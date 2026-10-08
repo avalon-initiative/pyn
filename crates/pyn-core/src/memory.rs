@@ -175,6 +175,18 @@ impl MetadataStore for MemoryMetadataStore {
         Ok(created)
     }
 
+    async fn list_head_revisions(&self, repo: &RepoId) -> Result<Vec<Revision>> {
+        let st = self.state.lock().unwrap();
+        let mut heads: Vec<Revision> = st
+            .revisions
+            .iter()
+            .filter(|((r, _), _)| r == repo)
+            .filter_map(|(_, revs)| revs.last().cloned())
+            .collect();
+        heads.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok(heads)
+    }
+
     async fn history(&self, repo: &RepoId, path: &RepoPath) -> Result<Vec<Revision>> {
         let st = self.state.lock().unwrap();
         Ok(st

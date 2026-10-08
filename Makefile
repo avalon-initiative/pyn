@@ -7,13 +7,15 @@ LOG_DIR := $(RUN_DIR)/logs
 PID_FILE := $(PID_DIR)/pyn.pid
 LOG_FILE := $(LOG_DIR)/pyn.log
 
-.PHONY: docs-check help build run start stop restart status test test-live fmt fmt-check lint check clean
+.PHONY: demo docs-check help build run start stop restart status test test-live fmt fmt-check lint check clean
 
 help:
 	@echo "pyn — local dev commands"
 	@echo ""
 	@echo "  make build         build the project"
 	@echo "  make run           run in the foreground"
+	@echo "  make demo          seed a running server with sample files and locks"
+	@echo "  make demo          seed a running server with sample files and locks"
 	@echo "  make start         run in the background (pid/log under $(RUN_DIR)/)"
 	@echo "  make stop          stop what 'make start' started"
 	@echo "  make restart       stop, then start"
@@ -77,6 +79,14 @@ fmt-check:
 lint:
 	cargo clippy --workspace --all-targets -- -D warnings
 	python3 scripts/check_links.py
+
+demo:
+	cargo build -p pyn-cli
+	scripts/demo.sh
+
+demo:
+	cargo build -p pyn-cli
+	scripts/demo.sh
 
 docs-check:
 	python3 scripts/check_links.py
