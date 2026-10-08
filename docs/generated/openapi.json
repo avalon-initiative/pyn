@@ -53,7 +53,7 @@
           {
             "name": "action",
             "in": "query",
-            "description": "checkout, release, checkin, restore or force_unlock",
+            "description": "checkout, release, checkin, restore, force_unlock, member_added, role_changed, role_permissions_changed, token_created or token_revoked",
             "required": false,
             "schema": {
               "type": "string"

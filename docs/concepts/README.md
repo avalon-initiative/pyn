@@ -27,10 +27,14 @@ Locks expire so abandoned work cannot block a file forever. The same holder chec
 Locks expire, but sometimes one has to be removed at once. `pyn unlock <path> --reason "..."` removes someone else's live
 lock. It needs the `force_unlock` permission, and the reason is mandatory because it is recorded.
 
-The audit log is an append-only record of lock and revision events: checkout, release, checkin, restore and force unlock,
-each with who, when, the path and a short detail (for a force unlock, whose lock was removed and why). `pyn audit` shows it
+The audit log is an append-only record of lock, revision and access events: checkout, release, checkin, restore, force unlock,
+member added, role changed, role permissions changed, token created and token revoked, each with who, when, the path and a short detail (for a force unlock, whose lock was removed and why). `pyn audit` shows it
 newest first and can filter by path, user and action; it needs the `view_audit` permission. Events are never changed or
 removed.
+
+Access events have no path: the detail names the target and what changed (a user and their old and new role, the
+permissions a role gained or lost, a token's id, name, owner, permissions and expiry). Token secrets are never recorded.
+Sign-in sessions are not logged. See [access](access.md).
 
 ## Looking at and restoring older versions
 

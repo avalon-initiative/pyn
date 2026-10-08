@@ -16,15 +16,25 @@ pub enum AuditAction {
     Checkin,
     Restore,
     ForceUnlock,
+    MemberAdded,
+    RoleChanged,
+    RolePermissionsChanged,
+    TokenCreated,
+    TokenRevoked,
 }
 
 impl AuditAction {
-    pub const ALL: [AuditAction; 5] = [
+    pub const ALL: [AuditAction; 10] = [
         AuditAction::Checkout,
         AuditAction::Release,
         AuditAction::Checkin,
         AuditAction::Restore,
         AuditAction::ForceUnlock,
+        AuditAction::MemberAdded,
+        AuditAction::RoleChanged,
+        AuditAction::RolePermissionsChanged,
+        AuditAction::TokenCreated,
+        AuditAction::TokenRevoked,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -34,6 +44,11 @@ impl AuditAction {
             Self::Checkin => "checkin",
             Self::Restore => "restore",
             Self::ForceUnlock => "force_unlock",
+            Self::MemberAdded => "member_added",
+            Self::RoleChanged => "role_changed",
+            Self::RolePermissionsChanged => "role_permissions_changed",
+            Self::TokenCreated => "token_created",
+            Self::TokenRevoked => "token_revoked",
         }
     }
 }
