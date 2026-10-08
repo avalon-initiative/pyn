@@ -2,6 +2,8 @@
 
 pub mod auth;
 pub mod clock;
+#[cfg(feature = "contract")]
+pub mod contract;
 pub mod error;
 pub mod memory;
 pub mod object;
