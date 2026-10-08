@@ -8,7 +8,7 @@ use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
 
 use crate::access::{
-    InviteId, InviteRecord, Permission, Role, RoleDefinitions, TokenId, TokenRecord,
+    InviteId, InviteRecord, Permission, Role, RoleDefinitions, SshKeyRecord, TokenId, TokenRecord,
 };
 use crate::access_service::AccessStore;
 use crate::audit::{AuditEvent, AuditQuery, AuditStore, NewAuditEvent};
@@ -261,6 +261,7 @@ struct AccessState {
     users: BTreeSet<UserId>,
     passwords: HashMap<UserId, String>,
     invites: HashMap<InviteId, InviteRecord>,
+    ssh_keys: Vec<SshKeyRecord>,
     roles: HashMap<(RepoId, UserId), Role>,
     definitions: HashMap<RepoId, RoleDefinitions>,
     tokens: HashMap<TokenId, TokenRecord>,
@@ -408,6 +409,63 @@ impl AccessStore for MemoryAccessStore {
         invite.used_at = Some(now);
         invite.used_by = Some(user.clone());
         Ok(true)
+    }
+
+    async fn add_ssh_key(&self, key: SshKeyRecord) -> Result<bool> {
+        let mut st = self.state.lock().unwrap();
+        if st.ssh_keys.iter().any(|k| k.fingerprint == key.fingerprint) {
+            return Ok(false);
+        }
+        st.ssh_keys.push(key);
+        Ok(true)
+    }
+
+    async fn list_ssh_keys(&self, user: &UserId) -> Result<Vec<SshKeyRecord>> {
+        let st = self.state.lock().unwrap();
+        let mut out: Vec<_> = st
+            .ssh_keys
+            .iter()
+            .filter(|k| &k.user == user)
+            .cloned()
+            .collect();
+        out.sort_by(|a, b| {
+            b.created_at
+                .cmp(&a.created_at)
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        Ok(out)
+    }
+
+    async fn delete_ssh_key(&self, user: &UserId, id: &str) -> Result<bool> {
+        let mut st = self.state.lock().unwrap();
+        let before = st.ssh_keys.len();
+        st.ssh_keys.retain(|k| !(&k.user == user && k.id == id));
+        Ok(st.ssh_keys.len() < before)
+    }
+
+    async fn find_ssh_key(&self, fingerprint: &str) -> Result<Option<SshKeyRecord>> {
+        Ok(self
+            .state
+            .lock()
+            .unwrap()
+            .ssh_keys
+            .iter()
+            .find(|k| k.fingerprint == fingerprint)
+            .cloned())
+    }
+
+    async fn touch_ssh_key(&self, fingerprint: &str, now: DateTime<Utc>) -> Result<()> {
+        if let Some(k) = self
+            .state
+            .lock()
+            .unwrap()
+            .ssh_keys
+            .iter_mut()
+            .find(|k| k.fingerprint == fingerprint)
+        {
+            k.last_used_at = Some(now);
+        }
+        Ok(())
     }
 
     async fn create_token(&self, token: TokenRecord) -> Result<()> {

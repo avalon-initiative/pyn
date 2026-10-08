@@ -6,7 +6,7 @@ use chrono::{Duration, TimeZone, Utc};
 
 use crate::AccessStore;
 use crate::access::{
-    InviteId, InviteRecord, Permission, Role, RoleDefinitions, TokenId, TokenRecord,
+    InviteId, InviteRecord, Permission, Role, RoleDefinitions, SshKeyRecord, TokenId, TokenRecord,
 };
 use crate::memory::{MemoryAuditStore, MemoryObjectStore};
 use crate::{
@@ -940,6 +940,103 @@ pub async fn invitations_are_single_use_expire_and_can_be_revoked(store: Access)
     );
 }
 
+fn ssh_key(id: &str, owner: &str, fingerprint: &str, created: i64) -> SshKeyRecord {
+    SshKeyRecord {
+        id: id.to_string(),
+        user: user(owner),
+        title: format!("key {id}"),
+        algorithm: "ssh-ed25519".into(),
+        public_key: format!("ssh-ed25519 AAAA{id}"),
+        fingerprint: fingerprint.to_string(),
+        created_at: at(created),
+        last_used_at: None,
+    }
+}
+
+pub async fn ssh_keys_are_unique_across_accounts_and_can_be_found_and_deleted(store: Access) {
+    for u in ["alice", "bob"] {
+        store.ensure_user(&user(u), at(0)).await.unwrap();
+    }
+    assert!(
+        store
+            .add_ssh_key(ssh_key("aaaaaaaaaaaa", "alice", "SHA256:one", 1))
+            .await
+            .unwrap()
+    );
+    assert!(
+        store
+            .add_ssh_key(ssh_key("bbbbbbbbbbbb", "alice", "SHA256:two", 5))
+            .await
+            .unwrap()
+    );
+    assert!(
+        !store
+            .add_ssh_key(ssh_key("cccccccccccc", "bob", "SHA256:one", 6))
+            .await
+            .unwrap(),
+        "another account's key"
+    );
+    assert!(
+        !store
+            .add_ssh_key(ssh_key("dddddddddddd", "alice", "SHA256:one", 7))
+            .await
+            .unwrap(),
+        "the same key twice"
+    );
+
+    let ids: Vec<_> = store
+        .list_ssh_keys(&user("alice"))
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|k| k.id)
+        .collect();
+    assert_eq!(ids, ["bbbbbbbbbbbb", "aaaaaaaaaaaa"], "newest first");
+    assert!(store.list_ssh_keys(&user("bob")).await.unwrap().is_empty());
+
+    let found = store.find_ssh_key("SHA256:one").await.unwrap().unwrap();
+    assert_eq!((found.user, found.last_used_at), (user("alice"), None));
+    store.touch_ssh_key("SHA256:one", at(30)).await.unwrap();
+    assert_eq!(
+        store
+            .find_ssh_key("SHA256:one")
+            .await
+            .unwrap()
+            .unwrap()
+            .last_used_at,
+        Some(at(30))
+    );
+    assert!(store.find_ssh_key("SHA256:nope").await.unwrap().is_none());
+
+    assert!(
+        !store
+            .delete_ssh_key(&user("bob"), "aaaaaaaaaaaa")
+            .await
+            .unwrap(),
+        "not bob's key"
+    );
+    assert!(
+        store
+            .delete_ssh_key(&user("alice"), "aaaaaaaaaaaa")
+            .await
+            .unwrap()
+    );
+    assert!(
+        !store
+            .delete_ssh_key(&user("alice"), "aaaaaaaaaaaa")
+            .await
+            .unwrap()
+    );
+    assert!(store.find_ssh_key("SHA256:one").await.unwrap().is_none());
+    assert!(
+        store
+            .add_ssh_key(ssh_key("eeeeeeeeeeee", "bob", "SHA256:one", 40))
+            .await
+            .unwrap(),
+        "a removed key can be linked again"
+    );
+}
+
 /// Generates one `#[tokio::test]` per access-store case for the store built by `$factory`.
 #[macro_export]
 macro_rules! access_contract_tests {
@@ -951,6 +1048,7 @@ macro_rules! access_contract_tests {
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; role_definitions_apply_overrides_to_defaults);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; accounts_hold_a_unique_name_and_a_password);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; invitations_are_single_use_expire_and_can_be_revoked);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; ssh_keys_are_unique_across_accounts_and_can_be_found_and_deleted);
     };
     (@one $factory:expr; [$(#[$attr:meta])*]; $name:ident) => {
         #[tokio::test(flavor = "multi_thread")]

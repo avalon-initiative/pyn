@@ -11,7 +11,7 @@ use chrono::Duration;
 
 use crate::access::{
     InviteId, InviteRecord, Permission, Principal, RegistrationMode, Role, RoleDefinitions,
-    TokenId, TokenRecord, account, invite, token,
+    SshKeyRecord, TokenId, TokenRecord, account, invite, ssh, token,
 };
 use crate::clock::Clock;
 use crate::error::{PynError, Result};
@@ -60,6 +60,19 @@ pub trait AccessStore: Send + Sync {
 
     /// Marks the invitation used by `user` if it is still unused, unrevoked and unexpired; false otherwise.
     async fn use_invite(&self, id: &InviteId, user: &UserId, now: DateTime<Utc>) -> Result<bool>;
+
+    /// Links a key to its account; false if another account (or this one) already has the same key.
+    async fn add_ssh_key(&self, key: SshKeyRecord) -> Result<bool>;
+
+    /// An account's keys, newest first.
+    async fn list_ssh_keys(&self, user: &UserId) -> Result<Vec<SshKeyRecord>>;
+
+    /// Removes one of the account's keys; false if it has no such key.
+    async fn delete_ssh_key(&self, user: &UserId, id: &str) -> Result<bool>;
+
+    async fn find_ssh_key(&self, fingerprint: &str) -> Result<Option<SshKeyRecord>>;
+
+    async fn touch_ssh_key(&self, fingerprint: &str, now: DateTime<Utc>) -> Result<()>;
 
     async fn create_token(&self, token: TokenRecord) -> Result<()>;
 
@@ -532,6 +545,78 @@ impl AccessService {
                 "there is no such invitation".into(),
             ))
         }
+    }
+
+    /// Links a public key to the actor's account. The title defaults to the key's own comment.
+    pub async fn add_ssh_key(
+        &self,
+        actor: &Principal,
+        title: Option<&str>,
+        key: &str,
+    ) -> Result<SshKeyRecord> {
+        let parsed = ssh::parse(key)?;
+        let title = title
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(str::to_string)
+            .or_else(|| (!parsed.comment.is_empty()).then(|| parsed.comment.clone()))
+            .unwrap_or_else(|| parsed.algorithm.clone());
+        self.store
+            .ensure_user(&actor.user, self.clock.now())
+            .await?;
+        let (id, _, _) = token::random_parts()?;
+        let record = SshKeyRecord {
+            id,
+            user: actor.user.clone(),
+            title,
+            algorithm: parsed.algorithm,
+            public_key: parsed.public_key,
+            fingerprint: parsed.fingerprint,
+            created_at: self.clock.now(),
+            last_used_at: None,
+        };
+        if !self.store.add_ssh_key(record.clone()).await? {
+            return Err(PynError::KeyInUse);
+        }
+        Ok(record)
+    }
+
+    /// The actor's own keys; another user's need `manage_users`.
+    pub async fn list_ssh_keys(
+        &self,
+        actor: &Principal,
+        user: &UserId,
+    ) -> Result<Vec<SshKeyRecord>> {
+        if &actor.user != user {
+            actor.require(Permission::ManageUsers)?;
+        }
+        self.store.list_ssh_keys(user).await
+    }
+
+    pub async fn delete_ssh_key(&self, actor: &Principal, user: &UserId, id: &str) -> Result<()> {
+        if &actor.user != user {
+            actor.require(Permission::ManageUsers)?;
+        }
+        if self.store.delete_ssh_key(user, id).await? {
+            Ok(())
+        } else {
+            Err(PynError::KeyNotFound(id.to_string()))
+        }
+    }
+
+    /// Who a presented key belongs to, with what they may do in `repo`. Used when a connection authenticates by key.
+    pub async fn authenticate_ssh_key(
+        &self,
+        repo: &RepoId,
+        fingerprint: &str,
+    ) -> Result<Principal> {
+        let record = self.store.find_ssh_key(fingerprint).await?.ok_or_else(|| {
+            PynError::Unauthenticated("this key is not linked to an account".into())
+        })?;
+        self.store
+            .touch_ssh_key(fingerprint, self.clock.now())
+            .await?;
+        self.principal(repo, &record.user).await
     }
 
     /// Gives an existing user a password without needing the old one, for the person running the server.

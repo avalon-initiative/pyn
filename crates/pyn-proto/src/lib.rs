@@ -231,6 +231,26 @@ pub struct CreatedInvite {
     pub info: InviteInfo,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct AddKeyRequest {
+    /// A name for the key; defaults to the key's own comment.
+    pub title: Option<String>,
+    /// The public key as an OpenSSH line.
+    pub key: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct SshKeyInfo {
+    pub id: String,
+    pub user: String,
+    pub title: String,
+    pub algorithm: String,
+    /// `SHA256:...`, as `ssh-keygen -l` prints it.
+    pub fingerprint: String,
+    pub created_at: DateTime<Utc>,
+    pub last_used_at: Option<DateTime<Utc>>,
+}
+
 /// Body of every non-2xx response; `code` is stable and machine-readable.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ErrorBody {

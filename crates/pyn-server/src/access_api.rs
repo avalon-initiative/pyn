@@ -7,7 +7,9 @@ use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use chrono::Duration;
-use pyn_core::{InviteId, InviteRecord, Permission, PynError, Role, TokenId, TokenRecord, UserId};
+use pyn_core::{
+    InviteId, InviteRecord, Permission, PynError, Role, SshKeyRecord, TokenId, TokenRecord, UserId,
+};
 use pyn_proto as api;
 use serde::Deserialize;
 
@@ -319,5 +321,69 @@ pub(crate) async fn revoke_invite(
 ) -> ApiResult<StatusCode> {
     let who = authorize(&s, &headers, None).await?;
     s.access.revoke_invite(&who, &InviteId(id)).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+fn key_info(k: SshKeyRecord) -> api::SshKeyInfo {
+    api::SshKeyInfo {
+        id: k.id,
+        user: k.user.to_string(),
+        title: k.title,
+        algorithm: k.algorithm,
+        fingerprint: k.fingerprint,
+        created_at: k.created_at,
+        last_used_at: k.last_used_at,
+    }
+}
+
+#[derive(Deserialize)]
+pub(crate) struct KeysQuery {
+    user: Option<String>,
+}
+
+#[utoipa::path(post, path = "/v1/keys", request_body = api::AddKeyRequest, responses(
+    (status = 200, body = api::SshKeyInfo),
+    (status = 400, body = api::ErrorBody, description = "not a usable public key"),
+    (status = 409, body = api::ErrorBody, description = "key_in_use"),
+))]
+pub(crate) async fn add_key(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<api::AddKeyRequest>,
+) -> ApiResult<Json<api::SshKeyInfo>> {
+    let who = authorize(&s, &headers, None).await?;
+    let key = s
+        .access
+        .add_ssh_key(&who, req.title.as_deref(), &req.key)
+        .await?;
+    Ok(Json(key_info(key)))
+}
+
+#[utoipa::path(get, path = "/v1/keys",
+    params(("user" = Option<String>, Query, description = "another user's keys; needs manage_users")),
+    responses((status = 200, body = Vec<api::SshKeyInfo>)))]
+pub(crate) async fn list_keys(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<KeysQuery>,
+) -> ApiResult<Json<Vec<api::SshKeyInfo>>> {
+    let who = authorize(&s, &headers, None).await?;
+    let user = q.user.map_or_else(|| who.user.clone(), UserId::new);
+    let keys = s.access.list_ssh_keys(&who, &user).await?;
+    Ok(Json(keys.into_iter().map(key_info).collect()))
+}
+
+#[utoipa::path(delete, path = "/v1/keys/{id}",
+    params(("user" = Option<String>, Query, description = "another user's key; needs manage_users")),
+    responses((status = 204), (status = 404, body = api::ErrorBody, description = "key_not_found")))]
+pub(crate) async fn delete_key(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Query(q): Query<KeysQuery>,
+) -> ApiResult<StatusCode> {
+    let who = authorize(&s, &headers, None).await?;
+    let user = q.user.map_or_else(|| who.user.clone(), UserId::new);
+    s.access.delete_ssh_key(&who, &user, &id).await?;
     Ok(StatusCode::NO_CONTENT)
 }

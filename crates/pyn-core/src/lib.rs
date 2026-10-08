@@ -17,7 +17,7 @@ pub mod types;
 
 pub use access::{
     InviteId, InviteRecord, Permission, Principal, RegistrationMode, Role, RoleDefinitions,
-    TokenId, TokenRecord, account, invite, token,
+    SshKeyRecord, TokenId, TokenRecord, account, invite, ssh, token,
 };
 pub use access_service::{AccessConfig, AccessService, AccessStore};
 pub use audit::{AuditAction, AuditEvent, AuditQuery, AuditStore, NewAuditEvent};

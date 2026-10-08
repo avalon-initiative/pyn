@@ -998,3 +998,149 @@ async fn people_can_change_their_own_password() {
         StatusCode::UNAUTHORIZED
     );
 }
+
+const ED1: &str = include_str!("../../pyn-core/tests/fixtures/keys/ed1.pub");
+const ED2: &str = include_str!("../../pyn-core/tests/fixtures/keys/ed2.pub");
+const DSA: &str = include_str!("../../pyn-core/tests/fixtures/keys/dsa.pub");
+
+#[tokio::test]
+async fn people_link_ssh_keys_to_their_accounts_like_on_github() {
+    let st = state_with(false, RegistrationMode::Open);
+    let app = router(st);
+    for name in ["alice", "bob"] {
+        app.clone()
+            .oneshot(anon(
+                "POST",
+                "/v1/register",
+                serde_json::json!({"username": name, "password": PASSWORD}),
+            ))
+            .await
+            .unwrap();
+    }
+    let session = |name: &str| {
+        let app = app.clone();
+        let name = name.to_string();
+        async move {
+            let r = app
+                .oneshot(anon(
+                    "POST",
+                    "/v1/login",
+                    serde_json::json!({"username": name, "password": PASSWORD}),
+                ))
+                .await
+                .unwrap();
+            body_json::<api::CreatedToken>(r).await.token
+        }
+    };
+    let (alice, bob) = (session("alice").await, session("bob").await);
+
+    let r = app
+        .clone()
+        .oneshot(with_token(
+            "POST",
+            "/v1/keys",
+            &alice,
+            Some(serde_json::json!({"key": ED1})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    let key: api::SshKeyInfo = body_json(r).await;
+    assert_eq!(
+        (
+            key.user.as_str(),
+            key.title.as_str(),
+            key.algorithm.as_str()
+        ),
+        ("alice", "alice@laptop", "ssh-ed25519")
+    );
+    assert!(key.fingerprint.starts_with("SHA256:"));
+
+    let r = app
+        .clone()
+        .oneshot(with_token(
+            "POST",
+            "/v1/keys",
+            &bob,
+            Some(serde_json::json!({"key": ED1})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        (
+            r.status(),
+            body_json::<api::ErrorBody>(r).await.code.as_str()
+        ),
+        (StatusCode::CONFLICT, "key_in_use")
+    );
+    let r = app
+        .clone()
+        .oneshot(with_token(
+            "POST",
+            "/v1/keys",
+            &bob,
+            Some(serde_json::json!({"key": DSA})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        status(
+            &app,
+            with_token(
+                "POST",
+                "/v1/keys",
+                &bob,
+                Some(serde_json::json!({"key": ED2, "title": "desk"}))
+            )
+        )
+        .await,
+        StatusCode::OK
+    );
+
+    let listed: Vec<api::SshKeyInfo> = body_json(
+        app.clone()
+            .oneshot(with_token("GET", "/v1/keys", &alice, None))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(listed.len(), 1, "only your own keys");
+    assert_eq!(
+        status(&app, with_token("GET", "/v1/keys?user=bob", &alice, None)).await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        status(
+            &app,
+            with_token(
+                "DELETE",
+                &format!("/v1/keys/{}?user=alice", key.id),
+                &bob,
+                None
+            )
+        )
+        .await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        status(
+            &app,
+            with_token("DELETE", &format!("/v1/keys/{}", key.id), &alice, None)
+        )
+        .await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        status(
+            &app,
+            with_token("DELETE", &format!("/v1/keys/{}", key.id), &alice, None)
+        )
+        .await,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        status(&app, Request::get("/v1/keys").body(Body::empty()).unwrap()).await,
+        StatusCode::UNAUTHORIZED
+    );
+}
