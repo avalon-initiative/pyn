@@ -1,0 +1,15 @@
+[workspace]
+resolver = "3"
+members = ["crates/pyn-core", "crates/pyn-proto", "crates/pyn-server", "crates/pyn-cli"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }

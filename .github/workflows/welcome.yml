@@ -1,0 +1,15 @@
+# Copy into a repo as .github/workflows/welcome.yml
+name: Welcome
+
+on:
+  issues:
+    types: [opened]
+  pull_request_target:
+    types: [opened]
+
+jobs:
+  call:
+    permissions:
+      issues: write
+      pull-requests: write
+    uses: avalon-initiative/.github/.github/workflows/welcome.yml@main

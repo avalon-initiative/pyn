@@ -1,0 +1,15 @@
+[package]
+name = "pyn-proto"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+chrono = { version = "0.4.45", features = ["serde"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+utoipa = { version = "6.0.0", features = ["chrono"] }
+
+[lints]
+workspace = true

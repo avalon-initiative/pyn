@@ -1,0 +1,19 @@
+# Example collaboration policy. Point the dev server at a copy with PYN_CONFIG=path/to/pyn.toml.
+# See docs/concepts/pyn-toml.md.
+
+[meta]
+default = "exclusive"   # unlisted paths need a lock; use "shared" for mostly-code repositories
+
+[exclusive]
+paths = [
+  "Content/",
+  "Config/ProductionConfig.cpp",
+  "**/*.uasset",
+]
+
+[shared]
+paths = [
+  "Source/",
+  "docs/",
+  "README.md",
+]

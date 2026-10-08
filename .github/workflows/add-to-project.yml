@@ -1,0 +1,16 @@
+# Copy into a repo as .github/workflows/add-to-project.yml
+# Needs the organization secret PROJECT_TOKEN. The avalon-protocol repo does not
+# use this caller: the project's native auto-add workflow covers it.
+name: Add to project
+
+on:
+  issues:
+    types: [opened, transferred]
+
+permissions: {}
+
+jobs:
+  call:
+    uses: avalon-initiative/.github/.github/workflows/add-to-project.yml@main
+    secrets:
+      PROJECT_TOKEN: ${{ secrets.PROJECT_TOKEN }}
