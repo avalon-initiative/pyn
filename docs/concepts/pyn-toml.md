@@ -54,10 +54,19 @@ When several entries cover a path, the most specific wins:
 The same exact file or folder in both lists is an error, not a silent choice. Unknown tables, unknown keys and
 invalid values are errors too: with a safe default, a typo like `[exlusive]` must not be quietly ignored.
 
-## Open questions
+## Changing policy
 
-- Whether `pyn.toml` is a versioned file in the repository (and which branch's copy counts) or a server-side
-  repository setting.
-- Policy changes (`shared` to `exclusive` and back) must be recorded as history events. Moving shared to exclusive
-  needs a canonical revision first, which depends on merge support.
-- Whether per-section settings belong in the same file (for example a lease length under `[exclusive]`).
+The server is the only authority on a path's mode, and it enforces the `pyn.toml` on the default branch for every
+branch. Edits to `pyn.toml` on other branches have no effect until they are merged, and a branch cannot override a path's
+mode.
+
+To move a file between modes, first land a change to `pyn.toml` on the default branch (a maintainer or admin, through
+the normal pull request path), and only then make the edits that need the new mode. The server checks the change when it
+is merged:
+
+- **Exclusive to shared** is always allowed. Live locks on the path are released.
+- **Shared to exclusive** is refused while branches hold different versions of the path. They must be merged or a
+  canonical version chosen first; the chosen version becomes the next revision on the path's single line.
+
+Each revision records the mode it was made under, so a path's history shows where it changed. Until pull requests
+exist, the policy is the server's own `pyn.toml`, changed by whoever administers the server.
