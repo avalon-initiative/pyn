@@ -98,6 +98,8 @@ pub struct Revision {
     pub author: UserId,
     pub message: String,
     pub created_at: DateTime<Utc>,
+    /// Set when this revision restores the content of an earlier one.
+    pub restored_from: Option<RevisionId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -107,6 +109,7 @@ pub struct NewRevision {
     pub author: UserId,
     pub message: String,
     pub created_at: DateTime<Utc>,
+    pub restored_from: Option<RevisionId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

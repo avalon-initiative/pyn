@@ -35,6 +35,8 @@ pub enum PynError {
     ObjectMissing(String),
     #[error("{path} has no revision {revision}")]
     RevisionNotFound { path: RepoPath, revision: String },
+    #[error("restoring replaces the head; to confirm, pass {expected}")]
+    ConfirmationRequired { expected: String },
     #[error("authentication failed: {0}")]
     Unauthenticated(String),
     #[error("permission {0} is required")]
@@ -60,6 +62,7 @@ impl PynError {
             Self::StaleBase { .. } => "stale_base",
             Self::ObjectMissing(_) => "object_missing",
             Self::RevisionNotFound { .. } => "revision_not_found",
+            Self::ConfirmationRequired { .. } => "confirmation_required",
             Self::Unauthenticated(_) => "unauthenticated",
             Self::Forbidden(_) => "forbidden",
             Self::TokenNotFound(_) => "token_not_found",

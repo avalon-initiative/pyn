@@ -56,6 +56,17 @@ enum Command {
         #[arg(short, long)]
         output: Option<std::path::PathBuf>,
     },
+    /// Make an older revision the new head. Needs the lock and the restore permission, and asks for confirmation.
+    Restore {
+        path: String,
+        /// The older revision whose content becomes the new head.
+        revision: u64,
+        #[arg(short, long)]
+        message: Option<String>,
+        /// Skip the typed confirmation.
+        #[arg(long)]
+        yes: bool,
+    },
     /// Show a path's revisions.
     History { path: String },
     /// Manage your API tokens.
@@ -250,9 +261,21 @@ fn main() -> Result<()> {
                 .send(api.get("/v1/history").query(&[("path", path)]))?
                 .json()?;
             for r in revs {
-                println!("{}\t{}\t{}\t{}", r.id, r.author, r.created_at, r.message);
+                let restored = r
+                    .restored_from
+                    .map_or(String::new(), |n| format!(" (restored from r{n})"));
+                println!(
+                    "{}\t{}\t{}\t{}{restored}",
+                    r.id, r.author, r.created_at, r.message
+                );
             }
         }
+        Command::Restore {
+            path,
+            revision,
+            message,
+            yes,
+        } => restore(&api, path, revision, message, yes)?,
         Command::Token(cmd) => token_command(&api, cmd)?,
         Command::Member(MemberCommand::List) => {
             let members: Vec<api::Member> = api.send(api.get("/v1/members"))?.json()?;
@@ -283,6 +306,59 @@ fn main() -> Result<()> {
             println!("updated {role}");
         }
     }
+    Ok(())
+}
+
+fn restore(
+    api: &Api,
+    path: String,
+    revision: u64,
+    message: Option<String>,
+    yes: bool,
+) -> Result<()> {
+    let revs: Vec<api::Revision> = api
+        .send(api.get("/v1/history").query(&[("path", path.as_str())]))?
+        .json()?;
+    let head = revs
+        .last()
+        .with_context(|| format!("{path} has no revisions"))?;
+    let source = revs
+        .iter()
+        .find(|r| r.id == revision)
+        .with_context(|| format!("{path} has no revision {revision}"))?;
+    println!(
+        "Restore {path} to r{} ({}, \"{}\").",
+        source.id, source.author, source.message
+    );
+    println!(
+        "The current head r{} ({}, \"{}\") stays in history; the restore becomes r{}.",
+        head.id,
+        head.author,
+        head.message,
+        head.id + 1
+    );
+    if !yes {
+        eprint!("Type the path to confirm: ");
+        let mut answer = String::new();
+        std::io::stdin().read_line(&mut answer)?;
+        if answer.trim() != path {
+            bail!("not confirmed");
+        }
+    }
+    let body = api::RestoreRequest {
+        path: path.clone(),
+        revision,
+        base_revision: head.id,
+        confirm: format!("{path}@r{}", head.id),
+        message,
+    };
+    let r: api::Revision = api
+        .send(api.request(Method::POST, "/v1/restore").json(&body))?
+        .json()?;
+    println!(
+        "{} is now at revision {}, restored from r{revision}",
+        r.path, r.id
+    );
     Ok(())
 }
 

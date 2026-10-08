@@ -318,6 +318,176 @@ pub async fn old_revisions_can_be_read_back(store: Store) {
     assert!(matches!(err, PynError::RevisionNotFound { .. }), "{err}");
 }
 
+async fn exclusive_history(h: &Harness, path: &RepoPath, texts: &[&str]) {
+    for (i, text) in texts.iter().enumerate() {
+        let base = (i > 0).then_some(RevisionId(i as u64));
+        h.svc.checkout(path, &user("alice"), base).await.unwrap();
+        let c = blob(h, text).await;
+        h.svc
+            .checkin(path, &user("alice"), c, base, (*text).into())
+            .await
+            .unwrap();
+    }
+}
+
+pub async fn restore_appends_a_checkpoint_with_the_old_content(store: Store) {
+    let h = harness(store);
+    let m = path("Content/m.umap");
+    exclusive_history(&h, &m, &["one", "two", "three"]).await;
+
+    h.svc
+        .checkout(&m, &user("bob"), Some(RevisionId(3)))
+        .await
+        .unwrap();
+    let r = h
+        .svc
+        .restore(
+            &m,
+            &user("bob"),
+            RevisionId(1),
+            RevisionId(3),
+            "Content/m.umap@r3",
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        (r.id, r.restored_from, r.author.as_str()),
+        (RevisionId(4), Some(RevisionId(1)), "bob")
+    );
+
+    let hist = h.svc.history(&m).await.unwrap();
+    assert_eq!(
+        hist.iter().map(|r| r.id.0).collect::<Vec<_>>(),
+        [1, 2, 3, 4]
+    );
+    assert_eq!(hist[3].content, hist[0].content);
+    assert_eq!(hist[2].restored_from, None);
+    assert_eq!(h.svc.read(&m, None).await.unwrap().1, b"one");
+    assert!(
+        h.svc.locks().await.unwrap().is_empty(),
+        "a restore releases the lock like a checkin"
+    );
+
+    h.svc
+        .checkout(&m, &user("alice"), Some(RevisionId(4)))
+        .await
+        .unwrap();
+    let c = blob(&h, "four").await;
+    let next = h
+        .svc
+        .checkin(&m, &user("alice"), c, Some(RevisionId(4)), "edit".into())
+        .await
+        .unwrap();
+    assert_eq!(
+        (next.id, next.restored_from),
+        (RevisionId(5), None),
+        "edits build on the restore"
+    );
+}
+
+pub async fn restore_needs_the_lock_and_the_right_confirmation(store: Store) {
+    let h = harness(store);
+    let m = path("Content/m.umap");
+    exclusive_history(&h, &m, &["one", "two"]).await;
+    let restore = |who: &str, confirm: &str| {
+        let (svc, who, confirm) = (h.svc.clone(), user(who), confirm.to_string());
+        let m = m.clone();
+        async move {
+            svc.restore(&m, &who, RevisionId(1), RevisionId(2), &confirm, None)
+                .await
+        }
+    };
+
+    let err = restore("bob", "Content/m.umap@r2").await.unwrap_err();
+    assert!(matches!(err, PynError::LockRequired(_)), "{err}");
+
+    h.svc
+        .checkout(&m, &user("alice"), Some(RevisionId(2)))
+        .await
+        .unwrap();
+    let err = restore("bob", "Content/m.umap@r2").await.unwrap_err();
+    assert!(
+        matches!(err, PynError::LockHeld { .. }),
+        "someone else's lock: {err}"
+    );
+
+    for wrong in ["", "Content/m.umap", "Content/m.umap@r1", "Source/x@r2"] {
+        let err = restore("alice", wrong).await.unwrap_err();
+        assert!(
+            matches!(err, PynError::ConfirmationRequired { ref expected } if expected == "Content/m.umap@r2"),
+            "{wrong:?}: {err}"
+        );
+    }
+    assert_eq!(
+        h.svc.head(&m).await.unwrap().unwrap().id,
+        RevisionId(2),
+        "refused restores change nothing"
+    );
+}
+
+pub async fn restore_is_for_exclusive_paths_and_real_older_revisions(store: Store) {
+    let h = harness(store);
+    let s = path("Source/a.cpp");
+    for (i, text) in ["one", "two"].into_iter().enumerate() {
+        let c = blob(&h, text).await;
+        let base = (i > 0).then_some(RevisionId(i as u64));
+        h.svc
+            .checkin(&s, &user("alice"), c, base, text.into())
+            .await
+            .unwrap();
+    }
+    let err = h
+        .svc
+        .restore(
+            &s,
+            &user("alice"),
+            RevisionId(1),
+            RevisionId(2),
+            "Source/a.cpp@r2",
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::NotExclusive(_)), "{err}");
+
+    let m = path("Content/m.umap");
+    exclusive_history(&h, &m, &["one", "two"]).await;
+    h.svc
+        .checkout(&m, &user("alice"), Some(RevisionId(2)))
+        .await
+        .unwrap();
+    let err = h
+        .svc
+        .restore(
+            &m,
+            &user("alice"),
+            RevisionId(9),
+            RevisionId(2),
+            "Content/m.umap@r2",
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::RevisionNotFound { .. }), "{err}");
+    let err = h
+        .svc
+        .restore(
+            &m,
+            &user("alice"),
+            RevisionId(2),
+            RevisionId(2),
+            "Content/m.umap@r2",
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, PynError::InvalidRequest(_)),
+        "the head itself: {err}"
+    );
+}
+
 /// Generates one `#[tokio::test]` per contract case for the store built by `$factory`.
 #[macro_export]
 macro_rules! contract_tests {
@@ -335,6 +505,9 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; checkin_of_unknown_content_is_refused);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; files_lists_heads_and_locks);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; old_revisions_can_be_read_back);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; restore_appends_a_checkpoint_with_the_old_content);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; restore_needs_the_lock_and_the_right_confirmation);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; restore_is_for_exclusive_paths_and_real_older_revisions);
     };
     (@one $factory:expr; [$(#[$attr:meta])*]; $name:ident) => {
         #[tokio::test(flavor = "multi_thread")]
