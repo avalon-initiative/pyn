@@ -4,13 +4,15 @@ use pyn_proto as api;
 use reqwest::Method;
 use reqwest::blocking::{Client, RequestBuilder, Response};
 
+mod credentials;
+
 /// pyn: version control that merges what can be merged and locks what shouldn't be.
 #[derive(Parser)]
 #[command(name = "pyn", version)]
 struct Cli {
     #[arg(long, env = "PYN_SERVER", default_value = "http://127.0.0.1:7878")]
     server: String,
-    /// API token to sign in with.
+    /// API token to sign in with; defaults to the sign-in saved by `pyn login`.
     #[arg(long, env = "PYN_TOKEN", hide_env_values = true)]
     token: Option<String>,
     /// Dev identity sent as X-Pyn-User; only works against a server running with PYN_DEV_AUTH.
@@ -22,8 +24,37 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Sign in with a user name and password and remember it for this server.
+    Login {
+        username: String,
+        /// Read the password from standard input instead of prompting.
+        #[arg(long)]
+        password_stdin: bool,
+    },
+    /// Forget the saved sign-in for this server and end that session.
+    Logout,
+    /// Create an account. Invite-only servers need --invite.
+    Register {
+        username: String,
+        #[arg(long)]
+        invite: Option<String>,
+        #[arg(long)]
+        password_stdin: bool,
+    },
+    /// Change your own password.
+    Password {
+        /// Read the current password, then the new one, from standard input.
+        #[arg(long)]
+        password_stdin: bool,
+    },
     /// Show who you are signed in as and what you may do.
     Whoami,
+    /// Create, list and revoke invitations.
+    #[command(subcommand)]
+    Invite(InviteCommand),
+    /// Add accounts (needs manage_users).
+    #[command(subcommand)]
+    User(UserCommand),
     /// List live locks.
     Locks,
     /// List files with their mode, head revision and lock.
@@ -123,6 +154,34 @@ enum TokenCommand {
 }
 
 #[derive(Subcommand)]
+enum InviteCommand {
+    /// Create a one-time invitation code. It is shown once.
+    Create {
+        #[arg(long, default_value = "reader")]
+        role: String,
+        /// How long the invitation can be used.
+        #[arg(long, default_value_t = 48)]
+        hours: i64,
+    },
+    List,
+    Revoke {
+        id: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum UserCommand {
+    /// Add an account with an initial password and a role.
+    Add {
+        username: String,
+        #[arg(long, default_value = "reader")]
+        role: String,
+        #[arg(long)]
+        password_stdin: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum MemberCommand {
     List,
     /// Give a user a role, adding them if they are new.
@@ -160,6 +219,11 @@ impl Api {
         }
     }
 
+    /// A request that carries no credentials, for signing in and registering.
+    fn anonymous(&self, method: Method, path: &str) -> RequestBuilder {
+        self.http.request(method, format!("{}{path}", self.base))
+    }
+
     fn get(&self, path: &str) -> RequestBuilder {
         self.request(Method::GET, path)
     }
@@ -171,14 +235,126 @@ impl Api {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    let base = cli.server.trim_end_matches('/').to_string();
+    let token = cli
+        .token
+        .or_else(|| credentials::load(&base).map(|saved| saved.token));
     let api = Api {
         http: Client::new(),
-        base: cli.server.trim_end_matches('/').to_string(),
-        token: cli.token,
+        base,
+        token,
         user: cli.user,
     };
 
     match cli.command {
+        Command::Login {
+            username,
+            password_stdin,
+        } => {
+            let password = credentials::read_password("Password: ", password_stdin)?;
+            let body = api::LoginRequest {
+                username: username.clone(),
+                password,
+            };
+            let made: api::CreatedToken = api
+                .send(api.anonymous(Method::POST, "/v1/login").json(&body))?
+                .json()?;
+            credentials::save(
+                &api.base,
+                credentials::Entry {
+                    user: username.clone(),
+                    token: made.token,
+                },
+            )?;
+            let until = made
+                .info
+                .expires_at
+                .map_or("never".to_string(), |e| e.to_string());
+            println!(
+                "signed in as {username} on {}; the sign-in expires {until}",
+                api.base
+            );
+        }
+        Command::Logout => {
+            let Some(saved) = credentials::load(&api.base) else {
+                println!("not signed in on {}", api.base);
+                return Ok(());
+            };
+            if let Some(id) = credentials::token_id(&saved.token) {
+                let _ = api
+                    .request(Method::DELETE, &format!("/v1/tokens/{id}"))
+                    .bearer_auth(&saved.token)
+                    .send();
+            }
+            credentials::remove(&api.base)?;
+            println!("signed out {} from {}", saved.user, api.base);
+        }
+        Command::Register {
+            username,
+            invite,
+            password_stdin,
+        } => {
+            let password = credentials::read_new_password(password_stdin)?;
+            let body = api::RegisterRequest {
+                username: username.clone(),
+                password,
+                invite,
+            };
+            api.send(api.anonymous(Method::POST, "/v1/register").json(&body))?;
+            println!("created {username}; sign in with `pyn login {username}`");
+        }
+        Command::Password { password_stdin } => {
+            let current = credentials::read_password("Current password: ", password_stdin)?;
+            let new = credentials::read_new_password(password_stdin)?;
+            let body = api::ChangePasswordRequest {
+                current: Some(current),
+                new,
+            };
+            api.send(api.request(Method::PUT, "/v1/me/password").json(&body))?;
+            println!("password changed");
+        }
+        Command::Invite(InviteCommand::Create { role, hours }) => {
+            let body = api::CreateInviteRequest { role, hours };
+            let made: api::CreatedInvite = api
+                .send(api.request(Method::POST, "/v1/invites").json(&body))?
+                .json()?;
+            println!("{}", made.code);
+            eprintln!(
+                "invitation {} for role {}, expires {}; this is the only time the code is shown",
+                made.info.id, made.info.role, made.info.expires_at
+            );
+        }
+        Command::Invite(InviteCommand::List) => {
+            let invites: Vec<api::InviteInfo> = api.send(api.get("/v1/invites"))?.json()?;
+            for i in invites {
+                let state = if i.revoked_at.is_some() {
+                    "revoked".to_string()
+                } else if let Some(user) = &i.used_by {
+                    format!("used by {user}")
+                } else {
+                    "unused".to_string()
+                };
+                println!("{}\t{}\t{state}\texpires {}", i.id, i.role, i.expires_at);
+            }
+        }
+        Command::Invite(InviteCommand::Revoke { id }) => {
+            api.send(api.request(Method::DELETE, &format!("/v1/invites/{id}")))?;
+            println!("revoked {id}");
+        }
+        Command::User(UserCommand::Add {
+            username,
+            role,
+            password_stdin,
+        }) => {
+            let password = credentials::read_new_password(password_stdin)?;
+            let body = api::AddUserRequest {
+                username: username.clone(),
+                password,
+                role: role.clone(),
+            };
+            api.send(api.request(Method::POST, "/v1/users").json(&body))?;
+            println!("added {username} as {role}");
+        }
         Command::Whoami => {
             let me: api::Me = api.send(api.get("/v1/me"))?.json()?;
             println!("{}\t{}", me.user, me.permissions.join(","));

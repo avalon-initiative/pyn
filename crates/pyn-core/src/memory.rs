@@ -7,7 +7,9 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
 
-use crate::access::{Permission, Role, RoleDefinitions, TokenId, TokenRecord};
+use crate::access::{
+    InviteId, InviteRecord, Permission, Role, RoleDefinitions, TokenId, TokenRecord,
+};
 use crate::access_service::AccessStore;
 use crate::audit::{AuditEvent, AuditQuery, AuditStore, NewAuditEvent};
 use crate::error::{PynError, Result};
@@ -257,6 +259,8 @@ impl ObjectStore for MemoryObjectStore {
 #[derive(Default)]
 struct AccessState {
     users: BTreeSet<UserId>,
+    passwords: HashMap<UserId, String>,
+    invites: HashMap<InviteId, InviteRecord>,
     roles: HashMap<(RepoId, UserId), Role>,
     definitions: HashMap<RepoId, RoleDefinitions>,
     tokens: HashMap<TokenId, TokenRecord>,
@@ -332,6 +336,78 @@ impl AccessStore for MemoryAccessStore {
             .or_insert_with(RoleDefinitions::defaults)
             .set(role, permissions);
         Ok(())
+    }
+
+    async fn create_user(&self, user: &UserId, _now: DateTime<Utc>) -> Result<bool> {
+        Ok(self.state.lock().unwrap().users.insert(user.clone()))
+    }
+
+    async fn user_exists(&self, user: &UserId) -> Result<bool> {
+        Ok(self.state.lock().unwrap().users.contains(user))
+    }
+
+    async fn set_password_hash(&self, user: &UserId, hash: &str) -> Result<()> {
+        self.state
+            .lock()
+            .unwrap()
+            .passwords
+            .insert(user.clone(), hash.to_string());
+        Ok(())
+    }
+
+    async fn password_hash(&self, user: &UserId) -> Result<Option<String>> {
+        Ok(self.state.lock().unwrap().passwords.get(user).cloned())
+    }
+
+    async fn create_invite(&self, invite: InviteRecord) -> Result<()> {
+        self.state
+            .lock()
+            .unwrap()
+            .invites
+            .insert(invite.id.clone(), invite);
+        Ok(())
+    }
+
+    async fn get_invite(&self, id: &InviteId) -> Result<Option<InviteRecord>> {
+        Ok(self.state.lock().unwrap().invites.get(id).cloned())
+    }
+
+    async fn list_invites(&self, repo: &RepoId) -> Result<Vec<InviteRecord>> {
+        let st = self.state.lock().unwrap();
+        let mut out: Vec<_> = st
+            .invites
+            .values()
+            .filter(|i| &i.repo == repo)
+            .cloned()
+            .collect();
+        out.sort_by(|a, b| {
+            b.created_at
+                .cmp(&a.created_at)
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        Ok(out)
+    }
+
+    async fn revoke_invite(&self, id: &InviteId, now: DateTime<Utc>) -> Result<bool> {
+        let mut st = self.state.lock().unwrap();
+        let Some(invite) = st.invites.get_mut(id) else {
+            return Ok(false);
+        };
+        invite.revoked_at.get_or_insert(now);
+        Ok(true)
+    }
+
+    async fn use_invite(&self, id: &InviteId, user: &UserId, now: DateTime<Utc>) -> Result<bool> {
+        let mut st = self.state.lock().unwrap();
+        let Some(invite) = st.invites.get_mut(id) else {
+            return Ok(false);
+        };
+        if invite.used_at.is_some() || invite.revoked_at.is_some() || invite.expires_at <= now {
+            return Ok(false);
+        }
+        invite.used_at = Some(now);
+        invite.used_by = Some(user.clone());
+        Ok(true)
     }
 
     async fn create_token(&self, token: TokenRecord) -> Result<()> {

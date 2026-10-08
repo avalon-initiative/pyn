@@ -4,7 +4,15 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
-use crate::access::{Permission, Principal, Role, RoleDefinitions, TokenId, TokenRecord, token};
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+
+use chrono::Duration;
+
+use crate::access::{
+    InviteId, InviteRecord, Permission, Principal, RegistrationMode, Role, RoleDefinitions,
+    TokenId, TokenRecord, account, invite, token,
+};
 use crate::clock::Clock;
 use crate::error::{PynError, Result};
 use crate::types::{RepoId, UserId};
@@ -31,6 +39,28 @@ pub trait AccessStore: Send + Sync {
         permissions: BTreeSet<Permission>,
     ) -> Result<()>;
 
+    /// Creates the user; false if the name is already taken.
+    async fn create_user(&self, user: &UserId, now: DateTime<Utc>) -> Result<bool>;
+
+    async fn user_exists(&self, user: &UserId) -> Result<bool>;
+
+    async fn set_password_hash(&self, user: &UserId, hash: &str) -> Result<()>;
+
+    async fn password_hash(&self, user: &UserId) -> Result<Option<String>>;
+
+    async fn create_invite(&self, invite: InviteRecord) -> Result<()>;
+
+    async fn get_invite(&self, id: &InviteId) -> Result<Option<InviteRecord>>;
+
+    /// A repository's invitations, newest first.
+    async fn list_invites(&self, repo: &RepoId) -> Result<Vec<InviteRecord>>;
+
+    /// Marks the invitation revoked; false if there is none. Revoking twice is harmless.
+    async fn revoke_invite(&self, id: &InviteId, now: DateTime<Utc>) -> Result<bool>;
+
+    /// Marks the invitation used by `user` if it is still unused, unrevoked and unexpired; false otherwise.
+    async fn use_invite(&self, id: &InviteId, user: &UserId, now: DateTime<Utc>) -> Result<bool>;
+
     async fn create_token(&self, token: TokenRecord) -> Result<()>;
 
     async fn get_token(&self, id: &TokenId) -> Result<Option<TokenRecord>>;
@@ -44,10 +74,35 @@ pub trait AccessStore: Send + Sync {
     async fn touch_token(&self, id: &TokenId, now: DateTime<Utc>) -> Result<()>;
 }
 
-/// Authentication of tokens and every rule about who may manage users, roles and tokens.
+/// Server settings that shape who can join and how long a sign-in lasts.
+#[derive(Debug, Clone)]
+pub struct AccessConfig {
+    pub registration: RegistrationMode,
+    /// The role given to people who register on an open server.
+    pub default_role: Role,
+    pub session_days: i64,
+}
+
+impl Default for AccessConfig {
+    fn default() -> Self {
+        Self {
+            registration: RegistrationMode::InviteOnly,
+            default_role: Role::Reader,
+            session_days: 30,
+        }
+    }
+}
+
+const MAX_FAILED_SIGN_INS: u32 = 5;
+const SIGN_IN_WINDOW: Duration = Duration::minutes(15);
+
+/// Authentication of tokens and passwords, and every rule about who may join and manage users, roles and tokens.
 pub struct AccessService {
     store: Arc<dyn AccessStore>,
     clock: Arc<dyn Clock>,
+    config: AccessConfig,
+    /// Failed sign-ins per user name: how many, and when the window started.
+    failures: Mutex<HashMap<String, (u32, DateTime<Utc>)>>,
 }
 
 fn unauthenticated(why: &str) -> PynError {
@@ -56,7 +111,21 @@ fn unauthenticated(why: &str) -> PynError {
 
 impl AccessService {
     pub fn new(store: Arc<dyn AccessStore>, clock: Arc<dyn Clock>) -> Self {
-        Self { store, clock }
+        Self {
+            store,
+            clock,
+            config: AccessConfig::default(),
+            failures: Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub fn with_config(mut self, config: AccessConfig) -> Self {
+        self.config = config;
+        self
+    }
+
+    pub fn registration_mode(&self) -> RegistrationMode {
+        self.config.registration
     }
 
     /// What `user`'s role grants in `repo`; nothing for a non-member.
@@ -225,6 +294,251 @@ impl AccessService {
         }
         self.store
             .set_role_permissions(repo, role, permissions)
+            .await
+    }
+
+    fn check_not_throttled(&self, key: &str, now: DateTime<Utc>) -> Result<()> {
+        let mut failures = self.failures.lock().unwrap();
+        if let Some(&(count, since)) = failures.get(key) {
+            if now >= since + SIGN_IN_WINDOW {
+                failures.remove(key);
+            } else if count >= MAX_FAILED_SIGN_INS {
+                let retry_after_secs = (since + SIGN_IN_WINDOW - now).num_seconds().max(1);
+                return Err(PynError::TooManyAttempts { retry_after_secs });
+            }
+        }
+        Ok(())
+    }
+
+    fn note_sign_in(&self, key: &str, now: DateTime<Utc>, success: bool) {
+        let mut failures = self.failures.lock().unwrap();
+        if success {
+            failures.remove(key);
+        } else {
+            failures.entry(key.to_string()).or_insert((0, now)).0 += 1;
+        }
+    }
+
+    /// Checks a password and returns a session credential: a token limited to the user's current role that
+    /// expires after the configured number of days. Repeated failures lock the user name out for a while.
+    pub async fn login(
+        &self,
+        repo: &RepoId,
+        username: &str,
+        password: &str,
+    ) -> Result<(TokenRecord, String)> {
+        let now = self.clock.now();
+        let key = username.to_lowercase();
+        self.check_not_throttled(&key, now)?;
+
+        let user = UserId::new(username);
+        let verified = match self.store.password_hash(&user).await? {
+            Some(hash) => account::verify_password(password, &hash),
+            None => {
+                static DUMMY: OnceLock<String> = OnceLock::new();
+                let dummy = DUMMY.get_or_init(|| {
+                    account::hash_password("not-a-real-password").unwrap_or_default()
+                });
+                account::verify_password(password, dummy);
+                false
+            }
+        };
+        self.note_sign_in(&key, now, verified);
+        if !verified {
+            return Err(PynError::Unauthenticated(
+                "wrong user name or password".into(),
+            ));
+        }
+
+        let permissions = self.role_permissions(repo, &user).await?;
+        if permissions.is_empty() {
+            return Err(PynError::Unauthenticated(
+                "this account has no access to this repository".into(),
+            ));
+        }
+        let actor = Principal {
+            user,
+            permissions: permissions.clone(),
+        };
+        let expires = now + Duration::days(self.config.session_days);
+        self.create_token(
+            &actor,
+            "sign-in",
+            permissions,
+            vec![repo.clone()],
+            Some(expires),
+        )
+        .await
+    }
+
+    /// Creates an account on the server's own terms: freely when registration is open, with a valid invitation
+    /// when it is invite only, never when it is closed.
+    pub async fn register(
+        &self,
+        repo: &RepoId,
+        username: &str,
+        password: &str,
+        invitation: Option<&str>,
+    ) -> Result<UserId> {
+        let user = account::validate_username(username)?;
+        account::validate_password(password)?;
+        let (role, claimed) = match self.config.registration {
+            RegistrationMode::Closed => return Err(PynError::RegistrationClosed),
+            RegistrationMode::Open => (self.config.default_role, None),
+            RegistrationMode::InviteOnly => {
+                let record = self.check_invitation(repo, invitation).await?;
+                (record.role, Some(record.id))
+            }
+        };
+        if self.store.user_exists(&user).await? {
+            return Err(PynError::UserExists(user));
+        }
+        let now = self.clock.now();
+        if let Some(id) = &claimed
+            && !self.store.use_invite(id, &user, now).await?
+        {
+            return Err(PynError::InvalidInvite("it has already been used".into()));
+        }
+        if !self.store.create_user(&user, now).await? {
+            return Err(PynError::UserExists(user));
+        }
+        self.store
+            .set_password_hash(&user, &account::hash_password(password)?)
+            .await?;
+        self.store.set_role(repo, &user, role).await?;
+        Ok(user)
+    }
+
+    async fn check_invitation(&self, repo: &RepoId, code: Option<&str>) -> Result<InviteRecord> {
+        let bad = |why: &str| PynError::InvalidInvite(why.to_string());
+        let (id, secret) =
+            invite::parse(code.ok_or_else(|| bad("this server needs an invitation"))?)
+                .ok_or_else(|| bad("the code is not valid"))?;
+        let record = self
+            .store
+            .get_invite(&id)
+            .await?
+            .ok_or_else(|| bad("the code is not valid"))?;
+        if !token::hashes_match(&record.secret_hash, &token::hash_secret(secret)) {
+            return Err(bad("the code is not valid"));
+        }
+        let now = self.clock.now();
+        if &record.repo != repo {
+            return Err(bad("the code is for another repository"));
+        }
+        if record.revoked_at.is_some() {
+            return Err(bad("it has been revoked"));
+        }
+        if record.used_at.is_some() {
+            return Err(bad("it has already been used"));
+        }
+        if record.expires_at <= now {
+            return Err(bad("it has expired"));
+        }
+        Ok(record)
+    }
+
+    /// Adds an account with an initial password, in any registration mode.
+    pub async fn add_user(
+        &self,
+        actor: &Principal,
+        repo: &RepoId,
+        username: &str,
+        password: &str,
+        role: Role,
+    ) -> Result<UserId> {
+        actor.require(Permission::ManageUsers)?;
+        self.require_can_grant(actor, repo, role).await?;
+        let user = account::validate_username(username)?;
+        account::validate_password(password)?;
+        if !self.store.create_user(&user, self.clock.now()).await? {
+            return Err(PynError::UserExists(user));
+        }
+        self.store
+            .set_password_hash(&user, &account::hash_password(password)?)
+            .await?;
+        self.store.set_role(repo, &user, role).await?;
+        Ok(user)
+    }
+
+    /// Changes the actor's own password. If they already have one, the current password must be given.
+    pub async fn change_password(
+        &self,
+        actor: &Principal,
+        current: Option<&str>,
+        new: &str,
+    ) -> Result<()> {
+        account::validate_password(new)?;
+        if let Some(hash) = self.store.password_hash(&actor.user).await?
+            && !current.is_some_and(|c| account::verify_password(c, &hash))
+        {
+            return Err(PynError::Unauthenticated(
+                "the current password is wrong".into(),
+            ));
+        }
+        self.store
+            .set_password_hash(&actor.user, &account::hash_password(new)?)
+            .await
+    }
+
+    /// Creates a one-time invitation for `role`. The code is returned once and not stored.
+    pub async fn create_invite(
+        &self,
+        actor: &Principal,
+        repo: &RepoId,
+        role: Role,
+        valid_for: Duration,
+    ) -> Result<(InviteRecord, String)> {
+        actor.require(Permission::ManageUsers)?;
+        self.require_can_grant(actor, repo, role).await?;
+        if valid_for <= Duration::zero() {
+            return Err(PynError::InvalidRequest(
+                "an invitation must be valid for some time".into(),
+            ));
+        }
+        let (id, code, secret_hash) = invite::generate()?;
+        let now = self.clock.now();
+        let record = InviteRecord {
+            id,
+            secret_hash,
+            repo: repo.clone(),
+            role,
+            created_by: actor.user.clone(),
+            created_at: now,
+            expires_at: now + valid_for,
+            used_at: None,
+            used_by: None,
+            revoked_at: None,
+        };
+        self.store.create_invite(record.clone()).await?;
+        Ok((record, code))
+    }
+
+    pub async fn list_invites(
+        &self,
+        actor: &Principal,
+        repo: &RepoId,
+    ) -> Result<Vec<InviteRecord>> {
+        actor.require(Permission::ManageUsers)?;
+        self.store.list_invites(repo).await
+    }
+
+    pub async fn revoke_invite(&self, actor: &Principal, id: &InviteId) -> Result<()> {
+        actor.require(Permission::ManageUsers)?;
+        if self.store.revoke_invite(id, self.clock.now()).await? {
+            Ok(())
+        } else {
+            Err(PynError::InvalidInvite(
+                "there is no such invitation".into(),
+            ))
+        }
+    }
+
+    /// Gives an existing user a password without needing the old one, for the person running the server.
+    pub async fn set_password_for_operator(&self, user: &UserId, password: &str) -> Result<()> {
+        account::validate_password(password)?;
+        self.store
+            .set_password_hash(user, &account::hash_password(password)?)
             .await
     }
 

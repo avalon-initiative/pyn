@@ -9,6 +9,7 @@ license.workspace = true
 contract = ["dep:tokio"]
 
 [dependencies]
+argon2 = "0.6.0"
 async-trait = "0.1.92"
 chrono = { version = "0.4.45", features = ["serde"] }
 getrandom = "0.4.3"

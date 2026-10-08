@@ -15,8 +15,11 @@ pub mod service;
 pub mod store;
 pub mod types;
 
-pub use access::{Permission, Principal, Role, RoleDefinitions, TokenId, TokenRecord, token};
-pub use access_service::{AccessService, AccessStore};
+pub use access::{
+    InviteId, InviteRecord, Permission, Principal, RegistrationMode, Role, RoleDefinitions,
+    TokenId, TokenRecord, account, invite, token,
+};
+pub use access_service::{AccessConfig, AccessService, AccessStore};
 pub use audit::{AuditAction, AuditEvent, AuditQuery, AuditStore, NewAuditEvent};
 pub use auth::AuthProvider;
 pub use clock::{Clock, ManualClock, SystemClock};
