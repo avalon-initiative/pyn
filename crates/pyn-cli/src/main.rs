@@ -70,6 +70,9 @@ enum Command {
     Config(ConfigCommand),
     /// Show who you are signed in as and what you may do.
     Whoami,
+    /// Link SSH public keys to your account.
+    #[command(subcommand)]
+    Key(KeyCommand),
     /// Create, list and revoke invitations.
     #[command(subcommand)]
     Invite(InviteCommand),
@@ -198,6 +201,29 @@ enum TokenCommand {
     },
     /// Revoke a token by id.
     Revoke { id: String },
+}
+
+#[derive(Subcommand)]
+enum KeyCommand {
+    /// Add a public key. Without a file, uses ~/.ssh/id_ed25519.pub, id_ecdsa.pub or id_rsa.pub, whichever exists first.
+    Add {
+        /// A public key file (a `.pub` file).
+        file: Option<std::path::PathBuf>,
+        /// A name for the key; defaults to the comment in the key.
+        #[arg(long)]
+        title: Option<String>,
+    },
+    /// List your keys, or another user's with --for (needs manage_users).
+    List {
+        #[arg(long = "for")]
+        for_user: Option<String>,
+    },
+    /// Remove a key by id.
+    Remove {
+        id: String,
+        #[arg(long = "for")]
+        for_user: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -353,6 +379,43 @@ fn main() -> Result<()> {
             };
             api.send(api.request(Method::PUT, "/v1/me/password").json(&body))?;
             println!("password changed");
+        }
+        Command::Key(KeyCommand::Add { file, title }) => {
+            let file = file.map_or_else(default_public_key, Ok)?;
+            let key = std::fs::read_to_string(&file)
+                .with_context(|| format!("reading {}", file.display()))?;
+            let body = api::AddKeyRequest { title, key };
+            let added: api::SshKeyInfo = api
+                .send(api.request(Method::POST, "/v1/keys").json(&body))?
+                .json()?;
+            println!(
+                "added {} ({}) as {}",
+                added.title, added.fingerprint, added.id
+            );
+        }
+        Command::Key(KeyCommand::List { for_user }) => {
+            let mut req = api.get("/v1/keys");
+            if let Some(user) = &for_user {
+                req = req.query(&[("user", user)]);
+            }
+            let keys: Vec<api::SshKeyInfo> = api.send(req)?.json()?;
+            for k in keys {
+                let used = k
+                    .last_used_at
+                    .map_or("never used".to_string(), |t| format!("last used {t}"));
+                println!(
+                    "{}\t{}\t{}\t{}\t{used}",
+                    k.id, k.title, k.algorithm, k.fingerprint
+                );
+            }
+        }
+        Command::Key(KeyCommand::Remove { id, for_user }) => {
+            let mut req = api.request(Method::DELETE, &format!("/v1/keys/{id}"));
+            if let Some(user) = &for_user {
+                req = req.query(&[("user", user)]);
+            }
+            api.send(req)?;
+            println!("removed {id}");
         }
         Command::Invite(InviteCommand::Create { role, hours }) => {
             let body = api::CreateInviteRequest { role, hours };
@@ -799,4 +862,14 @@ fn config_command(
         }
     }
     Ok(())
+}
+
+fn default_public_key() -> Result<std::path::PathBuf> {
+    let home =
+        std::env::var("HOME").context("cannot find your home directory; name the key file")?;
+    ["id_ed25519.pub", "id_ecdsa.pub", "id_rsa.pub"]
+        .iter()
+        .map(|name| std::path::Path::new(&home).join(".ssh").join(name))
+        .find(|p| p.is_file())
+        .context("no public key found in ~/.ssh; name the key file, or create one with `ssh-keygen -t ed25519`")
 }

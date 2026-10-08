@@ -40,6 +40,16 @@ session is a token limited to your role, and it lasts 30 days by default (`PYN_S
 Five wrong passwords for a user name lock that name out of signing in for 15 minutes, and the error never says whether the
 name or the password was wrong. `pyn password` changes your own password.
 
+## SSH keys
+
+SSH keys are how people sign in from the command line and, when the SSH transport arrives, how clone and push authenticate,
+as with git. Link a public key to your account with `pyn key add` (it uses `~/.ssh/id_ed25519.pub`, `id_ecdsa.pub` or
+`id_rsa.pub` if you do not name a file), see them with `pyn key list`, and remove one with `pyn key remove <id>`.
+
+As on GitHub, a key belongs to exactly one account: its fingerprint, the same `SHA256:...` that `ssh-keygen -l` prints,
+is unique across the server, and linking a key that another account has is refused. Ed25519, ECDSA, security keys and RSA
+of at least 2048 bits are accepted; DSA and small RSA keys are not. Administrators can list and remove other people's keys.
+
 ## Joining a server
 
 The person running the server chooses how people join with `PYN_REGISTRATION`:

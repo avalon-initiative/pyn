@@ -41,6 +41,9 @@ pub struct AppState {
         access_api::create_invite,
         access_api::list_invites,
         access_api::revoke_invite,
+        access_api::add_key,
+        access_api::list_keys,
+        access_api::delete_key,
         access_api::me,
         access_api::create_token,
         access_api::list_tokens,
@@ -85,6 +88,8 @@ pub struct AppState {
         api::CreateInviteRequest,
         api::InviteInfo,
         api::CreatedInvite,
+        api::AddKeyRequest,
+        api::SshKeyInfo,
         api::Me,
         api::CreateTokenRequest,
         api::TokenInfo,
@@ -113,6 +118,14 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/v1/invites/{id}",
             axum::routing::delete(access_api::revoke_invite),
+        )
+        .route(
+            "/v1/keys",
+            get(access_api::list_keys).post(access_api::add_key),
+        )
+        .route(
+            "/v1/keys/{id}",
+            axum::routing::delete(access_api::delete_key),
         )
         .route("/v1/me", get(access_api::me))
         .route(
@@ -157,13 +170,14 @@ impl IntoResponse for ApiError {
             | PynError::LockRequired(_)
             | PynError::NotLocked(_)
             | PynError::UserExists(_)
+            | PynError::KeyInUse
             | PynError::ConfirmationRequired { .. } => StatusCode::CONFLICT,
             PynError::NotLockHolder(_) | PynError::Forbidden(_) | PynError::RegistrationClosed => {
                 StatusCode::FORBIDDEN
             }
             PynError::TooManyAttempts { .. } => StatusCode::TOO_MANY_REQUESTS,
             PynError::Unauthenticated(_) => StatusCode::UNAUTHORIZED,
-            PynError::TokenNotFound(_) => StatusCode::NOT_FOUND,
+            PynError::TokenNotFound(_) | PynError::KeyNotFound(_) => StatusCode::NOT_FOUND,
             PynError::RevisionNotFound { .. } => StatusCode::NOT_FOUND,
             PynError::InvalidPath(_)
             | PynError::InvalidRules(_)

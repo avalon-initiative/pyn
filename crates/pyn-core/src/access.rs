@@ -210,7 +210,7 @@ pub mod token {
     }
 
     /// A random id, secret and the hash of the secret.
-    pub(super) fn random_parts() -> Result<(String, String, String)> {
+    pub(crate) fn random_parts() -> Result<(String, String, String)> {
         let id = random_hex(6)?;
         let secret = random_hex(32)?;
         let hash = hash_secret(&secret);
@@ -373,6 +373,79 @@ pub mod account {
             Argon2::default()
                 .verify_password(password.as_bytes(), &parsed)
                 .is_ok()
+        })
+    }
+}
+
+/// An SSH public key linked to an account. The fingerprint is unique across the server.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SshKeyRecord {
+    pub id: String,
+    pub user: UserId,
+    pub title: String,
+    /// `ssh-ed25519`, `ecdsa-sha2-nistp256`, `ssh-rsa` and so on.
+    pub algorithm: String,
+    /// The key as an OpenSSH line without its comment.
+    pub public_key: String,
+    /// `SHA256:...`, as `ssh-keygen -l` prints it.
+    pub fingerprint: String,
+    pub created_at: DateTime<Utc>,
+    pub last_used_at: Option<DateTime<Utc>>,
+}
+
+/// Parsing and vetting of public keys people paste or upload.
+pub mod ssh {
+    use ssh_key::{Algorithm, HashAlg, PublicKey};
+
+    use super::*;
+
+    const MIN_RSA_BITS: usize = 2048;
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct ParsedKey {
+        pub algorithm: String,
+        pub public_key: String,
+        pub fingerprint: String,
+        /// The comment at the end of the line, often `user@host`.
+        pub comment: String,
+    }
+
+    /// Accepts Ed25519, ECDSA, security keys, and RSA of at least 2048 bits; refuses everything else.
+    pub fn parse(text: &str) -> Result<ParsedKey> {
+        let bad = |why: String| PynError::InvalidRequest(why);
+        let mut key = PublicKey::from_openssh(text.trim())
+            .map_err(|_| bad("that is not an OpenSSH public key (it should look like `ssh-ed25519 AAAA... name`)".into()))?;
+        match key.algorithm() {
+            Algorithm::Ed25519
+            | Algorithm::Ecdsa { .. }
+            | Algorithm::SkEd25519
+            | Algorithm::SkEcdsaSha2NistP256 => {}
+            Algorithm::Rsa { .. } => {
+                let bits = key
+                    .key_data()
+                    .rsa()
+                    .and_then(|r| r.n.as_positive_bytes())
+                    .map_or(0, |n| n.len() * 8);
+                if bits < MIN_RSA_BITS {
+                    return Err(bad(format!(
+                        "RSA keys must be at least {MIN_RSA_BITS} bits; this one is {bits}"
+                    )));
+                }
+            }
+            other => return Err(bad(format!("{} keys are not accepted", other.as_str()))),
+        }
+        let comment = key.comment().to_string();
+        let fingerprint = key.fingerprint(HashAlg::Sha256).to_string();
+        let algorithm = key.algorithm().as_str().to_string();
+        key.set_comment("");
+        let public_key = key
+            .to_openssh()
+            .map_err(|_| bad("could not read the key".into()))?;
+        Ok(ParsedKey {
+            algorithm,
+            public_key,
+            fingerprint,
+            comment,
         })
     }
 }

@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use pyn_core::{
     AccessStore, InviteId, InviteRecord, Permission, RepoId, Result, Role, RoleDefinitions,
-    TokenId, TokenRecord, UserId,
+    SshKeyRecord, TokenId, TokenRecord, UserId,
 };
 use sqlx::Row;
 use sqlx::postgres::PgRow;
@@ -33,6 +33,19 @@ fn invite_from(row: &PgRow) -> Result<InviteRecord> {
         used_by: row.get::<Option<String>, _>("used_by").map(UserId::new),
         revoked_at: row.get("revoked_at"),
     })
+}
+
+fn ssh_key_from(row: &PgRow) -> SshKeyRecord {
+    SshKeyRecord {
+        id: row.get("id"),
+        user: UserId::new(row.get::<String, _>("user_id")),
+        title: row.get("title"),
+        algorithm: row.get("algorithm"),
+        public_key: row.get("public_key"),
+        fingerprint: row.get("fingerprint"),
+        created_at: row.get("created_at"),
+        last_used_at: row.get("last_used_at"),
+    }
 }
 
 fn token_from(row: &PgRow) -> Result<TokenRecord> {
@@ -253,6 +266,69 @@ impl AccessStore for PgMetadataStore {
         .await
         .map_err(db)?;
         Ok(done.rows_affected() > 0)
+    }
+
+    async fn add_ssh_key(&self, key: SshKeyRecord) -> Result<bool> {
+        let done = sqlx::query(
+            "INSERT INTO ssh_keys (id, user_id, title, algorithm, public_key, fingerprint, created_at, last_used_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT (fingerprint) DO NOTHING",
+        )
+        .bind(&key.id)
+        .bind(key.user.as_str())
+        .bind(&key.title)
+        .bind(&key.algorithm)
+        .bind(&key.public_key)
+        .bind(&key.fingerprint)
+        .bind(key.created_at)
+        .bind(key.last_used_at)
+        .execute(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    async fn list_ssh_keys(&self, user: &UserId) -> Result<Vec<SshKeyRecord>> {
+        let rows = sqlx::query(
+            "SELECT id, user_id, title, algorithm, public_key, fingerprint, created_at, last_used_at
+             FROM ssh_keys WHERE user_id = $1 ORDER BY created_at DESC, id",
+        )
+        .bind(user.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(rows.iter().map(ssh_key_from).collect())
+    }
+
+    async fn delete_ssh_key(&self, user: &UserId, id: &str) -> Result<bool> {
+        let done = sqlx::query("DELETE FROM ssh_keys WHERE user_id = $1 AND id = $2")
+            .bind(user.as_str())
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(db)?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    async fn find_ssh_key(&self, fingerprint: &str) -> Result<Option<SshKeyRecord>> {
+        let row = sqlx::query(
+            "SELECT id, user_id, title, algorithm, public_key, fingerprint, created_at, last_used_at
+             FROM ssh_keys WHERE fingerprint = $1",
+        )
+        .bind(fingerprint)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(row.as_ref().map(ssh_key_from))
+    }
+
+    async fn touch_ssh_key(&self, fingerprint: &str, now: DateTime<Utc>) -> Result<()> {
+        sqlx::query("UPDATE ssh_keys SET last_used_at = $2 WHERE fingerprint = $1")
+            .bind(fingerprint)
+            .bind(now)
+            .execute(&self.pool)
+            .await
+            .map_err(db)?;
+        Ok(())
     }
 
     async fn create_token(&self, token: TokenRecord) -> Result<()> {

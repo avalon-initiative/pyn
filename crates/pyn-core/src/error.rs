@@ -47,6 +47,10 @@ pub enum PynError {
     InvalidInvite(String),
     #[error("too many sign-in attempts; try again in {retry_after_secs} seconds")]
     TooManyAttempts { retry_after_secs: i64 },
+    #[error("that key is already linked to an account")]
+    KeyInUse,
+    #[error("no key {0}")]
+    KeyNotFound(String),
     #[error("authentication failed: {0}")]
     Unauthenticated(String),
     #[error("permission {0} is required")]
@@ -77,6 +81,8 @@ impl PynError {
             Self::UserExists(_) => "user_exists",
             Self::InvalidInvite(_) => "invalid_invite",
             Self::TooManyAttempts { .. } => "too_many_attempts",
+            Self::KeyInUse => "key_in_use",
+            Self::KeyNotFound(_) => "key_not_found",
             Self::Unauthenticated(_) => "unauthenticated",
             Self::Forbidden(_) => "forbidden",
             Self::TokenNotFound(_) => "token_not_found",
