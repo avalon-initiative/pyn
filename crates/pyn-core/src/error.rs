@@ -35,7 +35,7 @@ pub enum PynError {
 }
 
 impl PynError {
-    /// Stable machine-readable code, carried to API clients by `pyn-proto`.
+    /// Stable machine-readable code sent to API clients.
     pub fn code(&self) -> &'static str {
         match self {
             Self::InvalidPath(_) => "invalid_path",

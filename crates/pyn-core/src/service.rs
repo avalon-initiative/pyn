@@ -13,7 +13,7 @@ use crate::types::{
 
 #[derive(Debug, Clone)]
 pub struct ServiceConfig {
-    /// How long a checkout lasts before it expires on its own. Renewed by checking out again.
+    /// Lock lifetime; checking out again renews it.
     pub lease: Duration,
 }
 
@@ -25,11 +25,7 @@ impl Default for ServiceConfig {
     }
 }
 
-/// The server-side policy for one repository: which paths are exclusive (from `Rules`), who
-/// may check out and check in, and what a checkin must prove. All enforcement lives here and in
-/// the `MetadataStore` primitives; clients are never trusted.
-///
-/// Phase 1: one repo per service, a single mainline, rules fixed at construction.
+/// Server-side policy for one repository. Enforcement lives here and in the `MetadataStore` primitives.
 pub struct RepoService {
     repo: RepoId,
     rules: Rules,
@@ -66,9 +62,8 @@ impl RepoService {
         self.rules.mode_for(path)
     }
 
-    /// Request the lock on an exclusive path. `base` is the revision the caller's copy is at
-    /// (`None` = they have no copy). If it is not the head, the caller must update first, so
-    /// nobody starts editing a stale copy. Checking out again as the holder renews the lease.
+    /// Take the lock on an exclusive path. `base` must equal the head so nobody edits a stale copy;
+    /// the holder renews by checking out again.
     pub async fn checkout(
         &self,
         path: &RepoPath,
@@ -96,17 +91,14 @@ impl RepoService {
             .await
     }
 
-    /// Give up a lock without checking in.
     pub async fn release(&self, path: &RepoPath, user: &UserId) -> Result<()> {
         self.meta
             .release_lock(&self.repo, path, user, self.clock.now())
             .await
     }
 
-    /// Record a new revision. Content must already be in the object store. Exclusive paths
-    /// additionally require the caller's live lock, which is released by a successful checkin.
-    /// Every path requires `base` to equal the current head, so a stale shared edit is
-    /// rejected rather than silently overwriting someone's work (merge arrives in Phase 2).
+    /// Record a revision of `content` (already in the object store). Exclusive paths need the caller's
+    /// live lock; every path needs `base` == head.
     pub async fn checkin(
         &self,
         path: &RepoPath,

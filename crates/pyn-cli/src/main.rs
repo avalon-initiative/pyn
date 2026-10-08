@@ -9,7 +9,7 @@ use reqwest::blocking::{Client, Response};
 struct Cli {
     #[arg(long, env = "PYN_SERVER", default_value = "http://127.0.0.1:7878")]
     server: String,
-    /// Dev identity sent as X-Pyn-User until real authentication exists.
+    /// Dev identity sent as X-Pyn-User.
     #[arg(long, env = "PYN_USER")]
     user: String,
     #[command(subcommand)]
@@ -121,7 +121,7 @@ fn post(http: &Client, url: &str, user: &str, body: &impl serde::Serialize) -> R
         .send()?)
 }
 
-/// Turn a non-2xx response into an error carrying the server's code and message.
+/// Turn a non-2xx response into an error with the server's code and message.
 fn ok(resp: Response) -> Result<Response> {
     if resp.status().is_success() {
         return Ok(resp);

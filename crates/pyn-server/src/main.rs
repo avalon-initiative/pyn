@@ -13,7 +13,7 @@ async fn main() -> anyhow::Result<()> {
         Err(_) => Rules::empty(),
     };
 
-    // In-memory stores: state is lost on restart. Postgres + local-FS object store come next.
+    // In-memory stores: state is lost on restart.
     let objects = Arc::new(MemoryObjectStore::new());
     let service = Arc::new(RepoService::new(
         RepoId::new("default"),

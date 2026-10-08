@@ -1,9 +1,6 @@
 version: 2
 
 updates:
-  # Example ecosystem block — replace "cargo" with this project's actual
-  # package manager (npm, pip, bundler, gomod, ...), or delete this block
-  # entirely if dependency updates aren't wanted yet.
   - package-ecosystem: "cargo"
     directory: "/"
     schedule:
@@ -18,9 +15,6 @@ updates:
         patterns: ["*"]
         update-types: ["minor", "patch"]
 
-  # Keeps the workflow files themselves patched. Harmless to leave in even on
-  # a repo with no workflows installed yet — it just won't find anything to
-  # update.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:

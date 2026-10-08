@@ -6,8 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{PynError, Result};
 use crate::types::RepoPath;
 
-/// Collaboration policy for a path. Not a file-type classification: a text file can be
-/// exclusive and a binary file can be shared.
+/// Collaboration policy for a path, not a file-type classification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Mode {
@@ -15,22 +14,7 @@ pub enum Mode {
     Exclusive,
 }
 
-/// The `pyn.toml` file:
-///
-/// ```toml
-/// [meta]
-/// default = "exclusive"      # what an unlisted path is; "exclusive" if omitted
-///
-/// [exclusive]
-/// paths = [
-///   "Content/",              # a folder: trailing slash, everything beneath it
-///   "Config/Production.cfg", # an exact file
-///   "**/*.uasset",           # a glob
-/// ]
-///
-/// [shared]
-/// paths = ["Source/", "docs/"]
-/// ```
+/// Parsed `pyn.toml`; see docs/concepts/pyn-toml.md.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ConfigFile {
@@ -68,15 +52,8 @@ struct Section {
     paths: Vec<String>,
 }
 
-/// Collaboration policy for every path in a repository.
-///
-/// **Precedence (provisional)**, most specific first:
-/// 1. an exact file entry;
-/// 2. a glob entry (if a path matches globs in both lists, `exclusive` wins: the safe side);
-/// 3. a folder entry, the deepest matching folder winning;
-/// 4. `meta.default`, which is `exclusive` unless the file says otherwise.
-///
-/// The same entry appearing in both lists is a load-time error, not a silent choice.
+/// Precedence, most specific first: exact file, glob (`exclusive` wins a conflict), deepest folder,
+/// `meta.default`. The same entry in both lists is a load error.
 #[derive(Debug, Clone)]
 pub struct Rules {
     default: Mode,
@@ -120,7 +97,6 @@ fn classify(raw: &str) -> Result<Entry<'_>> {
 }
 
 impl Rules {
-    /// No entries: every path gets `default`.
     pub fn with_default(default: Mode) -> Self {
         Self {
             default,
@@ -130,12 +106,10 @@ impl Rules {
         }
     }
 
-    /// No entries and the standard default: everything is exclusive.
     pub fn empty() -> Self {
         Self::with_default(default_mode())
     }
 
-    /// Parse the contents of a `pyn.toml` file.
     pub fn from_toml(text: &str) -> Result<Self> {
         let file: ConfigFile =
             toml::from_str(text).map_err(|e| PynError::InvalidRules(e.to_string()))?;

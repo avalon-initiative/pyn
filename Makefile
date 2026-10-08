@@ -32,9 +32,7 @@ build:
 run:
 	cargo run -p pyn-server
 
-# Generic PID-file-based background run — reusable as-is for any long-running
-# process. Only `run:` above needs to change per-stack; start/stop/status
-# don't.
+# PID-file background run; only `run` is per-stack.
 start:
 	@mkdir -p $(PID_DIR) $(LOG_DIR)
 	@if [ -f $(PID_FILE) ] && kill -0 "$$(cat $(PID_FILE))" 2>/dev/null; then \
@@ -67,9 +65,6 @@ status:
 test:
 	cargo test --workspace
 
-# Delete this target (and its help line above) if this project has no tests
-# gated on real infra (a database, an external service) that are skipped by
-# default in `test`.
 test-live:
 	cargo test --workspace -- --ignored
 
