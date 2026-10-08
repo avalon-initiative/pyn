@@ -6,25 +6,28 @@ use chrono::{Duration, TimeZone, Utc};
 
 use crate::AccessStore;
 use crate::access::{Permission, Role, RoleDefinitions, TokenId, TokenRecord};
-use crate::memory::MemoryObjectStore;
+use crate::memory::{MemoryAuditStore, MemoryObjectStore};
 use crate::{
-    ContentHash, ManualClock, MetadataStore, ObjectStore, PynError, RepoId, RepoPath, RepoService,
-    RevisionId, Rules, ServiceConfig, UserId,
+    AuditAction, AuditQuery, AuditStore, ContentHash, ManualClock, MetadataStore, ObjectStore,
+    PynError, RepoId, RepoPath, RepoService, RevisionId, Rules, ServiceConfig, UserId,
 };
 
 pub type Store = Arc<dyn MetadataStore>;
 pub type Access = Arc<dyn AccessStore>;
+pub type Audit = Arc<dyn AuditStore>;
 
 const RULES: &str = "[meta]\ndefault = \"shared\"\n[exclusive]\npaths = [\"Content/\"]\n";
 
 struct Harness {
     svc: Arc<RepoService>,
     objects: Arc<MemoryObjectStore>,
+    audit: Arc<MemoryAuditStore>,
     clock: Arc<ManualClock>,
 }
 
 fn harness(store: Store) -> Harness {
     let objects = Arc::new(MemoryObjectStore::new());
+    let audit = Arc::new(MemoryAuditStore::new());
     let clock = Arc::new(ManualClock::new(
         Utc.with_ymd_and_hms(2026, 10, 8, 9, 0, 0).unwrap(),
     ));
@@ -33,12 +36,14 @@ fn harness(store: Store) -> Harness {
         Rules::from_toml(RULES).unwrap(),
         store,
         objects.clone(),
+        audit.clone(),
         clock.clone(),
         ServiceConfig::default(),
     ));
     Harness {
         svc,
         objects,
+        audit,
         clock,
     }
 }
@@ -488,6 +493,148 @@ pub async fn restore_is_for_exclusive_paths_and_real_older_revisions(store: Stor
     );
 }
 
+pub async fn force_unlock_removes_a_live_lock_and_says_why(store: Store) {
+    let h = harness(store);
+    let m = path("Content/m.umap");
+    h.svc.checkout(&m, &user("alice"), None).await.unwrap();
+
+    let err = h
+        .svc
+        .force_unlock(&m, &user("maya"), "  ")
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, PynError::InvalidRequest(_)),
+        "a reason is required: {err}"
+    );
+    assert_eq!(
+        h.svc.locks().await.unwrap().len(),
+        1,
+        "a refused unlock changes nothing"
+    );
+
+    let removed = h
+        .svc
+        .force_unlock(&m, &user("maya"), "alice is on leave")
+        .await
+        .unwrap();
+    assert_eq!(removed.owner, user("alice"));
+    assert!(h.svc.locks().await.unwrap().is_empty());
+    h.svc.checkout(&m, &user("bob"), None).await.unwrap();
+
+    let err = h
+        .svc
+        .force_unlock(&path("Content/free.umap"), &user("maya"), "x")
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::NotLocked(_)), "{err}");
+    h.clock.advance(Duration::hours(9));
+    let err = h
+        .svc
+        .force_unlock(&m, &user("maya"), "x")
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, PynError::NotLocked(_)),
+        "an expired lock is already gone: {err}"
+    );
+
+    let log = h
+        .svc
+        .audit(&AuditQuery {
+            action: Some(AuditAction::ForceUnlock),
+            limit: 10,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(log.len(), 1);
+    assert_eq!(
+        (
+            log[0].actor.as_str(),
+            log[0].path.as_ref().map(|p| p.as_str())
+        ),
+        ("maya", Some("Content/m.umap"))
+    );
+    assert!(
+        log[0].detail.contains("alice") && log[0].detail.contains("alice is on leave"),
+        "{}",
+        log[0].detail
+    );
+}
+
+pub async fn operations_are_recorded_in_the_audit_log(store: Store) {
+    let h = harness(store);
+    let m = path("Content/m.umap");
+    h.svc.checkout(&m, &user("alice"), None).await.unwrap();
+    let c = blob(&h, "one").await;
+    h.svc
+        .checkin(&m, &user("alice"), c, None, "first".into())
+        .await
+        .unwrap();
+    h.svc
+        .checkout(&m, &user("alice"), Some(RevisionId(1)))
+        .await
+        .unwrap();
+    h.svc.release(&m, &user("alice")).await.unwrap();
+
+    let log = h
+        .svc
+        .audit(&AuditQuery {
+            limit: 10,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let actions: Vec<_> = log.iter().map(|e| (e.action, e.actor.as_str())).collect();
+    assert_eq!(
+        actions,
+        [
+            (AuditAction::Release, "alice"),
+            (AuditAction::Checkout, "alice"),
+            (AuditAction::Checkin, "alice"),
+            (AuditAction::Checkout, "alice"),
+        ]
+    );
+    assert!(
+        log[2].detail.contains("r1") && log[2].detail.contains("first"),
+        "{}",
+        log[2].detail
+    );
+    assert!(
+        h.audit
+            .list(
+                &RepoId::new("game"),
+                &AuditQuery {
+                    limit: 100,
+                    ..Default::default()
+                }
+            )
+            .await
+            .unwrap()
+            .len()
+            == 4
+    );
+
+    let failed = h
+        .svc
+        .checkout(&path("Source/a.cpp"), &user("alice"), None)
+        .await;
+    assert!(failed.is_err());
+    assert_eq!(
+        h.svc
+            .audit(&AuditQuery {
+                limit: 100,
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .len(),
+        4,
+        "failures are not events"
+    );
+}
+
 /// Generates one `#[tokio::test]` per contract case for the store built by `$factory`.
 #[macro_export]
 macro_rules! contract_tests {
@@ -508,6 +655,8 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; restore_appends_a_checkpoint_with_the_old_content);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; restore_needs_the_lock_and_the_right_confirmation);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; restore_is_for_exclusive_paths_and_real_older_revisions);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; force_unlock_removes_a_live_lock_and_says_why);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; operations_are_recorded_in_the_audit_log);
     };
     (@one $factory:expr; [$(#[$attr:meta])*]; $name:ident) => {
         #[tokio::test(flavor = "multi_thread")]
@@ -681,6 +830,181 @@ macro_rules! access_contract_tests {
         $(#[$attr])*
         async fn $name() {
             let store: $crate::contract::Access = ($factory).await;
+            $crate::contract::$name(store).await;
+        }
+    };
+}
+
+fn event(
+    actor: &str,
+    action: AuditAction,
+    path: Option<&str>,
+    minute: i64,
+) -> crate::NewAuditEvent {
+    crate::NewAuditEvent {
+        at: at(minute),
+        actor: user(actor),
+        action,
+        path: path.map(|p| RepoPath::new(p).unwrap()),
+        detail: format!("{action} by {actor}"),
+    }
+}
+
+pub async fn audit_events_list_newest_first_with_filters(store: Audit) {
+    let repo = RepoId::new("game");
+    for (i, (who, action, p)) in [
+        ("alice", AuditAction::Checkout, Some("Content/a.umap")),
+        ("alice", AuditAction::Checkin, Some("Content/a.umap")),
+        ("bob", AuditAction::Checkout, Some("Content/b.umap")),
+        ("maya", AuditAction::ForceUnlock, Some("Content/b.umap")),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        store
+            .record(&repo, event(who, action, p, i as i64))
+            .await
+            .unwrap();
+    }
+    store
+        .record(
+            &RepoId::new("other"),
+            event("zed", AuditAction::Checkout, None, 9),
+        )
+        .await
+        .unwrap();
+
+    let all = store
+        .list(
+            &repo,
+            &AuditQuery {
+                limit: 10,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        all.iter().map(|e| e.actor.as_str()).collect::<Vec<_>>(),
+        ["maya", "bob", "alice", "alice"]
+    );
+    assert!(all.windows(2).all(|w| w[0].id > w[1].id), "ids descend");
+    assert_eq!(all[0].detail, "force_unlock by maya");
+
+    let by = |q: AuditQuery| {
+        let store = store.clone();
+        let repo = repo.clone();
+        async move {
+            store
+                .list(&repo, &AuditQuery { limit: 10, ..q })
+                .await
+                .unwrap()
+                .len()
+        }
+    };
+    assert_eq!(
+        by(AuditQuery {
+            actor: Some(user("alice")),
+            ..Default::default()
+        })
+        .await,
+        2
+    );
+    assert_eq!(
+        by(AuditQuery {
+            action: Some(AuditAction::Checkout),
+            ..Default::default()
+        })
+        .await,
+        2
+    );
+    assert_eq!(
+        by(AuditQuery {
+            path: Some(path("Content/b.umap")),
+            ..Default::default()
+        })
+        .await,
+        2
+    );
+    assert_eq!(
+        by(AuditQuery {
+            actor: Some(user("alice")),
+            action: Some(AuditAction::Checkout),
+            ..Default::default()
+        })
+        .await,
+        1
+    );
+}
+
+pub async fn audit_events_page_backwards(store: Audit) {
+    let repo = RepoId::new("game");
+    for i in 0..5 {
+        store
+            .record(
+                &repo,
+                event("alice", AuditAction::Checkout, Some("Content/a.umap"), i),
+            )
+            .await
+            .unwrap();
+    }
+    let first = store
+        .list(
+            &repo,
+            &AuditQuery {
+                limit: 2,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let second = store
+        .list(
+            &repo,
+            &AuditQuery {
+                limit: 2,
+                before: Some(first[1].id),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let rest = store
+        .list(
+            &repo,
+            &AuditQuery {
+                limit: 10,
+                before: Some(second[1].id),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let ids: Vec<i64> = first
+        .iter()
+        .chain(&second)
+        .chain(&rest)
+        .map(|e| e.id)
+        .collect();
+    assert_eq!(ids.len(), 5);
+    assert!(
+        ids.windows(2).all(|w| w[0] > w[1]),
+        "no event repeats or is skipped: {ids:?}"
+    );
+}
+
+/// Generates one `#[tokio::test]` per audit-store case for the store built by `$factory`.
+#[macro_export]
+macro_rules! audit_contract_tests {
+    ($factory:expr $(, #[$attr:meta])*) => {
+        $crate::audit_contract_tests!(@one $factory; [$(#[$attr])*]; audit_events_list_newest_first_with_filters);
+        $crate::audit_contract_tests!(@one $factory; [$(#[$attr])*]; audit_events_page_backwards);
+    };
+    (@one $factory:expr; [$(#[$attr:meta])*]; $name:ident) => {
+        #[tokio::test(flavor = "multi_thread")]
+        $(#[$attr])*
+        async fn $name() {
+            let store: $crate::contract::Audit = ($factory).await;
             $crate::contract::$name(store).await;
         }
     };

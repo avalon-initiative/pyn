@@ -22,6 +22,16 @@ read-only bit on disk is a convenience that stops editors from silently making u
 
 Locks expire so abandoned work cannot block a file forever. The same holder checking out again renews the lease.
 
+## Force unlock and the audit log
+
+Locks expire, but sometimes one has to be removed at once. `pyn unlock <path> --reason "..."` removes someone else's live
+lock. It needs the `force_unlock` permission, and the reason is mandatory because it is recorded.
+
+The audit log is an append-only record of lock and revision events: checkout, release, checkin, restore and force unlock,
+each with who, when, the path and a short detail (for a force unlock, whose lock was removed and why). `pyn audit` shows it
+newest first and can filter by path, user and action; it needs the `view_audit` permission. Events are never changed or
+removed.
+
 ## Looking at and restoring older versions
 
 Any revision of a file can be fetched read-only, without a lock: `pyn get <path> --rev N`.

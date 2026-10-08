@@ -20,10 +20,11 @@ pub enum Permission {
     EditPolicy,
     ManageUsers,
     ManageRoles,
+    ViewAudit,
 }
 
 impl Permission {
-    pub const ALL: [Permission; 8] = [
+    pub const ALL: [Permission; 9] = [
         Permission::Read,
         Permission::Lock,
         Permission::Checkin,
@@ -32,6 +33,7 @@ impl Permission {
         Permission::EditPolicy,
         Permission::ManageUsers,
         Permission::ManageRoles,
+        Permission::ViewAudit,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -44,6 +46,7 @@ impl Permission {
             Self::EditPolicy => "edit_policy",
             Self::ManageUsers => "manage_users",
             Self::ManageRoles => "manage_roles",
+            Self::ViewAudit => "view_audit",
         }
     }
 }
@@ -111,8 +114,16 @@ impl RoleDefinitions {
         use Permission::*;
         let reader: BTreeSet<_> = [Read].into();
         let writer: BTreeSet<_> = [Read, Lock, Checkin].into();
-        let maintainer: BTreeSet<_> =
-            [Read, Lock, Checkin, Restore, ForceUnlock, EditPolicy].into();
+        let maintainer: BTreeSet<_> = [
+            Read,
+            Lock,
+            Checkin,
+            Restore,
+            ForceUnlock,
+            EditPolicy,
+            ViewAudit,
+        ]
+        .into();
         let admin: BTreeSet<_> = Permission::ALL.into();
         Self(BTreeMap::from([
             (Role::Reader, reader),

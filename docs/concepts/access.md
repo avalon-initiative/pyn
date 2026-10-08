@@ -15,6 +15,7 @@ endpoints.
 | `edit_policy` | change `.pyn/pyn.toml` |
 | `manage_users` | add members, assign roles, list or revoke other users' tokens |
 | `manage_roles` | change what a role grants |
+| `view_audit` | read the audit log |
 
 Roles are named bundles. Each default role includes everything below it:
 
@@ -22,7 +23,7 @@ Roles are named bundles. Each default role includes everything below it:
 | --- | --- |
 | `reader` | `read` |
 | `writer` | `lock`, `checkin` |
-| `maintainer` | `restore`, `force_unlock`, `edit_policy` |
+| `maintainer` | `restore`, `force_unlock`, `edit_policy`, `view_audit` |
 | `admin` | `manage_users`, `manage_roles` |
 
 A repository owner can change what any role grants. The `admin` role always keeps `manage_users` and `manage_roles`, and

@@ -8,8 +8,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use pyn_core::{
-    AccessService, AuthProvider, ContentHash, ObjectStore, Permission, Principal, PynError,
-    RepoPath, RepoService, RevisionId,
+    AccessService, AuditAction, AuditQuery, AuthProvider, ContentHash, ObjectStore, Permission,
+    Principal, PynError, RepoPath, RepoService, RevisionId,
 };
 use pyn_proto as api;
 use serde::Deserialize;
@@ -48,6 +48,8 @@ pub struct AppState {
         release,
         checkin,
         restore,
+        force_unlock,
+        audit,
         put_object,
         history
     ),
@@ -57,6 +59,9 @@ pub struct AppState {
         api::CheckoutRequest,
         api::ReleaseRequest,
         api::RestoreRequest,
+        api::ForceUnlockRequest,
+        api::AuditEntry,
+        api::AuditPage,
         api::CheckinRequest,
         api::PutObjectResponse,
         api::ErrorBody,
@@ -99,6 +104,8 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/release", post(release))
         .route("/v1/checkin", post(checkin))
         .route("/v1/restore", post(restore))
+        .route("/v1/force-unlock", post(force_unlock))
+        .route("/v1/audit", get(audit))
         .route("/v1/objects", put(put_object))
         .route("/v1/history", get(history))
         .with_state(state)
@@ -118,6 +125,7 @@ impl IntoResponse for ApiError {
             PynError::LockHeld { .. }
             | PynError::StaleBase { .. }
             | PynError::LockRequired(_)
+            | PynError::NotLocked(_)
             | PynError::ConfirmationRequired { .. } => StatusCode::CONFLICT,
             PynError::NotLockHolder(_) | PynError::Forbidden(_) => StatusCode::FORBIDDEN,
             PynError::Unauthenticated(_) => StatusCode::UNAUTHORIZED,
@@ -405,4 +413,76 @@ async fn get_content(
         ),
     ];
     Ok((headers, bytes).into_response())
+}
+
+#[utoipa::path(post, path = "/v1/force-unlock", request_body = api::ForceUnlockRequest, responses(
+    (status = 200, body = api::Lock, description = "the lock that was removed"),
+    (status = 403, body = api::ErrorBody, description = "needs the force_unlock permission"),
+    (status = 409, body = api::ErrorBody, description = "not_locked"),
+))]
+async fn force_unlock(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<api::ForceUnlockRequest>,
+) -> ApiResult<Json<api::Lock>> {
+    let actor = authorize(&s, &headers, Some(Permission::ForceUnlock))
+        .await?
+        .user;
+    let lock = s
+        .service
+        .force_unlock(&RepoPath::new(req.path)?, &actor, &req.reason)
+        .await?;
+    Ok(Json(lock_dto(lock)))
+}
+
+#[derive(Deserialize)]
+struct AuditQueryParams {
+    path: Option<String>,
+    actor: Option<String>,
+    action: Option<String>,
+    before: Option<i64>,
+    limit: Option<usize>,
+}
+
+#[utoipa::path(get, path = "/v1/audit",
+    params(("path" = Option<String>, Query, description = "only events for this path"),
+           ("actor" = Option<String>, Query, description = "only events by this user"),
+           ("action" = Option<String>, Query, description = "checkout, release, checkin, restore or force_unlock"),
+           ("before" = Option<i64>, Query, description = "events older than this id"),
+           ("limit" = Option<usize>, Query, description = "page size, default 50, max 500")),
+    responses((status = 200, body = api::AuditPage), (status = 403, body = api::ErrorBody, description = "needs view_audit")))]
+async fn audit(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<AuditQueryParams>,
+) -> ApiResult<Json<api::AuditPage>> {
+    authorize(&s, &headers, Some(Permission::ViewAudit)).await?;
+    let limit = q.limit.unwrap_or(50).clamp(1, 500);
+    let query = AuditQuery {
+        path: q.path.map(RepoPath::new).transpose()?,
+        actor: q.actor.map(pyn_core::UserId::new),
+        action: q.action.map(|a| a.parse::<AuditAction>()).transpose()?,
+        before: q.before,
+        limit: limit + 1,
+    };
+    let mut events = s.service.audit(&query).await?;
+    let next_before = (events.len() > limit).then(|| {
+        events.truncate(limit);
+        events[limit - 1].id
+    });
+    let entries = events
+        .into_iter()
+        .map(|e| api::AuditEntry {
+            id: e.id,
+            at: e.at,
+            actor: e.actor.to_string(),
+            action: e.action.to_string(),
+            path: e.path.map(|p| p.to_string()),
+            detail: e.detail,
+        })
+        .collect();
+    Ok(Json(api::AuditPage {
+        entries,
+        next_before,
+    }))
 }

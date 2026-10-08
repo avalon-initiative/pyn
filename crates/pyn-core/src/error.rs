@@ -33,6 +33,8 @@ pub enum PynError {
     },
     #[error("content {0} is not in the object store")]
     ObjectMissing(String),
+    #[error("{0} is not locked")]
+    NotLocked(RepoPath),
     #[error("{path} has no revision {revision}")]
     RevisionNotFound { path: RepoPath, revision: String },
     #[error("restoring replaces the head; to confirm, pass {expected}")]
@@ -67,6 +69,7 @@ impl PynError {
             Self::Forbidden(_) => "forbidden",
             Self::TokenNotFound(_) => "token_not_found",
             Self::InvalidRequest(_) => "invalid_request",
+            Self::NotLocked(_) => "not_locked",
             Self::Storage(_) => "storage",
         }
     }

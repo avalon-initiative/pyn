@@ -1,9 +1,11 @@
 use std::sync::Arc;
 
-use pyn_core::memory::{MemoryAccessStore, MemoryMetadataStore, MemoryObjectStore};
+use pyn_core::memory::{
+    MemoryAccessStore, MemoryAuditStore, MemoryMetadataStore, MemoryObjectStore,
+};
 use pyn_core::{
-    AccessService, AccessStore, AuthProvider, MetadataStore, ObjectStore, RepoId, RepoService,
-    Rules, ServiceConfig, SystemClock, UserId,
+    AccessService, AccessStore, AuditStore, AuthProvider, MetadataStore, ObjectStore, RepoId,
+    RepoService, Rules, ServiceConfig, SystemClock, UserId,
 };
 use pyn_fs::FsObjectStore;
 use pyn_postgres::PgMetadataStore;
@@ -12,6 +14,34 @@ use pyn_server::{AppState, router};
 
 fn flag(name: &str) -> bool {
     std::env::var(name).is_ok_and(|v| v == "true")
+}
+
+struct Stores {
+    meta: Arc<dyn MetadataStore>,
+    access: Arc<dyn AccessStore>,
+    audit: Arc<dyn AuditStore>,
+    kind: &'static str,
+}
+
+/// PostgreSQL when `PYN_DATABASE_URL` is set, otherwise in-memory.
+async fn stores() -> anyhow::Result<Stores> {
+    Ok(match std::env::var("PYN_DATABASE_URL") {
+        Ok(url) => {
+            let pg = Arc::new(PgMetadataStore::connect(&url, flag("PYN_CREATE_DATABASE")).await?);
+            Stores {
+                meta: pg.clone(),
+                access: pg.clone(),
+                audit: pg,
+                kind: "postgres",
+            }
+        }
+        Err(_) => Stores {
+            meta: Arc::new(MemoryMetadataStore::new()),
+            access: Arc::new(MemoryAccessStore::new()),
+            audit: Arc::new(MemoryAuditStore::new()),
+            kind: "in-memory",
+        },
+    })
 }
 
 #[tokio::main]
@@ -23,19 +53,12 @@ async fn main() -> anyhow::Result<()> {
         Err(_) => Rules::empty(),
     };
 
-    let (meta, access_store, meta_kind): (Arc<dyn MetadataStore>, Arc<dyn AccessStore>, &str) =
-        match std::env::var("PYN_DATABASE_URL") {
-            Ok(url) => {
-                let pg =
-                    Arc::new(PgMetadataStore::connect(&url, flag("PYN_CREATE_DATABASE")).await?);
-                (pg.clone(), pg, "postgres")
-            }
-            Err(_) => (
-                Arc::new(MemoryMetadataStore::new()),
-                Arc::new(MemoryAccessStore::new()),
-                "in-memory",
-            ),
-        };
+    let Stores {
+        meta,
+        access: access_store,
+        audit,
+        kind: meta_kind,
+    } = stores().await?;
     let objects: Arc<dyn ObjectStore> = match std::env::var("PYN_DATA_DIR") {
         Ok(dir) => Arc::new(FsObjectStore::open(dir).await?),
         Err(_) => Arc::new(MemoryObjectStore::new()),
@@ -48,6 +71,7 @@ async fn main() -> anyhow::Result<()> {
         rules,
         meta,
         objects.clone(),
+        audit,
         clock.clone(),
         ServiceConfig::default(),
     ));

@@ -18,6 +18,7 @@ static SCHEMA_COUNTER: AtomicU64 = AtomicU64::new(0);
 const UNIQUE_VIOLATION: &str = "23505";
 
 mod access;
+mod audit;
 
 pub struct PgMetadataStore {
     pool: PgPool,
@@ -213,6 +214,25 @@ impl MetadataStore for PgMetadataStore {
         let row = sqlx::query(
             "SELECT path, owner, acquired_at, expires_at FROM locks
              WHERE repo = $1 AND path = $2 AND expires_at > $3",
+        )
+        .bind(repo.as_str())
+        .bind(path.as_str())
+        .bind(now)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db)?;
+        row.as_ref().map(lock_from).transpose()
+    }
+
+    async fn force_release_lock(
+        &self,
+        repo: &RepoId,
+        path: &RepoPath,
+        now: DateTime<Utc>,
+    ) -> Result<Option<Lock>> {
+        let row = sqlx::query(
+            "DELETE FROM locks WHERE repo = $1 AND path = $2 AND expires_at > $3
+             RETURNING path, owner, acquired_at, expires_at",
         )
         .bind(repo.as_str())
         .bind(path.as_str())

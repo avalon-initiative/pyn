@@ -67,6 +67,27 @@ enum Command {
         #[arg(long)]
         yes: bool,
     },
+    /// Remove someone else's lock. Needs the force_unlock permission and a reason, which is recorded.
+    Unlock {
+        path: String,
+        #[arg(long)]
+        reason: String,
+    },
+    /// Show the audit log, newest first (needs the view_audit permission).
+    Audit {
+        #[arg(long)]
+        path: Option<String>,
+        #[arg(long)]
+        actor: Option<String>,
+        /// checkout, release, checkin, restore or force_unlock.
+        #[arg(long)]
+        action: Option<String>,
+        /// Show events older than this id.
+        #[arg(long)]
+        before: Option<i64>,
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+    },
     /// Show a path's revisions.
     History { path: String },
     /// Manage your API tokens.
@@ -276,6 +297,44 @@ fn main() -> Result<()> {
             message,
             yes,
         } => restore(&api, path, revision, message, yes)?,
+        Command::Unlock { path, reason } => {
+            let body = api::ForceUnlockRequest {
+                path: path.clone(),
+                reason,
+            };
+            let lock: api::Lock = api
+                .send(api.request(Method::POST, "/v1/force-unlock").json(&body))?
+                .json()?;
+            println!("removed {}'s lock on {path}", lock.owner);
+        }
+        Command::Audit {
+            path,
+            actor,
+            action,
+            before,
+            limit,
+        } => {
+            let mut req = api.get("/v1/audit").query(&[("limit", limit)]);
+            for (key, value) in [("path", path), ("actor", actor), ("action", action)] {
+                if let Some(v) = value {
+                    req = req.query(&[(key, v)]);
+                }
+            }
+            if let Some(b) = before {
+                req = req.query(&[("before", b)]);
+            }
+            let page: api::AuditPage = api.send(req)?.json()?;
+            for e in &page.entries {
+                let path = e.path.as_deref().unwrap_or("-");
+                println!(
+                    "{}\t{}\t{}\t{}\t{path}\t{}",
+                    e.id, e.at, e.actor, e.action, e.detail
+                );
+            }
+            if let Some(next) = page.next_before {
+                eprintln!("more: --before {next}");
+            }
+        }
         Command::Token(cmd) => token_command(&api, cmd)?,
         Command::Member(MemberCommand::List) => {
             let members: Vec<api::Member> = api.send(api.get("/v1/members"))?.json()?;

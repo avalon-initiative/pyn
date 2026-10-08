@@ -9,6 +9,7 @@ use sha2::{Digest, Sha256};
 
 use crate::access::{Permission, Role, RoleDefinitions, TokenId, TokenRecord};
 use crate::access_service::AccessStore;
+use crate::audit::{AuditEvent, AuditQuery, AuditStore, NewAuditEvent};
 use crate::error::{PynError, Result};
 use crate::object::ObjectStore;
 use crate::store::MetadataStore;
@@ -103,6 +104,20 @@ impl MetadataStore for MemoryMetadataStore {
             .get(&(repo.clone(), path.clone()))
             .filter(|l| live(l, now))
             .cloned())
+    }
+
+    async fn force_release_lock(
+        &self,
+        repo: &RepoId,
+        path: &RepoPath,
+        now: DateTime<Utc>,
+    ) -> Result<Option<Lock>> {
+        let mut st = self.state.lock().unwrap();
+        let key = (repo.clone(), path.clone());
+        if st.locks.get(&key).is_some_and(|l| live(l, now)) {
+            return Ok(st.locks.remove(&key));
+        }
+        Ok(None)
     }
 
     async fn list_locks(&self, repo: &RepoId, now: DateTime<Utc>) -> Result<Vec<Lock>> {
@@ -362,5 +377,56 @@ impl AccessStore for MemoryAccessStore {
             token.last_used_at = Some(now);
         }
         Ok(())
+    }
+}
+
+#[derive(Default)]
+pub struct MemoryAuditStore {
+    events: Mutex<Vec<(RepoId, AuditEvent)>>,
+}
+
+impl MemoryAuditStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+#[async_trait]
+impl AuditStore for MemoryAuditStore {
+    async fn record(&self, repo: &RepoId, event: NewAuditEvent) -> Result<()> {
+        let mut events = self.events.lock().unwrap();
+        let id = events.len() as i64 + 1;
+        events.push((
+            repo.clone(),
+            AuditEvent {
+                id,
+                at: event.at,
+                actor: event.actor,
+                action: event.action,
+                path: event.path,
+                detail: event.detail,
+            },
+        ));
+        Ok(())
+    }
+
+    async fn list(&self, repo: &RepoId, query: &AuditQuery) -> Result<Vec<AuditEvent>> {
+        let events = self.events.lock().unwrap();
+        Ok(events
+            .iter()
+            .rev()
+            .filter(|(r, e)| {
+                r == repo
+                    && query.before.is_none_or(|b| e.id < b)
+                    && query
+                        .path
+                        .as_ref()
+                        .is_none_or(|p| e.path.as_ref() == Some(p))
+                    && query.actor.as_ref().is_none_or(|a| &e.actor == a)
+                    && query.action.is_none_or(|a| e.action == a)
+            })
+            .map(|(_, e)| e.clone())
+            .take(query.limit)
+            .collect())
     }
 }
