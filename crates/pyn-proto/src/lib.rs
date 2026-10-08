@@ -79,5 +79,8 @@ pub struct ErrorBody {
     pub message: String,
 }
 
+/// Response header carrying the revision number of returned content.
+pub const REVISION_HEADER: &str = "x-pyn-revision";
+
 /// Dev-only identity header.
 pub const DEV_USER_HEADER: &str = "x-pyn-user";

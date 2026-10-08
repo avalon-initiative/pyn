@@ -49,6 +49,13 @@ pub trait MetadataStore: Send + Sync {
         now: DateTime<Utc>,
     ) -> Result<Revision>;
 
+    async fn get_revision(
+        &self,
+        repo: &RepoId,
+        path: &RepoPath,
+        id: RevisionId,
+    ) -> Result<Option<Revision>>;
+
     /// The head revision of every path that has one, ordered by path.
     async fn list_head_revisions(&self, repo: &RepoId) -> Result<Vec<Revision>>;
 
