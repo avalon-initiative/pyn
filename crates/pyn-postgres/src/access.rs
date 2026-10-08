@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use pyn_core::{
     AccessStore, InviteId, InviteRecord, Permission, RepoId, Result, Role, RoleDefinitions,
-    SshKeyRecord, TokenId, TokenRecord, UserId,
+    SessionRecord, SshKeyRecord, TokenId, TokenRecord, UserId,
 };
 use sqlx::Row;
 use sqlx::postgres::PgRow;
@@ -45,6 +45,16 @@ fn ssh_key_from(row: &PgRow) -> SshKeyRecord {
         fingerprint: row.get("fingerprint"),
         created_at: row.get("created_at"),
         last_used_at: row.get("last_used_at"),
+    }
+}
+
+fn session_from(row: &PgRow) -> SessionRecord {
+    SessionRecord {
+        id_hash: row.get("id_hash"),
+        user: UserId::new(row.get::<String, _>("user_id")),
+        csrf_token: row.get("csrf_token"),
+        created_at: row.get("created_at"),
+        expires_at: row.get("expires_at"),
     }
 }
 
@@ -324,6 +334,51 @@ impl AccessStore for PgMetadataStore {
     async fn touch_ssh_key(&self, fingerprint: &str, now: DateTime<Utc>) -> Result<()> {
         sqlx::query("UPDATE ssh_keys SET last_used_at = $2 WHERE fingerprint = $1")
             .bind(fingerprint)
+            .bind(now)
+            .execute(&self.pool)
+            .await
+            .map_err(db)?;
+        Ok(())
+    }
+
+    async fn create_session(&self, session: SessionRecord) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO sessions (id_hash, user_id, csrf_token, created_at, expires_at)
+             VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(&session.id_hash)
+        .bind(session.user.as_str())
+        .bind(&session.csrf_token)
+        .bind(session.created_at)
+        .bind(session.expires_at)
+        .execute(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    async fn get_session(&self, id_hash: &str) -> Result<Option<SessionRecord>> {
+        let row = sqlx::query(
+            "SELECT id_hash, user_id, csrf_token, created_at, expires_at FROM sessions WHERE id_hash = $1",
+        )
+        .bind(id_hash)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(row.as_ref().map(session_from))
+    }
+
+    async fn delete_session(&self, id_hash: &str) -> Result<bool> {
+        let done = sqlx::query("DELETE FROM sessions WHERE id_hash = $1")
+            .bind(id_hash)
+            .execute(&self.pool)
+            .await
+            .map_err(db)?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    async fn delete_expired_sessions(&self, now: DateTime<Utc>) -> Result<()> {
+        sqlx::query("DELETE FROM sessions WHERE expires_at <= $1")
             .bind(now)
             .execute(&self.pool)
             .await

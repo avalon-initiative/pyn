@@ -11,7 +11,7 @@ use chrono::Duration;
 
 use crate::access::{
     InviteId, InviteRecord, Permission, Principal, RegistrationMode, Role, RoleDefinitions,
-    SshKeyRecord, TokenId, TokenRecord, account, invite, ssh, token,
+    SessionRecord, SshKeyRecord, TokenId, TokenRecord, account, invite, session, ssh, token,
 };
 use crate::audit::{AuditAction, AuditStore, NewAuditEvent};
 use crate::clock::Clock;
@@ -74,6 +74,16 @@ pub trait AccessStore: Send + Sync {
     async fn find_ssh_key(&self, fingerprint: &str) -> Result<Option<SshKeyRecord>>;
 
     async fn touch_ssh_key(&self, fingerprint: &str, now: DateTime<Utc>) -> Result<()>;
+
+    async fn create_session(&self, session: SessionRecord) -> Result<()>;
+
+    async fn get_session(&self, id_hash: &str) -> Result<Option<SessionRecord>>;
+
+    /// Removes the session; false if there is none.
+    async fn delete_session(&self, id_hash: &str) -> Result<bool>;
+
+    /// Removes every session that expired at or before `now`.
+    async fn delete_expired_sessions(&self, now: DateTime<Utc>) -> Result<()>;
 
     async fn create_token(&self, token: TokenRecord) -> Result<()>;
 
@@ -437,14 +447,13 @@ impl AccessService {
         }
     }
 
-    /// Checks a password and returns a session credential: a token limited to the user's current role that
-    /// expires after the configured number of days. Repeated failures lock the user name out for a while.
-    pub async fn login(
+    /// Checks a password for a user with access to `repo`. Repeated failures lock the user name out for a while.
+    async fn verify_sign_in(
         &self,
         repo: &RepoId,
         username: &str,
         password: &str,
-    ) -> Result<(TokenRecord, String)> {
+    ) -> Result<Principal> {
         let now = self.clock.now();
         let key = username.to_lowercase();
         self.check_not_throttled(&key, now)?;
@@ -474,11 +483,20 @@ impl AccessService {
                 "this account has no access to this repository".into(),
             ));
         }
-        let actor = Principal {
-            user,
-            permissions: permissions.clone(),
-        };
-        let expires = now + Duration::days(self.config.session_days);
+        Ok(Principal { user, permissions })
+    }
+
+    /// Checks a password and returns a token limited to the user's current role that expires after the
+    /// configured number of days.
+    pub async fn login(
+        &self,
+        repo: &RepoId,
+        username: &str,
+        password: &str,
+    ) -> Result<(TokenRecord, String)> {
+        let actor = self.verify_sign_in(repo, username, password).await?;
+        let expires = self.clock.now() + Duration::days(self.config.session_days);
+        let permissions = actor.permissions.clone();
         self.issue_token(
             &actor,
             "sign-in",
@@ -487,6 +505,65 @@ impl AccessService {
             Some(expires),
         )
         .await
+    }
+
+    /// Checks a password and starts a web session. Returns the record and the cookie value, which is not stored.
+    pub async fn start_session(
+        &self,
+        repo: &RepoId,
+        username: &str,
+        password: &str,
+    ) -> Result<(SessionRecord, String)> {
+        let who = self.verify_sign_in(repo, username, password).await?;
+        let now = self.clock.now();
+        self.store.delete_expired_sessions(now).await?;
+        let (cookie, csrf_token, id_hash) = session::generate()?;
+        let record = SessionRecord {
+            id_hash,
+            user: who.user,
+            csrf_token,
+            created_at: now,
+            expires_at: now + Duration::days(self.config.session_days),
+        };
+        self.store.create_session(record.clone()).await?;
+        Ok((record, cookie))
+    }
+
+    /// The session behind a cookie value, if it exists and has not expired.
+    pub async fn find_session(&self, cookie: &str) -> Result<Option<SessionRecord>> {
+        let Some(record) = self.store.get_session(&session::hash(cookie)).await? else {
+            return Ok(None);
+        };
+        Ok((record.expires_at > self.clock.now()).then_some(record))
+    }
+
+    /// Resolves a session cookie to the user's current permissions, so a role change applies at once.
+    pub async fn authenticate_session(
+        &self,
+        repo: &RepoId,
+        cookie: &str,
+    ) -> Result<(Principal, SessionRecord)> {
+        let record = self
+            .find_session(cookie)
+            .await?
+            .ok_or_else(|| unauthenticated("not signed in"))?;
+        let who = self.principal(repo, &record.user).await?;
+        if who.permissions.is_empty() {
+            return Err(unauthenticated(
+                "this account has no access to this repository",
+            ));
+        }
+        Ok((who, record))
+    }
+
+    /// Ends the session; ending one that is already gone is harmless.
+    pub async fn end_session(&self, cookie: &str) -> Result<()> {
+        self.store.delete_session(&session::hash(cookie)).await?;
+        Ok(())
+    }
+
+    pub fn session_lifetime(&self) -> Duration {
+        Duration::days(self.config.session_days)
     }
 
     /// Creates an account on the server's own terms: freely when registration is open, with a valid invitation

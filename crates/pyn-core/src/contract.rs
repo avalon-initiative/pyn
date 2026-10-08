@@ -6,7 +6,8 @@ use chrono::{Duration, TimeZone, Utc};
 
 use crate::AccessStore;
 use crate::access::{
-    InviteId, InviteRecord, Permission, Role, RoleDefinitions, SshKeyRecord, TokenId, TokenRecord,
+    InviteId, InviteRecord, Permission, Role, RoleDefinitions, SessionRecord, SshKeyRecord,
+    TokenId, TokenRecord,
 };
 use crate::memory::{MemoryAuditStore, MemoryObjectStore};
 use crate::{
@@ -953,6 +954,32 @@ fn ssh_key(id: &str, owner: &str, fingerprint: &str, created: i64) -> SshKeyReco
     }
 }
 
+pub async fn sessions_are_found_deleted_and_swept_when_expired(store: Access) {
+    store.ensure_user(&user("alice"), at(0)).await.unwrap();
+    let session = |hash: &str, expires: i64| SessionRecord {
+        id_hash: hash.to_string(),
+        user: user("alice"),
+        csrf_token: format!("csrf-{hash}"),
+        created_at: at(0),
+        expires_at: at(expires),
+    };
+    store.create_session(session("one", 10)).await.unwrap();
+    store.create_session(session("two", 20)).await.unwrap();
+
+    assert_eq!(
+        store.get_session("one").await.unwrap(),
+        Some(session("one", 10))
+    );
+    assert!(store.get_session("nope").await.unwrap().is_none());
+
+    store.delete_expired_sessions(at(10)).await.unwrap();
+    assert!(store.get_session("one").await.unwrap().is_none(), "expired");
+    assert!(store.get_session("two").await.unwrap().is_some());
+
+    assert!(store.delete_session("two").await.unwrap());
+    assert!(!store.delete_session("two").await.unwrap());
+}
+
 pub async fn ssh_keys_are_unique_across_accounts_and_can_be_found_and_deleted(store: Access) {
     for u in ["alice", "bob"] {
         store.ensure_user(&user(u), at(0)).await.unwrap();
@@ -1049,6 +1076,7 @@ macro_rules! access_contract_tests {
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; accounts_hold_a_unique_name_and_a_password);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; invitations_are_single_use_expire_and_can_be_revoked);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; ssh_keys_are_unique_across_accounts_and_can_be_found_and_deleted);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; sessions_are_found_deleted_and_swept_when_expired);
     };
     (@one $factory:expr; [$(#[$attr:meta])*]; $name:ident) => {
         #[tokio::test(flavor = "multi_thread")]

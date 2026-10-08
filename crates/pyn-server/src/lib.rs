@@ -17,6 +17,7 @@ use utoipa::OpenApi;
 
 mod access_api;
 pub mod auth;
+mod session_api;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -36,6 +37,9 @@ pub struct AppState {
         access_api::registration,
         access_api::register,
         access_api::login,
+        session_api::sign_in,
+        session_api::current,
+        session_api::sign_out,
         access_api::change_password,
         access_api::add_user,
         access_api::create_invite,
@@ -83,6 +87,7 @@ pub struct AppState {
         api::RegisterRequest,
         api::Registered,
         api::LoginRequest,
+        api::SessionInfo,
         api::ChangePasswordRequest,
         api::AddUserRequest,
         api::CreateInviteRequest,
@@ -109,6 +114,12 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/registration", get(access_api::registration))
         .route("/v1/register", post(access_api::register))
         .route("/v1/login", post(access_api::login))
+        .route(
+            "/v1/session",
+            get(session_api::current)
+                .post(session_api::sign_in)
+                .delete(session_api::sign_out),
+        )
         .route("/v1/me/password", put(access_api::change_password))
         .route("/v1/users", post(access_api::add_user))
         .route(
@@ -151,6 +162,10 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/audit", get(audit))
         .route("/v1/objects", put(put_object))
         .route("/v1/history", get(history))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            session_api::csrf_guard,
+        ))
         .with_state(state)
 }
 
@@ -172,9 +187,10 @@ impl IntoResponse for ApiError {
             | PynError::UserExists(_)
             | PynError::KeyInUse
             | PynError::ConfirmationRequired { .. } => StatusCode::CONFLICT,
-            PynError::NotLockHolder(_) | PynError::Forbidden(_) | PynError::RegistrationClosed => {
-                StatusCode::FORBIDDEN
-            }
+            PynError::NotLockHolder(_)
+            | PynError::Forbidden(_)
+            | PynError::RegistrationClosed
+            | PynError::CsrfFailed => StatusCode::FORBIDDEN,
             PynError::TooManyAttempts { .. } => StatusCode::TOO_MANY_REQUESTS,
             PynError::Unauthenticated(_) => StatusCode::UNAUTHORIZED,
             PynError::TokenNotFound(_) | PynError::KeyNotFound(_) => StatusCode::NOT_FOUND,
@@ -220,7 +236,16 @@ pub(crate) async fn authorize(
     let principal = match (bearer_token(headers), &state.dev_auth, dev_user) {
         (Some(token), _, _) => state.auth.authenticate(token).await?,
         (None, Some(dev), Some(user)) => dev.authenticate(user).await?,
-        _ => return Err(PynError::Unauthenticated("missing credentials".into()).into()),
+        _ => match session_api::session_cookie(headers) {
+            Some(cookie) => {
+                state
+                    .access
+                    .authenticate_session(state.service.repo(), cookie)
+                    .await?
+                    .0
+            }
+            None => return Err(PynError::Unauthenticated("missing credentials".into()).into()),
+        },
     };
     if let Some(permission) = need {
         principal.require(permission)?;

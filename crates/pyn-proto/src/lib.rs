@@ -263,3 +263,18 @@ pub const REVISION_HEADER: &str = "x-pyn-revision";
 
 /// Dev-only identity header.
 pub const DEV_USER_HEADER: &str = "x-pyn-user";
+
+/// Cookie holding the web session.
+pub const SESSION_COOKIE: &str = "pyn_session";
+
+/// Header carrying the CSRF token on state-changing requests made with a session cookie.
+pub const CSRF_HEADER: &str = "x-pyn-csrf";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct SessionInfo {
+    pub user: String,
+    pub permissions: Vec<String>,
+    /// Send as the `X-Pyn-CSRF` header on every POST, PUT and DELETE.
+    pub csrf_token: String,
+    pub expires_at: DateTime<Utc>,
+}

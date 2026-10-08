@@ -395,3 +395,57 @@ async fn changing_a_password_needs_the_current_one() {
         .unwrap();
     w.svc.login(&w.repo, "alice", PASSWORD).await.unwrap_err();
 }
+
+#[tokio::test]
+async fn a_session_follows_the_current_role_and_ends_on_sign_out_or_expiry() {
+    let w = world(RegistrationMode::Closed);
+    let root = admin(&w).await;
+    w.svc
+        .add_user(&root, &w.repo, "alice", PASSWORD, Role::Writer)
+        .await
+        .unwrap();
+
+    let err = w
+        .svc
+        .start_session(&w.repo, "alice", "not the password")
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::Unauthenticated(_)), "{err}");
+
+    let (record, cookie) = w
+        .svc
+        .start_session(&w.repo, "alice", PASSWORD)
+        .await
+        .unwrap();
+    assert_ne!(record.id_hash, cookie, "only a hash is stored");
+    let (who, _) = w.svc.authenticate_session(&w.repo, &cookie).await.unwrap();
+    assert!(who.has(Permission::Checkin));
+
+    w.svc
+        .set_user_role(&root, &w.repo, &UserId::new("alice"), Role::Reader)
+        .await
+        .unwrap();
+    let (who, _) = w.svc.authenticate_session(&w.repo, &cookie).await.unwrap();
+    assert_eq!(
+        who.permissions,
+        [Permission::Read].into(),
+        "role applies at once"
+    );
+
+    w.svc.end_session(&cookie).await.unwrap();
+    w.svc.end_session(&cookie).await.unwrap();
+    let err = w
+        .svc
+        .authenticate_session(&w.repo, &cookie)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::Unauthenticated(_)), "{err}");
+
+    let (_, cookie) = w
+        .svc
+        .start_session(&w.repo, "alice", PASSWORD)
+        .await
+        .unwrap();
+    w.clock.advance(Duration::days(31));
+    assert!(w.svc.find_session(&cookie).await.unwrap().is_none());
+}

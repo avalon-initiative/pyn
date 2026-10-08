@@ -377,6 +377,34 @@ pub mod account {
     }
 }
 
+/// A web sign-in. Only a hash of the cookie value is kept.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionRecord {
+    pub id_hash: String,
+    pub user: UserId,
+    /// Sent back in a header on state-changing requests.
+    pub csrf_token: String,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+}
+
+/// Session cookie values are 64 random hex characters.
+pub mod session {
+    use super::*;
+
+    /// The cookie value to hand to the browser, the CSRF token and the hash to store.
+    pub(crate) fn generate() -> Result<(String, String, String)> {
+        let secret = token::random_hex(32)?;
+        let csrf = token::random_hex(32)?;
+        let hash = token::hash_secret(&secret);
+        Ok((secret, csrf, hash))
+    }
+
+    pub fn hash(cookie_value: &str) -> String {
+        token::hash_secret(cookie_value)
+    }
+}
+
 /// An SSH public key linked to an account. The fingerprint is unique across the server.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SshKeyRecord {

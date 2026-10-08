@@ -37,6 +37,19 @@ for that server in your user configuration directory (`~/.config/pyn/credentials
 credential helper would; the CLI uses it when no token is given, and `pyn logout` ends the session and removes it. A
 session is a token limited to your role, and it lasts 30 days by default (`PYN_SESSION_DAYS`).
 
+## Web sessions
+
+The web signs in with `POST /v1/session` (user name and password, throttled like `pyn login`). The server keeps the session
+(only a hash of its cookie value is stored) and sets an `HttpOnly`, `SameSite=Lax` cookie, `pyn_session`, that page scripts
+cannot read; it is also `Secure` when the request arrived over HTTPS (`X-Forwarded-Proto: https` from a TLS-terminating
+proxy). A session lasts `PYN_SESSION_DAYS` (30 by default) and resolves to the user's current role on every request, so a
+role change applies at once. `GET /v1/session` returns the signed-in user, permissions and a CSRF token; `DELETE
+/v1/session` signs out and removes the session on the server.
+
+A request authenticated by the cookie alone must carry the CSRF token in an `X-Pyn-CSRF` header on every POST, PUT and
+DELETE, or the server answers 403 `csrf_failed`. Requests with a bearer token never use the cookie and need no CSRF token.
+The account pages (SSH keys, personal access tokens, password) are the same endpoints used with a session.
+
 Five wrong passwords for a user name lock that name out of signing in for 15 minutes, and the error never says whether the
 name or the password was wrong. `pyn password` changes your own password.
 

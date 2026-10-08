@@ -1149,6 +1149,210 @@ async fn people_link_ssh_keys_to_their_accounts_like_on_github() {
     );
 }
 
+fn with_cookie(
+    method: &str,
+    uri: &str,
+    cookie: &str,
+    csrf: Option<&str>,
+    body: Option<serde_json::Value>,
+) -> Request<Body> {
+    let mut builder = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("cookie", format!("{}={cookie}", api::SESSION_COOKIE));
+    if let Some(csrf) = csrf {
+        builder = builder.header(api::CSRF_HEADER, csrf);
+    }
+    match body {
+        Some(b) => builder
+            .header("content-type", "application/json")
+            .body(Body::from(b.to_string()))
+            .unwrap(),
+        None => builder.body(Body::empty()).unwrap(),
+    }
+}
+
+async fn web_sign_in(
+    app: &axum::Router,
+    forwarded_proto: Option<&str>,
+) -> (String, String, api::SessionInfo) {
+    let mut req = anon(
+        "POST",
+        "/v1/session",
+        serde_json::json!({"username": "alice", "password": PASSWORD}),
+    );
+    if let Some(proto) = forwarded_proto {
+        req.headers_mut()
+            .insert("x-forwarded-proto", proto.parse().unwrap());
+    }
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let set = res.headers()["set-cookie"].to_str().unwrap().to_string();
+    let info: api::SessionInfo = body_json(res).await;
+    (set, info.csrf_token.clone(), info)
+}
+
+#[tokio::test]
+async fn a_web_session_is_an_httponly_cookie_that_signs_out_and_follows_the_role() {
+    let st = state_with(false, RegistrationMode::Open);
+    let app = router(st.clone());
+    app.clone()
+        .oneshot(anon(
+            "POST",
+            "/v1/register",
+            serde_json::json!({"username": "alice", "password": PASSWORD}),
+        ))
+        .await
+        .unwrap();
+
+    let (set, csrf, info) = web_sign_in(&app, None).await;
+    assert_eq!(info.user, "alice");
+    for part in ["HttpOnly", "SameSite=Lax", "Path=/"] {
+        assert!(set.contains(part), "{set}");
+    }
+    assert!(!set.contains("Secure"), "plain HTTP: {set}");
+    let cookie = set
+        .split(';')
+        .next()
+        .unwrap()
+        .strip_prefix("pyn_session=")
+        .unwrap()
+        .to_string();
+    assert!(!cookie.is_empty() && !set.contains(&csrf));
+
+    let (set_https, _, _) = web_sign_in(&app, Some("https")).await;
+    assert!(set_https.contains("; Secure"), "{set_https}");
+
+    let me = |c: &str| with_cookie("GET", "/v1/me", c, None, None);
+    assert_eq!(status(&app, me(&cookie)).await, StatusCode::OK);
+    assert_eq!(
+        status(&app, with_cookie("GET", "/v1/session", &cookie, None, None)).await,
+        StatusCode::OK
+    );
+    assert_eq!(status(&app, me("forged")).await, StatusCode::UNAUTHORIZED);
+
+    let root = admin_token(&st).await;
+    let promote = |role: &str| {
+        with_token(
+            "PUT",
+            "/v1/members/alice",
+            &root,
+            Some(serde_json::json!({"role": role})),
+        )
+    };
+    assert_eq!(
+        status(&app, promote("writer")).await,
+        StatusCode::NO_CONTENT
+    );
+    let after: api::Me = body_json(app.clone().oneshot(me(&cookie)).await.unwrap()).await;
+    assert!(after.permissions.contains(&"checkin".to_string()));
+
+    let out = app
+        .clone()
+        .oneshot(with_cookie(
+            "DELETE",
+            "/v1/session",
+            &cookie,
+            Some(&csrf),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(out.status(), StatusCode::NO_CONTENT);
+    assert!(
+        out.headers()["set-cookie"]
+            .to_str()
+            .unwrap()
+            .contains("Max-Age=0")
+    );
+    assert_eq!(status(&app, me(&cookie)).await, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn state_changing_requests_with_a_cookie_need_the_csrf_token() {
+    let st = state_with(false, RegistrationMode::Open);
+    let app = router(st);
+    app.clone()
+        .oneshot(anon(
+            "POST",
+            "/v1/register",
+            serde_json::json!({"username": "alice", "password": PASSWORD}),
+        ))
+        .await
+        .unwrap();
+    let (set, csrf, _) = web_sign_in(&app, None).await;
+    let cookie = set
+        .split(';')
+        .next()
+        .unwrap()
+        .strip_prefix("pyn_session=")
+        .unwrap()
+        .to_string();
+
+    let body = || Some(serde_json::json!({"title": "laptop", "key": "ssh-ed25519 bad"}));
+    for token in [None, Some("wrong")] {
+        let res = app
+            .clone()
+            .oneshot(with_cookie("POST", "/v1/keys", &cookie, token, body()))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        let err: api::ErrorBody = body_json(res).await;
+        assert_eq!(err.code, "csrf_failed");
+    }
+    let pw = serde_json::json!({"current": PASSWORD, "new": "a brand new password"});
+    assert_eq!(
+        status(
+            &app,
+            with_cookie("PUT", "/v1/me/password", &cookie, None, Some(pw.clone()))
+        )
+        .await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        status(
+            &app,
+            with_cookie("PUT", "/v1/me/password", &cookie, Some(&csrf), Some(pw))
+        )
+        .await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        status(
+            &app,
+            with_cookie("DELETE", "/v1/session", &cookie, None, None)
+        )
+        .await,
+        StatusCode::FORBIDDEN,
+        "signing out needs the token too"
+    );
+}
+
+#[tokio::test]
+async fn bearer_requests_need_no_csrf_token_even_beside_a_session_cookie() {
+    let st = state_with(false, RegistrationMode::Open);
+    let app = router(st.clone());
+    app.clone()
+        .oneshot(anon(
+            "POST",
+            "/v1/register",
+            serde_json::json!({"username": "alice", "password": PASSWORD}),
+        ))
+        .await
+        .unwrap();
+    let (set, _, _) = web_sign_in(&app, None).await;
+    let cookie = set.split(';').next().unwrap().to_string();
+    let root = admin_token(&st).await;
+    let mut req = with_token(
+        "POST",
+        "/v1/tokens",
+        &root,
+        Some(serde_json::json!({"name": "ci", "permissions": ["read"]})),
+    );
+    req.headers_mut().insert("cookie", cookie.parse().unwrap());
+    assert_eq!(status(&app, req).await, StatusCode::OK);
+}
+
 #[tokio::test]
 async fn member_role_and_token_changes_are_audited_without_secrets() {
     let st = state(false);

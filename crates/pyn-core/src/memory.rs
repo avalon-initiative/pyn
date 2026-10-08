@@ -8,7 +8,8 @@ use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
 
 use crate::access::{
-    InviteId, InviteRecord, Permission, Role, RoleDefinitions, SshKeyRecord, TokenId, TokenRecord,
+    InviteId, InviteRecord, Permission, Role, RoleDefinitions, SessionRecord, SshKeyRecord,
+    TokenId, TokenRecord,
 };
 use crate::access_service::AccessStore;
 use crate::audit::{AuditEvent, AuditQuery, AuditStore, NewAuditEvent};
@@ -265,6 +266,7 @@ struct AccessState {
     roles: HashMap<(RepoId, UserId), Role>,
     definitions: HashMap<RepoId, RoleDefinitions>,
     tokens: HashMap<TokenId, TokenRecord>,
+    sessions: HashMap<String, SessionRecord>,
 }
 
 #[derive(Default)]
@@ -418,6 +420,38 @@ impl AccessStore for MemoryAccessStore {
         }
         st.ssh_keys.push(key);
         Ok(true)
+    }
+
+    async fn create_session(&self, session: SessionRecord) -> Result<()> {
+        self.state
+            .lock()
+            .unwrap()
+            .sessions
+            .insert(session.id_hash.clone(), session);
+        Ok(())
+    }
+
+    async fn get_session(&self, id_hash: &str) -> Result<Option<SessionRecord>> {
+        Ok(self.state.lock().unwrap().sessions.get(id_hash).cloned())
+    }
+
+    async fn delete_session(&self, id_hash: &str) -> Result<bool> {
+        Ok(self
+            .state
+            .lock()
+            .unwrap()
+            .sessions
+            .remove(id_hash)
+            .is_some())
+    }
+
+    async fn delete_expired_sessions(&self, now: DateTime<Utc>) -> Result<()> {
+        self.state
+            .lock()
+            .unwrap()
+            .sessions
+            .retain(|_, s| s.expires_at > now);
+        Ok(())
     }
 
     async fn list_ssh_keys(&self, user: &UserId) -> Result<Vec<SshKeyRecord>> {
