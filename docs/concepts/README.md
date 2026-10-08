@@ -22,10 +22,18 @@ read-only bit on disk is a convenience that stops editors from silently making u
 
 Locks expire so abandoned work cannot block a file forever. The same holder checking out again renews the lease.
 
+## Exclusive files and branches
+
+A lock covers a path across every branch. An exclusive path does not branch: it has one linear history shared by all
+branches. A branch (and each commit) records a pointer to a revision of each exclusive path, which is how a past state of
+the whole project is shown. Rolling a branch back moves its pointers only; the file's own history and head do not change.
+Merging branches takes the later pointer, and since edits are serialized by the lock there is no content conflict.
+
 ## Shared files, in Phase 1
 
-Merging arrives in Phase 2. Until then a shared checkin must also be based on the current head, so a stale edit is
-rejected rather than silently overwriting someone else's work.
+Shared files follow git's workflow once branches and merge exist (Phase 2), built in house with no dependency on git.
+Until then a shared checkin must also be based on the current head, so a stale edit is rejected rather than silently
+overwriting someone else's work.
 
 ## Terminology
 
