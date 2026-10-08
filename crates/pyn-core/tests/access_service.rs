@@ -149,7 +149,8 @@ async fn bad_revoked_expired_and_out_of_scope_tokens_are_rejected() {
         )
         .await
         .unwrap();
-    let tampered = format!("{}0", &full[..full.len() - 1]);
+    let flipped = if full.ends_with('0') { '1' } else { '0' };
+    let tampered = format!("{}{flipped}", &full[..full.len() - 1]);
     let err = w.svc.authenticate(&w.repo, &tampered).await.unwrap_err();
     assert!(
         matches!(err, PynError::Unauthenticated(_)),
