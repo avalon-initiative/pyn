@@ -1,6 +1,4 @@
-//! Wire types for the pyn HTTP API. Deliberately independent of `pyn-core` so the API contract
-//! can evolve separately from the domain model. The OpenAPI document is generated from these
-//! types (see `pyn-server`) and is the source for the generated TypeScript client in `pyn-web`.
+//! Wire types for the HTTP API, independent of `pyn-core`. The OpenAPI document is generated from them.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -18,7 +16,7 @@ pub struct Lock {
 pub struct Revision {
     pub id: u64,
     pub path: String,
-    /// SHA-256 hex of the content in the object store.
+    /// SHA-256 hex of the content.
     pub content: String,
     pub author: String,
     pub message: String,
@@ -28,7 +26,7 @@ pub struct Revision {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct CheckoutRequest {
     pub path: String,
-    /// Revision the caller's copy is at; omit if they have no copy. Must equal the head.
+    /// Revision the caller's copy is at (omit if none); must equal the head.
     pub base_revision: Option<u64>,
 }
 
@@ -51,13 +49,12 @@ pub struct PutObjectResponse {
     pub content: String,
 }
 
-/// Every non-2xx response carries this body. `code` is stable and machine-readable
-/// (`lock_held`, `stale_base`, `lock_required`, ...); `message` is for humans.
+/// Body of every non-2xx response; `code` is stable and machine-readable.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ErrorBody {
     pub code: String,
     pub message: String,
 }
 
-/// Header carrying the caller identity while only the dev auth provider exists.
+/// Dev-only identity header.
 pub const DEV_USER_HEADER: &str = "x-pyn-user";

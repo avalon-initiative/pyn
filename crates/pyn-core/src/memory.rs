@@ -1,5 +1,4 @@
-//! In-memory reference implementations of the storage traits. Used by tests and the dev
-//! server. Everything happens under one `Mutex`, which is what makes each primitive atomic.
+//! In-memory stores for tests and the dev server; one `Mutex` makes each primitive atomic.
 
 use std::collections::HashMap;
 use std::sync::Mutex;

@@ -27,21 +27,14 @@ macro_rules! string_id {
     };
 }
 
+string_id!(RepoId);
+string_id!(UserId);
 string_id!(
-    /// Identifies a repository on a server.
-    RepoId
-);
-string_id!(
-    /// Identifies an authenticated principal.
-    UserId
-);
-string_id!(
-    /// Lowercase hex SHA-256 of a file's content; the key into the `ObjectStore`.
+    /// SHA-256 hex of a file's content; the `ObjectStore` key.
     ContentHash
 );
 
-/// A normalized, repo-relative, `/`-separated path. Never absolute, never contains `.`/`..`
-/// segments or backslashes, so a path cannot escape the repository or alias another path.
+/// Repo-relative `/`-separated path; rejects absolute, `.`/`..` and backslash forms.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct RepoPath(String);
@@ -86,7 +79,7 @@ impl std::fmt::Display for RepoPath {
     }
 }
 
-/// Per-path revision number. The first revision of a path is 1; restores append, never rewrite.
+/// Per-path revision number, starting at 1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct RevisionId(pub u64);
@@ -97,7 +90,6 @@ impl std::fmt::Display for RevisionId {
     }
 }
 
-/// An immutable version of one file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Revision {
     pub id: RevisionId,
@@ -108,7 +100,6 @@ pub struct Revision {
     pub created_at: DateTime<Utc>,
 }
 
-/// A revision about to be appended; the store assigns the id.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewRevision {
     pub path: RepoPath,
@@ -118,7 +109,6 @@ pub struct NewRevision {
     pub created_at: DateTime<Utc>,
 }
 
-/// Temporary ownership of an exclusive path. Expired locks are treated as absent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Lock {
     pub path: RepoPath,

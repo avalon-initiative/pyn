@@ -1,9 +1,7 @@
 use async_trait::async_trait;
 use pyn_core::{AuthProvider, PynError, UserId};
 
-/// DEV ONLY. Trusts whatever user name the client sends in `X-Pyn-User`. Exists so the lock
-/// flow can be exercised before real authentication (tokens, OIDC) is built; never expose a
-/// server running this to a network you do not control.
+/// Dev only: trusts the `X-Pyn-User` header. Never expose to an untrusted network.
 pub struct DevHeaderAuth;
 
 #[async_trait]

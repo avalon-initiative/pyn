@@ -1,5 +1,3 @@
-//! The lock/checkin contract. These are the behaviours the whole product exists for.
-
 use std::sync::Arc;
 
 use chrono::{Duration, TimeZone, Utc};

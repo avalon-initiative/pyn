@@ -1,7 +1,4 @@
-//! Domain model and policy for pyn. No database, HTTP, or filesystem dependency: every
-//! infrastructure seam is a trait (`MetadataStore`, `ObjectStore`, `AuthProvider`, `Clock`)
-//! so implementations can be swapped. The `memory` module holds the reference implementations
-//! used by tests and the dev server.
+//! Domain model and policy. No database, HTTP or filesystem dependency; infrastructure sits behind traits.
 
 pub mod auth;
 pub mod clock;
