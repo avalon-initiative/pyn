@@ -5,7 +5,9 @@ use std::sync::Arc;
 use chrono::{Duration, TimeZone, Utc};
 
 use crate::AccessStore;
-use crate::access::{Permission, Role, RoleDefinitions, TokenId, TokenRecord};
+use crate::access::{
+    InviteId, InviteRecord, Permission, Role, RoleDefinitions, TokenId, TokenRecord,
+};
 use crate::memory::{MemoryAuditStore, MemoryObjectStore};
 use crate::{
     AuditAction, AuditQuery, AuditStore, ContentHash, ManualClock, MetadataStore, ObjectStore,
@@ -815,6 +817,129 @@ pub async fn role_definitions_apply_overrides_to_defaults(store: Access) {
     );
 }
 
+pub async fn accounts_hold_a_unique_name_and_a_password(store: Access) {
+    assert!(!store.user_exists(&user("alice")).await.unwrap());
+    assert!(store.create_user(&user("alice"), at(0)).await.unwrap());
+    assert!(
+        !store.create_user(&user("alice"), at(1)).await.unwrap(),
+        "a name can be taken once"
+    );
+    assert!(store.user_exists(&user("alice")).await.unwrap());
+
+    assert_eq!(store.password_hash(&user("alice")).await.unwrap(), None);
+    store
+        .set_password_hash(&user("alice"), "hash-one")
+        .await
+        .unwrap();
+    store
+        .set_password_hash(&user("alice"), "hash-two")
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .password_hash(&user("alice"))
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("hash-two")
+    );
+    assert_eq!(store.password_hash(&user("nobody")).await.unwrap(), None);
+}
+
+fn invite(id: &str, created: i64, expires: i64) -> InviteRecord {
+    InviteRecord {
+        id: InviteId(id.to_string()),
+        secret_hash: "11".repeat(32),
+        repo: RepoId::new("game"),
+        role: Role::Writer,
+        created_by: user("alice"),
+        created_at: at(created),
+        expires_at: at(expires),
+        used_at: None,
+        used_by: None,
+        revoked_at: None,
+    }
+}
+
+pub async fn invitations_are_single_use_expire_and_can_be_revoked(store: Access) {
+    store.ensure_user(&user("alice"), at(0)).await.unwrap();
+    for (id, created, expires) in [
+        ("aaaaaaaaaaaa", 1, 60),
+        ("bbbbbbbbbbbb", 5, 60),
+        ("cccccccccccc", 3, 10),
+    ] {
+        store
+            .create_invite(invite(id, created, expires))
+            .await
+            .unwrap();
+    }
+    let ids: Vec<_> = store
+        .list_invites(&RepoId::new("game"))
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|i| i.id.0)
+        .collect();
+    assert_eq!(
+        ids,
+        ["bbbbbbbbbbbb", "cccccccccccc", "aaaaaaaaaaaa"],
+        "newest first"
+    );
+    assert!(
+        store
+            .list_invites(&RepoId::new("other"))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    let a = InviteId("aaaaaaaaaaaa".into());
+    assert!(store.use_invite(&a, &user("bob"), at(20)).await.unwrap());
+    assert!(
+        !store.use_invite(&a, &user("carol"), at(21)).await.unwrap(),
+        "single use"
+    );
+    let used = store.get_invite(&a).await.unwrap().unwrap();
+    assert_eq!(
+        (used.used_at, used.used_by),
+        (Some(at(20)), Some(user("bob")))
+    );
+
+    let expired = InviteId("cccccccccccc".into());
+    assert!(
+        !store
+            .use_invite(&expired, &user("bob"), at(11))
+            .await
+            .unwrap(),
+        "expired"
+    );
+
+    let b = InviteId("bbbbbbbbbbbb".into());
+    assert!(store.revoke_invite(&b, at(30)).await.unwrap());
+    assert!(store.revoke_invite(&b, at(40)).await.unwrap());
+    assert_eq!(
+        store.get_invite(&b).await.unwrap().unwrap().revoked_at,
+        Some(at(30))
+    );
+    assert!(
+        !store.use_invite(&b, &user("bob"), at(31)).await.unwrap(),
+        "revoked"
+    );
+    assert!(
+        !store
+            .revoke_invite(&InviteId("ffffffffffff".into()), at(1))
+            .await
+            .unwrap()
+    );
+    assert!(
+        store
+            .get_invite(&InviteId("ffffffffffff".into()))
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
 /// Generates one `#[tokio::test]` per access-store case for the store built by `$factory`.
 #[macro_export]
 macro_rules! access_contract_tests {
@@ -824,6 +949,8 @@ macro_rules! access_contract_tests {
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; touching_a_token_records_last_use);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; roles_assign_and_overwrite);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; role_definitions_apply_overrides_to_defaults);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; accounts_hold_a_unique_name_and_a_password);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; invitations_are_single_use_expire_and_can_be_revoked);
     };
     (@one $factory:expr; [$(#[$attr:meta])*]; $name:ident) => {
         #[tokio::test(flavor = "multi_thread")]

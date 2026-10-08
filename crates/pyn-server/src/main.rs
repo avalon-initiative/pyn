@@ -4,8 +4,8 @@ use pyn_core::memory::{
     MemoryAccessStore, MemoryAuditStore, MemoryMetadataStore, MemoryObjectStore,
 };
 use pyn_core::{
-    AccessService, AccessStore, AuditStore, AuthProvider, MetadataStore, ObjectStore, RepoId,
-    RepoService, Rules, ServiceConfig, SystemClock, UserId,
+    AccessConfig, AccessService, AccessStore, AuditStore, AuthProvider, MetadataStore, ObjectStore,
+    RegistrationMode, RepoId, RepoService, Rules, ServiceConfig, SystemClock, UserId,
 };
 use pyn_fs::FsObjectStore;
 use pyn_postgres::PgMetadataStore;
@@ -75,13 +75,41 @@ async fn main() -> anyhow::Result<()> {
         clock.clone(),
         ServiceConfig::default(),
     ));
-    let access = Arc::new(AccessService::new(access_store, clock));
+    let defaults = AccessConfig::default();
+    let config = AccessConfig {
+        registration: match std::env::var("PYN_REGISTRATION") {
+            Ok(mode) => mode.parse()?,
+            Err(_) => defaults.registration,
+        },
+        default_role: match std::env::var("PYN_DEFAULT_ROLE") {
+            Ok(role) => role.parse()?,
+            Err(_) => defaults.default_role,
+        },
+        session_days: match std::env::var("PYN_SESSION_DAYS") {
+            Ok(days) => days.parse()?,
+            Err(_) => defaults.session_days,
+        },
+    };
+    if config.registration == RegistrationMode::Open {
+        tracing::warn!(
+            "registration is open: anyone who can reach this server can create an account"
+        );
+    }
+    let access = Arc::new(AccessService::new(access_store, clock).with_config(config));
 
     if let Ok(admin) = std::env::var("PYN_BOOTSTRAP_ADMIN") {
         let token = access
             .bootstrap_admin(&repo, &UserId::new(admin.clone()))
             .await?;
-        tracing::warn!("administrator {admin} can sign in with this token, shown once: {token}");
+        if let Ok(password) = std::env::var("PYN_BOOTSTRAP_PASSWORD") {
+            access
+                .set_password_for_operator(&UserId::new(admin.clone()), &password)
+                .await?;
+            tracing::warn!(
+                "administrator {admin} can sign in with the password from PYN_BOOTSTRAP_PASSWORD"
+            );
+        }
+        tracing::warn!("administrator {admin} can also use this token, shown once: {token}");
     }
 
     let dev_auth: Option<Arc<dyn AuthProvider>> = if flag("PYN_DEV_AUTH") {

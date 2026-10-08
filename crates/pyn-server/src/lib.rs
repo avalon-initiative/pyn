@@ -33,6 +33,14 @@ pub struct AppState {
 #[openapi(
     paths(
         health,
+        access_api::registration,
+        access_api::register,
+        access_api::login,
+        access_api::change_password,
+        access_api::add_user,
+        access_api::create_invite,
+        access_api::list_invites,
+        access_api::revoke_invite,
         access_api::me,
         access_api::create_token,
         access_api::list_tokens,
@@ -68,6 +76,15 @@ pub struct AppState {
         api::FileEntry,
         api::FilePage,
         api::Mode,
+        api::RegistrationInfo,
+        api::RegisterRequest,
+        api::Registered,
+        api::LoginRequest,
+        api::ChangePasswordRequest,
+        api::AddUserRequest,
+        api::CreateInviteRequest,
+        api::InviteInfo,
+        api::CreatedInvite,
         api::Me,
         api::CreateTokenRequest,
         api::TokenInfo,
@@ -84,6 +101,19 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(health))
         .route("/openapi.json", get(|| async { Json(ApiDoc::openapi()) }))
+        .route("/v1/registration", get(access_api::registration))
+        .route("/v1/register", post(access_api::register))
+        .route("/v1/login", post(access_api::login))
+        .route("/v1/me/password", put(access_api::change_password))
+        .route("/v1/users", post(access_api::add_user))
+        .route(
+            "/v1/invites",
+            get(access_api::list_invites).post(access_api::create_invite),
+        )
+        .route(
+            "/v1/invites/{id}",
+            axum::routing::delete(access_api::revoke_invite),
+        )
         .route("/v1/me", get(access_api::me))
         .route(
             "/v1/tokens",
@@ -126,14 +156,19 @@ impl IntoResponse for ApiError {
             | PynError::StaleBase { .. }
             | PynError::LockRequired(_)
             | PynError::NotLocked(_)
+            | PynError::UserExists(_)
             | PynError::ConfirmationRequired { .. } => StatusCode::CONFLICT,
-            PynError::NotLockHolder(_) | PynError::Forbidden(_) => StatusCode::FORBIDDEN,
+            PynError::NotLockHolder(_) | PynError::Forbidden(_) | PynError::RegistrationClosed => {
+                StatusCode::FORBIDDEN
+            }
+            PynError::TooManyAttempts { .. } => StatusCode::TOO_MANY_REQUESTS,
             PynError::Unauthenticated(_) => StatusCode::UNAUTHORIZED,
             PynError::TokenNotFound(_) => StatusCode::NOT_FOUND,
             PynError::RevisionNotFound { .. } => StatusCode::NOT_FOUND,
             PynError::InvalidPath(_)
             | PynError::InvalidRules(_)
             | PynError::InvalidRequest(_)
+            | PynError::InvalidInvite(_)
             | PynError::NotExclusive(_)
             | PynError::ObjectMissing(_) => StatusCode::BAD_REQUEST,
             PynError::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,

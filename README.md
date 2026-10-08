@@ -19,7 +19,7 @@ make demo                # in another terminal: seeds sample files and locks (ne
 ```
 
 Requests need credentials. For local work `.env.example` turns on `PYN_DEV_AUTH`, which accepts `--user <name>`. Otherwise
-start the server with `PYN_BOOTSTRAP_ADMIN=<name>`, copy the admin token it prints, and use it as `PYN_TOKEN`; see
+start the server with `PYN_BOOTSTRAP_ADMIN=<name> PYN_BOOTSTRAP_PASSWORD=<password>`, then `pyn login <name>`; see
 [access](docs/concepts/access.md).
 
 | Variable | Meaning |
@@ -31,7 +31,12 @@ start the server with `PYN_BOOTSTRAP_ADMIN=<name>`, copy the admin token it prin
 | `PYN_ADDR` | Listen address, default `127.0.0.1:7878` |
 | `PYN_DEV_AUTH` | `true` accepts the `X-Pyn-User` header with every permission; development only |
 | `PYN_BOOTSTRAP_ADMIN` | Creates this user as an admin at startup and prints a token |
-| `PYN_TOKEN` | Token the CLI signs in with (`PYN_USER` for the development header) |
+| `PYN_TOKEN` | Token the CLI signs in with, instead of the sign-in saved by `pyn login` (`PYN_USER` for the development header) |
+| `PYN_REGISTRATION` | `invite` (default), `open` or `closed`: how people create accounts |
+| `PYN_DEFAULT_ROLE` | Role for people who register on an open server, default `reader` |
+| `PYN_SESSION_DAYS` | How long a `pyn login` lasts, default 30 |
+| `PYN_BOOTSTRAP_PASSWORD` | Gives the `PYN_BOOTSTRAP_ADMIN` user this password |
+| `PYN_CONFIG_DIR` | Where the CLI keeps `credentials.toml`, default `~/.config/pyn` |
 
 `make test-live` runs the tests that need a database (`PYN_DATABASE_URL`); each uses its own temporary schema.
 Documentation lives in [docs/](docs/README.md).

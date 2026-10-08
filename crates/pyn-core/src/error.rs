@@ -39,6 +39,14 @@ pub enum PynError {
     RevisionNotFound { path: RepoPath, revision: String },
     #[error("restoring replaces the head; to confirm, pass {expected}")]
     ConfirmationRequired { expected: String },
+    #[error("registration is closed on this server")]
+    RegistrationClosed,
+    #[error("{0} already exists")]
+    UserExists(UserId),
+    #[error("invalid invitation: {0}")]
+    InvalidInvite(String),
+    #[error("too many sign-in attempts; try again in {retry_after_secs} seconds")]
+    TooManyAttempts { retry_after_secs: i64 },
     #[error("authentication failed: {0}")]
     Unauthenticated(String),
     #[error("permission {0} is required")]
@@ -65,6 +73,10 @@ impl PynError {
             Self::ObjectMissing(_) => "object_missing",
             Self::RevisionNotFound { .. } => "revision_not_found",
             Self::ConfirmationRequired { .. } => "confirmation_required",
+            Self::RegistrationClosed => "registration_closed",
+            Self::UserExists(_) => "user_exists",
+            Self::InvalidInvite(_) => "invalid_invite",
+            Self::TooManyAttempts { .. } => "too_many_attempts",
             Self::Unauthenticated(_) => "unauthenticated",
             Self::Forbidden(_) => "forbidden",
             Self::TokenNotFound(_) => "token_not_found",

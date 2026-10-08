@@ -7,7 +7,8 @@ use pyn_core::memory::{
     MemoryAccessStore, MemoryAuditStore, MemoryMetadataStore, MemoryObjectStore,
 };
 use pyn_core::{
-    AccessService, AuthProvider, RepoId, RepoService, Rules, ServiceConfig, SystemClock, UserId,
+    AccessConfig, AccessService, AuthProvider, RegistrationMode, RepoId, RepoService, Rules,
+    ServiceConfig, SystemClock, UserId,
 };
 use pyn_proto as api;
 use pyn_server::auth::{BearerAuth, DevHeaderAuth};
@@ -17,6 +18,10 @@ use tower::ServiceExt;
 const RULES: &str = "[meta]\ndefault = \"shared\"\n[exclusive]\npaths = [\"Content/\"]\n";
 
 fn state(dev: bool) -> AppState {
+    state_with(dev, RegistrationMode::InviteOnly)
+}
+
+fn state_with(dev: bool, mode: RegistrationMode) -> AppState {
     let repo = RepoId::new("t");
     let clock = Arc::new(SystemClock);
     let objects = Arc::new(MemoryObjectStore::new());
@@ -29,10 +34,12 @@ fn state(dev: bool) -> AppState {
         clock.clone(),
         ServiceConfig::default(),
     ));
-    let access = Arc::new(AccessService::new(
-        Arc::new(MemoryAccessStore::new()),
-        clock,
-    ));
+    let access = Arc::new(
+        AccessService::new(Arc::new(MemoryAccessStore::new()), clock).with_config(AccessConfig {
+            registration: mode,
+            ..AccessConfig::default()
+        }),
+    );
     AppState {
         service,
         objects,
@@ -704,5 +711,290 @@ async fn force_unlock_needs_the_permission_and_a_reason_and_is_audited() {
         )
         .await,
         StatusCode::BAD_REQUEST
+    );
+}
+
+fn anon(method: &str, uri: &str, body: serde_json::Value) -> Request<Body> {
+    Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
+const PASSWORD: &str = "correct horse battery";
+
+#[tokio::test]
+async fn registration_follows_the_servers_mode() {
+    let closed = router(state_with(false, RegistrationMode::Closed));
+    let r = closed
+        .clone()
+        .oneshot(
+            Request::get("/v1/registration")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        body_json::<api::RegistrationInfo>(r).await.registration,
+        "closed"
+    );
+    let r = closed
+        .oneshot(anon(
+            "POST",
+            "/v1/register",
+            serde_json::json!({"username": "alice", "password": PASSWORD}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        body_json::<api::ErrorBody>(r).await.code,
+        "registration_closed"
+    );
+
+    let open = router(state_with(false, RegistrationMode::Open));
+    let join = serde_json::json!({"username": "alice", "password": PASSWORD});
+    assert_eq!(
+        status(&open, anon("POST", "/v1/register", join.clone())).await,
+        StatusCode::CREATED
+    );
+    let r = open
+        .clone()
+        .oneshot(anon("POST", "/v1/register", join))
+        .await
+        .unwrap();
+    assert_eq!(
+        (
+            r.status(),
+            body_json::<api::ErrorBody>(r).await.code.as_str()
+        ),
+        (StatusCode::CONFLICT, "user_exists")
+    );
+    let weak = serde_json::json!({"username": "bob", "password": "short"});
+    assert_eq!(
+        status(&open, anon("POST", "/v1/register", weak)).await,
+        StatusCode::BAD_REQUEST
+    );
+
+    let r = open
+        .clone()
+        .oneshot(anon(
+            "POST",
+            "/v1/login",
+            serde_json::json!({"username": "alice", "password": PASSWORD}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    let session: api::CreatedToken = body_json(r).await;
+    let me: api::Me = body_json(
+        open.oneshot(with_token("GET", "/v1/me", &session.token, None))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        (me.user.as_str(), me.permissions.as_slice()),
+        ("alice", ["read".to_string()].as_slice())
+    );
+}
+
+#[tokio::test]
+async fn an_invite_only_server_admits_people_with_a_one_time_invitation() {
+    let st = state(false);
+    let admin = admin_token(&st).await;
+    let app = router(st);
+    let join = |code: Option<&str>| serde_json::json!({"username": "wendy", "password": PASSWORD, "invite": code});
+
+    let r = app
+        .clone()
+        .oneshot(anon("POST", "/v1/register", join(None)))
+        .await
+        .unwrap();
+    assert_eq!(
+        (
+            r.status(),
+            body_json::<api::ErrorBody>(r).await.code.as_str()
+        ),
+        (StatusCode::BAD_REQUEST, "invalid_invite")
+    );
+
+    let make = serde_json::json!({"role": "writer", "hours": 24});
+    let invite: api::CreatedInvite = body_json(
+        app.clone()
+            .oneshot(with_token("POST", "/v1/invites", &admin, Some(make)))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(invite.code.starts_with("pyni_"));
+    assert_eq!(
+        status(&app, anon("POST", "/v1/register", join(Some(&invite.code)))).await,
+        StatusCode::CREATED
+    );
+
+    let again =
+        serde_json::json!({"username": "xavier", "password": PASSWORD, "invite": invite.code});
+    assert_eq!(
+        status(&app, anon("POST", "/v1/register", again)).await,
+        StatusCode::BAD_REQUEST
+    );
+
+    let listed: Vec<api::InviteInfo> = body_json(
+        app.clone()
+            .oneshot(with_token("GET", "/v1/invites", &admin, None))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        (listed.len(), listed[0].used_by.as_deref()),
+        (1, Some("wendy"))
+    );
+    let r = app
+        .clone()
+        .oneshot(anon(
+            "POST",
+            "/v1/login",
+            serde_json::json!({"username": "wendy", "password": PASSWORD}),
+        ))
+        .await
+        .unwrap();
+    let wendy: api::CreatedToken = body_json(r).await;
+    assert_eq!(
+        status(
+            &app,
+            with_token(
+                "POST",
+                "/v1/invites",
+                &wendy.token,
+                Some(serde_json::json!({"role": "reader", "hours": 1}))
+            )
+        )
+        .await,
+        StatusCode::FORBIDDEN
+    );
+
+    let uri = format!("/v1/invites/{}", listed[0].id);
+    assert_eq!(
+        status(&app, with_token("DELETE", &uri, &admin, None)).await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        status(
+            &app,
+            with_token("DELETE", "/v1/invites/ffffffffffff", &admin, None)
+        )
+        .await,
+        StatusCode::BAD_REQUEST
+    );
+}
+
+#[tokio::test]
+async fn sign_in_is_throttled_and_never_says_which_part_was_wrong() {
+    let st = state(false);
+    let admin = admin_token(&st).await;
+    let app = router(st);
+    let add = serde_json::json!({"username": "alice", "password": PASSWORD, "role": "writer"});
+    assert_eq!(
+        status(
+            &app,
+            with_token("POST", "/v1/users", &admin, Some(add.clone()))
+        )
+        .await,
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        status(&app, with_token("POST", "/v1/users", &admin, Some(add))).await,
+        StatusCode::CONFLICT
+    );
+
+    let wrong = |user: &str| {
+        anon(
+            "POST",
+            "/v1/login",
+            serde_json::json!({"username": user, "password": "not the password"}),
+        )
+    };
+    let a = app.clone().oneshot(wrong("alice")).await.unwrap();
+    let b = app.clone().oneshot(wrong("nobody")).await.unwrap();
+    assert_eq!(
+        (a.status(), b.status()),
+        (StatusCode::UNAUTHORIZED, StatusCode::UNAUTHORIZED)
+    );
+    assert_eq!(
+        body_json::<api::ErrorBody>(a).await.message,
+        body_json::<api::ErrorBody>(b).await.message
+    );
+
+    for _ in 0..4 {
+        app.clone().oneshot(wrong("alice")).await.unwrap();
+    }
+    let r = app
+        .clone()
+        .oneshot(anon(
+            "POST",
+            "/v1/login",
+            serde_json::json!({"username": "alice", "password": PASSWORD}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        body_json::<api::ErrorBody>(r).await.code,
+        "too_many_attempts"
+    );
+}
+
+#[tokio::test]
+async fn people_can_change_their_own_password() {
+    let st = state_with(false, RegistrationMode::Open);
+    let app = router(st);
+    app.clone()
+        .oneshot(anon(
+            "POST",
+            "/v1/register",
+            serde_json::json!({"username": "alice", "password": PASSWORD}),
+        ))
+        .await
+        .unwrap();
+    let login = |pw: &str| {
+        anon(
+            "POST",
+            "/v1/login",
+            serde_json::json!({"username": "alice", "password": pw}),
+        )
+    };
+    let session: api::CreatedToken =
+        body_json(app.clone().oneshot(login(PASSWORD)).await.unwrap()).await;
+
+    let wrong = serde_json::json!({"current": "not the password", "new": "a brand new password"});
+    assert_eq!(
+        status(
+            &app,
+            with_token("PUT", "/v1/me/password", &session.token, Some(wrong))
+        )
+        .await,
+        StatusCode::UNAUTHORIZED
+    );
+    let right = serde_json::json!({"current": PASSWORD, "new": "a brand new password"});
+    assert_eq!(
+        status(
+            &app,
+            with_token("PUT", "/v1/me/password", &session.token, Some(right))
+        )
+        .await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        status(&app, login("a brand new password")).await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        status(&app, login(PASSWORD)).await,
+        StatusCode::UNAUTHORIZED
     );
 }

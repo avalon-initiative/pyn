@@ -166,6 +166,71 @@ pub struct AuditPage {
     pub next_before: Option<i64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct RegistrationInfo {
+    /// `open`, `invite` or `closed`.
+    pub registration: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct RegisterRequest {
+    pub username: String,
+    pub password: String,
+    /// Required when the server is invite only.
+    pub invite: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct Registered {
+    pub user: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct LoginRequest {
+    pub username: String,
+    pub password: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ChangePasswordRequest {
+    /// Required when the account already has a password.
+    pub current: Option<String>,
+    pub new: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct AddUserRequest {
+    pub username: String,
+    pub password: String,
+    pub role: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct CreateInviteRequest {
+    pub role: String,
+    /// How long the invitation can be used, in hours.
+    pub hours: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct InviteInfo {
+    pub id: String,
+    pub role: String,
+    pub created_by: String,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+    pub used_at: Option<DateTime<Utc>>,
+    pub used_by: Option<String>,
+    pub revoked_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct CreatedInvite {
+    /// Give this to the person being invited. Shown once and never stored.
+    pub code: String,
+    pub info: InviteInfo,
+}
+
 /// Body of every non-2xx response; `code` is stable and machine-readable.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ErrorBody {
