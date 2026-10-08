@@ -72,7 +72,8 @@ async fn lock_conflict_is_a_409_with_a_stable_code() {
     let err: api::ErrorBody =
         serde_json::from_slice(&r.into_body().collect().await.unwrap().to_bytes()).unwrap();
     assert_eq!(err.code, "lock_held");
-    assert!(err.message.contains("alice"));
+    assert!(err.message.contains("locked by alice until"));
+    assert!(err.message.contains("Ask alice to release it"));
 }
 
 #[tokio::test]
