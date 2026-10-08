@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
 use pyn_core::memory::{MemoryMetadataStore, MemoryObjectStore};
-use pyn_core::{RepoId, RepoService, Rules, ServiceConfig, SystemClock};
+use pyn_core::{ObjectStore, RepoId, RepoService, Rules, ServiceConfig, SystemClock};
+use pyn_fs::FsObjectStore;
 use pyn_server::{AppState, auth::DevHeaderAuth, router};
 
 #[tokio::main]
@@ -13,8 +14,10 @@ async fn main() -> anyhow::Result<()> {
         Err(_) => Rules::empty(),
     };
 
-    // In-memory stores: state is lost on restart.
-    let objects = Arc::new(MemoryObjectStore::new());
+    let objects: Arc<dyn ObjectStore> = match std::env::var("PYN_DATA_DIR") {
+        Ok(dir) => Arc::new(FsObjectStore::open(dir).await?),
+        Err(_) => Arc::new(MemoryObjectStore::new()),
+    };
     let service = Arc::new(RepoService::new(
         RepoId::new("default"),
         rules,
@@ -30,7 +33,7 @@ async fn main() -> anyhow::Result<()> {
     });
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
-    tracing::warn!("pyn-server listening on {addr} with in-memory storage and DEV auth");
+    tracing::warn!("pyn-server listening on {addr} with in-memory metadata and DEV auth");
     axum::serve(listener, app).await?;
     Ok(())
 }

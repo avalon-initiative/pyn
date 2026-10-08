@@ -1,4 +1,5 @@
 target/
+.pyn-data/
 
 # -----------------------------------------------------------------------------
 # Common patterns — OS junk, editors, secrets, scratch. Stack-specific entries
