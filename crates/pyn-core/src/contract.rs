@@ -4,6 +4,8 @@ use std::sync::Arc;
 
 use chrono::{Duration, TimeZone, Utc};
 
+use crate::AccessStore;
+use crate::access::{Permission, Role, RoleDefinitions, TokenId, TokenRecord};
 use crate::memory::MemoryObjectStore;
 use crate::{
     ContentHash, ManualClock, MetadataStore, ObjectStore, PynError, RepoId, RepoPath, RepoService,
@@ -11,6 +13,7 @@ use crate::{
 };
 
 pub type Store = Arc<dyn MetadataStore>;
+pub type Access = Arc<dyn AccessStore>;
 
 const RULES: &str = "[meta]\ndefault = \"shared\"\n[exclusive]\npaths = [\"Content/\"]\n";
 
@@ -338,6 +341,173 @@ macro_rules! contract_tests {
         $(#[$attr])*
         async fn $name() {
             let store: $crate::contract::Store = ($factory).await;
+            $crate::contract::$name(store).await;
+        }
+    };
+}
+
+fn at(minutes: i64) -> chrono::DateTime<Utc> {
+    Utc.with_ymd_and_hms(2026, 10, 8, 9, 0, 0).unwrap() + Duration::minutes(minutes)
+}
+
+fn token(id: &str, owner: &str, created: i64) -> TokenRecord {
+    TokenRecord {
+        id: TokenId(id.to_string()),
+        user: user(owner),
+        name: format!("token {id}"),
+        secret_hash: "00".repeat(32),
+        permissions: [Permission::Read, Permission::Checkin].into(),
+        repos: vec![RepoId::new("game")],
+        created_at: at(created),
+        expires_at: Some(at(created + 60)),
+        revoked_at: None,
+        last_used_at: None,
+    }
+}
+
+pub async fn tokens_round_trip_and_list_newest_first(store: Access) {
+    store.ensure_user(&user("alice"), at(0)).await.unwrap();
+    store.ensure_user(&user("bob"), at(0)).await.unwrap();
+    for (id, owner, created) in [
+        ("aaaaaaaaaaaa", "alice", 1),
+        ("bbbbbbbbbbbb", "alice", 5),
+        ("cccccccccccc", "bob", 3),
+    ] {
+        store.create_token(token(id, owner, created)).await.unwrap();
+    }
+    let got = store
+        .get_token(&TokenId("aaaaaaaaaaaa".into()))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(got, token("aaaaaaaaaaaa", "alice", 1));
+    assert!(
+        store
+            .get_token(&TokenId("ffffffffffff".into()))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let ids: Vec<_> = store
+        .list_tokens(&user("alice"))
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|t| t.id.0)
+        .collect();
+    assert_eq!(ids, ["bbbbbbbbbbbb", "aaaaaaaaaaaa"]);
+}
+
+pub async fn revoking_is_recorded_and_harmless_twice(store: Access) {
+    store.ensure_user(&user("alice"), at(0)).await.unwrap();
+    let id = TokenId("aaaaaaaaaaaa".into());
+    store
+        .create_token(token("aaaaaaaaaaaa", "alice", 1))
+        .await
+        .unwrap();
+    assert!(store.revoke_token(&id, at(10)).await.unwrap());
+    assert!(store.revoke_token(&id, at(20)).await.unwrap());
+    assert_eq!(
+        store.get_token(&id).await.unwrap().unwrap().revoked_at,
+        Some(at(10))
+    );
+    assert!(
+        !store
+            .revoke_token(&TokenId("ffffffffffff".into()), at(10))
+            .await
+            .unwrap()
+    );
+}
+
+pub async fn touching_a_token_records_last_use(store: Access) {
+    store.ensure_user(&user("alice"), at(0)).await.unwrap();
+    let id = TokenId("aaaaaaaaaaaa".into());
+    store
+        .create_token(token("aaaaaaaaaaaa", "alice", 1))
+        .await
+        .unwrap();
+    store.touch_token(&id, at(30)).await.unwrap();
+    assert_eq!(
+        store.get_token(&id).await.unwrap().unwrap().last_used_at,
+        Some(at(30))
+    );
+}
+
+pub async fn roles_assign_and_overwrite(store: Access) {
+    let repo = RepoId::new("game");
+    for u in ["alice", "bob"] {
+        store.ensure_user(&user(u), at(0)).await.unwrap();
+    }
+    assert_eq!(store.role_of(&repo, &user("alice")).await.unwrap(), None);
+    store
+        .set_role(&repo, &user("alice"), Role::Writer)
+        .await
+        .unwrap();
+    store
+        .set_role(&repo, &user("bob"), Role::Reader)
+        .await
+        .unwrap();
+    store
+        .set_role(&repo, &user("alice"), Role::Maintainer)
+        .await
+        .unwrap();
+    assert_eq!(
+        store.role_of(&repo, &user("alice")).await.unwrap(),
+        Some(Role::Maintainer)
+    );
+    assert_eq!(
+        store.members(&repo).await.unwrap(),
+        [
+            (user("alice"), Role::Maintainer),
+            (user("bob"), Role::Reader)
+        ]
+    );
+    assert!(
+        store
+            .members(&RepoId::new("other"))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+pub async fn role_definitions_apply_overrides_to_defaults(store: Access) {
+    let repo = RepoId::new("game");
+    assert_eq!(
+        store.role_definitions(&repo).await.unwrap(),
+        RoleDefinitions::defaults()
+    );
+    store
+        .set_role_permissions(&repo, Role::Writer, [Permission::Read].into())
+        .await
+        .unwrap();
+    let defs = store.role_definitions(&repo).await.unwrap();
+    assert_eq!(defs.get(Role::Writer), &[Permission::Read].into());
+    assert_eq!(
+        defs.get(Role::Admin),
+        RoleDefinitions::defaults().get(Role::Admin)
+    );
+    assert_eq!(
+        store.role_definitions(&RepoId::new("other")).await.unwrap(),
+        RoleDefinitions::defaults()
+    );
+}
+
+/// Generates one `#[tokio::test]` per access-store case for the store built by `$factory`.
+#[macro_export]
+macro_rules! access_contract_tests {
+    ($factory:expr $(, #[$attr:meta])*) => {
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; tokens_round_trip_and_list_newest_first);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; revoking_is_recorded_and_harmless_twice);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; touching_a_token_records_last_use);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; roles_assign_and_overwrite);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; role_definitions_apply_overrides_to_defaults);
+    };
+    (@one $factory:expr; [$(#[$attr:meta])*]; $name:ident) => {
+        #[tokio::test(flavor = "multi_thread")]
+        $(#[$attr])*
+        async fn $name() {
+            let store: $crate::contract::Access = ($factory).await;
             $crate::contract::$name(store).await;
         }
     };

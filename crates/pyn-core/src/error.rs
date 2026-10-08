@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 
+use crate::access::Permission;
 use crate::types::{RepoPath, RevisionId, UserId};
 
 pub type Result<T, E = PynError> = std::result::Result<T, E>;
@@ -32,6 +33,14 @@ pub enum PynError {
     ObjectMissing(String),
     #[error("{path} has no revision {revision}")]
     RevisionNotFound { path: RepoPath, revision: String },
+    #[error("authentication failed: {0}")]
+    Unauthenticated(String),
+    #[error("permission {0} is required")]
+    Forbidden(Permission),
+    #[error("no token {0}")]
+    TokenNotFound(String),
+    #[error("{0}")]
+    InvalidRequest(String),
     #[error("storage error: {0}")]
     Storage(String),
 }
@@ -49,6 +58,10 @@ impl PynError {
             Self::StaleBase { .. } => "stale_base",
             Self::ObjectMissing(_) => "object_missing",
             Self::RevisionNotFound { .. } => "revision_not_found",
+            Self::Unauthenticated(_) => "unauthenticated",
+            Self::Forbidden(_) => "forbidden",
+            Self::TokenNotFound(_) => "token_not_found",
+            Self::InvalidRequest(_) => "invalid_request",
             Self::Storage(_) => "storage",
         }
     }
