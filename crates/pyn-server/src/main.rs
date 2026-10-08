@@ -71,7 +71,7 @@ async fn main() -> anyhow::Result<()> {
         rules,
         meta,
         objects.clone(),
-        audit,
+        audit.clone(),
         clock.clone(),
         ServiceConfig::default(),
     ));
@@ -95,7 +95,11 @@ async fn main() -> anyhow::Result<()> {
             "registration is open: anyone who can reach this server can create an account"
         );
     }
-    let access = Arc::new(AccessService::new(access_store, clock).with_config(config));
+    let access = Arc::new(
+        AccessService::new(access_store, clock)
+            .with_config(config)
+            .with_audit(audit, repo.clone()),
+    );
 
     if let Ok(admin) = std::env::var("PYN_BOOTSTRAP_ADMIN") {
         let token = access

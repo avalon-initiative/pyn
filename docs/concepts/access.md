@@ -83,3 +83,9 @@ pyn token revoke <id>
 Start the server with `PYN_BOOTSTRAP_ADMIN=<name>` to create that user as an admin; the server prints an admin token
 once at startup. For local work only, `PYN_DEV_AUTH=true` lets any request name itself with an `X-Pyn-User` header and
 grants it every permission.
+
+## Audit
+
+Adding a member (by an admin or by registration), changing a member's role, changing what a role grants, and creating
+or revoking a token are recorded in the audit log with the actor and what changed, and are visible to `view_audit`.
+Token secrets are never recorded, and neither are sign-in sessions.
