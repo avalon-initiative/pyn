@@ -30,3 +30,34 @@ jobs:
       # fmt, clippy, tests, and the docs link check.
       - name: Checks
         run: make check
+
+  live:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: pyn
+          POSTGRES_PASSWORD: pyn
+          POSTGRES_DB: pyn
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U pyn"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PYN_DATABASE_URL: postgres://pyn:pyn@localhost:5432/pyn
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+
+      - name: Tests that need Postgres
+        run: cargo test --workspace -- --ignored
