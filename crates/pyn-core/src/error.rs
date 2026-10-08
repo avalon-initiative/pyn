@@ -53,6 +53,8 @@ pub enum PynError {
     KeyNotFound(String),
     #[error("authentication failed: {0}")]
     Unauthenticated(String),
+    #[error("the request is missing a valid CSRF token")]
+    CsrfFailed,
     #[error("permission {0} is required")]
     Forbidden(Permission),
     #[error("no token {0}")]
@@ -84,6 +86,7 @@ impl PynError {
             Self::KeyInUse => "key_in_use",
             Self::KeyNotFound(_) => "key_not_found",
             Self::Unauthenticated(_) => "unauthenticated",
+            Self::CsrfFailed => "csrf_failed",
             Self::Forbidden(_) => "forbidden",
             Self::TokenNotFound(_) => "token_not_found",
             Self::InvalidRequest(_) => "invalid_request",
