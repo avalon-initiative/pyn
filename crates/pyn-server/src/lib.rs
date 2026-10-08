@@ -8,25 +8,39 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use pyn_core::{
-    AuthProvider, ContentHash, ObjectStore, PynError, RepoPath, RepoService, RevisionId, UserId,
+    AccessService, AuthProvider, ContentHash, ObjectStore, Permission, Principal, PynError,
+    RepoPath, RepoService, RevisionId,
 };
 use pyn_proto as api;
 use serde::Deserialize;
 use utoipa::OpenApi;
 
+mod access_api;
 pub mod auth;
 
 #[derive(Clone)]
 pub struct AppState {
     pub service: Arc<RepoService>,
     pub objects: Arc<dyn ObjectStore>,
+    pub access: Arc<AccessService>,
+    /// Authenticates bearer tokens.
     pub auth: Arc<dyn AuthProvider>,
+    /// Accepts the `X-Pyn-User` header; present only when development auth is switched on.
+    pub dev_auth: Option<Arc<dyn AuthProvider>>,
 }
 
 #[derive(OpenApi)]
 #[openapi(
     paths(
         health,
+        access_api::me,
+        access_api::create_token,
+        access_api::list_tokens,
+        access_api::revoke_token,
+        access_api::list_roles,
+        access_api::set_role,
+        access_api::list_members,
+        access_api::set_member,
         list_locks,
         list_files,
         get_content,
@@ -46,7 +60,15 @@ pub struct AppState {
         api::ErrorBody,
         api::FileEntry,
         api::FilePage,
-        api::Mode
+        api::Mode,
+        api::Me,
+        api::CreateTokenRequest,
+        api::TokenInfo,
+        api::CreatedToken,
+        api::RoleGrant,
+        api::SetRoleRequest,
+        api::Member,
+        api::SetMemberRequest
     ))
 )]
 pub struct ApiDoc;
@@ -55,6 +77,19 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(health))
         .route("/openapi.json", get(|| async { Json(ApiDoc::openapi()) }))
+        .route("/v1/me", get(access_api::me))
+        .route(
+            "/v1/tokens",
+            get(access_api::list_tokens).post(access_api::create_token),
+        )
+        .route(
+            "/v1/tokens/{id}",
+            axum::routing::delete(access_api::revoke_token),
+        )
+        .route("/v1/roles", get(access_api::list_roles))
+        .route("/v1/roles/{role}", put(access_api::set_role))
+        .route("/v1/members", get(access_api::list_members))
+        .route("/v1/members/{user}", put(access_api::set_member))
         .route("/v1/locks", get(list_locks))
         .route("/v1/files", get(list_files))
         .route("/v1/content", get(get_content))
@@ -66,7 +101,7 @@ pub fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
-struct ApiError(PynError);
+pub(crate) struct ApiError(PynError);
 
 impl From<PynError> for ApiError {
     fn from(e: PynError) -> Self {
@@ -99,14 +134,37 @@ impl IntoResponse for ApiError {
     }
 }
 
-type ApiResult<T> = Result<T, ApiError>;
+pub(crate) type ApiResult<T> = Result<T, ApiError>;
 
-async fn caller(state: &AppState, headers: &HeaderMap) -> ApiResult<UserId> {
-    let credential = headers
+fn bearer_token(headers: &HeaderMap) -> Option<&str> {
+    let value = headers
+        .get(axum::http::header::AUTHORIZATION)?
+        .to_str()
+        .ok()?;
+    let (scheme, token) = value.split_once(' ')?;
+    scheme
+        .eq_ignore_ascii_case("bearer")
+        .then_some(token.trim())
+}
+
+/// Authenticates the request and, when `need` is given, checks the caller holds that permission.
+pub(crate) async fn authorize(
+    state: &AppState,
+    headers: &HeaderMap,
+    need: Option<Permission>,
+) -> ApiResult<Principal> {
+    let dev_user = headers
         .get(api::DEV_USER_HEADER)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    Ok(state.auth.authenticate(credential).await?.user)
+        .and_then(|v| v.to_str().ok());
+    let principal = match (bearer_token(headers), &state.dev_auth, dev_user) {
+        (Some(token), _, _) => state.auth.authenticate(token).await?,
+        (None, Some(dev), Some(user)) => dev.authenticate(user).await?,
+        _ => return Err(PynError::Unauthenticated("missing credentials".into()).into()),
+    };
+    if let Some(permission) = need {
+        principal.require(permission)?;
+    }
+    Ok(principal)
 }
 
 fn lock_dto(l: pyn_core::Lock) -> api::Lock {
@@ -135,7 +193,11 @@ async fn health() -> &'static str {
 }
 
 #[utoipa::path(get, path = "/v1/locks", responses((status = 200, body = Vec<api::Lock>)))]
-async fn list_locks(State(s): State<AppState>) -> ApiResult<Json<Vec<api::Lock>>> {
+async fn list_locks(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+) -> ApiResult<Json<Vec<api::Lock>>> {
+    authorize(&s, &headers, Some(Permission::Read)).await?;
     Ok(Json(
         s.service.locks().await?.into_iter().map(lock_dto).collect(),
     ))
@@ -151,7 +213,7 @@ async fn checkout(
     headers: HeaderMap,
     Json(req): Json<api::CheckoutRequest>,
 ) -> ApiResult<Json<api::Lock>> {
-    let user = caller(&s, &headers).await?;
+    let user = authorize(&s, &headers, Some(Permission::Lock)).await?.user;
     let lock = s
         .service
         .checkout(
@@ -172,7 +234,7 @@ async fn release(
     headers: HeaderMap,
     Json(req): Json<api::ReleaseRequest>,
 ) -> ApiResult<StatusCode> {
-    let user = caller(&s, &headers).await?;
+    let user = authorize(&s, &headers, Some(Permission::Lock)).await?.user;
     s.service.release(&RepoPath::new(req.path)?, &user).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -187,7 +249,9 @@ async fn checkin(
     headers: HeaderMap,
     Json(req): Json<api::CheckinRequest>,
 ) -> ApiResult<Json<api::Revision>> {
-    let user = caller(&s, &headers).await?;
+    let user = authorize(&s, &headers, Some(Permission::Checkin))
+        .await?
+        .user;
     let rev = s
         .service
         .checkin(
@@ -208,7 +272,7 @@ async fn put_object(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> ApiResult<Json<api::PutObjectResponse>> {
-    caller(&s, &headers).await?;
+    authorize(&s, &headers, Some(Permission::Checkin)).await?;
     let hash = s.objects.put(body.to_vec()).await?;
     Ok(Json(api::PutObjectResponse {
         content: hash.to_string(),
@@ -224,8 +288,10 @@ struct HistoryQuery {
     responses((status = 200, body = Vec<api::Revision>)))]
 async fn history(
     State(s): State<AppState>,
+    headers: HeaderMap,
     Query(q): Query<HistoryQuery>,
 ) -> ApiResult<Json<Vec<api::Revision>>> {
+    authorize(&s, &headers, Some(Permission::Read)).await?;
     let revs = s.service.history(&RepoPath::new(q.path)?).await?;
     Ok(Json(revs.into_iter().map(revision_dto).collect()))
 }
@@ -249,8 +315,10 @@ fn mode_dto(mode: pyn_core::Mode) -> api::Mode {
     responses((status = 200, body = api::FilePage)))]
 async fn list_files(
     State(s): State<AppState>,
+    headers: HeaderMap,
     Query(q): Query<FilesQuery>,
 ) -> ApiResult<Json<api::FilePage>> {
+    authorize(&s, &headers, Some(Permission::Read)).await?;
     let limit = q.limit.unwrap_or(200).clamp(1, 1000);
     let after = q.after.map(RepoPath::new).transpose()?;
     let mut files = s.service.files(after.as_ref(), limit + 1).await?;
@@ -286,8 +354,10 @@ struct ContentQuery {
               (status = 404, body = api::ErrorBody, description = "revision_not_found")))]
 async fn get_content(
     State(s): State<AppState>,
+    headers: HeaderMap,
     Query(q): Query<ContentQuery>,
 ) -> ApiResult<Response> {
+    authorize(&s, &headers, Some(Permission::Read)).await?;
     let (rev, bytes) = s
         .service
         .read(&RepoPath::new(q.path)?, q.revision.map(RevisionId))

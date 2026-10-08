@@ -1,7 +1,8 @@
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use pyn_proto as api;
-use reqwest::blocking::{Client, Response};
+use reqwest::Method;
+use reqwest::blocking::{Client, RequestBuilder, Response};
 
 /// pyn: version control that merges what can be merged and locks what shouldn't be.
 #[derive(Parser)]
@@ -9,15 +10,20 @@ use reqwest::blocking::{Client, Response};
 struct Cli {
     #[arg(long, env = "PYN_SERVER", default_value = "http://127.0.0.1:7878")]
     server: String,
-    /// Dev identity sent as X-Pyn-User.
+    /// API token to sign in with.
+    #[arg(long, env = "PYN_TOKEN", hide_env_values = true)]
+    token: Option<String>,
+    /// Dev identity sent as X-Pyn-User; only works against a server running with PYN_DEV_AUTH.
     #[arg(long, env = "PYN_USER")]
-    user: String,
+    user: Option<String>,
     #[command(subcommand)]
     command: Command,
 }
 
 #[derive(Subcommand)]
 enum Command {
+    /// Show who you are signed in as and what you may do.
+    Whoami,
     /// List live locks.
     Locks,
     /// List files with their mode, head revision and lock.
@@ -52,17 +58,101 @@ enum Command {
     },
     /// Show a path's revisions.
     History { path: String },
+    /// Manage your API tokens.
+    #[command(subcommand)]
+    Token(TokenCommand),
+    /// List or change who has which role.
+    #[command(subcommand)]
+    Member(MemberCommand),
+    /// List or change what each role grants.
+    #[command(subcommand)]
+    Role(RoleCommand),
+}
+
+#[derive(Subcommand)]
+enum TokenCommand {
+    /// Create a token. It is shown once.
+    Create {
+        name: String,
+        /// Comma-separated permissions, for example read,lock,checkin.
+        #[arg(long, value_delimiter = ',', required = true)]
+        permissions: Vec<String>,
+        /// Expire the token after this many days.
+        #[arg(long)]
+        expires_days: Option<i64>,
+    },
+    /// List your tokens, or another user's with --user (needs manage_users).
+    List {
+        #[arg(long = "for")]
+        for_user: Option<String>,
+    },
+    /// Revoke a token by id.
+    Revoke { id: String },
+}
+
+#[derive(Subcommand)]
+enum MemberCommand {
+    List,
+    /// Give a user a role, adding them if they are new.
+    Set {
+        user: String,
+        role: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum RoleCommand {
+    List,
+    /// Replace what a role grants.
+    Set {
+        role: String,
+        #[arg(long, value_delimiter = ',', required = true)]
+        permissions: Vec<String>,
+    },
+}
+
+struct Api {
+    http: Client,
+    base: String,
+    token: Option<String>,
+    user: Option<String>,
+}
+
+impl Api {
+    fn request(&self, method: Method, path: &str) -> RequestBuilder {
+        let req = self.http.request(method, format!("{}{path}", self.base));
+        match (&self.token, &self.user) {
+            (Some(token), _) => req.bearer_auth(token),
+            (None, Some(user)) => req.header(api::DEV_USER_HEADER, user),
+            _ => req,
+        }
+    }
+
+    fn get(&self, path: &str) -> RequestBuilder {
+        self.request(Method::GET, path)
+    }
+
+    fn send(&self, req: RequestBuilder) -> Result<Response> {
+        ok(req.send()?)
+    }
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let http = Client::new();
-    let url = |p: &str| format!("{}{p}", cli.server.trim_end_matches('/'));
-    let user = cli.user.as_str();
+    let api = Api {
+        http: Client::new(),
+        base: cli.server.trim_end_matches('/').to_string(),
+        token: cli.token,
+        user: cli.user,
+    };
 
     match cli.command {
+        Command::Whoami => {
+            let me: api::Me = api.send(api.get("/v1/me"))?.json()?;
+            println!("{}\t{}", me.user, me.permissions.join(","));
+        }
         Command::Locks => {
-            let locks: Vec<api::Lock> = ok(http.get(url("/v1/locks")).send()?)?.json()?;
+            let locks: Vec<api::Lock> = api.send(api.get("/v1/locks"))?.json()?;
             if locks.is_empty() {
                 println!("no locks");
             }
@@ -73,11 +163,11 @@ fn main() -> Result<()> {
         Command::Files => {
             let mut after: Option<String> = None;
             loop {
-                let mut req = http.get(url("/v1/files"));
+                let mut req = api.get("/v1/files");
                 if let Some(a) = &after {
                     req = req.query(&[("after", a)]);
                 }
-                let page: api::FilePage = ok(req.send()?)?.json()?;
+                let page: api::FilePage = api.send(req)?.json()?;
                 for f in &page.entries {
                     let rev = f.revision.map_or("-".to_string(), |r| format!("r{r}"));
                     let lock = f
@@ -93,20 +183,18 @@ fn main() -> Result<()> {
             }
         }
         Command::Checkout { path, base } => {
-            let req = api::CheckoutRequest {
+            let body = api::CheckoutRequest {
                 path,
                 base_revision: base,
             };
-            let l: api::Lock = ok(post(&http, &url("/v1/checkout"), user, &req)?)?.json()?;
+            let l: api::Lock = api
+                .send(api.request(Method::POST, "/v1/checkout").json(&body))?
+                .json()?;
             println!("locked {} until {}", l.path, l.expires_at);
         }
         Command::Release { path } => {
-            ok(post(
-                &http,
-                &url("/v1/release"),
-                user,
-                &api::ReleaseRequest { path },
-            )?)?;
+            let body = api::ReleaseRequest { path };
+            api.send(api.request(Method::POST, "/v1/release").json(&body))?;
             println!("released");
         }
         Command::Checkin {
@@ -117,29 +205,26 @@ fn main() -> Result<()> {
         } => {
             let bytes =
                 std::fs::read(&file).with_context(|| format!("reading {}", file.display()))?;
-            let put: api::PutObjectResponse = ok(http
-                .put(url("/v1/objects"))
-                .header(api::DEV_USER_HEADER, user)
-                .body(bytes)
-                .send()?)?
-            .json()?;
-            let req = api::CheckinRequest {
+            let put: api::PutObjectResponse = api
+                .send(api.request(Method::PUT, "/v1/objects").body(bytes))?
+                .json()?;
+            let body = api::CheckinRequest {
                 path,
                 content: put.content,
                 base_revision: base,
                 message,
             };
-            let r: api::Revision = ok(post(&http, &url("/v1/checkin"), user, &req)?)?.json()?;
+            let r: api::Revision = api
+                .send(api.request(Method::POST, "/v1/checkin").json(&body))?
+                .json()?;
             println!("{} is now at revision {}", r.path, r.id);
         }
         Command::Get { path, rev, output } => {
-            let mut req = http
-                .get(url("/v1/content"))
-                .query(&[("path", path.as_str())]);
+            let mut req = api.get("/v1/content").query(&[("path", path.as_str())]);
             if let Some(r) = rev {
                 req = req.query(&[("revision", r)]);
             }
-            let resp = ok(req.send()?)?;
+            let resp = api.send(req)?;
             let revision = resp
                 .headers()
                 .get(api::REVISION_HEADER)
@@ -161,25 +246,94 @@ fn main() -> Result<()> {
             }
         }
         Command::History { path } => {
-            let revs: Vec<api::Revision> = ok(http
-                .get(url("/v1/history"))
-                .query(&[("path", path)])
-                .send()?)?
-            .json()?;
+            let revs: Vec<api::Revision> = api
+                .send(api.get("/v1/history").query(&[("path", path)]))?
+                .json()?;
             for r in revs {
                 println!("{}\t{}\t{}\t{}", r.id, r.author, r.created_at, r.message);
             }
+        }
+        Command::Token(cmd) => token_command(&api, cmd)?,
+        Command::Member(MemberCommand::List) => {
+            let members: Vec<api::Member> = api.send(api.get("/v1/members"))?.json()?;
+            for m in members {
+                println!("{}\t{}", m.user, m.role);
+            }
+        }
+        Command::Member(MemberCommand::Set { user, role }) => {
+            let body = api::SetMemberRequest { role: role.clone() };
+            api.send(
+                api.request(Method::PUT, &format!("/v1/members/{user}"))
+                    .json(&body),
+            )?;
+            println!("{user} is now {role}");
+        }
+        Command::Role(RoleCommand::List) => {
+            let grants: Vec<api::RoleGrant> = api.send(api.get("/v1/roles"))?.json()?;
+            for g in grants {
+                println!("{}\t{}", g.role, g.permissions.join(","));
+            }
+        }
+        Command::Role(RoleCommand::Set { role, permissions }) => {
+            let body = api::SetRoleRequest { permissions };
+            api.send(
+                api.request(Method::PUT, &format!("/v1/roles/{role}"))
+                    .json(&body),
+            )?;
+            println!("updated {role}");
         }
     }
     Ok(())
 }
 
-fn post(http: &Client, url: &str, user: &str, body: &impl serde::Serialize) -> Result<Response> {
-    Ok(http
-        .post(url)
-        .header(api::DEV_USER_HEADER, user)
-        .json(body)
-        .send()?)
+fn token_command(api: &Api, cmd: TokenCommand) -> Result<()> {
+    match cmd {
+        TokenCommand::Create {
+            name,
+            permissions,
+            expires_days,
+        } => {
+            let body = api::CreateTokenRequest {
+                name,
+                permissions,
+                expires_at: expires_days.map(|d| chrono::Utc::now() + chrono::Duration::days(d)),
+            };
+            let made: api::CreatedToken = api
+                .send(api.request(Method::POST, "/v1/tokens").json(&body))?
+                .json()?;
+            println!("{}", made.token);
+            eprintln!(
+                "token {} created; this is the only time it is shown",
+                made.info.id
+            );
+        }
+        TokenCommand::List { for_user } => {
+            let mut req = api.get("/v1/tokens");
+            if let Some(user) = &for_user {
+                req = req.query(&[("user", user)]);
+            }
+            let tokens: Vec<api::TokenInfo> = api.send(req)?.json()?;
+            for t in tokens {
+                let state = if t.revoked_at.is_some() {
+                    "revoked"
+                } else {
+                    "active"
+                };
+                let expires = t.expires_at.map_or("never".to_string(), |e| e.to_string());
+                println!(
+                    "{}\t{}\t{state}\t{}\texpires {expires}",
+                    t.id,
+                    t.name,
+                    t.permissions.join(",")
+                );
+            }
+        }
+        TokenCommand::Revoke { id } => {
+            api.send(api.request(Method::DELETE, &format!("/v1/tokens/{id}")))?;
+            println!("revoked {id}");
+        }
+    }
+    Ok(())
 }
 
 /// Turn a non-2xx response into an error with the server's code and message.
