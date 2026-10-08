@@ -2,6 +2,7 @@
 
 pub mod access;
 pub mod access_service;
+pub mod audit;
 pub mod auth;
 pub mod clock;
 #[cfg(feature = "contract")]
@@ -16,6 +17,7 @@ pub mod types;
 
 pub use access::{Permission, Principal, Role, RoleDefinitions, TokenId, TokenRecord, token};
 pub use access_service::{AccessService, AccessStore};
+pub use audit::{AuditAction, AuditEvent, AuditQuery, AuditStore, NewAuditEvent};
 pub use auth::AuthProvider;
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use error::{PynError, Result};

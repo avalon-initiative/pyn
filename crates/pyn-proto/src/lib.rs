@@ -141,6 +141,31 @@ pub struct SetMemberRequest {
     pub role: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ForceUnlockRequest {
+    pub path: String,
+    /// Why the lock is being removed; required and recorded in the audit log.
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct AuditEntry {
+    pub id: i64,
+    pub at: DateTime<Utc>,
+    pub actor: String,
+    pub action: String,
+    pub path: Option<String>,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct AuditPage {
+    /// Newest first.
+    pub entries: Vec<AuditEntry>,
+    /// Pass as `before` to fetch the next, older page; absent on the last page.
+    pub next_before: Option<i64>,
+}
+
 /// Body of every non-2xx response; `code` is stable and machine-readable.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ErrorBody {

@@ -3,7 +3,9 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
-use pyn_core::memory::{MemoryAccessStore, MemoryMetadataStore, MemoryObjectStore};
+use pyn_core::memory::{
+    MemoryAccessStore, MemoryAuditStore, MemoryMetadataStore, MemoryObjectStore,
+};
 use pyn_core::{
     AccessService, AuthProvider, RepoId, RepoService, Rules, ServiceConfig, SystemClock, UserId,
 };
@@ -23,6 +25,7 @@ fn state(dev: bool) -> AppState {
         Rules::from_toml(RULES).unwrap(),
         Arc::new(MemoryMetadataStore::new()),
         objects.clone(),
+        Arc::new(MemoryAuditStore::new()),
         clock.clone(),
         ServiceConfig::default(),
     ));
@@ -355,7 +358,7 @@ async fn a_revoked_token_stops_working_and_whoami_reports_the_caller() {
     )
     .await;
     assert_eq!(me.user, "root");
-    assert_eq!(me.permissions.len(), 8);
+    assert_eq!(me.permissions.len(), 9);
 
     let made: api::CreatedToken = body_json(
         app.clone()
@@ -573,4 +576,133 @@ async fn restore_needs_the_permission_the_lock_and_the_confirmation() {
     assert_eq!(r.status(), StatusCode::OK);
     let rev: api::Revision = body_json(r).await;
     assert_eq!((rev.id, rev.restored_from), (3, Some(1)));
+}
+
+async fn member_token(st: &AppState, name: &str, role: pyn_core::Role) -> String {
+    let root = st
+        .access
+        .principal(st.service.repo(), &UserId::new("root"))
+        .await
+        .unwrap();
+    st.access
+        .set_user_role(&root, st.service.repo(), &UserId::new(name), role)
+        .await
+        .unwrap();
+    let who = st
+        .access
+        .principal(st.service.repo(), &UserId::new(name))
+        .await
+        .unwrap();
+    st.access
+        .create_token(&who, name, who.permissions.clone(), vec![], None)
+        .await
+        .unwrap()
+        .1
+}
+
+#[tokio::test]
+async fn force_unlock_needs_the_permission_and_a_reason_and_is_audited() {
+    let st = state(false);
+    admin_token(&st).await;
+    let wendy = member_token(&st, "wendy", pyn_core::Role::Writer).await;
+    let maya = member_token(&st, "maya", pyn_core::Role::Maintainer).await;
+    let app = router(st);
+
+    let lock = serde_json::json!({"path": "Content/a.umap", "base_revision": null});
+    assert_eq!(
+        status(&app, with_token("POST", "/v1/checkout", &wendy, Some(lock))).await,
+        StatusCode::OK
+    );
+
+    let unlock = |reason: &str| serde_json::json!({"path": "Content/a.umap", "reason": reason});
+    let r = app
+        .clone()
+        .oneshot(with_token(
+            "POST",
+            "/v1/force-unlock",
+            &wendy,
+            Some(unlock("mine")),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        r.status(),
+        StatusCode::FORBIDDEN,
+        "a writer cannot force an unlock"
+    );
+    assert_eq!(
+        status(
+            &app,
+            with_token("POST", "/v1/force-unlock", &maya, Some(unlock("  ")))
+        )
+        .await,
+        StatusCode::BAD_REQUEST
+    );
+
+    let r = app
+        .clone()
+        .oneshot(with_token(
+            "POST",
+            "/v1/force-unlock",
+            &maya,
+            Some(unlock("wendy is away")),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    let removed: api::Lock = body_json(r).await;
+    assert_eq!(removed.owner, "wendy");
+    let r = app
+        .clone()
+        .oneshot(with_token(
+            "POST",
+            "/v1/force-unlock",
+            &maya,
+            Some(unlock("again")),
+        ))
+        .await
+        .unwrap();
+    let err: api::ErrorBody = body_json(r).await;
+    assert_eq!(err.code, "not_locked");
+
+    assert_eq!(
+        status(&app, with_token("GET", "/v1/audit", &wendy, None)).await,
+        StatusCode::FORBIDDEN
+    );
+    let page: api::AuditPage = body_json(
+        app.clone()
+            .oneshot(with_token("GET", "/v1/audit", &maya, None))
+            .await
+            .unwrap(),
+    )
+    .await;
+    let actions: Vec<_> = page
+        .entries
+        .iter()
+        .map(|e| (e.action.as_str(), e.actor.as_str()))
+        .collect();
+    assert_eq!(actions, [("force_unlock", "maya"), ("checkout", "wendy")]);
+    assert!(page.entries[0].detail.contains("wendy is away"));
+
+    let only: api::AuditPage = body_json(
+        app.clone()
+            .oneshot(with_token(
+                "GET",
+                "/v1/audit?action=checkout&limit=1",
+                &maya,
+                None,
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(only.entries.len(), 1);
+    assert_eq!(
+        status(
+            &app,
+            with_token("GET", "/v1/audit?action=bogus", &maya, None)
+        )
+        .await,
+        StatusCode::BAD_REQUEST
+    );
 }

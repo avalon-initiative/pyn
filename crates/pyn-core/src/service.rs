@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use chrono::Duration;
 
+use crate::audit::{AuditAction, AuditEvent, AuditQuery, AuditStore, NewAuditEvent};
 use crate::clock::Clock;
 use crate::error::{PynError, Result};
 use crate::object::ObjectStore;
@@ -41,6 +42,7 @@ pub struct RepoService {
     rules: Rules,
     meta: Arc<dyn MetadataStore>,
     objects: Arc<dyn ObjectStore>,
+    audit: Arc<dyn AuditStore>,
     clock: Arc<dyn Clock>,
     config: ServiceConfig,
 }
@@ -51,6 +53,7 @@ impl RepoService {
         rules: Rules,
         meta: Arc<dyn MetadataStore>,
         objects: Arc<dyn ObjectStore>,
+        audit: Arc<dyn AuditStore>,
         clock: Arc<dyn Clock>,
         config: ServiceConfig,
     ) -> Self {
@@ -59,9 +62,27 @@ impl RepoService {
             rules,
             meta,
             objects,
+            audit,
             clock,
             config,
         }
+    }
+
+    async fn record(
+        &self,
+        actor: &UserId,
+        action: AuditAction,
+        path: &RepoPath,
+        detail: String,
+    ) -> Result<()> {
+        let event = NewAuditEvent {
+            at: self.clock.now(),
+            actor: actor.clone(),
+            action,
+            path: Some(path.clone()),
+            detail,
+        };
+        self.audit.record(&self.repo, event).await
     }
 
     pub fn repo(&self) -> &RepoId {
@@ -96,15 +117,54 @@ impl RepoService {
             });
         }
         let now = self.clock.now();
-        self.meta
+        let lock = self
+            .meta
             .acquire_lock(&self.repo, path, user, now, now + self.config.lease)
-            .await
+            .await?;
+        self.record(
+            user,
+            AuditAction::Checkout,
+            path,
+            format!("until {}", lock.expires_at),
+        )
+        .await?;
+        Ok(lock)
     }
 
     pub async fn release(&self, path: &RepoPath, user: &UserId) -> Result<()> {
         self.meta
             .release_lock(&self.repo, path, user, self.clock.now())
+            .await?;
+        self.record(user, AuditAction::Release, path, "released".into())
             .await
+    }
+
+    /// Removes someone else's live lock. The reason is required because it goes into the audit log.
+    pub async fn force_unlock(
+        &self,
+        path: &RepoPath,
+        actor: &UserId,
+        reason: &str,
+    ) -> Result<Lock> {
+        if reason.trim().is_empty() {
+            return Err(PynError::InvalidRequest(
+                "a reason is required to force an unlock".into(),
+            ));
+        }
+        let lock = self
+            .meta
+            .force_release_lock(&self.repo, path, self.clock.now())
+            .await?
+            .ok_or_else(|| PynError::NotLocked(path.clone()))?;
+        let detail = format!("removed {}'s lock: {}", lock.owner, reason.trim());
+        self.record(actor, AuditAction::ForceUnlock, path, detail)
+            .await?;
+        Ok(lock)
+    }
+
+    /// Audit events, newest first.
+    pub async fn audit(&self, query: &AuditQuery) -> Result<Vec<AuditEvent>> {
+        self.audit.list(&self.repo, query).await
     }
 
     /// Record a revision of `content` (already in the object store). Exclusive paths need the caller's
@@ -130,9 +190,18 @@ impl RepoService {
             created_at: now,
             restored_from: None,
         };
-        self.meta
+        let rev = self
+            .meta
             .commit_revision(&self.repo, revision, base, lock_holder, now)
-            .await
+            .await?;
+        self.record(
+            user,
+            AuditAction::Checkin,
+            path,
+            format!("r{}: {}", rev.id, rev.message),
+        )
+        .await?;
+        Ok(rev)
     }
 
     /// Makes an older revision's content the new head as a fresh revision marked `restored_from`; history is untouched.
@@ -178,9 +247,18 @@ impl RepoService {
             created_at: now,
             restored_from: Some(source),
         };
-        self.meta
+        let rev = self
+            .meta
             .commit_revision(&self.repo, revision, Some(base), Some(user), now)
-            .await
+            .await?;
+        self.record(
+            user,
+            AuditAction::Restore,
+            path,
+            format!("r{} restored from r{source}", rev.id),
+        )
+        .await?;
+        Ok(rev)
     }
 
     pub async fn locks(&self) -> Result<Vec<Lock>> {

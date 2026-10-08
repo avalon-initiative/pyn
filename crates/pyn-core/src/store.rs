@@ -27,6 +27,14 @@ pub trait MetadataStore: Send + Sync {
         now: DateTime<Utc>,
     ) -> Result<()>;
 
+    /// Removes a live lock whatever its owner and returns it; `None` if the path is not locked.
+    async fn force_release_lock(
+        &self,
+        repo: &RepoId,
+        path: &RepoPath,
+        now: DateTime<Utc>,
+    ) -> Result<Option<Lock>>;
+
     async fn get_lock(
         &self,
         repo: &RepoId,
