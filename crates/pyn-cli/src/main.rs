@@ -134,7 +134,7 @@ enum Command {
         path: Option<String>,
         #[arg(long)]
         actor: Option<String>,
-        /// checkout, release, checkin, restore or force_unlock.
+        /// An action such as checkout, restore, force_unlock, member_added, role_changed or token_created.
         #[arg(long)]
         action: Option<String>,
         /// Show events older than this id.

@@ -25,20 +25,23 @@ fn state_with(dev: bool, mode: RegistrationMode) -> AppState {
     let repo = RepoId::new("t");
     let clock = Arc::new(SystemClock);
     let objects = Arc::new(MemoryObjectStore::new());
+    let audit = Arc::new(MemoryAuditStore::new());
     let service = Arc::new(RepoService::new(
         repo.clone(),
         Rules::from_toml(RULES).unwrap(),
         Arc::new(MemoryMetadataStore::new()),
         objects.clone(),
-        Arc::new(MemoryAuditStore::new()),
+        audit.clone(),
         clock.clone(),
         ServiceConfig::default(),
     ));
     let access = Arc::new(
-        AccessService::new(Arc::new(MemoryAccessStore::new()), clock).with_config(AccessConfig {
-            registration: mode,
-            ..AccessConfig::default()
-        }),
+        AccessService::new(Arc::new(MemoryAccessStore::new()), clock)
+            .with_config(AccessConfig {
+                registration: mode,
+                ..AccessConfig::default()
+            })
+            .with_audit(audit, repo.clone()),
     );
     AppState {
         service,
@@ -686,6 +689,7 @@ async fn force_unlock_needs_the_permission_and_a_reason_and_is_audited() {
     let actions: Vec<_> = page
         .entries
         .iter()
+        .filter(|e| matches!(e.action.as_str(), "force_unlock" | "checkout"))
         .map(|e| (e.action.as_str(), e.actor.as_str()))
         .collect();
     assert_eq!(actions, [("force_unlock", "maya"), ("checkout", "wendy")]);
@@ -1347,4 +1351,85 @@ async fn bearer_requests_need_no_csrf_token_even_beside_a_session_cookie() {
     );
     req.headers_mut().insert("cookie", cookie.parse().unwrap());
     assert_eq!(status(&app, req).await, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn member_role_and_token_changes_are_audited_without_secrets() {
+    let st = state(false);
+    let admin = admin_token(&st).await;
+    let wendy = member_token(&st, "wendy", pyn_core::Role::Writer).await;
+    let app = router(st);
+    let send = |method, uri: &str, tok: &str, body| {
+        app.clone().oneshot(with_token(method, uri, tok, body))
+    };
+
+    send(
+        "PUT",
+        "/v1/members/wendy",
+        &admin,
+        Some(serde_json::json!({"role": "maintainer"})),
+    )
+    .await
+    .unwrap();
+    send(
+        "PUT",
+        "/v1/roles/reader",
+        &admin,
+        Some(serde_json::json!({"permissions": ["read", "view_audit"]})),
+    )
+    .await
+    .unwrap();
+    let made: api::CreatedToken = body_json(
+        send(
+            "POST",
+            "/v1/tokens",
+            &admin,
+            Some(serde_json::json!({"name": "ci", "permissions": ["read"]})),
+        )
+        .await
+        .unwrap(),
+    )
+    .await;
+    send(
+        "DELETE",
+        &format!("/v1/tokens/{}", made.info.id),
+        &admin,
+        None,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        status(&app, with_token("GET", "/v1/audit", &wendy, None)).await,
+        StatusCode::FORBIDDEN,
+        "a writer cannot read the audit log"
+    );
+    let page: api::AuditPage =
+        body_json(send("GET", "/v1/audit", &admin, None).await.unwrap()).await;
+    let seen: Vec<_> = page
+        .entries
+        .iter()
+        .map(|e| (e.action.as_str(), e.actor.as_str()))
+        .collect();
+    assert_eq!(
+        seen,
+        [
+            ("token_revoked", "root"),
+            ("token_created", "root"),
+            ("role_permissions_changed", "root"),
+            ("role_changed", "root"),
+            ("token_created", "wendy"),
+            ("member_added", "root"),
+        ]
+    );
+    assert!(
+        page.entries[3]
+            .detail
+            .contains("wendy: writer -> maintainer")
+    );
+    assert!(page.entries[2].detail.contains("added [view_audit]"));
+    let everything = serde_json::to_string(&page).unwrap();
+    for secret in [&made.token, &admin, &wendy] {
+        assert!(!everything.contains(secret.as_str()), "token secret leaked");
+    }
 }

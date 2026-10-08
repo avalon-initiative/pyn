@@ -13,6 +13,7 @@ use crate::access::{
     InviteId, InviteRecord, Permission, Principal, RegistrationMode, Role, RoleDefinitions,
     SessionRecord, SshKeyRecord, TokenId, TokenRecord, account, invite, session, ssh, token,
 };
+use crate::audit::{AuditAction, AuditStore, NewAuditEvent};
 use crate::clock::Clock;
 use crate::error::{PynError, Result};
 use crate::types::{RepoId, UserId};
@@ -124,8 +125,13 @@ pub struct AccessService {
     store: Arc<dyn AccessStore>,
     clock: Arc<dyn Clock>,
     config: AccessConfig,
+    audit: Option<(Arc<dyn AuditStore>, RepoId)>,
     /// Failed sign-ins per user name: how many, and when the window started.
     failures: Mutex<HashMap<String, (u32, DateTime<Utc>)>>,
+}
+
+fn join<T: ToString>(items: impl Iterator<Item = T>) -> String {
+    items.map(|i| i.to_string()).collect::<Vec<_>>().join(", ")
 }
 
 fn unauthenticated(why: &str) -> PynError {
@@ -138,6 +144,7 @@ impl AccessService {
             store,
             clock,
             config: AccessConfig::default(),
+            audit: None,
             failures: Mutex::new(HashMap::new()),
         }
     }
@@ -145,6 +152,32 @@ impl AccessService {
     pub fn with_config(mut self, config: AccessConfig) -> Self {
         self.config = config;
         self
+    }
+
+    /// Records member, role and token changes in `store`; token events go under `repo`.
+    pub fn with_audit(mut self, store: Arc<dyn AuditStore>, repo: RepoId) -> Self {
+        self.audit = Some((store, repo));
+        self
+    }
+
+    async fn record(
+        &self,
+        repo: Option<&RepoId>,
+        actor: &UserId,
+        action: AuditAction,
+        detail: String,
+    ) -> Result<()> {
+        let Some((store, default_repo)) = &self.audit else {
+            return Ok(());
+        };
+        let event = NewAuditEvent {
+            at: self.clock.now(),
+            actor: actor.clone(),
+            action,
+            path: None,
+            detail,
+        };
+        store.record(repo.unwrap_or(default_repo), event).await
     }
 
     pub fn registration_mode(&self) -> RegistrationMode {
@@ -210,6 +243,34 @@ impl AccessService {
         repos: Vec<RepoId>,
         expires_at: Option<DateTime<Utc>>,
     ) -> Result<(TokenRecord, String)> {
+        let (record, full) = self
+            .issue_token(actor, name, permissions, repos, expires_at)
+            .await?;
+        let detail = format!(
+            "token {} {:?} for {}: permissions [{}], repos [{}], expires {}",
+            record.id,
+            record.name,
+            record.user,
+            join(record.permissions.iter()),
+            join(record.repos.iter()),
+            record
+                .expires_at
+                .map_or("never".to_string(), |t| t.to_rfc3339()),
+        );
+        self.record(None, &actor.user, AuditAction::TokenCreated, detail)
+            .await?;
+        Ok((record, full))
+    }
+
+    /// Mints a token without an audit event, for sign-in sessions and the bootstrap admin.
+    async fn issue_token(
+        &self,
+        actor: &Principal,
+        name: &str,
+        permissions: BTreeSet<Permission>,
+        repos: Vec<RepoId>,
+        expires_at: Option<DateTime<Utc>>,
+    ) -> Result<(TokenRecord, String)> {
         if name.trim().is_empty() {
             return Err(PynError::InvalidRequest("a token needs a name".into()));
         }
@@ -263,7 +324,9 @@ impl AccessService {
             actor.require(Permission::ManageUsers)?;
         }
         self.store.revoke_token(id, self.clock.now()).await?;
-        Ok(())
+        let detail = format!("token {} {:?} of {}", record.id, record.name, record.user);
+        self.record(None, &actor.user, AuditAction::TokenRevoked, detail)
+            .await
     }
 
     /// A role can be given only by someone who already holds everything it grants.
@@ -285,8 +348,34 @@ impl AccessService {
     ) -> Result<()> {
         actor.require(Permission::ManageUsers)?;
         self.require_can_grant(actor, repo, role).await?;
+        let before = self.store.role_of(repo, user).await?;
         self.store.ensure_user(user, self.clock.now()).await?;
-        self.store.set_role(repo, user, role).await
+        self.store.set_role(repo, user, role).await?;
+        self.record_role(repo, &actor.user, user, before, role)
+            .await
+    }
+
+    async fn record_role(
+        &self,
+        repo: &RepoId,
+        actor: &UserId,
+        user: &UserId,
+        before: Option<Role>,
+        role: Role,
+    ) -> Result<()> {
+        match before {
+            None => {
+                let detail = format!("{user} added as {role}");
+                self.record(Some(repo), actor, AuditAction::MemberAdded, detail)
+                    .await
+            }
+            Some(old) if old != role => {
+                let detail = format!("{user}: {old} -> {role}");
+                self.record(Some(repo), actor, AuditAction::RoleChanged, detail)
+                    .await
+            }
+            Some(_) => Ok(()),
+        }
     }
 
     pub async fn members(&self, actor: &Principal, repo: &RepoId) -> Result<Vec<(UserId, Role)>> {
@@ -315,9 +404,25 @@ impl AccessService {
                 "admin must keep manage_users and manage_roles".into(),
             ));
         }
+        let before = self.store.role_definitions(repo).await?.get(role).clone();
         self.store
-            .set_role_permissions(repo, role, permissions)
-            .await
+            .set_role_permissions(repo, role, permissions.clone())
+            .await?;
+        if before == permissions {
+            return Ok(());
+        }
+        let detail = format!(
+            "{role}: added [{}], removed [{}]",
+            join(permissions.difference(&before)),
+            join(before.difference(&permissions)),
+        );
+        self.record(
+            Some(repo),
+            &actor.user,
+            AuditAction::RolePermissionsChanged,
+            detail,
+        )
+        .await
     }
 
     fn check_not_throttled(&self, key: &str, now: DateTime<Utc>) -> Result<()> {
@@ -392,7 +497,7 @@ impl AccessService {
         let actor = self.verify_sign_in(repo, username, password).await?;
         let expires = self.clock.now() + Duration::days(self.config.session_days);
         let permissions = actor.permissions.clone();
-        self.create_token(
+        self.issue_token(
             &actor,
             "sign-in",
             permissions,
@@ -496,6 +601,9 @@ impl AccessService {
             .set_password_hash(&user, &account::hash_password(password)?)
             .await?;
         self.store.set_role(repo, &user, role).await?;
+        let detail = format!("{user} registered as {role}");
+        self.record(Some(repo), &user, AuditAction::MemberAdded, detail)
+            .await?;
         Ok(user)
     }
 
@@ -548,6 +656,9 @@ impl AccessService {
             .set_password_hash(&user, &account::hash_password(password)?)
             .await?;
         self.store.set_role(repo, &user, role).await?;
+        let detail = format!("{user} added as {role}");
+        self.record(Some(repo), &actor.user, AuditAction::MemberAdded, detail)
+            .await?;
         Ok(user)
     }
 
@@ -710,7 +821,7 @@ impl AccessService {
         self.store.set_role(repo, user, Role::Admin).await?;
         let actor = self.principal(repo, user).await?;
         let (_, full) = self
-            .create_token(
+            .issue_token(
                 &actor,
                 "bootstrap",
                 Permission::ALL.into(),

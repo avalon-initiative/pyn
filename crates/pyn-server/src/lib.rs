@@ -521,7 +521,7 @@ struct AuditQueryParams {
 #[utoipa::path(get, path = "/v1/audit",
     params(("path" = Option<String>, Query, description = "only events for this path"),
            ("actor" = Option<String>, Query, description = "only events by this user"),
-           ("action" = Option<String>, Query, description = "checkout, release, checkin, restore or force_unlock"),
+           ("action" = Option<String>, Query, description = "checkout, release, checkin, restore, force_unlock, member_added, role_changed, role_permissions_changed, token_created or token_revoked"),
            ("before" = Option<i64>, Query, description = "events older than this id"),
            ("limit" = Option<usize>, Query, description = "page size, default 50, max 500")),
     responses((status = 200, body = api::AuditPage), (status = 403, body = api::ErrorBody, description = "needs view_audit")))]
