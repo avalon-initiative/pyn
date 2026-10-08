@@ -17,6 +17,8 @@ static SCHEMA_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 const UNIQUE_VIOLATION: &str = "23505";
 
+mod access;
+
 pub struct PgMetadataStore {
     pool: PgPool,
     scratch_schema: Option<String>,
