@@ -448,3 +448,129 @@ async fn admins_manage_members_and_roles_and_others_cannot() {
         StatusCode::BAD_REQUEST
     );
 }
+
+#[tokio::test]
+async fn restore_needs_the_permission_the_lock_and_the_confirmation() {
+    let st = state(false);
+    let admin = admin_token(&st).await;
+    let root = st
+        .access
+        .principal(st.service.repo(), &UserId::new("root"))
+        .await
+        .unwrap();
+    st.access
+        .set_user_role(
+            &root,
+            st.service.repo(),
+            &UserId::new("wendy"),
+            pyn_core::Role::Writer,
+        )
+        .await
+        .unwrap();
+    let wendy = st
+        .access
+        .principal(st.service.repo(), &UserId::new("wendy"))
+        .await
+        .unwrap();
+    let (_, writer) = st
+        .access
+        .create_token(&wendy, "w", wendy.permissions.clone(), vec![], None)
+        .await
+        .unwrap();
+    let app = router(st);
+
+    for (i, text) in ["one", "two"].into_iter().enumerate() {
+        let base = if i == 0 {
+            serde_json::Value::Null
+        } else {
+            serde_json::json!(i)
+        };
+        let r = app
+            .clone()
+            .oneshot(with_token(
+                "POST",
+                "/v1/checkout",
+                &admin,
+                Some(serde_json::json!({"path": "Content/m.umap", "base_revision": base})),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        let put = Request::put("/v1/objects")
+            .header("authorization", format!("Bearer {admin}"))
+            .body(Body::from(text))
+            .unwrap();
+        let obj: api::PutObjectResponse = body_json(app.clone().oneshot(put).await.unwrap()).await;
+        let checkin = serde_json::json!({"path": "Content/m.umap", "content": obj.content, "base_revision": base, "message": text});
+        assert_eq!(
+            status(
+                &app,
+                with_token("POST", "/v1/checkin", &admin, Some(checkin))
+            )
+            .await,
+            StatusCode::OK
+        );
+    }
+
+    let restore = |confirm: &str| serde_json::json!({"path": "Content/m.umap", "revision": 1, "base_revision": 2, "confirm": confirm});
+    let r = app
+        .clone()
+        .oneshot(with_token(
+            "POST",
+            "/v1/restore",
+            &writer,
+            Some(restore("Content/m.umap@r2")),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::FORBIDDEN);
+    let err: api::ErrorBody = body_json(r).await;
+    assert_eq!(err.code, "forbidden");
+
+    let r = app
+        .clone()
+        .oneshot(with_token(
+            "POST",
+            "/v1/restore",
+            &admin,
+            Some(restore("Content/m.umap@r2")),
+        ))
+        .await
+        .unwrap();
+    let err: api::ErrorBody = body_json(r).await;
+    assert_eq!(err.code, "lock_required");
+
+    let lock = serde_json::json!({"path": "Content/m.umap", "base_revision": 2});
+    assert_eq!(
+        status(&app, with_token("POST", "/v1/checkout", &admin, Some(lock))).await,
+        StatusCode::OK
+    );
+    let r = app
+        .clone()
+        .oneshot(with_token(
+            "POST",
+            "/v1/restore",
+            &admin,
+            Some(restore("yes")),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::CONFLICT);
+    let err: api::ErrorBody = body_json(r).await;
+    assert_eq!(err.code, "confirmation_required");
+    assert!(err.message.contains("Content/m.umap@r2"));
+
+    let r = app
+        .clone()
+        .oneshot(with_token(
+            "POST",
+            "/v1/restore",
+            &admin,
+            Some(restore("Content/m.umap@r2")),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    let rev: api::Revision = body_json(r).await;
+    assert_eq!((rev.id, rev.restored_from), (3, Some(1)));
+}

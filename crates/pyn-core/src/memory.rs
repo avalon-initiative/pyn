@@ -166,6 +166,7 @@ impl MetadataStore for MemoryMetadataStore {
             author: revision.author,
             message: revision.message,
             created_at: revision.created_at,
+            restored_from: revision.restored_from,
         };
         st.revisions
             .entry(key.clone())

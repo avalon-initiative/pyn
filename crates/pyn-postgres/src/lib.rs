@@ -45,6 +45,9 @@ fn revision_from(row: &PgRow) -> Result<Revision> {
         author: UserId::new(row.get::<String, _>("author")),
         message: row.get("message"),
         created_at: row.get("created_at"),
+        restored_from: row
+            .get::<Option<i64>, _>("restored_from")
+            .map(|r| RevisionId(r as u64)),
     })
 }
 
@@ -235,7 +238,7 @@ impl MetadataStore for PgMetadataStore {
 
     async fn head_revision(&self, repo: &RepoId, path: &RepoPath) -> Result<Option<Revision>> {
         let row = sqlx::query(
-            "SELECT id, path, content, author, message, created_at FROM revisions
+            "SELECT id, path, content, author, message, created_at, restored_from FROM revisions
              WHERE repo = $1 AND path = $2 ORDER BY id DESC LIMIT 1",
         )
         .bind(repo.as_str())
@@ -283,8 +286,8 @@ impl MetadataStore for PgMetadataStore {
         let expected = expected_head.map_or(0, |r| r.0 as i64);
         // Inserts only when the head still equals `expected`; a concurrent insert of the same id hits the primary key.
         let inserted = sqlx::query(
-            "INSERT INTO revisions (repo, path, id, content, author, message, created_at)
-             SELECT $1, $2, $3, $4, $5, $6, $7
+            "INSERT INTO revisions (repo, path, id, content, author, message, created_at, restored_from)
+             SELECT $1, $2, $3, $4, $5, $6, $7, $9::bigint
              WHERE COALESCE((SELECT max(id) FROM revisions WHERE repo = $1 AND path = $2), 0) = $8
              RETURNING id",
         )
@@ -296,6 +299,7 @@ impl MetadataStore for PgMetadataStore {
         .bind(&revision.message)
         .bind(revision.created_at)
         .bind(expected)
+        .bind(revision.restored_from.map(|r| r.0 as i64))
         .fetch_optional(&mut *tx)
         .await;
 
@@ -340,6 +344,7 @@ impl MetadataStore for PgMetadataStore {
             author: revision.author,
             message: revision.message,
             created_at: revision.created_at,
+            restored_from: revision.restored_from,
         })
     }
 
@@ -350,7 +355,7 @@ impl MetadataStore for PgMetadataStore {
         id: RevisionId,
     ) -> Result<Option<Revision>> {
         let row = sqlx::query(
-            "SELECT id, path, content, author, message, created_at FROM revisions
+            "SELECT id, path, content, author, message, created_at, restored_from FROM revisions
              WHERE repo = $1 AND path = $2 AND id = $3",
         )
         .bind(repo.as_str())
@@ -364,7 +369,7 @@ impl MetadataStore for PgMetadataStore {
 
     async fn list_head_revisions(&self, repo: &RepoId) -> Result<Vec<Revision>> {
         let rows = sqlx::query(
-            "SELECT DISTINCT ON (path) id, path, content, author, message, created_at
+            "SELECT DISTINCT ON (path) id, path, content, author, message, created_at, restored_from
              FROM revisions WHERE repo = $1 ORDER BY path, id DESC",
         )
         .bind(repo.as_str())
@@ -376,7 +381,7 @@ impl MetadataStore for PgMetadataStore {
 
     async fn history(&self, repo: &RepoId, path: &RepoPath) -> Result<Vec<Revision>> {
         let rows = sqlx::query(
-            "SELECT id, path, content, author, message, created_at FROM revisions
+            "SELECT id, path, content, author, message, created_at, restored_from FROM revisions
              WHERE repo = $1 AND path = $2 ORDER BY id",
         )
         .bind(repo.as_str())

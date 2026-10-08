@@ -21,6 +21,8 @@ pub struct Revision {
     pub author: String,
     pub message: String,
     pub created_at: DateTime<Utc>,
+    /// Set when this revision restored the content of an earlier one.
+    pub restored_from: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -28,6 +30,18 @@ pub struct CheckoutRequest {
     pub path: String,
     /// Revision the caller's copy is at (omit if none); must equal the head.
     pub base_revision: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct RestoreRequest {
+    pub path: String,
+    /// The older revision whose content becomes the new head.
+    pub revision: u64,
+    /// The current head the caller is looking at; must still be the head.
+    pub base_revision: u64,
+    /// `<path>@r<base_revision>`, confirming the caller knows which head is being replaced.
+    pub confirm: String,
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]

@@ -22,6 +22,20 @@ read-only bit on disk is a convenience that stops editors from silently making u
 
 Locks expire so abandoned work cannot block a file forever. The same holder checking out again renews the lease.
 
+## Looking at and restoring older versions
+
+Any revision of a file can be fetched read-only, without a lock: `pyn get <path> --rev N`.
+
+Making an older revision the working version again is a **restore**, and it is guarded because it changes the head for
+everyone. `pyn restore <path> <revision>` needs the live lock on the path, the `restore` permission, and a typed
+confirmation of the head being replaced. The server enforces all three; the confirmation is sent as `<path>@r<head>`, so a
+script cannot restore by accident.
+
+A restore appends a new revision on the same line. If the history is `a, b, c` and `b` is restored, the new head `d` has
+`b`'s content (the same stored object, not a copy) and records `restored_from = b`. Nothing is removed: `c` stays in
+history, a mistaken restore can itself be undone by restoring `c`, and further edits build on `d`. `pyn history` shows
+restores.
+
 ## Exclusive files and branches
 
 A lock covers a path across every branch. An exclusive path does not branch: it has one linear history shared by all

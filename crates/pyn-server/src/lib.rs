@@ -47,6 +47,7 @@ pub struct AppState {
         checkout,
         release,
         checkin,
+        restore,
         put_object,
         history
     ),
@@ -55,6 +56,7 @@ pub struct AppState {
         api::Revision,
         api::CheckoutRequest,
         api::ReleaseRequest,
+        api::RestoreRequest,
         api::CheckinRequest,
         api::PutObjectResponse,
         api::ErrorBody,
@@ -96,6 +98,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/checkout", post(checkout))
         .route("/v1/release", post(release))
         .route("/v1/checkin", post(checkin))
+        .route("/v1/restore", post(restore))
         .route("/v1/objects", put(put_object))
         .route("/v1/history", get(history))
         .with_state(state)
@@ -112,9 +115,10 @@ impl From<PynError> for ApiError {
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let status = match &self.0 {
-            PynError::LockHeld { .. } | PynError::StaleBase { .. } | PynError::LockRequired(_) => {
-                StatusCode::CONFLICT
-            }
+            PynError::LockHeld { .. }
+            | PynError::StaleBase { .. }
+            | PynError::LockRequired(_)
+            | PynError::ConfirmationRequired { .. } => StatusCode::CONFLICT,
             PynError::NotLockHolder(_) | PynError::Forbidden(_) => StatusCode::FORBIDDEN,
             PynError::Unauthenticated(_) => StatusCode::UNAUTHORIZED,
             PynError::TokenNotFound(_) => StatusCode::NOT_FOUND,
@@ -184,6 +188,7 @@ fn revision_dto(r: pyn_core::Revision) -> api::Revision {
         author: r.author.to_string(),
         message: r.message,
         created_at: r.created_at,
+        restored_from: r.restored_from.map(|r| r.0),
     }
 }
 
@@ -259,6 +264,33 @@ async fn checkin(
             &user,
             ContentHash::new(req.content),
             req.base_revision.map(RevisionId),
+            req.message,
+        )
+        .await?;
+    Ok(Json(revision_dto(rev)))
+}
+
+#[utoipa::path(post, path = "/v1/restore", request_body = api::RestoreRequest, responses(
+    (status = 200, body = api::Revision),
+    (status = 403, body = api::ErrorBody, description = "needs the restore permission"),
+    (status = 409, body = api::ErrorBody, description = "lock_required, lock_held, stale_base or confirmation_required"),
+))]
+async fn restore(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<api::RestoreRequest>,
+) -> ApiResult<Json<api::Revision>> {
+    let user = authorize(&s, &headers, Some(Permission::Restore))
+        .await?
+        .user;
+    let rev = s
+        .service
+        .restore(
+            &RepoPath::new(req.path)?,
+            &user,
+            RevisionId(req.revision),
+            RevisionId(req.base_revision),
+            &req.confirm,
             req.message,
         )
         .await?;

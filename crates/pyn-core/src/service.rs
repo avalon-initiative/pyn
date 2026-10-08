@@ -128,9 +128,58 @@ impl RepoService {
             author: user.clone(),
             message,
             created_at: now,
+            restored_from: None,
         };
         self.meta
             .commit_revision(&self.repo, revision, base, lock_holder, now)
+            .await
+    }
+
+    /// Makes an older revision's content the new head as a fresh revision marked `restored_from`; history is untouched.
+    /// Needs the caller's live lock, `base` equal to the head, and `confirm` naming the head being replaced.
+    pub async fn restore(
+        &self,
+        path: &RepoPath,
+        user: &UserId,
+        source: RevisionId,
+        base: RevisionId,
+        confirm: &str,
+        message: Option<String>,
+    ) -> Result<Revision> {
+        if self.mode_for(path) != Mode::Exclusive {
+            return Err(PynError::NotExclusive(path.clone()));
+        }
+        let expected = format!("{path}@r{base}");
+        if confirm != expected {
+            return Err(PynError::ConfirmationRequired { expected });
+        }
+        let old = self
+            .meta
+            .get_revision(&self.repo, path, source)
+            .await?
+            .ok_or_else(|| PynError::RevisionNotFound {
+                path: path.clone(),
+                revision: source.to_string(),
+            })?;
+        if source == base {
+            return Err(PynError::InvalidRequest(format!(
+                "r{source} is already the head"
+            )));
+        }
+        if !self.objects.exists(&old.content).await? {
+            return Err(PynError::ObjectMissing(old.content.to_string()));
+        }
+        let now = self.clock.now();
+        let revision = NewRevision {
+            path: path.clone(),
+            content: old.content,
+            author: user.clone(),
+            message: message.unwrap_or_else(|| format!("Restore r{source}")),
+            created_at: now,
+            restored_from: Some(source),
+        };
+        self.meta
+            .commit_revision(&self.repo, revision, Some(base), Some(user), now)
             .await
     }
 
