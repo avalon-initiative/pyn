@@ -85,3 +85,7 @@ paths = ["pyn.toml"]
 ```
 
 A change to the file's own mode is made under its current mode and takes effect once it lands.
+
+The very first `pyn.toml` is the owner's initial policy. It is accepted as submitted, without a lock, and the mode it
+declares for itself applies from that revision, so a repository can be created with a shared `pyn.toml`. Until it exists,
+everything is exclusive. The initial mode is recorded on that first revision like any other.
