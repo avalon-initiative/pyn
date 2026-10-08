@@ -84,10 +84,6 @@ demo:
 	cargo build -p pyn-cli
 	scripts/demo.sh
 
-demo:
-	cargo build -p pyn-cli
-	scripts/demo.sh
-
 docs-check:
 	python3 scripts/check_links.py
 
