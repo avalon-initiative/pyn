@@ -7,7 +7,7 @@ LOG_DIR := $(RUN_DIR)/logs
 PID_FILE := $(PID_DIR)/pyn.pid
 LOG_FILE := $(LOG_DIR)/pyn.log
 
-.PHONY: demo docs-check help build run start stop restart status test test-live fmt fmt-check lint check clean
+.PHONY: demo docs-check openapi help build run start stop restart status test test-live fmt fmt-check lint check clean
 
 help:
 	@echo "pyn — local dev commands"
@@ -25,6 +25,7 @@ help:
 	@echo "  make fmt           auto-format"
 	@echo "  make fmt-check     format check, no writes"
 	@echo "  make lint          clippy + docs link check"
+	@echo "  make openapi       regenerate docs/generated/openapi.json"
 	@echo "  make check         fmt-check + lint + test — what CI runs"
 	@echo "  make clean         remove build artifacts and PID/log files"
 
@@ -86,6 +87,9 @@ demo:
 
 docs-check:
 	python3 scripts/check_links.py
+
+openapi:
+	PYN_UPDATE_OPENAPI=1 cargo test -p pyn-server --test openapi
 
 check: fmt-check lint test
 
