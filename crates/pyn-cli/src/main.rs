@@ -2,16 +2,25 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use pyn_proto as api;
 use reqwest::Method;
-use reqwest::blocking::{Client, RequestBuilder, Response};
+use reqwest::blocking::Client;
 
+mod client;
 mod credentials;
+mod sync;
+mod workspace;
+
+use client::Api;
+use workspace::{Settings, Workspace, resolve};
+
+const DEFAULT_SERVER: &str = "http://127.0.0.1:7878";
 
 /// pyn: version control that merges what can be merged and locks what shouldn't be.
 #[derive(Parser)]
 #[command(name = "pyn", version)]
 struct Cli {
-    #[arg(long, env = "PYN_SERVER", default_value = "http://127.0.0.1:7878")]
-    server: String,
+    /// The server to talk to; falls back to the workspace's setting, then your user setting, then localhost.
+    #[arg(long, env = "PYN_SERVER")]
+    server: Option<String>,
     /// API token to sign in with; defaults to the sign-in saved by `pyn login`.
     #[arg(long, env = "PYN_TOKEN", hide_env_values = true)]
     token: Option<String>,
@@ -47,6 +56,18 @@ enum Command {
         #[arg(long)]
         password_stdin: bool,
     },
+    /// Download the repository into a new workspace folder.
+    Clone { dir: std::path::PathBuf },
+    /// Show what differs between this workspace and the server.
+    Status,
+    /// Fetch new and newer files; files with local changes are left alone.
+    Update {
+        /// Only these paths; everything if omitted.
+        paths: Vec<String>,
+    },
+    /// Read and write settings, per workspace or for your user.
+    #[command(subcommand)]
+    Config(ConfigCommand),
     /// Show who you are signed in as and what you may do.
     Whoami,
     /// Create, list and revoke invitations.
@@ -68,11 +89,11 @@ enum Command {
     },
     /// Give up a lock without checking in.
     Release { path: String },
-    /// Upload a local file as the next revision of `path`. Releases the lock.
+    /// Upload a file as the next revision of `path`. Releases the lock.
     Checkin {
         path: String,
-        /// Local file to upload.
-        file: std::path::PathBuf,
+        /// Local file to upload; in a workspace, the file at `path` by default.
+        file: Option<std::path::PathBuf>,
         #[arg(long)]
         base: Option<u64>,
         #[arg(short, long)]
@@ -130,6 +151,32 @@ enum Command {
     /// List or change what each role grants.
     #[command(subcommand)]
     Role(RoleCommand),
+}
+
+#[derive(Subcommand)]
+enum ConfigCommand {
+    /// Show the settings that are set (the effective values unless --global or --local is given).
+    List {
+        #[arg(long, conflicts_with = "local")]
+        global: bool,
+        #[arg(long)]
+        local: bool,
+    },
+    /// Show one setting.
+    Get {
+        key: String,
+        #[arg(long, conflicts_with = "local")]
+        global: bool,
+        #[arg(long)]
+        local: bool,
+    },
+    /// Set one setting for this workspace, or for your user with --global.
+    Set {
+        key: String,
+        value: String,
+        #[arg(long)]
+        global: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -202,40 +249,23 @@ enum RoleCommand {
     },
 }
 
-struct Api {
-    http: Client,
-    base: String,
-    token: Option<String>,
-    user: Option<String>,
-}
-
-impl Api {
-    fn request(&self, method: Method, path: &str) -> RequestBuilder {
-        let req = self.http.request(method, format!("{}{path}", self.base));
-        match (&self.token, &self.user) {
-            (Some(token), _) => req.bearer_auth(token),
-            (None, Some(user)) => req.header(api::DEV_USER_HEADER, user),
-            _ => req,
-        }
-    }
-
-    /// A request that carries no credentials, for signing in and registering.
-    fn anonymous(&self, method: Method, path: &str) -> RequestBuilder {
-        self.http.request(method, format!("{}{path}", self.base))
-    }
-
-    fn get(&self, path: &str) -> RequestBuilder {
-        self.request(Method::GET, path)
-    }
-
-    fn send(&self, req: RequestBuilder) -> Result<Response> {
-        ok(req.send()?)
-    }
-}
-
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let base = cli.server.trim_end_matches('/').to_string();
+    let cwd = std::env::current_dir()?;
+    let ws = Workspace::discover(&cwd);
+    let user_config = credentials::dir()?.join("config.toml");
+    let (mine, yours) = (
+        ws.as_ref().map(Workspace::settings).unwrap_or_default(),
+        Settings::load(&user_config).unwrap_or_default(),
+    );
+    let server = resolve(
+        cli.server,
+        mine.server.as_ref(),
+        yours.server.as_ref(),
+        Some(DEFAULT_SERVER),
+    )
+    .expect("there is a default");
+    let base = server.trim_end_matches('/').to_string();
     let token = cli
         .token
         .or_else(|| credentials::load(&base).map(|saved| saved.token));
@@ -243,7 +273,18 @@ fn main() -> Result<()> {
         http: Client::new(),
         base,
         token,
-        user: cli.user,
+        user: resolve(cli.user, mine.user.as_ref(), yours.user.as_ref(), None),
+    };
+    let rp = |p: &str| -> Result<String> {
+        match &ws {
+            Some(w) => w.repo_path(&cwd, p),
+            None => Ok(p.to_string()),
+        }
+    };
+    let in_workspace = |what: &str| -> Result<&Workspace> {
+        ws.as_ref().with_context(|| {
+            format!("`pyn {what}` works inside a workspace; run `pyn clone <dir>` first")
+        })
     };
 
     match cli.command {
@@ -390,19 +431,46 @@ fn main() -> Result<()> {
                 }
             }
         }
+        Command::Clone { dir } => {
+            let target = if dir.is_absolute() {
+                dir
+            } else {
+                cwd.join(dir)
+            };
+            sync::clone_into(&api, &target, &server)?;
+        }
+        Command::Status => sync::status(&api, in_workspace("status")?)?,
+        Command::Update { paths } => {
+            let only = paths.iter().map(|p| rp(p)).collect::<Result<Vec<_>>>()?;
+            sync::update(&api, in_workspace("update")?, &only)?;
+        }
+        Command::Config(cmd) => config_command(cmd, ws.as_ref(), &mine, &yours, &user_config)?,
         Command::Checkout { path, base } => {
+            let path = rp(&path)?;
+            let known = ws
+                .as_ref()
+                .and_then(|w| w.load_state().ok())
+                .and_then(|s| s.get(&path).map(|k| k.revision));
             let body = api::CheckoutRequest {
-                path,
-                base_revision: base,
+                path: path.clone(),
+                base_revision: base.or(known),
             };
             let l: api::Lock = api
-                .send(api.request(Method::POST, "/v1/checkout").json(&body))?
+                .send(api.request(Method::POST, "/v1/checkout").json(&body))
+                .map_err(|e| behind_hint(e, ws.is_some()))?
                 .json()?;
+            if let Some(w) = &ws {
+                sync::after_checkout(w, &path)?;
+            }
             println!("locked {} until {}", l.path, l.expires_at);
         }
         Command::Release { path } => {
-            let body = api::ReleaseRequest { path };
+            let path = rp(&path)?;
+            let body = api::ReleaseRequest { path: path.clone() };
             api.send(api.request(Method::POST, "/v1/release").json(&body))?;
+            if let Some(w) = &ws {
+                sync::after_release(w, &path)?;
+            }
             println!("released");
         }
         Command::Checkin {
@@ -411,23 +479,38 @@ fn main() -> Result<()> {
             base,
             message,
         } => {
+            let path = rp(&path)?;
+            let file = match (file, &ws) {
+                (Some(file), _) => file,
+                (None, Some(w)) => w.abs(&path),
+                (None, None) => bail!("name the file to upload, or run this inside a workspace"),
+            };
             let bytes =
                 std::fs::read(&file).with_context(|| format!("reading {}", file.display()))?;
+            let known = ws
+                .as_ref()
+                .and_then(|w| w.load_state().ok())
+                .and_then(|s| s.get(&path).map(|k| k.revision));
             let put: api::PutObjectResponse = api
-                .send(api.request(Method::PUT, "/v1/objects").body(bytes))?
+                .send(api.request(Method::PUT, "/v1/objects").body(bytes.clone()))?
                 .json()?;
             let body = api::CheckinRequest {
-                path,
+                path: path.clone(),
                 content: put.content,
-                base_revision: base,
+                base_revision: base.or(known),
                 message,
             };
             let r: api::Revision = api
-                .send(api.request(Method::POST, "/v1/checkin").json(&body))?
+                .send(api.request(Method::POST, "/v1/checkin").json(&body))
+                .map_err(|e| behind_hint(e, ws.is_some()))?
                 .json()?;
+            if let Some(w) = &ws {
+                sync::after_checkin(&api, w, &path, r.id, &bytes)?;
+            }
             println!("{} is now at revision {}", r.path, r.id);
         }
         Command::Get { path, rev, output } => {
+            let path = rp(&path)?;
             let mut req = api.get("/v1/content").query(&[("path", path.as_str())]);
             if let Some(r) = rev {
                 req = req.query(&[("revision", r)]);
@@ -454,6 +537,7 @@ fn main() -> Result<()> {
             }
         }
         Command::History { path } => {
+            let path = rp(&path)?;
             let revs: Vec<api::Revision> = api
                 .send(api.get("/v1/history").query(&[("path", path)]))?
                 .json()?;
@@ -472,8 +556,9 @@ fn main() -> Result<()> {
             revision,
             message,
             yes,
-        } => restore(&api, path, revision, message, yes)?,
+        } => restore(&api, rp(&path)?, revision, message, yes)?,
         Command::Unlock { path, reason } => {
+            let path = rp(&path)?;
             let body = api::ForceUnlockRequest {
                 path: path.clone(),
                 reason,
@@ -490,6 +575,7 @@ fn main() -> Result<()> {
             before,
             limit,
         } => {
+            let path = path.map(|p| rp(&p)).transpose()?;
             let mut req = api.get("/v1/audit").query(&[("limit", limit)]);
             for (key, value) in [("path", path), ("actor", actor), ("action", action)] {
                 if let Some(v) = value {
@@ -647,14 +733,70 @@ fn token_command(api: &Api, cmd: TokenCommand) -> Result<()> {
     Ok(())
 }
 
-/// Turn a non-2xx response into an error with the server's code and message.
-fn ok(resp: Response) -> Result<Response> {
-    if resp.status().is_success() {
-        return Ok(resp);
+/// A stale-base refusal in a workspace means the file moved on: say how to catch up.
+fn behind_hint(err: anyhow::Error, in_workspace: bool) -> anyhow::Error {
+    if in_workspace && err.to_string().starts_with("stale_base") {
+        err.context("the server has a newer revision; run `pyn update` first")
+    } else {
+        err
     }
-    let status = resp.status();
-    match resp.json::<api::ErrorBody>() {
-        Ok(e) => bail!("{} ({}): {}", e.code, status.as_u16(), e.message),
-        Err(_) => bail!("server returned {status}"),
+}
+
+fn config_command(
+    cmd: ConfigCommand,
+    ws: Option<&Workspace>,
+    mine: &Settings,
+    yours: &Settings,
+    user_config: &std::path::Path,
+) -> Result<()> {
+    let show = |name: &str, s: &Settings| -> Result<()> {
+        for key in workspace::SETTING_KEYS {
+            if let Some(v) = s.get(key)? {
+                println!("{key} = {v}  ({name})");
+            }
+        }
+        Ok(())
+    };
+    match cmd {
+        ConfigCommand::List { global, local } => {
+            if global {
+                show("user", yours)?;
+            } else if local {
+                show("workspace", mine)?;
+            } else {
+                show("workspace", mine)?;
+                show("user", yours)?;
+            }
+        }
+        ConfigCommand::Get { key, global, local } => {
+            let value = match (global, local) {
+                (true, _) => yours.get(&key)?.cloned(),
+                (_, true) => mine.get(&key)?.cloned(),
+                _ => resolve(
+                    None,
+                    mine.get(&key)?,
+                    yours.get(&key)?,
+                    (key == "server").then_some(DEFAULT_SERVER),
+                ),
+            };
+            match value {
+                Some(v) => println!("{v}"),
+                None => bail!("{key} is not set"),
+            }
+        }
+        ConfigCommand::Set { key, value, global } => {
+            if global {
+                let mut settings = yours.clone();
+                settings.set(&key, value)?;
+                settings.save(user_config)?;
+            } else {
+                let w =
+                    ws.context("not in a workspace; run `pyn clone <dir>` first, or use --global")?;
+                let mut settings = mine.clone();
+                settings.set(&key, value)?;
+                settings.save(&w.config_path())?;
+            }
+        }
     }
+    Ok(())
 }

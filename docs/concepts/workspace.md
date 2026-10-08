@@ -42,4 +42,31 @@ The collaboration policy is `.pyn/pyn.toml`, shared like any other file in the f
 [pyn.toml](pyn-toml.md). It is not called `config.toml`, because the server enforces it and a local file cannot override
 it, whereas the local settings layer in the order above.
 
-The workspace commands that read and write this folder are not built yet.
+## Working in a workspace
+
+`pyn clone <dir>` creates the folder, downloads every file at its head revision, and records in
+`.pyn/local_only/state/` which revision each file is at and a hash of its content. After that, commands work from wherever
+you are inside the workspace and take paths relative to your current directory.
+
+- **Read-only exclusive files.** Exclusive files are read-only until you hold the lock. `pyn checkout` makes the file
+  writable; `pyn checkin` and `pyn release` make it read-only again. Shared files are always writable.
+- **No base revisions to remember.** `checkout` and `checkin` use the revision the workspace has, so `--base` is only for
+  working outside a workspace. If the server has moved on, the command tells you to run `pyn update`.
+- **`pyn status`** lists what differs: files you modified or deleted, files that are behind the server, files that are new
+  on the server, untracked files, and who holds which lock. Clean, unlocked files are left out.
+- **`pyn update`** downloads new and newer files. A file with local changes is never overwritten; it is reported as skipped.
+- **`pyn checkin <path>`** uploads the file at `<path>` in the workspace; a file name is only needed outside one.
+
+## The ignore file
+
+`.pyn/ignore` lists paths that `pyn status` should not report as untracked, one pattern per line, with `#` for comments.
+A pattern ending in `/` ignores that folder wherever it appears (`node_modules/`), a pattern without a `/` matches at any
+depth (`*.log`), and a pattern containing a `/` is relative to the workspace root (`Saved/cache.bin`). The file is shared
+like the rest of `.pyn/`, so a team keeps one list.
+
+## Settings
+
+`pyn config get|set|list` reads and writes settings. For now there are two: `server` and `user` (the development
+identity). `set` writes the workspace's file by default and your user file with `--global`; `get` shows the effective value,
+or one layer with `--local` or `--global`. A `PYN_SERVER` or `--server` always wins, and `PYN_DIR` points at a `.pyn`
+folder kept somewhere else.
