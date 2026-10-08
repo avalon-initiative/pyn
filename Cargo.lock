@@ -1374,12 +1374,20 @@ name = "pyn-cli"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "axum",
  "chrono",
  "clap",
+ "globset",
+ "hex",
+ "pyn-core",
  "pyn-proto",
+ "pyn-server",
  "reqwest",
  "rpassword",
  "serde",
+ "sha2 0.11.0",
+ "tempfile",
+ "tokio",
  "toml",
 ]
 

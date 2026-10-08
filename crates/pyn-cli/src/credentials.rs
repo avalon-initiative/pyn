@@ -19,7 +19,7 @@ struct File {
 }
 
 /// `$PYN_CONFIG_DIR`, else `$XDG_CONFIG_HOME/pyn`, else `~/.config/pyn`.
-fn dir() -> Result<PathBuf> {
+pub fn dir() -> Result<PathBuf> {
     if let Ok(dir) = std::env::var("PYN_CONFIG_DIR") {
         return Ok(dir.into());
     }
