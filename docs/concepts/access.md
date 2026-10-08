@@ -12,7 +12,7 @@ endpoints.
 | `checkin` | upload content and check in |
 | `restore` | make an older revision the head again |
 | `force_unlock` | release someone else's lock |
-| `edit_policy` | change `pyn.toml` |
+| `edit_policy` | change `.pyn/pyn.toml` |
 | `manage_users` | add members, assign roles, list or revoke other users' tokens |
 | `manage_roles` | change what a role grants |
 
