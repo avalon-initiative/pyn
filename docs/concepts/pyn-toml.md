@@ -1,6 +1,6 @@
 # `pyn.toml`
 
-The repository's collaboration policy: which paths are `exclusive` (one editor at a time, enforced by the server) and
+The repository's collaboration policy, stored at `.pyn/pyn.toml` (see [the `.pyn/` folder](workspace.md)): which paths are `exclusive` (one editor at a time, enforced by the server) and
 which are `shared` (concurrent edits, merged later).
 
 ```toml
@@ -76,12 +76,12 @@ there is nothing to strand.
 
 ## `pyn.toml` is a tracked file
 
-`pyn.toml` is an ordinary path in the repository, exclusive or shared as the team prefers. Unless it lists itself, it
+`.pyn/pyn.toml` is an ordinary path in the repository, exclusive or shared as the team prefers. Unless it lists itself, it
 is **exclusive**, even when `meta.default` is `shared`. To share it, list it:
 
 ```toml
 [shared]
-paths = ["pyn.toml"]
+paths = [".pyn/pyn.toml"]
 ```
 
 A change to the file's own mode is made under its current mode and takes effect once it lands.

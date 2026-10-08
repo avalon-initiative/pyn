@@ -6,6 +6,7 @@ anything related to pyn.
 
 ```text
 .pyn/
+  pyn.toml          the repository's collaboration policy (shared)
   ignore            paths pyn leaves alone (shared)
   local_only/       never tracked
     config.toml     workspace settings: server, repository, identity
@@ -35,9 +36,10 @@ wins:
 user, like `git config`. `PYN_DIR` relocates the whole folder, and individual files such as the ignore file can be
 pointed elsewhere.
 
-## Policy file location (provisional)
+## The policy file
 
-The policy file may move from the repository root to `.pyn/pyn.toml`, where it would be shared like any other file in the
-folder. Until that is decided it stays at the root, as described in [pyn.toml](pyn-toml.md).
+The collaboration policy is `.pyn/pyn.toml`, shared like any other file in the folder and described in
+[pyn.toml](pyn-toml.md). It is not called `config.toml`, because the server enforces it and a local file cannot override
+it, whereas the local settings layer in the order above.
 
 The workspace commands that read and write this folder are not built yet.
