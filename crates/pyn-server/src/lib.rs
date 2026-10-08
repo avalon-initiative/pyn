@@ -26,7 +26,15 @@ pub struct AppState {
 #[derive(OpenApi)]
 #[openapi(
     paths(
-        health, list_locks, list_files, checkout, release, checkin, put_object, history
+        health,
+        list_locks,
+        list_files,
+        get_content,
+        checkout,
+        release,
+        checkin,
+        put_object,
+        history
     ),
     components(schemas(
         api::Lock,
@@ -49,6 +57,7 @@ pub fn router(state: AppState) -> Router {
         .route("/openapi.json", get(|| async { Json(ApiDoc::openapi()) }))
         .route("/v1/locks", get(list_locks))
         .route("/v1/files", get(list_files))
+        .route("/v1/content", get(get_content))
         .route("/v1/checkout", post(checkout))
         .route("/v1/release", post(release))
         .route("/v1/checkin", post(checkin))
@@ -72,6 +81,7 @@ impl IntoResponse for ApiError {
                 StatusCode::CONFLICT
             }
             PynError::NotLockHolder(_) => StatusCode::FORBIDDEN,
+            PynError::RevisionNotFound { .. } => StatusCode::NOT_FOUND,
             PynError::InvalidPath(_)
             | PynError::InvalidRules(_)
             | PynError::NotExclusive(_)
@@ -258,4 +268,36 @@ async fn list_files(
         entries,
         next_after,
     }))
+}
+
+#[derive(Deserialize)]
+struct ContentQuery {
+    path: String,
+    revision: Option<u64>,
+}
+
+#[utoipa::path(get, path = "/v1/content",
+    params(("path" = String, Query, description = "repo-relative path"),
+           ("revision" = Option<u64>, Query, description = "revision number; the head if omitted")),
+    responses((status = 200, content_type = "application/octet-stream", body = Vec<u8>),
+              (status = 404, body = api::ErrorBody, description = "revision_not_found")))]
+async fn get_content(
+    State(s): State<AppState>,
+    Query(q): Query<ContentQuery>,
+) -> ApiResult<Response> {
+    let (rev, bytes) = s
+        .service
+        .read(&RepoPath::new(q.path)?, q.revision.map(RevisionId))
+        .await?;
+    let headers = [
+        (
+            axum::http::header::CONTENT_TYPE,
+            "application/octet-stream".to_string(),
+        ),
+        (
+            axum::http::HeaderName::from_static(api::REVISION_HEADER),
+            rev.id.to_string(),
+        ),
+    ];
+    Ok((headers, bytes).into_response())
 }

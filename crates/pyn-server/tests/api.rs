@@ -112,3 +112,58 @@ async fn files_listing_shows_mode_and_lock() {
     assert_eq!(entry.lock.as_ref().unwrap().owner, "alice");
     assert!(page.next_after.is_none());
 }
+
+#[tokio::test]
+async fn any_revision_can_be_fetched() {
+    let app = app();
+    let mut base = serde_json::Value::Null;
+    for text in ["v1", "v2"] {
+        let put = Request::put("/v1/objects")
+            .header(api::DEV_USER_HEADER, "bob")
+            .body(Body::from(text))
+            .unwrap();
+        let r = app.clone().oneshot(put).await.unwrap();
+        let obj: api::PutObjectResponse =
+            serde_json::from_slice(&r.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        let body = serde_json::json!({"path": "Source/a.cpp", "content": obj.content, "base_revision": base, "message": text});
+        let r = app
+            .clone()
+            .oneshot(json_post("/v1/checkin", "bob", body))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        base = serde_json::json!(base.as_u64().unwrap_or(0) + 1);
+    }
+
+    let fetch = |query: &'static str| {
+        let app = app.clone();
+        async move {
+            app.oneshot(
+                Request::get(format!("/v1/content?{query}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+        }
+    };
+    let r = fetch("path=Source/a.cpp&revision=1").await;
+    assert_eq!(r.headers()[api::REVISION_HEADER], "1");
+    assert_eq!(
+        r.into_body().collect().await.unwrap().to_bytes().as_ref(),
+        b"v1"
+    );
+
+    let r = fetch("path=Source/a.cpp").await;
+    assert_eq!(r.headers()[api::REVISION_HEADER], "2");
+    assert_eq!(
+        r.into_body().collect().await.unwrap().to_bytes().as_ref(),
+        b"v2"
+    );
+
+    let r = fetch("path=Source/a.cpp&revision=9").await;
+    assert_eq!(r.status(), StatusCode::NOT_FOUND);
+    let err: api::ErrorBody =
+        serde_json::from_slice(&r.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(err.code, "revision_not_found");
+}

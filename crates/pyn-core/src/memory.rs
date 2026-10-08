@@ -175,6 +175,17 @@ impl MetadataStore for MemoryMetadataStore {
         Ok(created)
     }
 
+    async fn get_revision(
+        &self,
+        repo: &RepoId,
+        path: &RepoPath,
+        id: RevisionId,
+    ) -> Result<Option<Revision>> {
+        let st = self.state.lock().unwrap();
+        let revs = st.revisions.get(&(repo.clone(), path.clone()));
+        Ok(revs.and_then(|v| v.iter().find(|r| r.id == id).cloned()))
+    }
+
     async fn list_head_revisions(&self, repo: &RepoId) -> Result<Vec<Revision>> {
         let st = self.state.lock().unwrap();
         let mut heads: Vec<Revision> = st

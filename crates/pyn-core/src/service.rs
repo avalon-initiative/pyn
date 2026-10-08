@@ -174,6 +174,28 @@ impl RepoService {
             .collect())
     }
 
+    /// A revision and its content; the head when `revision` is `None`.
+    pub async fn read(
+        &self,
+        path: &RepoPath,
+        revision: Option<RevisionId>,
+    ) -> Result<(Revision, Vec<u8>)> {
+        let found = match revision {
+            Some(id) => self.meta.get_revision(&self.repo, path, id).await?,
+            None => self.meta.head_revision(&self.repo, path).await?,
+        };
+        let rev = found.ok_or_else(|| PynError::RevisionNotFound {
+            path: path.clone(),
+            revision: revision.map_or("(head)".to_string(), |r| r.to_string()),
+        })?;
+        let bytes = self
+            .objects
+            .get(&rev.content)
+            .await?
+            .ok_or_else(|| PynError::ObjectMissing(rev.content.to_string()))?;
+        Ok((rev, bytes))
+    }
+
     pub async fn head(&self, path: &RepoPath) -> Result<Option<Revision>> {
         self.meta.head_revision(&self.repo, path).await
     }

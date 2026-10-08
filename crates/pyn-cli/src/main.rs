@@ -41,6 +41,15 @@ enum Command {
         #[arg(short, long)]
         message: String,
     },
+    /// Fetch a file's content at a revision (the head if omitted).
+    Get {
+        path: String,
+        #[arg(long)]
+        rev: Option<u64>,
+        /// Write to this file instead of stdout.
+        #[arg(short, long)]
+        output: Option<std::path::PathBuf>,
+    },
     /// Show a path's revisions.
     History { path: String },
 }
@@ -122,6 +131,34 @@ fn main() -> Result<()> {
             };
             let r: api::Revision = ok(post(&http, &url("/v1/checkin"), user, &req)?)?.json()?;
             println!("{} is now at revision {}", r.path, r.id);
+        }
+        Command::Get { path, rev, output } => {
+            let mut req = http
+                .get(url("/v1/content"))
+                .query(&[("path", path.as_str())]);
+            if let Some(r) = rev {
+                req = req.query(&[("revision", r)]);
+            }
+            let resp = ok(req.send()?)?;
+            let revision = resp
+                .headers()
+                .get(api::REVISION_HEADER)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("?")
+                .to_string();
+            let bytes = resp.bytes()?;
+            match output {
+                Some(file) => {
+                    std::fs::write(&file, &bytes)
+                        .with_context(|| format!("writing {}", file.display()))?;
+                    println!(
+                        "wrote {path} at revision {revision} ({} bytes) to {}",
+                        bytes.len(),
+                        file.display()
+                    );
+                }
+                None => std::io::Write::write_all(&mut std::io::stdout(), &bytes)?,
+            }
         }
         Command::History { path } => {
             let revs: Vec<api::Revision> = ok(http

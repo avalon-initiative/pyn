@@ -30,6 +30,8 @@ pub enum PynError {
     },
     #[error("content {0} is not in the object store")]
     ObjectMissing(String),
+    #[error("{path} has no revision {revision}")]
+    RevisionNotFound { path: RepoPath, revision: String },
     #[error("storage error: {0}")]
     Storage(String),
 }
@@ -46,6 +48,7 @@ impl PynError {
             Self::NotExclusive(_) => "not_exclusive",
             Self::StaleBase { .. } => "stale_base",
             Self::ObjectMissing(_) => "object_missing",
+            Self::RevisionNotFound { .. } => "revision_not_found",
             Self::Storage(_) => "storage",
         }
     }

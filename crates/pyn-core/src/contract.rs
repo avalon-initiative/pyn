@@ -295,6 +295,26 @@ pub async fn files_lists_heads_and_locks(store: Store) {
     assert_eq!(page[0].path.as_str(), "Content/n.umap");
 }
 
+pub async fn old_revisions_can_be_read_back(store: Store) {
+    let h = harness(store);
+    let a = path("Source/a.cpp");
+    for (i, text) in ["one", "two", "three"].into_iter().enumerate() {
+        let c = blob(&h, text).await;
+        let base = (i > 0).then_some(RevisionId(i as u64));
+        h.svc
+            .checkin(&a, &user("alice"), c, base, text.into())
+            .await
+            .unwrap();
+    }
+
+    let (rev, bytes) = h.svc.read(&a, Some(RevisionId(1))).await.unwrap();
+    assert_eq!((rev.id, bytes), (RevisionId(1), b"one".to_vec()));
+    let (rev, bytes) = h.svc.read(&a, None).await.unwrap();
+    assert_eq!((rev.id, bytes), (RevisionId(3), b"three".to_vec()));
+    let err = h.svc.read(&a, Some(RevisionId(9))).await.unwrap_err();
+    assert!(matches!(err, PynError::RevisionNotFound { .. }), "{err}");
+}
+
 /// Generates one `#[tokio::test]` per contract case for the store built by `$factory`.
 #[macro_export]
 macro_rules! contract_tests {
@@ -311,6 +331,7 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; release_is_holder_only);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; checkin_of_unknown_content_is_refused);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; files_lists_heads_and_locks);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; old_revisions_can_be_read_back);
     };
     (@one $factory:expr; [$(#[$attr:meta])*]; $name:ident) => {
         #[tokio::test(flavor = "multi_thread")]
