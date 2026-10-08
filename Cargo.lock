@@ -1024,6 +1024,7 @@ dependencies = [
  "chrono",
  "globset",
  "hex",
+ "pyn-core",
  "serde",
  "sha2",
  "thiserror",

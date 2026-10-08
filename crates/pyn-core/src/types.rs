@@ -116,3 +116,16 @@ pub struct Lock {
     pub acquired_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn paths_cannot_escape_or_alias() {
+        for bad in ["", "/etc/passwd", "a/../b", "a//b", "a/", "./a", "a\\b"] {
+            assert!(RepoPath::new(bad).is_err(), "{bad:?} should be rejected");
+        }
+        assert!(RepoPath::new("Content/World/Main.umap").is_ok());
+    }
+}
