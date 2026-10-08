@@ -86,3 +86,29 @@ async fn openapi_document_lists_the_lock_routes() {
     assert!(doc["paths"]["/v1/checkout"].is_object());
     assert!(doc["components"]["schemas"]["ErrorBody"].is_object());
 }
+
+#[tokio::test]
+async fn files_listing_shows_mode_and_lock() {
+    let app = app();
+    let body = serde_json::json!({"path": "Content/a.umap", "base_revision": null});
+    app.clone()
+        .oneshot(json_post("/v1/checkout", "alice", body))
+        .await
+        .unwrap();
+
+    let r = app
+        .oneshot(Request::get("/v1/files").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    let page: api::FilePage =
+        serde_json::from_slice(&r.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(page.entries.len(), 1);
+    let entry = &page.entries[0];
+    assert_eq!(
+        (entry.path.as_str(), entry.mode, entry.revision),
+        ("Content/a.umap", api::Mode::Exclusive, None)
+    );
+    assert_eq!(entry.lock.as_ref().unwrap().owner, "alice");
+    assert!(page.next_after.is_none());
+}

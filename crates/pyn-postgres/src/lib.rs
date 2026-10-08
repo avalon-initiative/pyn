@@ -341,6 +341,18 @@ impl MetadataStore for PgMetadataStore {
         })
     }
 
+    async fn list_head_revisions(&self, repo: &RepoId) -> Result<Vec<Revision>> {
+        let rows = sqlx::query(
+            "SELECT DISTINCT ON (path) id, path, content, author, message, created_at
+             FROM revisions WHERE repo = $1 ORDER BY path, id DESC",
+        )
+        .bind(repo.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        rows.iter().map(revision_from).collect()
+    }
+
     async fn history(&self, repo: &RepoId, path: &RepoPath) -> Result<Vec<Revision>> {
         let rows = sqlx::query(
             "SELECT id, path, content, author, message, created_at FROM revisions

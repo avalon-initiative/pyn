@@ -17,6 +17,6 @@ pub use clock::{Clock, ManualClock, SystemClock};
 pub use error::{PynError, Result};
 pub use object::ObjectStore;
 pub use rules::{Mode, Rules};
-pub use service::{RepoService, ServiceConfig};
+pub use service::{FileEntry, RepoService, ServiceConfig};
 pub use store::MetadataStore;
 pub use types::{ContentHash, Lock, NewRevision, RepoId, RepoPath, Revision, RevisionId, UserId};

@@ -25,7 +25,9 @@ pub struct AppState {
 
 #[derive(OpenApi)]
 #[openapi(
-    paths(health, list_locks, checkout, release, checkin, put_object, history),
+    paths(
+        health, list_locks, list_files, checkout, release, checkin, put_object, history
+    ),
     components(schemas(
         api::Lock,
         api::Revision,
@@ -33,7 +35,10 @@ pub struct AppState {
         api::ReleaseRequest,
         api::CheckinRequest,
         api::PutObjectResponse,
-        api::ErrorBody
+        api::ErrorBody,
+        api::FileEntry,
+        api::FilePage,
+        api::Mode
     ))
 )]
 pub struct ApiDoc;
@@ -43,6 +48,7 @@ pub fn router(state: AppState) -> Router {
         .route("/healthz", get(health))
         .route("/openapi.json", get(|| async { Json(ApiDoc::openapi()) }))
         .route("/v1/locks", get(list_locks))
+        .route("/v1/files", get(list_files))
         .route("/v1/checkout", post(checkout))
         .route("/v1/release", post(release))
         .route("/v1/checkin", post(checkin))
@@ -209,4 +215,47 @@ async fn history(
 ) -> ApiResult<Json<Vec<api::Revision>>> {
     let revs = s.service.history(&RepoPath::new(q.path)?).await?;
     Ok(Json(revs.into_iter().map(revision_dto).collect()))
+}
+
+#[derive(Deserialize)]
+struct FilesQuery {
+    after: Option<String>,
+    limit: Option<usize>,
+}
+
+fn mode_dto(mode: pyn_core::Mode) -> api::Mode {
+    match mode {
+        pyn_core::Mode::Shared => api::Mode::Shared,
+        pyn_core::Mode::Exclusive => api::Mode::Exclusive,
+    }
+}
+
+#[utoipa::path(get, path = "/v1/files",
+    params(("after" = Option<String>, Query, description = "return paths after this one"),
+           ("limit" = Option<usize>, Query, description = "page size, default 200, max 1000")),
+    responses((status = 200, body = api::FilePage)))]
+async fn list_files(
+    State(s): State<AppState>,
+    Query(q): Query<FilesQuery>,
+) -> ApiResult<Json<api::FilePage>> {
+    let limit = q.limit.unwrap_or(200).clamp(1, 1000);
+    let after = q.after.map(RepoPath::new).transpose()?;
+    let mut files = s.service.files(after.as_ref(), limit + 1).await?;
+    let next_after = (files.len() > limit).then(|| {
+        files.truncate(limit);
+        files[limit - 1].path.to_string()
+    });
+    let entries = files
+        .into_iter()
+        .map(|f| api::FileEntry {
+            path: f.path.to_string(),
+            mode: mode_dto(f.mode),
+            revision: f.revision.map(|r| r.0),
+            lock: f.lock.map(lock_dto),
+        })
+        .collect();
+    Ok(Json(api::FilePage {
+        entries,
+        next_after,
+    }))
 }

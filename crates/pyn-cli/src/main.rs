@@ -20,6 +20,8 @@ struct Cli {
 enum Command {
     /// List live locks.
     Locks,
+    /// List files with their mode, head revision and lock.
+    Files,
     /// Take the lock on an exclusive file.
     Checkout {
         path: String,
@@ -57,6 +59,28 @@ fn main() -> Result<()> {
             }
             for l in locks {
                 println!("{}\t{}\texpires {}", l.path, l.owner, l.expires_at);
+            }
+        }
+        Command::Files => {
+            let mut after: Option<String> = None;
+            loop {
+                let mut req = http.get(url("/v1/files"));
+                if let Some(a) = &after {
+                    req = req.query(&[("after", a)]);
+                }
+                let page: api::FilePage = ok(req.send()?)?.json()?;
+                for f in &page.entries {
+                    let rev = f.revision.map_or("-".to_string(), |r| format!("r{r}"));
+                    let lock = f
+                        .lock
+                        .as_ref()
+                        .map_or(String::new(), |l| format!("locked by {}", l.owner));
+                    println!("{}\t{:?}\t{rev}\t{lock}", f.path, f.mode);
+                }
+                match page.next_after {
+                    Some(next) => after = Some(next),
+                    None => break,
+                }
             }
         }
         Command::Checkout { path, base } => {

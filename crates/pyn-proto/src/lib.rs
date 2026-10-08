@@ -49,6 +49,29 @@ pub struct PutObjectResponse {
     pub content: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Mode {
+    Shared,
+    Exclusive,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct FileEntry {
+    pub path: String,
+    pub mode: Mode,
+    /// Head revision; absent if the path is locked but has no revision yet.
+    pub revision: Option<u64>,
+    pub lock: Option<Lock>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct FilePage {
+    pub entries: Vec<FileEntry>,
+    /// Pass as `after` to fetch the next page; absent on the last page.
+    pub next_after: Option<String>,
+}
+
 /// Body of every non-2xx response; `code` is stable and machine-readable.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ErrorBody {

@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use chrono::Duration;
@@ -10,6 +11,15 @@ use crate::store::MetadataStore;
 use crate::types::{
     ContentHash, Lock, NewRevision, RepoId, RepoPath, Revision, RevisionId, UserId,
 };
+
+/// One path in a repository listing: its policy, head revision and live lock.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileEntry {
+    pub path: RepoPath,
+    pub mode: Mode,
+    pub revision: Option<RevisionId>,
+    pub lock: Option<Lock>,
+}
 
 #[derive(Debug, Clone)]
 pub struct ServiceConfig {
@@ -126,6 +136,42 @@ impl RepoService {
 
     pub async fn locks(&self) -> Result<Vec<Lock>> {
         self.meta.list_locks(&self.repo, self.clock.now()).await
+    }
+
+    /// Paths with a revision or a live lock, ordered by path, starting after `after`.
+    pub async fn files(&self, after: Option<&RepoPath>, limit: usize) -> Result<Vec<FileEntry>> {
+        let now = self.clock.now();
+        let mut entries: BTreeMap<RepoPath, FileEntry> = BTreeMap::new();
+        for rev in self.meta.list_head_revisions(&self.repo).await? {
+            let mode = self.mode_for(&rev.path);
+            entries.insert(
+                rev.path.clone(),
+                FileEntry {
+                    path: rev.path,
+                    mode,
+                    revision: Some(rev.id),
+                    lock: None,
+                },
+            );
+        }
+        for lock in self.meta.list_locks(&self.repo, now).await? {
+            let path = lock.path.clone();
+            let mode = self.mode_for(&path);
+            entries
+                .entry(path.clone())
+                .or_insert_with(|| FileEntry {
+                    path,
+                    mode,
+                    revision: None,
+                    lock: None,
+                })
+                .lock = Some(lock);
+        }
+        Ok(entries
+            .into_values()
+            .filter(|e| after.is_none_or(|a| &e.path > a))
+            .take(limit)
+            .collect())
     }
 
     pub async fn head(&self, path: &RepoPath) -> Result<Option<Revision>> {

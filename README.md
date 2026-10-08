@@ -8,16 +8,26 @@ Local proof of concept, Phase 1 only (single mainline, shared + exclusive paths,
 history). This repo holds the server, the `pyn` command-line client, and the shared libraries. The web UI is
 `pyn-web` (a separate repo).
 
+## Run it
+
 ```bash
-make run PYN_CONFIG=pyn.example.toml     # server on 127.0.0.1:7878
-cargo build -p pyn-cli                   # builds target/debug/pyn
-export PYN_SERVER=http://127.0.0.1:7878
-pyn --user alice checkout Content/Dungeon.umap
-pyn --user bob   checkout Content/Dungeon.umap    # lock_held (409)
-pyn --user alice checkin  Content/Dungeon.umap ./Dungeon.umap -m "first pass"
+cp .env.example .env     # set PYN_DATABASE_URL to use PostgreSQL; without it everything is in memory
+make run                 # server on 127.0.0.1:7878, reads .env
+make demo                # in another terminal: seeds sample files and locks
+./target/debug/pyn --user alice files
+./target/debug/pyn --user bob checkout Content/World/Main.umap    # lock_held (409)
 ```
 
+| Variable | Meaning |
+| --- | --- |
+| `PYN_DATABASE_URL` | PostgreSQL connection URL; unset means in-memory metadata |
+| `PYN_CREATE_DATABASE` | `true` creates the database if it does not exist |
+| `PYN_DATA_DIR` | Directory for uploaded content; unset means in-memory |
+| `PYN_CONFIG` | Path to the `pyn.toml` policy file; unset means everything is exclusive |
+| `PYN_ADDR` | Listen address, default `127.0.0.1:7878` |
+
+`make test-live` runs the tests that need a database (`PYN_DATABASE_URL`); each uses its own temporary schema.
 Documentation lives in [docs/](docs/README.md).
 
-> **Not for production.** Auth is a trusted `X-Pyn-User` header and storage is in memory. Do not expose this server
-> to a network you do not control.
+> **Not for production.** Auth is a trusted `X-Pyn-User` header. Do not expose this server to a network you do not
+> control.

@@ -247,6 +247,54 @@ pub async fn checkin_of_unknown_content_is_refused(store: Store) {
     assert!(matches!(err, PynError::ObjectMissing(_)), "{err}");
 }
 
+pub async fn files_lists_heads_and_locks(store: Store) {
+    let h = harness(store);
+    let (a, m, n) = (
+        path("Source/a.cpp"),
+        path("Content/m.umap"),
+        path("Content/n.umap"),
+    );
+    for (i, text) in ["one", "two"].into_iter().enumerate() {
+        let c = blob(&h, text).await;
+        let base = (i > 0).then_some(RevisionId(i as u64));
+        h.svc
+            .checkin(&a, &user("alice"), c, base, text.into())
+            .await
+            .unwrap();
+    }
+    h.svc.checkout(&n, &user("bob"), None).await.unwrap();
+    let c = blob(&h, "n").await;
+    h.svc
+        .checkin(&n, &user("bob"), c, None, "n".into())
+        .await
+        .unwrap();
+    h.svc.checkout(&m, &user("alice"), None).await.unwrap();
+
+    let files = h.svc.files(None, 100).await.unwrap();
+    let summary: Vec<_> = files
+        .iter()
+        .map(|f| {
+            (
+                f.path.as_str(),
+                f.revision.map(|r| r.0),
+                f.lock.as_ref().map(|l| l.owner.as_str()),
+            )
+        })
+        .collect();
+    assert_eq!(
+        summary,
+        [
+            ("Content/m.umap", None, Some("alice")),
+            ("Content/n.umap", Some(1), None),
+            ("Source/a.cpp", Some(2), None),
+        ]
+    );
+
+    let page = h.svc.files(Some(&path("Content/m.umap")), 1).await.unwrap();
+    assert_eq!(page.len(), 1);
+    assert_eq!(page[0].path.as_str(), "Content/n.umap");
+}
+
 /// Generates one `#[tokio::test]` per contract case for the store built by `$factory`.
 #[macro_export]
 macro_rules! contract_tests {
@@ -262,6 +310,7 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; shared_paths_cannot_be_checked_out_and_reject_stale_checkins);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; release_is_holder_only);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; checkin_of_unknown_content_is_refused);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; files_lists_heads_and_locks);
     };
     (@one $factory:expr; [$(#[$attr:meta])*]; $name:ident) => {
         #[tokio::test(flavor = "multi_thread")]
