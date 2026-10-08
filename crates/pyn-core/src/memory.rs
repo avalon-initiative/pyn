@@ -1,12 +1,14 @@
 //! In-memory stores for tests and the dev server; one `Mutex` makes each primitive atomic.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Mutex;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
 
+use crate::access::{Permission, Role, RoleDefinitions, TokenId, TokenRecord};
+use crate::access_service::AccessStore;
 use crate::error::{PynError, Result};
 use crate::object::ObjectStore;
 use crate::store::MetadataStore;
@@ -233,5 +235,131 @@ impl ObjectStore for MemoryObjectStore {
 
     async fn exists(&self, hash: &ContentHash) -> Result<bool> {
         Ok(self.objects.lock().unwrap().contains_key(hash))
+    }
+}
+
+#[derive(Default)]
+struct AccessState {
+    users: BTreeSet<UserId>,
+    roles: HashMap<(RepoId, UserId), Role>,
+    definitions: HashMap<RepoId, RoleDefinitions>,
+    tokens: HashMap<TokenId, TokenRecord>,
+}
+
+#[derive(Default)]
+pub struct MemoryAccessStore {
+    state: Mutex<AccessState>,
+}
+
+impl MemoryAccessStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+#[async_trait]
+impl AccessStore for MemoryAccessStore {
+    async fn ensure_user(&self, user: &UserId, _now: DateTime<Utc>) -> Result<()> {
+        self.state.lock().unwrap().users.insert(user.clone());
+        Ok(())
+    }
+
+    async fn set_role(&self, repo: &RepoId, user: &UserId, role: Role) -> Result<()> {
+        self.state
+            .lock()
+            .unwrap()
+            .roles
+            .insert((repo.clone(), user.clone()), role);
+        Ok(())
+    }
+
+    async fn role_of(&self, repo: &RepoId, user: &UserId) -> Result<Option<Role>> {
+        Ok(self
+            .state
+            .lock()
+            .unwrap()
+            .roles
+            .get(&(repo.clone(), user.clone()))
+            .copied())
+    }
+
+    async fn members(&self, repo: &RepoId) -> Result<Vec<(UserId, Role)>> {
+        let st = self.state.lock().unwrap();
+        let mut out: Vec<_> = st
+            .roles
+            .iter()
+            .filter(|((r, _), _)| r == repo)
+            .map(|((_, u), role)| (u.clone(), *role))
+            .collect();
+        out.sort();
+        Ok(out)
+    }
+
+    async fn role_definitions(&self, repo: &RepoId) -> Result<RoleDefinitions> {
+        let st = self.state.lock().unwrap();
+        Ok(st
+            .definitions
+            .get(repo)
+            .cloned()
+            .unwrap_or_else(RoleDefinitions::defaults))
+    }
+
+    async fn set_role_permissions(
+        &self,
+        repo: &RepoId,
+        role: Role,
+        permissions: BTreeSet<Permission>,
+    ) -> Result<()> {
+        let mut st = self.state.lock().unwrap();
+        st.definitions
+            .entry(repo.clone())
+            .or_insert_with(RoleDefinitions::defaults)
+            .set(role, permissions);
+        Ok(())
+    }
+
+    async fn create_token(&self, token: TokenRecord) -> Result<()> {
+        self.state
+            .lock()
+            .unwrap()
+            .tokens
+            .insert(token.id.clone(), token);
+        Ok(())
+    }
+
+    async fn get_token(&self, id: &TokenId) -> Result<Option<TokenRecord>> {
+        Ok(self.state.lock().unwrap().tokens.get(id).cloned())
+    }
+
+    async fn list_tokens(&self, user: &UserId) -> Result<Vec<TokenRecord>> {
+        let st = self.state.lock().unwrap();
+        let mut out: Vec<_> = st
+            .tokens
+            .values()
+            .filter(|t| &t.user == user)
+            .cloned()
+            .collect();
+        out.sort_by(|a, b| {
+            b.created_at
+                .cmp(&a.created_at)
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        Ok(out)
+    }
+
+    async fn revoke_token(&self, id: &TokenId, now: DateTime<Utc>) -> Result<bool> {
+        let mut st = self.state.lock().unwrap();
+        let Some(token) = st.tokens.get_mut(id) else {
+            return Ok(false);
+        };
+        token.revoked_at.get_or_insert(now);
+        Ok(true)
+    }
+
+    async fn touch_token(&self, id: &TokenId, now: DateTime<Utc>) -> Result<()> {
+        if let Some(token) = self.state.lock().unwrap().tokens.get_mut(id) {
+            token.last_used_at = Some(now);
+        }
+        Ok(())
     }
 }

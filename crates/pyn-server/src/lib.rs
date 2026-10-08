@@ -80,10 +80,13 @@ impl IntoResponse for ApiError {
             PynError::LockHeld { .. } | PynError::StaleBase { .. } | PynError::LockRequired(_) => {
                 StatusCode::CONFLICT
             }
-            PynError::NotLockHolder(_) => StatusCode::FORBIDDEN,
+            PynError::NotLockHolder(_) | PynError::Forbidden(_) => StatusCode::FORBIDDEN,
+            PynError::Unauthenticated(_) => StatusCode::UNAUTHORIZED,
+            PynError::TokenNotFound(_) => StatusCode::NOT_FOUND,
             PynError::RevisionNotFound { .. } => StatusCode::NOT_FOUND,
             PynError::InvalidPath(_)
             | PynError::InvalidRules(_)
+            | PynError::InvalidRequest(_)
             | PynError::NotExclusive(_)
             | PynError::ObjectMissing(_) => StatusCode::BAD_REQUEST,
             PynError::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -103,7 +106,7 @@ async fn caller(state: &AppState, headers: &HeaderMap) -> ApiResult<UserId> {
         .get(api::DEV_USER_HEADER)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    Ok(state.auth.authenticate(credential).await?)
+    Ok(state.auth.authenticate(credential).await?.user)
 }
 
 fn lock_dto(l: pyn_core::Lock) -> api::Lock {
