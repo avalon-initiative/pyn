@@ -1326,6 +1326,7 @@ name = "pyn-cli"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap",
  "pyn-proto",
  "reqwest",
@@ -1389,6 +1390,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
+ "clap",
  "http-body-util",
  "pyn-core",
  "pyn-fs",
