@@ -11,7 +11,9 @@ pub enum PynError {
     InvalidPath(String),
     #[error("invalid rules: {0}")]
     InvalidRules(String),
-    #[error("{path} is locked by {owner} until {expires_at}")]
+    #[error(
+        "{path} is locked by {owner} until {expires_at}. Ask {owner} to release it, or wait for the lease to end."
+    )]
     LockHeld {
         path: RepoPath,
         owner: UserId,
