@@ -9,6 +9,7 @@ use axum::response::{IntoResponse, Response};
 use pyn_core::{PynError, SessionRecord};
 use pyn_proto as api;
 
+use crate::client::Client;
 use crate::{ApiResult, AppState};
 
 pub(crate) fn session_cookie(headers: &HeaderMap) -> Option<&str> {
@@ -81,14 +82,19 @@ pub(crate) async fn csrf_guard(State(s): State<AppState>, req: Request, next: Ne
 #[utoipa::path(post, path = "/v1/session", request_body = api::LoginRequest, responses(
     (status = 200, body = api::SessionInfo, description = "sets the HttpOnly session cookie"),
     (status = 401, body = api::ErrorBody, description = "unauthenticated"),
-    (status = 429, body = api::ErrorBody, description = "too_many_attempts"),
+    (status = 403, body = api::ErrorBody, description = "right password, but the account cannot sign in: email_not_verified, approval_pending or account_disabled"),
+    (status = 429, body = api::ErrorBody, description = "too_many_attempts; Retry-After says how many seconds to wait"),
 ))]
 pub(crate) async fn sign_in(
     State(s): State<AppState>,
+    Client(client): Client,
     headers: HeaderMap,
     Json(req): Json<api::LoginRequest>,
 ) -> ApiResult<Response> {
-    let (record, cookie) = s.access.start_session(&req.username, &req.password).await?;
+    let (record, cookie) = s
+        .access
+        .start_session(&req.username, &req.password, client.as_deref())
+        .await?;
     let max_age = s.access.session_lifetime().num_seconds();
     let mut res = Json(info(&record)).into_response();
     res.headers_mut()

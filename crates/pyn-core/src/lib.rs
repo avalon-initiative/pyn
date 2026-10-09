@@ -7,10 +7,13 @@ pub mod auth;
 pub mod clock;
 #[cfg(feature = "contract")]
 pub mod contract;
+pub mod email;
 pub mod error;
 pub mod history;
 pub mod memory;
 pub mod object;
+pub mod passwords;
+pub mod ratelimit;
 pub mod repo;
 pub mod repositories;
 pub mod rules;
@@ -20,17 +23,23 @@ pub mod tree;
 pub mod types;
 
 pub use access::{
-    Credential, Identity, InviteId, InviteRecord, Permission, Principal, RegistrationMode, Role,
-    RoleDefinitions, SessionRecord, SshKeyRecord, TokenId, TokenRecord, account, invite, session,
-    ssh, token,
+    AccountRecord, AccountStatus, Credential, Identity, InviteId, InviteRecord, NewAccount,
+    Permission, Principal, RegistrationMode, Role, RoleDefinitions, SessionRecord, SignupStage,
+    SshKeyRecord, TokenId, TokenRecord, VerificationRecord, account, invite, session, ssh, token,
+    verification,
 };
-pub use access_service::{AccessConfig, AccessService, AccessStore};
+pub use access_service::{
+    AccessConfig, AccessService, AccessStore, RateLimits, Registration, SERVER_AUDIT_ID, SignUp,
+};
 pub use audit::{AuditAction, AuditEvent, AuditQuery, AuditStore, NewAuditEvent};
 pub use auth::AuthProvider;
 pub use clock::{Clock, ManualClock, SystemClock};
+pub use email::{EmailMessage, EmailSender, MemoryEmailSender, NullEmailSender};
 pub use error::{PynError, Result};
 pub use history::{HISTORY_DEFAULT_LIMIT, HISTORY_MAX_LIMIT, HistoryCursor, HistoryPage};
 pub use object::ObjectStore;
+pub use passwords::{InlinePasswords, PasswordWorker};
+pub use ratelimit::{RateLimitStore, RateState};
 pub use repo::{
     DEFAULT_MAX_LOCKS_PER_USER, MAX_LOCKS_PER_USER_CEILING, RepoRecord, RepoSettings, RepoUpdate,
     Visibility, validate_max_locks,

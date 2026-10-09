@@ -45,6 +45,7 @@ async fn state_with(dev: bool, mode: RegistrationMode) -> AppState {
         AccessService::new(Arc::new(MemoryAccessStore::new()), clock.clone())
             .with_config(AccessConfig {
                 registration: mode,
+                require_email_verification: false,
                 ..AccessConfig::default()
             })
             .with_audit(audit.clone()),
@@ -63,6 +64,7 @@ async fn state_with(dev: bool, mode: RegistrationMode) -> AppState {
         access: access.clone(),
         auth: Arc::new(BearerAuth { access }),
         dev_auth: dev.then(|| Arc::new(DevHeaderAuth) as Arc<dyn AuthProvider>),
+        trust_forwarded: true,
     }
 }
 

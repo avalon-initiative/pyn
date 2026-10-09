@@ -51,11 +51,13 @@ enum Command {
     },
     /// Forget the saved sign-in for this server and end that session.
     Logout,
-    /// Create an account. Invite-only servers need --invite.
+    /// Create an account. Invite-only servers need --invite; open servers that verify addresses need --email.
     Register {
         username: String,
         #[arg(long)]
         invite: Option<String>,
+        #[arg(long)]
+        email: Option<String>,
         #[arg(long)]
         password_stdin: bool,
     },
@@ -470,6 +472,7 @@ fn main() -> Result<()> {
         Command::Register {
             username,
             invite,
+            email,
             password_stdin,
         } => {
             let password = credentials::read_new_password(password_stdin)?;
@@ -477,9 +480,22 @@ fn main() -> Result<()> {
                 username: username.clone(),
                 password,
                 invite,
+                email,
             };
-            api.send(api.anonymous(Method::POST, "/v1/register").json(&body))?;
-            println!("created {username}; sign in with `pyn login {username}`");
+            let done: api::Registered = api
+                .send(api.anonymous(Method::POST, "/v1/register").json(&body))?
+                .json()?;
+            match done.status.as_str() {
+                "pending_verification" => println!(
+                    "created {username}; follow the link in the email sent to you, then sign in"
+                ),
+                "pending_approval" => {
+                    println!(
+                        "created {username}; an administrator must approve it before you can sign in"
+                    )
+                }
+                _ => println!("created {username}; sign in with `pyn login {username}`"),
+            }
         }
         Command::Password { password_stdin } => {
             let current = credentials::read_password("Current password: ", password_stdin)?;

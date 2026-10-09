@@ -2,10 +2,11 @@ use std::collections::BTreeSet;
 use std::str::FromStr;
 
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use pyn_core::{
-    AccessStore, InviteId, InviteRecord, Permission, RepoId, Result, Role, RoleDefinitions,
-    SessionRecord, SshKeyRecord, TokenId, TokenRecord, UserId,
+    AccessStore, AccountRecord, AccountStatus, InviteId, InviteRecord, NewAccount, Permission,
+    RateLimitStore, RateState, RepoId, Result, Role, RoleDefinitions, SessionRecord, SignupStage,
+    SshKeyRecord, TokenId, TokenRecord, UserId, VerificationRecord,
 };
 use sqlx::Row;
 use sqlx::postgres::PgRow;
@@ -56,6 +57,19 @@ fn session_from(row: &PgRow) -> SessionRecord {
         created_at: row.get("created_at"),
         expires_at: row.get("expires_at"),
     }
+}
+
+fn account_from(row: &PgRow) -> Result<AccountRecord> {
+    Ok(AccountRecord {
+        user: UserId::new(row.get::<String, _>("id")),
+        email: row.get("email"),
+        email_verified_at: row.get("email_verified_at"),
+        signup: SignupStage::from_str(row.get("signup"))?,
+        disabled_at: row.get("disabled_at"),
+        disabled_reason: row.get("disabled_reason"),
+        is_admin: row.get("is_admin"),
+        created_at: row.get("created_at"),
+    })
 }
 
 fn token_from(row: &PgRow) -> Result<TokenRecord> {
@@ -471,6 +485,256 @@ impl AccessStore for PgMetadataStore {
     async fn touch_token(&self, id: &TokenId, now: DateTime<Utc>) -> Result<()> {
         sqlx::query("UPDATE tokens SET last_used_at = $2 WHERE id = $1")
             .bind(&id.0)
+            .bind(now)
+            .execute(&self.pool)
+            .await
+            .map_err(db)?;
+        Ok(())
+    }
+
+    async fn create_account(&self, new: NewAccount) -> Result<bool> {
+        let done = sqlx::query(
+            "INSERT INTO users (id, created_at, email, password_hash, signup) VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT (id) DO NOTHING",
+        )
+        .bind(new.user.as_str())
+        .bind(new.created_at)
+        .bind(new.email)
+        .bind(new.password_hash)
+        .bind(new.signup.as_str())
+        .execute(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    async fn account(&self, user: &UserId) -> Result<Option<AccountRecord>> {
+        let row = sqlx::query("SELECT id, email, email_verified_at, signup, disabled_at, disabled_reason, is_admin, created_at FROM users WHERE id = $1")
+        .bind(user.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db)?;
+        row.as_ref().map(account_from).transpose()
+    }
+
+    async fn verified_email_owner(&self, email: &str) -> Result<Option<UserId>> {
+        let id: Option<String> = sqlx::query_scalar(
+            "SELECT id FROM users WHERE email = $1 AND email_verified_at IS NOT NULL",
+        )
+        .bind(email)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(id.map(UserId::new))
+    }
+
+    async fn pending_by_email(&self, email: &str) -> Result<Vec<AccountRecord>> {
+        let rows = sqlx::query("SELECT id, email, email_verified_at, signup, disabled_at, disabled_reason, is_admin, created_at FROM users WHERE email = $1 AND signup = 'pending_verification' ORDER BY created_at, id")
+        .bind(email)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        rows.iter().map(account_from).collect()
+    }
+
+    async fn complete_verification(
+        &self,
+        user: &UserId,
+        signup: SignupStage,
+        now: DateTime<Utc>,
+    ) -> Result<bool> {
+        let done = sqlx::query(
+            "UPDATE users SET email_verified_at = $3, signup = $2 WHERE id = $1 AND email IS NOT NULL",
+        )
+        .bind(user.as_str())
+        .bind(signup.as_str())
+        .bind(now)
+        .execute(&self.pool)
+        .await;
+        match done {
+            Ok(done) => Ok(done.rows_affected() > 0),
+            Err(e)
+                if e.as_database_error()
+                    .is_some_and(|d| d.is_unique_violation()) =>
+            {
+                Ok(false)
+            }
+            Err(e) => Err(db(e)),
+        }
+    }
+
+    async fn set_signup(&self, user: &UserId, signup: SignupStage) -> Result<bool> {
+        let done = sqlx::query("UPDATE users SET signup = $2 WHERE id = $1")
+            .bind(user.as_str())
+            .bind(signup.as_str())
+            .execute(&self.pool)
+            .await
+            .map_err(db)?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    async fn set_disabled(
+        &self,
+        user: &UserId,
+        disabled: Option<(DateTime<Utc>, Option<String>)>,
+    ) -> Result<bool> {
+        let (at, reason) = match disabled {
+            Some((at, reason)) => (Some(at), reason),
+            None => (None, None),
+        };
+        let done =
+            sqlx::query("UPDATE users SET disabled_at = $2, disabled_reason = $3 WHERE id = $1")
+                .bind(user.as_str())
+                .bind(at)
+                .bind(reason)
+                .execute(&self.pool)
+                .await
+                .map_err(db)?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    async fn set_admin(&self, user: &UserId, admin: bool) -> Result<()> {
+        sqlx::query("UPDATE users SET is_admin = $2 WHERE id = $1")
+            .bind(user.as_str())
+            .bind(admin)
+            .execute(&self.pool)
+            .await
+            .map_err(db)?;
+        Ok(())
+    }
+
+    async fn list_accounts(
+        &self,
+        status: Option<AccountStatus>,
+        limit: usize,
+    ) -> Result<Vec<AccountRecord>> {
+        let rows = sqlx::query("SELECT id, email, email_verified_at, signup, disabled_at, disabled_reason, is_admin, created_at FROM users
+             WHERE $1::text IS NULL
+                OR CASE WHEN $1 = 'disabled' THEN disabled_at IS NOT NULL
+                        ELSE disabled_at IS NULL AND signup = $1 END
+             ORDER BY created_at, id LIMIT $2")
+        .bind(status.map(AccountStatus::as_str))
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        rows.iter().map(account_from).collect()
+    }
+
+    async fn delete_stale_pending(
+        &self,
+        now: DateTime<Utc>,
+        created_before: DateTime<Utc>,
+    ) -> Result<()> {
+        sqlx::query("DELETE FROM email_verifications WHERE expires_at <= $1")
+            .bind(now)
+            .execute(&self.pool)
+            .await
+            .map_err(db)?;
+        sqlx::query(
+            "DELETE FROM users
+             WHERE signup = 'pending_verification' AND disabled_at IS NULL AND created_at < $1
+               AND NOT EXISTS (SELECT 1 FROM email_verifications v WHERE v.user_id = users.id)",
+        )
+        .bind(created_before)
+        .execute(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    async fn put_verification(&self, record: VerificationRecord) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO email_verifications (token_hash, user_id, email, expires_at) VALUES ($1, $2, $3, $4)
+             ON CONFLICT (user_id) DO UPDATE SET
+                token_hash = EXCLUDED.token_hash, email = EXCLUDED.email, expires_at = EXCLUDED.expires_at",
+        )
+        .bind(record.token_hash)
+        .bind(record.user.as_str())
+        .bind(record.email)
+        .bind(record.expires_at)
+        .execute(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    async fn take_verification(&self, token_hash: &str) -> Result<Option<VerificationRecord>> {
+        let row = sqlx::query(
+            "DELETE FROM email_verifications WHERE token_hash = $1
+             RETURNING token_hash, user_id, email, expires_at",
+        )
+        .bind(token_hash)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(row.map(|r| VerificationRecord {
+            token_hash: r.get("token_hash"),
+            user: UserId::new(r.get::<String, _>("user_id")),
+            email: r.get("email"),
+            expires_at: r.get("expires_at"),
+        }))
+    }
+
+    async fn delete_sessions_of(&self, user: &UserId) -> Result<()> {
+        sqlx::query("DELETE FROM sessions WHERE user_id = $1")
+            .bind(user.as_str())
+            .execute(&self.pool)
+            .await
+            .map_err(db)?;
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl RateLimitStore for PgMetadataStore {
+    async fn hit(&self, key: &str, window: Duration, now: DateTime<Utc>) -> Result<RateState> {
+        let row = sqlx::query(
+            "INSERT INTO rate_limits (key, count, resets_at)
+             VALUES ($1, 1, $2::timestamptz + make_interval(secs => $3))
+             ON CONFLICT (key) DO UPDATE SET
+                count = CASE WHEN rate_limits.resets_at <= $2 THEN 1 ELSE rate_limits.count + 1 END,
+                resets_at = CASE WHEN rate_limits.resets_at <= $2 THEN EXCLUDED.resets_at ELSE rate_limits.resets_at END
+             RETURNING count, resets_at",
+        )
+        .bind(key)
+        .bind(now)
+        .bind(window.num_seconds() as f64)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(RateState {
+            count: row.get::<i32, _>("count") as u32,
+            resets_at: row.get("resets_at"),
+        })
+    }
+
+    async fn state(&self, key: &str, now: DateTime<Utc>) -> Result<Option<RateState>> {
+        let row = sqlx::query(
+            "SELECT count, resets_at FROM rate_limits WHERE key = $1 AND resets_at > $2",
+        )
+        .bind(key)
+        .bind(now)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(row.map(|r| RateState {
+            count: r.get::<i32, _>("count") as u32,
+            resets_at: r.get("resets_at"),
+        }))
+    }
+
+    async fn reset(&self, key: &str) -> Result<()> {
+        sqlx::query("DELETE FROM rate_limits WHERE key = $1")
+            .bind(key)
+            .execute(&self.pool)
+            .await
+            .map_err(db)?;
+        Ok(())
+    }
+
+    async fn sweep(&self, now: DateTime<Utc>) -> Result<()> {
+        sqlx::query("DELETE FROM rate_limits WHERE resets_at <= $1")
             .bind(now)
             .execute(&self.pool)
             .await

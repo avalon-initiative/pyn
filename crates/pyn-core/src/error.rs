@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 
-use crate::access::Permission;
+use crate::access::{AccountStatus, Permission};
 use crate::types::{RepoPath, RevisionId, UserId};
 
 pub type Result<T, E = PynError> = std::result::Result<T, E>;
@@ -49,8 +49,16 @@ pub enum PynError {
     UserExists(UserId),
     #[error("invalid invitation: {0}")]
     InvalidInvite(String),
-    #[error("too many sign-in attempts; try again in {retry_after_secs} seconds")]
+    #[error("too many attempts; try again in {retry_after_secs} seconds")]
     TooManyAttempts { retry_after_secs: i64 },
+    #[error("{}", inactive_message(*.0))]
+    AccountInactive(AccountStatus),
+    #[error("invalid verification: {0}")]
+    InvalidVerification(String),
+    #[error("no account {0}")]
+    UserNotFound(String),
+    #[error("only a server administrator can do that")]
+    ServerAdminRequired,
     #[error("that key is already linked to an account")]
     KeyInUse,
     #[error("no key {0}")]
@@ -81,6 +89,19 @@ pub enum PynError {
     Storage(String),
 }
 
+fn inactive_message(status: AccountStatus) -> &'static str {
+    match status {
+        AccountStatus::PendingVerification => {
+            "this account's email address is not verified yet; follow the link in the verification email"
+        }
+        AccountStatus::PendingApproval => {
+            "this account is waiting for an administrator to approve it"
+        }
+        AccountStatus::Disabled => "this account is disabled",
+        AccountStatus::Active => "this account is active",
+    }
+}
+
 impl PynError {
     /// Stable machine-readable code sent to API clients.
     pub fn code(&self) -> &'static str {
@@ -100,6 +121,15 @@ impl PynError {
             Self::UserExists(_) => "user_exists",
             Self::InvalidInvite(_) => "invalid_invite",
             Self::TooManyAttempts { .. } => "too_many_attempts",
+            Self::AccountInactive(status) => match status {
+                AccountStatus::PendingVerification => "email_not_verified",
+                AccountStatus::PendingApproval => "approval_pending",
+                AccountStatus::Disabled => "account_disabled",
+                AccountStatus::Active => "account_active",
+            },
+            Self::InvalidVerification(_) => "invalid_verification",
+            Self::UserNotFound(_) => "user_not_found",
+            Self::ServerAdminRequired => "server_admin_required",
             Self::KeyInUse => "key_in_use",
             Self::KeyNotFound(_) => "key_not_found",
             Self::Unauthenticated(_) => "unauthenticated",

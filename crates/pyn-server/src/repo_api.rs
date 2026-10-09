@@ -7,8 +7,8 @@ use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use chrono::Duration;
 use pyn_core::{
-    InviteId, InviteRecord, LockLimit, Permission, RepoRecord, RepoSettings, RepoUpdate, Role,
-    UserId,
+    AccountStatus, InviteId, InviteRecord, LockLimit, Permission, RepoRecord, RepoSettings,
+    RepoUpdate, Role, UserId,
 };
 use pyn_proto as api;
 use serde::Deserialize;
@@ -334,6 +334,7 @@ pub(crate) async fn add_user(
         StatusCode::CREATED,
         Json(api::Registered {
             user: user.to_string(),
+            status: AccountStatus::Active.to_string(),
         }),
     ))
 }

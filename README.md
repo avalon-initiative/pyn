@@ -52,6 +52,13 @@ For your own server instead of the demo: `cp .env.example .env`, then `make run`
 | `PYN_TOKEN` | Token the CLI signs in with, instead of the sign-in saved by `pyn login` (`PYN_USER` with `PYN_DEV_AUTH`) |
 | `PYN_REGISTRATION` | `invite` (default), `open` or `closed`: how people create accounts |
 | `PYN_MAX_LOCKS_ALLOWED_PER_USER` | How many locks one user may hold in a repository, default 5; a repository setting or its `pyn.toml` can override it |
+| `PYN_EMAIL_VERIFICATION` | On unless `false`: open sign-up needs an email address and the account stays inactive until its link is followed |
+| `PYN_REQUIRE_APPROVAL` | `true` holds new open sign-ups until a server administrator approves them |
+| `PYN_PUBLIC_URL` | Where the web app lives, for links in emails; default `http://<PYN_ADDR>` |
+| `PYN_EMAIL` | How email is sent; only `log` (writes messages to the server log) exists |
+| `PYN_RATE_SIGN_IN_ACCOUNT`, `PYN_RATE_SIGN_IN_CLIENT`, `PYN_RATE_REGISTER_CLIENT`, `PYN_RATE_MAIL_PER_EMAIL` | Rate limits, defaults 5, 30, 10 and 3; see [access](docs/concepts/access.md#protecting-open-registration) |
+| `PYN_TRUST_FORWARDED_FOR` | `true` takes the client address from the last `X-Forwarded-For` entry; only behind a proxy that sets it |
+| `PYN_PASSWORD_HASHES` | Most password hashes at once, default the number of CPUs |
 | `PYN_SESSION_DAYS` | How long a `pyn login` lasts, default 30 |
 | `PYN_BOOTSTRAP_PASSWORD` | Gives the `PYN_BOOTSTRAP_ADMIN` user this password |
 | `PYN_CONFIG_DIR` | Where the CLI keeps `credentials.toml`, default `~/.config/pyn` |

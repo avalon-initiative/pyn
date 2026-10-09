@@ -105,7 +105,7 @@ tokens, password), create repositories in its own namespace and read public repo
 | `/v1/repos/{owner}/{name}/{locks,files,content,checkout,release,checkin,restore,force-unlock,audit,objects,history}` | the file and lock operations |
 | `/v1/repos/{owner}/{name}/{members,roles,invites,users}` | who has access |
 
-Account routes do not name a repository: `/v1/register`, `/v1/login`, `/v1/session`, `/v1/me`, `/v1/me/password`,
+Account routes do not name a repository: `/v1/register` (and `/v1/register/verify`, `/v1/register/resend`), `/v1/admin`, `/v1/login`, `/v1/session`, `/v1/me`, `/v1/me/password`,
 `/v1/me/locks`, `/v1/keys` and `/v1/tokens`. The previous single-repository routes (`/v1/files`, `/v1/checkout` and so on) are gone.
 
 `GET /v1/me/locks` lists the caller's live locks across every repository they can read (a token only sees the

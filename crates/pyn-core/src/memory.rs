@@ -1,21 +1,23 @@
 //! In-memory stores for tests and the dev server; one `Mutex` makes each primitive atomic.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Mutex;
 
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use sha2::{Digest, Sha256};
 
 use crate::access::{
-    InviteId, InviteRecord, Permission, Role, RoleDefinitions, SessionRecord, SshKeyRecord,
-    TokenId, TokenRecord,
+    AccountRecord, AccountStatus, InviteId, InviteRecord, NewAccount, Permission, Role,
+    RoleDefinitions, SessionRecord, SignupStage, SshKeyRecord, TokenId, TokenRecord,
+    VerificationRecord,
 };
 use crate::access_service::AccessStore;
 use crate::audit::{AuditEvent, AuditQuery, AuditStore, NewAuditEvent};
 use crate::error::{PynError, Result};
 use crate::history::HistoryCursor;
 use crate::object::ObjectStore;
+use crate::ratelimit::{RateLimitStore, RateState};
 use crate::repo::{RepoRecord, RepoUpdate};
 use crate::rules::PathFilter;
 use crate::store::MetadataStore;
@@ -387,7 +389,8 @@ impl ObjectStore for MemoryObjectStore {
 
 #[derive(Default)]
 struct AccessState {
-    users: BTreeSet<UserId>,
+    accounts: BTreeMap<UserId, AccountRecord>,
+    verifications: HashMap<String, VerificationRecord>,
     passwords: HashMap<UserId, String>,
     invites: HashMap<InviteId, InviteRecord>,
     ssh_keys: Vec<SshKeyRecord>,
@@ -395,6 +398,19 @@ struct AccessState {
     definitions: HashMap<RepoId, RoleDefinitions>,
     tokens: HashMap<TokenId, TokenRecord>,
     sessions: HashMap<String, SessionRecord>,
+}
+
+fn plain_account(user: &UserId, now: DateTime<Utc>) -> AccountRecord {
+    AccountRecord {
+        user: user.clone(),
+        email: None,
+        email_verified_at: None,
+        signup: SignupStage::Complete,
+        disabled_at: None,
+        disabled_reason: None,
+        is_admin: false,
+        created_at: now,
+    }
 }
 
 #[derive(Default)]
@@ -410,8 +426,13 @@ impl MemoryAccessStore {
 
 #[async_trait]
 impl AccessStore for MemoryAccessStore {
-    async fn ensure_user(&self, user: &UserId, _now: DateTime<Utc>) -> Result<()> {
-        self.state.lock().unwrap().users.insert(user.clone());
+    async fn ensure_user(&self, user: &UserId, now: DateTime<Utc>) -> Result<()> {
+        self.state
+            .lock()
+            .unwrap()
+            .accounts
+            .entry(user.clone())
+            .or_insert_with(|| plain_account(user, now));
         Ok(())
     }
 
@@ -489,12 +510,177 @@ impl AccessStore for MemoryAccessStore {
         Ok(())
     }
 
-    async fn create_user(&self, user: &UserId, _now: DateTime<Utc>) -> Result<bool> {
-        Ok(self.state.lock().unwrap().users.insert(user.clone()))
+    async fn create_user(&self, user: &UserId, now: DateTime<Utc>) -> Result<bool> {
+        let mut st = self.state.lock().unwrap();
+        if st.accounts.contains_key(user) {
+            return Ok(false);
+        }
+        st.accounts.insert(user.clone(), plain_account(user, now));
+        Ok(true)
     }
 
     async fn user_exists(&self, user: &UserId) -> Result<bool> {
-        Ok(self.state.lock().unwrap().users.contains(user))
+        Ok(self.state.lock().unwrap().accounts.contains_key(user))
+    }
+
+    async fn create_account(&self, new: NewAccount) -> Result<bool> {
+        let mut st = self.state.lock().unwrap();
+        if st.accounts.contains_key(&new.user) {
+            return Ok(false);
+        }
+        st.passwords.insert(new.user.clone(), new.password_hash);
+        let account = AccountRecord {
+            email: new.email,
+            signup: new.signup,
+            ..plain_account(&new.user, new.created_at)
+        };
+        st.accounts.insert(new.user, account);
+        Ok(true)
+    }
+
+    async fn account(&self, user: &UserId) -> Result<Option<AccountRecord>> {
+        Ok(self.state.lock().unwrap().accounts.get(user).cloned())
+    }
+
+    async fn verified_email_owner(&self, email: &str) -> Result<Option<UserId>> {
+        let st = self.state.lock().unwrap();
+        Ok(st
+            .accounts
+            .values()
+            .find(|a| a.email_verified_at.is_some() && a.email.as_deref() == Some(email))
+            .map(|a| a.user.clone()))
+    }
+
+    async fn pending_by_email(&self, email: &str) -> Result<Vec<AccountRecord>> {
+        let st = self.state.lock().unwrap();
+        Ok(st
+            .accounts
+            .values()
+            .filter(|a| {
+                a.signup == SignupStage::PendingVerification && a.email.as_deref() == Some(email)
+            })
+            .cloned()
+            .collect())
+    }
+
+    async fn complete_verification(
+        &self,
+        user: &UserId,
+        signup: SignupStage,
+        now: DateTime<Utc>,
+    ) -> Result<bool> {
+        let mut st = self.state.lock().unwrap();
+        let Some(email) = st.accounts.get(user).and_then(|a| a.email.clone()) else {
+            return Ok(false);
+        };
+        let taken = st.accounts.values().any(|a| {
+            &a.user != user
+                && a.email_verified_at.is_some()
+                && a.email.as_deref() == Some(email.as_str())
+        });
+        if taken {
+            return Ok(false);
+        }
+        let account = st.accounts.get_mut(user).expect("checked above");
+        account.email_verified_at = Some(now);
+        account.signup = signup;
+        Ok(true)
+    }
+
+    async fn set_signup(&self, user: &UserId, signup: SignupStage) -> Result<bool> {
+        let mut st = self.state.lock().unwrap();
+        let Some(account) = st.accounts.get_mut(user) else {
+            return Ok(false);
+        };
+        account.signup = signup;
+        Ok(true)
+    }
+
+    async fn set_disabled(
+        &self,
+        user: &UserId,
+        disabled: Option<(DateTime<Utc>, Option<String>)>,
+    ) -> Result<bool> {
+        let mut st = self.state.lock().unwrap();
+        let Some(account) = st.accounts.get_mut(user) else {
+            return Ok(false);
+        };
+        (account.disabled_at, account.disabled_reason) = match disabled {
+            Some((at, reason)) => (Some(at), reason),
+            None => (None, None),
+        };
+        Ok(true)
+    }
+
+    async fn set_admin(&self, user: &UserId, admin: bool) -> Result<()> {
+        if let Some(account) = self.state.lock().unwrap().accounts.get_mut(user) {
+            account.is_admin = admin;
+        }
+        Ok(())
+    }
+
+    async fn list_accounts(
+        &self,
+        status: Option<AccountStatus>,
+        limit: usize,
+    ) -> Result<Vec<AccountRecord>> {
+        let st = self.state.lock().unwrap();
+        let mut out: Vec<_> = st
+            .accounts
+            .values()
+            .filter(|a| status.is_none_or(|s| a.status() == s))
+            .cloned()
+            .collect();
+        out.sort_by(|a, b| {
+            a.created_at
+                .cmp(&b.created_at)
+                .then_with(|| a.user.cmp(&b.user))
+        });
+        out.truncate(limit);
+        Ok(out)
+    }
+
+    async fn delete_stale_pending(
+        &self,
+        now: DateTime<Utc>,
+        created_before: DateTime<Utc>,
+    ) -> Result<()> {
+        let mut st = self.state.lock().unwrap();
+        st.verifications.retain(|_, v| v.expires_at > now);
+        let live: BTreeSet<UserId> = st.verifications.values().map(|v| v.user.clone()).collect();
+        st.accounts.retain(|u, a| {
+            a.signup != SignupStage::PendingVerification
+                || a.created_at >= created_before
+                || a.disabled_at.is_some()
+                || live.contains(u)
+        });
+        let AccessState {
+            accounts,
+            passwords,
+            ..
+        } = &mut *st;
+        passwords.retain(|u, _| accounts.contains_key(u));
+        Ok(())
+    }
+
+    async fn put_verification(&self, record: VerificationRecord) -> Result<()> {
+        let mut st = self.state.lock().unwrap();
+        st.verifications.retain(|_, v| v.user != record.user);
+        st.verifications.insert(record.token_hash.clone(), record);
+        Ok(())
+    }
+
+    async fn take_verification(&self, token_hash: &str) -> Result<Option<VerificationRecord>> {
+        Ok(self.state.lock().unwrap().verifications.remove(token_hash))
+    }
+
+    async fn delete_sessions_of(&self, user: &UserId) -> Result<()> {
+        self.state
+            .lock()
+            .unwrap()
+            .sessions
+            .retain(|_, s| &s.user != user);
+        Ok(())
     }
 
     async fn set_password_hash(&self, user: &UserId, hash: &str) -> Result<()> {
@@ -744,5 +930,48 @@ impl AuditStore for MemoryAuditStore {
             .map(|(_, e)| e.clone())
             .take(query.limit)
             .collect())
+    }
+}
+
+#[derive(Default)]
+pub struct MemoryRateLimitStore {
+    windows: Mutex<HashMap<String, RateState>>,
+}
+
+impl MemoryRateLimitStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+#[async_trait]
+impl RateLimitStore for MemoryRateLimitStore {
+    async fn hit(&self, key: &str, window: Duration, now: DateTime<Utc>) -> Result<RateState> {
+        let mut windows = self.windows.lock().unwrap();
+        let live = windows.get(key).filter(|s| s.resets_at > now);
+        let state = RateState {
+            count: live.map_or(0, |s| s.count) + 1,
+            resets_at: live.map_or(now + window, |s| s.resets_at),
+        };
+        windows.insert(key.to_string(), state);
+        Ok(state)
+    }
+
+    async fn state(&self, key: &str, now: DateTime<Utc>) -> Result<Option<RateState>> {
+        let windows = self.windows.lock().unwrap();
+        Ok(windows.get(key).filter(|s| s.resets_at > now).copied())
+    }
+
+    async fn reset(&self, key: &str) -> Result<()> {
+        self.windows.lock().unwrap().remove(key);
+        Ok(())
+    }
+
+    async fn sweep(&self, now: DateTime<Utc>) -> Result<()> {
+        self.windows
+            .lock()
+            .unwrap()
+            .retain(|_, s| s.resets_at > now);
+        Ok(())
     }
 }

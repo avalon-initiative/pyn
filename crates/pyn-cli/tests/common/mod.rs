@@ -74,6 +74,7 @@ fn start_with(with_repo: bool) -> Env {
         access: access.clone(),
         auth: Arc::new(BearerAuth { access }),
         dev_auth: Some(Arc::new(DevHeaderAuth) as Arc<dyn AuthProvider>),
+        trust_forwarded: false,
     });
     let url = runtime.block_on(async {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

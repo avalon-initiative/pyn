@@ -169,6 +169,9 @@ pub struct RepoSummary {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct Account {
     pub user: String,
+    /// Runs the server: may approve and disable accounts under `/v1/admin`.
+    #[serde(default)]
+    pub admin: bool,
 }
 
 /// The caller and what they may do in one repository.
@@ -329,6 +332,13 @@ pub struct AuditPage {
 pub struct RegistrationInfo {
     /// `open`, `invite` or `closed`.
     pub registration: String,
+    /// With `open` registration: sign-up needs an email address, and the account stays inactive until its
+    /// link is followed.
+    #[serde(default)]
+    pub email_verification: bool,
+    /// With `open` registration: an administrator approves each new account after it is verified.
+    #[serde(default)]
+    pub approval: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -337,11 +347,47 @@ pub struct RegisterRequest {
     pub password: String,
     /// Required when the server is invite only.
     pub invite: Option<String>,
+    /// Required when the server is open and verifies email addresses (`RegistrationInfo.email_verification`).
+    pub email: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct Registered {
     pub user: String,
+    /// `active`, or what the account still needs: `pending_verification` (follow the link in the email) or
+    /// `pending_approval` (an administrator must approve it).
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct VerifyEmailRequest {
+    /// The token from the verification link.
+    pub token: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ResendVerificationRequest {
+    pub email: String,
+}
+
+/// An account as an administrator sees it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct AccountInfo {
+    pub user: String,
+    pub email: Option<String>,
+    pub email_verified: bool,
+    /// `pending_verification`, `pending_approval`, `active` or `disabled`.
+    pub status: String,
+    pub disabled_at: Option<DateTime<Utc>>,
+    pub disabled_reason: Option<String>,
+    pub admin: bool,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+pub struct DisableAccountRequest {
+    /// Shown to administrators; not to the account holder.
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
