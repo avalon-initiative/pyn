@@ -9,6 +9,7 @@ mod client;
 mod credentials;
 mod sync;
 mod table;
+mod time;
 mod workspace;
 
 use client::Api;
@@ -399,7 +400,7 @@ fn main() -> Result<()> {
             let until = made
                 .info
                 .expires_at
-                .map_or("never".to_string(), |e| e.to_string());
+                .map_or("never".to_string(), time::local);
             println!(
                 "signed in as {username} on {}; the sign-in expires {until}",
                 api.base
@@ -465,7 +466,7 @@ fn main() -> Result<()> {
             let rows: Vec<Vec<String>> = keys
                 .into_iter()
                 .map(|k| {
-                    let used = k.last_used_at.map_or("never".to_string(), table::when);
+                    let used = k.last_used_at.map_or("never".to_string(), time::local);
                     vec![k.id.to_string(), k.algorithm, used, k.fingerprint, k.title]
                 })
                 .collect();
@@ -494,7 +495,9 @@ fn main() -> Result<()> {
             println!("{}", made.code);
             eprintln!(
                 "invitation {} for role {}, expires {}; this is the only time the code is shown",
-                made.info.id, made.info.role, made.info.expires_at
+                made.info.id,
+                made.info.role,
+                time::local(made.info.expires_at)
             );
         }
         Command::Invite(InviteCommand::List) => {
@@ -510,7 +513,7 @@ fn main() -> Result<()> {
                     } else {
                         "unused".to_string()
                     };
-                    vec![i.id.to_string(), i.role, table::when(i.expires_at), state]
+                    vec![i.id.to_string(), i.role, time::local(i.expires_at), state]
                 })
                 .collect();
             table::show(&["ID", "ROLE", "EXPIRES", "STATE"], &rows, "no invitations");
@@ -550,7 +553,7 @@ fn main() -> Result<()> {
             let locks: Vec<api::Lock> = api.send(api.get(&api.repo_route("/locks")?))?.json()?;
             let rows: Vec<Vec<String>> = locks
                 .into_iter()
-                .map(|l| vec![l.owner, table::when(l.expires_at), l.path])
+                .map(|l| vec![l.owner, time::local(l.expires_at), l.path])
                 .collect();
             table::show(&["OWNER", "EXPIRES", "PATH"], &rows, "no locks");
         }
@@ -631,7 +634,7 @@ fn main() -> Result<()> {
                     .iter()
                     .map(|a| {
                         vec![
-                            table::when(a.at),
+                            time::local(a.at),
                             a.actor.clone(),
                             a.action.clone(),
                             a.path.clone().unwrap_or_else(|| "-".into()),
@@ -684,7 +687,7 @@ fn main() -> Result<()> {
             if let Some(w) = &ws {
                 sync::after_checkout(w, &path)?;
             }
-            println!("locked {} until {}", l.path, l.expires_at);
+            println!("locked {} until {}", l.path, time::local(l.expires_at));
         }
         Command::Release { path } => {
             let path = rp(&path)?;
@@ -786,7 +789,7 @@ fn main() -> Result<()> {
                     vec![
                         format!("r{}", r.id),
                         r.author,
-                        table::when(r.created_at),
+                        time::local(r.created_at),
                         format!("{}{restored}", r.message),
                     ]
                 })
@@ -839,11 +842,11 @@ fn main() -> Result<()> {
                 .map(|e| {
                     vec![
                         e.id.to_string(),
-                        table::when(e.at),
+                        time::local(e.at),
                         e.actor.clone(),
                         e.action.clone(),
                         e.path.clone().unwrap_or_else(|| "-".into()),
-                        e.detail.clone(),
+                        time::localize(&e.detail),
                     ]
                 })
                 .collect();
@@ -1075,7 +1078,7 @@ fn token_command(api: &Api, cmd: TokenCommand) -> Result<()> {
                     vec![
                         t.id.to_string(),
                         state.to_string(),
-                        t.expires_at.map_or("never".to_string(), table::when),
+                        t.expires_at.map_or("never".to_string(), time::local),
                         t.name,
                         t.permissions.join(","),
                     ]

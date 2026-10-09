@@ -80,7 +80,12 @@ pub fn ok(resp: Response) -> Result<Response> {
     }
     let status = resp.status();
     match resp.json::<api::ErrorBody>() {
-        Ok(e) => bail!("{} ({}): {}", e.code, status.as_u16(), e.message),
+        Ok(e) => bail!(
+            "{} ({}): {}",
+            e.code,
+            status.as_u16(),
+            crate::time::localize(&e.message)
+        ),
         Err(_) => bail!("server returned {status}"),
     }
 }

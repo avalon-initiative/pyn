@@ -103,3 +103,36 @@ fn config_list_is_a_table() {
     assert_eq!(rows[0], ["KEY", "SCOPE", "VALUE"]);
     assert!(rows.iter().any(|r| r == &["user", "user", "alice"]));
 }
+
+fn expires(env: &common::Env, home: &std::path::Path, tz: &str) -> chrono::NaiveDateTime {
+    let out = env.run_in_tz(home, "alice", &["locks"], tz);
+    let out = String::from_utf8_lossy(&out.stdout).into_owned();
+    let cell = cell_rows(&out)[1][1].clone();
+    chrono::NaiveDateTime::parse_from_str(&cell, "%b %d %Y %H:%M")
+        .unwrap_or_else(|e| panic!("{cell:?} is not `Mon DD YYYY HH:MM`: {e}"))
+}
+
+#[test]
+fn times_print_in_the_timezone_of_the_environment() {
+    let env = start();
+    env.seed("alice", "Source/a.cpp", "a", None);
+    let home = env.dir("home");
+    env.ok(&home, "alice", &["checkout", "Content/m.umap"]);
+
+    let utc = expires(&env, &home, "UTC");
+    let tokyo = expires(&env, &home, "Asia/Tokyo");
+    let new_york = expires(&env, &home, "America/New_York");
+    assert_eq!((tokyo - utc).num_hours(), 9);
+    assert!([-4, -5].contains(&(new_york - utc).num_hours()));
+}
+
+#[test]
+fn lock_errors_show_the_local_time_not_raw_utc() {
+    let env = start();
+    let home = env.dir("home");
+    env.ok(&home, "alice", &["checkout", "Content/m.umap"]);
+    let err = env.fails(&home, "bob", &["checkout", "Content/m.umap"]);
+    assert!(!err.contains("UTC"), "{err}");
+    let until = err.split(" until ").nth(1).expect(&err);
+    chrono::NaiveDateTime::parse_and_remainder(until, "%b %d %Y %H:%M").expect(&err);
+}
