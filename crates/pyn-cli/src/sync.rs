@@ -248,11 +248,11 @@ pub fn update(api: &Api, ws: &Workspace, only: &[String]) -> Result<()> {
     Ok(())
 }
 
-pub fn after_checkout(ws: &Workspace, path: &str) -> Result<()> {
+pub fn after_lock(ws: &Workspace, path: &str) -> Result<()> {
     set_read_only(&ws.abs(path), false)
 }
 
-pub fn after_release(ws: &Workspace, path: &str) -> Result<()> {
+pub fn after_unlock(ws: &Workspace, path: &str) -> Result<()> {
     if ws
         .load_state()?
         .get(path)

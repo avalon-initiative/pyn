@@ -9,10 +9,10 @@ a [public repository](repositories.md#visibility); everything else needs credent
 | Permission | Allows |
 | --- | --- |
 | `read` | list files, folders and locks, see the repository summary, fetch any revision, see history |
-| `lock` | check out and release exclusive files |
+| `lock` | lock and unlock exclusive files |
 | `checkin` | upload content and check in |
 | `restore` | make an older revision the head again |
-| `force_unlock` | release someone else's lock |
+| `force_unlock` | remove someone else's lock (`unlock --force`) |
 | `edit_policy` | change `.pyn/pyn.toml` |
 | `manage_users` | add members, assign roles, invite people, list or revoke tokens and keys of the repository's members |
 | `manage_roles` | change what a role grants |

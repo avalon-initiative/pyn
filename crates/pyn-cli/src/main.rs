@@ -110,14 +110,22 @@ enum Command {
     /// Show the repository summary: counts, locks and recent activity.
     Summary,
     /// Take the lock on an exclusive file.
-    Checkout {
+    Lock {
         path: String,
         /// Revision your copy is at (omit if you have none).
         #[arg(long)]
         base: Option<u64>,
     },
-    /// Give up a lock without checking in.
-    Release { path: String },
+    /// Give up your lock without checking in; with --force, remove someone else's (needs force_unlock and a reason).
+    Unlock {
+        path: String,
+        /// Remove another user's lock instead of giving up your own.
+        #[arg(long, requires = "reason")]
+        force: bool,
+        /// Why the lock is removed; recorded in the audit log.
+        #[arg(long, requires = "force")]
+        reason: Option<String>,
+    },
     /// Upload a file as the next revision of `path`. Releases the lock.
     Checkin {
         path: String,
@@ -148,19 +156,13 @@ enum Command {
         #[arg(long)]
         yes: bool,
     },
-    /// Remove someone else's lock. Needs the force_unlock permission and a reason, which is recorded.
-    Unlock {
-        path: String,
-        #[arg(long)]
-        reason: String,
-    },
     /// Show the audit log, newest first (needs the view_audit permission).
     Audit {
         #[arg(long)]
         path: Option<String>,
         #[arg(long)]
         actor: Option<String>,
-        /// An action such as checkout, restore, force_unlock, member_added, role_changed, token_created or repo_updated.
+        /// An action such as checkout (taking a lock), release, restore, force_unlock, member_added, role_changed, token_created or repo_updated.
         #[arg(long)]
         action: Option<String>,
         /// Show events older than this id.
@@ -170,7 +172,8 @@ enum Command {
         limit: usize,
     },
     /// Show a path's revisions (oldest first), or without a path the repository's, newest first.
-    History {
+    #[command(visible_alias = "history")]
+    Log {
         path: Option<String>,
         /// Only paths matching this glob; without a slash it matches at any depth (`*.ts`, `Source/**`).
         #[arg(long, conflicts_with = "path")]
@@ -199,7 +202,7 @@ enum RepoCommand {
         /// `public` or `private`; private by default.
         #[arg(long)]
         visibility: Option<String>,
-        /// How long a checkout lasts before it expires unless renewed.
+        /// How long a lock lasts before it expires unless renewed.
         #[arg(long)]
         lease_hours: Option<u32>,
         /// Locks one user may hold at once; the server's default if omitted, and a limit in the policy file wins.
@@ -749,7 +752,7 @@ fn main() -> Result<()> {
             sync::update(&api, in_workspace("update")?, &only)?;
         }
         Command::Config(cmd) => config_command(cmd, ws.as_ref(), &mine, &yours, &user_config)?,
-        Command::Checkout { path, base } => {
+        Command::Lock { path, base } => {
             let path = rp(&path)?;
             let known = ws
                 .as_ref()
@@ -767,21 +770,9 @@ fn main() -> Result<()> {
                 .map_err(|e| behind_hint(e, ws.is_some()))?
                 .json()?;
             if let Some(w) = &ws {
-                sync::after_checkout(w, &path)?;
+                sync::after_lock(w, &path)?;
             }
             println!("locked {} until {}", l.path, time::local(l.expires_at));
-        }
-        Command::Release { path } => {
-            let path = rp(&path)?;
-            let body = api::ReleaseRequest { path: path.clone() };
-            api.send(
-                api.request(Method::POST, &api.repo_route("/release")?)
-                    .json(&body),
-            )?;
-            if let Some(w) = &ws {
-                sync::after_release(w, &path)?;
-            }
-            println!("released");
         }
         Command::Checkin {
             path,
@@ -854,7 +845,7 @@ fn main() -> Result<()> {
                 None => std::io::Write::write_all(&mut std::io::stdout(), &bytes)?,
             }
         }
-        Command::History {
+        Command::Log {
             path,
             filter,
             limit,
@@ -894,7 +885,25 @@ fn main() -> Result<()> {
             message,
             yes,
         } => restore(&api, rp(&path)?, revision, message, yes)?,
-        Command::Unlock { path, reason } => {
+        Command::Unlock {
+            path, force: false, ..
+        } => {
+            let path = rp(&path)?;
+            let body = api::ReleaseRequest { path: path.clone() };
+            api.send(
+                api.request(Method::POST, &api.repo_route("/release")?)
+                    .json(&body),
+            )?;
+            if let Some(w) = &ws {
+                sync::after_unlock(w, &path)?;
+            }
+            println!("unlocked {path}");
+        }
+        Command::Unlock {
+            path,
+            reason: Some(reason),
+            ..
+        } => {
             let path = rp(&path)?;
             let body = api::ForceUnlockRequest {
                 path: path.clone(),
@@ -908,6 +917,7 @@ fn main() -> Result<()> {
                 .json()?;
             println!("removed {}'s lock on {path}", lock.owner);
         }
+        Command::Unlock { .. } => unreachable!("clap requires a reason with --force"),
         Command::Audit {
             path,
             actor,
