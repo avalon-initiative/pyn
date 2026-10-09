@@ -27,7 +27,7 @@ SSH addresses (`ssh://host/owner/name`) arrive with the SSH transport.
 
 | Setting | Meaning |
 | --- | --- |
-| `visibility` | `private` (the default) or `public`. Stored and returned today; public access without signing in is not implemented yet, so every repository still needs credentials. *Provisional* |
+| `visibility` | `private` (the default) or `public`; see [Visibility](#visibility) |
 | `lease_hours` | How long a checkout lasts unless renewed, 1 to 720, default 8 |
 | `max_locks_per_user` | How many locks one user may hold in the repository, 1 to 10000. Unset follows the server's `PYN_MAX_LOCKS_ALLOWED_PER_USER` (default 5). A limit in the repository's [`pyn.toml`](pyn-toml.md#lock-limit) overrides it |
 
@@ -41,8 +41,9 @@ follows the server) and `max_locks_set_by_policy` (true when `.pyn/pyn.toml` set
 
 ## Who can do what
 
-- **See a repository.** Only people who have a role in it. A private repository does not reveal that it exists to anyone
-  else: every route answers `404 repo_not_found` for an outsider and for a repository that is not there.
+- **See a repository.** Anyone, signed in or not, if it is public; otherwise only people who have a role in it. A private
+  repository does not reveal that it exists to anyone else: every route answers `404 repo_not_found` for an outsider (or
+  an anonymous request) and for a repository that is not there.
 - **Create.** Any signed-in account, in its own namespace. A token can create a repository only if it is not limited to
   specific repositories and carries `manage_roles`.
 - **Rename, change settings, delete.** The owner, who must also hold `manage_roles` in the repository (an `admin`). A
@@ -71,13 +72,32 @@ admin of the old repository (or the oldest member, or `default` if there were no
 revisions, roles and tokens keep working under the same id, and existing tokens still reach it. The new repository is
 private. A server with no earlier data starts with no repositories. In-memory storage never has earlier data.
 
+## Visibility
+
+A repository is `private` (members only) or `public` (anyone may read it), as on GitHub. Registering creates an account,
+not access: a new account has no role anywhere (there is no default role setting), so it can use its own settings (keys,
+tokens, password), create repositories in its own namespace and read public repositories, and nothing else.
+
+- **Public** grants the `read` permission to everyone, including requests with no credentials: the tree, files, file
+  content at any revision, history, summary, locks and repository info. A role keeps the permissions it already has.
+  Everything else needs a role: lock, checkin, restore, upload, force-unlock, audit, members, roles and invitations
+  answer `403` to a signed-in person without the permission and `401` to an anonymous request.
+- **Private** answers `404 repo_not_found` to anyone without a role, which is also what a repository that does not exist
+  answers. A request that presents a credential that is wrong or expired is `401` either way.
+- A token limited to other repositories, or a role without `read`, still reads a public repository (`read` only).
+- `GET /v1/repos` and `GET /v1/me/locks` list only repositories where the caller has a role (or, for locks, can read);
+  public repositories are reached by address.
+- The owner, holding `manage_roles` in the repository, changes visibility with `PATCH` (`pyn repo visibility owner/name
+  public|private`). It takes effect at once and is recorded as a `repo_updated` audit event whose detail reads
+  `visibility private -> public`.
+
 ## API summary
 
 | Route | Purpose |
 | --- | --- |
 | `GET /v1/repos` | repositories you belong to (`?owner=` narrows it), each with your role |
 | `POST /v1/repos` | create `{name, owner?, visibility?, lease_hours?, max_locks_per_user?}` |
-| `GET /v1/repos/{owner}/{name}` | one repository |
+| `GET /v1/repos/{owner}/{name}` | one repository (`role` is null for a reader of a public repository) |
 | `PATCH /v1/repos/{owner}/{name}` | rename or change settings `{name?, visibility?, lease_hours?, max_locks_per_user?}` (`null` clears the lock limit) |
 | `DELETE /v1/repos/{owner}/{name}` | delete |
 | `GET /v1/repos/{owner}/{name}/me` | who you are and what you may do there |
@@ -94,5 +114,5 @@ repositories and permissions it carries), ordered by `owner/name` then path. Eac
 the audit event as usual. A lock in a repository the caller can no longer read is not listed.
 
 On the command line: `pyn repo create [owner/]name [--visibility public|private] [--lease-hours N] [--max-locks N] [--policy FILE | --no-policy]`, `pyn repo list`,
-`pyn repo delete owner/name`, `pyn locks --mine` (your locks in every repository: repository, acquired, expires, path), and `pyn clone <server>/owner/name [dir]`. A workspace records its repository in
+`pyn repo visibility owner/name public|private`, `pyn repo delete owner/name`, `pyn locks --mine` (your locks in every repository: repository, acquired, expires, path), and `pyn clone <server>/owner/name [dir]`. A workspace records its repository in
 `.pyn/local_only/config.toml`, so commands inside it need no flag; see [the `.pyn/` folder](workspace.md).

@@ -304,25 +304,31 @@ pub(crate) async fn identify(state: &AppState, headers: &HeaderMap) -> ApiResult
     })
 }
 
-/// Finds a repository the identity may know about and what it may do there. Anyone with no part in a private
+/// Like `identify`, but a request with no credential at all is anonymous (`None`); a bad one still fails.
+pub(crate) async fn identify_optional(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> ApiResult<Option<Identity>> {
+    let dev = state.dev_auth.is_some() && headers.contains_key(api::DEV_USER_HEADER);
+    if bearer_token(headers).is_none() && !dev && session_api::session_cookie(headers).is_none() {
+        return Ok(None);
+    }
+    identify(state, headers).await.map(Some)
+}
+
+/// Finds a repository the caller may know about and what they may do there. Anyone with no part in a private
 /// repository is told it does not exist.
 pub(crate) async fn open_visible(
     state: &AppState,
-    who: &Identity,
+    who: Option<&Identity>,
     owner: &str,
     name: &str,
 ) -> ApiResult<(OpenRepo, Principal)> {
-    let hidden = || PynError::RepoNotFound(format!("{owner}/{name}"));
     let open = state.repos.open(owner, name).await?;
-    let principal = match state.access.principal_in(&open.record.id, who).await {
-        Ok(p) => p,
-        Err(PynError::Unauthenticated(_)) => return Err(hidden().into()),
-        Err(e) => return Err(e.into()),
-    };
-    if principal.permissions.is_empty() && open.record.visibility == pyn_core::Visibility::Private {
-        return Err(hidden().into());
+    match state.repos.principal_for(&open.record, who).await? {
+        Some(principal) => Ok((open, principal)),
+        None => Err(PynError::RepoNotFound(format!("{owner}/{name}")).into()),
     }
-    Ok((open, principal))
 }
 
 /// Authenticates the request and resolves `owner/name`, checking the caller holds `need` there.
@@ -334,11 +340,24 @@ pub(crate) async fn authorize_repo(
     need: Option<Permission>,
 ) -> ApiResult<(OpenRepo, Principal)> {
     let who = identify(state, headers).await?;
-    let (open, principal) = open_visible(state, &who, owner, name).await?;
+    let (open, principal) = open_visible(state, Some(&who), owner, name).await?;
     if let Some(permission) = need {
         principal.require(permission)?;
     }
     Ok((open, principal))
+}
+
+/// For read endpoints: like `authorize_repo`, but a public repository can be read without signing in.
+pub(crate) async fn authorize_read(
+    state: &AppState,
+    headers: &HeaderMap,
+    owner: &str,
+    name: &str,
+) -> ApiResult<OpenRepo> {
+    let who = identify_optional(state, headers).await?;
+    let (open, principal) = open_visible(state, who.as_ref(), owner, name).await?;
+    principal.require(Permission::Read)?;
+    Ok(open)
 }
 
 fn lock_dto(l: pyn_core::Lock) -> api::Lock {
@@ -368,6 +387,7 @@ async fn health() -> &'static str {
     "ok"
 }
 
+/// Readable without credentials when the repository is public; otherwise 404 unless the caller has a role.
 #[utoipa::path(get, path = "/v1/repos/{owner}/{name}/locks", params(RepoAddress),
     responses((status = 200, body = Vec<api::Lock>)))]
 async fn list_locks(
@@ -375,7 +395,7 @@ async fn list_locks(
     headers: HeaderMap,
     Path((owner, name)): Path<(String, String)>,
 ) -> ApiResult<Json<Vec<api::Lock>>> {
-    let (repo, _) = authorize_repo(&s, &headers, &owner, &name, Some(Permission::Read)).await?;
+    let repo = authorize_read(&s, &headers, &owner, &name).await?;
     Ok(Json(
         repo.service
             .locks()
@@ -504,6 +524,7 @@ struct HistoryQuery {
     limit: Option<usize>,
 }
 
+/// Readable without credentials when the repository is public; otherwise 404 unless the caller has a role.
 #[utoipa::path(get, path = "/v1/repos/{owner}/{name}/history",
     params(RepoAddress,
            ("path" = Option<String>, Query, description = "one path's revisions, oldest first; excludes the other parameters"),
@@ -518,7 +539,7 @@ async fn history(
     Path((owner, name)): Path<(String, String)>,
     Query(q): Query<HistoryQuery>,
 ) -> ApiResult<Json<api::HistoryPage>> {
-    let (repo, _) = authorize_repo(&s, &headers, &owner, &name, Some(Permission::Read)).await?;
+    let repo = authorize_read(&s, &headers, &owner, &name).await?;
     if let Some(path) = q.path {
         if q.filter.is_some() || q.before.is_some() || q.limit.is_some() {
             return Err(PynError::InvalidRequest(
@@ -557,6 +578,7 @@ fn mode_dto(mode: pyn_core::Mode) -> api::Mode {
     }
 }
 
+/// Readable without credentials when the repository is public; otherwise 404 unless the caller has a role.
 #[utoipa::path(get, path = "/v1/repos/{owner}/{name}/files",
     params(RepoAddress, ("after" = Option<String>, Query, description = "return paths after this one"),
            ("limit" = Option<usize>, Query, description = "page size, default 200, max 1000")),
@@ -567,7 +589,7 @@ async fn list_files(
     Path((owner, name)): Path<(String, String)>,
     Query(q): Query<FilesQuery>,
 ) -> ApiResult<Json<api::FilePage>> {
-    let (repo, _) = authorize_repo(&s, &headers, &owner, &name, Some(Permission::Read)).await?;
+    let repo = authorize_read(&s, &headers, &owner, &name).await?;
     let limit = q.limit.unwrap_or(200).clamp(1, 1000);
     let after = q.after.map(RepoPath::new).transpose()?;
     let mut files = repo.service.files(after.as_ref(), limit + 1).await?;
@@ -595,6 +617,7 @@ struct TreeQuery {
     path: Option<String>,
 }
 
+/// Readable without credentials when the repository is public; otherwise 404 unless the caller has a role.
 #[utoipa::path(get, path = "/v1/repos/{owner}/{name}/tree",
     params(RepoAddress, ("path" = Option<String>, Query, description = "folder to list; the root if omitted or empty")),
     responses((status = 200, body = api::TreeListing),
@@ -606,7 +629,7 @@ async fn tree(
     Path((owner, name)): Path<(String, String)>,
     Query(q): Query<TreeQuery>,
 ) -> ApiResult<Json<api::TreeListing>> {
-    let (repo, _) = authorize_repo(&s, &headers, &owner, &name, Some(Permission::Read)).await?;
+    let repo = authorize_read(&s, &headers, &owner, &name).await?;
     let raw = q.path.unwrap_or_default();
     let trimmed = raw.trim_end_matches('/');
     let dir = (!trimmed.is_empty())
@@ -642,6 +665,7 @@ struct SummaryQuery {
     activity: Option<usize>,
 }
 
+/// Readable without credentials when the repository is public; otherwise 404 unless the caller has a role.
 #[utoipa::path(get, path = "/v1/repos/{owner}/{name}/summary",
     params(RepoAddress, ("activity" = Option<usize>, Query, description = "recent activity entries, default 10, max 100")),
     responses((status = 200, body = api::RepoSummary)))]
@@ -651,7 +675,7 @@ async fn summary(
     Path((owner, name)): Path<(String, String)>,
     Query(q): Query<SummaryQuery>,
 ) -> ApiResult<Json<api::RepoSummary>> {
-    let (repo, _) = authorize_repo(&s, &headers, &owner, &name, Some(Permission::Read)).await?;
+    let repo = authorize_read(&s, &headers, &owner, &name).await?;
     let summary = repo
         .service
         .summary(q.activity.unwrap_or(10).clamp(1, 100))
@@ -684,6 +708,7 @@ struct ContentQuery {
     revision: Option<u64>,
 }
 
+/// Readable without credentials when the repository is public; otherwise 404 unless the caller has a role.
 #[utoipa::path(get, path = "/v1/repos/{owner}/{name}/content",
     params(RepoAddress, ("path" = String, Query, description = "repo-relative path"),
            ("revision" = Option<u64>, Query, description = "revision number; the head if omitted")),
@@ -695,7 +720,7 @@ async fn get_content(
     Path((owner, name)): Path<(String, String)>,
     Query(q): Query<ContentQuery>,
 ) -> ApiResult<Response> {
-    let (repo, _) = authorize_repo(&s, &headers, &owner, &name, Some(Permission::Read)).await?;
+    let repo = authorize_read(&s, &headers, &owner, &name).await?;
     let (rev, bytes) = repo
         .service
         .read(&RepoPath::new(q.path)?, q.revision.map(RevisionId))

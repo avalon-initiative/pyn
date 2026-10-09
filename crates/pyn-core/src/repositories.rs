@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use chrono::Duration;
 
-use crate::access::{Credential, Identity, Permission, Role};
+use crate::access::{Credential, Identity, Permission, Principal, Role};
 use crate::access_service::AccessService;
 use crate::audit::{AuditAction, AuditStore, NewAuditEvent};
 use crate::clock::Clock;
@@ -134,6 +134,37 @@ impl Repositories {
         Ok(OpenRepo { record, service })
     }
 
+    /// What the caller may do in the repository: their role, plus read on a public one for anyone, signed in or not.
+    /// `None` hides a private repository from someone with no part in it.
+    pub async fn principal_for(
+        &self,
+        record: &RepoRecord,
+        who: Option<&Identity>,
+    ) -> Result<Option<Principal>> {
+        let held = match who {
+            Some(who) => match self.access.principal_in(&record.id, who).await {
+                Ok(p) => Some(p),
+                Err(PynError::Unauthenticated(_)) => None,
+                Err(e) => return Err(e),
+            },
+            None => None,
+        };
+        let public = record.visibility == Visibility::Public;
+        Ok(match held {
+            Some(mut p) if !p.permissions.is_empty() => {
+                if public {
+                    p.permissions.insert(Permission::Read);
+                }
+                Some(p)
+            }
+            _ if public => Some(Principal {
+                user: who.map_or_else(|| UserId::new(""), |w| w.user.clone()),
+                permissions: [Permission::Read].into(),
+            }),
+            _ => None,
+        })
+    }
+
     /// The lock limit in force for the repository and whether its policy file sets it.
     pub async fn lock_limit(&self, record: &RepoRecord) -> Result<LockLimit> {
         Ok(self.service_for(record).await?.lock_limit())
@@ -224,10 +255,9 @@ impl Repositories {
         for (id, lock) in self.meta.list_locks_of(&who.user, self.clock.now()).await? {
             if !readable.contains_key(&id) {
                 let record = match self.meta.get_repo(&id).await? {
-                    Some(r) => match self.access.principal_in(&id, who).await {
-                        Ok(p) => p.require(Permission::Read).is_ok().then_some(r),
-                        Err(PynError::Unauthenticated(_)) => None,
-                        Err(e) => return Err(e),
+                    Some(r) => match self.principal_for(&r, Some(who)).await? {
+                        Some(p) if p.has(Permission::Read) => Some(r),
+                        _ => None,
                     },
                     None => None,
                 };
@@ -272,11 +302,15 @@ impl Repositories {
             update.settings = Some(settings);
         }
         let updated = self.meta.update_repo(&record.id, update).await?;
+        let visibility = if record.visibility == updated.visibility {
+            updated.visibility.to_string()
+        } else {
+            format!("visibility {} -> {}", record.visibility, updated.visibility)
+        };
         let detail = format!(
-            "{} -> {} ({}, lease {}h{})",
+            "{} -> {} ({visibility}, lease {}h{})",
             record.address(),
             updated.address(),
-            updated.visibility,
             updated.settings.lease_hours,
             limit_detail(&updated.settings)
         );

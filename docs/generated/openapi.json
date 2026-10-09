@@ -376,7 +376,7 @@
         ],
         "responses": {
           "200": {
-            "description": "the repositories the caller belongs to",
+            "description": "the repositories the caller has a role in; public repositories without a role are read by address",
             "content": {
               "application/json": {
                 "schema": {
@@ -463,6 +463,7 @@
         "tags": [
           "repo_api"
         ],
+        "summary": "Readable without credentials when the repository is public; otherwise 404 unless the caller has a role.",
         "operationId": "get_repo",
         "parameters": [
           {
@@ -886,6 +887,7 @@
     "/v1/repos/{owner}/{name}/content": {
       "get": {
         "tags": [],
+        "summary": "Readable without credentials when the repository is public; otherwise 404 unless the caller has a role.",
         "operationId": "get_content",
         "parameters": [
           {
@@ -958,6 +960,7 @@
     "/v1/repos/{owner}/{name}/files": {
       "get": {
         "tags": [],
+        "summary": "Readable without credentials when the repository is public; otherwise 404 unless the caller has a role.",
         "operationId": "list_files",
         "parameters": [
           {
@@ -1082,6 +1085,7 @@
     "/v1/repos/{owner}/{name}/history": {
       "get": {
         "tags": [],
+        "summary": "Readable without credentials when the repository is public; otherwise 404 unless the caller has a role.",
         "operationId": "history",
         "parameters": [
           {
@@ -1305,6 +1309,7 @@
     "/v1/repos/{owner}/{name}/locks": {
       "get": {
         "tags": [],
+        "summary": "Readable without credentials when the repository is public; otherwise 404 unless the caller has a role.",
         "operationId": "list_locks",
         "parameters": [
           {
@@ -1748,6 +1753,7 @@
     "/v1/repos/{owner}/{name}/summary": {
       "get": {
         "tags": [],
+        "summary": "Readable without credentials when the repository is public; otherwise 404 unless the caller has a role.",
         "operationId": "summary",
         "parameters": [
           {
@@ -1795,6 +1801,7 @@
     "/v1/repos/{owner}/{name}/tree": {
       "get": {
         "tags": [],
+        "summary": "Readable without credentials when the repository is public; otherwise 404 unless the caller has a role.",
         "operationId": "tree",
         "parameters": [
           {
@@ -3289,7 +3296,8 @@
           "visibility": {
             "oneOf": [
               {
-                "$ref": "#/components/schemas/Visibility"
+                "$ref": "#/components/schemas/Visibility",
+                "description": "Changing it needs the owner with admin rights and is recorded in the audit log."
               },
               {
                 "type": "null"
@@ -3300,6 +3308,7 @@
       },
       "Visibility": {
         "type": "string",
+        "description": "Public: anyone, signed in or not, may read the repository. Private: members only, and everyone else gets 404.",
         "enum": [
           "public",
           "private"

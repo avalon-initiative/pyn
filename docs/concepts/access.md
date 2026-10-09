@@ -1,7 +1,7 @@
 # Access: roles, permissions and tokens
 
-Every request is authenticated and checked against a permission. Health and the OpenAPI document are the only open
-endpoints. Accounts belong to the server, but roles, permissions, tokens' reach and invitations are per
+Every request is checked against a permission. Health, the OpenAPI document and registration are open, and so is reading
+a [public repository](repositories.md#visibility); everything else needs credentials. Accounts belong to the server, but roles, permissions, tokens' reach and invitations are per
 [repository](repositories.md): being an `admin` of `alice/game` says nothing about `bob/tools`.
 
 ## Permissions and roles
@@ -75,7 +75,7 @@ The person running the server chooses how people join with `PYN_REGISTRATION`:
 | Mode | Who can create an account |
 | --- | --- |
 | `invite` (default) | anyone with an invitation from a member who has `manage_users` in a repository |
-| `open` | anyone; the account has no access to any repository until someone adds it. Meant for a public server, and not recommended on the internet until sign-up protection exists |
+| `open` | anyone; the account has no role in any repository (it can read public ones) until someone adds it. Meant for a public server, and not recommended on the internet until sign-up protection exists |
 | `closed` | nobody on their own; someone with `manage_users` adds people with `pyn user add` |
 
 In every mode, someone with `manage_users` in a repository can add people to it by hand. An invitation is a one-time code

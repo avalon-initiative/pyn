@@ -178,6 +178,7 @@ pub struct Me {
     pub permissions: Vec<String>,
 }
 
+/// Public: anyone, signed in or not, may read the repository. Private: members only, and everyone else gets 404.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Visibility {
@@ -221,6 +222,7 @@ pub struct CreateRepoRequest {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
 pub struct UpdateRepoRequest {
     pub name: Option<String>,
+    /// Changing it needs the owner with admin rights and is recorded in the audit log.
     pub visibility: Option<Visibility>,
     pub lease_hours: Option<u32>,
     /// A number sets the limit, `null` returns to the server default. Refused while the policy file sets one.

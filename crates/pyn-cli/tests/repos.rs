@@ -340,3 +340,43 @@ fn repo_create_takes_a_lock_limit_that_checkout_enforces() {
     );
     assert!(bad.contains("invalid_request"), "{bad}");
 }
+
+#[test]
+fn the_owner_changes_a_repositorys_visibility() {
+    let env = start_empty();
+    let home = env.dir("home");
+    env.ok(&home, "alice", &["repo", "create", "notes", "--no-policy"]);
+    let visibility = || {
+        let listed = env.ok(&home, "alice", &["repo", "list"]);
+        cell_rows(&listed)[1][0].clone()
+    };
+    assert_eq!(visibility(), "private");
+
+    let out = env.ok(
+        &home,
+        "alice",
+        &["repo", "visibility", "alice/notes", "public"],
+    );
+    assert!(out.contains("alice/notes is now public"), "{out}");
+    assert_eq!(visibility(), "public");
+
+    let denied = env.fails(
+        &home,
+        "bob",
+        &["repo", "visibility", "alice/notes", "private"],
+    );
+    assert!(denied.contains("not_namespace_owner"), "{denied}");
+    let bad = env.fails(
+        &home,
+        "alice",
+        &["repo", "visibility", "alice/notes", "odd"],
+    );
+    assert!(bad.contains("unknown visibility"), "{bad}");
+
+    env.ok(
+        &home,
+        "alice",
+        &["repo", "visibility", "alice/notes", "private"],
+    );
+    assert_eq!(visibility(), "private");
+}
