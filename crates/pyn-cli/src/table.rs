@@ -25,11 +25,6 @@ pub fn render(header: &[&str], rows: &[Vec<String>]) -> String {
     lines.join("\n")
 }
 
-/// A timestamp to the second, in UTC.
-pub fn when(t: chrono::DateTime<chrono::Utc>) -> String {
-    t.format("%Y-%m-%d %H:%M:%S").to_string()
-}
-
 /// Prints the table, or `empty` alone when there are no rows.
 pub fn show(header: &[&str], rows: &[Vec<String>], empty: &str) {
     if rows.is_empty() {

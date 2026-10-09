@@ -72,6 +72,12 @@ message, detail) comes last and is not padded, so a long value never pushes the 
 show is `-`, and an empty list prints a short sentence such as `no locks` instead of a bare header. Scripts should read
 columns by position from the header rather than split on tabs; revisions are written `rN`.
 
+Dates and times follow one format everywhere the CLI prints them, in tables and in messages. The server sends UTC; the
+CLI converts to the operating system's timezone (set `TZ` to override it). A date is `Mon DD YYYY` with a three-letter
+month (`Jun 09 2026`), a time is `HH:MM` on a 24-hour clock with no seconds or fractions, and a timestamp is both
+(`Jun 09 2026 14:05`). A raw UTC timestamp inside a server message, such as the end of a lock in "locked by alice until
+...", is rewritten the same way. The time left on a lock stays relative (`7h 59m`).
+
 ## The ignore file
 
 `.pyn/ignore` lists paths that `pyn status` should not report as untracked, one pattern per line, with `#` for comments.

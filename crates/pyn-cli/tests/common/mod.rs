@@ -97,13 +97,19 @@ impl Env {
         p
     }
 
+    /// Runs the CLI with the timezone pinned to UTC.
     pub fn run(&self, cwd: &Path, user: &str, args: &[&str]) -> Output {
+        self.run_in_tz(cwd, user, args, "UTC")
+    }
+
+    pub fn run_in_tz(&self, cwd: &Path, user: &str, args: &[&str], tz: &str) -> Output {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_pyn"));
         cmd.args(args)
             .current_dir(cwd)
             .env("PYN_SERVER", &self.url)
             .env("PYN_USER", user)
             .env("PYN_CONFIG_DIR", self.config.path())
+            .env("TZ", tz)
             .env_remove("PYN_TOKEN")
             .env_remove("PYN_DIR")
             .env_remove("PYN_REPO");
