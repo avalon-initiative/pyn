@@ -195,6 +195,36 @@ async fn get_as(app: &axum::Router, uri: &str, user: &str) -> (StatusCode, Vec<u
 }
 
 #[tokio::test]
+async fn history_without_a_path_is_repository_wide_and_validates_its_parameters() {
+    let app = app().await;
+    let (status, body) = get_as(&app, "/v1/repos/owner/game/history", "alice").await;
+    assert_eq!(status, StatusCode::OK);
+    let page: api::HistoryPage = serde_json::from_slice(&body).unwrap();
+    assert!(page.revisions.is_empty() && page.next_cursor.is_none());
+
+    let (status, body) = get_as(&app, "/v1/repos/owner/game/history?path=a.txt", "alice").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        serde_json::from_slice::<api::HistoryPage>(&body)
+            .unwrap()
+            .revisions
+            .is_empty()
+    );
+
+    for uri in [
+        "/v1/repos/owner/game/history?filter=%5B",
+        "/v1/repos/owner/game/history?before=garbage",
+        "/v1/repos/owner/game/history?path=a.txt&filter=*.ts",
+        "/v1/repos/owner/game/history?path=a.txt&limit=5",
+    ] {
+        let (status, body) = get_as(&app, uri, "alice").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}");
+        let err: api::ErrorBody = serde_json::from_slice(&body).unwrap();
+        assert_eq!(err.code, "invalid_request", "{uri}");
+    }
+}
+
+#[tokio::test]
 async fn tree_and_summary_describe_the_landing_page() {
     let app = app().await;
     let body = serde_json::json!({"path": "Content/a.umap", "base_revision": null});

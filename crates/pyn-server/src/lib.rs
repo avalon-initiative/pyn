@@ -9,8 +9,8 @@ use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use pyn_core::repositories::OpenRepo;
 use pyn_core::{
-    AccessService, AuditAction, AuditQuery, AuthProvider, ContentHash, Identity, ObjectStore,
-    Permission, Principal, PynError, RepoPath, Repositories, RevisionId,
+    AccessService, AuditAction, AuditQuery, AuthProvider, ContentHash, HistoryCursor, Identity,
+    ObjectStore, PathFilter, Permission, Principal, PynError, RepoPath, Repositories, RevisionId,
 };
 use pyn_proto as api;
 use serde::Deserialize;
@@ -92,6 +92,7 @@ struct RepoAddress {
     components(schemas(
         api::Lock,
         api::Revision,
+        api::HistoryPage,
         api::CheckoutRequest,
         api::ReleaseRequest,
         api::RestoreRequest,
@@ -493,20 +494,50 @@ async fn put_object(
 
 #[derive(Deserialize)]
 struct HistoryQuery {
-    path: String,
+    path: Option<String>,
+    filter: Option<String>,
+    before: Option<String>,
+    limit: Option<usize>,
 }
 
-#[utoipa::path(get, path = "/v1/repos/{owner}/{name}/history", params(RepoAddress, ("path" = String, Query, description = "repo-relative path")),
-    responses((status = 200, body = Vec<api::Revision>)))]
+#[utoipa::path(get, path = "/v1/repos/{owner}/{name}/history",
+    params(RepoAddress,
+           ("path" = Option<String>, Query, description = "one path's revisions, oldest first; excludes the other parameters"),
+           ("filter" = Option<String>, Query, description = "glob over paths for repository history; no slash matches at any depth"),
+           ("before" = Option<String>, Query, description = "the previous page's next_cursor"),
+           ("limit" = Option<usize>, Query, description = "page size, default 50, max 200")),
+    responses((status = 200, body = api::HistoryPage),
+              (status = 400, body = api::ErrorBody, description = "invalid_request for a bad filter or cursor, or path combined with them")))]
 async fn history(
     State(s): State<AppState>,
     headers: HeaderMap,
     Path((owner, name)): Path<(String, String)>,
     Query(q): Query<HistoryQuery>,
-) -> ApiResult<Json<Vec<api::Revision>>> {
+) -> ApiResult<Json<api::HistoryPage>> {
     let (repo, _) = authorize_repo(&s, &headers, &owner, &name, Some(Permission::Read)).await?;
-    let revs = repo.service.history(&RepoPath::new(q.path)?).await?;
-    Ok(Json(revs.into_iter().map(revision_dto).collect()))
+    if let Some(path) = q.path {
+        if q.filter.is_some() || q.before.is_some() || q.limit.is_some() {
+            return Err(PynError::InvalidRequest(
+                "path cannot be combined with filter, before or limit".into(),
+            )
+            .into());
+        }
+        let revs = repo.service.history(&RepoPath::new(path)?).await?;
+        return Ok(Json(api::HistoryPage {
+            revisions: revs.into_iter().map(revision_dto).collect(),
+            next_cursor: None,
+        }));
+    }
+    let filter = q.filter.as_deref().map(PathFilter::new).transpose()?;
+    let before = q.before.as_deref().map(HistoryCursor::decode).transpose()?;
+    let page = repo
+        .service
+        .repo_history(filter.as_ref(), before.as_ref(), q.limit)
+        .await?;
+    Ok(Json(api::HistoryPage {
+        revisions: page.revisions.into_iter().map(revision_dto).collect(),
+        next_cursor: page.next.map(|c| c.encode()),
+    }))
 }
 
 #[derive(Deserialize)]

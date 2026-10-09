@@ -35,6 +35,41 @@ fn locks_files_and_history_have_stable_columns() {
 }
 
 #[test]
+fn repository_history_lists_newest_first_with_the_path_last() {
+    let env = start();
+    env.seed("alice", "Source/a.ts", "a", None);
+    env.seed("alice", "Source/b.cpp", "b", None);
+    env.seed("alice", "Source/a.ts", "a2", Some(1));
+    let home = env.dir("home");
+
+    let all = cell_rows(&env.ok(&home, "alice", &["history"]));
+    assert_eq!(all[0], ["REV", "AUTHOR", "WHEN", "MESSAGE", "PATH"]);
+    let tail: Vec<_> = all[1..]
+        .iter()
+        .map(|r| (r[0].as_str(), r[4].as_str()))
+        .collect();
+    assert_eq!(
+        tail,
+        [
+            ("r2", "Source/a.ts"),
+            ("r1", "Source/b.cpp"),
+            ("r1", "Source/a.ts")
+        ]
+    );
+
+    let ts = cell_rows(&env.ok(
+        &home,
+        "alice",
+        &["history", "--filter", "*.ts", "--limit", "1"],
+    ));
+    assert_eq!(ts.len(), 2, "{ts:?}");
+    assert_eq!(
+        (ts[1][0].as_str(), ts[1][4].as_str()),
+        ("r2", "Source/a.ts")
+    );
+}
+
+#[test]
 fn empty_listings_say_so_instead_of_printing_a_bare_header() {
     let env = start();
     let home = env.dir("home");

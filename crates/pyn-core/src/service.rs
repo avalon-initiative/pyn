@@ -6,8 +6,9 @@ use chrono::Duration;
 use crate::audit::{AuditAction, AuditEvent, AuditQuery, AuditStore, NewAuditEvent};
 use crate::clock::Clock;
 use crate::error::{PynError, Result};
+use crate::history::{HISTORY_DEFAULT_LIMIT, HISTORY_MAX_LIMIT, HistoryCursor, HistoryPage};
 use crate::object::ObjectStore;
-use crate::rules::{Mode, Rules};
+use crate::rules::{Mode, PathFilter, Rules};
 use crate::store::MetadataStore;
 use crate::tree::{ACTIVITY_ACTIONS, DEFAULT_BRANCH, EntryKind, RepoSummary, TreeEntry};
 use crate::types::{
@@ -435,5 +436,26 @@ impl RepoService {
 
     pub async fn history(&self, path: &RepoPath) -> Result<Vec<Revision>> {
         self.meta.history(&self.repo, path).await
+    }
+
+    /// Repository-wide history, newest first; `limit` defaults to 50 and is capped at 200.
+    pub async fn repo_history(
+        &self,
+        filter: Option<&PathFilter>,
+        before: Option<&HistoryCursor>,
+        limit: Option<usize>,
+    ) -> Result<HistoryPage> {
+        let limit = limit
+            .unwrap_or(HISTORY_DEFAULT_LIMIT)
+            .clamp(1, HISTORY_MAX_LIMIT);
+        let mut revisions = self
+            .meta
+            .repo_history(&self.repo, filter, before, limit + 1)
+            .await?;
+        let next = (revisions.len() > limit).then(|| {
+            revisions.truncate(limit);
+            HistoryCursor::of(&revisions[limit - 1])
+        });
+        Ok(HistoryPage { revisions, next })
     }
 }

@@ -185,6 +185,43 @@ impl Rules {
     }
 }
 
+/// A glob over repo paths with the `pyn.toml` glob semantics (`*` stays within a segment, `**` crosses them).
+/// A pattern without `/` matches at any depth; a trailing `/` means everything under that folder.
+#[derive(Debug, Clone)]
+pub struct PathFilter(GlobMatcher);
+
+impl PathFilter {
+    pub fn new(pattern: &str) -> Result<Self> {
+        let bad = |why: &str| PynError::InvalidRequest(format!("filter {pattern:?}: {why}"));
+        if pattern.is_empty() {
+            return Err(bad("empty pattern"));
+        }
+        if pattern.starts_with('/')
+            || pattern.starts_with("./")
+            || pattern.contains(['\\', '\0'])
+            || pattern.split('/').any(|seg| seg == ".." || seg == ".")
+        {
+            return Err(bad("patterns are repo-relative with '/' separators"));
+        }
+        let anchored = if pattern.ends_with('/') {
+            format!("{pattern}**")
+        } else if pattern.contains('/') {
+            pattern.to_string()
+        } else {
+            format!("**/{pattern}")
+        };
+        let glob = GlobBuilder::new(&anchored)
+            .literal_separator(true)
+            .build()
+            .map_err(|e| bad(&e.to_string()))?;
+        Ok(Self(glob.compile_matcher()))
+    }
+
+    pub fn is_match(&self, path: &RepoPath) -> bool {
+        self.0.is_match(path.as_str())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -329,5 +366,34 @@ paths = ["Content/docs/", "**/*.md", "docs/"]
     fn repeating_an_entry_in_the_same_list_is_harmless() {
         let r = rules("[exclusive]\npaths = [\"a.txt\", \"a.txt\", \"d/\", \"d/\"]\n");
         assert_eq!(r.mode_for(&p("a.txt")), Mode::Exclusive);
+    }
+
+    #[test]
+    fn filters_without_a_slash_match_at_any_depth() {
+        let f = PathFilter::new("*.ts").unwrap();
+        assert!(f.is_match(&p("a.ts")));
+        assert!(f.is_match(&p("src/deep/a.ts")));
+        assert!(!f.is_match(&p("a.tsx")));
+    }
+
+    #[test]
+    fn filters_with_a_slash_are_anchored_and_stars_stay_in_a_segment() {
+        let f = PathFilter::new("Content/*.uasset").unwrap();
+        assert!(f.is_match(&p("Content/a.uasset")));
+        assert!(!f.is_match(&p("Content/sub/a.uasset")));
+        assert!(!f.is_match(&p("Other/Content/a.uasset")));
+        let all = PathFilter::new("Source/**").unwrap();
+        assert!(all.is_match(&p("Source/a/b.cpp")));
+        assert!(!all.is_match(&p("Sources/a.cpp")));
+        let dir = PathFilter::new("Source/").unwrap();
+        assert!(dir.is_match(&p("Source/a/b.cpp")));
+    }
+
+    #[test]
+    fn bad_filters_are_invalid_requests() {
+        for bad in ["", "/a", "a/../b", "a\\b", "["] {
+            let err = PathFilter::new(bad).unwrap_err();
+            assert!(matches!(err, PynError::InvalidRequest(_)), "{bad:?}: {err}");
+        }
     }
 }
