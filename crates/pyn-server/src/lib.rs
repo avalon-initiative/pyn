@@ -6,7 +6,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::header::RETRY_AFTER;
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post, put};
+use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use pyn_core::repositories::OpenRepo;
 use pyn_core::{
@@ -76,6 +76,11 @@ struct RepoAddress {
         admin_api::disable,
         admin_api::enable,
         admin_api::audit,
+        admin_api::create_org,
+        admin_api::delete_org,
+        admin_api::create_service_credential,
+        admin_api::list_service_credentials,
+        admin_api::revoke_service_credential,
         access_api::create_token,
         access_api::list_tokens,
         access_api::revoke_token,
@@ -174,6 +179,10 @@ struct RepoAddress {
         api::Me,
         api::OrgInfo,
         api::CreateOrgRequest,
+        api::AdminCreateOrgRequest,
+        api::CreateServiceCredentialRequest,
+        api::ServiceCredentialInfo,
+        api::CreatedServiceCredential,
         api::Visibility,
         api::RepoInfo,
         api::CreateRepoRequest,
@@ -212,6 +221,16 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/admin/users/{user}/disable", post(admin_api::disable))
         .route("/v1/admin/users/{user}/enable", post(admin_api::enable))
         .route("/v1/admin/audit", get(admin_api::audit))
+        .route("/v1/admin/orgs", post(admin_api::create_org))
+        .route("/v1/admin/orgs/{org}", delete(admin_api::delete_org))
+        .route(
+            "/v1/admin/service-credentials",
+            get(admin_api::list_service_credentials).post(admin_api::create_service_credential),
+        )
+        .route(
+            "/v1/admin/service-credentials/{name}",
+            delete(admin_api::revoke_service_credential),
+        )
         .route("/v1/login", post(access_api::login))
         .route(
             "/v1/session",
@@ -364,12 +383,15 @@ impl IntoResponse for ApiError {
             | PynError::TeamExists { .. }
             | PynError::LastOrgOwner(_)
             | PynError::KeyInUse
+            | PynError::ServiceCredentialExists(_)
             | PynError::ConfirmationRequired { .. } => StatusCode::CONFLICT,
             PynError::NotLockHolder(_)
             | PynError::Forbidden(_)
             | PynError::RegistrationClosed
             | PynError::AccountInactive(_)
             | PynError::ServerAdminRequired
+            | PynError::ServiceScopeRequired(_)
+            | PynError::ServiceCredentialNotAllowed
             | PynError::NotNamespaceOwner(_)
             | PynError::NotOrgOwner(_)
             | PynError::NotOrgMember(_)
@@ -378,6 +400,7 @@ impl IntoResponse for ApiError {
             PynError::TooManyAttempts { .. } => StatusCode::TOO_MANY_REQUESTS,
             PynError::Unauthenticated(_) => StatusCode::UNAUTHORIZED,
             PynError::TokenNotFound(_)
+            | PynError::ServiceCredentialNotFound(_)
             | PynError::UserNotFound(_)
             | PynError::KeyNotFound(_)
             | PynError::RepoNotFound(_)
@@ -427,7 +450,17 @@ fn bearer_token(headers: &HeaderMap) -> Option<&str> {
 }
 
 /// Names the account behind the request's credential: a bearer token, the dev header or a session cookie.
+/// A service credential is refused; only the admin routes take one.
 pub(crate) async fn identify(state: &AppState, headers: &HeaderMap) -> ApiResult<Identity> {
+    let who = identify_admin(state, headers).await?;
+    if matches!(who.credential, pyn_core::Credential::Service(_)) {
+        return Err(PynError::ServiceCredentialNotAllowed.into());
+    }
+    Ok(who)
+}
+
+/// Like `identify`, but a service credential is accepted too.
+pub(crate) async fn identify_admin(state: &AppState, headers: &HeaderMap) -> ApiResult<Identity> {
     let dev_user = headers
         .get(api::DEV_USER_HEADER)
         .and_then(|v| v.to_str().ok());

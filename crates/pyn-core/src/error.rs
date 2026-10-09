@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 
-use crate::access::{AccountStatus, Permission};
+use crate::access::{AccountStatus, Permission, ServiceScope};
 use crate::types::{RepoPath, RevisionId, UserId};
 
 pub type Result<T, E = PynError> = std::result::Result<T, E>;
@@ -59,6 +59,14 @@ pub enum PynError {
     UserNotFound(String),
     #[error("only a server administrator can do that")]
     ServerAdminRequired,
+    #[error("the service credential needs the {0} scope")]
+    ServiceScopeRequired(ServiceScope),
+    #[error("a service credential cannot be used for this")]
+    ServiceCredentialNotAllowed,
+    #[error("no service credential {0}")]
+    ServiceCredentialNotFound(String),
+    #[error("there is already a service credential named {0}")]
+    ServiceCredentialExists(String),
     #[error("that key is already linked to an account")]
     KeyInUse,
     #[error("no key {0}")]
@@ -162,6 +170,10 @@ impl PynError {
             Self::InvalidVerification(_) => "invalid_verification",
             Self::UserNotFound(_) => "user_not_found",
             Self::ServerAdminRequired => "server_admin_required",
+            Self::ServiceScopeRequired(_) => "service_scope_required",
+            Self::ServiceCredentialNotAllowed => "service_credential_not_allowed",
+            Self::ServiceCredentialNotFound(_) => "service_credential_not_found",
+            Self::ServiceCredentialExists(_) => "service_credential_exists",
             Self::KeyInUse => "key_in_use",
             Self::KeyNotFound(_) => "key_not_found",
             Self::Unauthenticated(_) => "unauthenticated",

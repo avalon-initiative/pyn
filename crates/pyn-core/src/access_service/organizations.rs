@@ -65,6 +65,50 @@ impl AccessService {
         self.org(&org).await
     }
 
+    /// Creates an organization owned by an existing active user, on behalf of a server administrator or a
+    /// service credential with `manage_organizations`. Recorded in the organization's and the server's log.
+    pub async fn admin_create_org(
+        &self,
+        actor: &Identity,
+        name: &str,
+        owner: &UserId,
+    ) -> Result<AccountRecord> {
+        self.require_admin_scope(actor, ServiceScope::ManageOrganizations)
+            .await?;
+        let org = account::validate_org_name(name)?;
+        self.existing_account(owner).await?;
+        self.require_active(owner).await?;
+        if !self.store.create_org(&org, owner, self.clock.now()).await? {
+            return Err(PynError::UserExists(org));
+        }
+        let detail = format!("{org} created, owner {owner}");
+        self.record(
+            AuditScope::Org(org.clone()),
+            &actor.user,
+            AuditAction::OrgCreated,
+            detail.clone(),
+        )
+        .await?;
+        self.record_server(&actor.user, AuditAction::OrgCreated, detail)
+            .await?;
+        self.org(&org).await
+    }
+
+    /// Deletes an organization that owns no repositories, without being one of its owners. Same authority and
+    /// logging as `admin_create_org`.
+    pub async fn admin_delete_org(&self, actor: &Identity, name: &UserId) -> Result<()> {
+        self.require_admin_scope(actor, ServiceScope::ManageOrganizations)
+            .await?;
+        self.org(name).await?;
+        self.delete_org_unchecked(actor, name).await?;
+        self.record_server(
+            &actor.user,
+            AuditAction::OrgDeleted,
+            format!("{name} deleted"),
+        )
+        .await
+    }
+
     /// `OrgNotFound` if the organization is gone, `OrgDeleting` while a delete holds a fresh mark on it.
     pub async fn require_org_open(&self, name: &UserId) -> Result<()> {
         if self.org(name).await?.is_deleting(self.clock.now()) {
@@ -79,6 +123,10 @@ impl AccessService {
         actor.require_namespace_management()?;
         self.org(name).await?;
         self.require_org_owner(name, &actor.user).await?;
+        self.delete_org_unchecked(actor, name).await
+    }
+
+    async fn delete_org_unchecked(&self, actor: &Identity, name: &UserId) -> Result<()> {
         let now = self.clock.now();
         let stale_before = now - Duration::seconds(ORG_DELETE_MARK_SECONDS);
         match self

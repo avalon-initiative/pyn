@@ -7,9 +7,9 @@ use chrono::{DateTime, Duration, Utc};
 use crate::access::{
     AccountKind, AccountRecord, AccountStatus, Credential, Identity, InviteId, InviteRecord,
     NewAccount, ORG_DELETE_MARK_SECONDS, OrgCreation, OrgRole, Permission, Principal,
-    RegistrationMode, Role, RoleDefinitions, RoleSource, SessionRecord, SignupStage, SshKeyRecord,
-    TeamRecord, TokenId, TokenRecord, VerificationRecord, account, invite, session, ssh, token,
-    verification,
+    RegistrationMode, Role, RoleDefinitions, RoleSource, ServiceCredentialRecord, ServiceScope,
+    SessionRecord, SignupStage, SshKeyRecord, TeamRecord, TokenId, TokenRecord, VerificationRecord,
+    account, invite, service_credential, session, ssh, token, verification,
 };
 use crate::audit::{AuditAction, AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent};
 use crate::clock::Clock;
@@ -260,6 +260,20 @@ pub trait AccessStore: Send + Sync {
     async fn revoke_token(&self, id: &TokenId, now: DateTime<Utc>) -> Result<bool>;
 
     async fn touch_token(&self, id: &TokenId, now: DateTime<Utc>) -> Result<()>;
+
+    /// Stores the credential; false if its name is already taken, revoked or not.
+    async fn create_service_credential(&self, record: ServiceCredentialRecord) -> Result<bool>;
+
+    async fn get_service_credential(&self, id: &TokenId)
+    -> Result<Option<ServiceCredentialRecord>>;
+
+    /// Every service credential, oldest first.
+    async fn list_service_credentials(&self) -> Result<Vec<ServiceCredentialRecord>>;
+
+    /// Marks the named credential revoked; false if there is none. Revoking twice is harmless.
+    async fn revoke_service_credential(&self, name: &str, now: DateTime<Utc>) -> Result<bool>;
+
+    async fn touch_service_credential(&self, id: &TokenId, now: DateTime<Utc>) -> Result<()>;
 
     /// Creates a self-registered account with its password; false if the name is already taken.
     async fn create_account(&self, new: NewAccount) -> Result<bool>;
@@ -630,6 +644,9 @@ impl AccessService {
 
     /// Checks a bearer token and names its owner; the token's limits apply once a repository is chosen.
     pub async fn identify(&self, raw: &str) -> Result<Identity> {
+        if service_credential::is_service(raw) {
+            return self.identify_service(raw).await;
+        }
         let (id, secret) = token::parse(raw).ok_or_else(|| unauthenticated("malformed token"))?;
         let record = self
             .store
@@ -654,11 +671,38 @@ impl AccessService {
         })
     }
 
+    async fn identify_service(&self, raw: &str) -> Result<Identity> {
+        let (id, secret) = service_credential::parse(raw)
+            .ok_or_else(|| unauthenticated("malformed credential"))?;
+        let record = self
+            .store
+            .get_service_credential(&id)
+            .await?
+            .ok_or_else(|| unauthenticated("unknown credential"))?;
+        if !token::hashes_match(&record.secret_hash, &token::hash_secret(secret)) {
+            return Err(unauthenticated("unknown credential"));
+        }
+        if record.revoked_at.is_some() {
+            return Err(unauthenticated("credential revoked"));
+        }
+        self.store
+            .touch_service_credential(&id, self.clock.now())
+            .await?;
+        Ok(Identity {
+            user: record.actor(),
+            credential: Credential::Service(record),
+        })
+    }
+
     /// What the identity may do in `repo`: its role, further limited by a token's permissions and repositories.
     pub async fn principal_in(&self, repo: &RepoId, who: &Identity) -> Result<Principal> {
         match &who.credential {
             Credential::Unrestricted => Ok(Principal::unrestricted(who.user.clone())),
             Credential::Session => self.principal(repo, &who.user).await,
+            Credential::Service(_) => Ok(Principal {
+                user: who.user.clone(),
+                permissions: BTreeSet::new(),
+            }),
             Credential::Token(record) => {
                 if !record.repos.is_empty() && !record.repos.contains(repo) {
                     return Err(unauthenticated("token is not valid for this repository"));
@@ -1606,6 +1650,7 @@ impl AccessService {
     pub async fn is_server_admin(&self, who: &Identity) -> Result<bool> {
         match &who.credential {
             Credential::Unrestricted => return Ok(true),
+            Credential::Service(_) => return Ok(false),
             Credential::Token(t) if !t.permissions.contains(&Permission::ManageUsers) => {
                 return Ok(false);
             }
@@ -1626,6 +1671,15 @@ impl AccessService {
         }
     }
 
+    /// Server administrators pass; a service credential passes only with `scope`.
+    async fn require_admin_scope(&self, who: &Identity, scope: ServiceScope) -> Result<()> {
+        match &who.credential {
+            Credential::Service(c) if c.scopes.contains(&scope) => Ok(()),
+            Credential::Service(_) => Err(PynError::ServiceScopeRequired(scope)),
+            _ => self.require_server_admin(who).await,
+        }
+    }
+
     async fn record_server(
         &self,
         actor: &UserId,
@@ -1642,7 +1696,8 @@ impl AccessService {
         status: Option<AccountStatus>,
         limit: usize,
     ) -> Result<Vec<AccountRecord>> {
-        self.require_server_admin(actor).await?;
+        self.require_admin_scope(actor, ServiceScope::ManageAccounts)
+            .await?;
         self.store.list_accounts(status, limit).await
     }
 
@@ -1656,7 +1711,8 @@ impl AccessService {
 
     /// Lets a verified account that is waiting for approval in. Server administrators only.
     pub async fn approve_account(&self, actor: &Identity, user: &UserId) -> Result<AccountRecord> {
-        self.require_server_admin(actor).await?;
+        self.require_admin_scope(actor, ServiceScope::ManageAccounts)
+            .await?;
         let account = self.existing_account(user).await?;
         if account.signup != SignupStage::PendingApproval {
             return Err(PynError::InvalidRequest(
@@ -1681,7 +1737,8 @@ impl AccessService {
         user: &UserId,
         reason: Option<&str>,
     ) -> Result<AccountRecord> {
-        self.require_server_admin(actor).await?;
+        self.require_admin_scope(actor, ServiceScope::ManageAccounts)
+            .await?;
         if &actor.user == user {
             return Err(PynError::InvalidRequest(
                 "you cannot disable your own account".into(),
@@ -1707,7 +1764,8 @@ impl AccessService {
 
     /// Lifts a disable. Server administrators only.
     pub async fn enable_account(&self, actor: &Identity, user: &UserId) -> Result<AccountRecord> {
-        self.require_server_admin(actor).await?;
+        self.require_admin_scope(actor, ServiceScope::ManageAccounts)
+            .await?;
         let account = self.existing_account(user).await?;
         if account.disabled_at.is_none() {
             return Err(PynError::InvalidRequest(
@@ -1735,5 +1793,68 @@ impl AccessService {
             Some(store) => store.list(&AuditScope::Server, query).await,
             None => Ok(Vec::new()),
         }
+    }
+
+    /// Creates a service credential with `scopes`. Server administrators only; the secret is not stored and
+    /// cannot be shown again.
+    pub async fn create_service_credential(
+        &self,
+        actor: &Identity,
+        name: &str,
+        scopes: BTreeSet<ServiceScope>,
+    ) -> Result<(ServiceCredentialRecord, String)> {
+        self.require_server_admin(actor).await?;
+        let name = service_credential::validate_name(name)?;
+        if scopes.is_empty() {
+            return Err(PynError::InvalidRequest(
+                "a service credential needs at least one scope".into(),
+            ));
+        }
+        let (id, full, secret_hash) = service_credential::generate()?;
+        let record = ServiceCredentialRecord {
+            id,
+            name: name.clone(),
+            secret_hash,
+            scopes,
+            created_by: actor.user.clone(),
+            created_at: self.clock.now(),
+            revoked_at: None,
+            last_used_at: None,
+        };
+        if !self.store.create_service_credential(record.clone()).await? {
+            return Err(PynError::ServiceCredentialExists(name));
+        }
+        let detail = format!(
+            "service credential {name} ({}): scopes [{}]",
+            record.id,
+            join(record.scopes.iter())
+        );
+        self.record_server(&actor.user, AuditAction::ServiceCredentialCreated, detail)
+            .await?;
+        Ok((record, full))
+    }
+
+    /// Every service credential, oldest first. Server administrators only.
+    pub async fn list_service_credentials(
+        &self,
+        actor: &Identity,
+    ) -> Result<Vec<ServiceCredentialRecord>> {
+        self.require_server_admin(actor).await?;
+        self.store.list_service_credentials().await
+    }
+
+    /// Revokes the named credential at once. Server administrators only.
+    pub async fn revoke_service_credential(&self, actor: &Identity, name: &str) -> Result<()> {
+        self.require_server_admin(actor).await?;
+        let now = self.clock.now();
+        if !self.store.revoke_service_credential(name, now).await? {
+            return Err(PynError::ServiceCredentialNotFound(name.to_string()));
+        }
+        self.record_server(
+            &actor.user,
+            AuditAction::ServiceCredentialRevoked,
+            format!("service credential {name} revoked"),
+        )
+        .await
     }
 }

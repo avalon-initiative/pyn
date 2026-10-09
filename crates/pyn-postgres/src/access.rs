@@ -7,8 +7,9 @@ use pyn_core::{
     AccessStore, AccountKind, AccountRecord, AccountStatus, CreationEffect, CreationRule,
     CreationScope, CreationSubject, InviteId, InviteRecord, MemberCreation, NewAccount,
     OrgDeleteMark, OrgMemberChange, OrgRole, Permission, RateLimitStore, RateState, RepoId,
-    RepoPolicy, Result, Role, RoleDefinitions, SessionRecord, SignupStage, SshKeyRecord,
-    SubjectKind, TeamRecord, TokenId, TokenRecord, UserId, VerificationRecord,
+    RepoPolicy, Result, Role, RoleDefinitions, ServiceCredentialRecord, ServiceScope,
+    SessionRecord, SignupStage, SshKeyRecord, SubjectKind, TeamRecord, TokenId, TokenRecord,
+    UserId, VerificationRecord,
 };
 use sqlx::Row;
 use sqlx::postgres::PgRow;
@@ -21,6 +22,23 @@ fn permissions(names: Vec<String>) -> Result<BTreeSet<Permission>> {
 
 fn names(permissions: &BTreeSet<Permission>) -> Vec<String> {
     permissions.iter().map(|p| p.as_str().to_string()).collect()
+}
+
+fn service_credential_from(row: &PgRow) -> Result<ServiceCredentialRecord> {
+    Ok(ServiceCredentialRecord {
+        id: TokenId(row.get("id")),
+        name: row.get("name"),
+        secret_hash: row.get("secret_hash"),
+        scopes: row
+            .get::<Vec<String>, _>("scopes")
+            .iter()
+            .map(|n| ServiceScope::from_str(n))
+            .collect::<Result<_>>()?,
+        created_by: UserId::new(row.get::<String, _>("created_by")),
+        created_at: row.get("created_at"),
+        revoked_at: row.get("revoked_at"),
+        last_used_at: row.get("last_used_at"),
+    })
 }
 
 fn team_from(row: &PgRow) -> TeamRecord {
@@ -755,6 +773,79 @@ impl AccessStore for PgMetadataStore {
 
     async fn touch_token(&self, id: &TokenId, now: DateTime<Utc>) -> Result<()> {
         sqlx::query("UPDATE tokens SET last_used_at = $2 WHERE id = $1")
+            .bind(&id.0)
+            .bind(now)
+            .execute(&self.pool)
+            .await
+            .map_err(db)?;
+        Ok(())
+    }
+
+    async fn create_service_credential(&self, record: ServiceCredentialRecord) -> Result<bool> {
+        let done = sqlx::query(
+            "INSERT INTO service_credentials (id, name, secret_hash, scopes, created_by, created_at, revoked_at, last_used_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT (name) DO NOTHING",
+        )
+        .bind(&record.id.0)
+        .bind(&record.name)
+        .bind(&record.secret_hash)
+        .bind(
+            record
+                .scopes
+                .iter()
+                .map(|s| s.as_str().to_string())
+                .collect::<Vec<_>>(),
+        )
+        .bind(record.created_by.as_str())
+        .bind(record.created_at)
+        .bind(record.revoked_at)
+        .bind(record.last_used_at)
+        .execute(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    async fn get_service_credential(
+        &self,
+        id: &TokenId,
+    ) -> Result<Option<ServiceCredentialRecord>> {
+        let row = sqlx::query(
+            "SELECT id, name, secret_hash, scopes, created_by, created_at, revoked_at, last_used_at
+             FROM service_credentials WHERE id = $1",
+        )
+        .bind(&id.0)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db)?;
+        row.as_ref().map(service_credential_from).transpose()
+    }
+
+    async fn list_service_credentials(&self) -> Result<Vec<ServiceCredentialRecord>> {
+        let rows = sqlx::query(
+            "SELECT id, name, secret_hash, scopes, created_by, created_at, revoked_at, last_used_at
+             FROM service_credentials ORDER BY created_at, id",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        rows.iter().map(service_credential_from).collect()
+    }
+
+    async fn revoke_service_credential(&self, name: &str, now: DateTime<Utc>) -> Result<bool> {
+        let done = sqlx::query(
+            "UPDATE service_credentials SET revoked_at = COALESCE(revoked_at, $2) WHERE name = $1",
+        )
+        .bind(name)
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    async fn touch_service_credential(&self, id: &TokenId, now: DateTime<Utc>) -> Result<()> {
+        sqlx::query("UPDATE service_credentials SET last_used_at = $2 WHERE id = $1")
             .bind(&id.0)
             .bind(now)
             .execute(&self.pool)

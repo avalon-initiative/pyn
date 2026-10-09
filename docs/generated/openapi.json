@@ -67,7 +67,266 @@
             }
           },
           "403": {
+            "description": "server_admin_required: service credentials cannot read the log",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/orgs": {
+      "post": {
+        "tags": [
+          "admin_api"
+        ],
+        "operationId": "create_org",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminCreateOrgRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "the named user becomes its first owner",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrgInfo"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request (bad name) or reserved_name",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "server_admin_required, or service_scope_required for a service credential without manage_organizations",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "user_not_found: the owner",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "user_exists: the name is taken by a user or organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/orgs/{org}": {
+      "delete": {
+        "tags": [
+          "admin_api"
+        ],
+        "operationId": "delete_org",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "the organization's name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "its audit log is kept"
+          },
+          "403": {
+            "description": "server_admin_required, or service_scope_required for a service credential without manage_organizations",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "org_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "org_not_empty or org_deleting",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/service-credentials": {
+      "get": {
+        "tags": [
+          "admin_api"
+        ],
+        "operationId": "list_service_credentials",
+        "responses": {
+          "200": {
+            "description": "oldest first, revoked ones included",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ServiceCredentialInfo"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
             "description": "server_admin_required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "admin_api"
+        ],
+        "operationId": "create_service_credential",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateServiceCredentialRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "the secret is shown once",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatedServiceCredential"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: bad name, no scope or an unknown scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "server_admin_required: a service credential cannot create credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "service_credential_exists: names are never reused",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/service-credentials/{name}": {
+      "delete": {
+        "tags": [
+          "admin_api"
+        ],
+        "operationId": "revoke_service_credential",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "the credential's name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "revoked at once; revoking again is harmless"
+          },
+          "403": {
+            "description": "server_admin_required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "service_credential_not_found",
             "content": {
               "application/json": {
                 "schema": {
@@ -121,7 +380,7 @@
             }
           },
           "403": {
-            "description": "server_admin_required",
+            "description": "server_admin_required, or service_scope_required for a service credential without manage_accounts",
             "content": {
               "application/json": {
                 "schema": {
@@ -160,7 +419,7 @@
             }
           },
           "403": {
-            "description": "server_admin_required",
+            "description": "server_admin_required, or service_scope_required for a service credential without manage_accounts",
             "content": {
               "application/json": {
                 "schema": {
@@ -220,7 +479,7 @@
             }
           },
           "403": {
-            "description": "server_admin_required",
+            "description": "server_admin_required, or service_scope_required for a service credential without manage_accounts",
             "content": {
               "application/json": {
                 "schema": {
@@ -269,7 +528,7 @@
             }
           },
           "403": {
-            "description": "server_admin_required",
+            "description": "server_admin_required, or service_scope_required for a service credential without manage_accounts",
             "content": {
               "application/json": {
                 "schema": {
@@ -4200,6 +4459,24 @@
           }
         }
       },
+      "AdminCreateOrgRequest": {
+        "type": "object",
+        "description": "A server administrator or service credential creating an organization for an existing user.",
+        "required": [
+          "name",
+          "owner"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Same rules as `CreateOrgRequest.name`."
+          },
+          "owner": {
+            "type": "string",
+            "description": "An existing active user, who becomes the organization's first owner."
+          }
+        }
+      },
       "AuditEntry": {
         "type": "object",
         "required": [
@@ -4400,6 +4677,26 @@
           }
         }
       },
+      "CreateServiceCredentialRequest": {
+        "type": "object",
+        "required": [
+          "name",
+          "scopes"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "1 to 64 lowercase letters, digits, `-` or `_`; unique, and never reused after revocation."
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "At least one of `manage_accounts`, `manage_organizations`."
+          }
+        }
+      },
       "CreateTeamRequest": {
         "type": "object",
         "required": [
@@ -4472,6 +4769,22 @@
           },
           "info": {
             "$ref": "#/components/schemas/InviteInfo"
+          }
+        }
+      },
+      "CreatedServiceCredential": {
+        "type": "object",
+        "required": [
+          "secret",
+          "info"
+        ],
+        "properties": {
+          "info": {
+            "$ref": "#/components/schemas/ServiceCredentialInfo"
+          },
+          "secret": {
+            "type": "string",
+            "description": "Presented as a bearer credential. Shown once and never stored."
           }
         }
       },
@@ -5217,6 +5530,48 @@
           },
           "role": {
             "type": "string"
+          }
+        }
+      },
+      "ServiceCredentialInfo": {
+        "type": "object",
+        "required": [
+          "name",
+          "scopes",
+          "created_by",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "created_by": {
+            "type": "string",
+            "description": "The server administrator who created it."
+          },
+          "last_used_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "name": {
+            "type": "string"
+          },
+          "revoked_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         }
       },

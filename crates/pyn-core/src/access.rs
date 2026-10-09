@@ -149,6 +149,8 @@ pub enum Credential {
     Token(TokenRecord),
     /// A web session: the owner's roles apply as they are.
     Session,
+    /// A trusted external service: administrative scopes only, no account and no repository roles.
+    Service(ServiceCredentialRecord),
     /// Development identity with every permission everywhere.
     Unrestricted,
 }
@@ -169,6 +171,7 @@ impl Identity {
             {
                 Err(PynError::Forbidden(Permission::ManageRoles))
             }
+            Credential::Service(_) => Err(PynError::ServiceCredentialNotAllowed),
             _ => Ok(()),
         }
     }
@@ -277,6 +280,110 @@ pub mod token {
                 .zip(b.bytes())
                 .fold(0u8, |acc, (x, y)| acc | (x ^ y))
                 == 0
+    }
+}
+
+/// What a service credential may do on the server. Scopes only ever get added.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ServiceScope {
+    /// List, approve, disable and enable accounts.
+    ManageAccounts,
+    /// Create and delete organizations on behalf of an owner.
+    ManageOrganizations,
+}
+
+impl ServiceScope {
+    pub const ALL: [ServiceScope; 2] = [
+        ServiceScope::ManageAccounts,
+        ServiceScope::ManageOrganizations,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ManageAccounts => "manage_accounts",
+            Self::ManageOrganizations => "manage_organizations",
+        }
+    }
+}
+
+impl fmt::Display for ServiceScope {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for ServiceScope {
+    type Err = PynError;
+    fn from_str(s: &str) -> Result<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|p| p.as_str() == s)
+            .ok_or_else(|| PynError::InvalidRequest(format!("unknown service scope {s:?}")))
+    }
+}
+
+/// A stored service credential. Only a hash of the secret is kept; names are never reused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceCredentialRecord {
+    pub id: TokenId,
+    pub name: String,
+    pub secret_hash: String,
+    pub scopes: BTreeSet<ServiceScope>,
+    pub created_by: UserId,
+    pub created_at: DateTime<Utc>,
+    pub revoked_at: Option<DateTime<Utc>>,
+    pub last_used_at: Option<DateTime<Utc>>,
+}
+
+impl ServiceCredentialRecord {
+    /// The audit actor. The `@` keeps it apart from every account name.
+    pub fn actor(&self) -> UserId {
+        UserId::new(format!("@service:{}", self.name))
+    }
+}
+
+/// Service credential strings look like `pyns_<12 hex id>_<64 hex secret>`.
+pub mod service_credential {
+    use super::*;
+
+    const PREFIX: &str = "pyns_";
+    const MAX_NAME_LENGTH: usize = 64;
+
+    /// Lowercase letters, digits, `-` and `_`, 1 to 64 characters, starting with a letter or digit.
+    pub fn validate_name(name: &str) -> Result<String> {
+        let ok = !name.is_empty()
+            && name.len() <= MAX_NAME_LENGTH
+            && name
+                .bytes()
+                .next()
+                .is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_');
+        if ok {
+            Ok(name.to_string())
+        } else {
+            Err(PynError::InvalidRequest(format!(
+                "invalid service credential name {name:?}: use 1 to 64 lowercase letters, digits, '-' or '_', starting with a letter or digit"
+            )))
+        }
+    }
+
+    /// A new id, the full credential to hand over once, and the hash to store.
+    pub fn generate() -> Result<(TokenId, String, String)> {
+        let (id, secret, hash) = token::random_parts()?;
+        Ok((TokenId(id.clone()), format!("{PREFIX}{id}_{secret}"), hash))
+    }
+
+    pub fn is_service(raw: &str) -> bool {
+        raw.starts_with(PREFIX)
+    }
+
+    pub fn parse(raw: &str) -> Option<(TokenId, &str)> {
+        let rest = raw.strip_prefix(PREFIX)?;
+        let (id, secret) = rest.split_once('_')?;
+        token::is_id_and_secret(id, secret).then(|| (TokenId(id.to_string()), secret))
     }
 }
 
