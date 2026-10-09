@@ -1,0 +1,19 @@
+# Policy for the local demo stack (make dev). Applied to every repository on the demo server.
+
+[meta]
+default = "exclusive"
+
+[exclusive]
+paths = [
+  "Content/",
+  "Config/ProductionConfig.cpp",
+  "**/*.uasset",
+]
+
+[shared]
+paths = [
+  "Source/",
+  "docs/",
+  "README.md",
+  "Config/",
+]

@@ -81,8 +81,7 @@ The person running the server chooses how people join with `PYN_REGISTRATION`:
 In every mode, someone with `manage_users` in a repository can add people to it by hand. An invitation is a one-time code
 (`pyn invite create --role writer`) for one repository that carries the role the new person will get there and an expiry; it
 is shown once, can be revoked only in the repository it belongs to, and cannot grant a role above the level of the person
-creating it. The new person runs `pyn register <name> --invite <code>` and gets that role in that repository. `PYN_DEFAULT_ROLE`
-no longer exists: with many repositories there is no one repository to give a newcomer a role in.
+creating it. The new person runs `pyn register <name> --invite <code>` and gets that role in that repository.
 
 ## Tokens
 
@@ -104,8 +103,12 @@ pyn token revoke <id>
 ## First administrator and development
 
 Start the server with `PYN_BOOTSTRAP_ADMIN=<name>` to create that account; the server prints a token for it once at
-startup. The account owns nothing yet: it creates repositories like anyone else (`pyn repo create`) and is the admin of those. For local work only, `PYN_DEV_AUTH=true` lets any request name itself with an `X-Pyn-User` header and
-grants it every permission.
+startup; add `PYN_BOOTSTRAP_PASSWORD=<password>` to sign in with `pyn login` or on the web. The account owns nothing yet: it
+creates repositories like anyone else (`pyn repo create`) and is the admin of those. `make dev` runs this setup with open
+registration and a seeded demo; see the [README](../../README.md#run-it).
+
+`PYN_DEV_AUTH=true` is a test-only escape hatch: it lets any request name itself with an `X-Pyn-User` header and grants it
+every permission. Never set it on a server others can reach.
 
 ## Audit
 
