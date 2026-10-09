@@ -2212,3 +2212,87 @@ async fn an_invitation_admits_a_new_account_to_its_repository_only() {
         body_json(send(&app, "GET", "/v1/repos/owner/game/me", &token, None).await).await;
     assert!(me.permissions.contains(&"checkin".to_string()));
 }
+
+async fn put_blob(app: &axum::Router, repo: &str, token: &str, text: &str) -> String {
+    let req = Request::builder()
+        .method("PUT")
+        .uri(format!("/v1/repos/alice/{repo}/objects"))
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::from(text.to_string()))
+        .unwrap();
+    let r = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    body_json::<api::PutObjectResponse>(r).await.content
+}
+
+#[tokio::test]
+async fn the_policy_file_in_the_repository_governs_that_repository() {
+    let app = router(state_with(false, RegistrationMode::Open).await);
+    let alice = register_and_sign_in(&app, "alice").await;
+    let carol = register_and_sign_in(&app, "carol").await;
+    create_repo(&app, &alice, "game").await;
+    create_repo(&app, &alice, "other").await;
+    send(
+        &app,
+        "PUT",
+        "/v1/repos/alice/game/members/carol",
+        &alice,
+        Some(serde_json::json!({"role": "writer"})),
+    )
+    .await;
+    let checkin = |token: String, path: &'static str, content: String, repo: &'static str| {
+        let app = app.clone();
+        async move {
+            send(
+                &app,
+                "POST",
+                &format!("/v1/repos/alice/{repo}/checkin"),
+                &token,
+                Some(serde_json::json!({
+                    "path": path, "content": content, "base_revision": null, "message": "m"
+                })),
+            )
+            .await
+        }
+    };
+    let policy = "[exclusive]\npaths = [\"Source/\"]\n[shared]\npaths = [\".pyn/pyn.toml\"]\n";
+
+    let bad = put_blob(&app, "game", &alice, "[exlusive]\n").await;
+    let r = checkin(alice.clone(), ".pyn/pyn.toml", bad, "game").await;
+    assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(body_json::<api::ErrorBody>(r).await.code, "invalid_rules");
+
+    let good = put_blob(&app, "game", &carol, policy).await;
+    let r = checkin(carol.clone(), ".pyn/pyn.toml", good.clone(), "game").await;
+    assert_eq!(r.status(), StatusCode::FORBIDDEN);
+    assert_eq!(body_json::<api::ErrorBody>(r).await.code, "forbidden");
+
+    let r = checkin(alice.clone(), ".pyn/pyn.toml", good.clone(), "game").await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let rev: api::Revision = body_json(r).await;
+    assert_eq!((rev.id, rev.mode), (1, Some(api::Mode::Shared)));
+
+    let src = put_blob(&app, "game", &carol, "int main();").await;
+    let r = checkin(carol.clone(), "Source/a.cpp", src.clone(), "game").await;
+    assert_eq!(
+        r.status(),
+        StatusCode::CONFLICT,
+        "exclusive by the repository's policy"
+    );
+    assert_eq!(body_json::<api::ErrorBody>(r).await.code, "lock_required");
+    let r = checkin(alice.clone(), "Source/a.cpp", src, "other").await;
+    assert_eq!(
+        r.status(),
+        StatusCode::OK,
+        "another repository has its own policy"
+    );
+
+    let r = send(&app, "GET", "/v1/repos/alice/game/files", &alice, None).await;
+    let files: api::FilePage = body_json(r).await;
+    let modes: Vec<_> = files
+        .entries
+        .iter()
+        .map(|f| (f.path.as_str(), f.mode))
+        .collect();
+    assert_eq!(modes, [(".pyn/pyn.toml", api::Mode::Shared)]);
+}

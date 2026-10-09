@@ -14,6 +14,9 @@ pub enum Mode {
     Exclusive,
 }
 
+/// Where a repository keeps its policy file.
+pub const POLICY_PATH: &str = ".pyn/pyn.toml";
+
 /// Parsed `pyn.toml`; see docs/concepts/pyn-toml.md.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -160,28 +163,38 @@ impl Rules {
         self.default
     }
 
+    /// The policy file is exclusive unless an entry covers it, whatever `meta.default` says.
     pub fn mode_for(&self, path: &RepoPath) -> Mode {
+        self.listed_mode(path)
+            .unwrap_or(if path.as_str() == POLICY_PATH {
+                Mode::Exclusive
+            } else {
+                self.default
+            })
+    }
+
+    fn listed_mode(&self, path: &RepoPath) -> Option<Mode> {
         let p = path.as_str();
         if let Some(mode) = self.exact.get(p) {
-            return *mode;
+            return Some(*mode);
         }
         let mut glob_hit = None;
         for (matcher, mode) in &self.globs {
             if matcher.is_match(p) {
                 if *mode == Mode::Exclusive {
-                    return Mode::Exclusive;
+                    return Some(Mode::Exclusive);
                 }
                 glob_hit = Some(*mode);
             }
         }
-        if let Some(mode) = glob_hit {
-            return mode;
+        if glob_hit.is_some() {
+            return glob_hit;
         }
         // `dirs` is sorted deepest-first.
         self.dirs
             .iter()
             .find(|(d, _)| p.starts_with(d.as_str()))
-            .map_or(self.default, |(_, m)| *m)
+            .map(|(_, m)| *m)
     }
 }
 
@@ -277,6 +290,22 @@ paths = [
         let flipped = rules("[meta]\ndefault = \"shared\"\n[exclusive]\npaths = [\"Content/\"]\n");
         assert_eq!(flipped.mode_for(&p("Source/a.cpp")), Mode::Shared);
         assert_eq!(flipped.mode_for(&p("Content/a.umap")), Mode::Exclusive);
+    }
+
+    #[test]
+    fn the_policy_file_is_exclusive_unless_an_entry_covers_it() {
+        let policy = p(POLICY_PATH);
+        assert_eq!(Rules::empty().mode_for(&policy), Mode::Exclusive);
+        let shared_default = rules("[meta]\ndefault = \"shared\"\n");
+        assert_eq!(shared_default.mode_for(&policy), Mode::Exclusive);
+        assert_eq!(shared_default.mode_for(&p("a.txt")), Mode::Shared);
+        for listing in [".pyn/pyn.toml", ".pyn/", "**/pyn.toml"] {
+            let r = rules(&format!("[shared]\npaths = [\"{listing}\"]\n"));
+            assert_eq!(r.mode_for(&policy), Mode::Shared, "{listing}");
+        }
+        let listed_exclusive =
+            rules("[meta]\ndefault = \"shared\"\n[exclusive]\npaths = [\".pyn/\"]\n");
+        assert_eq!(listed_exclusive.mode_for(&policy), Mode::Exclusive);
     }
 
     #[test]

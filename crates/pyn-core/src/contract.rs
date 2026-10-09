@@ -6,8 +6,8 @@ use chrono::{Duration, TimeZone, Utc};
 
 use crate::AccessStore;
 use crate::access::{
-    InviteId, InviteRecord, Permission, Role, RoleDefinitions, SessionRecord, SshKeyRecord,
-    TokenId, TokenRecord,
+    InviteId, InviteRecord, Permission, Principal, Role, RoleDefinitions, SessionRecord,
+    SshKeyRecord, TokenId, TokenRecord,
 };
 use crate::clock::Clock;
 use crate::memory::{MemoryAuditStore, MemoryObjectStore};
@@ -61,6 +61,10 @@ fn user(s: &str) -> UserId {
     UserId::new(s)
 }
 
+fn who(s: &str) -> Principal {
+    Principal::unrestricted(user(s))
+}
+
 async fn blob(h: &Harness, s: &str) -> ContentHash {
     h.objects.put(s.as_bytes().to_vec()).await.unwrap()
 }
@@ -74,6 +78,27 @@ pub async fn second_user_cannot_take_a_held_lock(store: Store) {
         matches!(err, PynError::LockHeld { ref owner, .. } if owner == &user("alice")),
         "{err}"
     );
+}
+
+pub async fn revisions_keep_the_mode_they_were_made_under(store: Store) {
+    let h = harness(store);
+    let (src, map) = (path("Source/a.cpp"), path("Content/a.umap"));
+    let c = blob(&h, "x").await;
+    let shared = h
+        .svc
+        .checkin(&who("alice"), &src, c.clone(), None, "s".into())
+        .await
+        .unwrap();
+    h.svc.checkout(&map, &user("alice"), None).await.unwrap();
+    let exclusive = h
+        .svc
+        .checkin(&who("alice"), &map, c, None, "e".into())
+        .await
+        .unwrap();
+    assert_eq!(shared.mode, Some(crate::Mode::Shared));
+    assert_eq!(exclusive.mode, Some(crate::Mode::Exclusive));
+    let stored = h.svc.history(&map).await.unwrap();
+    assert_eq!(stored[0].mode, Some(crate::Mode::Exclusive));
 }
 
 pub async fn racing_checkouts_have_exactly_one_winner(store: Store) {
@@ -124,7 +149,7 @@ pub async fn expired_holder_cannot_check_in(store: Store) {
     let c = blob(&h, "v1").await;
     let err = h
         .svc
-        .checkin(&map, &user("alice"), c, None, "late".into())
+        .checkin(&who("alice"), &map, c, None, "late".into())
         .await
         .unwrap_err();
     assert!(matches!(err, PynError::LockRequired(_)), "{err}");
@@ -136,7 +161,7 @@ pub async fn exclusive_checkin_requires_the_lock(store: Store) {
     let c = blob(&h, "v1").await;
     let err = h
         .svc
-        .checkin(&map, &user("alice"), c.clone(), None, "sneaky".into())
+        .checkin(&who("alice"), &map, c.clone(), None, "sneaky".into())
         .await
         .unwrap_err();
     assert!(matches!(err, PynError::LockRequired(_)), "{err}");
@@ -144,7 +169,7 @@ pub async fn exclusive_checkin_requires_the_lock(store: Store) {
     h.svc.checkout(&map, &user("alice"), None).await.unwrap();
     let err = h
         .svc
-        .checkin(&map, &user("bob"), c, None, "bypass".into())
+        .checkin(&who("bob"), &map, c, None, "bypass".into())
         .await
         .unwrap_err();
     assert!(matches!(err, PynError::LockHeld { .. }), "{err}");
@@ -161,7 +186,7 @@ pub async fn checkin_creates_a_revision_and_releases_the_lock(store: Store) {
     let c1 = blob(&h, "v1").await;
     let r1 = h
         .svc
-        .checkin(&map, &user("alice"), c1, None, "first".into())
+        .checkin(&who("alice"), &map, c1, None, "first".into())
         .await
         .unwrap();
     assert_eq!(r1.id, RevisionId(1));
@@ -174,7 +199,7 @@ pub async fn checkin_creates_a_revision_and_releases_the_lock(store: Store) {
     let c2 = blob(&h, "v2").await;
     let r2 = h
         .svc
-        .checkin(&map, &user("bob"), c2, Some(RevisionId(1)), "second".into())
+        .checkin(&who("bob"), &map, c2, Some(RevisionId(1)), "second".into())
         .await
         .unwrap();
     assert_eq!(r2.id, RevisionId(2));
@@ -191,7 +216,7 @@ pub async fn checkout_from_a_stale_copy_is_refused(store: Store) {
     h.svc.checkout(&map, &user("alice"), None).await.unwrap();
     let c = blob(&h, "v1").await;
     h.svc
-        .checkin(&map, &user("alice"), c, None, "first".into())
+        .checkin(&who("alice"), &map, c, None, "first".into())
         .await
         .unwrap();
 
@@ -224,13 +249,13 @@ pub async fn shared_paths_cannot_be_checked_out_and_reject_stale_checkins(store:
 
     let c1 = blob(&h, "a").await;
     h.svc
-        .checkin(&src, &user("alice"), c1, None, "a".into())
+        .checkin(&who("alice"), &src, c1, None, "a".into())
         .await
         .unwrap();
     let c2 = blob(&h, "b").await;
     let err = h
         .svc
-        .checkin(&src, &user("bob"), c2, None, "b".into())
+        .checkin(&who("bob"), &src, c2, None, "b".into())
         .await
         .unwrap_err();
     assert!(matches!(err, PynError::StaleBase { .. }), "{err}");
@@ -254,7 +279,7 @@ pub async fn checkin_of_unknown_content_is_refused(store: Store) {
     let ghost = ContentHash::new("00".repeat(32));
     let err = h
         .svc
-        .checkin(&src, &user("alice"), ghost, None, "x".into())
+        .checkin(&who("alice"), &src, ghost, None, "x".into())
         .await
         .unwrap_err();
     assert!(matches!(err, PynError::ObjectMissing(_)), "{err}");
@@ -271,14 +296,14 @@ pub async fn files_lists_heads_and_locks(store: Store) {
         let c = blob(&h, text).await;
         let base = (i > 0).then_some(RevisionId(i as u64));
         h.svc
-            .checkin(&a, &user("alice"), c, base, text.into())
+            .checkin(&who("alice"), &a, c, base, text.into())
             .await
             .unwrap();
     }
     h.svc.checkout(&n, &user("bob"), None).await.unwrap();
     let c = blob(&h, "n").await;
     h.svc
-        .checkin(&n, &user("bob"), c, None, "n".into())
+        .checkin(&who("bob"), &n, c, None, "n".into())
         .await
         .unwrap();
     h.svc.checkout(&m, &user("alice"), None).await.unwrap();
@@ -332,7 +357,7 @@ pub async fn tree_lists_a_directory_with_last_change_mode_and_lock(store: Store)
     let svc = tree_service(&store, &h);
     assert!(svc.tree(None).await.unwrap().is_empty());
 
-    for (p, text, who) in [
+    for (p, text, by) in [
         ("README.md", "r", "alice"),
         ("Source/a.cpp", "a", "alice"),
         ("Source/deep/b.cpp", "b", "bob"),
@@ -342,9 +367,9 @@ pub async fn tree_lists_a_directory_with_last_change_mode_and_lock(store: Store)
         let p = path(p);
         let c = blob(&h, text).await;
         if svc.mode_for(&p) == crate::Mode::Exclusive {
-            svc.checkout(&p, &user(who), None).await.unwrap();
+            svc.checkout(&p, &user(by), None).await.unwrap();
         }
-        svc.checkin(&p, &user(who), c, None, format!("add {text}"))
+        svc.checkin(&who(by), &p, c, None, format!("add {text}"))
             .await
             .unwrap();
         h.clock.advance(Duration::minutes(1));
@@ -395,7 +420,7 @@ pub async fn tree_rejects_missing_directories_and_files(store: Store) {
     let h = harness(store);
     let c = blob(&h, "a").await;
     h.svc
-        .checkin(&path("Source/a.cpp"), &user("alice"), c, None, "a".into())
+        .checkin(&who("alice"), &path("Source/a.cpp"), c, None, "a".into())
         .await
         .unwrap();
     let missing = h.svc.tree(Some(&path("Nope"))).await.unwrap_err();
@@ -413,14 +438,14 @@ pub async fn summary_counts_files_locks_and_file_activity(store: Store) {
 
     let c = blob(&h, "a").await;
     h.svc
-        .checkin(&a, &user("alice"), c, None, "a".into())
+        .checkin(&who("alice"), &a, c, None, "a".into())
         .await
         .unwrap();
     h.clock.advance(Duration::minutes(1));
     h.svc.checkout(&m, &user("bob"), None).await.unwrap();
     let c = blob(&h, "m").await;
     h.svc
-        .checkin(&m, &user("bob"), c, None, "m".into())
+        .checkin(&who("bob"), &m, c, None, "m".into())
         .await
         .unwrap();
     h.clock.advance(Duration::minutes(1));
@@ -466,7 +491,7 @@ pub async fn old_revisions_can_be_read_back(store: Store) {
         let c = blob(&h, text).await;
         let base = (i > 0).then_some(RevisionId(i as u64));
         h.svc
-            .checkin(&a, &user("alice"), c, base, text.into())
+            .checkin(&who("alice"), &a, c, base, text.into())
             .await
             .unwrap();
     }
@@ -485,7 +510,7 @@ async fn exclusive_history(h: &Harness, path: &RepoPath, texts: &[&str]) {
         h.svc.checkout(path, &user("alice"), base).await.unwrap();
         let c = blob(h, text).await;
         h.svc
-            .checkin(path, &user("alice"), c, base, (*text).into())
+            .checkin(&who("alice"), path, c, base, (*text).into())
             .await
             .unwrap();
     }
@@ -498,7 +523,7 @@ async fn commit(h: &Harness, p: &RepoPath, text: &str) {
     }
     let c = blob(h, text).await;
     h.svc
-        .checkin(p, &user("alice"), c, base, text.into())
+        .checkin(&who("alice"), p, c, base, text.into())
         .await
         .unwrap();
 }
@@ -655,8 +680,8 @@ pub async fn restore_appends_a_checkpoint_with_the_old_content(store: Store) {
     let r = h
         .svc
         .restore(
+            &who("bob"),
             &m,
-            &user("bob"),
             RevisionId(1),
             RevisionId(3),
             "Content/m.umap@r3",
@@ -689,7 +714,7 @@ pub async fn restore_appends_a_checkpoint_with_the_old_content(store: Store) {
     let c = blob(&h, "four").await;
     let next = h
         .svc
-        .checkin(&m, &user("alice"), c, Some(RevisionId(4)), "edit".into())
+        .checkin(&who("alice"), &m, c, Some(RevisionId(4)), "edit".into())
         .await
         .unwrap();
     assert_eq!(
@@ -703,11 +728,11 @@ pub async fn restore_needs_the_lock_and_the_right_confirmation(store: Store) {
     let h = harness(store);
     let m = path("Content/m.umap");
     exclusive_history(&h, &m, &["one", "two"]).await;
-    let restore = |who: &str, confirm: &str| {
-        let (svc, who, confirm) = (h.svc.clone(), user(who), confirm.to_string());
+    let restore = |name: &str, confirm: &str| {
+        let (svc, by, confirm) = (h.svc.clone(), who(name), confirm.to_string());
         let m = m.clone();
         async move {
-            svc.restore(&m, &who, RevisionId(1), RevisionId(2), &confirm, None)
+            svc.restore(&by, &m, RevisionId(1), RevisionId(2), &confirm, None)
                 .await
         }
     };
@@ -746,15 +771,15 @@ pub async fn restore_is_for_exclusive_paths_and_real_older_revisions(store: Stor
         let c = blob(&h, text).await;
         let base = (i > 0).then_some(RevisionId(i as u64));
         h.svc
-            .checkin(&s, &user("alice"), c, base, text.into())
+            .checkin(&who("alice"), &s, c, base, text.into())
             .await
             .unwrap();
     }
     let err = h
         .svc
         .restore(
+            &who("alice"),
             &s,
-            &user("alice"),
             RevisionId(1),
             RevisionId(2),
             "Source/a.cpp@r2",
@@ -773,8 +798,8 @@ pub async fn restore_is_for_exclusive_paths_and_real_older_revisions(store: Stor
     let err = h
         .svc
         .restore(
+            &who("alice"),
             &m,
-            &user("alice"),
             RevisionId(9),
             RevisionId(2),
             "Content/m.umap@r2",
@@ -786,8 +811,8 @@ pub async fn restore_is_for_exclusive_paths_and_real_older_revisions(store: Stor
     let err = h
         .svc
         .restore(
+            &who("alice"),
             &m,
-            &user("alice"),
             RevisionId(2),
             RevisionId(2),
             "Content/m.umap@r2",
@@ -877,7 +902,7 @@ pub async fn operations_are_recorded_in_the_audit_log(store: Store) {
     h.svc.checkout(&m, &user("alice"), None).await.unwrap();
     let c = blob(&h, "one").await;
     h.svc
-        .checkin(&m, &user("alice"), c, None, "first".into())
+        .checkin(&who("alice"), &m, c, None, "first".into())
         .await
         .unwrap();
     h.svc
@@ -1100,7 +1125,7 @@ pub async fn repositories_do_not_share_locks_or_revisions(store: Store) {
     other.checkout(&map, &user("bob"), None).await.unwrap();
     let c = blob(&h, "one").await;
     h.svc
-        .checkin(&map, &user("alice"), c, None, "first".into())
+        .checkin(&who("alice"), &map, c, None, "first".into())
         .await
         .unwrap();
     assert!(other.head(&map).await.unwrap().is_none());
@@ -1123,7 +1148,7 @@ pub async fn deleting_a_repository_removes_only_its_own_data(store: Store) {
     for svc in [&h.svc, &other] {
         svc.checkout(&map, &user("alice"), None).await.unwrap();
         let c = blob(&h, "one").await;
-        svc.checkin(&map, &user("alice"), c, None, "first".into())
+        svc.checkin(&who("alice"), &map, c, None, "first".into())
             .await
             .unwrap();
         svc.checkout(&map, &user("alice"), Some(RevisionId(1)))
@@ -1157,6 +1182,7 @@ pub async fn deleting_a_repository_removes_only_its_own_data(store: Store) {
 macro_rules! contract_tests {
     ($factory:expr $(, #[$attr:meta])*) => {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; second_user_cannot_take_a_held_lock);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; revisions_keep_the_mode_they_were_made_under);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; racing_checkouts_have_exactly_one_winner);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; holder_can_renew_and_the_lease_moves_forward);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; expired_lease_frees_the_file);

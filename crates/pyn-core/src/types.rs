@@ -2,6 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{PynError, Result};
+use crate::rules::Mode;
 
 macro_rules! string_id {
     ($(#[$m:meta])* $name:ident) => {
@@ -100,6 +101,8 @@ pub struct Revision {
     pub created_at: DateTime<Utc>,
     /// Set when this revision restores the content of an earlier one.
     pub restored_from: Option<RevisionId>,
+    /// The path's mode when the revision was made; `None` for revisions that predate recording.
+    pub mode: Option<Mode>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -110,6 +113,7 @@ pub struct NewRevision {
     pub message: String,
     pub created_at: DateTime<Utc>,
     pub restored_from: Option<RevisionId>,
+    pub mode: Mode,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

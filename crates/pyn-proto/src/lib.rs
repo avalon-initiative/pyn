@@ -23,6 +23,8 @@ pub struct Revision {
     pub created_at: DateTime<Utc>,
     /// Set when this revision restored the content of an earlier one.
     pub restored_from: Option<u64>,
+    /// The path's mode when the revision was made; absent for revisions that predate recording it.
+    pub mode: Option<Mode>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]

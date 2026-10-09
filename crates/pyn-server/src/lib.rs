@@ -355,6 +355,7 @@ fn revision_dto(r: pyn_core::Revision) -> api::Revision {
         message: r.message,
         created_at: r.created_at,
         restored_from: r.restored_from.map(|r| r.0),
+        mode: r.mode.map(mode_dto),
     }
 }
 
@@ -425,7 +426,8 @@ async fn release(
 #[utoipa::path(post, path = "/v1/repos/{owner}/{name}/checkin", params(RepoAddress), request_body = api::CheckinRequest, responses(
     (status = 200, body = api::Revision),
     (status = 409, body = api::ErrorBody, description = "lock_required, lock_held or stale_base"),
-    (status = 400, body = api::ErrorBody, description = "object_missing or invalid_path"),
+    (status = 400, body = api::ErrorBody, description = "object_missing, invalid_path, or invalid_rules for a malformed .pyn/pyn.toml"),
+    (status = 403, body = api::ErrorBody, description = "checking in .pyn/pyn.toml needs the edit_policy permission"),
 ))]
 async fn checkin(
     State(s): State<AppState>,
@@ -435,12 +437,11 @@ async fn checkin(
 ) -> ApiResult<Json<api::Revision>> {
     let (repo, who) =
         authorize_repo(&s, &headers, &owner, &name, Some(Permission::Checkin)).await?;
-    let user = who.user;
     let rev = repo
         .service
         .checkin(
+            &who,
             &RepoPath::new(req.path)?,
-            &user,
             ContentHash::new(req.content),
             req.base_revision.map(RevisionId),
             req.message,
@@ -462,12 +463,11 @@ async fn restore(
 ) -> ApiResult<Json<api::Revision>> {
     let (repo, who) =
         authorize_repo(&s, &headers, &owner, &name, Some(Permission::Restore)).await?;
-    let user = who.user;
     let rev = repo
         .service
         .restore(
+            &who,
             &RepoPath::new(req.path)?,
-            &user,
             RevisionId(req.revision),
             RevisionId(req.base_revision),
             &req.confirm,
@@ -742,7 +742,7 @@ struct AuditQueryParams {
 #[utoipa::path(get, path = "/v1/repos/{owner}/{name}/audit",
     params(RepoAddress, ("path" = Option<String>, Query, description = "only events for this path"),
            ("actor" = Option<String>, Query, description = "only events by this user"),
-           ("action" = Option<String>, Query, description = "checkout, release, checkin, restore, force_unlock, member_added, role_changed, role_permissions_changed, token_created, token_revoked, repo_created, repo_updated or repo_deleted"),
+           ("action" = Option<String>, Query, description = "checkout, release, checkin, restore, force_unlock, member_added, role_changed, role_permissions_changed, token_created, token_revoked, repo_created, repo_updated, repo_deleted or policy_changed"),
            ("before" = Option<i64>, Query, description = "events older than this id"),
            ("limit" = Option<usize>, Query, description = "page size, default 50, max 500")),
     responses((status = 200, body = api::AuditPage), (status = 403, body = api::ErrorBody, description = "needs view_audit")))]

@@ -36,7 +36,7 @@ pub struct Repositories {
 }
 
 impl Repositories {
-    /// `rules` applies to every repository until each reads its own `.pyn/pyn.toml`.
+    /// `rules` apply to a repository until it has a `.pyn/pyn.toml`.
     pub fn new(
         meta: Arc<dyn MetadataStore>,
         objects: Arc<dyn ObjectStore>,
@@ -73,12 +73,16 @@ impl Repositories {
         self.audit.record(&record.id, event).await
     }
 
-    fn service_for(&self, record: &RepoRecord) -> Arc<RepoService> {
-        let mut services = self.services.lock().unwrap();
-        if let Some((settings, svc)) = services.get(&record.id)
-            && *settings == record.settings
-        {
-            return svc.clone();
+    fn cached(&self, record: &RepoRecord) -> Option<Arc<RepoService>> {
+        let services = self.services.lock().unwrap();
+        let (settings, svc) = services.get(&record.id)?;
+        (*settings == record.settings).then(|| svc.clone())
+    }
+
+    /// The cached service, or a new one with the policy read from the repository's head `.pyn/pyn.toml`.
+    async fn service_for(&self, record: &RepoRecord) -> Result<Arc<RepoService>> {
+        if let Some(svc) = self.cached(record) {
+            return Ok(svc);
         }
         let svc = Arc::new(RepoService::new(
             record.id.clone(),
@@ -91,8 +95,15 @@ impl Repositories {
                 lease: Duration::hours(i64::from(record.settings.lease_hours)),
             },
         ));
+        svc.load_policy().await?;
+        let mut services = self.services.lock().unwrap();
+        if let Some((settings, existing)) = services.get(&record.id)
+            && *settings == record.settings
+        {
+            return Ok(existing.clone());
+        }
         services.insert(record.id.clone(), (record.settings, svc.clone()));
-        svc
+        Ok(svc)
     }
 
     /// Finds `owner/name`; `RepoNotFound` if there is none.
@@ -102,7 +113,7 @@ impl Repositories {
             .find_repo(&UserId::new(owner), name)
             .await?
             .ok_or_else(|| PynError::RepoNotFound(format!("{owner}/{name}")))?;
-        let service = self.service_for(&record);
+        let service = self.service_for(&record).await?;
         Ok(OpenRepo { record, service })
     }
 
