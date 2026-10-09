@@ -73,6 +73,22 @@ impl Api {
     }
 }
 
+/// A non-2xx response: the server's error code and message.
+#[derive(Debug)]
+pub struct ApiError {
+    pub code: String,
+    pub status: u16,
+    pub message: String,
+}
+
+impl std::fmt::Display for ApiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} ({}): {}", self.code, self.status, self.message)
+    }
+}
+
+impl std::error::Error for ApiError {}
+
 /// Turn a non-2xx response into an error with the server's code and message.
 pub fn ok(resp: Response) -> Result<Response> {
     if resp.status().is_success() {
@@ -80,12 +96,12 @@ pub fn ok(resp: Response) -> Result<Response> {
     }
     let status = resp.status();
     match resp.json::<api::ErrorBody>() {
-        Ok(e) => bail!(
-            "{} ({}): {}",
-            e.code,
-            status.as_u16(),
-            crate::time::localize(&e.message)
-        ),
+        Ok(e) => Err(ApiError {
+            code: e.code,
+            status: status.as_u16(),
+            message: crate::time::localize(&e.message),
+        }
+        .into()),
         Err(_) => bail!("server returned {status}"),
     }
 }
