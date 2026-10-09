@@ -10,8 +10,8 @@ use pyn_core::memory::{
     MemoryAccessStore, MemoryAuditStore, MemoryMetadataStore, MemoryObjectStore,
 };
 use pyn_core::{
-    AccessService, AuthProvider, MetadataStore, RepoId, RepoRecord, RepoSettings, Repositories,
-    Rules, SystemClock, UserId, Visibility,
+    AccessConfig, AccessService, AuthProvider, MetadataStore, Registration, RegistrationMode,
+    RepoId, RepoRecord, RepoSettings, Repositories, Rules, SystemClock, UserId, Visibility,
 };
 use pyn_server::auth::{BearerAuth, DevHeaderAuth};
 use pyn_server::{AppState, router};
@@ -37,7 +37,16 @@ pub fn start_empty() -> Env {
     start_with(false)
 }
 
+/// A server with no repositories and these accounts already registered.
+pub fn start_with_accounts(names: &[&str]) -> Env {
+    build(false, names)
+}
+
 fn start_with(with_repo: bool) -> Env {
+    build(with_repo, &[])
+}
+
+fn build(with_repo: bool, accounts: &[&str]) -> Env {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let clock = Arc::new(SystemClock);
     let objects = Arc::new(MemoryObjectStore::new());
@@ -56,10 +65,26 @@ fn start_with(with_repo: bool) -> Env {
             }))
             .unwrap();
     }
+    let config = if accounts.is_empty() {
+        AccessConfig::default()
+    } else {
+        AccessConfig {
+            registration: RegistrationMode::Open,
+            require_email_verification: false,
+            ..AccessConfig::default()
+        }
+    };
     let access = Arc::new(
         AccessService::new(Arc::new(MemoryAccessStore::new()), clock.clone())
-            .with_registry(meta.clone()),
+            .with_config(config)
+            .with_registry(meta.clone())
+            .with_audit(audit.clone()),
     );
+    for name in accounts {
+        runtime
+            .block_on(access.register(Registration::new(name, "correct horse battery")))
+            .unwrap();
+    }
     let repos = Arc::new(Repositories::new(
         meta,
         objects.clone(),
