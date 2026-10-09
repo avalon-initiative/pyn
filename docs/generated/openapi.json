@@ -216,6 +216,38 @@
         }
       }
     },
+    "/v1/me/locks": {
+      "get": {
+        "tags": [
+          "repo_api"
+        ],
+        "operationId": "my_locks",
+        "responses": {
+          "200": {
+            "description": "live locks in repositories the caller can read, ordered by repository then path",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/MyLock"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/me/password": {
       "put": {
         "tags": [
@@ -2671,6 +2703,36 @@
           "shared",
           "exclusive"
         ]
+      },
+      "MyLock": {
+        "type": "object",
+        "description": "A live lock the caller holds, with the repository it is in.",
+        "required": [
+          "owner",
+          "name",
+          "path",
+          "acquired_at",
+          "expires_at"
+        ],
+        "properties": {
+          "acquired_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "name": {
+            "type": "string"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          }
+        }
       },
       "PutObjectResponse": {
         "type": "object",

@@ -69,6 +69,29 @@ pub(crate) async fn list_repos(
     Ok(Json(infos))
 }
 
+#[utoipa::path(get, path = "/v1/me/locks",
+    responses((status = 200, body = Vec<api::MyLock>, description = "live locks in repositories the caller can read, ordered by repository then path"),
+              (status = 401, body = api::ErrorBody)))]
+pub(crate) async fn my_locks(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+) -> ApiResult<Json<Vec<api::MyLock>>> {
+    let who = identify(&s, &headers).await?;
+    let locks = s.repos.locks_of(&who).await?;
+    Ok(Json(
+        locks
+            .into_iter()
+            .map(|(r, l)| api::MyLock {
+                owner: r.owner.to_string(),
+                name: r.name,
+                path: l.path.to_string(),
+                acquired_at: l.acquired_at,
+                expires_at: l.expires_at,
+            })
+            .collect(),
+    ))
+}
+
 #[utoipa::path(post, path = "/v1/repos", request_body = api::CreateRepoRequest, responses(
     (status = 201, body = api::RepoInfo, description = "the caller becomes its admin"),
     (status = 400, body = api::ErrorBody, description = "invalid_repo_name or invalid_request (a lease or lock limit out of range)"),

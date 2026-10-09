@@ -329,6 +329,25 @@ impl MetadataStore for PgMetadataStore {
         rows.iter().map(lock_from).collect()
     }
 
+    async fn list_locks_of(
+        &self,
+        owner: &UserId,
+        now: DateTime<Utc>,
+    ) -> Result<Vec<(RepoId, Lock)>> {
+        let rows = sqlx::query(
+            "SELECT repo, path, owner, acquired_at, expires_at FROM locks
+             WHERE owner = $1 AND expires_at > $2 ORDER BY repo COLLATE \"C\", path COLLATE \"C\"",
+        )
+        .bind(owner.as_str())
+        .bind(now)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        rows.iter()
+            .map(|r| Ok((RepoId::new(r.get::<String, _>("repo")), lock_from(r)?)))
+            .collect()
+    }
+
     async fn head_revision(&self, repo: &RepoId, path: &RepoPath) -> Result<Option<Revision>> {
         let row = sqlx::query(
             "SELECT id, path, content, author, message, created_at, restored_from, mode FROM revisions

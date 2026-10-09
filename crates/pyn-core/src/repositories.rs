@@ -18,7 +18,7 @@ use crate::repo::{
 use crate::rules::Rules;
 use crate::service::{LockLimit, RepoService, ServiceConfig};
 use crate::store::MetadataStore;
-use crate::types::UserId;
+use crate::types::{Lock, UserId};
 
 fn limit_detail(settings: &RepoSettings) -> String {
     settings
@@ -214,6 +214,30 @@ impl Repositories {
             let role = self.access.role_in(&record.id, &who.user).await?;
             out.push((record, role));
         }
+        Ok(out)
+    }
+
+    /// The caller's live locks in every repository they can read, ordered by address then path.
+    pub async fn locks_of(&self, who: &Identity) -> Result<Vec<(RepoRecord, Lock)>> {
+        let mut out = Vec::new();
+        let mut readable: HashMap<crate::RepoId, Option<RepoRecord>> = HashMap::new();
+        for (id, lock) in self.meta.list_locks_of(&who.user, self.clock.now()).await? {
+            if !readable.contains_key(&id) {
+                let record = match self.meta.get_repo(&id).await? {
+                    Some(r) => match self.access.principal_in(&id, who).await {
+                        Ok(p) => p.require(Permission::Read).is_ok().then_some(r),
+                        Err(PynError::Unauthenticated(_)) => None,
+                        Err(e) => return Err(e),
+                    },
+                    None => None,
+                };
+                readable.insert(id.clone(), record);
+            }
+            if let Some(Some(record)) = readable.get(&id) {
+                out.push((record.clone(), lock));
+            }
+        }
+        out.sort_by_cached_key(|(r, l)| (r.address(), l.path.clone()));
         Ok(out)
     }
 

@@ -49,6 +49,13 @@ pub trait MetadataStore: Send + Sync {
 
     async fn list_locks(&self, repo: &RepoId, now: DateTime<Utc>) -> Result<Vec<Lock>>;
 
+    /// The live locks `owner` holds in every repository, ordered by repository id then path.
+    async fn list_locks_of(
+        &self,
+        owner: &UserId,
+        now: DateTime<Utc>,
+    ) -> Result<Vec<(RepoId, Lock)>>;
+
     async fn head_revision(&self, repo: &RepoId, path: &RepoPath) -> Result<Option<Revision>>;
 
     /// Append a revision iff the head is `expected_head`, else `StaleBase`. With `lock_holder`,
