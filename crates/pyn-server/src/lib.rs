@@ -2,32 +2,45 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Query, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
+use pyn_core::repositories::OpenRepo;
 use pyn_core::{
-    AccessService, AuditAction, AuditQuery, AuthProvider, ContentHash, ObjectStore, Permission,
-    Principal, PynError, RepoPath, RepoService, RevisionId,
+    AccessService, AuditAction, AuditQuery, AuthProvider, ContentHash, Identity, ObjectStore,
+    Permission, Principal, PynError, RepoPath, Repositories, RevisionId,
 };
 use pyn_proto as api;
 use serde::Deserialize;
-use utoipa::OpenApi;
+use utoipa::{IntoParams, OpenApi};
 
 mod access_api;
 pub mod auth;
+mod repo_api;
 mod session_api;
 
 #[derive(Clone)]
 pub struct AppState {
-    pub service: Arc<RepoService>,
+    pub repos: Arc<Repositories>,
     pub objects: Arc<dyn ObjectStore>,
     pub access: Arc<AccessService>,
     /// Authenticates bearer tokens.
     pub auth: Arc<dyn AuthProvider>,
     /// Accepts the `X-Pyn-User` header; present only when development auth is switched on.
     pub dev_auth: Option<Arc<dyn AuthProvider>>,
+}
+
+/// The `{owner}` and `{name}` of every repository route.
+#[derive(IntoParams)]
+#[allow(dead_code)]
+#[into_params(parameter_in = Path)]
+struct RepoAddress {
+    /// The namespace that owns the repository.
+    owner: String,
+    /// The repository's name within its owner.
+    name: String,
 }
 
 #[derive(OpenApi)]
@@ -41,10 +54,6 @@ pub struct AppState {
         session_api::current,
         session_api::sign_out,
         access_api::change_password,
-        access_api::add_user,
-        access_api::create_invite,
-        access_api::list_invites,
-        access_api::revoke_invite,
         access_api::add_key,
         access_api::list_keys,
         access_api::delete_key,
@@ -52,10 +61,20 @@ pub struct AppState {
         access_api::create_token,
         access_api::list_tokens,
         access_api::revoke_token,
-        access_api::list_roles,
-        access_api::set_role,
-        access_api::list_members,
-        access_api::set_member,
+        repo_api::list_repos,
+        repo_api::create_repo,
+        repo_api::get_repo,
+        repo_api::update_repo,
+        repo_api::delete_repo,
+        repo_api::repo_me,
+        repo_api::add_user,
+        repo_api::create_invite,
+        repo_api::list_invites,
+        repo_api::revoke_invite,
+        repo_api::list_roles,
+        repo_api::set_role,
+        repo_api::list_members,
+        repo_api::set_member,
         list_locks,
         list_files,
         get_content,
@@ -95,7 +114,12 @@ pub struct AppState {
         api::CreatedInvite,
         api::AddKeyRequest,
         api::SshKeyInfo,
+        api::Account,
         api::Me,
+        api::Visibility,
+        api::RepoInfo,
+        api::CreateRepoRequest,
+        api::UpdateRepoRequest,
         api::CreateTokenRequest,
         api::TokenInfo,
         api::CreatedToken,
@@ -121,15 +145,6 @@ pub fn router(state: AppState) -> Router {
                 .delete(session_api::sign_out),
         )
         .route("/v1/me/password", put(access_api::change_password))
-        .route("/v1/users", post(access_api::add_user))
-        .route(
-            "/v1/invites",
-            get(access_api::list_invites).post(access_api::create_invite),
-        )
-        .route(
-            "/v1/invites/{id}",
-            axum::routing::delete(access_api::revoke_invite),
-        )
         .route(
             "/v1/keys",
             get(access_api::list_keys).post(access_api::add_key),
@@ -147,21 +162,50 @@ pub fn router(state: AppState) -> Router {
             "/v1/tokens/{id}",
             axum::routing::delete(access_api::revoke_token),
         )
-        .route("/v1/roles", get(access_api::list_roles))
-        .route("/v1/roles/{role}", put(access_api::set_role))
-        .route("/v1/members", get(access_api::list_members))
-        .route("/v1/members/{user}", put(access_api::set_member))
-        .route("/v1/locks", get(list_locks))
-        .route("/v1/files", get(list_files))
-        .route("/v1/content", get(get_content))
-        .route("/v1/checkout", post(checkout))
-        .route("/v1/release", post(release))
-        .route("/v1/checkin", post(checkin))
-        .route("/v1/restore", post(restore))
-        .route("/v1/force-unlock", post(force_unlock))
-        .route("/v1/audit", get(audit))
-        .route("/v1/objects", put(put_object))
-        .route("/v1/history", get(history))
+        .route(
+            "/v1/repos",
+            get(repo_api::list_repos).post(repo_api::create_repo),
+        )
+        .route(
+            "/v1/repos/{owner}/{name}",
+            get(repo_api::get_repo)
+                .patch(repo_api::update_repo)
+                .delete(repo_api::delete_repo),
+        )
+        .route("/v1/repos/{owner}/{name}/me", get(repo_api::repo_me))
+        .route("/v1/repos/{owner}/{name}/users", post(repo_api::add_user))
+        .route(
+            "/v1/repos/{owner}/{name}/invites",
+            get(repo_api::list_invites).post(repo_api::create_invite),
+        )
+        .route(
+            "/v1/repos/{owner}/{name}/invites/{id}",
+            axum::routing::delete(repo_api::revoke_invite),
+        )
+        .route("/v1/repos/{owner}/{name}/roles", get(repo_api::list_roles))
+        .route(
+            "/v1/repos/{owner}/{name}/roles/{role}",
+            put(repo_api::set_role),
+        )
+        .route(
+            "/v1/repos/{owner}/{name}/members",
+            get(repo_api::list_members),
+        )
+        .route(
+            "/v1/repos/{owner}/{name}/members/{user}",
+            put(repo_api::set_member),
+        )
+        .route("/v1/repos/{owner}/{name}/locks", get(list_locks))
+        .route("/v1/repos/{owner}/{name}/files", get(list_files))
+        .route("/v1/repos/{owner}/{name}/content", get(get_content))
+        .route("/v1/repos/{owner}/{name}/checkout", post(checkout))
+        .route("/v1/repos/{owner}/{name}/release", post(release))
+        .route("/v1/repos/{owner}/{name}/checkin", post(checkin))
+        .route("/v1/repos/{owner}/{name}/restore", post(restore))
+        .route("/v1/repos/{owner}/{name}/force-unlock", post(force_unlock))
+        .route("/v1/repos/{owner}/{name}/audit", get(audit))
+        .route("/v1/repos/{owner}/{name}/objects", put(put_object))
+        .route("/v1/repos/{owner}/{name}/history", get(history))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             session_api::csrf_guard,
@@ -185,20 +229,25 @@ impl IntoResponse for ApiError {
             | PynError::LockRequired(_)
             | PynError::NotLocked(_)
             | PynError::UserExists(_)
+            | PynError::RepoExists(_)
             | PynError::KeyInUse
             | PynError::ConfirmationRequired { .. } => StatusCode::CONFLICT,
             PynError::NotLockHolder(_)
             | PynError::Forbidden(_)
             | PynError::RegistrationClosed
+            | PynError::NotNamespaceOwner(_)
             | PynError::CsrfFailed => StatusCode::FORBIDDEN,
             PynError::TooManyAttempts { .. } => StatusCode::TOO_MANY_REQUESTS,
             PynError::Unauthenticated(_) => StatusCode::UNAUTHORIZED,
-            PynError::TokenNotFound(_) | PynError::KeyNotFound(_) => StatusCode::NOT_FOUND,
+            PynError::TokenNotFound(_) | PynError::KeyNotFound(_) | PynError::RepoNotFound(_) => {
+                StatusCode::NOT_FOUND
+            }
             PynError::RevisionNotFound { .. } => StatusCode::NOT_FOUND,
             PynError::InvalidPath(_)
             | PynError::InvalidRules(_)
             | PynError::InvalidRequest(_)
             | PynError::InvalidInvite(_)
+            | PynError::InvalidRepoName(_)
             | PynError::NotExclusive(_)
             | PynError::ObjectMissing(_) => StatusCode::BAD_REQUEST,
             PynError::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -224,33 +273,56 @@ fn bearer_token(headers: &HeaderMap) -> Option<&str> {
         .then_some(token.trim())
 }
 
-/// Authenticates the request and, when `need` is given, checks the caller holds that permission.
-pub(crate) async fn authorize(
-    state: &AppState,
-    headers: &HeaderMap,
-    need: Option<Permission>,
-) -> ApiResult<Principal> {
+/// Names the account behind the request's credential: a bearer token, the dev header or a session cookie.
+pub(crate) async fn identify(state: &AppState, headers: &HeaderMap) -> ApiResult<Identity> {
     let dev_user = headers
         .get(api::DEV_USER_HEADER)
         .and_then(|v| v.to_str().ok());
-    let principal = match (bearer_token(headers), &state.dev_auth, dev_user) {
+    Ok(match (bearer_token(headers), &state.dev_auth, dev_user) {
         (Some(token), _, _) => state.auth.authenticate(token).await?,
         (None, Some(dev), Some(user)) => dev.authenticate(user).await?,
         _ => match session_api::session_cookie(headers) {
-            Some(cookie) => {
-                state
-                    .access
-                    .authenticate_session(state.service.repo(), cookie)
-                    .await?
-                    .0
-            }
+            Some(cookie) => state.access.authenticate_session(cookie).await?.0,
             None => return Err(PynError::Unauthenticated("missing credentials".into()).into()),
         },
+    })
+}
+
+/// Finds a repository the identity may know about and what it may do there. Anyone with no part in a private
+/// repository is told it does not exist.
+pub(crate) async fn open_visible(
+    state: &AppState,
+    who: &Identity,
+    owner: &str,
+    name: &str,
+) -> ApiResult<(OpenRepo, Principal)> {
+    let hidden = || PynError::RepoNotFound(format!("{owner}/{name}"));
+    let open = state.repos.open(owner, name).await?;
+    let principal = match state.access.principal_in(&open.record.id, who).await {
+        Ok(p) => p,
+        Err(PynError::Unauthenticated(_)) => return Err(hidden().into()),
+        Err(e) => return Err(e.into()),
     };
+    if principal.permissions.is_empty() && open.record.visibility == pyn_core::Visibility::Private {
+        return Err(hidden().into());
+    }
+    Ok((open, principal))
+}
+
+/// Authenticates the request and resolves `owner/name`, checking the caller holds `need` there.
+pub(crate) async fn authorize_repo(
+    state: &AppState,
+    headers: &HeaderMap,
+    owner: &str,
+    name: &str,
+    need: Option<Permission>,
+) -> ApiResult<(OpenRepo, Principal)> {
+    let who = identify(state, headers).await?;
+    let (open, principal) = open_visible(state, &who, owner, name).await?;
     if let Some(permission) = need {
         principal.require(permission)?;
     }
-    Ok(principal)
+    Ok((open, principal))
 }
 
 fn lock_dto(l: pyn_core::Lock) -> api::Lock {
@@ -279,18 +351,25 @@ async fn health() -> &'static str {
     "ok"
 }
 
-#[utoipa::path(get, path = "/v1/locks", responses((status = 200, body = Vec<api::Lock>)))]
+#[utoipa::path(get, path = "/v1/repos/{owner}/{name}/locks", params(RepoAddress),
+    responses((status = 200, body = Vec<api::Lock>)))]
 async fn list_locks(
     State(s): State<AppState>,
     headers: HeaderMap,
+    Path((owner, name)): Path<(String, String)>,
 ) -> ApiResult<Json<Vec<api::Lock>>> {
-    authorize(&s, &headers, Some(Permission::Read)).await?;
+    let (repo, _) = authorize_repo(&s, &headers, &owner, &name, Some(Permission::Read)).await?;
     Ok(Json(
-        s.service.locks().await?.into_iter().map(lock_dto).collect(),
+        repo.service
+            .locks()
+            .await?
+            .into_iter()
+            .map(lock_dto)
+            .collect(),
     ))
 }
 
-#[utoipa::path(post, path = "/v1/checkout", request_body = api::CheckoutRequest, responses(
+#[utoipa::path(post, path = "/v1/repos/{owner}/{name}/checkout", params(RepoAddress), request_body = api::CheckoutRequest, responses(
     (status = 200, body = api::Lock),
     (status = 409, body = api::ErrorBody, description = "lock_held or stale_base"),
     (status = 400, body = api::ErrorBody, description = "not_exclusive or invalid_path"),
@@ -298,10 +377,12 @@ async fn list_locks(
 async fn checkout(
     State(s): State<AppState>,
     headers: HeaderMap,
+    Path((owner, name)): Path<(String, String)>,
     Json(req): Json<api::CheckoutRequest>,
 ) -> ApiResult<Json<api::Lock>> {
-    let user = authorize(&s, &headers, Some(Permission::Lock)).await?.user;
-    let lock = s
+    let (repo, who) = authorize_repo(&s, &headers, &owner, &name, Some(Permission::Lock)).await?;
+    let user = who.user;
+    let lock = repo
         .service
         .checkout(
             &RepoPath::new(req.path)?,
@@ -312,21 +393,24 @@ async fn checkout(
     Ok(Json(lock_dto(lock)))
 }
 
-#[utoipa::path(post, path = "/v1/release", request_body = api::ReleaseRequest, responses(
+#[utoipa::path(post, path = "/v1/repos/{owner}/{name}/release", params(RepoAddress), request_body = api::ReleaseRequest, responses(
     (status = 204),
     (status = 403, body = api::ErrorBody, description = "not_lock_holder"),
 ))]
 async fn release(
     State(s): State<AppState>,
     headers: HeaderMap,
+    Path((owner, name)): Path<(String, String)>,
     Json(req): Json<api::ReleaseRequest>,
 ) -> ApiResult<StatusCode> {
-    let user = authorize(&s, &headers, Some(Permission::Lock)).await?.user;
-    s.service.release(&RepoPath::new(req.path)?, &user).await?;
+    let (repo, who) = authorize_repo(&s, &headers, &owner, &name, Some(Permission::Lock)).await?;
+    repo.service
+        .release(&RepoPath::new(req.path)?, &who.user)
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-#[utoipa::path(post, path = "/v1/checkin", request_body = api::CheckinRequest, responses(
+#[utoipa::path(post, path = "/v1/repos/{owner}/{name}/checkin", params(RepoAddress), request_body = api::CheckinRequest, responses(
     (status = 200, body = api::Revision),
     (status = 409, body = api::ErrorBody, description = "lock_required, lock_held or stale_base"),
     (status = 400, body = api::ErrorBody, description = "object_missing or invalid_path"),
@@ -334,12 +418,13 @@ async fn release(
 async fn checkin(
     State(s): State<AppState>,
     headers: HeaderMap,
+    Path((owner, name)): Path<(String, String)>,
     Json(req): Json<api::CheckinRequest>,
 ) -> ApiResult<Json<api::Revision>> {
-    let user = authorize(&s, &headers, Some(Permission::Checkin))
-        .await?
-        .user;
-    let rev = s
+    let (repo, who) =
+        authorize_repo(&s, &headers, &owner, &name, Some(Permission::Checkin)).await?;
+    let user = who.user;
+    let rev = repo
         .service
         .checkin(
             &RepoPath::new(req.path)?,
@@ -352,7 +437,7 @@ async fn checkin(
     Ok(Json(revision_dto(rev)))
 }
 
-#[utoipa::path(post, path = "/v1/restore", request_body = api::RestoreRequest, responses(
+#[utoipa::path(post, path = "/v1/repos/{owner}/{name}/restore", params(RepoAddress), request_body = api::RestoreRequest, responses(
     (status = 200, body = api::Revision),
     (status = 403, body = api::ErrorBody, description = "needs the restore permission"),
     (status = 409, body = api::ErrorBody, description = "lock_required, lock_held, stale_base or confirmation_required"),
@@ -360,12 +445,13 @@ async fn checkin(
 async fn restore(
     State(s): State<AppState>,
     headers: HeaderMap,
+    Path((owner, name)): Path<(String, String)>,
     Json(req): Json<api::RestoreRequest>,
 ) -> ApiResult<Json<api::Revision>> {
-    let user = authorize(&s, &headers, Some(Permission::Restore))
-        .await?
-        .user;
-    let rev = s
+    let (repo, who) =
+        authorize_repo(&s, &headers, &owner, &name, Some(Permission::Restore)).await?;
+    let user = who.user;
+    let rev = repo
         .service
         .restore(
             &RepoPath::new(req.path)?,
@@ -379,14 +465,15 @@ async fn restore(
     Ok(Json(revision_dto(rev)))
 }
 
-#[utoipa::path(put, path = "/v1/objects", request_body(content = Vec<u8>, content_type = "application/octet-stream"),
+#[utoipa::path(put, path = "/v1/repos/{owner}/{name}/objects", params(RepoAddress), request_body(content = Vec<u8>, content_type = "application/octet-stream"),
     responses((status = 200, body = api::PutObjectResponse)))]
 async fn put_object(
     State(s): State<AppState>,
     headers: HeaderMap,
+    Path((owner, name)): Path<(String, String)>,
     body: axum::body::Bytes,
 ) -> ApiResult<Json<api::PutObjectResponse>> {
-    authorize(&s, &headers, Some(Permission::Checkin)).await?;
+    authorize_repo(&s, &headers, &owner, &name, Some(Permission::Checkin)).await?;
     let hash = s.objects.put(body.to_vec()).await?;
     Ok(Json(api::PutObjectResponse {
         content: hash.to_string(),
@@ -398,15 +485,16 @@ struct HistoryQuery {
     path: String,
 }
 
-#[utoipa::path(get, path = "/v1/history", params(("path" = String, Query, description = "repo-relative path")),
+#[utoipa::path(get, path = "/v1/repos/{owner}/{name}/history", params(RepoAddress, ("path" = String, Query, description = "repo-relative path")),
     responses((status = 200, body = Vec<api::Revision>)))]
 async fn history(
     State(s): State<AppState>,
     headers: HeaderMap,
+    Path((owner, name)): Path<(String, String)>,
     Query(q): Query<HistoryQuery>,
 ) -> ApiResult<Json<Vec<api::Revision>>> {
-    authorize(&s, &headers, Some(Permission::Read)).await?;
-    let revs = s.service.history(&RepoPath::new(q.path)?).await?;
+    let (repo, _) = authorize_repo(&s, &headers, &owner, &name, Some(Permission::Read)).await?;
+    let revs = repo.service.history(&RepoPath::new(q.path)?).await?;
     Ok(Json(revs.into_iter().map(revision_dto).collect()))
 }
 
@@ -423,19 +511,20 @@ fn mode_dto(mode: pyn_core::Mode) -> api::Mode {
     }
 }
 
-#[utoipa::path(get, path = "/v1/files",
-    params(("after" = Option<String>, Query, description = "return paths after this one"),
+#[utoipa::path(get, path = "/v1/repos/{owner}/{name}/files",
+    params(RepoAddress, ("after" = Option<String>, Query, description = "return paths after this one"),
            ("limit" = Option<usize>, Query, description = "page size, default 200, max 1000")),
     responses((status = 200, body = api::FilePage)))]
 async fn list_files(
     State(s): State<AppState>,
     headers: HeaderMap,
+    Path((owner, name)): Path<(String, String)>,
     Query(q): Query<FilesQuery>,
 ) -> ApiResult<Json<api::FilePage>> {
-    authorize(&s, &headers, Some(Permission::Read)).await?;
+    let (repo, _) = authorize_repo(&s, &headers, &owner, &name, Some(Permission::Read)).await?;
     let limit = q.limit.unwrap_or(200).clamp(1, 1000);
     let after = q.after.map(RepoPath::new).transpose()?;
-    let mut files = s.service.files(after.as_ref(), limit + 1).await?;
+    let mut files = repo.service.files(after.as_ref(), limit + 1).await?;
     let next_after = (files.len() > limit).then(|| {
         files.truncate(limit);
         files[limit - 1].path.to_string()
@@ -461,18 +550,19 @@ struct ContentQuery {
     revision: Option<u64>,
 }
 
-#[utoipa::path(get, path = "/v1/content",
-    params(("path" = String, Query, description = "repo-relative path"),
+#[utoipa::path(get, path = "/v1/repos/{owner}/{name}/content",
+    params(RepoAddress, ("path" = String, Query, description = "repo-relative path"),
            ("revision" = Option<u64>, Query, description = "revision number; the head if omitted")),
     responses((status = 200, content_type = "application/octet-stream", body = Vec<u8>),
               (status = 404, body = api::ErrorBody, description = "revision_not_found")))]
 async fn get_content(
     State(s): State<AppState>,
     headers: HeaderMap,
+    Path((owner, name)): Path<(String, String)>,
     Query(q): Query<ContentQuery>,
 ) -> ApiResult<Response> {
-    authorize(&s, &headers, Some(Permission::Read)).await?;
-    let (rev, bytes) = s
+    let (repo, _) = authorize_repo(&s, &headers, &owner, &name, Some(Permission::Read)).await?;
+    let (rev, bytes) = repo
         .service
         .read(&RepoPath::new(q.path)?, q.revision.map(RevisionId))
         .await?;
@@ -489,7 +579,7 @@ async fn get_content(
     Ok((headers, bytes).into_response())
 }
 
-#[utoipa::path(post, path = "/v1/force-unlock", request_body = api::ForceUnlockRequest, responses(
+#[utoipa::path(post, path = "/v1/repos/{owner}/{name}/force-unlock", params(RepoAddress), request_body = api::ForceUnlockRequest, responses(
     (status = 200, body = api::Lock, description = "the lock that was removed"),
     (status = 403, body = api::ErrorBody, description = "needs the force_unlock permission"),
     (status = 409, body = api::ErrorBody, description = "not_locked"),
@@ -497,12 +587,13 @@ async fn get_content(
 async fn force_unlock(
     State(s): State<AppState>,
     headers: HeaderMap,
+    Path((owner, name)): Path<(String, String)>,
     Json(req): Json<api::ForceUnlockRequest>,
 ) -> ApiResult<Json<api::Lock>> {
-    let actor = authorize(&s, &headers, Some(Permission::ForceUnlock))
-        .await?
-        .user;
-    let lock = s
+    let (repo, who) =
+        authorize_repo(&s, &headers, &owner, &name, Some(Permission::ForceUnlock)).await?;
+    let actor = who.user;
+    let lock = repo
         .service
         .force_unlock(&RepoPath::new(req.path)?, &actor, &req.reason)
         .await?;
@@ -518,19 +609,21 @@ struct AuditQueryParams {
     limit: Option<usize>,
 }
 
-#[utoipa::path(get, path = "/v1/audit",
-    params(("path" = Option<String>, Query, description = "only events for this path"),
+#[utoipa::path(get, path = "/v1/repos/{owner}/{name}/audit",
+    params(RepoAddress, ("path" = Option<String>, Query, description = "only events for this path"),
            ("actor" = Option<String>, Query, description = "only events by this user"),
-           ("action" = Option<String>, Query, description = "checkout, release, checkin, restore, force_unlock, member_added, role_changed, role_permissions_changed, token_created or token_revoked"),
+           ("action" = Option<String>, Query, description = "checkout, release, checkin, restore, force_unlock, member_added, role_changed, role_permissions_changed, token_created, token_revoked, repo_created, repo_updated or repo_deleted"),
            ("before" = Option<i64>, Query, description = "events older than this id"),
            ("limit" = Option<usize>, Query, description = "page size, default 50, max 500")),
     responses((status = 200, body = api::AuditPage), (status = 403, body = api::ErrorBody, description = "needs view_audit")))]
 async fn audit(
     State(s): State<AppState>,
     headers: HeaderMap,
+    Path((owner, name)): Path<(String, String)>,
     Query(q): Query<AuditQueryParams>,
 ) -> ApiResult<Json<api::AuditPage>> {
-    authorize(&s, &headers, Some(Permission::ViewAudit)).await?;
+    let (repo, _) =
+        authorize_repo(&s, &headers, &owner, &name, Some(Permission::ViewAudit)).await?;
     let limit = q.limit.unwrap_or(50).clamp(1, 500);
     let query = AuditQuery {
         path: q.path.map(RepoPath::new).transpose()?,
@@ -539,7 +632,7 @@ async fn audit(
         before: q.before,
         limit: limit + 1,
     };
-    let mut events = s.service.audit(&query).await?;
+    let mut events = repo.service.audit(&query).await?;
     let next_before = (events.len() > limit).then(|| {
         events.truncate(limit);
         events[limit - 1].id

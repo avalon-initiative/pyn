@@ -61,6 +61,16 @@ pub enum PynError {
     TokenNotFound(String),
     #[error("{0}")]
     InvalidRequest(String),
+    #[error("{0} already exists")]
+    RepoExists(String),
+    #[error("no repository {0}")]
+    RepoNotFound(String),
+    #[error(
+        "invalid repository name {0:?}: use 1 to 100 lowercase letters, digits, '-', '_' or '.', starting with a letter or digit"
+    )]
+    InvalidRepoName(String),
+    #[error("only {0} can do that in their namespace")]
+    NotNamespaceOwner(String),
     #[error("storage error: {0}")]
     Storage(String),
 }
@@ -91,6 +101,10 @@ impl PynError {
             Self::TokenNotFound(_) => "token_not_found",
             Self::InvalidRequest(_) => "invalid_request",
             Self::NotLocked(_) => "not_locked",
+            Self::RepoExists(_) => "repo_exists",
+            Self::RepoNotFound(_) => "repo_not_found",
+            Self::InvalidRepoName(_) => "invalid_repo_name",
+            Self::NotNamespaceOwner(_) => "not_namespace_owner",
             Self::Storage(_) => "storage",
         }
     }

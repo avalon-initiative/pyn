@@ -4,7 +4,7 @@ mod common;
 
 use std::path::Path;
 
-use common::start;
+use common::{REPO, start};
 
 fn read_only(path: &Path) -> bool {
     std::fs::metadata(path).unwrap().permissions().readonly()
@@ -17,7 +17,11 @@ fn a_workspace_tracks_what_you_cloned_and_handles_locks_and_checkins() {
     env.seed("alice", "Content/m.umap", "map one", None);
 
     let ws = env.dir("ws");
-    let out = env.ok(&env.dir("home"), "alice", &["clone", ws.to_str().unwrap()]);
+    let out = env.ok(
+        &env.dir("home"),
+        "alice",
+        &["clone", &env.source(REPO), ws.to_str().unwrap()],
+    );
     assert!(out.contains("cloned 2 files"), "{out}");
     let ws = ws.canonicalize().unwrap();
     assert_eq!(
@@ -97,7 +101,11 @@ fn update_brings_in_newer_files_but_never_overwrites_local_edits() {
     env.seed("alice", "Content/m.umap", "map one", None);
 
     let ws = env.dir("ws");
-    env.ok(&env.dir("home"), "alice", &["clone", ws.to_str().unwrap()]);
+    env.ok(
+        &env.dir("home"),
+        "alice",
+        &["clone", &env.source(REPO), ws.to_str().unwrap()],
+    );
     let ws = ws.canonicalize().unwrap();
 
     env.seed("bob", "Source/a.cpp", "a two", Some(1));
@@ -156,7 +164,11 @@ fn ignore_rules_and_settings_work_per_workspace_and_per_user() {
     let env = start();
     env.seed("alice", "Source/a.cpp", "a one", None);
     let ws = env.dir("ws");
-    env.ok(&env.dir("home"), "alice", &["clone", ws.to_str().unwrap()]);
+    env.ok(
+        &env.dir("home"),
+        "alice",
+        &["clone", &env.source(REPO), ws.to_str().unwrap()],
+    );
     let ws = ws.canonicalize().unwrap();
 
     std::fs::write(ws.join(".pyn/ignore"), "# build output\n*.log\nbuild/\n").unwrap();

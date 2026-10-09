@@ -4,9 +4,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use std::str::FromStr;
+
 use pyn_core::{
-    ContentHash, Lock, MetadataStore, NewRevision, PynError, RepoId, RepoPath, Result, Revision,
-    RevisionId, UserId,
+    ContentHash, Lock, MetadataStore, NewRevision, PynError, RepoId, RepoPath, RepoRecord,
+    RepoSettings, RepoUpdate, Result, Revision, RevisionId, UserId, Visibility,
 };
 use sqlx::migrate::MigrateDatabase;
 use sqlx::postgres::{PgPoolOptions, PgRow};
@@ -50,6 +52,23 @@ fn revision_from(row: &PgRow) -> Result<Revision> {
             .get::<Option<i64>, _>("restored_from")
             .map(|r| RevisionId(r as u64)),
     })
+}
+
+fn repo_from(row: &PgRow) -> Result<RepoRecord> {
+    Ok(RepoRecord {
+        id: RepoId::new(row.get::<String, _>("id")),
+        owner: UserId::new(row.get::<String, _>("owner")),
+        name: row.get("name"),
+        visibility: Visibility::from_str(row.get("visibility"))?,
+        settings: RepoSettings {
+            lease_hours: row.get::<i32, _>("lease_hours") as u32,
+        },
+        created_at: row.get("created_at"),
+    })
+}
+
+fn is_unique_violation(e: &sqlx::Error) -> bool {
+    matches!(e, sqlx::Error::Database(d) if d.code().as_deref() == Some(UNIQUE_VIOLATION))
 }
 
 impl PgMetadataStore {
@@ -410,5 +429,174 @@ impl MetadataStore for PgMetadataStore {
         .await
         .map_err(db)?;
         rows.iter().map(revision_from).collect()
+    }
+
+    async fn create_repo(&self, repo: RepoRecord) -> Result<RepoRecord> {
+        let inserted = sqlx::query(
+            "INSERT INTO repositories (id, owner, name, visibility, lease_hours, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6)",
+        )
+        .bind(repo.id.as_str())
+        .bind(repo.owner.as_str())
+        .bind(&repo.name)
+        .bind(repo.visibility.as_str())
+        .bind(repo.settings.lease_hours as i32)
+        .bind(repo.created_at)
+        .execute(&self.pool)
+        .await;
+        match inserted {
+            Ok(_) => Ok(repo),
+            Err(e) if is_unique_violation(&e) => Err(PynError::RepoExists(repo.address())),
+            Err(e) => Err(db(e)),
+        }
+    }
+
+    async fn find_repo(&self, owner: &UserId, name: &str) -> Result<Option<RepoRecord>> {
+        let row = sqlx::query(
+            "SELECT id, owner, name, visibility, lease_hours, created_at FROM repositories
+             WHERE owner = $1 AND name = $2",
+        )
+        .bind(owner.as_str())
+        .bind(name)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db)?;
+        row.as_ref().map(repo_from).transpose()
+    }
+
+    async fn get_repo(&self, id: &RepoId) -> Result<Option<RepoRecord>> {
+        let row = sqlx::query(
+            "SELECT id, owner, name, visibility, lease_hours, created_at FROM repositories
+             WHERE id = $1",
+        )
+        .bind(id.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db)?;
+        row.as_ref().map(repo_from).transpose()
+    }
+
+    async fn list_repos(&self, owner: Option<&UserId>) -> Result<Vec<RepoRecord>> {
+        let rows = sqlx::query(
+            "SELECT id, owner, name, visibility, lease_hours, created_at FROM repositories
+             WHERE ($1::text IS NULL OR owner = $1) ORDER BY owner, name",
+        )
+        .bind(owner.map(UserId::as_str))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        rows.iter().map(repo_from).collect()
+    }
+
+    async fn update_repo(&self, id: &RepoId, update: RepoUpdate) -> Result<RepoRecord> {
+        let current = self
+            .get_repo(id)
+            .await?
+            .ok_or_else(|| PynError::RepoNotFound(id.to_string()))?;
+        let updated = sqlx::query(
+            "UPDATE repositories SET name = COALESCE($2, name), visibility = COALESCE($3, visibility),
+                 lease_hours = COALESCE($4, lease_hours)
+             WHERE id = $1
+             RETURNING id, owner, name, visibility, lease_hours, created_at",
+        )
+        .bind(id.as_str())
+        .bind(update.name.as_deref())
+        .bind(update.visibility.map(Visibility::as_str))
+        .bind(update.settings.map(|s| s.lease_hours as i32))
+        .fetch_optional(&self.pool)
+        .await;
+        match updated {
+            Ok(Some(row)) => repo_from(&row),
+            Ok(None) => Err(PynError::RepoNotFound(id.to_string())),
+            Err(e) if is_unique_violation(&e) => Err(PynError::RepoExists(format!(
+                "{}/{}",
+                current.owner,
+                update.name.unwrap_or_default()
+            ))),
+            Err(e) => Err(db(e)),
+        }
+    }
+
+    async fn delete_repo(&self, id: &RepoId) -> Result<bool> {
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        for stmt in [
+            "DELETE FROM locks WHERE repo = $1",
+            "DELETE FROM revisions WHERE repo = $1",
+        ] {
+            sqlx::query(stmt)
+                .bind(id.as_str())
+                .execute(&mut *tx)
+                .await
+                .map_err(db)?;
+        }
+        let removed = sqlx::query("DELETE FROM repositories WHERE id = $1")
+            .bind(id.as_str())
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
+        tx.commit().await.map_err(db)?;
+        Ok(removed.rows_affected() > 0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn rewound_store() -> PgMetadataStore {
+        let url = std::env::var("PYN_DATABASE_URL").expect("PYN_DATABASE_URL must be set");
+        let store = PgMetadataStore::connect_in_scratch_schema(&url)
+            .await
+            .unwrap();
+        sqlx::query("DROP TABLE repositories")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM _sqlx_migrations WHERE version = 8")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        store
+    }
+
+    async fn migrate(store: &PgMetadataStore) {
+        sqlx::migrate!("./migrations")
+            .run(&store.pool)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "needs PYN_DATABASE_URL"]
+    async fn the_single_repository_data_is_registered_under_its_oldest_admin() {
+        let store = rewound_store().await;
+        for stmt in [
+            "INSERT INTO users (id, created_at) VALUES ('zed', now() - interval '3 days'), ('amy', now() - interval '2 days'), ('bob', now() - interval '1 day')",
+            "INSERT INTO memberships (repo, user_id, role) VALUES ('default', 'zed', 'reader'), ('default', 'bob', 'admin'), ('default', 'amy', 'admin')",
+            "INSERT INTO locks (repo, path, owner, acquired_at, expires_at) VALUES ('default', 'a', 'amy', now(), now() + interval '1 hour')",
+        ] {
+            sqlx::query(stmt).execute(&store.pool).await.unwrap();
+        }
+        migrate(&store).await;
+
+        let repo = store
+            .find_repo(&UserId::new("amy"), "default")
+            .await
+            .unwrap();
+        let repo = repo.expect("registered under the oldest admin");
+        assert_eq!(repo.id, RepoId::new("default"));
+        assert_eq!(repo.visibility, Visibility::Private);
+        assert_eq!(repo.settings, RepoSettings::default());
+        assert_eq!(store.list_repos(None).await.unwrap().len(), 1);
+        let locks = store.list_locks(&repo.id, Utc::now()).await.unwrap();
+        assert_eq!(locks.len(), 1, "existing data stays under the same id");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "needs PYN_DATABASE_URL"]
+    async fn an_empty_database_gets_no_default_repository() {
+        let store = rewound_store().await;
+        migrate(&store).await;
+        assert!(store.list_repos(None).await.unwrap().is_empty());
     }
 }

@@ -3,8 +3,9 @@
 Prove one thing: a team can safely collaborate on a repository containing both mergeable source and exclusive assets.
 
 In scope: repository rules, shared and exclusive paths, checkout, checkin, leased locks with expiry, per-path
-history, restore. A single mainline; one repository per server; in-memory storage and a development auth header
-until the Postgres and token work lands.
+history, restore. A single mainline per repository; in-memory storage and a development auth header until the Postgres and token work
+landed. Phase 1 was delivered with one repository per server; a server now hosts many, see
+[repositories](concepts/repositories.md).
 
 Out of scope until later phases: branches, workspaces, changesets, merge and conflict handling, pull requests,
 reviews, CI, organizations, SSO, Git import/export, engine and editor integrations, large-file chunking.

@@ -10,8 +10,9 @@ use std::sync::{Mutex, OnceLock};
 use chrono::Duration;
 
 use crate::access::{
-    InviteId, InviteRecord, Permission, Principal, RegistrationMode, Role, RoleDefinitions,
-    SessionRecord, SshKeyRecord, TokenId, TokenRecord, account, invite, session, ssh, token,
+    Credential, Identity, InviteId, InviteRecord, Permission, Principal, RegistrationMode, Role,
+    RoleDefinitions, SessionRecord, SshKeyRecord, TokenId, TokenRecord, account, invite, session,
+    ssh, token,
 };
 use crate::audit::{AuditAction, AuditStore, NewAuditEvent};
 use crate::clock::Clock;
@@ -29,6 +30,12 @@ pub trait AccessStore: Send + Sync {
     async fn role_of(&self, repo: &RepoId, user: &UserId) -> Result<Option<Role>>;
 
     async fn members(&self, repo: &RepoId) -> Result<Vec<(UserId, Role)>>;
+
+    /// The repositories the user has a role in, ordered by id.
+    async fn repos_of(&self, user: &UserId) -> Result<Vec<RepoId>>;
+
+    /// Removes the repository's memberships, role overrides and invitations.
+    async fn delete_repo_access(&self, repo: &RepoId) -> Result<()>;
 
     /// The defaults with the repository's overrides applied.
     async fn role_definitions(&self, repo: &RepoId) -> Result<RoleDefinitions>;
@@ -102,8 +109,6 @@ pub trait AccessStore: Send + Sync {
 #[derive(Debug, Clone)]
 pub struct AccessConfig {
     pub registration: RegistrationMode,
-    /// The role given to people who register on an open server.
-    pub default_role: Role,
     pub session_days: i64,
 }
 
@@ -111,7 +116,6 @@ impl Default for AccessConfig {
     fn default() -> Self {
         Self {
             registration: RegistrationMode::InviteOnly,
-            default_role: Role::Reader,
             session_days: 30,
         }
     }
@@ -125,7 +129,7 @@ pub struct AccessService {
     store: Arc<dyn AccessStore>,
     clock: Arc<dyn Clock>,
     config: AccessConfig,
-    audit: Option<(Arc<dyn AuditStore>, RepoId)>,
+    audit: Option<Arc<dyn AuditStore>>,
     /// Failed sign-ins per user name: how many, and when the window started.
     failures: Mutex<HashMap<String, (u32, DateTime<Utc>)>>,
 }
@@ -154,20 +158,20 @@ impl AccessService {
         self
     }
 
-    /// Records member, role and token changes in `store`; token events go under `repo`.
-    pub fn with_audit(mut self, store: Arc<dyn AuditStore>, repo: RepoId) -> Self {
-        self.audit = Some((store, repo));
+    /// Records member, role and token changes in `store`, each under the repository it concerns.
+    pub fn with_audit(mut self, store: Arc<dyn AuditStore>) -> Self {
+        self.audit = Some(store);
         self
     }
 
     async fn record(
         &self,
-        repo: Option<&RepoId>,
+        repo: &RepoId,
         actor: &UserId,
         action: AuditAction,
         detail: String,
     ) -> Result<()> {
-        let Some((store, default_repo)) = &self.audit else {
+        let Some(store) = &self.audit else {
             return Ok(());
         };
         let event = NewAuditEvent {
@@ -177,7 +181,7 @@ impl AccessService {
             path: None,
             detail,
         };
-        store.record(repo.unwrap_or(default_repo), event).await
+        store.record(repo, event).await
     }
 
     pub fn registration_mode(&self) -> RegistrationMode {
@@ -203,8 +207,8 @@ impl AccessService {
         })
     }
 
-    /// Resolves a bearer token to a principal limited to what both the token and the user's role allow.
-    pub async fn authenticate(&self, repo: &RepoId, raw: &str) -> Result<Principal> {
+    /// Checks a bearer token and names its owner; the token's limits apply once a repository is chosen.
+    pub async fn identify(&self, raw: &str) -> Result<Identity> {
         let (id, secret) = token::parse(raw).ok_or_else(|| unauthenticated("malformed token"))?;
         let record = self
             .store
@@ -221,30 +225,60 @@ impl AccessService {
         if record.expires_at.is_some_and(|t| t <= now) {
             return Err(unauthenticated("token expired"));
         }
-        if !record.repos.is_empty() && !record.repos.contains(repo) {
-            return Err(unauthenticated("token is not valid for this repository"));
-        }
         self.store.touch_token(&id, now).await?;
-        let role = self.role_permissions(repo, &record.user).await?;
-        let permissions = record.permissions.intersection(&role).copied().collect();
-        Ok(Principal {
-            user: record.user,
-            permissions,
+        Ok(Identity {
+            user: record.user.clone(),
+            credential: Credential::Token(record),
         })
     }
 
-    /// Creates a token for the actor. It can hold only permissions the actor holds. Returns the record and the
-    /// full token string, which is not stored and cannot be shown again.
+    /// What the identity may do in `repo`: its role, further limited by a token's permissions and repositories.
+    pub async fn principal_in(&self, repo: &RepoId, who: &Identity) -> Result<Principal> {
+        match &who.credential {
+            Credential::Unrestricted => Ok(Principal::unrestricted(who.user.clone())),
+            Credential::Session => self.principal(repo, &who.user).await,
+            Credential::Token(record) => {
+                if !record.repos.is_empty() && !record.repos.contains(repo) {
+                    return Err(unauthenticated("token is not valid for this repository"));
+                }
+                let role = self.role_permissions(repo, &who.user).await?;
+                Ok(Principal {
+                    user: who.user.clone(),
+                    permissions: record.permissions.intersection(&role).copied().collect(),
+                })
+            }
+        }
+    }
+
+    /// Resolves a bearer token to a principal limited to what both the token and the user's role allow in `repo`.
+    pub async fn authenticate(&self, repo: &RepoId, raw: &str) -> Result<Principal> {
+        let who = self.identify(raw).await?;
+        self.principal_in(repo, &who).await
+    }
+
+    /// Creates a token for the actor, scoped to `repos`. It can hold only permissions the actor holds in each of
+    /// them. Returns the record and the full token string, which is not stored and cannot be shown again.
     pub async fn create_token(
         &self,
-        actor: &Principal,
+        actor: &Identity,
         name: &str,
         permissions: BTreeSet<Permission>,
         repos: Vec<RepoId>,
         expires_at: Option<DateTime<Utc>>,
     ) -> Result<(TokenRecord, String)> {
+        if repos.is_empty() {
+            return Err(PynError::InvalidRequest(
+                "a token needs at least one repository".into(),
+            ));
+        }
+        for repo in &repos {
+            let held = self.principal_in(repo, actor).await?;
+            for p in &permissions {
+                held.require(*p)?;
+            }
+        }
         let (record, full) = self
-            .issue_token(actor, name, permissions, repos, expires_at)
+            .issue_token(&actor.user, name, permissions, repos, expires_at)
             .await?;
         let detail = format!(
             "token {} {:?} for {}: permissions [{}], repos [{}], expires {}",
@@ -257,15 +291,18 @@ impl AccessService {
                 .expires_at
                 .map_or("never".to_string(), |t| t.to_rfc3339()),
         );
-        self.record(None, &actor.user, AuditAction::TokenCreated, detail)
-            .await?;
+        for repo in &record.repos {
+            self.record(repo, &actor.user, AuditAction::TokenCreated, detail.clone())
+                .await?;
+        }
         Ok((record, full))
     }
 
-    /// Mints a token without an audit event, for sign-in sessions and the bootstrap admin.
+    /// Mints a token without an audit event, for sign-in sessions and the bootstrap admin. An empty `repos`
+    /// means every repository; the owner's role still caps what it can do in each.
     async fn issue_token(
         &self,
-        actor: &Principal,
+        user: &UserId,
         name: &str,
         permissions: BTreeSet<Permission>,
         repos: Vec<RepoId>,
@@ -279,9 +316,6 @@ impl AccessService {
                 "a token needs at least one permission".into(),
             ));
         }
-        for p in &permissions {
-            actor.require(*p)?;
-        }
         let now = self.clock.now();
         if expires_at.is_some_and(|t| t <= now) {
             return Err(PynError::InvalidRequest(
@@ -291,7 +325,7 @@ impl AccessService {
         let (id, full, secret_hash) = token::generate()?;
         let record = TokenRecord {
             id,
-            user: actor.user.clone(),
+            user: user.clone(),
             name: name.trim().to_string(),
             secret_hash,
             permissions,
@@ -305,28 +339,43 @@ impl AccessService {
         Ok((record, full))
     }
 
-    /// The actor's own tokens; another user's need `manage_users`.
-    pub async fn list_tokens(&self, actor: &Principal, user: &UserId) -> Result<Vec<TokenRecord>> {
-        if &actor.user != user {
-            actor.require(Permission::ManageUsers)?;
+    /// Allows the actor to act on `target`'s account: always for themselves, otherwise only with `manage_users`
+    /// in a repository the target belongs to.
+    async fn require_manages(&self, actor: &Identity, target: &UserId) -> Result<()> {
+        if &actor.user == target {
+            return Ok(());
         }
+        for repo in self.store.repos_of(target).await? {
+            if let Ok(held) = self.principal_in(&repo, actor).await
+                && held.has(Permission::ManageUsers)
+            {
+                return Ok(());
+            }
+        }
+        Err(PynError::Forbidden(Permission::ManageUsers))
+    }
+
+    /// The actor's own tokens; another user's need `manage_users` in a repository that user belongs to.
+    pub async fn list_tokens(&self, actor: &Identity, user: &UserId) -> Result<Vec<TokenRecord>> {
+        self.require_manages(actor, user).await?;
         self.store.list_tokens(user).await
     }
 
-    /// Revokes the actor's own token; another user's needs `manage_users`.
-    pub async fn revoke_token(&self, actor: &Principal, id: &TokenId) -> Result<()> {
+    /// Revokes the actor's own token; another user's needs `manage_users` in a repository that user belongs to.
+    pub async fn revoke_token(&self, actor: &Identity, id: &TokenId) -> Result<()> {
         let record = self
             .store
             .get_token(id)
             .await?
             .ok_or_else(|| PynError::TokenNotFound(id.to_string()))?;
-        if record.user != actor.user {
-            actor.require(Permission::ManageUsers)?;
-        }
+        self.require_manages(actor, &record.user).await?;
         self.store.revoke_token(id, self.clock.now()).await?;
         let detail = format!("token {} {:?} of {}", record.id, record.name, record.user);
-        self.record(None, &actor.user, AuditAction::TokenRevoked, detail)
-            .await
+        for repo in &record.repos {
+            self.record(repo, &actor.user, AuditAction::TokenRevoked, detail.clone())
+                .await?;
+        }
+        Ok(())
     }
 
     /// A role can be given only by someone who already holds everything it grants.
@@ -366,12 +415,12 @@ impl AccessService {
         match before {
             None => {
                 let detail = format!("{user} added as {role}");
-                self.record(Some(repo), actor, AuditAction::MemberAdded, detail)
+                self.record(repo, actor, AuditAction::MemberAdded, detail)
                     .await
             }
             Some(old) if old != role => {
                 let detail = format!("{user}: {old} -> {role}");
-                self.record(Some(repo), actor, AuditAction::RoleChanged, detail)
+                self.record(repo, actor, AuditAction::RoleChanged, detail)
                     .await
             }
             Some(_) => Ok(()),
@@ -417,7 +466,7 @@ impl AccessService {
             join(before.difference(&permissions)),
         );
         self.record(
-            Some(repo),
+            repo,
             &actor.user,
             AuditAction::RolePermissionsChanged,
             detail,
@@ -447,13 +496,8 @@ impl AccessService {
         }
     }
 
-    /// Checks a password for a user with access to `repo`. Repeated failures lock the user name out for a while.
-    async fn verify_sign_in(
-        &self,
-        repo: &RepoId,
-        username: &str,
-        password: &str,
-    ) -> Result<Principal> {
+    /// Checks a password. Repeated failures lock the user name out for a while.
+    async fn verify_sign_in(&self, username: &str, password: &str) -> Result<UserId> {
         let now = self.clock.now();
         let key = username.to_lowercase();
         self.check_not_throttled(&key, now)?;
@@ -476,32 +520,19 @@ impl AccessService {
                 "wrong user name or password".into(),
             ));
         }
-
-        let permissions = self.role_permissions(repo, &user).await?;
-        if permissions.is_empty() {
-            return Err(PynError::Unauthenticated(
-                "this account has no access to this repository".into(),
-            ));
-        }
-        Ok(Principal { user, permissions })
+        Ok(user)
     }
 
-    /// Checks a password and returns a token limited to the user's current role that expires after the
-    /// configured number of days.
-    pub async fn login(
-        &self,
-        repo: &RepoId,
-        username: &str,
-        password: &str,
-    ) -> Result<(TokenRecord, String)> {
-        let actor = self.verify_sign_in(repo, username, password).await?;
+    /// Checks a password and returns a token for every repository the user can reach, capped by their roles at
+    /// use time, that expires after the configured number of days.
+    pub async fn login(&self, username: &str, password: &str) -> Result<(TokenRecord, String)> {
+        let user = self.verify_sign_in(username, password).await?;
         let expires = self.clock.now() + Duration::days(self.config.session_days);
-        let permissions = actor.permissions.clone();
         self.issue_token(
-            &actor,
+            &user,
             "sign-in",
-            permissions,
-            vec![repo.clone()],
+            Permission::ALL.into(),
+            Vec::new(),
             Some(expires),
         )
         .await
@@ -510,17 +541,16 @@ impl AccessService {
     /// Checks a password and starts a web session. Returns the record and the cookie value, which is not stored.
     pub async fn start_session(
         &self,
-        repo: &RepoId,
         username: &str,
         password: &str,
     ) -> Result<(SessionRecord, String)> {
-        let who = self.verify_sign_in(repo, username, password).await?;
+        let user = self.verify_sign_in(username, password).await?;
         let now = self.clock.now();
         self.store.delete_expired_sessions(now).await?;
         let (cookie, csrf_token, id_hash) = session::generate()?;
         let record = SessionRecord {
             id_hash,
-            user: who.user,
+            user,
             csrf_token,
             created_at: now,
             expires_at: now + Duration::days(self.config.session_days),
@@ -537,22 +567,16 @@ impl AccessService {
         Ok((record.expires_at > self.clock.now()).then_some(record))
     }
 
-    /// Resolves a session cookie to the user's current permissions, so a role change applies at once.
-    pub async fn authenticate_session(
-        &self,
-        repo: &RepoId,
-        cookie: &str,
-    ) -> Result<(Principal, SessionRecord)> {
+    /// Resolves a session cookie to its account; roles are read per repository on each request, so a change applies at once.
+    pub async fn authenticate_session(&self, cookie: &str) -> Result<(Identity, SessionRecord)> {
         let record = self
             .find_session(cookie)
             .await?
             .ok_or_else(|| unauthenticated("not signed in"))?;
-        let who = self.principal(repo, &record.user).await?;
-        if who.permissions.is_empty() {
-            return Err(unauthenticated(
-                "this account has no access to this repository",
-            ));
-        }
+        let who = Identity {
+            user: record.user.clone(),
+            credential: Credential::Session,
+        };
         Ok((who, record))
     }
 
@@ -567,30 +591,26 @@ impl AccessService {
     }
 
     /// Creates an account on the server's own terms: freely when registration is open, with a valid invitation
-    /// when it is invite only, never when it is closed.
+    /// when it is invite only, never when it is closed. An invitation also gives its role in its repository.
     pub async fn register(
         &self,
-        repo: &RepoId,
         username: &str,
         password: &str,
         invitation: Option<&str>,
     ) -> Result<UserId> {
         let user = account::validate_username(username)?;
         account::validate_password(password)?;
-        let (role, claimed) = match self.config.registration {
+        let invite = match self.config.registration {
             RegistrationMode::Closed => return Err(PynError::RegistrationClosed),
-            RegistrationMode::Open => (self.config.default_role, None),
-            RegistrationMode::InviteOnly => {
-                let record = self.check_invitation(repo, invitation).await?;
-                (record.role, Some(record.id))
-            }
+            RegistrationMode::Open => None,
+            RegistrationMode::InviteOnly => Some(self.check_invitation(invitation).await?),
         };
         if self.store.user_exists(&user).await? {
             return Err(PynError::UserExists(user));
         }
         let now = self.clock.now();
-        if let Some(id) = &claimed
-            && !self.store.use_invite(id, &user, now).await?
+        if let Some(invite) = &invite
+            && !self.store.use_invite(&invite.id, &user, now).await?
         {
             return Err(PynError::InvalidInvite("it has already been used".into()));
         }
@@ -600,14 +620,18 @@ impl AccessService {
         self.store
             .set_password_hash(&user, &account::hash_password(password)?)
             .await?;
-        self.store.set_role(repo, &user, role).await?;
-        let detail = format!("{user} registered as {role}");
-        self.record(Some(repo), &user, AuditAction::MemberAdded, detail)
-            .await?;
+        if let Some(invite) = invite {
+            self.store
+                .set_role(&invite.repo, &user, invite.role)
+                .await?;
+            let detail = format!("{user} registered as {}", invite.role);
+            self.record(&invite.repo, &user, AuditAction::MemberAdded, detail)
+                .await?;
+        }
         Ok(user)
     }
 
-    async fn check_invitation(&self, repo: &RepoId, code: Option<&str>) -> Result<InviteRecord> {
+    async fn check_invitation(&self, code: Option<&str>) -> Result<InviteRecord> {
         let bad = |why: &str| PynError::InvalidInvite(why.to_string());
         let (id, secret) =
             invite::parse(code.ok_or_else(|| bad("this server needs an invitation"))?)
@@ -621,9 +645,6 @@ impl AccessService {
             return Err(bad("the code is not valid"));
         }
         let now = self.clock.now();
-        if &record.repo != repo {
-            return Err(bad("the code is for another repository"));
-        }
         if record.revoked_at.is_some() {
             return Err(bad("it has been revoked"));
         }
@@ -657,7 +678,7 @@ impl AccessService {
             .await?;
         self.store.set_role(repo, &user, role).await?;
         let detail = format!("{user} added as {role}");
-        self.record(Some(repo), &actor.user, AuditAction::MemberAdded, detail)
+        self.record(repo, &actor.user, AuditAction::MemberAdded, detail)
             .await?;
         Ok(user)
     }
@@ -665,7 +686,7 @@ impl AccessService {
     /// Changes the actor's own password. If they already have one, the current password must be given.
     pub async fn change_password(
         &self,
-        actor: &Principal,
+        actor: &Identity,
         current: Option<&str>,
         new: &str,
     ) -> Result<()> {
@@ -724,21 +745,29 @@ impl AccessService {
         self.store.list_invites(repo).await
     }
 
-    pub async fn revoke_invite(&self, actor: &Principal, id: &InviteId) -> Result<()> {
+    pub async fn revoke_invite(
+        &self,
+        actor: &Principal,
+        repo: &RepoId,
+        id: &InviteId,
+    ) -> Result<()> {
         actor.require(Permission::ManageUsers)?;
+        let no_such = || PynError::InvalidInvite("there is no such invitation".into());
+        match self.store.get_invite(id).await? {
+            Some(invite) if &invite.repo == repo => {}
+            _ => return Err(no_such()),
+        }
         if self.store.revoke_invite(id, self.clock.now()).await? {
             Ok(())
         } else {
-            Err(PynError::InvalidInvite(
-                "there is no such invitation".into(),
-            ))
+            Err(no_such())
         }
     }
 
     /// Links a public key to the actor's account. The title defaults to the key's own comment.
     pub async fn add_ssh_key(
         &self,
-        actor: &Principal,
+        actor: &Identity,
         title: Option<&str>,
         key: &str,
     ) -> Result<SshKeyRecord> {
@@ -769,22 +798,18 @@ impl AccessService {
         Ok(record)
     }
 
-    /// The actor's own keys; another user's need `manage_users`.
+    /// The actor's own keys; another user's need `manage_users` in a repository that user belongs to.
     pub async fn list_ssh_keys(
         &self,
-        actor: &Principal,
+        actor: &Identity,
         user: &UserId,
     ) -> Result<Vec<SshKeyRecord>> {
-        if &actor.user != user {
-            actor.require(Permission::ManageUsers)?;
-        }
+        self.require_manages(actor, user).await?;
         self.store.list_ssh_keys(user).await
     }
 
-    pub async fn delete_ssh_key(&self, actor: &Principal, user: &UserId, id: &str) -> Result<()> {
-        if &actor.user != user {
-            actor.require(Permission::ManageUsers)?;
-        }
+    pub async fn delete_ssh_key(&self, actor: &Identity, user: &UserId, id: &str) -> Result<()> {
+        self.require_manages(actor, user).await?;
         if self.store.delete_ssh_key(user, id).await? {
             Ok(())
         } else {
@@ -815,20 +840,37 @@ impl AccessService {
             .await
     }
 
-    /// Creates the first administrator and a full-access token for them, for the person running the server.
-    pub async fn bootstrap_admin(&self, repo: &RepoId, user: &UserId) -> Result<String> {
+    /// Creates the first account and a token for it that reaches every repository it belongs to, for the person
+    /// running the server.
+    pub async fn bootstrap_admin(&self, user: &UserId) -> Result<String> {
         self.store.ensure_user(user, self.clock.now()).await?;
-        self.store.set_role(repo, user, Role::Admin).await?;
-        let actor = self.principal(repo, user).await?;
         let (_, full) = self
-            .issue_token(
-                &actor,
-                "bootstrap",
-                Permission::ALL.into(),
-                vec![repo.clone()],
-                None,
-            )
+            .issue_token(user, "bootstrap", Permission::ALL.into(), Vec::new(), None)
             .await?;
         Ok(full)
+    }
+
+    /// Makes the user the admin of a repository they just created.
+    pub async fn add_creator(&self, repo: &RepoId, user: &UserId) -> Result<()> {
+        self.store.ensure_user(user, self.clock.now()).await?;
+        self.store.set_role(repo, user, Role::Admin).await?;
+        let detail = format!("{user} added as admin (creator)");
+        self.record(repo, user, AuditAction::MemberAdded, detail)
+            .await
+    }
+
+    /// The repositories where the user has a role.
+    pub async fn repos_of(&self, user: &UserId) -> Result<Vec<RepoId>> {
+        self.store.repos_of(user).await
+    }
+
+    /// The user's role in the repository, if any.
+    pub async fn role_in(&self, repo: &RepoId, user: &UserId) -> Result<Option<Role>> {
+        self.store.role_of(repo, user).await
+    }
+
+    /// Removes a deleted repository's memberships, role overrides and invitations. Its audit log stays.
+    pub async fn forget_repo(&self, repo: &RepoId) -> Result<()> {
+        self.store.delete_repo_access(repo).await
     }
 }

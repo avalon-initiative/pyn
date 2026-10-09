@@ -5,7 +5,7 @@ use pyn_core::memory::{
 };
 use pyn_core::{
     AccessConfig, AccessService, AccessStore, AuditStore, AuthProvider, MetadataStore, ObjectStore,
-    RegistrationMode, RepoId, RepoService, Rules, ServiceConfig, SystemClock, UserId,
+    RegistrationMode, Repositories, Rules, SystemClock, UserId,
 };
 use pyn_fs::FsObjectStore;
 use pyn_postgres::PgMetadataStore;
@@ -64,26 +64,12 @@ async fn main() -> anyhow::Result<()> {
         Err(_) => Arc::new(MemoryObjectStore::new()),
     };
 
-    let repo = RepoId::new("default");
     let clock = Arc::new(SystemClock);
-    let service = Arc::new(RepoService::new(
-        repo.clone(),
-        rules,
-        meta,
-        objects.clone(),
-        audit.clone(),
-        clock.clone(),
-        ServiceConfig::default(),
-    ));
     let defaults = AccessConfig::default();
     let config = AccessConfig {
         registration: match std::env::var("PYN_REGISTRATION") {
             Ok(mode) => mode.parse()?,
             Err(_) => defaults.registration,
-        },
-        default_role: match std::env::var("PYN_DEFAULT_ROLE") {
-            Ok(role) => role.parse()?,
-            Err(_) => defaults.default_role,
         },
         session_days: match std::env::var("PYN_SESSION_DAYS") {
             Ok(days) => days.parse()?,
@@ -96,15 +82,21 @@ async fn main() -> anyhow::Result<()> {
         );
     }
     let access = Arc::new(
-        AccessService::new(access_store, clock)
+        AccessService::new(access_store, clock.clone())
             .with_config(config)
-            .with_audit(audit, repo.clone()),
+            .with_audit(audit.clone()),
     );
+    let repos = Arc::new(Repositories::new(
+        meta,
+        objects.clone(),
+        audit,
+        access.clone(),
+        clock,
+        rules,
+    ));
 
     if let Ok(admin) = std::env::var("PYN_BOOTSTRAP_ADMIN") {
-        let token = access
-            .bootstrap_admin(&repo, &UserId::new(admin.clone()))
-            .await?;
+        let token = access.bootstrap_admin(&UserId::new(admin.clone())).await?;
         if let Ok(password) = std::env::var("PYN_BOOTSTRAP_PASSWORD") {
             access
                 .set_password_for_operator(&UserId::new(admin.clone()), &password)
@@ -123,10 +115,10 @@ async fn main() -> anyhow::Result<()> {
         None
     };
     let app = router(AppState {
-        service,
+        repos,
         objects,
         access: access.clone(),
-        auth: Arc::new(BearerAuth { access, repo }),
+        auth: Arc::new(BearerAuth { access }),
         dev_auth,
     });
 

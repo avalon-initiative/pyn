@@ -1,6 +1,7 @@
 # Concepts
 
-pyn separates three things that most version control systems fuse together.
+pyn separates three things that most version control systems fuse together. Each exists per [repository](repositories.md): a
+server hosts many, addressed as `owner/name`.
 
 1. **File content history.** Every path has immutable, numbered revisions (1, 2, 3, ...). A restore appends a new
    revision with old content; nothing is ever rewritten.
@@ -28,13 +29,13 @@ Locks expire, but sometimes one has to be removed at once. `pyn unlock <path> --
 lock. It needs the `force_unlock` permission, and the reason is mandatory because it is recorded.
 
 The audit log is an append-only record of lock, revision and access events: checkout, release, checkin, restore, force unlock,
-member added, role changed, role permissions changed, token created and token revoked, each with who, when, the path and a short detail (for a force unlock, whose lock was removed and why). `pyn audit` shows it
+member added, role changed, role permissions changed, token created, token revoked, and repository created, updated and deleted, each with who, when, the path and a short detail (for a force unlock, whose lock was removed and why). `pyn audit` shows it
 newest first and can filter by path, user and action; it needs the `view_audit` permission. Events are never changed or
 removed.
 
 Access events have no path: the detail names the target and what changed (a user and their old and new role, the
 permissions a role gained or lost, a token's id, name, owner, permissions and expiry). Token secrets are never recorded.
-Sign-in sessions are not logged. See [access](access.md).
+Sign-in sessions are not logged. The log is kept per repository, and a token's events appear in the log of each repository it is limited to. See [access](access.md).
 
 ## Looking at and restoring older versions
 
