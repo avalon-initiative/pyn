@@ -86,6 +86,73 @@ pub struct FilePage {
     pub next_after: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum TreeEntryKind {
+    File,
+    Folder,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum TreeMode {
+    Shared,
+    Exclusive,
+    /// A folder whose files do not all have the same mode.
+    Mixed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct TreeEntry {
+    /// The last path segment.
+    pub name: String,
+    /// Repo-relative path; pass it as `path` to list a folder.
+    pub path: String,
+    pub kind: TreeEntryKind,
+    pub mode: TreeMode,
+    /// The newest revision at or under the entry (`path` on it names the file). Absent for a file with a lock but no revision.
+    pub last_change: Option<Revision>,
+    /// The live lock on a file; always absent for folders.
+    pub lock: Option<Lock>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct TreeListing {
+    /// The listed folder; empty for the root.
+    pub path: String,
+    /// Folders first, then files, each by name.
+    pub entries: Vec<TreeEntry>,
+}
+
+/// A file or lock event from the audit log.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ActivityEntry {
+    pub id: i64,
+    pub at: DateTime<Utc>,
+    pub actor: String,
+    /// checkout, release, checkin, restore or force_unlock.
+    pub action: String,
+    pub path: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct RepoSummary {
+    /// Provisional: the single mainline until branches arrive.
+    pub default_branch: String,
+    /// Provisional: always 1 until branches arrive.
+    pub branch_count: u32,
+    /// Paths with at least one revision.
+    pub files: u64,
+    pub exclusive_files: u64,
+    pub shared_files: u64,
+    /// Time of the newest revision; absent for an empty repository.
+    pub updated_at: Option<DateTime<Utc>>,
+    /// Live locks with their holders, ordered by path.
+    pub locks: Vec<Lock>,
+    /// Newest first.
+    pub activity: Vec<ActivityEntry>,
+}
+
 /// The signed-in account, independent of any repository.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct Account {

@@ -15,6 +15,7 @@ pub mod repositories;
 pub mod rules;
 pub mod service;
 pub mod store;
+pub mod tree;
 pub mod types;
 
 pub use access::{
@@ -33,4 +34,5 @@ pub use repositories::Repositories;
 pub use rules::{Mode, Rules};
 pub use service::{FileEntry, RepoService, ServiceConfig};
 pub use store::MetadataStore;
+pub use tree::{DEFAULT_BRANCH, EntryKind, EntryMode, RepoSummary, TreeEntry};
 pub use types::{ContentHash, Lock, NewRevision, RepoId, RepoPath, Revision, RevisionId, UserId};

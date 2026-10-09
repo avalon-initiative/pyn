@@ -9,6 +9,7 @@ use crate::access::{
     InviteId, InviteRecord, Permission, Role, RoleDefinitions, SessionRecord, SshKeyRecord,
     TokenId, TokenRecord,
 };
+use crate::clock::Clock;
 use crate::memory::{MemoryAuditStore, MemoryObjectStore};
 use crate::{
     AuditAction, AuditQuery, AuditStore, ContentHash, ManualClock, MetadataStore, ObjectStore,
@@ -305,6 +306,157 @@ pub async fn files_lists_heads_and_locks(store: Store) {
     let page = h.svc.files(Some(&path("Content/m.umap")), 1).await.unwrap();
     assert_eq!(page.len(), 1);
     assert_eq!(page[0].path.as_str(), "Content/n.umap");
+}
+
+fn rules_with_mixed_folder() -> Rules {
+    Rules::from_toml(
+        "[meta]\ndefault = \"shared\"\n[exclusive]\npaths = [\"Content/\", \"Mixed/lock.bin\"]\n",
+    )
+    .unwrap()
+}
+
+fn tree_service(store: &Store, h: &Harness) -> RepoService {
+    RepoService::new(
+        RepoId::new("game"),
+        rules_with_mixed_folder(),
+        store.clone(),
+        h.objects.clone(),
+        h.audit.clone(),
+        h.clock.clone(),
+        ServiceConfig::default(),
+    )
+}
+
+pub async fn tree_lists_a_directory_with_last_change_mode_and_lock(store: Store) {
+    let h = harness(store.clone());
+    let svc = tree_service(&store, &h);
+    assert!(svc.tree(None).await.unwrap().is_empty());
+
+    for (p, text, who) in [
+        ("README.md", "r", "alice"),
+        ("Source/a.cpp", "a", "alice"),
+        ("Source/deep/b.cpp", "b", "bob"),
+        ("Mixed/lock.bin", "l", "bob"),
+        ("Mixed/free.bin", "f", "bob"),
+    ] {
+        let p = path(p);
+        let c = blob(&h, text).await;
+        if svc.mode_for(&p) == crate::Mode::Exclusive {
+            svc.checkout(&p, &user(who), None).await.unwrap();
+        }
+        svc.checkin(&p, &user(who), c, None, format!("add {text}"))
+            .await
+            .unwrap();
+        h.clock.advance(Duration::minutes(1));
+    }
+    svc.checkout(&path("Content/m.umap"), &user("carol"), None)
+        .await
+        .unwrap();
+
+    let root = svc.tree(None).await.unwrap();
+    let summary: Vec<_> = root
+        .iter()
+        .map(|e| {
+            (
+                e.name.as_str(),
+                e.kind,
+                e.mode,
+                e.last_change.as_ref().map(|r| r.message.as_str()),
+                e.lock.as_ref().map(|l| l.owner.as_str()),
+            )
+        })
+        .collect();
+    use crate::tree::{EntryKind::*, EntryMode::*};
+    assert_eq!(
+        summary,
+        [
+            ("Content", Folder, Exclusive, None, None),
+            ("Mixed", Folder, Mixed, Some("add f"), None),
+            ("Source", Folder, Shared, Some("add b"), None),
+            ("README.md", File, Shared, Some("add r"), None),
+        ]
+    );
+
+    let source = svc.tree(Some(&path("Source"))).await.unwrap();
+    let names: Vec<_> = source.iter().map(|e| (e.path.as_str(), e.kind)).collect();
+    assert_eq!(names, [("Source/deep", Folder), ("Source/a.cpp", File)]);
+
+    let content = svc.tree(Some(&path("Content"))).await.unwrap();
+    assert_eq!(content.len(), 1);
+    assert_eq!(content[0].lock.as_ref().unwrap().owner, user("carol"));
+    assert!(content[0].last_change.is_none());
+
+    let mixed = svc.tree(Some(&path("Mixed"))).await.unwrap();
+    let modes: Vec<_> = mixed.iter().map(|e| (e.name.as_str(), e.mode)).collect();
+    assert_eq!(modes, [("free.bin", Shared), ("lock.bin", Exclusive)]);
+}
+
+pub async fn tree_rejects_missing_directories_and_files(store: Store) {
+    let h = harness(store);
+    let c = blob(&h, "a").await;
+    h.svc
+        .checkin(&path("Source/a.cpp"), &user("alice"), c, None, "a".into())
+        .await
+        .unwrap();
+    let missing = h.svc.tree(Some(&path("Nope"))).await.unwrap_err();
+    assert!(matches!(missing, PynError::PathNotFound(_)), "{missing}");
+    let file = h.svc.tree(Some(&path("Source/a.cpp"))).await.unwrap_err();
+    assert!(matches!(file, PynError::InvalidRequest(_)), "{file}");
+}
+
+pub async fn summary_counts_files_locks_and_file_activity(store: Store) {
+    let h = harness(store);
+    let (a, m) = (path("Source/a.cpp"), path("Content/m.umap"));
+    let fresh = h.svc.summary(10).await.unwrap();
+    assert_eq!((fresh.files, fresh.updated_at), (0, None));
+    assert_eq!(fresh.default_branch, "main");
+
+    let c = blob(&h, "a").await;
+    h.svc
+        .checkin(&a, &user("alice"), c, None, "a".into())
+        .await
+        .unwrap();
+    h.clock.advance(Duration::minutes(1));
+    h.svc.checkout(&m, &user("bob"), None).await.unwrap();
+    let c = blob(&h, "m").await;
+    h.svc
+        .checkin(&m, &user("bob"), c, None, "m".into())
+        .await
+        .unwrap();
+    h.clock.advance(Duration::minutes(1));
+    h.svc
+        .checkout(&m, &user("bob"), Some(RevisionId(1)))
+        .await
+        .unwrap();
+    h.svc.force_unlock(&m, &user("maya"), "away").await.unwrap();
+    h.svc
+        .checkout(&m, &user("carol"), Some(RevisionId(1)))
+        .await
+        .unwrap();
+
+    let s = h.svc.summary(3).await.unwrap();
+    assert_eq!((s.files, s.exclusive_files, s.shared_files), (2, 1, 1));
+    assert_eq!(s.branch_count, 1);
+    assert_eq!(s.updated_at, Some(h.clock.now() - Duration::minutes(1)));
+    let locks: Vec<_> = s
+        .locks
+        .iter()
+        .map(|l| (l.path.as_str(), l.owner.as_str()))
+        .collect();
+    assert_eq!(locks, [("Content/m.umap", "carol")]);
+    let acts: Vec<_> = s
+        .activity
+        .iter()
+        .map(|e| (e.actor.as_str(), e.action))
+        .collect();
+    assert_eq!(
+        acts,
+        [
+            ("carol", AuditAction::Checkout),
+            ("maya", AuditAction::ForceUnlock),
+            ("bob", AuditAction::Checkout),
+        ]
+    );
 }
 
 pub async fn old_revisions_can_be_read_back(store: Store) {
@@ -864,6 +1016,9 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; release_is_holder_only);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; checkin_of_unknown_content_is_refused);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; files_lists_heads_and_locks);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; tree_lists_a_directory_with_last_change_mode_and_lock);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; tree_rejects_missing_directories_and_files);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; summary_counts_files_locks_and_file_activity);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; old_revisions_can_be_read_back);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; restore_appends_a_checkpoint_with_the_old_content);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; restore_needs_the_lock_and_the_right_confirmation);

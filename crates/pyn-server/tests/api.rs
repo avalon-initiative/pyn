@@ -176,6 +176,115 @@ async fn files_listing_shows_mode_and_lock() {
     assert!(page.next_after.is_none());
 }
 
+async fn get_as(app: &axum::Router, uri: &str, user: &str) -> (StatusCode, Vec<u8>) {
+    let r = app
+        .clone()
+        .oneshot(
+            Request::get(uri)
+                .header(api::DEV_USER_HEADER, user)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = r.status();
+    (
+        status,
+        r.into_body().collect().await.unwrap().to_bytes().to_vec(),
+    )
+}
+
+#[tokio::test]
+async fn tree_and_summary_describe_the_landing_page() {
+    let app = app().await;
+    let body = serde_json::json!({"path": "Content/a.umap", "base_revision": null});
+    app.clone()
+        .oneshot(json_post("/v1/repos/owner/game/checkout", "alice", body))
+        .await
+        .unwrap();
+    let put = Request::put("/v1/repos/owner/game/objects")
+        .header(api::DEV_USER_HEADER, "bob")
+        .body(Body::from("x"))
+        .unwrap();
+    let r = app.clone().oneshot(put).await.unwrap();
+    let obj: api::PutObjectResponse =
+        serde_json::from_slice(&r.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    let body = serde_json::json!({"path": "Source/a.cpp", "content": obj.content, "base_revision": null, "message": "add a"});
+    app.clone()
+        .oneshot(json_post("/v1/repos/owner/game/checkin", "bob", body))
+        .await
+        .unwrap();
+
+    let (status, bytes) = get_as(&app, "/v1/repos/owner/game/tree", "alice").await;
+    assert_eq!(status, StatusCode::OK);
+    let root: api::TreeListing = serde_json::from_slice(&bytes).unwrap();
+    let shape: Vec<_> = root
+        .entries
+        .iter()
+        .map(|e| (e.name.as_str(), e.kind, e.mode))
+        .collect();
+    assert_eq!(
+        shape,
+        [
+            (
+                "Content",
+                api::TreeEntryKind::Folder,
+                api::TreeMode::Exclusive
+            ),
+            ("Source", api::TreeEntryKind::Folder, api::TreeMode::Shared),
+        ]
+    );
+    let source = root.entries[1].last_change.as_ref().unwrap();
+    assert_eq!(
+        (
+            source.path.as_str(),
+            source.author.as_str(),
+            source.message.as_str()
+        ),
+        ("Source/a.cpp", "bob", "add a")
+    );
+
+    let (status, bytes) = get_as(&app, "/v1/repos/owner/game/tree?path=Content/", "alice").await;
+    assert_eq!(status, StatusCode::OK);
+    let content: api::TreeListing = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(content.path, "Content");
+    assert_eq!(content.entries[0].lock.as_ref().unwrap().owner, "alice");
+
+    let (status, bytes) = get_as(&app, "/v1/repos/owner/game/tree?path=Nope", "alice").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let err: api::ErrorBody = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(err.code, "path_not_found");
+    let (status, _) = get_as(&app, "/v1/repos/owner/game/tree?path=Source/a.cpp", "alice").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _) = get_as(&app, "/v1/repos/owner/game/tree?path=../x", "alice").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    let (status, bytes) = get_as(&app, "/v1/repos/owner/game/summary?activity=2", "alice").await;
+    assert_eq!(status, StatusCode::OK);
+    let sum: api::RepoSummary = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        (sum.default_branch.as_str(), sum.branch_count, sum.files),
+        ("main", 1, 1)
+    );
+    assert_eq!(sum.locks.len(), 1);
+    let acts: Vec<_> = sum
+        .activity
+        .iter()
+        .map(|a| (a.actor.as_str(), a.action.as_str()))
+        .collect();
+    assert_eq!(acts, [("bob", "checkin"), ("alice", "checkout")]);
+
+    let anon = app
+        .oneshot(
+            Request::get("/v1/repos/owner/game/tree")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(anon.status(), StatusCode::UNAUTHORIZED);
+}
+
 #[tokio::test]
 async fn any_revision_can_be_fetched() {
     let app = app().await;

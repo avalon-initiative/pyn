@@ -77,6 +77,8 @@ struct RepoAddress {
         repo_api::set_member,
         list_locks,
         list_files,
+        tree,
+        summary,
         get_content,
         checkout,
         release,
@@ -101,6 +103,12 @@ struct RepoAddress {
         api::ErrorBody,
         api::FileEntry,
         api::FilePage,
+        api::TreeEntryKind,
+        api::TreeMode,
+        api::TreeEntry,
+        api::TreeListing,
+        api::ActivityEntry,
+        api::RepoSummary,
         api::Mode,
         api::RegistrationInfo,
         api::RegisterRequest,
@@ -197,6 +205,8 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/v1/repos/{owner}/{name}/locks", get(list_locks))
         .route("/v1/repos/{owner}/{name}/files", get(list_files))
+        .route("/v1/repos/{owner}/{name}/tree", get(tree))
+        .route("/v1/repos/{owner}/{name}/summary", get(summary))
         .route("/v1/repos/{owner}/{name}/content", get(get_content))
         .route("/v1/repos/{owner}/{name}/checkout", post(checkout))
         .route("/v1/repos/{owner}/{name}/release", post(release))
@@ -239,9 +249,10 @@ impl IntoResponse for ApiError {
             | PynError::CsrfFailed => StatusCode::FORBIDDEN,
             PynError::TooManyAttempts { .. } => StatusCode::TOO_MANY_REQUESTS,
             PynError::Unauthenticated(_) => StatusCode::UNAUTHORIZED,
-            PynError::TokenNotFound(_) | PynError::KeyNotFound(_) | PynError::RepoNotFound(_) => {
-                StatusCode::NOT_FOUND
-            }
+            PynError::TokenNotFound(_)
+            | PynError::KeyNotFound(_)
+            | PynError::RepoNotFound(_)
+            | PynError::PathNotFound(_) => StatusCode::NOT_FOUND,
             PynError::RevisionNotFound { .. } => StatusCode::NOT_FOUND,
             PynError::InvalidPath(_)
             | PynError::InvalidRules(_)
@@ -541,6 +552,94 @@ async fn list_files(
     Ok(Json(api::FilePage {
         entries,
         next_after,
+    }))
+}
+
+#[derive(Deserialize)]
+struct TreeQuery {
+    path: Option<String>,
+}
+
+#[utoipa::path(get, path = "/v1/repos/{owner}/{name}/tree",
+    params(RepoAddress, ("path" = Option<String>, Query, description = "folder to list; the root if omitted or empty")),
+    responses((status = 200, body = api::TreeListing),
+              (status = 400, body = api::ErrorBody, description = "invalid_path, or the path is a file"),
+              (status = 404, body = api::ErrorBody, description = "path_not_found")))]
+async fn tree(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path((owner, name)): Path<(String, String)>,
+    Query(q): Query<TreeQuery>,
+) -> ApiResult<Json<api::TreeListing>> {
+    let (repo, _) = authorize_repo(&s, &headers, &owner, &name, Some(Permission::Read)).await?;
+    let raw = q.path.unwrap_or_default();
+    let trimmed = raw.trim_end_matches('/');
+    let dir = (!trimmed.is_empty())
+        .then(|| RepoPath::new(trimmed))
+        .transpose()?;
+    let entries = repo.service.tree(dir.as_ref()).await?;
+    Ok(Json(api::TreeListing {
+        path: trimmed.to_string(),
+        entries: entries.into_iter().map(tree_entry_dto).collect(),
+    }))
+}
+
+fn tree_entry_dto(e: pyn_core::TreeEntry) -> api::TreeEntry {
+    api::TreeEntry {
+        name: e.name,
+        path: e.path.to_string(),
+        kind: match e.kind {
+            pyn_core::EntryKind::File => api::TreeEntryKind::File,
+            pyn_core::EntryKind::Folder => api::TreeEntryKind::Folder,
+        },
+        mode: match e.mode {
+            pyn_core::EntryMode::Shared => api::TreeMode::Shared,
+            pyn_core::EntryMode::Exclusive => api::TreeMode::Exclusive,
+            pyn_core::EntryMode::Mixed => api::TreeMode::Mixed,
+        },
+        last_change: e.last_change.map(revision_dto),
+        lock: e.lock.map(lock_dto),
+    }
+}
+
+#[derive(Deserialize)]
+struct SummaryQuery {
+    activity: Option<usize>,
+}
+
+#[utoipa::path(get, path = "/v1/repos/{owner}/{name}/summary",
+    params(RepoAddress, ("activity" = Option<usize>, Query, description = "recent activity entries, default 10, max 100")),
+    responses((status = 200, body = api::RepoSummary)))]
+async fn summary(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path((owner, name)): Path<(String, String)>,
+    Query(q): Query<SummaryQuery>,
+) -> ApiResult<Json<api::RepoSummary>> {
+    let (repo, _) = authorize_repo(&s, &headers, &owner, &name, Some(Permission::Read)).await?;
+    let summary = repo
+        .service
+        .summary(q.activity.unwrap_or(10).clamp(1, 100))
+        .await?;
+    Ok(Json(api::RepoSummary {
+        default_branch: summary.default_branch,
+        branch_count: summary.branch_count,
+        files: summary.files,
+        exclusive_files: summary.exclusive_files,
+        shared_files: summary.shared_files,
+        updated_at: summary.updated_at,
+        locks: summary.locks.into_iter().map(lock_dto).collect(),
+        activity: summary
+            .activity
+            .into_iter()
+            .map(|e| api::ActivityEntry {
+                id: e.id,
+                at: e.at,
+                actor: e.actor.to_string(),
+                action: e.action.to_string(),
+                path: e.path.map(|p| p.to_string()),
+            })
+            .collect(),
     }))
 }
 

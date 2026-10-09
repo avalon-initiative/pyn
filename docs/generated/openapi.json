@@ -1658,6 +1658,119 @@
         }
       }
     },
+    "/v1/repos/{owner}/{name}/summary": {
+      "get": {
+        "tags": [],
+        "operationId": "summary",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "The namespace that owns the repository.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository's name within its owner.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "activity",
+            "in": "query",
+            "description": "recent activity entries, default 10, max 100",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepoSummary"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/repos/{owner}/{name}/tree": {
+      "get": {
+        "tags": [],
+        "operationId": "tree",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "The namespace that owns the repository.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository's name within its owner.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "description": "folder to list; the root if omitted or empty",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TreeListing"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_path, or the path is a file",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "path_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/repos/{owner}/{name}/users": {
       "post": {
         "tags": [
@@ -1938,6 +2051,39 @@
         "properties": {
           "user": {
             "type": "string"
+          }
+        }
+      },
+      "ActivityEntry": {
+        "type": "object",
+        "description": "A file or lock event from the audit log.",
+        "required": [
+          "id",
+          "at",
+          "actor",
+          "action"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "checkout, release, checkin, restore or force_unlock."
+          },
+          "actor": {
+            "type": "string"
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
@@ -2545,6 +2691,68 @@
           }
         }
       },
+      "RepoSummary": {
+        "type": "object",
+        "required": [
+          "default_branch",
+          "branch_count",
+          "files",
+          "exclusive_files",
+          "shared_files",
+          "locks",
+          "activity"
+        ],
+        "properties": {
+          "activity": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ActivityEntry"
+            },
+            "description": "Newest first."
+          },
+          "branch_count": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Provisional: always 1 until branches arrive.",
+            "minimum": 0
+          },
+          "default_branch": {
+            "type": "string",
+            "description": "Provisional: the single mainline until branches arrive."
+          },
+          "exclusive_files": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "files": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Paths with at least one revision.",
+            "minimum": 0
+          },
+          "locks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Lock"
+            },
+            "description": "Live locks with their holders, ordered by path."
+          },
+          "shared_files": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "updated_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Time of the newest revision; absent for an empty repository."
+          }
+        }
+      },
       "RestoreRequest": {
         "type": "object",
         "required": [
@@ -2788,6 +2996,88 @@
             "type": "string"
           }
         }
+      },
+      "TreeEntry": {
+        "type": "object",
+        "required": [
+          "name",
+          "path",
+          "kind",
+          "mode"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/TreeEntryKind"
+          },
+          "last_change": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Revision",
+                "description": "The newest revision at or under the entry (`path` on it names the file). Absent for a file with a lock but no revision."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "lock": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Lock",
+                "description": "The live lock on a file; always absent for folders."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "mode": {
+            "$ref": "#/components/schemas/TreeMode"
+          },
+          "name": {
+            "type": "string",
+            "description": "The last path segment."
+          },
+          "path": {
+            "type": "string",
+            "description": "Repo-relative path; pass it as `path` to list a folder."
+          }
+        }
+      },
+      "TreeEntryKind": {
+        "type": "string",
+        "enum": [
+          "file",
+          "folder"
+        ]
+      },
+      "TreeListing": {
+        "type": "object",
+        "required": [
+          "path",
+          "entries"
+        ],
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TreeEntry"
+            },
+            "description": "Folders first, then files, each by name."
+          },
+          "path": {
+            "type": "string",
+            "description": "The listed folder; empty for the root."
+          }
+        }
+      },
+      "TreeMode": {
+        "type": "string",
+        "enum": [
+          "shared",
+          "exclusive",
+          "mixed"
+        ]
       },
       "UpdateRepoRequest": {
         "type": "object",

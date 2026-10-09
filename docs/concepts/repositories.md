@@ -74,6 +74,7 @@ private. A server with no earlier data starts with no repositories. In-memory st
 | `PATCH /v1/repos/{owner}/{name}` | rename or change settings `{name?, visibility?, lease_hours?}` |
 | `DELETE /v1/repos/{owner}/{name}` | delete |
 | `GET /v1/repos/{owner}/{name}/me` | who you are and what you may do there |
+| `GET /v1/repos/{owner}/{name}/{tree,summary}` | [folder listing and summary](browsing.md) |
 | `/v1/repos/{owner}/{name}/{locks,files,content,checkout,release,checkin,restore,force-unlock,audit,objects,history}` | the file and lock operations |
 | `/v1/repos/{owner}/{name}/{members,roles,invites,users}` | who has access |
 
