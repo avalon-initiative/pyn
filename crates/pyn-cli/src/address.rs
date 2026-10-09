@@ -19,6 +19,16 @@ pub fn split_repo(text: &str) -> Result<(&str, &str)> {
     }
 }
 
+/// Splits `org/team`, refusing anything else.
+pub fn split_team(text: &str) -> Result<(&str, &str)> {
+    match text.split_once('/') {
+        Some((org, slug)) if !org.is_empty() && !slug.is_empty() && !slug.contains('/') => {
+            Ok((org, slug))
+        }
+        _ => bail!("{text:?} is not a team name; use org/team"),
+    }
+}
+
 /// `http(s)://host[:port][/prefix]/owner/name` or a bare `owner/name`; the last two path segments are the repository.
 pub fn parse_source(text: &str) -> Result<Source> {
     let text = text.trim().trim_end_matches('/');

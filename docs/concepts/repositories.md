@@ -87,6 +87,12 @@ a user owns has no teams: `400 not_org_repo`).
 | `PUT /v1/repos/{owner}/{name}/teams/{team}` | needs `manage_users`; `{role}` sets or changes the team's role; `204` |
 | `DELETE /v1/repos/{owner}/{name}/teams/{team}` | needs `manage_users`; `204`, also when the team holds no role |
 
+On the command line: `pyn team create <org>/<team> [--name N] [--description D]`, `pyn team list <org>` (members, repos,
+created, name, team), `pyn team show <org>/<team>` (details, members and the repositories it holds roles in),
+`pyn team delete <org>/<team> [--yes]` (asks you to type `org/team`), `pyn team member add|remove <org>/<team> <user>`,
+`pyn team grant <org>/<team> <owner>/<repo> --role R`, `pyn team revoke <org>/<team> <owner>/<repo>` and
+`pyn team access [<owner>/<repo>]` (the teams that hold a role in a repository, defaulting to the current one).
+
 Managing teams and their members needs, for a token, `manage_roles` and no repository limit, as for organization members.
 Granting a team a role follows the rule for people: the actor needs `manage_users` and every permission the role grants
 (`403 forbidden` otherwise), and removing a grant needs the permissions of the role being removed. The team events are
