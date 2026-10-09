@@ -3,7 +3,8 @@
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::header::RETRY_AFTER;
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
@@ -17,7 +18,11 @@ use serde::Deserialize;
 use utoipa::{IntoParams, OpenApi};
 
 mod access_api;
+mod admin_api;
 pub mod auth;
+mod client;
+pub mod email;
+pub mod passwords;
 mod repo_api;
 mod session_api;
 
@@ -30,6 +35,8 @@ pub struct AppState {
     pub auth: Arc<dyn AuthProvider>,
     /// Accepts the `X-Pyn-User` header; present only when development auth is switched on.
     pub dev_auth: Option<Arc<dyn AuthProvider>>,
+    /// Takes the caller's address from `X-Forwarded-For` (the last entry), for a server behind a trusted proxy.
+    pub trust_forwarded: bool,
 }
 
 /// The `{owner}` and `{name}` of every repository route.
@@ -49,6 +56,8 @@ struct RepoAddress {
         health,
         access_api::registration,
         access_api::register,
+        access_api::verify_email,
+        access_api::resend_verification,
         access_api::login,
         session_api::sign_in,
         session_api::current,
@@ -59,6 +68,11 @@ struct RepoAddress {
         access_api::delete_key,
         access_api::me,
         repo_api::my_locks,
+        admin_api::list_accounts,
+        admin_api::approve,
+        admin_api::disable,
+        admin_api::enable,
+        admin_api::audit,
         access_api::create_token,
         access_api::list_tokens,
         access_api::revoke_token,
@@ -115,6 +129,10 @@ struct RepoAddress {
         api::RegistrationInfo,
         api::RegisterRequest,
         api::Registered,
+        api::VerifyEmailRequest,
+        api::ResendVerificationRequest,
+        api::AccountInfo,
+        api::DisableAccountRequest,
         api::LoginRequest,
         api::SessionInfo,
         api::ChangePasswordRequest,
@@ -148,6 +166,13 @@ pub fn router(state: AppState) -> Router {
         .route("/openapi.json", get(|| async { Json(ApiDoc::openapi()) }))
         .route("/v1/registration", get(access_api::registration))
         .route("/v1/register", post(access_api::register))
+        .route("/v1/register/verify", post(access_api::verify_email))
+        .route("/v1/register/resend", post(access_api::resend_verification))
+        .route("/v1/admin/users", get(admin_api::list_accounts))
+        .route("/v1/admin/users/{user}/approve", post(admin_api::approve))
+        .route("/v1/admin/users/{user}/disable", post(admin_api::disable))
+        .route("/v1/admin/users/{user}/enable", post(admin_api::enable))
+        .route("/v1/admin/audit", get(admin_api::audit))
         .route("/v1/login", post(access_api::login))
         .route(
             "/v1/session",
@@ -250,11 +275,14 @@ impl IntoResponse for ApiError {
             PynError::NotLockHolder(_)
             | PynError::Forbidden(_)
             | PynError::RegistrationClosed
+            | PynError::AccountInactive(_)
+            | PynError::ServerAdminRequired
             | PynError::NotNamespaceOwner(_)
             | PynError::CsrfFailed => StatusCode::FORBIDDEN,
             PynError::TooManyAttempts { .. } => StatusCode::TOO_MANY_REQUESTS,
             PynError::Unauthenticated(_) => StatusCode::UNAUTHORIZED,
             PynError::TokenNotFound(_)
+            | PynError::UserNotFound(_)
             | PynError::KeyNotFound(_)
             | PynError::RepoNotFound(_)
             | PynError::PathNotFound(_) => StatusCode::NOT_FOUND,
@@ -263,6 +291,7 @@ impl IntoResponse for ApiError {
             | PynError::InvalidRules(_)
             | PynError::InvalidRequest(_)
             | PynError::InvalidInvite(_)
+            | PynError::InvalidVerification(_)
             | PynError::InvalidRepoName(_)
             | PynError::NotExclusive(_)
             | PynError::ObjectMissing(_) => StatusCode::BAD_REQUEST,
@@ -272,7 +301,12 @@ impl IntoResponse for ApiError {
             code: self.0.code().to_string(),
             message: self.0.to_string(),
         };
-        (status, Json(body)).into_response()
+        let mut res = (status, Json(body)).into_response();
+        if let PynError::TooManyAttempts { retry_after_secs } = self.0 {
+            res.headers_mut()
+                .insert(RETRY_AFTER, HeaderValue::from(retry_after_secs));
+        }
+        res
     }
 }
 

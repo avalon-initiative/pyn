@@ -33,7 +33,7 @@ nobody can grant a role containing a permission they do not hold themselves.
 ## Accounts and signing in
 
 People have accounts: a unique user name (2 to 39 lowercase letters, digits, `-` or `_`) and a password of at least ten
-characters, stored only as a salted argon2id hash. `pyn login <name>` checks the password and saves an expiring session
+characters (at most 256), stored only as a salted argon2id hash. `pyn login <name>` checks the password and saves an expiring session
 for that server in your user configuration directory (`~/.config/pyn/credentials.toml`, readable only by you), the way a git
 credential helper would; the CLI uses it when no token is given, and `pyn logout` ends the session and removes it. A
 session is a token that reaches every repository you belong to, with your role there as its limit, and it lasts 30 days by
@@ -53,8 +53,11 @@ A request authenticated by the cookie alone must carry the CSRF token in an `X-P
 DELETE, or the server answers 403 `csrf_failed`. Requests with a bearer token never use the cookie and need no CSRF token.
 The account pages (SSH keys, personal access tokens, password) are the same endpoints used with a session.
 
-Five wrong passwords for a user name lock that name out of signing in for 15 minutes, and the error never says whether the
-name or the password was wrong. `pyn password` changes your own password.
+Failed sign-ins are throttled twice: five wrong passwords for a user name (which need not exist) lock that name out for
+15 minutes, and 30 failures from one client address lock that address out for the same time, whatever names it tries. A
+success clears the name's count but not the address's. The error never says whether the name or the password was wrong, and
+a user name that does not exist costs the same work as one that does. Only a right password learns that the account cannot
+sign in yet (`email_not_verified`, `approval_pending`, `account_disabled`, all 403). `pyn password` changes your own password.
 
 ## SSH keys
 
@@ -65,8 +68,8 @@ as with git. Link a public key to your account with `pyn key add` (it uses `~/.s
 As on GitHub, a key belongs to exactly one account: its fingerprint, the same `SHA256:...` that `ssh-keygen -l` prints,
 is unique across the server, and linking a key that another account has is refused. Ed25519, ECDSA, security keys and RSA
 of at least 2048 bits are accepted; DSA and small RSA keys are not. Someone with `manage_users` in a repository can list and
-remove the keys and tokens of its members. *Provisional:* until server administrators exist, that is the only way to manage
-another person's account.
+remove the keys and tokens of its members. [Server administrators](#protecting-open-registration) approve and disable
+accounts but do not gain that.
 
 ## Joining a server
 
@@ -75,13 +78,81 @@ The person running the server chooses how people join with `PYN_REGISTRATION`:
 | Mode | Who can create an account |
 | --- | --- |
 | `invite` (default) | anyone with an invitation from a member who has `manage_users` in a repository |
-| `open` | anyone; the account has no role in any repository (it can read public ones) until someone adds it. Meant for a public server, and not recommended on the internet until sign-up protection exists |
+| `open` | anyone; the account has no role in any repository (it can read public ones) until someone adds it. Meant for a public server; see [protecting open registration](#protecting-open-registration) before exposing it to the internet |
 | `closed` | nobody on their own; someone with `manage_users` adds people with `pyn user add` |
 
 In every mode, someone with `manage_users` in a repository can add people to it by hand. An invitation is a one-time code
 (`pyn invite create --role writer`) for one repository that carries the role the new person will get there and an expiry; it
 is shown once, can be revoked only in the repository it belongs to, and cannot grant a role above the level of the person
 creating it. The new person runs `pyn register <name> --invite <code>` and gets that role in that repository.
+
+## Protecting open registration
+
+An open server attracts bots and password guessing, so it layers these protections. Each is server-side; clients only
+display what the server says. The mode default stays `invite` for now.
+
+**Email verification** (`PYN_EMAIL_VERIFICATION`, on unless set to `false`). An open sign-up must carry an `email`. The
+account is created `pending_verification` and cannot sign in. The server mails a link,
+`{PYN_PUBLIC_URL}/verify-email?token=...`, that works once for 24 hours; the web page behind it calls
+`POST /v1/register/verify {token}`. A pending account that never verifies, and has no live link, gives its name back after
+24 hours. Addresses are lowercased; an address can be verified by only one account. Invite-only and closed servers do not
+verify: the invitation or the administrator vouches for the person.
+
+**Approval** (`PYN_REQUIRE_APPROVAL=true`, off by default). After the address is verified (or at sign-up when verification
+is off) the account waits as `pending_approval` until a server administrator approves it.
+
+**Rate limits** (fixed windows, per client address and per target; limits are counted before any password work):
+
+| What | Limit | Setting |
+| --- | --- | --- |
+| failed sign-ins per user name | 5 per 15 minutes | `PYN_RATE_SIGN_IN_ACCOUNT` |
+| failed sign-ins per client address | 30 per 15 minutes | `PYN_RATE_SIGN_IN_CLIENT` |
+| sign-up and resend attempts per client address | 10 per hour | `PYN_RATE_REGISTER_CLIENT` |
+| verification emails per recipient address | 3 per hour | `PYN_RATE_MAIL_PER_EMAIL` |
+
+A refused request is 429 `too_many_attempts` with a `Retry-After` header in seconds. The per-recipient limit never
+changes the response: past it a sign-up still answers as usual and simply sends nothing. The client address is the
+connection's peer address; behind a reverse proxy set `PYN_TRUST_FORWARDED_FOR=true` to use the last entry of
+`X-Forwarded-For` instead (only when the proxy sets it; otherwise anyone could pick their own address). IPv6 addresses are
+limited per /64. Counters are in memory, or in PostgreSQL when `PYN_DATABASE_URL` is set, so restarts and several servers
+do not reset them.
+
+**No user enumeration.** Sign-in answers the same for a wrong password and an unknown user, with the same hashing work.
+Signing up with an email address that already belongs to a verified account gets the same `201` as a fresh one (and the
+hashing work is the same); the address's owner gets a notice instead of a link, and no account is created.
+`POST /v1/register/resend` always answers `202`. A taken user name is `409 user_exists`, as on GitHub, since names are public.
+
+**Server administrators** approve, disable and enable accounts. The account named by `PYN_BOOTSTRAP_ADMIN` is one; a token
+acts as one only if it carries `manage_users`. A disabled account cannot sign in, its sessions end at once, and its tokens
+and SSH keys stop working (403 `account_disabled`) until it is enabled; its email address stays reserved. Administrators
+cannot disable themselves. Approvals, disables and enables are recorded with the actor and reason in a server-wide audit
+log, read at `GET /v1/admin/audit`.
+
+**Password hashing** runs on a blocking thread pool, at most `PYN_PASSWORD_HASHES` at a time (default: the number of CPUs;
+each argon2id hash uses about 19 MiB), so heavy sign-in or sign-up traffic cannot stall other requests.
+
+**Email delivery.** The only sender today writes each message to the server log (`PYN_EMAIL=log`), which suffices for
+development and tests, not for real users. The server logs a warning at startup when registration is open and verification
+is off, or on but nothing is delivered.
+
+### Contract for clients
+
+| Route | Notes |
+| --- | --- |
+| `GET /v1/registration` | `{registration, email_verification, approval}`; the last two are true only for `open` servers that use them |
+| `POST /v1/register` | `{username, password, email?, invite?}` gives `201 {user, status}`; `status` is `active`, `pending_verification` or `pending_approval` |
+| `POST /v1/register/verify` | `{token}` gives `200 {user, status}`; `400 invalid_verification` for an unknown, used or expired link |
+| `POST /v1/register/resend` | `{email}` gives `202`, always |
+| `POST /v1/login`, `POST /v1/session` | `403` `email_not_verified`, `approval_pending` or `account_disabled` after a right password |
+| `GET /v1/me` | `{user, admin}` |
+| `GET /v1/admin/users?status=&limit=` | accounts oldest first: `{user, email, email_verified, status, disabled_at, disabled_reason, admin, created_at}` |
+| `POST /v1/admin/users/{user}/approve` | `{}`; the updated account |
+| `POST /v1/admin/users/{user}/disable` | `{reason?}`; the updated account |
+| `POST /v1/admin/users/{user}/enable` | the updated account |
+| `GET /v1/admin/audit?before=&limit=` | `account_approved`, `account_disabled`, `account_enabled` events, same page shape as a repository's |
+
+The admin routes answer `403 server_admin_required` to anyone else and `404 user_not_found` for an unknown account.
+`pyn register --email <address>` signs up on a server that verifies.
 
 ## Tokens
 
@@ -114,5 +185,6 @@ every permission. Never set it on a server others can reach.
 
 Adding a member (by an admin, by registration or as the creator of a repository), changing a member's role, changing what a
 role grants, creating or revoking a token, and creating, changing or deleting the repository itself are recorded in that
-repository's audit log with the actor and what changed, and are visible to `view_audit`. A token's events go to the log of
+repository's audit log with the actor and what changed, and are visible to `view_audit`. Server-wide account actions go to
+the [server audit log](#protecting-open-registration). A token's events go to the log of
 each repository it is limited to. Token secrets are never recorded, and neither are sign-in sessions.

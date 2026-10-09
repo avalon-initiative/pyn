@@ -1,23 +1,27 @@
 use std::collections::BTreeSet;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
-
-use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
-
-use chrono::Duration;
+use chrono::{DateTime, Duration, Utc};
 
 use crate::access::{
-    Credential, Identity, InviteId, InviteRecord, Permission, Principal, RegistrationMode, Role,
-    RoleDefinitions, SessionRecord, SshKeyRecord, TokenId, TokenRecord, account, invite, session,
-    ssh, token,
+    AccountRecord, AccountStatus, Credential, Identity, InviteId, InviteRecord, NewAccount,
+    Permission, Principal, RegistrationMode, Role, RoleDefinitions, SessionRecord, SignupStage,
+    SshKeyRecord, TokenId, TokenRecord, VerificationRecord, account, invite, session, ssh, token,
+    verification,
 };
-use crate::audit::{AuditAction, AuditStore, NewAuditEvent};
+use crate::audit::{AuditAction, AuditEvent, AuditQuery, AuditStore, NewAuditEvent};
 use crate::clock::Clock;
+use crate::email::{EmailMessage, EmailSender, NullEmailSender};
 use crate::error::{PynError, Result};
+use crate::memory::MemoryRateLimitStore;
+use crate::passwords::{InlinePasswords, PasswordWorker};
+use crate::ratelimit::RateLimitStore;
 use crate::types::{RepoId, UserId};
+
+/// Server-wide events (account approvals and disables) are recorded in the audit store under this id, which
+/// no repository can have.
+pub const SERVER_AUDIT_ID: &str = "@server";
 
 /// Persistence for users, roles and tokens.
 #[async_trait]
@@ -103,13 +107,105 @@ pub trait AccessStore: Send + Sync {
     async fn revoke_token(&self, id: &TokenId, now: DateTime<Utc>) -> Result<bool>;
 
     async fn touch_token(&self, id: &TokenId, now: DateTime<Utc>) -> Result<()>;
+
+    /// Creates a self-registered account with its password; false if the name is already taken.
+    async fn create_account(&self, new: NewAccount) -> Result<bool>;
+
+    async fn account(&self, user: &UserId) -> Result<Option<AccountRecord>>;
+
+    /// The account whose verified address is `email`, if any.
+    async fn verified_email_owner(&self, email: &str) -> Result<Option<UserId>>;
+
+    /// Accounts still waiting to verify `email`.
+    async fn pending_by_email(&self, email: &str) -> Result<Vec<AccountRecord>>;
+
+    /// Marks the account's address verified and moves it to `signup`; false if another account has already
+    /// verified the same address, or there is no such account.
+    async fn complete_verification(
+        &self,
+        user: &UserId,
+        signup: SignupStage,
+        now: DateTime<Utc>,
+    ) -> Result<bool>;
+
+    /// Moves the account to `signup`; false if there is no such account.
+    async fn set_signup(&self, user: &UserId, signup: SignupStage) -> Result<bool>;
+
+    /// Disables the account with a reason, or enables it with `None`; false if there is no such account.
+    async fn set_disabled(
+        &self,
+        user: &UserId,
+        disabled: Option<(DateTime<Utc>, Option<String>)>,
+    ) -> Result<bool>;
+
+    async fn set_admin(&self, user: &UserId, admin: bool) -> Result<()>;
+
+    /// Accounts oldest first, optionally only those in `status`.
+    async fn list_accounts(
+        &self,
+        status: Option<AccountStatus>,
+        limit: usize,
+    ) -> Result<Vec<AccountRecord>>;
+
+    /// Removes expired verifications, and the unverified accounts created before `created_before` that have
+    /// none left to use.
+    async fn delete_stale_pending(
+        &self,
+        now: DateTime<Utc>,
+        created_before: DateTime<Utc>,
+    ) -> Result<()>;
+
+    /// Stores the verification, replacing any earlier one for the same account.
+    async fn put_verification(&self, record: VerificationRecord) -> Result<()>;
+
+    /// Removes and returns the verification; each can be taken once.
+    async fn take_verification(&self, token_hash: &str) -> Result<Option<VerificationRecord>>;
+
+    async fn delete_sessions_of(&self, user: &UserId) -> Result<()>;
 }
+
+/// How many events one key may cause in a window before further ones are refused.
+#[derive(Debug, Clone)]
+pub struct RateLimits {
+    /// Failed sign-ins per user name, existing or not, in 15 minutes.
+    pub sign_in_per_account: u32,
+    /// Failed sign-ins per client address in 15 minutes.
+    pub sign_in_per_client: u32,
+    /// Sign-up attempts per client address in an hour.
+    pub register_per_client: u32,
+    /// Verification emails per recipient address in an hour.
+    pub mail_per_email: u32,
+}
+
+impl Default for RateLimits {
+    fn default() -> Self {
+        Self {
+            sign_in_per_account: 5,
+            sign_in_per_client: 30,
+            register_per_client: 10,
+            mail_per_email: 3,
+        }
+    }
+}
+
+const SIGN_IN_WINDOW: Duration = Duration::minutes(15);
+const REGISTER_WINDOW: Duration = Duration::hours(1);
+const MAIL_WINDOW: Duration = Duration::hours(1);
 
 /// Server settings that shape who can join and how long a sign-in lasts.
 #[derive(Debug, Clone)]
 pub struct AccessConfig {
     pub registration: RegistrationMode,
     pub session_days: i64,
+    /// Open registration only: an account stays inactive until its email address is confirmed.
+    pub require_email_verification: bool,
+    /// Open registration only: an administrator approves each new account after it is verified.
+    pub require_approval: bool,
+    pub limits: RateLimits,
+    /// Where the web app lives; verification links point at `{public_url}/verify-email`.
+    pub public_url: String,
+    /// How long a verification link works, and how long an unverified account keeps its name.
+    pub verification_ttl: Duration,
 }
 
 impl Default for AccessConfig {
@@ -117,12 +213,78 @@ impl Default for AccessConfig {
         Self {
             registration: RegistrationMode::InviteOnly,
             session_days: 30,
+            require_email_verification: true,
+            require_approval: false,
+            limits: RateLimits::default(),
+            public_url: "http://localhost:5173".into(),
+            verification_ttl: Duration::hours(24),
         }
     }
 }
 
-const MAX_FAILED_SIGN_INS: u32 = 5;
-const SIGN_IN_WINDOW: Duration = Duration::minutes(15);
+impl AccessConfig {
+    /// What to tell the operator about an open server that lacks protection; empty for other modes.
+    pub fn open_registration_warnings(&self, email_delivers: bool) -> Vec<String> {
+        if self.registration != RegistrationMode::Open {
+            return Vec::new();
+        }
+        let mut out = vec![
+            "registration is open: anyone who can reach this server can create an account"
+                .to_string(),
+        ];
+        if !self.require_email_verification {
+            out.push("email verification is off: sign-ups are not checked, so bots can create accounts freely".into());
+        } else if !email_delivers {
+            out.push("email verification is on but no email is delivered (verification links only reach the log): real people cannot finish signing up".into());
+        }
+        out
+    }
+}
+
+/// A request to create an account for oneself.
+#[derive(Debug, Clone, Copy)]
+pub struct Registration<'a> {
+    pub username: &'a str,
+    pub password: &'a str,
+    pub email: Option<&'a str>,
+    pub invite: Option<&'a str>,
+    /// The caller's network address, for rate limits.
+    pub client: Option<&'a str>,
+}
+
+impl<'a> Registration<'a> {
+    pub fn new(username: &'a str, password: &'a str) -> Self {
+        Self {
+            username,
+            password,
+            email: None,
+            invite: None,
+            client: None,
+        }
+    }
+
+    pub fn email(mut self, email: &'a str) -> Self {
+        self.email = Some(email);
+        self
+    }
+
+    pub fn invite(mut self, code: &'a str) -> Self {
+        self.invite = Some(code);
+        self
+    }
+
+    pub fn client(mut self, address: &'a str) -> Self {
+        self.client = Some(address);
+        self
+    }
+}
+
+/// The outcome of a sign-up: the account asked for, and what it must still do before it is usable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignUp {
+    pub user: UserId,
+    pub status: AccountStatus,
+}
 
 /// Authentication of tokens and passwords, and every rule about who may join and manage users, roles and tokens.
 pub struct AccessService {
@@ -130,8 +292,9 @@ pub struct AccessService {
     clock: Arc<dyn Clock>,
     config: AccessConfig,
     audit: Option<Arc<dyn AuditStore>>,
-    /// Failed sign-ins per user name: how many, and when the window started.
-    failures: Mutex<HashMap<String, (u32, DateTime<Utc>)>>,
+    limits: Arc<dyn RateLimitStore>,
+    email: Arc<dyn EmailSender>,
+    passwords: Arc<dyn PasswordWorker>,
 }
 
 fn join<T: ToString>(items: impl Iterator<Item = T>) -> String {
@@ -149,8 +312,33 @@ impl AccessService {
             clock,
             config: AccessConfig::default(),
             audit: None,
-            failures: Mutex::new(HashMap::new()),
+            limits: Arc::new(MemoryRateLimitStore::new()),
+            email: Arc::new(NullEmailSender),
+            passwords: Arc::new(InlinePasswords),
         }
+    }
+
+    /// Where rate-limit counters live; the default is in memory and resets on restart.
+    pub fn with_rate_limits(mut self, store: Arc<dyn RateLimitStore>) -> Self {
+        self.limits = store;
+        self
+    }
+
+    pub fn with_email(mut self, sender: Arc<dyn EmailSender>) -> Self {
+        self.email = sender;
+        self
+    }
+
+    /// Where passwords are hashed and checked; the default runs on the calling task.
+    pub fn with_passwords(mut self, worker: Arc<dyn PasswordWorker>) -> Self {
+        self.passwords = worker;
+        self
+    }
+
+    /// Warnings for the operator about how this server is set up.
+    pub fn startup_warnings(&self) -> Vec<String> {
+        self.config
+            .open_registration_warnings(self.email.delivers())
     }
 
     pub fn with_config(mut self, config: AccessConfig) -> Self {
@@ -186,6 +374,14 @@ impl AccessService {
 
     pub fn registration_mode(&self) -> RegistrationMode {
         self.config.registration
+    }
+
+    pub fn requires_email_verification(&self) -> bool {
+        self.config.require_email_verification
+    }
+
+    pub fn requires_approval(&self) -> bool {
+        self.config.require_approval
     }
 
     /// What `user`'s role grants in `repo`; nothing for a non-member.
@@ -225,6 +421,7 @@ impl AccessService {
         if record.expires_at.is_some_and(|t| t <= now) {
             return Err(unauthenticated("token expired"));
         }
+        self.require_active(&record.user).await?;
         self.store.touch_token(&id, now).await?;
         Ok(Identity {
             user: record.user.clone(),
@@ -474,59 +671,102 @@ impl AccessService {
         .await
     }
 
-    fn check_not_throttled(&self, key: &str, now: DateTime<Utc>) -> Result<()> {
-        let mut failures = self.failures.lock().unwrap();
-        if let Some(&(count, since)) = failures.get(key) {
-            if now >= since + SIGN_IN_WINDOW {
-                failures.remove(key);
-            } else if count >= MAX_FAILED_SIGN_INS {
-                let retry_after_secs = (since + SIGN_IN_WINDOW - now).num_seconds().max(1);
-                return Err(PynError::TooManyAttempts { retry_after_secs });
-            }
+    /// Refuses when `key` has already reached `max` events in its live window.
+    async fn gate(&self, key: &str, max: u32) -> Result<()> {
+        let now = self.clock.now();
+        match self.limits.state(key, now).await? {
+            Some(state) if state.count >= max => Err(PynError::TooManyAttempts {
+                retry_after_secs: (state.resets_at - now).num_seconds().max(1),
+            }),
+            _ => Ok(()),
+        }
+    }
+
+    /// Counts an event against `key` and refuses it once the window already holds `max`.
+    async fn count_limited(&self, key: &str, max: u32, window: Duration) -> Result<()> {
+        let now = self.clock.now();
+        let state = self.limits.hit(key, window, now).await?;
+        if state.count > max {
+            return Err(PynError::TooManyAttempts {
+                retry_after_secs: (state.resets_at - now).num_seconds().max(1),
+            });
         }
         Ok(())
     }
 
-    fn note_sign_in(&self, key: &str, now: DateTime<Utc>, success: bool) {
-        let mut failures = self.failures.lock().unwrap();
-        if success {
-            failures.remove(key);
-        } else {
-            failures.entry(key.to_string()).or_insert((0, now)).0 += 1;
+    /// Refuses unless the account is active; an account with no record is a development identity.
+    async fn require_active(&self, user: &UserId) -> Result<()> {
+        match self.store.account(user).await? {
+            Some(account) if account.status() != AccountStatus::Active => {
+                Err(PynError::AccountInactive(account.status()))
+            }
+            _ => Ok(()),
         }
     }
 
-    /// Checks a password. Repeated failures lock the user name out for a while.
-    async fn verify_sign_in(&self, username: &str, password: &str) -> Result<UserId> {
-        let now = self.clock.now();
-        let key = username.to_lowercase();
-        self.check_not_throttled(&key, now)?;
+    /// A hash to check against when the user does not exist, so both cases cost the same.
+    async fn dummy_hash(&self) -> String {
+        static DUMMY: OnceLock<String> = OnceLock::new();
+        if let Some(hash) = DUMMY.get() {
+            return hash.clone();
+        }
+        let hash = self
+            .passwords
+            .hash("not-a-real-password")
+            .await
+            .unwrap_or_default();
+        DUMMY.get_or_init(|| hash).clone()
+    }
+
+    /// Checks a password. Repeated failures lock the user name, and the client address, out for a while.
+    async fn verify_sign_in(
+        &self,
+        username: &str,
+        password: &str,
+        client: Option<&str>,
+    ) -> Result<UserId> {
+        let limits = &self.config.limits;
+        let account_key = format!("sign-in:account:{}", username.to_lowercase());
+        let client_key = client.map(|c| format!("sign-in:client:{c}"));
+        self.gate(&account_key, limits.sign_in_per_account).await?;
+        if let Some(key) = &client_key {
+            self.gate(key, limits.sign_in_per_client).await?;
+        }
 
         let user = UserId::new(username);
         let verified = match self.store.password_hash(&user).await? {
-            Some(hash) => account::verify_password(password, &hash),
+            Some(hash) => self.passwords.verify(password, &hash).await,
             None => {
-                static DUMMY: OnceLock<String> = OnceLock::new();
-                let dummy = DUMMY.get_or_init(|| {
-                    account::hash_password("not-a-real-password").unwrap_or_default()
-                });
-                account::verify_password(password, dummy);
+                self.passwords
+                    .verify(password, &self.dummy_hash().await)
+                    .await;
                 false
             }
         };
-        self.note_sign_in(&key, now, verified);
+        let now = self.clock.now();
         if !verified {
+            self.limits.hit(&account_key, SIGN_IN_WINDOW, now).await?;
+            if let Some(key) = &client_key {
+                self.limits.hit(key, SIGN_IN_WINDOW, now).await?;
+            }
             return Err(PynError::Unauthenticated(
                 "wrong user name or password".into(),
             ));
         }
+        self.limits.reset(&account_key).await?;
+        self.require_active(&user).await?;
         Ok(user)
     }
 
     /// Checks a password and returns a token for every repository the user can reach, capped by their roles at
     /// use time, that expires after the configured number of days.
-    pub async fn login(&self, username: &str, password: &str) -> Result<(TokenRecord, String)> {
-        let user = self.verify_sign_in(username, password).await?;
+    pub async fn login(
+        &self,
+        username: &str,
+        password: &str,
+        client: Option<&str>,
+    ) -> Result<(TokenRecord, String)> {
+        let user = self.verify_sign_in(username, password, client).await?;
         let expires = self.clock.now() + Duration::days(self.config.session_days);
         self.issue_token(
             &user,
@@ -543,8 +783,9 @@ impl AccessService {
         &self,
         username: &str,
         password: &str,
+        client: Option<&str>,
     ) -> Result<(SessionRecord, String)> {
-        let user = self.verify_sign_in(username, password).await?;
+        let user = self.verify_sign_in(username, password, client).await?;
         let now = self.clock.now();
         self.store.delete_expired_sessions(now).await?;
         let (cookie, csrf_token, id_hash) = session::generate()?;
@@ -573,6 +814,7 @@ impl AccessService {
             .find_session(cookie)
             .await?
             .ok_or_else(|| unauthenticated("not signed in"))?;
+        self.require_active(&record.user).await?;
         let who = Identity {
             user: record.user.clone(),
             credential: Credential::Session,
@@ -590,36 +832,70 @@ impl AccessService {
         Duration::days(self.config.session_days)
     }
 
-    /// Creates an account on the server's own terms: freely when registration is open, with a valid invitation
-    /// when it is invite only, never when it is closed. An invitation also gives its role in its repository.
-    pub async fn register(
-        &self,
-        username: &str,
-        password: &str,
-        invitation: Option<&str>,
-    ) -> Result<UserId> {
-        let user = account::validate_username(username)?;
-        account::validate_password(password)?;
-        let invite = match self.config.registration {
+    /// Creates an account on the server's terms: open (after any verification and approval), with an invitation
+    /// that also gives its role, or never when closed.
+    pub async fn register(&self, request: Registration<'_>) -> Result<SignUp> {
+        let user = account::validate_username(request.username)?;
+        account::validate_password(request.password)?;
+        let open = match self.config.registration {
             RegistrationMode::Closed => return Err(PynError::RegistrationClosed),
-            RegistrationMode::Open => None,
-            RegistrationMode::InviteOnly => Some(self.check_invitation(invitation).await?),
+            RegistrationMode::Open => true,
+            RegistrationMode::InviteOnly => false,
         };
+        if let Some(client) = request.client {
+            self.count_limited(
+                &format!("register:client:{client}"),
+                self.config.limits.register_per_client,
+                REGISTER_WINDOW,
+            )
+            .await?;
+        }
+        let invite = if open {
+            None
+        } else {
+            Some(self.check_invitation(request.invite).await?)
+        };
+        let email = request.email.map(account::normalize_email).transpose()?;
+        let verify = open && self.config.require_email_verification;
+        if verify && email.is_none() {
+            return Err(PynError::InvalidRequest(
+                "an email address is required to sign up on this server".into(),
+            ));
+        }
+        let now = self.clock.now();
+        self.store
+            .delete_stale_pending(now, now - self.config.verification_ttl)
+            .await?;
+        self.limits.sweep(now).await?;
         if self.store.user_exists(&user).await? {
             return Err(PynError::UserExists(user));
         }
-        let now = self.clock.now();
+        let password_hash = self.passwords.hash(request.password).await?;
+
+        if verify {
+            let email = email.expect("checked above");
+            return self.register_unverified(user, email, password_hash).await;
+        }
         if let Some(invite) = &invite
             && !self.store.use_invite(&invite.id, &user, now).await?
         {
             return Err(PynError::InvalidInvite("it has already been used".into()));
         }
-        if !self.store.create_user(&user, now).await? {
+        let signup = if open && self.config.require_approval {
+            SignupStage::PendingApproval
+        } else {
+            SignupStage::Complete
+        };
+        let new = NewAccount {
+            user: user.clone(),
+            email,
+            password_hash,
+            signup,
+            created_at: now,
+        };
+        if !self.store.create_account(new).await? {
             return Err(PynError::UserExists(user));
         }
-        self.store
-            .set_password_hash(&user, &account::hash_password(password)?)
-            .await?;
         if let Some(invite) = invite {
             self.store
                 .set_role(&invite.repo, &user, invite.role)
@@ -628,7 +904,168 @@ impl AccessService {
             self.record(&invite.repo, &user, AuditAction::MemberAdded, detail)
                 .await?;
         }
-        Ok(user)
+        let status = match signup {
+            SignupStage::PendingApproval => AccountStatus::PendingApproval,
+            _ => AccountStatus::Active,
+        };
+        Ok(SignUp { user, status })
+    }
+
+    /// Open sign-up with email verification. An address that already belongs to a verified account gets a
+    /// notice instead and the caller sees the same answer, so the response never says which addresses are taken.
+    async fn register_unverified(
+        &self,
+        user: UserId,
+        email: String,
+        password_hash: String,
+    ) -> Result<SignUp> {
+        let signup = SignUp {
+            user: user.clone(),
+            status: AccountStatus::PendingVerification,
+        };
+        let mail_allowed = self
+            .count_limited(
+                &format!("mail:{email}"),
+                self.config.limits.mail_per_email,
+                MAIL_WINDOW,
+            )
+            .await
+            .is_ok();
+        if self.store.verified_email_owner(&email).await?.is_some() {
+            if mail_allowed {
+                self.email
+                    .send(EmailMessage {
+                        to: email,
+                        subject: "Someone tried to sign up with your address".into(),
+                        body: "A sign-up was started with this email address, but it already belongs to an \
+                               account on this server. If that was you, sign in instead. Otherwise, ignore \
+                               this message."
+                            .into(),
+                    })
+                    .await?;
+            }
+            return Ok(signup);
+        }
+        let new = NewAccount {
+            user: user.clone(),
+            email: Some(email.clone()),
+            password_hash,
+            signup: SignupStage::PendingVerification,
+            created_at: self.clock.now(),
+        };
+        if !self.store.create_account(new).await? {
+            return Err(PynError::UserExists(user));
+        }
+        if mail_allowed {
+            self.send_verification(&user, &email).await?;
+        }
+        Ok(signup)
+    }
+
+    async fn send_verification(&self, user: &UserId, email: &str) -> Result<()> {
+        let (raw, token_hash) = verification::generate()?;
+        self.store
+            .put_verification(VerificationRecord {
+                token_hash,
+                user: user.clone(),
+                email: email.to_string(),
+                expires_at: self.clock.now() + self.config.verification_ttl,
+            })
+            .await?;
+        let link = format!(
+            "{}/verify-email?token={raw}",
+            self.config.public_url.trim_end_matches('/')
+        );
+        self.email
+            .send(EmailMessage {
+                to: email.to_string(),
+                subject: "Confirm your email address".into(),
+                body: format!(
+                    "Finish creating the account {user} by opening this link:\n\n{link}\n\n\
+                     It works once and expires in {} hours. If you did not sign up, ignore this message.",
+                    self.config.verification_ttl.num_hours()
+                ),
+            })
+            .await
+    }
+
+    /// Confirms an address from the token in its email. The account then becomes active, or waits for
+    /// approval. Every failure looks the same.
+    pub async fn verify_email(&self, raw_token: &str) -> Result<SignUp> {
+        let bad = |why: &str| PynError::InvalidVerification(why.to_string());
+        let record = self
+            .store
+            .take_verification(&verification::hash(raw_token))
+            .await?
+            .ok_or_else(|| bad("the link is not valid or has already been used"))?;
+        if record.expires_at <= self.clock.now() {
+            return Err(bad("the link has expired; ask for a new one"));
+        }
+        let account = self
+            .store
+            .account(&record.user)
+            .await?
+            .filter(|a| a.signup == SignupStage::PendingVerification)
+            .ok_or_else(|| bad("the link is not valid or has already been used"))?;
+        let next = if self.config.require_approval {
+            SignupStage::PendingApproval
+        } else {
+            SignupStage::Complete
+        };
+        if !self
+            .store
+            .complete_verification(&account.user, next, self.clock.now())
+            .await?
+        {
+            return Err(bad("that address already belongs to another account"));
+        }
+        let status = match next {
+            SignupStage::PendingApproval => AccountStatus::PendingApproval,
+            _ => AccountStatus::Active,
+        };
+        Ok(SignUp {
+            user: account.user,
+            status,
+        })
+    }
+
+    /// Sends a fresh verification email to accounts still waiting on `email`. Always succeeds from the
+    /// caller's point of view, whether or not anything was sent.
+    pub async fn resend_verification(&self, email: &str, client: Option<&str>) -> Result<()> {
+        if let Some(client) = client {
+            self.count_limited(
+                &format!("register:client:{client}"),
+                self.config.limits.register_per_client,
+                REGISTER_WINDOW,
+            )
+            .await?;
+        }
+        let Ok(email) = account::normalize_email(email) else {
+            return Ok(());
+        };
+        if self.config.registration != RegistrationMode::Open
+            || !self.config.require_email_verification
+        {
+            return Ok(());
+        }
+        let pending = self.store.pending_by_email(&email).await?;
+        if pending.is_empty() {
+            return Ok(());
+        }
+        let allowed = self
+            .count_limited(
+                &format!("mail:{email}"),
+                self.config.limits.mail_per_email,
+                MAIL_WINDOW,
+            )
+            .await
+            .is_ok();
+        if allowed {
+            for account in pending {
+                self.send_verification(&account.user, &email).await?;
+            }
+        }
+        Ok(())
     }
 
     async fn check_invitation(&self, code: Option<&str>) -> Result<InviteRecord> {
@@ -670,12 +1107,11 @@ impl AccessService {
         self.require_can_grant(actor, repo, role).await?;
         let user = account::validate_username(username)?;
         account::validate_password(password)?;
+        let hash = self.passwords.hash(password).await?;
         if !self.store.create_user(&user, self.clock.now()).await? {
             return Err(PynError::UserExists(user));
         }
-        self.store
-            .set_password_hash(&user, &account::hash_password(password)?)
-            .await?;
+        self.store.set_password_hash(&user, &hash).await?;
         self.store.set_role(repo, &user, role).await?;
         let detail = format!("{user} added as {role}");
         self.record(repo, &actor.user, AuditAction::MemberAdded, detail)
@@ -691,16 +1127,19 @@ impl AccessService {
         new: &str,
     ) -> Result<()> {
         account::validate_password(new)?;
-        if let Some(hash) = self.store.password_hash(&actor.user).await?
-            && !current.is_some_and(|c| account::verify_password(c, &hash))
-        {
-            return Err(PynError::Unauthenticated(
-                "the current password is wrong".into(),
-            ));
+        if let Some(hash) = self.store.password_hash(&actor.user).await? {
+            let ok = match current {
+                Some(current) => self.passwords.verify(current, &hash).await,
+                None => false,
+            };
+            if !ok {
+                return Err(PynError::Unauthenticated(
+                    "the current password is wrong".into(),
+                ));
+            }
         }
-        self.store
-            .set_password_hash(&actor.user, &account::hash_password(new)?)
-            .await
+        let hash = self.passwords.hash(new).await?;
+        self.store.set_password_hash(&actor.user, &hash).await
     }
 
     /// Creates a one-time invitation for `role`. The code is returned once and not stored.
@@ -826,6 +1265,7 @@ impl AccessService {
         let record = self.store.find_ssh_key(fingerprint).await?.ok_or_else(|| {
             PynError::Unauthenticated("this key is not linked to an account".into())
         })?;
+        self.require_active(&record.user).await?;
         self.store
             .touch_ssh_key(fingerprint, self.clock.now())
             .await?;
@@ -835,15 +1275,15 @@ impl AccessService {
     /// Gives an existing user a password without needing the old one, for the person running the server.
     pub async fn set_password_for_operator(&self, user: &UserId, password: &str) -> Result<()> {
         account::validate_password(password)?;
-        self.store
-            .set_password_hash(user, &account::hash_password(password)?)
-            .await
+        let hash = self.passwords.hash(password).await?;
+        self.store.set_password_hash(user, &hash).await
     }
 
     /// Creates the first account and a token for it that reaches every repository it belongs to, for the person
     /// running the server.
     pub async fn bootstrap_admin(&self, user: &UserId) -> Result<String> {
         self.store.ensure_user(user, self.clock.now()).await?;
+        self.store.set_admin(user, true).await?;
         let (_, full) = self
             .issue_token(user, "bootstrap", Permission::ALL.into(), Vec::new(), None)
             .await?;
@@ -872,5 +1312,140 @@ impl AccessService {
     /// Removes a deleted repository's memberships, role overrides and invitations. Its audit log stays.
     pub async fn forget_repo(&self, repo: &RepoId) -> Result<()> {
         self.store.delete_repo_access(repo).await
+    }
+
+    /// Whether the identity runs the server. The development identity does; a token needs `manage_users`.
+    pub async fn is_server_admin(&self, who: &Identity) -> Result<bool> {
+        match &who.credential {
+            Credential::Unrestricted => return Ok(true),
+            Credential::Token(t) if !t.permissions.contains(&Permission::ManageUsers) => {
+                return Ok(false);
+            }
+            _ => {}
+        }
+        Ok(self
+            .store
+            .account(&who.user)
+            .await?
+            .is_some_and(|a| a.is_admin))
+    }
+
+    async fn require_server_admin(&self, who: &Identity) -> Result<()> {
+        if self.is_server_admin(who).await? {
+            Ok(())
+        } else {
+            Err(PynError::ServerAdminRequired)
+        }
+    }
+
+    async fn record_server(
+        &self,
+        actor: &UserId,
+        action: AuditAction,
+        detail: String,
+    ) -> Result<()> {
+        self.record(&RepoId::new(SERVER_AUDIT_ID), actor, action, detail)
+            .await
+    }
+
+    /// Accounts oldest first, optionally only those in `status`. Server administrators only.
+    pub async fn list_accounts(
+        &self,
+        actor: &Identity,
+        status: Option<AccountStatus>,
+        limit: usize,
+    ) -> Result<Vec<AccountRecord>> {
+        self.require_server_admin(actor).await?;
+        self.store.list_accounts(status, limit).await
+    }
+
+    async fn existing_account(&self, user: &UserId) -> Result<AccountRecord> {
+        self.store
+            .account(user)
+            .await?
+            .ok_or_else(|| PynError::UserNotFound(user.to_string()))
+    }
+
+    /// Lets a verified account that is waiting for approval in. Server administrators only.
+    pub async fn approve_account(&self, actor: &Identity, user: &UserId) -> Result<AccountRecord> {
+        self.require_server_admin(actor).await?;
+        let account = self.existing_account(user).await?;
+        if account.signup != SignupStage::PendingApproval {
+            return Err(PynError::InvalidRequest(
+                "that account is not waiting for approval".into(),
+            ));
+        }
+        self.store.set_signup(user, SignupStage::Complete).await?;
+        self.record_server(
+            &actor.user,
+            AuditAction::AccountApproved,
+            format!("{user} approved"),
+        )
+        .await?;
+        self.existing_account(user).await
+    }
+
+    /// Blocks the account from signing in and ends its sessions; its tokens and keys stop working too.
+    /// Server administrators only, and never one's own account.
+    pub async fn disable_account(
+        &self,
+        actor: &Identity,
+        user: &UserId,
+        reason: Option<&str>,
+    ) -> Result<AccountRecord> {
+        self.require_server_admin(actor).await?;
+        if &actor.user == user {
+            return Err(PynError::InvalidRequest(
+                "you cannot disable your own account".into(),
+            ));
+        }
+        self.existing_account(user).await?;
+        let reason = reason
+            .map(str::trim)
+            .filter(|r| !r.is_empty())
+            .map(str::to_string);
+        self.store
+            .set_disabled(user, Some((self.clock.now(), reason.clone())))
+            .await?;
+        self.store.delete_sessions_of(user).await?;
+        let detail = match &reason {
+            Some(reason) => format!("{user} disabled: {reason}"),
+            None => format!("{user} disabled"),
+        };
+        self.record_server(&actor.user, AuditAction::AccountDisabled, detail)
+            .await?;
+        self.existing_account(user).await
+    }
+
+    /// Lifts a disable. Server administrators only.
+    pub async fn enable_account(&self, actor: &Identity, user: &UserId) -> Result<AccountRecord> {
+        self.require_server_admin(actor).await?;
+        let account = self.existing_account(user).await?;
+        if account.disabled_at.is_none() {
+            return Err(PynError::InvalidRequest(
+                "that account is not disabled".into(),
+            ));
+        }
+        self.store.set_disabled(user, None).await?;
+        self.record_server(
+            &actor.user,
+            AuditAction::AccountEnabled,
+            format!("{user} enabled"),
+        )
+        .await?;
+        self.existing_account(user).await
+    }
+
+    /// The server-wide audit log (account approvals and disables), newest first. Server administrators only.
+    pub async fn server_audit(
+        &self,
+        actor: &Identity,
+        query: &AuditQuery,
+    ) -> Result<Vec<AuditEvent>> {
+        self.require_server_admin(actor).await?;
+        match &self.audit {
+            Some(store) => store.list(&RepoId::new(SERVER_AUDIT_ID), query).await,
+            None => Ok(Vec::new()),
+        }
     }
 }

@@ -17,7 +17,7 @@ pyn-postgres = { version = "0.0.1", path = "../pyn-postgres" }
 pyn-proto = { version = "0.0.1", path = "../pyn-proto" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
-tokio = { version = "1.53.2", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1.53.2", features = ["macros", "rt-multi-thread", "sync", "time"] }
 tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
 utoipa = "6.0.0"

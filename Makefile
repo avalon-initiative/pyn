@@ -87,7 +87,7 @@ PYN_ADDR ?= 127.0.0.1:7878
 
 dev: build
 	@$(MAKE) --no-print-directory start PYN_BOOTSTRAP_ADMIN=$(DEMO_ADMIN) PYN_BOOTSTRAP_PASSWORD=$(DEMO_PASSWORD) \
-		PYN_REGISTRATION=open PYN_ADDR=$(PYN_ADDR) PYN_CONFIG=scripts/demo.pyn.toml
+		PYN_REGISTRATION=open PYN_EMAIL_VERIFICATION=false PYN_ADDR=$(PYN_ADDR) PYN_CONFIG=scripts/demo.pyn.toml
 	@PYN_SERVER=http://$(PYN_ADDR) PYN_BOOTSTRAP_ADMIN=$(DEMO_ADMIN) PYN_BOOTSTRAP_PASSWORD=$(DEMO_PASSWORD) scripts/demo.sh
 	@echo
 	@echo "server   http://$(PYN_ADDR) ($(if $(PYN_DATABASE_URL),postgres,in-memory); stop with make stop)"

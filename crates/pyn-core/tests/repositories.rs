@@ -6,8 +6,8 @@ use pyn_core::memory::{
 };
 use pyn_core::{
     AccessConfig, AccessService, AuditAction, AuditEvent, AuditQuery, AuditStore, Credential,
-    Identity, ManualClock, Permission, PynError, RepoPath, RepoSettings, RepoUpdate, Repositories,
-    Role, Rules, UserId, Visibility,
+    Identity, ManualClock, Permission, PynError, Registration, RepoPath, RepoSettings, RepoUpdate,
+    Repositories, Role, Rules, UserId, Visibility,
 };
 
 const PASSWORD: &str = "correct horse battery";
@@ -27,6 +27,7 @@ fn world() -> World {
         AccessService::new(Arc::new(MemoryAccessStore::new()), clock.clone())
             .with_config(AccessConfig {
                 registration: pyn_core::RegistrationMode::Open,
+                require_email_verification: false,
                 ..AccessConfig::default()
             })
             .with_audit(audit.clone()),
@@ -153,7 +154,10 @@ async fn only_valid_unique_names_in_your_own_namespace_are_accepted() {
 #[tokio::test]
 async fn a_limited_token_cannot_create_repositories() {
     let w = world();
-    w.access.register("alice", PASSWORD, None).await.unwrap();
+    w.access
+        .register(Registration::new("alice", PASSWORD))
+        .await
+        .unwrap();
     let alice = session("alice");
     let first = w
         .repos
@@ -182,7 +186,7 @@ async fn a_limited_token_cannot_create_repositories() {
         "{err}"
     );
 
-    let (_, full) = w.access.login("alice", PASSWORD).await.unwrap();
+    let (_, full) = w.access.login("alice", PASSWORD, None).await.unwrap();
     let full = w.access.identify(&full).await.unwrap();
     w.repos
         .create(&full, &user("alice"), "other", None, None)

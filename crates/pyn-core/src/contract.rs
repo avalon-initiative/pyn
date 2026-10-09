@@ -6,11 +6,13 @@ use chrono::{Duration, TimeZone, Utc};
 
 use crate::AccessStore;
 use crate::access::{
-    InviteId, InviteRecord, Permission, Principal, Role, RoleDefinitions, SessionRecord,
-    SshKeyRecord, TokenId, TokenRecord,
+    AccountStatus, InviteId, InviteRecord, NewAccount, Permission, Principal, Role,
+    RoleDefinitions, SessionRecord, SignupStage, SshKeyRecord, TokenId, TokenRecord,
+    VerificationRecord,
 };
 use crate::clock::Clock;
 use crate::memory::{MemoryAuditStore, MemoryObjectStore};
+use crate::ratelimit::RateLimitStore;
 use crate::{
     AuditAction, AuditQuery, AuditStore, ContentHash, ManualClock, MetadataStore, ObjectStore,
     PynError, RepoId, RepoPath, RepoRecord, RepoService, RepoSettings, RepoUpdate, RevisionId,
@@ -20,6 +22,7 @@ use crate::{
 pub type Store = Arc<dyn MetadataStore>;
 pub type Access = Arc<dyn AccessStore>;
 pub type Audit = Arc<dyn AuditStore>;
+pub type RateLimits = Arc<dyn RateLimitStore>;
 
 const RULES: &str = "[meta]\ndefault = \"shared\"\n[exclusive]\npaths = [\"Content/\"]\n";
 
@@ -1860,6 +1863,340 @@ pub async fn repos_of_lists_a_users_roles_and_forgetting_a_repo_clears_its_acces
     assert_eq!(store.members(&other).await.unwrap().len(), 1);
 }
 
+fn new_account(name: &str, email: &str, minute: i64) -> NewAccount {
+    NewAccount {
+        user: user(name),
+        email: Some(email.to_string()),
+        password_hash: format!("hash-{name}"),
+        signup: SignupStage::PendingVerification,
+        created_at: at(minute),
+    }
+}
+
+pub async fn self_registered_accounts_start_pending_and_keep_their_password(store: Access) {
+    assert!(
+        store
+            .create_account(new_account("alice", "a@example.org", 0))
+            .await
+            .unwrap()
+    );
+    assert!(
+        !store
+            .create_account(new_account("alice", "other@example.org", 1))
+            .await
+            .unwrap(),
+        "a name can be taken once"
+    );
+    let account = store.account(&user("alice")).await.unwrap().unwrap();
+    assert_eq!(account.email.as_deref(), Some("a@example.org"));
+    assert_eq!(account.status(), AccountStatus::PendingVerification);
+    assert!(account.email_verified_at.is_none() && !account.is_admin);
+    assert_eq!(
+        store
+            .password_hash(&user("alice"))
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("hash-alice")
+    );
+    assert!(store.account(&user("nobody")).await.unwrap().is_none());
+
+    store.ensure_user(&user("bob"), at(2)).await.unwrap();
+    let bob = store.account(&user("bob")).await.unwrap().unwrap();
+    assert_eq!(bob.status(), AccountStatus::Active);
+    assert!(bob.email.is_none());
+}
+
+pub async fn a_verified_address_belongs_to_one_account(store: Access) {
+    for (name, minute) in [("alice", 0), ("bob", 1)] {
+        store
+            .create_account(new_account(name, "same@example.org", minute))
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        store
+            .pending_by_email("same@example.org")
+            .await
+            .unwrap()
+            .len(),
+        2,
+        "unverified addresses can repeat"
+    );
+    assert!(
+        store
+            .verified_email_owner("same@example.org")
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    assert!(
+        store
+            .complete_verification(&user("alice"), SignupStage::Complete, at(5))
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        store
+            .verified_email_owner("same@example.org")
+            .await
+            .unwrap(),
+        Some(user("alice"))
+    );
+    let alice = store.account(&user("alice")).await.unwrap().unwrap();
+    assert_eq!(alice.email_verified_at, Some(at(5)));
+    assert_eq!(alice.status(), AccountStatus::Active);
+    assert!(
+        !store
+            .complete_verification(&user("bob"), SignupStage::Complete, at(6))
+            .await
+            .unwrap(),
+        "the address is already verified elsewhere"
+    );
+    let pending = store.pending_by_email("same@example.org").await.unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].user, user("bob"));
+    assert!(
+        !store
+            .complete_verification(&user("nobody"), SignupStage::Complete, at(6))
+            .await
+            .unwrap()
+    );
+}
+
+pub async fn accounts_can_be_approved_disabled_enabled_and_listed(store: Access) {
+    for (name, minute) in [("alice", 0), ("bob", 1), ("carol", 2)] {
+        store.ensure_user(&user(name), at(minute)).await.unwrap();
+    }
+    assert!(
+        store
+            .set_signup(&user("bob"), SignupStage::PendingApproval)
+            .await
+            .unwrap()
+    );
+    assert!(
+        store
+            .set_disabled(&user("carol"), Some((at(9), Some("spam".into()))))
+            .await
+            .unwrap()
+    );
+    assert!(
+        !store
+            .set_disabled(&user("nobody"), Some((at(9), None)))
+            .await
+            .unwrap()
+    );
+    store.set_admin(&user("alice"), true).await.unwrap();
+
+    let carol = store.account(&user("carol")).await.unwrap().unwrap();
+    assert_eq!(carol.status(), AccountStatus::Disabled);
+    assert_eq!(carol.disabled_at, Some(at(9)));
+    assert_eq!(carol.disabled_reason.as_deref(), Some("spam"));
+    assert!(
+        store
+            .account(&user("alice"))
+            .await
+            .unwrap()
+            .unwrap()
+            .is_admin
+    );
+
+    let names = |list: Vec<crate::AccountRecord>| -> Vec<String> {
+        list.into_iter().map(|a| a.user.to_string()).collect()
+    };
+    assert_eq!(
+        names(store.list_accounts(None, 10).await.unwrap()),
+        ["alice", "bob", "carol"]
+    );
+    assert_eq!(
+        names(
+            store
+                .list_accounts(Some(AccountStatus::PendingApproval), 10)
+                .await
+                .unwrap()
+        ),
+        ["bob"]
+    );
+    assert_eq!(
+        names(
+            store
+                .list_accounts(Some(AccountStatus::Disabled), 10)
+                .await
+                .unwrap()
+        ),
+        ["carol"]
+    );
+    assert_eq!(
+        names(
+            store
+                .list_accounts(Some(AccountStatus::Active), 10)
+                .await
+                .unwrap()
+        ),
+        ["alice"]
+    );
+    assert_eq!(store.list_accounts(None, 2).await.unwrap().len(), 2);
+
+    assert!(store.set_disabled(&user("carol"), None).await.unwrap());
+    let carol = store.account(&user("carol")).await.unwrap().unwrap();
+    assert_eq!(carol.status(), AccountStatus::Active);
+    assert!(carol.disabled_at.is_none() && carol.disabled_reason.is_none());
+}
+
+fn verification(hash: &str, name: &str, expires: i64) -> VerificationRecord {
+    VerificationRecord {
+        token_hash: hash.to_string(),
+        user: user(name),
+        email: format!("{name}@example.org"),
+        expires_at: at(expires),
+    }
+}
+
+pub async fn verifications_are_single_use_and_replace_earlier_ones(store: Access) {
+    store
+        .create_account(new_account("alice", "alice@example.org", 0))
+        .await
+        .unwrap();
+    store
+        .put_verification(verification("one", "alice", 60))
+        .await
+        .unwrap();
+    store
+        .put_verification(verification("two", "alice", 60))
+        .await
+        .unwrap();
+    assert!(
+        store.take_verification("one").await.unwrap().is_none(),
+        "a new verification replaces the old one"
+    );
+    assert_eq!(
+        store.take_verification("two").await.unwrap(),
+        Some(verification("two", "alice", 60))
+    );
+    assert!(store.take_verification("two").await.unwrap().is_none());
+}
+
+pub async fn unverified_accounts_with_no_live_verification_are_swept(store: Access) {
+    for (name, minute) in [("alice", 0), ("bob", 0), ("carol", 0), ("dave", 0)] {
+        store
+            .create_account(new_account(name, &format!("{name}@example.org"), minute))
+            .await
+            .unwrap();
+    }
+    store
+        .put_verification(verification("a", "alice", 10))
+        .await
+        .unwrap();
+    store
+        .put_verification(verification("b", "bob", 100))
+        .await
+        .unwrap();
+    store
+        .complete_verification(&user("carol"), SignupStage::Complete, at(1))
+        .await
+        .unwrap();
+    store
+        .set_disabled(&user("dave"), Some((at(1), None)))
+        .await
+        .unwrap();
+    store.ensure_user(&user("erin"), at(0)).await.unwrap();
+    store
+        .create_account(new_account("frank", "frank@example.org", 40))
+        .await
+        .unwrap();
+    store
+        .create_account(new_account("gina", "gina@example.org", 0))
+        .await
+        .unwrap();
+
+    store.delete_stale_pending(at(50), at(30)).await.unwrap();
+    assert!(store.user_exists(&user("frank")).await.unwrap(), "recent");
+    assert!(
+        !store.user_exists(&user("gina")).await.unwrap(),
+        "old and no verification"
+    );
+    assert!(!store.user_exists(&user("alice")).await.unwrap(), "expired");
+    assert!(store.user_exists(&user("bob")).await.unwrap(), "still live");
+    assert!(store.user_exists(&user("carol")).await.unwrap(), "verified");
+    assert!(store.user_exists(&user("dave")).await.unwrap(), "disabled");
+    assert!(
+        store.user_exists(&user("erin")).await.unwrap(),
+        "not pending"
+    );
+    assert!(store.take_verification("a").await.unwrap().is_none());
+    assert!(store.take_verification("b").await.unwrap().is_some());
+    assert!(
+        store.password_hash(&user("alice")).await.unwrap().is_none(),
+        "the swept account's password goes with it"
+    );
+}
+
+pub async fn deleting_an_accounts_sessions_leaves_others(store: Access) {
+    for name in ["alice", "bob"] {
+        store.ensure_user(&user(name), at(0)).await.unwrap();
+        store
+            .create_session(SessionRecord {
+                id_hash: format!("s-{name}"),
+                user: user(name),
+                csrf_token: "csrf".into(),
+                created_at: at(0),
+                expires_at: at(60),
+            })
+            .await
+            .unwrap();
+    }
+    store.delete_sessions_of(&user("alice")).await.unwrap();
+    assert!(store.get_session("s-alice").await.unwrap().is_none());
+    assert!(store.get_session("s-bob").await.unwrap().is_some());
+}
+
+pub async fn rate_windows_count_expire_and_reset(store: RateLimits) {
+    let window = Duration::minutes(10);
+    assert!(store.state("k", at(0)).await.unwrap().is_none());
+    let first = store.hit("k", window, at(0)).await.unwrap();
+    assert_eq!((first.count, first.resets_at), (1, at(10)));
+    let second = store.hit("k", window, at(4)).await.unwrap();
+    assert_eq!(
+        (second.count, second.resets_at),
+        (2, at(10)),
+        "the window keeps its start"
+    );
+    assert_eq!(store.state("k", at(5)).await.unwrap(), Some(second));
+    assert_eq!(store.hit("other", window, at(5)).await.unwrap().count, 1);
+
+    assert!(store.state("k", at(10)).await.unwrap().is_none(), "ended");
+    let again = store.hit("k", window, at(10)).await.unwrap();
+    assert_eq!((again.count, again.resets_at), (1, at(20)));
+
+    store.reset("k").await.unwrap();
+    assert!(store.state("k", at(11)).await.unwrap().is_none());
+    store.reset("k").await.unwrap();
+
+    store.sweep(at(15)).await.unwrap();
+    assert!(store.state("other", at(11)).await.unwrap().is_none());
+}
+
+pub async fn racing_hits_are_all_counted(store: RateLimits) {
+    let tasks: Vec<_> = (0..20)
+        .map(|_| {
+            let store = store.clone();
+            tokio::spawn(async move {
+                store
+                    .hit("race", Duration::minutes(10), at(0))
+                    .await
+                    .unwrap()
+            })
+        })
+        .collect();
+    let mut counts = Vec::new();
+    for t in tasks {
+        counts.push(t.await.unwrap().count);
+    }
+    counts.sort();
+    assert_eq!(counts, (1..=20).collect::<Vec<_>>());
+}
+
 /// Generates one `#[tokio::test]` per access-store case for the store built by `$factory`.
 #[macro_export]
 macro_rules! access_contract_tests {
@@ -1874,6 +2211,12 @@ macro_rules! access_contract_tests {
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; ssh_keys_are_unique_across_accounts_and_can_be_found_and_deleted);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; sessions_are_found_deleted_and_swept_when_expired);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; repos_of_lists_a_users_roles_and_forgetting_a_repo_clears_its_access);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; self_registered_accounts_start_pending_and_keep_their_password);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; a_verified_address_belongs_to_one_account);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; accounts_can_be_approved_disabled_enabled_and_listed);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; verifications_are_single_use_and_replace_earlier_ones);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; unverified_accounts_with_no_live_verification_are_swept);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; deleting_an_accounts_sessions_leaves_others);
     };
     (@one $factory:expr; [$(#[$attr:meta])*]; $name:ident) => {
         #[tokio::test(flavor = "multi_thread")]
@@ -2055,6 +2398,23 @@ macro_rules! audit_contract_tests {
         $(#[$attr])*
         async fn $name() {
             let store: $crate::contract::Audit = ($factory).await;
+            $crate::contract::$name(store).await;
+        }
+    };
+}
+
+/// Generates one `#[tokio::test]` per rate-limit-store case for the store built by `$factory`.
+#[macro_export]
+macro_rules! rate_limit_contract_tests {
+    ($factory:expr $(, #[$attr:meta])*) => {
+        $crate::rate_limit_contract_tests!(@one $factory; [$(#[$attr])*]; rate_windows_count_expire_and_reset);
+        $crate::rate_limit_contract_tests!(@one $factory; [$(#[$attr])*]; racing_hits_are_all_counted);
+    };
+    (@one $factory:expr; [$(#[$attr:meta])*]; $name:ident) => {
+        #[tokio::test(flavor = "multi_thread")]
+        $(#[$attr])*
+        async fn $name() {
+            let store: $crate::contract::RateLimits = ($factory).await;
             $crate::contract::$name(store).await;
         }
     };

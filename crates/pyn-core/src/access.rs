@@ -350,6 +350,8 @@ pub mod account {
     use super::*;
 
     pub const MIN_PASSWORD_LENGTH: usize = 10;
+    pub const MAX_PASSWORD_LENGTH: usize = 256;
+    const MAX_EMAIL_LENGTH: usize = 254;
 
     /// Lowercase letters, digits, `-` and `_`, 2 to 39 characters, starting with a letter or digit.
     pub fn validate_username(name: &str) -> Result<UserId> {
@@ -370,12 +372,42 @@ pub mod account {
     }
 
     pub fn validate_password(password: &str) -> Result<()> {
-        if password.chars().count() < MIN_PASSWORD_LENGTH {
+        let length = password.chars().count();
+        if length < MIN_PASSWORD_LENGTH {
             return Err(PynError::InvalidRequest(format!(
                 "a password needs at least {MIN_PASSWORD_LENGTH} characters"
             )));
         }
+        if length > MAX_PASSWORD_LENGTH {
+            return Err(PynError::InvalidRequest(format!(
+                "a password is at most {MAX_PASSWORD_LENGTH} characters"
+            )));
+        }
         Ok(())
+    }
+
+    /// Trims and lowercases an address and checks its shape; delivery is the only real proof it works.
+    pub fn normalize_email(email: &str) -> Result<String> {
+        let email = email.trim().to_lowercase();
+        let bad = || PynError::InvalidRequest("that is not a valid email address".into());
+        let (local, domain) = email.split_once('@').ok_or_else(bad)?;
+        let plain = |s: &str| {
+            s.chars()
+                .all(|c| c.is_ascii_graphic() && !matches!(c, '@' | '<' | '>' | ',' | ';' | '"'))
+        };
+        let domain_ok = domain.contains('.')
+            && !domain.starts_with(['.', '-'])
+            && !domain.ends_with(['.', '-'])
+            && !domain.contains("..");
+        if email.len() > MAX_EMAIL_LENGTH
+            || local.is_empty()
+            || !plain(local)
+            || !plain(domain)
+            || !domain_ok
+        {
+            return Err(bad());
+        }
+        Ok(email)
     }
 
     /// An argon2id hash with its own random salt, as a PHC string.
@@ -392,6 +424,144 @@ pub mod account {
                 .verify_password(password.as_bytes(), &parsed)
                 .is_ok()
         })
+    }
+}
+
+/// How far a new account has come in the sign-up flow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SignupStage {
+    PendingVerification,
+    PendingApproval,
+    Complete,
+}
+
+impl SignupStage {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PendingVerification => "pending_verification",
+            Self::PendingApproval => "pending_approval",
+            Self::Complete => "active",
+        }
+    }
+}
+
+impl FromStr for SignupStage {
+    type Err = PynError;
+    fn from_str(s: &str) -> Result<Self> {
+        match s {
+            "pending_verification" => Ok(Self::PendingVerification),
+            "pending_approval" => Ok(Self::PendingApproval),
+            "active" => Ok(Self::Complete),
+            other => Err(PynError::Storage(format!(
+                "unknown sign-up stage {other:?}"
+            ))),
+        }
+    }
+}
+
+/// What an account may do right now; an administrator's disable overrides the sign-up stage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AccountStatus {
+    PendingVerification,
+    PendingApproval,
+    Active,
+    Disabled,
+}
+
+impl AccountStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PendingVerification => "pending_verification",
+            Self::PendingApproval => "pending_approval",
+            Self::Active => "active",
+            Self::Disabled => "disabled",
+        }
+    }
+}
+
+impl fmt::Display for AccountStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for AccountStatus {
+    type Err = PynError;
+    fn from_str(s: &str) -> Result<Self> {
+        match s {
+            "pending_verification" => Ok(Self::PendingVerification),
+            "pending_approval" => Ok(Self::PendingApproval),
+            "active" => Ok(Self::Active),
+            "disabled" => Ok(Self::Disabled),
+            other => Err(PynError::InvalidRequest(format!(
+                "unknown account status {other:?}; use pending_verification, pending_approval, active or disabled"
+            ))),
+        }
+    }
+}
+
+/// An account as the sign-up and administration rules see it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccountRecord {
+    pub user: UserId,
+    /// Lowercase.
+    pub email: Option<String>,
+    pub email_verified_at: Option<DateTime<Utc>>,
+    pub signup: SignupStage,
+    pub disabled_at: Option<DateTime<Utc>>,
+    pub disabled_reason: Option<String>,
+    /// Runs the server: approves and disables accounts.
+    pub is_admin: bool,
+    pub created_at: DateTime<Utc>,
+}
+
+impl AccountRecord {
+    pub fn status(&self) -> AccountStatus {
+        if self.disabled_at.is_some() {
+            return AccountStatus::Disabled;
+        }
+        match self.signup {
+            SignupStage::PendingVerification => AccountStatus::PendingVerification,
+            SignupStage::PendingApproval => AccountStatus::PendingApproval,
+            SignupStage::Complete => AccountStatus::Active,
+        }
+    }
+}
+
+/// A self-registered account to store, with its password already hashed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewAccount {
+    pub user: UserId,
+    pub email: Option<String>,
+    pub password_hash: String,
+    pub signup: SignupStage,
+    pub created_at: DateTime<Utc>,
+}
+
+/// A pending email check. Only a hash of its token is kept.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerificationRecord {
+    pub token_hash: String,
+    pub user: UserId,
+    pub email: String,
+    pub expires_at: DateTime<Utc>,
+}
+
+/// Verification tokens are 64 random hex characters.
+pub mod verification {
+    use super::*;
+
+    /// The token to put in the email and the hash to store.
+    pub(crate) fn generate() -> Result<(String, String)> {
+        let secret = token::random_hex(32)?;
+        let hash = token::hash_secret(&secret);
+        Ok((secret, hash))
+    }
+
+    pub fn hash(raw: &str) -> String {
+        token::hash_secret(raw.trim())
     }
 }
 

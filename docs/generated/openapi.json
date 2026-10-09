@@ -27,6 +27,270 @@
         }
       }
     },
+    "/v1/admin/audit": {
+      "get": {
+        "tags": [
+          "admin_api"
+        ],
+        "operationId": "audit",
+        "parameters": [
+          {
+            "name": "before",
+            "in": "query",
+            "description": "events older than this id",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "page size, default 50, max 500",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "account_approved, account_disabled and account_enabled events",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditPage"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "server_admin_required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/users": {
+      "get": {
+        "tags": [
+          "admin_api"
+        ],
+        "operationId": "list_accounts",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "description": "only accounts in this state: pending_verification, pending_approval, active or disabled",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "default 100, max 500",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "oldest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AccountInfo"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "server_admin_required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/users/{user}/approve": {
+      "post": {
+        "tags": [
+          "admin_api"
+        ],
+        "operationId": "approve",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountInfo"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: the account is not waiting for approval",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "server_admin_required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "user_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/users/{user}/disable": {
+      "post": {
+        "tags": [
+          "admin_api"
+        ],
+        "operationId": "disable",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DisableAccountRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "sessions end at once; tokens and keys stop working",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountInfo"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: one's own account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "server_admin_required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "user_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/users/{user}/enable": {
+      "post": {
+        "tags": [
+          "admin_api"
+        ],
+        "operationId": "enable",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountInfo"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: the account is not disabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "server_admin_required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "user_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/keys": {
       "get": {
         "tags": [
@@ -175,8 +439,18 @@
               }
             }
           },
+          "403": {
+            "description": "right password, but the account cannot sign in: email_not_verified, approval_pending or account_disabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "429": {
-            "description": "too_many_attempts",
+            "description": "too_many_attempts; Retry-After says how many seconds to wait",
             "content": {
               "application/json": {
                 "schema": {
@@ -297,6 +571,7 @@
         },
         "responses": {
           "201": {
+            "description": "status says what the account still needs; with an unverified address the answer is the same whether or not the address is already in use",
             "content": {
               "application/json": {
                 "schema": {
@@ -327,6 +602,89 @@
           },
           "409": {
             "description": "user_exists",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "too_many_attempts; Retry-After says how many seconds to wait",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/register/resend": {
+      "post": {
+        "tags": [
+          "access_api"
+        ],
+        "operationId": "resend_verification",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResendVerificationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "always, whether or not a message was sent"
+          },
+          "429": {
+            "description": "too_many_attempts; Retry-After says how many seconds to wait",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/register/verify": {
+      "post": {
+        "tags": [
+          "access_api"
+        ],
+        "operationId": "verify_email",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerifyEmailRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "the address is confirmed; status is active or pending_approval",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Registered"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_verification: the link is unknown, used, expired or its address belongs to another account",
             "content": {
               "application/json": {
                 "schema": {
@@ -1998,8 +2356,18 @@
               }
             }
           },
+          "403": {
+            "description": "right password, but the account cannot sign in: email_not_verified, approval_pending or account_disabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "429": {
-            "description": "too_many_attempts",
+            "description": "too_many_attempts; Retry-After says how many seconds to wait",
             "content": {
               "application/json": {
                 "schema": {
@@ -2143,6 +2511,59 @@
           "user"
         ],
         "properties": {
+          "admin": {
+            "type": "boolean",
+            "description": "Runs the server: may approve and disable accounts under `/v1/admin`."
+          },
+          "user": {
+            "type": "string"
+          }
+        }
+      },
+      "AccountInfo": {
+        "type": "object",
+        "description": "An account as an administrator sees it.",
+        "required": [
+          "user",
+          "email_verified",
+          "status",
+          "admin",
+          "created_at"
+        ],
+        "properties": {
+          "admin": {
+            "type": "boolean"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "disabled_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "disabled_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "email_verified": {
+            "type": "boolean"
+          },
+          "status": {
+            "type": "string",
+            "description": "`pending_verification`, `pending_approval`, `active` or `disabled`."
+          },
           "user": {
             "type": "string"
           }
@@ -2472,6 +2893,18 @@
           }
         }
       },
+      "DisableAccountRequest": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Shown to administrators; not to the account holder."
+          }
+        }
+      },
       "ErrorBody": {
         "type": "object",
         "description": "Body of every non-2xx response; `code` is stable and machine-readable.",
@@ -2759,6 +3192,13 @@
           "password"
         ],
         "properties": {
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Required when the server is open and verifies email addresses (`RegistrationInfo.email_verification`)."
+          },
           "invite": {
             "type": [
               "string",
@@ -2777,9 +3217,14 @@
       "Registered": {
         "type": "object",
         "required": [
-          "user"
+          "user",
+          "status"
         ],
         "properties": {
+          "status": {
+            "type": "string",
+            "description": "`active`, or what the account still needs: `pending_verification` (follow the link in the email) or\n`pending_approval` (an administrator must approve it)."
+          },
           "user": {
             "type": "string"
           }
@@ -2791,6 +3236,14 @@
           "registration"
         ],
         "properties": {
+          "approval": {
+            "type": "boolean",
+            "description": "With `open` registration: an administrator approves each new account after it is verified."
+          },
+          "email_verification": {
+            "type": "boolean",
+            "description": "With `open` registration: sign-up needs an email address, and the account stays inactive until its\nlink is followed."
+          },
           "registration": {
             "type": "string",
             "description": "`open`, `invite` or `closed`."
@@ -2926,6 +3379,17 @@
             ],
             "format": "date-time",
             "description": "Time of the newest revision; absent for an empty repository."
+          }
+        }
+      },
+      "ResendVerificationRequest": {
+        "type": "object",
+        "required": [
+          "email"
+        ],
+        "properties": {
+          "email": {
+            "type": "string"
           }
         }
       },
@@ -3303,6 +3767,18 @@
                 "type": "null"
               }
             ]
+          }
+        }
+      },
+      "VerifyEmailRequest": {
+        "type": "object",
+        "required": [
+          "token"
+        ],
+        "properties": {
+          "token": {
+            "type": "string",
+            "description": "The token from the verification link."
           }
         }
       },

@@ -6,10 +6,13 @@ use std::str::FromStr;
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
-use pyn_core::{Permission, PynError, RepoId, SshKeyRecord, TokenId, TokenRecord, UserId};
+use pyn_core::{
+    Permission, PynError, Registration, RepoId, SignUp, SshKeyRecord, TokenId, TokenRecord, UserId,
+};
 use pyn_proto as api;
 use serde::Deserialize;
 
+use crate::client::Client;
 use crate::{ApiResult, AppState, identify, open_visible};
 
 pub(crate) fn names(permissions: &BTreeSet<Permission>) -> Vec<String> {
@@ -46,6 +49,7 @@ pub(crate) async fn me(
     let who = identify(&s, &headers).await?;
     Ok(Json(api::Account {
         user: who.user.to_string(),
+        admin: s.access.is_server_admin(&who).await?,
     }))
 }
 
@@ -117,43 +121,82 @@ pub(crate) async fn revoke_token(
 
 #[utoipa::path(get, path = "/v1/registration", responses((status = 200, body = api::RegistrationInfo)))]
 pub(crate) async fn registration(State(s): State<AppState>) -> Json<api::RegistrationInfo> {
+    let open = s.access.registration_mode() == pyn_core::RegistrationMode::Open;
     Json(api::RegistrationInfo {
         registration: s.access.registration_mode().as_str().to_string(),
+        email_verification: open && s.access.requires_email_verification(),
+        approval: open && s.access.requires_approval(),
     })
 }
 
+fn registered(up: SignUp) -> api::Registered {
+    api::Registered {
+        user: up.user.to_string(),
+        status: up.status.to_string(),
+    }
+}
+
 #[utoipa::path(post, path = "/v1/register", request_body = api::RegisterRequest, responses(
-    (status = 201, body = api::Registered),
+    (status = 201, body = api::Registered, description = "status says what the account still needs; with an unverified address the answer is the same whether or not the address is already in use"),
     (status = 400, body = api::ErrorBody, description = "invalid_request or invalid_invite"),
     (status = 403, body = api::ErrorBody, description = "registration_closed"),
     (status = 409, body = api::ErrorBody, description = "user_exists"),
+    (status = 429, body = api::ErrorBody, description = "too_many_attempts; Retry-After says how many seconds to wait"),
 ))]
 pub(crate) async fn register(
     State(s): State<AppState>,
+    Client(client): Client,
     Json(req): Json<api::RegisterRequest>,
 ) -> ApiResult<(StatusCode, Json<api::Registered>)> {
-    let user = s
-        .access
-        .register(&req.username, &req.password, req.invite.as_deref())
+    let mut request = Registration::new(&req.username, &req.password);
+    request.email = req.email.as_deref();
+    request.invite = req.invite.as_deref();
+    request.client = client.as_deref();
+    let up = s.access.register(request).await?;
+    Ok((StatusCode::CREATED, Json(registered(up))))
+}
+
+#[utoipa::path(post, path = "/v1/register/verify", request_body = api::VerifyEmailRequest, responses(
+    (status = 200, body = api::Registered, description = "the address is confirmed; status is active or pending_approval"),
+    (status = 400, body = api::ErrorBody, description = "invalid_verification: the link is unknown, used, expired or its address belongs to another account"),
+))]
+pub(crate) async fn verify_email(
+    State(s): State<AppState>,
+    Json(req): Json<api::VerifyEmailRequest>,
+) -> ApiResult<Json<api::Registered>> {
+    Ok(Json(registered(s.access.verify_email(&req.token).await?)))
+}
+
+#[utoipa::path(post, path = "/v1/register/resend", request_body = api::ResendVerificationRequest, responses(
+    (status = 202, description = "always, whether or not a message was sent"),
+    (status = 429, body = api::ErrorBody, description = "too_many_attempts; Retry-After says how many seconds to wait"),
+))]
+pub(crate) async fn resend_verification(
+    State(s): State<AppState>,
+    Client(client): Client,
+    Json(req): Json<api::ResendVerificationRequest>,
+) -> ApiResult<StatusCode> {
+    s.access
+        .resend_verification(&req.email, client.as_deref())
         .await?;
-    Ok((
-        StatusCode::CREATED,
-        Json(api::Registered {
-            user: user.to_string(),
-        }),
-    ))
+    Ok(StatusCode::ACCEPTED)
 }
 
 #[utoipa::path(post, path = "/v1/login", request_body = api::LoginRequest, responses(
     (status = 200, body = api::CreatedToken),
     (status = 401, body = api::ErrorBody, description = "unauthenticated"),
-    (status = 429, body = api::ErrorBody, description = "too_many_attempts"),
+    (status = 403, body = api::ErrorBody, description = "right password, but the account cannot sign in: email_not_verified, approval_pending or account_disabled"),
+    (status = 429, body = api::ErrorBody, description = "too_many_attempts; Retry-After says how many seconds to wait"),
 ))]
 pub(crate) async fn login(
     State(s): State<AppState>,
+    Client(client): Client,
     Json(req): Json<api::LoginRequest>,
 ) -> ApiResult<Json<api::CreatedToken>> {
-    let (record, token) = s.access.login(&req.username, &req.password).await?;
+    let (record, token) = s
+        .access
+        .login(&req.username, &req.password, client.as_deref())
+        .await?;
     Ok(Json(api::CreatedToken {
         token,
         info: token_info(&s, record).await?,
