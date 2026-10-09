@@ -5,8 +5,9 @@ use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use pyn_core::{
     AccessStore, AccountKind, AccountRecord, AccountStatus, InviteId, InviteRecord, NewAccount,
-    OrgRole, Permission, RateLimitStore, RateState, RepoId, Result, Role, RoleDefinitions,
-    SessionRecord, SignupStage, SshKeyRecord, TokenId, TokenRecord, UserId, VerificationRecord,
+    OrgMemberChange, OrgRole, Permission, RateLimitStore, RateState, RepoId, Result, Role,
+    RoleDefinitions, SessionRecord, SignupStage, SshKeyRecord, TokenId, TokenRecord, UserId,
+    VerificationRecord,
 };
 use sqlx::Row;
 use sqlx::postgres::PgRow;
@@ -562,6 +563,90 @@ impl AccessStore for PgMetadataStore {
         Ok(())
     }
 
+    async fn org_members(&self, org: &UserId) -> Result<Vec<(UserId, OrgRole)>> {
+        let rows =
+            sqlx::query("SELECT user_id, role FROM org_members WHERE org = $1 ORDER BY user_id")
+                .bind(org.as_str())
+                .fetch_all(&self.pool)
+                .await
+                .map_err(db)?;
+        rows.iter()
+            .map(|r| {
+                Ok((
+                    UserId::new(r.get::<String, _>("user_id")),
+                    OrgRole::from_str(r.get("role"))?,
+                ))
+            })
+            .collect()
+    }
+
+    async fn add_org_member(&self, org: &UserId, user: &UserId, role: OrgRole) -> Result<bool> {
+        let added = sqlx::query(
+            "INSERT INTO org_members (org, user_id, role) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+        )
+        .bind(org.as_str())
+        .bind(user.as_str())
+        .bind(role.as_str())
+        .execute(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(added.rows_affected() == 1)
+    }
+
+    async fn set_org_role(
+        &self,
+        org: &UserId,
+        user: &UserId,
+        role: OrgRole,
+    ) -> Result<OrgMemberChange> {
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        let Some((old, owners)) = locked_member(&mut tx, org, user).await? else {
+            return Ok(OrgMemberChange::NotMember);
+        };
+        if old == OrgRole::Owner && role != OrgRole::Owner && owners == 1 {
+            return Ok(OrgMemberChange::LastOwner);
+        }
+        sqlx::query("UPDATE org_members SET role = $3 WHERE org = $1 AND user_id = $2")
+            .bind(org.as_str())
+            .bind(user.as_str())
+            .bind(role.as_str())
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
+        tx.commit().await.map_err(db)?;
+        Ok(OrgMemberChange::Done(old))
+    }
+
+    async fn remove_org_member(
+        &self,
+        org: &UserId,
+        user: &UserId,
+        repos: &[RepoId],
+    ) -> Result<OrgMemberChange> {
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        let Some((old, owners)) = locked_member(&mut tx, org, user).await? else {
+            return Ok(OrgMemberChange::NotMember);
+        };
+        if old == OrgRole::Owner && owners == 1 {
+            return Ok(OrgMemberChange::LastOwner);
+        }
+        sqlx::query("DELETE FROM org_members WHERE org = $1 AND user_id = $2")
+            .bind(org.as_str())
+            .bind(user.as_str())
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
+        let repos: Vec<String> = repos.iter().map(|r| r.as_str().to_string()).collect();
+        sqlx::query("DELETE FROM memberships WHERE user_id = $1 AND repo = ANY($2)")
+            .bind(user.as_str())
+            .bind(&repos)
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
+        tx.commit().await.map_err(db)?;
+        Ok(OrgMemberChange::Done(old))
+    }
+
     async fn create_account(&self, new: NewAccount) -> Result<bool> {
         let done = sqlx::query(
             "INSERT INTO users (id, created_at, email, password_hash, signup) VALUES ($1, $2, $3, $4, $5)
@@ -812,4 +897,27 @@ impl RateLimitStore for PgMetadataStore {
             .map_err(db)?;
         Ok(())
     }
+}
+
+/// Locks the organization's member rows; returns the user's role and the number of owners.
+async fn locked_member(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    org: &UserId,
+    user: &UserId,
+) -> Result<Option<(OrgRole, usize)>> {
+    let rows = sqlx::query("SELECT user_id, role FROM org_members WHERE org = $1 FOR UPDATE")
+        .bind(org.as_str())
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(db)?;
+    let mut found = None;
+    let mut owners = 0;
+    for r in &rows {
+        let role = OrgRole::from_str(r.get("role"))?;
+        owners += usize::from(role == OrgRole::Owner);
+        if r.get::<String, _>("user_id") == user.as_str() {
+            found = Some(role);
+        }
+    }
+    Ok(found.map(|role| (role, owners)))
 }

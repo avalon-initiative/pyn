@@ -29,7 +29,8 @@ pub use access::{
     VerificationRecord, account, invite, session, ssh, token, verification,
 };
 pub use access_service::{
-    AccessConfig, AccessService, AccessStore, RateLimits, Registration, SERVER_AUDIT_ID, SignUp,
+    AccessConfig, AccessService, AccessStore, OrgMemberChange, RateLimits, Registration,
+    SERVER_AUDIT_ID, SignUp,
 };
 pub use audit::{AuditAction, AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent};
 pub use auth::AuthProvider;

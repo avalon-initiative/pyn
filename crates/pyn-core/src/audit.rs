@@ -31,10 +31,13 @@ pub enum AuditAction {
     AccountEnabled,
     OrgCreated,
     OrgDeleted,
+    OrgMemberAdded,
+    OrgMemberRemoved,
+    OrgMemberRoleChanged,
 }
 
 impl AuditAction {
-    pub const ALL: [AuditAction; 19] = [
+    pub const ALL: [AuditAction; 22] = [
         AuditAction::Checkout,
         AuditAction::Release,
         AuditAction::Checkin,
@@ -54,6 +57,9 @@ impl AuditAction {
         AuditAction::AccountEnabled,
         AuditAction::OrgCreated,
         AuditAction::OrgDeleted,
+        AuditAction::OrgMemberAdded,
+        AuditAction::OrgMemberRemoved,
+        AuditAction::OrgMemberRoleChanged,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -77,6 +83,9 @@ impl AuditAction {
             Self::AccountEnabled => "account_enabled",
             Self::OrgCreated => "org_created",
             Self::OrgDeleted => "org_deleted",
+            Self::OrgMemberAdded => "org_member_added",
+            Self::OrgMemberRemoved => "org_member_removed",
+            Self::OrgMemberRoleChanged => "org_member_role_changed",
         }
     }
 }

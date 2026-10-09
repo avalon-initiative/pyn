@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use chrono::{Duration, TimeZone, Utc};
 
-use crate::AccessStore;
 use crate::access::{
     AccountKind, AccountStatus, InviteId, InviteRecord, NewAccount, OrgRole, Permission, Principal,
     Role, RoleDefinitions, SessionRecord, SignupStage, SshKeyRecord, TokenId, TokenRecord,
@@ -13,6 +12,7 @@ use crate::access::{
 use crate::clock::Clock;
 use crate::memory::{MemoryAuditStore, MemoryObjectStore};
 use crate::ratelimit::RateLimitStore;
+use crate::{AccessStore, OrgMemberChange};
 use crate::{
     AuditAction, AuditQuery, AuditScope, AuditStore, ContentHash, ManualClock, MetadataStore,
     ObjectStore, PynError, RepoId, RepoPath, RepoRecord, RepoService, RepoSettings, RepoUpdate,
@@ -1722,6 +1722,186 @@ pub async fn deleting_an_organization_removes_its_members_and_frees_the_name(sto
     );
 }
 
+pub async fn organization_members_are_added_changed_and_never_left_without_an_owner(store: Access) {
+    let acme = user("acme");
+    for name in ["alice", "bob", "carol"] {
+        store.create_user(&user(name), at(0)).await.unwrap();
+    }
+    store
+        .create_org(&acme, &user("alice"), at(1))
+        .await
+        .unwrap();
+    assert_eq!(
+        store.org_members(&acme).await.unwrap(),
+        [(user("alice"), OrgRole::Owner)]
+    );
+
+    assert!(
+        store
+            .add_org_member(&acme, &user("carol"), OrgRole::Member)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !store
+            .add_org_member(&acme, &user("carol"), OrgRole::Owner)
+            .await
+            .unwrap(),
+        "adding twice changes nothing"
+    );
+    assert_eq!(
+        store.org_role(&acme, &user("carol")).await.unwrap(),
+        Some(OrgRole::Member)
+    );
+    store
+        .add_org_member(&acme, &user("bob"), OrgRole::Member)
+        .await
+        .unwrap();
+    assert_eq!(
+        store.org_members(&acme).await.unwrap(),
+        [
+            (user("alice"), OrgRole::Owner),
+            (user("bob"), OrgRole::Member),
+            (user("carol"), OrgRole::Member)
+        ]
+    );
+    assert_eq!(
+        store.orgs_of(&user("bob")).await.unwrap(),
+        [(acme.clone(), OrgRole::Member)]
+    );
+    assert!(store.org_members(&user("other")).await.unwrap().is_empty());
+
+    assert_eq!(
+        store
+            .set_org_role(&acme, &user("alice"), OrgRole::Member)
+            .await
+            .unwrap(),
+        OrgMemberChange::LastOwner
+    );
+    assert_eq!(
+        store
+            .remove_org_member(&acme, &user("alice"), &[])
+            .await
+            .unwrap(),
+        OrgMemberChange::LastOwner
+    );
+    assert_eq!(
+        store.org_role(&acme, &user("alice")).await.unwrap(),
+        Some(OrgRole::Owner),
+        "a refused change leaves the owner in place"
+    );
+    assert_eq!(
+        store
+            .set_org_role(&acme, &user("nobody"), OrgRole::Owner)
+            .await
+            .unwrap(),
+        OrgMemberChange::NotMember
+    );
+    assert_eq!(
+        store
+            .remove_org_member(&acme, &user("nobody"), &[])
+            .await
+            .unwrap(),
+        OrgMemberChange::NotMember
+    );
+
+    assert_eq!(
+        store
+            .set_org_role(&acme, &user("bob"), OrgRole::Owner)
+            .await
+            .unwrap(),
+        OrgMemberChange::Done(OrgRole::Member)
+    );
+    assert_eq!(
+        store
+            .set_org_role(&acme, &user("alice"), OrgRole::Member)
+            .await
+            .unwrap(),
+        OrgMemberChange::Done(OrgRole::Owner),
+        "with a second owner the first may step down"
+    );
+    assert_eq!(
+        store
+            .remove_org_member(&acme, &user("bob"), &[])
+            .await
+            .unwrap(),
+        OrgMemberChange::LastOwner
+    );
+    assert_eq!(
+        store
+            .remove_org_member(&acme, &user("alice"), &[])
+            .await
+            .unwrap(),
+        OrgMemberChange::Done(OrgRole::Member)
+    );
+    assert_eq!(store.org_role(&acme, &user("alice")).await.unwrap(), None);
+    assert!(store.user_exists(&user("alice")).await.unwrap());
+}
+
+pub async fn removing_an_organization_member_drops_their_roles_in_the_given_repositories(
+    store: Access,
+) {
+    let acme = user("acme");
+    store.create_user(&user("alice"), at(0)).await.unwrap();
+    store.create_user(&user("bob"), at(0)).await.unwrap();
+    store
+        .create_org(&acme, &user("alice"), at(1))
+        .await
+        .unwrap();
+    store
+        .add_org_member(&acme, &user("bob"), OrgRole::Member)
+        .await
+        .unwrap();
+    let (game, tools, other) = (
+        RepoId::new("acme/game"),
+        RepoId::new("acme/tools"),
+        RepoId::new("alice/own"),
+    );
+    for repo in [&game, &tools, &other] {
+        store
+            .set_role(repo, &user("bob"), Role::Writer)
+            .await
+            .unwrap();
+    }
+    store
+        .set_role(&game, &user("alice"), Role::Admin)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        store
+            .remove_org_member(&acme, &user("bob"), &[game.clone(), tools.clone()])
+            .await
+            .unwrap(),
+        OrgMemberChange::Done(OrgRole::Member)
+    );
+    assert_eq!(store.role_of(&game, &user("bob")).await.unwrap(), None);
+    assert_eq!(store.role_of(&tools, &user("bob")).await.unwrap(), None);
+    assert_eq!(
+        store.role_of(&other, &user("bob")).await.unwrap(),
+        Some(Role::Writer),
+        "grants outside the organization stay"
+    );
+    assert_eq!(
+        store.role_of(&game, &user("alice")).await.unwrap(),
+        Some(Role::Admin),
+        "other members keep theirs"
+    );
+
+    assert_eq!(
+        store
+            .remove_org_member(&acme, &user("alice"), std::slice::from_ref(&game))
+            .await
+            .unwrap(),
+        OrgMemberChange::LastOwner
+    );
+    assert_eq!(
+        store.role_of(&game, &user("alice")).await.unwrap(),
+        Some(Role::Admin),
+        "a refused removal drops no grants"
+    );
+}
+
 fn invite(id: &str, created: i64, expires: i64) -> InviteRecord {
     InviteRecord {
         id: InviteId(id.to_string()),
@@ -2345,6 +2525,8 @@ macro_rules! access_contract_tests {
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; deleting_an_accounts_sessions_leaves_others);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; organizations_share_the_account_namespace_and_start_with_their_creator_as_owner);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; deleting_an_organization_removes_its_members_and_frees_the_name);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; organization_members_are_added_changed_and_never_left_without_an_owner);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; removing_an_organization_member_drops_their_roles_in_the_given_repositories);
     };
     (@one $factory:expr; [$(#[$attr:meta])*]; $name:ident) => {
         #[tokio::test(flavor = "multi_thread")]
