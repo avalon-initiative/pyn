@@ -95,8 +95,11 @@ enum Command {
     /// Add accounts to the current repository (needs manage_users).
     #[command(subcommand)]
     User(UserCommand),
-    /// List live locks.
-    Locks,
+    /// List live locks in the repository, or with --mine yours in every repository.
+    Locks {
+        #[arg(long)]
+        mine: bool,
+    },
     /// List files with their mode, head revision and lock.
     Files,
     /// List a folder of the repository (the root by default) with each entry's mode, last change and lock.
@@ -568,7 +571,26 @@ fn main() -> Result<()> {
             }
         }
         Command::Repo(cmd) => repo_command(&api, cmd)?,
-        Command::Locks => {
+        Command::Locks { mine: true } => {
+            let locks: Vec<api::MyLock> = api.send(api.get("/v1/me/locks"))?.json()?;
+            let rows: Vec<Vec<String>> = locks
+                .into_iter()
+                .map(|l| {
+                    vec![
+                        format!("{}/{}", l.owner, l.name),
+                        time::local(l.acquired_at),
+                        time::local(l.expires_at),
+                        l.path,
+                    ]
+                })
+                .collect();
+            table::show(
+                &["REPOSITORY", "ACQUIRED", "EXPIRES", "PATH"],
+                &rows,
+                "no locks",
+            );
+        }
+        Command::Locks { mine: false } => {
             let locks: Vec<api::Lock> = api.send(api.get(&api.repo_route("/locks")?))?.json()?;
             let rows: Vec<Vec<String>> = locks
                 .into_iter()

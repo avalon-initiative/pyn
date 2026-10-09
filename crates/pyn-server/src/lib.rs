@@ -58,6 +58,7 @@ struct RepoAddress {
         access_api::list_keys,
         access_api::delete_key,
         access_api::me,
+        repo_api::my_locks,
         access_api::create_token,
         access_api::list_tokens,
         access_api::revoke_token,
@@ -124,6 +125,7 @@ struct RepoAddress {
         api::AddKeyRequest,
         api::SshKeyInfo,
         api::Account,
+        api::MyLock,
         api::Me,
         api::Visibility,
         api::RepoInfo,
@@ -163,6 +165,7 @@ pub fn router(state: AppState) -> Router {
             axum::routing::delete(access_api::delete_key),
         )
         .route("/v1/me", get(access_api::me))
+        .route("/v1/me/locks", get(repo_api::my_locks))
         .route(
             "/v1/tokens",
             get(access_api::list_tokens).post(access_api::create_token),

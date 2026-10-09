@@ -154,6 +154,22 @@ impl MetadataStore for MemoryMetadataStore {
         Ok(out)
     }
 
+    async fn list_locks_of(
+        &self,
+        owner: &UserId,
+        now: DateTime<Utc>,
+    ) -> Result<Vec<(RepoId, Lock)>> {
+        let st = self.state.lock().unwrap();
+        let mut out: Vec<(RepoId, Lock)> = st
+            .locks
+            .iter()
+            .filter(|(_, l)| &l.owner == owner && live(l, now))
+            .map(|((r, _), l)| (r.clone(), l.clone()))
+            .collect();
+        out.sort_by(|a, b| (&a.0, &a.1.path).cmp(&(&b.0, &b.1.path)));
+        Ok(out)
+    }
+
     async fn head_revision(&self, repo: &RepoId, path: &RepoPath) -> Result<Option<Revision>> {
         let st = self.state.lock().unwrap();
         Ok(st

@@ -12,6 +12,16 @@ pub struct Lock {
     pub expires_at: DateTime<Utc>,
 }
 
+/// A live lock the caller holds, with the repository it is in.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct MyLock {
+    pub owner: String,
+    pub name: String,
+    pub path: String,
+    pub acquired_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct Revision {
     pub id: u64,

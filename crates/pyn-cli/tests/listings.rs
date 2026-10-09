@@ -35,6 +35,49 @@ fn locks_files_and_history_have_stable_columns() {
 }
 
 #[test]
+fn locks_mine_lists_every_repository_with_the_path_last() {
+    let env = start();
+    let home = env.dir("home");
+    env.ok(&home, "alice", &["repo", "create", "other", "--no-policy"]);
+    env.ok(&home, "alice", &["checkout", "Content/m.umap"]);
+    env.ok(
+        &home,
+        "alice",
+        &["--repo", "alice/other", "checkout", "Content/o.umap"],
+    );
+    env.ok(
+        &home,
+        "bob",
+        &["--repo", "alice/other", "checkout", "Content/x.umap"],
+    );
+
+    let mine = cell_rows(&env.ok(&home, "alice", &["locks", "--mine"]));
+    assert_eq!(mine[0], ["REPOSITORY", "ACQUIRED", "EXPIRES", "PATH"]);
+    let tail: Vec<_> = mine[1..]
+        .iter()
+        .map(|r| (r[0].as_str(), r[r.len() - 1].as_str()))
+        .collect();
+    assert_eq!(
+        tail,
+        [
+            ("alice/game", "Content/m.umap"),
+            ("alice/other", "Content/o.umap")
+        ]
+    );
+
+    env.ok(&home, "alice", &["release", "Content/m.umap"]);
+    env.ok(
+        &home,
+        "alice",
+        &["--repo", "alice/other", "release", "Content/o.umap"],
+    );
+    assert_eq!(
+        env.ok(&home, "alice", &["locks", "--mine"]).trim(),
+        "no locks"
+    );
+}
+
+#[test]
 fn repository_history_lists_newest_first_with_the_path_last() {
     let env = start();
     env.seed("alice", "Source/a.ts", "a", None);

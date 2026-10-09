@@ -1276,6 +1276,52 @@ pub async fn repositories_do_not_share_locks_or_revisions(store: Store) {
     assert_eq!(h.svc.locks().await.unwrap().len(), 0);
 }
 
+pub async fn a_users_live_locks_are_listed_across_repositories(store: Store) {
+    let h = harness(store.clone());
+    let other = service_in(&store, &h, "other");
+    let (a, b) = (path("Content/a.umap"), path("Content/b.umap"));
+    other.checkout(&b, &user("alice"), None).await.unwrap();
+    h.svc.checkout(&b, &user("alice"), None).await.unwrap();
+    h.svc.checkout(&a, &user("alice"), None).await.unwrap();
+    h.svc
+        .checkout(&path("Content/c.umap"), &user("bob"), None)
+        .await
+        .unwrap();
+
+    let now = h.clock.now();
+    let mine = store.list_locks_of(&user("alice"), now).await.unwrap();
+    let listed: Vec<_> = mine
+        .iter()
+        .map(|(r, l)| (r.as_str(), l.path.as_str()))
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            ("game", "Content/a.umap"),
+            ("game", "Content/b.umap"),
+            ("other", "Content/b.umap")
+        ]
+    );
+    assert!(mine.iter().all(|(_, l)| l.owner == user("alice")));
+    assert!(
+        store
+            .list_locks_of(&user("carol"), now)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    h.clock.advance(Duration::hours(9));
+    let later = h.clock.now();
+    assert!(
+        store
+            .list_locks_of(&user("alice"), later)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
 pub async fn deleting_a_repository_removes_only_its_own_data(store: Store) {
     let h = harness(store.clone());
     let other = service_in(&store, &h, "other");
@@ -1358,6 +1404,7 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; updating_a_repository_keeps_its_id);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_repository_stores_its_lock_limit_and_can_clear_it);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; repositories_do_not_share_locks_or_revisions);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_users_live_locks_are_listed_across_repositories);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; deleting_a_repository_removes_only_its_own_data);
     };
     (@one $factory:expr; [$(#[$attr:meta])*]; $name:ident) => {

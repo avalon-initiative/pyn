@@ -1967,6 +1967,107 @@ async fn repositories_keep_files_locks_roles_and_audit_apart() {
 }
 
 #[tokio::test]
+async fn my_locks_span_the_repositories_the_caller_can_read() {
+    let app = router(state_with(false, RegistrationMode::Open).await);
+    let alice = register_and_sign_in(&app, "alice").await;
+    let bob = register_and_sign_in(&app, "bob").await;
+    create_repo(&app, &alice, "one").await;
+    create_repo(&app, &alice, "two").await;
+    for repo in ["one", "two"] {
+        send(
+            &app,
+            "PUT",
+            &format!("/v1/repos/alice/{repo}/members/bob"),
+            &alice,
+            Some(serde_json::json!({"role": "writer"})),
+        )
+        .await;
+    }
+    let lock = |repo: &'static str, who: &String, path: &'static str| {
+        let (app, who) = (app.clone(), who.clone());
+        async move {
+            send(
+                &app,
+                "POST",
+                &format!("/v1/repos/alice/{repo}/checkout"),
+                &who,
+                Some(serde_json::json!({"path": path, "base_revision": null})),
+            )
+            .await
+        }
+    };
+    assert_eq!(
+        lock("two", &bob, "Content/b.bin").await.status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        lock("one", &bob, "Content/a.bin").await.status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        lock("one", &alice, "Content/z.bin").await.status(),
+        StatusCode::OK
+    );
+
+    let mine = |token: String| {
+        let app = app.clone();
+        async move {
+            let r = send(&app, "GET", "/v1/me/locks", &token, None).await;
+            assert_eq!(r.status(), StatusCode::OK);
+            body_json::<Vec<api::MyLock>>(r).await
+        }
+    };
+    let listed: Vec<_> = mine(bob.clone())
+        .await
+        .into_iter()
+        .map(|l| (l.owner, l.name, l.path))
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            ("alice".into(), "one".into(), "Content/a.bin".into()),
+            ("alice".into(), "two".into(), "Content/b.bin".into())
+        ]
+    );
+
+    let r = send(
+        &app,
+        "POST",
+        "/v1/tokens",
+        &bob,
+        Some(serde_json::json!({"name": "ci", "repos": ["alice/one"], "permissions": ["read"]})),
+    )
+    .await;
+    let scoped = body_json::<api::CreatedToken>(r).await.token;
+    let seen = mine(scoped).await;
+    assert_eq!(
+        seen.iter().map(|l| l.name.as_str()).collect::<Vec<_>>(),
+        ["one"],
+        "a token sees only the repositories it carries"
+    );
+
+    let release = send(
+        &app,
+        "POST",
+        "/v1/repos/alice/one/release",
+        &bob,
+        Some(serde_json::json!({"path": "Content/a.bin"})),
+    )
+    .await;
+    assert_eq!(release.status(), StatusCode::NO_CONTENT);
+    assert_eq!(mine(bob).await.len(), 1);
+    assert_eq!(mine(alice).await.len(), 1);
+
+    let anon_status = app
+        .clone()
+        .oneshot(anon("GET", "/v1/me/locks", serde_json::json!(null)))
+        .await
+        .unwrap()
+        .status();
+    assert_eq!(anon_status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
 async fn outsiders_cannot_tell_a_private_repository_exists() {
     let app = router(state_with(false, RegistrationMode::Open).await);
     let alice = register_and_sign_in(&app, "alice").await;

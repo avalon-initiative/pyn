@@ -86,8 +86,13 @@ private. A server with no earlier data starts with no repositories. In-memory st
 | `/v1/repos/{owner}/{name}/{members,roles,invites,users}` | who has access |
 
 Account routes do not name a repository: `/v1/register`, `/v1/login`, `/v1/session`, `/v1/me`, `/v1/me/password`,
-`/v1/keys` and `/v1/tokens`. The previous single-repository routes (`/v1/files`, `/v1/checkout` and so on) are gone.
+`/v1/me/locks`, `/v1/keys` and `/v1/tokens`. The previous single-repository routes (`/v1/files`, `/v1/checkout` and so on) are gone.
+
+`GET /v1/me/locks` lists the caller's live locks across every repository they can read (a token only sees the
+repositories and permissions it carries), ordered by `owner/name` then path. Each entry is
+`{owner, name, path, acquired_at, expires_at}`; release one with the repository's own `POST .../release`, which records
+the audit event as usual. A lock in a repository the caller can no longer read is not listed.
 
 On the command line: `pyn repo create [owner/]name [--visibility public|private] [--lease-hours N] [--max-locks N] [--policy FILE | --no-policy]`, `pyn repo list`,
-`pyn repo delete owner/name`, and `pyn clone <server>/owner/name [dir]`. A workspace records its repository in
+`pyn repo delete owner/name`, `pyn locks --mine` (your locks in every repository: repository, acquired, expires, path), and `pyn clone <server>/owner/name [dir]`. A workspace records its repository in
 `.pyn/local_only/config.toml`, so commands inside it need no flag; see [the `.pyn/` folder](workspace.md).
