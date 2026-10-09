@@ -9,6 +9,7 @@ use crate::error::{PynError, Result};
 use crate::object::ObjectStore;
 use crate::rules::{Mode, Rules};
 use crate::store::MetadataStore;
+use crate::tree::{ACTIVITY_ACTIONS, DEFAULT_BRANCH, EntryKind, RepoSummary, TreeEntry};
 use crate::types::{
     ContentHash, Lock, NewRevision, RepoId, RepoPath, Revision, RevisionId, UserId,
 };
@@ -299,6 +300,111 @@ impl RepoService {
             .filter(|e| after.is_none_or(|a| &e.path > a))
             .take(limit)
             .collect())
+    }
+
+    /// Head revision and live lock of every path that has either, ordered by path.
+    async fn live_paths(&self) -> Result<BTreeMap<RepoPath, (Option<Revision>, Option<Lock>)>> {
+        let mut paths: BTreeMap<RepoPath, (Option<Revision>, Option<Lock>)> = BTreeMap::new();
+        for rev in self.meta.list_head_revisions(&self.repo).await? {
+            paths.insert(rev.path.clone(), (Some(rev), None));
+        }
+        for lock in self.meta.list_locks(&self.repo, self.clock.now()).await? {
+            let key = lock.path.clone();
+            paths.entry(key).or_default().1 = Some(lock);
+        }
+        Ok(paths)
+    }
+
+    /// The children of `dir` (the root when `None`): folders first, then files, each by name. A folder's mode is
+    /// `Mixed` unless every file under it has the same mode.
+    pub async fn tree(&self, dir: Option<&RepoPath>) -> Result<Vec<TreeEntry>> {
+        let paths = self.live_paths().await?;
+        let prefix = dir.map_or(String::new(), |d| format!("{d}/"));
+        let mut children: BTreeMap<(EntryKind, String), TreeEntry> = BTreeMap::new();
+        for (path, (rev, lock)) in &paths {
+            let Some(rest) = path.as_str().strip_prefix(&prefix) else {
+                continue;
+            };
+            let (kind, name) = match rest.split_once('/') {
+                Some((first, _)) => (EntryKind::Folder, first),
+                None => (EntryKind::File, rest),
+            };
+            let mode = self.mode_for(path);
+            match children.entry((kind, name.to_string())) {
+                std::collections::btree_map::Entry::Vacant(v) => {
+                    let child = RepoPath::new(format!("{prefix}{name}"))?;
+                    v.insert(TreeEntry {
+                        name: name.to_string(),
+                        path: child,
+                        kind,
+                        mode: mode.into(),
+                        last_change: rev.clone(),
+                        lock: if kind == EntryKind::File {
+                            lock.clone()
+                        } else {
+                            None
+                        },
+                    });
+                }
+                std::collections::btree_map::Entry::Occupied(mut o) => {
+                    let entry = o.get_mut();
+                    entry.mode = entry.mode.merge(mode);
+                    if let Some(rev) = rev
+                        && entry
+                            .last_change
+                            .as_ref()
+                            .is_none_or(|c| rev.created_at > c.created_at)
+                    {
+                        entry.last_change = Some(rev.clone());
+                    }
+                }
+            }
+        }
+        if children.is_empty()
+            && let Some(dir) = dir
+        {
+            return Err(if paths.contains_key(dir) {
+                PynError::InvalidRequest(format!("{dir} is a file, not a folder"))
+            } else {
+                PynError::PathNotFound(dir.to_string())
+            });
+        }
+        Ok(children.into_values().collect())
+    }
+
+    /// Counts, live locks and the newest `activity_limit` file and lock events.
+    pub async fn summary(&self, activity_limit: usize) -> Result<RepoSummary> {
+        let paths = self.live_paths().await?;
+        let (mut files, mut exclusive_files, mut updated_at) = (0, 0, None);
+        for (path, (rev, _)) in &paths {
+            let Some(rev) = rev else { continue };
+            files += 1;
+            if self.mode_for(path) == Mode::Exclusive {
+                exclusive_files += 1;
+            }
+            updated_at = updated_at.max(Some(rev.created_at));
+        }
+        let mut activity = Vec::new();
+        for action in ACTIVITY_ACTIONS {
+            let query = AuditQuery {
+                action: Some(action),
+                limit: activity_limit,
+                ..AuditQuery::default()
+            };
+            activity.extend(self.audit.list(&self.repo, &query).await?);
+        }
+        activity.sort_by_key(|e| std::cmp::Reverse(e.id));
+        activity.truncate(activity_limit);
+        Ok(RepoSummary {
+            default_branch: DEFAULT_BRANCH.to_string(),
+            branch_count: 1,
+            files,
+            exclusive_files,
+            shared_files: files - exclusive_files,
+            updated_at,
+            locks: paths.into_values().filter_map(|(_, lock)| lock).collect(),
+            activity,
+        })
     }
 
     /// A revision and its content; the head when `revision` is `None`.

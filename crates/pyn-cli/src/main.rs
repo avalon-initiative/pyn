@@ -95,6 +95,10 @@ enum Command {
     Locks,
     /// List files with their mode, head revision and lock.
     Files,
+    /// List a folder of the repository (the root by default) with each entry's mode, last change and lock.
+    Ls { path: Option<String> },
+    /// Show the repository summary: counts, locks and recent activity.
+    Summary,
     /// Take the lock on an exclusive file.
     Checkout {
         path: String,
@@ -563,6 +567,47 @@ fn main() -> Result<()> {
                     Some(next) => after = Some(next),
                     None => break,
                 }
+            }
+        }
+        Command::Ls { path } => {
+            let mut req = api.get(&api.repo_route("/tree")?);
+            if let Some(p) = &path {
+                req = req.query(&[("path", p)]);
+            }
+            let listing: api::TreeListing = api.send(req)?.json()?;
+            for e in &listing.entries {
+                let slash = if e.kind == api::TreeEntryKind::Folder {
+                    "/"
+                } else {
+                    ""
+                };
+                let change = e.last_change.as_ref().map_or(String::new(), |r| {
+                    format!("{} ({}, r{})", r.message, r.author, r.id)
+                });
+                let lock = e
+                    .lock
+                    .as_ref()
+                    .map_or(String::new(), |l| format!("locked by {}", l.owner));
+                println!("{}{slash}\t{:?}\t{change}\t{lock}", e.name, e.mode);
+            }
+        }
+        Command::Summary => {
+            let s: api::RepoSummary = api.send(api.get(&api.repo_route("/summary")?))?.json()?;
+            println!(
+                "{} ({} branch), {} files ({} exclusive, {} shared)",
+                s.default_branch, s.branch_count, s.files, s.exclusive_files, s.shared_files
+            );
+            for l in &s.locks {
+                println!("locked\t{}\t{}", l.path, l.owner);
+            }
+            for a in &s.activity {
+                println!(
+                    "{}\t{}\t{}\t{}",
+                    a.at,
+                    a.actor,
+                    a.action,
+                    a.path.as_deref().unwrap_or("")
+                );
             }
         }
         Command::Clone { dir, .. } => {

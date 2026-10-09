@@ -61,6 +61,8 @@ pub enum PynError {
     TokenNotFound(String),
     #[error("{0}")]
     InvalidRequest(String),
+    #[error("no file or folder {0}")]
+    PathNotFound(String),
     #[error("{0} already exists")]
     RepoExists(String),
     #[error("no repository {0}")]
@@ -101,6 +103,7 @@ impl PynError {
             Self::TokenNotFound(_) => "token_not_found",
             Self::InvalidRequest(_) => "invalid_request",
             Self::NotLocked(_) => "not_locked",
+            Self::PathNotFound(_) => "path_not_found",
             Self::RepoExists(_) => "repo_exists",
             Self::RepoNotFound(_) => "repo_not_found",
             Self::InvalidRepoName(_) => "invalid_repo_name",

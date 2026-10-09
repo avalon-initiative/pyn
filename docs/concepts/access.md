@@ -8,7 +8,7 @@ endpoints. Accounts belong to the server, but roles, permissions, tokens' reach 
 
 | Permission | Allows |
 | --- | --- |
-| `read` | list files and locks, fetch any revision, see history |
+| `read` | list files, folders and locks, see the repository summary, fetch any revision, see history |
 | `lock` | check out and release exclusive files |
 | `checkin` | upload content and check in |
 | `restore` | make an older revision the head again |

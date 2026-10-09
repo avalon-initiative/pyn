@@ -169,3 +169,30 @@ fn tokens_are_made_for_the_current_or_named_repositories() {
     );
     assert!(none.contains("--repos"), "{none}");
 }
+
+#[test]
+fn ls_and_summary_show_the_landing_page_data() {
+    let env = start();
+    env.seed("alice", "Source/a.cpp", "int a;", None);
+    let home = env.dir("home");
+    env.ok(&home, "alice", &["checkout", "Content/m.umap"]);
+
+    let root = env.ok(&home, "alice", &["ls"]);
+    assert!(root.contains("Source/\tShared\tseed (alice, r1)"), "{root}");
+    assert!(root.contains("Content/\tExclusive"), "{root}");
+    let content = env.ok(&home, "alice", &["ls", "Content"]);
+    assert!(
+        content.contains("m.umap\tExclusive\t\tlocked by alice"),
+        "{content}"
+    );
+    let missing = env.fails(&home, "alice", &["ls", "Nope"]);
+    assert!(missing.contains("path_not_found"), "{missing}");
+
+    let summary = env.ok(&home, "alice", &["summary"]);
+    assert!(summary.contains("main (1 branch), 1 files"), "{summary}");
+    assert!(
+        summary.contains("locked\tContent/m.umap\talice"),
+        "{summary}"
+    );
+    assert!(summary.contains("checkout"), "{summary}");
+}
