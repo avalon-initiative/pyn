@@ -55,6 +55,7 @@ For your own server instead of the demo: `cp .env.example .env`, then `make run`
 | `PYN_SESSION_DAYS` | How long a `pyn login` lasts, default 30 |
 | `PYN_BOOTSTRAP_PASSWORD` | Gives the `PYN_BOOTSTRAP_ADMIN` user this password |
 | `PYN_CONFIG_DIR` | Where the CLI keeps `credentials.toml`, default `~/.config/pyn` |
+| `PYN_CLI_CONFIG` | The CLI's user settings file, default `~/.config/pyn/config.toml` (not the server's `PYN_CONFIG`); `pyn config init` creates it, and the first command in a terminal offers to |
 | `PYN_REPO` | The repository (`owner/name`) the CLI acts on, unless a workspace or `--repo` says otherwise |
 
 `make test-live` runs the tests that need a database (`PYN_DATABASE_URL`); each uses its own temporary schema.

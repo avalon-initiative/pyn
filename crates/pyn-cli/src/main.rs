@@ -12,12 +12,13 @@ mod credentials;
 mod sync;
 mod table;
 mod time;
+mod userconfig;
 mod workspace;
 
 use client::Api;
 use workspace::{Settings, Workspace, resolve};
 
-const DEFAULT_SERVER: &str = "http://127.0.0.1:7878";
+use userconfig::DEFAULT_SERVER;
 
 /// pyn: version control that merges what can be merged and locks what shouldn't be.
 #[derive(Parser)]
@@ -227,6 +228,8 @@ enum RepoCommand {
 
 #[derive(Subcommand)]
 enum ConfigCommand {
+    /// Ask for the user settings and write them to the user configuration file.
+    Init,
     /// Show the settings that are set (the effective values unless --global or --local is given).
     List {
         #[arg(long, conflicts_with = "local")]
@@ -351,8 +354,8 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     let cwd = std::env::current_dir()?;
     let ws = Workspace::discover(&cwd);
-    let user_config = credentials::dir()?.join("config.toml");
-    let (mine, yours) = (
+    let user_config = userconfig::path()?;
+    let (mine, mut yours) = (
         ws.as_ref().map(Workspace::settings).unwrap_or_default(),
         Settings::load(&user_config).unwrap_or_default(),
     );
@@ -360,6 +363,21 @@ fn main() -> Result<()> {
         Command::Clone { source, .. } => Some(address::parse_source(source)?),
         _ => None,
     };
+    let needs_server = !matches!(cli.command, Command::Config(_))
+        && source.as_ref().is_none_or(|s| s.server.is_none());
+    if needs_server
+        && cli.server.is_none()
+        && mine.server.is_none()
+        && yours.server.is_none()
+        && !user_config.exists()
+    {
+        yours = userconfig::first_run(
+            &user_config,
+            interactive(),
+            &mut std::io::stdin().lock(),
+            &mut std::io::stderr(),
+        )?;
+    }
     let server = source
         .as_ref()
         .and_then(|s| s.server.clone())
@@ -1225,6 +1243,11 @@ fn behind_hint(err: anyhow::Error, in_workspace: bool) -> anyhow::Error {
     }
 }
 
+fn interactive() -> bool {
+    use std::io::IsTerminal;
+    std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
+}
+
 fn config_command(
     cmd: ConfigCommand,
     ws: Option<&Workspace>,
@@ -1241,6 +1264,17 @@ fn config_command(
         Ok(())
     };
     match cmd {
+        ConfigCommand::Init => {
+            if !interactive() {
+                bail!(
+                    "`pyn config init` asks questions and needs a terminal; use `pyn config set --global <key> <value>` instead"
+                );
+            }
+            let settings =
+                userconfig::prompt(yours, &mut std::io::stdin().lock(), &mut std::io::stderr())?;
+            settings.save(user_config)?;
+            println!("wrote {}", user_config.display());
+        }
         ConfigCommand::List { global, local } => {
             let mut rows = Vec::new();
             if global {
