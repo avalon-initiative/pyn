@@ -85,7 +85,44 @@ pub fn clone_into(api: &Api, root: &Path, server: &str, repo: &str) -> Result<()
     Ok(())
 }
 
-/// Lists what differs between the workspace and the server; clean, unlocked files are left out.
+/// "7h 59m", "2d 3h" or "<1m" until `expires_at`; "expired" once past.
+fn time_left(expires_at: chrono::DateTime<chrono::Utc>) -> String {
+    let mins = (expires_at - chrono::Utc::now()).num_minutes();
+    match mins {
+        m if m < 0 => "expired".into(),
+        0 => "<1m".into(),
+        m if m < 60 => format!("{m}m"),
+        m if m < 24 * 60 => format!("{}h {}m", m / 60, m % 60),
+        m => format!("{}d {}h", m / (24 * 60), m / 60 % 24),
+    }
+}
+
+/// Prints rows with every column padded to its widest cell; the last column is not padded.
+fn print_table(header: [&str; 5], rows: &[[String; 5]]) {
+    let mut widths = header.map(str::len);
+    for row in rows {
+        for (w, cell) in widths.iter_mut().zip(row) {
+            *w = (*w).max(cell.chars().count());
+        }
+    }
+    let line = |cells: &[&str]| {
+        let mut out = String::new();
+        for (i, cell) in cells.iter().enumerate() {
+            if i + 1 == cells.len() {
+                out.push_str(cell);
+            } else {
+                out.push_str(&format!("{cell:<w$}  ", w = widths[i]));
+            }
+        }
+        println!("{}", out.trim_end());
+    };
+    line(&header);
+    for row in rows {
+        line(&row.each_ref().map(String::as_str));
+    }
+}
+
+/// Lists what differs between the workspace and the server as a table; clean, unlocked files are left out.
 pub fn status(api: &Api, ws: &Workspace) -> Result<()> {
     let entries: BTreeMap<String, api::FileEntry> = api
         .list_files()?
@@ -101,7 +138,9 @@ pub fn status(api: &Api, ws: &Workspace) -> Result<()> {
         .chain(local.iter())
         .collect();
 
-    let mut lines = 0;
+    let (mut modified, mut behind, mut new, mut untracked) = (0, 0, 0, 0);
+    let (mut mine, mut theirs) = (0, 0);
+    let mut rows: Vec<[String; 5]> = Vec::new();
     for path in paths {
         let (known, entry) = (state.get(path), entries.get(path));
         let on_disk = ws.abs(path).is_file();
@@ -110,43 +149,77 @@ pub fn status(api: &Api, ws: &Workspace) -> Result<()> {
             (Some(k), true) => {
                 if hash_of(&std::fs::read(ws.abs(path))?) != k.hash {
                     notes.push("modified".into());
+                    modified += 1;
                 }
                 if let Some(head) = entry.and_then(|e| e.revision).filter(|h| *h > k.revision) {
-                    notes.push(format!("behind: head is r{head}"));
+                    notes.push(format!("behind (head r{head})"));
+                    behind += 1;
                 }
             }
-            (Some(_), false) => notes.push("deleted locally".into()),
-            (None, true) if local.contains(path) => notes.push(if entry.is_some() {
-                "untracked here but on the server: run `pyn update`".into()
-            } else {
-                "untracked".into()
-            }),
+            (Some(_), false) => {
+                notes.push("deleted locally".into());
+                modified += 1;
+            }
+            (None, true) if local.contains(path) => {
+                let on_server = entry.is_some_and(|e| e.revision.is_some());
+                notes.push(if on_server {
+                    "untracked (on the server: run `pyn update`)".into()
+                } else {
+                    "untracked".into()
+                });
+                untracked += 1;
+            }
             (None, false) if entry.is_some() => {
-                notes.push("new on the server: run `pyn update`".into())
+                if entry.is_some_and(|e| e.revision.is_some()) {
+                    notes.push("new".into());
+                    new += 1;
+                } else {
+                    notes.push("locked, not checked in yet".into());
+                }
             }
             _ => {}
         }
-        if let Some(lock) = entry.and_then(|e| e.lock.as_ref()) {
-            notes.push(if lock.owner == me {
-                "locked by you".into()
+        let lock = entry.and_then(|e| e.lock.as_ref()).map(|lock| {
+            let by_me = lock.owner == me;
+            if by_me {
+                mine += 1
             } else {
-                format!("locked by {} until {}", lock.owner, lock.expires_at)
-            });
-        }
-        if notes.is_empty() {
+                theirs += 1
+            }
+            format!(
+                "{} \u{b7} {}",
+                if by_me { "you" } else { &lock.owner },
+                time_left(lock.expires_at)
+            )
+        });
+        if notes.is_empty() && lock.is_none() {
             continue;
         }
         let mode = entry.map_or_else(
             || known.map_or("-", |k| k.mode.as_str()),
             |e| mode_name(e.mode),
         );
-        let rev = known.map_or("-".to_string(), |k| format!("r{}", k.revision));
-        println!("{path}\t{mode}\t{rev}\t{}", notes.join("; "));
-        lines += 1;
+        rows.push([
+            path.clone(),
+            mode.to_string(),
+            known.map_or("-".to_string(), |k| format!("r{}", k.revision)),
+            if notes.is_empty() {
+                "clean".to_string()
+            } else {
+                notes.join(", ")
+            },
+            lock.unwrap_or_else(|| "-".into()),
+        ]);
     }
-    if lines == 0 {
+    if rows.is_empty() {
         println!("everything is up to date");
+        return Ok(());
     }
+    print_table(["PATH", "MODE", "REV", "STATE", "LOCK"], &rows);
+    println!(
+        "{modified} modified, {behind} behind, {new} new, {untracked} untracked, \
+         {mine} locked by you, {theirs} locked by others"
+    );
     Ok(())
 }
 
