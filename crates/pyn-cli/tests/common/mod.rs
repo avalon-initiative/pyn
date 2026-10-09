@@ -155,3 +155,16 @@ impl Env {
         self.ok(&dir, user, &args);
     }
 }
+
+/// Splits table output into rows of cells; columns are separated by two or more spaces.
+pub fn cell_rows(out: &str) -> Vec<Vec<String>> {
+    out.lines()
+        .map(|l| {
+            l.split("  ")
+                .map(str::trim)
+                .filter(|c| !c.is_empty())
+                .map(String::from)
+                .collect()
+        })
+        .collect()
+}

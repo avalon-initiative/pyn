@@ -8,6 +8,7 @@ mod address;
 mod client;
 mod credentials;
 mod sync;
+mod table;
 mod workspace;
 
 use client::Api;
@@ -461,15 +462,18 @@ fn main() -> Result<()> {
                 req = req.query(&[("user", user)]);
             }
             let keys: Vec<api::SshKeyInfo> = api.send(req)?.json()?;
-            for k in keys {
-                let used = k
-                    .last_used_at
-                    .map_or("never used".to_string(), |t| format!("last used {t}"));
-                println!(
-                    "{}\t{}\t{}\t{}\t{used}",
-                    k.id, k.title, k.algorithm, k.fingerprint
-                );
-            }
+            let rows: Vec<Vec<String>> = keys
+                .into_iter()
+                .map(|k| {
+                    let used = k.last_used_at.map_or("never".to_string(), table::when);
+                    vec![k.id.to_string(), k.algorithm, used, k.fingerprint, k.title]
+                })
+                .collect();
+            table::show(
+                &["ID", "ALGORITHM", "LAST USED", "FINGERPRINT", "TITLE"],
+                &rows,
+                "no keys",
+            );
         }
         Command::Key(KeyCommand::Remove { id, for_user }) => {
             let mut req = api.request(Method::DELETE, &format!("/v1/keys/{id}"));
@@ -496,16 +500,20 @@ fn main() -> Result<()> {
         Command::Invite(InviteCommand::List) => {
             let invites: Vec<api::InviteInfo> =
                 api.send(api.get(&api.repo_route("/invites")?))?.json()?;
-            for i in invites {
-                let state = if i.revoked_at.is_some() {
-                    "revoked".to_string()
-                } else if let Some(user) = &i.used_by {
-                    format!("used by {user}")
-                } else {
-                    "unused".to_string()
-                };
-                println!("{}\t{}\t{state}\texpires {}", i.id, i.role, i.expires_at);
-            }
+            let rows: Vec<Vec<String>> = invites
+                .into_iter()
+                .map(|i| {
+                    let state = if i.revoked_at.is_some() {
+                        "revoked".to_string()
+                    } else if let Some(user) = &i.used_by {
+                        format!("used by {user}")
+                    } else {
+                        "unused".to_string()
+                    };
+                    vec![i.id.to_string(), i.role, table::when(i.expires_at), state]
+                })
+                .collect();
+            table::show(&["ID", "ROLE", "EXPIRES", "STATE"], &rows, "no invitations");
         }
         Command::Invite(InviteCommand::Revoke { id }) => {
             api.send(api.request(Method::DELETE, &api.repo_route(&format!("/invites/{id}"))?))?;
@@ -540,34 +548,35 @@ fn main() -> Result<()> {
         Command::Repo(cmd) => repo_command(&api, cmd)?,
         Command::Locks => {
             let locks: Vec<api::Lock> = api.send(api.get(&api.repo_route("/locks")?))?.json()?;
-            if locks.is_empty() {
-                println!("no locks");
-            }
-            for l in locks {
-                println!("{}\t{}\texpires {}", l.path, l.owner, l.expires_at);
-            }
+            let rows: Vec<Vec<String>> = locks
+                .into_iter()
+                .map(|l| vec![l.owner, table::when(l.expires_at), l.path])
+                .collect();
+            table::show(&["OWNER", "EXPIRES", "PATH"], &rows, "no locks");
         }
         Command::Files => {
             let mut after: Option<String> = None;
+            let mut rows: Vec<Vec<String>> = Vec::new();
             loop {
                 let mut req = api.get(&api.repo_route("/files")?);
                 if let Some(a) = &after {
                     req = req.query(&[("after", a)]);
                 }
                 let page: api::FilePage = api.send(req)?.json()?;
-                for f in &page.entries {
-                    let rev = f.revision.map_or("-".to_string(), |r| format!("r{r}"));
-                    let lock = f
-                        .lock
-                        .as_ref()
-                        .map_or(String::new(), |l| format!("locked by {}", l.owner));
-                    println!("{}\t{:?}\t{rev}\t{lock}", f.path, f.mode);
+                for f in page.entries {
+                    rows.push(vec![
+                        sync::mode_name(f.mode).to_string(),
+                        f.revision.map_or("-".to_string(), |r| format!("r{r}")),
+                        f.lock.map_or("-".to_string(), |l| l.owner),
+                        f.path,
+                    ]);
                 }
                 match page.next_after {
                     Some(next) => after = Some(next),
                     None => break,
                 }
             }
+            table::show(&["MODE", "REV", "LOCKED BY", "PATH"], &rows, "no files");
         }
         Command::Ls { path } => {
             let mut req = api.get(&api.repo_route("/tree")?);
@@ -575,21 +584,30 @@ fn main() -> Result<()> {
                 req = req.query(&[("path", p)]);
             }
             let listing: api::TreeListing = api.send(req)?.json()?;
-            for e in &listing.entries {
-                let slash = if e.kind == api::TreeEntryKind::Folder {
-                    "/"
-                } else {
-                    ""
-                };
-                let change = e.last_change.as_ref().map_or(String::new(), |r| {
-                    format!("{} ({}, r{})", r.message, r.author, r.id)
-                });
-                let lock = e
-                    .lock
-                    .as_ref()
-                    .map_or(String::new(), |l| format!("locked by {}", l.owner));
-                println!("{}{slash}\t{:?}\t{change}\t{lock}", e.name, e.mode);
-            }
+            let rows: Vec<Vec<String>> = listing
+                .entries
+                .iter()
+                .map(|e| {
+                    let slash = if e.kind == api::TreeEntryKind::Folder {
+                        "/"
+                    } else {
+                        ""
+                    };
+                    vec![
+                        format!("{:?}", e.mode).to_lowercase(),
+                        e.lock.as_ref().map_or("-".to_string(), |l| l.owner.clone()),
+                        format!("{}{slash}", e.name),
+                        e.last_change.as_ref().map_or("-".to_string(), |r| {
+                            format!("{} ({}, r{})", r.message, r.author, r.id)
+                        }),
+                    ]
+                })
+                .collect();
+            table::show(
+                &["MODE", "LOCKED BY", "NAME", "LAST CHANGE"],
+                &rows,
+                "empty",
+            );
         }
         Command::Summary => {
             let s: api::RepoSummary = api.send(api.get(&api.repo_route("/summary")?))?.json()?;
@@ -597,16 +615,32 @@ fn main() -> Result<()> {
                 "{} ({} branch), {} files ({} exclusive, {} shared)",
                 s.default_branch, s.branch_count, s.files, s.exclusive_files, s.shared_files
             );
-            for l in &s.locks {
-                println!("locked\t{}\t{}", l.path, l.owner);
+            if !s.locks.is_empty() {
+                println!();
+                let rows: Vec<Vec<String>> = s
+                    .locks
+                    .iter()
+                    .map(|l| vec![l.owner.clone(), l.path.clone()])
+                    .collect();
+                println!("{}", table::render(&["LOCKED BY", "PATH"], &rows));
             }
-            for a in &s.activity {
+            if !s.activity.is_empty() {
+                println!();
+                let rows: Vec<Vec<String>> = s
+                    .activity
+                    .iter()
+                    .map(|a| {
+                        vec![
+                            table::when(a.at),
+                            a.actor.clone(),
+                            a.action.clone(),
+                            a.path.clone().unwrap_or_else(|| "-".into()),
+                        ]
+                    })
+                    .collect();
                 println!(
-                    "{}\t{}\t{}\t{}",
-                    a.at,
-                    a.actor,
-                    a.action,
-                    a.path.as_deref().unwrap_or("")
+                    "{}",
+                    table::render(&["WHEN", "ACTOR", "ACTION", "PATH"], &rows)
                 );
             }
         }
@@ -743,15 +777,21 @@ fn main() -> Result<()> {
                         .query(&[("path", path)]),
                 )?
                 .json()?;
-            for r in revs {
-                let restored = r
-                    .restored_from
-                    .map_or(String::new(), |n| format!(" (restored from r{n})"));
-                println!(
-                    "{}\t{}\t{}\t{}{restored}",
-                    r.id, r.author, r.created_at, r.message
-                );
-            }
+            let rows: Vec<Vec<String>> = revs
+                .into_iter()
+                .map(|r| {
+                    let restored = r
+                        .restored_from
+                        .map_or(String::new(), |n| format!(" (restored from r{n})"));
+                    vec![
+                        format!("r{}", r.id),
+                        r.author,
+                        table::when(r.created_at),
+                        format!("{}{restored}", r.message),
+                    ]
+                })
+                .collect();
+            table::show(&["REV", "AUTHOR", "WHEN", "MESSAGE"], &rows, "no history");
         }
         Command::Restore {
             path,
@@ -793,13 +833,25 @@ fn main() -> Result<()> {
                 req = req.query(&[("before", b)]);
             }
             let page: api::AuditPage = api.send(req)?.json()?;
-            for e in &page.entries {
-                let path = e.path.as_deref().unwrap_or("-");
-                println!(
-                    "{}\t{}\t{}\t{}\t{path}\t{}",
-                    e.id, e.at, e.actor, e.action, e.detail
-                );
-            }
+            let rows: Vec<Vec<String>> = page
+                .entries
+                .iter()
+                .map(|e| {
+                    vec![
+                        e.id.to_string(),
+                        table::when(e.at),
+                        e.actor.clone(),
+                        e.action.clone(),
+                        e.path.clone().unwrap_or_else(|| "-".into()),
+                        e.detail.clone(),
+                    ]
+                })
+                .collect();
+            table::show(
+                &["ID", "WHEN", "ACTOR", "ACTION", "PATH", "DETAIL"],
+                &rows,
+                "no audit entries",
+            );
             if let Some(next) = page.next_before {
                 eprintln!("more: --before {next}");
             }
@@ -808,9 +860,9 @@ fn main() -> Result<()> {
         Command::Member(MemberCommand::List) => {
             let members: Vec<api::Member> =
                 api.send(api.get(&api.repo_route("/members")?))?.json()?;
-            for m in members {
-                println!("{}\t{}", m.user, m.role);
-            }
+            let rows: Vec<Vec<String>> =
+                members.into_iter().map(|m| vec![m.role, m.user]).collect();
+            table::show(&["ROLE", "USER"], &rows, "no members");
         }
         Command::Member(MemberCommand::Set { user, role }) => {
             let body = api::SetMemberRequest { role: role.clone() };
@@ -823,9 +875,11 @@ fn main() -> Result<()> {
         Command::Role(RoleCommand::List) => {
             let grants: Vec<api::RoleGrant> =
                 api.send(api.get(&api.repo_route("/roles")?))?.json()?;
-            for g in grants {
-                println!("{}\t{}", g.role, g.permissions.join(","));
-            }
+            let rows: Vec<Vec<String>> = grants
+                .into_iter()
+                .map(|g| vec![g.role, g.permissions.join(",")])
+                .collect();
+            table::show(&["ROLE", "PERMISSIONS"], &rows, "no roles");
         }
         Command::Role(RoleCommand::Set { role, permissions }) => {
             let body = api::SetRoleRequest { permissions };
@@ -933,18 +987,25 @@ fn repo_command(api: &Api, cmd: RepoCommand) -> Result<()> {
                 req = req.query(&[("owner", owner)]);
             }
             let repos: Vec<api::RepoInfo> = api.send(req)?.json()?;
-            for r in repos {
-                let visibility = match r.visibility {
-                    api::Visibility::Public => "public",
-                    api::Visibility::Private => "private",
-                };
-                println!(
-                    "{}/{}\t{visibility}\t{}",
-                    r.owner,
-                    r.name,
-                    r.role.as_deref().unwrap_or("-")
-                );
-            }
+            let rows: Vec<Vec<String>> = repos
+                .into_iter()
+                .map(|r| {
+                    let visibility = match r.visibility {
+                        api::Visibility::Public => "public",
+                        api::Visibility::Private => "private",
+                    };
+                    vec![
+                        visibility.to_string(),
+                        r.role.unwrap_or_else(|| "-".into()),
+                        format!("{}/{}", r.owner, r.name),
+                    ]
+                })
+                .collect();
+            table::show(
+                &["VISIBILITY", "ROLE", "REPOSITORY"],
+                &rows,
+                "no repositories",
+            );
         }
         RepoCommand::Delete { name, yes } => {
             let (owner, short) = address::split_repo(&name)?;
@@ -1003,20 +1064,28 @@ fn token_command(api: &Api, cmd: TokenCommand) -> Result<()> {
                 req = req.query(&[("user", user)]);
             }
             let tokens: Vec<api::TokenInfo> = api.send(req)?.json()?;
-            for t in tokens {
-                let state = if t.revoked_at.is_some() {
-                    "revoked"
-                } else {
-                    "active"
-                };
-                let expires = t.expires_at.map_or("never".to_string(), |e| e.to_string());
-                println!(
-                    "{}\t{}\t{state}\t{}\texpires {expires}",
-                    t.id,
-                    t.name,
-                    t.permissions.join(",")
-                );
-            }
+            let rows: Vec<Vec<String>> = tokens
+                .into_iter()
+                .map(|t| {
+                    let state = if t.revoked_at.is_some() {
+                        "revoked"
+                    } else {
+                        "active"
+                    };
+                    vec![
+                        t.id.to_string(),
+                        state.to_string(),
+                        t.expires_at.map_or("never".to_string(), table::when),
+                        t.name,
+                        t.permissions.join(","),
+                    ]
+                })
+                .collect();
+            table::show(
+                &["ID", "STATE", "EXPIRES", "NAME", "PERMISSIONS"],
+                &rows,
+                "no tokens",
+            );
         }
         TokenCommand::Revoke { id } => {
             api.send(api.request(Method::DELETE, &format!("/v1/tokens/{id}")))?;
@@ -1042,24 +1111,26 @@ fn config_command(
     yours: &Settings,
     user_config: &std::path::Path,
 ) -> Result<()> {
-    let show = |name: &str, s: &Settings| -> Result<()> {
+    let show = |name: &str, s: &Settings, rows: &mut Vec<Vec<String>>| -> Result<()> {
         for key in workspace::SETTING_KEYS {
             if let Some(v) = s.get(key)? {
-                println!("{key} = {v}  ({name})");
+                rows.push(vec![key.to_string(), name.to_string(), v.to_string()]);
             }
         }
         Ok(())
     };
     match cmd {
         ConfigCommand::List { global, local } => {
+            let mut rows = Vec::new();
             if global {
-                show("user", yours)?;
+                show("user", yours, &mut rows)?;
             } else if local {
-                show("workspace", mine)?;
+                show("workspace", mine, &mut rows)?;
             } else {
-                show("workspace", mine)?;
-                show("user", yours)?;
+                show("workspace", mine, &mut rows)?;
+                show("user", yours, &mut rows)?;
             }
+            table::show(&["KEY", "SCOPE", "VALUE"], &rows, "no settings");
         }
         ConfigCommand::Get { key, global, local } => {
             let value = match (global, local) {

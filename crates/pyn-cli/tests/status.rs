@@ -35,36 +35,36 @@ fn status_prints_an_aligned_table_with_a_summary() {
     let lines: Vec<&str> = out.lines().collect();
     assert_eq!(
         cells(lines[0]),
-        ["PATH", "MODE", "REV", "STATE", "LOCK"],
+        ["MODE", "REV", "STATE", "LOCK", "PATH"],
         "{out}"
     );
-    let col = lines[0].find("MODE").unwrap();
+    let col = lines[0].find("PATH").unwrap();
     for line in &lines[1..lines.len() - 1] {
         assert!(
-            !line.is_empty() && line[..col].ends_with("  "),
+            !line.is_empty() && line.chars().take(col).collect::<String>().ends_with("  "),
             "misaligned: {out}"
         );
     }
     let row = |p: &str| {
         lines
             .iter()
-            .find(|l| l.starts_with(p))
+            .find(|l| l.ends_with(p))
             .unwrap_or_else(|| panic!("no row for {p}: {out}"))
     };
     assert_eq!(
-        &cells(row("Source/a.cpp"))[1..4],
+        &cells(row("Source/a.cpp"))[0..3],
         ["shared", "r1", "modified"]
     );
-    assert_eq!(&cells(row("Source/behind.cpp"))[3..4], ["behind (head r2)"]);
+    assert_eq!(&cells(row("Source/behind.cpp"))[2..3], ["behind (head r2)"]);
     assert_eq!(
-        &cells(row("Source/fresh.cpp"))[1..4],
+        &cells(row("Source/fresh.cpp"))[0..3],
         ["shared", "-", "new"]
     );
-    assert_eq!(&cells(row("notes.txt"))[1..4], ["-", "-", "untracked"]);
+    assert_eq!(&cells(row("notes.txt"))[0..3], ["-", "-", "untracked"]);
     let m = cells(row("Content/m.umap"));
-    assert_eq!(&m[1..4], ["exclusive", "r1", "clean"]);
+    assert_eq!(&m[0..3], ["exclusive", "r1", "clean"]);
     assert!(
-        m[4].starts_with("you \u{b7} ") && m[4].ends_with('m'),
+        m[3].starts_with("you \u{b7} ") && m[3].ends_with('m'),
         "{m:?}"
     );
 
@@ -112,19 +112,19 @@ fn a_locked_path_without_a_revision_is_not_reported_as_new() {
     );
     let boss = out
         .lines()
-        .find(|l| l.starts_with("Content/boss.uasset"))
+        .find(|l| l.ends_with("Content/boss.uasset"))
         .expect(&out);
     assert_eq!(
-        &cells(boss)[1..4],
+        &cells(boss)[0..3],
         ["exclusive", "-", "locked, not checked in yet"],
         "{out}"
     );
-    assert!(cells(boss)[4].starts_with("you \u{b7} "), "{boss}");
+    assert!(cells(boss)[3].starts_with("you \u{b7} "), "{boss}");
     let map = out
         .lines()
-        .find(|l| l.starts_with("Content/map.umap"))
+        .find(|l| l.ends_with("Content/map.umap"))
         .expect(&out);
-    assert!(cells(map)[4].starts_with("bob \u{b7} "), "{map}");
+    assert!(cells(map)[3].starts_with("bob \u{b7} "), "{map}");
     assert!(out.contains("1 locked by you, 1 locked by others"), "{out}");
     assert!(
         env.ok(&ws, "alice", &["update"])

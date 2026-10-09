@@ -41,10 +41,15 @@ for user in "$ADMIN" alice bob; do
   echo "  $user"
 done
 
+# revisions <user> <path>: revision numbers of a path, oldest first, from the REV column of `pyn history`
+revisions() {
+  as "$1" history "$2" 2>/dev/null | awk '/^r[0-9]/ { print substr($1, 2) }'
+}
+
 # save <user> <path> <content> <message> [lock]: first revision of a path, taking its lock first if asked
 save() {
   local user=$1 path=$2 content=$3 message=$4 lock=${5:-}
-  if [ -n "$(as "$user" history "$path" 2>/dev/null)" ]; then return; fi
+  if [ -n "$(revisions "$user" "$path")" ]; then return; fi
   [ -n "$lock" ] && as "$user" checkout "$path" >/dev/null
   printf '%s\n' "$content" > "$tmp/file"
   as "$user" checkin "$path" "$tmp/file" -m "$message" >/dev/null
@@ -54,7 +59,7 @@ save() {
 # hold <user> <path>: take the lock on an existing file at its head revision
 hold() {
   local base
-  base=$(as "$1" history "$2" | tail -n 1 | cut -f1)
+  base=$(revisions "$1" "$2" | tail -n 1)
   as "$1" checkout "$2" --base "$base" >/dev/null 2>&1 || true
 }
 

@@ -53,8 +53,8 @@ you are inside the workspace and take paths relative to your current directory.
   writable; `pyn checkin` and `pyn release` make it read-only again. Shared files are always writable.
 - **No base revisions to remember.** `checkout` and `checkin` use the revision the workspace has, so `--base` is only for
   working outside a workspace. If the server has moved on, the command tells you to run `pyn update`.
-- **`pyn status`** prints a table of what differs, one row per file, with the columns `PATH`, `MODE`, `REV`, `STATE` and
-  `LOCK`, then a one-line summary of counts (modified, behind, new, untracked, locked by you, locked by others). `STATE`
+- **`pyn status`** prints a table of what differs, one row per file, with the columns `MODE`, `REV`, `STATE`, `LOCK` and
+  `PATH`, then a one-line summary of counts (modified, behind, new, untracked, locked by you, locked by others). `STATE`
   is `modified` (an edit or a local deletion), `behind (head rN)`, `new` (on the server, not downloaded yet),
   `untracked`, or `clean` for a file that is only listed because it is locked. `LOCK` shows the holder (`you` for your
   own locks) and the time left, for example `alice · 7h 59m`. A path that is locked but has no revision yet shows
@@ -62,6 +62,15 @@ you are inside the workspace and take paths relative to your current directory.
   workspace with no differences and no locks prints `everything is up to date`.
 - **`pyn update`** downloads new and newer files. A file with local changes is never overwritten; it is reported as skipped.
 - **`pyn checkin <path>`** uploads the file at `<path>` in the workspace; a file name is only needed outside one.
+
+## Listing output
+
+Every command that lists things (`status`, `locks`, `files`, `ls`, `history`, `audit`, `summary`, `repo list`, `key list`,
+`invite list`, `token list`, `member list`, `role list`, `config list`) prints one aligned table with a header row and
+no colour. Columns are separated by two spaces and fixed-width columns come first; the column that grows most (path,
+message, detail) comes last and is not padded, so a long value never pushes the others around. A cell with nothing to
+show is `-`, and an empty list prints a short sentence such as `no locks` instead of a bare header. Scripts should read
+columns by position from the header rather than split on tabs; revisions are written `rN`.
 
 ## The ignore file
 

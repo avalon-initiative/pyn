@@ -7,6 +7,7 @@ use anyhow::{Context, Result, bail};
 use pyn_proto as api;
 
 use crate::client::Api;
+use crate::table;
 use crate::workspace::{FileState, Settings, Workspace, hash_of, set_read_only};
 
 pub fn mode_name(mode: api::Mode) -> &'static str {
@@ -97,31 +98,6 @@ fn time_left(expires_at: chrono::DateTime<chrono::Utc>) -> String {
     }
 }
 
-/// Prints rows with every column padded to its widest cell; the last column is not padded.
-fn print_table(header: [&str; 5], rows: &[[String; 5]]) {
-    let mut widths = header.map(str::len);
-    for row in rows {
-        for (w, cell) in widths.iter_mut().zip(row) {
-            *w = (*w).max(cell.chars().count());
-        }
-    }
-    let line = |cells: &[&str]| {
-        let mut out = String::new();
-        for (i, cell) in cells.iter().enumerate() {
-            if i + 1 == cells.len() {
-                out.push_str(cell);
-            } else {
-                out.push_str(&format!("{cell:<w$}  ", w = widths[i]));
-            }
-        }
-        println!("{}", out.trim_end());
-    };
-    line(&header);
-    for row in rows {
-        line(&row.each_ref().map(String::as_str));
-    }
-}
-
 /// Lists what differs between the workspace and the server as a table; clean, unlocked files are left out.
 pub fn status(api: &Api, ws: &Workspace) -> Result<()> {
     let entries: BTreeMap<String, api::FileEntry> = api
@@ -140,7 +116,7 @@ pub fn status(api: &Api, ws: &Workspace) -> Result<()> {
 
     let (mut modified, mut behind, mut new, mut untracked) = (0, 0, 0, 0);
     let (mut mine, mut theirs) = (0, 0);
-    let mut rows: Vec<[String; 5]> = Vec::new();
+    let mut rows: Vec<Vec<String>> = Vec::new();
     for path in paths {
         let (known, entry) = (state.get(path), entries.get(path));
         let on_disk = ws.abs(path).is_file();
@@ -199,8 +175,7 @@ pub fn status(api: &Api, ws: &Workspace) -> Result<()> {
             || known.map_or("-", |k| k.mode.as_str()),
             |e| mode_name(e.mode),
         );
-        rows.push([
-            path.clone(),
+        rows.push(vec![
             mode.to_string(),
             known.map_or("-".to_string(), |k| format!("r{}", k.revision)),
             if notes.is_empty() {
@@ -209,13 +184,17 @@ pub fn status(api: &Api, ws: &Workspace) -> Result<()> {
                 notes.join(", ")
             },
             lock.unwrap_or_else(|| "-".into()),
+            path.clone(),
         ]);
     }
     if rows.is_empty() {
         println!("everything is up to date");
         return Ok(());
     }
-    print_table(["PATH", "MODE", "REV", "STATE", "LOCK"], &rows);
+    println!(
+        "{}",
+        table::render(&["MODE", "REV", "STATE", "LOCK", "PATH"], &rows)
+    );
     println!(
         "{modified} modified, {behind} behind, {new} new, {untracked} untracked, \
          {mine} locked by you, {theirs} locked by others"

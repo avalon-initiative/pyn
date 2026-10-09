@@ -41,20 +41,23 @@ fn keys_are_added_listed_and_removed_from_the_command_line() {
 
     let listed = env.ok(&home, "alice", &["key", "list"]);
     assert!(
-        listed.contains("laptop")
-            && listed.contains("ssh-ed25519")
-            && listed.contains("never used"),
+        listed.contains("laptop") && listed.contains("ssh-ed25519") && listed.contains("never"),
         "{listed}"
     );
     assert!(
-        env.ok(&home, "bob", &["key", "list"]).trim().is_empty(),
+        env.ok(&home, "bob", &["key", "list"]).trim() == "no keys",
         "only your own keys"
     );
 
-    let id = listed.split('\t').next().unwrap().to_string();
+    let rows = common::cell_rows(&listed);
+    assert_eq!(
+        rows[0],
+        ["ID", "ALGORITHM", "LAST USED", "FINGERPRINT", "TITLE"]
+    );
+    let id = rows[1][0].to_string();
     let out = env.ok(&home, "alice", &["key", "remove", &id]);
     assert!(out.contains("removed"), "{out}");
-    assert!(env.ok(&home, "alice", &["key", "list"]).trim().is_empty());
+    assert_eq!(env.ok(&home, "alice", &["key", "list"]).trim(), "no keys");
     let gone = env.fails(&home, "alice", &["key", "remove", &id]);
     assert!(gone.contains("key_not_found"), "{gone}");
 }
