@@ -77,7 +77,7 @@ repository the organization owns, and `pyn repo list [--owner <org>]` shows each
 ### Repository creation policy
 
 Owners can always create repositories in their organization and cannot be locked out. For everyone else the organization
-keeps a policy, **provisional** until the CLI and web UI use it:
+keeps a policy, **provisional** until the web UI uses it:
 
 - A **base setting** for members: `none` (the default: owners only), `private` or `both` (public and private).
 - **Rules**, each with a subject (`team` by slug, `user` by name, or `role`: `owner` or `member`), an effect (`allow` or
@@ -97,6 +97,12 @@ be a member of the organization. Renaming, reconfiguring and deleting a reposito
 | `PUT /v1/orgs/{org}/repo-policy` | owners; `{member_creation}` (`none`, `private`, `both`) gives `200` with the policy; rules are untouched |
 | `PUT /v1/orgs/{org}/repo-policy/rules/{effect}/{kind}/{subject}` | owners; `{scope}` adds or replaces the rule, `200` with it |
 | `DELETE /v1/orgs/{org}/repo-policy/rules/{effect}/{kind}/{subject}` | owners; `204`; `404 creation_rule_not_found` |
+
+On the command line (owners): `pyn org policy show <org>` prints the base setting, then a table of `EFFECT KIND SCOPE
+SUBJECT`; `pyn org policy set <org> --members none|private|both`; `pyn org policy allow|deny <org> team|user|role <subject>
+[--scope public|private|both]` (the scope is `both` by default); and `pyn org policy remove <org> allow|deny team|user|role
+<subject>`. When the policy refuses `pyn repo create <org>/<name>`, the CLI says which visibility the organization does not let
+you create, or that you are not a member.
 
 Changing the policy needs, for a token, `manage_roles` and no repository limit. A bad effect, kind, subject or scope is
 `400 invalid_request`. Changes are recorded in the organization log as `repo_creation_policy_changed` (the base

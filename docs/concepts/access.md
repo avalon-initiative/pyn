@@ -52,7 +52,8 @@ grant or demoting an organization owner applies at once, to tokens as well.
 `GET /v1/repos/{owner}/{name}/teams`.
 
 On the command line, `pyn member list` prints these as `ROLE SOURCE USER`, and `pyn team access [<owner>/<repo>]` lists the
-teams. Teams are managed with `pyn team ...` (see [teams](repositories.md#teams)).
+teams. Teams are managed with `pyn team ...` (see [teams](repositories.md#teams)). Who may create repositories in an organization is managed with `pyn org policy ...` (see
+[repository creation policy](repositories.md#repository-creation-policy)).
 
 ## Accounts and signing in
 

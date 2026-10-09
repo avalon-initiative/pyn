@@ -271,6 +271,49 @@ enum OrgCommand {
     /// List and change an organization's members.
     #[command(subcommand)]
     Member(OrgMemberCommand),
+    /// Show and change who may create repositories in an organization (owners only).
+    #[command(subcommand)]
+    Policy(OrgPolicyCommand),
+}
+
+#[derive(Subcommand)]
+enum OrgPolicyCommand {
+    /// Show the base setting for members and the rules.
+    Show { org: String },
+    /// Set what members may create when no rule applies.
+    Set {
+        org: String,
+        /// `none`, `private` or `both`.
+        #[arg(long)]
+        members: String,
+    },
+    /// Let a team, user or role create repositories.
+    Allow {
+        org: String,
+        /// `team`, `user` or `role`.
+        kind: String,
+        /// A team slug, a user name, or `owner` or `member` for a role.
+        subject: String,
+        /// `public`, `private` or `both`.
+        #[arg(long, default_value = "both")]
+        scope: String,
+    },
+    /// Stop a team, user or role from creating repositories; beats any allow.
+    Deny {
+        org: String,
+        kind: String,
+        subject: String,
+        #[arg(long, default_value = "both")]
+        scope: String,
+    },
+    /// Remove an allow or deny rule.
+    Remove {
+        org: String,
+        /// `allow` or `deny`.
+        effect: String,
+        kind: String,
+        subject: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1219,6 +1262,20 @@ fn submit_policy(api: &Api, repo: &str, bytes: Vec<u8>) -> Result<()> {
     Ok(())
 }
 
+fn explain_create_refusal(err: anyhow::Error, org: &str) -> anyhow::Error {
+    match err.downcast_ref::<client::ApiError>() {
+        Some(e) if e.code == "repo_create_forbidden" => anyhow::anyhow!(
+            "{} ({}); owners of {org} can change this with `pyn org policy`",
+            e.message,
+            e.code
+        ),
+        Some(e) if e.code == "not_org_member" => {
+            anyhow::anyhow!("you are not a member of {org} ({})", e.code)
+        }
+        _ => err,
+    }
+}
+
 fn parse_visibility(v: &str) -> Result<api::Visibility> {
     match v {
         "public" => Ok(api::Visibility::Public),
@@ -1256,8 +1313,10 @@ fn repo_command(api: &Api, cmd: RepoCommand) -> Result<()> {
                 lease_hours,
                 max_locks_per_user: max_locks,
             };
+            let org = body.owner.clone().unwrap_or_default();
             let made: api::RepoInfo = api
-                .send(api.request(Method::POST, "/v1/repos").json(&body))?
+                .send(api.request(Method::POST, "/v1/repos").json(&body))
+                .map_err(|e| explain_create_refusal(e, &org))?
                 .json()?;
             println!("created {}/{}", made.owner, made.name);
             if let Some(bytes) = policy {
@@ -1412,6 +1471,7 @@ fn org_command(api: &Api, cmd: OrgCommand) -> Result<()> {
             }
         }
         OrgCommand::Member(cmd) => org_member_command(api, cmd)?,
+        OrgCommand::Policy(cmd) => org_policy_command(api, cmd)?,
     }
     Ok(())
 }
@@ -1540,6 +1600,86 @@ fn team_command(api: &Api, cmd: TeamCommand) -> Result<()> {
             table::show(&["ROLE", "NAME", "TEAM"], &rows, "no teams");
         }
     }
+    Ok(())
+}
+
+fn org_policy_command(api: &Api, cmd: OrgPolicyCommand) -> Result<()> {
+    match cmd {
+        OrgPolicyCommand::Show { org } => {
+            let policy: api::RepoPolicyInfo = api
+                .send(api.get(&format!("/v1/orgs/{org}/repo-policy")))?
+                .json()?;
+            println!("members can create  {}", policy.member_creation);
+            println!();
+            let rows: Vec<Vec<String>> = policy
+                .rules
+                .into_iter()
+                .map(|r| vec![r.effect, r.kind, r.scope, r.subject])
+                .collect();
+            table::show(&["EFFECT", "KIND", "SCOPE", "SUBJECT"], &rows, "no rules");
+        }
+        OrgPolicyCommand::Set { org, members } => {
+            let body = api::SetRepoPolicyRequest {
+                member_creation: members,
+            };
+            let set: api::RepoPolicyInfo = api
+                .send(
+                    api.request(Method::PUT, &format!("/v1/orgs/{org}/repo-policy"))
+                        .json(&body),
+                )?
+                .json()?;
+            println!("members of {org} can create: {}", set.member_creation);
+        }
+        OrgPolicyCommand::Allow {
+            org,
+            kind,
+            subject,
+            scope,
+        } => set_creation_rule(api, &org, "allow", &kind, &subject, scope)?,
+        OrgPolicyCommand::Deny {
+            org,
+            kind,
+            subject,
+            scope,
+        } => set_creation_rule(api, &org, "deny", &kind, &subject, scope)?,
+        OrgPolicyCommand::Remove {
+            org,
+            effect,
+            kind,
+            subject,
+        } => {
+            api.send(api.request(
+                Method::DELETE,
+                &format!("/v1/orgs/{org}/repo-policy/rules/{effect}/{kind}/{subject}"),
+            ))?;
+            println!("removed the {effect} rule for {kind} {subject} in {org}");
+        }
+    }
+    Ok(())
+}
+
+fn set_creation_rule(
+    api: &Api,
+    org: &str,
+    effect: &str,
+    kind: &str,
+    subject: &str,
+    scope: String,
+) -> Result<()> {
+    let body = api::SetCreationRuleRequest { scope };
+    let rule: api::CreationRuleInfo = api
+        .send(
+            api.request(
+                Method::PUT,
+                &format!("/v1/orgs/{org}/repo-policy/rules/{effect}/{kind}/{subject}"),
+            )
+            .json(&body),
+        )?
+        .json()?;
+    println!(
+        "{org}: {} {} {} ({} repositories)",
+        rule.effect, rule.kind, rule.subject, rule.scope
+    );
     Ok(())
 }
 
