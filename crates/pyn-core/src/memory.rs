@@ -8,12 +8,12 @@ use chrono::{DateTime, Duration, Utc};
 use sha2::{Digest, Sha256};
 
 use crate::access::{
-    AccountRecord, AccountStatus, InviteId, InviteRecord, NewAccount, Permission, Role,
-    RoleDefinitions, SessionRecord, SignupStage, SshKeyRecord, TokenId, TokenRecord,
-    VerificationRecord,
+    AccountKind, AccountRecord, AccountStatus, InviteId, InviteRecord, NewAccount, OrgRole,
+    Permission, Role, RoleDefinitions, SessionRecord, SignupStage, SshKeyRecord, TokenId,
+    TokenRecord, VerificationRecord,
 };
 use crate::access_service::AccessStore;
-use crate::audit::{AuditEvent, AuditQuery, AuditStore, NewAuditEvent};
+use crate::audit::{AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent};
 use crate::error::{PynError, Result};
 use crate::history::HistoryCursor;
 use crate::object::ObjectStore;
@@ -395,6 +395,7 @@ struct AccessState {
     invites: HashMap<InviteId, InviteRecord>,
     ssh_keys: Vec<SshKeyRecord>,
     roles: HashMap<(RepoId, UserId), Role>,
+    org_roles: HashMap<(UserId, UserId), OrgRole>,
     definitions: HashMap<RepoId, RoleDefinitions>,
     tokens: HashMap<TokenId, TokenRecord>,
     sessions: HashMap<String, SessionRecord>,
@@ -403,6 +404,7 @@ struct AccessState {
 fn plain_account(user: &UserId, now: DateTime<Utc>) -> AccountRecord {
     AccountRecord {
         user: user.clone(),
+        kind: AccountKind::User,
         email: None,
         email_verified_at: None,
         signup: SignupStage::Complete,
@@ -523,6 +525,55 @@ impl AccessStore for MemoryAccessStore {
         Ok(self.state.lock().unwrap().accounts.contains_key(user))
     }
 
+    async fn create_org(&self, org: &UserId, owner: &UserId, now: DateTime<Utc>) -> Result<bool> {
+        let mut st = self.state.lock().unwrap();
+        if st.accounts.contains_key(org) {
+            return Ok(false);
+        }
+        st.accounts
+            .entry(owner.clone())
+            .or_insert_with(|| plain_account(owner, now));
+        let record = AccountRecord {
+            kind: AccountKind::Org,
+            ..plain_account(org, now)
+        };
+        st.accounts.insert(org.clone(), record);
+        st.org_roles
+            .insert((org.clone(), owner.clone()), OrgRole::Owner);
+        Ok(true)
+    }
+
+    async fn org_role(&self, org: &UserId, user: &UserId) -> Result<Option<OrgRole>> {
+        let st = self.state.lock().unwrap();
+        Ok(st.org_roles.get(&(org.clone(), user.clone())).copied())
+    }
+
+    async fn orgs_of(&self, user: &UserId) -> Result<Vec<(UserId, OrgRole)>> {
+        let st = self.state.lock().unwrap();
+        let mut out: Vec<_> = st
+            .org_roles
+            .iter()
+            .filter(|((_, u), _)| u == user)
+            .map(|((o, _), r)| (o.clone(), *r))
+            .collect();
+        out.sort();
+        Ok(out)
+    }
+
+    async fn delete_org(&self, org: &UserId) -> Result<bool> {
+        let mut st = self.state.lock().unwrap();
+        if st
+            .accounts
+            .get(org)
+            .is_none_or(|a| a.kind != AccountKind::Org)
+        {
+            return Ok(false);
+        }
+        st.accounts.remove(org);
+        st.org_roles.retain(|(o, _), _| o != org);
+        Ok(true)
+    }
+
     async fn create_account(&self, new: NewAccount) -> Result<bool> {
         let mut st = self.state.lock().unwrap();
         if st.accounts.contains_key(&new.user) {
@@ -628,6 +679,7 @@ impl AccessStore for MemoryAccessStore {
         let mut out: Vec<_> = st
             .accounts
             .values()
+            .filter(|a| a.kind == AccountKind::User)
             .filter(|a| status.is_none_or(|s| a.status() == s))
             .cloned()
             .collect();
@@ -884,7 +936,7 @@ impl AccessStore for MemoryAccessStore {
 
 #[derive(Default)]
 pub struct MemoryAuditStore {
-    events: Mutex<Vec<(RepoId, AuditEvent)>>,
+    events: Mutex<Vec<(String, AuditEvent)>>,
 }
 
 impl MemoryAuditStore {
@@ -895,11 +947,11 @@ impl MemoryAuditStore {
 
 #[async_trait]
 impl AuditStore for MemoryAuditStore {
-    async fn record(&self, repo: &RepoId, event: NewAuditEvent) -> Result<()> {
+    async fn record(&self, scope: &AuditScope, event: NewAuditEvent) -> Result<()> {
         let mut events = self.events.lock().unwrap();
         let id = events.len() as i64 + 1;
         events.push((
-            repo.clone(),
+            scope.key(),
             AuditEvent {
                 id,
                 at: event.at,
@@ -912,13 +964,14 @@ impl AuditStore for MemoryAuditStore {
         Ok(())
     }
 
-    async fn list(&self, repo: &RepoId, query: &AuditQuery) -> Result<Vec<AuditEvent>> {
+    async fn list(&self, scope: &AuditScope, query: &AuditQuery) -> Result<Vec<AuditEvent>> {
+        let key = scope.key();
         let events = self.events.lock().unwrap();
         Ok(events
             .iter()
             .rev()
             .filter(|(r, e)| {
-                r == repo
+                *r == key
                     && query.before.is_none_or(|b| e.id < b)
                     && query
                         .path

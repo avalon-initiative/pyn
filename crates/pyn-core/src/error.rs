@@ -85,6 +85,14 @@ pub enum PynError {
     InvalidRepoName(String),
     #[error("only {0} can do that in their namespace")]
     NotNamespaceOwner(String),
+    #[error("{0:?} is reserved and cannot be used as a name")]
+    ReservedName(String),
+    #[error("no organization {0}")]
+    OrgNotFound(String),
+    #[error("only an owner of {0} can do that")]
+    NotOrgOwner(String),
+    #[error("{0} still owns repositories; delete or transfer them first")]
+    OrgNotEmpty(String),
     #[error("storage error: {0}")]
     Storage(String),
 }
@@ -143,6 +151,10 @@ impl PynError {
             Self::RepoNotFound(_) => "repo_not_found",
             Self::InvalidRepoName(_) => "invalid_repo_name",
             Self::NotNamespaceOwner(_) => "not_namespace_owner",
+            Self::ReservedName(_) => "reserved_name",
+            Self::OrgNotFound(_) => "org_not_found",
+            Self::NotOrgOwner(_) => "not_org_owner",
+            Self::OrgNotEmpty(_) => "org_not_empty",
             Self::Storage(_) => "storage",
         }
     }

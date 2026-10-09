@@ -27,12 +27,26 @@ Roles are named bundles. Each default role includes everything below it:
 | `maintainer` | `restore`, `force_unlock`, `edit_policy`, `view_audit` |
 | `admin` | `manage_users`, `manage_roles` |
 
-A repository owner can change what any role grants. The `admin` role always keeps `manage_users` and `manage_roles`, and
+A repository owner can change what any role grants. An owner of the [organization](repositories.md#organizations) that
+owns a repository is an implicit `admin` of it. The `admin` role always keeps `manage_users` and `manage_roles`, and
 nobody can grant a role containing a permission they do not hold themselves.
+
+## Effective role
+
+What someone may do in a repository is decided by one function in the server: the highest role among the sources below.
+
+1. A direct grant on the repository (members, invitations, the creator of a user's repository).
+2. *Later:* a team grant, once [organization teams](repositories.md#organizations) exist.
+3. Owning the organization that owns the repository: `admin`.
+
+A token or session then narrows the result. Every lookup (the repository's `me`, the repository list, token creation, role
+checks) uses this one function. Organization members and teams (rules 1 and 2 for organization repositories) are later
+slices; today an organization has only its owner.
 
 ## Accounts and signing in
 
-People have accounts: a unique user name (2 to 39 lowercase letters, digits, `-` or `_`) and a password of at least ten
+People have accounts: a unique user name (2 to 39 lowercase letters, digits, `-` or `_`; not one of the
+[reserved names](repositories.md#addresses-and-namespaces)) and a password of at least ten
 characters (at most 256), stored only as a salted argon2id hash. `pyn login <name>` checks the password and saves an expiring session
 for that server in your user configuration directory (`~/.config/pyn/credentials.toml`, readable only by you), the way a git
 credential helper would; the CLI uses it when no token is given, and `pyn logout` ends the session and removes it. A
@@ -183,7 +197,8 @@ every permission. Never set it on a server others can reach.
 
 ## Audit
 
-Adding a member (by an admin, by registration or as the creator of a repository), changing a member's role, changing what a
+Organization events (created, deleted) are kept in a separate [organization log](repositories.md#organizations) for its
+owners. Adding a member (by an admin, by registration or as the creator of a repository), changing a member's role, changing what a
 role grants, creating or revoking a token, and creating, changing or deleting the repository itself are recorded in that
 repository's audit log with the actor and what changed, and are visible to `view_audit`. Server-wide account actions go to
 the [server audit log](#protecting-open-registration). A token's events go to the log of

@@ -48,6 +48,7 @@ async fn state_with(dev: bool, mode: RegistrationMode) -> AppState {
                 require_email_verification: false,
                 ..AccessConfig::default()
             })
+            .with_registry(meta.clone())
             .with_audit(audit.clone()),
     );
     let repos = Arc::new(Repositories::new(

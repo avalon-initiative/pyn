@@ -160,6 +160,20 @@ pub struct Identity {
     pub credential: Credential,
 }
 
+impl Identity {
+    /// A token must be unscoped and carry `manage_roles` to create or delete repositories and organizations.
+    pub fn require_namespace_management(&self) -> Result<()> {
+        match &self.credential {
+            Credential::Token(t)
+                if !t.repos.is_empty() || !t.permissions.contains(&Permission::ManageRoles) =>
+            {
+                Err(PynError::Forbidden(Permission::ManageRoles))
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
 /// An authenticated caller and what they may do in one repository right now.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Principal {
@@ -299,6 +313,36 @@ impl FromStr for RegistrationMode {
     }
 }
 
+/// Who may create an organization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OrgCreation {
+    Anyone,
+    AdminsOnly,
+}
+
+impl OrgCreation {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Anyone => "anyone",
+            Self::AdminsOnly => "admins",
+        }
+    }
+}
+
+impl FromStr for OrgCreation {
+    type Err = PynError;
+    fn from_str(s: &str) -> Result<Self> {
+        match s {
+            "anyone" => Ok(Self::Anyone),
+            "admins" => Ok(Self::AdminsOnly),
+            other => Err(PynError::InvalidRequest(format!(
+                "unknown organization creation setting {other:?}; use anyone or admins"
+            ))),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct InviteId(pub String);
@@ -353,8 +397,53 @@ pub mod account {
     pub const MAX_PASSWORD_LENGTH: usize = 256;
     const MAX_EMAIL_LENGTH: usize = 254;
 
-    /// Lowercase letters, digits, `-` and `_`, 2 to 39 characters, starting with a letter or digit.
+    /// Names that routes or pages use, so no user or organization may take them.
+    pub const RESERVED_NAMES: [&str; 24] = [
+        "_",
+        "-",
+        "about",
+        "admin",
+        "api",
+        "assets",
+        "explore",
+        "healthz",
+        "help",
+        "login",
+        "logout",
+        "new",
+        "notifications",
+        "openapi",
+        "orgs",
+        "pricing",
+        "register",
+        "search",
+        "settings",
+        "signup",
+        "static",
+        "user",
+        "users",
+        "v1",
+    ];
+
+    pub fn is_reserved_name(name: &str) -> bool {
+        RESERVED_NAMES.contains(&name)
+    }
+
+    /// Lowercase letters, digits, `-` and `_`, 2 to 39 characters, starting with a letter or digit, and not
+    /// reserved.
     pub fn validate_username(name: &str) -> Result<UserId> {
+        validate_namespace(name, "a user name")
+    }
+
+    /// An organization name follows the user name rules: both live in one namespace.
+    pub fn validate_org_name(name: &str) -> Result<UserId> {
+        validate_namespace(name, "an organization name")
+    }
+
+    fn validate_namespace(name: &str, noun: &str) -> Result<UserId> {
+        if is_reserved_name(name) {
+            return Err(PynError::ReservedName(name.to_string()));
+        }
         let ok_chars = name
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_');
@@ -365,9 +454,9 @@ pub mod account {
         if (2..=39).contains(&name.len()) && ok_chars && starts_ok {
             Ok(UserId::new(name))
         } else {
-            Err(PynError::InvalidRequest(
-                "a user name is 2 to 39 lowercase letters, digits, '-' or '_', starting with a letter or digit".into(),
-            ))
+            Err(PynError::InvalidRequest(format!(
+                "{noun} is 2 to 39 lowercase letters, digits, '-' or '_', starting with a letter or digit"
+            )))
         }
     }
 
@@ -502,10 +591,79 @@ impl FromStr for AccountStatus {
     }
 }
 
+/// What a namespace name belongs to. Organizations cannot sign in, hold keys or tokens, or sign up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AccountKind {
+    User,
+    Org,
+}
+
+impl AccountKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Org => "org",
+        }
+    }
+}
+
+impl fmt::Display for AccountKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for AccountKind {
+    type Err = PynError;
+    fn from_str(s: &str) -> Result<Self> {
+        match s {
+            "user" => Ok(Self::User),
+            "org" => Ok(Self::Org),
+            other => Err(PynError::Storage(format!("unknown account kind {other:?}"))),
+        }
+    }
+}
+
+/// A person's standing in an organization. Only owners exist until members are managed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OrgRole {
+    Owner,
+    Member,
+}
+
+impl OrgRole {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Owner => "owner",
+            Self::Member => "member",
+        }
+    }
+}
+
+impl fmt::Display for OrgRole {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for OrgRole {
+    type Err = PynError;
+    fn from_str(s: &str) -> Result<Self> {
+        match s {
+            "owner" => Ok(Self::Owner),
+            "member" => Ok(Self::Member),
+            other => Err(PynError::Storage(format!("unknown org role {other:?}"))),
+        }
+    }
+}
+
 /// An account as the sign-up and administration rules see it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccountRecord {
     pub user: UserId,
+    pub kind: AccountKind,
     /// Lowercase.
     pub email: Option<String>,
     pub email_verified_at: Option<DateTime<Utc>>,

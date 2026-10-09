@@ -2,7 +2,7 @@ use std::str::FromStr;
 
 use async_trait::async_trait;
 use pyn_core::{
-    AuditAction, AuditEvent, AuditQuery, AuditStore, NewAuditEvent, RepoId, RepoPath, Result,
+    AuditAction, AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent, RepoPath, Result,
     UserId,
 };
 use sqlx::Row;
@@ -11,11 +11,11 @@ use crate::{PgMetadataStore, db};
 
 #[async_trait]
 impl AuditStore for PgMetadataStore {
-    async fn record(&self, repo: &RepoId, event: NewAuditEvent) -> Result<()> {
+    async fn record(&self, scope: &AuditScope, event: NewAuditEvent) -> Result<()> {
         sqlx::query(
             "INSERT INTO audit_events (repo, at, actor, action, path, detail) VALUES ($1, $2, $3, $4, $5, $6)",
         )
-        .bind(repo.as_str())
+        .bind(scope.key())
         .bind(event.at)
         .bind(event.actor.as_str())
         .bind(event.action.as_str())
@@ -27,7 +27,7 @@ impl AuditStore for PgMetadataStore {
         Ok(())
     }
 
-    async fn list(&self, repo: &RepoId, query: &AuditQuery) -> Result<Vec<AuditEvent>> {
+    async fn list(&self, scope: &AuditScope, query: &AuditQuery) -> Result<Vec<AuditEvent>> {
         let rows = sqlx::query(
             "SELECT id, at, actor, action, path, detail FROM audit_events
              WHERE repo = $1
@@ -37,7 +37,7 @@ impl AuditStore for PgMetadataStore {
                AND ($5::bigint IS NULL OR id < $5)
              ORDER BY id DESC LIMIT $6",
         )
-        .bind(repo.as_str())
+        .bind(scope.key())
         .bind(query.path.as_ref().map(RepoPath::as_str))
         .bind(query.actor.as_ref().map(UserId::as_str))
         .bind(query.action.map(AuditAction::as_str))

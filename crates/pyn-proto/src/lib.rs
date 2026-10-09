@@ -174,6 +174,21 @@ pub struct Account {
     pub admin: bool,
 }
 
+/// An organization: a namespace that owns repositories.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct OrgInfo {
+    pub name: String,
+    pub created_at: DateTime<Utc>,
+    /// The caller's standing in it (`owner`); absent when they have none.
+    pub role: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct CreateOrgRequest {
+    /// Shares the namespace with user names: 2 to 39 lowercase letters, digits, `-` or `_`, not reserved.
+    pub name: String,
+}
+
 /// The caller and what they may do in one repository.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct Me {
@@ -210,7 +225,7 @@ pub struct RepoInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct CreateRepoRequest {
-    /// The namespace to create it in; must be the caller's own account name. Defaults to the caller.
+    /// The namespace to create it in: the caller's own account name, or an organization they own. Defaults to the caller.
     pub owner: Option<String>,
     pub name: String,
     /// Defaults to `private`.

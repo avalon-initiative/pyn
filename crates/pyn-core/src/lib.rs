@@ -23,15 +23,15 @@ pub mod tree;
 pub mod types;
 
 pub use access::{
-    AccountRecord, AccountStatus, Credential, Identity, InviteId, InviteRecord, NewAccount,
-    Permission, Principal, RegistrationMode, Role, RoleDefinitions, SessionRecord, SignupStage,
-    SshKeyRecord, TokenId, TokenRecord, VerificationRecord, account, invite, session, ssh, token,
-    verification,
+    AccountKind, AccountRecord, AccountStatus, Credential, Identity, InviteId, InviteRecord,
+    NewAccount, OrgCreation, OrgRole, Permission, Principal, RegistrationMode, Role,
+    RoleDefinitions, SessionRecord, SignupStage, SshKeyRecord, TokenId, TokenRecord,
+    VerificationRecord, account, invite, session, ssh, token, verification,
 };
 pub use access_service::{
     AccessConfig, AccessService, AccessStore, RateLimits, Registration, SERVER_AUDIT_ID, SignUp,
 };
-pub use audit::{AuditAction, AuditEvent, AuditQuery, AuditStore, NewAuditEvent};
+pub use audit::{AuditAction, AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent};
 pub use auth::AuthProvider;
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use email::{EmailMessage, EmailSender, MemoryEmailSender, NullEmailSender};

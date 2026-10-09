@@ -22,6 +22,7 @@ mod admin_api;
 pub mod auth;
 mod client;
 pub mod email;
+mod org_api;
 pub mod passwords;
 mod repo_api;
 mod session_api;
@@ -76,6 +77,11 @@ struct RepoAddress {
         access_api::create_token,
         access_api::list_tokens,
         access_api::revoke_token,
+        org_api::create_org,
+        org_api::list_orgs,
+        org_api::get_org,
+        org_api::delete_org,
+        org_api::org_audit,
         repo_api::list_repos,
         repo_api::create_repo,
         repo_api::get_repo,
@@ -145,6 +151,8 @@ struct RepoAddress {
         api::Account,
         api::MyLock,
         api::Me,
+        api::OrgInfo,
+        api::CreateOrgRequest,
         api::Visibility,
         api::RepoInfo,
         api::CreateRepoRequest,
@@ -199,6 +207,15 @@ pub fn router(state: AppState) -> Router {
             "/v1/tokens/{id}",
             axum::routing::delete(access_api::revoke_token),
         )
+        .route(
+            "/v1/orgs",
+            get(org_api::list_orgs).post(org_api::create_org),
+        )
+        .route(
+            "/v1/orgs/{org}",
+            get(org_api::get_org).delete(org_api::delete_org),
+        )
+        .route("/v1/orgs/{org}/audit", get(org_api::org_audit))
         .route(
             "/v1/repos",
             get(repo_api::list_repos).post(repo_api::create_repo),
@@ -270,6 +287,7 @@ impl IntoResponse for ApiError {
             | PynError::NotLocked(_)
             | PynError::UserExists(_)
             | PynError::RepoExists(_)
+            | PynError::OrgNotEmpty(_)
             | PynError::KeyInUse
             | PynError::ConfirmationRequired { .. } => StatusCode::CONFLICT,
             PynError::NotLockHolder(_)
@@ -278,6 +296,7 @@ impl IntoResponse for ApiError {
             | PynError::AccountInactive(_)
             | PynError::ServerAdminRequired
             | PynError::NotNamespaceOwner(_)
+            | PynError::NotOrgOwner(_)
             | PynError::CsrfFailed => StatusCode::FORBIDDEN,
             PynError::TooManyAttempts { .. } => StatusCode::TOO_MANY_REQUESTS,
             PynError::Unauthenticated(_) => StatusCode::UNAUTHORIZED,
@@ -285,6 +304,7 @@ impl IntoResponse for ApiError {
             | PynError::UserNotFound(_)
             | PynError::KeyNotFound(_)
             | PynError::RepoNotFound(_)
+            | PynError::OrgNotFound(_)
             | PynError::PathNotFound(_) => StatusCode::NOT_FOUND,
             PynError::RevisionNotFound { .. } => StatusCode::NOT_FOUND,
             PynError::InvalidPath(_)
@@ -293,6 +313,7 @@ impl IntoResponse for ApiError {
             | PynError::InvalidInvite(_)
             | PynError::InvalidVerification(_)
             | PynError::InvalidRepoName(_)
+            | PynError::ReservedName(_)
             | PynError::NotExclusive(_)
             | PynError::ObjectMissing(_) => StatusCode::BAD_REQUEST,
             PynError::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -330,7 +351,11 @@ pub(crate) async fn identify(state: &AppState, headers: &HeaderMap) -> ApiResult
         .and_then(|v| v.to_str().ok());
     Ok(match (bearer_token(headers), &state.dev_auth, dev_user) {
         (Some(token), _, _) => state.auth.authenticate(token).await?,
-        (None, Some(dev), Some(user)) => dev.authenticate(user).await?,
+        (None, Some(dev), Some(user)) => {
+            let who = dev.authenticate(user).await?;
+            state.access.reject_org(&who.user).await?;
+            who
+        }
         _ => match session_api::session_cookie(headers) {
             Some(cookie) => state.access.authenticate_session(cookie).await?.0,
             None => return Err(PynError::Unauthenticated("missing credentials".into()).into()),

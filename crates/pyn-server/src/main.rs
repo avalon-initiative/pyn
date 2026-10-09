@@ -113,6 +113,10 @@ async fn main() -> anyhow::Result<()> {
         },
         public_url: std::env::var("PYN_PUBLIC_URL").unwrap_or_else(|_| format!("http://{addr}")),
         verification_ttl: defaults.verification_ttl,
+        org_creation: match std::env::var("PYN_ORG_CREATION") {
+            Ok(mode) => mode.parse()?,
+            Err(_) => defaults.org_creation,
+        },
     };
     let parallelism = std::thread::available_parallelism().map_or(2, |n| n.get());
     let hashes = number("PYN_PASSWORD_HASHES", parallelism)?;
@@ -124,6 +128,7 @@ async fn main() -> anyhow::Result<()> {
     let access = Arc::new(
         AccessService::new(access_store, clock.clone())
             .with_config(config)
+            .with_registry(meta.clone())
             .with_audit(audit.clone())
             .with_rate_limits(limits)
             .with_email(Arc::new(LogEmailSender))

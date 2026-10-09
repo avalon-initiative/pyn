@@ -8,7 +8,7 @@ use chrono::Duration;
 
 use crate::access::{Credential, Identity, Permission, Principal, Role};
 use crate::access_service::AccessService;
-use crate::audit::{AuditAction, AuditStore, NewAuditEvent};
+use crate::audit::{AuditAction, AuditScope, AuditStore, NewAuditEvent};
 use crate::clock::Clock;
 use crate::error::{PynError, Result};
 use crate::object::ObjectStore;
@@ -86,7 +86,9 @@ impl Repositories {
             path: None,
             detail,
         };
-        self.audit.record(&record.id, event).await
+        self.audit
+            .record(&AuditScope::Repo(record.id.clone()), event)
+            .await
     }
 
     fn cached(&self, record: &RepoRecord) -> Option<Arc<RepoService>> {
@@ -178,8 +180,8 @@ impl Repositories {
         })
     }
 
-    /// Creates `owner/name` and makes the actor its admin. The actor can only use their own namespace, and a token
-    /// must be unscoped and carry `manage_roles`.
+    /// Creates `owner/name` in the actor's namespace or an organization they own; the creator of a user's repository
+    /// becomes its admin. A token must be unscoped and carry `manage_roles`.
     pub async fn create(
         &self,
         actor: &Identity,
@@ -188,12 +190,11 @@ impl Repositories {
         visibility: Option<Visibility>,
         settings: Option<RepoSettings>,
     ) -> Result<RepoRecord> {
-        if let Credential::Token(t) = &actor.credential
-            && (!t.repos.is_empty() || !t.permissions.contains(&Permission::ManageRoles))
-        {
-            return Err(PynError::Forbidden(Permission::ManageRoles));
-        }
-        if owner != &actor.user {
+        actor.require_namespace_management()?;
+        let in_org = owner != &actor.user && self.access.is_org(owner).await?;
+        if in_org {
+            self.access.require_org_owner(owner, &actor.user).await?;
+        } else if owner != &actor.user {
             return Err(PynError::NotNamespaceOwner(owner.to_string()));
         }
         let record = RepoRecord {
@@ -205,7 +206,7 @@ impl Repositories {
             created_at: self.clock.now(),
         };
         let record = self.meta.create_repo(record).await?;
-        if let Err(e) = self.access.add_creator(&record.id, &actor.user).await {
+        if !in_org && let Err(e) = self.access.add_creator(&record.id, &actor.user).await {
             let _ = self.meta.delete_repo(&record.id).await;
             return Err(e);
         }
@@ -271,10 +272,16 @@ impl Repositories {
         Ok(out)
     }
 
-    /// Only the owner, holding admin rights in the repository, may rename, delete or reconfigure it.
+    /// Only the owner (or an owner of the owning organization), holding admin rights in the repository, may
+    /// rename, delete or reconfigure it.
     async fn require_owner_admin(&self, actor: &Identity, record: &RepoRecord) -> Result<()> {
         if record.owner != actor.user {
-            return Err(PynError::NotNamespaceOwner(record.owner.to_string()));
+            if !self.access.is_org(&record.owner).await? {
+                return Err(PynError::NotNamespaceOwner(record.owner.to_string()));
+            }
+            self.access
+                .require_org_owner(&record.owner, &actor.user)
+                .await?;
         }
         let held = self.access.principal_in(&record.id, actor).await?;
         held.require(Permission::ManageRoles)
