@@ -5,9 +5,9 @@ use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use pyn_core::{
     AccessStore, AccountKind, AccountRecord, AccountStatus, InviteId, InviteRecord, NewAccount,
-    OrgMemberChange, OrgRole, Permission, RateLimitStore, RateState, RepoId, Result, Role,
-    RoleDefinitions, SessionRecord, SignupStage, SshKeyRecord, TeamRecord, TokenId, TokenRecord,
-    UserId, VerificationRecord,
+    OrgDeleteMark, OrgMemberChange, OrgRole, Permission, RateLimitStore, RateState, RepoId, Result,
+    Role, RoleDefinitions, SessionRecord, SignupStage, SshKeyRecord, TeamRecord, TokenId,
+    TokenRecord, UserId, VerificationRecord,
 };
 use sqlx::Row;
 use sqlx::postgres::PgRow;
@@ -86,6 +86,7 @@ fn account_from(row: &PgRow) -> Result<AccountRecord> {
         disabled_reason: row.get("disabled_reason"),
         is_admin: row.get("is_admin"),
         created_at: row.get("created_at"),
+        deleting_since: row.get("deleting_since"),
     })
 }
 
@@ -313,6 +314,47 @@ impl AccessStore for PgMetadataStore {
             .await
             .map_err(db)?;
         Ok(deleted.rows_affected() == 1)
+    }
+
+    async fn mark_org_deleting(
+        &self,
+        org: &UserId,
+        now: DateTime<Utc>,
+        stale_before: DateTime<Utc>,
+    ) -> Result<OrgDeleteMark> {
+        let marked = sqlx::query(
+            "UPDATE users SET deleting_since = $2 WHERE id = $1 AND kind = 'org' AND (deleting_since IS NULL OR deleting_since <= $3)",
+        )
+        .bind(org.as_str())
+        .bind(now)
+        .bind(stale_before)
+        .execute(&self.pool)
+        .await
+        .map_err(db)?;
+        if marked.rows_affected() == 1 {
+            return Ok(OrgDeleteMark::Set);
+        }
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM users WHERE id = $1 AND kind = 'org')",
+        )
+        .bind(org.as_str())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(if exists {
+            OrgDeleteMark::Held
+        } else {
+            OrgDeleteMark::NotFound
+        })
+    }
+
+    async fn clear_org_deleting(&self, org: &UserId) -> Result<()> {
+        sqlx::query("UPDATE users SET deleting_since = NULL WHERE id = $1")
+            .bind(org.as_str())
+            .execute(&self.pool)
+            .await
+            .map_err(db)?;
+        Ok(())
     }
 
     async fn set_password_hash(&self, user: &UserId, hash: &str) -> Result<()> {
@@ -899,7 +941,7 @@ impl AccessStore for PgMetadataStore {
     }
 
     async fn account(&self, user: &UserId) -> Result<Option<AccountRecord>> {
-        let row = sqlx::query("SELECT id, kind, email, email_verified_at, signup, disabled_at, disabled_reason, is_admin, created_at FROM users WHERE id = $1")
+        let row = sqlx::query("SELECT id, kind, email, email_verified_at, signup, disabled_at, disabled_reason, is_admin, created_at, deleting_since FROM users WHERE id = $1")
         .bind(user.as_str())
         .fetch_optional(&self.pool)
         .await
@@ -919,7 +961,7 @@ impl AccessStore for PgMetadataStore {
     }
 
     async fn pending_by_email(&self, email: &str) -> Result<Vec<AccountRecord>> {
-        let rows = sqlx::query("SELECT id, kind, email, email_verified_at, signup, disabled_at, disabled_reason, is_admin, created_at FROM users WHERE email = $1 AND signup = 'pending_verification' ORDER BY created_at, id")
+        let rows = sqlx::query("SELECT id, kind, email, email_verified_at, signup, disabled_at, disabled_reason, is_admin, created_at, deleting_since FROM users WHERE email = $1 AND signup = 'pending_verification' ORDER BY created_at, id")
         .bind(email)
         .fetch_all(&self.pool)
         .await
@@ -998,7 +1040,7 @@ impl AccessStore for PgMetadataStore {
         status: Option<AccountStatus>,
         limit: usize,
     ) -> Result<Vec<AccountRecord>> {
-        let rows = sqlx::query("SELECT id, kind, email, email_verified_at, signup, disabled_at, disabled_reason, is_admin, created_at FROM users
+        let rows = sqlx::query("SELECT id, kind, email, email_verified_at, signup, disabled_at, disabled_reason, is_admin, created_at, deleting_since FROM users
              WHERE kind = 'user'
                AND ($1::text IS NULL
                 OR CASE WHEN $1 = 'disabled' THEN disabled_at IS NOT NULL

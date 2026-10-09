@@ -194,6 +194,7 @@ impl Repositories {
         let in_org = owner != &actor.user && self.access.is_org(owner).await?;
         if in_org {
             self.access.require_org_owner(owner, &actor.user).await?;
+            self.access.require_org_open(owner).await?;
         } else if owner != &actor.user {
             return Err(PynError::NotNamespaceOwner(owner.to_string()));
         }
@@ -206,6 +207,10 @@ impl Repositories {
             created_at: self.clock.now(),
         };
         let record = self.meta.create_repo(record).await?;
+        if in_org && let Err(e) = self.access.require_org_open(owner).await {
+            let _ = self.meta.delete_repo(&record.id).await;
+            return Err(e);
+        }
         if !in_org && let Err(e) = self.access.add_creator(&record.id, &actor.user).await {
             let _ = self.meta.delete_repo(&record.id).await;
             return Err(e);

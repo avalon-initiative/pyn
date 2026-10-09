@@ -755,9 +755,20 @@ pub struct AccountRecord {
     /// Runs the server: approves and disables accounts.
     pub is_admin: bool,
     pub created_at: DateTime<Utc>,
+    /// Set on an organization while a delete is in flight.
+    pub deleting_since: Option<DateTime<Utc>>,
 }
 
+/// How long an organization's deleting mark blocks repository creation before it counts as left by a crash.
+pub const ORG_DELETE_MARK_SECONDS: i64 = 60;
+
 impl AccountRecord {
+    /// Whether a fresh deleting mark is set at `now`.
+    pub fn is_deleting(&self, now: DateTime<Utc>) -> bool {
+        self.deleting_since
+            .is_some_and(|since| since > now - chrono::Duration::seconds(ORG_DELETE_MARK_SECONDS))
+    }
+
     pub fn status(&self) -> AccountStatus {
         if self.disabled_at.is_some() {
             return AccountStatus::Disabled;

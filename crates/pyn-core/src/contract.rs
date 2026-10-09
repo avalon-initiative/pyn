@@ -1,6 +1,8 @@
 //! Behaviour every `MetadataStore` must satisfy, run against the store passed in.
 
-use std::sync::Arc;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 
 use chrono::{Duration, TimeZone, Utc};
 
@@ -12,7 +14,10 @@ use crate::access::{
 use crate::clock::Clock;
 use crate::memory::{MemoryAuditStore, MemoryMetadataStore, MemoryObjectStore};
 use crate::ratelimit::RateLimitStore;
-use crate::{AccessService, AccessStore, Credential, Identity, OrgMemberChange, RepoMember};
+use crate::{
+    AccessService, AccessStore, Credential, Identity, OrgDeleteMark, OrgMemberChange, RepoMember,
+    Repositories,
+};
 use crate::{
     AuditAction, AuditQuery, AuditScope, AuditStore, ContentHash, ManualClock, MetadataStore,
     ObjectStore, PynError, RepoId, RepoPath, RepoRecord, RepoService, RepoSettings, RepoUpdate,
@@ -1722,6 +1727,343 @@ pub async fn deleting_an_organization_removes_its_members_and_frees_the_name(sto
     );
 }
 
+type Hook = Box<dyn FnOnce() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send>;
+
+/// A registry that runs a one-shot hook just before it inserts a repository, to place another call in that gap.
+struct HookedMeta {
+    inner: MemoryMetadataStore,
+    before_create: Mutex<Option<Hook>>,
+}
+
+impl HookedMeta {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            inner: MemoryMetadataStore::new(),
+            before_create: Mutex::new(None),
+        })
+    }
+
+    fn on_create(&self, hook: Hook) {
+        *self.before_create.lock().unwrap() = Some(hook);
+    }
+}
+
+#[async_trait::async_trait]
+impl MetadataStore for HookedMeta {
+    async fn acquire_lock(
+        &self,
+        repo: &RepoId,
+        path: &RepoPath,
+        owner: &UserId,
+        now: chrono::DateTime<Utc>,
+        expires_at: chrono::DateTime<Utc>,
+        max_locks: u32,
+    ) -> crate::Result<crate::Lock> {
+        self.inner
+            .acquire_lock(repo, path, owner, now, expires_at, max_locks)
+            .await
+    }
+
+    async fn release_lock(
+        &self,
+        repo: &RepoId,
+        path: &RepoPath,
+        owner: &UserId,
+        now: chrono::DateTime<Utc>,
+    ) -> crate::Result<()> {
+        self.inner.release_lock(repo, path, owner, now).await
+    }
+
+    async fn force_release_lock(
+        &self,
+        repo: &RepoId,
+        path: &RepoPath,
+        now: chrono::DateTime<Utc>,
+    ) -> crate::Result<Option<crate::Lock>> {
+        self.inner.force_release_lock(repo, path, now).await
+    }
+
+    async fn get_lock(
+        &self,
+        repo: &RepoId,
+        path: &RepoPath,
+        now: chrono::DateTime<Utc>,
+    ) -> crate::Result<Option<crate::Lock>> {
+        self.inner.get_lock(repo, path, now).await
+    }
+
+    async fn list_locks(
+        &self,
+        repo: &RepoId,
+        now: chrono::DateTime<Utc>,
+    ) -> crate::Result<Vec<crate::Lock>> {
+        self.inner.list_locks(repo, now).await
+    }
+
+    async fn list_locks_of(
+        &self,
+        owner: &UserId,
+        now: chrono::DateTime<Utc>,
+    ) -> crate::Result<Vec<(RepoId, crate::Lock)>> {
+        self.inner.list_locks_of(owner, now).await
+    }
+
+    async fn head_revision(
+        &self,
+        repo: &RepoId,
+        path: &RepoPath,
+    ) -> crate::Result<Option<crate::Revision>> {
+        self.inner.head_revision(repo, path).await
+    }
+
+    async fn commit_revision(
+        &self,
+        repo: &RepoId,
+        revision: crate::NewRevision,
+        expected_head: Option<RevisionId>,
+        lock_holder: Option<&UserId>,
+        now: chrono::DateTime<Utc>,
+    ) -> crate::Result<crate::Revision> {
+        self.inner
+            .commit_revision(repo, revision, expected_head, lock_holder, now)
+            .await
+    }
+
+    async fn get_revision(
+        &self,
+        repo: &RepoId,
+        path: &RepoPath,
+        id: RevisionId,
+    ) -> crate::Result<Option<crate::Revision>> {
+        self.inner.get_revision(repo, path, id).await
+    }
+
+    async fn list_head_revisions(&self, repo: &RepoId) -> crate::Result<Vec<crate::Revision>> {
+        self.inner.list_head_revisions(repo).await
+    }
+
+    async fn history(&self, repo: &RepoId, path: &RepoPath) -> crate::Result<Vec<crate::Revision>> {
+        self.inner.history(repo, path).await
+    }
+
+    async fn repo_history(
+        &self,
+        repo: &RepoId,
+        filter: Option<&crate::PathFilter>,
+        before: Option<&crate::HistoryCursor>,
+        limit: usize,
+    ) -> crate::Result<Vec<crate::Revision>> {
+        self.inner.repo_history(repo, filter, before, limit).await
+    }
+
+    async fn create_repo(&self, repo: RepoRecord) -> crate::Result<RepoRecord> {
+        let hook = self.before_create.lock().unwrap().take();
+        if let Some(hook) = hook {
+            hook().await;
+        }
+        self.inner.create_repo(repo).await
+    }
+
+    async fn find_repo(&self, owner: &UserId, name: &str) -> crate::Result<Option<RepoRecord>> {
+        self.inner.find_repo(owner, name).await
+    }
+
+    async fn get_repo(&self, id: &RepoId) -> crate::Result<Option<RepoRecord>> {
+        self.inner.get_repo(id).await
+    }
+
+    async fn list_repos(&self, owner: Option<&UserId>) -> crate::Result<Vec<RepoRecord>> {
+        self.inner.list_repos(owner).await
+    }
+
+    async fn update_repo(&self, id: &RepoId, update: RepoUpdate) -> crate::Result<RepoRecord> {
+        self.inner.update_repo(id, update).await
+    }
+
+    async fn delete_repo(&self, id: &RepoId) -> crate::Result<bool> {
+        self.inner.delete_repo(id).await
+    }
+}
+
+const MARK_TTL: Duration = Duration::seconds(crate::access::ORG_DELETE_MARK_SECONDS);
+
+async fn mark_now(store: &Access, org: &UserId, clock: &ManualClock) -> OrgDeleteMark {
+    let now = clock.now();
+    store
+        .mark_org_deleting(org, now, now - MARK_TTL)
+        .await
+        .unwrap()
+}
+
+pub async fn the_deleting_mark_is_set_once_cleared_and_taken_over_when_stale(store: Access) {
+    let acme = user("acme");
+    store.create_user(&user("alice"), at(0)).await.unwrap();
+    store
+        .create_org(&acme, &user("alice"), at(0))
+        .await
+        .unwrap();
+    let stale = |now: chrono::DateTime<Utc>| now - MARK_TTL;
+
+    assert_eq!(
+        store
+            .mark_org_deleting(&acme, at(1), stale(at(1)))
+            .await
+            .unwrap(),
+        OrgDeleteMark::Set
+    );
+    assert_eq!(
+        store.account(&acme).await.unwrap().unwrap().deleting_since,
+        Some(at(1))
+    );
+    let later = at(1) + Duration::seconds(10);
+    assert_eq!(
+        store
+            .mark_org_deleting(&acme, later, stale(later))
+            .await
+            .unwrap(),
+        OrgDeleteMark::Held,
+        "a fresh mark is not replaced"
+    );
+    assert_eq!(
+        store.account(&acme).await.unwrap().unwrap().deleting_since,
+        Some(at(1)),
+        "and keeps its time"
+    );
+
+    let expired = at(1) + MARK_TTL + Duration::seconds(1);
+    assert_eq!(
+        store
+            .mark_org_deleting(&acme, expired, stale(expired))
+            .await
+            .unwrap(),
+        OrgDeleteMark::Set,
+        "a stale mark is taken over"
+    );
+    assert_eq!(
+        store.account(&acme).await.unwrap().unwrap().deleting_since,
+        Some(expired)
+    );
+
+    store.clear_org_deleting(&acme).await.unwrap();
+    assert_eq!(
+        store.account(&acme).await.unwrap().unwrap().deleting_since,
+        None
+    );
+    assert_eq!(
+        store
+            .mark_org_deleting(&acme, at(2), stale(at(2)))
+            .await
+            .unwrap(),
+        OrgDeleteMark::Set
+    );
+
+    for other in ["alice", "nobody"] {
+        assert_eq!(
+            store
+                .mark_org_deleting(&user(other), at(2), stale(at(2)))
+                .await
+                .unwrap(),
+            OrgDeleteMark::NotFound,
+            "{other}"
+        );
+    }
+    assert_eq!(
+        store
+            .account(&user("alice"))
+            .await
+            .unwrap()
+            .unwrap()
+            .deleting_since,
+        None,
+        "users are never marked"
+    );
+}
+
+pub async fn repository_creation_cannot_slip_in_while_an_organization_is_deleted(store: Access) {
+    let meta = HookedMeta::new();
+    let clock = Arc::new(ManualClock::new(at(0)));
+    let access =
+        Arc::new(AccessService::new(store.clone(), clock.clone()).with_registry(meta.clone()));
+    let repos = Repositories::new(
+        meta.clone(),
+        Arc::new(MemoryObjectStore::new()),
+        Arc::new(MemoryAuditStore::new()),
+        access.clone(),
+        clock.clone(),
+        Rules::empty(),
+    );
+    let (acme, alice) = (user("acme"), session("alice"));
+    access.create_org(&alice, "acme").await.unwrap();
+
+    // The create passed its mark check, then the delete marked before the insert landed.
+    let (s, c, o) = (store.clone(), clock.clone(), acme.clone());
+    meta.on_create(Box::new(move || {
+        Box::pin(async move {
+            assert_eq!(mark_now(&s, &o, &c).await, OrgDeleteMark::Set);
+        })
+    }));
+    let err = repos
+        .create(&alice, &acme, "game", None, None)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::OrgDeleting(_)), "{err}");
+    assert_eq!(err.code(), "org_deleting");
+    assert!(
+        meta.list_repos(None).await.unwrap().is_empty(),
+        "the insert is undone"
+    );
+
+    let err = repos
+        .create(&alice, &acme, "game", None, None)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, PynError::OrgDeleting(_)),
+        "refused while marked: {err}"
+    );
+    assert!(meta.list_repos(None).await.unwrap().is_empty());
+
+    // The mark outlives a crash by the fixed time only.
+    clock.advance(MARK_TTL + Duration::seconds(1));
+    repos
+        .create(&alice, &acme, "game", None, None)
+        .await
+        .unwrap();
+    let err = access.delete_org(&alice, &acme).await.unwrap_err();
+    assert!(matches!(err, PynError::OrgNotEmpty(_)), "{err}");
+    assert_eq!(
+        store.account(&acme).await.unwrap().unwrap().deleting_since,
+        None,
+        "a delete that finds repositories clears its mark"
+    );
+    repos
+        .create(&alice, &acme, "tools", None, None)
+        .await
+        .expect("creation resumes after the refused delete");
+}
+
+pub async fn a_retried_delete_finishes_an_interrupted_one_once_its_mark_is_stale(store: Access) {
+    let meta = HookedMeta::new();
+    let clock = Arc::new(ManualClock::new(at(0)));
+    let access = AccessService::new(store.clone(), clock.clone()).with_registry(meta.clone());
+    let (acme, alice) = (user("acme"), session("alice"));
+    access.create_org(&alice, "acme").await.unwrap();
+
+    assert_eq!(mark_now(&store, &acme, &clock).await, OrgDeleteMark::Set);
+    clock.advance(Duration::seconds(10));
+    let err = access.delete_org(&alice, &acme).await.unwrap_err();
+    assert!(
+        matches!(err, PynError::OrgDeleting(_)),
+        "a delete in flight is not doubled: {err}"
+    );
+    assert!(access.is_org(&acme).await.unwrap());
+
+    clock.advance(MARK_TTL);
+    access.delete_org(&alice, &acme).await.unwrap();
+    assert!(!access.is_org(&acme).await.unwrap());
+    assert!(store.account(&acme).await.unwrap().is_none());
+}
+
 pub async fn organization_members_are_added_changed_and_never_left_without_an_owner(store: Access) {
     let acme = user("acme");
     for name in ["alice", "bob", "carol"] {
@@ -3055,6 +3397,9 @@ macro_rules! access_contract_tests {
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; deleting_an_accounts_sessions_leaves_others);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; organizations_share_the_account_namespace_and_start_with_their_creator_as_owner);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; deleting_an_organization_removes_its_members_and_frees_the_name);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; the_deleting_mark_is_set_once_cleared_and_taken_over_when_stale);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; repository_creation_cannot_slip_in_while_an_organization_is_deleted);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; a_retried_delete_finishes_an_interrupted_one_once_its_mark_is_stale);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; organization_members_are_added_changed_and_never_left_without_an_owner);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; removing_an_organization_member_drops_their_roles_in_the_given_repositories);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; teams_hold_members_and_repository_roles_until_removed);

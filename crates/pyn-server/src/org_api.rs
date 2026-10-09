@@ -85,7 +85,7 @@ pub(crate) async fn get_org(
     responses((status = 204, description = "its audit log is kept"),
               (status = 403, body = api::ErrorBody, description = "not_org_owner"),
               (status = 404, body = api::ErrorBody, description = "org_not_found"),
-              (status = 409, body = api::ErrorBody, description = "org_not_empty: it still owns repositories")))]
+              (status = 409, body = api::ErrorBody, description = "org_not_empty: it still owns repositories; org_deleting: another delete of it is in flight")))]
 pub(crate) async fn delete_org(
     State(s): State<AppState>,
     headers: HeaderMap,

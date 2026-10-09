@@ -65,11 +65,39 @@ impl AccessService {
         self.org(&org).await
     }
 
+    /// `OrgNotFound` if the organization is gone, `OrgDeleting` while a delete holds a fresh mark on it.
+    pub async fn require_org_open(&self, name: &UserId) -> Result<()> {
+        if self.org(name).await?.is_deleting(self.clock.now()) {
+            return Err(PynError::OrgDeleting(name.to_string()));
+        }
+        Ok(())
+    }
+
     /// Deletes an organization that owns no repositories. Owners only; its audit log stays.
+    /// A fresh mark from another delete refuses with `OrgDeleting`; a stale one is taken over.
     pub async fn delete_org(&self, actor: &Identity, name: &UserId) -> Result<()> {
         actor.require_namespace_management()?;
         self.org(name).await?;
         self.require_org_owner(name, &actor.user).await?;
+        let now = self.clock.now();
+        let stale_before = now - Duration::seconds(ORG_DELETE_MARK_SECONDS);
+        match self
+            .store
+            .mark_org_deleting(name, now, stale_before)
+            .await?
+        {
+            OrgDeleteMark::Set => {}
+            OrgDeleteMark::Held => return Err(PynError::OrgDeleting(name.to_string())),
+            OrgDeleteMark::NotFound => return Err(PynError::OrgNotFound(name.to_string())),
+        }
+        let result = self.delete_marked_org(actor, name).await;
+        if result.is_err() {
+            let _ = self.store.clear_org_deleting(name).await;
+        }
+        result
+    }
+
+    async fn delete_marked_org(&self, actor: &Identity, name: &UserId) -> Result<()> {
         if let Some(registry) = &self.registry
             && !registry.list_repos(Some(name)).await?.is_empty()
         {

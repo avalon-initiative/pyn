@@ -756,7 +756,7 @@
             }
           },
           "409": {
-            "description": "org_not_empty: it still owns repositories",
+            "description": "org_not_empty: it still owns repositories; org_deleting: another delete of it is in flight",
             "content": {
               "application/json": {
                 "schema": {
@@ -1823,7 +1823,7 @@
             }
           },
           "409": {
-            "description": "repo_exists",
+            "description": "repo_exists, or org_deleting: the organization is being deleted",
             "content": {
               "application/json": {
                 "schema": {

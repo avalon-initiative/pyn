@@ -341,6 +341,7 @@ impl IntoResponse for ApiError {
             | PynError::UserExists(_)
             | PynError::RepoExists(_)
             | PynError::OrgNotEmpty(_)
+            | PynError::OrgDeleting(_)
             | PynError::UserNotOrgMember { .. }
             | PynError::AlreadyOrgMember { .. }
             | PynError::TeamExists { .. }
