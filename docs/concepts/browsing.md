@@ -40,6 +40,39 @@ nothing yet does not make a folder `mixed`. *Provisional*
 
 Watchers, forks and tags do not exist on the server and are not reported.
 
+## History
+
+`GET /v1/repos/{owner}/{name}/history` needs `read` and always answers `{ revisions, next_cursor }`. It has two modes.
+
+- **One path** (`path=<file>`): every revision of that path, **oldest first**, in one response with no `next_cursor`.
+  This is the order clients already rely on, so it is kept. `path` cannot be combined with the parameters below
+  (`400 invalid_request`).
+- **Repository-wide** (no `path`): revisions of every path, **newest first**, as the same `Revision` objects (`id`, `path`,
+  `author`, `message`, `created_at`, ...), paged.
+
+| Parameter | Meaning |
+| --- | --- |
+| `filter` | a glob over paths; only matching revisions are returned. A bad pattern is `400 invalid_request` |
+| `limit` | page size, default 50, at most 200 |
+| `before` | the previous page's `next_cursor`; omit for the first page |
+
+**Filter matching** uses the `pyn.toml` [glob rules](pyn-toml.md#entries): `*` stays within one segment, `**` crosses
+segments, `?` and `[abc]` work as there. A pattern **without a `/`** is matched against the path at any depth, as in
+the [ignore file](workspace.md#the-ignore-file), so `*.ts` finds `a.ts` and `src/deep/a.ts`. A pattern **with a `/`** is
+anchored at the repository root: `Content/*.uasset` matches only directly inside `Content/`, `Source/**` everything under
+`Source/`. A trailing `/` (`Source/`) means everything under that folder. Matching is on the revision's path.
+
+**Paging.** Revision ids are numbered per path, so they do not order the repository. The order is the key
+`(created_at, path, id)`, descending, with paths compared bytewise; revisions made in the same instant therefore have a
+fixed order. `next_cursor` is an opaque string encoding the last revision returned; pass it back unchanged as `before` to
+get the revisions strictly older than it. It is absent on the last page. A page can be shorter than `limit` only on the
+last page, even when a filter drops most revisions. Revisions committed after the first page are newer than every cursor
+and never shift later pages. A cursor that does not parse is `400 invalid_request`.
+
 ## Command line
+
+`pyn history <path>` lists one path's revisions, oldest first (`REV`, `AUTHOR`, `WHEN`, `MESSAGE`). `pyn history` without a
+path lists the repository's, newest first, with a `PATH` column after `MESSAGE`; `--filter <glob>` narrows it and
+`--limit <n>` (default 50) sets how many to show, following the cursor as needed.
 
 `pyn ls [path]` prints the listing and `pyn summary` the summary, as tables in the format described in [workspace](workspace.md#listing-output).

@@ -14,8 +14,10 @@ use crate::access::{
 use crate::access_service::AccessStore;
 use crate::audit::{AuditEvent, AuditQuery, AuditStore, NewAuditEvent};
 use crate::error::{PynError, Result};
+use crate::history::HistoryCursor;
 use crate::object::ObjectStore;
 use crate::repo::{RepoRecord, RepoUpdate};
+use crate::rules::PathFilter;
 use crate::store::MetadataStore;
 use crate::types::{
     ContentHash, Lock, NewRevision, RepoId, RepoPath, Revision, RevisionId, UserId,
@@ -39,6 +41,10 @@ impl MemoryMetadataStore {
     pub fn new() -> Self {
         Self::default()
     }
+}
+
+fn history_key(r: &Revision) -> (DateTime<Utc>, &str, RevisionId) {
+    (r.created_at, r.path.as_str(), r.id)
 }
 
 fn live(lock: &Lock, now: DateTime<Utc>) -> bool {
@@ -228,6 +234,26 @@ impl MetadataStore for MemoryMetadataStore {
             .get(&(repo.clone(), path.clone()))
             .cloned()
             .unwrap_or_default())
+    }
+
+    async fn repo_history(
+        &self,
+        repo: &RepoId,
+        filter: Option<&PathFilter>,
+        before: Option<&HistoryCursor>,
+        limit: usize,
+    ) -> Result<Vec<Revision>> {
+        let st = self.state.lock().unwrap();
+        let mut revs: Vec<&Revision> = st
+            .revisions
+            .iter()
+            .filter(|((r, _), _)| r == repo)
+            .flat_map(|(_, revs)| revs)
+            .filter(|r| filter.is_none_or(|f| f.is_match(&r.path)))
+            .filter(|r| before.is_none_or(|b| history_key(r) < b.sort_key()))
+            .collect();
+        revs.sort_by_key(|r| std::cmp::Reverse(history_key(r)));
+        Ok(revs.into_iter().take(limit).cloned().collect())
     }
 
     async fn create_repo(&self, repo: RepoRecord) -> Result<RepoRecord> {

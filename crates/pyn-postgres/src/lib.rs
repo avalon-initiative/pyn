@@ -7,8 +7,9 @@ use chrono::{DateTime, Utc};
 use std::str::FromStr;
 
 use pyn_core::{
-    ContentHash, Lock, MetadataStore, NewRevision, PynError, RepoId, RepoPath, RepoRecord,
-    RepoSettings, RepoUpdate, Result, Revision, RevisionId, UserId, Visibility,
+    ContentHash, HistoryCursor, Lock, MetadataStore, NewRevision, PathFilter, PynError, RepoId,
+    RepoPath, RepoRecord, RepoSettings, RepoUpdate, Result, Revision, RevisionId, UserId,
+    Visibility,
 };
 use sqlx::migrate::MigrateDatabase;
 use sqlx::postgres::{PgPoolOptions, PgRow};
@@ -429,6 +430,51 @@ impl MetadataStore for PgMetadataStore {
         .await
         .map_err(db)?;
         rows.iter().map(revision_from).collect()
+    }
+
+    async fn repo_history(
+        &self,
+        repo: &RepoId,
+        filter: Option<&PathFilter>,
+        before: Option<&HistoryCursor>,
+        limit: usize,
+    ) -> Result<Vec<Revision>> {
+        // The glob cannot run in SQL, so scan keyset batches and filter until `limit` rows match.
+        let batch = (limit.max(1) * 4).clamp(50, 1000) as i64;
+        let mut cursor = before.cloned();
+        let mut out = Vec::new();
+        loop {
+            let rows = sqlx::query(
+                "SELECT id, path, content, author, message, created_at, restored_from FROM revisions
+                 WHERE repo = $1
+                   AND ($2::timestamptz IS NULL
+                        OR (created_at, path COLLATE \"C\", id) < ($2, $3::text COLLATE \"C\", $4::bigint))
+                 ORDER BY created_at DESC, path COLLATE \"C\" DESC, id DESC
+                 LIMIT $5",
+            )
+            .bind(repo.as_str())
+            .bind(cursor.as_ref().map(|c| c.created_at))
+            .bind(cursor.as_ref().map(|c| c.path.as_str().to_string()))
+            .bind(cursor.as_ref().map(|c| c.id.0 as i64))
+            .bind(batch)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db)?;
+            let scanned = rows.len() as i64;
+            for row in &rows {
+                let rev = revision_from(row)?;
+                cursor = Some(HistoryCursor::of(&rev));
+                if filter.is_none_or(|f| f.is_match(&rev.path)) {
+                    out.push(rev);
+                    if out.len() == limit {
+                        return Ok(out);
+                    }
+                }
+            }
+            if scanned < batch {
+                return Ok(out);
+            }
+        }
     }
 
     async fn create_repo(&self, repo: RepoRecord) -> Result<RepoRecord> {

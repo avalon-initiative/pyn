@@ -2,7 +2,9 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
 use crate::error::Result;
+use crate::history::HistoryCursor;
 use crate::repo::{RepoRecord, RepoUpdate};
+use crate::rules::PathFilter;
 use crate::types::{Lock, NewRevision, RepoId, RepoPath, Revision, RevisionId, UserId};
 
 /// Persistence for the repository registry, locks and revisions. Each method is one atomic check-and-write; policy lives in
@@ -68,7 +70,18 @@ pub trait MetadataStore: Send + Sync {
     /// The head revision of every path that has one, ordered by path.
     async fn list_head_revisions(&self, repo: &RepoId) -> Result<Vec<Revision>>;
 
+    /// One path's revisions, oldest first.
     async fn history(&self, repo: &RepoId, path: &RepoPath) -> Result<Vec<Revision>>;
+
+    /// At most `limit` revisions of the repository matching `filter`, newest first by (created_at, path, id) with paths
+    /// compared bytewise, strictly before `before` when given.
+    async fn repo_history(
+        &self,
+        repo: &RepoId,
+        filter: Option<&PathFilter>,
+        before: Option<&HistoryCursor>,
+        limit: usize,
+    ) -> Result<Vec<Revision>>;
 
     /// Registers the repository; `RepoExists` if the owner already has one with that name.
     async fn create_repo(&self, repo: RepoRecord) -> Result<RepoRecord>;

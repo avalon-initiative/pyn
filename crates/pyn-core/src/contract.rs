@@ -491,6 +491,158 @@ async fn exclusive_history(h: &Harness, path: &RepoPath, texts: &[&str]) {
     }
 }
 
+async fn commit(h: &Harness, p: &RepoPath, text: &str) {
+    let base = h.svc.head(p).await.unwrap().map(|r| r.id);
+    if h.svc.mode_for(p) == crate::Mode::Exclusive {
+        h.svc.checkout(p, &user("alice"), base).await.unwrap();
+    }
+    let c = blob(h, text).await;
+    h.svc
+        .checkin(p, &user("alice"), c, base, text.into())
+        .await
+        .unwrap();
+}
+
+/// Commits across paths; the first two share a timestamp to exercise the tie-break.
+async fn seed_repo_history(h: &Harness) {
+    for (p, text, tick) in [
+        ("Source/a.ts", "a1", false),
+        ("Content/m.umap", "m1", false),
+        ("Source/deep/b.ts", "b1", true),
+        ("Source/a.ts", "a2", true),
+        ("README.md", "r1", true),
+        ("Content/m.umap", "m2", true),
+    ] {
+        if tick {
+            h.clock.advance(Duration::minutes(1));
+        }
+        commit(h, &path(p), text).await;
+    }
+}
+
+fn labels(revs: &[crate::Revision]) -> Vec<String> {
+    revs.iter()
+        .map(|r| format!("{}@{}", r.path, r.id))
+        .collect()
+}
+
+pub async fn repo_history_is_newest_first_across_paths(store: Store) {
+    let h = harness(store);
+    seed_repo_history(&h).await;
+    let page = h.svc.repo_history(None, None, None).await.unwrap();
+    assert_eq!(
+        labels(&page.revisions),
+        [
+            "Content/m.umap@2",
+            "README.md@1",
+            "Source/a.ts@2",
+            "Source/deep/b.ts@1",
+            "Source/a.ts@1",
+            "Content/m.umap@1"
+        ],
+        "equal timestamps order by path descending"
+    );
+    assert!(page.next.is_none());
+    let other = h.svc.history(&path("Source/a.ts")).await.unwrap();
+    assert_eq!(
+        labels(&other),
+        ["Source/a.ts@1", "Source/a.ts@2"],
+        "one path stays oldest first"
+    );
+}
+
+pub async fn repo_history_filters_by_glob(store: Store) {
+    let h = harness(store);
+    seed_repo_history(&h).await;
+    for (pattern, want) in [
+        (
+            "*.ts",
+            vec!["Source/a.ts@2", "Source/deep/b.ts@1", "Source/a.ts@1"],
+        ),
+        ("Source/*.ts", vec!["Source/a.ts@2", "Source/a.ts@1"]),
+        (
+            "Source/**",
+            vec!["Source/a.ts@2", "Source/deep/b.ts@1", "Source/a.ts@1"],
+        ),
+        (
+            "Content/*.umap",
+            vec!["Content/m.umap@2", "Content/m.umap@1"],
+        ),
+        ("*.nothing", vec![]),
+    ] {
+        let f = crate::PathFilter::new(pattern).unwrap();
+        let page = h.svc.repo_history(Some(&f), None, None).await.unwrap();
+        assert_eq!(labels(&page.revisions), want, "{pattern}");
+    }
+}
+
+pub async fn repo_history_pages_without_gaps_or_repeats(store: Store) {
+    let h = harness(store);
+    seed_repo_history(&h).await;
+    let all = labels(
+        &h.svc
+            .repo_history(None, None, None)
+            .await
+            .unwrap()
+            .revisions,
+    );
+    for size in [1, 2, 4] {
+        let mut seen = Vec::new();
+        let mut cursor = None;
+        loop {
+            let page = h
+                .svc
+                .repo_history(None, cursor.as_ref(), Some(size))
+                .await
+                .unwrap();
+            assert!(page.revisions.len() <= size);
+            seen.extend(labels(&page.revisions));
+            match page.next {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+        }
+        assert_eq!(seen, all, "page size {size}");
+    }
+
+    let f = crate::PathFilter::new("*.ts").unwrap();
+    let first = h.svc.repo_history(Some(&f), None, Some(2)).await.unwrap();
+    assert_eq!(
+        labels(&first.revisions),
+        ["Source/a.ts@2", "Source/deep/b.ts@1"]
+    );
+    let second = h
+        .svc
+        .repo_history(Some(&f), first.next.as_ref(), Some(2))
+        .await
+        .unwrap();
+    assert_eq!(labels(&second.revisions), ["Source/a.ts@1"]);
+    assert!(second.next.is_none());
+}
+
+pub async fn repo_history_is_per_repository(store: Store) {
+    let h = harness(store.clone());
+    let other = service_in(&store, &h, "other");
+    seed_repo_history(&h).await;
+    assert!(
+        other
+            .repo_history(None, None, None)
+            .await
+            .unwrap()
+            .revisions
+            .is_empty()
+    );
+    assert_eq!(
+        h.svc
+            .repo_history(None, None, None)
+            .await
+            .unwrap()
+            .revisions
+            .len(),
+        6
+    );
+}
+
 pub async fn restore_appends_a_checkpoint_with_the_old_content(store: Store) {
     let h = harness(store);
     let m = path("Content/m.umap");
@@ -1020,6 +1172,10 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; tree_rejects_missing_directories_and_files);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; summary_counts_files_locks_and_file_activity);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; old_revisions_can_be_read_back);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; repo_history_is_newest_first_across_paths);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; repo_history_filters_by_glob);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; repo_history_pages_without_gaps_or_repeats);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; repo_history_is_per_repository);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; restore_appends_a_checkpoint_with_the_old_content);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; restore_needs_the_lock_and_the_right_confirmation);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; restore_is_for_exclusive_paths_and_real_older_revisions);

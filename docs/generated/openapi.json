@@ -1053,10 +1053,38 @@
           {
             "name": "path",
             "in": "query",
-            "description": "repo-relative path",
-            "required": true,
+            "description": "one path's revisions, oldest first; excludes the other parameters",
+            "required": false,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "filter",
+            "in": "query",
+            "description": "glob over paths for repository history; no slash matches at any depth",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "description": "the previous page's next_cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "page size, default 50, max 200",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
             }
           }
         ],
@@ -1065,10 +1093,17 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/Revision"
-                  }
+                  "$ref": "#/components/schemas/HistoryPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request for a bad filter or cursor, or path combined with them",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -2453,6 +2488,28 @@
           "reason": {
             "type": "string",
             "description": "Why the lock is being removed; required and recorded in the audit log."
+          }
+        }
+      },
+      "HistoryPage": {
+        "type": "object",
+        "required": [
+          "revisions"
+        ],
+        "properties": {
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass as `before` to fetch the next, older page; absent on the last page and with `path`."
+          },
+          "revisions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Revision"
+            },
+            "description": "With `path`: all of that path's revisions, oldest first. Without: newest first."
           }
         }
       },

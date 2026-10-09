@@ -161,8 +161,16 @@ enum Command {
         #[arg(long, default_value_t = 50)]
         limit: usize,
     },
-    /// Show a path's revisions.
-    History { path: String },
+    /// Show a path's revisions (oldest first), or without a path the repository's, newest first.
+    History {
+        path: Option<String>,
+        /// Only paths matching this glob; without a slash it matches at any depth (`*.ts`, `Source/**`).
+        #[arg(long, conflicts_with = "path")]
+        filter: Option<String>,
+        /// How many revisions to show for the repository view.
+        #[arg(long, default_value_t = 50, conflicts_with = "path")]
+        limit: usize,
+    },
     /// Manage your API tokens.
     #[command(subcommand)]
     Token(TokenCommand),
@@ -772,29 +780,39 @@ fn main() -> Result<()> {
                 None => std::io::Write::write_all(&mut std::io::stdout(), &bytes)?,
             }
         }
-        Command::History { path } => {
-            let path = rp(&path)?;
-            let revs: Vec<api::Revision> = api
-                .send(
-                    api.get(&api.repo_route("/history")?)
-                        .query(&[("path", path)]),
-                )?
-                .json()?;
+        Command::History {
+            path,
+            filter,
+            limit,
+        } => {
+            let (revs, repo_wide) = match path {
+                Some(path) => (path_history(&api, &rp(&path)?)?, false),
+                None => (repo_history(&api, filter.as_deref(), limit)?, true),
+            };
             let rows: Vec<Vec<String>> = revs
                 .into_iter()
                 .map(|r| {
                     let restored = r
                         .restored_from
                         .map_or(String::new(), |n| format!(" (restored from r{n})"));
-                    vec![
+                    let mut row = vec![
                         format!("r{}", r.id),
                         r.author,
                         time::local(r.created_at),
                         format!("{}{restored}", r.message),
-                    ]
+                    ];
+                    if repo_wide {
+                        row.push(r.path);
+                    }
+                    row
                 })
                 .collect();
-            table::show(&["REV", "AUTHOR", "WHEN", "MESSAGE"], &rows, "no history");
+            let header: &[&str] = if repo_wide {
+                &["REV", "AUTHOR", "WHEN", "MESSAGE", "PATH"]
+            } else {
+                &["REV", "AUTHOR", "WHEN", "MESSAGE"]
+            };
+            table::show(header, &rows, "no history");
         }
         Command::Restore {
             path,
@@ -896,6 +914,36 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+fn path_history(api: &Api, path: &str) -> Result<Vec<api::Revision>> {
+    let page: api::HistoryPage = api
+        .send(
+            api.get(&api.repo_route("/history")?)
+                .query(&[("path", path)]),
+        )?
+        .json()?;
+    Ok(page.revisions)
+}
+
+/// Follows the server's cursor until `limit` revisions are collected or history ends.
+fn repo_history(api: &Api, filter: Option<&str>, limit: usize) -> Result<Vec<api::Revision>> {
+    let mut revs: Vec<api::Revision> = Vec::new();
+    let mut before: Option<String> = None;
+    while revs.len() < limit {
+        let mut query = vec![("limit", (limit - revs.len()).min(200).to_string())];
+        query.extend(filter.map(|f| ("filter", f.to_string())));
+        query.extend(before.take().map(|b| ("before", b)));
+        let page: api::HistoryPage = api
+            .send(api.get(&api.repo_route("/history")?).query(&query))?
+            .json()?;
+        revs.extend(page.revisions);
+        before = page.next_cursor;
+        if before.is_none() {
+            break;
+        }
+    }
+    Ok(revs)
+}
+
 fn restore(
     api: &Api,
     path: String,
@@ -903,12 +951,7 @@ fn restore(
     message: Option<String>,
     yes: bool,
 ) -> Result<()> {
-    let revs: Vec<api::Revision> = api
-        .send(
-            api.get(&api.repo_route("/history")?)
-                .query(&[("path", path.as_str())]),
-        )?
-        .json()?;
+    let revs = path_history(api, &path)?;
     let head = revs
         .last()
         .with_context(|| format!("{path} has no revisions"))?;

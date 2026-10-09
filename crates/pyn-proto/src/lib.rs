@@ -274,6 +274,14 @@ pub struct AuditEntry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct HistoryPage {
+    /// With `path`: all of that path's revisions, oldest first. Without: newest first.
+    pub revisions: Vec<Revision>,
+    /// Pass as `before` to fetch the next, older page; absent on the last page and with `path`.
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct AuditPage {
     /// Newest first.
     pub entries: Vec<AuditEntry>,
