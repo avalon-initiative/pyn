@@ -132,8 +132,8 @@ fn administration_listings_have_stable_columns() {
 
     env.ok(&home, "alice", &["member", "set", "bob", "writer"]);
     let members = cell_rows(&env.ok(&home, "alice", &["member", "list"]));
-    assert_eq!(members[0], ["ROLE", "USER"]);
-    assert!(members.iter().any(|r| r == &["writer", "bob"]));
+    assert_eq!(members[0], ["ROLE", "SOURCE", "USER"]);
+    assert!(members.iter().any(|r| r == &["writer", "direct", "bob"]));
 
     let roles = cell_rows(&env.ok(&home, "alice", &["role", "list"]));
     assert_eq!(roles[0], ["ROLE", "PERMISSIONS"]);

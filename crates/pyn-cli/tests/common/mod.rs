@@ -145,6 +145,22 @@ impl Env {
         cmd.output().unwrap()
     }
 
+    /// Runs the CLI authenticated by `token` instead of a development user.
+    pub fn run_with_token(&self, cwd: &Path, token: &str, args: &[&str]) -> Output {
+        Command::new(env!("CARGO_BIN_EXE_pyn"))
+            .args(args)
+            .current_dir(cwd)
+            .env("PYN_SERVER", &self.url)
+            .env("PYN_TOKEN", token)
+            .env("PYN_CONFIG_DIR", self.config.path())
+            .env("TZ", "UTC")
+            .env_remove("PYN_USER")
+            .env_remove("PYN_DIR")
+            .env_remove("PYN_REPO")
+            .output()
+            .unwrap()
+    }
+
     /// The clone source for `owner/name` on this server.
     pub fn source(&self, repo: &str) -> String {
         format!("{}/{repo}", self.url)

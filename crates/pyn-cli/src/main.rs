@@ -80,6 +80,9 @@ enum Command {
     /// Create, inspect and delete organizations, and manage who belongs to them.
     #[command(subcommand)]
     Org(OrgCommand),
+    /// Create and manage an organization's teams, and grant them roles on its repositories.
+    #[command(subcommand)]
+    Team(TeamCommand),
     /// Show what differs between this workspace and the server.
     Status,
     /// Fetch new and newer files; files with local changes are left alone.
@@ -290,6 +293,57 @@ enum OrgMemberCommand {
     },
     /// Remove a member, or leave by naming yourself. Drops their direct roles on the organization's repositories.
     Remove { org: String, user: String },
+}
+
+#[derive(Subcommand)]
+enum TeamCommand {
+    /// Create a team (organization owners only).
+    Create {
+        /// `<org>/<team>`; the team is 1 to 39 lowercase letters, digits, `-` or `_`.
+        team: String,
+        /// Display name; the team name by default.
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        description: Option<String>,
+    },
+    /// List an organization's teams.
+    List { org: String },
+    /// Show a team with its members and the repositories it holds roles in.
+    Show { team: String },
+    /// Delete a team, its memberships and its roles on repositories (owners only).
+    Delete {
+        team: String,
+        /// Skip the typed confirmation.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Add or remove team members.
+    #[command(subcommand)]
+    Member(TeamMemberCommand),
+    /// Give a team a role on one of the organization's repositories.
+    Grant {
+        team: String,
+        /// `owner/name` of a repository the organization owns.
+        repo: String,
+        #[arg(long)]
+        role: String,
+    },
+    /// Take a team's role on a repository away.
+    Revoke { team: String, repo: String },
+    /// List the teams that hold a role in a repository.
+    Access {
+        /// `owner/name`; the current repository if omitted.
+        repo: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum TeamMemberCommand {
+    /// Add an organization member to a team (owners only).
+    Add { team: String, user: String },
+    /// Remove a user from a team (owners only).
+    Remove { team: String, user: String },
 }
 
 #[derive(Subcommand)]
@@ -670,6 +724,7 @@ fn main() -> Result<()> {
         }
         Command::Repo(cmd) => repo_command(&api, cmd)?,
         Command::Org(cmd) => org_command(&api, cmd)?,
+        Command::Team(cmd) => team_command(&api, cmd)?,
         Command::Locks { mine: true } => {
             let locks: Vec<api::MyLock> = api.send(api.get("/v1/me/locks"))?.json()?;
             let rows: Vec<Vec<String>> = locks
@@ -1020,9 +1075,11 @@ fn main() -> Result<()> {
         Command::Member(MemberCommand::List) => {
             let members: Vec<api::Member> =
                 api.send(api.get(&api.repo_route("/members")?))?.json()?;
-            let rows: Vec<Vec<String>> =
-                members.into_iter().map(|m| vec![m.role, m.user]).collect();
-            table::show(&["ROLE", "USER"], &rows, "no members");
+            let rows: Vec<Vec<String>> = members
+                .into_iter()
+                .map(|m| vec![m.role, m.source, m.user])
+                .collect();
+            table::show(&["ROLE", "SOURCE", "USER"], &rows, "no members");
         }
         Command::Member(MemberCommand::Set { user, role }) => {
             let body = api::SetMemberRequest { role: role.clone() };
@@ -1355,6 +1412,133 @@ fn org_command(api: &Api, cmd: OrgCommand) -> Result<()> {
             }
         }
         OrgCommand::Member(cmd) => org_member_command(api, cmd)?,
+    }
+    Ok(())
+}
+
+fn team_command(api: &Api, cmd: TeamCommand) -> Result<()> {
+    match cmd {
+        TeamCommand::Create {
+            team,
+            name,
+            description,
+        } => {
+            let (org, slug) = address::split_team(&team)?;
+            let body = api::CreateTeamRequest {
+                slug: slug.into(),
+                name,
+                description,
+            };
+            let made: api::TeamInfo = api
+                .send(
+                    api.request(Method::POST, &format!("/v1/orgs/{org}/teams"))
+                        .json(&body),
+                )?
+                .json()?;
+            println!("created team {org}/{}", made.slug);
+        }
+        TeamCommand::List { org } => {
+            let teams: Vec<api::TeamInfo> = api
+                .send(api.get(&format!("/v1/orgs/{org}/teams")))?
+                .json()?;
+            let rows: Vec<Vec<String>> = teams
+                .into_iter()
+                .map(|t| {
+                    vec![
+                        t.members.len().to_string(),
+                        t.repos.len().to_string(),
+                        time::local(t.created_at),
+                        t.name,
+                        t.slug,
+                    ]
+                })
+                .collect();
+            table::show(
+                &["MEMBERS", "REPOS", "CREATED", "NAME", "TEAM"],
+                &rows,
+                "no teams",
+            );
+        }
+        TeamCommand::Show { team } => {
+            let (org, slug) = address::split_team(&team)?;
+            let t: api::TeamInfo = api
+                .send(api.get(&format!("/v1/orgs/{org}/teams/{slug}")))?
+                .json()?;
+            println!("team         {org}/{}", t.slug);
+            println!("name         {}", t.name);
+            println!("description  {}", t.description);
+            println!("created      {}", time::local(t.created_at));
+            println!();
+            let rows: Vec<Vec<String>> = t.members.into_iter().map(|m| vec![m]).collect();
+            table::show(&["MEMBER"], &rows, "no members");
+            println!();
+            let rows: Vec<Vec<String>> =
+                t.repos.into_iter().map(|r| vec![r.role, r.repo]).collect();
+            table::show(&["ROLE", "REPOSITORY"], &rows, "no repositories");
+        }
+        TeamCommand::Delete { team, yes } => {
+            let (org, slug) = address::split_team(&team)?;
+            if !yes {
+                eprintln!(
+                    "This removes the team {team}, its memberships and its roles on repositories."
+                );
+                eprint!("Type the team name to confirm: ");
+                let mut answer = String::new();
+                std::io::stdin().read_line(&mut answer)?;
+                if answer.trim() != team {
+                    bail!("not confirmed");
+                }
+            }
+            api.send(api.request(Method::DELETE, &format!("/v1/orgs/{org}/teams/{slug}")))?;
+            println!("deleted team {team}");
+        }
+        TeamCommand::Member(TeamMemberCommand::Add { team, user }) => {
+            let (org, slug) = address::split_team(&team)?;
+            api.send(api.request(
+                Method::PUT,
+                &format!("/v1/orgs/{org}/teams/{slug}/members/{user}"),
+            ))?;
+            println!("added {user} to {team}");
+        }
+        TeamCommand::Member(TeamMemberCommand::Remove { team, user }) => {
+            let (org, slug) = address::split_team(&team)?;
+            api.send(api.request(
+                Method::DELETE,
+                &format!("/v1/orgs/{org}/teams/{slug}/members/{user}"),
+            ))?;
+            println!("removed {user} from {team}");
+        }
+        TeamCommand::Grant { team, repo, role } => {
+            let (_, slug) = address::split_team(&team)?;
+            address::split_repo(&repo)?;
+            let body = api::SetTeamRoleRequest { role: role.clone() };
+            api.send(
+                api.request(Method::PUT, &format!("/v1/repos/{repo}/teams/{slug}"))
+                    .json(&body),
+            )?;
+            println!("{team} is now {role} on {repo}");
+        }
+        TeamCommand::Revoke { team, repo } => {
+            let (_, slug) = address::split_team(&team)?;
+            address::split_repo(&repo)?;
+            api.send(api.request(Method::DELETE, &format!("/v1/repos/{repo}/teams/{slug}")))?;
+            println!("{team} no longer has a role on {repo}");
+        }
+        TeamCommand::Access { repo } => {
+            let route = match repo {
+                Some(r) => {
+                    address::split_repo(&r)?;
+                    format!("/v1/repos/{r}/teams")
+                }
+                None => api.repo_route("/teams")?,
+            };
+            let teams: Vec<api::RepoTeam> = api.send(api.get(&route))?.json()?;
+            let rows: Vec<Vec<String>> = teams
+                .into_iter()
+                .map(|t| vec![t.role, t.name, t.slug])
+                .collect();
+            table::show(&["ROLE", "NAME", "TEAM"], &rows, "no teams");
+        }
     }
     Ok(())
 }

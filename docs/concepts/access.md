@@ -50,6 +50,9 @@ grant or demoting an organization owner applies at once, to tokens as well.
 `org_owner` (on a tie, direct comes first, then team). The teams that hold roles are listed at
 `GET /v1/repos/{owner}/{name}/teams`.
 
+On the command line, `pyn member list` prints these as `ROLE SOURCE USER`, and `pyn team access [<owner>/<repo>]` lists the
+teams. Teams are managed with `pyn team ...` (see [teams](repositories.md#teams)).
+
 ## Accounts and signing in
 
 People have accounts: a unique user name (2 to 39 lowercase letters, digits, `-` or `_`; not one of the
