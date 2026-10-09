@@ -29,7 +29,7 @@ wins:
 1. command-line flags
 2. environment variables (`PYN_*`)
 3. the workspace configuration, `.pyn/local_only/config.toml`
-4. the user configuration, `~/.config/pyn/config.toml`
+4. the user configuration, `~/.config/pyn/config.toml` (`$XDG_CONFIG_HOME/pyn/config.toml` when set)
 5. built-in defaults
 
 `pyn config get` and `pyn config set` read and write settings, with `--local` for the workspace and `--global` for the
@@ -87,8 +87,28 @@ like the rest of `.pyn/`, so a team keeps one list.
 
 ## Settings
 
-`pyn config get|set|list` reads and writes settings. For now there are three: `server`, `user` (the development
+`pyn config get|set|list` reads and writes settings (`pyn config init` runs the first-run prompt). For now there are three: `server`, `user` (the development
 identity) and `repo` (`owner/name`, set by `pyn clone`). `--repo` or `PYN_REPO` beats the workspace's `repo`, so one
 workspace can still reach another repository for a single command. Outside a workspace, repository commands need one of them. `set` writes the workspace's file by default and your user file with `--global`; `get` shows the effective value,
 or one layer with `--local` or `--global`. A `PYN_SERVER` or `--server` always wins, and `PYN_DIR` points at a `.pyn`
 folder kept somewhere else.
+
+## The user configuration file
+
+The user file is `~/.config/pyn/config.toml` (`$XDG_CONFIG_HOME/pyn/config.toml`, or `$PYN_CONFIG_DIR/config.toml`) and
+is read on every run. `PYN_CLI_CONFIG=/path/to/file.toml` makes the CLI read and write that TOML file instead; it is
+separate from the server's `PYN_CONFIG`, which names a policy file. The keys are the settings above (`server`, `user`,
+`repo`). Sign-in tokens never go in it: `pyn login` keeps them in `credentials.toml`, and no prompt asks for a password
+or token.
+
+The first time a command needs the server and none is set by a flag, `PYN_SERVER`, the workspace or a user file, and
+the user file does not exist:
+
+- in a terminal (stdin and stdout both), pyn offers to create the file: it asks for the server URL and the dev
+  identity, shows the recommended or current value in brackets, and a blank answer accepts it;
+- anywhere else (a pipe, CI, a script) the command fails with a message that names the missing `server` setting and the
+  ways to set it, and never waits for input.
+
+`pyn config init` runs the same prompt again at any time (terminal only), with the current values as the defaults.
+`pyn config get|set|list` keep editing single values. When the file exists, a missing `server` falls back to the
+built-in default, `http://127.0.0.1:7878`.
