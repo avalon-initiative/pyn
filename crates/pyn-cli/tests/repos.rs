@@ -2,14 +2,17 @@
 
 mod common;
 
-use common::{start, start_empty};
+use common::{cell_rows, start, start_empty};
 
 #[test]
 fn repositories_are_created_listed_and_deleted() {
     let env = start_empty();
     let home = env.dir("home");
 
-    assert!(env.ok(&home, "alice", &["repo", "list"]).trim().is_empty());
+    assert_eq!(
+        env.ok(&home, "alice", &["repo", "list"]).trim(),
+        "no repositories"
+    );
     let out = env.ok(&home, "alice", &["repo", "create", "game"]);
     assert!(out.contains("created alice/game"), "{out}");
     env.ok(
@@ -29,13 +32,16 @@ fn repositories_are_created_listed_and_deleted() {
 
     let listed = env.ok(&home, "alice", &["repo", "list", "--owner", "alice"]);
     assert_eq!(
-        listed.lines().collect::<Vec<_>>(),
-        ["alice/game\tprivate\tadmin", "alice/tools\tpublic\tadmin"]
+        cell_rows(&listed),
+        [
+            ["VISIBILITY", "ROLE", "REPOSITORY"],
+            ["private", "admin", "alice/game"],
+            ["public", "admin", "alice/tools"]
+        ]
     );
     assert_eq!(
-        env.ok(&home, "bob", &["repo", "list", "--owner", "bob"])
-            .trim(),
-        "bob/notes\tprivate\tadmin"
+        cell_rows(&env.ok(&home, "bob", &["repo", "list", "--owner", "bob"]))[1],
+        ["private", "admin", "bob/notes"]
     );
 
     let taken = env.fails(&home, "alice", &["repo", "create", "game"]);
@@ -56,9 +62,8 @@ fn repositories_are_created_listed_and_deleted() {
     let out = env.ok(&home, "alice", &["repo", "delete", "alice/game", "--yes"]);
     assert!(out.contains("deleted alice/game"), "{out}");
     assert_eq!(
-        env.ok(&home, "alice", &["repo", "list", "--owner", "alice"])
-            .trim(),
-        "alice/tools\tpublic\tadmin"
+        cell_rows(&env.ok(&home, "alice", &["repo", "list", "--owner", "alice"]))[1],
+        ["public", "admin", "alice/tools"]
     );
 }
 
@@ -178,20 +183,46 @@ fn ls_and_summary_show_the_landing_page_data() {
     env.ok(&home, "alice", &["checkout", "Content/m.umap"]);
 
     let root = env.ok(&home, "alice", &["ls"]);
-    assert!(root.contains("Source/\tShared\tseed (alice, r1)"), "{root}");
-    assert!(root.contains("Content/\tExclusive"), "{root}");
-    let content = env.ok(&home, "alice", &["ls", "Content"]);
+    let rows = cell_rows(&root);
+    assert_eq!(
+        rows[0],
+        ["MODE", "LOCKED BY", "NAME", "LAST CHANGE"],
+        "{root}"
+    );
     assert!(
-        content.contains("m.umap\tExclusive\t\tlocked by alice"),
-        "{content}"
+        rows.iter()
+            .any(|r| r == &["shared", "-", "Source/", "seed (alice, r1)"]),
+        "{root}"
+    );
+    assert!(
+        rows.iter()
+            .any(|r| r[..3] == ["exclusive", "-", "Content/"]),
+        "{root}"
+    );
+    let content = cell_rows(&env.ok(&home, "alice", &["ls", "Content"]));
+    assert!(
+        content
+            .iter()
+            .any(|r| r[..3] == ["exclusive", "alice", "m.umap"]),
+        "{content:?}"
     );
     let missing = env.fails(&home, "alice", &["ls", "Nope"]);
     assert!(missing.contains("path_not_found"), "{missing}");
 
     let summary = env.ok(&home, "alice", &["summary"]);
     assert!(summary.contains("main (1 branch), 1 files"), "{summary}");
+    let rows = cell_rows(&summary);
     assert!(
-        summary.contains("locked\tContent/m.umap\talice"),
+        rows.iter().any(|r| r == &["LOCKED BY", "PATH"]),
+        "{summary}"
+    );
+    assert!(
+        rows.iter().any(|r| r == &["alice", "Content/m.umap"]),
+        "{summary}"
+    );
+    assert!(
+        rows.iter()
+            .any(|r| r == &["WHEN", "ACTOR", "ACTION", "PATH"]),
         "{summary}"
     );
     assert!(summary.contains("checkout"), "{summary}");

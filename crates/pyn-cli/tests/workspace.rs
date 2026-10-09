@@ -86,7 +86,7 @@ fn a_workspace_tracks_what_you_cloned_and_handles_locks_and_checkins() {
             .contains("everything is up to date")
     );
     let history = env.ok(&ws, "alice", &["history", "Content/m.umap"]);
-    assert_eq!(history.lines().count(), 2, "{history}");
+    assert_eq!(history.lines().count(), 3, "{history}");
 
     env.ok(&content, "alice", &["checkout", "m.umap"]);
     env.ok(&content, "alice", &["release", "m.umap"]);

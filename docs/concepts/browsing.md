@@ -42,4 +42,4 @@ Watchers, forks and tags do not exist on the server and are not reported.
 
 ## Command line
 
-`pyn ls [path]` prints the listing and `pyn summary` the summary.
+`pyn ls [path]` prints the listing and `pyn summary` the summary, as tables in the format described in [workspace](workspace.md#listing-output).
