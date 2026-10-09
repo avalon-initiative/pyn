@@ -9,8 +9,8 @@ use sha2::{Digest, Sha256};
 
 use crate::access::{
     AccountKind, AccountRecord, AccountStatus, InviteId, InviteRecord, NewAccount, OrgRole,
-    Permission, Role, RoleDefinitions, SessionRecord, SignupStage, SshKeyRecord, TokenId,
-    TokenRecord, VerificationRecord,
+    Permission, Role, RoleDefinitions, SessionRecord, SignupStage, SshKeyRecord, TeamRecord,
+    TokenId, TokenRecord, VerificationRecord,
 };
 use crate::access_service::{AccessStore, OrgMemberChange};
 use crate::audit::{AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent};
@@ -396,6 +396,9 @@ struct AccessState {
     ssh_keys: Vec<SshKeyRecord>,
     roles: HashMap<(RepoId, UserId), Role>,
     org_roles: HashMap<(UserId, UserId), OrgRole>,
+    teams: BTreeMap<(UserId, String), TeamRecord>,
+    team_members: BTreeSet<(UserId, String, UserId)>,
+    team_roles: BTreeMap<(RepoId, UserId, String), Role>,
     definitions: HashMap<RepoId, RoleDefinitions>,
     tokens: HashMap<TokenId, TokenRecord>,
     sessions: HashMap<String, SessionRecord>,
@@ -493,6 +496,7 @@ impl AccessStore for MemoryAccessStore {
     async fn delete_repo_access(&self, repo: &RepoId) -> Result<()> {
         let mut st = self.state.lock().unwrap();
         st.roles.retain(|(r, _), _| r != repo);
+        st.team_roles.retain(|(r, _, _), _| r != repo);
         st.definitions.remove(repo);
         st.invites.retain(|_, i| &i.repo != repo);
         Ok(())
@@ -580,6 +584,9 @@ impl AccessStore for MemoryAccessStore {
         }
         st.accounts.remove(org);
         st.org_roles.retain(|(o, _), _| o != org);
+        st.teams.retain(|(o, _), _| o != org);
+        st.team_members.retain(|(o, _, _)| o != org);
+        st.team_roles.retain(|(_, o, _), _| o != org);
         Ok(true)
     }
 
@@ -638,10 +645,181 @@ impl AccessStore for MemoryAccessStore {
             return Ok(OrgMemberChange::LastOwner);
         }
         st.org_roles.remove(&key);
+        st.team_members.retain(|(o, _, u)| !(o == org && u == user));
         for repo in repos {
             st.roles.remove(&(repo.clone(), user.clone()));
         }
         Ok(OrgMemberChange::Done(old))
+    }
+
+    async fn create_team(&self, team: TeamRecord) -> Result<bool> {
+        let mut st = self.state.lock().unwrap();
+        let key = (team.org.clone(), team.slug.clone());
+        if st.teams.contains_key(&key) {
+            return Ok(false);
+        }
+        st.teams.insert(key, team);
+        Ok(true)
+    }
+
+    async fn team(&self, org: &UserId, slug: &str) -> Result<Option<TeamRecord>> {
+        let st = self.state.lock().unwrap();
+        Ok(st.teams.get(&(org.clone(), slug.to_string())).cloned())
+    }
+
+    async fn teams(&self, org: &UserId) -> Result<Vec<TeamRecord>> {
+        let st = self.state.lock().unwrap();
+        Ok(st
+            .teams
+            .values()
+            .filter(|t| &t.org == org)
+            .cloned()
+            .collect())
+    }
+
+    async fn update_team(&self, team: &TeamRecord) -> Result<bool> {
+        let mut st = self.state.lock().unwrap();
+        match st.teams.get_mut(&(team.org.clone(), team.slug.clone())) {
+            Some(existing) => {
+                existing.name = team.name.clone();
+                existing.description = team.description.clone();
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    async fn delete_team(&self, org: &UserId, slug: &str) -> Result<bool> {
+        let mut st = self.state.lock().unwrap();
+        if st.teams.remove(&(org.clone(), slug.to_string())).is_none() {
+            return Ok(false);
+        }
+        st.team_members.retain(|(o, t, _)| !(o == org && t == slug));
+        st.team_roles
+            .retain(|(_, o, t), _| !(o == org && t == slug));
+        Ok(true)
+    }
+
+    async fn team_members(&self, org: &UserId, slug: &str) -> Result<Vec<UserId>> {
+        let st = self.state.lock().unwrap();
+        Ok(st
+            .team_members
+            .iter()
+            .filter(|(o, t, _)| o == org && t == slug)
+            .map(|(_, _, u)| u.clone())
+            .collect())
+    }
+
+    async fn add_team_member(&self, org: &UserId, slug: &str, user: &UserId) -> Result<bool> {
+        let mut st = self.state.lock().unwrap();
+        if !st.teams.contains_key(&(org.clone(), slug.to_string()))
+            || !st.org_roles.contains_key(&(org.clone(), user.clone()))
+        {
+            return Err(PynError::Storage(format!(
+                "{user} cannot join team {slug} of {org}"
+            )));
+        }
+        Ok(st
+            .team_members
+            .insert((org.clone(), slug.to_string(), user.clone())))
+    }
+
+    async fn remove_team_member(&self, org: &UserId, slug: &str, user: &UserId) -> Result<bool> {
+        let mut st = self.state.lock().unwrap();
+        Ok(st
+            .team_members
+            .remove(&(org.clone(), slug.to_string(), user.clone())))
+    }
+
+    async fn teams_of(&self, org: &UserId, user: &UserId) -> Result<Vec<String>> {
+        let st = self.state.lock().unwrap();
+        Ok(st
+            .team_members
+            .iter()
+            .filter(|(o, _, u)| o == org && u == user)
+            .map(|(_, t, _)| t.clone())
+            .collect())
+    }
+
+    async fn set_team_role(
+        &self,
+        repo: &RepoId,
+        org: &UserId,
+        slug: &str,
+        role: Role,
+    ) -> Result<Option<Role>> {
+        let mut st = self.state.lock().unwrap();
+        if !st.teams.contains_key(&(org.clone(), slug.to_string())) {
+            return Err(PynError::Storage(format!("no team {slug} in {org}")));
+        }
+        Ok(st
+            .team_roles
+            .insert((repo.clone(), org.clone(), slug.to_string()), role))
+    }
+
+    async fn remove_team_role(
+        &self,
+        repo: &RepoId,
+        org: &UserId,
+        slug: &str,
+    ) -> Result<Option<Role>> {
+        let mut st = self.state.lock().unwrap();
+        Ok(st
+            .team_roles
+            .remove(&(repo.clone(), org.clone(), slug.to_string())))
+    }
+
+    async fn team_grants(&self, repo: &RepoId) -> Result<Vec<(String, Role)>> {
+        let st = self.state.lock().unwrap();
+        let mut out: Vec<_> = st
+            .team_roles
+            .iter()
+            .filter(|((r, _, _), _)| r == repo)
+            .map(|((_, _, t), role)| (t.clone(), *role))
+            .collect();
+        out.sort();
+        Ok(out)
+    }
+
+    async fn team_repos(&self, org: &UserId, slug: &str) -> Result<Vec<(RepoId, Role)>> {
+        let st = self.state.lock().unwrap();
+        Ok(st
+            .team_roles
+            .iter()
+            .filter(|((_, o, t), _)| o == org && t == slug)
+            .map(|((r, _, _), role)| (r.clone(), *role))
+            .collect())
+    }
+
+    async fn team_role_of(&self, repo: &RepoId, user: &UserId) -> Result<Option<Role>> {
+        let st = self.state.lock().unwrap();
+        Ok(st
+            .team_roles
+            .iter()
+            .filter(|((r, o, t), _)| {
+                r == repo
+                    && st
+                        .team_members
+                        .contains(&(o.clone(), t.clone(), user.clone()))
+            })
+            .map(|(_, role)| *role)
+            .max())
+    }
+
+    async fn team_repos_of(&self, user: &UserId) -> Result<Vec<RepoId>> {
+        let st = self.state.lock().unwrap();
+        let mut out: Vec<_> = st
+            .team_roles
+            .keys()
+            .filter(|(_, o, t)| {
+                st.team_members
+                    .contains(&(o.clone(), t.clone(), user.clone()))
+            })
+            .map(|(r, _, _)| r.clone())
+            .collect();
+        out.sort();
+        out.dedup();
+        Ok(out)
     }
 
     async fn create_account(&self, new: NewAccount) -> Result<bool> {

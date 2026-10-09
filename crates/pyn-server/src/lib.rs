@@ -26,6 +26,7 @@ mod org_api;
 pub mod passwords;
 mod repo_api;
 mod session_api;
+mod team_api;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -87,6 +88,16 @@ struct RepoAddress {
         org_api::add_member,
         org_api::set_member_role,
         org_api::remove_member,
+        team_api::list_teams,
+        team_api::create_team,
+        team_api::get_team,
+        team_api::update_team,
+        team_api::delete_team,
+        team_api::add_team_member,
+        team_api::remove_team_member,
+        team_api::list_repo_teams,
+        team_api::set_repo_team,
+        team_api::remove_repo_team,
         repo_api::list_repos,
         repo_api::create_repo,
         repo_api::get_repo,
@@ -168,7 +179,13 @@ struct RepoAddress {
         api::RoleGrant,
         api::SetRoleRequest,
         api::Member,
-        api::SetMemberRequest
+        api::SetMemberRequest,
+        api::TeamInfo,
+        api::TeamRepo,
+        api::CreateTeamRequest,
+        api::UpdateTeamRequest,
+        api::RepoTeam,
+        api::SetTeamRoleRequest
     ))
 )]
 pub struct ApiDoc;
@@ -229,6 +246,20 @@ pub fn router(state: AppState) -> Router {
             "/v1/orgs/{org}/members/{user}",
             axum::routing::patch(org_api::set_member_role).delete(org_api::remove_member),
         )
+        .route(
+            "/v1/orgs/{org}/teams",
+            get(team_api::list_teams).post(team_api::create_team),
+        )
+        .route(
+            "/v1/orgs/{org}/teams/{team}",
+            get(team_api::get_team)
+                .patch(team_api::update_team)
+                .delete(team_api::delete_team),
+        )
+        .route(
+            "/v1/orgs/{org}/teams/{team}/members/{user}",
+            put(team_api::add_team_member).delete(team_api::remove_team_member),
+        )
         .route("/v1/me/orgs", get(org_api::my_orgs))
         .route(
             "/v1/repos",
@@ -262,6 +293,14 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/v1/repos/{owner}/{name}/members/{user}",
             put(repo_api::set_member),
+        )
+        .route(
+            "/v1/repos/{owner}/{name}/teams",
+            get(team_api::list_repo_teams),
+        )
+        .route(
+            "/v1/repos/{owner}/{name}/teams/{team}",
+            put(team_api::set_repo_team).delete(team_api::remove_repo_team),
         )
         .route("/v1/repos/{owner}/{name}/locks", get(list_locks))
         .route("/v1/repos/{owner}/{name}/files", get(list_files))
@@ -304,6 +343,7 @@ impl IntoResponse for ApiError {
             | PynError::OrgNotEmpty(_)
             | PynError::UserNotOrgMember { .. }
             | PynError::AlreadyOrgMember { .. }
+            | PynError::TeamExists { .. }
             | PynError::LastOrgOwner(_)
             | PynError::KeyInUse
             | PynError::ConfirmationRequired { .. } => StatusCode::CONFLICT,
@@ -324,6 +364,8 @@ impl IntoResponse for ApiError {
             | PynError::RepoNotFound(_)
             | PynError::OrgNotFound(_)
             | PynError::OrgMemberNotFound { .. }
+            | PynError::TeamNotFound { .. }
+            | PynError::TeamMemberNotFound { .. }
             | PynError::PathNotFound(_) => StatusCode::NOT_FOUND,
             PynError::RevisionNotFound { .. } => StatusCode::NOT_FOUND,
             PynError::InvalidPath(_)
@@ -333,6 +375,7 @@ impl IntoResponse for ApiError {
             | PynError::InvalidVerification(_)
             | PynError::InvalidRepoName(_)
             | PynError::ReservedName(_)
+            | PynError::NotOrgRepo(_)
             | PynError::NotExclusive(_)
             | PynError::ObjectMissing(_) => StatusCode::BAD_REQUEST,
             PynError::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -849,7 +892,7 @@ struct AuditQueryParams {
 #[utoipa::path(get, path = "/v1/repos/{owner}/{name}/audit",
     params(RepoAddress, ("path" = Option<String>, Query, description = "only events for this path"),
            ("actor" = Option<String>, Query, description = "only events by this user"),
-           ("action" = Option<String>, Query, description = "checkout, release, checkin, restore, force_unlock, member_added, role_changed, role_permissions_changed, token_created, token_revoked, repo_created, repo_updated, repo_deleted or policy_changed"),
+           ("action" = Option<String>, Query, description = "checkout, release, checkin, restore, force_unlock, member_added, role_changed, role_permissions_changed, team_access_set, team_access_removed, token_created, token_revoked, repo_created, repo_updated, repo_deleted or policy_changed"),
            ("before" = Option<i64>, Query, description = "events older than this id"),
            ("limit" = Option<usize>, Query, description = "page size, default 50, max 500")),
     responses((status = 200, body = api::AuditPage), (status = 403, body = api::ErrorBody, description = "needs view_audit")))]

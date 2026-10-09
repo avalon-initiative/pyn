@@ -7,7 +7,8 @@ use pyn_core::memory::{
 use pyn_core::{
     AccessConfig, AccessService, AccessStore, AuditAction, AuditEvent, AuditQuery, AuditScope,
     AuditStore, Credential, Identity, ManualClock, OrgCreation, OrgRole, Permission, PynError,
-    Registration, RegistrationMode, Repositories, Role, Rules, TokenRecord, UserId, Visibility,
+    Registration, RegistrationMode, RepoMember, Repositories, Role, RoleSource, Rules, TokenRecord,
+    UserId, Visibility,
 };
 
 const PASSWORD: &str = "correct horse battery";
@@ -271,16 +272,22 @@ async fn only_owners_create_repositories_in_the_organization() {
         .unwrap();
     assert_eq!(rec.address(), "acme/game");
     assert_eq!(rec.visibility, Visibility::Private);
-    assert!(
-        w.access
-            .members(
-                &w.access.principal(&rec.id, &user("alice")).await.unwrap(),
-                &rec.id
-            )
-            .await
-            .unwrap()
-            .is_empty(),
-        "owners need no grant"
+    let listed = w
+        .access
+        .members(
+            &w.access.principal(&rec.id, &user("alice")).await.unwrap(),
+            &rec.id,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        listed,
+        [RepoMember {
+            user: user("alice"),
+            role: Role::Admin,
+            source: RoleSource::OrgOwner
+        }],
+        "owners need no grant, and are listed as owners"
     );
     let log = events(&w, AuditScope::Repo(rec.id.clone())).await;
     assert_eq!(

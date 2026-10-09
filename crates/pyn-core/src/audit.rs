@@ -34,10 +34,17 @@ pub enum AuditAction {
     OrgMemberAdded,
     OrgMemberRemoved,
     OrgMemberRoleChanged,
+    TeamCreated,
+    TeamUpdated,
+    TeamDeleted,
+    TeamMemberAdded,
+    TeamMemberRemoved,
+    TeamAccessSet,
+    TeamAccessRemoved,
 }
 
 impl AuditAction {
-    pub const ALL: [AuditAction; 22] = [
+    pub const ALL: [AuditAction; 29] = [
         AuditAction::Checkout,
         AuditAction::Release,
         AuditAction::Checkin,
@@ -60,6 +67,13 @@ impl AuditAction {
         AuditAction::OrgMemberAdded,
         AuditAction::OrgMemberRemoved,
         AuditAction::OrgMemberRoleChanged,
+        AuditAction::TeamCreated,
+        AuditAction::TeamUpdated,
+        AuditAction::TeamDeleted,
+        AuditAction::TeamMemberAdded,
+        AuditAction::TeamMemberRemoved,
+        AuditAction::TeamAccessSet,
+        AuditAction::TeamAccessRemoved,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -86,6 +100,13 @@ impl AuditAction {
             Self::OrgMemberAdded => "org_member_added",
             Self::OrgMemberRemoved => "org_member_removed",
             Self::OrgMemberRoleChanged => "org_member_role_changed",
+            Self::TeamCreated => "team_created",
+            Self::TeamUpdated => "team_updated",
+            Self::TeamDeleted => "team_deleted",
+            Self::TeamMemberAdded => "team_member_added",
+            Self::TeamMemberRemoved => "team_member_removed",
+            Self::TeamAccessSet => "team_access_set",
+            Self::TeamAccessRemoved => "team_access_removed",
         }
     }
 }

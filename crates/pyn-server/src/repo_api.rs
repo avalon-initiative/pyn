@@ -259,7 +259,7 @@ pub(crate) async fn set_role(
 }
 
 #[utoipa::path(get, path = "/v1/repos/{owner}/{name}/members", params(RepoAddress),
-    responses((status = 200, body = Vec<api::Member>)))]
+    responses((status = 200, body = Vec<api::Member>, description = "everyone with access, one row each: the effective role and its source (direct, team or org_owner); needs manage_users")))]
 pub(crate) async fn list_members(
     State(s): State<AppState>,
     headers: HeaderMap,
@@ -270,9 +270,10 @@ pub(crate) async fn list_members(
     Ok(Json(
         members
             .into_iter()
-            .map(|(u, r)| api::Member {
-                user: u.to_string(),
-                role: r.to_string(),
+            .map(|m| api::Member {
+                user: m.user.to_string(),
+                role: m.role.to_string(),
+                source: m.source.to_string(),
             })
             .collect(),
     ))

@@ -176,7 +176,7 @@ impl AccessService {
         Ok(())
     }
 
-    /// Removes a member and their direct grants on the organization's repositories. A member may remove
+    /// Removes a member, their team memberships and their direct grants on the organization's repositories. A member may remove
     /// themselves; otherwise owners only. The last owner cannot leave.
     pub async fn remove_org_member(
         &self,
@@ -197,6 +197,7 @@ impl AccessService {
                 }
             }
         }
+        let teams = self.store.teams_of(org, user).await?;
         let ids: Vec<_> = granted.iter().map(|r| r.id.clone()).collect();
         let change = self.store.remove_org_member(org, user, &ids).await?;
         self.member_change(org, user, change)?;
@@ -208,6 +209,9 @@ impl AccessService {
         if !granted.is_empty() {
             let repos = join(granted.iter().map(|r| r.address()));
             detail.push_str(&format!("; direct access dropped in {repos}"));
+        }
+        if !teams.is_empty() {
+            detail.push_str(&format!("; removed from teams {}", join(teams.iter())));
         }
         self.record(
             AuditScope::Org(org.clone()),

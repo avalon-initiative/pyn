@@ -47,16 +47,17 @@ people act on its behalf, and a request that names an organization as the signed
   (`GET /v1/orgs/{org}/members`); owners change a role (`PATCH /v1/orgs/{org}/members/{user}`) or remove a member
   (`DELETE /v1/orgs/{org}/members/{user}`), and any member can remove themselves (leave). Changing members needs, for a
   token, `manage_roles` and no repository limit. The member role does not by itself give access to any repository: access
-  comes from a direct grant or (later) a team. An organization **always keeps an owner**: demoting or removing the last one
+  comes from a direct grant or a [team](#teams). An organization **always keeps an owner**: demoting or removing the last one
   is `409 last_org_owner`.
 - **Direct grants.** A direct role on an organization's repository goes only to a member of the organization, whether it is
   given by setting a member's role or by adding a user (`409 user_not_org_member`). A repository invitation cannot be
   made for an organization's repository (`400 invalid_invite`), and an older one is refused at sign-up for the same reason.
   Removing a member, or the member leaving, **deletes their direct roles on every repository the organization owns**;
-  roles in other repositories are untouched. (Team memberships go the same way once teams exist.)
+  roles in other repositories are untouched. Team memberships go the same way, which ends the access they gave.
 - **Audit.** Organization events (`org_created`, `org_deleted`, `org_member_added`, `org_member_removed`,
-  `org_member_role_changed`) go to a separate organization log, readable by its owners at `GET /v1/orgs/{org}/audit`. They
-  are not in any repository's log or the server log. A removal records which repositories lost the member's direct access.
+  `org_member_role_changed`, and the team events below) go to a separate organization log, readable by its owners at
+  `GET /v1/orgs/{org}/audit`. They are not in the server log. A removal records which repositories lost the member's
+  direct access and which teams they left. Team grants and revocations are also recorded in the target repository's log.
 
 On the command line: `pyn org create <name>`, `pyn org list` (role, created, organization), `pyn org show <name>` (details,
 and the members if you belong to it), `pyn org delete <name> [--yes]` (asks you to type the name), `pyn org audit <name>
@@ -65,8 +66,33 @@ and the members if you belong to it), `pyn org delete <name> [--yes]` (asks you 
 are separate from `pyn member`, which sets roles inside the current repository. `pyn repo create <org>/<name>` creates a
 repository the organization owns, and `pyn repo list [--owner <org>]` shows each repository as `owner/name`.
 
-Teams and organization-level role grants are later steps: until then an organization member reaches a repository only
-through a direct grant.
+### Teams
+
+A **team** is a flat group of an organization's members (teams do not nest) with a `slug` (1 to 39 lowercase letters,
+digits, `-` or `_`; unique in the organization), a `name` (defaults to the slug) and a `description`. A team holds **one
+role per repository** the organization owns, from the same four roles as people, and every member gets it. Only
+organization members can be in a team, and a team can be granted only on a repository its organization owns (a repository
+a user owns has no teams: `400 not_org_repo`).
+
+| Route | Notes |
+| --- | --- |
+| `GET /v1/orgs/{org}/teams` | any organization member; teams ordered by slug, each `{slug, name, description, created_at, members, repos}` |
+| `POST /v1/orgs/{org}/teams` | owners; `{slug, name?, description?}` gives `201` with the team; `409 team_exists` |
+| `GET /v1/orgs/{org}/teams/{team}` | any organization member; `404 team_not_found` |
+| `PATCH /v1/orgs/{org}/teams/{team}` | owners; `{name?, description?}` |
+| `DELETE /v1/orgs/{org}/teams/{team}` | owners; removes its members and its roles on repositories |
+| `PUT /v1/orgs/{org}/teams/{team}/members/{user}` | owners; `204`, also when already in; `409 user_not_org_member` |
+| `DELETE /v1/orgs/{org}/teams/{team}/members/{user}` | owners; `404 team_member_not_found` |
+| `GET /v1/repos/{owner}/{name}/teams` | needs `manage_users`; `[{slug, name, description, role}]` |
+| `PUT /v1/repos/{owner}/{name}/teams/{team}` | needs `manage_users`; `{role}` sets or changes the team's role; `204` |
+| `DELETE /v1/repos/{owner}/{name}/teams/{team}` | needs `manage_users`; `204`, also when the team holds no role |
+
+Managing teams and their members needs, for a token, `manage_roles` and no repository limit, as for organization members.
+Granting a team a role follows the rule for people: the actor needs `manage_users` and every permission the role grants
+(`403 forbidden` otherwise), and removing a grant needs the permissions of the role being removed. The team events are
+`team_created`, `team_updated`, `team_deleted`, `team_member_added`, `team_member_removed` (organization log) and
+`team_access_set`, `team_access_removed` (organization log and the repository's log). Deleting a team records
+`team_access_removed` in each repository it held a role in.
 
 | Where | Form |
 | --- | --- |

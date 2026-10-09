@@ -6,13 +6,13 @@ use chrono::{Duration, TimeZone, Utc};
 
 use crate::access::{
     AccountKind, AccountStatus, InviteId, InviteRecord, NewAccount, OrgRole, Permission, Principal,
-    Role, RoleDefinitions, SessionRecord, SignupStage, SshKeyRecord, TokenId, TokenRecord,
-    VerificationRecord,
+    Role, RoleDefinitions, RoleSource, SessionRecord, SignupStage, SshKeyRecord, TeamRecord,
+    TokenId, TokenRecord, VerificationRecord,
 };
 use crate::clock::Clock;
-use crate::memory::{MemoryAuditStore, MemoryObjectStore};
+use crate::memory::{MemoryAuditStore, MemoryMetadataStore, MemoryObjectStore};
 use crate::ratelimit::RateLimitStore;
-use crate::{AccessStore, OrgMemberChange};
+use crate::{AccessService, AccessStore, Credential, Identity, OrgMemberChange, RepoMember};
 use crate::{
     AuditAction, AuditQuery, AuditScope, AuditStore, ContentHash, ManualClock, MetadataStore,
     ObjectStore, PynError, RepoId, RepoPath, RepoRecord, RepoService, RepoSettings, RepoUpdate,
@@ -1902,6 +1902,536 @@ pub async fn removing_an_organization_member_drops_their_roles_in_the_given_repo
     );
 }
 
+fn team(org: &str, slug: &str) -> TeamRecord {
+    TeamRecord {
+        org: user(org),
+        slug: slug.to_string(),
+        name: format!("Team {slug}"),
+        description: String::new(),
+        created_at: at(0),
+    }
+}
+
+async fn org_with_members(store: &Access, org: &str, owner: &str, members: &[&str]) {
+    store.create_user(&user(owner), at(0)).await.unwrap();
+    store
+        .create_org(&user(org), &user(owner), at(1))
+        .await
+        .unwrap();
+    for m in members {
+        store.create_user(&user(m), at(0)).await.unwrap();
+        store
+            .add_org_member(&user(org), &user(m), OrgRole::Member)
+            .await
+            .unwrap();
+    }
+}
+
+pub async fn teams_hold_members_and_repository_roles_until_removed(store: Access) {
+    let acme = user("acme");
+    org_with_members(&store, "acme", "alice", &["bob", "carol"]).await;
+    let (game, tools) = (RepoId::new("acme/game"), RepoId::new("acme/tools"));
+
+    assert!(store.create_team(team("acme", "art")).await.unwrap());
+    assert!(
+        !store.create_team(team("acme", "art")).await.unwrap(),
+        "a slug is unique in its organization"
+    );
+    assert!(store.create_team(team("acme", "eng")).await.unwrap());
+    store
+        .create_org(&user("other"), &user("alice"), at(1))
+        .await
+        .unwrap();
+    assert!(
+        store.create_team(team("other", "art")).await.unwrap(),
+        "other organizations may reuse a slug"
+    );
+    let listed = store.teams(&acme).await.unwrap();
+    assert_eq!(
+        listed.iter().map(|t| t.slug.as_str()).collect::<Vec<_>>(),
+        ["art", "eng"]
+    );
+    let mut renamed = team("acme", "art");
+    renamed.name = "Artists".into();
+    renamed.description = "pixels".into();
+    assert!(store.update_team(&renamed).await.unwrap());
+    assert_eq!(store.team(&acme, "art").await.unwrap(), Some(renamed));
+    assert!(!store.update_team(&team("acme", "none")).await.unwrap());
+    assert_eq!(store.team(&acme, "none").await.unwrap(), None);
+
+    assert!(
+        store
+            .add_team_member(&acme, "art", &user("bob"))
+            .await
+            .unwrap()
+    );
+    assert!(
+        !store
+            .add_team_member(&acme, "art", &user("bob"))
+            .await
+            .unwrap(),
+        "adding twice reports no change"
+    );
+    store
+        .add_team_member(&acme, "art", &user("carol"))
+        .await
+        .unwrap();
+    store
+        .add_team_member(&acme, "eng", &user("bob"))
+        .await
+        .unwrap();
+    assert!(
+        store
+            .add_team_member(&acme, "art", &user("stranger"))
+            .await
+            .is_err(),
+        "only organization members join teams"
+    );
+    assert_eq!(
+        store.team_members(&acme, "art").await.unwrap(),
+        [user("bob"), user("carol")]
+    );
+    assert_eq!(
+        store.teams_of(&acme, &user("bob")).await.unwrap(),
+        ["art", "eng"]
+    );
+
+    assert_eq!(
+        store
+            .set_team_role(&game, &acme, "art", Role::Reader)
+            .await
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        store
+            .set_team_role(&game, &acme, "art", Role::Writer)
+            .await
+            .unwrap(),
+        Some(Role::Reader)
+    );
+    store
+        .set_team_role(&game, &acme, "eng", Role::Maintainer)
+        .await
+        .unwrap();
+    store
+        .set_team_role(&tools, &acme, "art", Role::Reader)
+        .await
+        .unwrap();
+    assert_eq!(
+        store.team_grants(&game).await.unwrap(),
+        [
+            ("art".to_string(), Role::Writer),
+            ("eng".to_string(), Role::Maintainer)
+        ]
+    );
+    assert_eq!(
+        store.team_repos(&acme, "art").await.unwrap(),
+        [(game.clone(), Role::Writer), (tools.clone(), Role::Reader)]
+    );
+    assert_eq!(
+        store.team_role_of(&game, &user("bob")).await.unwrap(),
+        Some(Role::Maintainer),
+        "the highest of several teams"
+    );
+    assert_eq!(
+        store.team_role_of(&game, &user("carol")).await.unwrap(),
+        Some(Role::Writer)
+    );
+    assert_eq!(
+        store.team_role_of(&game, &user("alice")).await.unwrap(),
+        None
+    );
+    assert_eq!(
+        store.team_repos_of(&user("bob")).await.unwrap(),
+        [game.clone(), tools.clone()]
+    );
+    assert!(
+        store
+            .team_repos_of(&user("alice"))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        store.repos_of(&user("carol")).await.unwrap().is_empty(),
+        "direct roles are listed apart from team roles"
+    );
+
+    assert!(
+        store
+            .remove_team_member(&acme, "eng", &user("bob"))
+            .await
+            .unwrap()
+    );
+    assert!(
+        !store
+            .remove_team_member(&acme, "eng", &user("bob"))
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        store.team_role_of(&game, &user("bob")).await.unwrap(),
+        Some(Role::Writer)
+    );
+    assert_eq!(
+        store.remove_team_role(&game, &acme, "eng").await.unwrap(),
+        Some(Role::Maintainer)
+    );
+    assert_eq!(
+        store.remove_team_role(&game, &acme, "eng").await.unwrap(),
+        None
+    );
+
+    store
+        .remove_org_member(&acme, &user("carol"), std::slice::from_ref(&game))
+        .await
+        .unwrap();
+    assert_eq!(
+        store.team_members(&acme, "art").await.unwrap(),
+        [user("bob")]
+    );
+    assert_eq!(
+        store.team_role_of(&game, &user("carol")).await.unwrap(),
+        None
+    );
+    assert!(
+        store
+            .team_repos_of(&user("carol"))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    assert!(store.delete_team(&acme, "art").await.unwrap());
+    assert!(!store.delete_team(&acme, "art").await.unwrap());
+    assert!(store.team_grants(&game).await.unwrap().is_empty());
+    assert!(store.team_members(&acme, "art").await.unwrap().is_empty());
+    assert_eq!(store.team_role_of(&game, &user("bob")).await.unwrap(), None);
+    assert!(
+        store.team(&user("other"), "art").await.unwrap().is_some(),
+        "another organization's team stays"
+    );
+
+    store.create_team(team("acme", "ops")).await.unwrap();
+    store
+        .add_team_member(&acme, "ops", &user("bob"))
+        .await
+        .unwrap();
+    store
+        .set_team_role(&game, &acme, "ops", Role::Admin)
+        .await
+        .unwrap();
+    store.delete_repo_access(&game).await.unwrap();
+    assert!(store.team_grants(&game).await.unwrap().is_empty());
+    assert!(store.team_repos_of(&user("bob")).await.unwrap().is_empty());
+    assert_eq!(
+        store.team_members(&acme, "ops").await.unwrap(),
+        [user("bob")],
+        "forgetting a repository keeps its teams"
+    );
+
+    store
+        .set_team_role(&game, &acme, "ops", Role::Reader)
+        .await
+        .unwrap();
+    assert!(store.delete_org(&acme).await.unwrap());
+    assert!(store.teams(&acme).await.unwrap().is_empty());
+    assert!(store.team_grants(&game).await.unwrap().is_empty());
+}
+
+fn session(name: &str) -> Identity {
+    Identity {
+        user: user(name),
+        credential: Credential::Session,
+    }
+}
+
+fn token_identity(name: &str, permissions: &[Permission]) -> Identity {
+    Identity {
+        user: user(name),
+        credential: Credential::Token(TokenRecord {
+            permissions: permissions.iter().copied().collect(),
+            repos: Vec::new(),
+            ..token("tk", name, 0)
+        }),
+    }
+}
+
+pub async fn effective_roles_resolve_across_direct_team_and_owner_grants(store: Access) {
+    let meta = Arc::new(MemoryMetadataStore::new());
+    let clock = Arc::new(ManualClock::new(at(0)));
+    let access = AccessService::new(store.clone(), clock).with_registry(meta.clone());
+    let (acme, alice) = (user("acme"), session("alice"));
+    access.create_org(&alice, "acme").await.unwrap();
+    for name in ["bob", "carol", "dave", "erin"] {
+        store.create_user(&user(name), at(0)).await.unwrap();
+    }
+    for name in ["bob", "carol", "dave"] {
+        access
+            .add_org_member(&alice, &acme, &user(name), OrgRole::Member)
+            .await
+            .unwrap();
+    }
+    let (game, tools) = (RepoId::new("acme/game"), RepoId::new("acme/tools"));
+    for (id, name) in [(&game, "game"), (&tools, "tools")] {
+        meta.create_repo(repo_record(id.as_str(), "acme", name))
+            .await
+            .unwrap();
+    }
+    let admin = access.principal(&game, &user("alice")).await.unwrap();
+    for slug in ["art", "eng"] {
+        access
+            .create_team(&alice, &acme, slug, None, None)
+            .await
+            .unwrap();
+    }
+    let role = |who: &'static str, repo: &RepoId| {
+        let (access, repo) = (&access, repo.clone());
+        async move { access.effective_role(&repo, &user(who)).await.unwrap() }
+    };
+
+    assert_eq!(
+        role("bob", &game).await,
+        None,
+        "membership alone grants nothing"
+    );
+    assert_eq!(
+        role("alice", &game).await,
+        Some(Role::Admin),
+        "owners are admins"
+    );
+
+    access
+        .set_user_role(&admin, &game, &user("bob"), Role::Reader)
+        .await
+        .unwrap();
+    assert_eq!(role("bob", &game).await, Some(Role::Reader), "direct only");
+
+    access
+        .add_team_member(&alice, &acme, "art", &user("carol"))
+        .await
+        .unwrap();
+    access
+        .set_team_access(&admin, &game, "art", Role::Writer)
+        .await
+        .unwrap();
+    assert_eq!(role("carol", &game).await, Some(Role::Writer), "team only");
+    assert_eq!(
+        role("carol", &tools).await,
+        None,
+        "a team grant is per repository"
+    );
+
+    access
+        .add_team_member(&alice, &acme, "art", &user("bob"))
+        .await
+        .unwrap();
+    assert_eq!(
+        role("bob", &game).await,
+        Some(Role::Writer),
+        "the team's writer beats the direct reader"
+    );
+    access
+        .set_user_role(&admin, &game, &user("bob"), Role::Maintainer)
+        .await
+        .unwrap();
+    assert_eq!(
+        role("bob", &game).await,
+        Some(Role::Maintainer),
+        "the direct maintainer beats the team's writer"
+    );
+    access
+        .set_user_role(&admin, &game, &user("bob"), Role::Reader)
+        .await
+        .unwrap();
+
+    access
+        .add_team_member(&alice, &acme, "art", &user("dave"))
+        .await
+        .unwrap();
+    access
+        .add_team_member(&alice, &acme, "eng", &user("dave"))
+        .await
+        .unwrap();
+    access
+        .set_team_access(&admin, &game, "eng", Role::Maintainer)
+        .await
+        .unwrap();
+    assert_eq!(
+        role("dave", &game).await,
+        Some(Role::Maintainer),
+        "several teams give the highest"
+    );
+
+    let listed = access.members(&admin, &game).await.unwrap();
+    let member = |name: &str, role, source| RepoMember {
+        user: user(name),
+        role,
+        source,
+    };
+    assert_eq!(
+        listed,
+        [
+            member("alice", Role::Admin, RoleSource::OrgOwner),
+            member("bob", Role::Writer, RoleSource::Team),
+            member("carol", Role::Writer, RoleSource::Team),
+            member("dave", Role::Maintainer, RoleSource::Team),
+        ]
+    );
+    access
+        .set_user_role(&admin, &game, &user("carol"), Role::Writer)
+        .await
+        .unwrap();
+    assert_eq!(
+        access.members(&admin, &game).await.unwrap()[2],
+        member("carol", Role::Writer, RoleSource::Direct),
+        "a tie goes to the direct grant"
+    );
+
+    assert_eq!(
+        access.repos_of(&user("carol")).await.unwrap(),
+        std::slice::from_ref(&game)
+    );
+    assert_eq!(access.repos_of(&user("erin")).await.unwrap(), []);
+    assert_eq!(
+        access.repos_of(&user("alice")).await.unwrap(),
+        [game.clone(), tools.clone()]
+    );
+
+    let token = token_identity(
+        "dave",
+        &[
+            Permission::Read,
+            Permission::Lock,
+            Permission::ForceUnlock,
+            Permission::ManageUsers,
+        ],
+    );
+    let capped = access.principal_in(&game, &token).await.unwrap();
+    assert_eq!(
+        capped.permissions,
+        [Permission::Read, Permission::Lock, Permission::ForceUnlock].into(),
+        "a token gets only what the team role and the token share"
+    );
+    assert!(
+        access
+            .principal_in(&tools, &token)
+            .await
+            .unwrap()
+            .permissions
+            .is_empty()
+    );
+
+    let writer_actor = access.principal(&game, &user("carol")).await.unwrap();
+    assert!(
+        access
+            .set_team_access(&writer_actor, &game, "art", Role::Maintainer)
+            .await
+            .is_err(),
+        "nobody grants a role above their own"
+    );
+    let reach = Principal {
+        user: user("carol"),
+        permissions: [
+            Permission::ManageUsers,
+            Permission::Read,
+            Permission::Lock,
+            Permission::Checkin,
+        ]
+        .into(),
+    };
+    assert!(matches!(
+        access
+            .set_team_access(&reach, &game, "eng", Role::Maintainer)
+            .await,
+        Err(PynError::Forbidden(_))
+    ));
+    access
+        .set_team_access(&reach, &game, "art", Role::Reader)
+        .await
+        .unwrap();
+    assert_eq!(role("bob", &game).await, Some(Role::Reader));
+    access
+        .set_team_access(&admin, &game, "art", Role::Writer)
+        .await
+        .unwrap();
+
+    access
+        .remove_team_member(&alice, &acme, "eng", &user("dave"))
+        .await
+        .unwrap();
+    assert_eq!(
+        role("dave", &game).await,
+        Some(Role::Writer),
+        "leaving a team drops its grant"
+    );
+    access
+        .remove_team_access(&admin, &game, "art")
+        .await
+        .unwrap();
+    assert_eq!(
+        role("carol", &game).await,
+        Some(Role::Writer),
+        "carol's direct grant remains"
+    );
+    assert_eq!(
+        role("bob", &game).await,
+        Some(Role::Reader),
+        "bob falls back to the direct grant"
+    );
+    assert_eq!(role("dave", &game).await, None);
+    access.delete_team(&alice, &acme, "eng").await.unwrap();
+    assert!(access.repo_teams(&admin, &game).await.unwrap().is_empty());
+
+    access
+        .set_team_access(&admin, &game, "art", Role::Writer)
+        .await
+        .unwrap();
+    access
+        .add_team_member(&alice, &acme, "art", &user("dave"))
+        .await
+        .unwrap();
+    access
+        .remove_org_member(&alice, &acme, &user("dave"))
+        .await
+        .unwrap();
+    assert_eq!(
+        role("dave", &game).await,
+        None,
+        "leaving the organization drops team access"
+    );
+    assert_eq!(access.repos_of(&user("dave")).await.unwrap(), []);
+
+    access
+        .add_org_member(&alice, &acme, &user("erin"), OrgRole::Owner)
+        .await
+        .unwrap();
+    assert_eq!(role("erin", &tools).await, Some(Role::Admin));
+    access
+        .add_team_member(&alice, &acme, "art", &user("erin"))
+        .await
+        .unwrap();
+    access
+        .set_org_member_role(&alice, &acme, &user("erin"), OrgRole::Member)
+        .await
+        .unwrap();
+    assert_eq!(
+        role("erin", &tools).await,
+        None,
+        "a demoted owner loses the implicit admin"
+    );
+    assert_eq!(
+        role("erin", &game).await,
+        Some(Role::Writer),
+        "and keeps what a team gives"
+    );
+    assert_eq!(
+        access.repos_of(&user("erin")).await.unwrap(),
+        std::slice::from_ref(&game)
+    );
+}
+
 fn invite(id: &str, created: i64, expires: i64) -> InviteRecord {
     InviteRecord {
         id: InviteId(id.to_string()),
@@ -2527,6 +3057,8 @@ macro_rules! access_contract_tests {
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; deleting_an_organization_removes_its_members_and_frees_the_name);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; organization_members_are_added_changed_and_never_left_without_an_owner);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; removing_an_organization_member_drops_their_roles_in_the_given_repositories);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; teams_hold_members_and_repository_roles_until_removed);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; effective_roles_resolve_across_direct_team_and_owner_grants);
     };
     (@one $factory:expr; [$(#[$attr:meta])*]; $name:ident) => {
         #[tokio::test(flavor = "multi_thread")]

@@ -103,6 +103,14 @@ pub enum PynError {
     OrgMemberNotFound { org: String, user: String },
     #[error("{0} must keep at least one owner")]
     LastOrgOwner(String),
+    #[error("{org} has no team {team}")]
+    TeamNotFound { org: String, team: String },
+    #[error("{org} already has a team {team}")]
+    TeamExists { org: String, team: String },
+    #[error("{user} is not in team {team}")]
+    TeamMemberNotFound { team: String, user: String },
+    #[error("{0} is not owned by an organization, so it has no teams")]
+    NotOrgRepo(String),
     #[error("storage error: {0}")]
     Storage(String),
 }
@@ -170,6 +178,10 @@ impl PynError {
             Self::AlreadyOrgMember { .. } => "already_org_member",
             Self::OrgMemberNotFound { .. } => "org_member_not_found",
             Self::LastOrgOwner(_) => "last_org_owner",
+            Self::TeamNotFound { .. } => "team_not_found",
+            Self::TeamExists { .. } => "team_exists",
+            Self::TeamMemberNotFound { .. } => "team_member_not_found",
+            Self::NotOrgRepo(_) => "not_org_repo",
             Self::Storage(_) => "storage",
         }
     }
