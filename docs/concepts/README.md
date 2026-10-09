@@ -21,7 +21,8 @@ The server is the only enforcer. A checkin of an exclusive path is rejected unle
 the base revision equals the current head, so bypassing the CLI (uploading directly) cannot skip the lock. The
 read-only bit on disk is a convenience that stops editors from silently making unshippable edits.
 
-Locks expire so abandoned work cannot block a file forever. The same holder checking out again renews the lease.
+Locks expire so abandoned work cannot block a file forever. The same holder checking out again renews the lease. One user may hold only a limited number of locks in a repository (5
+by default); see [the lock limit](pyn-toml.md#lock-limit).
 
 ## Force unlock and the audit log
 

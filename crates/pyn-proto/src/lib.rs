@@ -182,6 +182,13 @@ pub struct RepoInfo {
     pub visibility: Visibility,
     /// How long a checkout lasts before it expires unless renewed.
     pub lease_hours: u32,
+    /// Locks one user may hold in the repository: the policy file's `meta.max_locks_per_user` if it sets one, else
+    /// the repository setting, else the server default.
+    pub max_locks_per_user: u32,
+    /// The repository setting alone; absent when it follows the server default. Not in force while the policy file sets one.
+    pub max_locks_per_user_setting: Option<u32>,
+    /// True when `.pyn/pyn.toml` sets the limit; the setting then cannot be changed.
+    pub max_locks_set_by_policy: bool,
     pub created_at: DateTime<Utc>,
     /// The caller's role in the repository; absent when they have none.
     pub role: Option<String>,
@@ -196,6 +203,8 @@ pub struct CreateRepoRequest {
     pub visibility: Option<Visibility>,
     /// Defaults to 8.
     pub lease_hours: Option<u32>,
+    /// Locks one user may hold; defaults to the server's. A limit in the repository's policy file overrides it.
+    pub max_locks_per_user: Option<u32>,
 }
 
 /// Fields left out stay as they are.
@@ -204,6 +213,19 @@ pub struct UpdateRepoRequest {
     pub name: Option<String>,
     pub visibility: Option<Visibility>,
     pub lease_hours: Option<u32>,
+    /// A number sets the limit, `null` returns to the server default. Refused while the policy file sets one.
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schema(value_type = Option<u32>)]
+    pub max_locks_per_user: Option<Option<u32>>,
+}
+
+/// Tells an explicit `null` (`Some(None)`) from an absent field (`None`).
+fn present<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Option<u32>>, D::Error> {
+    Option::deserialize(d).map(Some)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]

@@ -236,6 +236,7 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let status = match &self.0 {
             PynError::LockHeld { .. }
+            | PynError::LockLimitReached { .. }
             | PynError::StaleBase { .. }
             | PynError::LockRequired(_)
             | PynError::NotLocked(_)
@@ -384,7 +385,7 @@ async fn list_locks(
 
 #[utoipa::path(post, path = "/v1/repos/{owner}/{name}/checkout", params(RepoAddress), request_body = api::CheckoutRequest, responses(
     (status = 200, body = api::Lock),
-    (status = 409, body = api::ErrorBody, description = "lock_held or stale_base"),
+    (status = 409, body = api::ErrorBody, description = "lock_held, lock_limit_reached or stale_base"),
     (status = 400, body = api::ErrorBody, description = "not_exclusive or invalid_path"),
 ))]
 async fn checkout(

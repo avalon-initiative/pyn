@@ -51,6 +51,7 @@ For your own server instead of the demo: `cp .env.example .env`, then `make run`
 | `PYN_BOOTSTRAP_ADMIN` | Creates this account at startup and prints a token for it; it then creates repositories like anyone else |
 | `PYN_TOKEN` | Token the CLI signs in with, instead of the sign-in saved by `pyn login` (`PYN_USER` with `PYN_DEV_AUTH`) |
 | `PYN_REGISTRATION` | `invite` (default), `open` or `closed`: how people create accounts |
+| `PYN_MAX_LOCKS_ALLOWED_PER_USER` | How many locks one user may hold in a repository, default 5; a repository setting or its `pyn.toml` can override it |
 | `PYN_SESSION_DAYS` | How long a `pyn login` lasts, default 30 |
 | `PYN_BOOTSTRAP_PASSWORD` | Gives the `PYN_BOOTSTRAP_ADMIN` user this password |
 | `PYN_CONFIG_DIR` | Where the CLI keeps `credentials.toml`, default `~/.config/pyn` |

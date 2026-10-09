@@ -4,6 +4,7 @@ use globset::{GlobBuilder, GlobMatcher};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{PynError, Result};
+use crate::repo;
 use crate::types::RepoPath;
 
 /// Collaboration policy for a path, not a file-type classification.
@@ -34,12 +35,14 @@ struct ConfigFile {
 struct Meta {
     #[serde(default = "default_mode")]
     default: Mode,
+    max_locks_per_user: Option<u32>,
 }
 
 impl Default for Meta {
     fn default() -> Self {
         Self {
             default: default_mode(),
+            max_locks_per_user: None,
         }
     }
 }
@@ -60,6 +63,7 @@ struct Section {
 #[derive(Debug, Clone)]
 pub struct Rules {
     default: Mode,
+    max_locks: Option<u32>,
     exact: HashMap<String, Mode>,
     /// Folder entries stored with a trailing `/`.
     dirs: Vec<(String, Mode)>,
@@ -103,6 +107,7 @@ impl Rules {
     pub fn with_default(default: Mode) -> Self {
         Self {
             default,
+            max_locks: None,
             exact: HashMap::new(),
             dirs: Vec::new(),
             globs: Vec::new(),
@@ -117,6 +122,11 @@ impl Rules {
         let file: ConfigFile =
             toml::from_str(text).map_err(|e| PynError::InvalidRules(e.to_string()))?;
         let mut rules = Self::with_default(file.meta.default);
+        rules.max_locks = file
+            .meta
+            .max_locks_per_user
+            .map(|n| repo::validate_max_locks(n).map_err(|e| PynError::InvalidRules(e.to_string())))
+            .transpose()?;
         for (mode, section) in [
             (Mode::Exclusive, &file.exclusive),
             (Mode::Shared, &file.shared),
@@ -161,6 +171,11 @@ impl Rules {
 
     pub fn default_mode(&self) -> Mode {
         self.default
+    }
+
+    /// `meta.max_locks_per_user`, when the file sets it.
+    pub fn max_locks_per_user(&self) -> Option<u32> {
+        self.max_locks
     }
 
     /// The policy file is exclusive unless an entry covers it, whatever `meta.default` says.
@@ -423,6 +438,21 @@ paths = ["Content/docs/", "**/*.md", "docs/"]
         for bad in ["", "/a", "a/../b", "a\\b", "["] {
             let err = PathFilter::new(bad).unwrap_err();
             assert!(matches!(err, PynError::InvalidRequest(_)), "{bad:?}: {err}");
+        }
+    }
+
+    #[test]
+    fn the_lock_limit_is_optional_and_validated() {
+        assert_eq!(Rules::from_toml("").unwrap().max_locks_per_user(), None);
+        let set = Rules::from_toml("[meta]\nmax_locks_per_user = 3\n").unwrap();
+        assert_eq!(set.max_locks_per_user(), Some(3));
+        for bad in [
+            "[meta]\nmax_locks_per_user = 0\n",
+            "[meta]\nmax_locks_per_user = 10001\n",
+            "max_locks_per_user = 3\n",
+        ] {
+            let err = Rules::from_toml(bad).unwrap_err();
+            assert!(matches!(err, PynError::InvalidRules(_)), "{bad}: {err}");
         }
     }
 }

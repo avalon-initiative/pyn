@@ -133,7 +133,10 @@ async fn only_valid_unique_names_in_your_own_namespace_are_accepted() {
             &user("alice"),
             "slow",
             None,
-            Some(RepoSettings { lease_hours: 0 }),
+            Some(RepoSettings {
+                lease_hours: 0,
+                ..RepoSettings::default()
+            }),
         )
         .await
         .unwrap_err();
@@ -252,7 +255,10 @@ async fn only_the_owner_renames_or_deletes_and_data_goes_with_the_repository() {
     let rename = RepoUpdate {
         name: Some("engine".into()),
         visibility: Some(Visibility::Public),
-        settings: Some(RepoSettings { lease_hours: 2 }),
+        settings: Some(RepoSettings {
+            lease_hours: 2,
+            ..RepoSettings::default()
+        }),
     };
     let err = w
         .repos
@@ -310,7 +316,10 @@ async fn the_lease_setting_applies_to_that_repository_only() {
             &user("alice"),
             "short",
             None,
-            Some(RepoSettings { lease_hours: 1 }),
+            Some(RepoSettings {
+                lease_hours: 1,
+                ..RepoSettings::default()
+            }),
         )
         .await
         .unwrap();
@@ -331,7 +340,10 @@ async fn the_lease_setting_applies_to_that_repository_only() {
     }
 
     let changed = RepoUpdate {
-        settings: Some(RepoSettings { lease_hours: 3 }),
+        settings: Some(RepoSettings {
+            lease_hours: 3,
+            ..RepoSettings::default()
+        }),
         ..Default::default()
     };
     w.repos.update(&alice, &short, changed).await.unwrap();

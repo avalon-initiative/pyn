@@ -896,6 +896,109 @@ pub async fn force_unlock_removes_a_live_lock_and_says_why(store: Store) {
     );
 }
 
+fn limited_service(store: &Store, h: &Harness, id: &str, max_locks: u32) -> Arc<RepoService> {
+    Arc::new(RepoService::new(
+        RepoId::new(id),
+        Rules::from_toml(RULES).unwrap(),
+        store.clone(),
+        h.objects.clone(),
+        h.audit.clone(),
+        h.clock.clone(),
+        ServiceConfig {
+            max_locks,
+            ..ServiceConfig::default()
+        },
+    ))
+}
+
+pub async fn checkout_past_the_lock_limit_is_refused_until_a_slot_frees(store: Store) {
+    let h = harness(store.clone());
+    let svc = limited_service(&store, &h, "game", 2);
+    let (a, b, c) = (path("Content/a"), path("Content/b"), path("Content/c"));
+    let alice = user("alice");
+    svc.checkout(&a, &alice, None).await.unwrap();
+    svc.checkout(&b, &alice, None).await.unwrap();
+
+    let err = svc.checkout(&c, &alice, None).await.unwrap_err();
+    assert!(
+        matches!(err, PynError::LockLimitReached { limit: 2 }),
+        "{err}"
+    );
+    assert_eq!(
+        svc.locks().await.unwrap().len(),
+        2,
+        "a refusal locks nothing"
+    );
+    svc.checkout(&a, &alice, None).await.unwrap();
+    svc.checkout(&c, &user("bob"), None).await.unwrap();
+    let held = svc.checkout(&c, &alice, None).await.unwrap_err();
+    assert!(
+        matches!(held, PynError::LockHeld { .. }),
+        "a held path reports the holder: {held}"
+    );
+
+    svc.release(&a, &alice).await.unwrap();
+    svc.checkout(&a, &alice, None).await.unwrap();
+    svc.force_unlock(&b, &user("maya"), "reassigned")
+        .await
+        .unwrap();
+    svc.checkout(&b, &alice, None).await.unwrap();
+
+    h.clock.advance(Duration::hours(9));
+    svc.checkout(&c, &alice, None).await.unwrap();
+    svc.checkout(&a, &alice, None).await.unwrap();
+    let again = svc.checkout(&b, &alice, None).await.unwrap_err();
+    assert!(
+        matches!(again, PynError::LockLimitReached { .. }),
+        "{again}"
+    );
+}
+
+pub async fn the_lock_limit_counts_one_repository_at_a_time(store: Store) {
+    let h = harness(store.clone());
+    let game = limited_service(&store, &h, "game", 1);
+    let other = limited_service(&store, &h, "other", 1);
+    let alice = user("alice");
+    game.checkout(&path("Content/a"), &alice, None)
+        .await
+        .unwrap();
+    other
+        .checkout(&path("Content/a"), &alice, None)
+        .await
+        .unwrap();
+    let err = other
+        .checkout(&path("Content/b"), &alice, None)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, PynError::LockLimitReached { limit: 1 }),
+        "{err}"
+    );
+}
+
+pub async fn racing_checkouts_cannot_exceed_the_lock_limit(store: Store) {
+    let h = harness(store.clone());
+    let svc = limited_service(&store, &h, "game", 3);
+    let tasks: Vec<_> = (0..10)
+        .map(|i| {
+            let svc = svc.clone();
+            tokio::spawn(async move {
+                svc.checkout(&path(&format!("Content/{i}")), &user("alice"), None)
+                    .await
+            })
+        })
+        .collect();
+    let mut won = 0;
+    for task in tasks {
+        match task.await.unwrap() {
+            Ok(_) => won += 1,
+            Err(e) => assert!(matches!(e, PynError::LockLimitReached { .. }), "{e}"),
+        }
+    }
+    assert_eq!(won, 3);
+    assert_eq!(svc.locks().await.unwrap().len(), 3);
+}
+
 pub async fn operations_are_recorded_in_the_audit_log(store: Store) {
     let h = harness(store);
     let m = path("Content/m.umap");
@@ -982,7 +1085,10 @@ fn repo_record(id: &str, owner: &str, name: &str) -> RepoRecord {
 pub async fn repositories_are_registered_found_and_listed_in_order(store: Store) {
     let mut public = repo_record("r2", "alice", "zeta");
     public.visibility = Visibility::Public;
-    public.settings = RepoSettings { lease_hours: 2 };
+    public.settings = RepoSettings {
+        lease_hours: 2,
+        ..RepoSettings::default()
+    };
     for r in [
         public.clone(),
         repo_record("r1", "alice", "alpha"),
@@ -1055,7 +1161,10 @@ pub async fn updating_a_repository_keeps_its_id(store: Store) {
             RepoUpdate {
                 name: Some("engine".into()),
                 visibility: Some(Visibility::Public),
-                settings: Some(RepoSettings { lease_hours: 4 }),
+                settings: Some(RepoSettings {
+                    lease_hours: 4,
+                    ..RepoSettings::default()
+                }),
             },
         )
         .await
@@ -1103,6 +1212,40 @@ pub async fn updating_a_repository_keeps_its_id(store: Store) {
         .await
         .unwrap_err();
     assert!(matches!(missing, PynError::RepoNotFound(_)), "{missing}");
+}
+
+pub async fn a_repository_stores_its_lock_limit_and_can_clear_it(store: Store) {
+    let mut record = repo_record("r1", "alice", "game");
+    record.settings.max_locks = Some(3);
+    let created = store.create_repo(record).await.unwrap();
+    let found = store.get_repo(&created.id).await.unwrap().unwrap();
+    assert_eq!(found.settings.max_locks, Some(3));
+
+    let renamed = store
+        .update_repo(
+            &created.id,
+            RepoUpdate {
+                name: Some("engine".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(renamed.settings.max_locks, Some(3), "other updates keep it");
+
+    let cleared = store
+        .update_repo(
+            &created.id,
+            RepoUpdate {
+                settings: Some(RepoSettings::default()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(cleared.settings.max_locks, None);
+    let listed = store.list_repos(None).await.unwrap();
+    assert_eq!(listed[0].settings.max_locks, None);
 }
 
 fn service_in(store: &Store, h: &Harness, id: &str) -> RepoService {
@@ -1206,10 +1349,14 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; restore_needs_the_lock_and_the_right_confirmation);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; restore_is_for_exclusive_paths_and_real_older_revisions);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; force_unlock_removes_a_live_lock_and_says_why);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; checkout_past_the_lock_limit_is_refused_until_a_slot_frees);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; the_lock_limit_counts_one_repository_at_a_time);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; racing_checkouts_cannot_exceed_the_lock_limit);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; operations_are_recorded_in_the_audit_log);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; repositories_are_registered_found_and_listed_in_order);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_repository_name_is_unique_per_owner);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; updating_a_repository_keeps_its_id);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_repository_stores_its_lock_limit_and_can_clear_it);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; repositories_do_not_share_locks_or_revisions);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; deleting_a_repository_removes_only_its_own_data);
     };

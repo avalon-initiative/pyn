@@ -60,9 +60,20 @@ impl MetadataStore for MemoryMetadataStore {
         owner: &UserId,
         now: DateTime<Utc>,
         expires_at: DateTime<Utc>,
+        max_locks: u32,
     ) -> Result<Lock> {
         let mut st = self.state.lock().unwrap();
         let key = (repo.clone(), path.clone());
+        if !st.locks.get(&key).is_some_and(|l| live(l, now)) {
+            let held = st
+                .locks
+                .iter()
+                .filter(|((r, _), l)| r == repo && &l.owner == owner && live(l, now))
+                .count();
+            if held >= max_locks as usize {
+                return Err(PynError::LockLimitReached { limit: max_locks });
+            }
+        }
         let acquired_at = match st.locks.get(&key) {
             Some(l) if live(l, now) && &l.owner != owner => {
                 return Err(PynError::LockHeld {

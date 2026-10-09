@@ -19,6 +19,10 @@ pub enum PynError {
         owner: UserId,
         expires_at: DateTime<Utc>,
     },
+    #[error(
+        "lock limit reached: you already hold {limit} lock(s) in this repository; release one before checking out another"
+    )]
+    LockLimitReached { limit: u32 },
     #[error("{0} is not locked by you")]
     NotLockHolder(RepoPath),
     #[error("{0} is exclusive: check it out before checking in")]
@@ -84,6 +88,7 @@ impl PynError {
             Self::InvalidPath(_) => "invalid_path",
             Self::InvalidRules(_) => "invalid_rules",
             Self::LockHeld { .. } => "lock_held",
+            Self::LockLimitReached { .. } => "lock_limit_reached",
             Self::NotLockHolder(_) => "not_lock_holder",
             Self::LockRequired(_) => "lock_required",
             Self::NotExclusive(_) => "not_exclusive",

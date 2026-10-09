@@ -394,7 +394,7 @@
             }
           },
           "400": {
-            "description": "invalid_repo_name or invalid_request",
+            "description": "invalid_repo_name or invalid_request (a lease or lock limit out of range)",
             "content": {
               "application/json": {
                 "schema": {
@@ -566,6 +566,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/RepoInfo"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request, including a lock limit change while the policy file sets one",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -829,7 +839,7 @@
             }
           },
           "409": {
-            "description": "lock_held or stale_base",
+            "description": "lock_held, lock_limit_reached or stale_base",
             "content": {
               "application/json": {
                 "schema": {
@@ -2326,6 +2336,15 @@
             "description": "Defaults to 8.",
             "minimum": 0
           },
+          "max_locks_per_user": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Locks one user may hold; defaults to the server's. A limit in the repository's policy file overrides it.",
+            "minimum": 0
+          },
           "name": {
             "type": "string"
           },
@@ -2727,6 +2746,8 @@
           "name",
           "visibility",
           "lease_hours",
+          "max_locks_per_user",
+          "max_locks_set_by_policy",
           "created_at"
         ],
         "properties": {
@@ -2739,6 +2760,25 @@
             "format": "int32",
             "description": "How long a checkout lasts before it expires unless renewed.",
             "minimum": 0
+          },
+          "max_locks_per_user": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Locks one user may hold in the repository: the policy file's `meta.max_locks_per_user` if it sets one, else\nthe repository setting, else the server default.",
+            "minimum": 0
+          },
+          "max_locks_per_user_setting": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The repository setting alone; absent when it follows the server default. Not in force while the policy file sets one.",
+            "minimum": 0
+          },
+          "max_locks_set_by_policy": {
+            "type": "boolean",
+            "description": "True when `.pyn/pyn.toml` sets the limit; the setting then cannot be changed."
           },
           "name": {
             "type": "string"
@@ -3167,6 +3207,15 @@
               "null"
             ],
             "format": "int32",
+            "minimum": 0
+          },
+          "max_locks_per_user": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "A number sets the limit, `null` returns to the server default. Refused while the policy file sets one.",
             "minimum": 0
           },
           "name": {

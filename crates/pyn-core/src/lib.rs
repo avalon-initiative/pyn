@@ -31,10 +31,13 @@ pub use clock::{Clock, ManualClock, SystemClock};
 pub use error::{PynError, Result};
 pub use history::{HISTORY_DEFAULT_LIMIT, HISTORY_MAX_LIMIT, HistoryCursor, HistoryPage};
 pub use object::ObjectStore;
-pub use repo::{RepoRecord, RepoSettings, RepoUpdate, Visibility};
+pub use repo::{
+    DEFAULT_MAX_LOCKS_PER_USER, MAX_LOCKS_PER_USER_CEILING, RepoRecord, RepoSettings, RepoUpdate,
+    Visibility, validate_max_locks,
+};
 pub use repositories::Repositories;
 pub use rules::{Mode, PathFilter, Rules};
-pub use service::{FileEntry, RepoService, ServiceConfig};
+pub use service::{FileEntry, LockLimit, RepoService, ServiceConfig};
 pub use store::MetadataStore;
 pub use tree::{DEFAULT_BRANCH, EntryKind, EntryMode, RepoSummary, TreeEntry};
 pub use types::{ContentHash, Lock, NewRevision, RepoId, RepoPath, Revision, RevisionId, UserId};

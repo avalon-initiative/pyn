@@ -82,6 +82,7 @@ fn repo_from(row: &PgRow) -> Result<RepoRecord> {
         visibility: Visibility::from_str(row.get("visibility"))?,
         settings: RepoSettings {
             lease_hours: row.get::<i32, _>("lease_hours") as u32,
+            max_locks: row.get::<Option<i32>, _>("max_locks").map(|n| n as u32),
         },
         created_at: row.get("created_at"),
     })
@@ -183,6 +184,7 @@ impl MetadataStore for PgMetadataStore {
         owner: &UserId,
         now: DateTime<Utc>,
         expires_at: DateTime<Utc>,
+        max_locks: u32,
     ) -> Result<Lock> {
         // The WHERE clause makes the upsert a no-op when a live lock belongs to someone else.
         const UPSERT: &str = "
@@ -197,18 +199,50 @@ impl MetadataStore for PgMetadataStore {
             RETURNING path, owner, acquired_at, expires_at";
 
         for _ in 0..3 {
+            let mut tx = self.pool.begin().await.map_err(db)?;
+            // Serializes one user's acquisitions in a repository so the count below cannot go stale.
+            sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+                .bind(format!("{}/{}", repo.as_str(), owner.as_str()))
+                .execute(&mut *tx)
+                .await
+                .map_err(db)?;
+            let live: bool = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM locks WHERE repo = $1 AND path = $2 AND expires_at > $3)",
+            )
+            .bind(repo.as_str())
+            .bind(path.as_str())
+            .bind(now)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(db)?;
+            if !live {
+                let held: i64 = sqlx::query_scalar(
+                    "SELECT count(*) FROM locks WHERE repo = $1 AND owner = $2 AND expires_at > $3",
+                )
+                .bind(repo.as_str())
+                .bind(owner.as_str())
+                .bind(now)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(db)?;
+                if held >= i64::from(max_locks) {
+                    return Err(PynError::LockLimitReached { limit: max_locks });
+                }
+            }
             let row = sqlx::query(UPSERT)
                 .bind(repo.as_str())
                 .bind(path.as_str())
                 .bind(owner.as_str())
                 .bind(now)
                 .bind(expires_at)
-                .fetch_optional(&self.pool)
+                .fetch_optional(&mut *tx)
                 .await
                 .map_err(db)?;
             if let Some(row) = row {
+                tx.commit().await.map_err(db)?;
                 return lock_from(&row);
             }
+            drop(tx);
             // Lost to a live lock; read it for the error. If it expired meanwhile, retry.
             if let Some(current) = self.get_lock(repo, path, now).await? {
                 return Err(PynError::LockHeld {
@@ -500,14 +534,15 @@ impl MetadataStore for PgMetadataStore {
 
     async fn create_repo(&self, repo: RepoRecord) -> Result<RepoRecord> {
         let inserted = sqlx::query(
-            "INSERT INTO repositories (id, owner, name, visibility, lease_hours, created_at)
-             VALUES ($1, $2, $3, $4, $5, $6)",
+            "INSERT INTO repositories (id, owner, name, visibility, lease_hours, max_locks, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
         )
         .bind(repo.id.as_str())
         .bind(repo.owner.as_str())
         .bind(&repo.name)
         .bind(repo.visibility.as_str())
         .bind(repo.settings.lease_hours as i32)
+        .bind(repo.settings.max_locks.map(|n| n as i32))
         .bind(repo.created_at)
         .execute(&self.pool)
         .await;
@@ -520,7 +555,7 @@ impl MetadataStore for PgMetadataStore {
 
     async fn find_repo(&self, owner: &UserId, name: &str) -> Result<Option<RepoRecord>> {
         let row = sqlx::query(
-            "SELECT id, owner, name, visibility, lease_hours, created_at FROM repositories
+            "SELECT id, owner, name, visibility, lease_hours, max_locks, created_at FROM repositories
              WHERE owner = $1 AND name = $2",
         )
         .bind(owner.as_str())
@@ -533,7 +568,7 @@ impl MetadataStore for PgMetadataStore {
 
     async fn get_repo(&self, id: &RepoId) -> Result<Option<RepoRecord>> {
         let row = sqlx::query(
-            "SELECT id, owner, name, visibility, lease_hours, created_at FROM repositories
+            "SELECT id, owner, name, visibility, lease_hours, max_locks, created_at FROM repositories
              WHERE id = $1",
         )
         .bind(id.as_str())
@@ -545,7 +580,7 @@ impl MetadataStore for PgMetadataStore {
 
     async fn list_repos(&self, owner: Option<&UserId>) -> Result<Vec<RepoRecord>> {
         let rows = sqlx::query(
-            "SELECT id, owner, name, visibility, lease_hours, created_at FROM repositories
+            "SELECT id, owner, name, visibility, lease_hours, max_locks, created_at FROM repositories
              WHERE ($1::text IS NULL OR owner = $1) ORDER BY owner, name",
         )
         .bind(owner.map(UserId::as_str))
@@ -562,14 +597,17 @@ impl MetadataStore for PgMetadataStore {
             .ok_or_else(|| PynError::RepoNotFound(id.to_string()))?;
         let updated = sqlx::query(
             "UPDATE repositories SET name = COALESCE($2, name), visibility = COALESCE($3, visibility),
-                 lease_hours = COALESCE($4, lease_hours)
+                 lease_hours = COALESCE($4, lease_hours),
+                 max_locks = CASE WHEN $5 THEN $6 ELSE max_locks END
              WHERE id = $1
-             RETURNING id, owner, name, visibility, lease_hours, created_at",
+             RETURNING id, owner, name, visibility, lease_hours, max_locks, created_at",
         )
         .bind(id.as_str())
         .bind(update.name.as_deref())
         .bind(update.visibility.map(Visibility::as_str))
         .bind(update.settings.map(|s| s.lease_hours as i32))
+        .bind(update.settings.is_some())
+        .bind(update.settings.and_then(|s| s.max_locks).map(|n| n as i32))
         .fetch_optional(&self.pool)
         .await;
         match updated {
@@ -619,7 +657,7 @@ mod tests {
             .execute(&store.pool)
             .await
             .unwrap();
-        sqlx::query("DELETE FROM _sqlx_migrations WHERE version = 8")
+        sqlx::query("DELETE FROM _sqlx_migrations WHERE version IN (8, 11)")
             .execute(&store.pool)
             .await
             .unwrap();

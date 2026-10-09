@@ -6,6 +6,7 @@ which are `shared` (concurrent edits, merged later).
 ```toml
 [meta]
 default = "exclusive"            # what an unlisted path is; "exclusive" if this is omitted
+max_locks_per_user = 5           # optional: locks one user may hold at once (1 to 10000)
 
 [exclusive]
 paths = [
@@ -31,6 +32,23 @@ A path that no entry covers is **exclusive**. That is the safe side: the worst o
 out, never two people silently editing something unmergeable. Mostly-code repositories will usually flip it with
 `default = "shared"` and list only the exclusive paths; asset-heavy repositories keep the default and list the shared
 ones. This differs from the original proposal, where unlisted paths were shared.
+
+## Lock limit
+
+`meta.max_locks_per_user` caps how many live locks one user may hold in this repository. A checkout past it is refused
+with `lock_limit_reached` (HTTP 409), and the message names the limit; renewing a lock already held is never refused.
+Releasing, a force-unlock and expiry each free a slot.
+
+Where the limit comes from, first match wins:
+
+1. `meta.max_locks_per_user` in the repository's `.pyn/pyn.toml`;
+2. the repository's `max_locks_per_user` setting (see [repositories](repositories.md#what-each-repository-has));
+3. the server's `PYN_MAX_LOCKS_ALLOWED_PER_USER`, 5 if unset.
+
+The file wins over the setting: while it sets a limit, the setting cannot be changed (the API refuses with
+`invalid_request`) and the repository reports `max_locks_set_by_policy`, so a settings page shows the value read-only.
+Remove the key from the file and the setting applies again. Changing the limit in the file takes effect with the revision
+and releases nothing: a user already over a lowered limit keeps their locks and cannot take new ones until they are under it.
 
 ## Entries
 

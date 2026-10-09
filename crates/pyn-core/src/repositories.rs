@@ -12,11 +12,19 @@ use crate::audit::{AuditAction, AuditStore, NewAuditEvent};
 use crate::clock::Clock;
 use crate::error::{PynError, Result};
 use crate::object::ObjectStore;
-use crate::repo::{self, RepoRecord, RepoSettings, RepoUpdate, Visibility};
+use crate::repo::{
+    self, DEFAULT_MAX_LOCKS_PER_USER, RepoRecord, RepoSettings, RepoUpdate, Visibility,
+};
 use crate::rules::Rules;
-use crate::service::{RepoService, ServiceConfig};
+use crate::service::{LockLimit, RepoService, ServiceConfig};
 use crate::store::MetadataStore;
 use crate::types::UserId;
+
+fn limit_detail(settings: &RepoSettings) -> String {
+    settings
+        .max_locks
+        .map_or(String::new(), |n| format!(", max {n} locks per user"))
+}
 
 /// A repository found by address, with the service that enforces its policy.
 #[derive(Clone)]
@@ -32,6 +40,7 @@ pub struct Repositories {
     access: Arc<AccessService>,
     clock: Arc<dyn Clock>,
     rules: Rules,
+    default_max_locks: u32,
     services: Mutex<HashMap<crate::RepoId, (RepoSettings, Arc<RepoService>)>>,
 }
 
@@ -52,8 +61,15 @@ impl Repositories {
             access,
             clock,
             rules,
+            default_max_locks: DEFAULT_MAX_LOCKS_PER_USER,
             services: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// The per-user lock limit for repositories that set none; validated 1 to `MAX_LOCKS_PER_USER_CEILING`.
+    pub fn with_default_max_locks(mut self, limit: u32) -> Result<Self> {
+        self.default_max_locks = repo::validate_max_locks(limit)?;
+        Ok(self)
     }
 
     async fn record(
@@ -93,6 +109,7 @@ impl Repositories {
             self.clock.clone(),
             ServiceConfig {
                 lease: Duration::hours(i64::from(record.settings.lease_hours)),
+                max_locks: record.settings.max_locks.unwrap_or(self.default_max_locks),
             },
         ));
         svc.load_policy().await?;
@@ -115,6 +132,11 @@ impl Repositories {
             .ok_or_else(|| PynError::RepoNotFound(format!("{owner}/{name}")))?;
         let service = self.service_for(&record).await?;
         Ok(OpenRepo { record, service })
+    }
+
+    /// The lock limit in force for the repository and whether its policy file sets it.
+    pub async fn lock_limit(&self, record: &RepoRecord) -> Result<LockLimit> {
+        Ok(self.service_for(record).await?.lock_limit())
     }
 
     /// `owner/name` for a repository id; the id itself if the repository no longer exists.
@@ -157,10 +179,11 @@ impl Repositories {
             return Err(e);
         }
         let detail = format!(
-            "created {} ({}, lease {}h)",
+            "created {} ({}, lease {}h{})",
             record.address(),
             record.visibility,
-            record.settings.lease_hours
+            record.settings.lease_hours,
+            limit_detail(&record.settings)
         );
         self.record(&record, &actor.user, AuditAction::RepoCreated, detail)
             .await?;
@@ -214,15 +237,24 @@ impl Repositories {
             update.name = Some(repo::validate_name(name)?);
         }
         if let Some(settings) = update.settings {
-            update.settings = Some(settings.validate()?);
+            let settings = settings.validate()?;
+            if settings.max_locks != record.settings.max_locks
+                && self.lock_limit(record).await?.from_policy
+            {
+                return Err(PynError::InvalidRequest(
+                    "the lock limit is set by .pyn/pyn.toml; change it there".into(),
+                ));
+            }
+            update.settings = Some(settings);
         }
         let updated = self.meta.update_repo(&record.id, update).await?;
         let detail = format!(
-            "{} -> {} ({}, lease {}h)",
+            "{} -> {} ({}, lease {}h{})",
             record.address(),
             updated.address(),
             updated.visibility,
-            updated.settings.lease_hours
+            updated.settings.lease_hours,
+            limit_detail(&updated.settings)
         );
         self.record(&updated, &actor.user, AuditAction::RepoUpdated, detail)
             .await?;
