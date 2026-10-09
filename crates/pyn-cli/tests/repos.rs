@@ -72,7 +72,7 @@ fn a_workspace_remembers_its_repository() {
     let env = start_empty();
     let home = env.dir("home");
     for name in ["one", "two"] {
-        env.ok(&home, "alice", &["repo", "create", name]);
+        env.ok(&home, "alice", &["repo", "create", name, "--no-policy"]);
         let seed = env.dir(&format!("seed-{name}"));
         std::fs::write(seed.join("f"), format!("from {name}")).unwrap();
         env.ok(
@@ -226,4 +226,87 @@ fn ls_and_summary_show_the_landing_page_data() {
         "{summary}"
     );
     assert!(summary.contains("checkout"), "{summary}");
+}
+
+#[test]
+fn a_new_repository_starts_with_a_policy_file_the_owner_can_replace() {
+    let env = start_empty();
+    let home = env.dir("home");
+
+    let out = env.ok(&home, "alice", &["repo", "create", "plain"]);
+    assert!(out.contains("added .pyn/pyn.toml"), "{out}");
+    let files = env.ok(&home, "alice", &["--repo", "alice/plain", "files"]);
+    assert!(
+        cell_rows(&files)
+            .iter()
+            .any(|r| r.contains(&".pyn/pyn.toml".to_string())
+                && r.contains(&"exclusive".to_string())),
+        "{files}"
+    );
+    let shown = env.ok(
+        &home,
+        "alice",
+        &["--repo", "alice/plain", "get", ".pyn/pyn.toml"],
+    );
+    assert!(shown.contains("default = \"exclusive\""), "{shown}");
+
+    let ws = env.dir("ws-plain");
+    env.ok(
+        &home,
+        "alice",
+        &["clone", &env.source("alice/plain"), ws.to_str().unwrap()],
+    );
+    assert!(ws.join(".pyn/pyn.toml").is_file());
+
+    let custom = env.dir("custom");
+    std::fs::write(
+        custom.join("p.toml"),
+        "[meta]\ndefault = \"shared\"\n[shared]\npaths = [\".pyn/pyn.toml\"]\n",
+    )
+    .unwrap();
+    env.ok(
+        &custom,
+        "alice",
+        &["repo", "create", "open", "--policy", "p.toml"],
+    );
+    std::fs::write(custom.join("a.txt"), "a").unwrap();
+    env.ok(
+        &custom,
+        "alice",
+        &[
+            "--repo",
+            "alice/open",
+            "checkin",
+            "a.txt",
+            "a.txt",
+            "-m",
+            "a",
+        ],
+    );
+
+    let bad = custom.join("bad.toml");
+    std::fs::write(&bad, "[exlusive]\n").unwrap();
+    let err = env.fails(
+        &custom,
+        "alice",
+        &[
+            "repo",
+            "create",
+            "broken",
+            "--policy",
+            bad.to_str().unwrap(),
+        ],
+    );
+    assert!(err.contains("invalid_rules"), "{err}");
+
+    env.ok(&home, "alice", &["repo", "create", "bare", "--no-policy"]);
+    let files = env.ok(&home, "alice", &["--repo", "alice/bare", "files"]);
+    assert!(!files.contains("pyn.toml"), "{files}");
+
+    let clash = env.fails(
+        &home,
+        "alice",
+        &["repo", "create", "x", "--no-policy", "--policy", "p.toml"],
+    );
+    assert!(clash.contains("cannot be used with"), "{clash}");
 }

@@ -45,7 +45,7 @@ For your own server instead of the demo: `cp .env.example .env`, then `make run`
 | `PYN_DATABASE_URL` | PostgreSQL connection URL; unset means in-memory metadata |
 | `PYN_CREATE_DATABASE` | `true` creates the database if it does not exist |
 | `PYN_DATA_DIR` | Directory for uploaded content; unset means in-memory |
-| `PYN_CONFIG` | Path to the `pyn.toml` policy file, applied to every repository for now; unset means everything is exclusive (`make dev` uses `scripts/demo.pyn.toml`) |
+| `PYN_CONFIG` | Fallback policy for repositories that have no `.pyn/pyn.toml` yet; unset means everything is exclusive (`make dev` uses `scripts/demo.pyn.toml`) |
 | `PYN_ADDR` | Listen address, default `127.0.0.1:7878` |
 | `PYN_DEV_AUTH` | `true` accepts the `X-Pyn-User` header with every permission; for server tests only, not used by `make dev` |
 | `PYN_BOOTSTRAP_ADMIN` | Creates this account at startup and prints a token for it; it then creates repositories like anyone else |

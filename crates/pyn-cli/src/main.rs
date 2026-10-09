@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use pyn_proto as api;
@@ -194,6 +196,12 @@ enum RepoCommand {
         /// How long a checkout lasts before it expires unless renewed.
         #[arg(long)]
         lease_hours: Option<u32>,
+        /// Use this file as the repository's first `.pyn/pyn.toml` instead of the default (everything exclusive).
+        #[arg(long, conflicts_with = "no_policy")]
+        policy: Option<PathBuf>,
+        /// Create the repository without a `.pyn/pyn.toml`; the server's fallback policy applies until one is added.
+        #[arg(long)]
+        no_policy: bool,
     },
     /// List the repositories you belong to.
     List {
@@ -998,13 +1006,47 @@ fn restore(
     Ok(())
 }
 
+const POLICY_PATH: &str = ".pyn/pyn.toml";
+
+const DEFAULT_POLICY: &str = "[meta]\ndefault = \"exclusive\"\n";
+
+/// Checks in the repository's first policy file, which the server accepts without a lock.
+fn submit_policy(api: &Api, repo: &str, bytes: Vec<u8>) -> Result<()> {
+    let put: api::PutObjectResponse = api
+        .send(
+            api.request(Method::PUT, &format!("{repo}/objects"))
+                .body(bytes),
+        )?
+        .json()?;
+    let body = api::CheckinRequest {
+        path: POLICY_PATH.into(),
+        content: put.content,
+        base_revision: None,
+        message: "Initial policy".into(),
+    };
+    api.send(
+        api.request(Method::POST, &format!("{repo}/checkin"))
+            .json(&body),
+    )?;
+    Ok(())
+}
+
 fn repo_command(api: &Api, cmd: RepoCommand) -> Result<()> {
     match cmd {
         RepoCommand::Create {
             name,
             visibility,
             lease_hours,
+            policy,
+            no_policy,
         } => {
+            let policy = match (policy, no_policy) {
+                (Some(file), _) => Some(
+                    std::fs::read(&file).with_context(|| format!("reading {}", file.display()))?,
+                ),
+                (None, false) => Some(DEFAULT_POLICY.as_bytes().to_vec()),
+                (None, true) => None,
+            };
             let (owner, name) = match name.split_once('/') {
                 Some((owner, name)) => (Some(owner.to_string()), name.to_string()),
                 None => (None, name),
@@ -1026,6 +1068,12 @@ fn repo_command(api: &Api, cmd: RepoCommand) -> Result<()> {
                 .send(api.request(Method::POST, "/v1/repos").json(&body))?
                 .json()?;
             println!("created {}/{}", made.owner, made.name);
+            if let Some(bytes) = policy {
+                let repo = format!("/v1/repos/{}/{}", made.owner, made.name);
+                submit_policy(api, &repo, bytes)
+                    .context("the repository was created, but its policy was not accepted")?;
+                println!("added {POLICY_PATH}");
+            }
         }
         RepoCommand::List { owner } => {
             let mut req = api.get("/v1/repos");

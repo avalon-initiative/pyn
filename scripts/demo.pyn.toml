@@ -1,4 +1,4 @@
-# Policy for the local demo stack (make dev). Applied to every repository on the demo server.
+# Policy for the local demo stack (make dev): the server-wide fallback, and the first .pyn/pyn.toml of each demo repository.
 
 [meta]
 default = "exclusive"

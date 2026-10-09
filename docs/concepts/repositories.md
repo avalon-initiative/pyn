@@ -52,9 +52,11 @@ the server and is not garbage-collected yet. Tokens that were limited to the rep
 
 ## The policy
 
-Until each repository reads its own `.pyn/pyn.toml`, the one file named by `PYN_CONFIG` applies to **every** repository on
-the server. *Provisional:* per-repository policy read from the default branch is tracked in its own issue, and this
-server-wide fallback goes away when that lands.
+Each repository enforces the `.pyn/pyn.toml` at its own head, read when the server first opens the repository and replaced
+the moment a new revision of the file lands; see [Changing policy](pyn-toml.md#changing-policy). `pyn repo create` checks in a
+first policy file for the new repository (everything exclusive, or the file given with `--policy`; `--no-policy` skips it).
+Until a repository has a policy file, the server's `PYN_CONFIG` file applies to it, or everything is exclusive if that is
+unset.
 
 ## Moving from a single-repository server
 
@@ -81,6 +83,6 @@ private. A server with no earlier data starts with no repositories. In-memory st
 Account routes do not name a repository: `/v1/register`, `/v1/login`, `/v1/session`, `/v1/me`, `/v1/me/password`,
 `/v1/keys` and `/v1/tokens`. The previous single-repository routes (`/v1/files`, `/v1/checkout` and so on) are gone.
 
-On the command line: `pyn repo create [owner/]name [--visibility public|private] [--lease-hours N]`, `pyn repo list`,
+On the command line: `pyn repo create [owner/]name [--visibility public|private] [--lease-hours N] [--policy FILE | --no-policy]`, `pyn repo list`,
 `pyn repo delete owner/name`, and `pyn clone <server>/owner/name [dir]`. A workspace records its repository in
 `.pyn/local_only/config.toml`, so commands inside it need no flag; see [the `.pyn/` folder](workspace.md).

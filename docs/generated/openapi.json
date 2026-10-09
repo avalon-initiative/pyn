@@ -647,7 +647,7 @@
           {
             "name": "action",
             "in": "query",
-            "description": "checkout, release, checkin, restore, force_unlock, member_added, role_changed, role_permissions_changed, token_created, token_revoked, repo_created, repo_updated or repo_deleted",
+            "description": "checkout, release, checkin, restore, force_unlock, member_added, role_changed, role_permissions_changed, token_created, token_revoked, repo_created, repo_updated, repo_deleted or policy_changed",
             "required": false,
             "schema": {
               "type": "string"
@@ -742,7 +742,17 @@
             }
           },
           "400": {
-            "description": "object_missing or invalid_path",
+            "description": "object_missing, invalid_path, or invalid_rules for a malformed .pyn/pyn.toml",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "checking in .pyn/pyn.toml needs the edit_policy permission",
             "content": {
               "application/json": {
                 "schema": {
@@ -2875,6 +2885,17 @@
           },
           "message": {
             "type": "string"
+          },
+          "mode": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Mode",
+                "description": "The path's mode when the revision was made; absent for revisions that predate recording it."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "path": {
             "type": "string"

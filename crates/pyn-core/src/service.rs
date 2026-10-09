@@ -1,14 +1,15 @@
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use chrono::Duration;
 
+use crate::access::{Permission, Principal};
 use crate::audit::{AuditAction, AuditEvent, AuditQuery, AuditStore, NewAuditEvent};
 use crate::clock::Clock;
 use crate::error::{PynError, Result};
 use crate::history::{HISTORY_DEFAULT_LIMIT, HISTORY_MAX_LIMIT, HistoryCursor, HistoryPage};
 use crate::object::ObjectStore;
-use crate::rules::{Mode, PathFilter, Rules};
+use crate::rules::{Mode, POLICY_PATH, PathFilter, Rules};
 use crate::store::MetadataStore;
 use crate::tree::{ACTIVITY_ACTIONS, DEFAULT_BRANCH, EntryKind, RepoSummary, TreeEntry};
 use crate::types::{
@@ -38,10 +39,16 @@ impl Default for ServiceConfig {
     }
 }
 
+/// The rules in force and the policy revision they came from (`None` for the fallback).
+struct Applied {
+    revision: Option<RevisionId>,
+    rules: Arc<Rules>,
+}
+
 /// Server-side policy for one repository. Enforcement lives here and in the `MetadataStore` primitives.
 pub struct RepoService {
     repo: RepoId,
-    rules: Rules,
+    applied: RwLock<Applied>,
     meta: Arc<dyn MetadataStore>,
     objects: Arc<dyn ObjectStore>,
     audit: Arc<dyn AuditStore>,
@@ -61,7 +68,10 @@ impl RepoService {
     ) -> Self {
         Self {
             repo,
-            rules,
+            applied: RwLock::new(Applied {
+                revision: None,
+                rules: Arc::new(rules),
+            }),
             meta,
             objects,
             audit,
@@ -91,8 +101,79 @@ impl RepoService {
         &self.repo
     }
 
+    fn rules(&self) -> Arc<Rules> {
+        self.applied.read().unwrap().rules.clone()
+    }
+
     pub fn mode_for(&self, path: &RepoPath) -> Mode {
-        self.rules.mode_for(path)
+        self.rules().mode_for(path)
+    }
+
+    /// Applies the head of `.pyn/pyn.toml` if there is one; otherwise the rules given at construction stay.
+    pub async fn load_policy(&self) -> Result<()> {
+        let policy = RepoPath::new(POLICY_PATH)?;
+        if let Some(head) = self.meta.head_revision(&self.repo, &policy).await? {
+            let rules = self.parse_policy(&head.content).await?;
+            self.apply(head.id, rules);
+        }
+        Ok(())
+    }
+
+    async fn parse_policy(&self, content: &ContentHash) -> Result<Rules> {
+        let bytes = self
+            .objects
+            .get(content)
+            .await?
+            .ok_or_else(|| PynError::ObjectMissing(content.to_string()))?;
+        let text = std::str::from_utf8(&bytes)
+            .map_err(|_| PynError::InvalidRules(format!("{POLICY_PATH} is not UTF-8 text")))?;
+        Rules::from_toml(text)
+    }
+
+    /// Swaps in `rules` unless a newer policy revision is already applied; returns the rules replaced.
+    fn apply(&self, revision: RevisionId, rules: Rules) -> Option<Arc<Rules>> {
+        let mut applied = self.applied.write().unwrap();
+        if applied.revision.is_some_and(|current| current >= revision) {
+            return None;
+        }
+        applied.revision = Some(revision);
+        Some(std::mem::replace(&mut applied.rules, Arc::new(rules)))
+    }
+
+    /// Releases live locks on paths the new policy makes shared and audits the change.
+    async fn policy_applied(
+        &self,
+        actor: &UserId,
+        rev: &Revision,
+        old: &Rules,
+        new: &Rules,
+    ) -> Result<()> {
+        let now = self.clock.now();
+        let mut released = 0;
+        for lock in self.meta.list_locks(&self.repo, now).await? {
+            if old.mode_for(&lock.path) == Mode::Exclusive
+                && new.mode_for(&lock.path) == Mode::Shared
+                && self
+                    .meta
+                    .force_release_lock(&self.repo, &lock.path, now)
+                    .await?
+                    .is_some()
+            {
+                released += 1;
+                let detail = format!("released {}'s lock: now shared by policy", lock.owner);
+                self.record(actor, AuditAction::ForceUnlock, &lock.path, detail)
+                    .await?;
+            }
+        }
+        let detail = format!("r{} applied; {released} lock(s) released", rev.id);
+        self.record(actor, AuditAction::PolicyChanged, &rev.path, detail)
+            .await
+    }
+
+    /// Validates a policy revision before it is recorded: `who` needs the policy permission and the file must parse.
+    async fn check_policy_edit(&self, who: &Principal, content: &ContentHash) -> Result<Rules> {
+        who.require(Permission::EditPolicy)?;
+        self.parse_policy(content).await
     }
 
     /// Take the lock on an exclusive path. `base` must equal the head so nobody edits a stale copy;
@@ -169,12 +250,57 @@ impl RepoService {
         self.audit.list(&self.repo, query).await
     }
 
+    /// Appends the revision under the rules in force; a policy revision is validated first and applied once recorded.
+    /// The first policy revision is the owner's bootstrap: no lock, and the mode it declares for itself applies.
+    async fn commit(
+        &self,
+        who: &Principal,
+        path: &RepoPath,
+        content: ContentHash,
+        base: Option<RevisionId>,
+        message: String,
+        restored_from: Option<RevisionId>,
+    ) -> Result<Revision> {
+        let policy = path.as_str() == POLICY_PATH;
+        let parsed = if policy {
+            Some(self.check_policy_edit(who, &content).await?)
+        } else {
+            None
+        };
+        let bootstrap = policy && base.is_none();
+        let mode = match &parsed {
+            Some(new) if bootstrap => new.mode_for(path),
+            _ => self.mode_for(path),
+        };
+        let lock_holder = (mode == Mode::Exclusive && !bootstrap).then_some(&who.user);
+        let now = self.clock.now();
+        let revision = NewRevision {
+            path: path.clone(),
+            content,
+            author: who.user.clone(),
+            message,
+            created_at: now,
+            restored_from,
+            mode,
+        };
+        let rev = self
+            .meta
+            .commit_revision(&self.repo, revision, base, lock_holder, now)
+            .await?;
+        if let Some(new) = parsed
+            && let Some(old) = self.apply(rev.id, new.clone())
+        {
+            self.policy_applied(&who.user, &rev, &old, &new).await?;
+        }
+        Ok(rev)
+    }
+
     /// Record a revision of `content` (already in the object store). Exclusive paths need the caller's
-    /// live lock; every path needs `base` == head.
+    /// live lock; every path needs `base` == head. `.pyn/pyn.toml` also needs the policy permission.
     pub async fn checkin(
         &self,
+        who: &Principal,
         path: &RepoPath,
-        user: &UserId,
         content: ContentHash,
         base: Option<RevisionId>,
         message: String,
@@ -182,22 +308,9 @@ impl RepoService {
         if !self.objects.exists(&content).await? {
             return Err(PynError::ObjectMissing(content.to_string()));
         }
-        let now = self.clock.now();
-        let lock_holder = (self.mode_for(path) == Mode::Exclusive).then_some(user);
-        let revision = NewRevision {
-            path: path.clone(),
-            content,
-            author: user.clone(),
-            message,
-            created_at: now,
-            restored_from: None,
-        };
-        let rev = self
-            .meta
-            .commit_revision(&self.repo, revision, base, lock_holder, now)
-            .await?;
+        let rev = self.commit(who, path, content, base, message, None).await?;
         self.record(
-            user,
+            &who.user,
             AuditAction::Checkin,
             path,
             format!("r{}: {}", rev.id, rev.message),
@@ -210,8 +323,8 @@ impl RepoService {
     /// Needs the caller's live lock, `base` equal to the head, and `confirm` naming the head being replaced.
     pub async fn restore(
         &self,
+        who: &Principal,
         path: &RepoPath,
-        user: &UserId,
         source: RevisionId,
         base: RevisionId,
         confirm: &str,
@@ -240,21 +353,12 @@ impl RepoService {
         if !self.objects.exists(&old.content).await? {
             return Err(PynError::ObjectMissing(old.content.to_string()));
         }
-        let now = self.clock.now();
-        let revision = NewRevision {
-            path: path.clone(),
-            content: old.content,
-            author: user.clone(),
-            message: message.unwrap_or_else(|| format!("Restore r{source}")),
-            created_at: now,
-            restored_from: Some(source),
-        };
+        let message = message.unwrap_or_else(|| format!("Restore r{source}"));
         let rev = self
-            .meta
-            .commit_revision(&self.repo, revision, Some(base), Some(user), now)
+            .commit(who, path, old.content, Some(base), message, Some(source))
             .await?;
         self.record(
-            user,
+            &who.user,
             AuditAction::Restore,
             path,
             format!("r{} restored from r{source}", rev.id),

@@ -7,6 +7,7 @@ export PYN_SERVER=${PYN_SERVER:-http://127.0.0.1:7878}
 ADMIN=${PYN_BOOTSTRAP_ADMIN:-admin}
 ADMIN_PASSWORD=${PYN_BOOTSTRAP_PASSWORD:-demo-password}
 RUN_DIR=${RUN_DIR:-_running}
+POLICY=$(dirname "$0")/demo.pyn.toml
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
@@ -66,7 +67,7 @@ hold() {
 seed_game() {
   REPO=$ADMIN/demo
   echo "repository $REPO"
-  as "$ADMIN" repo create demo >/dev/null 2>&1 || true
+  as "$ADMIN" repo create demo --policy "$POLICY" >/dev/null 2>&1 || true
   as "$ADMIN" member set alice writer >/dev/null
   as "$ADMIN" member set bob writer >/dev/null
   save alice Source/Player.cpp "class Player {};" "player skeleton"
@@ -92,7 +93,7 @@ seed_game() {
 seed_tools() {
   REPO=bob/tools
   echo "repository $REPO"
-  as bob repo create tools --visibility public >/dev/null 2>&1 || true
+  as bob repo create tools --visibility public --policy "$POLICY" >/dev/null 2>&1 || true
   as bob member set alice reader >/dev/null
   save bob docs/Usage.md "# Tools" "usage notes"
   save bob Source/build.cpp "int main() {}" "build script"

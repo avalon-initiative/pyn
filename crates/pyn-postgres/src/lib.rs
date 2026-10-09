@@ -7,8 +7,8 @@ use chrono::{DateTime, Utc};
 use std::str::FromStr;
 
 use pyn_core::{
-    ContentHash, HistoryCursor, Lock, MetadataStore, NewRevision, PathFilter, PynError, RepoId,
-    RepoPath, RepoRecord, RepoSettings, RepoUpdate, Result, Revision, RevisionId, UserId,
+    ContentHash, HistoryCursor, Lock, MetadataStore, Mode, NewRevision, PathFilter, PynError,
+    RepoId, RepoPath, RepoRecord, RepoSettings, RepoUpdate, Result, Revision, RevisionId, UserId,
     Visibility,
 };
 use sqlx::migrate::MigrateDatabase;
@@ -52,7 +52,26 @@ fn revision_from(row: &PgRow) -> Result<Revision> {
         restored_from: row
             .get::<Option<i64>, _>("restored_from")
             .map(|r| RevisionId(r as u64)),
+        mode: row
+            .get::<Option<String>, _>("mode")
+            .map(|m| mode_from(&m))
+            .transpose()?,
     })
+}
+
+fn mode_str(mode: Mode) -> &'static str {
+    match mode {
+        Mode::Shared => "shared",
+        Mode::Exclusive => "exclusive",
+    }
+}
+
+fn mode_from(s: &str) -> Result<Mode> {
+    match s {
+        "shared" => Ok(Mode::Shared),
+        "exclusive" => Ok(Mode::Exclusive),
+        other => Err(PynError::Storage(format!("unknown mode {other:?}"))),
+    }
 }
 
 fn repo_from(row: &PgRow) -> Result<RepoRecord> {
@@ -278,7 +297,7 @@ impl MetadataStore for PgMetadataStore {
 
     async fn head_revision(&self, repo: &RepoId, path: &RepoPath) -> Result<Option<Revision>> {
         let row = sqlx::query(
-            "SELECT id, path, content, author, message, created_at, restored_from FROM revisions
+            "SELECT id, path, content, author, message, created_at, restored_from, mode FROM revisions
              WHERE repo = $1 AND path = $2 ORDER BY id DESC LIMIT 1",
         )
         .bind(repo.as_str())
@@ -326,8 +345,8 @@ impl MetadataStore for PgMetadataStore {
         let expected = expected_head.map_or(0, |r| r.0 as i64);
         // Inserts only when the head still equals `expected`; a concurrent insert of the same id hits the primary key.
         let inserted = sqlx::query(
-            "INSERT INTO revisions (repo, path, id, content, author, message, created_at, restored_from)
-             SELECT $1, $2, $3, $4, $5, $6, $7, $9::bigint
+            "INSERT INTO revisions (repo, path, id, content, author, message, created_at, restored_from, mode)
+             SELECT $1, $2, $3, $4, $5, $6, $7, $9::bigint, $10
              WHERE COALESCE((SELECT max(id) FROM revisions WHERE repo = $1 AND path = $2), 0) = $8
              RETURNING id",
         )
@@ -340,6 +359,7 @@ impl MetadataStore for PgMetadataStore {
         .bind(revision.created_at)
         .bind(expected)
         .bind(revision.restored_from.map(|r| r.0 as i64))
+        .bind(mode_str(revision.mode))
         .fetch_optional(&mut *tx)
         .await;
 
@@ -385,6 +405,7 @@ impl MetadataStore for PgMetadataStore {
             message: revision.message,
             created_at: revision.created_at,
             restored_from: revision.restored_from,
+            mode: Some(revision.mode),
         })
     }
 
@@ -395,7 +416,7 @@ impl MetadataStore for PgMetadataStore {
         id: RevisionId,
     ) -> Result<Option<Revision>> {
         let row = sqlx::query(
-            "SELECT id, path, content, author, message, created_at, restored_from FROM revisions
+            "SELECT id, path, content, author, message, created_at, restored_from, mode FROM revisions
              WHERE repo = $1 AND path = $2 AND id = $3",
         )
         .bind(repo.as_str())
@@ -409,7 +430,7 @@ impl MetadataStore for PgMetadataStore {
 
     async fn list_head_revisions(&self, repo: &RepoId) -> Result<Vec<Revision>> {
         let rows = sqlx::query(
-            "SELECT DISTINCT ON (path) id, path, content, author, message, created_at, restored_from
+            "SELECT DISTINCT ON (path) id, path, content, author, message, created_at, restored_from, mode
              FROM revisions WHERE repo = $1 ORDER BY path, id DESC",
         )
         .bind(repo.as_str())
@@ -421,7 +442,7 @@ impl MetadataStore for PgMetadataStore {
 
     async fn history(&self, repo: &RepoId, path: &RepoPath) -> Result<Vec<Revision>> {
         let rows = sqlx::query(
-            "SELECT id, path, content, author, message, created_at, restored_from FROM revisions
+            "SELECT id, path, content, author, message, created_at, restored_from, mode FROM revisions
              WHERE repo = $1 AND path = $2 ORDER BY id",
         )
         .bind(repo.as_str())
@@ -445,7 +466,7 @@ impl MetadataStore for PgMetadataStore {
         let mut out = Vec::new();
         loop {
             let rows = sqlx::query(
-                "SELECT id, path, content, author, message, created_at, restored_from FROM revisions
+                "SELECT id, path, content, author, message, created_at, restored_from, mode FROM revisions
                  WHERE repo = $1
                    AND ($2::timestamptz IS NULL
                         OR (created_at, path COLLATE \"C\", id) < ($2, $3::text COLLATE \"C\", $4::bigint))
