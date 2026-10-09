@@ -325,7 +325,66 @@ pub struct SetRoleRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct Member {
     pub user: String,
+    /// The effective role: the highest of the direct grant, team grants and organization ownership.
     pub role: String,
+    /// What decides `role`: `direct`, `team` or `org_owner`.
+    pub source: String,
+}
+
+/// A team of the owning organization and its role in a repository.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct RepoTeam {
+    pub slug: String,
+    pub name: String,
+    pub description: String,
+    pub role: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct SetTeamRoleRequest {
+    pub role: String,
+}
+
+/// A repository where a team holds a role.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct TeamRepo {
+    /// `owner/name`.
+    pub repo: String,
+    pub role: String,
+}
+
+/// A team of an organization with its members and repository roles.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct TeamInfo {
+    pub slug: String,
+    pub name: String,
+    pub description: String,
+    pub created_at: DateTime<Utc>,
+    /// User names, ordered.
+    pub members: Vec<String>,
+    /// Ordered by repository address.
+    pub repos: Vec<TeamRepo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct CreateTeamRequest {
+    /// 1 to 39 lowercase letters, digits, `-` or `_`, starting with a letter or digit; unique in the organization.
+    pub slug: String,
+    /// 1 to 100 characters; defaults to the slug.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// At most 500 characters; defaults to empty.
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+/// Fields left out stay as they are.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct UpdateTeamRequest {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]

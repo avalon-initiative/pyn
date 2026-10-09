@@ -6,8 +6,8 @@ use chrono::{DateTime, Duration, Utc};
 use pyn_core::{
     AccessStore, AccountKind, AccountRecord, AccountStatus, InviteId, InviteRecord, NewAccount,
     OrgMemberChange, OrgRole, Permission, RateLimitStore, RateState, RepoId, Result, Role,
-    RoleDefinitions, SessionRecord, SignupStage, SshKeyRecord, TokenId, TokenRecord, UserId,
-    VerificationRecord,
+    RoleDefinitions, SessionRecord, SignupStage, SshKeyRecord, TeamRecord, TokenId, TokenRecord,
+    UserId, VerificationRecord,
 };
 use sqlx::Row;
 use sqlx::postgres::PgRow;
@@ -20,6 +20,21 @@ fn permissions(names: Vec<String>) -> Result<BTreeSet<Permission>> {
 
 fn names(permissions: &BTreeSet<Permission>) -> Vec<String> {
     permissions.iter().map(|p| p.as_str().to_string()).collect()
+}
+
+fn team_from(row: &PgRow) -> TeamRecord {
+    TeamRecord {
+        org: UserId::new(row.get::<String, _>("org")),
+        slug: row.get("slug"),
+        name: row.get("name"),
+        description: row.get("description"),
+        created_at: row.get("created_at"),
+    }
+}
+
+fn fold_roles(roles: Vec<String>) -> Result<Option<Role>> {
+    let roles: Result<Vec<Role>> = roles.iter().map(|r| Role::from_str(r)).collect();
+    Ok(roles?.into_iter().max())
 }
 
 fn invite_from(row: &PgRow) -> Result<InviteRecord> {
@@ -163,6 +178,7 @@ impl AccessStore for PgMetadataStore {
         let mut tx = self.pool.begin().await.map_err(db)?;
         for stmt in [
             "DELETE FROM memberships WHERE repo = $1",
+            "DELETE FROM team_repo_roles WHERE repo = $1",
             "DELETE FROM role_permissions WHERE repo = $1",
             "DELETE FROM invites WHERE repo = $1",
         ] {
@@ -645,6 +661,225 @@ impl AccessStore for PgMetadataStore {
             .map_err(db)?;
         tx.commit().await.map_err(db)?;
         Ok(OrgMemberChange::Done(old))
+    }
+
+    async fn create_team(&self, team: TeamRecord) -> Result<bool> {
+        let done = sqlx::query(
+            "INSERT INTO teams (org, slug, name, description, created_at) VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(team.org.as_str())
+        .bind(&team.slug)
+        .bind(&team.name)
+        .bind(&team.description)
+        .bind(team.created_at)
+        .execute(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(done.rows_affected() == 1)
+    }
+
+    async fn team(&self, org: &UserId, slug: &str) -> Result<Option<TeamRecord>> {
+        let row = sqlx::query(
+            "SELECT org, slug, name, description, created_at FROM teams WHERE org = $1 AND slug = $2",
+        )
+        .bind(org.as_str())
+        .bind(slug)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(row.as_ref().map(team_from))
+    }
+
+    async fn teams(&self, org: &UserId) -> Result<Vec<TeamRecord>> {
+        let rows = sqlx::query(
+            "SELECT org, slug, name, description, created_at FROM teams WHERE org = $1 ORDER BY slug",
+        )
+        .bind(org.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(rows.iter().map(team_from).collect())
+    }
+
+    async fn update_team(&self, team: &TeamRecord) -> Result<bool> {
+        let done = sqlx::query(
+            "UPDATE teams SET name = $3, description = $4 WHERE org = $1 AND slug = $2",
+        )
+        .bind(team.org.as_str())
+        .bind(&team.slug)
+        .bind(&team.name)
+        .bind(&team.description)
+        .execute(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(done.rows_affected() == 1)
+    }
+
+    async fn delete_team(&self, org: &UserId, slug: &str) -> Result<bool> {
+        let done = sqlx::query("DELETE FROM teams WHERE org = $1 AND slug = $2")
+            .bind(org.as_str())
+            .bind(slug)
+            .execute(&self.pool)
+            .await
+            .map_err(db)?;
+        Ok(done.rows_affected() == 1)
+    }
+
+    async fn team_members(&self, org: &UserId, slug: &str) -> Result<Vec<UserId>> {
+        let rows: Vec<String> = sqlx::query_scalar(
+            "SELECT user_id FROM team_members WHERE org = $1 AND team = $2 ORDER BY user_id",
+        )
+        .bind(org.as_str())
+        .bind(slug)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(rows.into_iter().map(UserId::new).collect())
+    }
+
+    async fn add_team_member(&self, org: &UserId, slug: &str, user: &UserId) -> Result<bool> {
+        let done = sqlx::query(
+            "INSERT INTO team_members (org, team, user_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+        )
+        .bind(org.as_str())
+        .bind(slug)
+        .bind(user.as_str())
+        .execute(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(done.rows_affected() == 1)
+    }
+
+    async fn remove_team_member(&self, org: &UserId, slug: &str, user: &UserId) -> Result<bool> {
+        let done =
+            sqlx::query("DELETE FROM team_members WHERE org = $1 AND team = $2 AND user_id = $3")
+                .bind(org.as_str())
+                .bind(slug)
+                .bind(user.as_str())
+                .execute(&self.pool)
+                .await
+                .map_err(db)?;
+        Ok(done.rows_affected() == 1)
+    }
+
+    async fn teams_of(&self, org: &UserId, user: &UserId) -> Result<Vec<String>> {
+        sqlx::query_scalar(
+            "SELECT team FROM team_members WHERE org = $1 AND user_id = $2 ORDER BY team",
+        )
+        .bind(org.as_str())
+        .bind(user.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)
+    }
+
+    async fn set_team_role(
+        &self,
+        repo: &RepoId,
+        org: &UserId,
+        slug: &str,
+        role: Role,
+    ) -> Result<Option<Role>> {
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        let old: Option<String> = sqlx::query_scalar(
+            "SELECT role FROM team_repo_roles WHERE repo = $1 AND org = $2 AND team = $3 FOR UPDATE",
+        )
+        .bind(repo.as_str())
+        .bind(org.as_str())
+        .bind(slug)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db)?;
+        sqlx::query(
+            "INSERT INTO team_repo_roles (repo, org, team, role) VALUES ($1, $2, $3, $4)
+             ON CONFLICT (repo, org, team) DO UPDATE SET role = EXCLUDED.role",
+        )
+        .bind(repo.as_str())
+        .bind(org.as_str())
+        .bind(slug)
+        .bind(role.as_str())
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
+        tx.commit().await.map_err(db)?;
+        old.map(|r| Role::from_str(&r)).transpose()
+    }
+
+    async fn remove_team_role(
+        &self,
+        repo: &RepoId,
+        org: &UserId,
+        slug: &str,
+    ) -> Result<Option<Role>> {
+        let old: Option<String> = sqlx::query_scalar(
+            "DELETE FROM team_repo_roles WHERE repo = $1 AND org = $2 AND team = $3 RETURNING role",
+        )
+        .bind(repo.as_str())
+        .bind(org.as_str())
+        .bind(slug)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db)?;
+        old.map(|r| Role::from_str(&r)).transpose()
+    }
+
+    async fn team_grants(&self, repo: &RepoId) -> Result<Vec<(String, Role)>> {
+        let rows =
+            sqlx::query("SELECT team, role FROM team_repo_roles WHERE repo = $1 ORDER BY team")
+                .bind(repo.as_str())
+                .fetch_all(&self.pool)
+                .await
+                .map_err(db)?;
+        rows.iter()
+            .map(|r| Ok((r.get::<String, _>("team"), Role::from_str(r.get("role"))?)))
+            .collect()
+    }
+
+    async fn team_repos(&self, org: &UserId, slug: &str) -> Result<Vec<(RepoId, Role)>> {
+        let rows = sqlx::query(
+            "SELECT repo, role FROM team_repo_roles WHERE org = $1 AND team = $2 ORDER BY repo",
+        )
+        .bind(org.as_str())
+        .bind(slug)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        rows.iter()
+            .map(|r| {
+                Ok((
+                    RepoId::new(r.get::<String, _>("repo")),
+                    Role::from_str(r.get("role"))?,
+                ))
+            })
+            .collect()
+    }
+
+    async fn team_role_of(&self, repo: &RepoId, user: &UserId) -> Result<Option<Role>> {
+        let roles: Vec<String> = sqlx::query_scalar(
+            "SELECT g.role FROM team_repo_roles g
+             JOIN team_members m ON m.org = g.org AND m.team = g.team
+             WHERE g.repo = $1 AND m.user_id = $2",
+        )
+        .bind(repo.as_str())
+        .bind(user.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        fold_roles(roles)
+    }
+
+    async fn team_repos_of(&self, user: &UserId) -> Result<Vec<RepoId>> {
+        let rows: Vec<String> = sqlx::query_scalar(
+            "SELECT DISTINCT g.repo FROM team_repo_roles g
+             JOIN team_members m ON m.org = g.org AND m.team = g.team
+             WHERE m.user_id = $1 ORDER BY g.repo",
+        )
+        .bind(user.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(rows.into_iter().map(RepoId::new).collect())
     }
 
     async fn create_account(&self, new: NewAccount) -> Result<bool> {

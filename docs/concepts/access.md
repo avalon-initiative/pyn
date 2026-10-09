@@ -36,13 +36,19 @@ nobody can grant a role containing a permission they do not hold themselves.
 What someone may do in a repository is decided by one function in the server: the highest role among the sources below.
 
 1. A direct grant on the repository (members, invitations, the creator of a user's repository).
-2. *Later:* a team grant, once [organization teams](repositories.md#organizations) exist.
+2. A grant to a [team](repositories.md#teams) the person is in (the highest, when several teams hold a role).
 3. Owning the organization that owns the repository: `admin`.
 
 A token or session then narrows the result. Every lookup (the repository's `me`, the repository list, token creation, role
 checks) uses this one function. Being a plain organization member grants nothing by itself; a direct grant on an
 organization's repository goes only to a member of that organization (see
-[organizations](repositories.md#organizations)). Teams (rule 2) are a later slice.
+[organizations](repositories.md#organizations)). The repository list (`GET /v1/repos`) includes those reached through a team. Nothing caches a role: it is read on every request, so adding or removing a team member, changing a team
+grant or demoting an organization owner applies at once, to tokens as well.
+
+`GET /v1/repos/{owner}/{name}/members` (needs `manage_users`) lists everyone with access, one row per person:
+`{user, role, source}`, where `role` is the effective role and `source` is what decides it: `direct`, `team` or
+`org_owner` (on a tie, direct comes first, then team). The teams that hold roles are listed at
+`GET /v1/repos/{owner}/{name}/teams`.
 
 ## Accounts and signing in
 
@@ -198,9 +204,9 @@ every permission. Never set it on a server others can reach.
 
 ## Audit
 
-Organization events (created, deleted, members added, removed or changed) are kept in a separate [organization log](repositories.md#organizations) for its
+Organization events (created, deleted, members added, removed or changed, teams and their members) are kept in a separate [organization log](repositories.md#organizations) for its
 owners (`pyn org audit <org>`). Adding a member (by an admin, by registration or as the creator of a repository), changing a member's role, changing what a
-role grants, creating or revoking a token, and creating, changing or deleting the repository itself are recorded in that
+role grants, giving a team a role or taking it away, creating or revoking a token, and creating, changing or deleting the repository itself are recorded in that
 repository's audit log with the actor and what changed, and are visible to `view_audit`. Server-wide account actions go to
 the [server audit log](#protecting-open-registration). A token's events go to the log of
 each repository it is limited to. Token secrets are never recorded, and neither are sign-in sessions.

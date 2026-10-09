@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
@@ -7,8 +7,8 @@ use chrono::{DateTime, Duration, Utc};
 use crate::access::{
     AccountKind, AccountRecord, AccountStatus, Credential, Identity, InviteId, InviteRecord,
     NewAccount, OrgCreation, OrgRole, Permission, Principal, RegistrationMode, Role,
-    RoleDefinitions, SessionRecord, SignupStage, SshKeyRecord, TokenId, TokenRecord,
-    VerificationRecord, account, invite, session, ssh, token, verification,
+    RoleDefinitions, RoleSource, SessionRecord, SignupStage, SshKeyRecord, TeamRecord, TokenId,
+    TokenRecord, VerificationRecord, account, invite, session, ssh, token, verification,
 };
 use crate::audit::{AuditAction, AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent};
 use crate::clock::Clock;
@@ -25,6 +25,9 @@ use crate::types::{RepoId, UserId};
 pub const SERVER_AUDIT_ID: &str = "@server";
 
 mod organizations;
+mod teams;
+
+pub use teams::TeamDetail;
 
 /// The outcome of changing or removing an organization member.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,7 +53,7 @@ pub trait AccessStore: Send + Sync {
     /// The repositories the user has a role in, ordered by id.
     async fn repos_of(&self, user: &UserId) -> Result<Vec<RepoId>>;
 
-    /// Removes the repository's memberships, role overrides and invitations.
+    /// Removes the repository's memberships, team roles, role overrides and invitations.
     async fn delete_repo_access(&self, repo: &RepoId) -> Result<()>;
 
     /// The defaults with the repository's overrides applied.
@@ -77,7 +80,7 @@ pub trait AccessStore: Send + Sync {
     /// The organizations the user belongs to with their role, ordered by name.
     async fn orgs_of(&self, user: &UserId) -> Result<Vec<(UserId, OrgRole)>>;
 
-    /// Removes the organization and its member records; false if there is no such organization.
+    /// Removes the organization with its member and team records; false if there is no such organization.
     async fn delete_org(&self, org: &UserId) -> Result<bool>;
 
     /// The organization's members with their role, ordered by user name.
@@ -94,14 +97,69 @@ pub trait AccessStore: Send + Sync {
         role: OrgRole,
     ) -> Result<OrgMemberChange>;
 
-    /// Removes a member and their direct roles in `repos` (the organization's repositories), refusing to
-    /// remove the last owner. Returns the role they held.
+    /// Removes a member, their team memberships and their direct roles in `repos` (the organization's
+    /// repositories), refusing to remove the last owner. Returns the role they held.
     async fn remove_org_member(
         &self,
         org: &UserId,
         user: &UserId,
         repos: &[RepoId],
     ) -> Result<OrgMemberChange>;
+
+    /// Creates the team; false if the organization already has one with that slug.
+    async fn create_team(&self, team: TeamRecord) -> Result<bool>;
+
+    async fn team(&self, org: &UserId, slug: &str) -> Result<Option<TeamRecord>>;
+
+    /// The organization's teams, ordered by slug.
+    async fn teams(&self, org: &UserId) -> Result<Vec<TeamRecord>>;
+
+    /// Replaces the team's name and description; false if there is no such team.
+    async fn update_team(&self, team: &TeamRecord) -> Result<bool>;
+
+    /// Removes the team with its members and repository roles; false if there is no such team.
+    async fn delete_team(&self, org: &UserId, slug: &str) -> Result<bool>;
+
+    /// The team's members, ordered by user name.
+    async fn team_members(&self, org: &UserId, slug: &str) -> Result<Vec<UserId>>;
+
+    /// Adds an organization member to the team; false if they are already in it.
+    async fn add_team_member(&self, org: &UserId, slug: &str, user: &UserId) -> Result<bool>;
+
+    /// Removes the person from the team; false if they were not in it.
+    async fn remove_team_member(&self, org: &UserId, slug: &str, user: &UserId) -> Result<bool>;
+
+    /// The slugs of the organization's teams the user is in, ordered.
+    async fn teams_of(&self, org: &UserId, user: &UserId) -> Result<Vec<String>>;
+
+    /// Gives the team a role on the repository, returning the role it held before.
+    async fn set_team_role(
+        &self,
+        repo: &RepoId,
+        org: &UserId,
+        slug: &str,
+        role: Role,
+    ) -> Result<Option<Role>>;
+
+    /// Takes the team's role on the repository away, returning the role it held.
+    async fn remove_team_role(
+        &self,
+        repo: &RepoId,
+        org: &UserId,
+        slug: &str,
+    ) -> Result<Option<Role>>;
+
+    /// The repository's team grants as (team slug, role), ordered by slug.
+    async fn team_grants(&self, repo: &RepoId) -> Result<Vec<(String, Role)>>;
+
+    /// The team's repository roles, ordered by repository.
+    async fn team_repos(&self, org: &UserId, slug: &str) -> Result<Vec<(RepoId, Role)>>;
+
+    /// The highest role the user's teams hold on the repository.
+    async fn team_role_of(&self, repo: &RepoId, user: &UserId) -> Result<Option<Role>>;
+
+    /// The repositories where one of the user's teams holds a role, ordered by id.
+    async fn team_repos_of(&self, user: &UserId) -> Result<Vec<RepoId>>;
 
     async fn set_password_hash(&self, user: &UserId, hash: &str) -> Result<()>;
 
@@ -336,6 +394,14 @@ pub struct SignUp {
     pub status: AccountStatus,
 }
 
+/// A person with access to a repository, the role they effectively hold and where it comes from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepoMember {
+    pub user: UserId,
+    pub role: Role,
+    pub source: RoleSource,
+}
+
 /// Authentication of tokens and passwords, and every rule about who may join and manage users, roles and tokens.
 pub struct AccessService {
     store: Arc<dyn AccessStore>,
@@ -346,6 +412,21 @@ pub struct AccessService {
     email: Arc<dyn EmailSender>,
     passwords: Arc<dyn PasswordWorker>,
     registry: Option<Arc<dyn MetadataStore>>,
+}
+
+fn stronger(
+    current: Option<(Role, RoleSource)>,
+    candidate: (Role, RoleSource),
+) -> Option<(Role, RoleSource)> {
+    match current {
+        Some((role, source))
+            if (role, std::cmp::Reverse(source))
+                >= (candidate.0, std::cmp::Reverse(candidate.1)) =>
+        {
+            current
+        }
+        _ => Some(candidate),
+    }
 }
 
 fn join<T: ToString>(items: impl Iterator<Item = T>) -> String {
@@ -446,23 +527,38 @@ impl AccessService {
         self.config.require_approval
     }
 
-    /// The role `user` holds in `repo`: the highest of a direct grant and the implicit admin of an owner of the
-    /// owning organization. Every role lookup goes through here.
+    /// The role `user` holds in `repo`: the highest of a direct grant, the grants of their teams and the implicit
+    /// admin of an owner of the owning organization. Every role lookup goes through here.
     pub async fn effective_role(&self, repo: &RepoId, user: &UserId) -> Result<Option<Role>> {
-        let direct = self.store.role_of(repo, user).await?;
-        if direct == Some(Role::Admin) {
-            return Ok(direct);
+        Ok(self.resolve_role(repo, user).await?.map(|(role, _)| role))
+    }
+
+    /// The effective role with the source that decides it; on a tie, direct beats team beats owner.
+    async fn resolve_role(
+        &self,
+        repo: &RepoId,
+        user: &UserId,
+    ) -> Result<Option<(Role, RoleSource)>> {
+        let mut best = None;
+        if let Some(role) = self.store.role_of(repo, user).await? {
+            best = stronger(best, (role, RoleSource::Direct));
+        }
+        if best.is_some_and(|(role, _)| role == Role::Admin) {
+            return Ok(best);
+        }
+        if let Some(role) = self.store.team_role_of(repo, user).await? {
+            best = stronger(best, (role, RoleSource::Team));
         }
         let Some(registry) = &self.registry else {
-            return Ok(direct);
+            return Ok(best);
         };
         let Some(record) = registry.get_repo(repo).await? else {
-            return Ok(direct);
+            return Ok(best);
         };
-        match self.store.org_role(&record.owner, user).await? {
-            Some(OrgRole::Owner) => Ok(Some(Role::Admin)),
-            _ => Ok(direct),
+        if self.store.org_role(&record.owner, user).await? == Some(OrgRole::Owner) {
+            best = stronger(best, (Role::Admin, RoleSource::OrgOwner));
         }
+        Ok(best)
     }
 
     /// What `user`'s role grants in `repo`; nothing for a non-member.
@@ -706,9 +802,40 @@ impl AccessService {
         }
     }
 
-    pub async fn members(&self, actor: &Principal, repo: &RepoId) -> Result<Vec<(UserId, Role)>> {
+    /// Everyone with a role in the repository, ordered by user name: direct grants, members of granted teams and
+    /// owners of the owning organization, each with the effective role and its source.
+    pub async fn members(&self, actor: &Principal, repo: &RepoId) -> Result<Vec<RepoMember>> {
         actor.require(Permission::ManageUsers)?;
-        self.store.members(repo).await
+        let mut best: BTreeMap<UserId, (Role, RoleSource)> = BTreeMap::new();
+        let mut add = |user: UserId, candidate: (Role, RoleSource)| {
+            let current = best.get(&user).copied();
+            if let Some(winner) = stronger(current, candidate) {
+                best.insert(user, winner);
+            }
+        };
+        for (user, role) in self.store.members(repo).await? {
+            add(user, (role, RoleSource::Direct));
+        }
+        let owner = match &self.registry {
+            Some(registry) => registry.get_repo(repo).await?.map(|r| r.owner),
+            None => None,
+        };
+        if let Some(org) = owner {
+            for (slug, role) in self.store.team_grants(repo).await? {
+                for user in self.store.team_members(&org, &slug).await? {
+                    add(user, (role, RoleSource::Team));
+                }
+            }
+            for (user, role) in self.store.org_members(&org).await? {
+                if role == OrgRole::Owner {
+                    add(user, (Role::Admin, RoleSource::OrgOwner));
+                }
+            }
+        }
+        Ok(best
+            .into_iter()
+            .map(|(user, (role, source))| RepoMember { user, role, source })
+            .collect())
     }
 
     pub async fn role_definitions(&self, repo: &RepoId) -> Result<RoleDefinitions> {
@@ -1399,9 +1526,11 @@ impl AccessService {
             .await
     }
 
-    /// The repositories where the user has a role, including every one owned by an organization they own.
+    /// The repositories where the user has a role: direct grants, team grants and every repository owned by an
+    /// organization they own.
     pub async fn repos_of(&self, user: &UserId) -> Result<Vec<RepoId>> {
         let mut repos = self.store.repos_of(user).await?;
+        repos.extend(self.store.team_repos_of(user).await?);
         if let Some(registry) = &self.registry {
             for (org, role) in self.store.orgs_of(user).await? {
                 if role == OrgRole::Owner {

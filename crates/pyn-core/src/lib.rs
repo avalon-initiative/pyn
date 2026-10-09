@@ -25,12 +25,12 @@ pub mod types;
 pub use access::{
     AccountKind, AccountRecord, AccountStatus, Credential, Identity, InviteId, InviteRecord,
     NewAccount, OrgCreation, OrgRole, Permission, Principal, RegistrationMode, Role,
-    RoleDefinitions, SessionRecord, SignupStage, SshKeyRecord, TokenId, TokenRecord,
-    VerificationRecord, account, invite, session, ssh, token, verification,
+    RoleDefinitions, RoleSource, SessionRecord, SignupStage, SshKeyRecord, TeamRecord, TokenId,
+    TokenRecord, VerificationRecord, account, invite, session, ssh, team, token, verification,
 };
 pub use access_service::{
     AccessConfig, AccessService, AccessStore, OrgMemberChange, RateLimits, Registration,
-    SERVER_AUDIT_ID, SignUp,
+    RepoMember, SERVER_AUDIT_ID, SignUp, TeamDetail,
 };
 pub use audit::{AuditAction, AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent};
 pub use auth::AuthProvider;

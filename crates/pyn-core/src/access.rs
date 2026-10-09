@@ -659,6 +659,88 @@ impl FromStr for OrgRole {
     }
 }
 
+/// A flat group of an organization's members that holds one role per repository the organization owns.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TeamRecord {
+    pub org: UserId,
+    pub slug: String,
+    pub name: String,
+    pub description: String,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Where an effective role comes from. When sources tie on the role, the first listed wins.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RoleSource {
+    Direct,
+    Team,
+    OrgOwner,
+}
+
+impl RoleSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Direct => "direct",
+            Self::Team => "team",
+            Self::OrgOwner => "org_owner",
+        }
+    }
+}
+
+impl fmt::Display for RoleSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Rules for team names.
+pub mod team {
+    use super::*;
+
+    const MAX_NAME: usize = 100;
+    const MAX_DESCRIPTION: usize = 500;
+
+    /// 1 to 39 lowercase letters, digits, `-` or `_`, starting with a letter or digit.
+    pub fn validate_slug(slug: &str) -> Result<String> {
+        let chars_ok = slug
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_');
+        let starts_ok = slug
+            .bytes()
+            .next()
+            .is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit());
+        if (1..=39).contains(&slug.len()) && chars_ok && starts_ok {
+            Ok(slug.to_string())
+        } else {
+            Err(PynError::InvalidRequest(
+                "a team slug is 1 to 39 lowercase letters, digits, '-' or '_', starting with a letter or digit"
+                    .into(),
+            ))
+        }
+    }
+
+    pub fn validate_name(name: &str) -> Result<String> {
+        let name = name.trim();
+        if name.is_empty() || name.chars().count() > MAX_NAME {
+            return Err(PynError::InvalidRequest(format!(
+                "a team name is 1 to {MAX_NAME} characters"
+            )));
+        }
+        Ok(name.to_string())
+    }
+
+    pub fn validate_description(description: &str) -> Result<String> {
+        let description = description.trim();
+        if description.chars().count() > MAX_DESCRIPTION {
+            return Err(PynError::InvalidRequest(format!(
+                "a team description is at most {MAX_DESCRIPTION} characters"
+            )));
+        }
+        Ok(description.to_string())
+    }
+}
+
 /// An account as the sign-up and administration rules see it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccountRecord {
