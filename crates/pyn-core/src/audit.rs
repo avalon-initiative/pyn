@@ -5,6 +5,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::access_service::SERVER_AUDIT_ID;
 use crate::error::{PynError, Result};
 use crate::types::{RepoId, RepoPath, UserId};
 
@@ -28,10 +29,12 @@ pub enum AuditAction {
     AccountApproved,
     AccountDisabled,
     AccountEnabled,
+    OrgCreated,
+    OrgDeleted,
 }
 
 impl AuditAction {
-    pub const ALL: [AuditAction; 17] = [
+    pub const ALL: [AuditAction; 19] = [
         AuditAction::Checkout,
         AuditAction::Release,
         AuditAction::Checkin,
@@ -49,6 +52,8 @@ impl AuditAction {
         AuditAction::AccountApproved,
         AuditAction::AccountDisabled,
         AuditAction::AccountEnabled,
+        AuditAction::OrgCreated,
+        AuditAction::OrgDeleted,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -70,6 +75,8 @@ impl AuditAction {
             Self::AccountApproved => "account_approved",
             Self::AccountDisabled => "account_disabled",
             Self::AccountEnabled => "account_enabled",
+            Self::OrgCreated => "org_created",
+            Self::OrgDeleted => "org_deleted",
         }
     }
 }
@@ -119,10 +126,35 @@ pub struct AuditQuery {
     pub limit: usize,
 }
 
+/// What a log belongs to: a repository, an organization, or the server itself.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum AuditScope {
+    Repo(RepoId),
+    Org(UserId),
+    Server,
+}
+
+impl AuditScope {
+    /// The stable storage key. Neither `@` form can collide with a repository id or a user name.
+    pub fn key(&self) -> String {
+        match self {
+            Self::Repo(id) => id.to_string(),
+            Self::Org(name) => format!("@org:{name}"),
+            Self::Server => SERVER_AUDIT_ID.to_string(),
+        }
+    }
+}
+
+impl From<&RepoId> for AuditScope {
+    fn from(id: &RepoId) -> Self {
+        Self::Repo(id.clone())
+    }
+}
+
 /// Append-only record of administrative and locking events. Events are never changed or removed.
 #[async_trait]
 pub trait AuditStore: Send + Sync {
-    async fn record(&self, repo: &RepoId, event: NewAuditEvent) -> Result<()>;
+    async fn record(&self, scope: &AuditScope, event: NewAuditEvent) -> Result<()>;
 
-    async fn list(&self, repo: &RepoId, query: &AuditQuery) -> Result<Vec<AuditEvent>>;
+    async fn list(&self, scope: &AuditScope, query: &AuditQuery) -> Result<Vec<AuditEvent>>;
 }

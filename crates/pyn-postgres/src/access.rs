@@ -4,9 +4,9 @@ use std::str::FromStr;
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use pyn_core::{
-    AccessStore, AccountRecord, AccountStatus, InviteId, InviteRecord, NewAccount, Permission,
-    RateLimitStore, RateState, RepoId, Result, Role, RoleDefinitions, SessionRecord, SignupStage,
-    SshKeyRecord, TokenId, TokenRecord, UserId, VerificationRecord,
+    AccessStore, AccountKind, AccountRecord, AccountStatus, InviteId, InviteRecord, NewAccount,
+    OrgRole, Permission, RateLimitStore, RateState, RepoId, Result, Role, RoleDefinitions,
+    SessionRecord, SignupStage, SshKeyRecord, TokenId, TokenRecord, UserId, VerificationRecord,
 };
 use sqlx::Row;
 use sqlx::postgres::PgRow;
@@ -62,6 +62,7 @@ fn session_from(row: &PgRow) -> SessionRecord {
 fn account_from(row: &PgRow) -> Result<AccountRecord> {
     Ok(AccountRecord {
         user: UserId::new(row.get::<String, _>("id")),
+        kind: AccountKind::from_str(row.get("kind"))?,
         email: row.get("email"),
         email_verified_at: row.get("email_verified_at"),
         signup: SignupStage::from_str(row.get("signup"))?,
@@ -226,6 +227,75 @@ impl AccessStore for PgMetadataStore {
             .fetch_one(&self.pool)
             .await
             .map_err(db)
+    }
+
+    async fn create_org(&self, org: &UserId, owner: &UserId, now: DateTime<Utc>) -> Result<bool> {
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        let created = sqlx::query(
+            "INSERT INTO users (id, created_at, kind) VALUES ($1, $2, 'org') ON CONFLICT (id) DO NOTHING",
+        )
+        .bind(org.as_str())
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?
+        .rows_affected()
+            == 1;
+        if !created {
+            return Ok(false);
+        }
+        sqlx::query(
+            "INSERT INTO users (id, created_at) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING",
+        )
+        .bind(owner.as_str())
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
+        sqlx::query("INSERT INTO org_members (org, user_id, role) VALUES ($1, $2, 'owner')")
+            .bind(org.as_str())
+            .bind(owner.as_str())
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
+        tx.commit().await.map_err(db)?;
+        Ok(true)
+    }
+
+    async fn org_role(&self, org: &UserId, user: &UserId) -> Result<Option<OrgRole>> {
+        let role: Option<String> =
+            sqlx::query_scalar("SELECT role FROM org_members WHERE org = $1 AND user_id = $2")
+                .bind(org.as_str())
+                .bind(user.as_str())
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(db)?;
+        role.map(|r| OrgRole::from_str(&r)).transpose()
+    }
+
+    async fn orgs_of(&self, user: &UserId) -> Result<Vec<(UserId, OrgRole)>> {
+        let rows = sqlx::query("SELECT org, role FROM org_members WHERE user_id = $1 ORDER BY org")
+            .bind(user.as_str())
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db)?;
+        rows.iter()
+            .map(|r| {
+                Ok((
+                    UserId::new(r.get::<String, _>("org")),
+                    OrgRole::from_str(r.get("role"))?,
+                ))
+            })
+            .collect()
+    }
+
+    async fn delete_org(&self, org: &UserId) -> Result<bool> {
+        let deleted = sqlx::query("DELETE FROM users WHERE id = $1 AND kind = 'org'")
+            .bind(org.as_str())
+            .execute(&self.pool)
+            .await
+            .map_err(db)?;
+        Ok(deleted.rows_affected() == 1)
     }
 
     async fn set_password_hash(&self, user: &UserId, hash: &str) -> Result<()> {
@@ -509,7 +579,7 @@ impl AccessStore for PgMetadataStore {
     }
 
     async fn account(&self, user: &UserId) -> Result<Option<AccountRecord>> {
-        let row = sqlx::query("SELECT id, email, email_verified_at, signup, disabled_at, disabled_reason, is_admin, created_at FROM users WHERE id = $1")
+        let row = sqlx::query("SELECT id, kind, email, email_verified_at, signup, disabled_at, disabled_reason, is_admin, created_at FROM users WHERE id = $1")
         .bind(user.as_str())
         .fetch_optional(&self.pool)
         .await
@@ -529,7 +599,7 @@ impl AccessStore for PgMetadataStore {
     }
 
     async fn pending_by_email(&self, email: &str) -> Result<Vec<AccountRecord>> {
-        let rows = sqlx::query("SELECT id, email, email_verified_at, signup, disabled_at, disabled_reason, is_admin, created_at FROM users WHERE email = $1 AND signup = 'pending_verification' ORDER BY created_at, id")
+        let rows = sqlx::query("SELECT id, kind, email, email_verified_at, signup, disabled_at, disabled_reason, is_admin, created_at FROM users WHERE email = $1 AND signup = 'pending_verification' ORDER BY created_at, id")
         .bind(email)
         .fetch_all(&self.pool)
         .await
@@ -608,10 +678,11 @@ impl AccessStore for PgMetadataStore {
         status: Option<AccountStatus>,
         limit: usize,
     ) -> Result<Vec<AccountRecord>> {
-        let rows = sqlx::query("SELECT id, email, email_verified_at, signup, disabled_at, disabled_reason, is_admin, created_at FROM users
-             WHERE $1::text IS NULL
+        let rows = sqlx::query("SELECT id, kind, email, email_verified_at, signup, disabled_at, disabled_reason, is_admin, created_at FROM users
+             WHERE kind = 'user'
+               AND ($1::text IS NULL
                 OR CASE WHEN $1 = 'disabled' THEN disabled_at IS NOT NULL
-                        ELSE disabled_at IS NULL AND signup = $1 END
+                        ELSE disabled_at IS NULL AND signup = $1 END)
              ORDER BY created_at, id LIMIT $2")
         .bind(status.map(AccountStatus::as_str))
         .bind(limit as i64)

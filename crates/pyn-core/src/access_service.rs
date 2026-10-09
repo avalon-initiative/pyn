@@ -5,25 +5,28 @@ use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 
 use crate::access::{
-    AccountRecord, AccountStatus, Credential, Identity, InviteId, InviteRecord, NewAccount,
-    Permission, Principal, RegistrationMode, Role, RoleDefinitions, SessionRecord, SignupStage,
-    SshKeyRecord, TokenId, TokenRecord, VerificationRecord, account, invite, session, ssh, token,
-    verification,
+    AccountKind, AccountRecord, AccountStatus, Credential, Identity, InviteId, InviteRecord,
+    NewAccount, OrgCreation, OrgRole, Permission, Principal, RegistrationMode, Role,
+    RoleDefinitions, SessionRecord, SignupStage, SshKeyRecord, TokenId, TokenRecord,
+    VerificationRecord, account, invite, session, ssh, token, verification,
 };
-use crate::audit::{AuditAction, AuditEvent, AuditQuery, AuditStore, NewAuditEvent};
+use crate::audit::{AuditAction, AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent};
 use crate::clock::Clock;
 use crate::email::{EmailMessage, EmailSender, NullEmailSender};
 use crate::error::{PynError, Result};
 use crate::memory::MemoryRateLimitStore;
 use crate::passwords::{InlinePasswords, PasswordWorker};
 use crate::ratelimit::RateLimitStore;
+use crate::store::MetadataStore;
 use crate::types::{RepoId, UserId};
 
 /// Server-wide events (account approvals and disables) are recorded in the audit store under this id, which
 /// no repository can have.
 pub const SERVER_AUDIT_ID: &str = "@server";
 
-/// Persistence for users, roles and tokens.
+mod organizations;
+
+/// Persistence for users, organizations, roles and tokens.
 #[async_trait]
 pub trait AccessStore: Send + Sync {
     /// Creates the user if it does not exist.
@@ -55,6 +58,18 @@ pub trait AccessStore: Send + Sync {
     async fn create_user(&self, user: &UserId, now: DateTime<Utc>) -> Result<bool>;
 
     async fn user_exists(&self, user: &UserId) -> Result<bool>;
+
+    /// Creates the organization with `owner` as its first owner in one step, adding the owner's account if
+    /// needed; false if the name is already taken by any account.
+    async fn create_org(&self, org: &UserId, owner: &UserId, now: DateTime<Utc>) -> Result<bool>;
+
+    async fn org_role(&self, org: &UserId, user: &UserId) -> Result<Option<OrgRole>>;
+
+    /// The organizations the user belongs to with their role, ordered by name.
+    async fn orgs_of(&self, user: &UserId) -> Result<Vec<(UserId, OrgRole)>>;
+
+    /// Removes the organization and its member records; false if there is no such organization.
+    async fn delete_org(&self, org: &UserId) -> Result<bool>;
 
     async fn set_password_hash(&self, user: &UserId, hash: &str) -> Result<()>;
 
@@ -206,6 +221,8 @@ pub struct AccessConfig {
     pub public_url: String,
     /// How long a verification link works, and how long an unverified account keeps its name.
     pub verification_ttl: Duration,
+    /// Who may create organizations.
+    pub org_creation: OrgCreation,
 }
 
 impl Default for AccessConfig {
@@ -218,6 +235,7 @@ impl Default for AccessConfig {
             limits: RateLimits::default(),
             public_url: "http://localhost:5173".into(),
             verification_ttl: Duration::hours(24),
+            org_creation: OrgCreation::Anyone,
         }
     }
 }
@@ -295,10 +313,15 @@ pub struct AccessService {
     limits: Arc<dyn RateLimitStore>,
     email: Arc<dyn EmailSender>,
     passwords: Arc<dyn PasswordWorker>,
+    registry: Option<Arc<dyn MetadataStore>>,
 }
 
 fn join<T: ToString>(items: impl Iterator<Item = T>) -> String {
     items.map(|i| i.to_string()).collect::<Vec<_>>().join(", ")
+}
+
+fn org_cannot_sign_in() -> PynError {
+    unauthenticated("organizations cannot sign in; act as one of their owners")
 }
 
 fn unauthenticated(why: &str) -> PynError {
@@ -315,7 +338,14 @@ impl AccessService {
             limits: Arc::new(MemoryRateLimitStore::new()),
             email: Arc::new(NullEmailSender),
             passwords: Arc::new(InlinePasswords),
+            registry: None,
         }
+    }
+
+    /// The repository registry, which tells who owns a repository so organization owners resolve to admin.
+    pub fn with_registry(mut self, registry: Arc<dyn MetadataStore>) -> Self {
+        self.registry = Some(registry);
+        self
     }
 
     /// Where rate-limit counters live; the default is in memory and resets on restart.
@@ -354,7 +384,7 @@ impl AccessService {
 
     async fn record(
         &self,
-        repo: &RepoId,
+        scope: impl Into<AuditScope>,
         actor: &UserId,
         action: AuditAction,
         detail: String,
@@ -369,7 +399,7 @@ impl AccessService {
             path: None,
             detail,
         };
-        store.record(repo, event).await
+        store.record(&scope.into(), event).await
     }
 
     pub fn registration_mode(&self) -> RegistrationMode {
@@ -384,13 +414,32 @@ impl AccessService {
         self.config.require_approval
     }
 
+    /// The role `user` holds in `repo`: the highest of a direct grant and the implicit admin of an owner of the
+    /// owning organization. Every role lookup goes through here.
+    pub async fn effective_role(&self, repo: &RepoId, user: &UserId) -> Result<Option<Role>> {
+        let direct = self.store.role_of(repo, user).await?;
+        if direct == Some(Role::Admin) {
+            return Ok(direct);
+        }
+        let Some(registry) = &self.registry else {
+            return Ok(direct);
+        };
+        let Some(record) = registry.get_repo(repo).await? else {
+            return Ok(direct);
+        };
+        match self.store.org_role(&record.owner, user).await? {
+            Some(OrgRole::Owner) => Ok(Some(Role::Admin)),
+            _ => Ok(direct),
+        }
+    }
+
     /// What `user`'s role grants in `repo`; nothing for a non-member.
     pub async fn role_permissions(
         &self,
         repo: &RepoId,
         user: &UserId,
     ) -> Result<BTreeSet<Permission>> {
-        let Some(role) = self.store.role_of(repo, user).await? else {
+        let Some(role) = self.effective_role(repo, user).await? else {
             return Ok(BTreeSet::new());
         };
         Ok(self.store.role_definitions(repo).await?.get(role).clone())
@@ -542,7 +591,7 @@ impl AccessService {
         if &actor.user == target {
             return Ok(());
         }
-        for repo in self.store.repos_of(target).await? {
+        for repo in self.repos_of(target).await? {
             if let Ok(held) = self.principal_in(&repo, actor).await
                 && held.has(Permission::ManageUsers)
             {
@@ -697,9 +746,18 @@ impl AccessService {
     /// Refuses unless the account is active; an account with no record is a development identity.
     async fn require_active(&self, user: &UserId) -> Result<()> {
         match self.store.account(user).await? {
+            Some(account) if account.kind == AccountKind::Org => Err(org_cannot_sign_in()),
             Some(account) if account.status() != AccountStatus::Active => {
                 Err(PynError::AccountInactive(account.status()))
             }
+            _ => Ok(()),
+        }
+    }
+
+    /// Refuses an organization name as a signed-in identity, for credentials that skip the account store.
+    pub async fn reject_org(&self, user: &UserId) -> Result<()> {
+        match self.store.account(user).await? {
+            Some(account) if account.kind == AccountKind::Org => Err(org_cannot_sign_in()),
             _ => Ok(()),
         }
     }
@@ -1299,14 +1357,25 @@ impl AccessService {
             .await
     }
 
-    /// The repositories where the user has a role.
+    /// The repositories where the user has a role, including every one owned by an organization they own.
     pub async fn repos_of(&self, user: &UserId) -> Result<Vec<RepoId>> {
-        self.store.repos_of(user).await
+        let mut repos = self.store.repos_of(user).await?;
+        if let Some(registry) = &self.registry {
+            for (org, role) in self.store.orgs_of(user).await? {
+                if role == OrgRole::Owner {
+                    let owned = registry.list_repos(Some(&org)).await?;
+                    repos.extend(owned.into_iter().map(|r| r.id));
+                }
+            }
+        }
+        repos.sort();
+        repos.dedup();
+        Ok(repos)
     }
 
     /// The user's role in the repository, if any.
     pub async fn role_in(&self, repo: &RepoId, user: &UserId) -> Result<Option<Role>> {
-        self.store.role_of(repo, user).await
+        self.effective_role(repo, user).await
     }
 
     /// Removes a deleted repository's memberships, role overrides and invitations. Its audit log stays.
@@ -1344,8 +1413,7 @@ impl AccessService {
         action: AuditAction,
         detail: String,
     ) -> Result<()> {
-        self.record(&RepoId::new(SERVER_AUDIT_ID), actor, action, detail)
-            .await
+        self.record(AuditScope::Server, actor, action, detail).await
     }
 
     /// Accounts oldest first, optionally only those in `status`. Server administrators only.
@@ -1363,6 +1431,7 @@ impl AccessService {
         self.store
             .account(user)
             .await?
+            .filter(|a| a.kind == AccountKind::User)
             .ok_or_else(|| PynError::UserNotFound(user.to_string()))
     }
 
@@ -1444,7 +1513,7 @@ impl AccessService {
     ) -> Result<Vec<AuditEvent>> {
         self.require_server_admin(actor).await?;
         match &self.audit {
-            Some(store) => store.list(&RepoId::new(SERVER_AUDIT_ID), query).await,
+            Some(store) => store.list(&AuditScope::Server, query).await,
             None => Ok(Vec::new()),
         }
     }

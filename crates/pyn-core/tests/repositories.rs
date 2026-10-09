@@ -61,7 +61,7 @@ fn session(name: &str) -> Identity {
 async fn events(w: &World, repo: &pyn_core::RepoId) -> Vec<AuditEvent> {
     w.audit
         .list(
-            repo,
+            &pyn_core::AuditScope::Repo(repo.clone()),
             &AuditQuery {
                 limit: 100,
                 ..Default::default()

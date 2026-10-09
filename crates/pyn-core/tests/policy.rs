@@ -319,7 +319,7 @@ async fn making_a_path_shared_releases_its_live_locks_and_audits_it() {
     let log = w
         .audit
         .list(
-            svc.repo(),
+            &pyn_core::AuditScope::Repo(svc.repo().clone()),
             &AuditQuery {
                 limit: 100,
                 ..Default::default()

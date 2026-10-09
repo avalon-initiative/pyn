@@ -615,7 +615,7 @@ async fn a_disabled_account_loses_every_way_in_and_can_be_enabled_again() {
     assert!(events[1].detail.contains("spam"));
     assert!(
         w.audit
-            .list(&pyn_core::RepoId::new("@server"), &audit_query())
+            .list(&pyn_core::AuditScope::Server, &audit_query())
             .await
             .unwrap()
             .len()

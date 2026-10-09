@@ -6,17 +6,17 @@ use chrono::{Duration, TimeZone, Utc};
 
 use crate::AccessStore;
 use crate::access::{
-    AccountStatus, InviteId, InviteRecord, NewAccount, Permission, Principal, Role,
-    RoleDefinitions, SessionRecord, SignupStage, SshKeyRecord, TokenId, TokenRecord,
+    AccountKind, AccountStatus, InviteId, InviteRecord, NewAccount, OrgRole, Permission, Principal,
+    Role, RoleDefinitions, SessionRecord, SignupStage, SshKeyRecord, TokenId, TokenRecord,
     VerificationRecord,
 };
 use crate::clock::Clock;
 use crate::memory::{MemoryAuditStore, MemoryObjectStore};
 use crate::ratelimit::RateLimitStore;
 use crate::{
-    AuditAction, AuditQuery, AuditStore, ContentHash, ManualClock, MetadataStore, ObjectStore,
-    PynError, RepoId, RepoPath, RepoRecord, RepoService, RepoSettings, RepoUpdate, RevisionId,
-    Rules, ServiceConfig, UserId, Visibility,
+    AuditAction, AuditQuery, AuditScope, AuditStore, ContentHash, ManualClock, MetadataStore,
+    ObjectStore, PynError, RepoId, RepoPath, RepoRecord, RepoService, RepoSettings, RepoUpdate,
+    RevisionId, Rules, ServiceConfig, UserId, Visibility,
 };
 
 pub type Store = Arc<dyn MetadataStore>;
@@ -1043,7 +1043,7 @@ pub async fn operations_are_recorded_in_the_audit_log(store: Store) {
     assert!(
         h.audit
             .list(
-                &RepoId::new("game"),
+                &AuditScope::Repo(RepoId::new("game")),
                 &AuditQuery {
                     limit: 100,
                     ..Default::default()
@@ -1594,6 +1594,132 @@ pub async fn accounts_hold_a_unique_name_and_a_password(store: Access) {
         Some("hash-two")
     );
     assert_eq!(store.password_hash(&user("nobody")).await.unwrap(), None);
+}
+
+pub async fn organizations_share_the_account_namespace_and_start_with_their_creator_as_owner(
+    store: Access,
+) {
+    let acme = user("acme");
+    assert!(store.create_user(&user("alice"), at(0)).await.unwrap());
+    assert!(
+        store
+            .create_org(&acme, &user("alice"), at(1))
+            .await
+            .unwrap()
+    );
+    assert!(
+        !store.create_org(&acme, &user("bob"), at(2)).await.unwrap(),
+        "a name can be taken once"
+    );
+    assert!(
+        !store
+            .create_org(&user("alice"), &user("bob"), at(2))
+            .await
+            .unwrap(),
+        "an organization cannot take a user's name"
+    );
+    assert!(!store.create_user(&acme, at(3)).await.unwrap());
+    assert!(
+        !store
+            .create_account(new_account("acme", "acme@example.com", 3))
+            .await
+            .unwrap()
+    );
+    assert_eq!(store.password_hash(&acme).await.unwrap(), None);
+
+    let record = store.account(&acme).await.unwrap().unwrap();
+    assert_eq!(record.kind, AccountKind::Org);
+    assert_eq!(record.created_at, at(1));
+    assert_eq!(
+        store.account(&user("alice")).await.unwrap().unwrap().kind,
+        AccountKind::User
+    );
+    store.ensure_user(&acme, at(9)).await.unwrap();
+    assert_eq!(
+        store.account(&acme).await.unwrap().unwrap().kind,
+        AccountKind::Org,
+        "ensuring a name leaves an organization alone"
+    );
+
+    assert_eq!(
+        store.org_role(&acme, &user("alice")).await.unwrap(),
+        Some(OrgRole::Owner)
+    );
+    assert_eq!(store.org_role(&acme, &user("bob")).await.unwrap(), None);
+    assert_eq!(
+        store
+            .org_role(&user("alice"), &user("alice"))
+            .await
+            .unwrap(),
+        None,
+        "a user has no members"
+    );
+
+    assert!(
+        store
+            .create_org(&user("beta"), &user("carol"), at(4))
+            .await
+            .unwrap()
+    );
+    assert!(
+        store.user_exists(&user("carol")).await.unwrap(),
+        "the owner's account is created with the organization"
+    );
+    assert!(
+        store
+            .create_org(&user("aaa"), &user("alice"), at(5))
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        store.orgs_of(&user("alice")).await.unwrap(),
+        [
+            (user("aaa"), OrgRole::Owner),
+            (user("acme"), OrgRole::Owner)
+        ]
+    );
+    assert!(store.orgs_of(&user("bob")).await.unwrap().is_empty());
+
+    let listed: Vec<_> = store
+        .list_accounts(None, 10)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|a| a.user)
+        .collect();
+    assert_eq!(
+        listed,
+        [user("alice"), user("carol")],
+        "listings hold users only"
+    );
+}
+
+pub async fn deleting_an_organization_removes_its_members_and_frees_the_name(store: Access) {
+    let acme = user("acme");
+    store.create_user(&user("alice"), at(0)).await.unwrap();
+    store
+        .create_org(&acme, &user("alice"), at(1))
+        .await
+        .unwrap();
+
+    assert!(
+        !store.delete_org(&user("alice")).await.unwrap(),
+        "a user is not an organization"
+    );
+    assert!(store.user_exists(&user("alice")).await.unwrap());
+    assert!(!store.delete_org(&user("nobody")).await.unwrap());
+
+    assert!(store.delete_org(&acme).await.unwrap());
+    assert!(store.account(&acme).await.unwrap().is_none());
+    assert_eq!(store.org_role(&acme, &user("alice")).await.unwrap(), None);
+    assert!(store.orgs_of(&user("alice")).await.unwrap().is_empty());
+    assert!(store.user_exists(&user("alice")).await.unwrap());
+    assert!(!store.delete_org(&acme).await.unwrap());
+
+    assert!(
+        store.create_user(&acme, at(2)).await.unwrap(),
+        "the name is free again"
+    );
 }
 
 fn invite(id: &str, created: i64, expires: i64) -> InviteRecord {
@@ -2217,6 +2343,8 @@ macro_rules! access_contract_tests {
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; verifications_are_single_use_and_replace_earlier_ones);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; unverified_accounts_with_no_live_verification_are_swept);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; deleting_an_accounts_sessions_leaves_others);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; organizations_share_the_account_namespace_and_start_with_their_creator_as_owner);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; deleting_an_organization_removes_its_members_and_frees_the_name);
     };
     (@one $factory:expr; [$(#[$attr:meta])*]; $name:ident) => {
         #[tokio::test(flavor = "multi_thread")]
@@ -2244,7 +2372,7 @@ fn event(
 }
 
 pub async fn audit_events_list_newest_first_with_filters(store: Audit) {
-    let repo = RepoId::new("game");
+    let repo = AuditScope::Repo(RepoId::new("game"));
     for (i, (who, action, p)) in [
         ("alice", AuditAction::Checkout, Some("Content/a.umap")),
         ("alice", AuditAction::Checkin, Some("Content/a.umap")),
@@ -2261,7 +2389,7 @@ pub async fn audit_events_list_newest_first_with_filters(store: Audit) {
     }
     store
         .record(
-            &RepoId::new("other"),
+            &AuditScope::Repo(RepoId::new("other")),
             event("zed", AuditAction::Checkout, None, 9),
         )
         .await
@@ -2331,7 +2459,7 @@ pub async fn audit_events_list_newest_first_with_filters(store: Audit) {
 }
 
 pub async fn audit_events_page_backwards(store: Audit) {
-    let repo = RepoId::new("game");
+    let repo = AuditScope::Repo(RepoId::new("game"));
     for i in 0..5 {
         store
             .record(
@@ -2386,12 +2514,68 @@ pub async fn audit_events_page_backwards(store: Audit) {
     );
 }
 
+pub async fn audit_scopes_keep_repository_organization_and_server_logs_apart(store: Audit) {
+    let scopes = [
+        AuditScope::Repo(RepoId::new("game")),
+        AuditScope::Org(user("game")),
+        AuditScope::Server,
+    ];
+    let actions = [
+        AuditAction::RepoCreated,
+        AuditAction::OrgCreated,
+        AuditAction::AccountApproved,
+    ];
+    for (scope, action) in scopes.iter().zip(actions) {
+        store
+            .record(scope, event("alice", action, None, 0))
+            .await
+            .unwrap();
+    }
+    store
+        .record(&scopes[1], event("alice", AuditAction::OrgDeleted, None, 1))
+        .await
+        .unwrap();
+
+    for (scope, expected) in scopes.iter().zip([
+        vec![AuditAction::RepoCreated],
+        vec![AuditAction::OrgDeleted, AuditAction::OrgCreated],
+        vec![AuditAction::AccountApproved],
+    ]) {
+        let found: Vec<_> = store
+            .list(
+                scope,
+                &AuditQuery {
+                    limit: 10,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|e| e.action)
+            .collect();
+        assert_eq!(found, expected, "{scope:?}");
+    }
+    let none = store
+        .list(
+            &AuditScope::Org(user("other")),
+            &AuditQuery {
+                limit: 10,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert!(none.is_empty());
+}
+
 /// Generates one `#[tokio::test]` per audit-store case for the store built by `$factory`.
 #[macro_export]
 macro_rules! audit_contract_tests {
     ($factory:expr $(, #[$attr:meta])*) => {
         $crate::audit_contract_tests!(@one $factory; [$(#[$attr])*]; audit_events_list_newest_first_with_filters);
         $crate::audit_contract_tests!(@one $factory; [$(#[$attr])*]; audit_events_page_backwards);
+        $crate::audit_contract_tests!(@one $factory; [$(#[$attr])*]; audit_scopes_keep_repository_organization_and_server_logs_apart);
     };
     (@one $factory:expr; [$(#[$attr:meta])*]; $name:ident) => {
         #[tokio::test(flavor = "multi_thread")]

@@ -56,10 +56,10 @@ fn start_with(with_repo: bool) -> Env {
             }))
             .unwrap();
     }
-    let access = Arc::new(AccessService::new(
-        Arc::new(MemoryAccessStore::new()),
-        clock.clone(),
-    ));
+    let access = Arc::new(
+        AccessService::new(Arc::new(MemoryAccessStore::new()), clock.clone())
+            .with_registry(meta.clone()),
+    );
     let repos = Arc::new(Repositories::new(
         meta,
         objects.clone(),

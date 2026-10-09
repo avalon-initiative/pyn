@@ -4,7 +4,7 @@ use std::sync::{Arc, RwLock};
 use chrono::Duration;
 
 use crate::access::{Permission, Principal};
-use crate::audit::{AuditAction, AuditEvent, AuditQuery, AuditStore, NewAuditEvent};
+use crate::audit::{AuditAction, AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent};
 use crate::clock::Clock;
 use crate::error::{PynError, Result};
 use crate::history::{HISTORY_DEFAULT_LIMIT, HISTORY_MAX_LIMIT, HistoryCursor, HistoryPage};
@@ -105,7 +105,9 @@ impl RepoService {
             path: Some(path.clone()),
             detail,
         };
-        self.audit.record(&self.repo, event).await
+        self.audit
+            .record(&AuditScope::Repo(self.repo.clone()), event)
+            .await
     }
 
     pub fn repo(&self) -> &RepoId {
@@ -273,7 +275,9 @@ impl RepoService {
 
     /// Audit events, newest first.
     pub async fn audit(&self, query: &AuditQuery) -> Result<Vec<AuditEvent>> {
-        self.audit.list(&self.repo, query).await
+        self.audit
+            .list(&AuditScope::Repo(self.repo.clone()), query)
+            .await
     }
 
     /// Appends the revision under the rules in force; a policy revision is validated first and applied once recorded.
@@ -522,7 +526,11 @@ impl RepoService {
                 limit: activity_limit,
                 ..AuditQuery::default()
             };
-            activity.extend(self.audit.list(&self.repo, &query).await?);
+            activity.extend(
+                self.audit
+                    .list(&AuditScope::Repo(self.repo.clone()), &query)
+                    .await?,
+            );
         }
         activity.sort_by_key(|e| std::cmp::Reverse(e.id));
         activity.truncate(activity_limit);

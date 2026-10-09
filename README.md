@@ -51,6 +51,7 @@ For your own server instead of the demo: `cp .env.example .env`, then `make run`
 | `PYN_BOOTSTRAP_ADMIN` | Creates this account at startup and prints a token for it; it then creates repositories like anyone else |
 | `PYN_TOKEN` | Token the CLI signs in with, instead of the sign-in saved by `pyn login` (`PYN_USER` with `PYN_DEV_AUTH`) |
 | `PYN_REGISTRATION` | `invite` (default), `open` or `closed`: how people create accounts |
+| `PYN_ORG_CREATION` | `anyone` (default) or `admins`: who may create organizations; `admins` limits it to server administrators |
 | `PYN_MAX_LOCKS_ALLOWED_PER_USER` | How many locks one user may hold in a repository, default 5; a repository setting or its `pyn.toml` can override it |
 | `PYN_EMAIL_VERIFICATION` | On unless `false`: open sign-up needs an email address and the account stays inactive until its link is followed |
 | `PYN_REQUIRE_APPROVAL` | `true` holds new open sign-ups until a server administrator approves them |
