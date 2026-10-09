@@ -7,15 +7,15 @@ LOG_DIR := $(RUN_DIR)/logs
 PID_FILE := $(PID_DIR)/pyn.pid
 LOG_FILE := $(LOG_DIR)/pyn.log
 
-.PHONY: demo docs-check openapi help build run start stop restart status test test-live fmt fmt-check lint check clean
+.PHONY: dev demo docs-check openapi help build run start stop restart status test test-live fmt fmt-check lint check clean
 
 help:
 	@echo "pyn — local dev commands"
 	@echo ""
 	@echo "  make build         build the project"
-	@echo "  make run           run in the foreground"
-	@echo "  make demo          seed a running server with sample files and locks"
-	@echo "  make demo          seed a running server with sample files and locks"
+	@echo "  make run           run the server in the foreground (reads .env)"
+	@echo "  make dev           build, start a demo server in the background, seed it, print URL and sign-ins"
+	@echo "  make demo          seed a running demo server (users, repositories, files, locks)"
 	@echo "  make start         run in the background (pid/log under $(RUN_DIR)/)"
 	@echo "  make stop          stop what 'make start' started"
 	@echo "  make restart       stop, then start"
@@ -80,6 +80,19 @@ fmt-check:
 lint:
 	cargo clippy --workspace --all-targets -- -D warnings
 	python3 scripts/check_links.py
+
+DEMO_ADMIN ?= admin
+DEMO_PASSWORD ?= demo-password
+PYN_ADDR ?= 127.0.0.1:7878
+
+dev: build
+	@$(MAKE) --no-print-directory start PYN_BOOTSTRAP_ADMIN=$(DEMO_ADMIN) PYN_BOOTSTRAP_PASSWORD=$(DEMO_PASSWORD) \
+		PYN_REGISTRATION=open PYN_ADDR=$(PYN_ADDR) PYN_CONFIG=scripts/demo.pyn.toml
+	@PYN_SERVER=http://$(PYN_ADDR) PYN_BOOTSTRAP_ADMIN=$(DEMO_ADMIN) PYN_BOOTSTRAP_PASSWORD=$(DEMO_PASSWORD) scripts/demo.sh
+	@echo
+	@echo "server   http://$(PYN_ADDR) ($(if $(PYN_DATABASE_URL),postgres,in-memory); stop with make stop)"
+	@echo "sign in  $(DEMO_ADMIN) / $(DEMO_PASSWORD)   alice / alice-password   bob / bob-password"
+	@echo "web      cd ../pyn-web && npm run dev"
 
 demo:
 	cargo build -p pyn-cli
