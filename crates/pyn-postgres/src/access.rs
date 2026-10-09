@@ -133,6 +133,32 @@ impl AccessStore for PgMetadataStore {
             .collect()
     }
 
+    async fn repos_of(&self, user: &UserId) -> Result<Vec<RepoId>> {
+        let rows: Vec<String> =
+            sqlx::query_scalar("SELECT repo FROM memberships WHERE user_id = $1 ORDER BY repo")
+                .bind(user.as_str())
+                .fetch_all(&self.pool)
+                .await
+                .map_err(db)?;
+        Ok(rows.into_iter().map(RepoId::new).collect())
+    }
+
+    async fn delete_repo_access(&self, repo: &RepoId) -> Result<()> {
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        for stmt in [
+            "DELETE FROM memberships WHERE repo = $1",
+            "DELETE FROM role_permissions WHERE repo = $1",
+            "DELETE FROM invites WHERE repo = $1",
+        ] {
+            sqlx::query(stmt)
+                .bind(repo.as_str())
+                .execute(&mut *tx)
+                .await
+                .map_err(db)?;
+        }
+        tx.commit().await.map_err(db)
+    }
+
     async fn role_definitions(&self, repo: &RepoId) -> Result<RoleDefinitions> {
         let rows = sqlx::query("SELECT role, permissions FROM role_permissions WHERE repo = $1")
             .bind(repo.as_str())

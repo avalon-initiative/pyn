@@ -2,9 +2,10 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
 use crate::error::Result;
+use crate::repo::{RepoRecord, RepoUpdate};
 use crate::types::{Lock, NewRevision, RepoId, RepoPath, Revision, RevisionId, UserId};
 
-/// Persistence for locks and revisions. Each method is one atomic check-and-write; policy lives in
+/// Persistence for the repository registry, locks and revisions. Each method is one atomic check-and-write; policy lives in
 /// `RepoService`. A lock with `expires_at <= now` counts as absent.
 #[async_trait]
 pub trait MetadataStore: Send + Sync {
@@ -68,4 +69,20 @@ pub trait MetadataStore: Send + Sync {
     async fn list_head_revisions(&self, repo: &RepoId) -> Result<Vec<Revision>>;
 
     async fn history(&self, repo: &RepoId, path: &RepoPath) -> Result<Vec<Revision>>;
+
+    /// Registers the repository; `RepoExists` if the owner already has one with that name.
+    async fn create_repo(&self, repo: RepoRecord) -> Result<RepoRecord>;
+
+    async fn find_repo(&self, owner: &UserId, name: &str) -> Result<Option<RepoRecord>>;
+
+    async fn get_repo(&self, id: &RepoId) -> Result<Option<RepoRecord>>;
+
+    /// Ordered by owner, then name.
+    async fn list_repos(&self, owner: Option<&UserId>) -> Result<Vec<RepoRecord>>;
+
+    /// `RepoNotFound` for an unknown id, `RepoExists` if the new name is taken; a rejected update changes nothing.
+    async fn update_repo(&self, id: &RepoId, update: RepoUpdate) -> Result<RepoRecord>;
+
+    /// Removes the repository with its locks and revisions; false if it is not registered.
+    async fn delete_repo(&self, id: &RepoId) -> Result<bool>;
 }

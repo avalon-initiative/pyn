@@ -142,6 +142,24 @@ impl RoleDefinitions {
     }
 }
 
+/// How a request proved who it is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Credential {
+    /// A bearer token: it limits what its owner's role grants, and to which repositories.
+    Token(TokenRecord),
+    /// A web session: the owner's roles apply as they are.
+    Session,
+    /// Development identity with every permission everywhere.
+    Unrestricted,
+}
+
+/// An authenticated account, before any repository is chosen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Identity {
+    pub user: UserId,
+    pub credential: Credential,
+}
+
 /// An authenticated caller and what they may do in one repository right now.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Principal {
@@ -203,7 +221,7 @@ pub mod token {
 
     const PREFIX: &str = "pyn_";
 
-    pub(super) fn random_hex(bytes: usize) -> Result<String> {
+    pub(crate) fn random_hex(bytes: usize) -> Result<String> {
         let mut buf = vec![0u8; bytes];
         getrandom::fill(&mut buf).map_err(|e| PynError::Storage(format!("no randomness: {e}")))?;
         Ok(hex::encode(buf))

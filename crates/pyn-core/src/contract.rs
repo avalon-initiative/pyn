@@ -12,7 +12,8 @@ use crate::access::{
 use crate::memory::{MemoryAuditStore, MemoryObjectStore};
 use crate::{
     AuditAction, AuditQuery, AuditStore, ContentHash, ManualClock, MetadataStore, ObjectStore,
-    PynError, RepoId, RepoPath, RepoService, RevisionId, Rules, ServiceConfig, UserId,
+    PynError, RepoId, RepoPath, RepoRecord, RepoService, RepoSettings, RepoUpdate, RevisionId,
+    Rules, ServiceConfig, UserId, Visibility,
 };
 
 pub type Store = Arc<dyn MetadataStore>;
@@ -638,6 +639,215 @@ pub async fn operations_are_recorded_in_the_audit_log(store: Store) {
     );
 }
 
+fn repo_record(id: &str, owner: &str, name: &str) -> RepoRecord {
+    RepoRecord {
+        id: RepoId::new(id),
+        owner: user(owner),
+        name: name.to_string(),
+        visibility: Visibility::Private,
+        settings: RepoSettings::default(),
+        created_at: at(0),
+    }
+}
+
+pub async fn repositories_are_registered_found_and_listed_in_order(store: Store) {
+    let mut public = repo_record("r2", "alice", "zeta");
+    public.visibility = Visibility::Public;
+    public.settings = RepoSettings { lease_hours: 2 };
+    for r in [
+        public.clone(),
+        repo_record("r1", "alice", "alpha"),
+        repo_record("r3", "bob", "alpha"),
+    ] {
+        assert_eq!(store.create_repo(r.clone()).await.unwrap(), r);
+    }
+
+    assert_eq!(
+        store.find_repo(&user("alice"), "zeta").await.unwrap(),
+        Some(public.clone())
+    );
+    assert_eq!(
+        store
+            .get_repo(&RepoId::new("r3"))
+            .await
+            .unwrap()
+            .unwrap()
+            .owner,
+        user("bob")
+    );
+    assert_eq!(store.find_repo(&user("alice"), "nope").await.unwrap(), None);
+    assert_eq!(store.get_repo(&RepoId::new("nope")).await.unwrap(), None);
+
+    let all: Vec<_> = store
+        .list_repos(None)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|r| r.address())
+        .collect();
+    assert_eq!(all, ["alice/alpha", "alice/zeta", "bob/alpha"]);
+    let alices = store.list_repos(Some(&user("alice"))).await.unwrap();
+    assert_eq!(alices.len(), 2);
+}
+
+pub async fn a_repository_name_is_unique_per_owner(store: Store) {
+    store
+        .create_repo(repo_record("r1", "alice", "game"))
+        .await
+        .unwrap();
+    let err = store
+        .create_repo(repo_record("r2", "alice", "game"))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, PynError::RepoExists(ref a) if a == "alice/game"),
+        "{err}"
+    );
+    store
+        .create_repo(repo_record("r3", "bob", "game"))
+        .await
+        .unwrap();
+    assert_eq!(store.list_repos(None).await.unwrap().len(), 2);
+}
+
+pub async fn updating_a_repository_keeps_its_id(store: Store) {
+    store
+        .create_repo(repo_record("r1", "alice", "game"))
+        .await
+        .unwrap();
+    store
+        .create_repo(repo_record("r2", "alice", "taken"))
+        .await
+        .unwrap();
+
+    let renamed = store
+        .update_repo(
+            &RepoId::new("r1"),
+            RepoUpdate {
+                name: Some("engine".into()),
+                visibility: Some(Visibility::Public),
+                settings: Some(RepoSettings { lease_hours: 4 }),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(renamed.id, RepoId::new("r1"));
+    assert_eq!(renamed.address(), "alice/engine");
+    assert_eq!(renamed.visibility, Visibility::Public);
+    assert_eq!(renamed.settings.lease_hours, 4);
+    assert_eq!(store.find_repo(&user("alice"), "game").await.unwrap(), None);
+    assert_eq!(
+        store.find_repo(&user("alice"), "engine").await.unwrap(),
+        Some(renamed.clone())
+    );
+
+    let untouched = store
+        .update_repo(&RepoId::new("r1"), RepoUpdate::default())
+        .await
+        .unwrap();
+    assert_eq!(untouched, renamed);
+
+    let clash = store
+        .update_repo(
+            &RepoId::new("r1"),
+            RepoUpdate {
+                name: Some("taken".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(clash, PynError::RepoExists(_)), "{clash}");
+    assert_eq!(
+        store
+            .get_repo(&RepoId::new("r1"))
+            .await
+            .unwrap()
+            .unwrap()
+            .name,
+        "engine",
+        "a rejected rename changes nothing"
+    );
+
+    let missing = store
+        .update_repo(&RepoId::new("nope"), RepoUpdate::default())
+        .await
+        .unwrap_err();
+    assert!(matches!(missing, PynError::RepoNotFound(_)), "{missing}");
+}
+
+fn service_in(store: &Store, h: &Harness, id: &str) -> RepoService {
+    RepoService::new(
+        RepoId::new(id),
+        Rules::from_toml(RULES).unwrap(),
+        store.clone(),
+        h.objects.clone(),
+        h.audit.clone(),
+        h.clock.clone(),
+        ServiceConfig::default(),
+    )
+}
+
+pub async fn repositories_do_not_share_locks_or_revisions(store: Store) {
+    let h = harness(store.clone());
+    let other = service_in(&store, &h, "other");
+    let map = path("Content/Dungeon.umap");
+    h.svc.checkout(&map, &user("alice"), None).await.unwrap();
+    other.checkout(&map, &user("bob"), None).await.unwrap();
+    let c = blob(&h, "one").await;
+    h.svc
+        .checkin(&map, &user("alice"), c, None, "first".into())
+        .await
+        .unwrap();
+    assert!(other.head(&map).await.unwrap().is_none());
+    assert_eq!(other.locks().await.unwrap().len(), 1);
+    assert_eq!(h.svc.locks().await.unwrap().len(), 0);
+}
+
+pub async fn deleting_a_repository_removes_only_its_own_data(store: Store) {
+    let h = harness(store.clone());
+    let other = service_in(&store, &h, "other");
+    store
+        .create_repo(repo_record("game", "alice", "game"))
+        .await
+        .unwrap();
+    store
+        .create_repo(repo_record("other", "alice", "other"))
+        .await
+        .unwrap();
+    let map = path("Content/Dungeon.umap");
+    for svc in [&h.svc, &other] {
+        svc.checkout(&map, &user("alice"), None).await.unwrap();
+        let c = blob(&h, "one").await;
+        svc.checkin(&map, &user("alice"), c, None, "first".into())
+            .await
+            .unwrap();
+        svc.checkout(&map, &user("alice"), Some(RevisionId(1)))
+            .await
+            .unwrap();
+    }
+
+    assert!(store.delete_repo(&RepoId::new("game")).await.unwrap());
+    assert!(!store.delete_repo(&RepoId::new("game")).await.unwrap());
+    assert_eq!(store.find_repo(&user("alice"), "game").await.unwrap(), None);
+    assert!(h.svc.head(&map).await.unwrap().is_none());
+    assert!(h.svc.locks().await.unwrap().is_empty());
+    assert!(other.head(&map).await.unwrap().is_some());
+    assert_eq!(other.locks().await.unwrap().len(), 1);
+    assert!(
+        store
+            .find_repo(&user("alice"), "other")
+            .await
+            .unwrap()
+            .is_some()
+    );
+
+    store
+        .create_repo(repo_record("again", "alice", "game"))
+        .await
+        .unwrap();
+}
+
 /// Generates one `#[tokio::test]` per contract case for the store built by `$factory`.
 #[macro_export]
 macro_rules! contract_tests {
@@ -660,6 +870,11 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; restore_is_for_exclusive_paths_and_real_older_revisions);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; force_unlock_removes_a_live_lock_and_says_why);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; operations_are_recorded_in_the_audit_log);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; repositories_are_registered_found_and_listed_in_order);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_repository_name_is_unique_per_owner);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; updating_a_repository_keeps_its_id);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; repositories_do_not_share_locks_or_revisions);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; deleting_a_repository_removes_only_its_own_data);
     };
     (@one $factory:expr; [$(#[$attr:meta])*]; $name:ident) => {
         #[tokio::test(flavor = "multi_thread")]
@@ -1064,6 +1279,56 @@ pub async fn ssh_keys_are_unique_across_accounts_and_can_be_found_and_deleted(st
     );
 }
 
+pub async fn repos_of_lists_a_users_roles_and_forgetting_a_repo_clears_its_access(store: Access) {
+    let (game, other) = (RepoId::new("game"), RepoId::new("other"));
+    for u in ["alice", "bob"] {
+        store.ensure_user(&user(u), at(0)).await.unwrap();
+    }
+    store
+        .set_role(&game, &user("alice"), Role::Admin)
+        .await
+        .unwrap();
+    store
+        .set_role(&other, &user("alice"), Role::Reader)
+        .await
+        .unwrap();
+    store
+        .set_role(&game, &user("bob"), Role::Writer)
+        .await
+        .unwrap();
+    store
+        .set_role_permissions(&game, Role::Writer, [Permission::Read].into())
+        .await
+        .unwrap();
+    store
+        .create_invite(invite("aaaaaaaaaaaa", 1, 60))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        store.repos_of(&user("alice")).await.unwrap(),
+        [game.clone(), other.clone()]
+    );
+    assert_eq!(
+        store.repos_of(&user("bob")).await.unwrap(),
+        std::slice::from_ref(&game)
+    );
+
+    store.delete_repo_access(&game).await.unwrap();
+    assert!(store.members(&game).await.unwrap().is_empty());
+    assert_eq!(
+        store.repos_of(&user("alice")).await.unwrap(),
+        std::slice::from_ref(&other)
+    );
+    assert!(store.repos_of(&user("bob")).await.unwrap().is_empty());
+    assert_eq!(
+        store.role_definitions(&game).await.unwrap(),
+        RoleDefinitions::defaults()
+    );
+    assert!(store.list_invites(&game).await.unwrap().is_empty());
+    assert_eq!(store.members(&other).await.unwrap().len(), 1);
+}
+
 /// Generates one `#[tokio::test]` per access-store case for the store built by `$factory`.
 #[macro_export]
 macro_rules! access_contract_tests {
@@ -1077,6 +1342,7 @@ macro_rules! access_contract_tests {
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; invitations_are_single_use_expire_and_can_be_revoked);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; ssh_keys_are_unique_across_accounts_and_can_be_found_and_deleted);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; sessions_are_found_deleted_and_swept_when_expired);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; repos_of_lists_a_users_roles_and_forgetting_a_repo_clears_its_access);
     };
     (@one $factory:expr; [$(#[$attr:meta])*]; $name:ident) => {
         #[tokio::test(flavor = "multi_thread")]

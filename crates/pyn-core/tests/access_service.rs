@@ -4,7 +4,10 @@ use std::sync::Arc;
 use Permission::*;
 use chrono::{Duration, TimeZone, Utc};
 use pyn_core::memory::MemoryAccessStore;
-use pyn_core::{AccessService, ManualClock, Permission, Principal, PynError, RepoId, Role, UserId};
+use pyn_core::{
+    AccessService, Credential, Identity, ManualClock, Permission, Principal, PynError, RepoId,
+    Role, UserId,
+};
 
 struct World {
     svc: AccessService,
@@ -32,8 +35,16 @@ fn perms(p: &[Permission]) -> BTreeSet<Permission> {
     p.iter().copied().collect()
 }
 
+fn session(name: &str) -> Identity {
+    Identity {
+        user: user(name),
+        credential: Credential::Session,
+    }
+}
+
 async fn admin(w: &World) -> Principal {
-    w.svc.bootstrap_admin(&w.repo, &user("root")).await.unwrap();
+    w.svc.bootstrap_admin(&user("root")).await.unwrap();
+    w.svc.add_creator(&w.repo, &user("root")).await.unwrap();
     w.svc.principal(&w.repo, &user("root")).await.unwrap()
 }
 
@@ -74,11 +85,16 @@ async fn a_token_authenticates_with_the_intersection_of_token_and_role() {
         .set_user_role(&root, &w.repo, &user("wendy"), Role::Writer)
         .await
         .unwrap();
-    let wendy = w.svc.principal(&w.repo, &user("wendy")).await.unwrap();
 
     let (record, full) = w
         .svc
-        .create_token(&wendy, "ci", perms(&[Read, Checkin]), vec![], None)
+        .create_token(
+            &session("wendy"),
+            "ci",
+            perms(&[Read, Checkin]),
+            vec![w.repo.clone()],
+            None,
+        )
         .await
         .unwrap();
     assert_ne!(
@@ -111,25 +127,58 @@ async fn a_token_cannot_hold_more_than_its_owner() {
         .set_user_role(&root, &w.repo, &user("wendy"), Role::Writer)
         .await
         .unwrap();
-    let wendy = w.svc.principal(&w.repo, &user("wendy")).await.unwrap();
+    let wendy = session("wendy");
+    let repos = vec![w.repo.clone()];
     let err = w
         .svc
-        .create_token(&wendy, "sneaky", perms(&[Read, Restore]), vec![], None)
+        .create_token(
+            &wendy,
+            "sneaky",
+            perms(&[Read, Restore]),
+            repos.clone(),
+            None,
+        )
         .await
         .unwrap_err();
     assert!(matches!(err, PynError::Forbidden(Restore)), "{err}");
     let err = w
         .svc
-        .create_token(&wendy, "empty", perms(&[]), vec![], None)
+        .create_token(&wendy, "empty", perms(&[]), repos, None)
         .await
         .unwrap_err();
     assert!(matches!(err, PynError::InvalidRequest(_)), "{err}");
+    let err = w
+        .svc
+        .create_token(&wendy, "nowhere", perms(&[Read]), vec![], None)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::InvalidRequest(_)), "{err}");
+    let err = w
+        .svc
+        .create_token(
+            &wendy,
+            "elsewhere",
+            perms(&[Read]),
+            vec![RepoId::new("other")],
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, PynError::Forbidden(Read)),
+        "a token cannot reach a repository its owner is not in: {err}"
+    );
 }
 
 #[tokio::test]
 async fn bad_revoked_expired_and_out_of_scope_tokens_are_rejected() {
     let w = world().await;
-    let root = admin(&w).await;
+    admin(&w).await;
+    let root = session("root");
+    w.svc
+        .add_creator(&RepoId::new("elsewhere"), &user("root"))
+        .await
+        .unwrap();
     for raw in ["", "pyn_x", "Bearer abc", "pyn_aaaaaaaaaaaa_short"] {
         let err = w.svc.authenticate(&w.repo, raw).await.unwrap_err();
         assert!(
@@ -144,7 +193,7 @@ async fn bad_revoked_expired_and_out_of_scope_tokens_are_rejected() {
             &root,
             "t",
             perms(&[Read]),
-            vec![],
+            vec![w.repo.clone()],
             Some(Utc.with_ymd_and_hms(2026, 10, 8, 10, 0, 0).unwrap()),
         )
         .await
@@ -164,7 +213,7 @@ async fn bad_revoked_expired_and_out_of_scope_tokens_are_rejected() {
 
     let (rec2, full2) = w
         .svc
-        .create_token(&root, "t2", perms(&[Read]), vec![], None)
+        .create_token(&root, "t2", perms(&[Read]), vec![w.repo.clone()], None)
         .await
         .unwrap();
     w.svc.revoke_token(&root, &rec2.id).await.unwrap();
@@ -196,11 +245,10 @@ async fn tokens_belong_to_their_owner_unless_an_admin_steps_in() {
             .await
             .unwrap();
     }
-    let alice = w.svc.principal(&w.repo, &user("alice")).await.unwrap();
-    let bob = w.svc.principal(&w.repo, &user("bob")).await.unwrap();
+    let (alice, bob, root) = (session("alice"), session("bob"), session("root"));
     let (rec, _) = w
         .svc
-        .create_token(&alice, "mine", perms(&[Read]), vec![], None)
+        .create_token(&alice, "mine", perms(&[Read]), vec![w.repo.clone()], None)
         .await
         .unwrap();
 

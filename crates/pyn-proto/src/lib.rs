@@ -52,7 +52,7 @@ pub struct ReleaseRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct CheckinRequest {
     pub path: String,
-    /// Hash returned by `PUT /v1/objects`.
+    /// Hash returned by `PUT /v1/repos/{owner}/{name}/objects`.
     pub content: String,
     pub base_revision: Option<u64>,
     pub message: String,
@@ -86,16 +86,63 @@ pub struct FilePage {
     pub next_after: Option<String>,
 }
 
+/// The signed-in account, independent of any repository.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct Account {
+    pub user: String,
+}
+
+/// The caller and what they may do in one repository.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct Me {
     pub user: String,
     pub permissions: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Visibility {
+    Public,
+    Private,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct RepoInfo {
+    pub owner: String,
+    pub name: String,
+    pub visibility: Visibility,
+    /// How long a checkout lasts before it expires unless renewed.
+    pub lease_hours: u32,
+    pub created_at: DateTime<Utc>,
+    /// The caller's role in the repository; absent when they have none.
+    pub role: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct CreateRepoRequest {
+    /// The namespace to create it in; must be the caller's own account name. Defaults to the caller.
+    pub owner: Option<String>,
+    pub name: String,
+    /// Defaults to `private`.
+    pub visibility: Option<Visibility>,
+    /// Defaults to 8.
+    pub lease_hours: Option<u32>,
+}
+
+/// Fields left out stay as they are.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+pub struct UpdateRepoRequest {
+    pub name: Option<String>,
+    pub visibility: Option<Visibility>,
+    pub lease_hours: Option<u32>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct CreateTokenRequest {
     pub name: String,
     pub permissions: Vec<String>,
+    /// Repositories the token is valid for, as `owner/name`; at least one.
+    pub repos: Vec<String>,
     pub expires_at: Option<DateTime<Utc>>,
 }
 
@@ -105,6 +152,7 @@ pub struct TokenInfo {
     pub user: String,
     pub name: String,
     pub permissions: Vec<String>,
+    /// `owner/name` of each repository the token is limited to; empty means every repository.
     pub repos: Vec<String>,
     pub created_at: DateTime<Utc>,
     pub expires_at: Option<DateTime<Utc>>,
@@ -273,7 +321,6 @@ pub const CSRF_HEADER: &str = "x-pyn-csrf";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct SessionInfo {
     pub user: String,
-    pub permissions: Vec<String>,
     /// Send as the `X-Pyn-CSRF` header on every POST, PUT and DELETE.
     pub csrf_token: String,
     pub expires_at: DateTime<Utc>,

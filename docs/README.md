@@ -5,6 +5,7 @@ Markdown only; `make docs-check` verifies relative links and anchors.
 
 - [Concepts](concepts/README.md): the model, in the order to read it
 - [pyn.toml specification](concepts/pyn-toml.md)
+- [Repositories: owners, names, visibility and the API shape](concepts/repositories.md)
 - [Access: roles, permissions and tokens](concepts/access.md)
 - [The `.pyn/` folder](concepts/workspace.md)
 - [Phase 1 scope](phase-1.md)

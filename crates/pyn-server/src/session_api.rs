@@ -6,7 +6,7 @@ use axum::http::header::{AUTHORIZATION, COOKIE, SET_COOKIE};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use pyn_core::{Principal, PynError, SessionRecord};
+use pyn_core::{PynError, SessionRecord};
 use pyn_proto as api;
 
 use crate::{ApiResult, AppState};
@@ -39,14 +39,9 @@ fn set_cookie(value: &str, max_age_secs: i64, secure: bool) -> HeaderValue {
     HeaderValue::from_str(&cookie).expect("cookie is ASCII")
 }
 
-fn info(who: &Principal, session: &SessionRecord) -> api::SessionInfo {
+fn info(session: &SessionRecord) -> api::SessionInfo {
     api::SessionInfo {
-        user: who.user.to_string(),
-        permissions: who
-            .permissions
-            .iter()
-            .map(|p| p.as_str().to_string())
-            .collect(),
+        user: session.user.to_string(),
         csrf_token: session.csrf_token.clone(),
         expires_at: session.expires_at,
     }
@@ -93,14 +88,9 @@ pub(crate) async fn sign_in(
     headers: HeaderMap,
     Json(req): Json<api::LoginRequest>,
 ) -> ApiResult<Response> {
-    let repo = s.service.repo();
-    let (record, cookie) = s
-        .access
-        .start_session(repo, &req.username, &req.password)
-        .await?;
-    let who = s.access.principal(repo, &record.user).await?;
+    let (record, cookie) = s.access.start_session(&req.username, &req.password).await?;
     let max_age = s.access.session_lifetime().num_seconds();
-    let mut res = Json(info(&who, &record)).into_response();
+    let mut res = Json(info(&record)).into_response();
     res.headers_mut()
         .insert(SET_COOKIE, set_cookie(&cookie, max_age, is_https(&headers)));
     Ok(res)
@@ -116,11 +106,8 @@ pub(crate) async fn current(
 ) -> ApiResult<Json<api::SessionInfo>> {
     let cookie = session_cookie(&headers)
         .ok_or_else(|| PynError::Unauthenticated("not signed in".into()))?;
-    let (who, record) = s
-        .access
-        .authenticate_session(s.service.repo(), cookie)
-        .await?;
-    Ok(Json(info(&who, &record)))
+    let (_, record) = s.access.authenticate_session(cookie).await?;
+    Ok(Json(info(&record)))
 }
 
 #[utoipa::path(delete, path = "/v1/session", responses(

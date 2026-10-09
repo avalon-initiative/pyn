@@ -17,7 +17,7 @@ pub fn mode_name(mode: api::Mode) -> &'static str {
 }
 
 fn whoami(api: &Api) -> Result<String> {
-    let me: api::Me = api.send(api.get("/v1/me"))?.json()?;
+    let me: api::Account = api.send(api.get("/v1/me"))?.json()?;
     Ok(me.user)
 }
 
@@ -54,7 +54,7 @@ fn fetch(
 }
 
 /// Creates a workspace in `root` and downloads every file at its head revision.
-pub fn clone_into(api: &Api, root: &Path, server: &str) -> Result<()> {
+pub fn clone_into(api: &Api, root: &Path, server: &str, repo: &str) -> Result<()> {
     if root.exists() && std::fs::read_dir(root)?.next().is_some() {
         bail!("{} already exists and is not empty", root.display());
     }
@@ -64,6 +64,7 @@ pub fn clone_into(api: &Api, root: &Path, server: &str) -> Result<()> {
     Settings {
         server: Some(server.to_string()),
         user: None,
+        repo: Some(repo.to_string()),
     }
     .save(&ws.config_path())?;
 
@@ -76,7 +77,11 @@ pub fn clone_into(api: &Api, root: &Path, server: &str) -> Result<()> {
         state.insert(entry.path.clone(), fetch(api, &ws, &entry, revision, &me)?);
     }
     ws.save_state(&state)?;
-    println!("cloned {} files into {}", state.len(), root.display());
+    println!(
+        "cloned {} files from {repo} into {}",
+        state.len(),
+        root.display()
+    );
     Ok(())
 }
 

@@ -44,8 +44,9 @@ it, whereas the local settings layer in the order above.
 
 ## Working in a workspace
 
-`pyn clone <dir>` creates the folder, downloads every file at its head revision, and records in
-`.pyn/local_only/state/` which revision each file is at and a hash of its content. After that, commands work from wherever
+`pyn clone <server>/owner/name [dir]` (or `pyn clone owner/name` on the configured server) creates the folder, which defaults to
+a folder named after the repository, downloads every file at its head revision, records the repository in
+`.pyn/local_only/config.toml`, and records in `.pyn/local_only/state/` which revision each file is at and a hash of its content. After that, commands work from wherever
 you are inside the workspace and take paths relative to your current directory.
 
 - **Read-only exclusive files.** Exclusive files are read-only until you hold the lock. `pyn checkout` makes the file
@@ -66,7 +67,8 @@ like the rest of `.pyn/`, so a team keeps one list.
 
 ## Settings
 
-`pyn config get|set|list` reads and writes settings. For now there are two: `server` and `user` (the development
-identity). `set` writes the workspace's file by default and your user file with `--global`; `get` shows the effective value,
+`pyn config get|set|list` reads and writes settings. For now there are three: `server`, `user` (the development
+identity) and `repo` (`owner/name`, set by `pyn clone`). `--repo` or `PYN_REPO` beats the workspace's `repo`, so one
+workspace can still reach another repository for a single command. Outside a workspace, repository commands need one of them. `set` writes the workspace's file by default and your user file with `--global`; `get` shows the effective value,
 or one layer with `--local` or `--global`. A `PYN_SERVER` or `--server` always wins, and `PYN_DIR` points at a `.pyn`
 folder kept somewhere else.

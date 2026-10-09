@@ -1,4 +1,4 @@
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use pyn_proto as api;
 use reqwest::Method;
 use reqwest::blocking::{Client, RequestBuilder, Response};
@@ -8,9 +8,19 @@ pub struct Api {
     pub base: String,
     pub token: Option<String>,
     pub user: Option<String>,
+    /// `owner/name` of the repository that repository-scoped commands act on.
+    pub repo: Option<String>,
 }
 
 impl Api {
+    /// The route for something inside the current repository, such as `/files`.
+    pub fn repo_route(&self, tail: &str) -> Result<String> {
+        let repo = self.repo.as_ref().context(
+            "no repository: run this inside a workspace, or pass --repo owner/name (or set PYN_REPO)",
+        )?;
+        Ok(format!("/v1/repos/{repo}{tail}"))
+    }
+
     pub fn request(&self, method: Method, path: &str) -> RequestBuilder {
         let req = self.http.request(method, format!("{}{path}", self.base));
         match (&self.token, &self.user) {
@@ -38,7 +48,7 @@ impl Api {
         let mut all = Vec::new();
         let mut after: Option<String> = None;
         loop {
-            let mut req = self.get("/v1/files");
+            let mut req = self.get(&self.repo_route("/files")?);
             if let Some(a) = &after {
                 req = req.query(&[("after", a)]);
             }
@@ -53,7 +63,9 @@ impl Api {
 
     /// A file's content at `revision`, with the revision the server reports.
     pub fn content(&self, path: &str, revision: Option<u64>) -> Result<Vec<u8>> {
-        let mut req = self.get("/v1/content").query(&[("path", path)]);
+        let mut req = self
+            .get(&self.repo_route("/content")?)
+            .query(&[("path", path)]);
         if let Some(r) = revision {
             req = req.query(&[("revision", r)]);
         }

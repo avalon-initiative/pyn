@@ -7,8 +7,9 @@ use pyn_core::memory::{
     MemoryAccessStore, MemoryAuditStore, MemoryMetadataStore, MemoryObjectStore,
 };
 use pyn_core::{
-    AccessConfig, AccessService, AuthProvider, RegistrationMode, RepoId, RepoService, Rules,
-    ServiceConfig, SystemClock, UserId,
+    AccessConfig, AccessService, AuthProvider, Credential, Identity, MetadataStore,
+    RegistrationMode, RepoId, RepoRecord, RepoSettings, Repositories, Rules, SystemClock, UserId,
+    Visibility,
 };
 use pyn_proto as api;
 use pyn_server::auth::{BearerAuth, DevHeaderAuth};
@@ -17,44 +18,64 @@ use tower::ServiceExt;
 
 const RULES: &str = "[meta]\ndefault = \"shared\"\n[exclusive]\npaths = [\"Content/\"]\n";
 
-fn state(dev: bool) -> AppState {
-    state_with(dev, RegistrationMode::InviteOnly)
+/// The repository every test works in, registered as `owner/game`.
+const REPO_ID: &str = "t";
+const REPO: &str = "owner/game";
+
+async fn state(dev: bool) -> AppState {
+    state_with(dev, RegistrationMode::InviteOnly).await
 }
 
-fn state_with(dev: bool, mode: RegistrationMode) -> AppState {
-    let repo = RepoId::new("t");
+async fn state_with(dev: bool, mode: RegistrationMode) -> AppState {
     let clock = Arc::new(SystemClock);
     let objects = Arc::new(MemoryObjectStore::new());
     let audit = Arc::new(MemoryAuditStore::new());
-    let service = Arc::new(RepoService::new(
-        repo.clone(),
-        Rules::from_toml(RULES).unwrap(),
-        Arc::new(MemoryMetadataStore::new()),
-        objects.clone(),
-        audit.clone(),
-        clock.clone(),
-        ServiceConfig::default(),
-    ));
+    let meta = Arc::new(MemoryMetadataStore::new());
+    meta.create_repo(RepoRecord {
+        id: RepoId::new(REPO_ID),
+        owner: UserId::new("owner"),
+        name: "game".into(),
+        visibility: Visibility::Private,
+        settings: RepoSettings::default(),
+        created_at: chrono::Utc::now(),
+    })
+    .await
+    .unwrap();
     let access = Arc::new(
-        AccessService::new(Arc::new(MemoryAccessStore::new()), clock)
+        AccessService::new(Arc::new(MemoryAccessStore::new()), clock.clone())
             .with_config(AccessConfig {
                 registration: mode,
                 ..AccessConfig::default()
             })
-            .with_audit(audit, repo.clone()),
+            .with_audit(audit.clone()),
     );
+    let repos = Arc::new(Repositories::new(
+        meta,
+        objects.clone(),
+        audit,
+        access.clone(),
+        clock,
+        Rules::from_toml(RULES).unwrap(),
+    ));
     AppState {
-        service,
+        repos,
         objects,
         access: access.clone(),
-        auth: Arc::new(BearerAuth { access, repo }),
+        auth: Arc::new(BearerAuth { access }),
         dev_auth: dev.then(|| Arc::new(DevHeaderAuth) as Arc<dyn AuthProvider>),
     }
 }
 
+fn session(user: &str) -> Identity {
+    Identity {
+        user: UserId::new(user),
+        credential: Credential::Session,
+    }
+}
+
 /// An app with development auth on, as `make run` uses it.
-fn app() -> axum::Router {
-    router(state(true))
+async fn app() -> axum::Router {
+    router(state(true).await)
 }
 
 fn json_post(uri: &str, user: &str, body: serde_json::Value) -> Request<Body> {
@@ -67,18 +88,22 @@ fn json_post(uri: &str, user: &str, body: serde_json::Value) -> Request<Body> {
 
 #[tokio::test]
 async fn lock_conflict_is_a_409_with_a_stable_code() {
-    let app = app();
+    let app = app().await;
     let body = serde_json::json!({"path": "Content/a.umap", "base_revision": null});
 
     let r = app
         .clone()
-        .oneshot(json_post("/v1/checkout", "alice", body.clone()))
+        .oneshot(json_post(
+            "/v1/repos/owner/game/checkout",
+            "alice",
+            body.clone(),
+        ))
         .await
         .unwrap();
     assert_eq!(r.status(), StatusCode::OK);
 
     let r = app
-        .oneshot(json_post("/v1/checkout", "bob", body))
+        .oneshot(json_post("/v1/repos/owner/game/checkout", "bob", body))
         .await
         .unwrap();
     assert_eq!(r.status(), StatusCode::CONFLICT);
@@ -92,8 +117,9 @@ async fn lock_conflict_is_a_409_with_a_stable_code() {
 #[tokio::test]
 async fn unauthenticated_requests_are_rejected() {
     let r = app()
+        .await
         .oneshot(
-            Request::post("/v1/checkout")
+            Request::post("/v1/repos/owner/game/checkout")
                 .header("content-type", "application/json")
                 .body(Body::from(
                     r#"{"path":"Content/a.umap","base_revision":null}"#,
@@ -108,28 +134,29 @@ async fn unauthenticated_requests_are_rejected() {
 #[tokio::test]
 async fn openapi_document_lists_the_lock_routes() {
     let r = app()
+        .await
         .oneshot(Request::get("/openapi.json").body(Body::empty()).unwrap())
         .await
         .unwrap();
     assert_eq!(r.status(), StatusCode::OK);
     let doc: serde_json::Value =
         serde_json::from_slice(&r.into_body().collect().await.unwrap().to_bytes()).unwrap();
-    assert!(doc["paths"]["/v1/checkout"].is_object());
+    assert!(doc["paths"]["/v1/repos/{owner}/{name}/checkout"].is_object());
     assert!(doc["components"]["schemas"]["ErrorBody"].is_object());
 }
 
 #[tokio::test]
 async fn files_listing_shows_mode_and_lock() {
-    let app = app();
+    let app = app().await;
     let body = serde_json::json!({"path": "Content/a.umap", "base_revision": null});
     app.clone()
-        .oneshot(json_post("/v1/checkout", "alice", body))
+        .oneshot(json_post("/v1/repos/owner/game/checkout", "alice", body))
         .await
         .unwrap();
 
     let r = app
         .oneshot(
-            Request::get("/v1/files")
+            Request::get("/v1/repos/owner/game/files")
                 .header(api::DEV_USER_HEADER, "alice")
                 .body(Body::empty())
                 .unwrap(),
@@ -151,10 +178,10 @@ async fn files_listing_shows_mode_and_lock() {
 
 #[tokio::test]
 async fn any_revision_can_be_fetched() {
-    let app = app();
+    let app = app().await;
     let mut base = serde_json::Value::Null;
     for text in ["v1", "v2"] {
-        let put = Request::put("/v1/objects")
+        let put = Request::put("/v1/repos/owner/game/objects")
             .header(api::DEV_USER_HEADER, "bob")
             .body(Body::from(text))
             .unwrap();
@@ -164,7 +191,7 @@ async fn any_revision_can_be_fetched() {
         let body = serde_json::json!({"path": "Source/a.cpp", "content": obj.content, "base_revision": base, "message": text});
         let r = app
             .clone()
-            .oneshot(json_post("/v1/checkin", "bob", body))
+            .oneshot(json_post("/v1/repos/owner/game/checkin", "bob", body))
             .await
             .unwrap();
         assert_eq!(r.status(), StatusCode::OK);
@@ -175,7 +202,7 @@ async fn any_revision_can_be_fetched() {
         let app = app.clone();
         async move {
             app.oneshot(
-                Request::get(format!("/v1/content?{query}"))
+                Request::get(format!("/v1/repos/owner/game/content?{query}"))
                     .header(api::DEV_USER_HEADER, "alice")
                     .body(Body::empty())
                     .unwrap(),
@@ -233,28 +260,33 @@ async fn status(app: &axum::Router, req: Request<Body>) -> StatusCode {
 }
 
 async fn admin_token(state: &AppState) -> String {
+    let root = UserId::new("root");
+    let token = state.access.bootstrap_admin(&root).await.unwrap();
     state
         .access
-        .bootstrap_admin(state.service.repo(), &UserId::new("root"))
+        .add_creator(&RepoId::new(REPO_ID), &root)
         .await
-        .unwrap()
+        .unwrap();
+    token
 }
 
 #[tokio::test]
 async fn the_dev_header_is_ignored_unless_dev_auth_is_on() {
-    let app = router(state(false));
-    let req = Request::get("/v1/files")
+    let app = router(state(false).await);
+    let req = Request::get("/v1/repos/owner/game/files")
         .header(api::DEV_USER_HEADER, "alice")
         .body(Body::empty())
         .unwrap();
     assert_eq!(status(&app, req).await, StatusCode::UNAUTHORIZED);
-    let bare = Request::get("/v1/files").body(Body::empty()).unwrap();
+    let bare = Request::get("/v1/repos/owner/game/files")
+        .body(Body::empty())
+        .unwrap();
     assert_eq!(status(&app, bare).await, StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
 async fn health_and_openapi_need_no_credentials() {
-    let app = router(state(false));
+    let app = router(state(false).await);
     for uri in ["/healthz", "/openapi.json"] {
         assert_eq!(
             status(&app, Request::get(uri).body(Body::empty()).unwrap()).await,
@@ -266,7 +298,7 @@ async fn health_and_openapi_need_no_credentials() {
 
 #[tokio::test]
 async fn a_read_only_token_can_read_but_not_lock_or_check_in() {
-    let st = state(false);
+    let st = state(false).await;
     let admin = admin_token(&st).await;
     let app = router(st);
 
@@ -276,7 +308,7 @@ async fn a_read_only_token_can_read_but_not_lock_or_check_in() {
                 "POST",
                 "/v1/tokens",
                 &admin,
-                Some(serde_json::json!({"name": "ci", "permissions": ["read"]})),
+                Some(serde_json::json!({"name": "ci", "repos": [REPO], "permissions": ["read"]})),
             ))
             .await
             .unwrap(),
@@ -286,7 +318,11 @@ async fn a_read_only_token_can_read_but_not_lock_or_check_in() {
     assert_eq!(made.info.permissions, ["read"]);
 
     assert_eq!(
-        status(&app, with_token("GET", "/v1/files", &made.token, None)).await,
+        status(
+            &app,
+            with_token("GET", "/v1/repos/owner/game/files", &made.token, None)
+        )
+        .await,
         StatusCode::OK
     );
     let checkout = serde_json::json!({"path": "Content/a.umap", "base_revision": null});
@@ -294,7 +330,7 @@ async fn a_read_only_token_can_read_but_not_lock_or_check_in() {
         .clone()
         .oneshot(with_token(
             "POST",
-            "/v1/checkout",
+            "/v1/repos/owner/game/checkout",
             &made.token,
             Some(checkout),
         ))
@@ -307,15 +343,15 @@ async fn a_read_only_token_can_read_but_not_lock_or_check_in() {
 
 #[tokio::test]
 async fn a_token_cannot_ask_for_more_than_its_owner_holds() {
-    let st = state(false);
+    let st = state(false).await;
     let admin = admin_token(&st).await;
     st.access
         .set_user_role(
             &st.access
-                .principal(st.service.repo(), &UserId::new("root"))
+                .principal(&RepoId::new(REPO_ID), &UserId::new("root"))
                 .await
                 .unwrap(),
-            st.service.repo(),
+            &RepoId::new(REPO_ID),
             &UserId::new("wendy"),
             pyn_core::Role::Writer,
         )
@@ -323,18 +359,25 @@ async fn a_token_cannot_ask_for_more_than_its_owner_holds() {
         .unwrap();
     let wendy = st
         .access
-        .principal(st.service.repo(), &UserId::new("wendy"))
+        .principal(&RepoId::new(REPO_ID), &UserId::new("wendy"))
         .await
         .unwrap();
     let (_, wendy_token) = st
         .access
-        .create_token(&wendy, "w", wendy.permissions.clone(), vec![], None)
+        .create_token(
+            &session("wendy"),
+            "w",
+            wendy.permissions.clone(),
+            vec![RepoId::new(REPO_ID)],
+            None,
+        )
         .await
         .unwrap();
     let app = router(st);
     let _ = admin;
 
-    let body = serde_json::json!({"name": "sneaky", "permissions": ["read", "restore"]});
+    let body =
+        serde_json::json!({"name": "sneaky", "repos": [REPO], "permissions": ["read", "restore"]});
     assert_eq!(
         status(
             &app,
@@ -343,7 +386,7 @@ async fn a_token_cannot_ask_for_more_than_its_owner_holds() {
         .await,
         StatusCode::FORBIDDEN
     );
-    let body = serde_json::json!({"name": "nope", "permissions": ["flying"]});
+    let body = serde_json::json!({"name": "nope", "repos": [REPO], "permissions": ["flying"]});
     assert_eq!(
         status(
             &app,
@@ -356,19 +399,26 @@ async fn a_token_cannot_ask_for_more_than_its_owner_holds() {
 
 #[tokio::test]
 async fn a_revoked_token_stops_working_and_whoami_reports_the_caller() {
-    let st = state(false);
+    let st = state(false).await;
     let admin = admin_token(&st).await;
     let app = router(st);
 
-    let me: api::Me = body_json(
+    let account: api::Account = body_json(
         app.clone()
             .oneshot(with_token("GET", "/v1/me", &admin, None))
             .await
             .unwrap(),
     )
     .await;
-    assert_eq!(me.user, "root");
-    assert_eq!(me.permissions.len(), 9);
+    assert_eq!(account.user, "root");
+    let me: api::Me = body_json(
+        app.clone()
+            .oneshot(with_token("GET", "/v1/repos/owner/game/me", &admin, None))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!((me.user.as_str(), me.permissions.len()), ("root", 9));
 
     let made: api::CreatedToken = body_json(
         app.clone()
@@ -376,7 +426,7 @@ async fn a_revoked_token_stops_working_and_whoami_reports_the_caller() {
                 "POST",
                 "/v1/tokens",
                 &admin,
-                Some(serde_json::json!({"name": "tmp", "permissions": ["read"]})),
+                Some(serde_json::json!({"name": "tmp", "repos": [REPO], "permissions": ["read"]})),
             ))
             .await
             .unwrap(),
@@ -407,7 +457,7 @@ async fn a_revoked_token_stops_working_and_whoami_reports_the_caller() {
 
 #[tokio::test]
 async fn admins_manage_members_and_roles_and_others_cannot() {
-    let st = state(false);
+    let st = state(false).await;
     let admin = admin_token(&st).await;
     let app = router(st);
 
@@ -415,14 +465,24 @@ async fn admins_manage_members_and_roles_and_others_cannot() {
     assert_eq!(
         status(
             &app,
-            with_token("PUT", "/v1/members/wendy", &admin, Some(add))
+            with_token(
+                "PUT",
+                "/v1/repos/owner/game/members/wendy",
+                &admin,
+                Some(add)
+            )
         )
         .await,
         StatusCode::NO_CONTENT
     );
     let members: Vec<api::Member> = body_json(
         app.clone()
-            .oneshot(with_token("GET", "/v1/members", &admin, None))
+            .oneshot(with_token(
+                "GET",
+                "/v1/repos/owner/game/members",
+                &admin,
+                None,
+            ))
             .await
             .unwrap(),
     )
@@ -435,7 +495,12 @@ async fn admins_manage_members_and_roles_and_others_cannot() {
 
     let grants: Vec<api::RoleGrant> = body_json(
         app.clone()
-            .oneshot(with_token("GET", "/v1/roles", &admin, None))
+            .oneshot(with_token(
+                "GET",
+                "/v1/repos/owner/game/roles",
+                &admin,
+                None,
+            ))
             .await
             .unwrap(),
     )
@@ -446,7 +511,12 @@ async fn admins_manage_members_and_roles_and_others_cannot() {
     assert_eq!(
         status(
             &app,
-            with_token("PUT", "/v1/roles/writer", &admin, Some(narrow))
+            with_token(
+                "PUT",
+                "/v1/repos/owner/game/roles/writer",
+                &admin,
+                Some(narrow)
+            )
         )
         .await,
         StatusCode::NO_CONTENT
@@ -455,7 +525,12 @@ async fn admins_manage_members_and_roles_and_others_cannot() {
     assert_eq!(
         status(
             &app,
-            with_token("PUT", "/v1/roles/admin", &admin, Some(lock_out))
+            with_token(
+                "PUT",
+                "/v1/repos/owner/game/roles/admin",
+                &admin,
+                Some(lock_out)
+            )
         )
         .await,
         StatusCode::BAD_REQUEST
@@ -464,17 +539,17 @@ async fn admins_manage_members_and_roles_and_others_cannot() {
 
 #[tokio::test]
 async fn restore_needs_the_permission_the_lock_and_the_confirmation() {
-    let st = state(false);
+    let st = state(false).await;
     let admin = admin_token(&st).await;
     let root = st
         .access
-        .principal(st.service.repo(), &UserId::new("root"))
+        .principal(&RepoId::new(REPO_ID), &UserId::new("root"))
         .await
         .unwrap();
     st.access
         .set_user_role(
             &root,
-            st.service.repo(),
+            &RepoId::new(REPO_ID),
             &UserId::new("wendy"),
             pyn_core::Role::Writer,
         )
@@ -482,12 +557,18 @@ async fn restore_needs_the_permission_the_lock_and_the_confirmation() {
         .unwrap();
     let wendy = st
         .access
-        .principal(st.service.repo(), &UserId::new("wendy"))
+        .principal(&RepoId::new(REPO_ID), &UserId::new("wendy"))
         .await
         .unwrap();
     let (_, writer) = st
         .access
-        .create_token(&wendy, "w", wendy.permissions.clone(), vec![], None)
+        .create_token(
+            &session("wendy"),
+            "w",
+            wendy.permissions.clone(),
+            vec![RepoId::new(REPO_ID)],
+            None,
+        )
         .await
         .unwrap();
     let app = router(st);
@@ -502,14 +583,14 @@ async fn restore_needs_the_permission_the_lock_and_the_confirmation() {
             .clone()
             .oneshot(with_token(
                 "POST",
-                "/v1/checkout",
+                "/v1/repos/owner/game/checkout",
                 &admin,
                 Some(serde_json::json!({"path": "Content/m.umap", "base_revision": base})),
             ))
             .await
             .unwrap();
         assert_eq!(r.status(), StatusCode::OK);
-        let put = Request::put("/v1/objects")
+        let put = Request::put("/v1/repos/owner/game/objects")
             .header("authorization", format!("Bearer {admin}"))
             .body(Body::from(text))
             .unwrap();
@@ -518,7 +599,12 @@ async fn restore_needs_the_permission_the_lock_and_the_confirmation() {
         assert_eq!(
             status(
                 &app,
-                with_token("POST", "/v1/checkin", &admin, Some(checkin))
+                with_token(
+                    "POST",
+                    "/v1/repos/owner/game/checkin",
+                    &admin,
+                    Some(checkin)
+                )
             )
             .await,
             StatusCode::OK
@@ -530,7 +616,7 @@ async fn restore_needs_the_permission_the_lock_and_the_confirmation() {
         .clone()
         .oneshot(with_token(
             "POST",
-            "/v1/restore",
+            "/v1/repos/owner/game/restore",
             &writer,
             Some(restore("Content/m.umap@r2")),
         ))
@@ -544,7 +630,7 @@ async fn restore_needs_the_permission_the_lock_and_the_confirmation() {
         .clone()
         .oneshot(with_token(
             "POST",
-            "/v1/restore",
+            "/v1/repos/owner/game/restore",
             &admin,
             Some(restore("Content/m.umap@r2")),
         ))
@@ -555,14 +641,18 @@ async fn restore_needs_the_permission_the_lock_and_the_confirmation() {
 
     let lock = serde_json::json!({"path": "Content/m.umap", "base_revision": 2});
     assert_eq!(
-        status(&app, with_token("POST", "/v1/checkout", &admin, Some(lock))).await,
+        status(
+            &app,
+            with_token("POST", "/v1/repos/owner/game/checkout", &admin, Some(lock))
+        )
+        .await,
         StatusCode::OK
     );
     let r = app
         .clone()
         .oneshot(with_token(
             "POST",
-            "/v1/restore",
+            "/v1/repos/owner/game/restore",
             &admin,
             Some(restore("yes")),
         ))
@@ -577,7 +667,7 @@ async fn restore_needs_the_permission_the_lock_and_the_confirmation() {
         .clone()
         .oneshot(with_token(
             "POST",
-            "/v1/restore",
+            "/v1/repos/owner/game/restore",
             &admin,
             Some(restore("Content/m.umap@r2")),
         ))
@@ -591,20 +681,26 @@ async fn restore_needs_the_permission_the_lock_and_the_confirmation() {
 async fn member_token(st: &AppState, name: &str, role: pyn_core::Role) -> String {
     let root = st
         .access
-        .principal(st.service.repo(), &UserId::new("root"))
+        .principal(&RepoId::new(REPO_ID), &UserId::new("root"))
         .await
         .unwrap();
     st.access
-        .set_user_role(&root, st.service.repo(), &UserId::new(name), role)
+        .set_user_role(&root, &RepoId::new(REPO_ID), &UserId::new(name), role)
         .await
         .unwrap();
     let who = st
         .access
-        .principal(st.service.repo(), &UserId::new(name))
+        .principal(&RepoId::new(REPO_ID), &UserId::new(name))
         .await
         .unwrap();
     st.access
-        .create_token(&who, name, who.permissions.clone(), vec![], None)
+        .create_token(
+            &session(name),
+            name,
+            who.permissions.clone(),
+            vec![RepoId::new(REPO_ID)],
+            None,
+        )
         .await
         .unwrap()
         .1
@@ -612,7 +708,7 @@ async fn member_token(st: &AppState, name: &str, role: pyn_core::Role) -> String
 
 #[tokio::test]
 async fn force_unlock_needs_the_permission_and_a_reason_and_is_audited() {
-    let st = state(false);
+    let st = state(false).await;
     admin_token(&st).await;
     let wendy = member_token(&st, "wendy", pyn_core::Role::Writer).await;
     let maya = member_token(&st, "maya", pyn_core::Role::Maintainer).await;
@@ -620,7 +716,11 @@ async fn force_unlock_needs_the_permission_and_a_reason_and_is_audited() {
 
     let lock = serde_json::json!({"path": "Content/a.umap", "base_revision": null});
     assert_eq!(
-        status(&app, with_token("POST", "/v1/checkout", &wendy, Some(lock))).await,
+        status(
+            &app,
+            with_token("POST", "/v1/repos/owner/game/checkout", &wendy, Some(lock))
+        )
+        .await,
         StatusCode::OK
     );
 
@@ -629,7 +729,7 @@ async fn force_unlock_needs_the_permission_and_a_reason_and_is_audited() {
         .clone()
         .oneshot(with_token(
             "POST",
-            "/v1/force-unlock",
+            "/v1/repos/owner/game/force-unlock",
             &wendy,
             Some(unlock("mine")),
         ))
@@ -643,7 +743,12 @@ async fn force_unlock_needs_the_permission_and_a_reason_and_is_audited() {
     assert_eq!(
         status(
             &app,
-            with_token("POST", "/v1/force-unlock", &maya, Some(unlock("  ")))
+            with_token(
+                "POST",
+                "/v1/repos/owner/game/force-unlock",
+                &maya,
+                Some(unlock("  "))
+            )
         )
         .await,
         StatusCode::BAD_REQUEST
@@ -653,7 +758,7 @@ async fn force_unlock_needs_the_permission_and_a_reason_and_is_audited() {
         .clone()
         .oneshot(with_token(
             "POST",
-            "/v1/force-unlock",
+            "/v1/repos/owner/game/force-unlock",
             &maya,
             Some(unlock("wendy is away")),
         ))
@@ -666,7 +771,7 @@ async fn force_unlock_needs_the_permission_and_a_reason_and_is_audited() {
         .clone()
         .oneshot(with_token(
             "POST",
-            "/v1/force-unlock",
+            "/v1/repos/owner/game/force-unlock",
             &maya,
             Some(unlock("again")),
         ))
@@ -676,12 +781,16 @@ async fn force_unlock_needs_the_permission_and_a_reason_and_is_audited() {
     assert_eq!(err.code, "not_locked");
 
     assert_eq!(
-        status(&app, with_token("GET", "/v1/audit", &wendy, None)).await,
+        status(
+            &app,
+            with_token("GET", "/v1/repos/owner/game/audit", &wendy, None)
+        )
+        .await,
         StatusCode::FORBIDDEN
     );
     let page: api::AuditPage = body_json(
         app.clone()
-            .oneshot(with_token("GET", "/v1/audit", &maya, None))
+            .oneshot(with_token("GET", "/v1/repos/owner/game/audit", &maya, None))
             .await
             .unwrap(),
     )
@@ -699,7 +808,7 @@ async fn force_unlock_needs_the_permission_and_a_reason_and_is_audited() {
         app.clone()
             .oneshot(with_token(
                 "GET",
-                "/v1/audit?action=checkout&limit=1",
+                "/v1/repos/owner/game/audit?action=checkout&limit=1",
                 &maya,
                 None,
             ))
@@ -711,7 +820,12 @@ async fn force_unlock_needs_the_permission_and_a_reason_and_is_audited() {
     assert_eq!(
         status(
             &app,
-            with_token("GET", "/v1/audit?action=bogus", &maya, None)
+            with_token(
+                "GET",
+                "/v1/repos/owner/game/audit?action=bogus",
+                &maya,
+                None
+            )
         )
         .await,
         StatusCode::BAD_REQUEST
@@ -731,7 +845,7 @@ const PASSWORD: &str = "correct horse battery";
 
 #[tokio::test]
 async fn registration_follows_the_servers_mode() {
-    let closed = router(state_with(false, RegistrationMode::Closed));
+    let closed = router(state_with(false, RegistrationMode::Closed).await);
     let r = closed
         .clone()
         .oneshot(
@@ -759,7 +873,7 @@ async fn registration_follows_the_servers_mode() {
         "registration_closed"
     );
 
-    let open = router(state_with(false, RegistrationMode::Open));
+    let open = router(state_with(false, RegistrationMode::Open).await);
     let join = serde_json::json!({"username": "alice", "password": PASSWORD});
     assert_eq!(
         status(&open, anon("POST", "/v1/register", join.clone())).await,
@@ -794,21 +908,28 @@ async fn registration_follows_the_servers_mode() {
         .unwrap();
     assert_eq!(r.status(), StatusCode::OK);
     let session: api::CreatedToken = body_json(r).await;
-    let me: api::Me = body_json(
-        open.oneshot(with_token("GET", "/v1/me", &session.token, None))
+    let me: api::Account = body_json(
+        open.clone()
+            .oneshot(with_token("GET", "/v1/me", &session.token, None))
             .await
             .unwrap(),
     )
     .await;
+    assert_eq!(me.user, "alice");
     assert_eq!(
-        (me.user.as_str(), me.permissions.as_slice()),
-        ("alice", ["read".to_string()].as_slice())
+        status(
+            &open,
+            with_token("GET", "/v1/repos/owner/game/me", &session.token, None)
+        )
+        .await,
+        StatusCode::NOT_FOUND,
+        "registering gives no access to any repository"
     );
 }
 
 #[tokio::test]
 async fn an_invite_only_server_admits_people_with_a_one_time_invitation() {
-    let st = state(false);
+    let st = state(false).await;
     let admin = admin_token(&st).await;
     let app = router(st);
     let join = |code: Option<&str>| serde_json::json!({"username": "wendy", "password": PASSWORD, "invite": code});
@@ -829,7 +950,12 @@ async fn an_invite_only_server_admits_people_with_a_one_time_invitation() {
     let make = serde_json::json!({"role": "writer", "hours": 24});
     let invite: api::CreatedInvite = body_json(
         app.clone()
-            .oneshot(with_token("POST", "/v1/invites", &admin, Some(make)))
+            .oneshot(with_token(
+                "POST",
+                "/v1/repos/owner/game/invites",
+                &admin,
+                Some(make),
+            ))
             .await
             .unwrap(),
     )
@@ -849,7 +975,12 @@ async fn an_invite_only_server_admits_people_with_a_one_time_invitation() {
 
     let listed: Vec<api::InviteInfo> = body_json(
         app.clone()
-            .oneshot(with_token("GET", "/v1/invites", &admin, None))
+            .oneshot(with_token(
+                "GET",
+                "/v1/repos/owner/game/invites",
+                &admin,
+                None,
+            ))
             .await
             .unwrap(),
     )
@@ -873,7 +1004,7 @@ async fn an_invite_only_server_admits_people_with_a_one_time_invitation() {
             &app,
             with_token(
                 "POST",
-                "/v1/invites",
+                "/v1/repos/owner/game/invites",
                 &wendy.token,
                 Some(serde_json::json!({"role": "reader", "hours": 1}))
             )
@@ -882,7 +1013,7 @@ async fn an_invite_only_server_admits_people_with_a_one_time_invitation() {
         StatusCode::FORBIDDEN
     );
 
-    let uri = format!("/v1/invites/{}", listed[0].id);
+    let uri = format!("/v1/repos/owner/game/invites/{}", listed[0].id);
     assert_eq!(
         status(&app, with_token("DELETE", &uri, &admin, None)).await,
         StatusCode::NO_CONTENT
@@ -890,7 +1021,12 @@ async fn an_invite_only_server_admits_people_with_a_one_time_invitation() {
     assert_eq!(
         status(
             &app,
-            with_token("DELETE", "/v1/invites/ffffffffffff", &admin, None)
+            with_token(
+                "DELETE",
+                "/v1/repos/owner/game/invites/ffffffffffff",
+                &admin,
+                None
+            )
         )
         .await,
         StatusCode::BAD_REQUEST
@@ -899,20 +1035,29 @@ async fn an_invite_only_server_admits_people_with_a_one_time_invitation() {
 
 #[tokio::test]
 async fn sign_in_is_throttled_and_never_says_which_part_was_wrong() {
-    let st = state(false);
+    let st = state(false).await;
     let admin = admin_token(&st).await;
     let app = router(st);
     let add = serde_json::json!({"username": "alice", "password": PASSWORD, "role": "writer"});
     assert_eq!(
         status(
             &app,
-            with_token("POST", "/v1/users", &admin, Some(add.clone()))
+            with_token(
+                "POST",
+                "/v1/repos/owner/game/users",
+                &admin,
+                Some(add.clone())
+            )
         )
         .await,
         StatusCode::CREATED
     );
     assert_eq!(
-        status(&app, with_token("POST", "/v1/users", &admin, Some(add))).await,
+        status(
+            &app,
+            with_token("POST", "/v1/repos/owner/game/users", &admin, Some(add))
+        )
+        .await,
         StatusCode::CONFLICT
     );
 
@@ -955,7 +1100,7 @@ async fn sign_in_is_throttled_and_never_says_which_part_was_wrong() {
 
 #[tokio::test]
 async fn people_can_change_their_own_password() {
-    let st = state_with(false, RegistrationMode::Open);
+    let st = state_with(false, RegistrationMode::Open).await;
     let app = router(st);
     app.clone()
         .oneshot(anon(
@@ -1009,7 +1154,7 @@ const DSA: &str = include_str!("../../pyn-core/tests/fixtures/keys/dsa.pub");
 
 #[tokio::test]
 async fn people_link_ssh_keys_to_their_accounts_like_on_github() {
-    let st = state_with(false, RegistrationMode::Open);
+    let st = state_with(false, RegistrationMode::Open).await;
     let app = router(st);
     for name in ["alice", "bob"] {
         app.clone()
@@ -1194,7 +1339,7 @@ async fn web_sign_in(
 
 #[tokio::test]
 async fn a_web_session_is_an_httponly_cookie_that_signs_out_and_follows_the_role() {
-    let st = state_with(false, RegistrationMode::Open);
+    let st = state_with(false, RegistrationMode::Open).await;
     let app = router(st.clone());
     app.clone()
         .oneshot(anon(
@@ -1223,19 +1368,24 @@ async fn a_web_session_is_an_httponly_cookie_that_signs_out_and_follows_the_role
     let (set_https, _, _) = web_sign_in(&app, Some("https")).await;
     assert!(set_https.contains("; Secure"), "{set_https}");
 
-    let me = |c: &str| with_cookie("GET", "/v1/me", c, None, None);
-    assert_eq!(status(&app, me(&cookie)).await, StatusCode::OK);
+    let me = |c: &str| with_cookie("GET", "/v1/repos/owner/game/me", c, None, None);
+    let account = |c: &str| with_cookie("GET", "/v1/me", c, None, None);
+    assert_eq!(status(&app, account(&cookie)).await, StatusCode::OK);
+    assert_eq!(status(&app, me(&cookie)).await, StatusCode::NOT_FOUND);
     assert_eq!(
         status(&app, with_cookie("GET", "/v1/session", &cookie, None, None)).await,
         StatusCode::OK
     );
-    assert_eq!(status(&app, me("forged")).await, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        status(&app, account("forged")).await,
+        StatusCode::UNAUTHORIZED
+    );
 
     let root = admin_token(&st).await;
     let promote = |role: &str| {
         with_token(
             "PUT",
-            "/v1/members/alice",
+            "/v1/repos/owner/game/members/alice",
             &root,
             Some(serde_json::json!({"role": role})),
         )
@@ -1270,7 +1420,7 @@ async fn a_web_session_is_an_httponly_cookie_that_signs_out_and_follows_the_role
 
 #[tokio::test]
 async fn state_changing_requests_with_a_cookie_need_the_csrf_token() {
-    let st = state_with(false, RegistrationMode::Open);
+    let st = state_with(false, RegistrationMode::Open).await;
     let app = router(st);
     app.clone()
         .oneshot(anon(
@@ -1330,7 +1480,7 @@ async fn state_changing_requests_with_a_cookie_need_the_csrf_token() {
 
 #[tokio::test]
 async fn bearer_requests_need_no_csrf_token_even_beside_a_session_cookie() {
-    let st = state_with(false, RegistrationMode::Open);
+    let st = state_with(false, RegistrationMode::Open).await;
     let app = router(st.clone());
     app.clone()
         .oneshot(anon(
@@ -1347,7 +1497,7 @@ async fn bearer_requests_need_no_csrf_token_even_beside_a_session_cookie() {
         "POST",
         "/v1/tokens",
         &root,
-        Some(serde_json::json!({"name": "ci", "permissions": ["read"]})),
+        Some(serde_json::json!({"name": "ci", "repos": [REPO], "permissions": ["read"]})),
     );
     req.headers_mut().insert("cookie", cookie.parse().unwrap());
     assert_eq!(status(&app, req).await, StatusCode::OK);
@@ -1355,7 +1505,7 @@ async fn bearer_requests_need_no_csrf_token_even_beside_a_session_cookie() {
 
 #[tokio::test]
 async fn member_role_and_token_changes_are_audited_without_secrets() {
-    let st = state(false);
+    let st = state(false).await;
     let admin = admin_token(&st).await;
     let wendy = member_token(&st, "wendy", pyn_core::Role::Writer).await;
     let app = router(st);
@@ -1365,7 +1515,7 @@ async fn member_role_and_token_changes_are_audited_without_secrets() {
 
     send(
         "PUT",
-        "/v1/members/wendy",
+        "/v1/repos/owner/game/members/wendy",
         &admin,
         Some(serde_json::json!({"role": "maintainer"})),
     )
@@ -1373,7 +1523,7 @@ async fn member_role_and_token_changes_are_audited_without_secrets() {
     .unwrap();
     send(
         "PUT",
-        "/v1/roles/reader",
+        "/v1/repos/owner/game/roles/reader",
         &admin,
         Some(serde_json::json!({"permissions": ["read", "view_audit"]})),
     )
@@ -1384,7 +1534,7 @@ async fn member_role_and_token_changes_are_audited_without_secrets() {
             "POST",
             "/v1/tokens",
             &admin,
-            Some(serde_json::json!({"name": "ci", "permissions": ["read"]})),
+            Some(serde_json::json!({"name": "ci", "repos": [REPO], "permissions": ["read"]})),
         )
         .await
         .unwrap(),
@@ -1400,12 +1550,20 @@ async fn member_role_and_token_changes_are_audited_without_secrets() {
     .unwrap();
 
     assert_eq!(
-        status(&app, with_token("GET", "/v1/audit", &wendy, None)).await,
+        status(
+            &app,
+            with_token("GET", "/v1/repos/owner/game/audit", &wendy, None)
+        )
+        .await,
         StatusCode::FORBIDDEN,
         "a writer cannot read the audit log"
     );
-    let page: api::AuditPage =
-        body_json(send("GET", "/v1/audit", &admin, None).await.unwrap()).await;
+    let page: api::AuditPage = body_json(
+        send("GET", "/v1/repos/owner/game/audit", &admin, None)
+            .await
+            .unwrap(),
+    )
+    .await;
     let seen: Vec<_> = page
         .entries
         .iter()
@@ -1420,6 +1578,7 @@ async fn member_role_and_token_changes_are_audited_without_secrets() {
             ("role_changed", "root"),
             ("token_created", "wendy"),
             ("member_added", "root"),
+            ("member_added", "root"),
         ]
     );
     assert!(
@@ -1432,4 +1591,485 @@ async fn member_role_and_token_changes_are_audited_without_secrets() {
     for secret in [&made.token, &admin, &wendy] {
         assert!(!everything.contains(secret.as_str()), "token secret leaked");
     }
+}
+
+async fn register_and_sign_in(app: &axum::Router, name: &str) -> String {
+    let r = app
+        .clone()
+        .oneshot(anon(
+            "POST",
+            "/v1/register",
+            serde_json::json!({"username": name, "password": PASSWORD}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::CREATED);
+    let r = app
+        .clone()
+        .oneshot(anon(
+            "POST",
+            "/v1/login",
+            serde_json::json!({"username": name, "password": PASSWORD}),
+        ))
+        .await
+        .unwrap();
+    body_json::<api::CreatedToken>(r).await.token
+}
+
+async fn send(
+    app: &axum::Router,
+    method: &str,
+    uri: &str,
+    token: &str,
+    body: Option<serde_json::Value>,
+) -> axum::response::Response {
+    app.clone()
+        .oneshot(with_token(method, uri, token, body))
+        .await
+        .unwrap()
+}
+
+async fn create_repo(app: &axum::Router, token: &str, name: &str) -> api::RepoInfo {
+    let r = send(
+        app,
+        "POST",
+        "/v1/repos",
+        token,
+        Some(serde_json::json!({"name": name})),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::CREATED);
+    body_json(r).await
+}
+
+#[tokio::test]
+async fn anyone_can_create_repositories_in_their_own_namespace() {
+    let app = router(state_with(false, RegistrationMode::Open).await);
+    let alice = register_and_sign_in(&app, "alice").await;
+
+    let made = create_repo(&app, &alice, "game").await;
+    assert_eq!(
+        (
+            made.owner.as_str(),
+            made.name.as_str(),
+            made.role.as_deref()
+        ),
+        ("alice", "game", Some("admin"))
+    );
+    assert_eq!(made.visibility, api::Visibility::Private);
+    assert_eq!(made.lease_hours, 8);
+
+    let r = send(&app, "GET", "/v1/repos/alice/game", &alice, None).await;
+    assert_eq!(body_json::<api::RepoInfo>(r).await, made);
+    let me: api::Me =
+        body_json(send(&app, "GET", "/v1/repos/alice/game/me", &alice, None).await).await;
+    assert_eq!(me.permissions.len(), 9);
+
+    let dup = send(
+        &app,
+        "POST",
+        "/v1/repos",
+        &alice,
+        Some(serde_json::json!({"name": "game"})),
+    )
+    .await;
+    assert_eq!(dup.status(), StatusCode::CONFLICT);
+    assert_eq!(body_json::<api::ErrorBody>(dup).await.code, "repo_exists");
+
+    let bad = send(
+        &app,
+        "POST",
+        "/v1/repos",
+        &alice,
+        Some(serde_json::json!({"name": "Not Ok"})),
+    )
+    .await;
+    assert_eq!(bad.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        body_json::<api::ErrorBody>(bad).await.code,
+        "invalid_repo_name"
+    );
+
+    let elsewhere = send(
+        &app,
+        "POST",
+        "/v1/repos",
+        &alice,
+        Some(serde_json::json!({"owner": "bob", "name": "game"})),
+    )
+    .await;
+    assert_eq!(elsewhere.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        body_json::<api::ErrorBody>(elsewhere).await.code,
+        "not_namespace_owner"
+    );
+
+    let anon_create = app
+        .clone()
+        .oneshot(anon("POST", "/v1/repos", serde_json::json!({"name": "x"})))
+        .await
+        .unwrap();
+    assert_eq!(anon_create.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn listing_shows_only_repositories_you_belong_to() {
+    let app = router(state_with(false, RegistrationMode::Open).await);
+    let alice = register_and_sign_in(&app, "alice").await;
+    let bob = register_and_sign_in(&app, "bob").await;
+    create_repo(&app, &alice, "one").await;
+    create_repo(&app, &alice, "two").await;
+    create_repo(&app, &bob, "three").await;
+
+    let list = |token: String, query: &'static str| {
+        let app = app.clone();
+        async move {
+            let r = send(&app, "GET", &format!("/v1/repos{query}"), &token, None).await;
+            let repos: Vec<api::RepoInfo> = body_json(r).await;
+            repos
+                .into_iter()
+                .map(|r| format!("{}/{}", r.owner, r.name))
+                .collect::<Vec<_>>()
+        }
+    };
+    assert_eq!(list(alice.clone(), "").await, ["alice/one", "alice/two"]);
+    assert_eq!(list(bob.clone(), "").await, ["bob/three"]);
+    assert!(list(bob, "?owner=alice").await.is_empty());
+}
+
+#[tokio::test]
+async fn repositories_keep_files_locks_roles_and_audit_apart() {
+    let app = router(state_with(false, RegistrationMode::Open).await);
+    let alice = register_and_sign_in(&app, "alice").await;
+    create_repo(&app, &alice, "one").await;
+    create_repo(&app, &alice, "two").await;
+
+    let checkout = serde_json::json!({"path": "Content/a.bin", "base_revision": null});
+    assert_eq!(
+        send(
+            &app,
+            "POST",
+            "/v1/repos/alice/one/checkout",
+            &alice,
+            Some(checkout.clone())
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    let locks = |repo: &'static str| {
+        let (app, alice) = (app.clone(), alice.clone());
+        async move {
+            let r = send(
+                &app,
+                "GET",
+                &format!("/v1/repos/alice/{repo}/locks"),
+                &alice,
+                None,
+            )
+            .await;
+            body_json::<Vec<api::Lock>>(r).await.len()
+        }
+    };
+    assert_eq!((locks("one").await, locks("two").await), (1, 0));
+    assert_eq!(
+        send(
+            &app,
+            "POST",
+            "/v1/repos/alice/two/checkout",
+            &alice,
+            Some(checkout)
+        )
+        .await
+        .status(),
+        StatusCode::OK,
+        "the same path is free in another repository"
+    );
+
+    let audit = |repo: &'static str| {
+        let (app, alice) = (app.clone(), alice.clone());
+        async move {
+            let r = send(
+                &app,
+                "GET",
+                &format!("/v1/repos/alice/{repo}/audit?action=checkout"),
+                &alice,
+                None,
+            )
+            .await;
+            body_json::<api::AuditPage>(r).await.entries.len()
+        }
+    };
+    assert_eq!((audit("one").await, audit("two").await), (1, 1));
+
+    send(
+        &app,
+        "PUT",
+        "/v1/repos/alice/one/members/carol",
+        &alice,
+        Some(serde_json::json!({"role": "reader"})),
+    )
+    .await;
+    let members = |repo: &'static str| {
+        let (app, alice) = (app.clone(), alice.clone());
+        async move {
+            let r = send(
+                &app,
+                "GET",
+                &format!("/v1/repos/alice/{repo}/members"),
+                &alice,
+                None,
+            )
+            .await;
+            body_json::<Vec<api::Member>>(r).await.len()
+        }
+    };
+    assert_eq!((members("one").await, members("two").await), (2, 1));
+}
+
+#[tokio::test]
+async fn outsiders_cannot_tell_a_private_repository_exists() {
+    let app = router(state_with(false, RegistrationMode::Open).await);
+    let alice = register_and_sign_in(&app, "alice").await;
+    let bob = register_and_sign_in(&app, "bob").await;
+    create_repo(&app, &alice, "secret").await;
+
+    for uri in [
+        "/v1/repos/alice/secret",
+        "/v1/repos/alice/secret/files",
+        "/v1/repos/alice/secret/locks",
+        "/v1/repos/alice/nothing/files",
+    ] {
+        let r = send(&app, "GET", uri, &bob, None).await;
+        assert_eq!(r.status(), StatusCode::NOT_FOUND, "{uri}");
+        let body: api::ErrorBody = body_json(r).await;
+        assert_eq!(body.code, "repo_not_found", "{uri}");
+        assert!(!body.message.contains("permission"), "{uri}");
+    }
+    assert_eq!(
+        send(&app, "DELETE", "/v1/repos/alice/secret", &bob, None)
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+
+    send(
+        &app,
+        "PUT",
+        "/v1/repos/alice/secret/members/bob",
+        &alice,
+        Some(serde_json::json!({"role": "reader"})),
+    )
+    .await;
+    assert_eq!(
+        send(&app, "GET", "/v1/repos/alice/secret/files", &bob, None)
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        send(&app, "DELETE", "/v1/repos/alice/secret", &bob, None)
+            .await
+            .status(),
+        StatusCode::FORBIDDEN,
+        "a member who is not the owner cannot delete"
+    );
+}
+
+#[tokio::test]
+async fn a_token_works_only_in_the_repositories_it_was_made_for() {
+    let app = router(state_with(false, RegistrationMode::Open).await);
+    let alice = register_and_sign_in(&app, "alice").await;
+    create_repo(&app, &alice, "one").await;
+    create_repo(&app, &alice, "two").await;
+
+    let r = send(
+        &app,
+        "POST",
+        "/v1/tokens",
+        &alice,
+        Some(serde_json::json!({"name": "ci", "repos": ["alice/one"], "permissions": ["read"]})),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let made: api::CreatedToken = body_json(r).await;
+    assert_eq!(made.info.repos, ["alice/one"]);
+
+    for (repo, expected) in [("one", StatusCode::OK), ("two", StatusCode::NOT_FOUND)] {
+        let uri = format!("/v1/repos/alice/{repo}/files");
+        assert_eq!(
+            status(&app, with_token("GET", &uri, &made.token, None)).await,
+            expected
+        );
+    }
+    let none = send(
+        &app,
+        "POST",
+        "/v1/tokens",
+        &alice,
+        Some(serde_json::json!({"name": "ci", "repos": [], "permissions": ["read"]})),
+    )
+    .await;
+    assert_eq!(none.status(), StatusCode::BAD_REQUEST);
+    let other = send(
+        &app,
+        "POST",
+        "/v1/tokens",
+        &alice,
+        Some(serde_json::json!({"name": "ci", "repos": ["bob/nope"], "permissions": ["read"]})),
+    )
+    .await;
+    assert_eq!(other.status(), StatusCode::NOT_FOUND);
+
+    let denied = send(
+        &app,
+        "POST",
+        "/v1/repos",
+        &made.token,
+        Some(serde_json::json!({"name": "three"})),
+    )
+    .await;
+    assert_eq!(
+        denied.status(),
+        StatusCode::FORBIDDEN,
+        "a limited token cannot create repositories"
+    );
+
+    let signed_in = send(&app, "GET", "/v1/tokens", &alice, None).await;
+    let tokens: Vec<api::TokenInfo> = body_json(signed_in).await;
+    assert!(
+        tokens
+            .iter()
+            .any(|t| t.name == "sign-in" && t.repos.is_empty())
+    );
+}
+
+#[tokio::test]
+async fn the_owner_renames_reconfigures_and_deletes_a_repository() {
+    let app = router(state_with(false, RegistrationMode::Open).await);
+    let alice = register_and_sign_in(&app, "alice").await;
+    create_repo(&app, &alice, "game").await;
+    let put = Request::put("/v1/repos/alice/game/objects")
+        .header("authorization", format!("Bearer {alice}"))
+        .body(Body::from("data"))
+        .unwrap();
+    assert_eq!(status(&app, put).await, StatusCode::OK);
+    send(
+        &app,
+        "POST",
+        "/v1/repos/alice/game/checkout",
+        &alice,
+        Some(serde_json::json!({"path": "Content/a.bin", "base_revision": null})),
+    )
+    .await;
+
+    let r = send(
+        &app,
+        "PATCH",
+        "/v1/repos/alice/game",
+        &alice,
+        Some(serde_json::json!({"name": "engine", "visibility": "public", "lease_hours": 2})),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let info: api::RepoInfo = body_json(r).await;
+    assert_eq!(
+        (info.name.as_str(), info.visibility, info.lease_hours),
+        ("engine", api::Visibility::Public, 2)
+    );
+    assert_eq!(
+        send(&app, "GET", "/v1/repos/alice/game", &alice, None)
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    let locks: Vec<api::Lock> =
+        body_json(send(&app, "GET", "/v1/repos/alice/engine/locks", &alice, None).await).await;
+    assert_eq!(locks.len(), 1, "a rename keeps the repository's data");
+
+    let weird = send(
+        &app,
+        "PATCH",
+        "/v1/repos/alice/engine",
+        &alice,
+        Some(serde_json::json!({"lease_hours": 0})),
+    )
+    .await;
+    assert_eq!(weird.status(), StatusCode::BAD_REQUEST);
+
+    assert_eq!(
+        send(&app, "DELETE", "/v1/repos/alice/engine", &alice, None)
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        send(&app, "GET", "/v1/repos/alice/engine/files", &alice, None)
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    let again = create_repo(&app, &alice, "engine").await;
+    let locks: Vec<api::Lock> =
+        body_json(send(&app, "GET", "/v1/repos/alice/engine/locks", &alice, None).await).await;
+    assert!(locks.is_empty() && again.role.as_deref() == Some("admin"));
+}
+
+#[tokio::test]
+async fn the_single_repository_routes_are_gone() {
+    let app = app().await;
+    for uri in ["/v1/files", "/v1/locks", "/v1/roles", "/v1/members"] {
+        let r = app
+            .clone()
+            .oneshot(
+                Request::get(uri)
+                    .header(api::DEV_USER_HEADER, "alice")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::NOT_FOUND, "{uri}");
+    }
+}
+
+#[tokio::test]
+async fn an_invitation_admits_a_new_account_to_its_repository_only() {
+    let st = state(false).await;
+    let admin = admin_token(&st).await;
+    let app = router(st);
+    let made: api::CreatedInvite = body_json(
+        send(
+            &app,
+            "POST",
+            "/v1/repos/owner/game/invites",
+            &admin,
+            Some(serde_json::json!({"role": "writer", "hours": 24})),
+        )
+        .await,
+    )
+    .await;
+    let r = app
+        .clone()
+        .oneshot(anon(
+            "POST",
+            "/v1/register",
+            serde_json::json!({"username": "newbie", "password": PASSWORD, "invite": made.code}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::CREATED);
+    let r = app
+        .clone()
+        .oneshot(anon(
+            "POST",
+            "/v1/login",
+            serde_json::json!({"username": "newbie", "password": PASSWORD}),
+        ))
+        .await
+        .unwrap();
+    let token = body_json::<api::CreatedToken>(r).await.token;
+    let me: api::Me =
+        body_json(send(&app, "GET", "/v1/repos/owner/game/me", &token, None).await).await;
+    assert!(me.permissions.contains(&"checkin".to_string()));
 }

@@ -2,7 +2,10 @@ use std::sync::Arc;
 
 use chrono::{TimeZone, Utc};
 use pyn_core::memory::MemoryAccessStore;
-use pyn_core::{AccessService, ManualClock, Permission, PynError, RepoId, Role, UserId, ssh};
+use pyn_core::{
+    AccessService, Credential, Identity, ManualClock, Permission, PynError, RepoId, Role, UserId,
+    ssh,
+};
 
 const ED1: &str = include_str!("fixtures/keys/ed1.pub");
 const ED2: &str = include_str!("fixtures/keys/ed2.pub");
@@ -79,7 +82,14 @@ struct World {
     repo: RepoId,
 }
 
-async fn world() -> (World, pyn_core::Principal, pyn_core::Principal) {
+fn session(name: &str) -> Identity {
+    Identity {
+        user: UserId::new(name),
+        credential: Credential::Session,
+    }
+}
+
+async fn world() -> (World, Identity, Identity) {
     let clock = Arc::new(ManualClock::new(
         Utc.with_ymd_and_hms(2026, 10, 8, 9, 0, 0).unwrap(),
     ));
@@ -87,8 +97,9 @@ async fn world() -> (World, pyn_core::Principal, pyn_core::Principal) {
         svc: AccessService::new(Arc::new(MemoryAccessStore::new()), clock),
         repo: RepoId::new("game"),
     };
+    w.svc.bootstrap_admin(&UserId::new("root")).await.unwrap();
     w.svc
-        .bootstrap_admin(&w.repo, &UserId::new("root"))
+        .add_creator(&w.repo, &UserId::new("root"))
         .await
         .unwrap();
     let root = w
@@ -100,12 +111,7 @@ async fn world() -> (World, pyn_core::Principal, pyn_core::Principal) {
         .add_user(&root, &w.repo, "alice", "a long password", Role::Writer)
         .await
         .unwrap();
-    let alice = w
-        .svc
-        .principal(&w.repo, &UserId::new("alice"))
-        .await
-        .unwrap();
-    (w, root, alice)
+    (w, session("root"), session("alice"))
 }
 
 #[tokio::test]
@@ -167,12 +173,19 @@ async fn other_peoples_keys_are_only_for_administrators() {
     let key = w.svc.add_ssh_key(&alice, None, ED1).await.unwrap();
     let err = w.svc.list_ssh_keys(&root, &UserId::new("alice")).await;
     assert!(err.is_ok(), "an administrator may look");
+    let root_principal = w.svc.principal_in(&w.repo, &root).await.unwrap();
     let bob = w
         .svc
-        .add_user(&root, &w.repo, "bob", "another long password", Role::Reader)
+        .add_user(
+            &root_principal,
+            &w.repo,
+            "bob",
+            "another long password",
+            Role::Reader,
+        )
         .await
         .unwrap();
-    let bob = w.svc.principal(&w.repo, &bob).await.unwrap();
+    let bob = session(bob.as_str());
     assert!(matches!(
         w.svc.list_ssh_keys(&bob, &UserId::new("alice")).await,
         Err(PynError::Forbidden(Permission::ManageUsers))
@@ -199,6 +212,7 @@ async fn a_key_authenticates_as_its_owner_with_their_current_role() {
     assert_eq!(who.user, UserId::new("alice"));
     assert!(who.has(Permission::Checkin) && !who.has(Permission::Restore));
 
+    let root = w.svc.principal_in(&w.repo, &root).await.unwrap();
     w.svc
         .set_user_role(&root, &w.repo, &UserId::new("alice"), Role::Reader)
         .await

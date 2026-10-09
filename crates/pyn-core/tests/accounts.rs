@@ -3,8 +3,8 @@ use std::sync::Arc;
 use chrono::{Duration, TimeZone, Utc};
 use pyn_core::memory::MemoryAccessStore;
 use pyn_core::{
-    AccessConfig, AccessService, AccessStore, Clock, ManualClock, Permission, Principal, PynError,
-    RegistrationMode, RepoId, Role, UserId,
+    AccessConfig, AccessService, AccessStore, Clock, Credential, Identity, ManualClock, Permission,
+    Principal, PynError, RegistrationMode, RepoId, Role, UserId,
 };
 
 struct World {
@@ -32,9 +32,17 @@ fn world(mode: RegistrationMode) -> World {
 
 const PASSWORD: &str = "correct horse battery";
 
+fn identity(user: &str) -> Identity {
+    Identity {
+        user: UserId::new(user),
+        credential: Credential::Session,
+    }
+}
+
 async fn admin(w: &World) -> Principal {
+    w.svc.bootstrap_admin(&UserId::new("root")).await.unwrap();
     w.svc
-        .bootstrap_admin(&w.repo, &UserId::new("root"))
+        .add_creator(&w.repo, &UserId::new("root"))
         .await
         .unwrap();
     w.svc
@@ -46,11 +54,7 @@ async fn admin(w: &World) -> Principal {
 #[tokio::test]
 async fn a_closed_server_refuses_registration_but_administrators_can_add_people() {
     let w = world(RegistrationMode::Closed);
-    let err = w
-        .svc
-        .register(&w.repo, "alice", PASSWORD, None)
-        .await
-        .unwrap_err();
+    let err = w.svc.register("alice", PASSWORD, None).await.unwrap_err();
     assert!(matches!(err, PynError::RegistrationClosed), "{err}");
 
     let root = admin(&w).await;
@@ -58,27 +62,20 @@ async fn a_closed_server_refuses_registration_but_administrators_can_add_people(
         .add_user(&root, &w.repo, "alice", PASSWORD, Role::Writer)
         .await
         .unwrap();
-    let (_, token) = w.svc.login(&w.repo, "alice", PASSWORD).await.unwrap();
+    let (_, token) = w.svc.login("alice", PASSWORD).await.unwrap();
     let who = w.svc.authenticate(&w.repo, &token).await.unwrap();
     assert!(who.has(Permission::Checkin) && !who.has(Permission::Restore));
 }
 
 #[tokio::test]
-async fn an_open_server_lets_anyone_register_as_a_reader() {
+async fn an_open_server_lets_anyone_register_but_the_account_has_no_repository_access() {
     let w = world(RegistrationMode::Open);
-    w.svc
-        .register(&w.repo, "alice", PASSWORD, None)
-        .await
-        .unwrap();
-    let (_, token) = w.svc.login(&w.repo, "alice", PASSWORD).await.unwrap();
+    w.svc.register("alice", PASSWORD, None).await.unwrap();
+    let (_, token) = w.svc.login("alice", PASSWORD).await.unwrap();
     let who = w.svc.authenticate(&w.repo, &token).await.unwrap();
-    assert_eq!(who.permissions, [Permission::Read].into());
+    assert!(who.permissions.is_empty());
 
-    let err = w
-        .svc
-        .register(&w.repo, "alice", PASSWORD, None)
-        .await
-        .unwrap_err();
+    let err = w.svc.register("alice", PASSWORD, None).await.unwrap_err();
     assert!(matches!(err, PynError::UserExists(_)), "{err}");
 }
 
@@ -86,11 +83,7 @@ async fn an_open_server_lets_anyone_register_as_a_reader() {
 async fn an_invite_only_server_needs_a_valid_one_time_invitation() {
     let w = world(RegistrationMode::InviteOnly);
     let root = admin(&w).await;
-    let err = w
-        .svc
-        .register(&w.repo, "alice", PASSWORD, None)
-        .await
-        .unwrap_err();
+    let err = w.svc.register("alice", PASSWORD, None).await.unwrap_err();
     assert!(
         matches!(err, PynError::InvalidInvite(_)),
         "no invitation: {err}"
@@ -110,7 +103,7 @@ async fn an_invite_only_server_needs_a_valid_one_time_invitation() {
     };
     let err = w
         .svc
-        .register(&w.repo, "alice", PASSWORD, Some(&tampered))
+        .register("alice", PASSWORD, Some(&tampered))
         .await
         .unwrap_err();
     assert!(
@@ -119,10 +112,10 @@ async fn an_invite_only_server_needs_a_valid_one_time_invitation() {
     );
 
     w.svc
-        .register(&w.repo, "alice", PASSWORD, Some(&code))
+        .register("alice", PASSWORD, Some(&code))
         .await
         .unwrap();
-    let (_, token) = w.svc.login(&w.repo, "alice", PASSWORD).await.unwrap();
+    let (_, token) = w.svc.login("alice", PASSWORD).await.unwrap();
     assert!(
         w.svc
             .authenticate(&w.repo, &token)
@@ -134,7 +127,7 @@ async fn an_invite_only_server_needs_a_valid_one_time_invitation() {
 
     let err = w
         .svc
-        .register(&w.repo, "bob", PASSWORD, Some(&code))
+        .register("bob", PASSWORD, Some(&code))
         .await
         .unwrap_err();
     assert!(
@@ -157,18 +150,21 @@ async fn invitations_expire_and_can_be_revoked() {
         .create_invite(&root, &w.repo, Role::Reader, Duration::days(1))
         .await
         .unwrap();
-    w.svc.revoke_invite(&root, &revoked.id).await.unwrap();
+    w.svc
+        .revoke_invite(&root, &w.repo, &revoked.id)
+        .await
+        .unwrap();
     w.clock.advance(Duration::hours(2));
 
     let err = w
         .svc
-        .register(&w.repo, "alice", PASSWORD, Some(&expiring))
+        .register("alice", PASSWORD, Some(&expiring))
         .await
         .unwrap_err();
     assert!(err.to_string().contains("expired"), "{err}");
     let err = w
         .svc
-        .register(&w.repo, "bob", PASSWORD, Some(&revoked_code))
+        .register("bob", PASSWORD, Some(&revoked_code))
         .await
         .unwrap_err();
     assert!(err.to_string().contains("revoked"), "{err}");
@@ -227,38 +223,20 @@ async fn user_names_and_passwords_must_be_acceptable() {
         "al/ice",
         &"a".repeat(40),
     ] {
-        let err = w
-            .svc
-            .register(&w.repo, bad, PASSWORD, None)
-            .await
-            .unwrap_err();
+        let err = w.svc.register(bad, PASSWORD, None).await.unwrap_err();
         assert!(matches!(err, PynError::InvalidRequest(_)), "{bad:?}: {err}");
     }
-    let err = w
-        .svc
-        .register(&w.repo, "alice", "short", None)
-        .await
-        .unwrap_err();
+    let err = w.svc.register("alice", "short", None).await.unwrap_err();
     assert!(matches!(err, PynError::InvalidRequest(_)), "{err}");
-    w.svc
-        .register(&w.repo, "al-ice_9", PASSWORD, None)
-        .await
-        .unwrap();
+    w.svc.register("al-ice_9", PASSWORD, None).await.unwrap();
 }
 
 #[tokio::test]
 async fn signing_in_needs_the_right_password_and_does_not_reveal_which_part_was_wrong() {
     let w = world(RegistrationMode::Open);
-    w.svc
-        .register(&w.repo, "alice", PASSWORD, None)
-        .await
-        .unwrap();
-    let wrong = w
-        .svc
-        .login(&w.repo, "alice", "not the password")
-        .await
-        .unwrap_err();
-    let unknown = w.svc.login(&w.repo, "nobody", PASSWORD).await.unwrap_err();
+    w.svc.register("alice", PASSWORD, None).await.unwrap();
+    let wrong = w.svc.login("alice", "not the password").await.unwrap_err();
+    let unknown = w.svc.login("nobody", PASSWORD).await.unwrap_err();
     assert!(
         matches!(wrong, PynError::Unauthenticated(_))
             && matches!(unknown, PynError::Unauthenticated(_))
@@ -269,52 +247,45 @@ async fn signing_in_needs_the_right_password_and_does_not_reveal_which_part_was_
 #[tokio::test]
 async fn repeated_failures_lock_the_name_out_for_a_while_and_success_resets_the_count() {
     let w = world(RegistrationMode::Open);
-    w.svc
-        .register(&w.repo, "alice", PASSWORD, None)
-        .await
-        .unwrap();
+    w.svc.register("alice", PASSWORD, None).await.unwrap();
     for _ in 0..4 {
-        w.svc
-            .login(&w.repo, "alice", "wrong password")
-            .await
-            .unwrap_err();
+        w.svc.login("alice", "wrong password").await.unwrap_err();
     }
-    w.svc.login(&w.repo, "alice", PASSWORD).await.unwrap();
+    w.svc.login("alice", PASSWORD).await.unwrap();
 
     for _ in 0..5 {
-        w.svc
-            .login(&w.repo, "alice", "wrong password")
-            .await
-            .unwrap_err();
+        w.svc.login("alice", "wrong password").await.unwrap_err();
     }
-    let err = w.svc.login(&w.repo, "alice", PASSWORD).await.unwrap_err();
+    let err = w.svc.login("alice", PASSWORD).await.unwrap_err();
     assert!(
         matches!(err, PynError::TooManyAttempts { retry_after_secs } if retry_after_secs > 0),
         "{err}"
     );
-    let err = w.svc.login(&w.repo, "ALICE", PASSWORD).await.unwrap_err();
+    let err = w.svc.login("ALICE", PASSWORD).await.unwrap_err();
     assert!(
         matches!(err, PynError::TooManyAttempts { .. }),
         "case does not dodge it: {err}"
     );
 
     w.clock.advance(Duration::minutes(16));
-    w.svc.login(&w.repo, "alice", PASSWORD).await.unwrap();
+    w.svc.login("alice", PASSWORD).await.unwrap();
 }
 
 #[tokio::test]
-async fn a_sign_in_expires_and_follows_the_users_role() {
+async fn a_sign_in_expires_and_follows_the_users_role_in_each_repository() {
     let w = world(RegistrationMode::Open);
     let root = admin(&w).await;
-    w.svc
-        .register(&w.repo, "alice", PASSWORD, None)
-        .await
-        .unwrap();
-    let (record, token) = w.svc.login(&w.repo, "alice", PASSWORD).await.unwrap();
+    w.svc.register("alice", PASSWORD, None).await.unwrap();
+    let (record, token) = w.svc.login("alice", PASSWORD).await.unwrap();
     assert_eq!(record.name, "sign-in");
+    assert!(
+        record.repos.is_empty(),
+        "a sign-in reaches every repository"
+    );
 
+    let alice = UserId::new("alice");
     w.svc
-        .set_user_role(&root, &w.repo, &UserId::new("alice"), Role::Writer)
+        .set_user_role(&root, &w.repo, &alice, Role::Reader)
         .await
         .unwrap();
     assert_eq!(
@@ -323,8 +294,26 @@ async fn a_sign_in_expires_and_follows_the_users_role() {
             .await
             .unwrap()
             .permissions,
-        [Permission::Read].into(),
-        "a session never exceeds what it was issued with"
+        [Permission::Read].into()
+    );
+    w.svc
+        .set_user_role(&root, &w.repo, &alice, Role::Writer)
+        .await
+        .unwrap();
+    assert!(
+        w.svc
+            .authenticate(&w.repo, &token)
+            .await
+            .unwrap()
+            .has(Permission::Checkin)
+    );
+    assert!(
+        w.svc
+            .authenticate(&RepoId::new("elsewhere"), &token)
+            .await
+            .unwrap()
+            .permissions
+            .is_empty()
     );
 
     w.clock.advance(Duration::days(31));
@@ -333,7 +322,7 @@ async fn a_sign_in_expires_and_follows_the_users_role() {
 }
 
 #[tokio::test]
-async fn an_account_with_no_role_cannot_sign_in() {
+async fn an_account_with_no_role_can_sign_in_but_holds_no_permissions() {
     let clock = Arc::new(ManualClock::new(
         Utc.with_ymd_and_hms(2026, 10, 8, 9, 0, 0).unwrap(),
     ));
@@ -346,25 +335,19 @@ async fn an_account_with_no_role_cannot_sign_in() {
     svc.set_password_for_operator(&ghost, PASSWORD)
         .await
         .unwrap();
-    let err = svc
-        .login(&RepoId::new("game"), "ghost", PASSWORD)
+    let (_, token) = svc.login("ghost", PASSWORD).await.unwrap();
+    let who = svc
+        .authenticate(&RepoId::new("game"), &token)
         .await
-        .unwrap_err();
-    assert!(err.to_string().contains("no access"), "{err}");
+        .unwrap();
+    assert!(who.permissions.is_empty());
 }
 
 #[tokio::test]
 async fn changing_a_password_needs_the_current_one() {
     let w = world(RegistrationMode::Open);
-    w.svc
-        .register(&w.repo, "alice", PASSWORD, None)
-        .await
-        .unwrap();
-    let alice = w
-        .svc
-        .principal(&w.repo, &UserId::new("alice"))
-        .await
-        .unwrap();
+    w.svc.register("alice", PASSWORD, None).await.unwrap();
+    let alice = identity("alice");
 
     let err = w
         .svc
@@ -389,11 +372,8 @@ async fn changing_a_password_needs_the_current_one() {
         .change_password(&alice, Some(PASSWORD), "another long password")
         .await
         .unwrap();
-    w.svc
-        .login(&w.repo, "alice", "another long password")
-        .await
-        .unwrap();
-    w.svc.login(&w.repo, "alice", PASSWORD).await.unwrap_err();
+    w.svc.login("alice", "another long password").await.unwrap();
+    w.svc.login("alice", PASSWORD).await.unwrap_err();
 }
 
 #[tokio::test]
@@ -407,25 +387,23 @@ async fn a_session_follows_the_current_role_and_ends_on_sign_out_or_expiry() {
 
     let err = w
         .svc
-        .start_session(&w.repo, "alice", "not the password")
+        .start_session("alice", "not the password")
         .await
         .unwrap_err();
     assert!(matches!(err, PynError::Unauthenticated(_)), "{err}");
 
-    let (record, cookie) = w
-        .svc
-        .start_session(&w.repo, "alice", PASSWORD)
-        .await
-        .unwrap();
+    let (record, cookie) = w.svc.start_session("alice", PASSWORD).await.unwrap();
     assert_ne!(record.id_hash, cookie, "only a hash is stored");
-    let (who, _) = w.svc.authenticate_session(&w.repo, &cookie).await.unwrap();
+    let (who, _) = w.svc.authenticate_session(&cookie).await.unwrap();
+    let who = w.svc.principal_in(&w.repo, &who).await.unwrap();
     assert!(who.has(Permission::Checkin));
 
     w.svc
         .set_user_role(&root, &w.repo, &UserId::new("alice"), Role::Reader)
         .await
         .unwrap();
-    let (who, _) = w.svc.authenticate_session(&w.repo, &cookie).await.unwrap();
+    let (who, _) = w.svc.authenticate_session(&cookie).await.unwrap();
+    let who = w.svc.principal_in(&w.repo, &who).await.unwrap();
     assert_eq!(
         who.permissions,
         [Permission::Read].into(),
@@ -434,18 +412,10 @@ async fn a_session_follows_the_current_role_and_ends_on_sign_out_or_expiry() {
 
     w.svc.end_session(&cookie).await.unwrap();
     w.svc.end_session(&cookie).await.unwrap();
-    let err = w
-        .svc
-        .authenticate_session(&w.repo, &cookie)
-        .await
-        .unwrap_err();
+    let err = w.svc.authenticate_session(&cookie).await.unwrap_err();
     assert!(matches!(err, PynError::Unauthenticated(_)), "{err}");
 
-    let (_, cookie) = w
-        .svc
-        .start_session(&w.repo, "alice", PASSWORD)
-        .await
-        .unwrap();
+    let (_, cookie) = w.svc.start_session("alice", PASSWORD).await.unwrap();
     w.clock.advance(Duration::days(31));
     assert!(w.svc.find_session(&cookie).await.unwrap().is_none());
 }

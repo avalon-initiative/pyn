@@ -10,42 +10,69 @@ use pyn_core::memory::{
     MemoryAccessStore, MemoryAuditStore, MemoryMetadataStore, MemoryObjectStore,
 };
 use pyn_core::{
-    AccessService, AuthProvider, RepoId, RepoService, Rules, ServiceConfig, SystemClock,
+    AccessService, AuthProvider, MetadataStore, RepoId, RepoRecord, RepoSettings, Repositories,
+    Rules, SystemClock, UserId, Visibility,
 };
 use pyn_server::auth::{BearerAuth, DevHeaderAuth};
 use pyn_server::{AppState, router};
 
+/// The repository `start` registers and the commands default to.
+pub const REPO: &str = "alice/game";
+
 pub struct Env {
     pub url: String,
+    default_repo: Option<&'static str>,
     _runtime: tokio::runtime::Runtime,
     config: tempfile::TempDir,
     work: tempfile::TempDir,
 }
 
+/// A server with `alice/game` registered, and `PYN_REPO` pointing at it.
 pub fn start() -> Env {
+    start_with(true)
+}
+
+/// A server with no repositories.
+pub fn start_empty() -> Env {
+    start_with(false)
+}
+
+fn start_with(with_repo: bool) -> Env {
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    let repo = RepoId::new("t");
     let clock = Arc::new(SystemClock);
     let objects = Arc::new(MemoryObjectStore::new());
+    let audit = Arc::new(MemoryAuditStore::new());
     let rules = "[meta]\ndefault = \"shared\"\n[exclusive]\npaths = [\"Content/\"]\n";
-    let service = Arc::new(RepoService::new(
-        repo.clone(),
-        Rules::from_toml(rules).unwrap(),
-        Arc::new(MemoryMetadataStore::new()),
-        objects.clone(),
-        Arc::new(MemoryAuditStore::new()),
-        clock.clone(),
-        ServiceConfig::default(),
-    ));
+    let meta = Arc::new(MemoryMetadataStore::new());
+    if with_repo {
+        runtime
+            .block_on(meta.create_repo(RepoRecord {
+                id: RepoId::new("t"),
+                owner: UserId::new("alice"),
+                name: "game".into(),
+                visibility: Visibility::Private,
+                settings: RepoSettings::default(),
+                created_at: chrono::Utc::now(),
+            }))
+            .unwrap();
+    }
     let access = Arc::new(AccessService::new(
         Arc::new(MemoryAccessStore::new()),
+        clock.clone(),
+    ));
+    let repos = Arc::new(Repositories::new(
+        meta,
+        objects.clone(),
+        audit,
+        access.clone(),
         clock,
+        Rules::from_toml(rules).unwrap(),
     ));
     let app = router(AppState {
-        service,
+        repos,
         objects,
         access: access.clone(),
-        auth: Arc::new(BearerAuth { access, repo }),
+        auth: Arc::new(BearerAuth { access }),
         dev_auth: Some(Arc::new(DevHeaderAuth) as Arc<dyn AuthProvider>),
     });
     let url = runtime.block_on(async {
@@ -56,6 +83,7 @@ pub fn start() -> Env {
     });
     Env {
         url,
+        default_repo: with_repo.then_some(REPO),
         _runtime: runtime,
         config: tempfile::tempdir().unwrap(),
         work: tempfile::tempdir().unwrap(),
@@ -70,16 +98,24 @@ impl Env {
     }
 
     pub fn run(&self, cwd: &Path, user: &str, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_pyn"))
-            .args(args)
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_pyn"));
+        cmd.args(args)
             .current_dir(cwd)
             .env("PYN_SERVER", &self.url)
             .env("PYN_USER", user)
             .env("PYN_CONFIG_DIR", self.config.path())
             .env_remove("PYN_TOKEN")
             .env_remove("PYN_DIR")
-            .output()
-            .unwrap()
+            .env_remove("PYN_REPO");
+        if let Some(repo) = self.default_repo {
+            cmd.env("PYN_REPO", repo);
+        }
+        cmd.output().unwrap()
+    }
+
+    /// The clone source for `owner/name` on this server.
+    pub fn source(&self, repo: &str) -> String {
+        format!("{}/{repo}", self.url)
     }
 
     pub fn ok(&self, cwd: &Path, user: &str, args: &[&str]) -> String {

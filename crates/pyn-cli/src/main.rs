@@ -4,6 +4,7 @@ use pyn_proto as api;
 use reqwest::Method;
 use reqwest::blocking::Client;
 
+mod address;
 mod client;
 mod credentials;
 mod sync;
@@ -27,6 +28,9 @@ struct Cli {
     /// Dev identity sent as X-Pyn-User; only works against a server running with PYN_DEV_AUTH.
     #[arg(long, env = "PYN_USER")]
     user: Option<String>,
+    /// The repository as owner/name; falls back to the workspace's setting, then your user setting.
+    #[arg(long, env = "PYN_REPO", global = true)]
+    repo: Option<String>,
     #[command(subcommand)]
     command: Command,
 }
@@ -56,8 +60,16 @@ enum Command {
         #[arg(long)]
         password_stdin: bool,
     },
-    /// Download the repository into a new workspace folder.
-    Clone { dir: std::path::PathBuf },
+    /// Download a repository into a new workspace folder.
+    Clone {
+        /// `<server>/owner/name`, or `owner/name` on the configured server.
+        source: String,
+        /// Where to put it; defaults to a folder named after the repository.
+        dir: Option<std::path::PathBuf>,
+    },
+    /// Create, list and delete repositories.
+    #[command(subcommand)]
+    Repo(RepoCommand),
     /// Show what differs between this workspace and the server.
     Status,
     /// Fetch new and newer files; files with local changes are left alone.
@@ -68,7 +80,7 @@ enum Command {
     /// Read and write settings, per workspace or for your user.
     #[command(subcommand)]
     Config(ConfigCommand),
-    /// Show who you are signed in as and what you may do.
+    /// Show who you are signed in as and, in a repository, what you may do there.
     Whoami,
     /// Link SSH public keys to your account.
     #[command(subcommand)]
@@ -76,7 +88,7 @@ enum Command {
     /// Create, list and revoke invitations.
     #[command(subcommand)]
     Invite(InviteCommand),
-    /// Add accounts (needs manage_users).
+    /// Add accounts to the current repository (needs manage_users).
     #[command(subcommand)]
     User(UserCommand),
     /// List live locks.
@@ -134,7 +146,7 @@ enum Command {
         path: Option<String>,
         #[arg(long)]
         actor: Option<String>,
-        /// An action such as checkout, restore, force_unlock, member_added, role_changed or token_created.
+        /// An action such as checkout, restore, force_unlock, member_added, role_changed, token_created or repo_updated.
         #[arg(long)]
         action: Option<String>,
         /// Show events older than this id.
@@ -154,6 +166,35 @@ enum Command {
     /// List or change what each role grants.
     #[command(subcommand)]
     Role(RoleCommand),
+}
+
+#[derive(Subcommand)]
+enum RepoCommand {
+    /// Create a repository in your namespace; you become its admin.
+    Create {
+        /// `name`, or `owner/name` where owner is you.
+        name: String,
+        /// `public` or `private`; private by default.
+        #[arg(long)]
+        visibility: Option<String>,
+        /// How long a checkout lasts before it expires unless renewed.
+        #[arg(long)]
+        lease_hours: Option<u32>,
+    },
+    /// List the repositories you belong to.
+    List {
+        /// Only this owner's.
+        #[arg(long)]
+        owner: Option<String>,
+    },
+    /// Delete a repository with its files, history, locks and access. Its audit log is kept.
+    Delete {
+        /// `owner/name`.
+        name: String,
+        /// Skip the typed confirmation.
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -190,11 +231,14 @@ enum TokenCommand {
         /// Comma-separated permissions, for example read,lock,checkin.
         #[arg(long, value_delimiter = ',', required = true)]
         permissions: Vec<String>,
+        /// Comma-separated repositories (owner/name) the token is valid for; the current repository by default.
+        #[arg(long, value_delimiter = ',')]
+        repos: Vec<String>,
         /// Expire the token after this many days.
         #[arg(long)]
         expires_days: Option<i64>,
     },
-    /// List your tokens, or another user's with --user (needs manage_users).
+    /// List your tokens, or another user's with --for (needs manage_users in a repository they belong to).
     List {
         #[arg(long = "for")]
         for_user: Option<String>,
@@ -213,7 +257,7 @@ enum KeyCommand {
         #[arg(long)]
         title: Option<String>,
     },
-    /// List your keys, or another user's with --for (needs manage_users).
+    /// List your keys, or another user's with --for (needs manage_users in a repository they belong to).
     List {
         #[arg(long = "for")]
         for_user: Option<String>,
@@ -284,13 +328,26 @@ fn main() -> Result<()> {
         ws.as_ref().map(Workspace::settings).unwrap_or_default(),
         Settings::load(&user_config).unwrap_or_default(),
     );
-    let server = resolve(
-        cli.server,
-        mine.server.as_ref(),
-        yours.server.as_ref(),
-        Some(DEFAULT_SERVER),
-    )
-    .expect("there is a default");
+    let source = match &cli.command {
+        Command::Clone { source, .. } => Some(address::parse_source(source)?),
+        _ => None,
+    };
+    let server = source
+        .as_ref()
+        .and_then(|s| s.server.clone())
+        .or_else(|| {
+            resolve(
+                cli.server,
+                mine.server.as_ref(),
+                yours.server.as_ref(),
+                Some(DEFAULT_SERVER),
+            )
+        })
+        .expect("there is a default");
+    let repo = match &source {
+        Some(s) => Some(s.repo.clone()),
+        None => resolve(cli.repo, mine.repo.as_ref(), yours.repo.as_ref(), None),
+    };
     let base = server.trim_end_matches('/').to_string();
     let token = cli
         .token
@@ -300,6 +357,7 @@ fn main() -> Result<()> {
         base,
         token,
         user: resolve(cli.user, mine.user.as_ref(), yours.user.as_ref(), None),
+        repo,
     };
     let rp = |p: &str| -> Result<String> {
         match &ws {
@@ -420,7 +478,10 @@ fn main() -> Result<()> {
         Command::Invite(InviteCommand::Create { role, hours }) => {
             let body = api::CreateInviteRequest { role, hours };
             let made: api::CreatedInvite = api
-                .send(api.request(Method::POST, "/v1/invites").json(&body))?
+                .send(
+                    api.request(Method::POST, &api.repo_route("/invites")?)
+                        .json(&body),
+                )?
                 .json()?;
             println!("{}", made.code);
             eprintln!(
@@ -429,7 +490,8 @@ fn main() -> Result<()> {
             );
         }
         Command::Invite(InviteCommand::List) => {
-            let invites: Vec<api::InviteInfo> = api.send(api.get("/v1/invites"))?.json()?;
+            let invites: Vec<api::InviteInfo> =
+                api.send(api.get(&api.repo_route("/invites")?))?.json()?;
             for i in invites {
                 let state = if i.revoked_at.is_some() {
                     "revoked".to_string()
@@ -442,7 +504,7 @@ fn main() -> Result<()> {
             }
         }
         Command::Invite(InviteCommand::Revoke { id }) => {
-            api.send(api.request(Method::DELETE, &format!("/v1/invites/{id}")))?;
+            api.send(api.request(Method::DELETE, &api.repo_route(&format!("/invites/{id}"))?))?;
             println!("revoked {id}");
         }
         Command::User(UserCommand::Add {
@@ -456,15 +518,24 @@ fn main() -> Result<()> {
                 password,
                 role: role.clone(),
             };
-            api.send(api.request(Method::POST, "/v1/users").json(&body))?;
+            api.send(
+                api.request(Method::POST, &api.repo_route("/users")?)
+                    .json(&body),
+            )?;
             println!("added {username} as {role}");
         }
         Command::Whoami => {
-            let me: api::Me = api.send(api.get("/v1/me"))?.json()?;
-            println!("{}\t{}", me.user, me.permissions.join(","));
+            if api.repo.is_some() {
+                let me: api::Me = api.send(api.get(&api.repo_route("/me")?))?.json()?;
+                println!("{}\t{}", me.user, me.permissions.join(","));
+            } else {
+                let me: api::Account = api.send(api.get("/v1/me"))?.json()?;
+                println!("{}", me.user);
+            }
         }
+        Command::Repo(cmd) => repo_command(&api, cmd)?,
         Command::Locks => {
-            let locks: Vec<api::Lock> = api.send(api.get("/v1/locks"))?.json()?;
+            let locks: Vec<api::Lock> = api.send(api.get(&api.repo_route("/locks")?))?.json()?;
             if locks.is_empty() {
                 println!("no locks");
             }
@@ -475,7 +546,7 @@ fn main() -> Result<()> {
         Command::Files => {
             let mut after: Option<String> = None;
             loop {
-                let mut req = api.get("/v1/files");
+                let mut req = api.get(&api.repo_route("/files")?);
                 if let Some(a) = &after {
                     req = req.query(&[("after", a)]);
                 }
@@ -494,13 +565,19 @@ fn main() -> Result<()> {
                 }
             }
         }
-        Command::Clone { dir } => {
+        Command::Clone { dir, .. } => {
+            let repo = api.repo.clone().expect("clone names a repository");
+            let dir = dir.unwrap_or_else(|| {
+                address::split_repo(&repo)
+                    .map(|(_, n)| n.into())
+                    .unwrap_or_default()
+            });
             let target = if dir.is_absolute() {
                 dir
             } else {
                 cwd.join(dir)
             };
-            sync::clone_into(&api, &target, &server)?;
+            sync::clone_into(&api, &target, &server, &repo)?;
         }
         Command::Status => sync::status(&api, in_workspace("status")?)?,
         Command::Update { paths } => {
@@ -519,7 +596,10 @@ fn main() -> Result<()> {
                 base_revision: base.or(known),
             };
             let l: api::Lock = api
-                .send(api.request(Method::POST, "/v1/checkout").json(&body))
+                .send(
+                    api.request(Method::POST, &api.repo_route("/checkout")?)
+                        .json(&body),
+                )
                 .map_err(|e| behind_hint(e, ws.is_some()))?
                 .json()?;
             if let Some(w) = &ws {
@@ -530,7 +610,10 @@ fn main() -> Result<()> {
         Command::Release { path } => {
             let path = rp(&path)?;
             let body = api::ReleaseRequest { path: path.clone() };
-            api.send(api.request(Method::POST, "/v1/release").json(&body))?;
+            api.send(
+                api.request(Method::POST, &api.repo_route("/release")?)
+                    .json(&body),
+            )?;
             if let Some(w) = &ws {
                 sync::after_release(w, &path)?;
             }
@@ -555,7 +638,10 @@ fn main() -> Result<()> {
                 .and_then(|w| w.load_state().ok())
                 .and_then(|s| s.get(&path).map(|k| k.revision));
             let put: api::PutObjectResponse = api
-                .send(api.request(Method::PUT, "/v1/objects").body(bytes.clone()))?
+                .send(
+                    api.request(Method::PUT, &api.repo_route("/objects")?)
+                        .body(bytes.clone()),
+                )?
                 .json()?;
             let body = api::CheckinRequest {
                 path: path.clone(),
@@ -564,7 +650,10 @@ fn main() -> Result<()> {
                 message,
             };
             let r: api::Revision = api
-                .send(api.request(Method::POST, "/v1/checkin").json(&body))
+                .send(
+                    api.request(Method::POST, &api.repo_route("/checkin")?)
+                        .json(&body),
+                )
                 .map_err(|e| behind_hint(e, ws.is_some()))?
                 .json()?;
             if let Some(w) = &ws {
@@ -574,7 +663,9 @@ fn main() -> Result<()> {
         }
         Command::Get { path, rev, output } => {
             let path = rp(&path)?;
-            let mut req = api.get("/v1/content").query(&[("path", path.as_str())]);
+            let mut req = api
+                .get(&api.repo_route("/content")?)
+                .query(&[("path", path.as_str())]);
             if let Some(r) = rev {
                 req = req.query(&[("revision", r)]);
             }
@@ -602,7 +693,10 @@ fn main() -> Result<()> {
         Command::History { path } => {
             let path = rp(&path)?;
             let revs: Vec<api::Revision> = api
-                .send(api.get("/v1/history").query(&[("path", path)]))?
+                .send(
+                    api.get(&api.repo_route("/history")?)
+                        .query(&[("path", path)]),
+                )?
                 .json()?;
             for r in revs {
                 let restored = r
@@ -627,7 +721,10 @@ fn main() -> Result<()> {
                 reason,
             };
             let lock: api::Lock = api
-                .send(api.request(Method::POST, "/v1/force-unlock").json(&body))?
+                .send(
+                    api.request(Method::POST, &api.repo_route("/force-unlock")?)
+                        .json(&body),
+                )?
                 .json()?;
             println!("removed {}'s lock on {path}", lock.owner);
         }
@@ -639,7 +736,9 @@ fn main() -> Result<()> {
             limit,
         } => {
             let path = path.map(|p| rp(&p)).transpose()?;
-            let mut req = api.get("/v1/audit").query(&[("limit", limit)]);
+            let mut req = api
+                .get(&api.repo_route("/audit")?)
+                .query(&[("limit", limit)]);
             for (key, value) in [("path", path), ("actor", actor), ("action", action)] {
                 if let Some(v) = value {
                     req = req.query(&[(key, v)]);
@@ -662,7 +761,8 @@ fn main() -> Result<()> {
         }
         Command::Token(cmd) => token_command(&api, cmd)?,
         Command::Member(MemberCommand::List) => {
-            let members: Vec<api::Member> = api.send(api.get("/v1/members"))?.json()?;
+            let members: Vec<api::Member> =
+                api.send(api.get(&api.repo_route("/members")?))?.json()?;
             for m in members {
                 println!("{}\t{}", m.user, m.role);
             }
@@ -670,13 +770,14 @@ fn main() -> Result<()> {
         Command::Member(MemberCommand::Set { user, role }) => {
             let body = api::SetMemberRequest { role: role.clone() };
             api.send(
-                api.request(Method::PUT, &format!("/v1/members/{user}"))
+                api.request(Method::PUT, &api.repo_route(&format!("/members/{user}"))?)
                     .json(&body),
             )?;
             println!("{user} is now {role}");
         }
         Command::Role(RoleCommand::List) => {
-            let grants: Vec<api::RoleGrant> = api.send(api.get("/v1/roles"))?.json()?;
+            let grants: Vec<api::RoleGrant> =
+                api.send(api.get(&api.repo_route("/roles")?))?.json()?;
             for g in grants {
                 println!("{}\t{}", g.role, g.permissions.join(","));
             }
@@ -684,7 +785,7 @@ fn main() -> Result<()> {
         Command::Role(RoleCommand::Set { role, permissions }) => {
             let body = api::SetRoleRequest { permissions };
             api.send(
-                api.request(Method::PUT, &format!("/v1/roles/{role}"))
+                api.request(Method::PUT, &api.repo_route(&format!("/roles/{role}"))?)
                     .json(&body),
             )?;
             println!("updated {role}");
@@ -701,7 +802,10 @@ fn restore(
     yes: bool,
 ) -> Result<()> {
     let revs: Vec<api::Revision> = api
-        .send(api.get("/v1/history").query(&[("path", path.as_str())]))?
+        .send(
+            api.get(&api.repo_route("/history")?)
+                .query(&[("path", path.as_str())]),
+        )?
         .json()?;
     let head = revs
         .last()
@@ -737,7 +841,10 @@ fn restore(
         message,
     };
     let r: api::Revision = api
-        .send(api.request(Method::POST, "/v1/restore").json(&body))?
+        .send(
+            api.request(Method::POST, &api.repo_route("/restore")?)
+                .json(&body),
+        )?
         .json()?;
     println!(
         "{} is now at revision {}, restored from r{revision}",
@@ -746,16 +853,94 @@ fn restore(
     Ok(())
 }
 
+fn repo_command(api: &Api, cmd: RepoCommand) -> Result<()> {
+    match cmd {
+        RepoCommand::Create {
+            name,
+            visibility,
+            lease_hours,
+        } => {
+            let (owner, name) = match name.split_once('/') {
+                Some((owner, name)) => (Some(owner.to_string()), name.to_string()),
+                None => (None, name),
+            };
+            let visibility = visibility
+                .map(|v| match v.as_str() {
+                    "public" => Ok(api::Visibility::Public),
+                    "private" => Ok(api::Visibility::Private),
+                    other => bail!("unknown visibility {other:?}: use public or private"),
+                })
+                .transpose()?;
+            let body = api::CreateRepoRequest {
+                owner,
+                name,
+                visibility,
+                lease_hours,
+            };
+            let made: api::RepoInfo = api
+                .send(api.request(Method::POST, "/v1/repos").json(&body))?
+                .json()?;
+            println!("created {}/{}", made.owner, made.name);
+        }
+        RepoCommand::List { owner } => {
+            let mut req = api.get("/v1/repos");
+            if let Some(owner) = &owner {
+                req = req.query(&[("owner", owner)]);
+            }
+            let repos: Vec<api::RepoInfo> = api.send(req)?.json()?;
+            for r in repos {
+                let visibility = match r.visibility {
+                    api::Visibility::Public => "public",
+                    api::Visibility::Private => "private",
+                };
+                println!(
+                    "{}/{}\t{visibility}\t{}",
+                    r.owner,
+                    r.name,
+                    r.role.as_deref().unwrap_or("-")
+                );
+            }
+        }
+        RepoCommand::Delete { name, yes } => {
+            let (owner, short) = address::split_repo(&name)?;
+            if !yes {
+                eprintln!(
+                    "This removes {name} with its files, history, locks and access. Its audit log is kept."
+                );
+                eprint!("Type the repository name to confirm: ");
+                let mut answer = String::new();
+                std::io::stdin().read_line(&mut answer)?;
+                if answer.trim() != name {
+                    bail!("not confirmed");
+                }
+            }
+            api.send(api.request(Method::DELETE, &format!("/v1/repos/{owner}/{short}")))?;
+            println!("deleted {name}");
+        }
+    }
+    Ok(())
+}
+
 fn token_command(api: &Api, cmd: TokenCommand) -> Result<()> {
     match cmd {
         TokenCommand::Create {
             name,
             permissions,
+            repos,
             expires_days,
         } => {
+            let repos =
+                if repos.is_empty() {
+                    vec![api.repo.clone().context(
+                        "name the repositories the token is for with --repos owner/name",
+                    )?]
+                } else {
+                    repos
+                };
             let body = api::CreateTokenRequest {
                 name,
                 permissions,
+                repos,
                 expires_at: expires_days.map(|d| chrono::Utc::now() + chrono::Duration::days(d)),
             };
             let made: api::CreatedToken = api

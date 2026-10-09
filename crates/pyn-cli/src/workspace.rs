@@ -18,9 +18,11 @@ const LOCAL_ONLY: &str = "local_only";
 pub struct Settings {
     pub server: Option<String>,
     pub user: Option<String>,
+    /// The repository as `owner/name`.
+    pub repo: Option<String>,
 }
 
-pub const SETTING_KEYS: [&str; 2] = ["server", "user"];
+pub const SETTING_KEYS: [&str; 3] = ["server", "user", "repo"];
 
 impl Settings {
     pub fn load(path: &Path) -> Result<Self> {
@@ -45,6 +47,7 @@ impl Settings {
         match key {
             "server" => Ok(self.server.as_ref()),
             "user" => Ok(self.user.as_ref()),
+            "repo" => Ok(self.repo.as_ref()),
             other => bail!(
                 "unknown setting {other:?}; the settings are {}",
                 SETTING_KEYS.join(", ")
@@ -56,6 +59,10 @@ impl Settings {
         match key {
             "server" => self.server = Some(value),
             "user" => self.user = Some(value),
+            "repo" => {
+                crate::address::split_repo(&value)?;
+                self.repo = Some(value);
+            }
             other => bail!(
                 "unknown setting {other:?}; the settings are {}",
                 SETTING_KEYS.join(", ")

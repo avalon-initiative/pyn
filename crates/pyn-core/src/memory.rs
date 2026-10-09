@@ -15,6 +15,7 @@ use crate::access_service::AccessStore;
 use crate::audit::{AuditEvent, AuditQuery, AuditStore, NewAuditEvent};
 use crate::error::{PynError, Result};
 use crate::object::ObjectStore;
+use crate::repo::{RepoRecord, RepoUpdate};
 use crate::store::MetadataStore;
 use crate::types::{
     ContentHash, Lock, NewRevision, RepoId, RepoPath, Revision, RevisionId, UserId,
@@ -26,6 +27,7 @@ type Key = (RepoId, RepoPath);
 struct State {
     locks: HashMap<Key, Lock>,
     revisions: HashMap<Key, Vec<Revision>>,
+    repos: HashMap<RepoId, RepoRecord>,
 }
 
 #[derive(Default)]
@@ -227,6 +229,78 @@ impl MetadataStore for MemoryMetadataStore {
             .cloned()
             .unwrap_or_default())
     }
+
+    async fn create_repo(&self, repo: RepoRecord) -> Result<RepoRecord> {
+        let mut st = self.state.lock().unwrap();
+        if st
+            .repos
+            .values()
+            .any(|r| r.owner == repo.owner && r.name == repo.name)
+        {
+            return Err(PynError::RepoExists(repo.address()));
+        }
+        st.repos.insert(repo.id.clone(), repo.clone());
+        Ok(repo)
+    }
+
+    async fn find_repo(&self, owner: &UserId, name: &str) -> Result<Option<RepoRecord>> {
+        let st = self.state.lock().unwrap();
+        Ok(st
+            .repos
+            .values()
+            .find(|r| &r.owner == owner && r.name == name)
+            .cloned())
+    }
+
+    async fn get_repo(&self, id: &RepoId) -> Result<Option<RepoRecord>> {
+        Ok(self.state.lock().unwrap().repos.get(id).cloned())
+    }
+
+    async fn list_repos(&self, owner: Option<&UserId>) -> Result<Vec<RepoRecord>> {
+        let st = self.state.lock().unwrap();
+        let mut out: Vec<_> = st
+            .repos
+            .values()
+            .filter(|r| owner.is_none_or(|o| &r.owner == o))
+            .cloned()
+            .collect();
+        out.sort_by(|a, b| (&a.owner, &a.name).cmp(&(&b.owner, &b.name)));
+        Ok(out)
+    }
+
+    async fn update_repo(&self, id: &RepoId, update: RepoUpdate) -> Result<RepoRecord> {
+        let mut st = self.state.lock().unwrap();
+        let mut repo = st
+            .repos
+            .get(id)
+            .cloned()
+            .ok_or_else(|| PynError::RepoNotFound(id.to_string()))?;
+        if let Some(name) = update.name {
+            repo.name = name;
+        }
+        if let Some(visibility) = update.visibility {
+            repo.visibility = visibility;
+        }
+        if let Some(settings) = update.settings {
+            repo.settings = settings;
+        }
+        if st
+            .repos
+            .values()
+            .any(|r| &r.id != id && r.owner == repo.owner && r.name == repo.name)
+        {
+            return Err(PynError::RepoExists(repo.address()));
+        }
+        st.repos.insert(id.clone(), repo.clone());
+        Ok(repo)
+    }
+
+    async fn delete_repo(&self, id: &RepoId) -> Result<bool> {
+        let mut st = self.state.lock().unwrap();
+        st.locks.retain(|(r, _), _| r != id);
+        st.revisions.retain(|(r, _), _| r != id);
+        Ok(st.repos.remove(id).is_some())
+    }
 }
 
 #[derive(Default)]
@@ -316,6 +390,26 @@ impl AccessStore for MemoryAccessStore {
             .collect();
         out.sort();
         Ok(out)
+    }
+
+    async fn repos_of(&self, user: &UserId) -> Result<Vec<RepoId>> {
+        let st = self.state.lock().unwrap();
+        let mut out: Vec<_> = st
+            .roles
+            .keys()
+            .filter(|(_, u)| u == user)
+            .map(|(r, _)| r.clone())
+            .collect();
+        out.sort();
+        Ok(out)
+    }
+
+    async fn delete_repo_access(&self, repo: &RepoId) -> Result<()> {
+        let mut st = self.state.lock().unwrap();
+        st.roles.retain(|(r, _), _| r != repo);
+        st.definitions.remove(repo);
+        st.invites.retain(|_, i| &i.repo != repo);
+        Ok(())
     }
 
     async fn role_definitions(&self, repo: &RepoId) -> Result<RoleDefinitions> {
