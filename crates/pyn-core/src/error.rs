@@ -93,6 +93,16 @@ pub enum PynError {
     NotOrgOwner(String),
     #[error("{0} still owns repositories; delete or transfer them first")]
     OrgNotEmpty(String),
+    #[error("you are not a member of {0}")]
+    NotOrgMember(String),
+    #[error("{user} is not a member of {org}; add them to the organization first")]
+    UserNotOrgMember { org: String, user: String },
+    #[error("{user} is already a member of {org}")]
+    AlreadyOrgMember { org: String, user: String },
+    #[error("{user} is not a member of {org}")]
+    OrgMemberNotFound { org: String, user: String },
+    #[error("{0} must keep at least one owner")]
+    LastOrgOwner(String),
     #[error("storage error: {0}")]
     Storage(String),
 }
@@ -155,6 +165,11 @@ impl PynError {
             Self::OrgNotFound(_) => "org_not_found",
             Self::NotOrgOwner(_) => "not_org_owner",
             Self::OrgNotEmpty(_) => "org_not_empty",
+            Self::NotOrgMember(_) => "not_org_member",
+            Self::UserNotOrgMember { .. } => "user_not_org_member",
+            Self::AlreadyOrgMember { .. } => "already_org_member",
+            Self::OrgMemberNotFound { .. } => "org_member_not_found",
+            Self::LastOrgOwner(_) => "last_org_owner",
             Self::Storage(_) => "storage",
         }
     }

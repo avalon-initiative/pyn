@@ -41,12 +41,25 @@ people act on its behalf, and a request that names an organization as the signed
   repository gets `403 not_org_owner` for those three.
 - **Delete.** An owner can delete an organization only when it owns no repositories (`409 org_not_empty`); delete the
   repositories first. Its audit log is kept and its name is free again.
-- **Audit.** Organization events (`org_created`, `org_deleted`) go to a separate organization log, readable by its owners
-  at `GET /v1/orgs/{org}/audit`. They are not in any repository's log or the server log.
+- **Members.** An organization has **owners** and **members**. An owner adds an existing user account
+  (`POST /v1/orgs/{org}/members`, `{user, role?}`, role `owner` or `member`, default `member`): there are no organization
+  invitations, so someone without an account signs up on the server first. Any member can list the members
+  (`GET /v1/orgs/{org}/members`); owners change a role (`PATCH /v1/orgs/{org}/members/{user}`) or remove a member
+  (`DELETE /v1/orgs/{org}/members/{user}`), and any member can remove themselves (leave). Changing members needs, for a
+  token, `manage_roles` and no repository limit. The member role does not by itself give access to any repository: access
+  comes from a direct grant or (later) a team. An organization **always keeps an owner**: demoting or removing the last one
+  is `409 last_org_owner`.
+- **Direct grants.** A direct role on an organization's repository goes only to a member of the organization, whether it is
+  given by setting a member's role or by adding a user (`409 user_not_org_member`). A repository invitation cannot be
+  made for an organization's repository (`400 invalid_invite`), and an older one is refused at sign-up for the same reason.
+  Removing a member, or the member leaving, **deletes their direct roles on every repository the organization owns**;
+  roles in other repositories are untouched. (Team memberships go the same way once teams exist.)
+- **Audit.** Organization events (`org_created`, `org_deleted`, `org_member_added`, `org_member_removed`,
+  `org_member_role_changed`) go to a separate organization log, readable by its owners at `GET /v1/orgs/{org}/audit`. They
+  are not in any repository's log or the server log. A removal records which repositories lost the member's direct access.
 
-Members, teams and organization-level role grants are later steps: until then an organization has exactly one member, its
-creator, and the owner is the only way anyone has access to its repositories. Leaving, removing or promoting owners, and the
-rule that an organization always keeps an owner, arrive with member management.
+Teams and organization-level role grants are later steps: until then an organization member reaches a repository only
+through a direct grant.
 
 | Where | Form |
 | --- | --- |
@@ -138,6 +151,11 @@ tokens, password), create repositories in its own namespace and read public repo
 | `GET /v1/orgs` | organizations you belong to, each `{name, created_at, role}` |
 | `GET /v1/orgs/{org}` | one organization; `role` is null when you have none (`404 org_not_found` for a user name too) |
 | `DELETE /v1/orgs/{org}` | delete, when it owns no repositories |
+| `GET /v1/me/orgs` | the organizations you belong to, each `{name, created_at, role}` (same answer as `GET /v1/orgs`) |
+| `GET /v1/orgs/{org}/members` | members `[{user, role}]` (any member) |
+| `POST /v1/orgs/{org}/members` | add an existing account `{user, role?}` (owners; `404 user_not_found`, `409 already_org_member`) |
+| `PATCH /v1/orgs/{org}/members/{user}` | change a role `{role}` (owners; `409 last_org_owner`) |
+| `DELETE /v1/orgs/{org}/members/{user}` | remove a member, or leave (owners, or the member; `409 last_org_owner`) |
 | `GET /v1/orgs/{org}/audit` | the organization's audit log (owners; `?before=`, `?limit=`) |
 | `GET /v1/repos/{owner}/{name}/me` | who you are and what you may do there |
 | `GET /v1/repos/{owner}/{name}/{tree,summary}` | [folder listing and summary](browsing.md) |

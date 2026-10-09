@@ -625,7 +625,7 @@ impl FromStr for AccountKind {
     }
 }
 
-/// A person's standing in an organization. Only owners exist until members are managed.
+/// A person's standing in an organization. A member gets no repository access from it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OrgRole {

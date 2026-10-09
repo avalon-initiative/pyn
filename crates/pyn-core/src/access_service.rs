@@ -26,6 +26,15 @@ pub const SERVER_AUDIT_ID: &str = "@server";
 
 mod organizations;
 
+/// The outcome of changing or removing an organization member.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrgMemberChange {
+    /// Done; carries the role the person held before.
+    Done(OrgRole),
+    NotMember,
+    LastOwner,
+}
+
 /// Persistence for users, organizations, roles and tokens.
 #[async_trait]
 pub trait AccessStore: Send + Sync {
@@ -70,6 +79,29 @@ pub trait AccessStore: Send + Sync {
 
     /// Removes the organization and its member records; false if there is no such organization.
     async fn delete_org(&self, org: &UserId) -> Result<bool>;
+
+    /// The organization's members with their role, ordered by user name.
+    async fn org_members(&self, org: &UserId) -> Result<Vec<(UserId, OrgRole)>>;
+
+    /// Adds `user` to the organization; false if they already belong to it.
+    async fn add_org_member(&self, org: &UserId, user: &UserId, role: OrgRole) -> Result<bool>;
+
+    /// Sets a member's role, refusing to leave the organization without an owner. Returns the previous role.
+    async fn set_org_role(
+        &self,
+        org: &UserId,
+        user: &UserId,
+        role: OrgRole,
+    ) -> Result<OrgMemberChange>;
+
+    /// Removes a member and their direct roles in `repos` (the organization's repositories), refusing to
+    /// remove the last owner. Returns the role they held.
+    async fn remove_org_member(
+        &self,
+        org: &UserId,
+        user: &UserId,
+        repos: &[RepoId],
+    ) -> Result<OrgMemberChange>;
 
     async fn set_password_hash(&self, user: &UserId, hash: &str) -> Result<()>;
 
@@ -643,6 +675,7 @@ impl AccessService {
     ) -> Result<()> {
         actor.require(Permission::ManageUsers)?;
         self.require_can_grant(actor, repo, role).await?;
+        self.require_grantable(repo, user).await?;
         let before = self.store.role_of(repo, user).await?;
         self.store.ensure_user(user, self.clock.now()).await?;
         self.store.set_role(repo, user, role).await?;
@@ -911,7 +944,9 @@ impl AccessService {
         let invite = if open {
             None
         } else {
-            Some(self.check_invitation(request.invite).await?)
+            let invite = self.check_invitation(request.invite).await?;
+            self.require_grantable(&invite.repo, &user).await?;
+            Some(invite)
         };
         let email = request.email.map(account::normalize_email).transpose()?;
         let verify = open && self.config.require_email_verification;
@@ -1165,6 +1200,7 @@ impl AccessService {
         self.require_can_grant(actor, repo, role).await?;
         let user = account::validate_username(username)?;
         account::validate_password(password)?;
+        self.require_grantable(repo, &user).await?;
         let hash = self.passwords.hash(password).await?;
         if !self.store.create_user(&user, self.clock.now()).await? {
             return Err(PynError::UserExists(user));
@@ -1210,6 +1246,12 @@ impl AccessService {
     ) -> Result<(InviteRecord, String)> {
         actor.require(Permission::ManageUsers)?;
         self.require_can_grant(actor, repo, role).await?;
+        if self.is_org_repo(repo).await? {
+            return Err(PynError::InvalidInvite(
+                "an organization's repository cannot be shared by invitation; add the person to the organization first"
+                    .into(),
+            ));
+        }
         if valid_for <= Duration::zero() {
             return Err(PynError::InvalidRequest(
                 "an invitation must be valid for some time".into(),

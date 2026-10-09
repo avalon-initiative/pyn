@@ -376,7 +376,294 @@ async fn openapi_documents_the_organization_routes() {
         .unwrap();
     let doc: serde_json::Value =
         serde_json::from_slice(&r.into_body().collect().await.unwrap().to_bytes()).unwrap();
-    for path in ["/v1/orgs", "/v1/orgs/{org}", "/v1/orgs/{org}/audit"] {
+    for path in [
+        "/v1/orgs",
+        "/v1/orgs/{org}",
+        "/v1/orgs/{org}/audit",
+        "/v1/orgs/{org}/members",
+        "/v1/orgs/{org}/members/{user}",
+        "/v1/me/orgs",
+    ] {
         assert!(doc["paths"].get(path).is_some(), "{path}");
     }
+}
+
+fn code(r: &Reply) -> (u16, String) {
+    (r.status.as_u16(), r.code())
+}
+
+async fn members(app: &Router, who: &str, org: &str) -> Vec<(String, String)> {
+    let r = call(app, who, "GET", &format!("/v1/orgs/{org}/members"), None).await;
+    assert_eq!(r.status, StatusCode::OK);
+    r.json::<Vec<api::OrgMember>>()
+        .into_iter()
+        .map(|m| (m.user, m.role))
+        .collect()
+}
+
+#[tokio::test]
+async fn owners_manage_members_and_any_member_lists_them() {
+    let app = server(OrgCreation::Anyone).await;
+    let (alice, bob, carol) = (
+        token_for(&app, "alice").await,
+        token_for(&app, "bob").await,
+        token_for(&app, "carol").await,
+    );
+    create_org(&app, &alice, "acme").await;
+    let url = "/v1/orgs/acme/members";
+
+    let r = call(&app, &bob, "GET", url, None).await;
+    assert_eq!(code(&r), (403, "not_org_member".into()));
+    let r = call(&app, &alice, "POST", url, Some(json!({"user": "bob"}))).await;
+    assert_eq!(r.status, StatusCode::CREATED);
+    let added = r.json::<api::OrgMember>();
+    assert_eq!(
+        (added.user.as_str(), added.role.as_str()),
+        ("bob", "member"),
+        "member is the default"
+    );
+    let r = call(&app, &alice, "POST", url, Some(json!({"user": "bob"}))).await;
+    assert_eq!(code(&r), (409, "already_org_member".into()));
+    let r = call(&app, &alice, "POST", url, Some(json!({"user": "nobody"}))).await;
+    assert_eq!(code(&r), (404, "user_not_found".into()));
+    let r = call(&app, &alice, "POST", url, Some(json!({"user": "acme"}))).await;
+    assert_eq!(
+        code(&r),
+        (400, "invalid_request".into()),
+        "an organization is no member"
+    );
+    let r = call(
+        &app,
+        &alice,
+        "POST",
+        url,
+        Some(json!({"user": "carol", "role": "boss"})),
+    )
+    .await;
+    assert_eq!(code(&r), (400, "invalid_request".into()));
+    let r = call(&app, &bob, "POST", url, Some(json!({"user": "carol"}))).await;
+    assert_eq!(code(&r), (403, "not_org_owner".into()));
+    let r = call(&app, &carol, "POST", url, Some(json!({"user": "carol"}))).await;
+    assert_eq!(code(&r), (403, "not_org_owner".into()));
+    let r = call(
+        &app,
+        &alice,
+        "POST",
+        "/v1/orgs/nope/members",
+        Some(json!({"user": "carol"})),
+    )
+    .await;
+    assert_eq!(code(&r), (404, "org_not_found".into()));
+    call(
+        &app,
+        &alice,
+        "POST",
+        url,
+        Some(json!({"user": "carol", "role": "owner"})),
+    )
+    .await;
+
+    for who in [&alice, &bob, &carol] {
+        assert_eq!(
+            members(&app, who, "acme").await,
+            [
+                ("alice".to_string(), "owner".to_string()),
+                ("bob".to_string(), "member".to_string()),
+                ("carol".to_string(), "owner".to_string())
+            ]
+        );
+    }
+
+    let r = call(
+        &app,
+        &bob,
+        "PATCH",
+        "/v1/orgs/acme/members/bob",
+        Some(json!({"role": "owner"})),
+    )
+    .await;
+    assert_eq!(code(&r), (403, "not_org_owner".into()));
+    let r = call(
+        &app,
+        &alice,
+        "PATCH",
+        "/v1/orgs/acme/members/nobody",
+        Some(json!({"role": "owner"})),
+    )
+    .await;
+    assert_eq!(code(&r), (404, "org_member_not_found".into()));
+    let r = call(
+        &app,
+        &alice,
+        "PATCH",
+        "/v1/orgs/acme/members/bob",
+        Some(json!({"role": "owner"})),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(r.json::<api::OrgMember>().role, "owner");
+
+    let r = call(&app, &bob, "DELETE", "/v1/orgs/acme/members/carol", None).await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT);
+    let r = call(&app, &alice, "DELETE", "/v1/orgs/acme/members/carol", None).await;
+    assert_eq!(code(&r), (404, "org_member_not_found".into()));
+    let r = call(&app, &carol, "GET", url, None).await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+
+    let r = call(&app, &alice, "GET", "/v1/orgs/acme/audit", None).await;
+    let actions: Vec<_> = r
+        .json::<api::AuditPage>()
+        .entries
+        .into_iter()
+        .map(|e| e.action)
+        .collect();
+    assert_eq!(
+        actions,
+        [
+            "org_member_removed",
+            "org_member_role_changed",
+            "org_member_added",
+            "org_member_added",
+            "org_created"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn the_last_owner_cannot_leave_or_be_demoted() {
+    let app = server(OrgCreation::Anyone).await;
+    let (alice, bob) = (token_for(&app, "alice").await, token_for(&app, "bob").await);
+    create_org(&app, &alice, "acme").await;
+    call(
+        &app,
+        &alice,
+        "POST",
+        "/v1/orgs/acme/members",
+        Some(json!({"user": "bob"})),
+    )
+    .await;
+
+    let r = call(
+        &app,
+        &alice,
+        "PATCH",
+        "/v1/orgs/acme/members/alice",
+        Some(json!({"role": "member"})),
+    )
+    .await;
+    assert_eq!(code(&r), (409, "last_org_owner".into()));
+    let r = call(&app, &alice, "DELETE", "/v1/orgs/acme/members/alice", None).await;
+    assert_eq!(code(&r), (409, "last_org_owner".into()));
+    let r = call(&app, &bob, "DELETE", "/v1/orgs/acme/members/bob", None).await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT, "a member may leave");
+    assert_eq!(members(&app, &alice, "acme").await.len(), 1);
+}
+
+#[tokio::test]
+async fn my_orgs_lists_the_callers_organizations_with_their_role() {
+    let app = server(OrgCreation::Anyone).await;
+    let (alice, bob) = (token_for(&app, "alice").await, token_for(&app, "bob").await);
+    create_org(&app, &alice, "acme").await;
+    create_org(&app, &bob, "beta").await;
+    call(
+        &app,
+        &bob,
+        "POST",
+        "/v1/orgs/beta/members",
+        Some(json!({"user": "alice"})),
+    )
+    .await;
+
+    let r = call(&app, &alice, "GET", "/v1/me/orgs", None).await;
+    assert_eq!(r.status, StatusCode::OK);
+    let orgs: Vec<_> = r
+        .json::<Vec<api::OrgInfo>>()
+        .into_iter()
+        .map(|o| (o.name, o.role.unwrap()))
+        .collect();
+    assert_eq!(
+        orgs,
+        [
+            ("acme".to_string(), "owner".to_string()),
+            ("beta".to_string(), "member".to_string())
+        ]
+    );
+    let r = call(&app, "nobody", "GET", "/v1/me/orgs", None).await;
+    assert!(r.json::<Vec<api::OrgInfo>>().is_empty());
+}
+
+#[tokio::test]
+async fn removal_drops_direct_grants_and_direct_grants_need_membership() {
+    let app = server(OrgCreation::Anyone).await;
+    let (alice, bob) = (token_for(&app, "alice").await, token_for(&app, "bob").await);
+    token_for(&app, "carol").await;
+    create_org(&app, &alice, "acme").await;
+    call(
+        &app,
+        &alice,
+        "POST",
+        "/v1/repos",
+        Some(json!({"owner": "acme", "name": "game"})),
+    )
+    .await;
+    call(
+        &app,
+        &alice,
+        "POST",
+        "/v1/orgs/acme/members",
+        Some(json!({"user": "bob"})),
+    )
+    .await;
+
+    let r = call(&app, &bob, "GET", "/v1/repos/acme/game/me", None).await;
+    assert_eq!(
+        r.status,
+        StatusCode::NOT_FOUND,
+        "the member role grants no access"
+    );
+
+    let r = call(
+        &app,
+        &alice,
+        "PUT",
+        "/v1/repos/acme/game/members/carol",
+        Some(json!({"role": "reader"})),
+    )
+    .await;
+    assert_eq!(code(&r), (409, "user_not_org_member".into()));
+    let r = call(
+        &app,
+        &alice,
+        "POST",
+        "/v1/repos/acme/game/users",
+        Some(json!({"username": "dave", "password": PASSWORD, "role": "reader"})),
+    )
+    .await;
+    assert_eq!(code(&r), (409, "user_not_org_member".into()));
+    let r = call(
+        &app,
+        &alice,
+        "POST",
+        "/v1/repos/acme/game/invites",
+        Some(json!({"role": "reader", "hours": 1})),
+    )
+    .await;
+    assert_eq!(code(&r), (400, "invalid_invite".into()));
+
+    let r = call(
+        &app,
+        &alice,
+        "PUT",
+        "/v1/repos/acme/game/members/bob",
+        Some(json!({"role": "writer"})),
+    )
+    .await;
+    assert!(r.status.is_success(), "{:?}", r.status);
+    let r = call(&app, &bob, "GET", "/v1/repos/acme/game/me", None).await;
+    assert_eq!(r.status, StatusCode::OK);
+
+    let r = call(&app, &alice, "DELETE", "/v1/orgs/acme/members/bob", None).await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT);
+    let r = call(&app, &bob, "GET", "/v1/repos/acme/game/me", None).await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND);
 }

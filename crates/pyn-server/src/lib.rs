@@ -82,6 +82,11 @@ struct RepoAddress {
         org_api::get_org,
         org_api::delete_org,
         org_api::org_audit,
+        org_api::my_orgs,
+        org_api::list_members,
+        org_api::add_member,
+        org_api::set_member_role,
+        org_api::remove_member,
         repo_api::list_repos,
         repo_api::create_repo,
         repo_api::get_repo,
@@ -217,6 +222,15 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/v1/orgs/{org}/audit", get(org_api::org_audit))
         .route(
+            "/v1/orgs/{org}/members",
+            get(org_api::list_members).post(org_api::add_member),
+        )
+        .route(
+            "/v1/orgs/{org}/members/{user}",
+            axum::routing::patch(org_api::set_member_role).delete(org_api::remove_member),
+        )
+        .route("/v1/me/orgs", get(org_api::my_orgs))
+        .route(
             "/v1/repos",
             get(repo_api::list_repos).post(repo_api::create_repo),
         )
@@ -288,6 +302,9 @@ impl IntoResponse for ApiError {
             | PynError::UserExists(_)
             | PynError::RepoExists(_)
             | PynError::OrgNotEmpty(_)
+            | PynError::UserNotOrgMember { .. }
+            | PynError::AlreadyOrgMember { .. }
+            | PynError::LastOrgOwner(_)
             | PynError::KeyInUse
             | PynError::ConfirmationRequired { .. } => StatusCode::CONFLICT,
             PynError::NotLockHolder(_)
@@ -297,6 +314,7 @@ impl IntoResponse for ApiError {
             | PynError::ServerAdminRequired
             | PynError::NotNamespaceOwner(_)
             | PynError::NotOrgOwner(_)
+            | PynError::NotOrgMember(_)
             | PynError::CsrfFailed => StatusCode::FORBIDDEN,
             PynError::TooManyAttempts { .. } => StatusCode::TOO_MANY_REQUESTS,
             PynError::Unauthenticated(_) => StatusCode::UNAUTHORIZED,
@@ -305,6 +323,7 @@ impl IntoResponse for ApiError {
             | PynError::KeyNotFound(_)
             | PynError::RepoNotFound(_)
             | PynError::OrgNotFound(_)
+            | PynError::OrgMemberNotFound { .. }
             | PynError::PathNotFound(_) => StatusCode::NOT_FOUND,
             PynError::RevisionNotFound { .. } => StatusCode::NOT_FOUND,
             PynError::InvalidPath(_)

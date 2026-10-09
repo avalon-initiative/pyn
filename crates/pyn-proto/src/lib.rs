@@ -179,7 +179,7 @@ pub struct Account {
 pub struct OrgInfo {
     pub name: String,
     pub created_at: DateTime<Utc>,
-    /// The caller's standing in it (`owner`); absent when they have none.
+    /// The caller's standing in it (`owner` or `member`); absent when they have none.
     pub role: Option<String>,
 }
 
@@ -187,6 +187,29 @@ pub struct OrgInfo {
 pub struct CreateOrgRequest {
     /// Shares the namespace with user names: 2 to 39 lowercase letters, digits, `-` or `_`, not reserved.
     pub name: String,
+}
+
+/// A person in an organization.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct OrgMember {
+    pub user: String,
+    /// `owner` or `member`.
+    pub role: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct AddOrgMemberRequest {
+    /// An existing user account.
+    pub user: String,
+    /// `owner` or `member`; defaults to `member`.
+    #[serde(default)]
+    pub role: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct SetOrgRoleRequest {
+    /// `owner` or `member`.
+    pub role: String,
 }
 
 /// The caller and what they may do in one repository.

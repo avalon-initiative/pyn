@@ -12,7 +12,7 @@ use crate::access::{
     Permission, Role, RoleDefinitions, SessionRecord, SignupStage, SshKeyRecord, TokenId,
     TokenRecord, VerificationRecord,
 };
-use crate::access_service::AccessStore;
+use crate::access_service::{AccessStore, OrgMemberChange};
 use crate::audit::{AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent};
 use crate::error::{PynError, Result};
 use crate::history::HistoryCursor;
@@ -401,6 +401,15 @@ struct AccessState {
     sessions: HashMap<String, SessionRecord>,
 }
 
+impl AccessState {
+    fn owner_count(&self, org: &UserId) -> usize {
+        self.org_roles
+            .iter()
+            .filter(|((o, _), r)| o == org && **r == OrgRole::Owner)
+            .count()
+    }
+}
+
 fn plain_account(user: &UserId, now: DateTime<Utc>) -> AccountRecord {
     AccountRecord {
         user: user.clone(),
@@ -572,6 +581,67 @@ impl AccessStore for MemoryAccessStore {
         st.accounts.remove(org);
         st.org_roles.retain(|(o, _), _| o != org);
         Ok(true)
+    }
+
+    async fn org_members(&self, org: &UserId) -> Result<Vec<(UserId, OrgRole)>> {
+        let st = self.state.lock().unwrap();
+        let mut out: Vec<_> = st
+            .org_roles
+            .iter()
+            .filter(|((o, _), _)| o == org)
+            .map(|((_, u), r)| (u.clone(), *r))
+            .collect();
+        out.sort();
+        Ok(out)
+    }
+
+    async fn add_org_member(&self, org: &UserId, user: &UserId, role: OrgRole) -> Result<bool> {
+        let mut st = self.state.lock().unwrap();
+        let key = (org.clone(), user.clone());
+        if st.org_roles.contains_key(&key) {
+            return Ok(false);
+        }
+        st.org_roles.insert(key, role);
+        Ok(true)
+    }
+
+    async fn set_org_role(
+        &self,
+        org: &UserId,
+        user: &UserId,
+        role: OrgRole,
+    ) -> Result<OrgMemberChange> {
+        let mut st = self.state.lock().unwrap();
+        let key = (org.clone(), user.clone());
+        let Some(&old) = st.org_roles.get(&key) else {
+            return Ok(OrgMemberChange::NotMember);
+        };
+        if old == OrgRole::Owner && role != OrgRole::Owner && st.owner_count(org) == 1 {
+            return Ok(OrgMemberChange::LastOwner);
+        }
+        st.org_roles.insert(key, role);
+        Ok(OrgMemberChange::Done(old))
+    }
+
+    async fn remove_org_member(
+        &self,
+        org: &UserId,
+        user: &UserId,
+        repos: &[RepoId],
+    ) -> Result<OrgMemberChange> {
+        let mut st = self.state.lock().unwrap();
+        let key = (org.clone(), user.clone());
+        let Some(&old) = st.org_roles.get(&key) else {
+            return Ok(OrgMemberChange::NotMember);
+        };
+        if old == OrgRole::Owner && st.owner_count(org) == 1 {
+            return Ok(OrgMemberChange::LastOwner);
+        }
+        st.org_roles.remove(&key);
+        for repo in repos {
+            st.roles.remove(&(repo.clone(), user.clone()));
+        }
+        Ok(OrgMemberChange::Done(old))
     }
 
     async fn create_account(&self, new: NewAccount) -> Result<bool> {

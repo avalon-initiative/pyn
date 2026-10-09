@@ -5,29 +5,35 @@ use pyn_core::memory::{
     MemoryAccessStore, MemoryAuditStore, MemoryMetadataStore, MemoryObjectStore,
 };
 use pyn_core::{
-    AccessConfig, AccessService, AuditAction, AuditEvent, AuditQuery, AuditScope, AuditStore,
-    Credential, Identity, ManualClock, OrgCreation, OrgRole, Permission, PynError, Registration,
-    RegistrationMode, Repositories, Role, Rules, TokenRecord, UserId, Visibility,
+    AccessConfig, AccessService, AccessStore, AuditAction, AuditEvent, AuditQuery, AuditScope,
+    AuditStore, Credential, Identity, ManualClock, OrgCreation, OrgRole, Permission, PynError,
+    Registration, RegistrationMode, Repositories, Role, Rules, TokenRecord, UserId, Visibility,
 };
 
 const PASSWORD: &str = "correct horse battery";
 
 struct World {
+    store: Arc<MemoryAccessStore>,
     repos: Repositories,
     access: Arc<AccessService>,
     audit: Arc<MemoryAuditStore>,
 }
 
 fn world_with(org_creation: OrgCreation) -> World {
+    build(org_creation, RegistrationMode::Open)
+}
+
+fn build(org_creation: OrgCreation, registration: RegistrationMode) -> World {
     let clock = Arc::new(ManualClock::new(
         Utc.with_ymd_and_hms(2026, 10, 8, 9, 0, 0).unwrap(),
     ));
     let audit = Arc::new(MemoryAuditStore::new());
     let meta = Arc::new(MemoryMetadataStore::new());
+    let store = Arc::new(MemoryAccessStore::new());
     let access = Arc::new(
-        AccessService::new(Arc::new(MemoryAccessStore::new()), clock.clone())
+        AccessService::new(store.clone(), clock.clone())
             .with_config(AccessConfig {
-                registration: RegistrationMode::Open,
+                registration,
                 require_email_verification: false,
                 org_creation,
                 ..AccessConfig::default()
@@ -44,6 +50,7 @@ fn world_with(org_creation: OrgCreation) -> World {
         Rules::empty(),
     );
     World {
+        store,
         repos,
         access,
         audit,
@@ -406,6 +413,10 @@ async fn organization_owners_resolve_to_admin_on_every_repository_it_owns() {
         Some(Role::Admin)
     );
     w.access
+        .add_org_member(&alice, &user("acme"), &user("carol"), OrgRole::Member)
+        .await
+        .unwrap();
+    w.access
         .set_user_role(&root, &game.id, &user("carol"), Role::Writer)
         .await
         .unwrap();
@@ -422,6 +433,10 @@ async fn owners_rename_reconfigure_and_delete_organization_repositories_but_othe
     let (alice, carol) = (session("alice"), session("carol"));
     w.access.create_org(&alice, "acme").await.unwrap();
     sign_up(&w, "carol").await;
+    w.access
+        .add_org_member(&alice, &user("acme"), &user("carol"), OrgRole::Member)
+        .await
+        .unwrap();
     let game = w
         .repos
         .create(&alice, &user("acme"), "game", None, None)
@@ -532,4 +547,498 @@ async fn the_organization_log_is_for_its_owners() {
         .await
         .unwrap_err();
     assert!(matches!(err, PynError::OrgNotFound(_)), "{err}");
+}
+
+async fn org_with(w: &World, members: &[&str]) {
+    let alice = session("alice");
+    w.access.create_org(&alice, "acme").await.unwrap();
+    for name in members {
+        sign_up(w, name).await;
+        w.access
+            .add_org_member(&alice, &user("acme"), &user(name), OrgRole::Member)
+            .await
+            .unwrap();
+    }
+}
+
+fn pairs(members: Vec<(UserId, OrgRole)>) -> Vec<(String, OrgRole)> {
+    members
+        .into_iter()
+        .map(|(u, r)| (u.to_string(), r))
+        .collect()
+}
+
+#[tokio::test]
+async fn any_member_lists_the_members_and_outsiders_cannot() {
+    let w = world();
+    org_with(&w, &["bob"]).await;
+    sign_up(&w, "carol").await;
+    let acme = user("acme");
+
+    for who in ["alice", "bob"] {
+        let members = w.access.org_members(&session(who), &acme).await.unwrap();
+        assert_eq!(
+            pairs(members),
+            [
+                ("alice".to_string(), OrgRole::Owner),
+                ("bob".to_string(), OrgRole::Member)
+            ]
+        );
+    }
+    let err = w
+        .access
+        .org_members(&session("carol"), &acme)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, PynError::NotOrgMember(ref o) if o == "acme"),
+        "{err}"
+    );
+    assert_eq!(err.code(), "not_org_member");
+    let err = w
+        .access
+        .org_members(&session("alice"), &user("nobody"))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::OrgNotFound(_)), "{err}");
+    let err = w
+        .access
+        .org_members(&session("alice"), &user("bob"))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, PynError::OrgNotFound(_)),
+        "a user is not an organization: {err}"
+    );
+}
+
+#[tokio::test]
+async fn owners_add_existing_accounts_and_nobody_else_does() {
+    let w = world();
+    org_with(&w, &["bob"]).await;
+    for name in ["carol", "dave"] {
+        sign_up(&w, name).await;
+    }
+    w.access
+        .create_org(&session("carol"), "beta")
+        .await
+        .unwrap();
+    let (alice, bob, acme) = (session("alice"), session("bob"), user("acme"));
+
+    w.access
+        .add_org_member(&alice, &acme, &user("carol"), OrgRole::Owner)
+        .await
+        .unwrap();
+    assert_eq!(
+        w.access.org_role(&acme, &user("carol")).await.unwrap(),
+        Some(OrgRole::Owner)
+    );
+
+    let err = w
+        .access
+        .add_org_member(&alice, &acme, &user("nobody"), OrgRole::Member)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::UserNotFound(_)), "{err}");
+    let err = w
+        .access
+        .add_org_member(&alice, &acme, &user("beta"), OrgRole::Member)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, PynError::InvalidRequest(_)),
+        "an organization is no member: {err}"
+    );
+    assert!(
+        w.access
+            .org_role(&acme, &user("beta"))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let err = w
+        .access
+        .add_org_member(&alice, &acme, &user("bob"), OrgRole::Owner)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::AlreadyOrgMember { .. }), "{err}");
+    assert_eq!(err.code(), "already_org_member");
+    assert_eq!(
+        w.access.org_role(&acme, &user("bob")).await.unwrap(),
+        Some(OrgRole::Member),
+        "adding again leaves the role alone"
+    );
+
+    for actor in [&bob, &session("dave")] {
+        let err = w
+            .access
+            .add_org_member(actor, &acme, &user("dave"), OrgRole::Member)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, PynError::NotOrgOwner(_)), "{err}");
+    }
+    let err = w
+        .access
+        .add_org_member(&alice, &user("nobody"), &user("dave"), OrgRole::Member)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::OrgNotFound(_)), "{err}");
+
+    let weak = token_for("alice", &[Permission::Read]);
+    let err = w
+        .access
+        .add_org_member(&weak, &acme, &user("dave"), OrgRole::Member)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, PynError::Forbidden(Permission::ManageRoles)),
+        "{err}"
+    );
+    let managing = token_for("alice", &[Permission::ManageRoles]);
+    w.access
+        .add_org_member(&managing, &acme, &user("dave"), OrgRole::Member)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn roles_change_but_the_last_owner_is_never_demoted_or_removed() {
+    let w = world();
+    org_with(&w, &["bob"]).await;
+    let (alice, bob, acme) = (session("alice"), session("bob"), user("acme"));
+
+    let err = w
+        .access
+        .set_org_member_role(&alice, &acme, &user("alice"), OrgRole::Member)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, PynError::LastOrgOwner(ref o) if o == "acme"),
+        "{err}"
+    );
+    assert_eq!(err.code(), "last_org_owner");
+    let err = w
+        .access
+        .remove_org_member(&alice, &acme, &user("alice"))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, PynError::LastOrgOwner(_)),
+        "the last owner cannot leave: {err}"
+    );
+
+    let err = w
+        .access
+        .set_org_member_role(&bob, &acme, &user("bob"), OrgRole::Owner)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, PynError::NotOrgOwner(_)),
+        "a member cannot promote themselves: {err}"
+    );
+    let err = w
+        .access
+        .set_org_member_role(&alice, &acme, &user("nobody"), OrgRole::Owner)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::OrgMemberNotFound { .. }), "{err}");
+    assert_eq!(err.code(), "org_member_not_found");
+
+    w.access
+        .set_org_member_role(&alice, &acme, &user("bob"), OrgRole::Owner)
+        .await
+        .unwrap();
+    w.access
+        .set_org_member_role(&alice, &acme, &user("bob"), OrgRole::Owner)
+        .await
+        .unwrap();
+    w.access
+        .set_org_member_role(&bob, &acme, &user("alice"), OrgRole::Member)
+        .await
+        .unwrap();
+    let err = w
+        .access
+        .set_org_member_role(&alice, &acme, &user("bob"), OrgRole::Member)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, PynError::NotOrgOwner(_)),
+        "alice is a member now: {err}"
+    );
+
+    let log = events(&w, AuditScope::Org(acme)).await;
+    let changes: Vec<_> = log
+        .iter()
+        .filter(|e| e.action == AuditAction::OrgMemberRoleChanged)
+        .map(|e| (e.actor.to_string(), e.detail.clone()))
+        .collect();
+    assert_eq!(
+        changes,
+        [
+            ("bob".to_string(), "alice: owner -> member".to_string()),
+            ("alice".to_string(), "bob: member -> owner".to_string()),
+        ],
+        "only real changes are logged, newest first"
+    );
+}
+
+#[tokio::test]
+async fn removing_a_member_drops_their_direct_grants_in_the_organizations_repositories_only() {
+    let w = world();
+    org_with(&w, &["bob", "carol"]).await;
+    let (alice, bob, acme) = (session("alice"), session("bob"), user("acme"));
+    let game = w
+        .repos
+        .create(&alice, &acme, "game", None, None)
+        .await
+        .unwrap();
+    let tools = w
+        .repos
+        .create(&alice, &acme, "tools", None, None)
+        .await
+        .unwrap();
+    let notes = w
+        .repos
+        .create(&bob, &user("bob"), "notes", None, None)
+        .await
+        .unwrap();
+    let root = w.access.principal_in(&game.id, &alice).await.unwrap();
+    for (repo, who) in [(&game.id, "bob"), (&tools.id, "bob"), (&game.id, "carol")] {
+        w.access
+            .set_user_role(&root, repo, &user(who), Role::Writer)
+            .await
+            .unwrap();
+    }
+    assert_eq!(w.access.repos_of(&user("bob")).await.unwrap().len(), 3);
+
+    w.access
+        .remove_org_member(&alice, &acme, &user("bob"))
+        .await
+        .unwrap();
+    assert_eq!(w.access.org_role(&acme, &user("bob")).await.unwrap(), None);
+    assert_eq!(
+        w.access.role_in(&game.id, &user("bob")).await.unwrap(),
+        None
+    );
+    assert_eq!(
+        w.access.role_in(&tools.id, &user("bob")).await.unwrap(),
+        None
+    );
+    assert_eq!(
+        w.access.role_in(&notes.id, &user("bob")).await.unwrap(),
+        Some(Role::Admin),
+        "bob's own repository is untouched"
+    );
+    assert_eq!(
+        w.access.role_in(&game.id, &user("carol")).await.unwrap(),
+        Some(Role::Writer)
+    );
+    assert!(w.access.orgs_of(&user("bob")).await.unwrap().is_empty());
+    assert!(
+        w.repos
+            .list(&bob, None)
+            .await
+            .unwrap()
+            .iter()
+            .all(|(r, _)| r.owner == user("bob"))
+    );
+
+    let err = w
+        .access
+        .remove_org_member(&alice, &acme, &user("bob"))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::OrgMemberNotFound { .. }), "{err}");
+    let err = w
+        .access
+        .remove_org_member(&session("carol"), &acme, &user("alice"))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, PynError::NotOrgOwner(_)),
+        "a member cannot remove others: {err}"
+    );
+
+    w.access
+        .remove_org_member(&session("carol"), &acme, &user("carol"))
+        .await
+        .unwrap();
+    assert_eq!(
+        w.access.role_in(&game.id, &user("carol")).await.unwrap(),
+        None
+    );
+
+    let log = events(&w, AuditScope::Org(acme)).await;
+    let removed: Vec<_> = log
+        .iter()
+        .filter(|e| e.action == AuditAction::OrgMemberRemoved)
+        .map(|e| (e.actor.to_string(), e.detail.clone()))
+        .collect();
+    assert_eq!(
+        removed,
+        [
+            (
+                "carol".to_string(),
+                "carol left; direct access dropped in acme/game".to_string()
+            ),
+            (
+                "alice".to_string(),
+                "bob removed; direct access dropped in acme/game, acme/tools".to_string()
+            ),
+        ]
+    );
+    assert_eq!(
+        log.iter()
+            .filter(|e| e.action == AuditAction::OrgMemberAdded)
+            .count(),
+        2
+    );
+}
+
+#[tokio::test]
+async fn the_member_role_alone_grants_no_repository_access() {
+    let w = world();
+    org_with(&w, &["bob"]).await;
+    let (alice, bob) = (session("alice"), session("bob"));
+    let game = w
+        .repos
+        .create(&alice, &user("acme"), "game", None, None)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        w.access.role_in(&game.id, &user("bob")).await.unwrap(),
+        None
+    );
+    assert!(
+        w.access
+            .principal_in(&game.id, &bob)
+            .await
+            .unwrap()
+            .permissions
+            .is_empty()
+    );
+    assert!(w.repos.list(&bob, None).await.unwrap().is_empty());
+    assert!(w.access.repos_of(&user("bob")).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn direct_grants_on_organization_repositories_go_only_to_members() {
+    let w = world();
+    org_with(&w, &["bob"]).await;
+    sign_up(&w, "carol").await;
+    let alice = session("alice");
+    let game = w
+        .repos
+        .create(&alice, &user("acme"), "game", None, None)
+        .await
+        .unwrap();
+    let root = w.access.principal_in(&game.id, &alice).await.unwrap();
+
+    let err = w
+        .access
+        .set_user_role(&root, &game.id, &user("carol"), Role::Reader)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::UserNotOrgMember { .. }), "{err}");
+    assert_eq!(err.code(), "user_not_org_member");
+    assert_eq!(
+        w.access.role_in(&game.id, &user("carol")).await.unwrap(),
+        None
+    );
+    let err = w
+        .access
+        .add_user(&root, &game.id, "dave", PASSWORD, Role::Reader)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::UserNotOrgMember { .. }), "{err}");
+    sign_up(&w, "dave").await;
+
+    w.access
+        .set_user_role(&root, &game.id, &user("bob"), Role::Writer)
+        .await
+        .unwrap();
+    assert_eq!(
+        w.access.role_in(&game.id, &user("bob")).await.unwrap(),
+        Some(Role::Writer)
+    );
+
+    let personal = w
+        .repos
+        .create(&alice, &user("alice"), "notes", None, None)
+        .await
+        .unwrap();
+    let mine = w.access.principal_in(&personal.id, &alice).await.unwrap();
+    w.access
+        .set_user_role(&mine, &personal.id, &user("carol"), Role::Reader)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn invitations_for_organization_repositories_cannot_be_made_or_redeemed_by_outsiders() {
+    let w = build(OrgCreation::Anyone, RegistrationMode::InviteOnly);
+    let alice = session("alice");
+    w.access.create_org(&alice, "acme").await.unwrap();
+    let game = w
+        .repos
+        .create(&alice, &user("acme"), "game", None, None)
+        .await
+        .unwrap();
+    let personal = w
+        .repos
+        .create(&alice, &user("alice"), "notes", None, None)
+        .await
+        .unwrap();
+    let root = w.access.principal_in(&game.id, &alice).await.unwrap();
+
+    let err = w
+        .access
+        .create_invite(&root, &game.id, Role::Reader, chrono::Duration::hours(1))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::InvalidInvite(_)), "{err}");
+
+    let mine = w.access.principal_in(&personal.id, &alice).await.unwrap();
+    let (_, code) = w
+        .access
+        .create_invite(
+            &mine,
+            &personal.id,
+            Role::Reader,
+            chrono::Duration::hours(1),
+        )
+        .await
+        .unwrap();
+    let signed = w
+        .access
+        .register(Registration::new("bob", PASSWORD).invite(&code))
+        .await
+        .unwrap();
+    assert_eq!(signed.user, user("bob"));
+
+    let (id, code, secret_hash) = pyn_core::invite::generate().unwrap();
+    let old = pyn_core::InviteRecord {
+        id,
+        secret_hash,
+        repo: game.id.clone(),
+        role: Role::Reader,
+        created_by: user("alice"),
+        created_at: Utc::now(),
+        expires_at: Utc::now() + chrono::Duration::days(365 * 100),
+        used_at: None,
+        used_by: None,
+        revoked_at: None,
+    };
+    w.store.create_invite(old).await.unwrap();
+    let err = w
+        .access
+        .register(Registration::new("carol", PASSWORD).invite(&code))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::UserNotOrgMember { .. }), "{err}");
+    assert!(
+        !w.store.user_exists(&user("carol")).await.unwrap(),
+        "a refused sign-up leaves no account"
+    );
 }

@@ -40,8 +40,9 @@ What someone may do in a repository is decided by one function in the server: th
 3. Owning the organization that owns the repository: `admin`.
 
 A token or session then narrows the result. Every lookup (the repository's `me`, the repository list, token creation, role
-checks) uses this one function. Organization members and teams (rules 1 and 2 for organization repositories) are later
-slices; today an organization has only its owner.
+checks) uses this one function. Being a plain organization member grants nothing by itself; a direct grant on an
+organization's repository goes only to a member of that organization (see
+[organizations](repositories.md#organizations)). Teams (rule 2) are a later slice.
 
 ## Accounts and signing in
 
@@ -197,7 +198,7 @@ every permission. Never set it on a server others can reach.
 
 ## Audit
 
-Organization events (created, deleted) are kept in a separate [organization log](repositories.md#organizations) for its
+Organization events (created, deleted, members added, removed or changed) are kept in a separate [organization log](repositories.md#organizations) for its
 owners. Adding a member (by an admin, by registration or as the creator of a repository), changing a member's role, changing what a
 role grants, creating or revoking a token, and creating, changing or deleting the repository itself are recorded in that
 repository's audit log with the actor and what changed, and are visible to `view_audit`. Server-wide account actions go to

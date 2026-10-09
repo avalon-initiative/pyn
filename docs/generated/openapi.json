@@ -522,6 +522,38 @@
         }
       }
     },
+    "/v1/me/orgs": {
+      "get": {
+        "tags": [
+          "org_api"
+        ],
+        "operationId": "my_orgs",
+        "responses": {
+          "200": {
+            "description": "the organizations the caller belongs to, each with the caller's role, ordered by name",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/OrgInfo"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/me/password": {
       "put": {
         "tags": [
@@ -775,7 +807,7 @@
         ],
         "responses": {
           "200": {
-            "description": "org_created and org_deleted events, newest first",
+            "description": "organization events (created, deleted, member added, removed or changed), newest first",
             "content": {
               "application/json": {
                 "schema": {
@@ -796,6 +828,288 @@
           },
           "404": {
             "description": "org_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/orgs/{org}/members": {
+      "get": {
+        "tags": [
+          "org_api"
+        ],
+        "operationId": "list_members",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "the organization's name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ordered by user name; any member may list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/OrgMember"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "not_org_member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "org_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "org_api"
+        ],
+        "operationId": "add_member",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "the organization's name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddOrgMemberRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrgMember"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: bad role, or the name is an organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "not_org_owner, or a token without manage_roles or limited to repositories",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "org_not_found, or user_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "already_org_member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/orgs/{org}/members/{user}": {
+      "delete": {
+        "tags": [
+          "org_api"
+        ],
+        "operationId": "remove_member",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "the organization's name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "user",
+            "in": "path",
+            "description": "the member's user name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "also deletes their direct roles on the organization's repositories; a member may remove themselves"
+          },
+          "403": {
+            "description": "not_org_owner (removing someone else), or a token without manage_roles or limited to repositories",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "org_not_found, or org_member_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "last_org_owner: the only owner cannot leave",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "org_api"
+        ],
+        "operationId": "set_member_role",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "the organization's name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "user",
+            "in": "path",
+            "description": "the member's user name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetOrgRoleRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrgMember"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: bad role",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "not_org_owner, or a token without manage_roles or limited to repositories",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "org_not_found, or org_member_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "last_org_owner: the only owner cannot be demoted",
             "content": {
               "application/json": {
                 "schema": {
@@ -2875,6 +3189,25 @@
           }
         }
       },
+      "AddOrgMemberRequest": {
+        "type": "object",
+        "required": [
+          "user"
+        ],
+        "properties": {
+          "role": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`owner` or `member`; defaults to `member`."
+          },
+          "user": {
+            "type": "string",
+            "description": "An existing user account."
+          }
+        }
+      },
       "AddUserRequest": {
         "type": "object",
         "required": [
@@ -3460,7 +3793,24 @@
               "string",
               "null"
             ],
-            "description": "The caller's standing in it (`owner`); absent when they have none."
+            "description": "The caller's standing in it (`owner` or `member`); absent when they have none."
+          }
+        }
+      },
+      "OrgMember": {
+        "type": "object",
+        "description": "A person in an organization.",
+        "required": [
+          "user",
+          "role"
+        ],
+        "properties": {
+          "role": {
+            "type": "string",
+            "description": "`owner` or `member`."
+          },
+          "user": {
+            "type": "string"
           }
         }
       },
@@ -3821,6 +4171,18 @@
         "properties": {
           "role": {
             "type": "string"
+          }
+        }
+      },
+      "SetOrgRoleRequest": {
+        "type": "object",
+        "required": [
+          "role"
+        ],
+        "properties": {
+          "role": {
+            "type": "string",
+            "description": "`owner` or `member`."
           }
         }
       },
