@@ -66,7 +66,7 @@ pub(crate) async fn create_token(
         let (owner, name) = address.split_once('/').ok_or_else(|| {
             PynError::InvalidRequest(format!("{address:?} is not an owner/name repository"))
         })?;
-        let (open, _) = open_visible(&s, &who, owner, name).await?;
+        let (open, _) = open_visible(&s, Some(&who), owner, name).await?;
         repos.push(open.record.id);
     }
     let (record, token) = s

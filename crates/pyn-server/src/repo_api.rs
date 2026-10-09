@@ -14,7 +14,9 @@ use pyn_proto as api;
 use serde::Deserialize;
 
 use crate::access_api::names;
-use crate::{ApiResult, AppState, RepoAddress, authorize_repo, identify, open_visible};
+use crate::{
+    ApiResult, AppState, RepoAddress, authorize_repo, identify, identify_optional, open_visible,
+};
 
 fn visibility_dto(v: pyn_core::Visibility) -> api::Visibility {
     match v {
@@ -51,7 +53,7 @@ pub(crate) struct ListReposQuery {
 
 #[utoipa::path(get, path = "/v1/repos",
     params(("owner" = Option<String>, Query, description = "only this owner's repositories")),
-    responses((status = 200, body = Vec<api::RepoInfo>, description = "the repositories the caller belongs to"),
+    responses((status = 200, body = Vec<api::RepoInfo>, description = "the repositories the caller has a role in; public repositories without a role are read by address"),
               (status = 401, body = api::ErrorBody)))]
 pub(crate) async fn list_repos(
     State(s): State<AppState>,
@@ -129,6 +131,7 @@ pub(crate) async fn create_repo(
     ))
 }
 
+/// Readable without credentials when the repository is public; otherwise 404 unless the caller has a role.
 #[utoipa::path(get, path = "/v1/repos/{owner}/{name}", params(RepoAddress), responses(
     (status = 200, body = api::RepoInfo),
     (status = 404, body = api::ErrorBody, description = "repo_not_found"),
@@ -138,9 +141,12 @@ pub(crate) async fn get_repo(
     headers: HeaderMap,
     Path((owner, name)): Path<(String, String)>,
 ) -> ApiResult<Json<api::RepoInfo>> {
-    let who = identify(&s, &headers).await?;
-    let (open, _) = open_visible(&s, &who, &owner, &name).await?;
-    let role = s.access.role_in(&open.record.id, &who.user).await?;
+    let who = identify_optional(&s, &headers).await?;
+    let (open, _) = open_visible(&s, who.as_ref(), &owner, &name).await?;
+    let role = match &who {
+        Some(who) => s.access.role_in(&open.record.id, &who.user).await?,
+        None => None,
+    };
     let limit = open.service.lock_limit();
     Ok(Json(repo_info(open.record, role, limit)))
 }
@@ -159,7 +165,7 @@ pub(crate) async fn update_repo(
     Json(req): Json<api::UpdateRepoRequest>,
 ) -> ApiResult<Json<api::RepoInfo>> {
     let who = identify(&s, &headers).await?;
-    let (open, _) = open_visible(&s, &who, &owner, &name).await?;
+    let (open, _) = open_visible(&s, Some(&who), &owner, &name).await?;
     let update = RepoUpdate {
         name: req.name,
         visibility: req.visibility.map(visibility_from),
@@ -188,7 +194,7 @@ pub(crate) async fn delete_repo(
     Path((owner, name)): Path<(String, String)>,
 ) -> ApiResult<StatusCode> {
     let who = identify(&s, &headers).await?;
-    let (open, _) = open_visible(&s, &who, &owner, &name).await?;
+    let (open, _) = open_visible(&s, Some(&who), &owner, &name).await?;
     s.repos.delete(&who, &open.record).await?;
     Ok(StatusCode::NO_CONTENT)
 }

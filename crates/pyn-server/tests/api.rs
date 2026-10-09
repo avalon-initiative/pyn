@@ -312,7 +312,11 @@ async fn tree_and_summary_describe_the_landing_page() {
         )
         .await
         .unwrap();
-    assert_eq!(anon.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        anon.status(),
+        StatusCode::NOT_FOUND,
+        "a private repository does not exist to the anonymous"
+    );
 }
 
 #[tokio::test]
@@ -416,11 +420,11 @@ async fn the_dev_header_is_ignored_unless_dev_auth_is_on() {
         .header(api::DEV_USER_HEADER, "alice")
         .body(Body::empty())
         .unwrap();
-    assert_eq!(status(&app, req).await, StatusCode::UNAUTHORIZED);
+    assert_eq!(status(&app, req).await, StatusCode::NOT_FOUND);
     let bare = Request::get("/v1/repos/owner/game/files")
         .body(Body::empty())
         .unwrap();
-    assert_eq!(status(&app, bare).await, StatusCode::UNAUTHORIZED);
+    assert_eq!(status(&app, bare).await, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -2532,4 +2536,356 @@ async fn the_lock_limit_is_set_at_creation_overridden_by_the_policy_file_and_enf
             .unwrap()
             .max_locks_set_by_policy
     );
+}
+
+fn anonymous_get(uri: &str) -> Request<Body> {
+    Request::get(uri).body(Body::empty()).unwrap()
+}
+
+async fn checkin_text(app: &axum::Router, repo: &str, token: &str, path: &str) {
+    let content = put_blob(app, repo, token, "hello").await;
+    let r = send(
+        app,
+        "POST",
+        &format!("/v1/repos/alice/{repo}/checkin"),
+        token,
+        Some(serde_json::json!({
+            "path": path, "content": content, "base_revision": null, "message": "seed"
+        })),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+}
+
+const READ_ROUTES: [&str; 6] = [
+    "tree",
+    "files",
+    "summary",
+    "locks",
+    "history",
+    "content?path=readme.txt",
+];
+
+struct Visible {
+    app: axum::Router,
+    alice: String,
+    bob: String,
+}
+
+async fn visible_world() -> Visible {
+    let app = router(state_with(false, RegistrationMode::Open).await);
+    let alice = register_and_sign_in(&app, "alice").await;
+    let bob = register_and_sign_in(&app, "bob").await;
+    for (name, visibility) in [("open", "public"), ("closed", "private")] {
+        let r = send(
+            &app,
+            "POST",
+            "/v1/repos",
+            &alice,
+            Some(serde_json::json!({"name": name, "visibility": visibility})),
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::CREATED);
+        checkin_text(&app, name, &alice, "readme.txt").await;
+    }
+    Visible { app, alice, bob }
+}
+
+#[tokio::test]
+async fn a_public_repository_is_readable_by_anyone_and_a_private_one_does_not_exist_to_them() {
+    let v = visible_world().await;
+    for route in READ_ROUTES {
+        let uri = format!("/v1/repos/alice/open/{route}");
+        let anonymous = v.app.clone().oneshot(anonymous_get(&uri)).await.unwrap();
+        assert_eq!(anonymous.status(), StatusCode::OK, "anonymous {route}");
+        let signed_in = send(&v.app, "GET", &uri, &v.bob, None).await;
+        assert_eq!(signed_in.status(), StatusCode::OK, "no-role {route}");
+
+        let hidden = format!("/v1/repos/alice/closed/{route}");
+        let missing = format!("/v1/repos/alice/nothing/{route}");
+        let (a, b) = (
+            v.app.clone().oneshot(anonymous_get(&hidden)).await.unwrap(),
+            send(&v.app, "GET", &hidden, &v.bob, None).await,
+        );
+        let gone = send(&v.app, "GET", &missing, &v.bob, None).await;
+        assert_eq!(a.status(), StatusCode::NOT_FOUND, "{route}");
+        assert_eq!(b.status(), StatusCode::NOT_FOUND, "{route}");
+        let (hidden_body, gone_body) = (
+            body_json::<api::ErrorBody>(b).await,
+            body_json::<api::ErrorBody>(gone).await,
+        );
+        assert_eq!(hidden_body.code, "repo_not_found");
+        assert_eq!(
+            hidden_body.message.replace("closed", "nothing"),
+            gone_body.message
+        );
+    }
+    let r = v
+        .app
+        .clone()
+        .oneshot(anonymous_get(
+            "/v1/repos/alice/open/content?path=readme.txt",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        &r.into_body().collect().await.unwrap().to_bytes()[..],
+        b"hello"
+    );
+
+    let info = v
+        .app
+        .clone()
+        .oneshot(anonymous_get("/v1/repos/alice/open"))
+        .await
+        .unwrap();
+    let info: api::RepoInfo = body_json(info).await;
+    assert_eq!(
+        (info.visibility, info.role),
+        (api::Visibility::Public, None)
+    );
+    let r = v
+        .app
+        .clone()
+        .oneshot(anonymous_get("/v1/repos/alice/closed"))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn reading_a_public_repository_does_not_extend_to_writes_or_management() {
+    let v = visible_world().await;
+    let base = "/v1/repos/alice/open";
+    let lock = serde_json::json!({"path": "Content/a.umap", "base_revision": null});
+    for route in ["checkout", "release", "force-unlock"] {
+        let body = serde_json::json!({"path": "Content/a.umap", "reason": "x"});
+        let r = send(
+            &v.app,
+            "POST",
+            &format!("{base}/{route}"),
+            &v.bob,
+            Some(body),
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::FORBIDDEN, "{route}");
+    }
+    let content = put_blob(&v.app, "open", &v.alice, "x").await;
+    let checkin = serde_json::json!({
+        "path": "readme.txt", "content": content, "base_revision": 1, "message": "m"
+    });
+    let r = send(
+        &v.app,
+        "POST",
+        &format!("{base}/checkin"),
+        &v.bob,
+        Some(checkin),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::FORBIDDEN);
+    let put = Request::put(format!("{base}/objects"))
+        .header("authorization", format!("Bearer {}", v.bob))
+        .body(Body::from("x"))
+        .unwrap();
+    assert_eq!(status(&v.app, put).await, StatusCode::FORBIDDEN);
+    for route in ["audit", "members", "invites"] {
+        let r = send(&v.app, "GET", &format!("{base}/{route}"), &v.bob, None).await;
+        assert_eq!(r.status(), StatusCode::FORBIDDEN, "{route}");
+    }
+    let r = send(
+        &v.app,
+        "PATCH",
+        base,
+        &v.bob,
+        Some(serde_json::json!({"visibility": "private"})),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::FORBIDDEN);
+    let r = send(&v.app, "DELETE", base, &v.bob, None).await;
+    assert_eq!(r.status(), StatusCode::FORBIDDEN);
+
+    let anonymous = |method: &str, uri: String| {
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("content-type", "application/json")
+            .body(Body::from(lock.to_string()))
+            .unwrap()
+    };
+    for (method, route) in [
+        ("POST", "checkout"),
+        ("PUT", "objects"),
+        ("GET", "audit"),
+        ("GET", "me"),
+    ] {
+        let r = v
+            .app
+            .clone()
+            .oneshot(anonymous(method, format!("{base}/{route}")))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::UNAUTHORIZED, "{route}");
+    }
+
+    let me: api::Me =
+        body_json(send(&v.app, "GET", &format!("{base}/me"), &v.bob, None).await).await;
+    assert_eq!(me.permissions, ["read"]);
+    let r = send(&v.app, "GET", "/v1/repos/alice/closed/me", &v.bob, None).await;
+    assert_eq!(r.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn a_bad_credential_is_refused_even_on_a_public_repository() {
+    let v = visible_world().await;
+    let r = send(
+        &v.app,
+        "GET",
+        "/v1/repos/alice/open/tree",
+        "pyn_bogus",
+        None,
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn a_token_limited_to_another_repository_still_reads_a_public_one_and_nothing_more() {
+    let v = visible_world().await;
+    let made = send(
+        &v.app,
+        "POST",
+        "/v1/tokens",
+        &v.alice,
+        Some(serde_json::json!({
+            "name": "closed only", "permissions": ["read", "lock"], "repos": ["alice/closed"]
+        })),
+    )
+    .await;
+    let scoped = body_json::<api::CreatedToken>(made).await.token;
+    let r = send(&v.app, "GET", "/v1/repos/alice/open/tree", &scoped, None).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let lock = serde_json::json!({"path": "Content/a.umap", "base_revision": null});
+    let r = send(
+        &v.app,
+        "POST",
+        "/v1/repos/alice/open/checkout",
+        &scoped,
+        Some(lock),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn listings_name_only_what_the_caller_belongs_to_and_never_a_private_repository() {
+    let v = visible_world().await;
+    let list = |token: String| {
+        let app = v.app.clone();
+        async move {
+            let r = send(&app, "GET", "/v1/repos", &token, None).await;
+            let repos: Vec<api::RepoInfo> = body_json(r).await;
+            repos.into_iter().map(|r| r.name).collect::<Vec<_>>()
+        }
+    };
+    assert_eq!(list(v.bob.clone()).await, Vec::<String>::new());
+    assert_eq!(list(v.alice.clone()).await, ["closed", "open"]);
+    let r = v
+        .app
+        .clone()
+        .oneshot(anonymous_get("/v1/repos"))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
+    let r = send(&v.app, "GET", "/v1/me/locks", &v.bob, None).await;
+    assert_eq!(body_json::<Vec<api::MyLock>>(r).await.len(), 0);
+}
+
+#[tokio::test]
+async fn only_the_owner_changes_visibility_and_the_change_takes_effect_at_once_and_is_audited() {
+    let v = visible_world().await;
+    let patch = |token: String, uri: &'static str, visibility: &'static str| {
+        let app = v.app.clone();
+        async move {
+            send(
+                &app,
+                "PATCH",
+                uri,
+                &token,
+                Some(serde_json::json!({"visibility": visibility})),
+            )
+            .await
+        }
+    };
+    let r = patch(v.bob.clone(), "/v1/repos/alice/closed", "public").await;
+    assert_eq!(
+        r.status(),
+        StatusCode::NOT_FOUND,
+        "a stranger learns nothing"
+    );
+
+    let tree = || anonymous_get("/v1/repos/alice/closed/tree");
+    let r = patch(v.alice.clone(), "/v1/repos/alice/closed", "public").await;
+    assert_eq!(r.status(), StatusCode::OK);
+    assert_eq!(
+        body_json::<api::RepoInfo>(r).await.visibility,
+        api::Visibility::Public
+    );
+    assert_eq!(status(&v.app, tree()).await, StatusCode::OK);
+
+    let r = patch(v.alice.clone(), "/v1/repos/alice/closed", "private").await;
+    assert_eq!(r.status(), StatusCode::OK);
+    assert_eq!(status(&v.app, tree()).await, StatusCode::NOT_FOUND);
+
+    let page: api::AuditPage = body_json(
+        send(
+            &v.app,
+            "GET",
+            "/v1/repos/alice/closed/audit?action=repo_updated",
+            &v.alice,
+            None,
+        )
+        .await,
+    )
+    .await;
+    let details: Vec<_> = page.entries.iter().map(|e| e.detail.as_str()).collect();
+    assert!(
+        details[0].contains("visibility public -> private"),
+        "{details:?}"
+    );
+    assert!(
+        details[1].contains("visibility private -> public"),
+        "{details:?}"
+    );
+    assert!(page.entries.iter().all(|e| e.actor == "alice"));
+}
+
+#[tokio::test]
+async fn an_account_with_no_role_can_still_use_its_own_settings() {
+    let v = visible_world().await;
+    let r = send(
+        &v.app,
+        "POST",
+        "/v1/keys",
+        &v.bob,
+        Some(serde_json::json!({"title": "laptop", "key": ED1})),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let r = send(&v.app, "GET", "/v1/keys", &v.bob, None).await;
+    assert_eq!(body_json::<Vec<api::SshKeyInfo>>(r).await.len(), 1);
+    let r = send(&v.app, "GET", "/v1/tokens", &v.bob, None).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let r = send(&v.app, "GET", "/v1/me", &v.bob, None).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let r = send(
+        &v.app,
+        "PUT",
+        "/v1/me/password",
+        &v.bob,
+        Some(serde_json::json!({"current": PASSWORD, "new": "another long passphrase"})),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::NO_CONTENT);
+    let r = send(&v.app, "GET", "/v1/repos", &v.bob, None).await;
+    assert!(body_json::<Vec<api::RepoInfo>>(r).await.is_empty());
 }

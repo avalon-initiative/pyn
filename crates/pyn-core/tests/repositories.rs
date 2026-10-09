@@ -448,3 +448,151 @@ async fn an_invitation_belongs_to_its_repository() {
         .await
         .unwrap();
 }
+
+#[tokio::test]
+async fn public_repositories_grant_read_to_anyone_and_private_ones_only_to_members() {
+    let w = world();
+    let (alice, bob) = (session("alice"), session("bob"));
+    let private = w
+        .repos
+        .create(&alice, &user("alice"), "closed", None, None)
+        .await
+        .unwrap();
+    let public = w
+        .repos
+        .create(
+            &alice,
+            &user("alice"),
+            "open",
+            Some(Visibility::Public),
+            None,
+        )
+        .await
+        .unwrap();
+
+    let member = w.repos.principal_for(&private, Some(&alice)).await.unwrap();
+    assert!(member.unwrap().has(Permission::Restore));
+    for who in [Some(&bob), None] {
+        assert_eq!(w.repos.principal_for(&private, who).await.unwrap(), None);
+        let p = w.repos.principal_for(&public, who).await.unwrap().unwrap();
+        assert_eq!(
+            p.permissions,
+            [Permission::Read].into(),
+            "read and nothing more"
+        );
+    }
+    let member = w.repos.principal_for(&public, Some(&alice)).await.unwrap();
+    assert!(
+        member.unwrap().has(Permission::Restore),
+        "a role keeps its permissions"
+    );
+}
+
+#[tokio::test]
+async fn a_stricter_role_still_reads_a_public_repository() {
+    let w = world();
+    let alice = session("alice");
+    let public = w
+        .repos
+        .create(
+            &alice,
+            &user("alice"),
+            "open",
+            Some(Visibility::Public),
+            None,
+        )
+        .await
+        .unwrap();
+    let root = w.access.principal_in(&public.id, &alice).await.unwrap();
+    w.access
+        .set_user_role(&root, &public.id, &user("bob"), Role::Reader)
+        .await
+        .unwrap();
+    w.access
+        .set_role_permissions(&root, &public.id, Role::Reader, [Permission::Lock].into())
+        .await
+        .unwrap();
+    let p = w
+        .repos
+        .principal_for(&public, Some(&session("bob")))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(p.has(Permission::Read) && p.has(Permission::Lock));
+}
+
+#[tokio::test]
+async fn my_locks_follow_visibility_for_someone_without_a_role() {
+    let w = world();
+    let (alice, bob) = (session("alice"), session("bob"));
+    let rec = w
+        .repos
+        .create(&alice, &user("alice"), "game", None, None)
+        .await
+        .unwrap();
+    let open = w.repos.open("alice", "game").await.unwrap();
+    let map = RepoPath::new("Content/a.umap").unwrap();
+    open.service
+        .checkout(&map, &user("bob"), None)
+        .await
+        .unwrap();
+    assert!(w.repos.locks_of(&bob).await.unwrap().is_empty());
+
+    let update = |visibility| RepoUpdate {
+        name: None,
+        visibility: Some(visibility),
+        settings: None,
+    };
+    w.repos
+        .update(&alice, &rec, update(Visibility::Public))
+        .await
+        .unwrap();
+    assert_eq!(w.repos.locks_of(&bob).await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn changing_visibility_is_recorded_with_before_and_after() {
+    let w = world();
+    let alice = session("alice");
+    let rec = w
+        .repos
+        .create(&alice, &user("alice"), "game", None, None)
+        .await
+        .unwrap();
+    let made_public = w
+        .repos
+        .update(
+            &alice,
+            &rec,
+            RepoUpdate {
+                name: None,
+                visibility: Some(Visibility::Public),
+                settings: None,
+            },
+        )
+        .await
+        .unwrap();
+    let log = events(&w, &rec.id).await;
+    assert_eq!(log[0].action, AuditAction::RepoUpdated);
+    assert_eq!(log[0].actor, user("alice"));
+    assert!(
+        log[0].detail.contains("visibility private -> public"),
+        "{}",
+        log[0].detail
+    );
+
+    w.repos
+        .update(
+            &alice,
+            &made_public,
+            RepoUpdate {
+                name: Some("renamed".into()),
+                visibility: None,
+                settings: None,
+            },
+        )
+        .await
+        .unwrap();
+    let log = events(&w, &rec.id).await;
+    assert!(!log[0].detail.contains("visibility"), "{}", log[0].detail);
+}

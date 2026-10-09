@@ -216,6 +216,13 @@ enum RepoCommand {
         #[arg(long)]
         owner: Option<String>,
     },
+    /// Make a repository public (anyone may read it) or private (members only). Owner and admin only.
+    Visibility {
+        /// `owner/name`.
+        name: String,
+        /// `public` or `private`.
+        visibility: String,
+    },
     /// Delete a repository with its files, history, locks and access. Its audit log is kept.
     Delete {
         /// `owner/name`.
@@ -1074,6 +1081,14 @@ fn submit_policy(api: &Api, repo: &str, bytes: Vec<u8>) -> Result<()> {
     Ok(())
 }
 
+fn parse_visibility(v: &str) -> Result<api::Visibility> {
+    match v {
+        "public" => Ok(api::Visibility::Public),
+        "private" => Ok(api::Visibility::Private),
+        other => bail!("unknown visibility {other:?}: use public or private"),
+    }
+}
+
 fn repo_command(api: &Api, cmd: RepoCommand) -> Result<()> {
     match cmd {
         RepoCommand::Create {
@@ -1095,13 +1110,7 @@ fn repo_command(api: &Api, cmd: RepoCommand) -> Result<()> {
                 Some((owner, name)) => (Some(owner.to_string()), name.to_string()),
                 None => (None, name),
             };
-            let visibility = visibility
-                .map(|v| match v.as_str() {
-                    "public" => Ok(api::Visibility::Public),
-                    "private" => Ok(api::Visibility::Private),
-                    other => bail!("unknown visibility {other:?}: use public or private"),
-                })
-                .transpose()?;
+            let visibility = visibility.as_deref().map(parse_visibility).transpose()?;
             let body = api::CreateRepoRequest {
                 owner,
                 name,
@@ -1145,6 +1154,18 @@ fn repo_command(api: &Api, cmd: RepoCommand) -> Result<()> {
                 &rows,
                 "no repositories",
             );
+        }
+        RepoCommand::Visibility { name, visibility } => {
+            let (owner, short) = address::split_repo(&name)?;
+            let body = api::UpdateRepoRequest {
+                visibility: Some(parse_visibility(&visibility)?),
+                ..Default::default()
+            };
+            api.send(
+                api.request(Method::PATCH, &format!("/v1/repos/{owner}/{short}"))
+                    .json(&body),
+            )?;
+            println!("{name} is now {visibility}");
         }
         RepoCommand::Delete { name, yes } => {
             let (owner, short) = address::split_repo(&name)?;
