@@ -98,7 +98,7 @@ pub(crate) async fn my_locks(
     (status = 201, body = api::RepoInfo, description = "the caller becomes its admin"),
     (status = 400, body = api::ErrorBody, description = "invalid_repo_name or invalid_request (a lease or lock limit out of range)"),
     (status = 403, body = api::ErrorBody, description = "not_namespace_owner, or a token without manage_roles or limited to repositories"),
-    (status = 409, body = api::ErrorBody, description = "repo_exists"),
+    (status = 409, body = api::ErrorBody, description = "repo_exists, or org_deleting: the organization is being deleted"),
 ))]
 pub(crate) async fn create_repo(
     State(s): State<AppState>,

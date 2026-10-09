@@ -6,9 +6,10 @@ use chrono::{DateTime, Duration, Utc};
 
 use crate::access::{
     AccountKind, AccountRecord, AccountStatus, Credential, Identity, InviteId, InviteRecord,
-    NewAccount, OrgCreation, OrgRole, Permission, Principal, RegistrationMode, Role,
-    RoleDefinitions, RoleSource, SessionRecord, SignupStage, SshKeyRecord, TeamRecord, TokenId,
-    TokenRecord, VerificationRecord, account, invite, session, ssh, token, verification,
+    NewAccount, ORG_DELETE_MARK_SECONDS, OrgCreation, OrgRole, Permission, Principal,
+    RegistrationMode, Role, RoleDefinitions, RoleSource, SessionRecord, SignupStage, SshKeyRecord,
+    TeamRecord, TokenId, TokenRecord, VerificationRecord, account, invite, session, ssh, token,
+    verification,
 };
 use crate::audit::{AuditAction, AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent};
 use crate::clock::Clock;
@@ -36,6 +37,17 @@ pub enum OrgMemberChange {
     Done(OrgRole),
     NotMember,
     LastOwner,
+}
+
+/// The outcome of marking an organization as being deleted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrgDeleteMark {
+    /// This call set the mark.
+    Set,
+    /// A fresh mark from another delete was already set.
+    Held,
+    /// No such organization.
+    NotFound,
 }
 
 /// Persistence for users, organizations, roles and tokens.
@@ -82,6 +94,17 @@ pub trait AccessStore: Send + Sync {
 
     /// Removes the organization with its member and team records; false if there is no such organization.
     async fn delete_org(&self, org: &UserId) -> Result<bool>;
+
+    /// Sets the organization's deleting mark in one step unless a mark newer than `stale_before` is already set.
+    async fn mark_org_deleting(
+        &self,
+        org: &UserId,
+        now: DateTime<Utc>,
+        stale_before: DateTime<Utc>,
+    ) -> Result<OrgDeleteMark>;
+
+    /// Clears the organization's deleting mark.
+    async fn clear_org_deleting(&self, org: &UserId) -> Result<()>;
 
     /// The organization's members with their role, ordered by user name.
     async fn org_members(&self, org: &UserId) -> Result<Vec<(UserId, OrgRole)>>;

@@ -8,8 +8,8 @@ use pyn_core::memory::{
     MemoryAccessStore, MemoryAuditStore, MemoryMetadataStore, MemoryObjectStore,
 };
 use pyn_core::{
-    AccessConfig, AccessService, AuthProvider, OrgCreation, RegistrationMode, Repositories, Rules,
-    SystemClock, UserId,
+    AccessConfig, AccessService, AccessStore, AuthProvider, OrgCreation, OrgDeleteMark,
+    RegistrationMode, Repositories, Rules, SystemClock, UserId,
 };
 use pyn_proto as api;
 use pyn_server::auth::{BearerAuth, DevHeaderAuth};
@@ -21,12 +21,18 @@ const PASSWORD: &str = "correct horse battery";
 
 /// The app and a token for the bootstrap administrator `root`.
 async fn server_with_root(org_creation: OrgCreation) -> (Router, String) {
+    let (app, root, _) = server_with_store(org_creation).await;
+    (app, root)
+}
+
+async fn server_with_store(org_creation: OrgCreation) -> (Router, String, Arc<MemoryAccessStore>) {
     let clock = Arc::new(SystemClock);
     let objects = Arc::new(MemoryObjectStore::new());
     let audit = Arc::new(MemoryAuditStore::new());
     let meta = Arc::new(MemoryMetadataStore::new());
+    let store = Arc::new(MemoryAccessStore::new());
     let access = Arc::new(
-        AccessService::new(Arc::new(MemoryAccessStore::new()), clock.clone())
+        AccessService::new(store.clone(), clock.clone())
             .with_config(AccessConfig {
                 registration: RegistrationMode::Open,
                 require_email_verification: false,
@@ -53,7 +59,7 @@ async fn server_with_root(org_creation: OrgCreation) -> (Router, String) {
         dev_auth: Some(Arc::new(DevHeaderAuth) as Arc<dyn AuthProvider>),
         trust_forwarded: false,
     });
-    (app, root)
+    (app, root, store)
 }
 
 async fn server(org_creation: OrgCreation) -> Router {
@@ -666,4 +672,52 @@ async fn removal_drops_direct_grants_and_direct_grants_need_membership() {
     assert_eq!(r.status, StatusCode::NO_CONTENT);
     let r = call(&app, &bob, "GET", "/v1/repos/acme/game/me", None).await;
     assert_eq!(r.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn an_organization_being_deleted_refuses_new_repositories_and_a_second_delete() {
+    let (app, _, store) = server_with_store(OrgCreation::Anyone).await;
+    create_org(&app, "alice", "acme").await;
+    let now = chrono::Utc::now();
+    let mark = store
+        .mark_org_deleting(
+            &UserId::new("acme"),
+            now,
+            now - chrono::Duration::seconds(60),
+        )
+        .await
+        .unwrap();
+    assert_eq!(mark, OrgDeleteMark::Set);
+
+    let r = call(
+        &app,
+        "alice",
+        "POST",
+        "/v1/repos",
+        Some(json!({"owner": "acme", "name": "game"})),
+    )
+    .await;
+    assert_eq!(
+        (r.status, r.code().as_str()),
+        (StatusCode::CONFLICT, "org_deleting")
+    );
+    let r = call(&app, "alice", "DELETE", "/v1/orgs/acme", None).await;
+    assert_eq!(
+        (r.status, r.code().as_str()),
+        (StatusCode::CONFLICT, "org_deleting")
+    );
+
+    store
+        .clear_org_deleting(&UserId::new("acme"))
+        .await
+        .unwrap();
+    let r = call(
+        &app,
+        "alice",
+        "POST",
+        "/v1/repos",
+        Some(json!({"owner": "acme", "name": "game"})),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::CREATED);
 }

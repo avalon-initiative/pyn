@@ -93,6 +93,8 @@ pub enum PynError {
     NotOrgOwner(String),
     #[error("{0} still owns repositories; delete or transfer them first")]
     OrgNotEmpty(String),
+    #[error("{0} is being deleted")]
+    OrgDeleting(String),
     #[error("you are not a member of {0}")]
     NotOrgMember(String),
     #[error("{user} is not a member of {org}; add them to the organization first")]
@@ -173,6 +175,7 @@ impl PynError {
             Self::OrgNotFound(_) => "org_not_found",
             Self::NotOrgOwner(_) => "not_org_owner",
             Self::OrgNotEmpty(_) => "org_not_empty",
+            Self::OrgDeleting(_) => "org_deleting",
             Self::NotOrgMember(_) => "not_org_member",
             Self::UserNotOrgMember { .. } => "user_not_org_member",
             Self::AlreadyOrgMember { .. } => "already_org_member",

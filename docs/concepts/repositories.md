@@ -41,6 +41,12 @@ people act on its behalf, and a request that names an organization as the signed
   repository gets `403 not_org_owner` for those three.
 - **Delete.** An owner can delete an organization only when it owns no repositories (`409 org_not_empty`); delete the
   repositories first. Its audit log is kept and its name is free again.
+  A delete first marks the organization as being deleted in one atomic step. While the mark is set, creating a
+  repository under it fails with `409 org_deleting`, and a create that was already under way undoes its insert when it
+  finds the mark. With the mark set the delete re-checks for repositories: if there are any it clears the mark and
+  returns `org_not_empty`. A second delete that meets a mark younger than 60 seconds also gets `409 org_deleting`; an
+  older mark is taken to be left by a crash and the new delete takes it over and finishes. Member and team changes
+  are not blocked meanwhile.
 - **Members.** An organization has **owners** and **members**. An owner adds an existing user account
   (`POST /v1/orgs/{org}/members`, `{user, role?}`, role `owner` or `member`, default `member`): there are no organization
   invitations, so someone without an account signs up on the server first. Any member can list the members

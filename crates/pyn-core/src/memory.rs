@@ -12,7 +12,7 @@ use crate::access::{
     Permission, Role, RoleDefinitions, SessionRecord, SignupStage, SshKeyRecord, TeamRecord,
     TokenId, TokenRecord, VerificationRecord,
 };
-use crate::access_service::{AccessStore, OrgMemberChange};
+use crate::access_service::{AccessStore, OrgDeleteMark, OrgMemberChange};
 use crate::audit::{AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent};
 use crate::error::{PynError, Result};
 use crate::history::HistoryCursor;
@@ -424,6 +424,7 @@ fn plain_account(user: &UserId, now: DateTime<Utc>) -> AccountRecord {
         disabled_reason: None,
         is_admin: false,
         created_at: now,
+        deleting_since: None,
     }
 }
 
@@ -588,6 +589,35 @@ impl AccessStore for MemoryAccessStore {
         st.team_members.retain(|(o, _, _)| o != org);
         st.team_roles.retain(|(_, o, _), _| o != org);
         Ok(true)
+    }
+
+    async fn mark_org_deleting(
+        &self,
+        org: &UserId,
+        now: DateTime<Utc>,
+        stale_before: DateTime<Utc>,
+    ) -> Result<OrgDeleteMark> {
+        let mut st = self.state.lock().unwrap();
+        let Some(account) = st
+            .accounts
+            .get_mut(org)
+            .filter(|a| a.kind == AccountKind::Org)
+        else {
+            return Ok(OrgDeleteMark::NotFound);
+        };
+        if account.deleting_since.is_some_and(|s| s > stale_before) {
+            return Ok(OrgDeleteMark::Held);
+        }
+        account.deleting_since = Some(now);
+        Ok(OrgDeleteMark::Set)
+    }
+
+    async fn clear_org_deleting(&self, org: &UserId) -> Result<()> {
+        let mut st = self.state.lock().unwrap();
+        if let Some(account) = st.accounts.get_mut(org) {
+            account.deleting_since = None;
+        }
+        Ok(())
     }
 
     async fn org_members(&self, org: &UserId) -> Result<Vec<(UserId, OrgRole)>> {
