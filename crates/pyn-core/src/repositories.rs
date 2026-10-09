@@ -263,6 +263,7 @@ impl Repositories {
         let member: HashSet<_> = match &who.credential {
             Credential::Unrestricted => all.iter().map(|r| r.id.clone()).collect(),
             Credential::Session => self.access.repos_of(&who.user).await?.into_iter().collect(),
+            Credential::Service(_) => HashSet::new(),
             Credential::Token(t) => self
                 .access
                 .repos_of(&who.user)

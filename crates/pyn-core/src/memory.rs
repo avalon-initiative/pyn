@@ -9,8 +9,8 @@ use sha2::{Digest, Sha256};
 
 use crate::access::{
     AccountKind, AccountRecord, AccountStatus, InviteId, InviteRecord, NewAccount, OrgRole,
-    Permission, Role, RoleDefinitions, SessionRecord, SignupStage, SshKeyRecord, TeamRecord,
-    TokenId, TokenRecord, VerificationRecord,
+    Permission, Role, RoleDefinitions, ServiceCredentialRecord, SessionRecord, SignupStage,
+    SshKeyRecord, TeamRecord, TokenId, TokenRecord, VerificationRecord,
 };
 use crate::access_service::{AccessStore, OrgDeleteMark, OrgMemberChange};
 use crate::audit::{AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent};
@@ -406,6 +406,7 @@ struct AccessState {
     creation_rules: BTreeMap<(UserId, CreationSubject, CreationEffect), CreationScope>,
     definitions: HashMap<RepoId, RoleDefinitions>,
     tokens: HashMap<TokenId, TokenRecord>,
+    service_credentials: HashMap<TokenId, ServiceCredentialRecord>,
     sessions: HashMap<String, SessionRecord>,
 }
 
@@ -1279,6 +1280,65 @@ impl AccessStore for MemoryAccessStore {
     async fn touch_token(&self, id: &TokenId, now: DateTime<Utc>) -> Result<()> {
         if let Some(token) = self.state.lock().unwrap().tokens.get_mut(id) {
             token.last_used_at = Some(now);
+        }
+        Ok(())
+    }
+
+    async fn create_service_credential(&self, record: ServiceCredentialRecord) -> Result<bool> {
+        let mut st = self.state.lock().unwrap();
+        if st
+            .service_credentials
+            .values()
+            .any(|c| c.name == record.name)
+        {
+            return Ok(false);
+        }
+        st.service_credentials.insert(record.id.clone(), record);
+        Ok(true)
+    }
+
+    async fn get_service_credential(
+        &self,
+        id: &TokenId,
+    ) -> Result<Option<ServiceCredentialRecord>> {
+        Ok(self
+            .state
+            .lock()
+            .unwrap()
+            .service_credentials
+            .get(id)
+            .cloned())
+    }
+
+    async fn list_service_credentials(&self) -> Result<Vec<ServiceCredentialRecord>> {
+        let mut out: Vec<_> = self
+            .state
+            .lock()
+            .unwrap()
+            .service_credentials
+            .values()
+            .cloned()
+            .collect();
+        out.sort_by(|a, b| {
+            a.created_at
+                .cmp(&b.created_at)
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        Ok(out)
+    }
+
+    async fn revoke_service_credential(&self, name: &str, now: DateTime<Utc>) -> Result<bool> {
+        let mut st = self.state.lock().unwrap();
+        let Some(c) = st.service_credentials.values_mut().find(|c| c.name == name) else {
+            return Ok(false);
+        };
+        c.revoked_at.get_or_insert(now);
+        Ok(true)
+    }
+
+    async fn touch_service_credential(&self, id: &TokenId, now: DateTime<Utc>) -> Result<()> {
+        if let Some(c) = self.state.lock().unwrap().service_credentials.get_mut(id) {
+            c.last_used_at = Some(now);
         }
         Ok(())
     }

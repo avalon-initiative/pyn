@@ -8,8 +8,8 @@ use chrono::{Duration, TimeZone, Utc};
 
 use crate::access::{
     AccountKind, AccountStatus, InviteId, InviteRecord, NewAccount, OrgRole, Permission, Principal,
-    Role, RoleDefinitions, RoleSource, SessionRecord, SignupStage, SshKeyRecord, TeamRecord,
-    TokenId, TokenRecord, VerificationRecord,
+    Role, RoleDefinitions, RoleSource, ServiceCredentialRecord, ServiceScope, SessionRecord,
+    SignupStage, SshKeyRecord, TeamRecord, TokenId, TokenRecord, VerificationRecord,
 };
 use crate::clock::Clock;
 use crate::memory::{MemoryAuditStore, MemoryMetadataStore, MemoryObjectStore};
@@ -1512,6 +1512,106 @@ pub async fn touching_a_token_records_last_use(store: Access) {
     assert_eq!(
         store.get_token(&id).await.unwrap().unwrap().last_used_at,
         Some(at(30))
+    );
+}
+
+fn service_credential(id: &str, name: &str, created: i64) -> ServiceCredentialRecord {
+    ServiceCredentialRecord {
+        id: TokenId(id.to_string()),
+        name: name.to_string(),
+        secret_hash: "00".repeat(32),
+        scopes: [
+            ServiceScope::ManageAccounts,
+            ServiceScope::ManageOrganizations,
+        ]
+        .into(),
+        created_by: user("root"),
+        created_at: at(created),
+        revoked_at: None,
+        last_used_at: None,
+    }
+}
+
+pub async fn service_credentials_round_trip_list_oldest_first_and_keep_names_unique(store: Access) {
+    for (id, name, created) in [
+        ("bbbbbbbbbbbb", "billing", 5),
+        ("aaaaaaaaaaaa", "provisioner", 1),
+    ] {
+        assert!(
+            store
+                .create_service_credential(service_credential(id, name, created))
+                .await
+                .unwrap()
+        );
+    }
+    assert!(
+        !store
+            .create_service_credential(service_credential("cccccccccccc", "billing", 9))
+            .await
+            .unwrap(),
+        "a taken name is refused"
+    );
+    let got = store
+        .get_service_credential(&TokenId("aaaaaaaaaaaa".into()))
+        .await
+        .unwrap();
+    assert_eq!(
+        got,
+        Some(service_credential("aaaaaaaaaaaa", "provisioner", 1))
+    );
+    assert!(
+        store
+            .get_service_credential(&TokenId("ffffffffffff".into()))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let names: Vec<_> = store
+        .list_service_credentials()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|c| c.name)
+        .collect();
+    assert_eq!(names, ["provisioner", "billing"]);
+}
+
+pub async fn revoking_and_touching_a_service_credential_are_recorded(store: Access) {
+    let id = TokenId("aaaaaaaaaaaa".into());
+    store
+        .create_service_credential(service_credential("aaaaaaaaaaaa", "provisioner", 1))
+        .await
+        .unwrap();
+    store.touch_service_credential(&id, at(30)).await.unwrap();
+    assert!(
+        store
+            .revoke_service_credential("provisioner", at(40))
+            .await
+            .unwrap()
+    );
+    assert!(
+        store
+            .revoke_service_credential("provisioner", at(50))
+            .await
+            .unwrap()
+    );
+    let got = store.get_service_credential(&id).await.unwrap().unwrap();
+    assert_eq!(
+        (got.last_used_at, got.revoked_at),
+        (Some(at(30)), Some(at(40)))
+    );
+    assert!(
+        !store
+            .revoke_service_credential("nobody", at(40))
+            .await
+            .unwrap()
+    );
+    assert!(
+        !store
+            .create_service_credential(service_credential("bbbbbbbbbbbb", "provisioner", 60))
+            .await
+            .unwrap(),
+        "a revoked credential keeps its name"
     );
 }
 
@@ -3895,6 +3995,8 @@ macro_rules! access_contract_tests {
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; tokens_round_trip_and_list_newest_first);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; revoking_is_recorded_and_harmless_twice);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; touching_a_token_records_last_use);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; service_credentials_round_trip_list_oldest_first_and_keep_names_unique);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; revoking_and_touching_a_service_credential_are_recorded);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; roles_assign_and_overwrite);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; role_definitions_apply_overrides_to_defaults);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; accounts_hold_a_unique_name_and_a_password);

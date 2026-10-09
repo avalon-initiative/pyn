@@ -196,6 +196,37 @@ pyn token list
 pyn token revoke <id>
 ```
 
+## Service credentials
+
+A service credential lets a trusted external service administer a server without being a person. A server
+administrator creates it with a unique name and a list of scopes; it has no account, no password, no tokens and no
+repository roles, so it cannot sign in, appears in no member list and cannot read or change repository content. Its
+secret (`pyns_<id>_<secret>`) is shown once and only a hash is stored. Revoking it ends it at once; the revoked record
+stays listed and its name is never reused.
+
+| Scope | Allows |
+| --- | --- |
+| `manage_accounts` | list, approve, disable and enable accounts (`/v1/admin/users*`) |
+| `manage_organizations` | create an organization for an existing user and delete an empty one (`/v1/admin/orgs*`) |
+
+Scopes are only ever added, and a credential holds exactly the scopes it was given. Server administrators pass every
+scope check. A credential is accepted only on the `/v1/admin/*` routes its scopes cover; elsewhere it gets
+`403 service_credential_not_allowed`. It can neither manage service credentials nor read the server log
+(`403 server_admin_required`).
+
+Creating and revoking a credential, and every action taken with one, go to the [server audit log](#protecting-open-registration)
+with the actor `@service:<name>`; organization actions also appear in that organization's log.
+
+| Route | Notes |
+| --- | --- |
+| `POST /v1/admin/service-credentials` | `{name, scopes}` gives `201 {secret, info}`; `400 invalid_request` for a bad name, no scope or an unknown scope; `409 service_credential_exists` |
+| `GET /v1/admin/service-credentials` | `[{name, scopes, created_by, created_at, revoked_at, last_used_at}]`, oldest first |
+| `DELETE /v1/admin/service-credentials/{name}` | `204`; `404 service_credential_not_found` |
+| `POST /v1/admin/orgs` | `{name, owner}` gives `201`; the owner must be an existing active user (`404 user_not_found`); `409 user_exists` |
+| `DELETE /v1/admin/orgs/{org}` | `204`; `404 org_not_found`, `409 org_not_empty` |
+
+A credential missing the scope gets `403 service_scope_required`; a revoked or unknown one gets `401 unauthenticated`.
+
 ## First administrator and development
 
 Start the server with `PYN_BOOTSTRAP_ADMIN=<name>` to create that account; the server prints a token for it once at
@@ -211,6 +242,6 @@ every permission. Never set it on a server others can reach.
 Organization events (created, deleted, members added, removed or changed, teams and their members, repository-creation policy changes) are kept in a separate [organization log](repositories.md#organizations) for its
 owners (`pyn org audit <org>`). Adding a member (by an admin, by registration or as the creator of a repository), changing a member's role, changing what a
 role grants, giving a team a role or taking it away, creating or revoking a token, and creating, changing or deleting the repository itself are recorded in that
-repository's audit log with the actor and what changed, and are visible to `view_audit`. Server-wide account actions go to
+repository's audit log with the actor and what changed, and are visible to `view_audit`. Server-wide account actions and service credential changes go to
 the [server audit log](#protecting-open-registration). A token's events go to the log of
 each repository it is limited to. Token secrets are never recorded, and neither are sign-in sessions.

@@ -189,6 +189,41 @@ pub struct CreateOrgRequest {
     pub name: String,
 }
 
+/// A server administrator or service credential creating an organization for an existing user.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct AdminCreateOrgRequest {
+    /// Same rules as `CreateOrgRequest.name`.
+    pub name: String,
+    /// An existing active user, who becomes the organization's first owner.
+    pub owner: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct CreateServiceCredentialRequest {
+    /// 1 to 64 lowercase letters, digits, `-` or `_`; unique, and never reused after revocation.
+    pub name: String,
+    /// At least one of `manage_accounts`, `manage_organizations`.
+    pub scopes: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ServiceCredentialInfo {
+    pub name: String,
+    pub scopes: Vec<String>,
+    /// The server administrator who created it.
+    pub created_by: String,
+    pub created_at: DateTime<Utc>,
+    pub revoked_at: Option<DateTime<Utc>>,
+    pub last_used_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct CreatedServiceCredential {
+    /// Presented as a bearer credential. Shown once and never stored.
+    pub secret: String,
+    pub info: ServiceCredentialInfo,
+}
+
 /// A person in an organization.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct OrgMember {
