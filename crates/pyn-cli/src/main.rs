@@ -77,6 +77,9 @@ enum Command {
     /// Create, list and delete repositories.
     #[command(subcommand)]
     Repo(RepoCommand),
+    /// Create, inspect and delete organizations, and manage who belongs to them.
+    #[command(subcommand)]
+    Org(OrgCommand),
     /// Show what differs between this workspace and the server.
     Status,
     /// Fetch new and newer files; files with local changes are left alone.
@@ -195,9 +198,9 @@ enum Command {
 
 #[derive(Subcommand)]
 enum RepoCommand {
-    /// Create a repository in your namespace; you become its admin.
+    /// Create a repository in your namespace or an organization you own; you become its admin.
     Create {
-        /// `name`, or `owner/name` where owner is you.
+        /// `name`, or `owner/name` where owner is you or an organization you own.
         name: String,
         /// `public` or `private`; private by default.
         #[arg(long)]
@@ -236,6 +239,57 @@ enum RepoCommand {
         #[arg(long)]
         yes: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum OrgCommand {
+    /// Create an organization; you become its first owner.
+    Create { name: String },
+    /// List the organizations you belong to.
+    List,
+    /// Show an organization, and its members if you belong to it.
+    Show { name: String },
+    /// Delete an organization that owns no repositories. Its audit log is kept.
+    Delete {
+        name: String,
+        /// Skip the typed confirmation.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Show an organization's audit log, newest first (owners only).
+    Audit {
+        name: String,
+        /// Only entries older than this id.
+        #[arg(long)]
+        before: Option<i64>,
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+    },
+    /// List and change an organization's members.
+    #[command(subcommand)]
+    Member(OrgMemberCommand),
+}
+
+#[derive(Subcommand)]
+enum OrgMemberCommand {
+    /// List an organization's members.
+    List { org: String },
+    /// Add an existing account to an organization (owners only).
+    Add {
+        org: String,
+        user: String,
+        /// `owner` or `member`; member by default.
+        #[arg(long)]
+        role: Option<String>,
+    },
+    /// Change a member's role to `owner` or `member` (owners only).
+    Set {
+        org: String,
+        user: String,
+        role: String,
+    },
+    /// Remove a member, or leave by naming yourself. Drops their direct roles on the organization's repositories.
+    Remove { org: String, user: String },
 }
 
 #[derive(Subcommand)]
@@ -615,6 +669,7 @@ fn main() -> Result<()> {
             }
         }
         Command::Repo(cmd) => repo_command(&api, cmd)?,
+        Command::Org(cmd) => org_command(&api, cmd)?,
         Command::Locks { mine: true } => {
             let locks: Vec<api::MyLock> = api.send(api.get("/v1/me/locks"))?.json()?;
             let rows: Vec<Vec<String>> = locks
@@ -1208,6 +1263,138 @@ fn repo_command(api: &Api, cmd: RepoCommand) -> Result<()> {
             }
             api.send(api.request(Method::DELETE, &format!("/v1/repos/{owner}/{short}")))?;
             println!("deleted {name}");
+        }
+    }
+    Ok(())
+}
+
+fn org_command(api: &Api, cmd: OrgCommand) -> Result<()> {
+    match cmd {
+        OrgCommand::Create { name } => {
+            let body = api::CreateOrgRequest { name };
+            let made: api::OrgInfo = api
+                .send(api.request(Method::POST, "/v1/orgs").json(&body))?
+                .json()?;
+            println!("created organization {}", made.name);
+        }
+        OrgCommand::List => {
+            let orgs: Vec<api::OrgInfo> = api.send(api.get("/v1/orgs"))?.json()?;
+            let rows: Vec<Vec<String>> = orgs
+                .into_iter()
+                .map(|o| {
+                    vec![
+                        o.role.unwrap_or_else(|| "-".into()),
+                        time::local(o.created_at),
+                        o.name,
+                    ]
+                })
+                .collect();
+            table::show(
+                &["ROLE", "CREATED", "ORGANIZATION"],
+                &rows,
+                "no organizations",
+            );
+        }
+        OrgCommand::Show { name } => {
+            let org: api::OrgInfo = api.send(api.get(&format!("/v1/orgs/{name}")))?.json()?;
+            println!("organization  {}", org.name);
+            println!("created       {}", time::local(org.created_at));
+            println!("your role     {}", org.role.as_deref().unwrap_or("-"));
+            if org.role.is_some() {
+                println!();
+                org_members(api, &org.name)?;
+            }
+        }
+        OrgCommand::Delete { name, yes } => {
+            if !yes {
+                eprintln!(
+                    "This removes the organization {name} and its memberships. It must own no repositories. Its audit log is kept."
+                );
+                eprint!("Type the organization name to confirm: ");
+                let mut answer = String::new();
+                std::io::stdin().read_line(&mut answer)?;
+                if answer.trim() != name {
+                    bail!("not confirmed");
+                }
+            }
+            api.send(api.request(Method::DELETE, &format!("/v1/orgs/{name}")))?;
+            println!("deleted organization {name}");
+        }
+        OrgCommand::Audit {
+            name,
+            before,
+            limit,
+        } => {
+            let mut req = api
+                .get(&format!("/v1/orgs/{name}/audit"))
+                .query(&[("limit", limit)]);
+            if let Some(b) = before {
+                req = req.query(&[("before", b)]);
+            }
+            let page: api::AuditPage = api.send(req)?.json()?;
+            let rows: Vec<Vec<String>> = page
+                .entries
+                .iter()
+                .map(|e| {
+                    vec![
+                        e.id.to_string(),
+                        time::local(e.at),
+                        e.actor.clone(),
+                        e.action.clone(),
+                        time::localize(&e.detail),
+                    ]
+                })
+                .collect();
+            table::show(
+                &["ID", "WHEN", "ACTOR", "ACTION", "DETAIL"],
+                &rows,
+                "no audit entries",
+            );
+            if let Some(next) = page.next_before {
+                eprintln!("more: --before {next}");
+            }
+        }
+        OrgCommand::Member(cmd) => org_member_command(api, cmd)?,
+    }
+    Ok(())
+}
+
+fn org_members(api: &Api, org: &str) -> Result<()> {
+    let members: Vec<api::OrgMember> = api
+        .send(api.get(&format!("/v1/orgs/{org}/members")))?
+        .json()?;
+    let rows: Vec<Vec<String>> = members.into_iter().map(|m| vec![m.role, m.user]).collect();
+    table::show(&["ROLE", "USER"], &rows, "no members");
+    Ok(())
+}
+
+fn org_member_command(api: &Api, cmd: OrgMemberCommand) -> Result<()> {
+    match cmd {
+        OrgMemberCommand::List { org } => org_members(api, &org)?,
+        OrgMemberCommand::Add { org, user, role } => {
+            let body = api::AddOrgMemberRequest {
+                user: user.clone(),
+                role,
+            };
+            let added: api::OrgMember = api
+                .send(
+                    api.request(Method::POST, &format!("/v1/orgs/{org}/members"))
+                        .json(&body),
+                )?
+                .json()?;
+            println!("added {user} to {org} as {}", added.role);
+        }
+        OrgMemberCommand::Set { org, user, role } => {
+            let body = api::SetOrgRoleRequest { role: role.clone() };
+            api.send(
+                api.request(Method::PATCH, &format!("/v1/orgs/{org}/members/{user}"))
+                    .json(&body),
+            )?;
+            println!("{user} is now {role} of {org}");
+        }
+        OrgMemberCommand::Remove { org, user } => {
+            api.send(api.request(Method::DELETE, &format!("/v1/orgs/{org}/members/{user}")))?;
+            println!("removed {user} from {org}");
         }
     }
     Ok(())

@@ -58,6 +58,13 @@ people act on its behalf, and a request that names an organization as the signed
   `org_member_role_changed`) go to a separate organization log, readable by its owners at `GET /v1/orgs/{org}/audit`. They
   are not in any repository's log or the server log. A removal records which repositories lost the member's direct access.
 
+On the command line: `pyn org create <name>`, `pyn org list` (role, created, organization), `pyn org show <name>` (details,
+and the members if you belong to it), `pyn org delete <name> [--yes]` (asks you to type the name), `pyn org audit <name>
+[--before ID] [--limit N]` (owners), and `pyn org member list <org>`, `pyn org member add <org> <user> [--role owner|member]`,
+`pyn org member set <org> <user> owner|member` and `pyn org member remove <org> <user>` (naming yourself leaves). These
+are separate from `pyn member`, which sets roles inside the current repository. `pyn repo create <org>/<name>` creates a
+repository the organization owns, and `pyn repo list [--owner <org>]` shows each repository as `owner/name`.
+
 Teams and organization-level role grants are later steps: until then an organization member reaches a repository only
 through a direct grant.
 

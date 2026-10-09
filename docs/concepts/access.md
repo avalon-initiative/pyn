@@ -199,7 +199,7 @@ every permission. Never set it on a server others can reach.
 ## Audit
 
 Organization events (created, deleted, members added, removed or changed) are kept in a separate [organization log](repositories.md#organizations) for its
-owners. Adding a member (by an admin, by registration or as the creator of a repository), changing a member's role, changing what a
+owners (`pyn org audit <org>`). Adding a member (by an admin, by registration or as the creator of a repository), changing a member's role, changing what a
 role grants, creating or revoking a token, and creating, changing or deleting the repository itself are recorded in that
 repository's audit log with the actor and what changed, and are visible to `view_audit`. Server-wide account actions go to
 the [server audit log](#protecting-open-registration). A token's events go to the log of
