@@ -74,9 +74,12 @@ seed_game() {
   save alice Content/Characters/Knight.uasset "knight v1" "knight mesh" lock
   save bob Content/Characters/Props/Sword.uasset "sword v1" "sword mesh" lock
 
+  save alice Content/World/Main.umap "main v1" "main level layout" lock
+  save bob Content/Enemies/Boss.uasset "boss v1" "boss mesh" lock
+
   echo "locks"
-  as alice checkout Content/World/Main.umap >/dev/null 2>&1 || true
-  as bob checkout Content/Enemies/Boss.uasset >/dev/null 2>&1 || true
+  hold alice Content/World/Main.umap
+  hold bob Content/Enemies/Boss.uasset
   hold alice Content/Characters/Knight.uasset
   hold bob Content/World/Dungeon.umap
 }

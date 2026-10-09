@@ -53,8 +53,13 @@ you are inside the workspace and take paths relative to your current directory.
   writable; `pyn checkin` and `pyn release` make it read-only again. Shared files are always writable.
 - **No base revisions to remember.** `checkout` and `checkin` use the revision the workspace has, so `--base` is only for
   working outside a workspace. If the server has moved on, the command tells you to run `pyn update`.
-- **`pyn status`** lists what differs: files you modified or deleted, files that are behind the server, files that are new
-  on the server, untracked files, and who holds which lock. Clean, unlocked files are left out.
+- **`pyn status`** prints a table of what differs, one row per file, with the columns `PATH`, `MODE`, `REV`, `STATE` and
+  `LOCK`, then a one-line summary of counts (modified, behind, new, untracked, locked by you, locked by others). `STATE`
+  is `modified` (an edit or a local deletion), `behind (head rN)`, `new` (on the server, not downloaded yet),
+  `untracked`, or `clean` for a file that is only listed because it is locked. `LOCK` shows the holder (`you` for your
+  own locks) and the time left, for example `alice · 7h 59m`. A path that is locked but has no revision yet shows
+  `locked, not checked in yet`; `pyn update` has nothing to fetch for it. Clean, unlocked files are left out, and a
+  workspace with no differences and no locks prints `everything is up to date`.
 - **`pyn update`** downloads new and newer files. A file with local changes is never overwritten; it is reported as skipped.
 - **`pyn checkin <path>`** uploads the file at `<path>` in the workspace; a file name is only needed outside one.
 
