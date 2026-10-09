@@ -71,7 +71,7 @@ and never shift later pages. A cursor that does not parse is `400 invalid_reques
 
 ## Command line
 
-`pyn history <path>` lists one path's revisions, oldest first (`REV`, `AUTHOR`, `WHEN`, `MESSAGE`). `pyn history` without a
+`pyn log <path>` (alias `pyn history`) lists one path's revisions, oldest first (`REV`, `AUTHOR`, `WHEN`, `MESSAGE`). `pyn log` without a
 path lists the repository's, newest first, with a `PATH` column after `MESSAGE`; `--filter <glob>` narrows it and
 `--limit <n>` (default 50) sets how many to show, following the cursor as needed.
 

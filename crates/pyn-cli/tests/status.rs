@@ -27,7 +27,7 @@ fn status_prints_an_aligned_table_with_a_summary() {
 
     std::fs::write(ws.join("Source/a.cpp"), "edited").unwrap();
     std::fs::write(ws.join("notes.txt"), "x").unwrap();
-    env.ok(&ws, "alice", &["checkout", "Content/m.umap"]);
+    env.ok(&ws, "alice", &["lock", "Content/m.umap"]);
     env.seed("bob", "Source/behind.cpp", "two", Some(1));
     env.seed("bob", "Source/fresh.cpp", "fresh", None);
 
@@ -94,8 +94,8 @@ fn a_locked_path_without_a_revision_is_not_reported_as_new() {
     let env = start();
     env.seed("alice", "Source/a.cpp", "a one", None);
     let home = env.dir("home");
-    env.ok(&home, "alice", &["checkout", "Content/boss.uasset"]);
-    env.ok(&home, "bob", &["checkout", "Content/map.umap"]);
+    env.ok(&home, "alice", &["lock", "Content/boss.uasset"]);
+    env.ok(&home, "bob", &["lock", "Content/map.umap"]);
     let ws = env.dir("ws");
     let out = env.ok(
         &home,

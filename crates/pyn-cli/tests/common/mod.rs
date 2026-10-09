@@ -153,7 +153,7 @@ impl Env {
             extra.extend(["--base", b]);
         }
         if path.starts_with("Content/") {
-            let mut args = vec!["checkout", path];
+            let mut args = vec!["lock", path];
             args.extend(&extra);
             self.ok(&dir, user, &args);
         }

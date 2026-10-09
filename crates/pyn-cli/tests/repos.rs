@@ -180,7 +180,7 @@ fn ls_and_summary_show_the_landing_page_data() {
     let env = start();
     env.seed("alice", "Source/a.cpp", "int a;", None);
     let home = env.dir("home");
-    env.ok(&home, "alice", &["checkout", "Content/m.umap"]);
+    env.ok(&home, "alice", &["lock", "Content/m.umap"]);
 
     let root = env.ok(&home, "alice", &["ls"]);
     let rows = cell_rows(&root);
@@ -312,7 +312,7 @@ fn a_new_repository_starts_with_a_policy_file_the_owner_can_replace() {
 }
 
 #[test]
-fn repo_create_takes_a_lock_limit_that_checkout_enforces() {
+fn repo_create_takes_a_lock_limit_that_lock_enforces() {
     let env = start_empty();
     let home = env.dir("home");
     env.ok(
@@ -326,12 +326,12 @@ fn repo_create_takes_a_lock_limit_that_checkout_enforces() {
             .chain(tail.iter().copied())
             .collect()
     };
-    env.ok(&home, "alice", &run(&["checkout", "Content/a.umap"]));
-    let err = env.fails(&home, "alice", &run(&["checkout", "Content/b.umap"]));
+    env.ok(&home, "alice", &run(&["lock", "Content/a.umap"]));
+    let err = env.fails(&home, "alice", &run(&["lock", "Content/b.umap"]));
     assert!(err.contains("lock_limit_reached"), "{err}");
     assert!(err.contains("1 lock"), "{err}");
-    env.ok(&home, "alice", &run(&["release", "Content/a.umap"]));
-    env.ok(&home, "alice", &run(&["checkout", "Content/b.umap"]));
+    env.ok(&home, "alice", &run(&["unlock", "Content/a.umap"]));
+    env.ok(&home, "alice", &run(&["lock", "Content/b.umap"]));
 
     let bad = env.fails(
         &home,

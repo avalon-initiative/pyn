@@ -1,11 +1,11 @@
 # pyn
 
 Version control that merges what can be merged and locks what shouldn't be. Git-style collaboration for files that
-can be merged, Perforce-style exclusive checkout (server-enforced, leased locks) for files that shouldn't be edited
+can be merged, Perforce-style exclusive locks (server-enforced, leased locks) for files that shouldn't be edited
 concurrently. Which is which is set per path in [`pyn.toml`](docs/concepts/pyn-toml.md).
 
 Local proof of concept, Phase 1 only (single mainline per repository, shared + exclusive paths, leased locks,
-checkout/checkin, history), on a server that hosts many [repositories](docs/concepts/repositories.md). This repo holds the server, the `pyn` command-line client, and the shared libraries. The web UI is
+lock/checkin, log), on a server that hosts many [repositories](docs/concepts/repositories.md). This repo holds the server, the `pyn` command-line client, and the shared libraries. The web UI is
 `pyn-web` (a separate repo).
 
 ## Run it
@@ -28,7 +28,7 @@ Drive it from the CLI; `make dev` keeps each account's sign-in under `_running/d
 export PYN_SERVER=http://127.0.0.1:7878 PYN_REPO=admin/demo PYN_CONFIG_DIR=_running/demo-config/bob
 ./target/debug/pyn ls Content          # modes, last change and locks, one folder at a time
 ./target/debug/pyn summary
-./target/debug/pyn checkout Content/World/Main.umap # lock_held (409): alice has it
+./target/debug/pyn lock Content/World/Main.umap # lock_held (409): alice has it
 ```
 
 And in the browser, with the web app from the `pyn-web` repo (it proxies `/v1` to `http://127.0.0.1:7878`, or to `PYN_API` if set):

@@ -9,7 +9,7 @@ fn locks_files_and_history_have_stable_columns() {
     let env = start();
     env.seed("alice", "Source/a.cpp", "a", None);
     let home = env.dir("home");
-    env.ok(&home, "alice", &["checkout", "Content/m.umap"]);
+    env.ok(&home, "alice", &["lock", "Content/m.umap"]);
 
     let locks = cell_rows(&env.ok(&home, "alice", &["locks"]));
     assert_eq!(locks[0], ["OWNER", "EXPIRES", "PATH"]);
@@ -29,7 +29,7 @@ fn locks_files_and_history_have_stable_columns() {
             .any(|r| r == &["exclusive", "-", "alice", "Content/m.umap"])
     );
 
-    let history = cell_rows(&env.ok(&home, "alice", &["history", "Source/a.cpp"]));
+    let history = cell_rows(&env.ok(&home, "alice", &["log", "Source/a.cpp"]));
     assert_eq!(history[0], ["REV", "AUTHOR", "WHEN", "MESSAGE"]);
     assert_eq!(history[1], ["r1", "alice", history[1][2].as_str(), "seed"]);
 }
@@ -39,16 +39,16 @@ fn locks_mine_lists_every_repository_with_the_path_last() {
     let env = start();
     let home = env.dir("home");
     env.ok(&home, "alice", &["repo", "create", "other", "--no-policy"]);
-    env.ok(&home, "alice", &["checkout", "Content/m.umap"]);
+    env.ok(&home, "alice", &["lock", "Content/m.umap"]);
     env.ok(
         &home,
         "alice",
-        &["--repo", "alice/other", "checkout", "Content/o.umap"],
+        &["--repo", "alice/other", "lock", "Content/o.umap"],
     );
     env.ok(
         &home,
         "bob",
-        &["--repo", "alice/other", "checkout", "Content/x.umap"],
+        &["--repo", "alice/other", "lock", "Content/x.umap"],
     );
 
     let mine = cell_rows(&env.ok(&home, "alice", &["locks", "--mine"]));
@@ -65,11 +65,11 @@ fn locks_mine_lists_every_repository_with_the_path_last() {
         ]
     );
 
-    env.ok(&home, "alice", &["release", "Content/m.umap"]);
+    env.ok(&home, "alice", &["unlock", "Content/m.umap"]);
     env.ok(
         &home,
         "alice",
-        &["--repo", "alice/other", "release", "Content/o.umap"],
+        &["--repo", "alice/other", "unlock", "Content/o.umap"],
     );
     assert_eq!(
         env.ok(&home, "alice", &["locks", "--mine"]).trim(),
@@ -85,7 +85,7 @@ fn repository_history_lists_newest_first_with_the_path_last() {
     env.seed("alice", "Source/a.ts", "a2", Some(1));
     let home = env.dir("home");
 
-    let all = cell_rows(&env.ok(&home, "alice", &["history"]));
+    let all = cell_rows(&env.ok(&home, "alice", &["log"]));
     assert_eq!(all[0], ["REV", "AUTHOR", "WHEN", "MESSAGE", "PATH"]);
     let tail: Vec<_> = all[1..]
         .iter()
@@ -100,11 +100,7 @@ fn repository_history_lists_newest_first_with_the_path_last() {
         ]
     );
 
-    let ts = cell_rows(&env.ok(
-        &home,
-        "alice",
-        &["history", "--filter", "*.ts", "--limit", "1"],
-    ));
+    let ts = cell_rows(&env.ok(&home, "alice", &["log", "--filter", "*.ts", "--limit", "1"]));
     assert_eq!(ts.len(), 2, "{ts:?}");
     assert_eq!(
         (ts[1][0].as_str(), ts[1][4].as_str()),
@@ -119,7 +115,7 @@ fn empty_listings_say_so_instead_of_printing_a_bare_header() {
     for (args, text) in [
         (vec!["locks"], "no locks"),
         (vec!["files"], "no files"),
-        (vec!["history", "nope.txt"], "no history"),
+        (vec!["log", "nope.txt"], "no history"),
         (vec!["token", "list"], "no tokens"),
         (vec!["invite", "list"], "no invitations"),
         (vec!["config", "list"], "no settings"),
@@ -195,7 +191,7 @@ fn times_print_in_the_timezone_of_the_environment() {
     let env = start();
     env.seed("alice", "Source/a.cpp", "a", None);
     let home = env.dir("home");
-    env.ok(&home, "alice", &["checkout", "Content/m.umap"]);
+    env.ok(&home, "alice", &["lock", "Content/m.umap"]);
 
     let utc = expires(&env, &home, "UTC");
     let tokyo = expires(&env, &home, "Asia/Tokyo");
@@ -208,9 +204,43 @@ fn times_print_in_the_timezone_of_the_environment() {
 fn lock_errors_show_the_local_time_not_raw_utc() {
     let env = start();
     let home = env.dir("home");
-    env.ok(&home, "alice", &["checkout", "Content/m.umap"]);
-    let err = env.fails(&home, "bob", &["checkout", "Content/m.umap"]);
+    env.ok(&home, "alice", &["lock", "Content/m.umap"]);
+    let err = env.fails(&home, "bob", &["lock", "Content/m.umap"]);
     assert!(!err.contains("UTC"), "{err}");
     let until = err.split(" until ").nth(1).expect(&err);
     chrono::NaiveDateTime::parse_and_remainder(until, "%b %d %Y %H:%M").expect(&err);
+}
+
+#[test]
+fn unlock_gives_up_your_lock_and_force_removes_another_users() {
+    let env = start();
+    let home = env.dir("home");
+    env.ok(&home, "bob", &["lock", "Content/m.umap"]);
+    let err = env.fails(&home, "alice", &["unlock", "--force", "Content/m.umap"]);
+    assert!(err.contains("--reason"), "{err}");
+    let err = env.fails(
+        &home,
+        "alice",
+        &["unlock", "Content/m.umap", "--reason", "x"],
+    );
+    assert!(err.contains("--force"), "{err}");
+    env.ok(
+        &home,
+        "alice",
+        &["unlock", "--force", "--reason", "stuck", "Content/m.umap"],
+    );
+    env.ok(&home, "bob", &["lock", "Content/m.umap"]);
+    env.ok(&home, "bob", &["unlock", "Content/m.umap"]);
+    assert!(env.ok(&home, "bob", &["locks"]).contains("no locks"));
+}
+
+#[test]
+fn history_is_an_alias_of_log() {
+    let env = start();
+    env.seed("alice", "Source/a.cpp", "a", None);
+    let home = env.dir("home");
+    assert_eq!(
+        env.ok(&home, "alice", &["history", "Source/a.cpp"]),
+        env.ok(&home, "alice", &["log", "Source/a.cpp"])
+    );
 }

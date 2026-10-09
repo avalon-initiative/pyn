@@ -35,9 +35,9 @@ ones. This differs from the original proposal, where unlisted paths were shared.
 
 ## Lock limit
 
-`meta.max_locks_per_user` caps how many live locks one user may hold in this repository. A checkout past it is refused
+`meta.max_locks_per_user` caps how many live locks one user may hold in this repository. Locking past it is refused
 with `lock_limit_reached` (HTTP 409), and the message names the limit; renewing a lock already held is never refused.
-Releasing, a force-unlock and expiry each free a slot.
+Unlocking, a forced unlock and expiry each free a slot.
 
 Where the limit comes from, first match wins:
 

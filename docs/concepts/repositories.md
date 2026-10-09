@@ -61,7 +61,7 @@ SSH addresses (`ssh://host/owner/name`) arrive with the SSH transport.
 | Setting | Meaning |
 | --- | --- |
 | `visibility` | `private` (the default) or `public`; see [Visibility](#visibility) |
-| `lease_hours` | How long a checkout lasts unless renewed, 1 to 720, default 8 |
+| `lease_hours` | How long a lock lasts unless renewed, 1 to 720, default 8 |
 | `max_locks_per_user` | How many locks one user may hold in the repository, 1 to 10000. Unset follows the server's `PYN_MAX_LOCKS_ALLOWED_PER_USER` (default 5). A limit in the repository's [`pyn.toml`](pyn-toml.md#lock-limit) overrides it |
 
 The owner can change all three and rename the repository. The limit counts one user's live locks in this repository only; a
@@ -149,7 +149,7 @@ Account routes do not name a repository: `/v1/register` (and `/v1/register/verif
 
 `GET /v1/me/locks` lists the caller's live locks across every repository they can read (a token only sees the
 repositories and permissions it carries), ordered by `owner/name` then path. Each entry is
-`{owner, name, path, acquired_at, expires_at}`; release one with the repository's own `POST .../release`, which records
+`{owner, name, path, acquired_at, expires_at}`; remove one with the repository's own `POST .../release` (`pyn unlock`), which records
 the audit event as usual. A lock in a repository the caller can no longer read is not listed.
 
 On the command line: `pyn repo create [owner/]name [--visibility public|private] [--lease-hours N] [--max-locks N] [--policy FILE | --no-policy]`, `pyn repo list`,

@@ -53,16 +53,16 @@ fn a_workspace_tracks_what_you_cloned_and_handles_locks_and_checkins() {
     );
 
     let content = ws.join("Content");
-    env.ok(&content, "alice", &["checkout", "m.umap"]);
+    env.ok(&content, "alice", &["lock", "m.umap"]);
     assert!(
         !read_only(&ws.join("Content/m.umap")),
-        "checkout makes it writable"
+        "lock makes it writable"
     );
     assert!(
         env.ok(&ws, "alice", &["status"])
             .contains("1 locked by you")
     );
-    let blocked = env.fails(&ws, "bob", &["checkout", "Content/m.umap"]);
+    let blocked = env.fails(&ws, "bob", &["lock", "Content/m.umap"]);
     assert!(
         blocked.contains("locked by alice") && blocked.contains("Ask alice"),
         "{blocked}"
@@ -85,11 +85,11 @@ fn a_workspace_tracks_what_you_cloned_and_handles_locks_and_checkins() {
         env.ok(&ws, "alice", &["status"])
             .contains("everything is up to date")
     );
-    let history = env.ok(&ws, "alice", &["history", "Content/m.umap"]);
+    let history = env.ok(&ws, "alice", &["log", "Content/m.umap"]);
     assert_eq!(history.lines().count(), 3, "{history}");
 
-    env.ok(&content, "alice", &["checkout", "m.umap"]);
-    env.ok(&content, "alice", &["release", "m.umap"]);
+    env.ok(&content, "alice", &["lock", "m.umap"]);
+    env.ok(&content, "alice", &["unlock", "m.umap"]);
     assert!(
         read_only(&ws.join("Content/m.umap")),
         "release locks it down too"
@@ -131,7 +131,7 @@ fn update_brings_in_newer_files_but_never_overwrites_local_edits() {
         "{status}"
     );
 
-    let stale = env.fails(&ws, "alice", &["checkout", "Content/m.umap"]);
+    let stale = env.fails(&ws, "alice", &["lock", "Content/m.umap"]);
     assert!(stale.contains("pyn update"), "{stale}");
 
     let out = env.ok(&ws, "alice", &["update"]);
@@ -159,7 +159,7 @@ fn update_brings_in_newer_files_but_never_overwrites_local_edits() {
     );
     assert!(read_only(&ws.join("Content/m.umap")));
 
-    env.ok(&ws, "alice", &["checkout", "Content/m.umap"]);
+    env.ok(&ws, "alice", &["lock", "Content/m.umap"]);
 }
 
 #[test]
@@ -217,6 +217,6 @@ fn ignore_rules_and_settings_work_per_workspace_and_per_user() {
             .contains("unknown setting")
     );
 
-    let outside = env.fails(&ws, "alice", &["checkout", "../elsewhere.txt"]);
+    let outside = env.fails(&ws, "alice", &["lock", "../elsewhere.txt"]);
     assert!(outside.contains("outside the workspace"), "{outside}");
 }
