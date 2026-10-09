@@ -33,12 +33,14 @@ people act on its behalf, and a request that names an organization as the signed
   running the server can restrict this to server administrators with `PYN_ORG_CREATION=admins` (default `anyone`); anyone
   else then gets `403 server_admin_required`. A token needs `manage_roles` and no repository limit, as for creating a
   repository. A name already taken by a user or an organization is `409 user_exists`.
-- **Repositories.** Only an owner creates repositories in the organization (`POST /v1/repos` with `owner` set to it); anyone
-  else gets `403 not_org_owner`. An owner of the organization is an **implicit `admin` on every repository it owns**, with
+- **Repositories.** An owner always creates repositories in the organization (`POST /v1/repos` with `owner` set to it), public
+  or private; other members only as the [creation policy](#repository-creation-policy) allows, and become the repository's
+  `admin` (a direct grant). A person who is not a member gets `403 not_org_member`; a member the policy refuses gets
+  `403 repo_create_forbidden`, whose message names the visibility. An owner of the organization is an **implicit `admin` on every repository it owns**, with
   no per-repository grant, and always at least that: a weaker direct role never lowers an owner. The same rule applies
   everywhere a role is looked up (a repository's `me`, the repository list and its `role`, tokens and sessions, which
   tokens still narrow). Owners rename, reconfigure and delete the organization's repositories; another admin of the
-  repository gets `403 not_org_owner` for those three.
+  repository, including its creator, gets `403 not_org_owner` for those three.
 - **Delete.** An owner can delete an organization only when it owns no repositories (`409 org_not_empty`); delete the
   repositories first. Its audit log is kept and its name is free again.
   A delete first marks the organization as being deleted in one atomic step. While the mark is set, creating a
@@ -61,7 +63,7 @@ people act on its behalf, and a request that names an organization as the signed
   Removing a member, or the member leaving, **deletes their direct roles on every repository the organization owns**;
   roles in other repositories are untouched. Team memberships go the same way, which ends the access they gave.
 - **Audit.** Organization events (`org_created`, `org_deleted`, `org_member_added`, `org_member_removed`,
-  `org_member_role_changed`, and the team events below) go to a separate organization log, readable by its owners at
+  `org_member_role_changed`, the team events and the creation-policy events below) go to a separate organization log, readable by its owners at
   `GET /v1/orgs/{org}/audit`. They are not in the server log. A removal records which repositories lost the member's
   direct access and which teams they left. Team grants and revocations are also recorded in the target repository's log.
 
@@ -71,6 +73,36 @@ and the members if you belong to it), `pyn org delete <name> [--yes]` (asks you 
 `pyn org member set <org> <user> owner|member` and `pyn org member remove <org> <user>` (naming yourself leaves). These
 are separate from `pyn member`, which sets roles inside the current repository. `pyn repo create <org>/<name>` creates a
 repository the organization owns, and `pyn repo list [--owner <org>]` shows each repository as `owner/name`.
+
+### Repository creation policy
+
+Owners can always create repositories in their organization and cannot be locked out. For everyone else the organization
+keeps a policy, **provisional** until the CLI and web UI use it:
+
+- A **base setting** for members: `none` (the default: owners only), `private` or `both` (public and private).
+- **Rules**, each with a subject (`team` by slug, `user` by name, or `role`: `owner` or `member`), an effect (`allow` or
+  `deny`) and a scope (`public`, `private` or `both`). A subject holds at most one rule per effect; setting it again
+  replaces the scope. A rule for a team or user needs the team to exist or the user to be a member
+  (`404 team_not_found`, `409 user_not_org_member`). A `deny` for the `owner` role is refused (`400 invalid_request`),
+  and a `deny` that names an owner has no effect.
+
+For the visibility being created, one function decides: owners are allowed; otherwise an explicit `deny` that matches the
+person (their user rule, a rule on any team they are in, or their organization role) and covers that visibility refuses;
+else a matching `allow`, or a base setting covering the visibility, grants; else the request is refused. The person must
+be a member of the organization. Renaming, reconfiguring and deleting a repository stay with owners.
+
+| Route | Notes |
+| --- | --- |
+| `GET /v1/orgs/{org}/repo-policy` | owners; `{member_creation, rules: [{effect, kind, subject, scope}]}`, rules ordered by kind, subject, effect |
+| `PUT /v1/orgs/{org}/repo-policy` | owners; `{member_creation}` (`none`, `private`, `both`) gives `200` with the policy; rules are untouched |
+| `PUT /v1/orgs/{org}/repo-policy/rules/{effect}/{kind}/{subject}` | owners; `{scope}` adds or replaces the rule, `200` with it |
+| `DELETE /v1/orgs/{org}/repo-policy/rules/{effect}/{kind}/{subject}` | owners; `204`; `404 creation_rule_not_found` |
+
+Changing the policy needs, for a token, `manage_roles` and no repository limit. A bad effect, kind, subject or scope is
+`400 invalid_request`. Changes are recorded in the organization log as `repo_creation_policy_changed` (the base
+setting), `repo_creation_rule_set` and `repo_creation_rule_removed`. Rules for a team go when the team is deleted, and
+rules for a person when they leave or are removed; the `team_deleted` and `org_member_removed` entries say which.
+Deleting the organization removes its policy.
 
 ### Teams
 
@@ -135,7 +167,8 @@ follows the server) and `max_locks_set_by_policy` (true when `.pyn/pyn.toml` set
 - **See a repository.** Anyone, signed in or not, if it is public; otherwise only people who have a role in it. A private
   repository does not reveal that it exists to anyone else: every route answers `404 repo_not_found` for an outsider (or
   an anonymous request) and for a repository that is not there.
-- **Create.** Any signed-in account, in its own namespace, or an owner of an organization, in the organization's. A token
+- **Create.** Any signed-in account, in its own namespace, or a member of an organization its
+  [creation policy](#repository-creation-policy) allows (owners always), in the organization's. A token
   can create a repository only if it is not limited to specific repositories and carries `manage_roles`.
 - **Rename, change settings, delete.** The owner, who must also hold `manage_roles` in the repository (an `admin`): the
   user in their own namespace, an organization owner in an organization's. A member who is not the owner gets

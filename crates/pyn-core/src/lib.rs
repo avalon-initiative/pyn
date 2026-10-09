@@ -15,6 +15,7 @@ pub mod object;
 pub mod passwords;
 pub mod ratelimit;
 pub mod repo;
+pub mod repo_policy;
 pub mod repositories;
 pub mod rules;
 pub mod service;
@@ -45,6 +46,10 @@ pub use ratelimit::{RateLimitStore, RateState};
 pub use repo::{
     DEFAULT_MAX_LOCKS_PER_USER, MAX_LOCKS_PER_USER_CEILING, RepoRecord, RepoSettings, RepoUpdate,
     Visibility, validate_max_locks,
+};
+pub use repo_policy::{
+    CreationEffect, CreationRule, CreationScope, CreationSubject, MemberCreation, RepoPolicy,
+    Standing, SubjectKind,
 };
 pub use repositories::Repositories;
 pub use rules::{Mode, PathFilter, Rules};

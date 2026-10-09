@@ -148,7 +148,7 @@ fn an_organization_owner_creates_and_lists_its_repositories() {
     let out = env.ok(&home, "alice", &["repo", "create", "acme/game"]);
     assert!(out.contains("created acme/game"), "{out}");
     let denied = env.fails(&home, "bob", &["repo", "create", "acme/tools"]);
-    assert!(denied.contains("not_org_owner"), "{denied}");
+    assert!(denied.contains("repo_create_forbidden"), "{denied}");
     let outsider = env.fails(&home, "bob", &["repo", "create", "beta/tools"]);
     assert!(outsider.contains("not_namespace_owner"), "{outsider}");
 

@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use chrono::Duration;
 
-use crate::access::{Credential, Identity, Permission, Principal, Role};
+use crate::access::{Credential, Identity, OrgRole, Permission, Principal, Role};
 use crate::access_service::AccessService;
 use crate::audit::{AuditAction, AuditScope, AuditStore, NewAuditEvent};
 use crate::clock::Clock;
@@ -180,8 +180,9 @@ impl Repositories {
         })
     }
 
-    /// Creates `owner/name` in the actor's namespace or an organization they own; the creator of a user's repository
-    /// becomes its admin. A token must be unscoped and carry `manage_roles`.
+    /// Creates `owner/name` in the actor's namespace or an organization whose policy lets them; the creator of a
+    /// user's repository, or a non-owner's in an organization, becomes its admin. A token must be unscoped and
+    /// carry `manage_roles`.
     pub async fn create(
         &self,
         actor: &Identity,
@@ -191,9 +192,15 @@ impl Repositories {
         settings: Option<RepoSettings>,
     ) -> Result<RepoRecord> {
         actor.require_namespace_management()?;
+        let visibility = visibility.unwrap_or(Visibility::Private);
         let in_org = owner != &actor.user && self.access.is_org(owner).await?;
+        let mut org_role = None;
         if in_org {
-            self.access.require_org_owner(owner, &actor.user).await?;
+            org_role = Some(
+                self.access
+                    .require_repo_creator(owner, &actor.user, visibility)
+                    .await?,
+            );
             self.access.require_org_open(owner).await?;
         } else if owner != &actor.user {
             return Err(PynError::NotNamespaceOwner(owner.to_string()));
@@ -202,7 +209,7 @@ impl Repositories {
             id: repo::generate_id()?,
             owner: owner.clone(),
             name: repo::validate_name(name)?,
-            visibility: visibility.unwrap_or(Visibility::Private),
+            visibility,
             settings: settings.unwrap_or_default().validate()?,
             created_at: self.clock.now(),
         };
@@ -211,8 +218,11 @@ impl Repositories {
             let _ = self.meta.delete_repo(&record.id).await;
             return Err(e);
         }
-        if !in_org && let Err(e) = self.access.add_creator(&record.id, &actor.user).await {
+        if org_role != Some(OrgRole::Owner)
+            && let Err(e) = self.add_creator(&record, owner, in_org, &actor.user).await
+        {
             let _ = self.meta.delete_repo(&record.id).await;
+            let _ = self.access.forget_repo(&record.id).await;
             return Err(e);
         }
         let detail = format!(
@@ -225,6 +235,21 @@ impl Repositories {
         self.record(&record, &actor.user, AuditAction::RepoCreated, detail)
             .await?;
         Ok(record)
+    }
+
+    /// Makes the creator admin; in an organization, also re-checks they are still a member.
+    async fn add_creator(
+        &self,
+        record: &RepoRecord,
+        owner: &UserId,
+        in_org: bool,
+        creator: &UserId,
+    ) -> Result<()> {
+        self.access.add_creator(&record.id, creator).await?;
+        if in_org && self.access.org_role(owner, creator).await?.is_none() {
+            return Err(PynError::NotOrgMember(owner.to_string()));
+        }
+        Ok(())
     }
 
     /// Repositories the identity belongs to (every repository for the development identity), optionally one

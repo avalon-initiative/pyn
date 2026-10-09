@@ -18,6 +18,9 @@ use crate::error::{PynError, Result};
 use crate::memory::MemoryRateLimitStore;
 use crate::passwords::{InlinePasswords, PasswordWorker};
 use crate::ratelimit::RateLimitStore;
+use crate::repo_policy::{
+    CreationEffect, CreationRule, CreationScope, CreationSubject, MemberCreation, RepoPolicy,
+};
 use crate::store::MetadataStore;
 use crate::types::{RepoId, UserId};
 
@@ -26,6 +29,7 @@ use crate::types::{RepoId, UserId};
 pub const SERVER_AUDIT_ID: &str = "@server";
 
 mod organizations;
+mod repo_policy;
 mod teams;
 
 pub use teams::TeamDetail;
@@ -92,7 +96,7 @@ pub trait AccessStore: Send + Sync {
     /// The organizations the user belongs to with their role, ordered by name.
     async fn orgs_of(&self, user: &UserId) -> Result<Vec<(UserId, OrgRole)>>;
 
-    /// Removes the organization with its member and team records; false if there is no such organization.
+    /// Removes the organization with its member, team and policy records; false if there is no such organization.
     async fn delete_org(&self, org: &UserId) -> Result<bool>;
 
     /// Sets the organization's deleting mark in one step unless a mark newer than `stale_before` is already set.
@@ -120,7 +124,7 @@ pub trait AccessStore: Send + Sync {
         role: OrgRole,
     ) -> Result<OrgMemberChange>;
 
-    /// Removes a member, their team memberships and their direct roles in `repos` (the organization's
+    /// Removes a member, their team memberships, creation rules and their direct roles in `repos` (the organization's
     /// repositories), refusing to remove the last owner. Returns the role they held.
     async fn remove_org_member(
         &self,
@@ -140,7 +144,7 @@ pub trait AccessStore: Send + Sync {
     /// Replaces the team's name and description; false if there is no such team.
     async fn update_team(&self, team: &TeamRecord) -> Result<bool>;
 
-    /// Removes the team with its members and repository roles; false if there is no such team.
+    /// Removes the team with its members, repository roles and creation rules; false if there is no such team.
     async fn delete_team(&self, org: &UserId, slug: &str) -> Result<bool>;
 
     /// The team's members, ordered by user name.
@@ -183,6 +187,27 @@ pub trait AccessStore: Send + Sync {
 
     /// The repositories where one of the user's teams holds a role, ordered by id.
     async fn team_repos_of(&self, user: &UserId) -> Result<Vec<RepoId>>;
+
+    /// The organization's repository-creation policy; the default when none was set.
+    async fn repo_policy(&self, org: &UserId) -> Result<RepoPolicy>;
+
+    /// Sets what members may create with no rule, returning the previous setting.
+    async fn set_member_creation(
+        &self,
+        org: &UserId,
+        base: MemberCreation,
+    ) -> Result<MemberCreation>;
+
+    /// Adds or replaces the rule for its subject and effect; false if the team or member no longer exists.
+    async fn set_creation_rule(&self, org: &UserId, rule: &CreationRule) -> Result<bool>;
+
+    /// Removes the rule for the subject and effect, returning the scope it had.
+    async fn remove_creation_rule(
+        &self,
+        org: &UserId,
+        subject: &CreationSubject,
+        effect: CreationEffect,
+    ) -> Result<Option<CreationScope>>;
 
     async fn set_password_hash(&self, user: &UserId, hash: &str) -> Result<()>;
 

@@ -1121,6 +1121,312 @@
         }
       }
     },
+    "/v1/orgs/{org}/repo-policy": {
+      "get": {
+        "tags": [
+          "repo_policy_api"
+        ],
+        "operationId": "get_repo_policy",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "the organization's name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepoPolicyInfo"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "not_org_owner",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "org_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "repo_policy_api"
+        ],
+        "operationId": "set_repo_policy",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "the organization's name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetRepoPolicyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "the policy after the change; rules are untouched",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepoPolicyInfo"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: member_creation is not none, private or both",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "not_org_owner, or a token without manage_roles or limited to repositories",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "org_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/orgs/{org}/repo-policy/rules/{effect}/{kind}/{subject}": {
+      "put": {
+        "tags": [
+          "repo_policy_api"
+        ],
+        "operationId": "set_creation_rule",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "the organization's name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "effect",
+            "in": "path",
+            "description": "allow or deny",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "kind",
+            "in": "path",
+            "description": "team, user or role",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "subject",
+            "in": "path",
+            "description": "a team slug, an organization member's user name, or owner or member",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetCreationRuleRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "adds the rule or replaces its scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreationRuleInfo"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: bad effect, kind, subject or scope, or a deny for the owner role",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "not_org_owner, or a token without manage_roles or limited to repositories",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "org_not_found or team_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "user_not_org_member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "repo_policy_api"
+        ],
+        "operationId": "remove_creation_rule",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "the organization's name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "effect",
+            "in": "path",
+            "description": "allow or deny",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "kind",
+            "in": "path",
+            "description": "team, user or role",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "subject",
+            "in": "path",
+            "description": "a team slug, a user name, or owner or member",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "rule removed"
+          },
+          "400": {
+            "description": "invalid_request: bad effect, kind or subject",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "not_org_owner, or a token without manage_roles or limited to repositories",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "org_not_found or creation_rule_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/orgs/{org}/teams": {
       "get": {
         "tags": [
@@ -1813,7 +2119,7 @@
             }
           },
           "403": {
-            "description": "not_namespace_owner, or a token without manage_roles or limited to repositories",
+            "description": "not_namespace_owner; in an organization not_org_member or repo_create_forbidden (the policy refuses that visibility); or a token without manage_roles or limited to repositories",
             "content": {
               "application/json": {
                 "schema": {
@@ -4079,7 +4385,7 @@
               "string",
               "null"
             ],
-            "description": "The namespace to create it in: the caller's own account name, or an organization they own. Defaults to the caller."
+            "description": "The namespace to create it in: the caller's own account name, or an organization whose repository-creation\npolicy lets them. Defaults to the caller."
           },
           "visibility": {
             "oneOf": [
@@ -4182,6 +4488,34 @@
           "token": {
             "type": "string",
             "description": "The token to present as a bearer credential. Shown once and never stored."
+          }
+        }
+      },
+      "CreationRuleInfo": {
+        "type": "object",
+        "description": "A subject holds at most one rule per effect. A matching `deny` beats any `allow`.",
+        "required": [
+          "effect",
+          "kind",
+          "subject",
+          "scope"
+        ],
+        "properties": {
+          "effect": {
+            "type": "string",
+            "description": "`allow` or `deny`."
+          },
+          "kind": {
+            "type": "string",
+            "description": "`team`, `user` or `role`."
+          },
+          "scope": {
+            "type": "string",
+            "description": "`public`, `private` or `both`."
+          },
+          "subject": {
+            "type": "string",
+            "description": "The team slug, user name, or organization role (`owner` or `member`)."
           }
         }
       },
@@ -4659,6 +4993,27 @@
           }
         }
       },
+      "RepoPolicyInfo": {
+        "type": "object",
+        "description": "An organization's repository-creation policy. Owners can always create repositories and are not listed in it.",
+        "required": [
+          "member_creation",
+          "rules"
+        ],
+        "properties": {
+          "member_creation": {
+            "type": "string",
+            "description": "What members may create when no rule applies: `none` (owners only, the default), `private` or `both`."
+          },
+          "rules": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CreationRuleInfo"
+            },
+            "description": "Ordered by kind, subject, then effect."
+          }
+        }
+      },
       "RepoSummary": {
         "type": "object",
         "required": [
@@ -4886,6 +5241,18 @@
           }
         }
       },
+      "SetCreationRuleRequest": {
+        "type": "object",
+        "required": [
+          "scope"
+        ],
+        "properties": {
+          "scope": {
+            "type": "string",
+            "description": "`public`, `private` or `both`."
+          }
+        }
+      },
       "SetMemberRequest": {
         "type": "object",
         "required": [
@@ -4906,6 +5273,18 @@
           "role": {
             "type": "string",
             "description": "`owner` or `member`."
+          }
+        }
+      },
+      "SetRepoPolicyRequest": {
+        "type": "object",
+        "required": [
+          "member_creation"
+        ],
+        "properties": {
+          "member_creation": {
+            "type": "string",
+            "description": "`none`, `private` or `both`."
           }
         }
       },

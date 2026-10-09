@@ -269,7 +269,8 @@ async fn the_server_can_limit_creation_to_administrators() {
 }
 
 #[tokio::test]
-async fn repositories_in_an_organization_are_created_and_run_by_its_owners() {
+async fn repositories_in_an_organization_are_created_and_run_by_its_owners_and_refused_to_outsiders()
+ {
     let app = server(OrgCreation::Anyone).await;
     let (alice, bob) = (token_for(&app, "alice").await, token_for(&app, "bob").await);
     create_org(&app, &alice, "acme").await;
@@ -284,7 +285,7 @@ async fn repositories_in_an_organization_are_created_and_run_by_its_owners() {
     .await;
     assert_eq!(
         (r.status, r.code().as_str()),
-        (StatusCode::FORBIDDEN, "not_org_owner")
+        (StatusCode::FORBIDDEN, "not_org_member")
     );
 
     let r = call(
@@ -388,6 +389,8 @@ async fn openapi_documents_the_organization_routes() {
         "/v1/orgs/{org}/audit",
         "/v1/orgs/{org}/members",
         "/v1/orgs/{org}/members/{user}",
+        "/v1/orgs/{org}/repo-policy",
+        "/v1/orgs/{org}/repo-policy/rules/{effect}/{kind}/{subject}",
         "/v1/me/orgs",
     ] {
         assert!(doc["paths"].get(path).is_some(), "{path}");
@@ -720,4 +723,223 @@ async fn an_organization_being_deleted_refuses_new_repositories_and_a_second_del
     )
     .await;
     assert_eq!(r.status, StatusCode::CREATED);
+}
+
+async fn create_in_acme(app: &Router, who: &str, name: &str, visibility: &str) -> Reply {
+    let body = json!({"owner": "acme", "name": name, "visibility": visibility});
+    call(app, who, "POST", "/v1/repos", Some(body)).await
+}
+
+#[tokio::test]
+async fn the_repository_creation_policy_is_read_changed_and_applied_through_the_api() {
+    let app = server(OrgCreation::Anyone).await;
+    let (alice, bob, carol) = (
+        token_for(&app, "alice").await,
+        token_for(&app, "bob").await,
+        token_for(&app, "carol").await,
+    );
+    create_org(&app, &alice, "acme").await;
+    for user in ["bob", "carol"] {
+        let r = call(
+            &app,
+            &alice,
+            "POST",
+            "/v1/orgs/acme/members",
+            Some(json!({ "user": user })),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::CREATED);
+    }
+    let policy = "/v1/orgs/acme/repo-policy";
+    let rule = |tail: &str| format!("{policy}/rules/{tail}");
+
+    let r = call(&app, &alice, "GET", policy, None).await;
+    let info = r.json::<api::RepoPolicyInfo>();
+    assert_eq!(
+        (info.member_creation.as_str(), info.rules.len()),
+        ("none", 0)
+    );
+    let r = call(&app, &bob, "GET", policy, None).await;
+    assert_eq!(code(&r), (403, "not_org_owner".into()));
+    let r = call(
+        &app,
+        &bob,
+        "PUT",
+        policy,
+        Some(json!({"member_creation": "both"})),
+    )
+    .await;
+    assert_eq!(code(&r), (403, "not_org_owner".into()));
+    let r = call(
+        &app,
+        &alice,
+        "PUT",
+        policy,
+        Some(json!({"member_creation": "all"})),
+    )
+    .await;
+    assert_eq!(code(&r), (400, "invalid_request".into()));
+
+    let r = create_in_acme(&app, &bob, "one", "private").await;
+    assert_eq!(code(&r), (403, "repo_create_forbidden".into()));
+    assert!(r.json::<api::ErrorBody>().message.contains("private"));
+
+    let r = call(
+        &app,
+        &alice,
+        "PUT",
+        policy,
+        Some(json!({"member_creation": "private"})),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(r.json::<api::RepoPolicyInfo>().member_creation, "private");
+    assert_eq!(
+        create_in_acme(&app, &bob, "one", "private").await.status,
+        StatusCode::CREATED
+    );
+    let r = create_in_acme(&app, &bob, "two", "public").await;
+    assert_eq!(code(&r), (403, "repo_create_forbidden".into()));
+    let r = call(&app, &bob, "GET", "/v1/repos/acme/one", None).await;
+    assert_eq!(r.json::<api::RepoInfo>().role.as_deref(), Some("admin"));
+
+    let r = call(
+        &app,
+        &alice,
+        "PUT",
+        &rule("allow/user/carol"),
+        Some(json!({"scope": "both"})),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK);
+    let info = r.json::<api::CreationRuleInfo>();
+    assert_eq!(
+        (
+            info.effect.as_str(),
+            info.kind.as_str(),
+            info.subject.as_str(),
+            info.scope.as_str()
+        ),
+        ("allow", "user", "carol", "both")
+    );
+    assert_eq!(
+        create_in_acme(&app, &carol, "three", "public").await.status,
+        StatusCode::CREATED
+    );
+    let r = call(
+        &app,
+        &alice,
+        "PUT",
+        &rule("deny/role/member"),
+        Some(json!({"scope": "public"})),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(
+        code(&create_in_acme(&app, &carol, "four", "public").await),
+        (403, "repo_create_forbidden".into())
+    );
+    assert_eq!(
+        create_in_acme(&app, &carol, "four", "private").await.status,
+        StatusCode::CREATED
+    );
+
+    let r = call(
+        &app,
+        &alice,
+        "PUT",
+        &rule("deny/role/owner"),
+        Some(json!({"scope": "both"})),
+    )
+    .await;
+    assert_eq!(code(&r), (400, "invalid_request".into()));
+    let r = call(
+        &app,
+        &alice,
+        "PUT",
+        &rule("allow/team/nope"),
+        Some(json!({"scope": "both"})),
+    )
+    .await;
+    assert_eq!(code(&r), (404, "team_not_found".into()));
+    let r = call(
+        &app,
+        &alice,
+        "PUT",
+        &rule("allow/user/zed"),
+        Some(json!({"scope": "both"})),
+    )
+    .await;
+    assert_eq!(code(&r), (409, "user_not_org_member".into()));
+    let r = call(
+        &app,
+        &alice,
+        "PUT",
+        &rule("allow/group/x"),
+        Some(json!({"scope": "both"})),
+    )
+    .await;
+    assert_eq!(code(&r), (400, "invalid_request".into()));
+    let r = call(
+        &app,
+        &alice,
+        "PUT",
+        &rule("permit/user/carol"),
+        Some(json!({"scope": "both"})),
+    )
+    .await;
+    assert_eq!(code(&r), (400, "invalid_request".into()));
+    let r = call(
+        &app,
+        &alice,
+        "PUT",
+        &rule("allow/user/carol"),
+        Some(json!({"scope": "some"})),
+    )
+    .await;
+    assert_eq!(code(&r), (400, "invalid_request".into()));
+    let r = call(
+        &app,
+        &bob,
+        "PUT",
+        &rule("allow/user/bob"),
+        Some(json!({"scope": "both"})),
+    )
+    .await;
+    assert_eq!(code(&r), (403, "not_org_owner".into()));
+
+    let r = call(&app, &alice, "GET", policy, None).await;
+    let info = r.json::<api::RepoPolicyInfo>();
+    let listed: Vec<_> = info
+        .rules
+        .iter()
+        .map(|r| format!("{} {} {} {}", r.effect, r.kind, r.subject, r.scope))
+        .collect();
+    assert_eq!(listed, ["deny role member public", "allow user carol both"]);
+
+    let r = call(&app, &alice, "DELETE", &rule("allow/user/carol"), None).await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT);
+    let r = call(&app, &alice, "DELETE", &rule("allow/user/carol"), None).await;
+    assert_eq!(code(&r), (404, "creation_rule_not_found".into()));
+    let r = call(&app, &bob, "DELETE", &rule("deny/role/member"), None).await;
+    assert_eq!(code(&r), (403, "not_org_owner".into()));
+
+    let r = call(&app, &alice, "GET", "/v1/orgs/acme/audit", None).await;
+    let actions: Vec<_> = r
+        .json::<api::AuditPage>()
+        .entries
+        .into_iter()
+        .map(|e| e.action)
+        .take(5)
+        .collect();
+    assert_eq!(
+        actions,
+        [
+            "repo_creation_rule_removed",
+            "repo_creation_rule_set",
+            "repo_creation_rule_set",
+            "repo_creation_policy_changed",
+            "org_member_added"
+        ]
+    );
 }

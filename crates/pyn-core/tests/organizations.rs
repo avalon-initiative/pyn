@@ -259,7 +259,7 @@ async fn a_token_needs_manage_roles_and_no_repository_scope_to_create_an_organiz
 }
 
 #[tokio::test]
-async fn only_owners_create_repositories_in_the_organization() {
+async fn owners_create_repositories_and_outsiders_are_refused() {
     let w = world();
     let (alice, bob) = (session("alice"), session("bob"));
     w.access.create_org(&alice, "acme").await.unwrap();
@@ -301,10 +301,10 @@ async fn only_owners_create_repositories_in_the_organization() {
         .await
         .unwrap_err();
     assert!(
-        matches!(err, PynError::NotOrgOwner(ref o) if o == "acme"),
+        matches!(err, PynError::NotOrgMember(ref o) if o == "acme"),
         "{err}"
     );
-    assert_eq!(err.code(), "not_org_owner");
+    assert_eq!(err.code(), "not_org_member");
     let err = w
         .repos
         .create(&alice, &user("nobody"), "x", None, None)
