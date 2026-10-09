@@ -29,10 +29,15 @@ SSH addresses (`ssh://host/owner/name`) arrive with the SSH transport.
 | --- | --- |
 | `visibility` | `private` (the default) or `public`. Stored and returned today; public access without signing in is not implemented yet, so every repository still needs credentials. *Provisional* |
 | `lease_hours` | How long a checkout lasts unless renewed, 1 to 720, default 8 |
+| `max_locks_per_user` | How many locks one user may hold in the repository, 1 to 10000. Unset follows the server's `PYN_MAX_LOCKS_ALLOWED_PER_USER` (default 5). A limit in the repository's [`pyn.toml`](pyn-toml.md#lock-limit) overrides it |
 
-The owner can change both and rename the repository. A rename keeps all of its data: internally a repository has a fixed
+The owner can change all three and rename the repository. The limit counts one user's live locks in this repository only; a
+limit across repositories is not implemented. A rename keeps all of its data: internally a repository has a fixed
 opaque id, and the name is only its address, so old addresses stop working and may be reused by a new repository without
 touching the old data.
+
+A repository reports `max_locks_per_user` (the limit in force), `max_locks_per_user_setting` (the stored setting, absent when it
+follows the server) and `max_locks_set_by_policy` (true when `.pyn/pyn.toml` sets the limit, so the setting is read-only).
 
 ## Who can do what
 
@@ -71,9 +76,9 @@ private. A server with no earlier data starts with no repositories. In-memory st
 | Route | Purpose |
 | --- | --- |
 | `GET /v1/repos` | repositories you belong to (`?owner=` narrows it), each with your role |
-| `POST /v1/repos` | create `{name, owner?, visibility?, lease_hours?}` |
+| `POST /v1/repos` | create `{name, owner?, visibility?, lease_hours?, max_locks_per_user?}` |
 | `GET /v1/repos/{owner}/{name}` | one repository |
-| `PATCH /v1/repos/{owner}/{name}` | rename or change settings `{name?, visibility?, lease_hours?}` |
+| `PATCH /v1/repos/{owner}/{name}` | rename or change settings `{name?, visibility?, lease_hours?, max_locks_per_user?}` (`null` clears the lock limit) |
 | `DELETE /v1/repos/{owner}/{name}` | delete |
 | `GET /v1/repos/{owner}/{name}/me` | who you are and what you may do there |
 | `GET /v1/repos/{owner}/{name}/{tree,summary}` | [folder listing and summary](browsing.md) |
@@ -83,6 +88,6 @@ private. A server with no earlier data starts with no repositories. In-memory st
 Account routes do not name a repository: `/v1/register`, `/v1/login`, `/v1/session`, `/v1/me`, `/v1/me/password`,
 `/v1/keys` and `/v1/tokens`. The previous single-repository routes (`/v1/files`, `/v1/checkout` and so on) are gone.
 
-On the command line: `pyn repo create [owner/]name [--visibility public|private] [--lease-hours N] [--policy FILE | --no-policy]`, `pyn repo list`,
+On the command line: `pyn repo create [owner/]name [--visibility public|private] [--lease-hours N] [--max-locks N] [--policy FILE | --no-policy]`, `pyn repo list`,
 `pyn repo delete owner/name`, and `pyn clone <server>/owner/name [dir]`. A workspace records its repository in
 `.pyn/local_only/config.toml`, so commands inside it need no flag; see [the `.pyn/` folder](workspace.md).

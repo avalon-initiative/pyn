@@ -2296,3 +2296,139 @@ async fn the_policy_file_in_the_repository_governs_that_repository() {
         .collect();
     assert_eq!(modes, [(".pyn/pyn.toml", api::Mode::Shared)]);
 }
+
+#[tokio::test]
+async fn the_lock_limit_is_set_at_creation_overridden_by_the_policy_file_and_enforced() {
+    let app = router(state_with(false, RegistrationMode::Open).await);
+    let alice = register_and_sign_in(&app, "alice").await;
+    let made = create_repo(&app, &alice, "plain").await;
+    assert_eq!(
+        (
+            made.max_locks_per_user,
+            made.max_locks_per_user_setting,
+            made.max_locks_set_by_policy
+        ),
+        (5, None, false),
+        "the server default"
+    );
+
+    let r = send(
+        &app,
+        "POST",
+        "/v1/repos",
+        &alice,
+        Some(serde_json::json!({"name": "game", "max_locks_per_user": 2})),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::CREATED);
+    let info: api::RepoInfo = body_json(r).await;
+    assert_eq!(
+        (info.max_locks_per_user, info.max_locks_per_user_setting),
+        (2, Some(2))
+    );
+    let zero = send(
+        &app,
+        "POST",
+        "/v1/repos",
+        &alice,
+        Some(serde_json::json!({"name": "bad", "max_locks_per_user": 0})),
+    )
+    .await;
+    assert_eq!(zero.status(), StatusCode::BAD_REQUEST);
+
+    let checkout = |name: &'static str| {
+        let app = app.clone();
+        let alice = alice.clone();
+        async move {
+            send(
+                &app,
+                "POST",
+                "/v1/repos/alice/game/checkout",
+                &alice,
+                Some(serde_json::json!({"path": format!("Content/{name}"), "base_revision": null})),
+            )
+            .await
+        }
+    };
+    assert_eq!(checkout("a").await.status(), StatusCode::OK);
+    assert_eq!(checkout("b").await.status(), StatusCode::OK);
+    let r = checkout("c").await;
+    assert_eq!(r.status(), StatusCode::CONFLICT);
+    let err: api::ErrorBody = body_json(r).await;
+    assert_eq!(err.code, "lock_limit_reached");
+    assert!(err.message.contains("hold 2 lock"), "{}", err.message);
+
+    let r = send(
+        &app,
+        "POST",
+        "/v1/repos/alice/game/release",
+        &alice,
+        Some(serde_json::json!({"path": "Content/a"})),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::NO_CONTENT);
+    assert_eq!(checkout("c").await.status(), StatusCode::OK);
+
+    let patch = |body: serde_json::Value| {
+        let app = app.clone();
+        let alice = alice.clone();
+        async move { send(&app, "PATCH", "/v1/repos/alice/game", &alice, Some(body)).await }
+    };
+    let r = patch(serde_json::json!({"max_locks_per_user": 3})).await;
+    assert_eq!(body_json::<api::RepoInfo>(r).await.max_locks_per_user, 3);
+    let r = patch(serde_json::json!({"lease_hours": 4})).await;
+    let info: api::RepoInfo = body_json(r).await;
+    assert_eq!(
+        info.max_locks_per_user_setting,
+        Some(3),
+        "an absent field is left alone"
+    );
+    let r = patch(serde_json::json!({"max_locks_per_user": null})).await;
+    let info: api::RepoInfo = body_json(r).await;
+    assert_eq!(
+        (info.max_locks_per_user, info.max_locks_per_user_setting),
+        (5, None),
+        "null returns to the server default"
+    );
+    let r = patch(serde_json::json!({"max_locks_per_user": 0})).await;
+    assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+
+    let policy = put_blob(
+        &app,
+        "game",
+        &alice,
+        "[meta]\ndefault = \"shared\"\nmax_locks_per_user = 1\n[exclusive]\npaths = [\"Content/\"]\n",
+    )
+    .await;
+    let r = send(
+        &app,
+        "POST",
+        "/v1/repos/alice/game/checkin",
+        &alice,
+        Some(serde_json::json!({
+            "path": ".pyn/pyn.toml", "content": policy, "base_revision": null, "message": "limit"
+        })),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let info: api::RepoInfo =
+        body_json(send(&app, "GET", "/v1/repos/alice/game", &alice, None).await).await;
+    assert_eq!(
+        (info.max_locks_per_user, info.max_locks_set_by_policy),
+        (1, true)
+    );
+    let r = patch(serde_json::json!({"max_locks_per_user": 4})).await;
+    assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(body_json::<api::ErrorBody>(r).await.code, "invalid_request");
+    let listed: Vec<api::RepoInfo> =
+        body_json(send(&app, "GET", "/v1/repos", &alice, None).await).await;
+    let game = listed.iter().find(|r| r.name == "game").unwrap();
+    assert!(game.max_locks_set_by_policy);
+    assert!(
+        !listed
+            .iter()
+            .find(|r| r.name == "plain")
+            .unwrap()
+            .max_locks_set_by_policy
+    );
+}

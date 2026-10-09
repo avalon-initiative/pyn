@@ -86,14 +86,11 @@ async fn main() -> anyhow::Result<()> {
             .with_config(config)
             .with_audit(audit.clone()),
     );
-    let repos = Arc::new(Repositories::new(
-        meta,
-        objects.clone(),
-        audit,
-        access.clone(),
-        clock,
-        rules,
-    ));
+    let mut repos = Repositories::new(meta, objects.clone(), audit, access.clone(), clock, rules);
+    if let Ok(limit) = std::env::var("PYN_MAX_LOCKS_ALLOWED_PER_USER") {
+        repos = repos.with_default_max_locks(limit.parse()?)?;
+    }
+    let repos = Arc::new(repos);
 
     if let Ok(admin) = std::env::var("PYN_BOOTSTRAP_ADMIN") {
         let token = access.bootstrap_admin(&UserId::new(admin.clone())).await?;

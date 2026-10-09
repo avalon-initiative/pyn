@@ -7,7 +7,8 @@ use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use chrono::Duration;
 use pyn_core::{
-    InviteId, InviteRecord, Permission, RepoRecord, RepoSettings, RepoUpdate, Role, UserId,
+    InviteId, InviteRecord, LockLimit, Permission, RepoRecord, RepoSettings, RepoUpdate, Role,
+    UserId,
 };
 use pyn_proto as api;
 use serde::Deserialize;
@@ -29,12 +30,15 @@ fn visibility_from(v: api::Visibility) -> pyn_core::Visibility {
     }
 }
 
-fn repo_info(r: RepoRecord, role: Option<Role>) -> api::RepoInfo {
+fn repo_info(r: RepoRecord, role: Option<Role>, limit: LockLimit) -> api::RepoInfo {
     api::RepoInfo {
         owner: r.owner.to_string(),
         name: r.name,
         visibility: visibility_dto(r.visibility),
         lease_hours: r.settings.lease_hours,
+        max_locks_per_user: limit.max,
+        max_locks_per_user_setting: r.settings.max_locks,
+        max_locks_set_by_policy: limit.from_policy,
         created_at: r.created_at,
         role: role.map(|r| r.to_string()),
     }
@@ -57,17 +61,17 @@ pub(crate) async fn list_repos(
     let who = identify(&s, &headers).await?;
     let owner = q.owner.map(UserId::new);
     let repos = s.repos.list(&who, owner.as_ref()).await?;
-    Ok(Json(
-        repos
-            .into_iter()
-            .map(|(r, role)| repo_info(r, role))
-            .collect(),
-    ))
+    let mut infos = Vec::with_capacity(repos.len());
+    for (record, role) in repos {
+        let limit = s.repos.lock_limit(&record).await?;
+        infos.push(repo_info(record, role, limit));
+    }
+    Ok(Json(infos))
 }
 
 #[utoipa::path(post, path = "/v1/repos", request_body = api::CreateRepoRequest, responses(
     (status = 201, body = api::RepoInfo, description = "the caller becomes its admin"),
-    (status = 400, body = api::ErrorBody, description = "invalid_repo_name or invalid_request"),
+    (status = 400, body = api::ErrorBody, description = "invalid_repo_name or invalid_request (a lease or lock limit out of range)"),
     (status = 403, body = api::ErrorBody, description = "not_namespace_owner, or a token without manage_roles or limited to repositories"),
     (status = 409, body = api::ErrorBody, description = "repo_exists"),
 ))]
@@ -78,9 +82,13 @@ pub(crate) async fn create_repo(
 ) -> ApiResult<(StatusCode, Json<api::RepoInfo>)> {
     let who = identify(&s, &headers).await?;
     let owner = req.owner.map_or_else(|| who.user.clone(), UserId::new);
-    let settings = req
-        .lease_hours
-        .map(|lease_hours| RepoSettings { lease_hours });
+    let settings = (req.lease_hours.is_some() || req.max_locks_per_user.is_some()).then(|| {
+        let defaults = RepoSettings::default();
+        RepoSettings {
+            lease_hours: req.lease_hours.unwrap_or(defaults.lease_hours),
+            max_locks: req.max_locks_per_user,
+        }
+    });
     let record = s
         .repos
         .create(
@@ -91,9 +99,10 @@ pub(crate) async fn create_repo(
             settings,
         )
         .await?;
+    let limit = s.repos.lock_limit(&record).await?;
     Ok((
         StatusCode::CREATED,
-        Json(repo_info(record, Some(Role::Admin))),
+        Json(repo_info(record, Some(Role::Admin), limit)),
     ))
 }
 
@@ -109,11 +118,13 @@ pub(crate) async fn get_repo(
     let who = identify(&s, &headers).await?;
     let (open, _) = open_visible(&s, &who, &owner, &name).await?;
     let role = s.access.role_in(&open.record.id, &who.user).await?;
-    Ok(Json(repo_info(open.record, role)))
+    let limit = open.service.lock_limit();
+    Ok(Json(repo_info(open.record, role, limit)))
 }
 
 #[utoipa::path(patch, path = "/v1/repos/{owner}/{name}", params(RepoAddress), request_body = api::UpdateRepoRequest, responses(
     (status = 200, body = api::RepoInfo),
+    (status = 400, body = api::ErrorBody, description = "invalid_request, including a lock limit change while the policy file sets one"),
     (status = 403, body = api::ErrorBody, description = "only the owner, with admin rights in the repository"),
     (status = 404, body = api::ErrorBody, description = "repo_not_found"),
     (status = 409, body = api::ErrorBody, description = "repo_exists"),
@@ -129,13 +140,18 @@ pub(crate) async fn update_repo(
     let update = RepoUpdate {
         name: req.name,
         visibility: req.visibility.map(visibility_from),
-        settings: req
-            .lease_hours
-            .map(|lease_hours| RepoSettings { lease_hours }),
+        settings: (req.lease_hours.is_some() || req.max_locks_per_user.is_some()).then(|| {
+            let current = open.record.settings;
+            RepoSettings {
+                lease_hours: req.lease_hours.unwrap_or(current.lease_hours),
+                max_locks: req.max_locks_per_user.unwrap_or(current.max_locks),
+            }
+        }),
     };
     let record = s.repos.update(&who, &open.record, update).await?;
     let role = s.access.role_in(&record.id, &who.user).await?;
-    Ok(Json(repo_info(record, role)))
+    let limit = s.repos.lock_limit(&record).await?;
+    Ok(Json(repo_info(record, role, limit)))
 }
 
 #[utoipa::path(delete, path = "/v1/repos/{owner}/{name}", params(RepoAddress), responses(

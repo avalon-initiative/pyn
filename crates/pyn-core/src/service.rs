@@ -9,6 +9,7 @@ use crate::clock::Clock;
 use crate::error::{PynError, Result};
 use crate::history::{HISTORY_DEFAULT_LIMIT, HISTORY_MAX_LIMIT, HistoryCursor, HistoryPage};
 use crate::object::ObjectStore;
+use crate::repo::DEFAULT_MAX_LOCKS_PER_USER;
 use crate::rules::{Mode, POLICY_PATH, PathFilter, Rules};
 use crate::store::MetadataStore;
 use crate::tree::{ACTIVITY_ACTIONS, DEFAULT_BRANCH, EntryKind, RepoSummary, TreeEntry};
@@ -29,14 +30,24 @@ pub struct FileEntry {
 pub struct ServiceConfig {
     /// Lock lifetime; checking out again renews it.
     pub lease: Duration,
+    /// Locks one user may hold when the policy file sets no limit.
+    pub max_locks: u32,
 }
 
 impl Default for ServiceConfig {
     fn default() -> Self {
         Self {
             lease: Duration::hours(8),
+            max_locks: DEFAULT_MAX_LOCKS_PER_USER,
         }
     }
+}
+
+/// The per-user lock limit in force and whether the policy file set it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LockLimit {
+    pub max: u32,
+    pub from_policy: bool,
 }
 
 /// The rules in force and the policy revision they came from (`None` for the fallback).
@@ -107,6 +118,14 @@ impl RepoService {
 
     pub fn mode_for(&self, path: &RepoPath) -> Mode {
         self.rules().mode_for(path)
+    }
+
+    pub fn lock_limit(&self) -> LockLimit {
+        let policy = self.rules().max_locks_per_user();
+        LockLimit {
+            max: policy.unwrap_or(self.config.max_locks),
+            from_policy: policy.is_some(),
+        }
     }
 
     /// Applies the head of `.pyn/pyn.toml` if there is one; otherwise the rules given at construction stay.
@@ -202,7 +221,14 @@ impl RepoService {
         let now = self.clock.now();
         let lock = self
             .meta
-            .acquire_lock(&self.repo, path, user, now, now + self.config.lease)
+            .acquire_lock(
+                &self.repo,
+                path,
+                user,
+                now,
+                now + self.config.lease,
+                self.lock_limit().max,
+            )
             .await?;
         self.record(
             user,

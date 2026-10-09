@@ -44,30 +44,46 @@ impl FromStr for Visibility {
 
 pub const DEFAULT_LEASE_HOURS: u32 = 8;
 pub const MAX_LEASE_HOURS: u32 = 24 * 30;
+pub const DEFAULT_MAX_LOCKS_PER_USER: u32 = 5;
+pub const MAX_LOCKS_PER_USER_CEILING: u32 = 10_000;
+
+/// A lock limit is 1 to `MAX_LOCKS_PER_USER_CEILING`.
+pub fn validate_max_locks(limit: u32) -> Result<u32> {
+    if (1..=MAX_LOCKS_PER_USER_CEILING).contains(&limit) {
+        Ok(limit)
+    } else {
+        Err(PynError::InvalidRequest(format!(
+            "a lock limit is 1 to {MAX_LOCKS_PER_USER_CEILING}"
+        )))
+    }
+}
 
 /// Per-repository configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RepoSettings {
     pub lease_hours: u32,
+    /// Locks one user may hold here; `None` follows the server default. The policy file overrides it.
+    pub max_locks: Option<u32>,
 }
 
 impl Default for RepoSettings {
     fn default() -> Self {
         Self {
             lease_hours: DEFAULT_LEASE_HOURS,
+            max_locks: None,
         }
     }
 }
 
 impl RepoSettings {
     pub fn validate(self) -> Result<Self> {
-        if (1..=MAX_LEASE_HOURS).contains(&self.lease_hours) {
-            Ok(self)
-        } else {
-            Err(PynError::InvalidRequest(format!(
+        if !(1..=MAX_LEASE_HOURS).contains(&self.lease_hours) {
+            return Err(PynError::InvalidRequest(format!(
                 "a lease is 1 to {MAX_LEASE_HOURS} hours"
-            )))
+            )));
         }
+        self.max_locks.map(validate_max_locks).transpose()?;
+        Ok(self)
     }
 }
 

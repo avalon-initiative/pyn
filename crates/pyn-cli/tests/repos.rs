@@ -310,3 +310,33 @@ fn a_new_repository_starts_with_a_policy_file_the_owner_can_replace() {
     );
     assert!(clash.contains("cannot be used with"), "{clash}");
 }
+
+#[test]
+fn repo_create_takes_a_lock_limit_that_checkout_enforces() {
+    let env = start_empty();
+    let home = env.dir("home");
+    env.ok(
+        &home,
+        "alice",
+        &["repo", "create", "game", "--max-locks", "1", "--no-policy"],
+    );
+    let run = |tail: &[&'static str]| -> Vec<&'static str> {
+        ["--repo", "alice/game"]
+            .into_iter()
+            .chain(tail.iter().copied())
+            .collect()
+    };
+    env.ok(&home, "alice", &run(&["checkout", "Content/a.umap"]));
+    let err = env.fails(&home, "alice", &run(&["checkout", "Content/b.umap"]));
+    assert!(err.contains("lock_limit_reached"), "{err}");
+    assert!(err.contains("1 lock"), "{err}");
+    env.ok(&home, "alice", &run(&["release", "Content/a.umap"]));
+    env.ok(&home, "alice", &run(&["checkout", "Content/b.umap"]));
+
+    let bad = env.fails(
+        &home,
+        "alice",
+        &["repo", "create", "other", "--max-locks", "0", "--no-policy"],
+    );
+    assert!(bad.contains("invalid_request"), "{bad}");
+}

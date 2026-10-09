@@ -11,7 +11,8 @@ use crate::types::{Lock, NewRevision, RepoId, RepoPath, Revision, RevisionId, Us
 /// `RepoService`. A lock with `expires_at <= now` counts as absent.
 #[async_trait]
 pub trait MetadataStore: Send + Sync {
-    /// Take or renew the lock; `LockHeld` if someone else holds a live one.
+    /// Take or renew the lock; `LockHeld` if someone else holds a live one. Taking a new lock while `owner` already holds
+    /// `max_locks` live ones in the repository is `LockLimitReached`; renewing never is.
     async fn acquire_lock(
         &self,
         repo: &RepoId,
@@ -19,6 +20,7 @@ pub trait MetadataStore: Send + Sync {
         owner: &UserId,
         now: DateTime<Utc>,
         expires_at: DateTime<Utc>,
+        max_locks: u32,
     ) -> Result<Lock>;
 
     /// `NotLockHolder` if there is no live lock or another user holds it.

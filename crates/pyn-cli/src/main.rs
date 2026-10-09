@@ -196,6 +196,9 @@ enum RepoCommand {
         /// How long a checkout lasts before it expires unless renewed.
         #[arg(long)]
         lease_hours: Option<u32>,
+        /// Locks one user may hold at once; the server's default if omitted, and a limit in the policy file wins.
+        #[arg(long)]
+        max_locks: Option<u32>,
         /// Use this file as the repository's first `.pyn/pyn.toml` instead of the default (everything exclusive).
         #[arg(long, conflicts_with = "no_policy")]
         policy: Option<PathBuf>,
@@ -1037,6 +1040,7 @@ fn repo_command(api: &Api, cmd: RepoCommand) -> Result<()> {
             name,
             visibility,
             lease_hours,
+            max_locks,
             policy,
             no_policy,
         } => {
@@ -1063,6 +1067,7 @@ fn repo_command(api: &Api, cmd: RepoCommand) -> Result<()> {
                 name,
                 visibility,
                 lease_hours,
+                max_locks_per_user: max_locks,
             };
             let made: api::RepoInfo = api
                 .send(api.request(Method::POST, "/v1/repos").json(&body))?
