@@ -19,6 +19,9 @@ use crate::history::HistoryCursor;
 use crate::object::ObjectStore;
 use crate::ratelimit::{RateLimitStore, RateState};
 use crate::repo::{RepoRecord, RepoUpdate};
+use crate::repo_policy::{
+    CreationEffect, CreationRule, CreationScope, CreationSubject, MemberCreation, RepoPolicy,
+};
 use crate::rules::PathFilter;
 use crate::store::MetadataStore;
 use crate::types::{
@@ -399,6 +402,8 @@ struct AccessState {
     teams: BTreeMap<(UserId, String), TeamRecord>,
     team_members: BTreeSet<(UserId, String, UserId)>,
     team_roles: BTreeMap<(RepoId, UserId, String), Role>,
+    member_creation: HashMap<UserId, MemberCreation>,
+    creation_rules: BTreeMap<(UserId, CreationSubject, CreationEffect), CreationScope>,
     definitions: HashMap<RepoId, RoleDefinitions>,
     tokens: HashMap<TokenId, TokenRecord>,
     sessions: HashMap<String, SessionRecord>,
@@ -588,6 +593,8 @@ impl AccessStore for MemoryAccessStore {
         st.teams.retain(|(o, _), _| o != org);
         st.team_members.retain(|(o, _, _)| o != org);
         st.team_roles.retain(|(_, o, _), _| o != org);
+        st.member_creation.remove(org);
+        st.creation_rules.retain(|(o, _, _), _| o != org);
         Ok(true)
     }
 
@@ -676,6 +683,8 @@ impl AccessStore for MemoryAccessStore {
         }
         st.org_roles.remove(&key);
         st.team_members.retain(|(o, _, u)| !(o == org && u == user));
+        st.creation_rules
+            .retain(|(o, s, _), _| !(o == org && *s == CreationSubject::User(user.clone())));
         for repo in repos {
             st.roles.remove(&(repo.clone(), user.clone()));
         }
@@ -727,6 +736,8 @@ impl AccessStore for MemoryAccessStore {
         st.team_members.retain(|(o, t, _)| !(o == org && t == slug));
         st.team_roles
             .retain(|(_, o, t), _| !(o == org && t == slug));
+        st.creation_rules
+            .retain(|(o, s, _), _| !(o == org && *s == CreationSubject::Team(slug.to_string())));
         Ok(true)
     }
 
@@ -850,6 +861,67 @@ impl AccessStore for MemoryAccessStore {
         out.sort();
         out.dedup();
         Ok(out)
+    }
+
+    async fn repo_policy(&self, org: &UserId) -> Result<RepoPolicy> {
+        let st = self.state.lock().unwrap();
+        let mut rules: Vec<_> = st
+            .creation_rules
+            .iter()
+            .filter(|((o, _, _), _)| o == org)
+            .map(|((_, subject, effect), scope)| CreationRule {
+                subject: subject.clone(),
+                effect: *effect,
+                scope: *scope,
+            })
+            .collect();
+        rules.sort_by_key(|r| (r.subject.kind().as_str(), r.subject.name(), r.effect));
+        Ok(RepoPolicy {
+            base: st
+                .member_creation
+                .get(org)
+                .copied()
+                .unwrap_or(MemberCreation::None),
+            rules,
+        })
+    }
+
+    async fn set_member_creation(
+        &self,
+        org: &UserId,
+        base: MemberCreation,
+    ) -> Result<MemberCreation> {
+        let mut st = self.state.lock().unwrap();
+        Ok(st
+            .member_creation
+            .insert(org.clone(), base)
+            .unwrap_or(MemberCreation::None))
+    }
+
+    async fn set_creation_rule(&self, org: &UserId, rule: &CreationRule) -> Result<bool> {
+        let mut st = self.state.lock().unwrap();
+        let present = match &rule.subject {
+            CreationSubject::Team(slug) => st.teams.contains_key(&(org.clone(), slug.clone())),
+            CreationSubject::User(user) => st.org_roles.contains_key(&(org.clone(), user.clone())),
+            CreationSubject::Role(_) => true,
+        };
+        if present {
+            st.creation_rules
+                .insert((org.clone(), rule.subject.clone(), rule.effect), rule.scope);
+        }
+        Ok(present)
+    }
+
+    async fn remove_creation_rule(
+        &self,
+        org: &UserId,
+        subject: &CreationSubject,
+        effect: CreationEffect,
+    ) -> Result<Option<CreationScope>> {
+        let mut st = self.state.lock().unwrap();
+        Ok(st
+            .creation_rules
+            .remove(&(org.clone(), subject.clone(), effect)))
     }
 
     async fn create_account(&self, new: NewAccount) -> Result<bool> {

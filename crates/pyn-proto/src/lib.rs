@@ -248,7 +248,8 @@ pub struct RepoInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct CreateRepoRequest {
-    /// The namespace to create it in: the caller's own account name, or an organization they own. Defaults to the caller.
+    /// The namespace to create it in: the caller's own account name, or an organization whose repository-creation
+    /// policy lets them. Defaults to the caller.
     pub owner: Option<String>,
     pub name: String,
     /// Defaults to `private`.
@@ -385,6 +386,40 @@ pub struct UpdateTeamRequest {
     pub name: Option<String>,
     #[serde(default)]
     pub description: Option<String>,
+}
+
+/// An organization's repository-creation policy. Owners can always create repositories and are not listed in it.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct RepoPolicyInfo {
+    /// What members may create when no rule applies: `none` (owners only, the default), `private` or `both`.
+    pub member_creation: String,
+    /// Ordered by kind, subject, then effect.
+    pub rules: Vec<CreationRuleInfo>,
+}
+
+/// A subject holds at most one rule per effect. A matching `deny` beats any `allow`.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct CreationRuleInfo {
+    /// `allow` or `deny`.
+    pub effect: String,
+    /// `team`, `user` or `role`.
+    pub kind: String,
+    /// The team slug, user name, or organization role (`owner` or `member`).
+    pub subject: String,
+    /// `public`, `private` or `both`.
+    pub scope: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct SetRepoPolicyRequest {
+    /// `none`, `private` or `both`.
+    pub member_creation: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct SetCreationRuleRequest {
+    /// `public`, `private` or `both`.
+    pub scope: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]

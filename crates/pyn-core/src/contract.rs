@@ -14,6 +14,9 @@ use crate::access::{
 use crate::clock::Clock;
 use crate::memory::{MemoryAuditStore, MemoryMetadataStore, MemoryObjectStore};
 use crate::ratelimit::RateLimitStore;
+use crate::repo_policy::{
+    CreationEffect, CreationRule, CreationScope, CreationSubject, MemberCreation, RepoPolicy,
+};
 use crate::{
     AccessService, AccessStore, Credential, Identity, OrgDeleteMark, OrgMemberChange, RepoMember,
     Repositories,
@@ -3375,6 +3378,516 @@ pub async fn racing_hits_are_all_counted(store: RateLimits) {
     assert_eq!(counts, (1..=20).collect::<Vec<_>>());
 }
 
+/// Organization `acme`: owner alice; members bob, carol (team art), dave (team eng), plus alice in art; erin outside.
+struct CreationWorld {
+    store: Access,
+    access: Arc<AccessService>,
+    repos: Repositories,
+    audit: Arc<MemoryAuditStore>,
+    made: Mutex<u32>,
+}
+
+impl CreationWorld {
+    async fn new(store: Access) -> Self {
+        let meta = Arc::new(MemoryMetadataStore::new());
+        let clock = Arc::new(ManualClock::new(at(0)));
+        let audit = Arc::new(MemoryAuditStore::new());
+        let access = Arc::new(
+            AccessService::new(store.clone(), clock.clone())
+                .with_registry(meta.clone())
+                .with_audit(audit.clone()),
+        );
+        let repos = Repositories::new(
+            meta,
+            Arc::new(MemoryObjectStore::new()),
+            audit.clone(),
+            access.clone(),
+            clock,
+            Rules::empty(),
+        );
+        let (acme, alice) = (user("acme"), session("alice"));
+        access.create_org(&alice, "acme").await.unwrap();
+        for name in ["bob", "carol", "dave", "erin"] {
+            store.create_user(&user(name), at(0)).await.unwrap();
+        }
+        for name in ["bob", "carol", "dave"] {
+            access
+                .add_org_member(&alice, &acme, &user(name), OrgRole::Member)
+                .await
+                .unwrap();
+        }
+        for slug in ["art", "eng"] {
+            access
+                .create_team(&alice, &acme, slug, None, None)
+                .await
+                .unwrap();
+        }
+        for (slug, member) in [("art", "carol"), ("art", "alice"), ("eng", "dave")] {
+            access
+                .add_team_member(&alice, &acme, slug, &user(member))
+                .await
+                .unwrap();
+        }
+        Self {
+            store,
+            access,
+            repos,
+            audit,
+            made: Mutex::new(0),
+        }
+    }
+
+    async fn rule(&self, effect: CreationEffect, subject: CreationSubject, scope: CreationScope) {
+        let rule = CreationRule {
+            subject,
+            effect,
+            scope,
+        };
+        self.access
+            .set_creation_rule(&session("alice"), &user("acme"), rule)
+            .await
+            .unwrap();
+    }
+
+    async fn policy(&self) -> RepoPolicy {
+        self.access
+            .repo_policy(&session("alice"), &user("acme"))
+            .await
+            .unwrap()
+    }
+
+    /// Removes every rule and resets the base setting.
+    async fn clear(&self) {
+        for rule in self.policy().await.rules {
+            self.access
+                .remove_creation_rule(&session("alice"), &user("acme"), &rule.subject, rule.effect)
+                .await
+                .unwrap();
+        }
+        self.base(MemberCreation::None).await;
+    }
+
+    async fn base(&self, base: MemberCreation) {
+        self.access
+            .set_member_creation(&session("alice"), &user("acme"), base)
+            .await
+            .unwrap();
+    }
+
+    async fn create(&self, who: &str, visibility: Visibility) -> crate::Result<RepoRecord> {
+        let n = {
+            let mut made = self.made.lock().unwrap();
+            *made += 1;
+            *made
+        };
+        self.repos
+            .create(
+                &session(who),
+                &user("acme"),
+                &format!("repo{n}"),
+                Some(visibility),
+                None,
+            )
+            .await
+    }
+
+    /// Whether `who` may create a public and a private repository.
+    async fn can(&self, who: &str) -> (bool, bool) {
+        let mut out = [false; 2];
+        for (i, vis) in [Visibility::Public, Visibility::Private]
+            .into_iter()
+            .enumerate()
+        {
+            out[i] = match self.create(who, vis).await {
+                Ok(_) => true,
+                Err(PynError::RepoCreateForbidden { org, scope }) => {
+                    assert_eq!((org.as_str(), scope.as_str()), ("acme", vis.as_str()));
+                    false
+                }
+                Err(e) => panic!("{who} creating {vis}: {e}"),
+            };
+        }
+        (out[0], out[1])
+    }
+}
+
+fn by_user(name: &str) -> CreationSubject {
+    CreationSubject::User(user(name))
+}
+
+fn by_team(slug: &str) -> CreationSubject {
+    CreationSubject::Team(slug.to_string())
+}
+
+fn by_role(role: OrgRole) -> CreationSubject {
+    CreationSubject::Role(role)
+}
+
+pub async fn organization_repository_creation_resolves_owner_base_and_rules(store: Access) {
+    use CreationEffect::{Allow, Deny};
+    use CreationScope::{Both, Private, Public};
+    let w = CreationWorld::new(store).await;
+
+    assert_eq!(w.can("alice").await, (true, true), "owners always create");
+    assert_eq!(
+        w.can("bob").await,
+        (false, false),
+        "the default is owners only"
+    );
+    let err = w.create("erin", Visibility::Private).await.unwrap_err();
+    assert!(matches!(err, PynError::NotOrgMember(_)), "{err}");
+    assert_eq!(err.code(), "not_org_member");
+
+    w.base(MemberCreation::Private).await;
+    assert_eq!(w.can("bob").await, (false, true), "base private");
+    w.base(MemberCreation::Both).await;
+    assert_eq!(w.can("bob").await, (true, true), "base both");
+    let err = w.create("erin", Visibility::Private).await.unwrap_err();
+    assert!(
+        matches!(err, PynError::NotOrgMember(_)),
+        "a non-member is refused whatever the base: {err}"
+    );
+    w.clear().await;
+
+    w.rule(Allow, by_role(OrgRole::Member), Public).await;
+    assert_eq!(
+        w.can("bob").await,
+        (true, false),
+        "allow by role, public only"
+    );
+    w.rule(Allow, by_role(OrgRole::Member), Both).await;
+    assert_eq!(
+        w.can("bob").await,
+        (true, true),
+        "a rule's scope is replaced"
+    );
+    w.clear().await;
+
+    w.rule(Allow, by_user("carol"), Private).await;
+    assert_eq!(w.can("carol").await, (false, true), "allow by user");
+    assert_eq!(w.can("bob").await, (false, false));
+    w.clear().await;
+
+    w.rule(Allow, by_team("eng"), Both).await;
+    assert_eq!(w.can("dave").await, (true, true), "allow by team");
+    assert_eq!(
+        w.can("carol").await,
+        (false, false),
+        "another team gets nothing"
+    );
+    w.rule(Allow, by_team("eng"), Public).await;
+    assert_eq!(w.can("dave").await, (true, false), "scope public");
+    w.rule(Allow, by_team("eng"), Private).await;
+    assert_eq!(w.can("dave").await, (false, true), "scope private");
+    w.clear().await;
+
+    w.base(MemberCreation::Both).await;
+    w.rule(Deny, by_team("art"), Public).await;
+    assert_eq!(
+        w.can("carol").await,
+        (false, true),
+        "deny by team, public only"
+    );
+    assert_eq!(w.can("dave").await, (true, true), "not in the team");
+    w.rule(Deny, by_role(OrgRole::Member), Private).await;
+    assert_eq!(w.can("bob").await, (true, false), "deny by role");
+    assert_eq!(
+        w.can("carol").await,
+        (false, false),
+        "several denies add up"
+    );
+    w.clear().await;
+
+    w.rule(Allow, by_user("carol"), Both).await;
+    w.rule(Deny, by_team("art"), Public).await;
+    assert_eq!(
+        w.can("carol").await,
+        (false, true),
+        "deny beats allow in its scope"
+    );
+    w.rule(Allow, by_team("eng"), Both).await;
+    w.rule(Deny, by_user("dave"), Both).await;
+    assert_eq!(
+        w.can("dave").await,
+        (false, false),
+        "a user deny beats a team allow"
+    );
+    w.clear().await;
+
+    // Owners cannot be locked out.
+    w.rule(Deny, by_user("alice"), Both).await;
+    w.rule(Deny, by_team("art"), Both).await;
+    assert_eq!(
+        w.can("alice").await,
+        (true, true),
+        "deny rules do not bind owners"
+    );
+    let err = w
+        .access
+        .set_creation_rule(
+            &session("alice"),
+            &user("acme"),
+            CreationRule {
+                subject: by_role(OrgRole::Owner),
+                effect: Deny,
+                scope: Both,
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::InvalidRequest(_)), "{err}");
+    w.clear().await;
+
+    // A member who creates a repository becomes its admin; an owner stays implicit.
+    w.base(MemberCreation::Both).await;
+    let mine = w.create("bob", Visibility::Public).await.unwrap();
+    assert_eq!(
+        w.store.role_of(&mine.id, &user("bob")).await.unwrap(),
+        Some(Role::Admin),
+        "a direct admin row"
+    );
+    assert_eq!(
+        w.access
+            .effective_role(&mine.id, &user("bob"))
+            .await
+            .unwrap(),
+        Some(Role::Admin)
+    );
+    let theirs = w.create("alice", Visibility::Private).await.unwrap();
+    assert_eq!(
+        w.store.role_of(&theirs.id, &user("alice")).await.unwrap(),
+        None,
+        "owners need no row"
+    );
+    let err = w.repos.delete(&session("bob"), &mine).await.unwrap_err();
+    assert!(
+        matches!(err, PynError::NotOrgOwner(_)),
+        "deleting stays with owners: {err}"
+    );
+    let err = w
+        .repos
+        .update(&session("bob"), &mine, RepoUpdate::default())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, PynError::NotOrgOwner(_)),
+        "settings stay with owners: {err}"
+    );
+    let err = w
+        .repos
+        .create(&session("bob"), &user("acme"), "Bad Name", None, None)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::InvalidRepoName(_)), "{err}");
+}
+
+pub async fn creation_rules_are_validated_audited_and_dropped_with_their_subject(store: Access) {
+    use CreationEffect::{Allow, Deny};
+    use CreationScope::{Both, Private, Public};
+    let w = CreationWorld::new(store).await;
+    let (acme, alice, bob) = (user("acme"), session("alice"), session("bob"));
+
+    let err = w.access.repo_policy(&bob, &acme).await.unwrap_err();
+    assert!(matches!(err, PynError::NotOrgOwner(_)), "{err}");
+    let err = w
+        .access
+        .set_member_creation(&bob, &acme, MemberCreation::Both)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::NotOrgOwner(_)), "{err}");
+    let err = w
+        .access
+        .set_member_creation(
+            &token_identity("alice", &[Permission::Read]),
+            &acme,
+            MemberCreation::Both,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::Forbidden(_)), "{err}");
+    let err = w
+        .access
+        .repo_policy(&alice, &user("nobody"))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::OrgNotFound(_)), "{err}");
+
+    let rule = |subject, effect, scope| CreationRule {
+        subject,
+        effect,
+        scope,
+    };
+    let err = w
+        .access
+        .set_creation_rule(&alice, &acme, rule(by_team("nope"), Allow, Both))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::TeamNotFound { .. }), "{err}");
+    let err = w
+        .access
+        .set_creation_rule(&alice, &acme, rule(by_user("erin"), Allow, Both))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::UserNotOrgMember { .. }), "{err}");
+    let err = w
+        .access
+        .set_creation_rule(&bob, &acme, rule(by_user("bob"), Allow, Both))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::NotOrgOwner(_)), "{err}");
+    assert!(
+        !w.store
+            .set_creation_rule(&acme, &rule(by_team("nope"), Allow, Both))
+            .await
+            .unwrap(),
+        "the store refuses a team that is gone"
+    );
+    assert!(
+        !w.store
+            .set_creation_rule(&acme, &rule(by_user("erin"), Allow, Both))
+            .await
+            .unwrap(),
+        "and a person who is not a member"
+    );
+    let err = w
+        .access
+        .remove_creation_rule(&alice, &acme, &by_team("art"), Deny)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, PynError::CreationRuleNotFound { .. }),
+        "{err}"
+    );
+    assert_eq!(err.code(), "creation_rule_not_found");
+    assert_eq!(w.policy().await, RepoPolicy::default());
+
+    w.base(MemberCreation::Private).await;
+    w.base(MemberCreation::Private).await;
+    w.rule(Deny, by_team("art"), Public).await;
+    w.rule(Allow, by_team("eng"), Both).await;
+    w.rule(Allow, by_user("carol"), Private).await;
+    w.rule(Deny, by_user("bob"), Both).await;
+    w.rule(Allow, by_role(OrgRole::Member), Public).await;
+    w.rule(Allow, by_user("carol"), Both).await;
+    let listed: Vec<_> = w
+        .policy()
+        .await
+        .rules
+        .iter()
+        .map(|r| {
+            format!(
+                "{} {} {} {}",
+                r.effect,
+                r.subject,
+                r.scope,
+                r.subject.kind()
+            )
+        })
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            "allow role member public role",
+            "deny team art public team",
+            "allow team eng both team",
+            "deny user bob both user",
+            "allow user carol both user",
+        ],
+        "ordered by kind and subject, one rule per subject and effect"
+    );
+    assert_eq!(w.policy().await.base, MemberCreation::Private);
+
+    w.access.delete_team(&alice, &acme, "art").await.unwrap();
+    w.access
+        .remove_org_member(&session("carol"), &acme, &user("carol"))
+        .await
+        .unwrap();
+    w.access
+        .remove_org_member(&alice, &acme, &user("bob"))
+        .await
+        .unwrap();
+    let remaining: Vec<_> = w
+        .policy()
+        .await
+        .rules
+        .iter()
+        .map(|r| r.subject.to_string())
+        .collect();
+    assert_eq!(
+        remaining,
+        ["role member", "team eng"],
+        "rules go with their team and with a member who leaves or is removed"
+    );
+    w.access
+        .remove_creation_rule(&alice, &acme, &by_role(OrgRole::Member), Allow)
+        .await
+        .unwrap();
+
+    let log = w
+        .audit
+        .list(
+            &AuditScope::Org(acme.clone()),
+            &AuditQuery {
+                limit: 100,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let notes = |action| -> Vec<String> {
+        log.iter()
+            .rev()
+            .filter(|e| e.action == action)
+            .map(|e| e.detail.clone())
+            .collect()
+    };
+    assert_eq!(
+        notes(AuditAction::RepoCreationPolicyChanged),
+        ["members may create: none -> private"],
+        "an unchanged setting records nothing"
+    );
+    assert_eq!(
+        notes(AuditAction::RepoCreationRuleSet),
+        [
+            "deny public for team art",
+            "allow both for team eng",
+            "allow private for user carol",
+            "deny both for user bob",
+            "allow public for role member",
+            "allow both for user carol",
+        ]
+    );
+    assert_eq!(
+        notes(AuditAction::RepoCreationRuleRemoved),
+        ["allow public for role member removed"]
+    );
+    assert!(
+        notes(AuditAction::TeamDeleted)[0].contains("creation rules dropped: deny public"),
+        "{:?}",
+        notes(AuditAction::TeamDeleted)
+    );
+    let member_notes = notes(AuditAction::OrgMemberRemoved);
+    assert!(
+        member_notes[0].contains("creation rules dropped: allow both")
+            && member_notes[1].contains("creation rules dropped: deny both"),
+        "{member_notes:?}"
+    );
+
+    w.rule(Allow, by_team("eng"), Both).await;
+    w.access.delete_org(&alice, &acme).await.unwrap();
+    assert_eq!(
+        w.store.repo_policy(&acme).await.unwrap(),
+        RepoPolicy::default(),
+        "deleting the organization drops its policy"
+    );
+    w.access.create_org(&alice, "acme").await.unwrap();
+    assert_eq!(
+        w.store.repo_policy(&acme).await.unwrap(),
+        RepoPolicy::default(),
+        "a new organization with the name starts with the default"
+    );
+}
+
 /// Generates one `#[tokio::test]` per access-store case for the store built by `$factory`.
 #[macro_export]
 macro_rules! access_contract_tests {
@@ -3404,6 +3917,8 @@ macro_rules! access_contract_tests {
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; removing_an_organization_member_drops_their_roles_in_the_given_repositories);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; teams_hold_members_and_repository_roles_until_removed);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; effective_roles_resolve_across_direct_team_and_owner_grants);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; organization_repository_creation_resolves_owner_base_and_rules);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; creation_rules_are_validated_audited_and_dropped_with_their_subject);
     };
     (@one $factory:expr; [$(#[$attr:meta])*]; $name:ident) => {
         #[tokio::test(flavor = "multi_thread")]

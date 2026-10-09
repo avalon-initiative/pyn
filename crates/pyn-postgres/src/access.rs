@@ -4,10 +4,11 @@ use std::str::FromStr;
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use pyn_core::{
-    AccessStore, AccountKind, AccountRecord, AccountStatus, InviteId, InviteRecord, NewAccount,
-    OrgDeleteMark, OrgMemberChange, OrgRole, Permission, RateLimitStore, RateState, RepoId, Result,
-    Role, RoleDefinitions, SessionRecord, SignupStage, SshKeyRecord, TeamRecord, TokenId,
-    TokenRecord, UserId, VerificationRecord,
+    AccessStore, AccountKind, AccountRecord, AccountStatus, CreationEffect, CreationRule,
+    CreationScope, CreationSubject, InviteId, InviteRecord, MemberCreation, NewAccount,
+    OrgDeleteMark, OrgMemberChange, OrgRole, Permission, RateLimitStore, RateState, RepoId,
+    RepoPolicy, Result, Role, RoleDefinitions, SessionRecord, SignupStage, SshKeyRecord,
+    SubjectKind, TeamRecord, TokenId, TokenRecord, UserId, VerificationRecord,
 };
 use sqlx::Row;
 use sqlx::postgres::PgRow;
@@ -30,6 +31,24 @@ fn team_from(row: &PgRow) -> TeamRecord {
         description: row.get("description"),
         created_at: row.get("created_at"),
     }
+}
+
+async fn drop_rules(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    org: &UserId,
+    kind: &str,
+    subject: &str,
+) -> Result<()> {
+    sqlx::query(
+        "DELETE FROM org_repo_creation_rules WHERE org = $1 AND kind = $2 AND subject = $3",
+    )
+    .bind(org.as_str())
+    .bind(kind)
+    .bind(subject)
+    .execute(&mut **tx)
+    .await
+    .map_err(db)?;
+    Ok(())
 }
 
 fn fold_roles(roles: Vec<String>) -> Result<Option<Role>> {
@@ -355,6 +374,129 @@ impl AccessStore for PgMetadataStore {
             .await
             .map_err(db)?;
         Ok(())
+    }
+
+    async fn repo_policy(&self, org: &UserId) -> Result<RepoPolicy> {
+        let base: Option<String> =
+            sqlx::query_scalar("SELECT member_creation FROM org_repo_policy WHERE org = $1")
+                .bind(org.as_str())
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(db)?;
+        let rows = sqlx::query(
+            "SELECT kind, subject, effect, scope FROM org_repo_creation_rules
+             WHERE org = $1 ORDER BY kind, subject, effect",
+        )
+        .bind(org.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        let rules = rows
+            .iter()
+            .map(|r| {
+                Ok(CreationRule {
+                    subject: CreationSubject::parse(
+                        SubjectKind::from_str(r.get("kind"))?,
+                        r.get("subject"),
+                    )?,
+                    effect: CreationEffect::from_str(r.get("effect"))?,
+                    scope: CreationScope::from_str(r.get("scope"))?,
+                })
+            })
+            .collect::<Result<_>>()?;
+        Ok(RepoPolicy {
+            base: base.map_or(Ok(MemberCreation::None), |b| MemberCreation::from_str(&b))?,
+            rules,
+        })
+    }
+
+    async fn set_member_creation(
+        &self,
+        org: &UserId,
+        base: MemberCreation,
+    ) -> Result<MemberCreation> {
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        let old: Option<String> = sqlx::query_scalar(
+            "SELECT member_creation FROM org_repo_policy WHERE org = $1 FOR UPDATE",
+        )
+        .bind(org.as_str())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db)?;
+        sqlx::query(
+            "INSERT INTO org_repo_policy (org, member_creation) VALUES ($1, $2)
+             ON CONFLICT (org) DO UPDATE SET member_creation = EXCLUDED.member_creation",
+        )
+        .bind(org.as_str())
+        .bind(base.as_str())
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
+        tx.commit().await.map_err(db)?;
+        old.map_or(Ok(MemberCreation::None), |o| MemberCreation::from_str(&o))
+    }
+
+    async fn set_creation_rule(&self, org: &UserId, rule: &CreationRule) -> Result<bool> {
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        let subject = rule.subject.name();
+        let present: Option<i32> = match &rule.subject {
+            CreationSubject::Team(slug) => {
+                sqlx::query_scalar("SELECT 1 FROM teams WHERE org = $1 AND slug = $2 FOR SHARE")
+                    .bind(org.as_str())
+                    .bind(slug)
+                    .fetch_optional(&mut *tx)
+                    .await
+            }
+            CreationSubject::User(user) => {
+                sqlx::query_scalar(
+                    "SELECT 1 FROM org_members WHERE org = $1 AND user_id = $2 FOR SHARE",
+                )
+                .bind(org.as_str())
+                .bind(user.as_str())
+                .fetch_optional(&mut *tx)
+                .await
+            }
+            CreationSubject::Role(_) => Ok(Some(1)),
+        }
+        .map_err(db)?;
+        if present.is_none() {
+            return Ok(false);
+        }
+        sqlx::query(
+            "INSERT INTO org_repo_creation_rules (org, kind, subject, effect, scope)
+             VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT (org, kind, subject, effect) DO UPDATE SET scope = EXCLUDED.scope",
+        )
+        .bind(org.as_str())
+        .bind(rule.subject.kind().as_str())
+        .bind(subject)
+        .bind(rule.effect.as_str())
+        .bind(rule.scope.as_str())
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
+        tx.commit().await.map_err(db)?;
+        Ok(true)
+    }
+
+    async fn remove_creation_rule(
+        &self,
+        org: &UserId,
+        subject: &CreationSubject,
+        effect: CreationEffect,
+    ) -> Result<Option<CreationScope>> {
+        let old: Option<String> = sqlx::query_scalar(
+            "DELETE FROM org_repo_creation_rules
+             WHERE org = $1 AND kind = $2 AND subject = $3 AND effect = $4 RETURNING scope",
+        )
+        .bind(org.as_str())
+        .bind(subject.kind().as_str())
+        .bind(subject.name())
+        .bind(effect.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db)?;
+        old.map(|s| CreationScope::from_str(&s)).transpose()
     }
 
     async fn set_password_hash(&self, user: &UserId, hash: &str) -> Result<()> {
@@ -694,6 +836,7 @@ impl AccessStore for PgMetadataStore {
             .execute(&mut *tx)
             .await
             .map_err(db)?;
+        drop_rules(&mut tx, org, "user", user.as_str()).await?;
         let repos: Vec<String> = repos.iter().map(|r| r.as_str().to_string()).collect();
         sqlx::query("DELETE FROM memberships WHERE user_id = $1 AND repo = ANY($2)")
             .bind(user.as_str())
@@ -759,12 +902,15 @@ impl AccessStore for PgMetadataStore {
     }
 
     async fn delete_team(&self, org: &UserId, slug: &str) -> Result<bool> {
+        let mut tx = self.pool.begin().await.map_err(db)?;
         let done = sqlx::query("DELETE FROM teams WHERE org = $1 AND slug = $2")
             .bind(org.as_str())
             .bind(slug)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(db)?;
+        drop_rules(&mut tx, org, "team", slug).await?;
+        tx.commit().await.map_err(db)?;
         Ok(done.rows_affected() == 1)
     }
 

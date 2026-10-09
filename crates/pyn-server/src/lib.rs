@@ -25,6 +25,7 @@ pub mod email;
 mod org_api;
 pub mod passwords;
 mod repo_api;
+mod repo_policy_api;
 mod session_api;
 mod team_api;
 
@@ -88,6 +89,10 @@ struct RepoAddress {
         org_api::add_member,
         org_api::set_member_role,
         org_api::remove_member,
+        repo_policy_api::get_repo_policy,
+        repo_policy_api::set_repo_policy,
+        repo_policy_api::set_creation_rule,
+        repo_policy_api::remove_creation_rule,
         team_api::list_teams,
         team_api::create_team,
         team_api::get_team,
@@ -180,6 +185,10 @@ struct RepoAddress {
         api::SetRoleRequest,
         api::Member,
         api::SetMemberRequest,
+        api::RepoPolicyInfo,
+        api::CreationRuleInfo,
+        api::SetRepoPolicyRequest,
+        api::SetCreationRuleRequest,
         api::TeamInfo,
         api::TeamRepo,
         api::CreateTeamRequest,
@@ -245,6 +254,14 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/v1/orgs/{org}/members/{user}",
             axum::routing::patch(org_api::set_member_role).delete(org_api::remove_member),
+        )
+        .route(
+            "/v1/orgs/{org}/repo-policy",
+            get(repo_policy_api::get_repo_policy).put(repo_policy_api::set_repo_policy),
+        )
+        .route(
+            "/v1/orgs/{org}/repo-policy/rules/{effect}/{kind}/{subject}",
+            put(repo_policy_api::set_creation_rule).delete(repo_policy_api::remove_creation_rule),
         )
         .route(
             "/v1/orgs/{org}/teams",
@@ -356,6 +373,7 @@ impl IntoResponse for ApiError {
             | PynError::NotNamespaceOwner(_)
             | PynError::NotOrgOwner(_)
             | PynError::NotOrgMember(_)
+            | PynError::RepoCreateForbidden { .. }
             | PynError::CsrfFailed => StatusCode::FORBIDDEN,
             PynError::TooManyAttempts { .. } => StatusCode::TOO_MANY_REQUESTS,
             PynError::Unauthenticated(_) => StatusCode::UNAUTHORIZED,
@@ -367,6 +385,7 @@ impl IntoResponse for ApiError {
             | PynError::OrgMemberNotFound { .. }
             | PynError::TeamNotFound { .. }
             | PynError::TeamMemberNotFound { .. }
+            | PynError::CreationRuleNotFound { .. }
             | PynError::PathNotFound(_) => StatusCode::NOT_FOUND,
             PynError::RevisionNotFound { .. } => StatusCode::NOT_FOUND,
             PynError::InvalidPath(_)

@@ -30,7 +30,7 @@ impl AccessService {
         })
     }
 
-    async fn require_team(&self, org: &UserId, slug: &str) -> Result<TeamRecord> {
+    pub(super) async fn require_team(&self, org: &UserId, slug: &str) -> Result<TeamRecord> {
         self.store
             .team(org, slug)
             .await?
@@ -142,13 +142,19 @@ impl AccessService {
         self.require_team_admin(actor, org).await?;
         self.require_team(org, slug).await?;
         let repos = self.store.team_repos(org, slug).await?;
+        let rules = self
+            .rules_note(
+                org,
+                &crate::repo_policy::CreationSubject::Team(slug.to_string()),
+            )
+            .await?;
         if !self.store.delete_team(org, slug).await? {
             return Err(PynError::TeamNotFound {
                 org: org.to_string(),
                 team: slug.to_string(),
             });
         }
-        let mut detail = format!("team {slug} deleted");
+        let mut detail = format!("team {slug} deleted{rules}");
         if let Some(registry) = &self.registry
             && !repos.is_empty()
         {

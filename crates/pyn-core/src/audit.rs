@@ -41,10 +41,13 @@ pub enum AuditAction {
     TeamMemberRemoved,
     TeamAccessSet,
     TeamAccessRemoved,
+    RepoCreationPolicyChanged,
+    RepoCreationRuleSet,
+    RepoCreationRuleRemoved,
 }
 
 impl AuditAction {
-    pub const ALL: [AuditAction; 29] = [
+    pub const ALL: [AuditAction; 32] = [
         AuditAction::Checkout,
         AuditAction::Release,
         AuditAction::Checkin,
@@ -74,6 +77,9 @@ impl AuditAction {
         AuditAction::TeamMemberRemoved,
         AuditAction::TeamAccessSet,
         AuditAction::TeamAccessRemoved,
+        AuditAction::RepoCreationPolicyChanged,
+        AuditAction::RepoCreationRuleSet,
+        AuditAction::RepoCreationRuleRemoved,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -107,6 +113,9 @@ impl AuditAction {
             Self::TeamMemberRemoved => "team_member_removed",
             Self::TeamAccessSet => "team_access_set",
             Self::TeamAccessRemoved => "team_access_removed",
+            Self::RepoCreationPolicyChanged => "repo_creation_policy_changed",
+            Self::RepoCreationRuleSet => "repo_creation_rule_set",
+            Self::RepoCreationRuleRemoved => "repo_creation_rule_removed",
         }
     }
 }

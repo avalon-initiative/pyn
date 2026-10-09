@@ -35,7 +35,8 @@ nobody can grant a role containing a permission they do not hold themselves.
 
 What someone may do in a repository is decided by one function in the server: the highest role among the sources below.
 
-1. A direct grant on the repository (members, invitations, the creator of a user's repository).
+1. A direct grant on the repository (members, invitations, the creator of a user's repository, or of an organization's
+   repository when they are not an owner).
 2. A grant to a [team](repositories.md#teams) the person is in (the highest, when several teams hold a role).
 3. Owning the organization that owns the repository: `admin`.
 
@@ -207,7 +208,7 @@ every permission. Never set it on a server others can reach.
 
 ## Audit
 
-Organization events (created, deleted, members added, removed or changed, teams and their members) are kept in a separate [organization log](repositories.md#organizations) for its
+Organization events (created, deleted, members added, removed or changed, teams and their members, repository-creation policy changes) are kept in a separate [organization log](repositories.md#organizations) for its
 owners (`pyn org audit <org>`). Adding a member (by an admin, by registration or as the creator of a repository), changing a member's role, changing what a
 role grants, giving a team a role or taking it away, creating or revoking a token, and creating, changing or deleting the repository itself are recorded in that
 repository's audit log with the actor and what changed, and are visible to `view_audit`. Server-wide account actions go to

@@ -226,6 +226,12 @@ impl AccessService {
             }
         }
         let teams = self.store.teams_of(org, user).await?;
+        let rules = self
+            .rules_note(
+                org,
+                &crate::repo_policy::CreationSubject::User(user.clone()),
+            )
+            .await?;
         let ids: Vec<_> = granted.iter().map(|r| r.id.clone()).collect();
         let change = self.store.remove_org_member(org, user, &ids).await?;
         self.member_change(org, user, change)?;
@@ -241,6 +247,7 @@ impl AccessService {
         if !teams.is_empty() {
             detail.push_str(&format!("; removed from teams {}", join(teams.iter())));
         }
+        detail.push_str(&rules);
         self.record(
             AuditScope::Org(org.clone()),
             &actor.user,
