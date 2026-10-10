@@ -43,6 +43,12 @@ pub enum PynError {
     RevisionNotFound { path: RepoPath, revision: String },
     #[error("restoring replaces the head; to confirm, pass {expected}")]
     ConfirmationRequired { expected: String },
+    #[error("this server has not been set up yet; complete the first-run setup")]
+    NotInitialised,
+    #[error("this server has already been set up")]
+    AlreadyInitialised,
+    #[error("the setup token is not correct")]
+    InvalidSetupToken,
     #[error("registration is closed on this server")]
     RegistrationClosed,
     #[error("{0} already exists")]
@@ -157,6 +163,9 @@ impl PynError {
             Self::ObjectMissing(_) => "object_missing",
             Self::RevisionNotFound { .. } => "revision_not_found",
             Self::ConfirmationRequired { .. } => "confirmation_required",
+            Self::NotInitialised => "not_initialised",
+            Self::AlreadyInitialised => "already_initialised",
+            Self::InvalidSetupToken => "invalid_setup_token",
             Self::RegistrationClosed => "registration_closed",
             Self::UserExists(_) => "user_exists",
             Self::InvalidInvite(_) => "invalid_invite",

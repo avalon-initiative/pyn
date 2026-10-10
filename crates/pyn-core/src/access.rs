@@ -898,6 +898,16 @@ pub struct NewAccount {
     pub created_at: DateTime<Utc>,
 }
 
+/// What first-run setup recorded about the server; its presence means the server is initialised.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerSettings {
+    pub initialised_at: DateTime<Utc>,
+    pub server_name: Option<String>,
+    pub public_url: Option<String>,
+    /// Overrides the configured registration mode.
+    pub registration: Option<RegistrationMode>,
+}
+
 /// A pending email check. Only a hash of its token is kept.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerificationRecord {

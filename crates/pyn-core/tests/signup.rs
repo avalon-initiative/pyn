@@ -89,7 +89,7 @@ fn identity(user: &str) -> Identity {
 }
 
 async fn admin(w: &World) -> Identity {
-    w.svc.bootstrap_admin(&UserId::new("root")).await.unwrap();
+    w.svc.admin_for_tests(&UserId::new("root")).await.unwrap();
     identity("root")
 }
 

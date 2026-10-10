@@ -27,6 +27,7 @@ pub mod passwords;
 mod repo_api;
 mod repo_policy_api;
 mod session_api;
+mod setup_api;
 mod team_api;
 
 #[derive(Clone)]
@@ -57,6 +58,8 @@ struct RepoAddress {
 #[openapi(
     paths(
         health,
+        setup_api::setup_status,
+        setup_api::complete_setup,
         access_api::registration,
         access_api::register,
         access_api::verify_email,
@@ -158,6 +161,9 @@ struct RepoAddress {
         api::ActivityEntry,
         api::RepoSummary,
         api::Mode,
+        api::SetupStatus,
+        api::SetupRequest,
+        api::SetupCompleted,
         api::RegistrationInfo,
         api::RegisterRequest,
         api::Registered,
@@ -212,6 +218,10 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(health))
         .route("/openapi.json", get(|| async { Json(ApiDoc::openapi()) }))
+        .route(
+            "/v1/setup",
+            get(setup_api::setup_status).post(setup_api::complete_setup),
+        )
         .route("/v1/registration", get(access_api::registration))
         .route("/v1/register", post(access_api::register))
         .route("/v1/register/verify", post(access_api::verify_email))
@@ -355,6 +365,10 @@ pub fn router(state: AppState) -> Router {
             state.clone(),
             session_api::csrf_guard,
         ))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            setup_api::guard,
+        ))
         .with_state(state)
 }
 
@@ -383,11 +397,13 @@ impl IntoResponse for ApiError {
             | PynError::TeamExists { .. }
             | PynError::LastOrgOwner(_)
             | PynError::KeyInUse
+            | PynError::AlreadyInitialised
             | PynError::ServiceCredentialExists(_)
             | PynError::ConfirmationRequired { .. } => StatusCode::CONFLICT,
             PynError::NotLockHolder(_)
             | PynError::Forbidden(_)
             | PynError::RegistrationClosed
+            | PynError::InvalidSetupToken
             | PynError::AccountInactive(_)
             | PynError::ServerAdminRequired
             | PynError::ServiceScopeRequired(_)
@@ -398,6 +414,7 @@ impl IntoResponse for ApiError {
             | PynError::RepoCreateForbidden { .. }
             | PynError::CsrfFailed => StatusCode::FORBIDDEN,
             PynError::TooManyAttempts { .. } => StatusCode::TOO_MANY_REQUESTS,
+            PynError::NotInitialised => StatusCode::SERVICE_UNAVAILABLE,
             PynError::Unauthenticated(_) => StatusCode::UNAUTHORIZED,
             PynError::TokenNotFound(_)
             | PynError::ServiceCredentialNotFound(_)

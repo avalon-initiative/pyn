@@ -46,10 +46,11 @@ pub enum AuditAction {
     RepoCreationRuleRemoved,
     ServiceCredentialCreated,
     ServiceCredentialRevoked,
+    ServerSetupCompleted,
 }
 
 impl AuditAction {
-    pub const ALL: [AuditAction; 34] = [
+    pub const ALL: [AuditAction; 35] = [
         AuditAction::Checkout,
         AuditAction::Release,
         AuditAction::Checkin,
@@ -84,6 +85,7 @@ impl AuditAction {
         AuditAction::RepoCreationRuleRemoved,
         AuditAction::ServiceCredentialCreated,
         AuditAction::ServiceCredentialRevoked,
+        AuditAction::ServerSetupCompleted,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -122,6 +124,7 @@ impl AuditAction {
             Self::RepoCreationRuleRemoved => "repo_creation_rule_removed",
             Self::ServiceCredentialCreated => "service_credential_created",
             Self::ServiceCredentialRevoked => "service_credential_revoked",
+            Self::ServerSetupCompleted => "server_setup_completed",
         }
     }
 }

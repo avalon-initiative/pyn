@@ -228,7 +228,7 @@ async fn organizations_cannot_sign_in_or_act() {
 #[tokio::test]
 async fn the_server_can_limit_creation_to_administrators() {
     let w = world_with(OrgCreation::AdminsOnly);
-    w.access.bootstrap_admin(&user("root")).await.unwrap();
+    w.access.admin_for_tests(&user("root")).await.unwrap();
 
     let err = w
         .access

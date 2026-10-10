@@ -4,8 +4,8 @@ set -euo pipefail
 
 PYN=${PYN:-target/debug/pyn}
 export PYN_SERVER=${PYN_SERVER:-http://127.0.0.1:7878}
-ADMIN=${PYN_BOOTSTRAP_ADMIN:-admin}
-ADMIN_PASSWORD=${PYN_BOOTSTRAP_PASSWORD:-demo-password}
+ADMIN=${DEMO_ADMIN:-root}
+ADMIN_PASSWORD=${DEMO_PASSWORD:-demo-password}
 RUN_DIR=${RUN_DIR:-_running}
 POLICY=$(dirname "$0")/demo.pyn.toml
 tmp=$(mktemp -d)
@@ -32,6 +32,15 @@ for _ in $(seq 1 60); do
   sleep 0.5
 done
 curl -fs "$PYN_SERVER/healthz" >/dev/null || { echo "no server at $PYN_SERVER" >&2; exit 1; }
+
+# Completes first-run setup with PYN_SETUP_TOKEN unless the server has been set up already.
+if ! curl -fs "$PYN_SERVER/v1/setup" | grep -q '"initialised":true'; then
+  [ -n "${PYN_SETUP_TOKEN:-}" ] || { echo "the server is not set up; set PYN_SETUP_TOKEN to its setup token" >&2; exit 1; }
+  printf '{"token":"%s","username":"%s","password":"%s","server_name":"pyn demo","registration":"open"}' \
+    "$PYN_SETUP_TOKEN" "$ADMIN" "$ADMIN_PASSWORD" |
+    curl -fs -X POST -H 'content-type: application/json' --data-binary @- "$PYN_SERVER/v1/setup" >/dev/null
+  echo "server set up"
+fi
 
 echo "accounts"
 for user in alice bob; do

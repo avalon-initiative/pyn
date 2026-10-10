@@ -6,7 +6,7 @@ use pyn_core::memory::{
 };
 use pyn_core::{
     AccessConfig, AccessService, AccessStore, AuditStore, AuthProvider, MetadataStore, ObjectStore,
-    RateLimitStore, RateLimits, Repositories, Rules, SystemClock, UserId,
+    RateLimitStore, RateLimits, Repositories, Rules, SystemClock, generate_setup_token,
 };
 use pyn_fs::FsObjectStore;
 use pyn_postgres::PgMetadataStore;
@@ -125,6 +125,11 @@ async fn main() -> anyhow::Result<()> {
         Ok("log") | Err(_) => {}
         Ok(other) => anyhow::bail!("unknown PYN_EMAIL {other:?}; only \"log\" is available"),
     }
+    let supplied_token = std::env::var("PYN_SETUP_TOKEN").ok();
+    let setup_token = match &supplied_token {
+        Some(token) => token.clone(),
+        None => generate_setup_token()?,
+    };
     let access = Arc::new(
         AccessService::new(access_store, clock.clone())
             .with_config(config)
@@ -132,8 +137,22 @@ async fn main() -> anyhow::Result<()> {
             .with_audit(audit.clone())
             .with_rate_limits(limits)
             .with_email(Arc::new(LogEmailSender))
-            .with_passwords(Arc::new(PooledPasswords::new(hashes))),
+            .with_passwords(Arc::new(PooledPasswords::new(hashes)))
+            .with_setup_token(&setup_token)?,
     );
+    if access.load_setup().await? {
+        if supplied_token.is_some() {
+            tracing::warn!("PYN_SETUP_TOKEN is set but this server is already set up; remove it");
+        }
+    } else if supplied_token.is_some() {
+        tracing::warn!(
+            "this server is not set up yet; finish setup with the PYN_SETUP_TOKEN you supplied"
+        );
+    } else {
+        tracing::warn!(
+            "this server is not set up yet; finish setup with this one-time token: {setup_token}"
+        );
+    }
     for warning in access.startup_warnings() {
         tracing::warn!("{warning}");
     }
@@ -142,19 +161,6 @@ async fn main() -> anyhow::Result<()> {
         repos = repos.with_default_max_locks(limit.parse()?)?;
     }
     let repos = Arc::new(repos);
-
-    if let Ok(admin) = std::env::var("PYN_BOOTSTRAP_ADMIN") {
-        let token = access.bootstrap_admin(&UserId::new(admin.clone())).await?;
-        if let Ok(password) = std::env::var("PYN_BOOTSTRAP_PASSWORD") {
-            access
-                .set_password_for_operator(&UserId::new(admin.clone()), &password)
-                .await?;
-            tracing::warn!(
-                "administrator {admin} can sign in with the password from PYN_BOOTSTRAP_PASSWORD"
-            );
-        }
-        tracing::warn!("administrator {admin} can also use this token, shown once: {token}");
-    }
 
     let dev_auth: Option<Arc<dyn AuthProvider>> = if flag("PYN_DEV_AUTH") {
         tracing::warn!("PYN_DEV_AUTH is on: anyone who can reach this server can act as any user");

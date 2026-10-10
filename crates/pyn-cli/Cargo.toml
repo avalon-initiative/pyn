@@ -27,7 +27,7 @@ workspace = true
 
 [dev-dependencies]
 axum = "0.8.9"
-pyn-core = { path = "../pyn-core" }
+pyn-core = { path = "../pyn-core", features = ["test-support"] }
 pyn-server = { path = "../pyn-server" }
 tempfile = "3.27.0"
 tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros", "net"] }

@@ -407,7 +407,7 @@ async fn status(app: &axum::Router, req: Request<Body>) -> StatusCode {
 
 async fn admin_token(state: &AppState) -> String {
     let root = UserId::new("root");
-    let token = state.access.bootstrap_admin(&root).await.unwrap();
+    let token = state.access.admin_for_tests(&root).await.unwrap();
     state
         .access
         .add_creator(&RepoId::new(REPO_ID), &root)

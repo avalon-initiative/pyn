@@ -97,7 +97,7 @@ async fn world() -> (World, Identity, Identity) {
         svc: AccessService::new(Arc::new(MemoryAccessStore::new()), clock),
         repo: RepoId::new("game"),
     };
-    w.svc.bootstrap_admin(&UserId::new("root")).await.unwrap();
+    w.svc.admin_for_tests(&UserId::new("root")).await.unwrap();
     w.svc
         .add_creator(&w.repo, &UserId::new("root"))
         .await

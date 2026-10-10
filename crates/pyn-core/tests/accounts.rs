@@ -41,7 +41,7 @@ fn identity(user: &str) -> Identity {
 }
 
 async fn admin(w: &World) -> Principal {
-    w.svc.bootstrap_admin(&UserId::new("root")).await.unwrap();
+    w.svc.admin_for_tests(&UserId::new("root")).await.unwrap();
     w.svc
         .add_creator(&w.repo, &UserId::new("root"))
         .await
