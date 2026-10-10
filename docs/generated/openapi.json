@@ -32,7 +32,7 @@
         "tags": [
           "admin_api"
         ],
-        "operationId": "audit",
+        "operationId": "admin_audit",
         "parameters": [
           {
             "name": "before",
@@ -84,7 +84,7 @@
         "tags": [
           "admin_api"
         ],
-        "operationId": "create_org",
+        "operationId": "admin_create_org",
         "requestBody": {
           "content": {
             "application/json": {
@@ -154,7 +154,7 @@
         "tags": [
           "admin_api"
         ],
-        "operationId": "delete_org",
+        "operationId": "admin_delete_org",
         "parameters": [
           {
             "name": "org",
@@ -1265,7 +1265,7 @@
         "tags": [
           "org_api"
         ],
-        "operationId": "list_members",
+        "operationId": "org_list_members",
         "parameters": [
           {
             "name": "org",
@@ -2749,7 +2749,7 @@
     "/v1/repos/{owner}/{name}/audit": {
       "get": {
         "tags": [],
-        "operationId": "audit",
+        "operationId": "repo_audit",
         "parameters": [
           {
             "name": "owner",
@@ -3506,7 +3506,7 @@
         "tags": [
           "repo_api"
         ],
-        "operationId": "list_members",
+        "operationId": "repo_list_members",
         "parameters": [
           {
             "name": "owner",

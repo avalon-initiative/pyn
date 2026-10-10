@@ -151,3 +151,19 @@ fn nullable_cursors_are_required() {
         assert!(required.iter().any(|r| r == field), "{schema}.{field}");
     }
 }
+
+#[test]
+fn operation_ids_are_unique() {
+    let spec = spec();
+    let mut seen = std::collections::HashMap::new();
+    let mut dupes = Vec::new();
+    for (path, item) in spec["paths"].as_object().unwrap() {
+        for (method, op) in item.as_object().unwrap() {
+            let id = op["operationId"].as_str().unwrap().to_string();
+            if let Some(first) = seen.insert(id.clone(), format!("{method} {path}")) {
+                dupes.push(format!("{id}: {first} and {method} {path}"));
+            }
+        }
+    }
+    assert!(dupes.is_empty(), "duplicate operationIds: {dupes:#?}");
+}

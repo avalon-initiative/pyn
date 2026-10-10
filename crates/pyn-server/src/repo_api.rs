@@ -259,7 +259,7 @@ pub(crate) async fn set_role(
     Ok(StatusCode::NO_CONTENT)
 }
 
-#[utoipa::path(get, path = "/v1/repos/{owner}/{name}/members", params(RepoAddress),
+#[utoipa::path(get, path = "/v1/repos/{owner}/{name}/members", operation_id = "repo_list_members", params(RepoAddress),
     responses((status = 200, body = Vec<api::Member>, description = "everyone with access, one row each: the effective role and its source (direct, team or org_owner); needs manage_users")))]
 pub(crate) async fn list_members(
     State(s): State<AppState>,
