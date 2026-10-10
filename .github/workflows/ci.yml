@@ -27,7 +27,10 @@ jobs:
       - name: Rust cache
         uses: swatinem/rust-cache@v2
 
-      # fmt, clippy, tests, and the docs link check.
+      - name: Public boundary
+        run: make boundary-check
+
+      # fmt, clippy, tests, the docs link check and the public-boundary check.
       - name: Checks
         run: make check
 

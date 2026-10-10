@@ -7,7 +7,7 @@ LOG_DIR := $(RUN_DIR)/logs
 PID_FILE := $(PID_DIR)/pyn.pid
 LOG_FILE := $(LOG_DIR)/pyn.log
 
-.PHONY: dev demo docs-check openapi help build run start stop restart status test test-live fmt fmt-check lint check clean
+.PHONY: dev demo docs-check boundary-check openapi help build run start stop restart status test test-live fmt fmt-check lint check clean
 
 help:
 	@echo "pyn — local dev commands"
@@ -24,7 +24,8 @@ help:
 	@echo "  make test-live     also run tests gated on real infra (Postgres)"
 	@echo "  make fmt           auto-format"
 	@echo "  make fmt-check     format check, no writes"
-	@echo "  make lint          clippy + docs link check"
+	@echo "  make lint          clippy + docs link check + public-boundary check"
+	@echo "  make boundary-check  fail on private references or secrets in tracked files"
 	@echo "  make openapi       regenerate docs/generated/openapi.json"
 	@echo "  make check         fmt-check + lint + test — what CI runs"
 	@echo "  make clean         remove build artifacts and PID/log files"
@@ -80,6 +81,7 @@ fmt-check:
 lint:
 	cargo clippy --workspace --all-targets -- -D warnings
 	python3 scripts/check_links.py
+	python3 scripts/check_public_boundary.py
 
 DEMO_ADMIN ?= root
 DEMO_PASSWORD ?= demo-password
@@ -101,6 +103,9 @@ demo:
 
 docs-check:
 	python3 scripts/check_links.py
+
+boundary-check:
+	python3 scripts/check_public_boundary.py
 
 openapi:
 	PYN_UPDATE_OPENAPI=1 cargo test -p pyn-server --test openapi
