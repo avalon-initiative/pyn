@@ -15,7 +15,9 @@ use pyn_core::{
 };
 use pyn_proto as api;
 use serde::Deserialize;
-use utoipa::{IntoParams, OpenApi};
+use utoipa::openapi::RefOr;
+use utoipa::openapi::schema::{KnownFormat, ObjectBuilder, Schema, SchemaFormat, Type};
+use utoipa::{IntoParams, OpenApi, PartialSchema, ToSchema};
 
 mod access_api;
 mod admin_api;
@@ -893,6 +895,20 @@ async fn summary(
     }))
 }
 
+/// The raw bytes of a file revision.
+struct FileContent;
+
+impl PartialSchema for FileContent {
+    fn schema() -> RefOr<Schema> {
+        ObjectBuilder::new()
+            .schema_type(Type::String)
+            .format(Some(SchemaFormat::KnownFormat(KnownFormat::Binary)))
+            .into()
+    }
+}
+
+impl ToSchema for FileContent {}
+
 #[derive(Deserialize)]
 struct ContentQuery {
     path: String,
@@ -903,7 +919,7 @@ struct ContentQuery {
 #[utoipa::path(get, path = "/v1/repos/{owner}/{name}/content",
     params(RepoAddress, ("path" = String, Query, description = "repo-relative path"),
            ("revision" = Option<u64>, Query, description = "revision number; the head if omitted")),
-    responses((status = 200, content_type = "application/octet-stream", body = Vec<u8>),
+    responses((status = 200, content_type = "application/octet-stream", body = inline(FileContent)),
               (status = 404, body = api::ErrorBody, description = "revision_not_found")))]
 async fn get_content(
     State(s): State<AppState>,

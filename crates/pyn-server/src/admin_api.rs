@@ -54,7 +54,9 @@ pub(crate) async fn list_accounts(
     Ok(Json(accounts.into_iter().map(info).collect()))
 }
 
-#[utoipa::path(post, path = "/v1/admin/users/{user}/approve", responses(
+#[utoipa::path(post, path = "/v1/admin/users/{user}/approve",
+    params(("user" = String, Path, description = "the account's user name")),
+    responses(
     (status = 200, body = api::AccountInfo),
     (status = 400, body = api::ErrorBody, description = "invalid_request: the account is not waiting for approval"),
     (status = 403, body = api::ErrorBody, description = "server_admin_required, or service_scope_required for a service credential without manage_accounts"),
@@ -70,7 +72,9 @@ pub(crate) async fn approve(
     Ok(Json(info(account)))
 }
 
-#[utoipa::path(post, path = "/v1/admin/users/{user}/disable", request_body = api::DisableAccountRequest, responses(
+#[utoipa::path(post, path = "/v1/admin/users/{user}/disable",
+    params(("user" = String, Path, description = "the account's user name")),
+    request_body = api::DisableAccountRequest, responses(
     (status = 200, body = api::AccountInfo, description = "sessions end at once; tokens and keys stop working"),
     (status = 400, body = api::ErrorBody, description = "invalid_request: one's own account"),
     (status = 403, body = api::ErrorBody, description = "server_admin_required, or service_scope_required for a service credential without manage_accounts"),
@@ -90,7 +94,9 @@ pub(crate) async fn disable(
     Ok(Json(info(account)))
 }
 
-#[utoipa::path(post, path = "/v1/admin/users/{user}/enable", responses(
+#[utoipa::path(post, path = "/v1/admin/users/{user}/enable",
+    params(("user" = String, Path, description = "the account's user name")),
+    responses(
     (status = 200, body = api::AccountInfo),
     (status = 400, body = api::ErrorBody, description = "invalid_request: the account is not disabled"),
     (status = 403, body = api::ErrorBody, description = "server_admin_required, or service_scope_required for a service credential without manage_accounts"),

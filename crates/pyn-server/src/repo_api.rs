@@ -240,7 +240,8 @@ pub(crate) async fn list_roles(
     Ok(Json(grants))
 }
 
-#[utoipa::path(put, path = "/v1/repos/{owner}/{name}/roles/{role}", params(RepoAddress), request_body = api::SetRoleRequest, responses(
+#[utoipa::path(put, path = "/v1/repos/{owner}/{name}/roles/{role}",
+    params(RepoAddress, ("role" = String, Path, description = "the role's name")), request_body = api::SetRoleRequest, responses(
     (status = 204),
     (status = 403, body = api::ErrorBody, description = "needs manage_roles"),
 ))]
@@ -279,7 +280,8 @@ pub(crate) async fn list_members(
     ))
 }
 
-#[utoipa::path(put, path = "/v1/repos/{owner}/{name}/members/{user}", params(RepoAddress), request_body = api::SetMemberRequest, responses(
+#[utoipa::path(put, path = "/v1/repos/{owner}/{name}/members/{user}",
+    params(RepoAddress, ("user" = String, Path, description = "the member's user name")), request_body = api::SetMemberRequest, responses(
     (status = 204),
     (status = 403, body = api::ErrorBody, description = "needs manage_users and every permission the role grants"),
 ))]
@@ -374,7 +376,8 @@ pub(crate) async fn list_invites(
     Ok(Json(invites.into_iter().map(invite_info).collect()))
 }
 
-#[utoipa::path(delete, path = "/v1/repos/{owner}/{name}/invites/{id}", params(RepoAddress),
+#[utoipa::path(delete, path = "/v1/repos/{owner}/{name}/invites/{id}",
+    params(RepoAddress, ("id" = String, Path, description = "the invitation's id")),
     responses((status = 204), (status = 400, body = api::ErrorBody)))]
 pub(crate) async fn revoke_invite(
     State(s): State<AppState>,

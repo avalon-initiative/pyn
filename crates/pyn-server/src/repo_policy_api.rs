@@ -72,8 +72,8 @@ pub(crate) async fn set_repo_policy(
 
 #[utoipa::path(put, path = "/v1/orgs/{org}/repo-policy/rules/{effect}/{kind}/{subject}",
     params(("org" = String, Path, description = "the organization's name"),
-           ("effect" = String, Path, description = "allow or deny"),
-           ("kind" = String, Path, description = "team, user or role"),
+           ("effect" = api::CreationEffect, Path),
+           ("kind" = api::CreationSubjectKind, Path),
            ("subject" = String, Path, description = "a team slug, an organization member's user name, or owner or member")),
     request_body = api::SetCreationRuleRequest,
     responses((status = 200, body = api::CreationRuleInfo, description = "adds the rule or replaces its scope"),
@@ -102,8 +102,8 @@ pub(crate) async fn set_creation_rule(
 
 #[utoipa::path(delete, path = "/v1/orgs/{org}/repo-policy/rules/{effect}/{kind}/{subject}",
     params(("org" = String, Path, description = "the organization's name"),
-           ("effect" = String, Path, description = "allow or deny"),
-           ("kind" = String, Path, description = "team, user or role"),
+           ("effect" = api::CreationEffect, Path),
+           ("kind" = api::CreationSubjectKind, Path),
            ("subject" = String, Path, description = "a team slug, a user name, or owner or member")),
     responses((status = 204, description = "rule removed"),
               (status = 400, body = api::ErrorBody, description = "invalid_request: bad effect, kind or subject"),
