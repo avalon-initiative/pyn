@@ -20,7 +20,7 @@ use crate::error::{PynError, Result};
 use crate::history::HistoryCursor;
 use crate::object::ObjectStore;
 use crate::ratelimit::{RateLimitStore, RateState};
-use crate::repo::{RepoRecord, RepoUpdate};
+use crate::repo::{RepoRecord, RepoUpdate, Visibility};
 use crate::repo_policy::{
     CreationEffect, CreationRule, CreationScope, CreationSubject, MemberCreation, RepoPolicy,
 };
@@ -326,6 +326,26 @@ impl MetadataStore for MemoryMetadataStore {
             .cloned()
             .collect();
         out.sort_by(|a, b| (&a.owner, &a.name).cmp(&(&b.owner, &b.name)));
+        Ok(out)
+    }
+
+    async fn list_public_repos(
+        &self,
+        after: Option<(&UserId, &str)>,
+        limit: usize,
+    ) -> Result<Vec<RepoRecord>> {
+        let st = self.state.lock().unwrap();
+        let mut out: Vec<_> = st
+            .repos
+            .values()
+            .filter(|r| r.visibility == Visibility::Public)
+            .filter(|r| {
+                after.is_none_or(|(o, n)| (r.owner.as_str(), r.name.as_str()) > (o.as_str(), n))
+            })
+            .cloned()
+            .collect();
+        out.sort_by(|a, b| (&a.owner, &a.name).cmp(&(&b.owner, &b.name)));
+        out.truncate(limit);
         Ok(out)
     }
 

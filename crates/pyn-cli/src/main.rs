@@ -252,6 +252,12 @@ enum RepoCommand {
         #[arg(long)]
         owner: Option<String>,
     },
+    /// List public repositories on the server, including ones you have no role in; works signed out.
+    Explore {
+        /// At most this many repositories.
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+    },
     /// Make a repository public (anyone may read it) or private (members only). Owner and admin only.
     Visibility {
         /// `owner/name`.
@@ -1398,6 +1404,32 @@ fn repo_command(api: &Api, cmd: RepoCommand) -> Result<()> {
                 &rows,
                 "no repositories",
             );
+        }
+        RepoCommand::Explore { limit } => {
+            let mut repos: Vec<api::RepoInfo> = Vec::new();
+            let mut after: Option<String> = None;
+            while repos.len() < limit {
+                let mut query = vec![("limit", (limit - repos.len()).min(200).to_string())];
+                query.extend(after.take().map(|a| ("after", a)));
+                let page: api::RepoPage = api
+                    .send(api.get("/v1/explore/repos").query(&query))?
+                    .json()?;
+                repos.extend(page.repos);
+                after = page.next_after;
+                if after.is_none() {
+                    break;
+                }
+            }
+            let rows: Vec<Vec<String>> = repos
+                .into_iter()
+                .map(|r| {
+                    vec![
+                        r.role.unwrap_or_else(|| "-".into()),
+                        format!("{}/{}", r.owner, r.name),
+                    ]
+                })
+                .collect();
+            table::show(&["ROLE", "REPOSITORY"], &rows, "no public repositories");
         }
         RepoCommand::Visibility { name, visibility } => {
             let (owner, short) = address::split_repo(&name)?;

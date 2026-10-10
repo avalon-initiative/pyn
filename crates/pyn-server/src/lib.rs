@@ -116,6 +116,7 @@ struct RepoAddress {
         team_api::set_repo_team,
         team_api::remove_repo_team,
         repo_api::list_repos,
+        repo_api::explore_repos,
         repo_api::create_repo,
         repo_api::get_repo,
         repo_api::update_repo,
@@ -158,6 +159,7 @@ struct RepoAddress {
         api::ErrorBody,
         api::FileEntry,
         api::FilePage,
+        api::RepoPage,
         api::TreeEntryKind,
         api::TreeMode,
         api::TreeEntry,
@@ -315,6 +317,7 @@ pub fn router(state: AppState) -> Router {
             put(team_api::add_team_member).delete(team_api::remove_team_member),
         )
         .route("/v1/me/orgs", get(org_api::my_orgs))
+        .route("/v1/explore/repos", get(repo_api::explore_repos))
         .route(
             "/v1/repos",
             get(repo_api::list_repos).post(repo_api::create_repo),

@@ -356,6 +356,15 @@ pub struct RepoInfo {
     pub role: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct RepoPage {
+    /// Ordered by owner, then name.
+    pub repos: Vec<RepoInfo>,
+    /// Pass as `after` to fetch the next page; null on the last page.
+    #[schema(required = true)]
+    pub next_after: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct CreateRepoRequest {
     /// The namespace to create it in: the caller's own account name, or an organization whose repository-creation
