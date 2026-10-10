@@ -975,7 +975,7 @@ struct AuditQueryParams {
     limit: Option<usize>,
 }
 
-#[utoipa::path(get, path = "/v1/repos/{owner}/{name}/audit",
+#[utoipa::path(get, path = "/v1/repos/{owner}/{name}/audit", operation_id = "repo_audit",
     params(RepoAddress, ("path" = Option<String>, Query, description = "only events for this path"),
            ("actor" = Option<String>, Query, description = "only events by this user"),
            ("action" = Option<String>, Query, description = "checkout, release, checkin, restore, force_unlock, member_added, role_changed, role_permissions_changed, team_access_set, team_access_removed, token_created, token_revoked, repo_created, repo_updated, repo_deleted or policy_changed"),

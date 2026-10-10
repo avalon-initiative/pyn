@@ -144,7 +144,7 @@ pub(crate) async fn org_audit(
     }))
 }
 
-#[utoipa::path(get, path = "/v1/orgs/{org}/members",
+#[utoipa::path(get, path = "/v1/orgs/{org}/members", operation_id = "org_list_members",
     params(("org" = String, Path, description = "the organization's name")),
     responses((status = 200, body = Vec<api::OrgMember>, description = "ordered by user name; any member may list"),
               (status = 403, body = api::ErrorBody, description = "not_org_member"),
