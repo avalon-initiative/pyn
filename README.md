@@ -38,8 +38,8 @@ cd ../pyn-web && npm ci && npm run dev    # http://localhost:5173, sign in as al
 ```
 
 For your own server instead of the demo: `cp .env.example .env`, then `make run` (foreground, reads `.env`). A new
-server is uninitialised and prints a one-time setup token in its log; `POST /v1/setup` with that token creates the first
-administrator, then `pyn login <name>`. See [first-run setup](docs/concepts/access.md#first-run-setup).
+server is uninitialised and prints a one-time setup token in its log; `pyn setup <name> --setup-token <token>` (or `POST /v1/setup`)
+creates the first administrator, then `pyn login <name>`. See [first-run setup](docs/concepts/access.md#first-run-setup).
 
 | Variable | Meaning |
 | --- | --- |
