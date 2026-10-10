@@ -118,7 +118,7 @@ pub(crate) struct AuditParams {
     limit: Option<usize>,
 }
 
-#[utoipa::path(get, path = "/v1/admin/audit",
+#[utoipa::path(get, path = "/v1/admin/audit", operation_id = "admin_audit",
     params(("before" = Option<i64>, Query, description = "events older than this id"),
            ("limit" = Option<usize>, Query, description = "page size, default 50, max 500")),
     responses((status = 200, body = api::AuditPage, description = "account_approved, account_disabled and account_enabled events"),
@@ -157,7 +157,7 @@ pub(crate) async fn audit(
     }))
 }
 
-#[utoipa::path(post, path = "/v1/admin/orgs", request_body = api::AdminCreateOrgRequest, responses(
+#[utoipa::path(post, path = "/v1/admin/orgs", operation_id = "admin_create_org", request_body = api::AdminCreateOrgRequest, responses(
     (status = 201, body = api::OrgInfo, description = "the named user becomes its first owner"),
     (status = 400, body = api::ErrorBody, description = "invalid_request (bad name) or reserved_name"),
     (status = 403, body = api::ErrorBody, description = "server_admin_required, or service_scope_required for a service credential without manage_organizations"),
@@ -184,7 +184,7 @@ pub(crate) async fn create_org(
     ))
 }
 
-#[utoipa::path(delete, path = "/v1/admin/orgs/{org}",
+#[utoipa::path(delete, path = "/v1/admin/orgs/{org}", operation_id = "admin_delete_org",
     params(("org" = String, Path, description = "the organization's name")),
     responses((status = 204, description = "its audit log is kept"),
               (status = 403, body = api::ErrorBody, description = "server_admin_required, or service_scope_required for a service credential without manage_organizations"),
