@@ -181,6 +181,7 @@ pub struct OrgInfo {
     pub name: String,
     pub created_at: DateTime<Utc>,
     /// The caller's standing in it (`owner` or `member`); absent when they have none.
+    #[schema(value_type = Option<OrgRole>)]
     pub role: Option<String>,
 }
 
