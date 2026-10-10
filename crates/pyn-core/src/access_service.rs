@@ -7,9 +7,9 @@ use chrono::{DateTime, Duration, Utc};
 use crate::access::{
     AccountKind, AccountRecord, AccountStatus, Credential, Identity, InviteId, InviteRecord,
     NewAccount, ORG_DELETE_MARK_SECONDS, OrgCreation, OrgRole, Permission, Principal,
-    RegistrationMode, Role, RoleDefinitions, RoleSource, ServiceCredentialRecord, ServiceScope,
-    SessionRecord, SignupStage, SshKeyRecord, TeamRecord, TokenId, TokenRecord, VerificationRecord,
-    account, invite, service_credential, session, ssh, token, verification,
+    RegistrationMode, Role, RoleDefinitions, RoleSource, ServerSettings, ServiceCredentialRecord,
+    ServiceScope, SessionRecord, SignupStage, SshKeyRecord, TeamRecord, TokenId, TokenRecord,
+    VerificationRecord, account, invite, service_credential, session, ssh, token, verification,
 };
 use crate::audit::{AuditAction, AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent};
 use crate::clock::Clock;
@@ -30,8 +30,10 @@ pub const SERVER_AUDIT_ID: &str = "@server";
 
 mod organizations;
 mod repo_policy;
+mod setup;
 mod teams;
 
+pub use setup::{SetupRequest, SetupStatus, generate_setup_token};
 pub use teams::TeamDetail;
 
 /// The outcome of changing or removing an organization member.
@@ -329,6 +331,13 @@ pub trait AccessStore: Send + Sync {
     async fn take_verification(&self, token_hash: &str) -> Result<Option<VerificationRecord>>;
 
     async fn delete_sessions_of(&self, user: &UserId) -> Result<()>;
+
+    /// What setup recorded; `None` while the server is uninitialised.
+    async fn server_settings(&self) -> Result<Option<ServerSettings>>;
+
+    /// Creates `admin` as a server administrator and records `settings` in one step. False if setup already ran;
+    /// `UserExists` if the name is taken.
+    async fn complete_setup(&self, admin: NewAccount, settings: ServerSettings) -> Result<bool>;
 }
 
 /// How many events one key may cause in a window before further ones are refused.
@@ -474,6 +483,7 @@ pub struct AccessService {
     email: Arc<dyn EmailSender>,
     passwords: Arc<dyn PasswordWorker>,
     registry: Option<Arc<dyn MetadataStore>>,
+    setup: setup::SetupState,
 }
 
 fn stronger(
@@ -514,6 +524,7 @@ impl AccessService {
             email: Arc::new(NullEmailSender),
             passwords: Arc::new(InlinePasswords),
             registry: None,
+            setup: setup::SetupState::default(),
         }
     }
 
@@ -578,7 +589,17 @@ impl AccessService {
     }
 
     pub fn registration_mode(&self) -> RegistrationMode {
-        self.config.registration
+        self.setup
+            .settings()
+            .and_then(|s| s.registration)
+            .unwrap_or(self.config.registration)
+    }
+
+    fn public_url(&self) -> String {
+        self.setup
+            .settings()
+            .and_then(|s| s.public_url)
+            .unwrap_or_else(|| self.config.public_url.clone())
     }
 
     pub fn requires_email_verification(&self) -> bool {
@@ -764,7 +785,7 @@ impl AccessService {
         Ok((record, full))
     }
 
-    /// Mints a token without an audit event, for sign-in sessions and the bootstrap admin. An empty `repos`
+    /// Mints a token without an audit event, for sign-in sessions. An empty `repos`
     /// means every repository; the owner's role still caps what it can do in each.
     async fn issue_token(
         &self,
@@ -1147,7 +1168,7 @@ impl AccessService {
     pub async fn register(&self, request: Registration<'_>) -> Result<SignUp> {
         let user = account::validate_username(request.username)?;
         account::validate_password(request.password)?;
-        let open = match self.config.registration {
+        let open = match self.registration_mode() {
             RegistrationMode::Closed => return Err(PynError::RegistrationClosed),
             RegistrationMode::Open => true,
             RegistrationMode::InviteOnly => false,
@@ -1286,7 +1307,7 @@ impl AccessService {
             .await?;
         let link = format!(
             "{}/verify-email?token={raw}",
-            self.config.public_url.trim_end_matches('/')
+            self.public_url().trim_end_matches('/')
         );
         self.email
             .send(EmailMessage {
@@ -1355,7 +1376,7 @@ impl AccessService {
         let Ok(email) = account::normalize_email(email) else {
             return Ok(());
         };
-        if self.config.registration != RegistrationMode::Open
+        if self.registration_mode() != RegistrationMode::Open
             || !self.config.require_email_verification
         {
             return Ok(());
@@ -1598,13 +1619,13 @@ impl AccessService {
         self.store.set_password_hash(user, &hash).await
     }
 
-    /// Creates the first account and a token for it that reaches every repository it belongs to, for the person
-    /// running the server.
-    pub async fn bootstrap_admin(&self, user: &UserId) -> Result<String> {
+    /// Creates a server administrator and a token reaching every repository it belongs to, skipping setup.
+    #[cfg(feature = "test-support")]
+    pub async fn admin_for_tests(&self, user: &UserId) -> Result<String> {
         self.store.ensure_user(user, self.clock.now()).await?;
         self.store.set_admin(user, true).await?;
         let (_, full) = self
-            .issue_token(user, "bootstrap", Permission::ALL.into(), Vec::new(), None)
+            .issue_token(user, "test", Permission::ALL.into(), Vec::new(), None)
             .await?;
         Ok(full)
     }

@@ -6,10 +6,10 @@ use chrono::{DateTime, Duration, Utc};
 use pyn_core::{
     AccessStore, AccountKind, AccountRecord, AccountStatus, CreationEffect, CreationRule,
     CreationScope, CreationSubject, InviteId, InviteRecord, MemberCreation, NewAccount,
-    OrgDeleteMark, OrgMemberChange, OrgRole, Permission, RateLimitStore, RateState, RepoId,
-    RepoPolicy, Result, Role, RoleDefinitions, ServiceCredentialRecord, ServiceScope,
-    SessionRecord, SignupStage, SshKeyRecord, SubjectKind, TeamRecord, TokenId, TokenRecord,
-    UserId, VerificationRecord,
+    OrgDeleteMark, OrgMemberChange, OrgRole, Permission, PynError, RateLimitStore, RateState,
+    RegistrationMode, RepoId, RepoPolicy, Result, Role, RoleDefinitions, ServerSettings,
+    ServiceCredentialRecord, ServiceScope, SessionRecord, SignupStage, SshKeyRecord, SubjectKind,
+    TeamRecord, TokenId, TokenRecord, UserId, VerificationRecord,
 };
 use sqlx::Row;
 use sqlx::postgres::PgRow;
@@ -1353,6 +1353,62 @@ impl AccessStore for PgMetadataStore {
             .await
             .map_err(db)?;
         Ok(())
+    }
+
+    async fn server_settings(&self) -> Result<Option<ServerSettings>> {
+        let row = sqlx::query(
+            "SELECT initialised_at, server_name, public_url, registration FROM server_settings",
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db)?;
+        row.map(|row| {
+            Ok(ServerSettings {
+                initialised_at: row.get("initialised_at"),
+                server_name: row.get("server_name"),
+                public_url: row.get("public_url"),
+                registration: row
+                    .get::<Option<String>, _>("registration")
+                    .map(|m| RegistrationMode::from_str(&m))
+                    .transpose()?,
+            })
+        })
+        .transpose()
+    }
+
+    async fn complete_setup(&self, admin: NewAccount, settings: ServerSettings) -> Result<bool> {
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        let claimed = sqlx::query(
+            "INSERT INTO server_settings (initialised_at, server_name, public_url, registration)
+             VALUES ($1, $2, $3, $4) ON CONFLICT (singleton) DO NOTHING",
+        )
+        .bind(settings.initialised_at)
+        .bind(settings.server_name)
+        .bind(settings.public_url)
+        .bind(settings.registration.map(RegistrationMode::as_str))
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
+        if claimed.rows_affected() == 0 {
+            return Ok(false);
+        }
+        let created = sqlx::query(
+            "INSERT INTO users (id, created_at, email, password_hash, signup, is_admin)
+             VALUES ($1, $2, $3, $4, $5, true) ON CONFLICT (id) DO NOTHING",
+        )
+        .bind(admin.user.as_str())
+        .bind(admin.created_at)
+        .bind(admin.email)
+        .bind(admin.password_hash)
+        .bind(admin.signup.as_str())
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
+        if created.rows_affected() == 0 {
+            return Err(PynError::UserExists(admin.user));
+        }
+        tx.commit().await.map_err(db)?;
+        Ok(true)
     }
 }
 

@@ -9,8 +9,8 @@ use sha2::{Digest, Sha256};
 
 use crate::access::{
     AccountKind, AccountRecord, AccountStatus, InviteId, InviteRecord, NewAccount, OrgRole,
-    Permission, Role, RoleDefinitions, ServiceCredentialRecord, SessionRecord, SignupStage,
-    SshKeyRecord, TeamRecord, TokenId, TokenRecord, VerificationRecord,
+    Permission, Role, RoleDefinitions, ServerSettings, ServiceCredentialRecord, SessionRecord,
+    SignupStage, SshKeyRecord, TeamRecord, TokenId, TokenRecord, VerificationRecord,
 };
 use crate::access_service::{AccessStore, OrgDeleteMark, OrgMemberChange};
 use crate::audit::{AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent};
@@ -408,6 +408,7 @@ struct AccessState {
     tokens: HashMap<TokenId, TokenRecord>,
     service_credentials: HashMap<TokenId, ServiceCredentialRecord>,
     sessions: HashMap<String, SessionRecord>,
+    settings: Option<ServerSettings>,
 }
 
 impl AccessState {
@@ -1084,6 +1085,30 @@ impl AccessStore for MemoryAccessStore {
             .sessions
             .retain(|_, s| &s.user != user);
         Ok(())
+    }
+
+    async fn server_settings(&self) -> Result<Option<ServerSettings>> {
+        Ok(self.state.lock().unwrap().settings.clone())
+    }
+
+    async fn complete_setup(&self, admin: NewAccount, settings: ServerSettings) -> Result<bool> {
+        let mut st = self.state.lock().unwrap();
+        if st.settings.is_some() {
+            return Ok(false);
+        }
+        if st.accounts.contains_key(&admin.user) {
+            return Err(PynError::UserExists(admin.user));
+        }
+        st.passwords.insert(admin.user.clone(), admin.password_hash);
+        let account = AccountRecord {
+            email: admin.email,
+            signup: admin.signup,
+            is_admin: true,
+            ..plain_account(&admin.user, admin.created_at)
+        };
+        st.accounts.insert(admin.user, account);
+        st.settings = Some(settings);
+        Ok(true)
     }
 
     async fn set_password_hash(&self, user: &UserId, hash: &str) -> Result<()> {

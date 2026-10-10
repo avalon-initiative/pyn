@@ -19,7 +19,7 @@ use tower::ServiceExt;
 
 const PASSWORD: &str = "correct horse battery";
 
-/// The app and a token for the bootstrap administrator `root`.
+/// The app and a token for the administrator `root`.
 async fn server_with_root(org_creation: OrgCreation) -> (Router, String) {
     let (app, root, _) = server_with_store(org_creation).await;
     (app, root)
@@ -42,7 +42,7 @@ async fn server_with_store(org_creation: OrgCreation) -> (Router, String, Arc<Me
             .with_registry(meta.clone())
             .with_audit(audit.clone()),
     );
-    let root = access.bootstrap_admin(&UserId::new("root")).await.unwrap();
+    let root = access.admin_for_tests(&UserId::new("root")).await.unwrap();
     let repos = Arc::new(Repositories::new(
         meta,
         objects.clone(),

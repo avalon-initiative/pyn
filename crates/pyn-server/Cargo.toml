@@ -26,5 +26,6 @@ utoipa = "6.0.0"
 workspace = true
 
 [dev-dependencies]
+pyn-core = { path = "../pyn-core", features = ["test-support"] }
 http-body-util = "0.1.5"
 tower = "0.5.3"

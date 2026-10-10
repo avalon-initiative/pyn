@@ -8,8 +8,9 @@ use chrono::{Duration, TimeZone, Utc};
 
 use crate::access::{
     AccountKind, AccountStatus, InviteId, InviteRecord, NewAccount, OrgRole, Permission, Principal,
-    Role, RoleDefinitions, RoleSource, ServiceCredentialRecord, ServiceScope, SessionRecord,
-    SignupStage, SshKeyRecord, TeamRecord, TokenId, TokenRecord, VerificationRecord,
+    RegistrationMode, Role, RoleDefinitions, RoleSource, ServerSettings, ServiceCredentialRecord,
+    ServiceScope, SessionRecord, SignupStage, SshKeyRecord, TeamRecord, TokenId, TokenRecord,
+    VerificationRecord,
 };
 use crate::clock::Clock;
 use crate::memory::{MemoryAuditStore, MemoryMetadataStore, MemoryObjectStore};
@@ -3188,6 +3189,69 @@ pub async fn self_registered_accounts_start_pending_and_keep_their_password(stor
     assert!(bob.email.is_none());
 }
 
+pub async fn setup_runs_once_and_creates_the_administrator_with_its_settings(store: Access) {
+    assert!(store.server_settings().await.unwrap().is_none());
+    let settings = ServerSettings {
+        initialised_at: at(0),
+        server_name: Some("Studio".into()),
+        public_url: Some("https://pyn.example".into()),
+        registration: Some(RegistrationMode::Closed),
+    };
+    let mut admin = new_account("root", "root@example.org", 0);
+    admin.signup = SignupStage::Complete;
+    assert!(
+        store
+            .complete_setup(admin.clone(), settings.clone())
+            .await
+            .unwrap()
+    );
+    assert_eq!(store.server_settings().await.unwrap(), Some(settings));
+    let account = store.account(&user("root")).await.unwrap().unwrap();
+    assert!(account.is_admin);
+    assert_eq!(account.status(), AccountStatus::Active);
+    assert_eq!(
+        store.password_hash(&user("root")).await.unwrap().as_deref(),
+        Some("hash-root")
+    );
+
+    let other = ServerSettings {
+        initialised_at: at(1),
+        server_name: None,
+        public_url: None,
+        registration: None,
+    };
+    let mut second = new_account("second", "second@example.org", 1);
+    second.signup = SignupStage::Complete;
+    assert!(!store.complete_setup(second, other).await.unwrap());
+    assert!(store.account(&user("second")).await.unwrap().is_none());
+    assert_eq!(
+        store
+            .server_settings()
+            .await
+            .unwrap()
+            .unwrap()
+            .server_name
+            .as_deref(),
+        Some("Studio")
+    );
+}
+
+pub async fn a_setup_that_fails_leaves_the_server_uninitialised(store: Access) {
+    store.ensure_user(&user("root"), at(0)).await.unwrap();
+    let settings = ServerSettings {
+        initialised_at: at(1),
+        server_name: None,
+        public_url: None,
+        registration: None,
+    };
+    let err = store
+        .complete_setup(new_account("root", "root@example.org", 1), settings)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::UserExists(_)));
+    assert!(store.server_settings().await.unwrap().is_none());
+}
+
 pub async fn a_verified_address_belongs_to_one_account(store: Access) {
     for (name, minute) in [("alice", 0), ("bob", 1)] {
         store
@@ -4005,6 +4069,8 @@ macro_rules! access_contract_tests {
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; sessions_are_found_deleted_and_swept_when_expired);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; repos_of_lists_a_users_roles_and_forgetting_a_repo_clears_its_access);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; self_registered_accounts_start_pending_and_keep_their_password);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; setup_runs_once_and_creates_the_administrator_with_its_settings);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; a_setup_that_fails_leaves_the_server_uninitialised);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; a_verified_address_belongs_to_one_account);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; accounts_can_be_approved_disabled_enabled_and_listed);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; verifications_are_single_use_and_replace_earlier_ones);

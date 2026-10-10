@@ -508,6 +508,39 @@ pub struct RegistrationInfo {
     pub approval: bool,
 }
 
+/// Whether first-run setup has happened; carries no secrets.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct SetupStatus {
+    pub initialised: bool,
+    /// Set once setup recorded a name.
+    pub server_name: Option<String>,
+    /// What setup recorded; before setup, the address the server is configured with.
+    pub public_url: String,
+    /// `open`, `invite` or `closed`: what setup recorded, or the configured default before setup.
+    pub registration: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct SetupRequest {
+    /// The one-time setup token from the server's log or its `PYN_SETUP_TOKEN` setting.
+    pub token: String,
+    /// The first administrator's user name.
+    pub username: String,
+    pub password: String,
+    pub email: Option<String>,
+    pub server_name: Option<String>,
+    /// The address people reach the web app at; verification links use it.
+    pub public_url: Option<String>,
+    /// `open`, `invite` or `closed`.
+    pub registration: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct SetupCompleted {
+    /// The first administrator, who can now sign in with the password.
+    pub user: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct RegisterRequest {
     pub username: String,

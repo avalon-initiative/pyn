@@ -81,14 +81,15 @@ lint:
 	cargo clippy --workspace --all-targets -- -D warnings
 	python3 scripts/check_links.py
 
-DEMO_ADMIN ?= admin
+DEMO_ADMIN ?= root
 DEMO_PASSWORD ?= demo-password
+DEMO_SETUP_TOKEN ?= demo-setup-token-not-a-secret
 PYN_ADDR ?= 127.0.0.1:7878
 
 dev: build
-	@$(MAKE) --no-print-directory start PYN_BOOTSTRAP_ADMIN=$(DEMO_ADMIN) PYN_BOOTSTRAP_PASSWORD=$(DEMO_PASSWORD) \
+	@$(MAKE) --no-print-directory start PYN_SETUP_TOKEN=$(DEMO_SETUP_TOKEN) \
 		PYN_REGISTRATION=open PYN_EMAIL_VERIFICATION=false PYN_ADDR=$(PYN_ADDR) PYN_CONFIG=scripts/demo.pyn.toml
-	@PYN_SERVER=http://$(PYN_ADDR) PYN_BOOTSTRAP_ADMIN=$(DEMO_ADMIN) PYN_BOOTSTRAP_PASSWORD=$(DEMO_PASSWORD) scripts/demo.sh
+	@PYN_SERVER=http://$(PYN_ADDR) PYN_SETUP_TOKEN=$(DEMO_SETUP_TOKEN) DEMO_ADMIN=$(DEMO_ADMIN) DEMO_PASSWORD=$(DEMO_PASSWORD) scripts/demo.sh
 	@echo
 	@echo "server   http://$(PYN_ADDR) ($(if $(PYN_DATABASE_URL),postgres,in-memory); stop with make stop)"
 	@echo "sign in  $(DEMO_ADMIN) / $(DEMO_PASSWORD)   alice / alice-password   bob / bob-password"

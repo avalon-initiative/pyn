@@ -148,7 +148,7 @@ Signing up with an email address that already belongs to a verified account gets
 hashing work is the same); the address's owner gets a notice instead of a link, and no account is created.
 `POST /v1/register/resend` always answers `202`. A taken user name is `409 user_exists`, as on GitHub, since names are public.
 
-**Server administrators** approve, disable and enable accounts. The account named by `PYN_BOOTSTRAP_ADMIN` is one; a token
+**Server administrators** approve, disable and enable accounts. The account created by [first-run setup](#first-run-setup) is the first; a token
 acts as one only if it carries `manage_users`. A disabled account cannot sign in, its sessions end at once, and its tokens
 and SSH keys stop working (403 `account_disabled`) until it is enabled; its email address stays reserved. Administrators
 cannot disable themselves. Approvals, disables and enables are recorded with the actor and reason in a server-wide audit
@@ -175,7 +175,7 @@ is off, or on but nothing is delivered.
 | `POST /v1/admin/users/{user}/approve` | `{}`; the updated account |
 | `POST /v1/admin/users/{user}/disable` | `{reason?}`; the updated account |
 | `POST /v1/admin/users/{user}/enable` | the updated account |
-| `GET /v1/admin/audit?before=&limit=` | `account_approved`, `account_disabled`, `account_enabled` events, same page shape as a repository's |
+| `GET /v1/admin/audit?before=&limit=` | `account_approved`, `account_disabled`, `account_enabled` and `server_setup_completed` events, same page shape as a repository's |
 
 The admin routes answer `403 server_admin_required` to anyone else and `404 user_not_found` for an unknown account.
 `pyn register --email <address>` signs up on a server that verifies.
@@ -228,12 +228,31 @@ with the actor `@service:<name>`; organization actions also appear in that organ
 
 A credential missing the scope gets `403 service_scope_required`; a revoked or unknown one gets `401 unauthenticated`.
 
-## First administrator and development
+## First-run setup
 
-Start the server with `PYN_BOOTSTRAP_ADMIN=<name>` to create that account; the server prints a token for it once at
-startup; add `PYN_BOOTSTRAP_PASSWORD=<password>` to sign in with `pyn login` or on the web. The account owns nothing yet: it
-creates repositories like anyone else (`pyn repo create`) and is the admin of those. `make dev` runs this setup with open
-registration and a seeded demo; see the [README](../../README.md#run-it).
+A new server is uninitialised. Until setup completes it serves only `GET /v1/setup`, `POST /v1/setup` and `GET /healthz`;
+every other route answers `503 not_initialised`. Setup creates the first administrator and records the essentials, and it
+can never run again (`409 already_initialised`).
+
+To stop whoever reaches a fresh server first from claiming it, setup needs a one-time **setup token**. The server prints
+one to its log at first start (shown only there), or an operator sets `PYN_SETUP_TOKEN` (at least 16 characters, no
+whitespace) ahead of time for unattended installs. The token is compared in constant time, wrong tries are rate limited
+per client and for the whole server (`429 too_many_attempts`), and it is discarded when setup completes. A server that is
+already set up ignores `PYN_SETUP_TOKEN` and warns about it.
+
+| Route | Notes |
+| --- | --- |
+| `GET /v1/setup` | `{initialised, server_name?, public_url, registration}`; no secrets. Before setup `public_url` and `registration` are the configured defaults |
+| `POST /v1/setup` | `{token, username, password, email?, server_name?, public_url?, registration}` gives `201 {user}`; `403 invalid_setup_token`, `400 invalid_request`, `409 already_initialised`, `429 too_many_attempts` |
+
+`registration` is `open`, `invite` or `closed`. What setup records replaces `PYN_REGISTRATION` and `PYN_PUBLIC_URL`; the
+other registration settings (`PYN_EMAIL_VERIFICATION`, `PYN_REQUIRE_APPROVAL`) stay environment settings. The
+administrator signs in with the password it set (`pyn login`, or on the web) and creates repositories like anyone else.
+Setup is written to the [server audit log](#protecting-open-registration) as `server_setup_completed` with the
+administrator as actor. A server created before setup existed counts as set up if it already has accounts.
+
+`make dev` starts a server with a fixed demo `PYN_SETUP_TOKEN`, and the demo script completes setup with it before
+seeding; see the [README](../../README.md#run-it).
 
 `PYN_DEV_AUTH=true` is a test-only escape hatch: it lets any request name itself with an `X-Pyn-User` header and grants it
 every permission. Never set it on a server others can reach.

@@ -43,7 +43,7 @@ fn session(name: &str) -> Identity {
 }
 
 async fn admin(w: &World) -> Principal {
-    w.svc.bootstrap_admin(&user("root")).await.unwrap();
+    w.svc.admin_for_tests(&user("root")).await.unwrap();
     w.svc.add_creator(&w.repo, &user("root")).await.unwrap();
     w.svc.principal(&w.repo, &user("root")).await.unwrap()
 }

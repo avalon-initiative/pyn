@@ -4200,6 +4200,92 @@
         }
       }
     },
+    "/v1/setup": {
+      "get": {
+        "tags": [
+          "setup_api"
+        ],
+        "operationId": "setup_status",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SetupStatus"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "setup_api"
+        ],
+        "operationId": "complete_setup",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetupRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SetupCompleted"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request or reserved_name",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "invalid_setup_token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "already_initialised",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "too_many_attempts; Retry-After says how many seconds to wait",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/tokens": {
       "get": {
         "tags": [
@@ -5665,6 +5751,92 @@
         "properties": {
           "role": {
             "type": "string"
+          }
+        }
+      },
+      "SetupCompleted": {
+        "type": "object",
+        "required": [
+          "user"
+        ],
+        "properties": {
+          "user": {
+            "type": "string",
+            "description": "The first administrator, who can now sign in with the password."
+          }
+        }
+      },
+      "SetupRequest": {
+        "type": "object",
+        "required": [
+          "token",
+          "username",
+          "password",
+          "registration"
+        ],
+        "properties": {
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "password": {
+            "type": "string"
+          },
+          "public_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The address people reach the web app at; verification links use it."
+          },
+          "registration": {
+            "type": "string",
+            "description": "`open`, `invite` or `closed`."
+          },
+          "server_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "token": {
+            "type": "string",
+            "description": "The one-time setup token from the server's log or its `PYN_SETUP_TOKEN` setting."
+          },
+          "username": {
+            "type": "string",
+            "description": "The first administrator's user name."
+          }
+        }
+      },
+      "SetupStatus": {
+        "type": "object",
+        "description": "Whether first-run setup has happened; carries no secrets.",
+        "required": [
+          "initialised",
+          "public_url",
+          "registration"
+        ],
+        "properties": {
+          "initialised": {
+            "type": "boolean"
+          },
+          "public_url": {
+            "type": "string",
+            "description": "What setup recorded; before setup, the address the server is configured with."
+          },
+          "registration": {
+            "type": "string",
+            "description": "`open`, `invite` or `closed`: what setup recorded, or the configured default before setup."
+          },
+          "server_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Set once setup recorded a name."
           }
         }
       },
