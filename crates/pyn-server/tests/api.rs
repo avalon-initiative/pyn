@@ -2778,6 +2778,67 @@ async fn a_bad_credential_is_refused_even_on_a_public_repository() {
 }
 
 #[tokio::test]
+async fn explore_lists_public_repositories_to_anyone_and_never_a_private_one() {
+    let v = visible_world().await;
+    let uri = "/v1/explore/repos";
+    let anonymous: api::RepoPage =
+        body_json(v.app.clone().oneshot(anonymous_get(uri)).await.unwrap()).await;
+    let signed_in: api::RepoPage = body_json(send(&v.app, "GET", uri, &v.bob, None).await).await;
+    let owner: api::RepoPage = body_json(send(&v.app, "GET", uri, &v.alice, None).await).await;
+    for page in [&anonymous, &signed_in, &owner] {
+        let names: Vec<_> = page.repos.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["open"]);
+        assert!(page.next_after.is_none());
+    }
+    assert_eq!(anonymous.repos[0].role, None);
+    assert_eq!(signed_in.repos[0].role, None);
+    assert_eq!(owner.repos[0].role.as_deref(), Some("admin"));
+}
+
+#[tokio::test]
+async fn explore_pages_in_address_order_and_refuses_a_bad_cursor() {
+    let v = visible_world().await;
+    for name in ["beta", "alpha", "gamma"] {
+        let r = send(
+            &v.app,
+            "POST",
+            "/v1/repos",
+            &v.bob,
+            Some(serde_json::json!({"name": name, "visibility": "public"})),
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::CREATED);
+    }
+    let mut seen = Vec::new();
+    let mut after: Option<String> = None;
+    loop {
+        let uri = match &after {
+            Some(a) => format!("/v1/explore/repos?limit=2&after={a}"),
+            None => "/v1/explore/repos?limit=2".to_string(),
+        };
+        let page: api::RepoPage =
+            body_json(v.app.clone().oneshot(anonymous_get(&uri)).await.unwrap()).await;
+        assert!(page.repos.len() <= 2);
+        seen.extend(page.repos.iter().map(|r| format!("{}/{}", r.owner, r.name)));
+        match page.next_after {
+            Some(next) => after = Some(next),
+            None => break,
+        }
+    }
+    assert_eq!(seen, ["alice/open", "bob/alpha", "bob/beta", "bob/gamma"]);
+
+    let r = v
+        .app
+        .clone()
+        .oneshot(anonymous_get("/v1/explore/repos?after=nonsense"))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+    let r = send(&v.app, "GET", "/v1/explore/repos", "pyn_bogus", None).await;
+    assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
 async fn a_token_limited_to_another_repository_still_reads_a_public_one_and_nothing_more() {
     let v = visible_world().await;
     let made = send(

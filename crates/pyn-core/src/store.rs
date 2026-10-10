@@ -102,6 +102,13 @@ pub trait MetadataStore: Send + Sync {
     /// Ordered by owner, then name.
     async fn list_repos(&self, owner: Option<&UserId>) -> Result<Vec<RepoRecord>>;
 
+    /// At most `limit` public repositories ordered by owner, then name, strictly after `after` (owner, name) when given.
+    async fn list_public_repos(
+        &self,
+        after: Option<(&UserId, &str)>,
+        limit: usize,
+    ) -> Result<Vec<RepoRecord>>;
+
     /// `RepoNotFound` for an unknown id, `RepoExists` if the new name is taken; a rejected update changes nothing.
     async fn update_repo(&self, id: &RepoId, update: RepoUpdate) -> Result<RepoRecord>;
 

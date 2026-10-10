@@ -280,6 +280,41 @@ impl Repositories {
         Ok(out)
     }
 
+    /// One page of public repositories ordered by address, strictly after `after` (`owner/name`), with the caller's
+    /// role in each and the address to pass back for the next page. Works without an identity.
+    pub async fn list_public(
+        &self,
+        who: Option<&Identity>,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<(Vec<(RepoRecord, Option<Role>)>, Option<String>)> {
+        let limit = limit.max(1);
+        let after = after
+            .map(|a| {
+                a.split_once('/')
+                    .map(|(owner, name)| (UserId::new(owner), name))
+                    .ok_or_else(|| PynError::InvalidRequest(format!("invalid cursor {a:?}")))
+            })
+            .transpose()?;
+        let mut found = self
+            .meta
+            .list_public_repos(after.as_ref().map(|(o, n)| (o, *n)), limit + 1)
+            .await?;
+        let next = (found.len() > limit).then(|| {
+            found.truncate(limit);
+            found[limit - 1].address()
+        });
+        let mut out = Vec::with_capacity(found.len());
+        for record in found {
+            let role = match who {
+                Some(who) => self.access.role_in(&record.id, &who.user).await?,
+                None => None,
+            };
+            out.push((record, role));
+        }
+        Ok((out, next))
+    }
+
     /// The caller's live locks in every repository they can read, ordered by address then path.
     pub async fn locks_of(&self, who: &Identity) -> Result<Vec<(RepoRecord, Lock)>> {
         let mut out = Vec::new();

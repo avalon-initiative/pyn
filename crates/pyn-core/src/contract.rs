@@ -1137,6 +1137,54 @@ pub async fn repositories_are_registered_found_and_listed_in_order(store: Store)
     assert_eq!(alices.len(), 2);
 }
 
+pub async fn public_repositories_are_listed_in_pages_after_an_address(store: Store) {
+    for (id, owner, name, public) in [
+        ("r1", "alice", "alpha", true),
+        ("r2", "alice", "beta", false),
+        ("r3", "alice", "gamma", true),
+        ("r4", "bob", "alpha", true),
+        ("r5", "carol", "alpha", false),
+        ("r6", "dave", "alpha", true),
+    ] {
+        let mut r = repo_record(id, owner, name);
+        if public {
+            r.visibility = Visibility::Public;
+        }
+        store.create_repo(r).await.unwrap();
+    }
+    let addresses = |repos: Vec<RepoRecord>| -> Vec<String> {
+        repos.into_iter().map(|r| r.address()).collect()
+    };
+
+    let all = store.list_public_repos(None, 10).await.unwrap();
+    assert!(all.iter().all(|r| r.visibility == Visibility::Public));
+    assert_eq!(
+        addresses(all),
+        ["alice/alpha", "alice/gamma", "bob/alpha", "dave/alpha"]
+    );
+    let first = store.list_public_repos(None, 2).await.unwrap();
+    assert_eq!(addresses(first), ["alice/alpha", "alice/gamma"]);
+    let after = store
+        .list_public_repos(Some((&user("alice"), "gamma")), 2)
+        .await
+        .unwrap();
+    assert_eq!(addresses(after), ["bob/alpha", "dave/alpha"]);
+    let skipped = store
+        .list_public_repos(Some((&user("alice"), "beta")), 10)
+        .await
+        .unwrap();
+    assert_eq!(
+        skipped.len(),
+        3,
+        "a cursor need not name a listed repository"
+    );
+    let end = store
+        .list_public_repos(Some((&user("dave"), "alpha")), 10)
+        .await
+        .unwrap();
+    assert!(end.is_empty());
+}
+
 pub async fn a_repository_name_is_unique_per_owner(store: Store) {
     store
         .create_repo(repo_record("r1", "alice", "game"))
@@ -1412,6 +1460,7 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; racing_checkouts_cannot_exceed_the_lock_limit);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; operations_are_recorded_in_the_audit_log);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; repositories_are_registered_found_and_listed_in_order);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; public_repositories_are_listed_in_pages_after_an_address);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_repository_name_is_unique_per_owner);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; updating_a_repository_keeps_its_id);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_repository_stores_its_lock_limit_and_can_clear_it);
@@ -1978,6 +2027,14 @@ impl MetadataStore for HookedMeta {
 
     async fn list_repos(&self, owner: Option<&UserId>) -> crate::Result<Vec<RepoRecord>> {
         self.inner.list_repos(owner).await
+    }
+
+    async fn list_public_repos(
+        &self,
+        after: Option<(&UserId, &str)>,
+        limit: usize,
+    ) -> crate::Result<Vec<RepoRecord>> {
+        self.inner.list_public_repos(after, limit).await
     }
 
     async fn update_repo(&self, id: &RepoId, update: RepoUpdate) -> crate::Result<RepoRecord> {

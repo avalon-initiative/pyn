@@ -217,7 +217,12 @@ tokens, password), create repositories in its own namespace and read public repo
   answers. A request that presents a credential that is wrong or expired is `401` either way.
 - A token limited to other repositories, or a role without `read`, still reads a public repository (`read` only).
 - `GET /v1/repos` and `GET /v1/me/locks` list only repositories where the caller has a role (or, for locks, can read);
-  public repositories are reached by address.
+  public repositories are reached by address or found through `GET /v1/explore/repos`.
+- **Discovery.** `GET /v1/explore/repos` lists public repositories, with or without credentials (a wrong or expired
+  credential is still `401`); a private repository never appears. It is paged like the file list: `?limit=` (default 50,
+  maximum 200) and `?after=owner/name`, answering `{repos, next_after}` in `owner/name` order, where `next_after` is null on
+  the last page. Each entry is the usual repository info, with `role` set when the caller has one. On the command line,
+  `pyn repo explore [--limit N]` prints `ROLE` and `REPOSITORY`.
 - The owner, holding `manage_roles` in the repository, changes visibility with `PATCH` (`pyn repo visibility owner/name
   public|private`). It takes effect at once and is recorded as a `repo_updated` audit event whose detail reads
   `visibility private -> public`.
@@ -227,6 +232,7 @@ tokens, password), create repositories in its own namespace and read public repo
 | Route | Purpose |
 | --- | --- |
 | `GET /v1/repos` | repositories you belong to, including every one of an organization you own (`?owner=` narrows it), each with your role |
+| `GET /v1/explore/repos` | public repositories, signed in or not (`?after=owner/name`, `?limit=`); see [Visibility](#visibility) |
 | `POST /v1/repos` | create `{name, owner?, visibility?, lease_hours?, max_locks_per_user?}` |
 | `GET /v1/repos/{owner}/{name}` | one repository (`role` is null for a reader of a public repository) |
 | `PATCH /v1/repos/{owner}/{name}` | rename or change settings `{name?, visibility?, lease_hours?, max_locks_per_user?}` (`null` clears the lock limit) |
@@ -254,6 +260,6 @@ repositories and permissions it carries), ordered by `owner/name` then path. Eac
 `{owner, name, path, acquired_at, expires_at}`; remove one with the repository's own `POST .../release` (`pyn unlock`), which records
 the audit event as usual. A lock in a repository the caller can no longer read is not listed.
 
-On the command line: `pyn repo create [owner/]name [--visibility public|private] [--lease-hours N] [--max-locks N] [--policy FILE | --no-policy]`, `pyn repo list`,
+On the command line: `pyn repo create [owner/]name [--visibility public|private] [--lease-hours N] [--max-locks N] [--policy FILE | --no-policy]`, `pyn repo list`, `pyn repo explore`,
 `pyn repo visibility owner/name public|private`, `pyn repo delete owner/name`, `pyn locks --mine` (your locks in every repository: repository, acquired, expires, path), and `pyn clone <server>/owner/name [dir]`. A workspace records its repository in
 `.pyn/local_only/config.toml`, so commands inside it need no flag; see [the `.pyn/` folder](workspace.md).

@@ -71,6 +71,38 @@ pub(crate) async fn list_repos(
     Ok(Json(infos))
 }
 
+#[derive(Deserialize)]
+pub(crate) struct ExploreQuery {
+    after: Option<String>,
+    limit: Option<usize>,
+}
+
+/// Works without credentials; private repositories never appear.
+#[utoipa::path(get, path = "/v1/explore/repos",
+    params(("after" = Option<String>, Query, description = "return repositories after this `owner/name`"),
+           ("limit" = Option<usize>, Query, description = "page size, default 50, max 200")),
+    responses((status = 200, body = api::RepoPage, description = "public repositories; `role` is the caller's, if they have one"),
+              (status = 400, body = api::ErrorBody, description = "invalid_request: a malformed `after`"),
+              (status = 401, body = api::ErrorBody, description = "credentials were sent but are not valid")))]
+pub(crate) async fn explore_repos(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<ExploreQuery>,
+) -> ApiResult<Json<api::RepoPage>> {
+    let who = identify_optional(&s, &headers).await?;
+    let limit = q.limit.unwrap_or(50).clamp(1, 200);
+    let (found, next_after) = s
+        .repos
+        .list_public(who.as_ref(), q.after.as_deref(), limit)
+        .await?;
+    let mut repos = Vec::with_capacity(found.len());
+    for (record, role) in found {
+        let limit = s.repos.lock_limit(&record).await?;
+        repos.push(repo_info(record, role, limit));
+    }
+    Ok(Json(api::RepoPage { repos, next_after }))
+}
+
 #[utoipa::path(get, path = "/v1/me/locks",
     responses((status = 200, body = Vec<api::MyLock>, description = "live locks in repositories the caller can read, ordered by repository then path"),
               (status = 401, body = api::ErrorBody)))]

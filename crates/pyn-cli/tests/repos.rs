@@ -5,6 +5,36 @@ mod common;
 use common::{cell_rows, start, start_empty};
 
 #[test]
+fn explore_lists_public_repositories_whatever_the_role() {
+    let env = start_empty();
+    let home = env.dir("home");
+    assert_eq!(
+        env.ok(&home, "bob", &["repo", "explore"]).trim(),
+        "no public repositories"
+    );
+    for (user, name, vis) in [
+        ("alice", "alice/tools", "public"),
+        ("alice", "alice/game", "private"),
+        ("bob", "bob/notes", "public"),
+        ("bob", "bob/docs", "public"),
+    ] {
+        env.ok(&home, user, &["repo", "create", name, "--visibility", vis]);
+    }
+    let listed = env.ok(&home, "alice", &["repo", "explore"]);
+    assert_eq!(
+        cell_rows(&listed),
+        [
+            ["ROLE", "REPOSITORY"],
+            ["admin", "alice/tools"],
+            ["-", "bob/docs"],
+            ["-", "bob/notes"]
+        ]
+    );
+    let capped = env.ok(&home, "alice", &["repo", "explore", "--limit", "2"]);
+    assert_eq!(cell_rows(&capped).len(), 3, "{capped}");
+}
+
+#[test]
 fn repositories_are_created_listed_and_deleted() {
     let env = start_empty();
     let home = env.dir("home");

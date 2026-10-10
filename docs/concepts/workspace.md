@@ -65,7 +65,7 @@ you are inside the workspace and take paths relative to your current directory.
 
 ## Listing output
 
-Every command that lists things (`status`, `locks`, `files`, `ls`, `log`, `audit`, `summary`, `repo list`, `key list`,
+Every command that lists things (`status`, `locks`, `files`, `ls`, `log`, `audit`, `summary`, `repo list`, `repo explore`, `key list`,
 `invite list`, `token list`, `member list`, `role list`, `config list`) prints one aligned table with a header row and
 no colour. Columns are separated by two spaces and fixed-width columns come first; the column that grows most (path,
 message, detail) comes last and is not padded, so a long value never pushes the others around. A cell with nothing to

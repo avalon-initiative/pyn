@@ -713,6 +713,68 @@
         }
       }
     },
+    "/v1/explore/repos": {
+      "get": {
+        "tags": [
+          "repo_api"
+        ],
+        "summary": "Works without credentials; private repositories never appear.",
+        "operationId": "explore_repos",
+        "parameters": [
+          {
+            "name": "after",
+            "in": "query",
+            "description": "return repositories after this `owner/name`",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "page size, default 50, max 200",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "public repositories; `role` is the caller's, if they have one",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepoPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: a malformed `after`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "credentials were sent but are not valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/keys": {
       "get": {
         "tags": [
@@ -5686,6 +5748,29 @@
           },
           "visibility": {
             "$ref": "#/components/schemas/Visibility"
+          }
+        }
+      },
+      "RepoPage": {
+        "type": "object",
+        "required": [
+          "repos",
+          "next_after"
+        ],
+        "properties": {
+          "next_after": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass as `after` to fetch the next page; null on the last page."
+          },
+          "repos": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RepoInfo"
+            },
+            "description": "Ordered by owner, then name."
           }
         }
       },
