@@ -110,6 +110,7 @@ fn closed_sets_are_enums() {
             &["open", "invite", "closed"],
         ),
         ("OrgMember", "role", &["owner", "member"]),
+        ("OrgInfo", "role", &["owner", "member"]),
         ("AddOrgMemberRequest", "role", &["owner", "member"]),
         ("SetOrgRoleRequest", "role", &["owner", "member"]),
         ("CreationRuleInfo", "effect", &["allow", "deny"]),
