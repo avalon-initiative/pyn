@@ -151,7 +151,7 @@ hashing work is the same); the address's owner gets a notice instead of a link, 
 **Server administrators** approve, disable and enable accounts. The account created by [first-run setup](#first-run-setup) is the first; a token
 acts as one only if it carries `manage_users`. An administrator grants the flag to another active account and revokes it from
 any account, their own included; the last active administrator cannot be revoked (`409 last_server_admin`), so the server is
-never left without one. A service credential cannot grant or revoke (`403 server_admin_required`). Grants and revokes are
+never left without one; disabling the last active administrator is refused the same way. A service credential cannot grant or revoke (`403 server_admin_required`). Grants and revokes are
 recorded with who and whom in the audit log. A disabled account cannot sign in, its sessions end at once, and its tokens
 and SSH keys stop working (403 `account_disabled`) until it is enabled; its email address stays reserved. Administrators
 cannot disable themselves. Approvals, disables and enables are recorded with the actor and reason in a server-wide audit
@@ -176,7 +176,7 @@ is off, or on but nothing is delivered.
 | `GET /v1/me` | `{user, admin}` |
 | `GET /v1/admin/users?status=&limit=` | accounts oldest first: `{user, email, email_verified, status, disabled_at, disabled_reason, admin, created_at}` |
 | `POST /v1/admin/users/{user}/approve` | `{}`; the updated account |
-| `POST /v1/admin/users/{user}/disable` | `{reason?}`; the updated account |
+| `POST /v1/admin/users/{user}/disable` | `{reason?}`; the updated account. `409 last_server_admin` if the account is the only active administrator |
 | `POST /v1/admin/users/{user}/enable` | the updated account |
 | `PUT /v1/admin/users/{user}/admin` | grants the flag; the updated account. `400 invalid_request` if the account is not active; granting again changes nothing |
 | `DELETE /v1/admin/users/{user}/admin` | revokes the flag; the updated account. `409 last_server_admin` if no other active administrator would remain; revoking from a non-administrator changes nothing |

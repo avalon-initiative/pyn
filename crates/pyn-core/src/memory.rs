@@ -12,7 +12,9 @@ use crate::access::{
     Permission, Role, RoleDefinitions, ServerSettings, ServiceCredentialRecord, SessionRecord,
     SignupStage, SshKeyRecord, TeamRecord, TokenId, TokenRecord, VerificationRecord,
 };
-use crate::access_service::{AccessStore, AdminRevoke, OrgDeleteMark, OrgMemberChange};
+use crate::access_service::{
+    AccessStore, AccountDisable, AdminRevoke, OrgDeleteMark, OrgMemberChange,
+};
 use crate::audit::{AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent};
 use crate::error::{PynError, Result};
 use crate::history::HistoryCursor;
@@ -1013,6 +1015,32 @@ impl AccessStore for MemoryAccessStore {
             None => (None, None),
         };
         Ok(true)
+    }
+
+    async fn disable_account(
+        &self,
+        user: &UserId,
+        at: DateTime<Utc>,
+        reason: Option<String>,
+    ) -> Result<AccountDisable> {
+        let mut st = self.state.lock().unwrap();
+        let Some(target) = st.accounts.get(user) else {
+            return Ok(AccountDisable::NoAccount);
+        };
+        if target.is_admin && target.disabled_at.is_none() {
+            let others = st.accounts.values().any(|a| {
+                &a.user != user
+                    && a.kind == AccountKind::User
+                    && a.is_admin
+                    && a.disabled_at.is_none()
+            });
+            if !others {
+                return Ok(AccountDisable::LastAdmin);
+            }
+        }
+        let account = st.accounts.get_mut(user).unwrap();
+        (account.disabled_at, account.disabled_reason) = (Some(at), reason);
+        Ok(AccountDisable::Disabled)
     }
 
     async fn set_admin(&self, user: &UserId, admin: bool) -> Result<()> {
