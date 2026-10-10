@@ -18,3 +18,11 @@ Markdown only; `make docs-check` verifies relative links and anchors.
 client from. It is generated, not edited: `make openapi` rewrites it, and `make check` fails when it is stale. Changes
 are additive by default (new routes, new optional fields); removing or renaming something is a breaking change that
 needs its own decision issue.
+
+## Public boundary
+
+`pyn` builds and runs with no private dependency (decision #140). Hosted-service code lives in a separate closed-source
+application that uses only the documented API. `make boundary-check` (part of `make lint`, and a CI step) fails on
+submodules, git or alternate-registry dependencies, path dependencies outside the repository, references to private
+code, and files or content that look like secrets. Do not add any of these, and keep credentials out of the tree
+(`.env` is ignored; `.env.example` holds placeholders only).
