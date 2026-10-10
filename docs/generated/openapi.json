@@ -57,7 +57,7 @@
         ],
         "responses": {
           "200": {
-            "description": "account_approved, account_disabled and account_enabled events",
+            "description": "account, administrator and setup events",
             "content": {
               "application/json": {
                 "schema": {
@@ -381,6 +381,126 @@
           },
           "403": {
             "description": "server_admin_required, or service_scope_required for a service credential without manage_accounts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/users/{user}/admin": {
+      "put": {
+        "tags": [
+          "admin_api"
+        ],
+        "operationId": "grant_admin",
+        "parameters": [
+          {
+            "name": "user",
+            "in": "path",
+            "description": "the account's user name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "the account is now an administrator; granting again changes nothing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountInfo"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: the account is not active",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "server_admin_required: also for any service credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "user_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "admin_api"
+        ],
+        "operationId": "revoke_admin",
+        "parameters": [
+          {
+            "name": "user",
+            "in": "path",
+            "description": "the account's user name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "the account is no longer an administrator; revoking from a non-administrator changes nothing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountInfo"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "server_admin_required: also for any service credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "user_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "last_server_admin: no other active administrator would remain",
             "content": {
               "application/json": {
                 "schema": {

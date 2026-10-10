@@ -424,3 +424,30 @@ async fn every_service_action_is_logged_with_the_credential_name() {
     );
     assert_eq!(org_log.len(), 2);
 }
+
+#[tokio::test]
+async fn a_service_credential_cannot_grant_or_revoke_administrators() {
+    let w = world();
+    let (svc, _) = service(
+        &w,
+        "provisioner",
+        &[
+            ServiceScope::ManageAccounts,
+            ServiceScope::ManageOrganizations,
+        ],
+    )
+    .await;
+    signup(&w, "alice").await;
+    for err in [
+        w.svc
+            .grant_admin(&svc, &UserId::new("alice"))
+            .await
+            .unwrap_err(),
+        w.svc
+            .revoke_admin(&svc, &UserId::new("root"))
+            .await
+            .unwrap_err(),
+    ] {
+        assert!(matches!(err, PynError::ServerAdminRequired), "{err}");
+    }
+}

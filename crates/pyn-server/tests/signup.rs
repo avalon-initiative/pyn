@@ -660,6 +660,90 @@ async fn an_ordinary_account_cannot_reach_the_admin_routes() {
     assert_eq!(r.status, StatusCode::UNAUTHORIZED);
 }
 
+async fn sign_in_token(s: &Server, name: &str) -> String {
+    let body = serde_json::json!({"username": name, "password": PASSWORD});
+    send(&s.app, post("/v1/register", body.clone(), None)).await;
+    let r = send(&s.app, post("/v1/login", body, None)).await;
+    r.json::<api::CreatedToken>().token
+}
+
+fn with_bearer(method: &str, uri: &str, token: &str) -> Request<Body> {
+    Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap()
+}
+
+#[tokio::test]
+async fn administrators_are_granted_and_revoked_over_the_admin_route() {
+    let s = server_with(true, |c| c.require_email_verification = false);
+    let alice = sign_in_token(&s, "alice").await;
+    let bob = sign_in_token(&s, "bob").await;
+    let uri = "/v1/admin/users/alice/admin";
+
+    let r = send(
+        &s.app,
+        with_bearer("PUT", "/v1/admin/users/bob/admin", &alice),
+    )
+    .await;
+    assert_eq!(
+        (r.status, r.code().as_str()),
+        (StatusCode::FORBIDDEN, "server_admin_required")
+    );
+    let r = send(&s.app, as_admin("PUT", "/v1/admin/users/ghost/admin", None)).await;
+    assert_eq!(
+        (r.status, r.code().as_str()),
+        (StatusCode::NOT_FOUND, "user_not_found")
+    );
+
+    let r = send(&s.app, as_admin("PUT", uri, None)).await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert!(r.json::<api::AccountInfo>().admin);
+    let r = send(&s.app, as_admin("PUT", uri, None)).await;
+    assert!(r.json::<api::AccountInfo>().admin);
+
+    let r = send(
+        &s.app,
+        with_bearer("PUT", "/v1/admin/users/bob/admin", &alice),
+    )
+    .await;
+    assert!(r.json::<api::AccountInfo>().admin);
+    let r = send(&s.app, with_bearer("DELETE", uri, &bob)).await;
+    assert!(!r.json::<api::AccountInfo>().admin);
+    let r = send(&s.app, with_bearer("DELETE", uri, &alice)).await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+
+    let r = send(
+        &s.app,
+        with_bearer("DELETE", "/v1/admin/users/bob/admin", &bob),
+    )
+    .await;
+    assert_eq!(
+        (r.status, r.code().as_str()),
+        (StatusCode::CONFLICT, "last_server_admin")
+    );
+
+    let page = send(&s.app, as_admin("GET", "/v1/admin/audit", None))
+        .await
+        .json::<api::AuditPage>();
+    let seen: Vec<_> = page
+        .entries
+        .iter()
+        .rev()
+        .map(|e| (e.actor.as_str(), e.action.as_str(), e.detail.as_str()))
+        .collect();
+    assert_eq!(
+        seen,
+        [
+            ("root", "admin_granted", "alice made an administrator"),
+            ("alice", "admin_granted", "bob made an administrator"),
+            ("bob", "admin_revoked", "alice no longer an administrator"),
+        ]
+    );
+}
+
 #[tokio::test]
 async fn the_development_identity_is_reported_as_an_administrator() {
     let s = server_with(true, |c| c.require_email_verification = false);

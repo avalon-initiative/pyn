@@ -12,7 +12,7 @@ use crate::access::{
     Permission, Role, RoleDefinitions, ServerSettings, ServiceCredentialRecord, SessionRecord,
     SignupStage, SshKeyRecord, TeamRecord, TokenId, TokenRecord, VerificationRecord,
 };
-use crate::access_service::{AccessStore, OrgDeleteMark, OrgMemberChange};
+use crate::access_service::{AccessStore, AdminRevoke, OrgDeleteMark, OrgMemberChange};
 use crate::audit::{AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent};
 use crate::error::{PynError, Result};
 use crate::history::HistoryCursor;
@@ -1020,6 +1020,21 @@ impl AccessStore for MemoryAccessStore {
             account.is_admin = admin;
         }
         Ok(())
+    }
+
+    async fn revoke_admin(&self, user: &UserId) -> Result<AdminRevoke> {
+        let mut st = self.state.lock().unwrap();
+        if !st.accounts.get(user).is_some_and(|a| a.is_admin) {
+            return Ok(AdminRevoke::NotAdmin);
+        }
+        let others = st.accounts.values().any(|a| {
+            &a.user != user && a.kind == AccountKind::User && a.is_admin && a.disabled_at.is_none()
+        });
+        if !others {
+            return Ok(AdminRevoke::LastAdmin);
+        }
+        st.accounts.get_mut(user).unwrap().is_admin = false;
+        Ok(AdminRevoke::Revoked)
     }
 
     async fn list_accounts(

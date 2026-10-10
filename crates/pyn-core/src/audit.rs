@@ -47,10 +47,12 @@ pub enum AuditAction {
     ServiceCredentialCreated,
     ServiceCredentialRevoked,
     ServerSetupCompleted,
+    AdminGranted,
+    AdminRevoked,
 }
 
 impl AuditAction {
-    pub const ALL: [AuditAction; 35] = [
+    pub const ALL: [AuditAction; 37] = [
         AuditAction::Checkout,
         AuditAction::Release,
         AuditAction::Checkin,
@@ -86,6 +88,8 @@ impl AuditAction {
         AuditAction::ServiceCredentialCreated,
         AuditAction::ServiceCredentialRevoked,
         AuditAction::ServerSetupCompleted,
+        AuditAction::AdminGranted,
+        AuditAction::AdminRevoked,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -125,6 +129,8 @@ impl AuditAction {
             Self::ServiceCredentialCreated => "service_credential_created",
             Self::ServiceCredentialRevoked => "service_credential_revoked",
             Self::ServerSetupCompleted => "server_setup_completed",
+            Self::AdminGranted => "admin_granted",
+            Self::AdminRevoked => "admin_revoked",
         }
     }
 }

@@ -279,6 +279,8 @@ async fn a_credential_cannot_manage_credentials_or_read_the_server_log() {
         ("GET", "/v1/admin/service-credentials"),
         ("DELETE", "/v1/admin/service-credentials/all"),
         ("GET", "/v1/admin/audit"),
+        ("PUT", "/v1/admin/users/alice/admin"),
+        ("DELETE", "/v1/admin/users/alice/admin"),
     ] {
         let r = call(&app, c, m, u, None).await;
         assert!(

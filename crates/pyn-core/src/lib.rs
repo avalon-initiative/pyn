@@ -32,9 +32,9 @@ pub use access::{
     verification,
 };
 pub use access_service::{
-    AccessConfig, AccessService, AccessStore, OrgDeleteMark, OrgMemberChange, RateLimits,
-    Registration, RepoMember, SERVER_AUDIT_ID, SetupRequest, SetupStatus, SignUp, TeamDetail,
-    generate_setup_token,
+    AccessConfig, AccessService, AccessStore, AdminRevoke, OrgDeleteMark, OrgMemberChange,
+    RateLimits, Registration, RepoMember, SERVER_AUDIT_ID, SetupRequest, SetupStatus, SignUp,
+    TeamDetail, generate_setup_token,
 };
 pub use audit::{AuditAction, AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent};
 pub use auth::AuthProvider;

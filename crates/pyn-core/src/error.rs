@@ -65,6 +65,8 @@ pub enum PynError {
     UserNotFound(String),
     #[error("only a server administrator can do that")]
     ServerAdminRequired,
+    #[error("the server must keep at least one active administrator")]
+    LastServerAdmin,
     #[error("the service credential needs the {0} scope")]
     ServiceScopeRequired(ServiceScope),
     #[error("a service credential cannot be used for this")]
@@ -179,6 +181,7 @@ impl PynError {
             Self::InvalidVerification(_) => "invalid_verification",
             Self::UserNotFound(_) => "user_not_found",
             Self::ServerAdminRequired => "server_admin_required",
+            Self::LastServerAdmin => "last_server_admin",
             Self::ServiceScopeRequired(_) => "service_scope_required",
             Self::ServiceCredentialNotAllowed => "service_credential_not_allowed",
             Self::ServiceCredentialNotFound(_) => "service_credential_not_found",

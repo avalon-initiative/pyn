@@ -80,6 +80,8 @@ struct RepoAddress {
         admin_api::approve,
         admin_api::disable,
         admin_api::enable,
+        admin_api::grant_admin,
+        admin_api::revoke_admin,
         admin_api::audit,
         admin_api::create_org,
         admin_api::delete_org,
@@ -232,6 +234,10 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/admin/users/{user}/approve", post(admin_api::approve))
         .route("/v1/admin/users/{user}/disable", post(admin_api::disable))
         .route("/v1/admin/users/{user}/enable", post(admin_api::enable))
+        .route(
+            "/v1/admin/users/{user}/admin",
+            put(admin_api::grant_admin).delete(admin_api::revoke_admin),
+        )
         .route("/v1/admin/audit", get(admin_api::audit))
         .route("/v1/admin/orgs", post(admin_api::create_org))
         .route("/v1/admin/orgs/{org}", delete(admin_api::delete_org))
@@ -398,6 +404,7 @@ impl IntoResponse for ApiError {
             | PynError::AlreadyOrgMember { .. }
             | PynError::TeamExists { .. }
             | PynError::LastOrgOwner(_)
+            | PynError::LastServerAdmin
             | PynError::KeyInUse
             | PynError::AlreadyInitialised
             | PynError::ServiceCredentialExists(_)
