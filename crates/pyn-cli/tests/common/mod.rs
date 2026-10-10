@@ -39,14 +39,19 @@ pub fn start_empty() -> Env {
 
 /// A server with no repositories and these accounts already registered.
 pub fn start_with_accounts(names: &[&str]) -> Env {
-    build(false, names)
+    build(false, names, None)
+}
+
+/// A server that has not been set up and expects this setup token.
+pub fn start_uninitialised(token: &str) -> Env {
+    build(false, &[], Some(token))
 }
 
 fn start_with(with_repo: bool) -> Env {
-    build(with_repo, &[])
+    build(with_repo, &[], None)
 }
 
-fn build(with_repo: bool, accounts: &[&str]) -> Env {
+fn build(with_repo: bool, accounts: &[&str], setup_token: Option<&str>) -> Env {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let clock = Arc::new(SystemClock);
     let objects = Arc::new(MemoryObjectStore::new());
@@ -65,7 +70,7 @@ fn build(with_repo: bool, accounts: &[&str]) -> Env {
             }))
             .unwrap();
     }
-    let config = if accounts.is_empty() {
+    let config = if accounts.is_empty() && setup_token.is_none() {
         AccessConfig::default()
     } else {
         AccessConfig {
@@ -74,12 +79,14 @@ fn build(with_repo: bool, accounts: &[&str]) -> Env {
             ..AccessConfig::default()
         }
     };
-    let access = Arc::new(
-        AccessService::new(Arc::new(MemoryAccessStore::new()), clock.clone())
-            .with_config(config)
-            .with_registry(meta.clone())
-            .with_audit(audit.clone()),
-    );
+    let mut service = AccessService::new(Arc::new(MemoryAccessStore::new()), clock.clone())
+        .with_config(config)
+        .with_registry(meta.clone())
+        .with_audit(audit.clone());
+    if let Some(token) = setup_token {
+        service = service.with_setup_token(token).unwrap();
+    }
+    let access = Arc::new(service);
     for name in accounts {
         runtime
             .block_on(access.register(Registration::new(name, "correct horse battery")))
@@ -143,6 +150,35 @@ impl Env {
             cmd.env("PYN_REPO", repo);
         }
         cmd.output().unwrap()
+    }
+
+    /// Runs the CLI as `user` with `input` on standard input.
+    pub fn run_stdin(&self, cwd: &Path, user: &str, args: &[&str], input: &str) -> Output {
+        use std::io::Write;
+        use std::process::Stdio;
+        let mut child = Command::new(env!("CARGO_BIN_EXE_pyn"))
+            .args(args)
+            .current_dir(cwd)
+            .env("PYN_SERVER", &self.url)
+            .env("PYN_USER", user)
+            .env("PYN_CONFIG_DIR", self.config.path())
+            .env("TZ", "UTC")
+            .env_remove("PYN_TOKEN")
+            .env_remove("PYN_DIR")
+            .env_remove("PYN_REPO")
+            .env_remove("PYN_SETUP_TOKEN")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.as_bytes())
+            .unwrap();
+        child.wait_with_output().unwrap()
     }
 
     /// Runs the CLI authenticated by `token` instead of a development user.

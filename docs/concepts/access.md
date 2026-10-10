@@ -182,6 +182,19 @@ is off, or on but nothing is delivered.
 | `DELETE /v1/admin/users/{user}/admin` | revokes the flag; the updated account. `409 last_server_admin` if no other active administrator would remain; revoking from a non-administrator changes nothing |
 | `GET /v1/admin/audit?before=&limit=` | `account_approved`, `account_disabled`, `account_enabled`, `admin_granted`, `admin_revoked` and `server_setup_completed` events, same page shape as a repository's |
 
+On the command line (server administrators; each listing is an aligned table with the name last):
+
+| Command | Does |
+| --- | --- |
+| `pyn admin user list [--status S] [--limit N]` | columns `STATUS ROLE CREATED EMAIL USER` |
+| `pyn admin user approve <user>`, `disable <user> [--reason R]`, `enable <user>` | the account routes above |
+| `pyn admin grant <user>`, `pyn admin revoke <user>` | grant or revoke the administrator flag |
+| `pyn admin service-credential create <name> --scopes manage_accounts,manage_organizations` | prints the secret alone on stdout; it is shown once |
+| `pyn admin service-credential list`, `revoke <name>` | columns `STATE CREATED LAST USED BY SCOPES NAME`; revoked ones are listed |
+| `pyn admin org create <name> --owner <user>`, `pyn admin org delete <name> [--yes]` | on behalf of an owner; delete asks to type the name |
+
+Automation signs in with `--token` or `PYN_TOKEN` set to a service credential's secret; it is limited to its scopes.
+
 The admin routes answer `403 server_admin_required` to anyone else and `404 user_not_found` for an unknown account.
 `pyn register --email <address>` signs up on a server that verifies.
 
@@ -255,6 +268,11 @@ other registration settings (`PYN_EMAIL_VERIFICATION`, `PYN_REQUIRE_APPROVAL`) s
 administrator signs in with the password it set (`pyn login`, or on the web) and creates repositories like anyone else.
 Setup is written to the [server audit log](#protecting-open-registration) as `server_setup_completed` with the
 administrator as actor. A server created before setup existed counts as set up if it already has accounts.
+
+On the command line: `pyn setup <username> [--setup-token T] [--email E] [--server-name N] [--public-url U] [--registration
+open|invite|closed] [--password-stdin]`. The token also comes from `PYN_SETUP_TOKEN`, or is asked for (hidden) on a terminal; the
+password is asked for twice, or read from standard input. `--registration` defaults to what the server reports. Setup does not
+sign the administrator in: run `pyn login <username>` next. On a server that is already set up it stops before asking anything.
 
 `make dev` starts a server with a fixed demo `PYN_SETUP_TOKEN`, and the demo script completes setup with it before
 seeding; see the [README](../../README.md#run-it).
