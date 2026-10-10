@@ -5561,11 +5561,15 @@
             "type": "string"
           },
           "role": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "The caller's standing in it (`owner` or `member`); absent when they have none."
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/OrgRole",
+                "description": "The caller's standing in it (`owner` or `member`); absent when they have none."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
