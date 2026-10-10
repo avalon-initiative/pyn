@@ -93,6 +93,26 @@ pub enum PynError {
     KeyInUse,
     #[error("no key {0}")]
     KeyNotFound(String),
+    #[error("this server has no external sign-in provider")]
+    OidcNotConfigured,
+    #[error("sign-in with the provider failed: {0}")]
+    ExternalSignInFailed(String),
+    #[error("the sign-in provider could not be reached: {0}")]
+    ExternalProviderUnavailable(String),
+    #[error(
+        "no account is linked to that provider identity; sign in with your password and link it in your account settings"
+    )]
+    ExternalNotLinked,
+    #[error("that provider identity is already linked to another account")]
+    ExternalIdentityTaken,
+    #[error("no linked provider identity {0}")]
+    ExternalIdentityNotFound(String),
+    #[error(
+        "that is the only way this account can sign in; set a password or link another identity first"
+    )]
+    LastSignInMethod,
+    #[error("password sign-in is turned off on this server; sign in with the provider")]
+    PasswordSignInDisabled,
     #[error("authentication failed: {0}")]
     Unauthenticated(String),
     #[error("the request is missing a valid CSRF token")]
@@ -207,6 +227,14 @@ impl PynError {
             Self::ServiceCredentialExists(_) => "service_credential_exists",
             Self::KeyInUse => "key_in_use",
             Self::KeyNotFound(_) => "key_not_found",
+            Self::OidcNotConfigured => "oidc_not_configured",
+            Self::ExternalSignInFailed(_) => "external_sign_in_failed",
+            Self::ExternalProviderUnavailable(_) => "external_provider_unavailable",
+            Self::ExternalNotLinked => "external_account_not_linked",
+            Self::ExternalIdentityTaken => "external_identity_taken",
+            Self::ExternalIdentityNotFound(_) => "external_identity_not_found",
+            Self::LastSignInMethod => "last_sign_in_method",
+            Self::PasswordSignInDisabled => "password_sign_in_disabled",
             Self::Unauthenticated(_) => "unauthenticated",
             Self::CsrfFailed => "csrf_failed",
             Self::Forbidden(_) => "forbidden",

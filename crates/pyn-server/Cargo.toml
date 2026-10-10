@@ -13,6 +13,7 @@ chrono = "0.4.45"
 clap = "4.6.7"
 pyn-core = { version = "0.0.1", path = "../pyn-core" }
 pyn-fs = { version = "0.0.1", path = "../pyn-fs" }
+pyn-oidc = { version = "0.0.1", path = "../pyn-oidc" }
 pyn-postgres = { version = "0.0.1", path = "../pyn-postgres" }
 pyn-proto = { version = "0.0.1", path = "../pyn-proto" }
 serde = { version = "1.0.229", features = ["derive"] }
@@ -28,4 +29,5 @@ workspace = true
 [dev-dependencies]
 pyn-core = { path = "../pyn-core", features = ["test-support"] }
 http-body-util = "0.1.5"
+pyn-oidc = { path = "../pyn-oidc", features = ["test-support"] }
 tower = "0.5.3"

@@ -13,6 +13,10 @@ use crate::client::Client;
 use crate::{ApiResult, AppState};
 
 pub(crate) fn session_cookie(headers: &HeaderMap) -> Option<&str> {
+    cookie_value(headers, api::SESSION_COOKIE)
+}
+
+pub(crate) fn cookie_value<'a>(headers: &'a HeaderMap, wanted: &str) -> Option<&'a str> {
     headers
         .get_all(COOKIE)
         .iter()
@@ -20,18 +24,18 @@ pub(crate) fn session_cookie(headers: &HeaderMap) -> Option<&str> {
         .flat_map(|v| v.split(';'))
         .find_map(|pair| {
             let (name, value) = pair.trim().split_once('=')?;
-            (name == api::SESSION_COOKIE && !value.is_empty()).then_some(value)
+            (name == wanted && !value.is_empty()).then_some(value)
         })
 }
 
-fn is_https(headers: &HeaderMap) -> bool {
+pub(crate) fn is_https(headers: &HeaderMap) -> bool {
     headers
         .get("x-forwarded-proto")
         .and_then(|v| v.to_str().ok())
         .is_some_and(|v| v.eq_ignore_ascii_case("https"))
 }
 
-fn set_cookie(value: &str, max_age_secs: i64, secure: bool) -> HeaderValue {
+pub(crate) fn set_cookie(value: &str, max_age_secs: i64, secure: bool) -> HeaderValue {
     let secure = if secure { "; Secure" } else { "" };
     let cookie = format!(
         "{}={value}; Path=/; Max-Age={max_age_secs}; HttpOnly; SameSite=Lax{secure}",

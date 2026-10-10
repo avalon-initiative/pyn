@@ -1084,6 +1084,80 @@
         }
       }
     },
+    "/v1/me/identities": {
+      "get": {
+        "tags": [
+          "oidc_api"
+        ],
+        "operationId": "list_identities",
+        "responses": {
+          "200": {
+            "description": "the provider identities linked to the caller's account, oldest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ExternalIdentityInfo"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/me/identities/{id}": {
+      "delete": {
+        "tags": [
+          "oidc_api"
+        ],
+        "operationId": "unlink_identity",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "the link's id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "404": {
+            "description": "external_identity_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "last_sign_in_method: the account has no password and no other link",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/me/locks": {
       "get": {
         "tags": [
@@ -1168,6 +1242,172 @@
           "204": {},
           "401": {
             "description": "the current password is wrong",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/oidc/authorize": {
+      "get": {
+        "tags": [
+          "oidc_api"
+        ],
+        "operationId": "authorize",
+        "parameters": [
+          {
+            "name": "return_to",
+            "in": "query",
+            "description": "a path in the web app to open after signing in, such as /repos",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "to the provider; sets a short-lived cookie that ties the sign-in to this browser"
+          },
+          "400": {
+            "description": "invalid_request: return_to is not a path in the web app",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "oidc_not_configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "too_many_attempts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "external_provider_unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/oidc/callback": {
+      "get": {
+        "tags": [
+          "oidc_api"
+        ],
+        "operationId": "callback",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "query",
+            "description": "the authorization code",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "description": "the state sent with the authorization request",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "error",
+            "in": "query",
+            "description": "set by the provider when the person did not sign in",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "to the web app: the return_to path (or /) with the session cookie set, or /sign-in?error=<code> on failure"
+          }
+        }
+      }
+    },
+    "/v1/oidc/link": {
+      "post": {
+        "tags": [
+          "oidc_api"
+        ],
+        "operationId": "link",
+        "parameters": [
+          {
+            "name": "return_to",
+            "in": "query",
+            "description": "a path in the web app to open after linking",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "send the browser to `url`; the provider identity it signs in as is linked to the caller's account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OidcLink"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "oidc_not_configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "external_provider_unavailable",
             "content": {
               "application/json": {
                 "schema": {
@@ -4802,6 +5042,25 @@
         }
       }
     },
+    "/v1/sign-in-options": {
+      "get": {
+        "tags": [
+          "oidc_api"
+        ],
+        "operationId": "sign_in_options",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignInOptions"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/tokens": {
       "get": {
         "tags": [
@@ -5510,6 +5769,62 @@
           }
         }
       },
+      "ExternalIdentityInfo": {
+        "type": "object",
+        "description": "A provider identity linked to an account.",
+        "required": [
+          "id",
+          "issuer",
+          "subject",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The address the provider last gave, if it vouched for one."
+          },
+          "id": {
+            "type": "string"
+          },
+          "issuer": {
+            "type": "string"
+          },
+          "last_sign_in_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "subject": {
+            "type": "string"
+          }
+        }
+      },
+      "ExternalProviderInfo": {
+        "type": "object",
+        "required": [
+          "name",
+          "sign_in_url"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "What to call it on the sign-in button."
+          },
+          "sign_in_url": {
+            "type": "string",
+            "description": "Send the browser here (a full page navigation, with an optional `return_to` path) to start signing in."
+          }
+        }
+      },
       "FileEntry": {
         "type": "object",
         "required": [
@@ -5843,6 +6158,18 @@
             "type": "string"
           },
           "path": {
+            "type": "string"
+          }
+        }
+      },
+      "OidcLink": {
+        "type": "object",
+        "description": "Where to send the browser to link the provider to the signed-in account.",
+        "required": [
+          "url"
+        ],
+        "properties": {
+          "url": {
             "type": "string"
           }
         }
@@ -6652,6 +6979,30 @@
               "null"
             ],
             "description": "Set once setup recorded a name."
+          }
+        }
+      },
+      "SignInOptions": {
+        "type": "object",
+        "description": "How people can sign in to this server.",
+        "required": [
+          "password"
+        ],
+        "properties": {
+          "external": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ExternalProviderInfo",
+                "description": "The configured external provider; null when the server has none."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "password": {
+            "type": "boolean",
+            "description": "Whether anyone may sign in with a password. When false, server administrators still can."
           }
         }
       },

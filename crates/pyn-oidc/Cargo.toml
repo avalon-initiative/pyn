@@ -1,0 +1,29 @@
+[package]
+name = "pyn-oidc"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[features]
+test-support = ["dep:axum", "dep:aws-lc-rs", "dep:base64", "dep:sha2", "jsonwebtoken/use_pem"]
+
+[dependencies]
+async-trait = "0.1.92"
+aws-lc-rs = { version = "1.18.1", optional = true }
+axum = { version = "0.8.9", optional = true }
+base64 = { version = "0.23.1", optional = true }
+jsonwebtoken = { version = "11.1.0", default-features = false, features = ["aws_lc_rs"] }
+pyn-core = { version = "0.0.1", path = "../pyn-core" }
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls", "form"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+sha2 = { version = "0.11.0", optional = true }
+tokio = { version = "1.53.2", features = ["sync", "time", "net", "rt"] }
+
+[dev-dependencies]
+pyn-oidc = { path = ".", features = ["test-support"] }
+tokio = { version = "1.53.2", features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true
