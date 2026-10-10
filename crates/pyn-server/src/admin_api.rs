@@ -112,6 +112,42 @@ pub(crate) async fn enable(
     Ok(Json(info(account)))
 }
 
+#[utoipa::path(put, path = "/v1/admin/users/{user}/admin",
+    params(("user" = String, Path, description = "the account's user name")),
+    responses(
+    (status = 200, body = api::AccountInfo, description = "the account is now an administrator; granting again changes nothing"),
+    (status = 400, body = api::ErrorBody, description = "invalid_request: the account is not active"),
+    (status = 403, body = api::ErrorBody, description = "server_admin_required: also for any service credential"),
+    (status = 404, body = api::ErrorBody, description = "user_not_found"),
+))]
+pub(crate) async fn grant_admin(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path(user): Path<String>,
+) -> ApiResult<Json<api::AccountInfo>> {
+    let who = identify_admin(&s, &headers).await?;
+    let account = s.access.grant_admin(&who, &UserId::new(user)).await?;
+    Ok(Json(info(account)))
+}
+
+#[utoipa::path(delete, path = "/v1/admin/users/{user}/admin",
+    params(("user" = String, Path, description = "the account's user name")),
+    responses(
+    (status = 200, body = api::AccountInfo, description = "the account is no longer an administrator; revoking from a non-administrator changes nothing"),
+    (status = 403, body = api::ErrorBody, description = "server_admin_required: also for any service credential"),
+    (status = 404, body = api::ErrorBody, description = "user_not_found"),
+    (status = 409, body = api::ErrorBody, description = "last_server_admin: no other active administrator would remain"),
+))]
+pub(crate) async fn revoke_admin(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path(user): Path<String>,
+) -> ApiResult<Json<api::AccountInfo>> {
+    let who = identify_admin(&s, &headers).await?;
+    let account = s.access.revoke_admin(&who, &UserId::new(user)).await?;
+    Ok(Json(info(account)))
+}
+
 #[derive(Deserialize)]
 pub(crate) struct AuditParams {
     before: Option<i64>,
@@ -121,7 +157,7 @@ pub(crate) struct AuditParams {
 #[utoipa::path(get, path = "/v1/admin/audit", operation_id = "admin_audit",
     params(("before" = Option<i64>, Query, description = "events older than this id"),
            ("limit" = Option<usize>, Query, description = "page size, default 50, max 500")),
-    responses((status = 200, body = api::AuditPage, description = "account_approved, account_disabled and account_enabled events"),
+    responses((status = 200, body = api::AuditPage, description = "account, administrator and setup events"),
               (status = 403, body = api::ErrorBody, description = "server_admin_required: service credentials cannot read the log")))]
 pub(crate) async fn audit(
     State(s): State<AppState>,

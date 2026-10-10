@@ -4,10 +4,10 @@ use std::str::FromStr;
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use pyn_core::{
-    AccessStore, AccountKind, AccountRecord, AccountStatus, CreationEffect, CreationRule,
-    CreationScope, CreationSubject, InviteId, InviteRecord, MemberCreation, NewAccount,
-    OrgDeleteMark, OrgMemberChange, OrgRole, Permission, PynError, RateLimitStore, RateState,
-    RegistrationMode, RepoId, RepoPolicy, Result, Role, RoleDefinitions, ServerSettings,
+    AccessStore, AccountKind, AccountRecord, AccountStatus, AdminRevoke, CreationEffect,
+    CreationRule, CreationScope, CreationSubject, InviteId, InviteRecord, MemberCreation,
+    NewAccount, OrgDeleteMark, OrgMemberChange, OrgRole, Permission, PynError, RateLimitStore,
+    RateState, RegistrationMode, RepoId, RepoPolicy, Result, Role, RoleDefinitions, ServerSettings,
     ServiceCredentialRecord, ServiceScope, SessionRecord, SignupStage, SshKeyRecord, SubjectKind,
     TeamRecord, TokenId, TokenRecord, UserId, VerificationRecord,
 };
@@ -1270,6 +1270,35 @@ impl AccessStore for PgMetadataStore {
             .await
             .map_err(db)?;
         Ok(())
+    }
+
+    async fn revoke_admin(&self, user: &UserId) -> Result<AdminRevoke> {
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        // Locking every administrator row (in id order) serialises concurrent revokes.
+        let rows = sqlx::query(
+            "SELECT id, disabled_at IS NULL AS active FROM users
+             WHERE is_admin AND kind = 'user' ORDER BY id FOR UPDATE",
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(db)?;
+        let is_target = |r: &PgRow| r.get::<String, _>("id") == user.as_str();
+        if !rows.iter().any(is_target) {
+            return Ok(AdminRevoke::NotAdmin);
+        }
+        if !rows
+            .iter()
+            .any(|r| !is_target(r) && r.get::<bool, _>("active"))
+        {
+            return Ok(AdminRevoke::LastAdmin);
+        }
+        sqlx::query("UPDATE users SET is_admin = false WHERE id = $1")
+            .bind(user.as_str())
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
+        tx.commit().await.map_err(db)?;
+        Ok(AdminRevoke::Revoked)
     }
 
     async fn list_accounts(

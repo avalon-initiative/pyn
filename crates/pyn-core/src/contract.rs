@@ -3389,6 +3389,71 @@ pub async fn accounts_can_be_approved_disabled_enabled_and_listed(store: Access)
     assert!(carol.disabled_at.is_none() && carol.disabled_reason.is_none());
 }
 
+pub async fn revoking_admin_always_leaves_another_active_administrator(store: Access) {
+    use crate::AdminRevoke;
+
+    for name in ["alice", "bob", "carol"] {
+        store.ensure_user(&user(name), at(0)).await.unwrap();
+    }
+    assert_eq!(
+        store.revoke_admin(&user("alice")).await.unwrap(),
+        AdminRevoke::NotAdmin
+    );
+    assert_eq!(
+        store.revoke_admin(&user("nobody")).await.unwrap(),
+        AdminRevoke::NotAdmin
+    );
+    store.set_admin(&user("alice"), true).await.unwrap();
+    assert_eq!(
+        store.revoke_admin(&user("alice")).await.unwrap(),
+        AdminRevoke::LastAdmin
+    );
+
+    store.set_admin(&user("bob"), true).await.unwrap();
+    store
+        .set_disabled(&user("bob"), Some((at(1), None)))
+        .await
+        .unwrap();
+    assert_eq!(
+        store.revoke_admin(&user("alice")).await.unwrap(),
+        AdminRevoke::LastAdmin,
+        "a disabled administrator does not count"
+    );
+
+    store.set_disabled(&user("bob"), None).await.unwrap();
+    assert_eq!(
+        store.revoke_admin(&user("alice")).await.unwrap(),
+        AdminRevoke::Revoked
+    );
+    assert!(
+        !store
+            .account(&user("alice"))
+            .await
+            .unwrap()
+            .unwrap()
+            .is_admin
+    );
+    assert_eq!(
+        store.revoke_admin(&user("bob")).await.unwrap(),
+        AdminRevoke::LastAdmin
+    );
+    assert!(store.account(&user("bob")).await.unwrap().unwrap().is_admin);
+}
+
+pub async fn racing_revokes_leave_one_administrator(store: Access) {
+    use crate::AdminRevoke;
+
+    for name in ["alice", "bob"] {
+        store.ensure_user(&user(name), at(0)).await.unwrap();
+        store.set_admin(&user(name), true).await.unwrap();
+    }
+    let (alice, bob) = (user("alice"), user("bob"));
+    let (a, b) = tokio::join!(store.revoke_admin(&alice), store.revoke_admin(&bob));
+    let mut outcomes = [a.unwrap(), b.unwrap()];
+    outcomes.sort_by_key(|o| *o != AdminRevoke::Revoked);
+    assert_eq!(outcomes, [AdminRevoke::Revoked, AdminRevoke::LastAdmin]);
+}
+
 fn verification(hash: &str, name: &str, expires: i64) -> VerificationRecord {
     VerificationRecord {
         token_hash: hash.to_string(),
@@ -4073,6 +4138,8 @@ macro_rules! access_contract_tests {
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; a_setup_that_fails_leaves_the_server_uninitialised);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; a_verified_address_belongs_to_one_account);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; accounts_can_be_approved_disabled_enabled_and_listed);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; revoking_admin_always_leaves_another_active_administrator);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; racing_revokes_leave_one_administrator);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; verifications_are_single_use_and_replace_earlier_ones);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; unverified_accounts_with_no_live_verification_are_swept);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; deleting_an_accounts_sessions_leaves_others);

@@ -771,3 +771,128 @@ async fn an_open_server_without_protection_warns() {
         );
     }
 }
+
+#[tokio::test]
+async fn administrators_are_granted_and_revoked_with_an_audit_trail() {
+    let w = world_with(|c| c.require_email_verification = false);
+    let root = admin(&w).await;
+    let alice = UserId::new("alice");
+    let bob = UserId::new("bob");
+    for name in ["alice", "bob"] {
+        w.svc
+            .register(Registration::new(name, PASSWORD))
+            .await
+            .unwrap();
+    }
+
+    let err = w
+        .svc
+        .grant_admin(&identity("bob"), &alice)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::ServerAdminRequired), "{err}");
+    let err = w
+        .svc
+        .grant_admin(&root, &UserId::new("nobody"))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::UserNotFound(_)), "{err}");
+
+    assert!(w.svc.grant_admin(&root, &alice).await.unwrap().is_admin);
+    assert!(w.svc.grant_admin(&root, &alice).await.unwrap().is_admin);
+    assert!(w.svc.is_server_admin(&identity("alice")).await.unwrap());
+
+    let err = w
+        .svc
+        .revoke_admin(&identity("bob"), &alice)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::ServerAdminRequired), "{err}");
+    assert!(
+        !w.svc
+            .revoke_admin(&identity("alice"), &alice)
+            .await
+            .unwrap()
+            .is_admin
+    );
+    assert!(!w.svc.is_server_admin(&identity("alice")).await.unwrap());
+    assert!(!w.svc.revoke_admin(&root, &bob).await.unwrap().is_admin);
+
+    let err = w
+        .svc
+        .revoke_admin(&root, &UserId::new("root"))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::LastServerAdmin), "{err}");
+    assert!(w.svc.is_server_admin(&root).await.unwrap());
+
+    w.svc.grant_admin(&root, &bob).await.unwrap();
+    w.svc
+        .revoke_admin(&root, &UserId::new("root"))
+        .await
+        .unwrap();
+    let err = w
+        .svc
+        .revoke_admin(&identity("bob"), &bob)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::LastServerAdmin), "{err}");
+
+    let log = w
+        .svc
+        .server_audit(&identity("bob"), &audit_query())
+        .await
+        .unwrap();
+    let seen: Vec<_> = log
+        .iter()
+        .rev()
+        .map(|e| (e.actor.to_string(), e.action, e.detail.clone()))
+        .collect();
+    assert_eq!(
+        seen,
+        [
+            (
+                "root".into(),
+                AuditAction::AdminGranted,
+                "alice made an administrator".into()
+            ),
+            (
+                "alice".into(),
+                AuditAction::AdminRevoked,
+                "alice no longer an administrator".into()
+            ),
+            (
+                "root".into(),
+                AuditAction::AdminGranted,
+                "bob made an administrator".into()
+            ),
+            (
+                "root".into(),
+                AuditAction::AdminRevoked,
+                "root no longer an administrator".into()
+            ),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn only_an_active_account_can_become_an_administrator() {
+    let w = world();
+    let root = admin(&w).await;
+    w.svc
+        .register(Registration::new("alice", PASSWORD).email("alice@example.org"))
+        .await
+        .unwrap();
+    let err = w
+        .svc
+        .grant_admin(&root, &UserId::new("alice"))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::InvalidRequest(_)), "{err}");
+    let listed = w.svc.list_accounts(&root, None, 10).await.unwrap();
+    assert!(
+        listed
+            .iter()
+            .any(|a| a.user.as_str() == "alice" && !a.is_admin)
+    );
+}

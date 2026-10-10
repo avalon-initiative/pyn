@@ -45,6 +45,15 @@ pub enum OrgMemberChange {
     LastOwner,
 }
 
+/// The outcome of removing the administrator flag from an account.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdminRevoke {
+    Revoked,
+    NotAdmin,
+    /// No other active administrator would remain.
+    LastAdmin,
+}
+
 /// The outcome of marking an organization as being deleted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OrgDeleteMark {
@@ -308,6 +317,9 @@ pub trait AccessStore: Send + Sync {
     ) -> Result<bool>;
 
     async fn set_admin(&self, user: &UserId, admin: bool) -> Result<()>;
+
+    /// Removes the flag unless that leaves no other active administrator. Atomic against concurrent revokes.
+    async fn revoke_admin(&self, user: &UserId) -> Result<AdminRevoke>;
 
     /// Accounts oldest first, optionally only those in `status`.
     async fn list_accounts(
@@ -1800,6 +1812,48 @@ impl AccessService {
             format!("{user} enabled"),
         )
         .await?;
+        self.existing_account(user).await
+    }
+
+    /// Makes an active account a server administrator. Server administrators only; granting again changes nothing.
+    pub async fn grant_admin(&self, actor: &Identity, user: &UserId) -> Result<AccountRecord> {
+        self.require_server_admin(actor).await?;
+        let account = self.existing_account(user).await?;
+        if account.is_admin {
+            return Ok(account);
+        }
+        if account.status() != AccountStatus::Active {
+            return Err(PynError::InvalidRequest(
+                "only an active account can become an administrator".into(),
+            ));
+        }
+        self.store.set_admin(user, true).await?;
+        self.record_server(
+            &actor.user,
+            AuditAction::AdminGranted,
+            format!("{user} made an administrator"),
+        )
+        .await?;
+        self.existing_account(user).await
+    }
+
+    /// Removes the administrator flag, one's own included. The last active administrator cannot be removed.
+    /// Server administrators only; revoking from a non-administrator changes nothing.
+    pub async fn revoke_admin(&self, actor: &Identity, user: &UserId) -> Result<AccountRecord> {
+        self.require_server_admin(actor).await?;
+        self.existing_account(user).await?;
+        match self.store.revoke_admin(user).await? {
+            AdminRevoke::Revoked => {
+                self.record_server(
+                    &actor.user,
+                    AuditAction::AdminRevoked,
+                    format!("{user} no longer an administrator"),
+                )
+                .await?
+            }
+            AdminRevoke::NotAdmin => {}
+            AdminRevoke::LastAdmin => return Err(PynError::LastServerAdmin),
+        }
         self.existing_account(user).await
     }
 

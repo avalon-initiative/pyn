@@ -149,7 +149,10 @@ hashing work is the same); the address's owner gets a notice instead of a link, 
 `POST /v1/register/resend` always answers `202`. A taken user name is `409 user_exists`, as on GitHub, since names are public.
 
 **Server administrators** approve, disable and enable accounts. The account created by [first-run setup](#first-run-setup) is the first; a token
-acts as one only if it carries `manage_users`. A disabled account cannot sign in, its sessions end at once, and its tokens
+acts as one only if it carries `manage_users`. An administrator grants the flag to another active account and revokes it from
+any account, their own included; the last active administrator cannot be revoked (`409 last_server_admin`), so the server is
+never left without one. A service credential cannot grant or revoke (`403 server_admin_required`). Grants and revokes are
+recorded with who and whom in the audit log. A disabled account cannot sign in, its sessions end at once, and its tokens
 and SSH keys stop working (403 `account_disabled`) until it is enabled; its email address stays reserved. Administrators
 cannot disable themselves. Approvals, disables and enables are recorded with the actor and reason in a server-wide audit
 log, read at `GET /v1/admin/audit`.
@@ -175,7 +178,9 @@ is off, or on but nothing is delivered.
 | `POST /v1/admin/users/{user}/approve` | `{}`; the updated account |
 | `POST /v1/admin/users/{user}/disable` | `{reason?}`; the updated account |
 | `POST /v1/admin/users/{user}/enable` | the updated account |
-| `GET /v1/admin/audit?before=&limit=` | `account_approved`, `account_disabled`, `account_enabled` and `server_setup_completed` events, same page shape as a repository's |
+| `PUT /v1/admin/users/{user}/admin` | grants the flag; the updated account. `400 invalid_request` if the account is not active; granting again changes nothing |
+| `DELETE /v1/admin/users/{user}/admin` | revokes the flag; the updated account. `409 last_server_admin` if no other active administrator would remain; revoking from a non-administrator changes nothing |
+| `GET /v1/admin/audit?before=&limit=` | `account_approved`, `account_disabled`, `account_enabled`, `admin_granted`, `admin_revoked` and `server_setup_completed` events, same page shape as a repository's |
 
 The admin routes answer `403 server_admin_required` to anyone else and `404 user_not_found` for an unknown account.
 `pyn register --email <address>` signs up on a server that verifies.
