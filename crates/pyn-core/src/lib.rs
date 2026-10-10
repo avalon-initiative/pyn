@@ -10,6 +10,7 @@ pub mod contract;
 pub mod email;
 pub mod error;
 pub mod history;
+pub mod limits;
 pub mod memory;
 pub mod object;
 pub mod passwords;
@@ -33,8 +34,8 @@ pub use access::{
 };
 pub use access_service::{
     AccessConfig, AccessService, AccessStore, AccountDisable, AdminRevoke, OrgDeleteMark,
-    OrgMemberChange, RateLimits, Registration, RepoMember, SERVER_AUDIT_ID, SetupRequest,
-    SetupStatus, SignUp, TeamDetail, generate_setup_token,
+    OrgMemberChange, OwnerLimits, RateLimits, Registration, RepoMember, SERVER_AUDIT_ID,
+    SetupRequest, SetupStatus, SignUp, TeamDetail, generate_setup_token,
 };
 pub use audit::{AuditAction, AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent};
 pub use auth::AuthProvider;
@@ -42,6 +43,9 @@ pub use clock::{Clock, ManualClock, SystemClock};
 pub use email::{EmailMessage, EmailSender, MemoryEmailSender, NullEmailSender};
 pub use error::{PynError, Result};
 pub use history::{HISTORY_DEFAULT_LIMIT, HISTORY_MAX_LIMIT, HistoryCursor, HistoryPage};
+pub use limits::{
+    Limits, LimitsChange, MAX_LIMIT_VALUE, RepoUsage, StorageCap, StorageCaps, Usage,
+};
 pub use object::ObjectStore;
 pub use passwords::{InlinePasswords, PasswordWorker};
 pub use ratelimit::{RateLimitStore, RateState};

@@ -489,6 +489,7 @@ async fn a_stored_policy_that_no_longer_parses_fails_the_repository_closed() {
                 created_at: Utc::now(),
                 restored_from: None,
                 mode: Mode::Exclusive,
+                size: 0,
             },
             None,
             None,

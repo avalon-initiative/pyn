@@ -23,6 +23,9 @@ pub enum AdminCommand {
     /// Create and delete organizations on behalf of an owner.
     #[command(subcommand)]
     Org(AdminOrgCommand),
+    /// Optional per-owner limits on repositories, members and stored content.
+    #[command(subcommand)]
+    Limits(crate::limits::LimitsCommand),
 }
 
 #[derive(Subcommand)]
@@ -53,7 +56,7 @@ pub enum ServiceCredentialCommand {
     /// Create a credential. Its secret is shown once.
     Create {
         name: String,
-        /// Comma-separated scopes: manage_accounts, manage_organizations.
+        /// Comma-separated scopes: manage_accounts, manage_organizations, manage_limits.
         #[arg(long, value_delimiter = ',', required = true)]
         scopes: Vec<String>,
     },
@@ -142,6 +145,7 @@ pub fn run(api: &Api, cmd: AdminCommand) -> Result<()> {
         }
         AdminCommand::ServiceCredential(cmd) => service_credential(api, cmd),
         AdminCommand::Org(cmd) => org(api, cmd),
+        AdminCommand::Limits(cmd) => crate::limits::run(api, cmd),
     }
 }
 

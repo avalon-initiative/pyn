@@ -9,4 +9,6 @@ pub trait ObjectStore: Send + Sync {
     async fn put(&self, bytes: Vec<u8>) -> Result<ContentHash>;
     async fn get(&self, hash: &ContentHash) -> Result<Option<Vec<u8>>>;
     async fn exists(&self, hash: &ContentHash) -> Result<bool>;
+    /// The object's length in bytes, `None` if it is not stored.
+    async fn size(&self, hash: &ContentHash) -> Result<Option<u64>>;
 }

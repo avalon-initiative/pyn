@@ -8,6 +8,7 @@ Markdown only; `make docs-check` verifies relative links and anchors.
 - [Repositories: owners, names, visibility and the API shape](concepts/repositories.md)
 - [Browsing a repository: folder listing and summary](concepts/browsing.md)
 - [Access: roles, permissions and tokens](concepts/access.md)
+- [Limits and usage: optional per-owner caps](concepts/limits.md)
 - [The `.pyn/` folder](concepts/workspace.md)
 - [Phase 1 scope](phase-1.md)
 

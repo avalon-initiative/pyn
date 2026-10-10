@@ -204,7 +204,7 @@ pub struct AdminCreateOrgRequest {
 pub struct CreateServiceCredentialRequest {
     /// 1 to 64 lowercase letters, digits, `-` or `_`; unique, and never reused after revocation.
     pub name: String,
-    /// At least one of `manage_accounts`, `manage_organizations`.
+    /// At least one of `manage_accounts`, `manage_organizations`, `manage_limits`.
     pub scopes: Vec<String>,
 }
 
@@ -398,7 +398,9 @@ pub struct UpdateRepoRequest {
 }
 
 /// Tells an explicit `null` (`Some(None)`) from an absent field (`None`).
-fn present<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Option<u32>>, D::Error> {
+fn present<'de, T: Deserialize<'de>, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<Option<T>>, D::Error> {
     Option::deserialize(d).map(Some)
 }
 
@@ -771,4 +773,108 @@ pub struct SessionInfo {
     /// Send as the `X-Pyn-CSRF` header on every POST, PUT and DELETE.
     pub csrf_token: String,
     pub expires_at: DateTime<Utc>,
+}
+
+/// What an owner (a user or an organization) is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum OwnerKind {
+    User,
+    Org,
+}
+
+/// Limits on one owner. Every limit is opt-in: a null field is unlimited.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct Limits {
+    /// Repositories the owner may have.
+    #[schema(required = true)]
+    pub repositories: Option<u64>,
+    /// Members an organization may have; always null for a user.
+    #[schema(required = true)]
+    pub members: Option<u64>,
+    /// Bytes of distinct content across the owner's repositories.
+    #[schema(required = true)]
+    pub storage_bytes: Option<u64>,
+}
+
+/// An owner's limits. Nothing is limited unless an operator sets a limit or a server default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct OwnerLimits {
+    pub kind: OwnerKind,
+    /// The limits in force: the owner's own where set, else the server default, else null (unlimited).
+    pub effective: Limits,
+    /// Limits set for this owner alone; a null field follows the server default.
+    pub own: Limits,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct OwnerLimitsEntry {
+    pub owner: String,
+    pub limits: OwnerLimits,
+}
+
+/// The server default and every owner that has limits of its own.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct LimitsListing {
+    /// Applies to owners with nothing of their own; all null unless the operator configures it.
+    pub defaults: Limits,
+    /// Ordered by name.
+    pub owners: Vec<OwnerLimitsEntry>,
+}
+
+/// Fields left out stay as they are; a number sets the limit and `null` returns the field to the server default.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+pub struct SetLimitsRequest {
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schema(value_type = Option<u64>)]
+    pub repositories: Option<Option<u64>>,
+    /// Organizations only; a user has no member limit.
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schema(value_type = Option<u64>)]
+    pub members: Option<Option<u64>>,
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schema(value_type = Option<u64>)]
+    pub storage_bytes: Option<Option<u64>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct Usage {
+    pub repositories: u64,
+    /// Organization members; null for a user.
+    #[schema(required = true)]
+    pub members: Option<u64>,
+    /// Bytes of distinct content, counted once per repository.
+    pub stored_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct RepoUsage {
+    /// `owner/name`.
+    pub repository: String,
+    pub stored_bytes: u64,
+    /// Paths with a head revision.
+    pub files: u64,
+    pub revisions: u64,
+}
+
+/// What an owner uses against its limits.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct OwnerUsage {
+    pub owner: String,
+    pub limits: OwnerLimits,
+    pub usage: Usage,
+    /// Ordered by name.
+    pub repositories: Vec<RepoUsage>,
 }

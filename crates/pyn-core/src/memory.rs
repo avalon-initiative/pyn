@@ -18,6 +18,7 @@ use crate::access_service::{
 use crate::audit::{AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent};
 use crate::error::{PynError, Result};
 use crate::history::HistoryCursor;
+use crate::limits::{Limits, LimitsChange, RepoUsage, StorageCap, Usage};
 use crate::object::ObjectStore;
 use crate::ratelimit::{RateLimitStore, RateState};
 use crate::repo::{RepoRecord, RepoUpdate, Visibility};
@@ -37,6 +38,18 @@ struct State {
     locks: HashMap<Key, Lock>,
     revisions: HashMap<Key, Vec<Revision>>,
     repos: HashMap<RepoId, RepoRecord>,
+    /// Length of each distinct content in each repository.
+    sizes: HashMap<(RepoId, ContentHash), u64>,
+}
+
+impl State {
+    fn stored_by(&self, owner: &UserId) -> u64 {
+        self.sizes
+            .iter()
+            .filter(|((r, _), _)| self.repos.get(r).is_some_and(|rec| &rec.owner == owner))
+            .map(|(_, size)| size)
+            .sum()
+    }
 }
 
 #[derive(Default)]
@@ -185,13 +198,14 @@ impl MetadataStore for MemoryMetadataStore {
             .and_then(|v| v.last().cloned()))
     }
 
-    async fn commit_revision(
+    async fn commit_revision_capped(
         &self,
         repo: &RepoId,
         revision: NewRevision,
         expected_head: Option<RevisionId>,
         lock_holder: Option<&UserId>,
         now: DateTime<Utc>,
+        cap: Option<StorageCap>,
     ) -> Result<Revision> {
         let mut st = self.state.lock().unwrap();
         let key = (repo.clone(), revision.path.clone());
@@ -219,6 +233,20 @@ impl MetadataStore for MemoryMetadataStore {
             });
         }
 
+        let size_key = (repo.clone(), revision.content.clone());
+        if let Some(cap) = &cap
+            && !st.sizes.contains_key(&size_key)
+        {
+            let used = st.stored_by(&cap.owner);
+            if used + revision.size > cap.max_bytes {
+                return Err(PynError::StorageLimitReached {
+                    owner: cap.owner.to_string(),
+                    limit: cap.max_bytes,
+                    used,
+                });
+            }
+        }
+        st.sizes.insert(size_key, revision.size);
         let created = Revision {
             id: RevisionId(head.map_or(1, |h| h.0 + 1)),
             path: revision.path,
@@ -291,7 +319,11 @@ impl MetadataStore for MemoryMetadataStore {
         Ok(revs.into_iter().take(limit).cloned().collect())
     }
 
-    async fn create_repo(&self, repo: RepoRecord) -> Result<RepoRecord> {
+    async fn create_repo_capped(
+        &self,
+        repo: RepoRecord,
+        max_repos: Option<u64>,
+    ) -> Result<RepoRecord> {
         let mut st = self.state.lock().unwrap();
         if st
             .repos
@@ -299,6 +331,14 @@ impl MetadataStore for MemoryMetadataStore {
             .any(|r| r.owner == repo.owner && r.name == repo.name)
         {
             return Err(PynError::RepoExists(repo.address()));
+        }
+        if let Some(limit) = max_repos
+            && st.repos.values().filter(|r| r.owner == repo.owner).count() as u64 >= limit
+        {
+            return Err(PynError::RepoLimitReached {
+                owner: repo.owner.to_string(),
+                limit,
+            });
         }
         st.repos.insert(repo.id.clone(), repo.clone());
         Ok(repo)
@@ -380,7 +420,32 @@ impl MetadataStore for MemoryMetadataStore {
         let mut st = self.state.lock().unwrap();
         st.locks.retain(|(r, _), _| r != id);
         st.revisions.retain(|(r, _), _| r != id);
+        st.sizes.retain(|(r, _), _| r != id);
         Ok(st.repos.remove(id).is_some())
+    }
+
+    async fn owner_usage(&self, owner: &UserId) -> Result<Usage> {
+        let st = self.state.lock().unwrap();
+        Ok(Usage {
+            repositories: st.repos.values().filter(|r| &r.owner == owner).count() as u64,
+            members: None,
+            stored_bytes: st.stored_by(owner),
+        })
+    }
+
+    async fn repo_usage(&self, repo: &RepoId) -> Result<RepoUsage> {
+        let st = self.state.lock().unwrap();
+        let in_repo = || st.revisions.iter().filter(|((r, _), _)| r == repo);
+        Ok(RepoUsage {
+            stored_bytes: st
+                .sizes
+                .iter()
+                .filter(|((r, _), _)| r == repo)
+                .map(|(_, size)| size)
+                .sum(),
+            files: in_repo().count() as u64,
+            revisions: in_repo().map(|(_, revs)| revs.len() as u64).sum(),
+        })
     }
 }
 
@@ -410,6 +475,15 @@ impl ObjectStore for MemoryObjectStore {
     async fn exists(&self, hash: &ContentHash) -> Result<bool> {
         Ok(self.objects.lock().unwrap().contains_key(hash))
     }
+
+    async fn size(&self, hash: &ContentHash) -> Result<Option<u64>> {
+        Ok(self
+            .objects
+            .lock()
+            .unwrap()
+            .get(hash)
+            .map(|b| b.len() as u64))
+    }
 }
 
 #[derive(Default)]
@@ -431,6 +505,7 @@ struct AccessState {
     service_credentials: HashMap<TokenId, ServiceCredentialRecord>,
     sessions: HashMap<String, SessionRecord>,
     settings: Option<ServerSettings>,
+    limits: BTreeMap<UserId, Limits>,
 }
 
 impl AccessState {
@@ -613,6 +688,7 @@ impl AccessStore for MemoryAccessStore {
             return Ok(false);
         }
         st.accounts.remove(org);
+        st.limits.remove(org);
         st.org_roles.retain(|(o, _), _| o != org);
         st.teams.retain(|(o, _), _| o != org);
         st.team_members.retain(|(o, _, _)| o != org);
@@ -663,14 +739,50 @@ impl AccessStore for MemoryAccessStore {
         Ok(out)
     }
 
-    async fn add_org_member(&self, org: &UserId, user: &UserId, role: OrgRole) -> Result<bool> {
+    async fn add_org_member_capped(
+        &self,
+        org: &UserId,
+        user: &UserId,
+        role: OrgRole,
+        max_members: Option<u64>,
+    ) -> Result<bool> {
         let mut st = self.state.lock().unwrap();
         let key = (org.clone(), user.clone());
         if st.org_roles.contains_key(&key) {
             return Ok(false);
         }
+        if let Some(limit) = max_members
+            && st.org_roles.keys().filter(|(o, _)| o == org).count() as u64 >= limit
+        {
+            return Err(PynError::MemberLimitReached {
+                org: org.to_string(),
+                limit,
+            });
+        }
         st.org_roles.insert(key, role);
         Ok(true)
+    }
+
+    async fn owner_limits(&self, owner: &UserId) -> Result<Limits> {
+        let st = self.state.lock().unwrap();
+        Ok(st.limits.get(owner).copied().unwrap_or_default())
+    }
+
+    async fn update_owner_limits(&self, owner: &UserId, change: LimitsChange) -> Result<Limits> {
+        let mut st = self.state.lock().unwrap();
+        let updated = change.apply(st.limits.get(owner).copied().unwrap_or_default());
+        st.limits.insert(owner.clone(), updated);
+        Ok(updated)
+    }
+
+    async fn list_owner_limits(&self) -> Result<Vec<(UserId, Limits)>> {
+        let st = self.state.lock().unwrap();
+        Ok(st
+            .limits
+            .iter()
+            .filter(|(_, l)| !l.is_unset())
+            .map(|(o, l)| (o.clone(), *l))
+            .collect())
     }
 
     async fn set_org_role(

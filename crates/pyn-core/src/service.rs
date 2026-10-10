@@ -8,6 +8,7 @@ use crate::audit::{AuditAction, AuditEvent, AuditQuery, AuditScope, AuditStore, 
 use crate::clock::Clock;
 use crate::error::{PynError, Result};
 use crate::history::{HISTORY_DEFAULT_LIMIT, HISTORY_MAX_LIMIT, HistoryCursor, HistoryPage};
+use crate::limits::{StorageCap, StorageCaps};
 use crate::object::ObjectStore;
 use crate::repo::DEFAULT_MAX_LOCKS_PER_USER;
 use crate::rules::{Mode, POLICY_PATH, PathFilter, Rules};
@@ -65,6 +66,7 @@ pub struct RepoService {
     audit: Arc<dyn AuditStore>,
     clock: Arc<dyn Clock>,
     config: ServiceConfig,
+    storage: Option<(UserId, Arc<dyn StorageCaps>)>,
 }
 
 impl RepoService {
@@ -88,7 +90,14 @@ impl RepoService {
             audit,
             clock,
             config,
+            storage: None,
         }
+    }
+
+    /// Enforces the storage ceiling `caps` reports for the repository's `owner`, if one is set.
+    pub fn with_storage_caps(mut self, owner: UserId, caps: Arc<dyn StorageCaps>) -> Self {
+        self.storage = Some((owner, caps));
+        self
     }
 
     async fn record(
@@ -304,6 +313,18 @@ impl RepoService {
         };
         let lock_holder = (mode == Mode::Exclusive && !bootstrap).then_some(&who.user);
         let now = self.clock.now();
+        let size = self
+            .objects
+            .size(&content)
+            .await?
+            .ok_or_else(|| PynError::ObjectMissing(content.to_string()))?;
+        let cap = match &self.storage {
+            Some((owner, caps)) => caps.storage_cap(owner).await?.map(|max_bytes| StorageCap {
+                owner: owner.clone(),
+                max_bytes,
+            }),
+            None => None,
+        };
         let revision = NewRevision {
             path: path.clone(),
             content,
@@ -312,10 +333,11 @@ impl RepoService {
             created_at: now,
             restored_from,
             mode,
+            size,
         };
         let rev = self
             .meta
-            .commit_revision(&self.repo, revision, base, lock_holder, now)
+            .commit_revision_capped(&self.repo, revision, base, lock_holder, now, cap)
             .await?;
         if let Some(new) = parsed
             && let Some(old) = self.apply(rev.id, new.clone())

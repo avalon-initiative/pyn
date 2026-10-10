@@ -291,18 +291,22 @@ pub enum ServiceScope {
     ManageAccounts,
     /// Create and delete organizations on behalf of an owner.
     ManageOrganizations,
+    /// Set per-owner limits and read any owner's usage.
+    ManageLimits,
 }
 
 impl ServiceScope {
-    pub const ALL: [ServiceScope; 2] = [
+    pub const ALL: [ServiceScope; 3] = [
         ServiceScope::ManageAccounts,
         ServiceScope::ManageOrganizations,
+        ServiceScope::ManageLimits,
     ];
 
     pub fn as_str(self) -> &'static str {
         match self {
             Self::ManageAccounts => "manage_accounts",
             Self::ManageOrganizations => "manage_organizations",
+            Self::ManageLimits => "manage_limits",
         }
     }
 }

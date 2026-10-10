@@ -8,8 +8,8 @@ use std::str::FromStr;
 
 use pyn_core::{
     ContentHash, HistoryCursor, Lock, MetadataStore, Mode, NewRevision, PathFilter, PynError,
-    RepoId, RepoPath, RepoRecord, RepoSettings, RepoUpdate, Result, Revision, RevisionId, UserId,
-    Visibility,
+    RepoId, RepoPath, RepoRecord, RepoSettings, RepoUpdate, RepoUsage, Result, Revision,
+    RevisionId, StorageCap, Usage, UserId, Visibility,
 };
 use sqlx::migrate::MigrateDatabase;
 use sqlx::postgres::{PgPoolOptions, PgRow};
@@ -86,6 +86,22 @@ fn repo_from(row: &PgRow) -> Result<RepoRecord> {
         },
         created_at: row.get("created_at"),
     })
+}
+
+/// Bytes of distinct content across the owner's repositories.
+async fn owner_stored(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    owner: &UserId,
+) -> Result<i64> {
+    sqlx::query_scalar(
+        "SELECT COALESCE(SUM(size), 0)::bigint FROM (
+             SELECT DISTINCT r.repo, r.content, r.size FROM revisions r
+             JOIN repositories p ON p.id = r.repo WHERE p.owner = $1) t",
+    )
+    .bind(owner.as_str())
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(db)
 }
 
 fn is_unique_violation(e: &sqlx::Error) -> bool {
@@ -361,15 +377,24 @@ impl MetadataStore for PgMetadataStore {
         row.as_ref().map(revision_from).transpose()
     }
 
-    async fn commit_revision(
+    async fn commit_revision_capped(
         &self,
         repo: &RepoId,
         revision: NewRevision,
         expected_head: Option<RevisionId>,
         lock_holder: Option<&UserId>,
         now: DateTime<Utc>,
+        cap: Option<StorageCap>,
     ) -> Result<Revision> {
         let mut tx = self.pool.begin().await.map_err(db)?;
+        if let Some(cap) = &cap {
+            // Serializes this owner's capped writes so the usage read below cannot go stale.
+            sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+                .bind(format!("pyn:storage:{}", cap.owner))
+                .execute(&mut *tx)
+                .await
+                .map_err(db)?;
+        }
 
         if let Some(user) = lock_holder {
             let row = sqlx::query(
@@ -398,8 +423,8 @@ impl MetadataStore for PgMetadataStore {
         let expected = expected_head.map_or(0, |r| r.0 as i64);
         // Inserts only when the head still equals `expected`; a concurrent insert of the same id hits the primary key.
         let inserted = sqlx::query(
-            "INSERT INTO revisions (repo, path, id, content, author, message, created_at, restored_from, mode)
-             SELECT $1, $2, $3, $4, $5, $6, $7, $9::bigint, $10
+            "INSERT INTO revisions (repo, path, id, content, author, message, created_at, restored_from, mode, size)
+             SELECT $1, $2, $3, $4, $5, $6, $7, $9::bigint, $10, $11
              WHERE COALESCE((SELECT max(id) FROM revisions WHERE repo = $1 AND path = $2), 0) = $8
              RETURNING id",
         )
@@ -413,6 +438,7 @@ impl MetadataStore for PgMetadataStore {
         .bind(expected)
         .bind(revision.restored_from.map(|r| r.0 as i64))
         .bind(mode_str(revision.mode))
+        .bind(revision.size as i64)
         .fetch_optional(&mut *tx)
         .await;
 
@@ -440,6 +466,29 @@ impl MetadataStore for PgMetadataStore {
             Err(e) => return Err(db(e)),
         }
 
+        if let Some(cap) = &cap {
+            let known: bool = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM revisions
+                                WHERE repo = $1 AND content = $2 AND size > 0 AND NOT (path = $4 AND id = $3))",
+            )
+            .bind(repo.as_str())
+            .bind(revision.content.as_str())
+            .bind(expected + 1)
+            .bind(revision.path.as_str())
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(db)?;
+            if !known {
+                let total = owner_stored(&mut tx, &cap.owner).await?;
+                if total as u64 > cap.max_bytes {
+                    return Err(PynError::StorageLimitReached {
+                        owner: cap.owner.to_string(),
+                        limit: cap.max_bytes,
+                        used: total as u64 - revision.size,
+                    });
+                }
+            }
+        }
         if lock_holder.is_some() {
             sqlx::query("DELETE FROM locks WHERE repo = $1 AND path = $2")
                 .bind(repo.as_str())
@@ -551,7 +600,40 @@ impl MetadataStore for PgMetadataStore {
         }
     }
 
-    async fn create_repo(&self, repo: RepoRecord) -> Result<RepoRecord> {
+    async fn create_repo_capped(
+        &self,
+        repo: RepoRecord,
+        max_repos: Option<u64>,
+    ) -> Result<RepoRecord> {
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        if let Some(limit) = max_repos {
+            // Serializes this owner's capped creations so the count below cannot go stale.
+            sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+                .bind(format!("pyn:repos:{}", repo.owner))
+                .execute(&mut *tx)
+                .await
+                .map_err(db)?;
+            let held: i64 =
+                sqlx::query_scalar("SELECT count(*) FROM repositories WHERE owner = $1")
+                    .bind(repo.owner.as_str())
+                    .fetch_one(&mut *tx)
+                    .await
+                    .map_err(db)?;
+            let taken: bool = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM repositories WHERE owner = $1 AND name = $2)",
+            )
+            .bind(repo.owner.as_str())
+            .bind(&repo.name)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(db)?;
+            if !taken && held as u64 >= limit {
+                return Err(PynError::RepoLimitReached {
+                    owner: repo.owner.to_string(),
+                    limit,
+                });
+            }
+        }
         let inserted = sqlx::query(
             "INSERT INTO repositories (id, owner, name, visibility, lease_hours, max_locks, created_at)
              VALUES ($1, $2, $3, $4, $5, $6, $7)",
@@ -563,10 +645,13 @@ impl MetadataStore for PgMetadataStore {
         .bind(repo.settings.lease_hours as i32)
         .bind(repo.settings.max_locks.map(|n| n as i32))
         .bind(repo.created_at)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await;
         match inserted {
-            Ok(_) => Ok(repo),
+            Ok(_) => {
+                tx.commit().await.map_err(db)?;
+                Ok(repo)
+            }
             Err(e) if is_unique_violation(&e) => Err(PynError::RepoExists(repo.address())),
             Err(e) => Err(db(e)),
         }
@@ -658,6 +743,40 @@ impl MetadataStore for PgMetadataStore {
             ))),
             Err(e) => Err(db(e)),
         }
+    }
+
+    async fn owner_usage(&self, owner: &UserId) -> Result<Usage> {
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        let repositories: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM repositories WHERE owner = $1")
+                .bind(owner.as_str())
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(db)?;
+        let stored_bytes = owner_stored(&mut tx, owner).await?;
+        Ok(Usage {
+            repositories: repositories as u64,
+            members: None,
+            stored_bytes: stored_bytes as u64,
+        })
+    }
+
+    async fn repo_usage(&self, repo: &RepoId) -> Result<RepoUsage> {
+        let row = sqlx::query(
+            "SELECT (SELECT COALESCE(SUM(size), 0)::bigint
+                     FROM (SELECT DISTINCT content, size FROM revisions WHERE repo = $1) d) AS bytes,
+                    count(DISTINCT path) AS files, count(*) AS revisions
+             FROM revisions WHERE repo = $1",
+        )
+        .bind(repo.as_str())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(RepoUsage {
+            stored_bytes: row.get::<i64, _>("bytes") as u64,
+            files: row.get::<i64, _>("files") as u64,
+            revisions: row.get::<i64, _>("revisions") as u64,
+        })
     }
 
     async fn delete_repo(&self, id: &RepoId) -> Result<bool> {

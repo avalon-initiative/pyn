@@ -5,11 +5,12 @@ use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use pyn_core::{
     AccessStore, AccountDisable, AccountKind, AccountRecord, AccountStatus, AdminRevoke,
-    CreationEffect, CreationRule, CreationScope, CreationSubject, InviteId, InviteRecord,
-    MemberCreation, NewAccount, OrgDeleteMark, OrgMemberChange, OrgRole, Permission, PynError,
-    RateLimitStore, RateState, RegistrationMode, RepoId, RepoPolicy, Result, Role, RoleDefinitions,
-    ServerSettings, ServiceCredentialRecord, ServiceScope, SessionRecord, SignupStage,
-    SshKeyRecord, SubjectKind, TeamRecord, TokenId, TokenRecord, UserId, VerificationRecord,
+    CreationEffect, CreationRule, CreationScope, CreationSubject, InviteId, InviteRecord, Limits,
+    LimitsChange, MemberCreation, NewAccount, OrgDeleteMark, OrgMemberChange, OrgRole, Permission,
+    PynError, RateLimitStore, RateState, RegistrationMode, RepoId, RepoPolicy, Result, Role,
+    RoleDefinitions, ServerSettings, ServiceCredentialRecord, ServiceScope, SessionRecord,
+    SignupStage, SshKeyRecord, SubjectKind, TeamRecord, TokenId, TokenRecord, UserId,
+    VerificationRecord,
 };
 use sqlx::Row;
 use sqlx::postgres::PgRow;
@@ -39,6 +40,15 @@ fn service_credential_from(row: &PgRow) -> Result<ServiceCredentialRecord> {
         revoked_at: row.get("revoked_at"),
         last_used_at: row.get("last_used_at"),
     })
+}
+
+fn limits_from(row: &PgRow) -> Limits {
+    let get = |column: &str| row.get::<Option<i64>, _>(column).map(|n| n as u64);
+    Limits {
+        repositories: get("max_repositories"),
+        members: get("max_members"),
+        storage_bytes: get("max_storage_bytes"),
+    }
 }
 
 fn team_from(row: &PgRow) -> TeamRecord {
@@ -871,17 +881,102 @@ impl AccessStore for PgMetadataStore {
             .collect()
     }
 
-    async fn add_org_member(&self, org: &UserId, user: &UserId, role: OrgRole) -> Result<bool> {
+    async fn add_org_member_capped(
+        &self,
+        org: &UserId,
+        user: &UserId,
+        role: OrgRole,
+        max_members: Option<u64>,
+    ) -> Result<bool> {
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        if let Some(limit) = max_members {
+            // The organization row serializes concurrent adds so the count cannot go stale.
+            sqlx::query("SELECT id FROM users WHERE id = $1 FOR UPDATE")
+                .bind(org.as_str())
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(db)?;
+            let taken: bool = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM org_members WHERE org = $1 AND user_id = $2)",
+            )
+            .bind(org.as_str())
+            .bind(user.as_str())
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(db)?;
+            let count: i64 = sqlx::query_scalar("SELECT count(*) FROM org_members WHERE org = $1")
+                .bind(org.as_str())
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(db)?;
+            if !taken && count as u64 >= limit {
+                return Err(PynError::MemberLimitReached {
+                    org: org.to_string(),
+                    limit,
+                });
+            }
+        }
         let added = sqlx::query(
             "INSERT INTO org_members (org, user_id, role) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
         )
         .bind(org.as_str())
         .bind(user.as_str())
         .bind(role.as_str())
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(db)?;
+        tx.commit().await.map_err(db)?;
         Ok(added.rows_affected() == 1)
+    }
+
+    async fn owner_limits(&self, owner: &UserId) -> Result<Limits> {
+        let row = sqlx::query(
+            "SELECT max_repositories, max_members, max_storage_bytes FROM owner_limits WHERE owner = $1",
+        )
+        .bind(owner.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(row.as_ref().map(limits_from).unwrap_or_default())
+    }
+
+    async fn update_owner_limits(&self, owner: &UserId, change: LimitsChange) -> Result<Limits> {
+        let big = |v: Option<Option<u64>>| v.flatten().map(|n| n as i64);
+        let row = sqlx::query(
+            "INSERT INTO owner_limits (owner, max_repositories, max_members, max_storage_bytes)
+             VALUES ($1, CASE WHEN $2::boolean THEN $3::bigint END, CASE WHEN $4::boolean THEN $5::bigint END, CASE WHEN $6::boolean THEN $7::bigint END)
+             ON CONFLICT (owner) DO UPDATE SET
+                 max_repositories = CASE WHEN $2::boolean THEN $3::bigint ELSE owner_limits.max_repositories END,
+                 max_members = CASE WHEN $4::boolean THEN $5::bigint ELSE owner_limits.max_members END,
+                 max_storage_bytes = CASE WHEN $6::boolean THEN $7::bigint ELSE owner_limits.max_storage_bytes END
+             RETURNING max_repositories, max_members, max_storage_bytes",
+        )
+        .bind(owner.as_str())
+        .bind(change.repositories.is_some())
+        .bind(big(change.repositories))
+        .bind(change.members.is_some())
+        .bind(big(change.members))
+        .bind(change.storage_bytes.is_some())
+        .bind(big(change.storage_bytes))
+        .fetch_one(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(limits_from(&row))
+    }
+
+    async fn list_owner_limits(&self) -> Result<Vec<(UserId, Limits)>> {
+        let rows = sqlx::query(
+            "SELECT owner, max_repositories, max_members, max_storage_bytes FROM owner_limits
+             WHERE max_repositories IS NOT NULL OR max_members IS NOT NULL OR max_storage_bytes IS NOT NULL
+             ORDER BY owner COLLATE \"C\"",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(rows
+            .iter()
+            .map(|r| (UserId::new(r.get::<String, _>("owner")), limits_from(r)))
+            .collect())
     }
 
     async fn set_org_role(

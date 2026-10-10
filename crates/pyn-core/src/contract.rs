@@ -1426,6 +1426,296 @@ pub async fn deleting_a_repository_removes_only_its_own_data(store: Store) {
         .unwrap();
 }
 
+struct FixedCap(Option<u64>);
+
+#[async_trait::async_trait]
+impl crate::StorageCaps for FixedCap {
+    async fn storage_cap(&self, _owner: &UserId) -> crate::Result<Option<u64>> {
+        Ok(self.0)
+    }
+}
+
+fn capped_service(store: &Store, h: &Harness, id: &str, cap: Option<u64>) -> RepoService {
+    service_in(store, h, id).with_storage_caps(user("alice"), Arc::new(FixedCap(cap)))
+}
+
+pub async fn repository_creation_stops_at_the_owners_cap(store: Store) {
+    let create = |id: &'static str, owner: &'static str, cap: Option<u64>| {
+        let store = store.clone();
+        async move {
+            store
+                .create_repo_capped(repo_record(id, owner, id), cap)
+                .await
+        }
+    };
+    create("a1", "alice", Some(2)).await.unwrap();
+    create("a2", "alice", Some(2)).await.unwrap();
+    let err = create("a3", "alice", Some(2)).await.unwrap_err();
+    assert!(
+        matches!(err, PynError::RepoLimitReached { ref owner, limit: 2 } if owner == "alice"),
+        "{err}"
+    );
+    assert!(
+        store
+            .find_repo(&user("alice"), "a3")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    create("b1", "bob", Some(2)).await.unwrap();
+    create("a3", "alice", None).await.unwrap();
+
+    let err = create("c1", "carol", Some(0)).await.unwrap_err();
+    assert!(
+        matches!(err, PynError::RepoLimitReached { limit: 0, .. }),
+        "{err}"
+    );
+
+    assert!(store.delete_repo(&RepoId::new("a1")).await.unwrap());
+    create("a4", "alice", Some(3)).await.unwrap();
+    let err = create("a5", "alice", Some(3)).await.unwrap_err();
+    assert!(
+        matches!(err, PynError::RepoLimitReached { limit: 3, .. }),
+        "{err}"
+    );
+}
+
+pub async fn racing_repository_creations_cannot_exceed_the_cap(store: Store) {
+    let tasks: Vec<_> = (0..10)
+        .map(|i| {
+            let store = store.clone();
+            tokio::spawn(async move {
+                let id = format!("r{i}");
+                store
+                    .create_repo_capped(repo_record(&id, "alice", &id), Some(3))
+                    .await
+            })
+        })
+        .collect();
+    let mut won = 0;
+    for task in tasks {
+        match task.await.unwrap() {
+            Ok(_) => won += 1,
+            Err(e) => assert!(matches!(e, PynError::RepoLimitReached { .. }), "{e}"),
+        }
+    }
+    assert_eq!(won, 3);
+    assert_eq!(
+        store.list_repos(Some(&user("alice"))).await.unwrap().len(),
+        3
+    );
+}
+
+pub async fn usage_counts_distinct_content_once_per_repository(store: Store) {
+    let h = harness(store.clone());
+    let other = service_in(&store, &h, "other");
+    for (id, owner) in [("game", "alice"), ("other", "alice"), ("theirs", "bob")] {
+        store.create_repo(repo_record(id, owner, id)).await.unwrap();
+    }
+    let empty = store.owner_usage(&user("alice")).await.unwrap();
+    assert_eq!(
+        (empty.repositories, empty.stored_bytes, empty.members),
+        (2, 0, None)
+    );
+
+    let (a, b) = (path("Source/a.txt"), path("Source/b.txt"));
+    let (five, three) = (blob(&h, "12345").await, blob(&h, "123").await);
+    h.svc
+        .checkin(&who("alice"), &a, five.clone(), None, "a".into())
+        .await
+        .unwrap();
+    h.svc
+        .checkin(&who("alice"), &b, five.clone(), None, "same content".into())
+        .await
+        .unwrap();
+    h.svc
+        .checkin(
+            &who("alice"),
+            &a,
+            three.clone(),
+            Some(RevisionId(1)),
+            "a2".into(),
+        )
+        .await
+        .unwrap();
+    let usage = store.repo_usage(&RepoId::new("game")).await.unwrap();
+    assert_eq!(
+        (usage.stored_bytes, usage.files, usage.revisions),
+        (8, 2, 3),
+        "old revisions keep their content"
+    );
+
+    other
+        .checkin(&who("alice"), &a, five, None, "a".into())
+        .await
+        .unwrap();
+    let theirs = service_in(&store, &h, "theirs");
+    theirs
+        .checkin(&who("bob"), &a, three, None, "a".into())
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .owner_usage(&user("alice"))
+            .await
+            .unwrap()
+            .stored_bytes,
+        13
+    );
+    assert_eq!(
+        store.owner_usage(&user("bob")).await.unwrap().stored_bytes,
+        3
+    );
+    assert_eq!(
+        store
+            .repo_usage(&RepoId::new("other"))
+            .await
+            .unwrap()
+            .stored_bytes,
+        5
+    );
+
+    assert!(store.delete_repo(&RepoId::new("game")).await.unwrap());
+    let after = store.owner_usage(&user("alice")).await.unwrap();
+    assert_eq!((after.repositories, after.stored_bytes), (1, 5));
+    assert_eq!(
+        store.repo_usage(&RepoId::new("game")).await.unwrap(),
+        Default::default()
+    );
+}
+
+pub async fn checkin_past_the_storage_cap_is_refused_unless_it_adds_nothing(store: Store) {
+    let h = harness(store.clone());
+    let game = capped_service(&store, &h, "game", Some(10));
+    let other = capped_service(&store, &h, "other", Some(10));
+    for id in ["game", "other"] {
+        store
+            .create_repo(repo_record(id, "alice", id))
+            .await
+            .unwrap();
+    }
+    let (a, b, c) = (path("Source/a"), path("Source/b"), path("Source/c"));
+    let six = blob(&h, "123456").await;
+    game.checkin(&who("alice"), &a, six.clone(), None, "a".into())
+        .await
+        .unwrap();
+
+    let err = game
+        .checkin(
+            &who("alice"),
+            &b,
+            blob(&h, "abcdef").await,
+            None,
+            "b".into(),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            PynError::StorageLimitReached {
+                limit: 10,
+                used: 6,
+                ..
+            }
+        ),
+        "{err}"
+    );
+    assert!(
+        game.head(&b).await.unwrap().is_none(),
+        "a refused checkin leaves no revision"
+    );
+
+    game.checkin(&who("alice"), &b, six.clone(), None, "same bytes".into())
+        .await
+        .unwrap();
+    let err = other
+        .checkin(&who("alice"), &a, blob(&h, "abcde").await, None, "c".into())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, PynError::StorageLimitReached { used: 6, .. }),
+        "{err}"
+    );
+    other
+        .checkin(
+            &who("alice"),
+            &a,
+            blob(&h, "abcd").await,
+            None,
+            "fits".into(),
+        )
+        .await
+        .unwrap();
+
+    // Lowering the cap below use deletes nothing and still allows writes that add no bytes.
+    let shrunk = capped_service(&store, &h, "game", Some(1));
+    shrunk
+        .checkin(&who("alice"), &c, six, None, "no new bytes".into())
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .owner_usage(&user("alice"))
+            .await
+            .unwrap()
+            .stored_bytes,
+        10
+    );
+
+    let unlimited = capped_service(&store, &h, "game", None);
+    unlimited
+        .checkin(
+            &who("alice"),
+            &c,
+            blob(&h, "x".repeat(100).as_str()).await,
+            Some(RevisionId(1)),
+            "big".into(),
+        )
+        .await
+        .unwrap();
+}
+
+pub async fn racing_checkins_cannot_exceed_the_storage_cap(store: Store) {
+    let h = harness(store.clone());
+    store
+        .create_repo(repo_record("game", "alice", "game"))
+        .await
+        .unwrap();
+    let svc = Arc::new(capped_service(&store, &h, "game", Some(12)));
+    let mut tasks = Vec::new();
+    for i in 0..10 {
+        let content = blob(&h, &format!("{i:04}")).await;
+        let svc = svc.clone();
+        tasks.push(tokio::spawn(async move {
+            svc.checkin(
+                &who("alice"),
+                &path(&format!("Source/{i}")),
+                content,
+                None,
+                "x".into(),
+            )
+            .await
+        }));
+    }
+    let mut won = 0;
+    for task in tasks {
+        match task.await.unwrap() {
+            Ok(_) => won += 1,
+            Err(e) => assert!(matches!(e, PynError::StorageLimitReached { .. }), "{e}"),
+        }
+    }
+    assert_eq!(won, 3);
+    assert_eq!(
+        store
+            .owner_usage(&user("alice"))
+            .await
+            .unwrap()
+            .stored_bytes,
+        12
+    );
+}
+
 /// Generates one `#[tokio::test]` per contract case for the store built by `$factory`.
 #[macro_export]
 macro_rules! contract_tests {
@@ -1467,6 +1757,11 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; repositories_do_not_share_locks_or_revisions);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_users_live_locks_are_listed_across_repositories);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; deleting_a_repository_removes_only_its_own_data);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; repository_creation_stops_at_the_owners_cap);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; racing_repository_creations_cannot_exceed_the_cap);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; usage_counts_distinct_content_once_per_repository);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; checkin_past_the_storage_cap_is_refused_unless_it_adds_nothing);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; racing_checkins_cannot_exceed_the_storage_cap);
     };
     (@one $factory:expr; [$(#[$attr:meta])*]; $name:ident) => {
         #[tokio::test(flavor = "multi_thread")]
@@ -1969,16 +2264,17 @@ impl MetadataStore for HookedMeta {
         self.inner.head_revision(repo, path).await
     }
 
-    async fn commit_revision(
+    async fn commit_revision_capped(
         &self,
         repo: &RepoId,
         revision: crate::NewRevision,
         expected_head: Option<RevisionId>,
         lock_holder: Option<&UserId>,
         now: chrono::DateTime<Utc>,
+        cap: Option<crate::StorageCap>,
     ) -> crate::Result<crate::Revision> {
         self.inner
-            .commit_revision(repo, revision, expected_head, lock_holder, now)
+            .commit_revision_capped(repo, revision, expected_head, lock_holder, now, cap)
             .await
     }
 
@@ -2009,12 +2305,16 @@ impl MetadataStore for HookedMeta {
         self.inner.repo_history(repo, filter, before, limit).await
     }
 
-    async fn create_repo(&self, repo: RepoRecord) -> crate::Result<RepoRecord> {
+    async fn create_repo_capped(
+        &self,
+        repo: RepoRecord,
+        max_repos: Option<u64>,
+    ) -> crate::Result<RepoRecord> {
         let hook = self.before_create.lock().unwrap().take();
         if let Some(hook) = hook {
             hook().await;
         }
-        self.inner.create_repo(repo).await
+        self.inner.create_repo_capped(repo, max_repos).await
     }
 
     async fn find_repo(&self, owner: &UserId, name: &str) -> crate::Result<Option<RepoRecord>> {
@@ -2043,6 +2343,14 @@ impl MetadataStore for HookedMeta {
 
     async fn delete_repo(&self, id: &RepoId) -> crate::Result<bool> {
         self.inner.delete_repo(id).await
+    }
+
+    async fn owner_usage(&self, owner: &UserId) -> crate::Result<crate::Usage> {
+        self.inner.owner_usage(owner).await
+    }
+
+    async fn repo_usage(&self, repo: &RepoId) -> crate::Result<crate::RepoUsage> {
+        self.inner.repo_usage(repo).await
     }
 }
 
@@ -4249,6 +4557,165 @@ pub async fn creation_rules_are_validated_audited_and_dropped_with_their_subject
     );
 }
 
+pub async fn organization_members_stop_at_the_cap(store: Access) {
+    org_with_members(&store, "acme", "alice", &[]).await;
+    let (acme, bob, carol) = (user("acme"), user("bob"), user("carol"));
+    for name in ["bob", "carol"] {
+        store.create_user(&user(name), at(0)).await.unwrap();
+    }
+    assert!(
+        store
+            .add_org_member_capped(&acme, &bob, OrgRole::Member, Some(2))
+            .await
+            .unwrap()
+    );
+    assert!(
+        !store
+            .add_org_member_capped(&acme, &bob, OrgRole::Member, Some(2))
+            .await
+            .unwrap(),
+        "a member already there is not counted again"
+    );
+    let err = store
+        .add_org_member_capped(&acme, &carol, OrgRole::Member, Some(2))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, PynError::MemberLimitReached { ref org, limit: 2 } if org == "acme"),
+        "{err}"
+    );
+    assert_eq!(store.org_role(&acme, &carol).await.unwrap(), None);
+    assert!(
+        store
+            .add_org_member_capped(&acme, &carol, OrgRole::Member, None)
+            .await
+            .unwrap()
+    );
+}
+
+pub async fn racing_member_adds_cannot_exceed_the_cap(store: Access) {
+    org_with_members(&store, "acme", "alice", &[]).await;
+    let mut tasks = Vec::new();
+    for i in 0..10 {
+        let store = store.clone();
+        tasks.push(tokio::spawn(async move {
+            let who = user(&format!("u{i}"));
+            store.create_user(&who, at(0)).await.unwrap();
+            store
+                .add_org_member_capped(&user("acme"), &who, OrgRole::Member, Some(4))
+                .await
+        }));
+    }
+    let mut won = 0;
+    for task in tasks {
+        match task.await.unwrap() {
+            Ok(true) => won += 1,
+            Ok(false) => unreachable!(),
+            Err(e) => assert!(matches!(e, PynError::MemberLimitReached { .. }), "{e}"),
+        }
+    }
+    assert_eq!(won, 3);
+    assert_eq!(store.org_members(&user("acme")).await.unwrap().len(), 4);
+}
+
+pub async fn owner_limits_are_patched_listed_and_dropped_with_an_organization(store: Access) {
+    use crate::{Limits, LimitsChange};
+    let (alice, acme) = (user("alice"), user("acme"));
+    for name in ["alice", "zed"] {
+        store.create_user(&user(name), at(0)).await.unwrap();
+    }
+    assert_eq!(store.owner_limits(&alice).await.unwrap(), Limits::default());
+    assert!(store.list_owner_limits().await.unwrap().is_empty());
+
+    let set = store
+        .update_owner_limits(
+            &alice,
+            LimitsChange {
+                repositories: Some(Some(3)),
+                storage_bytes: Some(Some(1000)),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        set,
+        Limits {
+            repositories: Some(3),
+            members: None,
+            storage_bytes: Some(1000)
+        }
+    );
+    let patched = store
+        .update_owner_limits(
+            &alice,
+            LimitsChange {
+                repositories: Some(None),
+                members: Some(Some(0)),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        patched,
+        Limits {
+            repositories: None,
+            members: Some(0),
+            storage_bytes: Some(1000)
+        },
+        "an absent field is untouched and null clears"
+    );
+    assert_eq!(store.owner_limits(&alice).await.unwrap(), patched);
+
+    org_with_members(&store, "acme", "bob", &[]).await;
+    store
+        .update_owner_limits(
+            &acme,
+            LimitsChange {
+                members: Some(Some(5)),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    store
+        .update_owner_limits(
+            &user("zed"),
+            LimitsChange {
+                storage_bytes: Some(Some(1)),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    store
+        .update_owner_limits(
+            &user("zed"),
+            LimitsChange {
+                storage_bytes: Some(None),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let listed: Vec<_> = store
+        .list_owner_limits()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|(o, _)| o.to_string())
+        .collect();
+    assert_eq!(
+        listed,
+        ["acme", "alice"],
+        "owners with nothing set are not listed"
+    );
+
+    assert!(store.delete_org(&acme).await.unwrap());
+    assert_eq!(store.owner_limits(&acme).await.unwrap(), Limits::default());
+}
+
 /// Generates one `#[tokio::test]` per access-store case for the store built by `$factory`.
 #[macro_export]
 macro_rules! access_contract_tests {
@@ -4288,6 +4755,9 @@ macro_rules! access_contract_tests {
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; effective_roles_resolve_across_direct_team_and_owner_grants);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; organization_repository_creation_resolves_owner_base_and_rules);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; creation_rules_are_validated_audited_and_dropped_with_their_subject);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; organization_members_stop_at_the_cap);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; racing_member_adds_cannot_exceed_the_cap);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; owner_limits_are_patched_listed_and_dropped_with_an_organization);
     };
     (@one $factory:expr; [$(#[$attr:meta])*]; $name:ident) => {
         #[tokio::test(flavor = "multi_thread")]

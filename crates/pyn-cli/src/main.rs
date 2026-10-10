@@ -10,6 +10,7 @@ mod address;
 mod admin;
 mod client;
 mod credentials;
+mod limits;
 mod sync;
 mod table;
 mod time;
@@ -216,6 +217,11 @@ enum Command {
     /// Server administration (server administrators and service credentials only).
     #[command(subcommand)]
     Admin(admin::AdminCommand),
+    /// Show what you or an organization you own use on the server, and any limits that apply.
+    Usage {
+        /// A user or organization; you by default.
+        owner: Option<String>,
+    },
     /// List or change who has which role.
     #[command(subcommand)]
     Member(MemberCommand),
@@ -264,6 +270,11 @@ enum RepoCommand {
         name: String,
         /// `public` or `private`.
         visibility: String,
+    },
+    /// Show the stored bytes, files and revisions of a repository.
+    Usage {
+        /// `owner/name`.
+        name: String,
     },
     /// Delete a repository with its files, history, locks and access. Its audit log is kept.
     Delete {
@@ -820,6 +831,7 @@ fn main() -> Result<()> {
             interactive(),
         )?,
         Command::Admin(cmd) => admin::run(&api, cmd)?,
+        Command::Usage { owner } => limits::usage(&api, owner)?,
         Command::Team(cmd) => team_command(&api, cmd)?,
         Command::Locks { mine: true } => {
             let locks: Vec<api::MyLock> = api.send(api.get("/v1/me/locks"))?.json()?;
@@ -1442,6 +1454,10 @@ fn repo_command(api: &Api, cmd: RepoCommand) -> Result<()> {
                     .json(&body),
             )?;
             println!("{name} is now {visibility}");
+        }
+        RepoCommand::Usage { name } => {
+            let (owner, short) = address::split_repo(&name)?;
+            limits::repo_usage(api, owner, short)?;
         }
         RepoCommand::Delete { name, yes } => {
             let (owner, short) = address::split_repo(&name)?;

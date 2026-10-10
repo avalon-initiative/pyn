@@ -114,6 +114,8 @@ pub struct NewRevision {
     pub created_at: DateTime<Utc>,
     pub restored_from: Option<RevisionId>,
     pub mode: Mode,
+    /// Length of the content in bytes.
+    pub size: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
