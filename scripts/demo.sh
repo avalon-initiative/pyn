@@ -36,9 +36,8 @@ curl -fs "$PYN_SERVER/healthz" >/dev/null || { echo "no server at $PYN_SERVER" >
 # Completes first-run setup with PYN_SETUP_TOKEN unless the server has been set up already.
 if ! curl -fs "$PYN_SERVER/v1/setup" | grep -q '"initialised":true'; then
   [ -n "${PYN_SETUP_TOKEN:-}" ] || { echo "the server is not set up; set PYN_SETUP_TOKEN to its setup token" >&2; exit 1; }
-  printf '{"token":"%s","username":"%s","password":"%s","server_name":"pyn demo","registration":"open"}' \
-    "$PYN_SETUP_TOKEN" "$ADMIN" "$ADMIN_PASSWORD" |
-    curl -fs -X POST -H 'content-type: application/json' --data-binary @- "$PYN_SERVER/v1/setup" >/dev/null
+  printf '%s\n' "$ADMIN_PASSWORD" |
+    "$PYN" setup "$ADMIN" --server-name "pyn demo" --registration open --password-stdin >/dev/null
   echo "server set up"
 fi
 

@@ -7,6 +7,7 @@ use reqwest::Method;
 use reqwest::blocking::Client;
 
 mod address;
+mod admin;
 mod client;
 mod credentials;
 mod sync;
@@ -191,6 +192,30 @@ enum Command {
     /// Manage your API tokens.
     #[command(subcommand)]
     Token(TokenCommand),
+    /// Run first-run setup on a new server: creates the first administrator and records the essentials.
+    Setup {
+        /// The first administrator's user name.
+        username: String,
+        /// The one-time setup token from the server's log or its PYN_SETUP_TOKEN setting.
+        #[arg(long, env = "PYN_SETUP_TOKEN", hide_env_values = true)]
+        setup_token: Option<String>,
+        #[arg(long)]
+        email: Option<String>,
+        #[arg(long)]
+        server_name: Option<String>,
+        /// The address people reach the web app at; verification links use it.
+        #[arg(long)]
+        public_url: Option<String>,
+        /// `open`, `invite` or `closed`; the server's configured default if omitted.
+        #[arg(long)]
+        registration: Option<String>,
+        /// Read the password from standard input instead of prompting.
+        #[arg(long)]
+        password_stdin: bool,
+    },
+    /// Server administration (server administrators and service credentials only).
+    #[command(subcommand)]
+    Admin(admin::AdminCommand),
     /// List or change who has which role.
     #[command(subcommand)]
     Member(MemberCommand),
@@ -767,6 +792,28 @@ fn main() -> Result<()> {
         }
         Command::Repo(cmd) => repo_command(&api, cmd)?,
         Command::Org(cmd) => org_command(&api, cmd)?,
+        Command::Setup {
+            username,
+            setup_token,
+            email,
+            server_name,
+            public_url,
+            registration,
+            password_stdin,
+        } => admin::setup(
+            &api,
+            admin::SetupArgs {
+                username,
+                setup_token,
+                email,
+                server_name,
+                public_url,
+                registration,
+                password_stdin,
+            },
+            interactive(),
+        )?,
+        Command::Admin(cmd) => admin::run(&api, cmd)?,
         Command::Team(cmd) => team_command(&api, cmd)?,
         Command::Locks { mine: true } => {
             let locks: Vec<api::MyLock> = api.send(api.get("/v1/me/locks"))?.json()?;

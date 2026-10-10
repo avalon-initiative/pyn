@@ -639,6 +639,16 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "last_server_admin: the account is the only active administrator",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         }
       }

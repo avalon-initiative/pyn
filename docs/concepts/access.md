@@ -154,7 +154,7 @@ hashing work is the same); the address's owner gets a notice instead of a link, 
 **Server administrators** approve, disable and enable accounts. The account created by [first-run setup](#first-run-setup) is the first; a token
 acts as one only if it carries `manage_users`. An administrator grants the flag to another active account and revokes it from
 any account, their own included; the last active administrator cannot be revoked (`409 last_server_admin`), so the server is
-never left without one. A service credential cannot grant or revoke (`403 server_admin_required`). Grants and revokes are
+never left without one; disabling the last active administrator is refused the same way. A service credential cannot grant or revoke (`403 server_admin_required`). Grants and revokes are
 recorded with who and whom in the audit log. A disabled account cannot sign in, its sessions end at once, and its tokens
 and SSH keys stop working (403 `account_disabled`) until it is enabled; its email address stays reserved. Administrators
 cannot disable themselves. Approvals, disables and enables are recorded with the actor and reason in a server-wide audit
@@ -179,11 +179,24 @@ is off, or on but nothing is delivered.
 | `GET /v1/me` | `{user, admin}` |
 | `GET /v1/admin/users?status=&limit=` | accounts oldest first: `{user, email, email_verified, status, disabled_at, disabled_reason, admin, created_at}` |
 | `POST /v1/admin/users/{user}/approve` | `{}`; the updated account |
-| `POST /v1/admin/users/{user}/disable` | `{reason?}`; the updated account |
+| `POST /v1/admin/users/{user}/disable` | `{reason?}`; the updated account. `409 last_server_admin` if the account is the only active administrator |
 | `POST /v1/admin/users/{user}/enable` | the updated account |
 | `PUT /v1/admin/users/{user}/admin` | grants the flag; the updated account. `400 invalid_request` if the account is not active; granting again changes nothing |
 | `DELETE /v1/admin/users/{user}/admin` | revokes the flag; the updated account. `409 last_server_admin` if no other active administrator would remain; revoking from a non-administrator changes nothing |
 | `GET /v1/admin/audit?before=&limit=` | `account_approved`, `account_disabled`, `account_enabled`, `admin_granted`, `admin_revoked` and `server_setup_completed` events, same page shape as a repository's |
+
+On the command line (server administrators; each listing is an aligned table with the name last):
+
+| Command | Does |
+| --- | --- |
+| `pyn admin user list [--status S] [--limit N]` | columns `STATUS ROLE CREATED EMAIL USER` |
+| `pyn admin user approve <user>`, `disable <user> [--reason R]`, `enable <user>` | the account routes above |
+| `pyn admin grant <user>`, `pyn admin revoke <user>` | grant or revoke the administrator flag |
+| `pyn admin service-credential create <name> --scopes manage_accounts,manage_organizations` | prints the secret alone on stdout; it is shown once |
+| `pyn admin service-credential list`, `revoke <name>` | columns `STATE CREATED LAST USED BY SCOPES NAME`; revoked ones are listed |
+| `pyn admin org create <name> --owner <user>`, `pyn admin org delete <name> [--yes]` | on behalf of an owner; delete asks to type the name |
+
+Automation signs in with `--token` or `PYN_TOKEN` set to a service credential's secret; it is limited to its scopes.
 
 The admin routes answer `403 server_admin_required` to anyone else and `404 user_not_found` for an unknown account.
 `pyn register --email <address>` signs up on a server that verifies.
@@ -258,6 +271,11 @@ other registration settings (`PYN_EMAIL_VERIFICATION`, `PYN_REQUIRE_APPROVAL`) s
 administrator signs in with the password it set (`pyn login`, or on the web) and creates repositories like anyone else.
 Setup is written to the [server audit log](#protecting-open-registration) as `server_setup_completed` with the
 administrator as actor. A server created before setup existed counts as set up if it already has accounts.
+
+On the command line: `pyn setup <username> [--setup-token T] [--email E] [--server-name N] [--public-url U] [--registration
+open|invite|closed] [--password-stdin]`. The token also comes from `PYN_SETUP_TOKEN`, or is asked for (hidden) on a terminal; the
+password is asked for twice, or read from standard input. `--registration` defaults to what the server reports. Setup does not
+sign the administrator in: run `pyn login <username>` next. On a server that is already set up it stops before asking anything.
 
 `make dev` starts a server with a fixed demo `PYN_SETUP_TOKEN`, and the demo script completes setup with it before
 seeding; see the [README](../../README.md#run-it).
