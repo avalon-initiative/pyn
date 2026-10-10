@@ -2657,6 +2657,32 @@ async fn a_public_repository_is_readable_by_anyone_and_a_private_one_does_not_ex
 }
 
 #[tokio::test]
+async fn role_definitions_are_for_members_not_for_readers_of_a_public_repository() {
+    let v = visible_world().await;
+    let uri = "/v1/repos/alice/open/roles";
+    let r = send(&v.app, "GET", uri, &v.bob, None).await;
+    assert_eq!(r.status(), StatusCode::FORBIDDEN);
+    let body: api::ErrorBody = body_json(r).await;
+    assert_eq!(body.code, "not_repo_member");
+    let anonymous = v.app.clone().oneshot(anonymous_get(uri)).await.unwrap();
+    assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
+    let r = send(&v.app, "GET", "/v1/repos/alice/closed/roles", &v.bob, None).await;
+    assert_eq!(r.status(), StatusCode::NOT_FOUND);
+
+    let r = send(
+        &v.app,
+        "PUT",
+        "/v1/repos/alice/open/members/bob",
+        &v.alice,
+        Some(serde_json::json!({"role": "reader"})),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::NO_CONTENT);
+    let r = send(&v.app, "GET", uri, &v.bob, None).await;
+    assert_eq!(r.status(), StatusCode::OK);
+}
+
+#[tokio::test]
 async fn reading_a_public_repository_does_not_extend_to_writes_or_management() {
     let v = visible_world().await;
     let base = "/v1/repos/alice/open";

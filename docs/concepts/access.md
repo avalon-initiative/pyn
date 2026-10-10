@@ -46,6 +46,9 @@ organization's repository goes only to a member of that organization (see
 [organizations](repositories.md#organizations)). The repository list (`GET /v1/repos`) includes those reached through a team. Nothing caches a role: it is read on every request, so adding or removing a team member, changing a team
 grant or demoting an organization owner applies at once, to tokens as well.
 
+`GET /v1/repos/{owner}/{name}/roles` lists what each role grants and is for members only: someone who can merely read a
+[public repository](repositories.md#visibility) and holds no role gets `403 not_repo_member`.
+
 `GET /v1/repos/{owner}/{name}/members` (needs `manage_users`) lists everyone with access, one row per person:
 `{user, role, source}`, where `role` is the effective role and `source` is what decides it: `direct`, `team` or
 `org_owner` (on a tie, direct comes first, then team). The teams that hold roles are listed at
