@@ -366,3 +366,29 @@ async fn the_owner_can_adjust_roles_but_admin_keeps_access_management() {
         .unwrap_err();
     assert!(matches!(err, PynError::InvalidRequest(_)), "{err}");
 }
+
+#[tokio::test]
+async fn role_definitions_need_a_role_in_the_repository() {
+    let w = world().await;
+    let root = admin(&w).await;
+    w.svc
+        .set_user_role(&root, &w.repo, &user("r"), Role::Reader)
+        .await
+        .unwrap();
+    let reader = w.svc.principal(&w.repo, &user("r")).await.unwrap();
+    assert!(
+        w.svc
+            .role_definitions(&reader, &w.repo, "a/game")
+            .await
+            .is_ok()
+    );
+
+    let outsider = Principal {
+        user: user("x"),
+        permissions: perms(&[Read]),
+    };
+    assert!(matches!(
+        w.svc.role_definitions(&outsider, &w.repo, "a/game").await,
+        Err(PynError::NotRepoMember(_))
+    ));
+}

@@ -127,6 +127,8 @@ pub enum PynError {
     TeamExists { org: String, team: String },
     #[error("{user} is not in team {team}")]
     TeamMemberNotFound { team: String, user: String },
+    #[error("{0} is visible to you, but you hold no role in it")]
+    NotRepoMember(String),
     #[error("{org} does not let you create {scope} repositories")]
     RepoCreateForbidden { org: String, scope: String },
     #[error("{org} has no repository-creation rule for {rule}")]
@@ -212,6 +214,7 @@ impl PynError {
             Self::TeamNotFound { .. } => "team_not_found",
             Self::TeamExists { .. } => "team_exists",
             Self::TeamMemberNotFound { .. } => "team_member_not_found",
+            Self::NotRepoMember(_) => "not_repo_member",
             Self::RepoCreateForbidden { .. } => "repo_create_forbidden",
             Self::CreationRuleNotFound { .. } => "creation_rule_not_found",
             Self::NotOrgRepo(_) => "not_org_repo",

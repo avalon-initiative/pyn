@@ -421,6 +421,7 @@ impl IntoResponse for ApiError {
             | PynError::NotOrgOwner(_)
             | PynError::NotOrgMember(_)
             | PynError::RepoCreateForbidden { .. }
+            | PynError::NotRepoMember(_)
             | PynError::CsrfFailed => StatusCode::FORBIDDEN,
             PynError::TooManyAttempts { .. } => StatusCode::TOO_MANY_REQUESTS,
             PynError::NotInitialised => StatusCode::SERVICE_UNAVAILABLE,

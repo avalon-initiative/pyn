@@ -222,14 +222,19 @@ fn parse_permissions(
 }
 
 #[utoipa::path(get, path = "/v1/repos/{owner}/{name}/roles", params(RepoAddress),
-    responses((status = 200, body = Vec<api::RoleGrant>)))]
+    responses((status = 200, body = Vec<api::RoleGrant>),
+              (status = 403, body = api::ErrorBody, description = "not_repo_member: the caller holds no role in the repository"),
+              (status = 404, body = api::ErrorBody, description = "repo_not_found")))]
 pub(crate) async fn list_roles(
     State(s): State<AppState>,
     headers: HeaderMap,
     Path((owner, name)): Path<(String, String)>,
 ) -> ApiResult<Json<Vec<api::RoleGrant>>> {
-    let (repo, _) = authorize_repo(&s, &headers, &owner, &name, None).await?;
-    let defs = s.access.role_definitions(&repo.record.id).await?;
+    let (repo, who) = authorize_repo(&s, &headers, &owner, &name, None).await?;
+    let defs = s
+        .access
+        .role_definitions(&who, &repo.record.id, &repo.record.address())
+        .await?;
     let grants = Role::ALL
         .into_iter()
         .map(|role| api::RoleGrant {

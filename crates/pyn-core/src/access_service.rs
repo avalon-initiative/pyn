@@ -963,7 +963,16 @@ impl AccessService {
             .collect())
     }
 
-    pub async fn role_definitions(&self, repo: &RepoId) -> Result<RoleDefinitions> {
+    /// What each role grants. Members only: reading a public repository is not membership.
+    pub async fn role_definitions(
+        &self,
+        actor: &Principal,
+        repo: &RepoId,
+        address: &str,
+    ) -> Result<RoleDefinitions> {
+        if !actor.has(Permission::ManageRoles) && self.role_in(repo, &actor.user).await?.is_none() {
+            return Err(PynError::NotRepoMember(address.to_string()));
+        }
         self.store.role_definitions(repo).await
     }
 
