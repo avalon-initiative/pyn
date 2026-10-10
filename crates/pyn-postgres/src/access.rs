@@ -4,12 +4,12 @@ use std::str::FromStr;
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use pyn_core::{
-    AccessStore, AccountKind, AccountRecord, AccountStatus, AdminRevoke, CreationEffect,
-    CreationRule, CreationScope, CreationSubject, InviteId, InviteRecord, MemberCreation,
-    NewAccount, OrgDeleteMark, OrgMemberChange, OrgRole, Permission, PynError, RateLimitStore,
-    RateState, RegistrationMode, RepoId, RepoPolicy, Result, Role, RoleDefinitions, ServerSettings,
-    ServiceCredentialRecord, ServiceScope, SessionRecord, SignupStage, SshKeyRecord, SubjectKind,
-    TeamRecord, TokenId, TokenRecord, UserId, VerificationRecord,
+    AccessStore, AccountDisable, AccountKind, AccountRecord, AccountStatus, AdminRevoke,
+    CreationEffect, CreationRule, CreationScope, CreationSubject, InviteId, InviteRecord,
+    MemberCreation, NewAccount, OrgDeleteMark, OrgMemberChange, OrgRole, Permission, PynError,
+    RateLimitStore, RateState, RegistrationMode, RepoId, RepoPolicy, Result, Role, RoleDefinitions,
+    ServerSettings, ServiceCredentialRecord, ServiceScope, SessionRecord, SignupStage,
+    SshKeyRecord, SubjectKind, TeamRecord, TokenId, TokenRecord, UserId, VerificationRecord,
 };
 use sqlx::Row;
 use sqlx::postgres::PgRow;
@@ -1260,6 +1260,47 @@ impl AccessStore for PgMetadataStore {
                 .await
                 .map_err(db)?;
         Ok(done.rows_affected() > 0)
+    }
+
+    async fn disable_account(
+        &self,
+        user: &UserId,
+        at: DateTime<Utc>,
+        reason: Option<String>,
+    ) -> Result<AccountDisable> {
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        // Same lock order as `revoke_admin`, so the two serialise.
+        let rows = sqlx::query(
+            "SELECT id, disabled_at IS NULL AS active FROM users
+             WHERE is_admin AND kind = 'user' ORDER BY id FOR UPDATE",
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(db)?;
+        let is_target = |r: &PgRow| r.get::<String, _>("id") == user.as_str();
+        let target_active = rows
+            .iter()
+            .any(|r| is_target(r) && r.get::<bool, _>("active"));
+        if target_active
+            && !rows
+                .iter()
+                .any(|r| !is_target(r) && r.get::<bool, _>("active"))
+        {
+            return Ok(AccountDisable::LastAdmin);
+        }
+        let done =
+            sqlx::query("UPDATE users SET disabled_at = $2, disabled_reason = $3 WHERE id = $1")
+                .bind(user.as_str())
+                .bind(at)
+                .bind(reason)
+                .execute(&mut *tx)
+                .await
+                .map_err(db)?;
+        if done.rows_affected() == 0 {
+            return Ok(AccountDisable::NoAccount);
+        }
+        tx.commit().await.map_err(db)?;
+        Ok(AccountDisable::Disabled)
     }
 
     async fn set_admin(&self, user: &UserId, admin: bool) -> Result<()> {

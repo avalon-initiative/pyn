@@ -54,6 +54,15 @@ pub enum AdminRevoke {
     LastAdmin,
 }
 
+/// The outcome of disabling an account.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccountDisable {
+    Disabled,
+    NoAccount,
+    /// The account is the only active administrator.
+    LastAdmin,
+}
+
 /// The outcome of marking an organization as being deleted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OrgDeleteMark {
@@ -315,6 +324,15 @@ pub trait AccessStore: Send + Sync {
         user: &UserId,
         disabled: Option<(DateTime<Utc>, Option<String>)>,
     ) -> Result<bool>;
+
+    /// Disables the account unless it is the only active administrator. Atomic against concurrent
+    /// administrator revokes and disables.
+    async fn disable_account(
+        &self,
+        user: &UserId,
+        at: DateTime<Utc>,
+        reason: Option<String>,
+    ) -> Result<AccountDisable>;
 
     async fn set_admin(&self, user: &UserId, admin: bool) -> Result<()>;
 
@@ -1782,9 +1800,15 @@ impl AccessService {
             .map(str::trim)
             .filter(|r| !r.is_empty())
             .map(str::to_string);
-        self.store
-            .set_disabled(user, Some((self.clock.now(), reason.clone())))
-            .await?;
+        match self
+            .store
+            .disable_account(user, self.clock.now(), reason.clone())
+            .await?
+        {
+            AccountDisable::Disabled => {}
+            AccountDisable::NoAccount => return Err(PynError::UserNotFound(user.to_string())),
+            AccountDisable::LastAdmin => return Err(PynError::LastServerAdmin),
+        }
         self.store.delete_sessions_of(user).await?;
         let detail = match &reason {
             Some(reason) => format!("{user} disabled: {reason}"),

@@ -79,6 +79,7 @@ pub(crate) async fn approve(
     (status = 400, body = api::ErrorBody, description = "invalid_request: one's own account"),
     (status = 403, body = api::ErrorBody, description = "server_admin_required, or service_scope_required for a service credential without manage_accounts"),
     (status = 404, body = api::ErrorBody, description = "user_not_found"),
+    (status = 409, body = api::ErrorBody, description = "last_server_admin: the account is the only active administrator"),
 ))]
 pub(crate) async fn disable(
     State(s): State<AppState>,
