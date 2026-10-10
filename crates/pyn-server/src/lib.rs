@@ -6,7 +6,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::header::RETRY_AFTER;
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post, put};
+use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router};
 use pyn_core::repositories::OpenRepo;
 use pyn_core::{
@@ -24,6 +24,7 @@ mod admin_api;
 pub mod auth;
 mod client;
 pub mod email;
+mod limits_api;
 mod org_api;
 pub mod passwords;
 mod repo_api;
@@ -88,6 +89,11 @@ struct RepoAddress {
         admin_api::create_service_credential,
         admin_api::list_service_credentials,
         admin_api::revoke_service_credential,
+        limits_api::list_limits,
+        limits_api::owner_limits,
+        limits_api::set_owner_limits,
+        limits_api::owner_usage,
+        limits_api::repo_usage,
         access_api::create_token,
         access_api::list_tokens,
         access_api::revoke_token,
@@ -215,7 +221,16 @@ struct RepoAddress {
         api::CreateTeamRequest,
         api::UpdateTeamRequest,
         api::RepoTeam,
-        api::SetTeamRoleRequest
+        api::SetTeamRoleRequest,
+        api::OwnerKind,
+        api::Limits,
+        api::OwnerLimits,
+        api::OwnerLimitsEntry,
+        api::LimitsListing,
+        api::SetLimitsRequest,
+        api::Usage,
+        api::RepoUsage,
+        api::OwnerUsage
     ))
 )]
 pub struct ApiDoc;
@@ -250,6 +265,17 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/v1/admin/service-credentials/{name}",
             delete(admin_api::revoke_service_credential),
+        )
+        .route("/v1/admin/limits", get(limits_api::list_limits))
+        .route(
+            "/v1/admin/owners/{owner}/limits",
+            patch(limits_api::set_owner_limits),
+        )
+        .route("/v1/owners/{owner}/limits", get(limits_api::owner_limits))
+        .route("/v1/owners/{owner}/usage", get(limits_api::owner_usage))
+        .route(
+            "/v1/repos/{owner}/{name}/usage",
+            get(limits_api::repo_usage),
         )
         .route("/v1/login", post(access_api::login))
         .route(
@@ -396,6 +422,9 @@ impl IntoResponse for ApiError {
         let status = match &self.0 {
             PynError::LockHeld { .. }
             | PynError::LockLimitReached { .. }
+            | PynError::RepoLimitReached { .. }
+            | PynError::MemberLimitReached { .. }
+            | PynError::StorageLimitReached { .. }
             | PynError::StaleBase { .. }
             | PynError::LockRequired(_)
             | PynError::NotLocked(_)

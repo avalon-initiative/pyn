@@ -5,8 +5,9 @@ use pyn_core::memory::{
     MemoryRateLimitStore,
 };
 use pyn_core::{
-    AccessConfig, AccessService, AccessStore, AuditStore, AuthProvider, MetadataStore, ObjectStore,
-    RateLimitStore, RateLimits, Repositories, Rules, SystemClock, generate_setup_token,
+    AccessConfig, AccessService, AccessStore, AuditStore, AuthProvider, Limits, MetadataStore,
+    ObjectStore, RateLimitStore, RateLimits, Repositories, Rules, SystemClock,
+    generate_setup_token,
 };
 use pyn_fs::FsObjectStore;
 use pyn_postgres::PgMetadataStore;
@@ -64,6 +65,16 @@ async fn stores() -> anyhow::Result<Stores> {
     })
 }
 
+/// A limit that stays unset, meaning unlimited, unless the variable is present.
+fn optional_number(name: &str) -> anyhow::Result<Option<u64>> {
+    match std::env::var(name) {
+        Ok(v) => Ok(Some(v.parse().map_err(|_| {
+            anyhow::anyhow!("{name} must be a non-negative whole number")
+        })?)),
+        Err(_) => Ok(None),
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
@@ -117,6 +128,12 @@ async fn main() -> anyhow::Result<()> {
             Ok(mode) => mode.parse()?,
             Err(_) => defaults.org_creation,
         },
+        default_limits: Limits {
+            repositories: optional_number("PYN_DEFAULT_MAX_REPOSITORIES")?,
+            members: optional_number("PYN_DEFAULT_MAX_ORG_MEMBERS")?,
+            storage_bytes: optional_number("PYN_DEFAULT_MAX_STORAGE_BYTES")?,
+        }
+        .validate()?,
     };
     let parallelism = std::thread::available_parallelism().map_or(2, |n| n.get());
     let hashes = number("PYN_PASSWORD_HASHES", parallelism)?;

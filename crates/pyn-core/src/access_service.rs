@@ -15,6 +15,7 @@ use crate::audit::{AuditAction, AuditEvent, AuditQuery, AuditScope, AuditStore, 
 use crate::clock::Clock;
 use crate::email::{EmailMessage, EmailSender, NullEmailSender};
 use crate::error::{PynError, Result};
+use crate::limits::{Limits, LimitsChange, StorageCaps};
 use crate::memory::MemoryRateLimitStore;
 use crate::passwords::{InlinePasswords, PasswordWorker};
 use crate::ratelimit::RateLimitStore;
@@ -28,11 +29,13 @@ use crate::types::{RepoId, UserId};
 /// no repository can have.
 pub const SERVER_AUDIT_ID: &str = "@server";
 
+mod limits;
 mod organizations;
 mod repo_policy;
 mod setup;
 mod teams;
 
+pub use limits::OwnerLimits;
 pub use setup::{SetupRequest, SetupStatus, generate_setup_token};
 pub use teams::TeamDetail;
 
@@ -134,7 +137,28 @@ pub trait AccessStore: Send + Sync {
     async fn org_members(&self, org: &UserId) -> Result<Vec<(UserId, OrgRole)>>;
 
     /// Adds `user` to the organization; false if they already belong to it.
-    async fn add_org_member(&self, org: &UserId, user: &UserId, role: OrgRole) -> Result<bool>;
+    async fn add_org_member(&self, org: &UserId, user: &UserId, role: OrgRole) -> Result<bool> {
+        self.add_org_member_capped(org, user, role, None).await
+    }
+
+    /// Like `add_org_member`, but with `max_members` already in the organization the add is
+    /// `MemberLimitReached`; the count and the insert are one atomic step.
+    async fn add_org_member_capped(
+        &self,
+        org: &UserId,
+        user: &UserId,
+        role: OrgRole,
+        max_members: Option<u64>,
+    ) -> Result<bool>;
+
+    /// The owner's own limits; all unset when none were stored.
+    async fn owner_limits(&self, owner: &UserId) -> Result<Limits>;
+
+    /// Applies `change` to the owner's own limits atomically and returns the result.
+    async fn update_owner_limits(&self, owner: &UserId, change: LimitsChange) -> Result<Limits>;
+
+    /// Owners with at least one limit of their own, ordered by name.
+    async fn list_owner_limits(&self) -> Result<Vec<(UserId, Limits)>>;
 
     /// Sets a member's role, refusing to leave the organization without an owner. Returns the previous role.
     async fn set_org_role(
@@ -414,6 +438,8 @@ pub struct AccessConfig {
     pub verification_ttl: Duration,
     /// Who may create organizations.
     pub org_creation: OrgCreation,
+    /// Limits for owners that have none of their own; all unset (unlimited) unless the operator sets them.
+    pub default_limits: Limits,
 }
 
 impl Default for AccessConfig {
@@ -427,6 +453,7 @@ impl Default for AccessConfig {
             public_url: "http://localhost:5173".into(),
             verification_ttl: Duration::hours(24),
             org_creation: OrgCreation::Anyone,
+            default_limits: Limits::default(),
         }
     }
 }

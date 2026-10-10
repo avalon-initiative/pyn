@@ -49,10 +49,11 @@ pub enum AuditAction {
     ServerSetupCompleted,
     AdminGranted,
     AdminRevoked,
+    OwnerLimitsChanged,
 }
 
 impl AuditAction {
-    pub const ALL: [AuditAction; 37] = [
+    pub const ALL: [AuditAction; 38] = [
         AuditAction::Checkout,
         AuditAction::Release,
         AuditAction::Checkin,
@@ -90,6 +91,7 @@ impl AuditAction {
         AuditAction::ServerSetupCompleted,
         AuditAction::AdminGranted,
         AuditAction::AdminRevoked,
+        AuditAction::OwnerLimitsChanged,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -131,6 +133,7 @@ impl AuditAction {
             Self::ServerSetupCompleted => "server_setup_completed",
             Self::AdminGranted => "admin_granted",
             Self::AdminRevoked => "admin_revoked",
+            Self::OwnerLimitsChanged => "owner_limits_changed",
         }
     }
 }

@@ -6,11 +6,12 @@ use std::sync::{Arc, Mutex};
 
 use chrono::Duration;
 
-use crate::access::{Credential, Identity, OrgRole, Permission, Principal, Role};
-use crate::access_service::AccessService;
+use crate::access::{AccountKind, Credential, Identity, OrgRole, Permission, Principal, Role};
+use crate::access_service::{AccessService, OwnerLimits};
 use crate::audit::{AuditAction, AuditScope, AuditStore, NewAuditEvent};
 use crate::clock::Clock;
 use crate::error::{PynError, Result};
+use crate::limits::{RepoUsage, Usage};
 use crate::object::ObjectStore;
 use crate::repo::{
     self, DEFAULT_MAX_LOCKS_PER_USER, RepoRecord, RepoSettings, RepoUpdate, Visibility,
@@ -24,6 +25,14 @@ fn limit_detail(settings: &RepoSettings) -> String {
     settings
         .max_locks
         .map_or(String::new(), |n| format!(", max {n} locks per user"))
+}
+
+/// An owner's limits and what they use.
+#[derive(Debug, Clone)]
+pub struct OwnerReport {
+    pub limits: OwnerLimits,
+    pub usage: Usage,
+    pub repositories: Vec<(RepoRecord, RepoUsage)>,
 }
 
 /// A repository found by address, with the service that enforces its policy.
@@ -102,7 +111,7 @@ impl Repositories {
         if let Some(svc) = self.cached(record) {
             return Ok(svc);
         }
-        let svc = Arc::new(RepoService::new(
+        let svc = RepoService::new(
             record.id.clone(),
             self.rules.clone(),
             self.meta.clone(),
@@ -113,7 +122,8 @@ impl Repositories {
                 lease: Duration::hours(i64::from(record.settings.lease_hours)),
                 max_locks: record.settings.max_locks.unwrap_or(self.default_max_locks),
             },
-        ));
+        );
+        let svc = Arc::new(svc.with_storage_caps(record.owner.clone(), self.access.clone()));
         svc.load_policy().await?;
         let mut services = self.services.lock().unwrap();
         if let Some((settings, existing)) = services.get(&record.id)
@@ -172,6 +182,31 @@ impl Repositories {
         Ok(self.service_for(record).await?.lock_limit())
     }
 
+    /// What one repository uses. Callers check the reader's access first.
+    pub async fn repo_usage(&self, record: &RepoRecord) -> Result<RepoUsage> {
+        self.meta.repo_usage(&record.id).await
+    }
+
+    /// The owner's limits, usage and per-repository usage, for the owner, an owner of the organization, a server
+    /// administrator or a service credential with `manage_limits`.
+    pub async fn owner_report(&self, actor: &Identity, owner: &UserId) -> Result<OwnerReport> {
+        let limits = self.access.owner_limits(actor, owner).await?;
+        let mut usage = self.meta.owner_usage(owner).await?;
+        if limits.kind == AccountKind::Org {
+            usage.members = Some(self.access.member_count(owner).await?);
+        }
+        let mut repositories = Vec::new();
+        for record in self.meta.list_repos(Some(owner)).await? {
+            let used = self.meta.repo_usage(&record.id).await?;
+            repositories.push((record, used));
+        }
+        Ok(OwnerReport {
+            limits,
+            usage,
+            repositories,
+        })
+    }
+
     /// `owner/name` for a repository id; the id itself if the repository no longer exists.
     pub async fn address_of(&self, id: &crate::RepoId) -> Result<String> {
         Ok(match self.meta.get_repo(id).await? {
@@ -213,7 +248,8 @@ impl Repositories {
             settings: settings.unwrap_or_default().validate()?,
             created_at: self.clock.now(),
         };
-        let record = self.meta.create_repo(record).await?;
+        let max_repos = self.access.effective_limits(owner).await?.repositories;
+        let record = self.meta.create_repo_capped(record, max_repos).await?;
         if in_org && let Err(e) = self.access.require_org_open(owner).await {
             let _ = self.meta.delete_repo(&record.id).await;
             return Err(e);

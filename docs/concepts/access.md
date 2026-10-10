@@ -183,7 +183,7 @@ is off, or on but nothing is delivered.
 | `POST /v1/admin/users/{user}/enable` | the updated account |
 | `PUT /v1/admin/users/{user}/admin` | grants the flag; the updated account. `400 invalid_request` if the account is not active; granting again changes nothing |
 | `DELETE /v1/admin/users/{user}/admin` | revokes the flag; the updated account. `409 last_server_admin` if no other active administrator would remain; revoking from a non-administrator changes nothing |
-| `GET /v1/admin/audit?before=&limit=` | `account_approved`, `account_disabled`, `account_enabled`, `admin_granted`, `admin_revoked` and `server_setup_completed` events, same page shape as a repository's |
+| `GET /v1/admin/audit?before=&limit=` | `account_approved`, `account_disabled`, `account_enabled`, `admin_granted`, `admin_revoked`, `owner_limits_changed` and `server_setup_completed` events, same page shape as a repository's |
 
 On the command line (server administrators; each listing is an aligned table with the name last):
 
@@ -192,8 +192,9 @@ On the command line (server administrators; each listing is an aligned table wit
 | `pyn admin user list [--status S] [--limit N]` | columns `STATUS ROLE CREATED EMAIL USER` |
 | `pyn admin user approve <user>`, `disable <user> [--reason R]`, `enable <user>` | the account routes above |
 | `pyn admin grant <user>`, `pyn admin revoke <user>` | grant or revoke the administrator flag |
-| `pyn admin service-credential create <name> --scopes manage_accounts,manage_organizations` | prints the secret alone on stdout; it is shown once |
+| `pyn admin service-credential create <name> --scopes manage_accounts,manage_organizations,manage_limits` | prints the secret alone on stdout; it is shown once |
 | `pyn admin service-credential list`, `revoke <name>` | columns `STATE CREATED LAST USED BY SCOPES NAME`; revoked ones are listed |
+| `pyn admin limits list`, `show <owner>`, `set <owner> [--repos N] [--members N] [--storage SIZE]` | optional [limits](limits.md); `default` drops an owner's own value |
 | `pyn admin org create <name> --owner <user>`, `pyn admin org delete <name> [--yes]` | on behalf of an owner; delete asks to type the name |
 
 Automation signs in with `--token` or `PYN_TOKEN` set to a service credential's secret; it is limited to its scopes.
@@ -230,9 +231,10 @@ stays listed and its name is never reused.
 | --- | --- |
 | `manage_accounts` | list, approve, disable and enable accounts (`/v1/admin/users*`) |
 | `manage_organizations` | create an organization for an existing user and delete an empty one (`/v1/admin/orgs*`) |
+| `manage_limits` | set per-owner [limits](limits.md) and read any owner's limits and usage (`/v1/admin/limits`, `/v1/admin/owners/{owner}/limits`, `/v1/owners/{owner}/limits`, `/v1/owners/{owner}/usage`) |
 
 Scopes are only ever added, and a credential holds exactly the scopes it was given. Server administrators pass every
-scope check. A credential is accepted only on the `/v1/admin/*` routes its scopes cover; elsewhere it gets
+scope check. A credential is accepted only on the routes its scopes cover (`/v1/admin/*`, and the owner limits and usage reads); elsewhere it gets
 `403 service_credential_not_allowed`. It can neither manage service credentials nor read the server log
 (`403 server_admin_required`).
 

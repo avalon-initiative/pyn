@@ -54,6 +54,7 @@ creates the first administrator, then `pyn login <name>`. See [first-run setup](
 | `PYN_REGISTRATION` | `invite` (default), `open` or `closed`: how people create accounts; the choice made in first-run setup replaces it |
 | `PYN_ORG_CREATION` | `anyone` (default) or `admins`: who may create organizations; `admins` limits it to server administrators |
 | `PYN_MAX_LOCKS_ALLOWED_PER_USER` | How many locks one user may hold in a repository, default 5; a repository setting or its `pyn.toml` can override it |
+| `PYN_DEFAULT_MAX_REPOSITORIES`, `PYN_DEFAULT_MAX_ORG_MEMBERS`, `PYN_DEFAULT_MAX_STORAGE_BYTES` | Optional defaults for per-owner [limits](docs/concepts/limits.md); unset (the norm for a self-hosted server) means unlimited |
 | `PYN_EMAIL_VERIFICATION` | On unless `false`: open sign-up needs an email address and the account stays inactive until its link is followed |
 | `PYN_REQUIRE_APPROVAL` | `true` holds new open sign-ups until a server administrator approves them |
 | `PYN_PUBLIC_URL` | Where the web app lives, for links in emails; default `http://<PYN_ADDR>`; the address given in first-run setup replaces it |

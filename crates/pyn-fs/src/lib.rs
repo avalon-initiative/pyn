@@ -86,4 +86,13 @@ impl ObjectStore for FsObjectStore {
         let path = self.path_for(hash)?;
         tokio::fs::try_exists(path).await.map_err(storage)
     }
+
+    async fn size(&self, hash: &ContentHash) -> Result<Option<u64>> {
+        let path = self.path_for(hash)?;
+        match tokio::fs::metadata(path).await {
+            Ok(meta) => Ok(Some(meta.len())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(storage(e)),
+        }
+    }
 }

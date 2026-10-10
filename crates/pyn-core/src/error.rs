@@ -23,6 +23,20 @@ pub enum PynError {
         "lock limit reached: you already hold {limit} lock(s) in this repository; release one before checking out another"
     )]
     LockLimitReached { limit: u32 },
+    #[error(
+        "repository limit reached: {owner} may own at most {limit} repositories on this server"
+    )]
+    RepoLimitReached { owner: String, limit: u64 },
+    #[error("member limit reached: {org} may have at most {limit} members on this server")]
+    MemberLimitReached { org: String, limit: u64 },
+    #[error(
+        "storage limit reached: {owner} may store at most {limit} bytes on this server and uses {used}"
+    )]
+    StorageLimitReached {
+        owner: String,
+        limit: u64,
+        used: u64,
+    },
     #[error("{0} is not locked by you")]
     NotLockHolder(RepoPath),
     #[error("{0} is exclusive: check it out before checking in")]
@@ -160,6 +174,9 @@ impl PynError {
             Self::InvalidRules(_) => "invalid_rules",
             Self::LockHeld { .. } => "lock_held",
             Self::LockLimitReached { .. } => "lock_limit_reached",
+            Self::RepoLimitReached { .. } => "repo_limit_reached",
+            Self::MemberLimitReached { .. } => "member_limit_reached",
+            Self::StorageLimitReached { .. } => "storage_limit_reached",
             Self::NotLockHolder(_) => "not_lock_holder",
             Self::LockRequired(_) => "lock_required",
             Self::NotExclusive(_) => "not_exclusive",

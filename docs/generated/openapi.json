@@ -79,6 +79,36 @@
         }
       }
     },
+    "/v1/admin/limits": {
+      "get": {
+        "tags": [
+          "limits_api"
+        ],
+        "operationId": "list_limits",
+        "responses": {
+          "200": {
+            "description": "the server default and every owner with limits of its own",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LimitsListing"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "server_admin_required, or service_scope_required for a service credential without manage_limits",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/admin/orgs": {
       "post": {
         "tags": [
@@ -192,6 +222,77 @@
           },
           "409": {
             "description": "org_not_empty or org_deleting",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/owners/{owner}/limits": {
+      "patch": {
+        "tags": [
+          "limits_api"
+        ],
+        "operationId": "set_owner_limits",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "a user or organization name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetLimitsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "lowering a limit below current use deletes nothing; it only stops growth",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OwnerLimits"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: a value out of range, or a member limit on a user",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "server_admin_required, or service_scope_required for a service credential without manage_limits",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "user_not_found",
             "content": {
               "application/json": {
                 "schema": {
@@ -2367,6 +2468,108 @@
         }
       }
     },
+    "/v1/owners/{owner}/limits": {
+      "get": {
+        "tags": [
+          "limits_api"
+        ],
+        "operationId": "owner_limits",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "a user or organization name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "all limits null means unlimited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OwnerLimits"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "not_namespace_owner or not_org_owner: only the owner, an administrator or a service credential with manage_limits may look",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "user_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/owners/{owner}/usage": {
+      "get": {
+        "tags": [
+          "limits_api"
+        ],
+        "operationId": "owner_usage",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "a user or organization name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "usage next to the limits in force, with every repository the owner has",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OwnerUsage"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "not_namespace_owner or not_org_owner: only the owner, an administrator or a service credential with manage_limits may look",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "user_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/register": {
       "post": {
         "tags": [
@@ -4296,6 +4499,46 @@
         }
       }
     },
+    "/v1/repos/{owner}/{name}/usage": {
+      "get": {
+        "tags": [
+          "limits_api"
+        ],
+        "operationId": "repo_usage",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "The namespace that owns the repository.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository's name within its owner.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "readable by anyone who can read the repository",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepoUsage"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/repos/{owner}/{name}/users": {
       "post": {
         "tags": [
@@ -5077,7 +5320,7 @@
             "items": {
               "type": "string"
             },
-            "description": "At least one of `manage_accounts`, `manage_organizations`."
+            "description": "At least one of `manage_accounts`, `manage_organizations`, `manage_limits`."
           }
         }
       },
@@ -5411,6 +5654,65 @@
           }
         }
       },
+      "Limits": {
+        "type": "object",
+        "description": "Limits on one owner. Every limit is opt-in: a null field is unlimited.",
+        "required": [
+          "repositories",
+          "members",
+          "storage_bytes"
+        ],
+        "properties": {
+          "members": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Members an organization may have; always null for a user.",
+            "minimum": 0
+          },
+          "repositories": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Repositories the owner may have.",
+            "minimum": 0
+          },
+          "storage_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Bytes of distinct content across the owner's repositories.",
+            "minimum": 0
+          }
+        }
+      },
+      "LimitsListing": {
+        "type": "object",
+        "description": "The server default and every owner that has limits of its own.",
+        "required": [
+          "defaults",
+          "owners"
+        ],
+        "properties": {
+          "defaults": {
+            "$ref": "#/components/schemas/Limits",
+            "description": "Applies to owners with nothing of their own; all null unless the operator configures it."
+          },
+          "owners": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OwnerLimitsEntry"
+            },
+            "description": "Ordered by name."
+          }
+        }
+      },
       "Lock": {
         "type": "object",
         "required": [
@@ -5596,6 +5898,79 @@
           "owner",
           "member"
         ]
+      },
+      "OwnerKind": {
+        "type": "string",
+        "description": "What an owner (a user or an organization) is.",
+        "enum": [
+          "user",
+          "org"
+        ]
+      },
+      "OwnerLimits": {
+        "type": "object",
+        "description": "An owner's limits. Nothing is limited unless an operator sets a limit or a server default.",
+        "required": [
+          "kind",
+          "effective",
+          "own"
+        ],
+        "properties": {
+          "effective": {
+            "$ref": "#/components/schemas/Limits",
+            "description": "The limits in force: the owner's own where set, else the server default, else null (unlimited)."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/OwnerKind"
+          },
+          "own": {
+            "$ref": "#/components/schemas/Limits",
+            "description": "Limits set for this owner alone; a null field follows the server default."
+          }
+        }
+      },
+      "OwnerLimitsEntry": {
+        "type": "object",
+        "required": [
+          "owner",
+          "limits"
+        ],
+        "properties": {
+          "limits": {
+            "$ref": "#/components/schemas/OwnerLimits"
+          },
+          "owner": {
+            "type": "string"
+          }
+        }
+      },
+      "OwnerUsage": {
+        "type": "object",
+        "description": "What an owner uses against its limits.",
+        "required": [
+          "owner",
+          "limits",
+          "usage",
+          "repositories"
+        ],
+        "properties": {
+          "limits": {
+            "$ref": "#/components/schemas/OwnerLimits"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "repositories": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RepoUsage"
+            },
+            "description": "Ordered by name."
+          },
+          "usage": {
+            "$ref": "#/components/schemas/Usage"
+          }
+        }
       },
       "PutObjectResponse": {
         "type": "object",
@@ -5881,6 +6256,37 @@
           }
         }
       },
+      "RepoUsage": {
+        "type": "object",
+        "required": [
+          "repository",
+          "stored_bytes",
+          "files",
+          "revisions"
+        ],
+        "properties": {
+          "files": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Paths with a head revision.",
+            "minimum": 0
+          },
+          "repository": {
+            "type": "string",
+            "description": "`owner/name`."
+          },
+          "revisions": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "stored_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
       "ResendVerificationRequest": {
         "type": "object",
         "required": [
@@ -6072,6 +6478,37 @@
         "properties": {
           "scope": {
             "$ref": "#/components/schemas/CreationScope"
+          }
+        }
+      },
+      "SetLimitsRequest": {
+        "type": "object",
+        "description": "Fields left out stay as they are; a number sets the limit and `null` returns the field to the server default.",
+        "properties": {
+          "members": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Organizations only; a user has no member limit.",
+            "minimum": 0
+          },
+          "repositories": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "storage_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
           }
         }
       },
@@ -6513,6 +6950,36 @@
               "string",
               "null"
             ]
+          }
+        }
+      },
+      "Usage": {
+        "type": "object",
+        "required": [
+          "repositories",
+          "members",
+          "stored_bytes"
+        ],
+        "properties": {
+          "members": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Organization members; null for a user.",
+            "minimum": 0
+          },
+          "repositories": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "stored_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Bytes of distinct content, counted once per repository.",
+            "minimum": 0
           }
         }
       },
