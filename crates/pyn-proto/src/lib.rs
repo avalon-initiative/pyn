@@ -94,7 +94,8 @@ pub struct FileEntry {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct FilePage {
     pub entries: Vec<FileEntry>,
-    /// Pass as `after` to fetch the next page; absent on the last page.
+    /// Pass as `after` to fetch the next page; null on the last page.
+    #[schema(required = true)]
     pub next_after: Option<String>,
 }
 
@@ -224,11 +225,84 @@ pub struct CreatedServiceCredential {
     pub info: ServiceCredentialInfo,
 }
 
+// Fields typed by these are `String` in Rust and enums in the schema (`value_type`), so an unknown value in a
+// request still reaches the handler and gets `invalid_request`.
+/// An account's state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AccountStatus {
+    PendingVerification,
+    PendingApproval,
+    Active,
+    Disabled,
+}
+
+/// Who may create an account.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum RegistrationMode {
+    Open,
+    Invite,
+    Closed,
+}
+
+/// A person's standing in an organization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum OrgRole {
+    Owner,
+    Member,
+}
+
+/// Whether a creation rule permits or forbids.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum CreationEffect {
+    Allow,
+    Deny,
+}
+
+/// What a creation rule's subject names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum CreationSubjectKind {
+    Team,
+    User,
+    Role,
+}
+
+/// Which repository visibilities a rule or policy covers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum CreationScope {
+    Public,
+    Private,
+    Both,
+}
+
+/// What members may create when no rule applies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum MemberCreation {
+    None,
+    Private,
+    Both,
+}
+
+/// What decides a member's effective role.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MemberSource {
+    Direct,
+    Team,
+    OrgOwner,
+}
+
 /// A person in an organization.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct OrgMember {
     pub user: String,
-    /// `owner` or `member`.
+    #[schema(value_type = OrgRole)]
     pub role: String,
 }
 
@@ -236,14 +310,15 @@ pub struct OrgMember {
 pub struct AddOrgMemberRequest {
     /// An existing user account.
     pub user: String,
-    /// `owner` or `member`; defaults to `member`.
+    /// Defaults to `member`.
     #[serde(default)]
+    #[schema(value_type = Option<OrgRole>)]
     pub role: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct SetOrgRoleRequest {
-    /// `owner` or `member`.
+    #[schema(value_type = OrgRole)]
     pub role: String,
 }
 
@@ -363,7 +438,7 @@ pub struct Member {
     pub user: String,
     /// The effective role: the highest of the direct grant, team grants and organization ownership.
     pub role: String,
-    /// What decides `role`: `direct`, `team` or `org_owner`.
+    #[schema(value_type = MemberSource)]
     pub source: String,
 }
 
@@ -426,7 +501,8 @@ pub struct UpdateTeamRequest {
 /// An organization's repository-creation policy. Owners can always create repositories and are not listed in it.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct RepoPolicyInfo {
-    /// What members may create when no rule applies: `none` (owners only, the default), `private` or `both`.
+    /// What members may create when no rule applies; `none` (owners only) is the default.
+    #[schema(value_type = MemberCreation)]
     pub member_creation: String,
     /// Ordered by kind, subject, then effect.
     pub rules: Vec<CreationRuleInfo>,
@@ -435,25 +511,25 @@ pub struct RepoPolicyInfo {
 /// A subject holds at most one rule per effect. A matching `deny` beats any `allow`.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct CreationRuleInfo {
-    /// `allow` or `deny`.
+    #[schema(value_type = CreationEffect)]
     pub effect: String,
-    /// `team`, `user` or `role`.
+    #[schema(value_type = CreationSubjectKind)]
     pub kind: String,
     /// The team slug, user name, or organization role (`owner` or `member`).
     pub subject: String,
-    /// `public`, `private` or `both`.
+    #[schema(value_type = CreationScope)]
     pub scope: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct SetRepoPolicyRequest {
-    /// `none`, `private` or `both`.
+    #[schema(value_type = MemberCreation)]
     pub member_creation: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct SetCreationRuleRequest {
-    /// `public`, `private` or `both`.
+    #[schema(value_type = CreationScope)]
     pub scope: String,
 }
 
@@ -483,7 +559,8 @@ pub struct AuditEntry {
 pub struct HistoryPage {
     /// With `path`: all of that path's revisions, oldest first. Without: newest first.
     pub revisions: Vec<Revision>,
-    /// Pass as `before` to fetch the next, older page; absent on the last page and with `path`.
+    /// Pass as `before` to fetch the next, older page; null on the last page and with `path`.
+    #[schema(required = true)]
     pub next_cursor: Option<String>,
 }
 
@@ -491,13 +568,14 @@ pub struct HistoryPage {
 pub struct AuditPage {
     /// Newest first.
     pub entries: Vec<AuditEntry>,
-    /// Pass as `before` to fetch the next, older page; absent on the last page.
+    /// Pass as `before` to fetch the next, older page; null on the last page.
+    #[schema(required = true)]
     pub next_before: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct RegistrationInfo {
-    /// `open`, `invite` or `closed`.
+    #[schema(value_type = RegistrationMode)]
     pub registration: String,
     /// With `open` registration: sign-up needs an email address, and the account stays inactive until its
     /// link is followed.
@@ -516,7 +594,8 @@ pub struct SetupStatus {
     pub server_name: Option<String>,
     /// What setup recorded; before setup, the address the server is configured with.
     pub public_url: String,
-    /// `open`, `invite` or `closed`: what setup recorded, or the configured default before setup.
+    /// What setup recorded, or the configured default before setup.
+    #[schema(value_type = RegistrationMode)]
     pub registration: String,
 }
 
@@ -531,7 +610,7 @@ pub struct SetupRequest {
     pub server_name: Option<String>,
     /// The address people reach the web app at; verification links use it.
     pub public_url: Option<String>,
-    /// `open`, `invite` or `closed`.
+    #[schema(value_type = RegistrationMode)]
     pub registration: String,
 }
 
@@ -556,6 +635,7 @@ pub struct Registered {
     pub user: String,
     /// `active`, or what the account still needs: `pending_verification` (follow the link in the email) or
     /// `pending_approval` (an administrator must approve it).
+    #[schema(value_type = AccountStatus)]
     pub status: String,
 }
 
@@ -576,7 +656,7 @@ pub struct AccountInfo {
     pub user: String,
     pub email: Option<String>,
     pub email_verified: bool,
-    /// `pending_verification`, `pending_approval`, `active` or `disabled`.
+    #[schema(value_type = AccountStatus)]
     pub status: String,
     pub disabled_at: Option<DateTime<Utc>>,
     pub disabled_reason: Option<String>,

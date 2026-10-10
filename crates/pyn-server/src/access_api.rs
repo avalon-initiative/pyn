@@ -105,7 +105,9 @@ pub(crate) async fn list_tokens(
     Ok(Json(infos))
 }
 
-#[utoipa::path(delete, path = "/v1/tokens/{id}", responses(
+#[utoipa::path(delete, path = "/v1/tokens/{id}",
+    params(("id" = String, Path, description = "the token's id")),
+    responses(
     (status = 204),
     (status = 404, body = api::ErrorBody, description = "token_not_found"),
 ))]
@@ -269,7 +271,8 @@ pub(crate) async fn list_keys(
 }
 
 #[utoipa::path(delete, path = "/v1/keys/{id}",
-    params(("user" = Option<String>, Query, description = "another user's key; needs manage_users")),
+    params(("id" = String, Path, description = "the key's id"),
+           ("user" = Option<String>, Query, description = "another user's key; needs manage_users")),
     responses((status = 204), (status = 404, body = api::ErrorBody, description = "key_not_found")))]
 pub(crate) async fn delete_key(
     State(s): State<AppState>,

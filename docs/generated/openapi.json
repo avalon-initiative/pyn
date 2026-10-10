@@ -398,6 +398,17 @@
           "admin_api"
         ],
         "operationId": "approve",
+        "parameters": [
+          {
+            "name": "user",
+            "in": "path",
+            "description": "the account's user name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -447,6 +458,17 @@
           "admin_api"
         ],
         "operationId": "disable",
+        "parameters": [
+          {
+            "name": "user",
+            "in": "path",
+            "description": "the account's user name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -507,6 +529,17 @@
           "admin_api"
         ],
         "operationId": "enable",
+        "parameters": [
+          {
+            "name": "user",
+            "in": "path",
+            "description": "the account's user name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -637,6 +670,15 @@
         ],
         "operationId": "delete_key",
         "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "the key's id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
           {
             "name": "user",
             "in": "query",
@@ -1518,19 +1560,17 @@
           {
             "name": "effect",
             "in": "path",
-            "description": "allow or deny",
             "required": true,
             "schema": {
-              "type": "string"
+              "$ref": "#/components/schemas/CreationEffect"
             }
           },
           {
             "name": "kind",
             "in": "path",
-            "description": "team, user or role",
             "required": true,
             "schema": {
-              "type": "string"
+              "$ref": "#/components/schemas/CreationSubjectKind"
             }
           },
           {
@@ -1624,19 +1664,17 @@
           {
             "name": "effect",
             "in": "path",
-            "description": "allow or deny",
             "required": true,
             "schema": {
-              "type": "string"
+              "$ref": "#/components/schemas/CreationEffect"
             }
           },
           {
             "name": "kind",
             "in": "path",
-            "description": "team, user or role",
             "required": true,
             "schema": {
-              "type": "string"
+              "$ref": "#/components/schemas/CreationSubjectKind"
             }
           },
           {
@@ -2876,12 +2914,8 @@
             "content": {
               "application/octet-stream": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "type": "integer",
-                    "format": "int32",
-                    "minimum": 0
-                  }
+                  "type": "string",
+                  "format": "binary"
                 }
               }
             }
@@ -3232,6 +3266,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "description": "the invitation's id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -3401,6 +3444,15 @@
             "name": "name",
             "in": "path",
             "description": "The repository's name within its owner.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "user",
+            "in": "path",
+            "description": "the member's user name",
             "required": true,
             "schema": {
               "type": "string"
@@ -3662,6 +3714,15 @@
             "name": "name",
             "in": "path",
             "description": "The repository's name within its owner.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "role",
+            "in": "path",
+            "description": "the role's name",
             "required": true,
             "schema": {
               "type": "string"
@@ -4372,6 +4433,17 @@
           "access_api"
         ],
         "operationId": "revoke_token",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "the token's id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "204": {},
           "404": {
@@ -4447,13 +4519,22 @@
             "type": "boolean"
           },
           "status": {
-            "type": "string",
-            "description": "`pending_verification`, `pending_approval`, `active` or `disabled`."
+            "$ref": "#/components/schemas/AccountStatus"
           },
           "user": {
             "type": "string"
           }
         }
+      },
+      "AccountStatus": {
+        "type": "string",
+        "description": "An account's state.",
+        "enum": [
+          "pending_verification",
+          "pending_approval",
+          "active",
+          "disabled"
+        ]
       },
       "ActivityEntry": {
         "type": "object",
@@ -4514,11 +4595,15 @@
         ],
         "properties": {
           "role": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "`owner` or `member`; defaults to `member`."
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/OrgRole",
+                "description": "Defaults to `member`."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "user": {
             "type": "string",
@@ -4601,7 +4686,8 @@
       "AuditPage": {
         "type": "object",
         "required": [
-          "entries"
+          "entries",
+          "next_before"
         ],
         "properties": {
           "entries": {
@@ -4617,7 +4703,7 @@
               "null"
             ],
             "format": "int64",
-            "description": "Pass as `before` to fetch the next, older page; absent on the last page."
+            "description": "Pass as `before` to fetch the next, older page; null on the last page."
           }
         }
       },
@@ -4890,6 +4976,14 @@
           }
         }
       },
+      "CreationEffect": {
+        "type": "string",
+        "description": "Whether a creation rule permits or forbids.",
+        "enum": [
+          "allow",
+          "deny"
+        ]
+      },
       "CreationRuleInfo": {
         "type": "object",
         "description": "A subject holds at most one rule per effect. A matching `deny` beats any `allow`.",
@@ -4901,22 +4995,37 @@
         ],
         "properties": {
           "effect": {
-            "type": "string",
-            "description": "`allow` or `deny`."
+            "$ref": "#/components/schemas/CreationEffect"
           },
           "kind": {
-            "type": "string",
-            "description": "`team`, `user` or `role`."
+            "$ref": "#/components/schemas/CreationSubjectKind"
           },
           "scope": {
-            "type": "string",
-            "description": "`public`, `private` or `both`."
+            "$ref": "#/components/schemas/CreationScope"
           },
           "subject": {
             "type": "string",
             "description": "The team slug, user name, or organization role (`owner` or `member`)."
           }
         }
+      },
+      "CreationScope": {
+        "type": "string",
+        "description": "Which repository visibilities a rule or policy covers.",
+        "enum": [
+          "public",
+          "private",
+          "both"
+        ]
+      },
+      "CreationSubjectKind": {
+        "type": "string",
+        "description": "What a creation rule's subject names.",
+        "enum": [
+          "team",
+          "user",
+          "role"
+        ]
       },
       "DisableAccountRequest": {
         "type": "object",
@@ -4983,7 +5092,8 @@
       "FilePage": {
         "type": "object",
         "required": [
-          "entries"
+          "entries",
+          "next_after"
         ],
         "properties": {
           "entries": {
@@ -4997,7 +5107,7 @@
               "string",
               "null"
             ],
-            "description": "Pass as `after` to fetch the next page; absent on the last page."
+            "description": "Pass as `after` to fetch the next page; null on the last page."
           }
         }
       },
@@ -5020,7 +5130,8 @@
       "HistoryPage": {
         "type": "object",
         "required": [
-          "revisions"
+          "revisions",
+          "next_cursor"
         ],
         "properties": {
           "next_cursor": {
@@ -5028,7 +5139,7 @@
               "string",
               "null"
             ],
-            "description": "Pass as `before` to fetch the next, older page; absent on the last page and with `path`."
+            "description": "Pass as `before` to fetch the next, older page; null on the last page and with `path`."
           },
           "revisions": {
             "type": "array",
@@ -5160,13 +5271,30 @@
             "description": "The effective role: the highest of the direct grant, team grants and organization ownership."
           },
           "source": {
-            "type": "string",
-            "description": "What decides `role`: `direct`, `team` or `org_owner`."
+            "$ref": "#/components/schemas/MemberSource"
           },
           "user": {
             "type": "string"
           }
         }
+      },
+      "MemberCreation": {
+        "type": "string",
+        "description": "What members may create when no rule applies.",
+        "enum": [
+          "none",
+          "private",
+          "both"
+        ]
+      },
+      "MemberSource": {
+        "type": "string",
+        "description": "What decides a member's effective role.",
+        "enum": [
+          "direct",
+          "team",
+          "org_owner"
+        ]
       },
       "Mode": {
         "type": "string",
@@ -5238,13 +5366,20 @@
         ],
         "properties": {
           "role": {
-            "type": "string",
-            "description": "`owner` or `member`."
+            "$ref": "#/components/schemas/OrgRole"
           },
           "user": {
             "type": "string"
           }
         }
+      },
+      "OrgRole": {
+        "type": "string",
+        "description": "A person's standing in an organization.",
+        "enum": [
+          "owner",
+          "member"
+        ]
       },
       "PutObjectResponse": {
         "type": "object",
@@ -5294,7 +5429,7 @@
         ],
         "properties": {
           "status": {
-            "type": "string",
+            "$ref": "#/components/schemas/AccountStatus",
             "description": "`active`, or what the account still needs: `pending_verification` (follow the link in the email) or\n`pending_approval` (an administrator must approve it)."
           },
           "user": {
@@ -5317,10 +5452,18 @@
             "description": "With `open` registration: sign-up needs an email address, and the account stays inactive until its\nlink is followed."
           },
           "registration": {
-            "type": "string",
-            "description": "`open`, `invite` or `closed`."
+            "$ref": "#/components/schemas/RegistrationMode"
           }
         }
+      },
+      "RegistrationMode": {
+        "type": "string",
+        "description": "Who may create an account.",
+        "enum": [
+          "open",
+          "invite",
+          "closed"
+        ]
       },
       "ReleaseRequest": {
         "type": "object",
@@ -5401,8 +5544,8 @@
         ],
         "properties": {
           "member_creation": {
-            "type": "string",
-            "description": "What members may create when no rule applies: `none` (owners only, the default), `private` or `both`."
+            "$ref": "#/components/schemas/MemberCreation",
+            "description": "What members may create when no rule applies; `none` (owners only) is the default."
           },
           "rules": {
             "type": "array",
@@ -5689,8 +5832,7 @@
         ],
         "properties": {
           "scope": {
-            "type": "string",
-            "description": "`public`, `private` or `both`."
+            "$ref": "#/components/schemas/CreationScope"
           }
         }
       },
@@ -5712,8 +5854,7 @@
         ],
         "properties": {
           "role": {
-            "type": "string",
-            "description": "`owner` or `member`."
+            "$ref": "#/components/schemas/OrgRole"
           }
         }
       },
@@ -5724,8 +5865,7 @@
         ],
         "properties": {
           "member_creation": {
-            "type": "string",
-            "description": "`none`, `private` or `both`."
+            "$ref": "#/components/schemas/MemberCreation"
           }
         }
       },
@@ -5792,8 +5932,7 @@
             "description": "The address people reach the web app at; verification links use it."
           },
           "registration": {
-            "type": "string",
-            "description": "`open`, `invite` or `closed`."
+            "$ref": "#/components/schemas/RegistrationMode"
           },
           "server_name": {
             "type": [
@@ -5828,8 +5967,8 @@
             "description": "What setup recorded; before setup, the address the server is configured with."
           },
           "registration": {
-            "type": "string",
-            "description": "`open`, `invite` or `closed`: what setup recorded, or the configured default before setup."
+            "$ref": "#/components/schemas/RegistrationMode",
+            "description": "What setup recorded, or the configured default before setup."
           },
           "server_name": {
             "type": [
