@@ -17,6 +17,9 @@ use crate::email::{EmailMessage, EmailSender, NullEmailSender};
 use crate::error::{PynError, Result};
 use crate::limits::{Limits, LimitsChange, StorageCaps};
 use crate::memory::MemoryRateLimitStore;
+use crate::oidc::{
+    ExternalCreate, ExternalIdentity, IdentityUnlink, NewExternalAccount, OidcFlow, OidcProvider,
+};
 use crate::passwords::{InlinePasswords, PasswordWorker};
 use crate::ratelimit::RateLimitStore;
 use crate::repo_policy::{
@@ -29,12 +32,14 @@ use crate::types::{RepoId, UserId};
 /// no repository can have.
 pub const SERVER_AUDIT_ID: &str = "@server";
 
+mod external;
 mod limits;
 mod organizations;
 mod repo_policy;
 mod setup;
 mod teams;
 
+pub use external::{ExternalSignIn, OidcBegin, OidcFinish, OidcStart};
 pub use limits::OwnerLimits;
 pub use setup::{SetupRequest, SetupStatus, generate_setup_token};
 pub use teams::TeamDetail;
@@ -386,6 +391,41 @@ pub trait AccessStore: Send + Sync {
 
     async fn delete_sessions_of(&self, user: &UserId) -> Result<()>;
 
+    /// Creates an account with no password from an external sign-in, verified by the provider, together with its
+    /// link. All or nothing.
+    async fn create_external_account(&self, new: NewExternalAccount) -> Result<ExternalCreate>;
+
+    async fn find_external_identity(
+        &self,
+        issuer: &str,
+        subject: &str,
+    ) -> Result<Option<ExternalIdentity>>;
+
+    /// Links the identity to its account; false if that provider subject is already linked to any account.
+    async fn link_external_identity(&self, identity: ExternalIdentity) -> Result<bool>;
+
+    /// An account's linked identities, oldest first.
+    async fn list_external_identities(&self, user: &UserId) -> Result<Vec<ExternalIdentity>>;
+
+    /// Removes one of the account's links unless it is the only way the account can sign in.
+    async fn unlink_external_identity(&self, user: &UserId, id: &str) -> Result<IdentityUnlink>;
+
+    /// Records a sign-in through the link and the address the provider last gave.
+    async fn touch_external_identity(
+        &self,
+        id: &str,
+        email: Option<&str>,
+        now: DateTime<Utc>,
+    ) -> Result<()>;
+
+    async fn put_oidc_flow(&self, flow: OidcFlow) -> Result<()>;
+
+    /// Removes and returns the flow; each can be taken once.
+    async fn take_oidc_flow(&self, state_hash: &str) -> Result<Option<OidcFlow>>;
+
+    /// Removes every flow that expired at or before `now`.
+    async fn delete_expired_oidc_flows(&self, now: DateTime<Utc>) -> Result<()>;
+
     /// What setup recorded; `None` while the server is uninitialised.
     async fn server_settings(&self) -> Result<Option<ServerSettings>>;
 
@@ -440,6 +480,31 @@ pub struct AccessConfig {
     pub org_creation: OrgCreation,
     /// Limits for owners that have none of their own; all unset (unlimited) unless the operator sets them.
     pub default_limits: Limits,
+    /// How external sign-in behaves; applies only when a provider is configured.
+    pub external: ExternalPolicy,
+}
+
+/// The operator's choices about external (OpenID Connect) sign-in.
+#[derive(Debug, Clone)]
+pub struct ExternalPolicy {
+    /// A first sign-in with no linked account creates one. Off: only people who link the provider to an
+    /// existing account can use it.
+    pub create_accounts: bool,
+    /// Password sign-in works for everyone. Off: it still works for server administrators, so a broken
+    /// provider cannot lock the operator out.
+    pub password_sign_in: bool,
+    /// Where the provider sends the browser back; default `{public_url}/v1/oidc/callback`.
+    pub redirect_url: Option<String>,
+}
+
+impl Default for ExternalPolicy {
+    fn default() -> Self {
+        Self {
+            create_accounts: false,
+            password_sign_in: true,
+            redirect_url: None,
+        }
+    }
 }
 
 impl Default for AccessConfig {
@@ -454,6 +519,7 @@ impl Default for AccessConfig {
             verification_ttl: Duration::hours(24),
             org_creation: OrgCreation::Anyone,
             default_limits: Limits::default(),
+            external: ExternalPolicy::default(),
         }
     }
 }
@@ -540,6 +606,7 @@ pub struct AccessService {
     email: Arc<dyn EmailSender>,
     passwords: Arc<dyn PasswordWorker>,
     registry: Option<Arc<dyn MetadataStore>>,
+    oidc: Option<Arc<dyn OidcProvider>>,
     setup: setup::SetupState,
 }
 
@@ -581,6 +648,7 @@ impl AccessService {
             email: Arc::new(NullEmailSender),
             passwords: Arc::new(InlinePasswords),
             registry: None,
+            oidc: None,
             setup: setup::SetupState::default(),
         }
     }
@@ -652,7 +720,8 @@ impl AccessService {
             .unwrap_or(self.config.registration)
     }
 
-    fn public_url(&self) -> String {
+    /// Where the web app lives: what setup recorded, else the configured default.
+    pub fn public_url(&self) -> String {
         self.setup
             .settings()
             .and_then(|s| s.public_url)
@@ -1152,6 +1221,7 @@ impl AccessService {
         }
         self.limits.reset(&account_key).await?;
         self.require_active(&user).await?;
+        self.require_password_sign_in(&user).await?;
         Ok(user)
     }
 
@@ -1183,6 +1253,10 @@ impl AccessService {
         client: Option<&str>,
     ) -> Result<(SessionRecord, String)> {
         let user = self.verify_sign_in(username, password, client).await?;
+        self.open_session(user).await
+    }
+
+    async fn open_session(&self, user: UserId) -> Result<(SessionRecord, String)> {
         let now = self.clock.now();
         self.store.delete_expired_sessions(now).await?;
         let (cookie, csrf_token, id_hash) = session::generate()?;

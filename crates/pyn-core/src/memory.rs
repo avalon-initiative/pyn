@@ -20,6 +20,7 @@ use crate::error::{PynError, Result};
 use crate::history::HistoryCursor;
 use crate::limits::{Limits, LimitsChange, RepoUsage, StorageCap, Usage};
 use crate::object::ObjectStore;
+use crate::oidc::{ExternalCreate, ExternalIdentity, IdentityUnlink, NewExternalAccount, OidcFlow};
 use crate::ratelimit::{RateLimitStore, RateState};
 use crate::repo::{RepoRecord, RepoUpdate, Visibility};
 use crate::repo_policy::{
@@ -504,6 +505,8 @@ struct AccessState {
     tokens: HashMap<TokenId, TokenRecord>,
     service_credentials: HashMap<TokenId, ServiceCredentialRecord>,
     sessions: HashMap<String, SessionRecord>,
+    identities: Vec<ExternalIdentity>,
+    oidc_flows: HashMap<String, OidcFlow>,
     settings: Option<ServerSettings>,
     limits: BTreeMap<UserId, Limits>,
 }
@@ -1259,6 +1262,130 @@ impl AccessStore for MemoryAccessStore {
             .unwrap()
             .sessions
             .retain(|_, s| &s.user != user);
+        Ok(())
+    }
+
+    async fn create_external_account(&self, new: NewExternalAccount) -> Result<ExternalCreate> {
+        let mut st = self.state.lock().unwrap();
+        if st.accounts.contains_key(&new.user) {
+            return Ok(ExternalCreate::NameTaken);
+        }
+        if st
+            .identities
+            .iter()
+            .any(|i| i.issuer == new.identity.issuer && i.subject == new.identity.subject)
+        {
+            return Ok(ExternalCreate::IdentityTaken);
+        }
+        if let Some(email) = &new.email
+            && st
+                .accounts
+                .values()
+                .any(|a| a.email_verified_at.is_some() && a.email.as_ref() == Some(email))
+        {
+            return Ok(ExternalCreate::EmailTaken);
+        }
+        let verified_at = new.email.is_some().then_some(new.identity.created_at);
+        let account = AccountRecord {
+            email: new.email,
+            email_verified_at: verified_at,
+            ..plain_account(&new.user, new.identity.created_at)
+        };
+        st.accounts.insert(new.user, account);
+        st.identities.push(new.identity);
+        Ok(ExternalCreate::Created)
+    }
+
+    async fn find_external_identity(
+        &self,
+        issuer: &str,
+        subject: &str,
+    ) -> Result<Option<ExternalIdentity>> {
+        let st = self.state.lock().unwrap();
+        Ok(st
+            .identities
+            .iter()
+            .find(|i| i.issuer == issuer && i.subject == subject)
+            .cloned())
+    }
+
+    async fn link_external_identity(&self, identity: ExternalIdentity) -> Result<bool> {
+        let mut st = self.state.lock().unwrap();
+        if st
+            .identities
+            .iter()
+            .any(|i| i.issuer == identity.issuer && i.subject == identity.subject)
+        {
+            return Ok(false);
+        }
+        st.identities.push(identity);
+        Ok(true)
+    }
+
+    async fn list_external_identities(&self, user: &UserId) -> Result<Vec<ExternalIdentity>> {
+        let st = self.state.lock().unwrap();
+        let mut out: Vec<_> = st
+            .identities
+            .iter()
+            .filter(|i| &i.user == user)
+            .cloned()
+            .collect();
+        out.sort_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
+        Ok(out)
+    }
+
+    async fn unlink_external_identity(&self, user: &UserId, id: &str) -> Result<IdentityUnlink> {
+        let mut st = self.state.lock().unwrap();
+        let Some(pos) = st
+            .identities
+            .iter()
+            .position(|i| i.id == id && &i.user == user)
+        else {
+            return Ok(IdentityUnlink::NotFound);
+        };
+        let links = st.identities.iter().filter(|i| &i.user == user).count();
+        if links == 1 && !st.passwords.contains_key(user) {
+            return Ok(IdentityUnlink::LastCredential);
+        }
+        st.identities.remove(pos);
+        Ok(IdentityUnlink::Removed)
+    }
+
+    async fn touch_external_identity(
+        &self,
+        id: &str,
+        email: Option<&str>,
+        now: DateTime<Utc>,
+    ) -> Result<()> {
+        let mut st = self.state.lock().unwrap();
+        if let Some(identity) = st.identities.iter_mut().find(|i| i.id == id) {
+            identity.last_sign_in_at = Some(now);
+            if let Some(email) = email {
+                identity.email = Some(email.to_string());
+            }
+        }
+        Ok(())
+    }
+
+    async fn put_oidc_flow(&self, flow: OidcFlow) -> Result<()> {
+        self.state
+            .lock()
+            .unwrap()
+            .oidc_flows
+            .insert(flow.state_hash.clone(), flow);
+        Ok(())
+    }
+
+    async fn take_oidc_flow(&self, state_hash: &str) -> Result<Option<OidcFlow>> {
+        Ok(self.state.lock().unwrap().oidc_flows.remove(state_hash))
+    }
+
+    async fn delete_expired_oidc_flows(&self, now: DateTime<Utc>) -> Result<()> {
+        self.state
+            .lock()
+            .unwrap()
+            .oidc_flows
+            .retain(|_, f| f.expires_at > now);
         Ok(())
     }
 

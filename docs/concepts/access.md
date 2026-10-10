@@ -88,6 +88,9 @@ success clears the name's count but not the address's. The error never says whet
 a user name that does not exist costs the same work as one that does. Only a right password learns that the account cannot
 sign in yet (`email_not_verified`, `approval_pending`, `account_disabled`, all 403). `pyn password` changes your own password.
 
+A server can also sign people in through an external OpenID Connect provider, and turn password sign-in off (server
+administrators keep it); see [signing in with an external provider](external-sign-in.md).
+
 ## SSH keys
 
 SSH keys are how people sign in from the command line and, when the SSH transport arrives, how clone and push authenticate,
@@ -183,7 +186,7 @@ is off, or on but nothing is delivered.
 | `POST /v1/admin/users/{user}/enable` | the updated account |
 | `PUT /v1/admin/users/{user}/admin` | grants the flag; the updated account. `400 invalid_request` if the account is not active; granting again changes nothing |
 | `DELETE /v1/admin/users/{user}/admin` | revokes the flag; the updated account. `409 last_server_admin` if no other active administrator would remain; revoking from a non-administrator changes nothing |
-| `GET /v1/admin/audit?before=&limit=` | `account_approved`, `account_disabled`, `account_enabled`, `admin_granted`, `admin_revoked`, `owner_limits_changed` and `server_setup_completed` events, same page shape as a repository's |
+| `GET /v1/admin/audit?before=&limit=` | `account_approved`, `account_disabled`, `account_enabled`, `admin_granted`, `admin_revoked`, `owner_limits_changed`, `server_setup_completed`, `external_account_created`, `external_identity_linked` and `external_identity_unlinked` events, same page shape as a repository's |
 
 On the command line (server administrators; each listing is an aligned table with the name last):
 
@@ -210,7 +213,7 @@ tokens from `pyn login` are valid everywhere). It is shown once when created; on
 authenticates with the intersection of its permissions and its owner's current role in the repository the request is
 for, so demoting a user narrows their tokens, and a revoked token stops working at once. A token used on a repository it
 was not made for is told the repository does not exist. A token limited to specific repositories cannot create, rename or
-delete repositories. Tokens are meant for automation and CI; SSH keys and OIDC are planned for signing
+delete repositories. Tokens are meant for automation and CI; SSH keys and [OpenID Connect](external-sign-in.md) are for signing
 people in, and resolve to the same users and permissions.
 
 ```bash

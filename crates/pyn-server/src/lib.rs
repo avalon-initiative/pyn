@@ -25,6 +25,7 @@ pub mod auth;
 mod client;
 pub mod email;
 mod limits_api;
+mod oidc_api;
 mod org_api;
 pub mod passwords;
 mod repo_api;
@@ -71,6 +72,12 @@ struct RepoAddress {
         session_api::sign_in,
         session_api::current,
         session_api::sign_out,
+        oidc_api::sign_in_options,
+        oidc_api::authorize,
+        oidc_api::link,
+        oidc_api::callback,
+        oidc_api::list_identities,
+        oidc_api::unlink_identity,
         access_api::change_password,
         access_api::add_key,
         access_api::list_keys,
@@ -185,6 +192,10 @@ struct RepoAddress {
         api::DisableAccountRequest,
         api::LoginRequest,
         api::SessionInfo,
+        api::SignInOptions,
+        api::ExternalProviderInfo,
+        api::ExternalIdentityInfo,
+        api::OidcLink,
         api::ChangePasswordRequest,
         api::AddUserRequest,
         api::CreateInviteRequest,
@@ -283,6 +294,15 @@ pub fn router(state: AppState) -> Router {
             get(session_api::current)
                 .post(session_api::sign_in)
                 .delete(session_api::sign_out),
+        )
+        .route("/v1/sign-in-options", get(oidc_api::sign_in_options))
+        .route("/v1/oidc/authorize", get(oidc_api::authorize))
+        .route("/v1/oidc/link", post(oidc_api::link))
+        .route("/v1/oidc/callback", get(oidc_api::callback))
+        .route("/v1/me/identities", get(oidc_api::list_identities))
+        .route(
+            "/v1/me/identities/{id}",
+            axum::routing::delete(oidc_api::unlink_identity),
         )
         .route("/v1/me/password", put(access_api::change_password))
         .route(
@@ -438,6 +458,8 @@ impl IntoResponse for ApiError {
             | PynError::LastOrgOwner(_)
             | PynError::LastServerAdmin
             | PynError::KeyInUse
+            | PynError::ExternalIdentityTaken
+            | PynError::LastSignInMethod
             | PynError::AlreadyInitialised
             | PynError::ServiceCredentialExists(_)
             | PynError::ConfirmationRequired { .. } => StatusCode::CONFLICT,
@@ -454,14 +476,21 @@ impl IntoResponse for ApiError {
             | PynError::NotOrgMember(_)
             | PynError::RepoCreateForbidden { .. }
             | PynError::NotRepoMember(_)
+            | PynError::ExternalNotLinked
+            | PynError::PasswordSignInDisabled
             | PynError::CsrfFailed => StatusCode::FORBIDDEN,
             PynError::TooManyAttempts { .. } => StatusCode::TOO_MANY_REQUESTS,
             PynError::NotInitialised => StatusCode::SERVICE_UNAVAILABLE,
-            PynError::Unauthenticated(_) => StatusCode::UNAUTHORIZED,
+            PynError::Unauthenticated(_) | PynError::ExternalSignInFailed(_) => {
+                StatusCode::UNAUTHORIZED
+            }
+            PynError::ExternalProviderUnavailable(_) => StatusCode::BAD_GATEWAY,
             PynError::TokenNotFound(_)
             | PynError::ServiceCredentialNotFound(_)
             | PynError::UserNotFound(_)
             | PynError::KeyNotFound(_)
+            | PynError::OidcNotConfigured
+            | PynError::ExternalIdentityNotFound(_)
             | PynError::RepoNotFound(_)
             | PynError::OrgNotFound(_)
             | PynError::OrgMemberNotFound { .. }

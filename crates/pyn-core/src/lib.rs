@@ -13,6 +13,7 @@ pub mod history;
 pub mod limits;
 pub mod memory;
 pub mod object;
+pub mod oidc;
 pub mod passwords;
 pub mod ratelimit;
 pub mod repo;
@@ -33,9 +34,10 @@ pub use access::{
     verification,
 };
 pub use access_service::{
-    AccessConfig, AccessService, AccessStore, AccountDisable, AdminRevoke, OrgDeleteMark,
-    OrgMemberChange, OwnerLimits, RateLimits, Registration, RepoMember, SERVER_AUDIT_ID,
-    SetupRequest, SetupStatus, SignUp, TeamDetail, generate_setup_token,
+    AccessConfig, AccessService, AccessStore, AccountDisable, AdminRevoke, ExternalPolicy,
+    ExternalSignIn, OidcBegin, OidcFinish, OidcStart, OrgDeleteMark, OrgMemberChange, OwnerLimits,
+    RateLimits, Registration, RepoMember, SERVER_AUDIT_ID, SetupRequest, SetupStatus, SignUp,
+    TeamDetail, generate_setup_token,
 };
 pub use audit::{AuditAction, AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent};
 pub use auth::AuthProvider;
@@ -47,6 +49,10 @@ pub use limits::{
     Limits, LimitsChange, MAX_LIMIT_VALUE, RepoUsage, StorageCap, StorageCaps, Usage,
 };
 pub use object::ObjectStore;
+pub use oidc::{
+    AuthorizationRequest, CodeExchange, ExternalClaims, ExternalCreate, ExternalIdentity,
+    IdentityUnlink, NewExternalAccount, OidcFlow, OidcProvider, pkce_challenge,
+};
 pub use passwords::{InlinePasswords, PasswordWorker};
 pub use ratelimit::{RateLimitStore, RateState};
 pub use repo::{

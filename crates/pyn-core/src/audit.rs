@@ -50,10 +50,13 @@ pub enum AuditAction {
     AdminGranted,
     AdminRevoked,
     OwnerLimitsChanged,
+    ExternalAccountCreated,
+    ExternalIdentityLinked,
+    ExternalIdentityUnlinked,
 }
 
 impl AuditAction {
-    pub const ALL: [AuditAction; 38] = [
+    pub const ALL: [AuditAction; 41] = [
         AuditAction::Checkout,
         AuditAction::Release,
         AuditAction::Checkin,
@@ -92,6 +95,9 @@ impl AuditAction {
         AuditAction::AdminGranted,
         AuditAction::AdminRevoked,
         AuditAction::OwnerLimitsChanged,
+        AuditAction::ExternalAccountCreated,
+        AuditAction::ExternalIdentityLinked,
+        AuditAction::ExternalIdentityUnlinked,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -134,6 +140,9 @@ impl AuditAction {
             Self::AdminGranted => "admin_granted",
             Self::AdminRevoked => "admin_revoked",
             Self::OwnerLimitsChanged => "owner_limits_changed",
+            Self::ExternalAccountCreated => "external_account_created",
+            Self::ExternalIdentityLinked => "external_identity_linked",
+            Self::ExternalIdentityUnlinked => "external_identity_unlinked",
         }
     }
 }

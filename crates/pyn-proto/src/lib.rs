@@ -775,6 +775,44 @@ pub struct SessionInfo {
     pub expires_at: DateTime<Utc>,
 }
 
+/// Cookie that ties an external sign-in to the browser that started it; only sent to `/v1/oidc`.
+pub const OIDC_BINDING_COOKIE: &str = "pyn_oidc";
+
+/// How people can sign in to this server.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct SignInOptions {
+    /// Whether anyone may sign in with a password. When false, server administrators still can.
+    pub password: bool,
+    /// The configured external provider; null when the server has none.
+    pub external: Option<ExternalProviderInfo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ExternalProviderInfo {
+    /// What to call it on the sign-in button.
+    pub name: String,
+    /// Send the browser here (a full page navigation, with an optional `return_to` path) to start signing in.
+    pub sign_in_url: String,
+}
+
+/// A provider identity linked to an account.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ExternalIdentityInfo {
+    pub id: String,
+    pub issuer: String,
+    pub subject: String,
+    /// The address the provider last gave, if it vouched for one.
+    pub email: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub last_sign_in_at: Option<DateTime<Utc>>,
+}
+
+/// Where to send the browser to link the provider to the signed-in account.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct OidcLink {
+    pub url: String,
+}
+
 /// What an owner (a user or an organization) is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]

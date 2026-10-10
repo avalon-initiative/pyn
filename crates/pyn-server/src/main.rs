@@ -5,11 +5,12 @@ use pyn_core::memory::{
     MemoryRateLimitStore,
 };
 use pyn_core::{
-    AccessConfig, AccessService, AccessStore, AuditStore, AuthProvider, Limits, MetadataStore,
-    ObjectStore, RateLimitStore, RateLimits, Repositories, Rules, SystemClock,
+    AccessConfig, AccessService, AccessStore, AuditStore, AuthProvider, ExternalPolicy, Limits,
+    MetadataStore, ObjectStore, RateLimitStore, RateLimits, Repositories, Rules, SystemClock,
     generate_setup_token,
 };
 use pyn_fs::FsObjectStore;
+use pyn_oidc::{HttpOidcProvider, OidcConfig};
 use pyn_postgres::PgMetadataStore;
 use pyn_server::auth::{BearerAuth, DevHeaderAuth};
 use pyn_server::email::LogEmailSender;
@@ -75,6 +76,32 @@ fn optional_number(name: &str) -> anyhow::Result<Option<u64>> {
     }
 }
 
+/// OpenID Connect sign-in, only when the issuer, client id and client secret are all set.
+fn oidc_provider() -> anyhow::Result<Option<Arc<HttpOidcProvider>>> {
+    let var = |name: &str| std::env::var(name).ok().filter(|v| !v.is_empty());
+    let (issuer, id, secret) = (
+        var("PYN_OIDC_ISSUER"),
+        var("PYN_OIDC_CLIENT_ID"),
+        var("PYN_OIDC_CLIENT_SECRET"),
+    );
+    let (Some(issuer), Some(id), Some(secret)) = (issuer.clone(), id.clone(), secret.clone())
+    else {
+        anyhow::ensure!(
+            issuer.is_none() && id.is_none() && secret.is_none(),
+            "PYN_OIDC_ISSUER, PYN_OIDC_CLIENT_ID and PYN_OIDC_CLIENT_SECRET must be set together"
+        );
+        return Ok(None);
+    };
+    let mut config = OidcConfig::new(&issuer, &id, &secret);
+    if let Some(name) = var("PYN_OIDC_NAME") {
+        config.display_name = name;
+    }
+    if let Some(claim) = var("PYN_OIDC_USERNAME_CLAIM") {
+        config.username_claim = claim;
+    }
+    Ok(Some(Arc::new(HttpOidcProvider::new(config)?)))
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
@@ -134,7 +161,17 @@ async fn main() -> anyhow::Result<()> {
             storage_bytes: optional_number("PYN_DEFAULT_MAX_STORAGE_BYTES")?,
         }
         .validate()?,
+        external: ExternalPolicy {
+            create_accounts: flag("PYN_OIDC_CREATE_ACCOUNTS"),
+            password_sign_in: flag_or("PYN_PASSWORD_SIGN_IN", true),
+            redirect_url: std::env::var("PYN_OIDC_REDIRECT_URL").ok(),
+        },
     };
+    let oidc = oidc_provider()?;
+    anyhow::ensure!(
+        oidc.is_some() || config.external.password_sign_in,
+        "PYN_PASSWORD_SIGN_IN=false needs an OpenID Connect provider (PYN_OIDC_ISSUER)"
+    );
     let parallelism = std::thread::available_parallelism().map_or(2, |n| n.get());
     let hashes = number("PYN_PASSWORD_HASHES", parallelism)?;
     anyhow::ensure!(hashes >= 1, "PYN_PASSWORD_HASHES must be at least 1");
@@ -147,8 +184,13 @@ async fn main() -> anyhow::Result<()> {
         Some(token) => token.clone(),
         None => generate_setup_token()?,
     };
+    let mut service = AccessService::new(access_store, clock.clone());
+    if let Some(provider) = oidc {
+        tracing::info!("sign-in with the OpenID Connect provider is on");
+        service = service.with_oidc(provider);
+    }
     let access = Arc::new(
-        AccessService::new(access_store, clock.clone())
+        service
             .with_config(config)
             .with_registry(meta.clone())
             .with_audit(audit.clone())

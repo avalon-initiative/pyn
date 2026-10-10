@@ -4716,6 +4716,304 @@ pub async fn owner_limits_are_patched_listed_and_dropped_with_an_organization(st
     assert_eq!(store.owner_limits(&acme).await.unwrap(), Limits::default());
 }
 
+fn identity(id: &str, owner: &str, subject: &str, minute: i64) -> crate::ExternalIdentity {
+    crate::ExternalIdentity {
+        id: id.to_string(),
+        user: user(owner),
+        issuer: "https://idp.example".to_string(),
+        subject: subject.to_string(),
+        email: None,
+        created_at: at(minute),
+        last_sign_in_at: None,
+    }
+}
+
+fn external(name: &str, email: Option<&str>, subject: &str) -> crate::NewExternalAccount {
+    crate::NewExternalAccount {
+        user: user(name),
+        email: email.map(str::to_string),
+        identity: identity(&format!("id-{name}"), name, subject, 0),
+    }
+}
+
+pub async fn external_accounts_are_created_with_their_link_and_no_password(store: Access) {
+    use crate::ExternalCreate::*;
+    assert_eq!(
+        store
+            .create_external_account(external("alice", Some("a@example.org"), "sub-a"))
+            .await
+            .unwrap(),
+        Created
+    );
+    let alice = store.account(&user("alice")).await.unwrap().unwrap();
+    assert_eq!(alice.status(), AccountStatus::Active);
+    assert_eq!(alice.email.as_deref(), Some("a@example.org"));
+    assert!(alice.email_verified_at.is_some() && !alice.is_admin);
+    assert!(store.password_hash(&user("alice")).await.unwrap().is_none());
+    assert_eq!(
+        store
+            .find_external_identity("https://idp.example", "sub-a")
+            .await
+            .unwrap(),
+        Some(identity("id-alice", "alice", "sub-a", 0))
+    );
+    assert!(
+        store
+            .find_external_identity("https://other.example", "sub-a")
+            .await
+            .unwrap()
+            .is_none(),
+        "a subject belongs to its issuer"
+    );
+
+    assert_eq!(
+        store
+            .create_external_account(external("alice", None, "sub-new"))
+            .await
+            .unwrap(),
+        NameTaken
+    );
+    assert_eq!(
+        store
+            .create_external_account(external("bob", None, "sub-a"))
+            .await
+            .unwrap(),
+        IdentityTaken
+    );
+    assert_eq!(
+        store
+            .create_external_account(external("carol", Some("a@example.org"), "sub-c"))
+            .await
+            .unwrap(),
+        EmailTaken
+    );
+    for name in ["bob", "carol"] {
+        assert!(
+            store.account(&user(name)).await.unwrap().is_none(),
+            "a refused account leaves nothing behind: {name}"
+        );
+    }
+    assert!(
+        store
+            .find_external_identity("https://idp.example", "sub-c")
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    assert_eq!(
+        store
+            .create_external_account(external("dave", None, "sub-d"))
+            .await
+            .unwrap(),
+        Created
+    );
+    let dave = store.account(&user("dave")).await.unwrap().unwrap();
+    assert!(dave.email.is_none() && dave.email_verified_at.is_none());
+}
+
+pub async fn identities_link_once_list_oldest_first_and_record_sign_ins(store: Access) {
+    store.ensure_user(&user("alice"), at(0)).await.unwrap();
+    store.ensure_user(&user("bob"), at(0)).await.unwrap();
+    assert!(
+        store
+            .link_external_identity(identity("i2", "alice", "s2", 2))
+            .await
+            .unwrap()
+    );
+    assert!(
+        store
+            .link_external_identity(identity("i1", "alice", "s1", 1))
+            .await
+            .unwrap()
+    );
+    assert!(
+        !store
+            .link_external_identity(identity("i3", "bob", "s1", 3))
+            .await
+            .unwrap(),
+        "a provider subject links to one account"
+    );
+    let ids: Vec<_> = store
+        .list_external_identities(&user("alice"))
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|i| i.id)
+        .collect();
+    assert_eq!(ids, ["i1", "i2"]);
+    assert!(
+        store
+            .list_external_identities(&user("bob"))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    store
+        .touch_external_identity("i1", Some("new@example.org"), at(9))
+        .await
+        .unwrap();
+    store
+        .touch_external_identity("i1", None, at(10))
+        .await
+        .unwrap();
+    let found = store
+        .find_external_identity("https://idp.example", "s1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(found.last_sign_in_at, Some(at(10)));
+    assert_eq!(found.email.as_deref(), Some("new@example.org"));
+}
+
+pub async fn the_last_way_to_sign_in_cannot_be_unlinked(store: Access) {
+    use crate::IdentityUnlink::*;
+    store
+        .create_external_account(external("alice", None, "s-alice"))
+        .await
+        .unwrap();
+    store.ensure_user(&user("bob"), at(0)).await.unwrap();
+    store
+        .link_external_identity(identity("i-bob", "bob", "s-bob", 1))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        store
+            .unlink_external_identity(&user("bob"), "id-alice")
+            .await
+            .unwrap(),
+        NotFound,
+        "another account's link"
+    );
+    assert_eq!(
+        store
+            .unlink_external_identity(&user("alice"), "nope")
+            .await
+            .unwrap(),
+        NotFound
+    );
+    assert_eq!(
+        store
+            .unlink_external_identity(&user("alice"), "id-alice")
+            .await
+            .unwrap(),
+        LastCredential,
+        "no password and no other link"
+    );
+
+    store
+        .link_external_identity(identity("second", "alice", "s-alice-2", 2))
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .unlink_external_identity(&user("alice"), "id-alice")
+            .await
+            .unwrap(),
+        Removed
+    );
+    assert!(
+        store
+            .find_external_identity("https://idp.example", "s-alice")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        store
+            .unlink_external_identity(&user("alice"), "second")
+            .await
+            .unwrap(),
+        LastCredential
+    );
+
+    store
+        .set_password_hash(&user("alice"), "hash")
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .unlink_external_identity(&user("alice"), "second")
+            .await
+            .unwrap(),
+        Removed,
+        "a password is another way in"
+    );
+}
+
+pub async fn racing_unlinks_leave_one_way_to_sign_in(store: Access) {
+    store.ensure_user(&user("alice"), at(0)).await.unwrap();
+    for n in 0..2 {
+        store
+            .link_external_identity(identity(&format!("i{n}"), "alice", &format!("s{n}"), n))
+            .await
+            .unwrap();
+    }
+    let mut tasks = Vec::new();
+    for n in 0..2 {
+        let store = store.clone();
+        tasks.push(tokio::spawn(async move {
+            store
+                .unlink_external_identity(&user("alice"), &format!("i{n}"))
+                .await
+                .unwrap()
+        }));
+    }
+    let mut removed = 0;
+    for task in tasks {
+        if task.await.unwrap() == crate::IdentityUnlink::Removed {
+            removed += 1;
+        }
+    }
+    assert_eq!(removed, 1);
+    assert_eq!(
+        store
+            .list_external_identities(&user("alice"))
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+fn flow(hash: &str, expires: i64) -> crate::OidcFlow {
+    crate::OidcFlow {
+        state_hash: hash.to_string(),
+        binding_hash: format!("binding-{hash}"),
+        nonce: format!("nonce-{hash}"),
+        code_verifier: format!("verifier-{hash}"),
+        link_user: None,
+        return_to: Some("/repos".to_string()),
+        expires_at: at(expires),
+    }
+}
+
+pub async fn sign_in_flows_are_taken_once_and_swept_when_expired(store: Access) {
+    store.ensure_user(&user("alice"), at(0)).await.unwrap();
+    let mut linking = flow("link", 20);
+    linking.link_user = Some(user("alice"));
+    linking.return_to = None;
+    store.put_oidc_flow(flow("one", 10)).await.unwrap();
+    store.put_oidc_flow(linking.clone()).await.unwrap();
+
+    assert_eq!(
+        store.take_oidc_flow("one").await.unwrap(),
+        Some(flow("one", 10))
+    );
+    assert!(store.take_oidc_flow("one").await.unwrap().is_none(), "once");
+    assert!(store.take_oidc_flow("nope").await.unwrap().is_none());
+
+    store.put_oidc_flow(flow("two", 10)).await.unwrap();
+    store.delete_expired_oidc_flows(at(10)).await.unwrap();
+    assert!(
+        store.take_oidc_flow("two").await.unwrap().is_none(),
+        "expired"
+    );
+    assert_eq!(store.take_oidc_flow("link").await.unwrap(), Some(linking));
+}
+
 /// Generates one `#[tokio::test]` per access-store case for the store built by `$factory`.
 #[macro_export]
 macro_rules! access_contract_tests {
@@ -4758,6 +5056,11 @@ macro_rules! access_contract_tests {
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; organization_members_stop_at_the_cap);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; racing_member_adds_cannot_exceed_the_cap);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; owner_limits_are_patched_listed_and_dropped_with_an_organization);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; external_accounts_are_created_with_their_link_and_no_password);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; identities_link_once_list_oldest_first_and_record_sign_ins);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; the_last_way_to_sign_in_cannot_be_unlinked);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; racing_unlinks_leave_one_way_to_sign_in);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; sign_in_flows_are_taken_once_and_swept_when_expired);
     };
     (@one $factory:expr; [$(#[$attr:meta])*]; $name:ident) => {
         #[tokio::test(flavor = "multi_thread")]

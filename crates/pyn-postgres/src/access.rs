@@ -5,12 +5,12 @@ use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use pyn_core::{
     AccessStore, AccountDisable, AccountKind, AccountRecord, AccountStatus, AdminRevoke,
-    CreationEffect, CreationRule, CreationScope, CreationSubject, InviteId, InviteRecord, Limits,
-    LimitsChange, MemberCreation, NewAccount, OrgDeleteMark, OrgMemberChange, OrgRole, Permission,
-    PynError, RateLimitStore, RateState, RegistrationMode, RepoId, RepoPolicy, Result, Role,
-    RoleDefinitions, ServerSettings, ServiceCredentialRecord, ServiceScope, SessionRecord,
-    SignupStage, SshKeyRecord, SubjectKind, TeamRecord, TokenId, TokenRecord, UserId,
-    VerificationRecord,
+    CreationEffect, CreationRule, CreationScope, CreationSubject, ExternalCreate, ExternalIdentity,
+    IdentityUnlink, InviteId, InviteRecord, Limits, LimitsChange, MemberCreation, NewAccount,
+    NewExternalAccount, OidcFlow, OrgDeleteMark, OrgMemberChange, OrgRole, Permission, PynError,
+    RateLimitStore, RateState, RegistrationMode, RepoId, RepoPolicy, Result, Role, RoleDefinitions,
+    ServerSettings, ServiceCredentialRecord, ServiceScope, SessionRecord, SignupStage,
+    SshKeyRecord, SubjectKind, TeamRecord, TokenId, TokenRecord, UserId, VerificationRecord,
 };
 use sqlx::Row;
 use sqlx::postgres::PgRow;
@@ -23,6 +23,34 @@ fn permissions(names: Vec<String>) -> Result<BTreeSet<Permission>> {
 
 fn names(permissions: &BTreeSet<Permission>) -> Vec<String> {
     permissions.iter().map(|p| p.as_str().to_string()).collect()
+}
+
+fn identity_from(row: &PgRow) -> ExternalIdentity {
+    ExternalIdentity {
+        id: row.get("id"),
+        user: UserId::new(row.get::<String, _>("user_id")),
+        issuer: row.get("issuer"),
+        subject: row.get("subject"),
+        email: row.get("email"),
+        created_at: row.get("created_at"),
+        last_sign_in_at: row.get("last_sign_in_at"),
+    }
+}
+
+fn insert_identity(
+    i: &ExternalIdentity,
+) -> sqlx::query::Query<'_, sqlx::Postgres, sqlx::postgres::PgArguments> {
+    sqlx::query(
+        "INSERT INTO external_identities (id, user_id, issuer, subject, email, created_at, last_sign_in_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (issuer, subject) DO NOTHING",
+    )
+    .bind(&i.id)
+    .bind(i.user.as_str())
+    .bind(&i.issuer)
+    .bind(&i.subject)
+    .bind(&i.email)
+    .bind(i.created_at)
+    .bind(i.last_sign_in_at)
 }
 
 fn service_credential_from(row: &PgRow) -> Result<ServiceCredentialRecord> {
@@ -1514,6 +1542,183 @@ impl AccessStore for PgMetadataStore {
     async fn delete_sessions_of(&self, user: &UserId) -> Result<()> {
         sqlx::query("DELETE FROM sessions WHERE user_id = $1")
             .bind(user.as_str())
+            .execute(&self.pool)
+            .await
+            .map_err(db)?;
+        Ok(())
+    }
+
+    async fn create_external_account(&self, new: NewExternalAccount) -> Result<ExternalCreate> {
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        let verified_at = new.email.is_some().then_some(new.identity.created_at);
+        let created = sqlx::query(
+            "INSERT INTO users (id, created_at, email, email_verified_at) VALUES ($1, $2, $3, $4)
+             ON CONFLICT (id) DO NOTHING",
+        )
+        .bind(new.user.as_str())
+        .bind(new.identity.created_at)
+        .bind(&new.email)
+        .bind(verified_at)
+        .execute(&mut *tx)
+        .await;
+        match created {
+            Ok(done) if done.rows_affected() == 0 => return Ok(ExternalCreate::NameTaken),
+            Ok(_) => {}
+            Err(e)
+                if e.as_database_error()
+                    .is_some_and(|d| d.is_unique_violation()) =>
+            {
+                return Ok(ExternalCreate::EmailTaken);
+            }
+            Err(e) => return Err(db(e)),
+        }
+        let linked = insert_identity(&new.identity)
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
+        if linked.rows_affected() == 0 {
+            return Ok(ExternalCreate::IdentityTaken);
+        }
+        tx.commit().await.map_err(db)?;
+        Ok(ExternalCreate::Created)
+    }
+
+    async fn find_external_identity(
+        &self,
+        issuer: &str,
+        subject: &str,
+    ) -> Result<Option<ExternalIdentity>> {
+        let row = sqlx::query(
+            "SELECT id, user_id, issuer, subject, email, created_at, last_sign_in_at
+             FROM external_identities WHERE issuer = $1 AND subject = $2",
+        )
+        .bind(issuer)
+        .bind(subject)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(row.as_ref().map(identity_from))
+    }
+
+    async fn link_external_identity(&self, identity: ExternalIdentity) -> Result<bool> {
+        let done = insert_identity(&identity)
+            .execute(&self.pool)
+            .await
+            .map_err(db)?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    async fn list_external_identities(&self, user: &UserId) -> Result<Vec<ExternalIdentity>> {
+        let rows = sqlx::query(
+            "SELECT id, user_id, issuer, subject, email, created_at, last_sign_in_at
+             FROM external_identities WHERE user_id = $1 ORDER BY created_at, id",
+        )
+        .bind(user.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(rows.iter().map(identity_from).collect())
+    }
+
+    async fn unlink_external_identity(&self, user: &UserId, id: &str) -> Result<IdentityUnlink> {
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        let row = sqlx::query(
+            "SELECT password_hash IS NOT NULL AS has_password FROM users WHERE id = $1 FOR UPDATE",
+        )
+        .bind(user.as_str())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db)?;
+        let Some(row) = row else {
+            return Ok(IdentityUnlink::NotFound);
+        };
+        let links: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM external_identities WHERE user_id = $1")
+                .bind(user.as_str())
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(db)?;
+        let owned: Option<String> =
+            sqlx::query_scalar("SELECT id FROM external_identities WHERE id = $1 AND user_id = $2")
+                .bind(id)
+                .bind(user.as_str())
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(db)?;
+        if owned.is_none() {
+            return Ok(IdentityUnlink::NotFound);
+        }
+        if links == 1 && !row.get::<bool, _>("has_password") {
+            return Ok(IdentityUnlink::LastCredential);
+        }
+        sqlx::query("DELETE FROM external_identities WHERE id = $1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
+        tx.commit().await.map_err(db)?;
+        Ok(IdentityUnlink::Removed)
+    }
+
+    async fn touch_external_identity(
+        &self,
+        id: &str,
+        email: Option<&str>,
+        now: DateTime<Utc>,
+    ) -> Result<()> {
+        sqlx::query(
+            "UPDATE external_identities SET last_sign_in_at = $2, email = COALESCE($3, email) WHERE id = $1",
+        )
+        .bind(id)
+        .bind(now)
+        .bind(email)
+        .execute(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    async fn put_oidc_flow(&self, flow: OidcFlow) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO oidc_flows (state_hash, binding_hash, nonce, code_verifier, link_user, return_to, expires_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        )
+        .bind(&flow.state_hash)
+        .bind(&flow.binding_hash)
+        .bind(&flow.nonce)
+        .bind(&flow.code_verifier)
+        .bind(flow.link_user.as_ref().map(UserId::as_str))
+        .bind(&flow.return_to)
+        .bind(flow.expires_at)
+        .execute(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    async fn take_oidc_flow(&self, state_hash: &str) -> Result<Option<OidcFlow>> {
+        let row = sqlx::query(
+            "DELETE FROM oidc_flows WHERE state_hash = $1
+             RETURNING state_hash, binding_hash, nonce, code_verifier, link_user, return_to, expires_at",
+        )
+        .bind(state_hash)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(row.map(|r| OidcFlow {
+            state_hash: r.get("state_hash"),
+            binding_hash: r.get("binding_hash"),
+            nonce: r.get("nonce"),
+            code_verifier: r.get("code_verifier"),
+            link_user: r.get::<Option<String>, _>("link_user").map(UserId::new),
+            return_to: r.get("return_to"),
+            expires_at: r.get("expires_at"),
+        }))
+    }
+
+    async fn delete_expired_oidc_flows(&self, now: DateTime<Utc>) -> Result<()> {
+        sqlx::query("DELETE FROM oidc_flows WHERE expires_at <= $1")
+            .bind(now)
             .execute(&self.pool)
             .await
             .map_err(db)?;
