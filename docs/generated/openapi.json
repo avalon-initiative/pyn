@@ -3435,6 +3435,7 @@
     "/v1/repos/{owner}/{name}/checkout": {
       "post": {
         "tags": [],
+        "summary": "Lock an exclusive path for the caller.",
         "operationId": "checkout",
         "parameters": [
           {
@@ -4174,6 +4175,7 @@
     "/v1/repos/{owner}/{name}/release": {
       "post": {
         "tags": [],
+        "summary": "Unlock a path the caller holds.",
         "operationId": "release",
         "parameters": [
           {
@@ -6413,7 +6415,7 @@
           "lease_hours": {
             "type": "integer",
             "format": "int32",
-            "description": "How long a checkout lasts before it expires unless renewed.",
+            "description": "How long a lock lasts before it expires unless renewed.",
             "minimum": 0
           },
           "max_locks_per_user": {

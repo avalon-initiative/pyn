@@ -673,6 +673,7 @@ async fn list_locks(
     (status = 409, body = api::ErrorBody, description = "lock_held, lock_limit_reached or stale_base"),
     (status = 400, body = api::ErrorBody, description = "not_exclusive or invalid_path"),
 ))]
+/// Lock an exclusive path for the caller.
 async fn checkout(
     State(s): State<AppState>,
     headers: HeaderMap,
@@ -696,6 +697,7 @@ async fn checkout(
     (status = 204),
     (status = 403, body = api::ErrorBody, description = "not_lock_holder"),
 ))]
+/// Unlock a path the caller holds.
 async fn release(
     State(s): State<AppState>,
     headers: HeaderMap,

@@ -343,7 +343,7 @@ pub struct RepoInfo {
     pub owner: String,
     pub name: String,
     pub visibility: Visibility,
-    /// How long a checkout lasts before it expires unless renewed.
+    /// How long a lock lasts before it expires unless renewed.
     pub lease_hours: u32,
     /// Locks one user may hold in the repository: the policy file's `meta.max_locks_per_user` if it sets one, else
     /// the repository setting, else the server default.

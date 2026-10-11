@@ -12,7 +12,7 @@ pub enum PynError {
     #[error("invalid rules: {0}")]
     InvalidRules(String),
     #[error(
-        "{path} is locked by {owner} until {expires_at}. Ask {owner} to release it, or wait for the lease to end."
+        "{path} is locked by {owner} until {expires_at}. Ask {owner} to unlock it, or wait for the lease to end."
     )]
     LockHeld {
         path: RepoPath,
@@ -20,7 +20,7 @@ pub enum PynError {
         expires_at: DateTime<Utc>,
     },
     #[error(
-        "lock limit reached: you already hold {limit} lock(s) in this repository; release one before checking out another"
+        "lock limit reached: you already hold {limit} lock(s) in this repository; unlock one before locking another"
     )]
     LockLimitReached { limit: u32 },
     #[error(
@@ -39,9 +39,9 @@ pub enum PynError {
     },
     #[error("{0} is not locked by you")]
     NotLockHolder(RepoPath),
-    #[error("{0} is exclusive: check it out before checking in")]
+    #[error("{0} is exclusive: lock it before checking in")]
     LockRequired(RepoPath),
-    #[error("{0} is not an exclusive path; there is nothing to check out")]
+    #[error("{0} is not an exclusive path; there is nothing to lock")]
     NotExclusive(RepoPath),
     #[error("stale base for {path}: you have {expected:?}, head is {actual:?}")]
     StaleBase {
