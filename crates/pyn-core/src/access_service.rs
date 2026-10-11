@@ -391,6 +391,9 @@ pub trait AccessStore: Send + Sync {
 
     async fn delete_sessions_of(&self, user: &UserId) -> Result<()>;
 
+    /// Deletes the user's sessions except the one with `keep_id_hash`.
+    async fn delete_other_sessions(&self, user: &UserId, keep_id_hash: &str) -> Result<()>;
+
     /// Creates an account with no password from an external sign-in, verified by the provider, together with its
     /// link. All or nothing.
     async fn create_external_account(&self, new: NewExternalAccount) -> Result<ExternalCreate>;
@@ -1593,12 +1596,14 @@ impl AccessService {
         Ok(user)
     }
 
-    /// Changes the actor's own password. If they already have one, the current password must be given.
+    /// Changes the actor's own password and ends their other sessions, keeping `keep_session` (a cookie).
+    /// If they already have a password, the current one must be given.
     pub async fn change_password(
         &self,
         actor: &Identity,
         current: Option<&str>,
         new: &str,
+        keep_session: Option<&str>,
     ) -> Result<()> {
         account::validate_password(new)?;
         if let Some(hash) = self.store.password_hash(&actor.user).await? {
@@ -1613,7 +1618,15 @@ impl AccessService {
             }
         }
         let hash = self.passwords.hash(new).await?;
-        self.store.set_password_hash(&actor.user, &hash).await
+        self.store.set_password_hash(&actor.user, &hash).await?;
+        match keep_session {
+            Some(cookie) => {
+                self.store
+                    .delete_other_sessions(&actor.user, &session::hash(cookie))
+                    .await
+            }
+            None => self.store.delete_sessions_of(&actor.user).await,
+        }
     }
 
     /// Creates a one-time invitation for `role`. The code is returned once and not stored.

@@ -400,25 +400,30 @@ async fn changing_a_password_needs_the_current_one() {
 
     let err = w
         .svc
-        .change_password(&alice, Some("not the password"), "another long password")
+        .change_password(
+            &alice,
+            Some("not the password"),
+            "another long password",
+            None,
+        )
         .await
         .unwrap_err();
     assert!(matches!(err, PynError::Unauthenticated(_)), "{err}");
     let err = w
         .svc
-        .change_password(&alice, None, "another long password")
+        .change_password(&alice, None, "another long password", None)
         .await
         .unwrap_err();
     assert!(matches!(err, PynError::Unauthenticated(_)), "{err}");
     let err = w
         .svc
-        .change_password(&alice, Some(PASSWORD), "short")
+        .change_password(&alice, Some(PASSWORD), "short", None)
         .await
         .unwrap_err();
     assert!(matches!(err, PynError::InvalidRequest(_)), "{err}");
 
     w.svc
-        .change_password(&alice, Some(PASSWORD), "another long password")
+        .change_password(&alice, Some(PASSWORD), "another long password", None)
         .await
         .unwrap();
     w.svc
@@ -470,4 +475,27 @@ async fn a_session_follows_the_current_role_and_ends_on_sign_out_or_expiry() {
     let (_, cookie) = w.svc.start_session("alice", PASSWORD, None).await.unwrap();
     w.clock.advance(Duration::days(31));
     assert!(w.svc.find_session(&cookie).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn changing_a_password_ends_the_other_sessions_and_keeps_the_current_one() {
+    let w = world(RegistrationMode::Open);
+    w.svc
+        .register(Registration::new("alice", PASSWORD))
+        .await
+        .unwrap();
+    let (_, here) = w.svc.start_session("alice", PASSWORD, None).await.unwrap();
+    let (_, elsewhere) = w.svc.start_session("alice", PASSWORD, None).await.unwrap();
+
+    w.svc
+        .change_password(
+            &identity("alice"),
+            Some(PASSWORD),
+            "another long password",
+            Some(&here),
+        )
+        .await
+        .unwrap();
+    assert!(w.svc.find_session(&here).await.unwrap().is_some());
+    assert!(w.svc.find_session(&elsewhere).await.unwrap().is_none());
 }

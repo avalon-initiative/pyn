@@ -86,7 +86,7 @@ Failed sign-ins are throttled twice: five wrong passwords for a user name (which
 15 minutes, and 30 failures from one client address lock that address out for the same time, whatever names it tries. A
 success clears the name's count but not the address's. The error never says whether the name or the password was wrong, and
 a user name that does not exist costs the same work as one that does. Only a right password learns that the account cannot
-sign in yet (`email_not_verified`, `approval_pending`, `account_disabled`, all 403). `pyn password` changes your own password.
+sign in yet (`email_not_verified`, `approval_pending`, `account_disabled`, all 403). `pyn password` changes your own password and ends your other web sessions (the one making the change stays signed in; tokens and keys keep working).
 
 A server can also sign people in through an external OpenID Connect provider, and turn password sign-in off (server
 administrators keep it); see [signing in with an external provider](external-sign-in.md).

@@ -1548,6 +1548,16 @@ impl AccessStore for PgMetadataStore {
         Ok(())
     }
 
+    async fn delete_other_sessions(&self, user: &UserId, keep_id_hash: &str) -> Result<()> {
+        sqlx::query("DELETE FROM sessions WHERE user_id = $1 AND id_hash <> $2")
+            .bind(user.as_str())
+            .bind(keep_id_hash)
+            .execute(&self.pool)
+            .await
+            .map_err(db)?;
+        Ok(())
+    }
+
     async fn create_external_account(&self, new: NewExternalAccount) -> Result<ExternalCreate> {
         let mut tx = self.pool.begin().await.map_err(db)?;
         let verified_at = new.email.is_some().then_some(new.identity.created_at);

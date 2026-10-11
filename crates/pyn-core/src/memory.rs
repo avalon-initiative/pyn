@@ -1265,6 +1265,15 @@ impl AccessStore for MemoryAccessStore {
         Ok(())
     }
 
+    async fn delete_other_sessions(&self, user: &UserId, keep_id_hash: &str) -> Result<()> {
+        self.state
+            .lock()
+            .unwrap()
+            .sessions
+            .retain(|id, s| &s.user != user || id == keep_id_hash);
+        Ok(())
+    }
+
     async fn create_external_account(&self, new: NewExternalAccount) -> Result<ExternalCreate> {
         let mut st = self.state.lock().unwrap();
         if st.accounts.contains_key(&new.user) {

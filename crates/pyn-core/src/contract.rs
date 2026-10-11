@@ -4001,6 +4001,31 @@ pub async fn deleting_an_accounts_sessions_leaves_others(store: Access) {
     assert!(store.get_session("s-bob").await.unwrap().is_some());
 }
 
+pub async fn deleting_other_sessions_keeps_the_named_one(store: Access) {
+    for name in ["alice", "bob"] {
+        store.ensure_user(&user(name), at(0)).await.unwrap();
+    }
+    for (id, name) in [("a1", "alice"), ("a2", "alice"), ("b1", "bob")] {
+        store
+            .create_session(SessionRecord {
+                id_hash: id.into(),
+                user: user(name),
+                csrf_token: "csrf".into(),
+                created_at: at(0),
+                expires_at: at(60),
+            })
+            .await
+            .unwrap();
+    }
+    store
+        .delete_other_sessions(&user("alice"), "a1")
+        .await
+        .unwrap();
+    assert!(store.get_session("a1").await.unwrap().is_some());
+    assert!(store.get_session("a2").await.unwrap().is_none());
+    assert!(store.get_session("b1").await.unwrap().is_some());
+}
+
 pub async fn rate_windows_count_expire_and_reset(store: RateLimits) {
     let window = Duration::minutes(10);
     assert!(store.state("k", at(0)).await.unwrap().is_none());
@@ -5042,6 +5067,7 @@ macro_rules! access_contract_tests {
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; verifications_are_single_use_and_replace_earlier_ones);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; unverified_accounts_with_no_live_verification_are_swept);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; deleting_an_accounts_sessions_leaves_others);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; deleting_other_sessions_keeps_the_named_one);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; organizations_share_the_account_namespace_and_start_with_their_creator_as_owner);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; deleting_an_organization_removes_its_members_and_frees_the_name);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; the_deleting_mark_is_set_once_cleared_and_taken_over_when_stale);

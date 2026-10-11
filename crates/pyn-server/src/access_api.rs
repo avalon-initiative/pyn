@@ -216,7 +216,12 @@ pub(crate) async fn change_password(
 ) -> ApiResult<StatusCode> {
     let who = identify(&s, &headers).await?;
     s.access
-        .change_password(&who, req.current.as_deref(), &req.new)
+        .change_password(
+            &who,
+            req.current.as_deref(),
+            &req.new,
+            crate::session_api::session_cookie(&headers),
+        )
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }
