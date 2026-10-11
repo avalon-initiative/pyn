@@ -599,6 +599,29 @@ impl RepoService {
         Ok((rev, bytes))
     }
 
+    /// Like `read`, but streams the content, or the byte `range` of it.
+    pub async fn read_stream(
+        &self,
+        path: &RepoPath,
+        revision: Option<RevisionId>,
+        range: Option<std::ops::Range<u64>>,
+    ) -> Result<(Revision, crate::ObjectRead)> {
+        let found = match revision {
+            Some(id) => self.meta.get_revision(&self.repo, path, id).await?,
+            None => self.meta.head_revision(&self.repo, path).await?,
+        };
+        let rev = found.ok_or_else(|| PynError::RevisionNotFound {
+            path: path.clone(),
+            revision: revision.map_or("(head)".to_string(), |r| r.to_string()),
+        })?;
+        let read = self
+            .objects
+            .read(&rev.content, range)
+            .await?
+            .ok_or_else(|| PynError::ObjectMissing(rev.content.to_string()))?;
+        Ok((rev, read))
+    }
+
     pub async fn head(&self, path: &RepoPath) -> Result<Option<Revision>> {
         self.meta.head_revision(&self.repo, path).await
     }

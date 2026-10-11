@@ -19,7 +19,7 @@ use crate::audit::{AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent
 use crate::error::{PynError, Result};
 use crate::history::HistoryCursor;
 use crate::limits::{Limits, LimitsChange, RepoUsage, StorageCap, Usage};
-use crate::object::ObjectStore;
+use crate::object::{ObjectRead, ObjectReader, ObjectStore};
 use crate::oidc::{ExternalCreate, ExternalIdentity, IdentityUnlink, NewExternalAccount, OidcFlow};
 use crate::ratelimit::{RateLimitStore, RateState};
 use crate::repo::{RepoRecord, RepoUpdate, Visibility};
@@ -463,14 +463,33 @@ impl MemoryObjectStore {
 
 #[async_trait]
 impl ObjectStore for MemoryObjectStore {
-    async fn put(&self, bytes: Vec<u8>) -> Result<ContentHash> {
+    async fn put_stream(&self, reader: ObjectReader, max: Option<u64>) -> Result<ContentHash> {
+        let bytes = crate::object::read_limited(reader, max).await?;
         let hash = ContentHash::new(hex::encode(Sha256::digest(&bytes)));
         self.objects.lock().unwrap().insert(hash.clone(), bytes);
         Ok(hash)
     }
 
-    async fn get(&self, hash: &ContentHash) -> Result<Option<Vec<u8>>> {
-        Ok(self.objects.lock().unwrap().get(hash).cloned())
+    async fn read(
+        &self,
+        hash: &ContentHash,
+        range: Option<std::ops::Range<u64>>,
+    ) -> Result<Option<ObjectRead>> {
+        let Some(bytes) = self.objects.lock().unwrap().get(hash).cloned() else {
+            return Ok(None);
+        };
+        let total = bytes.len() as u64;
+        let range = crate::object::clamp_range(range, total);
+        let part = bytes[range.start as usize..range.end as usize].to_vec();
+        Ok(Some(ObjectRead {
+            reader: Box::pin(std::io::Cursor::new(part)),
+            total,
+            range,
+        }))
+    }
+
+    async fn delete(&self, hash: &ContentHash) -> Result<bool> {
+        Ok(self.objects.lock().unwrap().remove(hash).is_some())
     }
 
     async fn exists(&self, hash: &ContentHash) -> Result<bool> {

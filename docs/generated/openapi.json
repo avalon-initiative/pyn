@@ -3556,6 +3556,17 @@
               }
             }
           },
+          "206": {
+            "description": "the part named by a single-range `Range: bytes=` header",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
           "404": {
             "description": "revision_not_found",
             "content": {
@@ -3565,6 +3576,9 @@
                 }
               }
             }
+          },
+          "416": {
+            "description": "the range lies outside the content; `Content-Range: bytes */<length>`"
           }
         }
       }
@@ -4165,6 +4179,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PutObjectResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "object_too_large: the upload exceeds the server's per-object limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }

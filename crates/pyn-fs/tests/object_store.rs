@@ -86,3 +86,57 @@ async fn concurrent_puts_of_the_same_content_all_succeed() {
     assert!(hashes.windows(2).all(|w| w[0] == w[1]));
     assert_eq!(s.get(&hashes[0]).await.unwrap().unwrap(), vec![7u8; 4096]);
 }
+
+#[tokio::test]
+async fn streams_in_ranges_and_deletes() {
+    let (s, dir) = store().await;
+    let data: Vec<u8> = (0..200_000u32).map(|i| (i % 253) as u8).collect();
+    let hash = s
+        .put_stream(Box::pin(std::io::Cursor::new(data.clone())), None)
+        .await
+        .unwrap();
+    assert_eq!(hash, s.put(data.clone()).await.unwrap());
+    assert_eq!(s.size(&hash).await.unwrap(), Some(200_000));
+
+    let mut part = s.read(&hash, Some(100..110)).await.unwrap().unwrap();
+    assert_eq!((part.total, part.range.clone()), (200_000, 100..110));
+    let mut got = Vec::new();
+    tokio::io::AsyncReadExt::read_to_end(&mut part.reader, &mut got)
+        .await
+        .unwrap();
+    assert_eq!(got, &data[100..110]);
+
+    let clamped = s
+        .read(&hash, Some(199_990..999_999))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(clamped.range, 199_990..200_000);
+
+    assert!(s.delete(&hash).await.unwrap());
+    assert!(!s.delete(&hash).await.unwrap());
+    assert!(s.read(&hash, None).await.unwrap().is_none());
+    let leftovers: Vec<_> = std::fs::read_dir(dir.path().join("objects"))
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().starts_with(".tmp"))
+        .collect();
+    assert!(leftovers.is_empty());
+}
+
+#[tokio::test]
+async fn an_oversized_stream_is_refused_and_leaves_nothing() {
+    let (s, dir) = store().await;
+    let err = s
+        .put_stream(Box::pin(std::io::Cursor::new(vec![7u8; 1000])), Some(999))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, PynError::ObjectTooLarge { limit: 999 }),
+        "{err}"
+    );
+    let entries = std::fs::read_dir(dir.path().join("objects"))
+        .unwrap()
+        .count();
+    assert_eq!(entries, 0);
+}

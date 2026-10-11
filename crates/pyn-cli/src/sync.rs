@@ -269,7 +269,7 @@ pub fn after_checkin(
     ws: &Workspace,
     path: &str,
     revision: u64,
-    bytes: &[u8],
+    hash: &str,
 ) -> Result<()> {
     let mut state = ws.load_state()?;
     let mode = match state.get(path) {
@@ -287,7 +287,7 @@ pub fn after_checkin(
         path.to_string(),
         FileState {
             revision,
-            hash: hash_of(bytes),
+            hash: hash.to_string(),
             mode,
         },
     );

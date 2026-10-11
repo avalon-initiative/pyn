@@ -34,6 +34,9 @@ mod session_api;
 mod setup_api;
 mod team_api;
 
+/// The largest object one upload may carry.
+const MAX_OBJECT_BYTES: u64 = 16 << 30;
+
 #[derive(Clone)]
 pub struct AppState {
     pub repos: Arc<Repositories>,
@@ -480,6 +483,7 @@ impl IntoResponse for ApiError {
             | PynError::PasswordSignInDisabled
             | PynError::CsrfFailed => StatusCode::FORBIDDEN,
             PynError::TooManyAttempts { .. } => StatusCode::TOO_MANY_REQUESTS,
+            PynError::ObjectTooLarge { .. } => StatusCode::PAYLOAD_TOO_LARGE,
             PynError::NotInitialised => StatusCode::SERVICE_UNAVAILABLE,
             PynError::Unauthenticated(_) | PynError::ExternalSignInFailed(_) => {
                 StatusCode::UNAUTHORIZED
@@ -766,15 +770,22 @@ async fn restore(
 }
 
 #[utoipa::path(put, path = "/v1/repos/{owner}/{name}/objects", params(RepoAddress), request_body(content = Vec<u8>, content_type = "application/octet-stream"),
-    responses((status = 200, body = api::PutObjectResponse)))]
+    responses((status = 200, body = api::PutObjectResponse),
+              (status = 413, body = api::ErrorBody, description = "object_too_large: the upload exceeds the server's per-object limit")))]
 async fn put_object(
     State(s): State<AppState>,
     headers: HeaderMap,
     Path((owner, name)): Path<(String, String)>,
-    body: axum::body::Bytes,
+    body: axum::body::Body,
 ) -> ApiResult<Json<api::PutObjectResponse>> {
     authorize_repo(&s, &headers, &owner, &name, Some(Permission::Checkin)).await?;
-    let hash = s.objects.put(body.to_vec()).await?;
+    use futures_util::TryStreamExt;
+    let reader =
+        tokio_util::io::StreamReader::new(body.into_data_stream().map_err(std::io::Error::other));
+    let hash = s
+        .objects
+        .put_stream(Box::pin(reader), Some(MAX_OBJECT_BYTES))
+        .await?;
     Ok(Json(api::PutObjectResponse {
         content: hash.to_string(),
     }))
@@ -991,6 +1002,8 @@ struct ContentQuery {
     params(RepoAddress, ("path" = String, Query, description = "repo-relative path"),
            ("revision" = Option<u64>, Query, description = "revision number; the head if omitted")),
     responses((status = 200, content_type = "application/octet-stream", body = inline(FileContent)),
+              (status = 206, content_type = "application/octet-stream", body = inline(FileContent), description = "the part named by a single-range `Range: bytes=` header"),
+              (status = 416, description = "the range lies outside the content; `Content-Range: bytes */<length>`"),
               (status = 404, body = api::ErrorBody, description = "revision_not_found")))]
 async fn get_content(
     State(s): State<AppState>,
@@ -999,21 +1012,114 @@ async fn get_content(
     Query(q): Query<ContentQuery>,
 ) -> ApiResult<Response> {
     let repo = authorize_read(&s, &headers, &owner, &name).await?;
-    let (rev, bytes) = repo
+    let path = RepoPath::new(q.path)?;
+    let revision = q.revision.map(RevisionId);
+    let wanted = headers
+        .get(axum::http::header::RANGE)
+        .and_then(|v| v.to_str().ok());
+    let range = match wanted {
+        Some(text) => {
+            let (_, found) = repo
+                .service
+                .read_stream(&path, revision, Some(0..0))
+                .await?;
+            match parse_range(text, found.total) {
+                Some(r) => Some(r),
+                None => return Ok(range_not_satisfiable(found.total)),
+            }
+        }
+        None => None,
+    };
+    let (rev, found) = repo
         .service
-        .read(&RepoPath::new(q.path)?, q.revision.map(RevisionId))
+        .read_stream(&path, revision, range.clone())
         .await?;
-    let headers = [
-        (
-            axum::http::header::CONTENT_TYPE,
-            "application/octet-stream".to_string(),
-        ),
-        (
-            axum::http::HeaderName::from_static(api::REVISION_HEADER),
-            rev.id.to_string(),
-        ),
-    ];
-    Ok((headers, bytes).into_response())
+    let mut res = Response::new(axum::body::Body::from_stream(
+        tokio_util::io::ReaderStream::new(found.reader),
+    ));
+    if range.is_some() {
+        *res.status_mut() = StatusCode::PARTIAL_CONTENT;
+    }
+    let h = res.headers_mut();
+    h.insert(
+        axum::http::header::CONTENT_TYPE,
+        HeaderValue::from_static("application/octet-stream"),
+    );
+    h.insert(
+        axum::http::HeaderName::from_static(api::REVISION_HEADER),
+        HeaderValue::from(rev.id.0),
+    );
+    h.insert(
+        axum::http::header::ACCEPT_RANGES,
+        HeaderValue::from_static("bytes"),
+    );
+    h.insert(
+        axum::http::header::CONTENT_LENGTH,
+        HeaderValue::from(found.range.end - found.range.start),
+    );
+    if range.is_some() {
+        let content_range = format!(
+            "bytes {}-{}/{}",
+            found.range.start,
+            found.range.end.saturating_sub(1),
+            found.total
+        );
+        h.insert(
+            axum::http::header::CONTENT_RANGE,
+            HeaderValue::from_str(&content_range).expect("ASCII"),
+        );
+    }
+    Ok(res)
+}
+
+fn range_not_satisfiable(total: u64) -> Response {
+    let mut res = Response::new(axum::body::Body::empty());
+    *res.status_mut() = StatusCode::RANGE_NOT_SATISFIABLE;
+    res.headers_mut().insert(
+        axum::http::header::CONTENT_RANGE,
+        HeaderValue::from_str(&format!("bytes */{total}")).expect("ASCII"),
+    );
+    res
+}
+
+/// One `bytes=` range over an object of `total` bytes, as a half-open range; `None` if unsatisfiable.
+fn parse_range(header: &str, total: u64) -> Option<std::ops::Range<u64>> {
+    let spec = header.strip_prefix("bytes=")?;
+    if spec.contains(',') {
+        return None;
+    }
+    let (start, end) = spec.split_once('-')?;
+    let range = match (start.trim(), end.trim()) {
+        ("", n) => {
+            let n: u64 = n.parse().ok()?;
+            total.saturating_sub(n)..total
+        }
+        (s, "") => s.parse().ok()?..total,
+        (s, e) => s.parse().ok()?..e.parse::<u64>().ok()?.checked_add(1)?.min(total),
+    };
+    (range.start < total && range.start < range.end).then_some(range)
+}
+
+#[cfg(test)]
+mod range_tests {
+    use super::parse_range;
+
+    #[test]
+    fn parses_single_ranges() {
+        assert_eq!(parse_range("bytes=0-3", 10), Some(0..4));
+        assert_eq!(parse_range("bytes=4-", 10), Some(4..10));
+        assert_eq!(parse_range("bytes=-3", 10), Some(7..10));
+        assert_eq!(parse_range("bytes=8-100", 10), Some(8..10));
+    }
+
+    #[test]
+    fn refuses_what_cannot_be_served() {
+        assert_eq!(parse_range("bytes=10-12", 10), None);
+        assert_eq!(parse_range("bytes=5-2", 10), None);
+        assert_eq!(parse_range("bytes=0-1,4-5", 10), None);
+        assert_eq!(parse_range("items=0-1", 10), None);
+        assert_eq!(parse_range("bytes=-0", 10), None);
+    }
 }
 
 #[utoipa::path(post, path = "/v1/repos/{owner}/{name}/force-unlock", params(RepoAddress), request_body = api::ForceUnlockRequest, responses(
