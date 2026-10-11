@@ -453,6 +453,7 @@ impl MetadataStore for MemoryMetadataStore {
 #[derive(Default)]
 pub struct MemoryObjectStore {
     objects: Mutex<HashMap<ContentHash, Vec<u8>>>,
+    manifests: Mutex<HashMap<ContentHash, Vec<u8>>>,
 }
 
 impl MemoryObjectStore {
@@ -489,11 +490,23 @@ impl ObjectStore for MemoryObjectStore {
     }
 
     async fn delete(&self, hash: &ContentHash) -> Result<bool> {
-        Ok(self.objects.lock().unwrap().remove(hash).is_some())
+        let blob = self.objects.lock().unwrap().remove(hash).is_some();
+        let manifest = self.manifests.lock().unwrap().remove(hash).is_some();
+        Ok(blob || manifest)
+    }
+
+    async fn put_manifest(&self, key: &ContentHash, bytes: Vec<u8>) -> Result<()> {
+        self.manifests.lock().unwrap().insert(key.clone(), bytes);
+        Ok(())
+    }
+
+    async fn get_manifest(&self, key: &ContentHash) -> Result<Option<Vec<u8>>> {
+        Ok(self.manifests.lock().unwrap().get(key).cloned())
     }
 
     async fn exists(&self, hash: &ContentHash) -> Result<bool> {
-        Ok(self.objects.lock().unwrap().contains_key(hash))
+        Ok(self.objects.lock().unwrap().contains_key(hash)
+            || self.manifests.lock().unwrap().contains_key(hash))
     }
 
     async fn size(&self, hash: &ContentHash) -> Result<Option<u64>> {

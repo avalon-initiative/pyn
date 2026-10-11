@@ -4,6 +4,7 @@ pub mod access;
 pub mod access_service;
 pub mod audit;
 pub mod auth;
+pub mod chunking;
 pub mod clock;
 #[cfg(feature = "contract")]
 pub mod contract;
@@ -41,6 +42,7 @@ pub use access_service::{
 };
 pub use audit::{AuditAction, AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent};
 pub use auth::AuthProvider;
+pub use chunking::ChunkedStore;
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use email::{EmailMessage, EmailSender, MemoryEmailSender, NullEmailSender};
 pub use error::{PynError, Result};

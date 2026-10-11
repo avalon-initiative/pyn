@@ -23,9 +23,17 @@ object is `<hash>.zst` beside where `<hash>` would be, so existing raw objects k
 look like a compressed frame is never misread. The key is always the hash of the uncompressed bytes, `size` reports the
 uncompressed length, and a damaged compressed object is an error, not a short read. The memory store keeps raw bytes.
 
+## Chunking
+
+Objects over 1 MiB are split by content-defined chunking (a gear-hash cut with normalised masks: 256 KiB minimum,
+1 MiB average, 4 MiB maximum) into chunks stored as ordinary blobs, so each is compressed and deduplicated on its own.
+A small manifest, stored under the whole content's hash (`<hash>.cm` on disk), lists the chunk hashes and lengths. Reads,
+sizes and byte ranges work on the whole object; an insertion near the start of a large file changes only the chunks around
+it. `ChunkedStore` wraps any store that can keep manifests, and the server uses it over the filesystem or memory store.
+Chunks are not removed when an object is deleted: reclaiming them is garbage collection (#207).
+
 ## Planned (provisional)
 
-- Content-defined chunking of objects over 1 MiB, with a manifest addressed by the whole-content hash.
 - Chunk-granular upload with a missing-hashes check, so transfers resume and deduplicate.
 - Mark-and-sweep garbage collection with a retention window.
 

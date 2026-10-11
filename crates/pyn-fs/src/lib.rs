@@ -44,6 +44,12 @@ fn tokio_stream_from(
     futures_util::stream::poll_fn(move |cx| rx.poll_recv(cx))
 }
 
+fn manifest_path(raw: &Path) -> PathBuf {
+    let mut name = raw.file_name().expect("object path has a name").to_owned();
+    name.push(".cm");
+    raw.with_file_name(name)
+}
+
 fn packed_path(raw: &Path) -> PathBuf {
     let mut name = raw.file_name().expect("object path has a name").to_owned();
     name.push(".zst");
@@ -205,10 +211,39 @@ impl ObjectStore for FsObjectStore {
         }))
     }
 
+    async fn put_manifest(&self, key: &ContentHash, bytes: Vec<u8>) -> Result<()> {
+        let dest = manifest_path(&self.path_for(key)?);
+        tokio::fs::create_dir_all(dest.parent().expect("object path has a parent"))
+            .await
+            .map_err(storage)?;
+        let n = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let tmp = self.root.join(format!(".tmp-{}-{n}", std::process::id()));
+        let written = async {
+            let mut file = tokio::fs::File::create(&tmp).await?;
+            file.write_all(&bytes).await?;
+            file.sync_all().await?;
+            drop(file);
+            tokio::fs::rename(&tmp, &dest).await
+        }
+        .await;
+        if written.is_err() {
+            let _ = tokio::fs::remove_file(&tmp).await;
+        }
+        written.map_err(storage)
+    }
+
+    async fn get_manifest(&self, key: &ContentHash) -> Result<Option<Vec<u8>>> {
+        match tokio::fs::read(manifest_path(&self.path_for(key)?)).await {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(storage(e)),
+        }
+    }
+
     async fn delete(&self, hash: &ContentHash) -> Result<bool> {
         let path = self.path_for(hash)?;
         let mut removed = false;
-        for target in [path.clone(), packed_path(&path)] {
+        for target in [path.clone(), packed_path(&path), manifest_path(&path)] {
             match tokio::fs::remove_file(target).await {
                 Ok(()) => removed = true,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -220,10 +255,12 @@ impl ObjectStore for FsObjectStore {
 
     async fn exists(&self, hash: &ContentHash) -> Result<bool> {
         let path = self.path_for(hash)?;
-        Ok(tokio::fs::try_exists(&path).await.map_err(storage)?
-            || tokio::fs::try_exists(packed_path(&path))
-                .await
-                .map_err(storage)?)
+        for candidate in [path.clone(), packed_path(&path), manifest_path(&path)] {
+            if tokio::fs::try_exists(candidate).await.map_err(storage)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     async fn size(&self, hash: &ContentHash) -> Result<Option<u64>> {

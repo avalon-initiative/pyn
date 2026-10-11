@@ -35,6 +35,22 @@ pub trait ObjectStore: Send + Sync {
     /// Removes the object; `false` if it was not stored.
     async fn delete(&self, hash: &ContentHash) -> Result<bool>;
 
+    /// Keeps a chunk manifest under the whole object's `key` (see `chunking`); stores that cannot refuse.
+    async fn put_manifest(&self, _key: &ContentHash, _bytes: Vec<u8>) -> Result<()> {
+        Err(PynError::Storage(
+            "this store cannot keep chunk manifests".into(),
+        ))
+    }
+
+    async fn get_manifest(&self, _key: &ContentHash) -> Result<Option<Vec<u8>>> {
+        Ok(None)
+    }
+
+    /// The chunk blobs an object is made of; empty for a whole object.
+    async fn chunks_of(&self, _hash: &ContentHash) -> Result<Vec<ContentHash>> {
+        Ok(Vec::new())
+    }
+
     async fn put(&self, bytes: Vec<u8>) -> Result<ContentHash> {
         self.put_stream(Box::pin(Cursor::new(bytes)), None).await
     }

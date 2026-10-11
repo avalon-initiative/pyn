@@ -5,9 +5,9 @@ use pyn_core::memory::{
     MemoryRateLimitStore,
 };
 use pyn_core::{
-    AccessConfig, AccessService, AccessStore, AuditStore, AuthProvider, ExternalPolicy, Limits,
-    MetadataStore, ObjectStore, RateLimitStore, RateLimits, Repositories, Rules, SystemClock,
-    generate_setup_token,
+    AccessConfig, AccessService, AccessStore, AuditStore, AuthProvider, ChunkedStore,
+    ExternalPolicy, Limits, MetadataStore, ObjectStore, RateLimitStore, RateLimits, Repositories,
+    Rules, SystemClock, generate_setup_token,
 };
 use pyn_fs::FsObjectStore;
 use pyn_oidc::{HttpOidcProvider, OidcConfig};
@@ -125,8 +125,8 @@ async fn main() -> anyhow::Result<()> {
         "PYN_INSTANCES above 1 needs PYN_DATABASE_URL and PYN_DATA_DIR on storage all copies share"
     );
     let objects: Arc<dyn ObjectStore> = match std::env::var("PYN_DATA_DIR") {
-        Ok(dir) => Arc::new(FsObjectStore::open(dir).await?),
-        Err(_) => Arc::new(MemoryObjectStore::new()),
+        Ok(dir) => Arc::new(ChunkedStore::new(Arc::new(FsObjectStore::open(dir).await?))),
+        Err(_) => Arc::new(ChunkedStore::new(Arc::new(MemoryObjectStore::new()))),
     };
 
     let clock = Arc::new(SystemClock);

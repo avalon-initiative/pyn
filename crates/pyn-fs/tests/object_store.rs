@@ -232,3 +232,33 @@ async fn a_damaged_compressed_object_is_an_error_not_a_short_read() {
     std::fs::write(&packed, bytes).unwrap();
     assert!(s.get(&hash).await.is_err());
 }
+
+#[tokio::test]
+async fn chunked_objects_on_disk_share_chunks_compress_and_delete() {
+    let (fs, dir) = store().await;
+    let s = pyn_core::ChunkedStore::new(Arc::new(fs));
+    let text: Vec<u8> = "line of source text that repeats\n"
+        .repeat(200_000)
+        .into_bytes();
+    let hash = s.put(text.clone()).await.unwrap();
+    assert!(files_named(dir.path(), ".cm") == 1);
+    assert!(
+        files_named(dir.path(), ".zst") >= 1,
+        "chunks are compressed too"
+    );
+    assert_eq!(s.size(&hash).await.unwrap(), Some(text.len() as u64));
+    assert_eq!(s.get(&hash).await.unwrap().unwrap(), text);
+    let mut part = s
+        .read(&hash, Some(1_500_000..1_500_100))
+        .await
+        .unwrap()
+        .unwrap();
+    let mut got = Vec::new();
+    tokio::io::AsyncReadExt::read_to_end(&mut part.reader, &mut got)
+        .await
+        .unwrap();
+    assert_eq!(got, &text[1_500_000..1_500_100]);
+    assert!(s.delete(&hash).await.unwrap());
+    assert!(!s.exists(&hash).await.unwrap());
+    assert_eq!(files_named(dir.path(), ".cm"), 0);
+}
