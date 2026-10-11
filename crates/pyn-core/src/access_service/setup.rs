@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::*;
 
+const SETTINGS_TTL: Duration = Duration::seconds(60);
 const SETUP_WINDOW: Duration = Duration::minutes(15);
 const FAILURES_PER_CLIENT: u32 = 10;
 const FAILURES_PER_SERVER: u32 = 50;
@@ -20,6 +21,7 @@ pub(super) struct SetupState {
     initialised: AtomicBool,
     token_hash: Mutex<Option<String>>,
     settings: Mutex<Option<ServerSettings>>,
+    read_at: Mutex<Option<DateTime<Utc>>>,
 }
 
 impl SetupState {
@@ -27,8 +29,9 @@ impl SetupState {
         self.settings.lock().unwrap().clone()
     }
 
-    fn finish(&self, settings: ServerSettings) {
+    fn finish(&self, settings: ServerSettings, now: DateTime<Utc>) {
         *self.settings.lock().unwrap() = Some(settings);
+        *self.read_at.lock().unwrap() = Some(now);
         *self.token_hash.lock().unwrap() = None;
         self.initialised.store(true, Ordering::Release);
     }
@@ -111,12 +114,23 @@ impl AccessService {
 
     /// Reads what setup recorded and applies it. Returns whether the server is initialised.
     pub async fn load_setup(&self) -> Result<bool> {
-        if !self.setup.enabled || self.setup.initialised.load(Ordering::Acquire) {
+        if !self.setup.enabled {
+            return Ok(true);
+        }
+        // Settings changed through another server copy are picked up after the TTL.
+        let now = self.clock.now();
+        let fresh = self
+            .setup
+            .read_at
+            .lock()
+            .unwrap()
+            .is_some_and(|at| now - at < SETTINGS_TTL);
+        if self.setup.initialised.load(Ordering::Acquire) && fresh {
             return Ok(true);
         }
         match self.store.server_settings().await? {
             Some(settings) => {
-                self.setup.finish(settings);
+                self.setup.finish(settings, now);
                 Ok(true)
             }
             None => Ok(false),
@@ -185,7 +199,7 @@ impl AccessService {
         if !self.store.complete_setup(admin, settings.clone()).await? {
             return Err(PynError::AlreadyInitialised);
         }
-        self.setup.finish(settings);
+        self.setup.finish(settings, self.clock.now());
         let detail = format!(
             "server set up; {user} is the first administrator; registration {}",
             request.registration.as_str()

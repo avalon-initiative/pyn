@@ -264,7 +264,9 @@ To stop whoever reaches a fresh server first from claiming it, setup needs a one
 one to its log at first start (shown only there), or an operator sets `PYN_SETUP_TOKEN` (at least 16 characters, no
 whitespace) ahead of time for unattended installs. The token is compared in constant time, wrong tries are rate limited
 per client and for the whole server (`429 too_many_attempts`), and it is discarded when setup completes. A server that is
-already set up ignores `PYN_SETUP_TOKEN` and warns about it.
+already set up ignores `PYN_SETUP_TOKEN` and warns about it. With several server copies on one database, set the same
+`PYN_SETUP_TOKEN` on all of them; otherwise each prints its own token and any one of them completes setup. Server name and
+public address are re-read from the database every minute, so a copy picks up changes made through another.
 
 | Route | Notes |
 | --- | --- |

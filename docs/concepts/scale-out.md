@@ -16,14 +16,15 @@ page records the current state. Provisional: it reflects the code at the time of
 | Cleanup of expired sessions, flows, pending accounts | Lazy, inside requests | Idempotent deletes; there are no background tasks. With no traffic nothing is swept, which costs storage only. |
 | Organization deleting mark | Database | Atomic compare-and-set. |
 | Migrations | Startup | sqlx takes an advisory lock, so concurrent starts serialise. |
+| Repository policy cache | Per process | Revalidated against the head of `.pyn/pyn.toml` on each lookup (#181). |
+| Setup settings | Per process | Re-read from the database every minute (#182). |
 | Password hashing limit | Per process | Holds no correctness state. |
 
 ## Not safe yet
 
 | State | Problem | Issue |
 | --- | --- | --- |
-| Repository policy cache | A policy change applied by one copy is not seen by the others. | #181 |
-| Setup token and settings cache | One token per process; settings cached for the process lifetime. | #182 |
+| Setup token | One generated token per process unless `PYN_SETUP_TOKEN` is shared; any one completes setup. Documented in [access](access.md). | #182 |
 | Object store | The filesystem store needs a shared volume; the in-memory store is single-process. | #183 |
 | Clock use | Lease expiry and rate-limit windows use each process's clock. | #183 |
 | In-memory stores | Selected when `PYN_DATABASE_URL` is unset; single-process and not durable. Development and tests only. | #183 |
