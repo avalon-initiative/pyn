@@ -1,4 +1,6 @@
-//! Content-addressed `ObjectStore` on the local filesystem.
+//! Content-addressed `ObjectStore` on the local filesystem. Compressible objects are stored zstd-compressed.
+
+mod zstd_blob;
 
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -16,6 +18,36 @@ static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 #[derive(Debug, Clone)]
 pub struct FsObjectStore {
     root: PathBuf,
+}
+
+type Chunk = std::io::Result<bytes::Bytes>;
+
+/// Sends what a blocking decoder writes to an async reader, so a decode error reaches the reader.
+struct ChannelWriter(tokio::sync::mpsc::Sender<Chunk>);
+
+impl std::io::Write for ChannelWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .blocking_send(Ok(bytes::Bytes::copy_from_slice(buf)))
+            .map_err(|_| std::io::Error::other("reader gone"))?;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn tokio_stream_from(
+    mut rx: tokio::sync::mpsc::Receiver<Chunk>,
+) -> impl futures_core::Stream<Item = Chunk> {
+    futures_util::stream::poll_fn(move |cx| rx.poll_recv(cx))
+}
+
+fn packed_path(raw: &Path) -> PathBuf {
+    let mut name = raw.file_name().expect("object path has a name").to_owned();
+    name.push(".zst");
+    raw.with_file_name(name)
 }
 
 fn storage(e: impl std::fmt::Display) -> PynError {
@@ -61,6 +93,40 @@ impl FsObjectStore {
         Ok(ContentHash::new(hex::encode(hasher.finalize())))
     }
 
+    /// Moves the finished temp file into the store, compressed when that pays; leaves `tmp` for the caller to remove.
+    async fn place(&self, hash: &ContentHash, tmp: &Path) -> Result<()> {
+        let raw = self.path_for(hash)?;
+        let packed = packed_path(&raw);
+        if tokio::fs::try_exists(&raw).await.map_err(storage)?
+            || tokio::fs::try_exists(&packed).await.map_err(storage)?
+        {
+            return Ok(());
+        }
+        tokio::fs::create_dir_all(raw.parent().expect("object path has a parent"))
+            .await
+            .map_err(storage)?;
+        let len = tokio::fs::metadata(tmp).await.map_err(storage)?.len();
+        let tmp_owned = tmp.to_path_buf();
+        let compress = tokio::task::spawn_blocking(move || {
+            zstd_blob::worthwhile(&tmp_owned, len).map_err(storage)
+        })
+        .await
+        .map_err(storage)??;
+        if !compress {
+            return tokio::fs::rename(tmp, &raw).await.map_err(storage);
+        }
+        let staged = tmp.with_extension("zst");
+        let (src, dst) = (tmp.to_path_buf(), staged.clone());
+        let done = tokio::task::spawn_blocking(move || zstd_blob::compress_file(&src, &dst, len))
+            .await
+            .map_err(storage)?;
+        if let Err(e) = done {
+            let _ = tokio::fs::remove_file(&staged).await;
+            return Err(storage(e));
+        }
+        tokio::fs::rename(&staged, &packed).await.map_err(storage)
+    }
+
     /// Rejects anything that is not 64 lowercase hex characters, so a hash can never escape the root.
     fn path_for(&self, hash: &ContentHash) -> Result<PathBuf> {
         let h = hash.as_str();
@@ -85,19 +151,8 @@ impl ObjectStore for FsObjectStore {
                 return Err(e);
             }
         };
-        let dest = self.path_for(&hash)?;
-        let dir = dest.parent().expect("object path has a parent");
-        let placed = async {
-            if tokio::fs::try_exists(&dest).await.map_err(storage)? {
-                return tokio::fs::remove_file(&tmp).await.map_err(storage);
-            }
-            tokio::fs::create_dir_all(dir).await.map_err(storage)?;
-            tokio::fs::rename(&tmp, &dest).await.map_err(storage)
-        }
-        .await;
-        if placed.is_err() {
-            let _ = tokio::fs::remove_file(&tmp).await;
-        }
+        let placed = self.place(&hash, &tmp).await;
+        let _ = tokio::fs::remove_file(&tmp).await;
         placed.map(|()| hash)
     }
 
@@ -107,18 +162,44 @@ impl ObjectStore for FsObjectStore {
         range: Option<Range<u64>>,
     ) -> Result<Option<ObjectRead>> {
         let path = self.path_for(hash)?;
-        let mut file = match tokio::fs::File::open(&path).await {
-            Ok(f) => f,
+        match tokio::fs::File::open(&path).await {
+            Ok(mut file) => {
+                let total = file.metadata().await.map_err(storage)?.len();
+                let range = clamp_range(range, total);
+                file.seek(std::io::SeekFrom::Start(range.start))
+                    .await
+                    .map_err(storage)?;
+                return Ok(Some(ObjectRead {
+                    reader: Box::pin(file.take(range.end - range.start)),
+                    total,
+                    range,
+                }));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(storage(e)),
+        }
+        let packed = packed_path(&path);
+        let probe = packed.clone();
+        let total = match tokio::task::spawn_blocking(move || zstd_blob::content_size(&probe))
+            .await
+            .map_err(storage)?
+        {
+            Ok(total) => total,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(storage(e)),
         };
-        let total = file.metadata().await.map_err(storage)?.len();
         let range = clamp_range(range, total);
-        file.seek(std::io::SeekFrom::Start(range.start))
-            .await
-            .map_err(storage)?;
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+        let (skip, take) = (range.start, range.end - range.start);
+        tokio::task::spawn_blocking(move || {
+            let mut out = ChannelWriter(tx.clone());
+            if let Err(e) = zstd_blob::decode_range(&packed, skip, take, &mut out) {
+                let _ = tx.blocking_send(Err(e));
+            }
+        });
+        let stream = tokio_stream_from(rx);
         Ok(Some(ObjectRead {
-            reader: Box::pin(file.take(range.end - range.start)),
+            reader: Box::pin(tokio_util::io::StreamReader::new(stream)),
             total,
             range,
         }))
@@ -126,22 +207,38 @@ impl ObjectStore for FsObjectStore {
 
     async fn delete(&self, hash: &ContentHash) -> Result<bool> {
         let path = self.path_for(hash)?;
-        match tokio::fs::remove_file(path).await {
-            Ok(()) => Ok(true),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
-            Err(e) => Err(storage(e)),
+        let mut removed = false;
+        for target in [path.clone(), packed_path(&path)] {
+            match tokio::fs::remove_file(target).await {
+                Ok(()) => removed = true,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(storage(e)),
+            }
         }
+        Ok(removed)
     }
 
     async fn exists(&self, hash: &ContentHash) -> Result<bool> {
         let path = self.path_for(hash)?;
-        tokio::fs::try_exists(path).await.map_err(storage)
+        Ok(tokio::fs::try_exists(&path).await.map_err(storage)?
+            || tokio::fs::try_exists(packed_path(&path))
+                .await
+                .map_err(storage)?)
     }
 
     async fn size(&self, hash: &ContentHash) -> Result<Option<u64>> {
         let path = self.path_for(hash)?;
-        match tokio::fs::metadata(path).await {
-            Ok(meta) => Ok(Some(meta.len())),
+        match tokio::fs::metadata(&path).await {
+            Ok(meta) => return Ok(Some(meta.len())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(storage(e)),
+        }
+        let packed = packed_path(&path);
+        match tokio::task::spawn_blocking(move || zstd_blob::content_size(&packed))
+            .await
+            .map_err(storage)?
+        {
+            Ok(size) => Ok(Some(size)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(storage(e)),
         }

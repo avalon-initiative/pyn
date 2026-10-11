@@ -140,3 +140,95 @@ async fn an_oversized_stream_is_refused_and_leaves_nothing() {
         .count();
     assert_eq!(entries, 0);
 }
+
+fn files_named(dir: &std::path::Path, suffix: &str) -> usize {
+    let mut n = 0;
+    for shard in std::fs::read_dir(dir.join("objects")).unwrap().flatten() {
+        if shard.path().is_dir() {
+            n += std::fs::read_dir(shard.path())
+                .unwrap()
+                .flatten()
+                .filter(|f| f.file_name().to_string_lossy().ends_with(suffix))
+                .count();
+        }
+    }
+    n
+}
+
+#[tokio::test]
+async fn compressible_objects_are_stored_compressed_and_read_back_whole_or_in_ranges() {
+    let (s, dir) = store().await;
+    let text: Vec<u8> = "the quick brown fox jumps over the lazy dog\n"
+        .repeat(5000)
+        .into_bytes();
+    let hash = s.put(text.clone()).await.unwrap();
+    assert_eq!(files_named(dir.path(), ".zst"), 1);
+    let on_disk: u64 = std::fs::read_dir(dir.path().join("objects"))
+        .unwrap()
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .flat_map(|d| std::fs::read_dir(d.path()).unwrap().flatten())
+        .map(|f| f.metadata().unwrap().len())
+        .sum();
+    assert!(on_disk < text.len() as u64 / 10, "{on_disk}");
+
+    assert_eq!(s.size(&hash).await.unwrap(), Some(text.len() as u64));
+    assert!(s.exists(&hash).await.unwrap());
+    assert_eq!(s.get(&hash).await.unwrap().unwrap(), text);
+    assert_eq!(s.put(text.clone()).await.unwrap(), hash, "idempotent");
+    assert_eq!(files_named(dir.path(), ".zst"), 1);
+
+    let mut part = s.read(&hash, Some(1000..1100)).await.unwrap().unwrap();
+    assert_eq!(
+        (part.total, part.range.clone()),
+        (text.len() as u64, 1000..1100)
+    );
+    let mut got = Vec::new();
+    tokio::io::AsyncReadExt::read_to_end(&mut part.reader, &mut got)
+        .await
+        .unwrap();
+    assert_eq!(got, &text[1000..1100]);
+
+    assert!(s.delete(&hash).await.unwrap());
+    assert!(!s.exists(&hash).await.unwrap());
+    assert_eq!(files_named(dir.path(), ".zst"), 0);
+}
+
+#[tokio::test]
+async fn incompressible_and_tiny_objects_stay_raw() {
+    let (s, dir) = store().await;
+    let mut x = 0x2545F4914F6CDD1Du64;
+    let noise: Vec<u8> = (0..100_000)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            (x >> 24) as u8
+        })
+        .collect();
+    let a = s.put(noise.clone()).await.unwrap();
+    let b = s.put(b"tiny".to_vec()).await.unwrap();
+    assert_eq!(files_named(dir.path(), ".zst"), 0);
+    assert_eq!(s.get(&a).await.unwrap().unwrap(), noise);
+    assert_eq!(s.get(&b).await.unwrap().unwrap(), b"tiny");
+}
+
+#[tokio::test]
+async fn a_damaged_compressed_object_is_an_error_not_a_short_read() {
+    let (s, dir) = store().await;
+    let text = "abc ".repeat(20_000).into_bytes();
+    let hash = s.put(text).await.unwrap();
+    let packed = std::fs::read_dir(dir.path().join("objects"))
+        .unwrap()
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .flat_map(|d| std::fs::read_dir(d.path()).unwrap().flatten())
+        .find(|f| f.file_name().to_string_lossy().ends_with(".zst"))
+        .unwrap()
+        .path();
+    let mut bytes = std::fs::read(&packed).unwrap();
+    let keep = bytes.len() / 2;
+    bytes.truncate(keep);
+    std::fs::write(&packed, bytes).unwrap();
+    assert!(s.get(&hash).await.is_err());
+}

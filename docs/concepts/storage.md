@@ -15,9 +15,16 @@ as conveniences. The server streams uploads (`PUT /v1/repos/{owner}/{name}/objec
 `413 object_too_large`) and downloads, and `GET .../content` honours a single `Range: bytes=` header (`206`, or
 `416` outside the content). The CLI streams uploads and `pyn get --output` downloads.
 
+## Compression
+
+The filesystem store compresses with zstd (level 3) when a probe of the object's first 64 KiB saves at least 5%;
+objects under 512 bytes and already-compressed content stay raw. The per-blob marker is the file name: a compressed
+object is `<hash>.zst` beside where `<hash>` would be, so existing raw objects keep working and content that happens to
+look like a compressed frame is never misread. The key is always the hash of the uncompressed bytes, `size` reports the
+uncompressed length, and a damaged compressed object is an error, not a short read. The memory store keeps raw bytes.
+
 ## Planned (provisional)
 
-- Zstd compression per blob with a one-byte codec marker.
 - Content-defined chunking of objects over 1 MiB, with a manifest addressed by the whole-content hash.
 - Chunk-granular upload with a missing-hashes check, so transfers resume and deduplicate.
 - Mark-and-sweep garbage collection with a retention window.
