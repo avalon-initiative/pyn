@@ -294,7 +294,7 @@ every permission. Never set it on a server others can reach.
 
 Organization events (created, deleted, members added, removed or changed, teams and their members, repository-creation policy changes) are kept in a separate [organization log](repositories.md#organizations) for its
 owners (`pyn org audit <org>`). Adding a member (by an admin, by registration or as the creator of a repository), changing a member's role, changing what a
-role grants, giving a team a role or taking it away, creating or revoking a token, and creating, changing or deleting the repository itself are recorded in that
+role grants, giving a team a role or taking it away, creating or revoking a token or an invitation (never its code), and creating, changing or deleting the repository itself are recorded in that
 repository's audit log with the actor and what changed, and are visible to `view_audit`. Server-wide account actions and service credential changes go to
 the [server audit log](#protecting-open-registration). A token's events go to the log of
 each repository it is limited to. Token secrets are never recorded, and neither are sign-in sessions.

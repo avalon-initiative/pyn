@@ -1652,6 +1652,14 @@ impl AccessService {
             revoked_at: None,
         };
         self.store.create_invite(record.clone()).await?;
+        let detail = format!(
+            "invitation {} for role {}, expires {}",
+            record.id,
+            record.role.as_str(),
+            record.expires_at.to_rfc3339()
+        );
+        self.record(repo, &actor.user, AuditAction::InviteCreated, detail)
+            .await?;
         Ok((record, code))
     }
 
@@ -1677,7 +1685,13 @@ impl AccessService {
             _ => return Err(no_such()),
         }
         if self.store.revoke_invite(id, self.clock.now()).await? {
-            Ok(())
+            self.record(
+                repo,
+                &actor.user,
+                AuditAction::InviteRevoked,
+                format!("invitation {id}"),
+            )
+            .await
         } else {
             Err(no_such())
         }

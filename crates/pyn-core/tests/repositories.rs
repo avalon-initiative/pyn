@@ -451,6 +451,22 @@ async fn an_invitation_belongs_to_its_repository() {
         .revoke_invite(&admin_of(&one).await, &one.id, &record.id)
         .await
         .unwrap();
+
+    let logged = events(&w, &one.id).await;
+    let actions: Vec<_> = logged
+        .iter()
+        .map(|e| e.action)
+        .filter(|a| matches!(a, AuditAction::InviteCreated | AuditAction::InviteRevoked))
+        .collect();
+    assert_eq!(
+        actions,
+        [AuditAction::InviteRevoked, AuditAction::InviteCreated],
+        "newest first, and only in the repository concerned"
+    );
+    assert!(events(&w, &two.id).await.iter().all(|e| !matches!(
+        e.action,
+        AuditAction::InviteCreated | AuditAction::InviteRevoked
+    )));
 }
 
 #[tokio::test]
