@@ -139,10 +139,19 @@ impl RepoService {
         }
     }
 
-    /// Applies the head of `.pyn/pyn.toml` if there is one; otherwise the rules given at construction stay.
+    /// Applies the head of `.pyn/pyn.toml` if it is newer than the applied one; otherwise the current rules stay.
     pub async fn load_policy(&self) -> Result<()> {
         let policy = RepoPath::new(POLICY_PATH)?;
         if let Some(head) = self.meta.head_revision(&self.repo, &policy).await? {
+            if self
+                .applied
+                .read()
+                .unwrap()
+                .revision
+                .is_some_and(|r| r >= head.id)
+            {
+                return Ok(());
+            }
             let rules = self.parse_policy(&head.content).await?;
             self.apply(head.id, rules);
         }

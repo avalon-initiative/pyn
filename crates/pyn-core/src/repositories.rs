@@ -106,9 +106,10 @@ impl Repositories {
         (*settings == record.settings).then(|| svc.clone())
     }
 
-    /// The cached service, or a new one with the policy read from the repository's head `.pyn/pyn.toml`.
+    /// The cached service, or a new one, with the policy at the repository's head `.pyn/pyn.toml`; other copies may have changed it.
     async fn service_for(&self, record: &RepoRecord) -> Result<Arc<RepoService>> {
         if let Some(svc) = self.cached(record) {
+            svc.load_policy().await?;
             return Ok(svc);
         }
         let svc = RepoService::new(

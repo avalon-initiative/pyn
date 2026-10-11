@@ -711,3 +711,18 @@ async fn repository_creation_takes_the_limit_and_validates_it() {
     }
     assert!(build(&w, Rules::empty()).with_default_max_locks(0).is_err());
 }
+
+#[tokio::test]
+async fn another_server_copy_sees_a_policy_change_on_its_next_request() {
+    let w = world();
+    let svc_a = make_repo(&w, "game").await;
+    let copy_b = build(&w, Rules::empty());
+    let svc_b = copy_b.open("alice", "game").await.unwrap().service;
+    assert_eq!(svc_b.mode_for(&path("Source/a.cpp")), Mode::Exclusive);
+
+    put_policy(&w, &svc_a, &admin("alice"), SHARED_POLICY, None)
+        .await
+        .unwrap();
+    let svc_b = copy_b.open("alice", "game").await.unwrap().service;
+    assert_eq!(svc_b.mode_for(&path("Source/a.cpp")), Mode::Shared);
+}
