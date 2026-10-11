@@ -112,7 +112,12 @@ impl PgMetadataStore {
     /// Connects and applies migrations, creating the database first when `create_database` is set.
     pub async fn connect(url: &str, create_database: bool) -> Result<Self> {
         if create_database && !Postgres::database_exists(url).await.map_err(db)? {
-            Postgres::create_database(url).await.map_err(db)?;
+            // Another copy starting at the same time may create it first.
+            if let Err(e) = Postgres::create_database(url).await
+                && !Postgres::database_exists(url).await.map_err(db)?
+            {
+                return Err(db(e));
+            }
         }
         let pool = PgPoolOptions::new()
             .max_connections(10)

@@ -25,6 +25,5 @@ page records the current state. Provisional: it reflects the code at the time of
 | State | Problem | Issue |
 | --- | --- | --- |
 | Setup token | One generated token per process unless `PYN_SETUP_TOKEN` is shared; any one completes setup. Documented in [access](access.md). | #182 |
-| Object store | The filesystem store needs a shared volume; the in-memory store is single-process. | #183 |
-| Clock use | Lease expiry and rate-limit windows use each process's clock. | #183 |
-| In-memory stores | Selected when `PYN_DATABASE_URL` is unset; single-process and not durable. Development and tests only. | #183 |
+| Object store and in-memory stores | Single-process or not durable. Setting `PYN_INSTANCES` above 1 makes the server refuse to start without `PYN_DATABASE_URL` and `PYN_DATA_DIR`, which must be shared storage. | #183 |
+| Clock use | Lease expiry and rate-limit windows use each process's clock, so keep the copies' clocks in sync (NTP). Using database time is not done yet. | #187 |

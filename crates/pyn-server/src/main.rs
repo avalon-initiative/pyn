@@ -118,6 +118,12 @@ async fn main() -> anyhow::Result<()> {
         limits,
         kind: meta_kind,
     } = stores().await?;
+    let instances: u32 = number("PYN_INSTANCES", 1)?;
+    anyhow::ensure!(instances >= 1, "PYN_INSTANCES must be at least 1");
+    anyhow::ensure!(
+        instances == 1 || (meta_kind == "postgres" && std::env::var("PYN_DATA_DIR").is_ok()),
+        "PYN_INSTANCES above 1 needs PYN_DATABASE_URL and PYN_DATA_DIR on storage all copies share"
+    );
     let objects: Arc<dyn ObjectStore> = match std::env::var("PYN_DATA_DIR") {
         Ok(dir) => Arc::new(FsObjectStore::open(dir).await?),
         Err(_) => Arc::new(MemoryObjectStore::new()),
