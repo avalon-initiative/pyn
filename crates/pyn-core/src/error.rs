@@ -37,6 +37,8 @@ pub enum PynError {
         limit: u64,
         used: u64,
     },
+    #[error("the object is larger than the {limit} byte limit")]
+    ObjectTooLarge { limit: u64 },
     #[error("{0} is not locked by you")]
     NotLockHolder(RepoPath),
     #[error("{0} is exclusive: lock it before checking in")]
@@ -197,6 +199,7 @@ impl PynError {
             Self::RepoLimitReached { .. } => "repo_limit_reached",
             Self::MemberLimitReached { .. } => "member_limit_reached",
             Self::StorageLimitReached { .. } => "storage_limit_reached",
+            Self::ObjectTooLarge { .. } => "object_too_large",
             Self::NotLockHolder(_) => "not_lock_holder",
             Self::LockRequired(_) => "lock_required",
             Self::NotExclusive(_) => "not_exclusive",

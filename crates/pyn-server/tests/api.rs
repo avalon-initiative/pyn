@@ -2979,3 +2979,77 @@ async fn an_account_with_no_role_can_still_use_its_own_settings() {
     let r = send(&v.app, "GET", "/v1/repos", &v.bob, None).await;
     assert!(body_json::<Vec<api::RepoInfo>>(r).await.is_empty());
 }
+
+#[tokio::test]
+async fn large_uploads_stream_and_content_serves_byte_ranges() {
+    let app = app().await;
+    let data: Vec<u8> = (0..3_000_000u32).map(|i| (i % 251) as u8).collect();
+    let put = Request::put("/v1/repos/owner/game/objects")
+        .header(api::DEV_USER_HEADER, "bob")
+        .body(Body::from(data.clone()))
+        .unwrap();
+    let r = app.clone().oneshot(put).await.unwrap();
+    assert_eq!(r.status(), StatusCode::OK, "no 2 MB cap on uploads");
+    let obj: api::PutObjectResponse =
+        serde_json::from_slice(&r.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    let body = serde_json::json!({"path": "Source/big.bin", "content": obj.content, "base_revision": null, "message": "big"});
+    let r = app
+        .clone()
+        .oneshot(json_post("/v1/repos/owner/game/checkin", "bob", body))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+
+    let fetch = |range: Option<&'static str>| {
+        let app = app.clone();
+        async move {
+            let mut req = Request::get("/v1/repos/owner/game/content?path=Source/big.bin")
+                .header(api::DEV_USER_HEADER, "alice");
+            if let Some(range) = range {
+                req = req.header("range", range);
+            }
+            app.oneshot(req.body(Body::empty()).unwrap()).await.unwrap()
+        }
+    };
+    let whole = fetch(None).await;
+    assert_eq!(whole.status(), StatusCode::OK);
+    assert_eq!(whole.headers()["accept-ranges"], "bytes");
+    assert_eq!(
+        whole
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .as_ref(),
+        data.as_slice()
+    );
+
+    let part = fetch(Some("bytes=1000-1999")).await;
+    assert_eq!(part.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(part.headers()["content-range"], "bytes 1000-1999/3000000");
+    assert_eq!(
+        part.into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .as_ref(),
+        &data[1000..2000]
+    );
+
+    let tail = fetch(Some("bytes=-10")).await;
+    assert_eq!(
+        tail.into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .as_ref(),
+        &data[data.len() - 10..]
+    );
+
+    let bad = fetch(Some("bytes=9000000-")).await;
+    assert_eq!(bad.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+    assert_eq!(bad.headers()["content-range"], "bytes */3000000");
+}

@@ -48,7 +48,7 @@ pub use history::{HISTORY_DEFAULT_LIMIT, HISTORY_MAX_LIMIT, HistoryCursor, Histo
 pub use limits::{
     Limits, LimitsChange, MAX_LIMIT_VALUE, RepoUsage, StorageCap, StorageCaps, Usage,
 };
-pub use object::ObjectStore;
+pub use object::{ObjectRead, ObjectReader, ObjectStore};
 pub use oidc::{
     AuthorizationRequest, CodeExchange, ExternalClaims, ExternalCreate, ExternalIdentity,
     IdentityUnlink, NewExternalAccount, OidcFlow, OidcProvider, pkce_challenge,

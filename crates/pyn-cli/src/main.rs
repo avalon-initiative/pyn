@@ -1043,8 +1043,9 @@ fn main() -> Result<()> {
                 (None, Some(w)) => w.abs(&path),
                 (None, None) => bail!("name the file to upload, or run this inside a workspace"),
             };
-            let bytes =
-                std::fs::read(&file).with_context(|| format!("reading {}", file.display()))?;
+            let upload = std::fs::File::open(&file)
+                .with_context(|| format!("reading {}", file.display()))?;
+            let len = upload.metadata()?.len();
             let known = ws
                 .as_ref()
                 .and_then(|w| w.load_state().ok())
@@ -1052,9 +1053,10 @@ fn main() -> Result<()> {
             let put: api::PutObjectResponse = api
                 .send(
                     api.request(Method::PUT, &api.repo_route("/objects")?)
-                        .body(bytes.clone()),
+                        .body(reqwest::blocking::Body::sized(upload, len)),
                 )?
                 .json()?;
+            let hash = put.content.clone();
             let body = api::CheckinRequest {
                 path: path.clone(),
                 content: put.content,
@@ -1069,7 +1071,7 @@ fn main() -> Result<()> {
                 .map_err(|e| behind_hint(e, ws.is_some()))?
                 .json()?;
             if let Some(w) = &ws {
-                sync::after_checkin(&api, w, &path, r.id, &bytes)?;
+                sync::after_checkin(&api, w, &path, r.id, &hash)?;
             }
             println!("{} is now at revision {}", r.path, r.id);
         }
@@ -1088,18 +1090,20 @@ fn main() -> Result<()> {
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or("?")
                 .to_string();
-            let bytes = resp.bytes()?;
+            let mut resp = resp;
             match output {
                 Some(file) => {
-                    std::fs::write(&file, &bytes)
+                    let mut out = std::fs::File::create(&file)
                         .with_context(|| format!("writing {}", file.display()))?;
+                    let len = resp.copy_to(&mut out)?;
                     println!(
-                        "wrote {path} at revision {revision} ({} bytes) to {}",
-                        bytes.len(),
+                        "wrote {path} at revision {revision} ({len} bytes) to {}",
                         file.display()
                     );
                 }
-                None => std::io::Write::write_all(&mut std::io::stdout(), &bytes)?,
+                None => {
+                    resp.copy_to(&mut std::io::stdout())?;
+                }
             }
         }
         Command::Log {
