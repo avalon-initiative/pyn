@@ -27,15 +27,6 @@ fn wants_read_only(entry: &api::FileEntry, me: &str) -> bool {
     entry.mode == api::Mode::Exclusive && entry.lock.as_ref().is_none_or(|l| l.owner != me)
 }
 
-fn write_file(path: &Path, bytes: &[u8]) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("creating {}", parent.display()))?;
-    }
-    set_read_only(path, false)?;
-    std::fs::write(path, bytes).with_context(|| format!("writing {}", path.display()))
-}
-
 fn fetch(
     api: &Api,
     ws: &Workspace,
@@ -43,13 +34,13 @@ fn fetch(
     revision: u64,
     me: &str,
 ) -> Result<FileState> {
-    let bytes = api.content(&entry.path, Some(revision))?;
     let target = ws.abs(&entry.path);
-    write_file(&target, &bytes)?;
+    set_read_only(&target, false)?;
+    let (_, hash) = crate::transfer::download(api, &entry.path, Some(revision), &target)?;
     set_read_only(&target, wants_read_only(entry, me))?;
     Ok(FileState {
         revision,
-        hash: hash_of(&bytes),
+        hash,
         mode: mode_name(entry.mode).to_string(),
     })
 }

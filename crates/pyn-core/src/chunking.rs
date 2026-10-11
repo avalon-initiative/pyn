@@ -16,51 +16,7 @@ use crate::error::{PynError, Result};
 use crate::object::{ObjectRead, ObjectReader, ObjectStore, clamp_range};
 use crate::types::ContentHash;
 
-pub const SMALL_OBJECT: usize = 1 << 20;
-const MIN_CHUNK: usize = 256 << 10;
-const AVG_CHUNK: usize = 1 << 20;
-const MAX_CHUNK: usize = 4 << 20;
-/// Normalised chunking: a stricter mask before the average size, a looser one after it.
-const MASK_SMALL: u64 = !0 << (64 - 22);
-const MASK_LARGE: u64 = !0 << (64 - 18);
-
-fn gear() -> &'static [u64; 256] {
-    static TABLE: std::sync::OnceLock<[u64; 256]> = std::sync::OnceLock::new();
-    TABLE.get_or_init(|| {
-        let mut table = [0u64; 256];
-        let mut x = 0x9E37_79B9_7F4A_7C15u64;
-        for slot in &mut table {
-            x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
-            let mut z = x;
-            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-            *slot = z ^ (z >> 31);
-        }
-        table
-    })
-}
-
-/// Length of the first chunk of `data`, which holds at least `MAX_CHUNK` bytes unless the stream ended.
-pub fn cut_point(data: &[u8]) -> usize {
-    let n = data.len().min(MAX_CHUNK);
-    if n <= MIN_CHUNK {
-        return n;
-    }
-    let table = gear();
-    let mut fp = 0u64;
-    for (i, &b) in data[..n].iter().enumerate().skip(MIN_CHUNK) {
-        fp = (fp << 1).wrapping_add(table[b as usize]);
-        let mask = if i < AVG_CHUNK {
-            MASK_SMALL
-        } else {
-            MASK_LARGE
-        };
-        if fp & mask == 0 {
-            return i + 1;
-        }
-    }
-    n
-}
+pub use pyn_chunk::{MAX_CHUNK, MIN_CHUNK, SMALL_OBJECT, cut_point};
 
 /// The ordered chunks that make up one object.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -280,6 +236,45 @@ impl ObjectStore for ChunkedStore {
 
     async fn delete(&self, hash: &ContentHash) -> Result<bool> {
         self.inner.delete(hash).await
+    }
+
+    async fn assemble(&self, chunks: &[ContentHash], max: Option<u64>) -> Result<ContentHash> {
+        let mut whole = Sha256::new();
+        let mut listed = Vec::with_capacity(chunks.len());
+        let mut total = 0u64;
+        let mut buf = vec![0u8; 256 << 10];
+        for hash in chunks {
+            let Some(found) = self.inner.read(hash, None).await? else {
+                return Err(PynError::ObjectMissing(hash.to_string()));
+            };
+            if found.total > MAX_CHUNK as u64 {
+                return Err(PynError::InvalidRequest(format!(
+                    "chunk {hash} is larger than {MAX_CHUNK} bytes"
+                )));
+            }
+            total += found.total;
+            if let Some(limit) = max
+                && total > limit
+            {
+                return Err(PynError::ObjectTooLarge { limit });
+            }
+            let mut reader = found.reader;
+            loop {
+                let n = reader.read(&mut buf).await.map_err(io_err)?;
+                if n == 0 {
+                    break;
+                }
+                whole.update(&buf[..n]);
+            }
+            listed.push((hash.clone(), found.total));
+        }
+        let key = ContentHash::new(hex::encode(whole.finalize()));
+        let manifest = Manifest {
+            total,
+            chunks: listed,
+        };
+        self.inner.put_manifest(&key, manifest.encode()).await?;
+        Ok(key)
     }
 
     async fn chunks_of(&self, hash: &ContentHash) -> Result<Vec<ContentHash>> {

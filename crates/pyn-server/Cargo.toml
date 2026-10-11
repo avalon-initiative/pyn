@@ -11,6 +11,7 @@ async-trait = "0.1.92"
 axum = "0.8.9"
 chrono = "0.4.45"
 clap = "4.6.7"
+pyn-chunk = { version = "0.0.1", path = "../pyn-chunk" }
 pyn-core = { version = "0.0.1", path = "../pyn-core" }
 pyn-fs = { version = "0.0.1", path = "../pyn-fs" }
 pyn-oidc = { version = "0.0.1", path = "../pyn-oidc" }

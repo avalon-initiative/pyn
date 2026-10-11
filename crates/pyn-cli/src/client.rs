@@ -60,17 +60,6 @@ impl Api {
             }
         }
     }
-
-    /// A file's content at `revision`, with the revision the server reports.
-    pub fn content(&self, path: &str, revision: Option<u64>) -> Result<Vec<u8>> {
-        let mut req = self
-            .get(&self.repo_route("/content")?)
-            .query(&[("path", path)]);
-        if let Some(r) = revision {
-            req = req.query(&[("revision", r)]);
-        }
-        Ok(self.send(req)?.bytes()?.to_vec())
-    }
 }
 
 /// A non-2xx response: the server's error code and message.

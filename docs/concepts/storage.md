@@ -32,9 +32,25 @@ sizes and byte ranges work on the whole object; an insertion near the start of a
 it. `ChunkedStore` wraps any store that can keep manifests, and the server uses it over the filesystem or memory store.
 Chunks are not removed when an object is deleted: reclaiming them is garbage collection (#207).
 
+## Chunked transfer
+
+Over HTTP a client can send a large file as chunks (decision #76: plain HTTP, no new format):
+
+1. Cut the file with the shared algorithm (`pyn-chunk`; the CLI and server use the same one) and hash each chunk.
+2. `POST /v1/repos/{owner}/{name}/objects/missing` with the hashes (at most 10000 per call) returns the ones the server does
+   not store.
+3. `PUT .../objects` each missing chunk; a chunk is an ordinary object (at most 4 MiB for assembly).
+4. `POST .../objects/assemble` with the ordered chunk hashes. The server reads the chunks, computes the hash of their
+   concatenation (the client cannot claim one), stores the manifest, and returns that hash to use in a checkin.
+
+Repeating the sequence after a failure uploads only what is still missing. `GET .../content` sends `X-Pyn-Content` (the
+content hash) and honours `Range`, so the CLI downloads through a `.pyn-part` file, continues a partial one with a `Range`
+request, verifies the hash, and only then moves the file into place. Files at or under 1 MiB use the single `PUT`. Parallel
+chunk transfer is not done yet. An existence check answers for any repository on the server, so a hash is only useful to
+someone who already has the content.
+
 ## Planned (provisional)
 
-- Chunk-granular upload with a missing-hashes check, so transfers resume and deduplicate.
 - Mark-and-sweep garbage collection with a retention window.
 
 See epic #196.

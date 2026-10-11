@@ -14,6 +14,7 @@ mod limits;
 mod sync;
 mod table;
 mod time;
+mod transfer;
 mod userconfig;
 mod workspace;
 
@@ -1043,23 +1044,14 @@ fn main() -> Result<()> {
                 (None, Some(w)) => w.abs(&path),
                 (None, None) => bail!("name the file to upload, or run this inside a workspace"),
             };
-            let upload = std::fs::File::open(&file)
-                .with_context(|| format!("reading {}", file.display()))?;
-            let len = upload.metadata()?.len();
             let known = ws
                 .as_ref()
                 .and_then(|w| w.load_state().ok())
                 .and_then(|s| s.get(&path).map(|k| k.revision));
-            let put: api::PutObjectResponse = api
-                .send(
-                    api.request(Method::PUT, &api.repo_route("/objects")?)
-                        .body(reqwest::blocking::Body::sized(upload, len)),
-                )?
-                .json()?;
-            let hash = put.content.clone();
+            let hash = transfer::upload_file(&api, &file)?;
             let body = api::CheckinRequest {
                 path: path.clone(),
-                content: put.content,
+                content: hash.clone(),
                 base_revision: base.or(known),
                 message,
             };
@@ -1077,32 +1069,23 @@ fn main() -> Result<()> {
         }
         Command::Get { path, rev, output } => {
             let path = rp(&path)?;
-            let mut req = api
-                .get(&api.repo_route("/content")?)
-                .query(&[("path", path.as_str())]);
-            if let Some(r) = rev {
-                req = req.query(&[("revision", r)]);
-            }
-            let resp = api.send(req)?;
-            let revision = resp
-                .headers()
-                .get(api::REVISION_HEADER)
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("?")
-                .to_string();
-            let mut resp = resp;
             match output {
                 Some(file) => {
-                    let mut out = std::fs::File::create(&file)
-                        .with_context(|| format!("writing {}", file.display()))?;
-                    let len = resp.copy_to(&mut out)?;
+                    let (revision, _) = transfer::download(&api, &path, rev, &file)?;
+                    let len = std::fs::metadata(&file)?.len();
                     println!(
                         "wrote {path} at revision {revision} ({len} bytes) to {}",
                         file.display()
                     );
                 }
                 None => {
-                    resp.copy_to(&mut std::io::stdout())?;
+                    let mut req = api
+                        .get(&api.repo_route("/content")?)
+                        .query(&[("path", path.as_str())]);
+                    if let Some(r) = rev {
+                        req = req.query(&[("revision", r)]);
+                    }
+                    api.send(req)?.copy_to(&mut std::io::stdout())?;
                 }
             }
         }

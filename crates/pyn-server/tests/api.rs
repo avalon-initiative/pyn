@@ -28,7 +28,9 @@ async fn state(dev: bool) -> AppState {
 
 async fn state_with(dev: bool, mode: RegistrationMode) -> AppState {
     let clock = Arc::new(SystemClock);
-    let objects = Arc::new(MemoryObjectStore::new());
+    let objects = Arc::new(pyn_core::ChunkedStore::new(Arc::new(
+        MemoryObjectStore::new(),
+    )));
     let audit = Arc::new(MemoryAuditStore::new());
     let meta = Arc::new(MemoryMetadataStore::new());
     meta.create_repo(RepoRecord {
@@ -3052,4 +3054,88 @@ async fn large_uploads_stream_and_content_serves_byte_ranges() {
     let bad = fetch(Some("bytes=9000000-")).await;
     assert_eq!(bad.status(), StatusCode::RANGE_NOT_SATISFIABLE);
     assert_eq!(bad.headers()["content-range"], "bytes */3000000");
+}
+
+#[tokio::test]
+async fn chunks_are_checked_for_and_assembled_into_one_object() {
+    let app = app().await;
+    let part = |bytes: Vec<u8>| {
+        Request::put("/v1/repos/owner/game/objects")
+            .header(api::DEV_USER_HEADER, "bob")
+            .body(Body::from(bytes))
+            .unwrap()
+    };
+    let mut hashes = Vec::new();
+    for bytes in [b"first ".to_vec(), b"second".to_vec()] {
+        let r = app.clone().oneshot(part(bytes)).await.unwrap();
+        let obj: api::PutObjectResponse =
+            serde_json::from_slice(&r.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        hashes.push(obj.content);
+    }
+
+    let ask = serde_json::json!({"hashes": [hashes[0], "0".repeat(64)]});
+    let r = app
+        .clone()
+        .oneshot(json_post(
+            "/v1/repos/owner/game/objects/missing",
+            "bob",
+            ask,
+        ))
+        .await
+        .unwrap();
+    let found: api::MissingObjectsResponse =
+        serde_json::from_slice(&r.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(found.missing, ["0".repeat(64)]);
+
+    let bad = serde_json::json!({"hashes": ["not-a-hash"]});
+    let r = app
+        .clone()
+        .oneshot(json_post(
+            "/v1/repos/owner/game/objects/missing",
+            "bob",
+            bad,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+
+    let join = serde_json::json!({"chunks": hashes});
+    let r = app
+        .clone()
+        .oneshot(json_post(
+            "/v1/repos/owner/game/objects/assemble",
+            "bob",
+            join,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    let whole: api::PutObjectResponse =
+        serde_json::from_slice(&r.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    let body = serde_json::json!({"path": "Source/joined.txt", "content": whole.content, "base_revision": null, "message": "join"});
+    let r = app
+        .clone()
+        .oneshot(json_post("/v1/repos/owner/game/checkin", "bob", body))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    let (_, bytes) = get_as(
+        &app,
+        "/v1/repos/owner/game/content?path=Source/joined.txt",
+        "alice",
+    )
+    .await;
+    assert_eq!(bytes.as_slice(), b"first second");
+
+    let missing = serde_json::json!({"chunks": ["1".repeat(64)]});
+    let r = app
+        .clone()
+        .oneshot(json_post(
+            "/v1/repos/owner/game/objects/assemble",
+            "bob",
+            missing,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::BAD_REQUEST);
 }

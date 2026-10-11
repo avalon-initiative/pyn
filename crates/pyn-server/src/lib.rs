@@ -159,6 +159,8 @@ struct RepoAddress {
         preview_policy,
         audit,
         put_object,
+        missing_objects,
+        assemble_object,
         history
     ),
     components(schemas(
@@ -170,6 +172,9 @@ struct RepoAddress {
         api::RestoreRequest,
         api::ForceUnlockRequest,
         api::PolicyPreviewRequest,
+        api::MissingObjectsRequest,
+        api::MissingObjectsResponse,
+        api::AssembleObjectRequest,
         api::PolicyPreview,
         api::AuditEntry,
         api::AuditPage,
@@ -427,6 +432,14 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/v1/repos/{owner}/{name}/audit", get(audit))
         .route("/v1/repos/{owner}/{name}/objects", put(put_object))
+        .route(
+            "/v1/repos/{owner}/{name}/objects/missing",
+            post(missing_objects),
+        )
+        .route(
+            "/v1/repos/{owner}/{name}/objects/assemble",
+            post(assemble_object),
+        )
         .route("/v1/repos/{owner}/{name}/history", get(history))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -798,6 +811,71 @@ async fn put_object(
     }))
 }
 
+const MAX_HASHES_PER_REQUEST: usize = 10_000;
+
+fn parse_hash(text: &str) -> Result<pyn_core::ContentHash, PynError> {
+    let ok = text.len() == 64 && text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+    if ok {
+        Ok(pyn_core::ContentHash::new(text))
+    } else {
+        Err(PynError::InvalidRequest(format!(
+            "{text:?} is not a SHA-256 hex hash"
+        )))
+    }
+}
+
+#[utoipa::path(post, path = "/v1/repos/{owner}/{name}/objects/missing", params(RepoAddress), request_body = api::MissingObjectsRequest, responses(
+    (status = 200, body = api::MissingObjectsResponse, description = "the requested hashes the server does not store"),
+    (status = 400, body = api::ErrorBody, description = "invalid_request for a malformed hash or more than 10000 hashes"),
+))]
+async fn missing_objects(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path((owner, name)): Path<(String, String)>,
+    Json(req): Json<api::MissingObjectsRequest>,
+) -> ApiResult<Json<api::MissingObjectsResponse>> {
+    authorize_repo(&s, &headers, &owner, &name, Some(Permission::Checkin)).await?;
+    if req.hashes.len() > MAX_HASHES_PER_REQUEST {
+        return Err(PynError::InvalidRequest(format!(
+            "ask about at most {MAX_HASHES_PER_REQUEST} hashes at a time"
+        ))
+        .into());
+    }
+    let mut missing = Vec::new();
+    for text in req.hashes {
+        if !s.objects.exists(&parse_hash(&text)?).await? {
+            missing.push(text);
+        }
+    }
+    Ok(Json(api::MissingObjectsResponse { missing }))
+}
+
+#[utoipa::path(post, path = "/v1/repos/{owner}/{name}/objects/assemble", params(RepoAddress), request_body = api::AssembleObjectRequest, responses(
+    (status = 200, body = api::PutObjectResponse, description = "the hash of the chunks' concatenation, ready to check in"),
+    (status = 400, body = api::ErrorBody, description = "invalid_request for a malformed hash, an oversized chunk or too many chunks; object_missing when a chunk was not uploaded"),
+    (status = 413, body = api::ErrorBody, description = "object_too_large"),
+))]
+async fn assemble_object(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path((owner, name)): Path<(String, String)>,
+    Json(req): Json<api::AssembleObjectRequest>,
+) -> ApiResult<Json<api::PutObjectResponse>> {
+    authorize_repo(&s, &headers, &owner, &name, Some(Permission::Checkin)).await?;
+    if req.chunks.len() > (MAX_OBJECT_BYTES / pyn_chunk::MIN_CHUNK as u64) as usize + 1 {
+        return Err(PynError::InvalidRequest("too many chunks".into()).into());
+    }
+    let chunks = req
+        .chunks
+        .iter()
+        .map(|c| parse_hash(c))
+        .collect::<Result<Vec<_>, _>>()?;
+    let hash = s.objects.assemble(&chunks, Some(MAX_OBJECT_BYTES)).await?;
+    Ok(Json(api::PutObjectResponse {
+        content: hash.to_string(),
+    }))
+}
+
 #[derive(Deserialize)]
 struct HistoryQuery {
     path: Option<String>,
@@ -1055,6 +1133,10 @@ async fn get_content(
     h.insert(
         axum::http::HeaderName::from_static(api::REVISION_HEADER),
         HeaderValue::from(rev.id.0),
+    );
+    h.insert(
+        axum::http::HeaderName::from_static(api::CONTENT_HASH_HEADER),
+        HeaderValue::from_str(rev.content.as_str()).expect("hex is ASCII"),
     );
     h.insert(
         axum::http::header::ACCEPT_RANGES,

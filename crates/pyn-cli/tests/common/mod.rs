@@ -54,7 +54,9 @@ fn start_with(with_repo: bool) -> Env {
 fn build(with_repo: bool, accounts: &[&str], setup_token: Option<&str>) -> Env {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let clock = Arc::new(SystemClock);
-    let objects = Arc::new(MemoryObjectStore::new());
+    let objects = Arc::new(pyn_core::ChunkedStore::new(Arc::new(
+        MemoryObjectStore::new(),
+    )));
     let audit = Arc::new(MemoryAuditStore::new());
     let rules = "[meta]\ndefault = \"shared\"\n[exclusive]\npaths = [\"Content/\"]\n";
     let meta = Arc::new(MemoryMetadataStore::new());

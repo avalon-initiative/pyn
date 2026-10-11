@@ -550,6 +550,26 @@ pub struct SetMemberRequest {
     pub role: String,
 }
 
+/// Content hashes to check against the server's object store.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct MissingObjectsRequest {
+    /// SHA-256 hex hashes; at most 10000.
+    pub hashes: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct MissingObjectsResponse {
+    /// The hashes from the request that the server does not store.
+    pub missing: Vec<String>,
+}
+
+/// Chunks already uploaded as objects, to be joined into one object.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct AssembleObjectRequest {
+    /// Hashes of stored chunks, in order; each at most 4 MiB.
+    pub chunks: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct PolicyPreviewRequest {
     /// The proposed contents of `.pyn/pyn.toml`.
@@ -774,6 +794,8 @@ pub struct ErrorBody {
 
 /// Response header carrying the revision number of returned content.
 pub const REVISION_HEADER: &str = "x-pyn-revision";
+/// Carries the SHA-256 hex of the content on `GET .../content`, so a client can verify what it downloaded.
+pub const CONTENT_HASH_HEADER: &str = "x-pyn-content";
 
 /// Dev-only identity header.
 pub const DEV_USER_HEADER: &str = "x-pyn-user";

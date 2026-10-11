@@ -4196,6 +4196,132 @@
         }
       }
     },
+    "/v1/repos/{owner}/{name}/objects/assemble": {
+      "post": {
+        "tags": [],
+        "operationId": "assemble_object",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "The namespace that owns the repository.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository's name within its owner.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssembleObjectRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "the hash of the chunks' concatenation, ready to check in",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PutObjectResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request for a malformed hash, an oversized chunk or too many chunks; object_missing when a chunk was not uploaded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "object_too_large",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/repos/{owner}/{name}/objects/missing": {
+      "post": {
+        "tags": [],
+        "operationId": "missing_objects",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "The namespace that owns the repository.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository's name within its owner.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MissingObjectsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "the requested hashes the server does not store",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MissingObjectsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request for a malformed hash or more than 10000 hashes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/repos/{owner}/{name}/policy/preview": {
       "post": {
         "tags": [],
@@ -5455,6 +5581,22 @@
           }
         }
       },
+      "AssembleObjectRequest": {
+        "type": "object",
+        "description": "Chunks already uploaded as objects, to be joined into one object.",
+        "required": [
+          "chunks"
+        ],
+        "properties": {
+          "chunks": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Hashes of stored chunks, in order; each at most 4 MiB."
+          }
+        }
+      },
       "AuditEntry": {
         "type": "object",
         "required": [
@@ -6217,6 +6359,37 @@
           "team",
           "org_owner"
         ]
+      },
+      "MissingObjectsRequest": {
+        "type": "object",
+        "description": "Content hashes to check against the server's object store.",
+        "required": [
+          "hashes"
+        ],
+        "properties": {
+          "hashes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "SHA-256 hex hashes; at most 10000."
+          }
+        }
+      },
+      "MissingObjectsResponse": {
+        "type": "object",
+        "required": [
+          "missing"
+        ],
+        "properties": {
+          "missing": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The hashes from the request that the server does not store."
+          }
+        }
       },
       "Mode": {
         "type": "string",

@@ -46,6 +46,14 @@ pub trait ObjectStore: Send + Sync {
         Ok(None)
     }
 
+    /// Makes one object of already stored chunks, in order, and returns the hash of their concatenation. The
+    /// store reads the chunks to compute it, so the caller cannot claim a hash.
+    async fn assemble(&self, _chunks: &[ContentHash], _max: Option<u64>) -> Result<ContentHash> {
+        Err(PynError::Storage(
+            "this store cannot assemble chunks".into(),
+        ))
+    }
+
     /// The chunk blobs an object is made of; empty for a whole object.
     async fn chunks_of(&self, _hash: &ContentHash) -> Result<Vec<ContentHash>> {
         Ok(Vec::new())
