@@ -4172,6 +4172,73 @@
         }
       }
     },
+    "/v1/repos/{owner}/{name}/policy/preview": {
+      "post": {
+        "tags": [],
+        "operationId": "preview_policy",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "The namespace that owns the repository.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository's name within its owner.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PolicyPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PolicyPreview"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_rules: the proposed policy does not parse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "needs the edit_policy permission",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/repos/{owner}/{name}/release": {
       "post": {
         "tags": [],
@@ -6298,6 +6365,50 @@
           },
           "usage": {
             "$ref": "#/components/schemas/Usage"
+          }
+        }
+      },
+      "PolicyPreview": {
+        "type": "object",
+        "description": "What a proposed policy would change in the repository, without applying it.",
+        "required": [
+          "to_shared",
+          "to_exclusive",
+          "released_locks"
+        ],
+        "properties": {
+          "released_locks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Lock"
+            },
+            "description": "Live locks that would be released because their path becomes shared."
+          },
+          "to_exclusive": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Paths that are shared now and would become exclusive."
+          },
+          "to_shared": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Paths that are exclusive now and would become shared."
+          }
+        }
+      },
+      "PolicyPreviewRequest": {
+        "type": "object",
+        "required": [
+          "content"
+        ],
+        "properties": {
+          "content": {
+            "type": "string",
+            "description": "The proposed contents of `.pyn/pyn.toml`."
           }
         }
       },

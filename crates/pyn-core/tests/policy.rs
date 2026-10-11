@@ -13,6 +13,7 @@ use pyn_core::{
 
 const POLICY: &str = ".pyn/pyn.toml";
 const SHARED_POLICY: &str = "[meta]\ndefault = \"shared\"\n[exclusive]\npaths = [\"Content/\"]\n[shared]\npaths = [\".pyn/pyn.toml\"]\n";
+const SHARED_POLICY_ALL: &str = "[meta]\ndefault = \"shared\"\n";
 const EXCLUSIVE_POLICY: &str =
     "[meta]\ndefault = \"shared\"\n[exclusive]\npaths = [\"Content/\"]\n";
 
@@ -725,4 +726,60 @@ async fn another_server_copy_sees_a_policy_change_on_its_next_request() {
         .unwrap();
     let svc_b = copy_b.open("alice", "game").await.unwrap().service;
     assert_eq!(svc_b.mode_for(&path("Source/a.cpp")), Mode::Shared);
+}
+
+#[tokio::test]
+async fn a_preview_lists_conversions_and_released_locks_without_applying_them() {
+    let w = world();
+    let svc = make_repo(&w, "game").await;
+    put_policy(&w, &svc, &admin("alice"), EXCLUSIVE_POLICY, None)
+        .await
+        .unwrap();
+    let map = path("Content/a.umap");
+    svc.checkout(&map, &UserId::new("bob"), None).await.unwrap();
+    let src = path("Source/a.cpp");
+    let c = blob(&w, "x").await;
+    svc.checkin(&admin("alice"), &src, c, None, "add".into())
+        .await
+        .unwrap();
+    let before = svc.locks().await.unwrap().len();
+
+    let preview = svc
+        .preview_policy(&admin("alice"), SHARED_POLICY_ALL)
+        .await
+        .unwrap();
+    assert!(preview.to_exclusive.is_empty());
+    assert!(preview.to_shared.contains(&map), "{preview:?}");
+    assert_eq!(
+        preview
+            .released_locks
+            .iter()
+            .map(|l| &l.path)
+            .collect::<Vec<_>>(),
+        [&map]
+    );
+
+    let stricter = svc
+        .preview_policy(&admin("alice"), "[meta]\ndefault = \"exclusive\"\n")
+        .await
+        .unwrap();
+    assert!(stricter.to_exclusive.contains(&src), "{stricter:?}");
+    assert!(stricter.released_locks.is_empty());
+
+    assert_eq!(svc.locks().await.unwrap().len(), before, "nothing applied");
+    assert_eq!(svc.mode_for(&map), Mode::Exclusive);
+
+    let err = svc
+        .preview_policy(&writer("bob"), SHARED_POLICY_ALL)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, PynError::Forbidden(Permission::EditPolicy)),
+        "{err}"
+    );
+    let err = svc
+        .preview_policy(&admin("alice"), "not toml [")
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::InvalidRules(_)), "{err}");
 }

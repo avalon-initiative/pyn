@@ -57,6 +57,14 @@ struct Applied {
     rules: Arc<Rules>,
 }
 
+/// The effect a policy change would have, as `preview_policy` reports it.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct PolicyPreview {
+    pub to_shared: Vec<RepoPath>,
+    pub to_exclusive: Vec<RepoPath>,
+    pub released_locks: Vec<Lock>,
+}
+
 /// Server-side policy for one repository. Enforcement lives here and in the `MetadataStore` primitives.
 pub struct RepoService {
     repo: RepoId,
@@ -266,6 +274,34 @@ impl RepoService {
             .await?;
         self.record(user, AuditAction::Release, path, "released".into())
             .await
+    }
+
+    /// What applying the policy `text` would change: paths whose mode flips and live locks it would release.
+    pub async fn preview_policy(&self, who: &Principal, text: &str) -> Result<PolicyPreview> {
+        who.require(Permission::EditPolicy)?;
+        let new = Rules::from_toml(text)?;
+        let old = self.rules();
+        let mut preview = PolicyPreview::default();
+        let mut paths: BTreeMap<RepoPath, ()> = BTreeMap::new();
+        for rev in self.meta.list_head_revisions(&self.repo).await? {
+            paths.insert(rev.path, ());
+        }
+        let locks = self.meta.list_locks(&self.repo, self.clock.now()).await?;
+        for lock in &locks {
+            paths.insert(lock.path.clone(), ());
+        }
+        for path in paths.into_keys() {
+            match (old.mode_for(&path), new.mode_for(&path)) {
+                (Mode::Exclusive, Mode::Shared) => preview.to_shared.push(path),
+                (Mode::Shared, Mode::Exclusive) => preview.to_exclusive.push(path),
+                _ => {}
+            }
+        }
+        preview.released_locks = locks
+            .into_iter()
+            .filter(|l| preview.to_shared.contains(&l.path))
+            .collect();
+        Ok(preview)
     }
 
     /// Removes someone else's live lock. The reason is required because it goes into the audit log.

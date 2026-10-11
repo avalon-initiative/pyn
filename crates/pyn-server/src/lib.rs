@@ -153,6 +153,7 @@ struct RepoAddress {
         checkin,
         restore,
         force_unlock,
+        preview_policy,
         audit,
         put_object,
         history
@@ -165,6 +166,8 @@ struct RepoAddress {
         api::ReleaseRequest,
         api::RestoreRequest,
         api::ForceUnlockRequest,
+        api::PolicyPreviewRequest,
+        api::PolicyPreview,
         api::AuditEntry,
         api::AuditPage,
         api::CheckinRequest,
@@ -415,6 +418,10 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/repos/{owner}/{name}/checkin", post(checkin))
         .route("/v1/repos/{owner}/{name}/restore", post(restore))
         .route("/v1/repos/{owner}/{name}/force-unlock", post(force_unlock))
+        .route(
+            "/v1/repos/{owner}/{name}/policy/preview",
+            post(preview_policy),
+        )
         .route("/v1/repos/{owner}/{name}/audit", get(audit))
         .route("/v1/repos/{owner}/{name}/objects", put(put_object))
         .route("/v1/repos/{owner}/{name}/history", get(history))
@@ -1035,6 +1042,27 @@ async fn force_unlock(
         .force_unlock(&RepoPath::new(req.path)?, &actor, &req.reason)
         .await?;
     Ok(Json(lock_dto(lock)))
+}
+
+#[utoipa::path(post, path = "/v1/repos/{owner}/{name}/policy/preview", params(RepoAddress), request_body = api::PolicyPreviewRequest, responses(
+    (status = 200, body = api::PolicyPreview),
+    (status = 400, body = api::ErrorBody, description = "invalid_rules: the proposed policy does not parse"),
+    (status = 403, body = api::ErrorBody, description = "needs the edit_policy permission"),
+))]
+async fn preview_policy(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path((owner, name)): Path<(String, String)>,
+    Json(req): Json<api::PolicyPreviewRequest>,
+) -> ApiResult<Json<api::PolicyPreview>> {
+    let (repo, who) =
+        authorize_repo(&s, &headers, &owner, &name, Some(Permission::EditPolicy)).await?;
+    let found = repo.service.preview_policy(&who, &req.content).await?;
+    Ok(Json(api::PolicyPreview {
+        to_shared: found.to_shared.iter().map(ToString::to_string).collect(),
+        to_exclusive: found.to_exclusive.iter().map(ToString::to_string).collect(),
+        released_locks: found.released_locks.into_iter().map(lock_dto).collect(),
+    }))
 }
 
 #[derive(Deserialize)]

@@ -551,6 +551,23 @@ pub struct SetMemberRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct PolicyPreviewRequest {
+    /// The proposed contents of `.pyn/pyn.toml`.
+    pub content: String,
+}
+
+/// What a proposed policy would change in the repository, without applying it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct PolicyPreview {
+    /// Paths that are exclusive now and would become shared.
+    pub to_shared: Vec<String>,
+    /// Paths that are shared now and would become exclusive.
+    pub to_exclusive: Vec<String>,
+    /// Live locks that would be released because their path becomes shared.
+    pub released_locks: Vec<Lock>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ForceUnlockRequest {
     pub path: String,
     /// Why the lock is being removed; required and recorded in the audit log.

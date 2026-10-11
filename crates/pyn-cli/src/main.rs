@@ -153,6 +153,9 @@ enum Command {
         #[arg(short, long)]
         output: Option<std::path::PathBuf>,
     },
+    /// Inspect policy changes before committing them.
+    #[command(subcommand)]
+    Policy(PolicyCommand),
     /// Make an older revision the new head. Needs the lock and the restore permission, and asks for confirmation.
     Restore {
         path: String,
@@ -456,6 +459,15 @@ enum ConfigCommand {
         value: String,
         #[arg(long)]
         global: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum PolicyCommand {
+    /// Show which paths would change mode, and which locks would be released, if this policy file were committed.
+    Preview {
+        /// A proposed `pyn.toml`.
+        file: std::path::PathBuf,
     },
 }
 
@@ -968,6 +980,33 @@ fn main() -> Result<()> {
         Command::Update { paths } => {
             let only = paths.iter().map(|p| rp(p)).collect::<Result<Vec<_>>>()?;
             sync::update(&api, in_workspace("update")?, &only)?;
+        }
+        Command::Policy(PolicyCommand::Preview { file }) => {
+            let content = std::fs::read_to_string(&file)
+                .with_context(|| format!("reading {}", file.display()))?;
+            let body = api::PolicyPreviewRequest { content };
+            let found: api::PolicyPreview = api
+                .send(
+                    api.request(Method::POST, &api.repo_route("/policy/preview")?)
+                        .json(&body),
+                )?
+                .json()?;
+            let rows: Vec<Vec<String>> = found
+                .to_shared
+                .iter()
+                .map(|p| ("exclusive -> shared", p))
+                .chain(
+                    found
+                        .to_exclusive
+                        .iter()
+                        .map(|p| ("shared -> exclusive", p)),
+                )
+                .map(|(change, path)| vec![change.to_string(), path.clone()])
+                .collect();
+            table::show(&["CHANGE", "PATH"], &rows, "no path changes mode");
+            for lock in &found.released_locks {
+                println!("would release {}'s lock on {}", lock.owner, lock.path);
+            }
         }
         Command::Config(cmd) => config_command(cmd, ws.as_ref(), &mine, &yours, &user_config)?,
         Command::Lock { path, base } => {

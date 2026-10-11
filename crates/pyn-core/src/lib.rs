@@ -65,7 +65,7 @@ pub use repo_policy::{
 };
 pub use repositories::Repositories;
 pub use rules::{Mode, PathFilter, Rules};
-pub use service::{FileEntry, LockLimit, RepoService, ServiceConfig};
+pub use service::{FileEntry, LockLimit, PolicyPreview, RepoService, ServiceConfig};
 pub use store::MetadataStore;
 pub use tree::{DEFAULT_BRANCH, EntryKind, EntryMode, RepoSummary, TreeEntry};
 pub use types::{ContentHash, Lock, NewRevision, RepoId, RepoPath, Revision, RevisionId, UserId};

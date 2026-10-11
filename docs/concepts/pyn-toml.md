@@ -97,6 +97,10 @@ than guess at a policy.
   version, take the lock and check it in as the new head. *Provisional:* until branches exist there is nothing to strand,
   and the report arrives with them.
 
+**Preview.** `pyn policy preview <file>` (`POST /v1/repos/{owner}/{name}/policy/preview`, needs `edit_policy`) reports which paths
+would change mode in each direction and which live locks would be released, without applying anything. The conversion rules
+are decision #195.
+
 Each revision records the mode its path had when it was made (`mode` on the revision in the API), so a path's history shows
 where it changed. Revisions made before this was recorded have no mode.
 
