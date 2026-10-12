@@ -290,9 +290,13 @@ pub fn tree_dump(root: &Path) -> String {
             } else if meta.is_dir() {
                 walk(root, &path, out);
             } else {
+                let mode = if meta.permissions().mode() & 0o111 != 0 {
+                    0o755
+                } else {
+                    0o644
+                };
                 out.push(format!(
-                    "{rel} {:o} {}",
-                    meta.permissions().mode() & 0o777,
+                    "{rel} {mode:o} {}",
                     sha256_hex(&fs::read(&path).unwrap())
                 ));
             }

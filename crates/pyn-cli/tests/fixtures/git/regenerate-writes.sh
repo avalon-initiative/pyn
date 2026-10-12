@@ -42,7 +42,7 @@ dump() {
   git ls-files -s > "$out/ls-files.txt"
   git status --porcelain=v1 > "$out/status.txt"
   find . \( -name .git -prune \) -o \( -type f -o -type l \) -print | sort | while IFS= read -r f; do
-    if [ -L "$f" ]; then echo "$f -> $(readlink "$f")"; else echo "$f $(stat -c %a "$f") $(sha256sum < "$f" | cut -d' ' -f1)"; fi
+    if [ -L "$f" ]; then echo "$f -> $(readlink "$f")"; else echo "$f $([ -x "$f" ] && echo 755 || echo 644) $(sha256sum < "$f" | cut -d' ' -f1)"; fi
   done > "$out/tree.txt"
   ( cd "$common"; { find logs worktrees/*/logs -type f 2>/dev/null || true; } | sort | while IFS= read -r f; do echo "== $f"; cat "$f"; done ) > "$out/logs.txt"
   { for f in MERGE_HEAD MERGE_MSG MERGE_MODE ORIG_HEAD; do [ -f "$gitdir/$f" ] && { echo "== $f"; cat "$gitdir/$f"; }; done; true; } > "$out/state.txt"
