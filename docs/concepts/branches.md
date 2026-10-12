@@ -2,8 +2,7 @@
 
 A **branch** is a name that points at a [commit](commits.md). Commits are git commits, so a commit's id covers its parents,
 and a branch moves only by committing on it. Decisions #233 and #245 set the model; this page is how a pyn server holds it.
-[Merging](merging.md) branches is described on its own page. Remotes (#237), per-branch policy and the stranded-version report
-(#238) are separate work and are not done here.
+[Merging](merging.md) branches is described on its own page. Remotes (#237) are separate work and are not done here.
 
 ## Branches and the default branch
 
@@ -57,25 +56,60 @@ A snapshot, a folder listing, a file's content at the branch head and the base c
 
 ## Policy and modes
 
-The policy is the default branch's `.pyn/pyn.toml` and applies to every branch (decision #233, owner comments). A
-branch cannot change a path's mode:
+The policy is the default branch's `.pyn/pyn.toml` (decision #38), and a path's mode changes only by a commit to that file
+on the default branch (decision #233, owner comments). A branch cannot change a path's mode; it takes a change when it gets
+the commit that made it, by [merge or update](merging.md) from the default branch (decision #195: the change "takes effect
+for a branch when that branch has the policy commit").
 
-- A commit to `.pyn/pyn.toml` on another branch is allowed (it needs the `edit_policy` permission, the file must parse and,
-  as for any path, the file's own mode decides whether it needs a lock) but it is only a file there. It applies nothing and
-  releases no lock until a [merge](merging.md#what-a-merge-commit-holds) lands it on the default branch.
-- A snapshot's modes come from the policy revision in the snapshot when that revision is on the default branch's history;
-  a policy revision made only on another branch is ignored, and a commit that is not on the default branch's history takes
-  the default branch's current policy.
-- Trees are plain git trees and carry no mode beyond the git file mode, so a conversion applied on the default branch
-  changes no stored tree.
+### The effective policy of a branch
 
-Until per-branch policy (#238), a mode change made by a policy commit on the default branch applies at once to the checkin
-rules on every branch. Converting a path to exclusive records its content on the default branch as the next revision of
-the path's line, as before. A branch that diverged keeps its shared revision, which has a lower number than the conversion
-revision, and cannot commit the path any more without the lock and a base on the newest revision. The data the stranded
-report (#238) and the shared-to-exclusive conflict rule need is kept: each revision records the mode it was made under,
-and a shared revision outside the default branch's ancestry with a number below the conversion revision is a diverged
-version of that path.
+- A **policy commit** is a commit carrying a revision of `.pyn/pyn.toml` that has reached the default branch: it is the
+  default branch's head or one of its ancestors. A commit to the file on another branch is validated (it needs the
+  `edit_policy` permission, the file must parse and, as for any path, the file's own mode decides whether it needs a lock) but
+  is only a file there. It becomes a policy commit when a merge or fast-forward lands it on the default branch, and releases
+  no lock and converts no path until then.
+- The **effective policy of a commit** is the policy of the highest-numbered revision of `.pyn/pyn.toml` made in a policy
+  commit that is that commit or one of its ancestors; the server's fallback rules (or all-exclusive) when there is none.
+  The **effective policy of a branch** is that of its head.
+- On the default branch this is the latest policy commit, which is what the server enforces, so a policy commit applies to
+  the default branch at once. Any other branch keeps the policy it last picked up, whatever the default branch has done
+  since, until a merge or update brings it the later policy commit. A branch created at a commit starts with that commit's
+  policy.
+
+The effective policy is what the branch's own operations use, each by the branch it names:
+
+- a checkin, changeset or restore on a branch records revisions under the mode the branch's policy gives the path, and a
+  path that is exclusive there needs the caller's lock (`lock_required`) and a base on the newest revision of its line,
+  while a shared one is based on the branch's own revision;
+- a lock request names the branch it is for (`branch`, the default branch if omitted) and is refused with `not_exclusive`
+  when the branch's policy makes the path shared;
+- a snapshot, a folder listing and the file list of a branch or of any commit show the modes of that commit's effective
+  policy;
+- a [merge](merging.md) is decided under the policy the result has: the later of the two sides' effective policies (the
+  higher-numbered policy revision), so merging the default branch into a branch brings the policy commit and its
+  conversions to that branch, and a merge into the default branch uses the policy in force there.
+
+The per-commit tree records no mode (trees are plain git trees, decision #245 item 9), so a conversion landing on the
+default branch changes no stored tree and nothing needs rewriting when a branch picks it up: the branch's next effective
+policy simply reads the path under its new mode.
+
+### What a stale branch does
+
+Because a branch keeps its policy until it picks up a later one:
+
+- **Shared to exclusive on the default branch.** The default branch records a conversion revision (the next revision of the
+  path's line). A branch that has not picked it up still treats the path as shared: it may keep committing the path without a
+  lock, and each of those revisions is a shared revision outside the default branch's history, a **diverged version**. When
+  the branch picks the policy commit up, the diverged version meets the conversion revision and the path is a conflict that
+  is never merged automatically ([merging](merging.md#exclusive-paths)). The data is in the revisions: each records the mode
+  it was made under, so a shared revision that the default branch's history does not contain, of a path that is exclusive
+  there, is a diverged version whatever its number (a stale branch's revision made after the conversion has a higher number
+  than the conversion revision, one made before has a lower one).
+- **Exclusive to shared on the default branch.** Live locks on the path are released. A branch that has not picked it up still
+  sees the path as exclusive: it can lock the path again (for that branch) and commit it under the lock, extending the
+  single line. When the branch picks the policy up the path merges by content like any shared path.
+
+[Policy changes](pyn-toml.md#changing-policy) report the stranded versions of the first case.
 
 ## Existing data
 
