@@ -21,6 +21,8 @@ pub const REPO: &str = "alice/game";
 
 pub struct Env {
     pub url: String,
+    pub meta: Arc<MemoryMetadataStore>,
+    pub audit: Arc<MemoryAuditStore>,
     default_repo: Option<&'static str>,
     _runtime: tokio::runtime::Runtime,
     config: tempfile::TempDir,
@@ -95,9 +97,9 @@ fn build(with_repo: bool, accounts: &[&str], setup_token: Option<&str>) -> Env {
             .unwrap();
     }
     let repos = Arc::new(Repositories::new(
-        meta,
+        meta.clone(),
         objects.clone(),
-        audit,
+        audit.clone(),
         access.clone(),
         clock,
         Rules::from_toml(rules).unwrap(),
@@ -118,6 +120,8 @@ fn build(with_repo: bool, accounts: &[&str], setup_token: Option<&str>) -> Env {
     });
     Env {
         url,
+        meta,
+        audit,
         default_repo: with_repo.then_some(REPO),
         _runtime: runtime,
         config: tempfile::tempdir().unwrap(),

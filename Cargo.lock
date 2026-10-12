@@ -1758,6 +1758,7 @@ dependencies = [
  "pyn-chunk",
  "pyn-core",
  "pyn-diff",
+ "pyn-hash",
  "pyn-proto",
  "pyn-server",
  "reqwest",

@@ -25,6 +25,7 @@ Conventions that hold everywhere:
 | `git pull`, `git fetch` | `pyn update [<path>...]` | different | Fast-forwards files without local changes and never overwrites edits. Neither command exists by name until branches and merge land. |
 | `git ls-files`, `git ls-tree` | `pyn files`, `pyn ls [<path>]` | different | Tables with mode, head revision and lock holder. |
 | `git config --list`, `--get`, `<key> <value>` | `pyn config list`, `get`, `set` | different | Subcommands instead of flags; `--global` and `--local` behave as in git. Keys are pyn's own. |
+| `git fsck` | `pyn verify [<path>]` | different | Checks every revision's hash and its link to the one before, and the audit log's chain. Silent and exit 0 when intact, as git; otherwise a `PROBLEM`, `WHAT`, `PATH` table and exit 1. `-v` / `--verbose` also prints what was checked. See [integrity](integrity.md). |
 | `git reflog` (loosely) | `pyn audit` | pyn only | Append-only audit log of lock, revision and access events. |
 | none | `pyn lock`, `pyn unlock`, `pyn locks`, `pyn policy` | pyn only | Leased locks and per-path modes. |
 | none | `pyn login`, `logout`, `register`, `whoami`, `token`, `key`, `invite`, `user`, `member`, `role`, `org`, `team`, `repo`, `admin`, `setup`, `usage`, `summary` | pyn only | Server, account and access administration. |

@@ -20,6 +20,7 @@ mod time;
 mod transfer;
 mod unsupported;
 mod userconfig;
+mod verify;
 mod workspace;
 
 use client::Api;
@@ -244,6 +245,17 @@ enum Command {
         /// List commits instead of revisions.
         #[arg(long, conflicts_with_all = ["path", "filter"])]
         commits: bool,
+    },
+    /// Check that history is intact: every revision's hash and its link to the one before, and the audit log's chain.
+    ///
+    /// Prints one line per break and exits 1 if there is any, like `git fsck`. The audit log is checked when you have
+    /// the view_audit permission and no path is given.
+    Verify {
+        /// Check only this path.
+        path: Option<String>,
+        /// Also print what was checked.
+        #[arg(short, long)]
+        verbose: bool,
     },
     /// Manage your API tokens.
     #[command(subcommand)]
@@ -1335,6 +1347,12 @@ fn run(cli: Cli) -> Result<()> {
                 &["REV", "AUTHOR", "WHEN", "MESSAGE"]
             };
             table::show(header, &rows, "no history");
+        }
+        Command::Verify { path, verbose } => {
+            let path = path.map(|p| rp(&p)).transpose()?;
+            if !verify::run(&api, path.as_deref(), verbose)? {
+                std::process::exit(1);
+            }
         }
         Command::Restore {
             path,

@@ -9,7 +9,7 @@ use std::str::FromStr;
 use crate::{REVISION_COLUMNS, db, revision_from};
 
 // Arbitrary constant: concurrent starts take turns instead of hashing the same rows twice.
-const LOCK_KEY: i64 = 0x7079_6e68_6173_68;
+const LOCK_KEY: i64 = 0x0070_796e_6861_7368;
 
 /// Hashes every row still lacking a hash, in chain order. Hashed rows are left alone.
 pub(crate) async fn backfill(pool: &PgPool) -> Result<()> {
