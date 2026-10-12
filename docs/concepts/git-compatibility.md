@@ -4,7 +4,8 @@ Decision #218: where pyn has an equivalent of a git command it uses git's name, 
 so `alias git=pyn` works for everyday flows. pyn owns what git lacks (`lock`, `unlock`, `policy`, modes, leases,
 organizations and teams). This page is the compatibility table: every difference from git is deliberate and listed here.
 The table describes the CLI as it is; rows that say *planned* name the issue that will change them. Conformance tests
-against git are tracked in #224.
+against git are tracked in #224. Everything below is about a repository on a pyn server unless it says *git home*; a
+repository that lives in git is described in [On a git home](#on-a-git-home).
 
 ## Conventions
 
@@ -28,6 +29,9 @@ Divergence rules:
    implemented here, and there is no dependency on git (decision #30). A git import and export bridge may come later.
 8. **Listings are aligned tables** with the path or variable column last, not git's free-form blocks. This is a
    repository-wide difference: it keeps columns such as mode, lock and revision readable.
+
+9. **A repository has one home** (decision #245): a pyn server or git. In a git repository pyn behaves as git, through its own
+   implementation, and commands that only a pyn server provides refuse and say so; see [On a git home](#on-a-git-home).
 
 Exit codes follow git: `0` success, `128` for a failure (message prefixed `fatal: `), `129` for a usage error such as
 an unknown flag on a supported command (raised by the argument parser, which names the flag and the command's usage),
@@ -53,27 +57,27 @@ The commands named in decision #218.
 
 | Git | pyn | Status | Notes |
 | --- | --- | --- | --- |
-| `git init` | none | planned | Fails with the git-command message. Repositories are created on the server with `pyn repo create` and then cloned; a local `init` has no issue yet (epic #219). |
+| `git init` | `pyn init` | different | In an existing git repository it adds `.pyn/` to `.git/info/exclude` and creates `.pyn/local_only/` (see [On a git home](#on-a-git-home)); it never creates a repository. Anywhere else it fails with the git-command message: repositories are created on the server with `pyn repo create` and then cloned, and a local `init` has no issue yet (epic #219). |
 | `git clone <repo> [<dir>]` | `pyn clone <source> [<dir>]` | same | Source is `<server>/owner/name`, or `owner/name` on the configured server. Output is one summary line, not progress. |
 | `git clone --depth`, `-b`, `--branch`, `--bare`, `--mirror`, `-o`, `-n`, `--recurse-submodules` | none | unsupported | Usage error (`129`). `-b` and `--branch` become possible with branches (#235). Every clone has full history on the server; there is no local object store to shallow. |
 | `pyn clone --revision <commit>` | | pyn only | Clone as of a commit (a hash, `HEAD~N`). Git does this with `clone` then `checkout`. |
-| `git status` | `pyn status` | different | Table with mode, revision, state, lock and path plus a summary line, because mode and lock state have no place in git's layout. |
-| `git status -s`, `--short`, `--porcelain`, `-b`, `<pathspec>...` | none | unsupported | Usage error (`129`). A stable machine format is not scheduled. |
+| `git status` | `pyn status` | different | Table with mode, revision, state, lock and path plus a summary line, because mode and lock state have no place in git's layout. On a git home the table is `STAGED`, `UNSTAGED`, `PATH` with git's states. |
+| `git status -s`, `--short`, `--porcelain`, `-b`, `<pathspec>...` | none | unsupported | Usage error (`129`). A stable machine format is not scheduled. `pyn status --revision` fails on a git home. |
 | `pyn status --revision <commit>` | | pyn only | Compare the workspace with a past commit (`behind` / `ahead`). |
-| `git add <path>...` | none | planned | Fails with the git-command message. pyn has no index: `commit` takes paths directly. Whether a staging notion is added is open in #223. |
+| `git add <path>...` | none | planned | Fails with the git-command message. On a pyn server `commit` takes paths directly; on a git home `add` arrives with the staging index (#253). |
 | `git commit -m <msg> [<path>...]` | `pyn commit -m <msg> <path>...` | different | One atomic commit of the named paths, uploaded to the server; there is no index and no local-only commit, so commit and publish are one step (no `push` needed). Paths are required and `-m` is required (no editor). Releases the locks it held. Output is `<path> is now at revision N`, not git's summary. |
 | `git commit -a`, `-F`, `--amend`, `--allow-empty`, `-s`, `-S`, `--no-verify`, `--author`, `--date`, `-v` | none | unsupported | Usage error (`129`). Commits are immutable on the server, so `--amend` will not exist; `-F` is not accepted because `--file` already means the content file. |
 | `pyn commit --file <local>` | | pyn only | Content file for a single path. In a workspace the file at the path is the default. |
 | `pyn commit --base <rev>` | | pyn only | The revision the edit started from; the server rejects the commit if the head moved on an exclusive path. |
-| `git log [-n <n>] [<path>]` | `pyn log [-n <n>] [<path>]` (alias `history`) | different | Without a path, newest first, 50 by default. With a path, oldest first and all revisions (git prints newest first). Output is a table of per-path revisions, not commit blocks. `-n` is also `--max-count`; `--limit` is an alias. |
+| `git log [-n <n>] [<path>]` | `pyn log [-n <n>] [<path>]` (alias `history`) | different | Without a path, newest first, 50 by default. With a path, oldest first and all revisions (git prints newest first). Output is a table of per-path revisions, not commit blocks. `-n` is also `--max-count`; `--limit` is an alias. On a git home it is git's output (see below). |
 | `git log --oneline`, `--graph`, `--stat`, `-p`, `--author`, `--since`, `--grep`, `--format`, `--follow`, `<rev>..<rev>`, `<rev> -- <path>` | none | unsupported | Usage error (`129`). A revision range is read as a path. Branch-aware log arrives with #235. |
 | `pyn log --commits` | | pyn only | List commits (`COMMIT`, `AUTHOR`, `WHEN`, `FILES`, `MESSAGE`) instead of revisions. |
 | `pyn log --filter <glob>` | | pyn only | Only paths matching the glob. |
-| `git diff [<c1> [<c2>]] [-- <path>...]` | `pyn diff [<c1> [<c2>]] [-- <path>...]` | different | Unified output as git, computed in the CLI. Commits are hashes (or abbreviations of 4 or more digits), `HEAD`, `~N`, `^`, or `a..b`; two commits work outside a workspace. With no commit it compares with the last update (git compares with the index). File modes print as in git, including `old mode` and `new mode`. |
+| `git diff [<c1> [<c2>]] [-- <path>...]` | `pyn diff [<c1> [<c2>]] [-- <path>...]` | different | Unified output as git, computed in the CLI. Commits are hashes (or abbreviations of 4 or more digits), `HEAD`, `~N`, `^`, or `a..b`; two commits work outside a workspace. With no commit it compares with the last update (git compares with the index; on a git home pyn does too). File modes print as in git, including `old mode` and `new mode`. |
 | `git diff -U<n>`, `--unified=<n>`, `--stat`, `--name-only`, `--name-status`, `--exit-code`, `-q` | same | same | `--name-status` prints `A`, `M`, `D` only. |
 | `git diff --cached`, `--staged` | none | unsupported | `fatal: pyn has no staging area` (`128`). |
 | `git diff --shortstat`, `-w`, `--word-diff`, `--color`, `--no-index`, `--check`, `-M`, `-C` | none | unsupported | Usage error (`129`). |
-| `git show [<commit>]` | `pyn show [<commit>]` | different | Commit header (`commit`, `Author:`, `Date:`), message, then the commit's diff. The newest commit if none is named. The author line carries the email. |
+| `git show [<commit>]` | `pyn show [<commit>]` | different | Commit header (`commit`, `Author:`, `Date:`), message, then the commit's diff. The newest commit if none is named. The author line carries the email. On a git home the output is git's, except for merge commits (see below). |
 | `git show -U<n>`, `--stat`, `--name-only`, `--name-status` | same | same | |
 | `git show <rev>:<path>` | `pyn get <path> [--rev N] [-o <file>]` | different | `show` takes commits only (`HEAD:foo` fails with `fatal: ... is not a commit`, `128`). File content at a revision is `pyn get`, to stdout or a file. `--rev` is a per-path revision, not a commit. |
 | `git show --oneline`, `-s`, `--format`, `<tag>`, `<object>` | none | unsupported | Usage error (`129`) or `fatal: ... is not a commit`. |
@@ -96,8 +100,8 @@ Commands people reach for that are not in the daily set.
 
 | Git | pyn | Status | Notes |
 | --- | --- | --- | --- |
-| `git ls-files` | `pyn files` | different | Table of every file with mode, head revision and lock holder. No flags. |
-| `git ls-tree [<rev>] [<path>]` | `pyn ls [<path>]` | different | One folder with each entry's mode, last change and lock. Head only; no revision argument. |
+| `git ls-files` | `pyn files` | different | Table of every file with mode, head revision and lock holder. No flags. On a git home it lists the index, every file `shared`, with no revision or lock. |
+| `git ls-tree [<rev>] [<path>]` | `pyn ls [<path>]` | different | One folder with each entry's mode, last change and lock. Head only; no revision argument. On a git home it lists `HEAD`'s tree, with no last change. |
 | `git cat-file -p`, `git show <rev>:<path>` | `pyn get <path>` | different | See `show` above. |
 | `git config --list`, `--get <key>`, `<key> <value>` | `pyn config list`, `get`, `set` | different | Subcommands instead of flags. `--global` and `--local` are accepted where they apply (`set` takes `--global` only; the default is the workspace). Keys are pyn's own. `pyn config init` is pyn only: it prompts for the user settings. |
 | `git config --unset`, `-e`, `--system`, `--file` | none | unsupported | Usage error (`129`). |
@@ -158,7 +162,92 @@ schedules them.
 | `git rm`, `git mv` | Not a CLI verb yet; no issue schedules removing or renaming paths from the CLI. |
 | `git rebase`, `git cherry-pick`, `git revert` | History is append-only on the server. |
 | `git blame`, `git grep` | Not scheduled. |
-| Anything that depends on git's object format, packfiles, `.git/` or the wire protocol (`gc`, `fsck`, `bundle`, `submodule`, `worktree`, hooks in `.git/hooks`) | Out of scope by decision #30. pyn's own hooks are tracked in #216. |
+| Commands that maintain git's own storage or run its hooks (`gc`, `fsck`, `bundle`, `submodule`, `worktree`, hooks in `.git/hooks`) | pyn reads a git repository's `.git/` on a git home (decision #245) but does not maintain it or run its hooks. pyn's own hooks are tracked in #216. |
+
+## On a git home
+
+Decision #245: a repository has one home, a pyn server or git. In a git repository (a `.git` is found) pyn behaves as git,
+through its own implementation of git's object store, refs and index, with no git library or binary (decision #30). A
+`.pyn/pyn.toml` there is ignored: no path is exclusive, and the commands that need a pyn server refuse and name it. Going
+from a git home to a pyn server is one explicit step, `pyn convert` (issue #95), which does not exist yet.
+
+**Nothing git sees is ever changed.** Tracked files, refs, notes, hooks, line endings and the index are only read. The one
+file pyn writes inside `.git/` is `info/exclude`, once, from `pyn init`. A test asserts that the `.git` directory and the
+work tree are byte-identical before and after every command.
+
+### Which home
+
+pyn looks upward from the working directory for the nearest folder that holds either of these:
+
+- a `.git`: a folder, or a `gitdir:` file as in a linked worktree or a submodule;
+- a pyn server workspace: a `.pyn` folder that `pyn clone` filled in (it holds `local_only/state/files.toml`).
+
+The nearer one decides, so a clone made inside a git repository is a pyn workspace and a git repository inside a pyn
+workspace is a git home. In one folder, the pyn server workspace wins, which is also how a converted repository will say it
+has moved. Any other `.pyn` folder, such as one `pyn init` created or a committed `.pyn/pyn.toml`, leaves the home git.
+`GIT_DIR` and `GIT_WORK_TREE` are not read.
+
+`pyn init` in a git repository adds `.pyn/` to `.git/info/exclude` (the shared one, found through the `.git` file in a
+worktree or submodule) unless a line there already hides it, and creates `.pyn/local_only/`, where pyn keeps its own state
+for a git home. It is safe to run again.
+
+### Ignored files
+
+`status` honors git's ignore rules in full: every `.gitignore` from the work tree root down (a deeper file wins),
+`.git/info/exclude`, and the global excludes file (`core.excludesFile`, else `$XDG_CONFIG_HOME/git/ignore`, else
+`~/.config/git/ignore`). Patterns follow git's own matching: negation, folder-only patterns, `**`, character classes,
+escapes and `core.ignoreCase`. A file inside an ignored folder cannot be re-included, and a tracked file stays tracked
+whatever the rules say.
+
+### Commands
+
+| Command | On a git home |
+| --- | --- |
+| `status` | Header (`On branch main`, or `HEAD detached at <id>`), a `STAGED`, `UNSTAGED`, `PATH` table, and a count line; `nothing to commit, working tree clean` when clean. States are `added`, `modified`, `deleted`, `typechange`, `untracked` and `unmerged`. Staged is `HEAD` against the index, unstaged is the index against the work tree, so a path can be in both. A folder with nothing tracked in it is listed once, as `dir/`. Paths are from the repository root. Mode changes count as modified; symlinks are compared by their target. |
+| `diff` | Index against the work tree; one commit against the work tree (the paths in the commit or the index); two commits, or `a..b`. A name that is both a revision and a file needs `--`. Shows `old mode` and `new mode`, symlinks and binary files as git does. `--cached` and `--staged` fail naming #253. |
+| `show [<rev>]` | Commit header and message, then the diff against the first parent. A merge commit prints no diff (git prints a combined diff, which pyn does not compute). |
+| `log [-n <n>] [<path or rev>]` | Git's output: commit blocks, newest first across all parents, with git's history simplification for a path. The argument is a path if one exists (now or at `HEAD`), else a revision. `--commits` is the pyn table. `--filter` fails. |
+| `files`, `ls` | `files` lists the index and `ls` lists `HEAD`'s tree. Every entry is `shared`, with no revision, lock or last change. |
+| `init` | See above. |
+| `config`, `clone` | Unchanged: they do not depend on the repository's home. A clone made inside a git repository is its own pyn workspace. |
+
+Revisions are `HEAD`, `@`, a branch, a tag (annotated tags are followed to their commit), a full or abbreviated id of 4 or
+more digits, and any of `~N`, `^` and `^N` after one. SHA-1 and SHA-256 repositories are both read. Dates print in the
+offset recorded in the commit, as git does.
+
+Differences from git, all deliberate or not yet done:
+
+- Files are read as they are on disk: `core.autocrlf`, `.gitattributes` filters and `core.eol` are not applied, so a
+  repository that depends on them can show files as modified that git does not.
+- No rename or copy detection: a rename is a delete and an add.
+- Submodule entries are not compared, and a submodule folder is not descended into.
+- `log` and `show` print no ref decorations; commit abbreviations are 7 digits and are not lengthened to stay unique;
+  `diff --stat` prints `Bin` without sizes for a binary file.
+- A nested repository that the index does not track is one untracked `dir/`.
+
+### Refused commands
+
+The commands only a pyn server provides refuse with exit `128` and this message, naming the home that has them:
+
+```text
+fatal: `pyn lock` needs a pyn server, and this repository is a git repository; `pyn convert` moves it to a pyn server
+```
+
+These are `lock`, `unlock`, `locks`, `policy`, `audit`, `verify`, `summary`, `whoami`, and the account, organization, team,
+repository and server administration commands (`login`, `logout`, `register`, `password`, `key`, `invite`, `user`, `repo`,
+`org`, `team`, `setup`, `admin`, `usage`, `token`, `member`, `role`).
+
+Commands a git home will gain fail with exit `1`, as the other git-only commands do, and name the issue:
+
+| Command | Needs |
+| --- | --- |
+| `add` | The staging index, #253. |
+| `commit`, `restore` | The staging index, #253, and writing commits and the work tree, #254. |
+| `branch`, `switch`, `checkout`, `merge`, `tag`, `stash` | Writing refs, the work tree and objects, #254. |
+| `fetch`, `pull`, `push`, `remote`, `update` | Git transport, #255. |
+| `get` | Per-path revisions, which git has no equivalent of; not scheduled. |
+
+`pyn convert` fails with `pyn: 'convert' is not available yet` and names #95.
 
 ## Open items
 

@@ -25,26 +25,26 @@ const GIT_ONLY: &[&str] = &[
 
 /// A git command, or a pyn command that wraps one, that a git home will gain with a named issue.
 const PLANNED_ON_GIT: &[(&str, &str)] = &[
-    ("add", "the staging index, #253"),
+    ("add", "the staging index (#253)"),
     (
         "commit",
-        "the staging index, #253, and writing commits, #254",
+        "the staging index (#253) and writing commits (#254)",
     ),
     (
         "restore",
-        "the staging index, #253, and writing to the work tree, #254",
+        "the staging index (#253) and writing the work tree (#254)",
     ),
-    ("branch", "writing branches, #254"),
-    ("switch", "writing branches, #254"),
-    ("checkout", "writing branches and the work tree, #254"),
-    ("merge", "merging, #254"),
-    ("tag", "writing tags, #254"),
-    ("stash", "stashing, #254"),
-    ("fetch", "git transport, #255"),
-    ("pull", "git transport, #255"),
-    ("push", "git transport, #255"),
-    ("remote", "git transport, #255"),
-    ("update", "git transport, #255"),
+    ("branch", "writing branches (#254)"),
+    ("switch", "writing branches (#254)"),
+    ("checkout", "writing branches and the work tree (#254)"),
+    ("merge", "merging (#254)"),
+    ("tag", "writing tags (#254)"),
+    ("stash", "stashing (#254)"),
+    ("fetch", "git transport (#255)"),
+    ("pull", "git transport (#255)"),
+    ("push", "git transport (#255)"),
+    ("remote", "git transport (#255)"),
+    ("update", "git transport (#255)"),
 ];
 
 /// The commands whose arguments only make sense on a pyn server, so a git home refuses before parsing them.

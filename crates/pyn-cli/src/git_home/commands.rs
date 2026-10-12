@@ -423,10 +423,7 @@ fn log_target(git: &GitHome, cwd: &Path, arg: Option<&str>) -> Result<LogTarget>
     }
     match git.repo.resolve(arg) {
         Ok(id) => Ok(LogTarget::Revision(id)),
-        Err(_) => match git.ws.repo_path(cwd, arg) {
-            Ok(rel) => Ok(LogTarget::Path(rel)),
-            Err(e) => Err(e),
-        },
+        Err(_) => Ok(LogTarget::Path(git.ws.repo_path(cwd, arg)?)),
     }
 }
 

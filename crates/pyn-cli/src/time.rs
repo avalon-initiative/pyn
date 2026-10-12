@@ -78,8 +78,14 @@ mod tests {
     #[test]
     fn git_dates_use_the_recorded_offset_and_an_unpadded_day() {
         assert_eq!(git_date(1_700_000_000, 0), "Tue Nov 14 22:13:20 2023 +0000");
-        assert_eq!(git_date(1_700_000_000, 120), "Wed Nov 15 00:13:20 2023 +0200");
-        assert_eq!(git_date(1_700_000_000, -330), "Tue Nov 14 16:43:20 2023 -0530");
+        assert_eq!(
+            git_date(1_700_000_000, 120),
+            "Wed Nov 15 00:13:20 2023 +0200"
+        );
+        assert_eq!(
+            git_date(1_700_000_000, -330),
+            "Tue Nov 14 16:43:20 2023 -0530"
+        );
         assert_eq!(git_date(1_680_000_000, 0), "Tue Mar 28 10:40:00 2023 +0000");
         assert_eq!(git_date(1_678_000_000, 0), "Sun Mar 5 07:06:40 2023 +0000");
     }

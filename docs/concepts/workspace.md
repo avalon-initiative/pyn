@@ -43,6 +43,12 @@ The collaboration policy is `.pyn/pyn.toml`, shared like any other file in the f
 [pyn.toml](pyn-toml.md). It is not called `config.toml`, because the server enforces it and a local file cannot override
 it, whereas the local settings layer in the order above.
 
+## In a git repository
+
+In a git repository `.pyn/` holds only pyn's own state, in `local_only/`, and `pyn init` hides it from git by adding `.pyn/` to
+`.git/info/exclude`, so git never sees it. The policy file is not read there: a git repository has no exclusive paths. See
+[git compatibility](git-compatibility.md#on-a-git-home) for how pyn tells a git repository from a pyn server workspace.
+
 ## Working in a workspace
 
 `pyn clone <server>/owner/name [dir]` (or `pyn clone owner/name` on the configured server) creates the folder, which defaults to
