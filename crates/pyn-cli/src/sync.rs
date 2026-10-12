@@ -132,12 +132,16 @@ pub fn status(backend: &dyn Backend, ws: &Workspace, commit: Option<&str>) -> Re
     let state = ws.load_state()?;
     let index = staging::Index::load(ws)?;
     let local: BTreeSet<String> = ws.scan()?.into_iter().collect();
+    let unmerged = crate::merging::unmerged(ws)?;
+    let merged = crate::merging::merged_cleanly(ws);
     let me = backend.whoami()?;
     let paths: BTreeSet<&String> = entries
         .keys()
         .chain(state.keys())
         .chain(local.iter())
         .chain(index.entries.keys())
+        .chain(unmerged.keys())
+        .chain(merged.iter())
         .collect();
 
     let (mut staged, mut modified, mut behind, mut ahead, mut new, mut untracked) =
@@ -215,6 +219,11 @@ pub fn status(backend: &dyn Backend, ws: &Workspace, commit: Option<&str>) -> Re
             }
             _ => {}
         }
+        if let Some(why) = unmerged.get(path) {
+            notes.push(format!("unmerged ({why})"));
+        } else if merged.contains(path) {
+            notes.push("merged".into());
+        }
         let lock = entry.and_then(|e| e.lock.as_ref()).map(|lock| {
             let by_me = lock.owner == me;
             if by_me {
@@ -261,8 +270,13 @@ pub fn status(backend: &dyn Backend, ws: &Workspace, commit: Option<&str>) -> Re
     } else {
         String::new()
     };
+    let unmerged = if unmerged.is_empty() {
+        String::new()
+    } else {
+        format!("{} unmerged, ", unmerged.len())
+    };
     println!(
-        "{staged} staged, {modified} modified, {behind} behind, {ahead}{new} new, \
+        "{staged} staged, {modified} modified, {behind} behind, {ahead}{unmerged}{new} new, \
          {untracked} untracked, {mine} locked by you, {theirs} locked by others"
     );
     Ok(())

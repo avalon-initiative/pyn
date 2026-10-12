@@ -78,10 +78,10 @@ fn git_only_commands_say_so_and_unknown_ones_are_not_commands() {
             String::from_utf8_lossy(&out.stderr).into_owned(),
         )
     };
-    let (code, err) = run(&["merge", "x"]);
+    let (code, err) = run(&["rebase", "x"]);
     assert_eq!(code, Some(1));
     assert!(
-        err.contains("'merge' is a git command pyn does not support yet"),
+        err.contains("'rebase' is a git command pyn does not support yet"),
         "{err}"
     );
 

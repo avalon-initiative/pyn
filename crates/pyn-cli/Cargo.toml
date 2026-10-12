@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0.104"
+base64 = "0.23.1"
 chrono = "0.4.45"
 clap = { version = "4.6.7", features = ["derive", "env"] }
 globset = "0.4.20"
@@ -20,6 +21,7 @@ pyn-diff = { version = "0.0.1", path = "../pyn-diff" }
 pyn-git = { version = "0.0.1", path = "../pyn-git" }
 pyn-gitwork = { version = "0.0.1", path = "../pyn-gitwork" }
 pyn-hash = { version = "0.0.1", path = "../pyn-hash" }
+pyn-merge = { version = "0.0.1", path = "../pyn-merge" }
 pyn-object = { version = "0.0.1", path = "../pyn-object" }
 pyn-proto = { version = "0.0.1", path = "../pyn-proto" }
 reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "json", "query", "rustls"] }

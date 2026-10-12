@@ -1787,6 +1787,7 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "axum",
+ "base64 0.23.1",
  "chrono",
  "clap",
  "globset",
@@ -1797,6 +1798,7 @@ dependencies = [
  "pyn-git",
  "pyn-gitwork",
  "pyn-hash",
+ "pyn-merge",
  "pyn-object",
  "pyn-proto",
  "pyn-server",

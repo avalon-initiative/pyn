@@ -884,3 +884,62 @@ pub async fn a_policy_file_arriving_by_merge_is_policy_on_the_default_branch(sto
         MergeOutcome::FastForward
     );
 }
+
+pub async fn merges_racing_into_one_branch_each_land_or_are_told_to_retry(store: Store) {
+    let h = harness(store);
+    put_on(
+        &h,
+        "main",
+        "alice",
+        &path("Source/base.cpp"),
+        "base\n",
+        None,
+    )
+    .await;
+    let names: Vec<String> = (0..6).map(|i| format!("b{i}")).collect();
+    for name in &names {
+        branch_at(&h, name, "main").await;
+        put_on(
+            &h,
+            name,
+            "alice",
+            &path(&format!("Source/{name}.cpp")),
+            name,
+            None,
+        )
+        .await;
+    }
+    put_on(
+        &h,
+        "main",
+        "alice",
+        &path("Source/base.cpp"),
+        "moved\n",
+        Some(1),
+    )
+    .await;
+    let tasks: Vec<_> = names
+        .iter()
+        .map(|name| {
+            let (svc, name) = (h.svc.clone(), name.clone());
+            tokio::spawn(async move {
+                loop {
+                    match svc.merge(&who("alice"), request(&name, "main")).await {
+                        Err(PynError::MergeStale(_)) => tokio::task::yield_now().await,
+                        other => return other.map(|r| r.outcome),
+                    }
+                }
+            })
+        })
+        .collect();
+    for t in tasks {
+        assert_eq!(t.await.unwrap().unwrap(), MergeOutcome::Merge);
+    }
+    let files: Vec<_> = revision_numbers(&h, "main")
+        .await
+        .into_iter()
+        .map(|(p, _)| p)
+        .collect();
+    assert_eq!(files.len(), 7, "{files:?}");
+    verified(&h).await;
+}

@@ -110,6 +110,12 @@ pub struct CheckoutArgs {
     /// Discard local changes that the switch would overwrite.
     #[arg(short = 'f', long)]
     force: bool,
+    /// During a merge, take the current branch's version of the conflicted files.
+    #[arg(long, conflicts_with = "theirs")]
+    ours: bool,
+    /// During a merge, take the merged-in version of the conflicted files.
+    #[arg(long)]
+    theirs: bool,
 }
 
 fn branches(api: &Api) -> Result<Vec<api::Branch>> {
@@ -132,7 +138,7 @@ fn find(api: &Api, name: &str) -> Result<Option<api::Branch>> {
 }
 
 /// What the server takes as a start point: a branch name as it is, a commit reference as the commit's full id.
-fn start_point(backend: &dyn Backend, api: &Api, spec: &str) -> Result<String> {
+pub(crate) fn start_point(backend: &dyn Backend, api: &Api, spec: &str) -> Result<String> {
     if find(api, spec)?.is_some() {
         return Ok(spec.to_string());
     }
@@ -331,7 +337,16 @@ pub fn checkout_command(
         paths,
         create: new,
         force,
+        ours,
+        theirs,
     } = args;
+    if ours || theirs {
+        if paths.is_empty() || new.is_some() {
+            bail!("`pyn checkout --ours` and `--theirs` take paths after `--`");
+        }
+        let named = paths.iter().map(|p| rp(p)).collect::<Result<Vec<_>>>()?;
+        return crate::merging::take_side(backend, api, ws, theirs, &named);
+    }
     if !paths.is_empty() {
         if new.is_some() {
             bail!("`pyn checkout -b` cannot be combined with paths");
@@ -480,6 +495,7 @@ fn remove_empty_parents(ws: &Workspace, path: &str) {
 
 /// Brings the workspace to the head of `target`, refusing first if local changes are in the way.
 fn go(backend: &dyn Backend, api: &Api, ws: &Workspace, target: &str, force: bool) -> Result<()> {
+    crate::merging::refuse_during_merge(ws, "switch")?;
     let already = name(Some(ws)) == target;
     let found = find(api, target)?.with_context(|| format!("branch '{target}' not found"))?;
     let (_, snap) = match &found.commit {

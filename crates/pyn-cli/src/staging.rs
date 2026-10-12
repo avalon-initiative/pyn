@@ -200,6 +200,7 @@ struct Plan {
 
 fn plan(ws: &Workspace, index: &Index, specs: &Specs, args: &AddArgs) -> Result<Plan> {
     let state = ws.load_state()?;
+    let conflicted = crate::merging::conflicted(ws);
     let mut ops = BTreeMap::new();
     let mut ignored = Vec::new();
     for (path, known) in &state {
@@ -214,7 +215,7 @@ fn plan(ws: &Workspace, index: &Index, specs: &Specs, args: &AddArgs) -> Result<
             continue;
         }
         let (file_mode, bytes) = localfile::read(&file)?;
-        if !known.changed(file_mode, &bytes) {
+        if !known.changed(file_mode, &bytes) && !conflicted.contains(path) {
             if index.entries.contains_key(path) {
                 ops.insert(path.clone(), Op::Unstage);
             }
@@ -301,10 +302,11 @@ pub fn add(backend: &dyn Backend, ws: &Workspace, cwd: &Path, args: &AddArgs) ->
         .collect();
     specs.require_known(ws, &known, "files")?;
     let plan = plan(ws, &index, &specs, args)?;
+    let conflicted = crate::merging::conflicted(ws);
     let puts: Vec<&String> = plan
         .ops
         .iter()
-        .filter(|(_, op)| matches!(op, Op::Put { .. }))
+        .filter(|(p, op)| matches!(op, Op::Put { .. }) && !conflicted.contains(*p))
         .map(|(p, _)| p)
         .collect();
     require_locks(backend, &puts)?;
@@ -316,6 +318,9 @@ pub fn add(backend: &dyn Backend, ws: &Workspace, cwd: &Path, args: &AddArgs) ->
                 }
                 if args.dry_run {
                     continue;
+                }
+                if conflicted.contains(&path) && crate::merging::has_markers(&ws.abs(&path)) {
+                    eprintln!("warning: {path} still has conflict markers");
                 }
                 let hash = hash_of(&bytes);
                 store(ws, &hash, &bytes)?;

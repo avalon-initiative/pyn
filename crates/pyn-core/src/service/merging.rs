@@ -25,7 +25,7 @@ enum Verdict {
     /// The target's revision stands.
     Keep,
     /// The path points at an existing revision.
-    Point(Revision),
+    Point(Box<Revision>),
     /// A new revision of the path's line.
     Write(Content, FileMode),
     Conflict(ConflictKind),
@@ -103,7 +103,7 @@ fn settle(
         if is_ours {
             Verdict::Keep
         } else {
-            Verdict::Point(natural.clone())
+            Verdict::Point(Box::new(natural.clone()))
         }
     } else {
         Verdict::Write(content, file_mode)
@@ -480,7 +480,7 @@ impl RepoService {
     ) -> Result<Verdict> {
         match (ours, theirs) {
             (Some(_), None) | (None, None) => Ok(Verdict::Keep),
-            (None, Some(t)) => Ok(Verdict::Point(t.clone())),
+            (None, Some(t)) => Ok(Verdict::Point(Box::new(t.clone()))),
             (Some(o), Some(t)) => {
                 let (later, earlier, later_head) = if o.id > t.id {
                     (o, t, ours_head)
@@ -497,7 +497,7 @@ impl RepoService {
                 } else if o.id > t.id {
                     Verdict::Keep
                 } else {
-                    Verdict::Point(later.clone())
+                    Verdict::Point(Box::new(later.clone()))
                 })
             }
         }
@@ -740,7 +740,7 @@ impl RepoService {
                     if is_policy {
                         policy_content = Some(r.content);
                     }
-                    adopted.push(r.clone());
+                    adopted.push((**r).clone());
                 }
                 Verdict::Write(content, file_mode) => {
                     let blob = match content {

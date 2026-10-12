@@ -2,7 +2,6 @@
 
 const GIT_ONLY: &[&str] = &[
     "init",
-    "merge",
     "fetch",
     "pull",
     "push",

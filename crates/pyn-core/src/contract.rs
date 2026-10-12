@@ -3064,6 +3064,7 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_merge_computed_on_an_old_head_is_refused);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_merge_needs_the_checkin_permission_and_an_existing_source);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_policy_file_arriving_by_merge_is_policy_on_the_default_branch);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; merges_racing_into_one_branch_each_land_or_are_told_to_retry);
     };
     (@one $factory:expr; [$(#[$attr:meta])*]; $name:ident) => {
         #[tokio::test(flavor = "multi_thread")]

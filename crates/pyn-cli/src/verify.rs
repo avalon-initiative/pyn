@@ -194,11 +194,12 @@ fn commit_id(c: &api::Commit) -> Option<String> {
     git.id(algorithm).ok().map(|id: ObjectId| id.to_hex())
 }
 
-/// Recomputes every commit id from its fields and checks that each commit's parent is the commit before it.
+/// Recomputes every commit id from its fields and checks that each commit's parents are commits that came before it.
 /// `commits` is newest first, as served.
 fn check_commits(commits: &[api::Commit]) -> Vec<Finding> {
     let mut out = Vec::new();
-    for (i, c) in commits.iter().enumerate() {
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for c in commits.iter().rev() {
         let at = |kind: &str| {
             (
                 kind.to_string(),
@@ -209,14 +210,17 @@ fn check_commits(commits: &[api::Commit]) -> Vec<Finding> {
         if commit_id(c).as_deref() != Some(c.id.as_str()) {
             out.push(at("hash_mismatch"));
         }
-        let before = commits.get(i + 1).map(|p| p.id.as_str());
-        if c.parents.first().map(String::as_str) != before || c.parents.len() > 1 {
+        let linked = c.parents.iter().all(|p| seen.contains(p.as_str()))
+            && (!c.parents.is_empty() || seen.is_empty());
+        if !linked {
             out.push(at("broken_link"));
         }
         if c.revisions.iter().any(|r| r.commit != c.id) {
             out.push(at("broken_link"));
         }
+        seen.insert(c.id.as_str());
     }
+    out.reverse();
     out
 }
 

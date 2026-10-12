@@ -17,6 +17,7 @@ mod diff;
 mod git_home;
 mod limits;
 mod localfile;
+mod merging;
 mod pyn_server;
 mod snapshot;
 mod staging;
@@ -108,6 +109,8 @@ enum Command {
     Switch(branch::SwitchArgs),
     /// Switch branches, or restore files from the workspace's revisions or from another commit (`pyn lock` takes a lock).
     Checkout(branch::CheckoutArgs),
+    /// Merge a branch into the current branch.
+    Merge(merging::MergeArgs),
     /// Show what differs between this workspace and the server.
     Status {
         /// Compare with the repository as of this commit (`HEAD~N`, a commit hash) instead of the newest.
@@ -222,8 +225,8 @@ enum Command {
         file: Option<std::path::PathBuf>,
         #[arg(long)]
         base: Option<u64>,
-        /// The commit message; repeat for more paragraphs.
-        #[arg(short, long, required = true)]
+        /// The commit message; repeat for more paragraphs. A merge in progress has its own.
+        #[arg(short, long)]
         message: Vec<String>,
         /// Stage every changed tracked file first, as in git; new files are not included.
         #[arg(short = 'a', long)]
@@ -785,6 +788,12 @@ fn runs_anywhere(command: &Command) -> bool {
 
 fn run(cli: Cli) -> Result<()> {
     let cwd = std::env::current_dir()?;
+    if let Command::Commit { message, .. } = &cli.command
+        && message.is_empty()
+        && !Workspace::discover(&cwd).is_some_and(|w| merging::in_progress(&w))
+    {
+        usage_error("the following required arguments were not provided:\n  --message <MESSAGE>");
+    }
     let git = if matches!(cli.command, Command::Clone { .. } | Command::Config(_)) {
         None
     } else {
@@ -870,6 +879,16 @@ fn run(cli: Cli) -> Result<()> {
             format!("`pyn {what}` works inside a workspace; run `pyn clone <dir>` first")
         })
     };
+
+    if let (Command::Commit { paths, .. }, Some(w)) = (&cli.command, &ws)
+        && !paths.is_empty()
+        && merging::in_progress(w)
+    {
+        bail!(
+            "you have not concluded your merge, so paths cannot be committed alone; \
+             stage what you resolved with `pyn add` and run `pyn commit`, or give the merge up with `pyn merge --abort`"
+        );
+    }
 
     match cli.command {
         Command::External(_) => unreachable!("handled before run"),
@@ -1180,6 +1199,7 @@ fn run(cli: Cli) -> Result<()> {
                 .transpose()?;
             sync::clone_into(&backend, &target, &server, &repo, commit.as_deref())?;
         }
+        Command::Merge(args) => merging::merge_command(&backend, ws.as_ref(), args)?,
         Command::Branch(args) => branch::branch_command(&backend, ws.as_ref(), args)?,
         Command::Switch(args) => branch::switch_command(&backend, ws.as_ref(), args)?,
         Command::Checkout(args) => {
@@ -1188,6 +1208,9 @@ fn run(cli: Cli) -> Result<()> {
         Command::Status { revision } => {
             let w = in_workspace("status")?;
             branch::print_header(Some(w));
+            if let Some(text) = merging::status_header(w)? {
+                print!("{text}");
+            }
             let commit = revision
                 .map(|r| snapshot::resolve(&backend, &r))
                 .transpose()?;
@@ -1195,6 +1218,9 @@ fn run(cli: Cli) -> Result<()> {
         }
         Command::Update { paths, revision } => {
             let only = paths.iter().map(|p| rp(p)).collect::<Result<Vec<_>>>()?;
+            if let Some(w) = &ws {
+                merging::refuse_during_merge(w, "update")?;
+            }
             let commit = revision
                 .map(|r| snapshot::resolve(&backend, &r))
                 .transpose()?;
@@ -1304,7 +1330,17 @@ fn run(cli: Cli) -> Result<()> {
                 bail!("--file and --base need a path");
             }
             let w = in_workspace("commit")?;
-            staging::commit(&backend, w, &message.join("\n\n"), all)?;
+            if merging::in_progress(w) {
+                if all {
+                    bail!(
+                        "cannot do a partial commit during a merge; stage what you resolved with `pyn add`"
+                    );
+                }
+                let message = (!message.is_empty()).then(|| message.join("\n\n"));
+                merging::finish(&backend, backend.pyn_server("commit")?, w, message)?;
+            } else {
+                staging::commit(&backend, w, &message.join("\n\n"), all)?;
+            }
         }
         Command::Commit { all: true, .. } => {
             bail!("`commit -a` commits every changed tracked file; name no paths with it")
