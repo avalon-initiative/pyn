@@ -223,6 +223,17 @@ impl AuditScope {
     }
 }
 
+impl AuditScope {
+    /// The scope a storage key from `key` names.
+    pub fn from_key(key: &str) -> Self {
+        match key.strip_prefix("@org:") {
+            Some(name) => Self::Org(UserId::new(name)),
+            None if key == SERVER_AUDIT_ID => Self::Server,
+            None => Self::Repo(RepoId::new(key)),
+        }
+    }
+}
+
 impl From<&RepoId> for AuditScope {
     fn from(id: &RepoId) -> Self {
         Self::Repo(id.clone())

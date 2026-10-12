@@ -179,14 +179,7 @@ pub(crate) async fn audit(
     });
     let entries = events
         .into_iter()
-        .map(|e| api::AuditEntry {
-            id: e.id,
-            at: e.at,
-            actor: e.actor.to_string(),
-            action: e.action.to_string(),
-            path: None,
-            detail: e.detail,
-        })
+        .map(|e| crate::audit_entry_dto(e, false))
         .collect();
     Ok(Json(api::AuditPage {
         entries,

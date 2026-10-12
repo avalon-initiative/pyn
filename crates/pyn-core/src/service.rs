@@ -783,7 +783,10 @@ impl RepoService {
                 ..AuditQuery::default()
             };
             let scope = AuditScope::Repo(self.repo.clone());
-            activity.extend(check_events(&scope, self.audit.list(&scope, &query).await?)?);
+            activity.extend(check_events(
+                &scope,
+                self.audit.list(&scope, &query).await?,
+            )?);
         }
         activity.sort_by_key(|e| std::cmp::Reverse(e.id));
         activity.truncate(activity_limit);

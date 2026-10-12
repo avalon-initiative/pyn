@@ -164,6 +164,7 @@ struct RepoAddress {
         missing_objects,
         assemble_object,
         history,
+        verify,
         list_commits,
         get_commit,
         snapshot
@@ -172,6 +173,8 @@ struct RepoAddress {
         api::Lock,
         api::Revision,
         api::HistoryPage,
+        api::VerifyReport,
+        api::VerifyProblem,
         api::Commit,
         api::CommitPage,
         api::SnapshotEntry,
@@ -454,6 +457,7 @@ pub fn router(state: AppState) -> Router {
             post(assemble_object),
         )
         .route("/v1/repos/{owner}/{name}/history", get(history))
+        .route("/v1/repos/{owner}/{name}/verify", get(verify))
         .route("/v1/repos/{owner}/{name}/commits", get(list_commits))
         .route("/v1/repos/{owner}/{name}/commits/{commit}", get(get_commit))
         .route("/v1/repos/{owner}/{name}/snapshot", get(snapshot))
@@ -551,7 +555,7 @@ impl IntoResponse for ApiError {
             | PynError::NotOrgRepo(_)
             | PynError::NotExclusive(_)
             | PynError::ObjectMissing(_) => StatusCode::BAD_REQUEST,
-            PynError::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            PynError::Storage(_) | PynError::HistoryCorrupt(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         let body = api::ErrorBody {
             code: self.0.code().to_string(),
@@ -685,6 +689,21 @@ fn revision_dto(r: pyn_core::Revision) -> api::Revision {
         mode: r.mode.map(mode_dto),
         changeset: r.changeset,
         commit: r.commit,
+        hash: r.hash.to_string(),
+        previous: r.previous.map(|h| h.to_string()),
+    }
+}
+
+pub(crate) fn audit_entry_dto(e: pyn_core::AuditEvent, with_path: bool) -> api::AuditEntry {
+    api::AuditEntry {
+        id: e.id,
+        at: e.at,
+        actor: e.actor.to_string(),
+        action: e.action.to_string(),
+        path: e.path.filter(|_| with_path).map(|p| p.to_string()),
+        detail: e.detail,
+        hash: e.hash,
+        previous: e.previous,
     }
 }
 
@@ -992,6 +1011,48 @@ async fn history(
     Ok(Json(api::HistoryPage {
         revisions: page.revisions.into_iter().map(revision_dto).collect(),
         next_cursor: page.next.map(|c| c.encode()),
+    }))
+}
+
+#[derive(Deserialize)]
+struct VerifyQuery {
+    path: Option<String>,
+}
+
+/// Needs `read`; the audit log is also checked for callers with `view_audit`.
+#[utoipa::path(get, path = "/v1/repos/{owner}/{name}/verify",
+    params(RepoAddress,
+           ("path" = Option<String>, Query, description = "check only this path; the audit log is then not checked")),
+    responses((status = 200, body = api::VerifyReport),
+              (status = 404, body = api::ErrorBody, description = "path_not_found for a path without revisions")))]
+async fn verify(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path((owner, name)): Path<(String, String)>,
+    Query(q): Query<VerifyQuery>,
+) -> ApiResult<Json<api::VerifyReport>> {
+    let who = identify_optional(&s, &headers).await?;
+    let (repo, principal) = open_visible(&s, who.as_ref(), &owner, &name).await?;
+    principal.require(Permission::Read)?;
+    let path = q.path.map(RepoPath::new).transpose()?;
+    let report = repo
+        .service
+        .verify(path.as_ref(), principal.has(Permission::ViewAudit))
+        .await?;
+    Ok(Json(api::VerifyReport {
+        paths: report.paths,
+        revisions: report.revisions,
+        audit_events: report.audit_events,
+        problems: report
+            .problems
+            .into_iter()
+            .map(|p| api::VerifyProblem {
+                kind: p.kind.as_str().to_string(),
+                path: p.path.map(|p| p.to_string()),
+                revision: p.revision.map(|r| r.0),
+                event: p.event,
+            })
+            .collect(),
     }))
 }
 
@@ -1450,14 +1511,7 @@ async fn audit(
     });
     let entries = events
         .into_iter()
-        .map(|e| api::AuditEntry {
-            id: e.id,
-            at: e.at,
-            actor: e.actor.to_string(),
-            action: e.action.to_string(),
-            path: e.path.map(|p| p.to_string()),
-            detail: e.detail,
-        })
+        .map(|e| audit_entry_dto(e, true))
         .collect();
     Ok(Json(api::AuditPage {
         entries,

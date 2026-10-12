@@ -39,6 +39,10 @@ pub struct Revision {
     pub changeset: Option<String>,
     /// The repository-wide commit this revision belongs to; see `Commit`.
     pub commit: u64,
+    /// SHA-256 hex over the revision's canonical encoding (docs/concepts/integrity.md).
+    pub hash: String,
+    /// The hash of the path's previous revision; absent for the first.
+    pub previous: Option<String>,
 }
 
 /// One atomic write: a single checkin or a whole changeset. Commits are numbered 1, 2, ... per repository, and the
@@ -675,6 +679,10 @@ pub struct AuditEntry {
     pub action: String,
     pub path: Option<String>,
     pub detail: String,
+    /// SHA-256 hex over the event's canonical encoding, which includes `previous`.
+    pub hash: String,
+    /// The hash of the preceding event in the same log; absent for the first.
+    pub previous: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -1027,4 +1035,24 @@ pub struct OwnerUsage {
     pub usage: Usage,
     /// Ordered by name.
     pub repositories: Vec<RepoUsage>,
+}
+
+/// One break found by verification: `hash_mismatch` (a record's fields do not give its hash) or `broken_link` (it does
+/// not follow the record before it). Revision breaks carry `path` and `revision`; audit breaks carry `event`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct VerifyProblem {
+    pub kind: String,
+    pub path: Option<String>,
+    pub revision: Option<u64>,
+    pub event: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct VerifyReport {
+    pub paths: u64,
+    pub revisions: u64,
+    /// Events checked; null when the audit log was not checked (a single path, or no `view_audit`).
+    #[schema(required = true)]
+    pub audit_events: Option<u64>,
+    pub problems: Vec<VerifyProblem>,
 }
