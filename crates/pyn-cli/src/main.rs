@@ -1348,8 +1348,9 @@ fn run(cli: Cli) -> Result<()> {
             table::show(header, &rows, "no history");
         }
         Command::Verify { path, verbose } => {
+            let api = backend.pyn_server("verify")?;
             let path = path.map(|p| rp(&p)).transpose()?;
-            if !verify::run(&api, path.as_deref(), verbose)? {
+            if !verify::run(api, path.as_deref(), verbose)? {
                 std::process::exit(1);
             }
         }
