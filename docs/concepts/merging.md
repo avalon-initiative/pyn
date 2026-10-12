@@ -3,7 +3,7 @@
 Merging brings the commits of one [branch](branches.md) (or any commit) into another. It follows git's model, extended only
 where exclusive files need it: shared paths are merged by content, exclusive paths take the later revision of their single
 line (decision #28), and a mode conversion that met parallel work is a conflict the person decides (decision #195).
-Remotes (#237), per-branch policy and the stranded-version report (#238) and git-home merge (#254) are separate work.
+Remotes (#237) and git-home merge (#254) are separate work.
 
 ## The operation
 
@@ -47,8 +47,10 @@ other common ancestor descends from.
 
 ## Per path
 
-The merge looks at every path whose revision differs between the two heads. A path's mode is the one the policy gives it
-now (the default branch's `.pyn/pyn.toml`; a branch cannot change a path's mode).
+The merge looks at every path whose revision differs between the two heads. A path's mode is the one the policy the merge result has gives it: the later of the two sides'
+[effective policies](branches.md#the-effective-policy-of-a-branch) (the higher-numbered policy commit), so merging the
+default branch into a branch brings its policy commits, and a merge into the default branch is decided under the policy in
+force there. A branch cannot change a path's mode.
 
 ### Shared paths
 
@@ -75,13 +77,20 @@ commit is the highest-numbered revision in its ancestry, so a merge takes the la
 lock and writes no revision.
 
 The one exception is a path that was **converted** from shared to exclusive while another branch kept changing it as a
-shared path (decision #195 item 4). Its revision on that branch is a shared version outside the other side's ancestry and
-below the conversion revision. That path is a conflict that is never merged automatically, and it blocks only itself: the
-rest of the merge is computed as usual. It is reported as `exclusive_conversion`, with both versions and the base. The
-person chooses the content that becomes the next revision of the path's single line, which may be either version or
-something new, and takes the lock as for any exclusive edit (`lock_required` otherwise); the new revision is based on the
-newest revision of the path on any branch. Choosing the content the later revision already has needs no lock and writes
-nothing.
+shared path (decision #195 item 4). A version of it that was made under the shared mode and that the other side's history
+does not contain is a **diverged version**, whether its number is below the conversion revision or above it (a branch that
+had not picked the policy up kept committing the path without a lock). When one side holds a diverged version and the other
+a different one, the path is a conflict that is never merged automatically, and it blocks only itself: the rest of the
+merge is computed as usual. Two sides with the same content never conflict. It is reported as `exclusive_conversion`, with
+both versions and the base, and with **what happened and when** (`conversion`): the conversion revision, the policy
+revision in force and who made the change and when, and the diverged version that was stranded with its author and time.
+`pyn merge` prints it as one sentence per path. The person chooses the content that becomes the next revision of the path's
+single line, which may be either version or something new, and takes the lock as for any exclusive edit (`lock_required`
+otherwise; the lock request may name the branch being merged into even though that branch has not picked the policy up yet);
+the new revision is based on the newest revision of the path on any branch. Choosing the content the later revision already
+has needs no lock and writes nothing.
+
+The same report was given when the conversion happened: see [stranded versions](pyn-toml.md#stranded-versions).
 
 Exclusive-to-shared (decision #195 item 3) never conflicts: the old line is ordinary ancestry, and the path merges as a
 shared path from then on.
@@ -100,7 +109,8 @@ shared path from then on.
   merged.
 - **Policy**: a merge into the default branch that brings a different `.pyn/pyn.toml` is a policy commit: the file must
   parse, the merger needs the `edit_policy` permission, and the new policy applies and converts paths exactly as a direct
-  policy commit does (decision #38, [policy](pyn-toml.md)). On any other branch the file is just a file.
+  policy commit does (decision #38, [policy](pyn-toml.md)), and the report of the merge lists the
+  [stranded versions](pyn-toml.md#stranded-versions) it caused (`stranded`). On any other branch the file is just a file.
 
 ## Conflicts and resolution
 

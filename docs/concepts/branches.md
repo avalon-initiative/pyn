@@ -82,7 +82,8 @@ The effective policy is what the branch's own operations use, each by the branch
   path that is exclusive there needs the caller's lock (`lock_required`) and a base on the newest revision of its line,
   while a shared one is based on the branch's own revision;
 - a lock request names the branch it is for (`branch`, the default branch if omitted) and is refused with `not_exclusive`
-  when the branch's policy makes the path shared;
+  only when the path is shared under the branch's policy and under the default branch's, so a branch that is about to take
+  a conversion can still take the lock that resolving it needs;
 - a snapshot, a folder listing and the file list of a branch or of any commit show the modes of that commit's effective
   policy;
 - a [merge](merging.md) is decided under the policy the result has: the later of the two sides' effective policies (the
@@ -130,7 +131,10 @@ schemas only.
 | `PATCH .../branches/{branch}` `{name}` | the renamed branch |
 | `DELETE .../branches/{branch}?force=` | `204`; `409 branch_not_merged` without `force` for a branch that is not on the default branch |
 
-`checkin`, `changesets` and `restore` take an optional `branch` in the body. `commits`, `snapshot`, `tree`, `files`,
+`checkin`, `changesets`, `restore` and `checkout` (the lock request) take an optional `branch` in the body.
+The lock request is refused with `not_exclusive` unless the path is exclusive under the branch's effective policy or the
+default branch's. The response to checking in or restoring `.pyn/pyn.toml` on the default branch carries `stranded`, and
+`policy/preview` and the merge report carry it too ([stranded versions](pyn-toml.md#stranded-versions)). `commits`, `snapshot`, `tree`, `files`,
 `history` and `content` take an optional `branch` query parameter; `snapshot` takes either `commit` or `branch`. Every one
 of them uses the default branch when none is named. `summary` describes the default branch and counts all branches. An
 unknown branch is `404 branch_not_found`.
@@ -138,7 +142,7 @@ unknown branch is `404 branch_not_found`.
 ## Command line
 
 A workspace is on one branch, recorded in `.pyn/local_only/state/branch` (the default branch when the file is absent).
-Everything the workspace does, listing, `update`, `diff`, `log`, `commit`, `restore`, `get`, is scoped to that branch.
+Everything the workspace does, listing, `update`, `diff`, `log`, `commit`, `restore`, `get`, `lock`, is scoped to that branch.
 `pyn status` starts with `On branch <name>`, and `pyn log` prints it on standard error.
 
 | Command | What it does |

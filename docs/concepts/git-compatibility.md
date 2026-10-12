@@ -118,7 +118,7 @@ Commands people reach for that are not in the daily set.
 ## Branching and merging
 
 Branches and merge exist on a pyn server ([branches](branches.md), [merging](merging.md)); remotes do not and fail with a message today. The model is
-decision #233 (commit graph, per-commit trees, branch heads); policy per branch is #238; exclusive paths keep one linear
+decision #233 (commit graph, per-commit trees, branch heads); policy per branch is [branches](branches.md#policy-and-modes); exclusive paths keep one linear
 history across branches (decision #28).
 
 | Git | pyn | Status | Notes |
@@ -148,7 +148,7 @@ No git equivalent; these keep their own names and are never aliased to a git com
 | `pyn lock <path> [--base <rev>]` | Take the leased lock on an exclusive file. |
 | `pyn unlock <path> [--force --reason <text>]` | Give a lock up without committing, or remove another user's (needs `force_unlock`). |
 | `pyn locks [--mine]` | List live locks in the repository, or yours everywhere. |
-| `pyn policy preview` | Show which paths would change mode, and which locks would be released, if a policy file were committed. |
+| `pyn policy preview` | Show which paths would change mode, which locks would be released and which branch versions would be stranded, if a policy file were committed. |
 | `pyn audit` | Audit log (see `reflog` above). |
 | `pyn get <path>`, `files`, `ls`, `summary`, `update` | Content, listings, repository summary and workspace update (see above). |
 | `pyn login`, `logout`, `register`, `password`, `whoami`, `key`, `token` | Accounts, sessions, SSH keys and API tokens. |

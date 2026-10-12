@@ -74,11 +74,16 @@ invalid values are errors too: with a safe default, a typo like `[exlusive]` mus
 
 ## Changing policy
 
-The server is the only authority on a path's mode. Each repository enforces the `.pyn/pyn.toml` at its own head, and a
-branch cannot override a path's mode. Only the default branch's copy counts: a commit to `.pyn/pyn.toml` on another
+The server is the only authority on a path's mode. A path's mode changes only by a commit to the default branch's
+`.pyn/pyn.toml`, and a branch cannot override it. A commit to `.pyn/pyn.toml` on another
 [branch](branches.md#policy-and-modes) is a change to a file there, and takes effect when it is merged into the default
 branch by a [merge](merging.md#what-a-merge-commit-holds) (or fast-forward), which then applies it and converts paths as a direct
-policy commit does; until per-branch policy (#238) the default branch's policy applies to every branch.
+policy commit does.
+
+The policy applies to the default branch from that commit on. Another branch takes it when it gets the commit, by merge or
+update from the default branch, and keeps the policy it had until then: a branch's
+[effective policy](branches.md#the-effective-policy-of-a-branch) is the default branch's policy as of the latest policy
+commit the branch contains.
 
 A policy change is a check-in of `.pyn/pyn.toml`, made by someone with the `edit_policy` permission. It can arrive through
 a pull request or as a direct commit; which one is the team's choice. The server validates the file before recording it: it
@@ -98,16 +103,39 @@ log as `mode_converted`, and the change itself as `policy_changed`. Storage is u
   yet.
 - **Shared to exclusive**: the path's current content is recorded as the next revision of its history (a conversion
   revision, made under the exclusive mode and authored by whoever made the change), and later changes need the lock.
-  It is never refused. Branches that hold diverged versions of the path become stranded: their
+  It is never refused. Branches that hold diverged versions of the path become [stranded](#stranded-versions): their
   versions stay in history but can no longer merge into the path's single line. The server reports the affected branches
   and revisions to whoever made the change and to the branch owners, and shows it again at merge time (a
   [merge](merging.md#exclusive-paths) reports the path as a conflict that blocks only itself). To keep a stranded
-  version, take the lock and check it in as the new head. *Provisional:* the diverged versions are kept and cannot be committed
-  on without the lock (see [branches](branches.md#policy-and-modes)), but the report of them arrives with #238.
+  version, take the lock and check it in as the new head.
 
 **Preview.** `pyn policy preview <file>` (`POST /v1/repos/{owner}/{name}/policy/preview`, needs `edit_policy`) reports which paths
-would change mode in each direction and which live locks would be released, without applying anything. The conversion rules
-are decision #195.
+would change mode in each direction, which live locks would be released and which branch versions would be stranded
+(`stranded`, the same entries the change itself returns, without the conversion revision), without applying anything. The
+conversion rules are decision #195.
+
+## Stranded versions
+
+When a path becomes exclusive on the default branch, a **diverged version** of it on another branch is a revision of the
+path that was made under the shared mode, that the default branch's history does not contain, and whose content differs
+from the default branch's. It is stranded: it stays in history, nothing is deleted, and it cannot merge into the path's
+single line. A branch that has not picked the policy up can still commit the path as a shared one, so a version made after
+the conversion is diverged too.
+
+- **To the person making the change.** The response to checking in (or restoring) `.pyn/pyn.toml` on the default branch,
+  and the report of a merge that brings a policy file into it, list every stranded version in `stranded`: the path, the
+  branch, who created the branch, the revision, its commit, author and time, and the conversion revision. `pyn commit` and
+  `pyn merge` print it as a table. The preview lists the versions the change would strand.
+- **To the branch owners.** Notifications do not exist yet (#21, #76), so each stranded version is written to the
+  repository's [audit log](access.md) as one `version_stranded` event for the path, by whoever made the change, naming the
+  branch, the person who created it, the revision with its author and time, the policy revision and the conversion
+  revision. `pyn audit --action version_stranded` lists them.
+- **At a later merge.** Merging the branch into the default branch, or the default branch into the branch, reports the path
+  as an `exclusive_conversion` conflict that carries what happened and when: the conversion revision, the policy revision,
+  who made the change and when, and the stranded version with its author and time ([merging](merging.md#exclusive-paths)).
+
+Branches whose copy of the path equals the default branch's content, and branches that have already taken the conversion,
+are not reported. Changing a path to shared never strands anything.
 
 Each revision records the mode its path had when it was made (`mode` on the revision in the API), so a path's history shows
 where it changed. Revisions made before this was recorded have no mode.

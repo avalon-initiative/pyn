@@ -45,7 +45,7 @@ Locks expire, but sometimes one has to be removed at once. `pyn unlock --force -
 lock. It needs the `force_unlock` permission, and the reason is mandatory because it is recorded.
 
 The audit log is an append-only record of lock, revision and access events: checkout, release, checkin, restore, force unlock,
-member added, role changed, role permissions changed, token created, token revoked, and repository created, updated and deleted, each with who, when, the path and a short detail (for a force unlock, whose lock was removed and why). `pyn audit` shows it
+member added, role changed, role permissions changed, token created, token revoked, repository created, updated and deleted, and a [version stranded](pyn-toml.md#stranded-versions) by a policy change, each with who, when, the path and a short detail (for a force unlock, whose lock was removed and why). `pyn audit` shows it
 newest first and can filter by path, user and action; it needs the `view_audit` permission. Events are never changed or
 removed.
 
