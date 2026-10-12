@@ -1,0 +1,7 @@
+diff --git a/src/main.rs b/src/main.rs
+index da5ceda..7703aae 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1 +1 @@
+-fn main() {}
++fn main() { println!("v2"); }

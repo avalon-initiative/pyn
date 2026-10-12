@@ -1,0 +1,16 @@
+commit 128036cd7ff9bf9ad5ab698f051ca2426f98a070
+Author: Fixture Author <author@example.com>
+Date:   Sun Nov 19 00:13:20 2023 +0200
+
+    third commit
+
+diff --git a/docs/guide.md b/docs/guide.md
+deleted file mode 100644
+index 7e2b643..0000000
+--- a/docs/guide.md
++++ /dev/null
+@@ -1 +0,0 @@
+-guide
+diff --git a/src/lib.rs b/src/lib.rs
+old mode 100644
+new mode 100755

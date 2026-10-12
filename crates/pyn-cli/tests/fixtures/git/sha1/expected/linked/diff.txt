@@ -1,0 +1,7 @@
+diff --git a/feature.txt b/feature.txt
+index a7453f0..d1dd32e 100644
+--- a/feature.txt
++++ b/feature.txt
+@@ -1 +1 @@
+-feature
++feature edit

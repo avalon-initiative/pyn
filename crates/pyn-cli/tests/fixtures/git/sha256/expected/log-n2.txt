@@ -1,0 +1,12 @@
+commit 941cd002cda4ba2e72e1afadf90c6e9e6798ad6428d364ac7c4f1b477e25eac9
+Merge: 61e35e6 f67558d
+Author: Fixture Author <author@example.com>
+Date:   Mon Nov 20 00:13:20 2023 +0200
+
+    Merge branch 'feature'
+
+commit 61e35e652f78d2c7e93d996572c3b51dd5ac8710c7119897a3af0514d46daa0f
+Author: Fixture Author <author@example.com>
+Date:   Sun Nov 19 00:13:20 2023 +0200
+
+    third commit
