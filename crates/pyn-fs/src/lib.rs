@@ -8,8 +8,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
 use pyn_core::object::clamp_range;
-use pyn_core::{ContentHash, ObjectRead, ObjectReader, ObjectStore, PynError, Result};
-use sha2::{Digest, Sha256};
+use pyn_core::{
+    KeyHasher, Keying, ObjectId, ObjectRead, ObjectReader, ObjectStore, PynError, REPO_ALGORITHM,
+    Result,
+};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -74,11 +76,12 @@ impl FsObjectStore {
     async fn write_temp(
         &self,
         reader: &mut ObjectReader,
+        keying: Keying,
         max: Option<u64>,
         tmp: &Path,
-    ) -> Result<ContentHash> {
+    ) -> Result<ObjectId> {
         let mut file = tokio::fs::File::create(tmp).await.map_err(storage)?;
-        let mut hasher = Sha256::new();
+        let mut hasher = KeyHasher::new(keying);
         let mut total = 0u64;
         let mut buf = vec![0u8; 64 * 1024];
         loop {
@@ -92,15 +95,15 @@ impl FsObjectStore {
                     limit: max.unwrap_or_default(),
                 });
             }
-            hasher.update(&buf[..n]);
+            hasher.update(&buf[..n])?;
             file.write_all(&buf[..n]).await.map_err(storage)?;
         }
         file.sync_all().await.map_err(storage)?;
-        Ok(ContentHash::new(hex::encode(hasher.finalize())))
+        hasher.finish()
     }
 
     /// Moves the finished temp file into the store, compressed when that pays; leaves `tmp` for the caller to remove.
-    async fn place(&self, hash: &ContentHash, tmp: &Path) -> Result<()> {
+    async fn place(&self, hash: &ObjectId, tmp: &Path) -> Result<()> {
         let raw = self.path_for(hash)?;
         let packed = packed_path(&raw);
         if tokio::fs::try_exists(&raw).await.map_err(storage)?
@@ -133,12 +136,11 @@ impl FsObjectStore {
         tokio::fs::rename(&staged, &packed).await.map_err(storage)
     }
 
-    /// Rejects anything that is not 64 lowercase hex characters, so a hash can never escape the root.
-    fn path_for(&self, hash: &ContentHash) -> Result<PathBuf> {
-        let h = hash.as_str();
-        let valid = h.len() == 64 && h.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
-        if !valid {
-            return Err(PynError::ObjectMissing(h.to_string()));
+    /// Only SHA-256 ids are stored; the hex form cannot escape the root.
+    fn path_for(&self, hash: &ObjectId) -> Result<PathBuf> {
+        let h = hash.to_hex();
+        if hash.algorithm() != REPO_ALGORITHM {
+            return Err(PynError::ObjectMissing(h));
         }
         Ok(self.root.join(&h[..2]).join(&h[2..]))
     }
@@ -146,10 +148,15 @@ impl FsObjectStore {
 
 #[async_trait]
 impl ObjectStore for FsObjectStore {
-    async fn put_stream(&self, mut reader: ObjectReader, max: Option<u64>) -> Result<ContentHash> {
+    async fn put_stream(
+        &self,
+        mut reader: ObjectReader,
+        keying: Keying,
+        max: Option<u64>,
+    ) -> Result<ObjectId> {
         let n = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
         let tmp = self.root.join(format!(".tmp-{}-{n}", std::process::id()));
-        let written = self.write_temp(&mut reader, max, &tmp).await;
+        let written = self.write_temp(&mut reader, keying, max, &tmp).await;
         let hash = match written {
             Ok(hash) => hash,
             Err(e) => {
@@ -162,11 +169,7 @@ impl ObjectStore for FsObjectStore {
         placed.map(|()| hash)
     }
 
-    async fn read(
-        &self,
-        hash: &ContentHash,
-        range: Option<Range<u64>>,
-    ) -> Result<Option<ObjectRead>> {
+    async fn read(&self, hash: &ObjectId, range: Option<Range<u64>>) -> Result<Option<ObjectRead>> {
         let path = self.path_for(hash)?;
         match tokio::fs::File::open(&path).await {
             Ok(mut file) => {
@@ -211,7 +214,7 @@ impl ObjectStore for FsObjectStore {
         }))
     }
 
-    async fn put_manifest(&self, key: &ContentHash, bytes: Vec<u8>) -> Result<()> {
+    async fn put_manifest(&self, key: &ObjectId, bytes: Vec<u8>) -> Result<()> {
         let dest = manifest_path(&self.path_for(key)?);
         tokio::fs::create_dir_all(dest.parent().expect("object path has a parent"))
             .await
@@ -232,7 +235,7 @@ impl ObjectStore for FsObjectStore {
         written.map_err(storage)
     }
 
-    async fn get_manifest(&self, key: &ContentHash) -> Result<Option<Vec<u8>>> {
+    async fn get_manifest(&self, key: &ObjectId) -> Result<Option<Vec<u8>>> {
         match tokio::fs::read(manifest_path(&self.path_for(key)?)).await {
             Ok(bytes) => Ok(Some(bytes)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -240,7 +243,7 @@ impl ObjectStore for FsObjectStore {
         }
     }
 
-    async fn delete(&self, hash: &ContentHash) -> Result<bool> {
+    async fn delete(&self, hash: &ObjectId) -> Result<bool> {
         let path = self.path_for(hash)?;
         let mut removed = false;
         for target in [path.clone(), packed_path(&path), manifest_path(&path)] {
@@ -253,7 +256,7 @@ impl ObjectStore for FsObjectStore {
         Ok(removed)
     }
 
-    async fn exists(&self, hash: &ContentHash) -> Result<bool> {
+    async fn exists(&self, hash: &ObjectId) -> Result<bool> {
         let path = self.path_for(hash)?;
         for candidate in [path.clone(), packed_path(&path), manifest_path(&path)] {
             if tokio::fs::try_exists(candidate).await.map_err(storage)? {
@@ -263,7 +266,7 @@ impl ObjectStore for FsObjectStore {
         Ok(false)
     }
 
-    async fn size(&self, hash: &ContentHash) -> Result<Option<u64>> {
+    async fn size(&self, hash: &ObjectId) -> Result<Option<u64>> {
         let path = self.path_for(hash)?;
         match tokio::fs::metadata(&path).await {
             Ok(meta) => return Ok(Some(meta.len())),

@@ -6,8 +6,8 @@ use pyn_core::memory::{
     MemoryAccessStore, MemoryAuditStore, MemoryMetadataStore, MemoryObjectStore,
 };
 use pyn_core::{
-    AccessService, AuditAction, AuditQuery, AuditStore, ContentHash, Credential, Identity,
-    ManualClock, MetadataStore, Mode, NewRevision, ObjectStore, Permission, Principal, PynError,
+    AccessService, AuditAction, AuditQuery, AuditStore, Credential, Identity, ManualClock,
+    MetadataStore, Mode, NewRevision, ObjectId, ObjectStore, Permission, Principal, PynError,
     RepoPath, RepoService, Repositories, RevisionId, Rules, UserId,
 };
 
@@ -97,7 +97,7 @@ async fn make_repo(w: &World, repo: &str) -> Arc<RepoService> {
     open(w, repo).await
 }
 
-async fn blob(w: &World, text: &str) -> ContentHash {
+async fn blob(w: &World, text: &str) -> ObjectId {
     w.objects.put(text.as_bytes().to_vec()).await.unwrap()
 }
 
@@ -353,7 +353,7 @@ async fn every_revision_records_the_mode_it_was_made_under() {
     let alice = admin("alice");
     let c = blob(&w, "x").await;
     let shared = svc
-        .checkin(&alice, &src, c.clone(), None, "s".into())
+        .checkin(&alice, &src, c, None, "s".into())
         .await
         .unwrap();
     svc.checkout(&map, &alice.user, None).await.unwrap();
@@ -861,10 +861,10 @@ async fn shared_to_exclusive_records_a_conversion_revision_and_then_needs_a_lock
         .unwrap();
     let (src, map) = (path("Source/a.cpp"), path("Content/a.umap"));
     let c = blob(&w, "x").await;
-    svc.checkin(&alice, &src, c.clone(), None, "add".into())
+    svc.checkin(&alice, &src, c, None, "add".into())
         .await
         .unwrap();
-    svc.checkin(&alice, &map, c.clone(), None, "add".into())
+    svc.checkin(&alice, &map, c, None, "add".into())
         .await
         .unwrap();
     svc.checkout(&path(POLICY), &alice.user, Some(RevisionId(1)))
@@ -889,7 +889,7 @@ async fn shared_to_exclusive_records_a_conversion_revision_and_then_needs_a_lock
 
     let c2 = blob(&w, "y").await;
     let err = svc
-        .checkin(&alice, &map, c2.clone(), Some(conv.id), "edit".into())
+        .checkin(&alice, &map, c2, Some(conv.id), "edit".into())
         .await
         .unwrap_err();
     assert!(matches!(err, PynError::LockRequired(_)), "{err}");

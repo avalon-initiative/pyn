@@ -3060,7 +3060,7 @@ async fn large_uploads_stream_and_content_serves_byte_ranges() {
 async fn chunks_are_checked_for_and_assembled_into_one_object() {
     let app = app().await;
     let part = |bytes: Vec<u8>| {
-        Request::put("/v1/repos/owner/game/objects")
+        Request::put("/v1/repos/owner/game/objects/chunk")
             .header(api::DEV_USER_HEADER, "bob")
             .body(Body::from(bytes))
             .unwrap()
@@ -3070,8 +3070,13 @@ async fn chunks_are_checked_for_and_assembled_into_one_object() {
         let r = app.clone().oneshot(part(bytes)).await.unwrap();
         let obj: api::PutObjectResponse =
             serde_json::from_slice(&r.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(obj.content.len(), 64);
         hashes.push(obj.content);
     }
+    assert_eq!(
+        hashes[0], "1f9ee9ef8f51c403d969eec342a084bbbd126dfe6915c9594b83873ca0c1699f",
+        "a chunk is keyed by the raw SHA-256 of its bytes"
+    );
 
     let ask = serde_json::json!({"hashes": [hashes[0], "0".repeat(64)]});
     let r = app
@@ -3112,6 +3117,10 @@ async fn chunks_are_checked_for_and_assembled_into_one_object() {
     assert_eq!(r.status(), StatusCode::OK);
     let whole: api::PutObjectResponse =
         serde_json::from_slice(&r.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(
+        whole.content, "d54acd202cf7ffaff07159a5c03bde95b4f491d43297c3decc6e043a9138a198",
+        "the assembled object has the blob id of the whole content"
+    );
     let body = serde_json::json!({"path": "Source/joined.txt", "content": whole.content, "base_revision": null, "message": "join"});
     let r = app
         .clone()
@@ -3306,5 +3315,33 @@ async fn commits_and_snapshots_are_served_per_commit() {
         assert_eq!(r.status(), StatusCode::NOT_FOUND, "{uri}");
         let err: api::ErrorBody = body_json(r).await;
         assert_eq!(err.code, "commit_not_found");
+    }
+}
+
+#[tokio::test]
+async fn an_object_is_keyed_by_its_blob_id_and_must_match_its_declared_length() {
+    let app = app().await;
+    let put = |declared: &str| {
+        Request::put("/v1/repos/owner/game/objects")
+            .header(api::DEV_USER_HEADER, "bob")
+            .header("content-length", declared)
+            .body(Body::from("hello"))
+            .unwrap()
+    };
+    let r = app.clone().oneshot(put("5")).await.unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    let obj: api::PutObjectResponse =
+        serde_json::from_slice(&r.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(
+        obj.content,
+        "8aec4e4876f854f688d0ebfc8f37598f38e5fd6903cccc850ca36591175aeb60"
+    );
+
+    for declared in ["4", "6"] {
+        let r = app.clone().oneshot(put(declared)).await.unwrap();
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST, "declared {declared}");
+        let err: api::ErrorBody =
+            serde_json::from_slice(&r.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(err.code, "length_mismatch");
     }
 }

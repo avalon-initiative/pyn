@@ -7,9 +7,9 @@ use chrono::{DateTime, Utc};
 use std::str::FromStr;
 
 use pyn_core::{
-    ChangesetItem, Commit, ContentHash, HistoryCursor, Lock, MetadataStore, Mode, NewRevision,
-    PathFilter, PynError, RepoId, RepoPath, RepoRecord, RepoSettings, RepoUpdate, RepoUsage,
-    Result, Revision, RevisionHash, RevisionId, StorageCap, Usage, UserId, Visibility,
+    ChangesetItem, Commit, HistoryCursor, Lock, MetadataStore, Mode, NewRevision, ObjectId,
+    PathFilter, PynError, REPO_ALGORITHM, RepoId, RepoPath, RepoRecord, RepoSettings, RepoUpdate,
+    RepoUsage, Result, Revision, RevisionHash, RevisionId, StorageCap, Usage, UserId, Visibility,
 };
 use sqlx::migrate::MigrateDatabase;
 use sqlx::postgres::{PgPoolOptions, PgRow};
@@ -22,6 +22,7 @@ const UNIQUE_VIOLATION: &str = "23505";
 
 mod access;
 mod audit;
+mod content_ids;
 mod hashing;
 
 pub struct PgMetadataStore {
@@ -42,13 +43,15 @@ fn lock_from(row: &PgRow) -> Result<Lock> {
     })
 }
 
-const REVISION_COLUMNS: &str = "id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no, hash, previous_hash";
+const REVISION_COLUMNS: &str = "id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no, hash, previous_hash, content_v1";
 
 fn revision_from(row: &PgRow) -> Result<Revision> {
     Ok(Revision {
         id: RevisionId(row.get::<i64, _>("id") as u64),
         path: RepoPath::new(row.get::<String, _>("path"))?,
-        content: ContentHash::new(row.get::<String, _>("content")),
+        content: ObjectId::from_hex(REPO_ALGORITHM, &row.get::<String, _>("content"))
+            .map_err(|e| PynError::Storage(format!("revision content id: {e}")))?,
+        legacy_content: row.get("content_v1"),
         author: UserId::new(row.get::<String, _>("author")),
         message: row.get("message"),
         created_at: row.get("created_at"),
@@ -168,7 +171,7 @@ async fn append_revision(
     .bind(repo.as_str())
     .bind(revision.path.as_str())
     .bind(expected + 1)
-    .bind(revision.content.as_str())
+    .bind(revision.content.to_hex())
     .bind(revision.author.as_str())
     .bind(&revision.message)
     .bind(revision.created_at)
@@ -212,7 +215,7 @@ async fn append_revision(
                             WHERE repo = $1 AND content = $2 AND size > 0 AND NOT (path = $4 AND id = $3))",
         )
         .bind(repo.as_str())
-        .bind(revision.content.as_str())
+        .bind(revision.content.to_hex())
         .bind(expected + 1)
         .bind(revision.path.as_str())
         .fetch_one(&mut **tx)
@@ -241,6 +244,7 @@ async fn append_revision(
         id: RevisionId((expected + 1) as u64),
         path: revision.path,
         content: revision.content,
+        legacy_content: None,
         author: revision.author,
         message: revision.message,
         created_at: revision.created_at,
@@ -551,7 +555,7 @@ impl MetadataStore for PgMetadataStore {
 
     async fn head_revision(&self, repo: &RepoId, path: &RepoPath) -> Result<Option<Revision>> {
         let row = sqlx::query(
-            "SELECT id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no, hash, previous_hash FROM revisions
+            "SELECT id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no, hash, previous_hash, content_v1 FROM revisions
              WHERE repo = $1 AND path = $2 ORDER BY id DESC LIMIT 1",
         )
         .bind(repo.as_str())
@@ -607,7 +611,7 @@ impl MetadataStore for PgMetadataStore {
         id: RevisionId,
     ) -> Result<Option<Revision>> {
         let row = sqlx::query(
-            "SELECT id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no, hash, previous_hash FROM revisions
+            "SELECT id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no, hash, previous_hash, content_v1 FROM revisions
              WHERE repo = $1 AND path = $2 AND id = $3",
         )
         .bind(repo.as_str())
@@ -688,7 +692,7 @@ impl MetadataStore for PgMetadataStore {
 
     async fn list_head_revisions(&self, repo: &RepoId) -> Result<Vec<Revision>> {
         let rows = sqlx::query(
-            "SELECT DISTINCT ON (path) id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no, hash, previous_hash
+            "SELECT DISTINCT ON (path) id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no, hash, previous_hash, content_v1
              FROM revisions WHERE repo = $1 ORDER BY path, id DESC",
         )
         .bind(repo.as_str())
@@ -700,7 +704,7 @@ impl MetadataStore for PgMetadataStore {
 
     async fn history(&self, repo: &RepoId, path: &RepoPath) -> Result<Vec<Revision>> {
         let rows = sqlx::query(
-            "SELECT id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no, hash, previous_hash FROM revisions
+            "SELECT id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no, hash, previous_hash, content_v1 FROM revisions
              WHERE repo = $1 AND path = $2 ORDER BY id",
         )
         .bind(repo.as_str())
@@ -724,7 +728,7 @@ impl MetadataStore for PgMetadataStore {
         let mut out = Vec::new();
         loop {
             let rows = sqlx::query(
-                "SELECT id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no, hash, previous_hash FROM revisions
+                "SELECT id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no, hash, previous_hash, content_v1 FROM revisions
                  WHERE repo = $1
                    AND ($2::timestamptz IS NULL
                         OR (created_at, path COLLATE \"C\", id) < ($2, $3::text COLLATE \"C\", $4::bigint))
@@ -1031,11 +1035,11 @@ mod tests {
             "ALTER TABLE revisions DROP COLUMN commit_no",
             "DELETE FROM _sqlx_migrations WHERE version = 22",
             "INSERT INTO revisions (repo, path, id, content, author, message, created_at, changeset) VALUES
-               ('r', 'a', 1, 'h1', 'u', 'm', now() - interval '3 hours', NULL),
-               ('r', 'b', 1, 'h2', 'u', 'm', now() - interval '2 hours', 'cs'),
-               ('r', 'c', 1, 'h2', 'u', 'm', now() - interval '2 hours', 'cs'),
-               ('r', 'a', 2, 'h3', 'u', 'm', now() - interval '1 hours', NULL),
-               ('other', 'a', 1, 'h1', 'u', 'm', now(), NULL)",
+               ('r', 'a', 1, repeat('1', 64), 'u', 'm', now() - interval '3 hours', NULL),
+               ('r', 'b', 1, repeat('2', 64), 'u', 'm', now() - interval '2 hours', 'cs'),
+               ('r', 'c', 1, repeat('2', 64), 'u', 'm', now() - interval '2 hours', 'cs'),
+               ('r', 'a', 2, repeat('3', 64), 'u', 'm', now() - interval '1 hours', NULL),
+               ('other', 'a', 1, repeat('1', 64), 'u', 'm', now(), NULL)",
         ] {
             sqlx::query(stmt).execute(&store.pool).await.unwrap();
         }
@@ -1061,9 +1065,9 @@ mod tests {
             .unwrap();
         for stmt in [
             "INSERT INTO revisions (repo, path, id, content, author, message, created_at, commit_no) VALUES
-               ('r', 'a', 1, 'h1', 'u', 'm1', '2026-01-01T00:00:00.123456Z', 1),
-               ('r', 'a', 2, 'h2', 'u', 'm2', '2026-01-02T00:00:00Z', 2),
-               ('r', 'b', 1, 'h3', 'u', 'm3', '2026-01-03T00:00:00Z', 3)",
+               ('r', 'a', 1, repeat('1', 64), 'u', 'm1', '2026-01-01T00:00:00.123456Z', 1),
+               ('r', 'a', 2, repeat('2', 64), 'u', 'm2', '2026-01-02T00:00:00Z', 2),
+               ('r', 'b', 1, repeat('3', 64), 'u', 'm3', '2026-01-03T00:00:00Z', 3)",
             "INSERT INTO audit_events (repo, at, actor, action, path, detail) VALUES
                ('r', '2026-01-01T00:00:00Z', 'u', 'checkin', 'a', 'd1'),
                ('@server', '2026-01-02T00:00:00Z', 'u', 'admin_granted', NULL, 'd2'),
@@ -1124,7 +1128,7 @@ mod tests {
         for i in 0..2u64 {
             let rev = NewRevision {
                 path: path.clone(),
-                content: ContentHash::new(format!("c{i}")),
+                content: ObjectId::from_hex(REPO_ALGORITHM, &format!("{:064x}", i + 1)).unwrap(),
                 author: UserId::new("u"),
                 message: "m".into(),
                 created_at: "2026-01-01T00:00:00.123456789Z".parse().unwrap(),
@@ -1148,5 +1152,65 @@ mod tests {
             .unwrap();
         let revs = store.history(&repo, &path).await.unwrap();
         assert_eq!(pyn_core::integrity::verify_revisions(&revs).len(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "needs PYN_DATABASE_URL"]
+    async fn content_ids_are_rekeyed_and_old_hashes_still_verify() {
+        use pyn_core::ObjectStore;
+        use pyn_core::memory::MemoryObjectStore;
+        use sha2::{Digest, Sha256};
+
+        let url = std::env::var("PYN_DATABASE_URL").expect("PYN_DATABASE_URL must be set");
+        let store = PgMetadataStore::connect_in_scratch_schema(&url)
+            .await
+            .unwrap();
+        let objects = MemoryObjectStore::new();
+        let old = objects.put_chunk(b"hello".to_vec()).await.unwrap();
+        assert_eq!(old.to_hex(), hex::encode(Sha256::digest(b"hello")));
+        let ghost = "ab".repeat(32);
+        for content in [old.to_hex(), ghost.clone()] {
+            sqlx::query(
+                "INSERT INTO revisions (repo, path, id, content, author, message, created_at, commit_no, content_v1)
+                 VALUES ('r', $1, 1, $2, 'u', 'm', '2026-01-01T00:00:00Z', 1, $2)",
+            )
+            .bind(&content[..4])
+            .bind(&content)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        }
+        hashing::backfill(&store.pool).await.unwrap();
+        let before = store
+            .history(
+                &RepoId::new("r"),
+                &RepoPath::new(&old.to_hex()[..4]).unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let report = store.migrate_content_ids(&objects).await.unwrap();
+        assert_eq!((report.migrated, report.missing), (1, vec![ghost]));
+        let again = store.migrate_content_ids(&objects).await.unwrap();
+        assert_eq!(again.migrated, 0);
+
+        let after = store
+            .history(
+                &RepoId::new("r"),
+                &RepoPath::new(&old.to_hex()[..4]).unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_ne!(after[0].content, old);
+        assert_eq!(
+            objects.get(&after[0].content).await.unwrap().unwrap(),
+            b"hello"
+        );
+        assert_eq!(
+            after[0].legacy_content.as_deref(),
+            Some(old.to_hex().as_str())
+        );
+        assert_eq!(after[0].hash, before[0].hash);
+        assert!(pyn_core::integrity::verify_revisions(&after).is_empty());
     }
 }

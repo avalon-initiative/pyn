@@ -9,12 +9,11 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use async_trait::async_trait;
-use sha2::{Digest, Sha256};
+use pyn_object::{Algorithm, ObjectId};
 use tokio::io::{AsyncRead, AsyncReadExt, ReadBuf};
 
 use crate::error::{PynError, Result};
-use crate::object::{ObjectRead, ObjectReader, ObjectStore, clamp_range};
-use crate::types::ContentHash;
+use crate::object::{KeyHasher, Keying, ObjectRead, ObjectReader, ObjectStore, clamp_range};
 
 pub use pyn_chunk::{MAX_CHUNK, MIN_CHUNK, SMALL_OBJECT, cut_point};
 
@@ -22,7 +21,7 @@ pub use pyn_chunk::{MAX_CHUNK, MIN_CHUNK, SMALL_OBJECT, cut_point};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Manifest {
     pub total: u64,
-    pub chunks: Vec<(ContentHash, u64)>,
+    pub chunks: Vec<(ObjectId, u64)>,
 }
 
 impl Manifest {
@@ -45,7 +44,8 @@ impl Manifest {
         let mut chunks = Vec::new();
         for line in lines {
             let (hash, len) = line.split_once(' ').ok_or_else(bad)?;
-            chunks.push((ContentHash::new(hash), len.parse().map_err(|_| bad())?));
+            let id = ObjectId::from_hex(Algorithm::Sha256, hash).map_err(|_| bad())?;
+            chunks.push((id, len.parse().map_err(|_| bad())?));
         }
         if chunks.iter().map(|(_, len)| len).sum::<u64>() != total {
             return Err(bad());
@@ -54,7 +54,7 @@ impl Manifest {
     }
 
     /// The chunks overlapping `range`, each with the part of it to read.
-    fn pieces(&self, range: &Range<u64>) -> Vec<(ContentHash, Range<u64>)> {
+    fn pieces(&self, range: &Range<u64>) -> Vec<(ObjectId, Range<u64>)> {
         let mut out = Vec::new();
         let mut offset = 0u64;
         for (hash, len) in &self.chunks {
@@ -64,7 +64,7 @@ impl Manifest {
                 continue;
             }
             out.push((
-                hash.clone(),
+                *hash,
                 range.start.max(start) - start..range.end.min(end) - start,
             ));
         }
@@ -77,7 +77,7 @@ type Opening = Pin<Box<dyn Future<Output = Result<Option<ObjectRead>>> + Send>>;
 /// Reads a list of chunk pieces in order, opening one at a time.
 struct ChainReader {
     store: Arc<dyn ObjectStore>,
-    pieces: std::vec::IntoIter<(ContentHash, Range<u64>)>,
+    pieces: std::vec::IntoIter<(ObjectId, Range<u64>)>,
     opening: Option<Opening>,
     current: Option<ObjectReader>,
 }
@@ -135,7 +135,7 @@ impl ChunkedStore {
         Self { inner }
     }
 
-    async fn manifest(&self, hash: &ContentHash) -> Result<Option<Manifest>> {
+    async fn manifest(&self, hash: &ObjectId) -> Result<Option<Manifest>> {
         self.inner
             .get_manifest(hash)
             .await?
@@ -163,7 +163,21 @@ async fn fill(reader: &mut ObjectReader, buf: &mut Vec<u8>, want: usize) -> Resu
 
 #[async_trait]
 impl ObjectStore for ChunkedStore {
-    async fn put_stream(&self, mut reader: ObjectReader, max: Option<u64>) -> Result<ContentHash> {
+    async fn put_stream(
+        &self,
+        mut reader: ObjectReader,
+        keying: Keying,
+        max: Option<u64>,
+    ) -> Result<ObjectId> {
+        if keying == Keying::Raw {
+            return self.inner.put_stream(reader, keying, max).await;
+        }
+        if let Keying::Blob { len } = keying
+            && let Some(limit) = max
+            && len > limit
+        {
+            return Err(PynError::ObjectTooLarge { limit });
+        }
         let mut buf = Vec::new();
         fill(&mut reader, &mut buf, SMALL_OBJECT + 1).await?;
         if buf.len() <= SMALL_OBJECT {
@@ -172,9 +186,12 @@ impl ObjectStore for ChunkedStore {
             {
                 return Err(PynError::ObjectTooLarge { limit });
             }
-            return self.inner.put(buf).await;
+            return self
+                .inner
+                .put_stream(Box::pin(std::io::Cursor::new(buf)), keying, max)
+                .await;
         }
-        let mut whole = Sha256::new();
+        let mut whole = KeyHasher::new(keying);
         let mut total = 0u64;
         let mut chunks = Vec::new();
         loop {
@@ -191,21 +208,17 @@ impl ObjectStore for ChunkedStore {
             {
                 return Err(PynError::ObjectTooLarge { limit });
             }
-            whole.update(&chunk);
+            whole.update(&chunk)?;
             let len = chunk.len() as u64;
-            chunks.push((self.inner.put(chunk).await?, len));
+            chunks.push((self.inner.put_chunk(chunk).await?, len));
         }
-        let hash = ContentHash::new(hex::encode(whole.finalize()));
+        let hash = whole.finish()?;
         let manifest = Manifest { total, chunks };
         self.inner.put_manifest(&hash, manifest.encode()).await?;
         Ok(hash)
     }
 
-    async fn read(
-        &self,
-        hash: &ContentHash,
-        range: Option<Range<u64>>,
-    ) -> Result<Option<ObjectRead>> {
+    async fn read(&self, hash: &ObjectId, range: Option<Range<u64>>) -> Result<Option<ObjectRead>> {
         let Some(manifest) = self.manifest(hash).await? else {
             return self.inner.read(hash, range).await;
         };
@@ -223,52 +236,57 @@ impl ObjectStore for ChunkedStore {
         }))
     }
 
-    async fn exists(&self, hash: &ContentHash) -> Result<bool> {
+    async fn exists(&self, hash: &ObjectId) -> Result<bool> {
         self.inner.exists(hash).await
     }
 
-    async fn size(&self, hash: &ContentHash) -> Result<Option<u64>> {
+    async fn size(&self, hash: &ObjectId) -> Result<Option<u64>> {
         match self.manifest(hash).await? {
             Some(m) => Ok(Some(m.total)),
             None => self.inner.size(hash).await,
         }
     }
 
-    async fn delete(&self, hash: &ContentHash) -> Result<bool> {
+    async fn delete(&self, hash: &ObjectId) -> Result<bool> {
         self.inner.delete(hash).await
     }
 
-    async fn assemble(&self, chunks: &[ContentHash], max: Option<u64>) -> Result<ContentHash> {
-        let mut whole = Sha256::new();
+    async fn assemble(&self, chunks: &[ObjectId], max: Option<u64>) -> Result<ObjectId> {
         let mut listed = Vec::with_capacity(chunks.len());
         let mut total = 0u64;
-        let mut buf = vec![0u8; 256 << 10];
         for hash in chunks {
-            let Some(found) = self.inner.read(hash, None).await? else {
+            let Some(len) = self.inner.size(hash).await? else {
                 return Err(PynError::ObjectMissing(hash.to_string()));
             };
-            if found.total > MAX_CHUNK as u64 {
+            if len > MAX_CHUNK as u64 {
                 return Err(PynError::InvalidRequest(format!(
                     "chunk {hash} is larger than {MAX_CHUNK} bytes"
                 )));
             }
-            total += found.total;
+            total += len;
             if let Some(limit) = max
                 && total > limit
             {
                 return Err(PynError::ObjectTooLarge { limit });
             }
+            listed.push((*hash, len));
+        }
+        let mut whole = KeyHasher::new(Keying::Blob { len: total });
+        let mut buf = vec![0u8; 256 << 10];
+        for hash in chunks {
+            let Some(found) = self.inner.read(hash, None).await? else {
+                return Err(PynError::ObjectMissing(hash.to_string()));
+            };
             let mut reader = found.reader;
             loop {
                 let n = reader.read(&mut buf).await.map_err(io_err)?;
                 if n == 0 {
                     break;
                 }
-                whole.update(&buf[..n]);
+                whole.update(&buf[..n])?;
             }
-            listed.push((hash.clone(), found.total));
         }
-        let key = ContentHash::new(hex::encode(whole.finalize()));
+        let key = whole.finish()?;
         let manifest = Manifest {
             total,
             chunks: listed,
@@ -277,7 +295,7 @@ impl ObjectStore for ChunkedStore {
         Ok(key)
     }
 
-    async fn chunks_of(&self, hash: &ContentHash) -> Result<Vec<ContentHash>> {
+    async fn chunks_of(&self, hash: &ObjectId) -> Result<Vec<ObjectId>> {
         Ok(self
             .manifest(hash)
             .await?

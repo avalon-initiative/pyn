@@ -23,8 +23,8 @@ use crate::{
     Repositories,
 };
 use crate::{
-    AuditAction, AuditQuery, AuditScope, AuditStore, ChangeEntry, ContentHash, ManualClock,
-    MetadataStore, ObjectStore, PynError, RepoId, RepoPath, RepoRecord, RepoService, RepoSettings,
+    AuditAction, AuditQuery, AuditScope, AuditStore, ChangeEntry, ManualClock, MetadataStore,
+    ObjectId, ObjectStore, PynError, RepoId, RepoPath, RepoRecord, RepoService, RepoSettings,
     RepoUpdate, RevisionId, Rules, ServiceConfig, UserId, Visibility,
 };
 
@@ -77,7 +77,7 @@ fn who(s: &str) -> Principal {
     Principal::unrestricted(user(s))
 }
 
-async fn blob(h: &Harness, s: &str) -> ContentHash {
+async fn blob(h: &Harness, s: &str) -> ObjectId {
     h.objects.put(s.as_bytes().to_vec()).await.unwrap()
 }
 
@@ -98,7 +98,7 @@ pub async fn revisions_keep_the_mode_they_were_made_under(store: Store) {
     let c = blob(&h, "x").await;
     let shared = h
         .svc
-        .checkin(&who("alice"), &src, c.clone(), None, "s".into())
+        .checkin(&who("alice"), &src, c, None, "s".into())
         .await
         .unwrap();
     h.svc.checkout(&map, &user("alice"), None).await.unwrap();
@@ -173,7 +173,7 @@ pub async fn exclusive_checkin_requires_the_lock(store: Store) {
     let c = blob(&h, "v1").await;
     let err = h
         .svc
-        .checkin(&who("alice"), &map, c.clone(), None, "sneaky".into())
+        .checkin(&who("alice"), &map, c, None, "sneaky".into())
         .await
         .unwrap_err();
     assert!(matches!(err, PynError::LockRequired(_)), "{err}");
@@ -288,7 +288,7 @@ pub async fn release_is_holder_only(store: Store) {
 pub async fn checkin_of_unknown_content_is_refused(store: Store) {
     let h = harness(store);
     let src = path("Source/a.cpp");
-    let ghost = ContentHash::new("00".repeat(32));
+    let ghost = ObjectId::from_hex(pyn_object::Algorithm::Sha256, &"00".repeat(32)).unwrap();
     let err = h
         .svc
         .checkin(&who("alice"), &src, ghost, None, "x".into())
@@ -1602,21 +1602,15 @@ pub async fn usage_counts_distinct_content_once_per_repository(store: Store) {
     let (a, b) = (path("Source/a.txt"), path("Source/b.txt"));
     let (five, three) = (blob(&h, "12345").await, blob(&h, "123").await);
     h.svc
-        .checkin(&who("alice"), &a, five.clone(), None, "a".into())
+        .checkin(&who("alice"), &a, five, None, "a".into())
         .await
         .unwrap();
     h.svc
-        .checkin(&who("alice"), &b, five.clone(), None, "same content".into())
+        .checkin(&who("alice"), &b, five, None, "same content".into())
         .await
         .unwrap();
     h.svc
-        .checkin(
-            &who("alice"),
-            &a,
-            three.clone(),
-            Some(RevisionId(1)),
-            "a2".into(),
-        )
+        .checkin(&who("alice"), &a, three, Some(RevisionId(1)), "a2".into())
         .await
         .unwrap();
     let usage = store.repo_usage(&RepoId::new("game")).await.unwrap();
@@ -1665,10 +1659,10 @@ pub async fn usage_counts_distinct_content_once_per_repository(store: Store) {
     );
 }
 
-fn entry(p: &RepoPath, content: &ContentHash, base: Option<u64>) -> ChangeEntry {
+fn entry(p: &RepoPath, content: &ObjectId, base: Option<u64>) -> ChangeEntry {
     ChangeEntry {
         path: p.clone(),
-        content: content.clone(),
+        content: *content,
         base: base.map(RevisionId),
     }
 }
@@ -1684,7 +1678,7 @@ pub async fn every_write_is_one_numbered_commit_and_a_changeset_is_one(store: St
     let (c1, c2) = (blob(&h, "one").await, blob(&h, "two").await);
     let first = h
         .svc
-        .checkin(&who("alice"), &a, c1.clone(), None, "first".into())
+        .checkin(&who("alice"), &a, c1, None, "first".into())
         .await
         .unwrap();
     h.svc.checkout(&map, &user("bob"), None).await.unwrap();
@@ -1729,11 +1723,11 @@ pub async fn a_rejected_write_does_not_use_up_a_commit_number(store: Store) {
     let (a, b) = (path("Source/a.cpp"), path("Source/b.cpp"));
     let c = blob(&h, "v1").await;
     h.svc
-        .checkin(&who("alice"), &a, c.clone(), None, "one".into())
+        .checkin(&who("alice"), &a, c, None, "one".into())
         .await
         .unwrap();
     h.svc
-        .checkin(&who("alice"), &a, c.clone(), None, "stale".into())
+        .checkin(&who("alice"), &a, c, None, "stale".into())
         .await
         .unwrap_err();
     h.svc
@@ -1765,22 +1759,16 @@ pub async fn a_snapshot_is_every_path_as_of_a_commit(store: Store) {
         blob(&h, "three").await,
     );
     h.svc
-        .checkin(&who("alice"), &src, c1.clone(), None, "src".into())
+        .checkin(&who("alice"), &src, c1, None, "src".into())
         .await
         .unwrap();
     h.svc.checkout(&map, &user("alice"), None).await.unwrap();
     h.svc
-        .checkin(&who("alice"), &map, c1.clone(), None, "map".into())
+        .checkin(&who("alice"), &map, c1, None, "map".into())
         .await
         .unwrap();
     h.svc
-        .checkin(
-            &who("alice"),
-            &src,
-            c2.clone(),
-            Some(RevisionId(1)),
-            "src 2".into(),
-        )
+        .checkin(&who("alice"), &src, c2, Some(RevisionId(1)), "src 2".into())
         .await
         .unwrap();
     h.svc
@@ -1788,13 +1776,7 @@ pub async fn a_snapshot_is_every_path_as_of_a_commit(store: Store) {
         .await
         .unwrap();
     h.svc
-        .checkin(
-            &who("alice"),
-            &map,
-            c3.clone(),
-            Some(RevisionId(1)),
-            "map 2".into(),
-        )
+        .checkin(&who("alice"), &map, c3, Some(RevisionId(1)), "map 2".into())
         .await
         .unwrap();
 
@@ -1808,14 +1790,7 @@ pub async fn a_snapshot_is_every_path_as_of_a_commit(store: Store) {
     let got: Vec<_> = three
         .entries
         .iter()
-        .map(|e| {
-            (
-                e.path.clone(),
-                e.revision.id,
-                e.revision.content.clone(),
-                e.mode,
-            )
-        })
+        .map(|e| (e.path.clone(), e.revision.id, e.revision.content, e.mode))
         .collect();
     assert_eq!(
         got,
@@ -1875,7 +1850,7 @@ pub async fn a_changeset_with_a_stale_path_applies_nothing(store: Store) {
     let (a, b) = (path("Source/a.cpp"), path("Source/b.cpp"));
     let c = blob(&h, "v1").await;
     h.svc
-        .checkin(&who("alice"), &b, c.clone(), None, "seed".into())
+        .checkin(&who("alice"), &b, c, None, "seed".into())
         .await
         .unwrap();
     let err = h
@@ -1942,7 +1917,7 @@ pub async fn a_changeset_rejects_empty_duplicate_policy_and_unknown_content(stor
         .await
         .unwrap_err();
     assert!(matches!(err, PynError::InvalidRequest(_)), "{err}");
-    let missing = ContentHash::new("0".repeat(64));
+    let missing = ObjectId::from_hex(pyn_object::Algorithm::Sha256, &"0".repeat(64)).unwrap();
     let err = call(vec![entry(&a, &missing, None)]).await.unwrap_err();
     assert!(matches!(err, PynError::ObjectMissing(_)), "{err}");
     assert!(h.svc.head(&a).await.unwrap().is_none());
@@ -1984,7 +1959,7 @@ pub async fn checkin_past_the_storage_cap_is_refused_unless_it_adds_nothing(stor
     }
     let (a, b, c) = (path("Source/a"), path("Source/b"), path("Source/c"));
     let six = blob(&h, "123456").await;
-    game.checkin(&who("alice"), &a, six.clone(), None, "a".into())
+    game.checkin(&who("alice"), &a, six, None, "a".into())
         .await
         .unwrap();
 
@@ -2014,7 +1989,7 @@ pub async fn checkin_past_the_storage_cap_is_refused_unless_it_adds_nothing(stor
         "a refused checkin leaves no revision"
     );
 
-    game.checkin(&who("alice"), &b, six.clone(), None, "same bytes".into())
+    game.checkin(&who("alice"), &b, six, None, "same bytes".into())
         .await
         .unwrap();
     let err = other

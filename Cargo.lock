@@ -1795,6 +1795,7 @@ dependencies = [
  "pyn-core",
  "pyn-diff",
  "pyn-hash",
+ "pyn-object",
  "pyn-proto",
  "pyn-server",
  "reqwest",
@@ -1820,6 +1821,7 @@ dependencies = [
  "pyn-chunk",
  "pyn-core",
  "pyn-hash",
+ "pyn-object",
  "serde",
  "sha2 0.11.0",
  "ssh-key",
@@ -1842,6 +1844,7 @@ dependencies = [
  "futures-util",
  "hex",
  "pyn-core",
+ "pyn-object",
  "sha2 0.11.0",
  "tempfile",
  "tokio",
@@ -1911,7 +1914,9 @@ version = "0.0.1"
 dependencies = [
  "async-trait",
  "chrono",
+ "hex",
  "pyn-core",
+ "sha2 0.11.0",
  "sqlx",
  "tokio",
 ]

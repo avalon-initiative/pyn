@@ -26,8 +26,12 @@ pub struct MyLock {
 pub struct Revision {
     pub id: u64,
     pub path: String,
-    /// SHA-256 hex of the content.
+    /// The content's git blob id (SHA-256 hex of `blob <len>\0` followed by the content).
     pub content: String,
+    /// The content string this revision's `hash` covers, when it differs from `content`: revisions that predate blob
+    /// ids, whose hash covers the SHA-256 hex of the bare content.
+    #[serde(default)]
+    pub legacy_content: Option<String>,
     pub author: String,
     pub message: String,
     pub created_at: DateTime<Utc>,
@@ -68,14 +72,14 @@ pub struct CommitPage {
     pub next_before: Option<u64>,
 }
 
-/// A path as of a commit. A shared path is identified by its `content` hash, an exclusive one by its `revision`.
+/// A path as of a commit. A shared path is identified by its `content` id, an exclusive one by its `revision`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct SnapshotEntry {
     pub path: String,
     /// The mode recorded with the revision.
     pub mode: Mode,
     pub revision: u64,
-    /// SHA-256 hex of the content at that revision.
+    /// The content's git blob id at that revision.
     pub content: String,
 }
 
@@ -118,7 +122,7 @@ pub struct ReleaseRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct CheckinRequest {
     pub path: String,
-    /// Hash returned by `PUT /v1/repos/{owner}/{name}/objects`.
+    /// Blob id returned by `PUT /v1/repos/{owner}/{name}/objects`.
     pub content: String,
     pub base_revision: Option<u64>,
     pub message: String,
@@ -128,7 +132,7 @@ pub struct CheckinRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ChangesetEntry {
     pub path: String,
-    /// Hash returned by `PUT /v1/repos/{owner}/{name}/objects`.
+    /// Blob id returned by `PUT /v1/repos/{owner}/{name}/objects`.
     pub content: String,
     pub base_revision: Option<u64>,
 }
@@ -149,6 +153,7 @@ pub struct ChangesetResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct PutObjectResponse {
+    /// The object's git blob id; for a chunk upload, the SHA-256 hex of its bytes.
     pub content: String,
 }
 
@@ -627,23 +632,23 @@ pub struct SetMemberRequest {
     pub role: String,
 }
 
-/// Content hashes to check against the server's object store.
+/// Chunk digests to check against the server's object store.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct MissingObjectsRequest {
-    /// SHA-256 hex hashes; at most 10000.
+    /// SHA-256 hex of each chunk's bytes; at most 10000.
     pub hashes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct MissingObjectsResponse {
-    /// The hashes from the request that the server does not store.
+    /// The digests from the request that the server does not store.
     pub missing: Vec<String>,
 }
 
 /// Chunks already uploaded as objects, to be joined into one object.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct AssembleObjectRequest {
-    /// Hashes of stored chunks, in order; each at most 4 MiB.
+    /// SHA-256 hex digests of stored chunks, in order; each at most 4 MiB.
     pub chunks: Vec<String>,
 }
 
@@ -875,7 +880,7 @@ pub struct ErrorBody {
 
 /// Response header carrying the revision number of returned content.
 pub const REVISION_HEADER: &str = "x-pyn-revision";
-/// Carries the SHA-256 hex of the content on `GET .../content`, so a client can verify what it downloaded.
+/// Carries the content's git blob id on `GET .../content`, so a client can verify what it downloaded.
 pub const CONTENT_HASH_HEADER: &str = "x-pyn-content";
 
 /// Dev-only identity header.

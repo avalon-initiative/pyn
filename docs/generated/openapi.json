@@ -4345,6 +4345,7 @@
           }
         ],
         "requestBody": {
+          "description": "the content; its `Content-Length` is the declared length that the blob id's header covers",
           "content": {
             "application/octet-stream": {
               "schema": {
@@ -4361,10 +4362,21 @@
         },
         "responses": {
           "200": {
+            "description": "the content's git blob id",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PutObjectResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request without a `Content-Length`; length_mismatch when the body is not that long",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -4418,7 +4430,7 @@
         },
         "responses": {
           "200": {
-            "description": "the hash of the chunks' concatenation, ready to check in",
+            "description": "the blob id of the chunks' concatenation, ready to check in",
             "content": {
               "application/json": {
                 "schema": {
@@ -4429,6 +4441,80 @@
           },
           "400": {
             "description": "invalid_request for a malformed hash, an oversized chunk or too many chunks; object_missing when a chunk was not uploaded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "object_too_large",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/repos/{owner}/{name}/objects/chunk": {
+      "put": {
+        "tags": [],
+        "operationId": "put_chunk",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "The namespace that owns the repository.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository's name within its owner.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "one chunk, at most 4 MiB",
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "int32",
+                  "minimum": 0
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "the chunk's key: the SHA-256 hex of its bytes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PutObjectResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request for a chunk over 4 MiB",
             "content": {
               "application/json": {
                 "schema": {
@@ -5914,7 +6000,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Hashes of stored chunks, in order; each at most 4 MiB."
+            "description": "SHA-256 hex digests of stored chunks, in order; each at most 4 MiB."
           }
         }
       },
@@ -6025,7 +6111,7 @@
           },
           "content": {
             "type": "string",
-            "description": "Hash returned by `PUT /v1/repos/{owner}/{name}/objects`."
+            "description": "Blob id returned by `PUT /v1/repos/{owner}/{name}/objects`."
           },
           "path": {
             "type": "string"
@@ -6088,7 +6174,7 @@
           },
           "content": {
             "type": "string",
-            "description": "Hash returned by `PUT /v1/repos/{owner}/{name}/objects`."
+            "description": "Blob id returned by `PUT /v1/repos/{owner}/{name}/objects`."
           },
           "message": {
             "type": "string"
@@ -6825,7 +6911,7 @@
       },
       "MissingObjectsRequest": {
         "type": "object",
-        "description": "Content hashes to check against the server's object store.",
+        "description": "Chunk digests to check against the server's object store.",
         "required": [
           "hashes"
         ],
@@ -6835,7 +6921,7 @@
             "items": {
               "type": "string"
             },
-            "description": "SHA-256 hex hashes; at most 10000."
+            "description": "SHA-256 hex of each chunk's bytes; at most 10000."
           }
         }
       },
@@ -6850,7 +6936,7 @@
             "items": {
               "type": "string"
             },
-            "description": "The hashes from the request that the server does not store."
+            "description": "The digests from the request that the server does not store."
           }
         }
       },
@@ -7079,7 +7165,8 @@
         ],
         "properties": {
           "content": {
-            "type": "string"
+            "type": "string",
+            "description": "The object's git blob id; for a chunk upload, the SHA-256 hex of its bytes."
           }
         }
       },
@@ -7465,7 +7552,7 @@
           },
           "content": {
             "type": "string",
-            "description": "SHA-256 hex of the content."
+            "description": "The content's git blob id (SHA-256 hex of `blob <len>\\0` followed by the content)."
           },
           "created_at": {
             "type": "string",
@@ -7479,6 +7566,13 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          },
+          "legacy_content": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The content string this revision's `hash` covers, when it differs from `content`: revisions that predate blob\nids, whose hash covers the SHA-256 hex of the bare content."
           },
           "message": {
             "type": "string"
@@ -7807,7 +7901,7 @@
       },
       "SnapshotEntry": {
         "type": "object",
-        "description": "A path as of a commit. A shared path is identified by its `content` hash, an exclusive one by its `revision`.",
+        "description": "A path as of a commit. A shared path is identified by its `content` id, an exclusive one by its `revision`.",
         "required": [
           "path",
           "mode",
@@ -7817,7 +7911,7 @@
         "properties": {
           "content": {
             "type": "string",
-            "description": "SHA-256 hex of the content at that revision."
+            "description": "The content's git blob id at that revision."
           },
           "mode": {
             "$ref": "#/components/schemas/Mode",

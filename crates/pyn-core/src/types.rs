@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{PynError, Result};
 use crate::rules::Mode;
+use pyn_object::ObjectId;
 
 macro_rules! string_id {
     ($(#[$m:meta])* $name:ident) => {
@@ -30,10 +31,6 @@ macro_rules! string_id {
 
 string_id!(RepoId);
 string_id!(UserId);
-string_id!(
-    /// SHA-256 hex of a file's content; the `ObjectStore` key.
-    ContentHash
-);
 string_id!(
     /// SHA-256 hex over a revision's canonical encoding (docs/concepts/integrity.md).
     RevisionHash
@@ -95,11 +92,14 @@ impl std::fmt::Display for RevisionId {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Revision {
     pub id: RevisionId,
     pub path: RepoPath,
-    pub content: ContentHash,
+    /// The git blob id of the content.
+    pub content: ObjectId,
+    /// The content string the v1 hash covers, when it is not the blob id: revisions migrated from SHA-256 content hashes.
+    pub legacy_content: Option<String>,
     pub author: UserId,
     pub message: String,
     pub created_at: DateTime<Utc>,
@@ -148,7 +148,7 @@ impl Commit {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewRevision {
     pub path: RepoPath,
-    pub content: ContentHash,
+    pub content: ObjectId,
     pub author: UserId,
     pub message: String,
     pub created_at: DateTime<Utc>,

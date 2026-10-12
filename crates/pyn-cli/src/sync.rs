@@ -8,7 +8,7 @@ use pyn_proto as api;
 
 use crate::backend::Backend;
 use crate::table;
-use crate::workspace::{FileState, Settings, Workspace, hash_of, set_read_only};
+use crate::workspace::{FileState, Settings, Workspace, set_read_only};
 
 pub fn mode_name(mode: api::Mode) -> &'static str {
     match mode {
@@ -36,6 +36,7 @@ fn fetch(
     Ok(FileState {
         revision,
         hash,
+        legacy: false,
         mode: mode_name(entry.mode).to_string(),
     })
 }
@@ -140,7 +141,7 @@ pub fn status(backend: &dyn Backend, ws: &Workspace, commit: Option<u64>) -> Res
         let mut notes: Vec<String> = Vec::new();
         match (known, on_disk) {
             (Some(k), true) => {
-                if hash_of(&std::fs::read(ws.abs(path))?) != k.hash {
+                if !k.matches(&std::fs::read(ws.abs(path))?) {
                     notes.push("modified".into());
                     modified += 1;
                 }
@@ -256,10 +257,9 @@ pub fn update(
             continue;
         }
         let Some(head) = entry.revision else {
-            if let (Some(c), Some(known)) = (commit, state.get(&entry.path).map(|k| k.hash.clone()))
-            {
+            if let (Some(c), Some(known)) = (commit, state.get(&entry.path)) {
                 let target = ws.abs(&entry.path);
-                if target.is_file() && hash_of(&std::fs::read(&target)?) != known {
+                if target.is_file() && !known.matches(&std::fs::read(&target)?) {
                     skipped.push(format!("{}: local changes; not in c{c}", entry.path));
                 } else {
                     set_read_only(&target, false)?;
@@ -279,7 +279,7 @@ pub fn update(
                     mode_name(entry.mode).to_string();
                 continue;
             }
-            Some(k) if on_disk && hash_of(&std::fs::read(&target)?) != k.hash => {
+            Some(k) if on_disk && !k.matches(&std::fs::read(&target)?) => {
                 skipped.push(format!(
                     "{}: local changes; r{head} is available",
                     entry.path
@@ -350,6 +350,7 @@ pub fn after_commit(
         FileState {
             revision,
             hash: hash.to_string(),
+            legacy: false,
             mode,
         },
     );

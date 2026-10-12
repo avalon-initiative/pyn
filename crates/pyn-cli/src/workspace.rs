@@ -6,11 +6,13 @@ use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use globset::{Glob, GlobSet, GlobSetBuilder};
+use pyn_object::{Algorithm, Kind};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 pub const DIR: &str = ".pyn";
 const LOCAL_ONLY: &str = "local_only";
+const STATE_VERSION: u32 = 2;
 
 /// Settings that can be set per workspace or per user.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -76,14 +78,20 @@ impl Settings {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileState {
     pub revision: u64,
-    /// SHA-256 of the content at that revision, to tell whether the local copy changed.
+    /// Git blob id of the content at that revision, to tell whether the local copy changed.
     pub hash: String,
+    /// Set for a state recorded before blob ids, whose `hash` is the SHA-256 of the bare content, until it is next updated.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub legacy: bool,
     /// `shared` or `exclusive`, as the server last said.
     pub mode: String,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct StateFile {
+    /// 2 once hashes are blob ids; absent in older files.
+    #[serde(default)]
+    version: u32,
     #[serde(default)]
     files: BTreeMap<String, FileState>,
 }
@@ -94,8 +102,22 @@ pub struct Workspace {
     pub dir: PathBuf,
 }
 
+/// The git blob id of `bytes` as the server computes it.
 pub fn hash_of(bytes: &[u8]) -> String {
-    hex::encode(Sha256::digest(bytes))
+    pyn_object::hash_object(Algorithm::Sha256, Kind::Blob, bytes)
+        .expect("hashing a whole buffer cannot fail")
+        .to_hex()
+}
+
+impl FileState {
+    /// Whether `bytes` are the content this state recorded.
+    pub fn matches(&self, bytes: &[u8]) -> bool {
+        if self.legacy {
+            hex::encode(Sha256::digest(bytes)) == self.hash
+        } else {
+            hash_of(bytes) == self.hash
+        }
+    }
 }
 
 impl Workspace {
@@ -150,11 +172,30 @@ impl Workspace {
 
     pub fn load_state(&self) -> Result<BTreeMap<String, FileState>> {
         match std::fs::read_to_string(self.state_path()) {
-            Ok(text) => Ok(toml::from_str::<StateFile>(&text)
-                .context("reading the workspace state")?
-                .files),
+            Ok(text) => {
+                let state: StateFile =
+                    toml::from_str(&text).context("reading the workspace state")?;
+                let mut files = state.files;
+                if state.version < STATE_VERSION {
+                    self.rekey_state(&mut files);
+                }
+                Ok(files)
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
             Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Moves state recorded with SHA-256 content hashes to blob ids where the file on disk is still that content.
+    fn rekey_state(&self, files: &mut BTreeMap<String, FileState>) {
+        for (path, known) in files.iter_mut() {
+            known.legacy = true;
+            if let Ok(bytes) = std::fs::read(self.abs(path))
+                && known.matches(&bytes)
+            {
+                known.hash = hash_of(&bytes);
+                known.legacy = false;
+            }
         }
     }
 
@@ -164,6 +205,7 @@ impl Workspace {
             std::fs::create_dir_all(parent)?;
         }
         let text = toml::to_string_pretty(&StateFile {
+            version: STATE_VERSION,
             files: files.clone(),
         })?;
         std::fs::write(&path, text).with_context(|| format!("writing {}", path.display()))
@@ -444,5 +486,35 @@ mod tests {
         )
         .unwrap();
         assert_eq!(w.scan().unwrap(), [".pyn/ignore", "a.cpp"]);
+    }
+
+    #[test]
+    fn state_with_sha256_hashes_is_rekeyed_where_the_file_is_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = Workspace::create(dir.path()).unwrap();
+        std::fs::write(dir.path().join("same.txt"), b"hello").unwrap();
+        std::fs::write(dir.path().join("edited.txt"), b"changed").unwrap();
+        let old = |content: &[u8]| FileState {
+            revision: 1,
+            hash: hex::encode(Sha256::digest(content)),
+            legacy: false,
+            mode: "shared".into(),
+        };
+        let text = format!(
+            "[files.\"same.txt\"]\nrevision = 1\nhash = \"{}\"\nmode = \"shared\"\n\n[files.\"edited.txt\"]\nrevision = 1\nhash = \"{}\"\nmode = \"shared\"\n",
+            old(b"hello").hash,
+            old(b"original").hash
+        );
+        std::fs::write(ws.state_path(), text).unwrap();
+
+        let state = ws.load_state().unwrap();
+        assert_eq!(state["same.txt"].hash, hash_of(b"hello"));
+        assert!(state["same.txt"].matches(b"hello") && !state["same.txt"].legacy);
+        assert!(state["edited.txt"].legacy);
+        assert!(!state["edited.txt"].matches(b"changed"));
+        assert!(state["edited.txt"].matches(b"original"));
+
+        ws.save_state(&state).unwrap();
+        assert_eq!(ws.load_state().unwrap(), state);
     }
 }

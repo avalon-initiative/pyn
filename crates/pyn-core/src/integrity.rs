@@ -16,7 +16,7 @@ impl NewRevision {
     pub fn hash(&self, previous: Option<&RevisionHash>) -> RevisionHash {
         RevisionHash::new(revision_hash(&RevisionFields {
             path: self.path.as_str(),
-            content: self.content.as_str(),
+            content: &self.content.to_hex(),
             previous: previous.map(RevisionHash::as_str),
             author: self.author.as_str(),
             created_micros: micros(self.created_at),
@@ -29,9 +29,13 @@ impl NewRevision {
 impl Revision {
     /// The hash its own fields and `previous` give; equals `hash` unless the record was altered.
     pub fn expected_hash(&self) -> RevisionHash {
+        let content = self
+            .legacy_content
+            .clone()
+            .unwrap_or_else(|| self.content.to_hex());
         RevisionHash::new(revision_hash(&RevisionFields {
             path: self.path.as_str(),
-            content: self.content.as_str(),
+            content: &content,
             previous: self.previous.as_ref().map(RevisionHash::as_str),
             author: self.author.as_str(),
             created_micros: micros(self.created_at),
