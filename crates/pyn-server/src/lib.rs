@@ -27,6 +27,7 @@ mod branch_api;
 mod client;
 pub mod email;
 mod limits_api;
+mod merge_api;
 mod oidc_api;
 mod org_api;
 pub mod passwords;
@@ -174,7 +175,9 @@ struct RepoAddress {
         branch_api::get_branch,
         branch_api::create_branch,
         branch_api::delete_branch,
-        branch_api::rename_branch
+        branch_api::rename_branch,
+        merge_api::preview_merge,
+        merge_api::merge
     ),
     components(schemas(
         api::Lock,
@@ -187,6 +190,16 @@ struct RepoAddress {
         api::Branch,
         api::CreateBranchRequest,
         api::RenameBranchRequest,
+        api::MergeFastForward,
+        api::MergeRequest,
+        api::MergeResolution,
+        api::MergeOutcome,
+        api::MergeConflictKind,
+        api::MergeSide,
+        api::MergeInputs,
+        api::MergeChange,
+        api::MergeConflict,
+        api::MergeReport,
         api::SnapshotEntry,
         api::SnapshotPage,
         api::CheckoutRequest,
@@ -478,6 +491,11 @@ pub fn router(state: AppState) -> Router {
             "/v1/repos/{owner}/{name}/branches",
             get(branch_api::list_branches).post(branch_api::create_branch),
         )
+        .route("/v1/repos/{owner}/{name}/merge", post(merge_api::merge))
+        .route(
+            "/v1/repos/{owner}/{name}/merge/preview",
+            post(merge_api::preview_merge),
+        )
         .route(
             "/v1/repos/{owner}/{name}/branches/{*branch}",
             get(branch_api::get_branch)
@@ -530,6 +548,9 @@ impl IntoResponse for ApiError {
             | PynError::ServiceCredentialExists(_)
             | PynError::BranchExists(_)
             | PynError::BranchNotMerged(_)
+            | PynError::MergeConflict(_)
+            | PynError::MergeStale(_)
+            | PynError::NotFastForward(_)
             | PynError::ConfirmationRequired { .. } => StatusCode::CONFLICT,
             PynError::NotLockHolder(_)
             | PynError::Forbidden(_)

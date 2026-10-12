@@ -3688,3 +3688,271 @@ async fn a_reader_may_list_branches_but_not_create_them() {
     let r = send(&app, "DELETE", &format!("{base}/branches/x"), &bob, None).await;
     assert_eq!(r.status(), StatusCode::FORBIDDEN);
 }
+
+async fn checkin_json(
+    app: &axum::Router,
+    token: &str,
+    branch: &str,
+    path: &str,
+    text: &str,
+    base_rev: Option<u64>,
+) {
+    let content = put_blob(app, "game", token, text).await;
+    let r = send(
+        app,
+        "POST",
+        "/v1/repos/alice/game/checkin",
+        token,
+        Some(
+            serde_json::json!({"path": path, "content": content, "base_revision": base_rev,
+                                "message": "m", "branch": branch}),
+        ),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK, "{path} on {branch}");
+}
+
+#[tokio::test]
+async fn a_merge_is_previewed_written_and_refused_with_stable_codes() {
+    let app = router(state_with(false, RegistrationMode::Open).await);
+    let alice = register_and_sign_in(&app, "alice").await;
+    let bob = register_and_sign_in(&app, "bob").await;
+    create_repo(&app, &alice, "game").await;
+    let base = "/v1/repos/alice/game";
+    checkin_json(&app, &alice, "main", "a.txt", "1\n2\n3\n", None).await;
+    checkin_json(&app, &alice, "main", "b.txt", "b\n", None).await;
+    let r = send(
+        &app,
+        "POST",
+        &format!("{base}/branches"),
+        &alice,
+        Some(serde_json::json!({"name": "topic"})),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+    checkin_json(&app, &alice, "topic", "a.txt", "1\n2\ntopic\n", Some(1)).await;
+    checkin_json(&app, &alice, "topic", "c.txt", "c\n", None).await;
+    checkin_json(&app, &alice, "main", "a.txt", "main\n2\n3\n", Some(1)).await;
+
+    let merge = |extra: serde_json::Value| {
+        let mut body = serde_json::json!({"source": "topic", "target": "main"});
+        body.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        body
+    };
+    let r = send(
+        &app,
+        "POST",
+        &format!("{base}/merge/preview"),
+        &alice,
+        Some(merge(serde_json::json!({}))),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let preview: api::MergeReport = body_json(r).await;
+    assert_eq!(preview.outcome, api::MergeOutcome::Merge);
+    assert!(preview.conflicts.is_empty() && preview.commit.is_none());
+    let paths: Vec<_> = preview.changes.iter().map(|c| c.path.as_str()).collect();
+    assert_eq!(paths, ["a.txt", "c.txt"]);
+    let merged = &preview.changes[0];
+    assert!(merged.revision.is_none());
+    let inputs = merged.inputs.as_ref().unwrap();
+    assert_eq!(inputs.base.as_ref().unwrap().revision, Some(1));
+    assert_eq!(preview.changes[1].revision, Some(1));
+
+    let r = send(
+        &app,
+        "GET",
+        &format!("{base}/commits?branch=main"),
+        &alice,
+        None,
+    )
+    .await;
+    let before: api::CommitPage = body_json(r).await;
+
+    let r = send(
+        &app,
+        "POST",
+        &format!("{base}/merge"),
+        &alice,
+        Some(merge(serde_json::json!({"expect_target": "0".repeat(64)}))),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::CONFLICT);
+    assert_eq!(error_code(r).await, "merge_stale");
+    let r = send(
+        &app,
+        "POST",
+        &format!("{base}/merge"),
+        &alice,
+        Some(merge(serde_json::json!({"fast_forward": "only"}))),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::CONFLICT);
+    assert_eq!(error_code(r).await, "not_fast_forward");
+
+    let r = send(
+        &app,
+        "POST",
+        &format!("{base}/merge"),
+        &alice,
+        Some(merge(serde_json::json!({"message": "bring in topic",
+                                      "expect_target": preview.target_commit}))),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let done: api::MergeReport = body_json(r).await;
+    assert_eq!(done.outcome, api::MergeOutcome::Merge);
+    let commit = done.commit.unwrap();
+    let r = send(
+        &app,
+        "GET",
+        &format!("{base}/commits/{commit}"),
+        &alice,
+        None,
+    )
+    .await;
+    let made: api::Commit = body_json(r).await;
+    assert_eq!(made.parents.len(), 2);
+    assert_eq!(made.parents[0], before.commits[0].id);
+    assert_eq!(made.message, "bring in topic");
+    let r = send(
+        &app,
+        "GET",
+        &format!("{base}/content?path=a.txt&branch=main"),
+        &alice,
+        None,
+    )
+    .await;
+    assert_eq!(
+        r.into_body().collect().await.unwrap().to_bytes().as_ref(),
+        b"main\n2\ntopic\n"
+    );
+    let r = send(
+        &app,
+        "POST",
+        &format!("{base}/merge"),
+        &alice,
+        Some(merge(serde_json::json!({}))),
+    )
+    .await;
+    let again: api::MergeReport = body_json(r).await;
+    assert_eq!(again.outcome, api::MergeOutcome::UpToDate);
+
+    let r = send(
+        &app,
+        "POST",
+        &format!("{base}/merge"),
+        &alice,
+        Some(serde_json::json!({"source": "nope"})),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::NOT_FOUND);
+    assert_eq!(error_code(r).await, "commit_not_found");
+    let r = send(
+        &app,
+        "POST",
+        &format!("{base}/merge"),
+        &alice,
+        Some(serde_json::json!({"source": "main", "target": "nope"})),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::NOT_FOUND);
+
+    send(
+        &app,
+        "PUT",
+        &format!("{base}/members/bob"),
+        &alice,
+        Some(serde_json::json!({"role": "reader"})),
+    )
+    .await;
+    let r = send(
+        &app,
+        "POST",
+        &format!("{base}/merge/preview"),
+        &bob,
+        Some(merge(serde_json::json!({}))),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let r = send(
+        &app,
+        "POST",
+        &format!("{base}/merge"),
+        &bob,
+        Some(merge(serde_json::json!({}))),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn a_conflicted_merge_writes_nothing_until_every_conflict_is_resolved() {
+    let app = router(state_with(false, RegistrationMode::Open).await);
+    let alice = register_and_sign_in(&app, "alice").await;
+    create_repo(&app, &alice, "game").await;
+    let base = "/v1/repos/alice/game";
+    checkin_json(&app, &alice, "main", "a.txt", "1\n2\n3\n", None).await;
+    send(
+        &app,
+        "POST",
+        &format!("{base}/branches"),
+        &alice,
+        Some(serde_json::json!({"name": "topic"})),
+    )
+    .await;
+    checkin_json(&app, &alice, "topic", "a.txt", "1\ntopic\n3\n", Some(1)).await;
+    checkin_json(&app, &alice, "main", "a.txt", "1\nmain\n3\n", Some(1)).await;
+    let body = serde_json::json!({"source": "topic"});
+
+    let r = send(
+        &app,
+        "POST",
+        &format!("{base}/merge/preview"),
+        &alice,
+        Some(body.clone()),
+    )
+    .await;
+    let preview: api::MergeReport = body_json(r).await;
+    assert_eq!(preview.outcome, api::MergeOutcome::Conflicted);
+    let conflict = &preview.conflicts[0];
+    assert_eq!(
+        (conflict.path.as_str(), conflict.kind),
+        ("a.txt", api::MergeConflictKind::Content)
+    );
+    assert_eq!(conflict.inputs.ours.as_ref().unwrap().revision, Some(3));
+    assert_eq!(conflict.inputs.theirs.as_ref().unwrap().revision, Some(2));
+
+    let r = send(
+        &app,
+        "POST",
+        &format!("{base}/merge"),
+        &alice,
+        Some(body.clone()),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::CONFLICT);
+    let err: api::ErrorBody = body_json(r).await;
+    assert_eq!(err.code, "merge_conflict");
+    assert!(err.message.contains("a.txt"), "{}", err.message);
+    let r = send(&app, "GET", &format!("{base}/commits"), &alice, None).await;
+    assert_eq!(body_json::<api::CommitPage>(r).await.commits.len(), 2);
+
+    let resolved = put_blob(&app, "game", &alice, "1\nboth\n3\n").await;
+    let r = send(
+        &app,
+        "POST",
+        &format!("{base}/merge"),
+        &alice,
+        Some(serde_json::json!({"source": "topic",
+            "resolutions": [{"path": "a.txt", "content": resolved}]})),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let done: api::MergeReport = body_json(r).await;
+    assert_eq!(done.outcome, api::MergeOutcome::Merge);
+    let r = send(&app, "GET", &format!("{base}/verify"), &alice, None).await;
+    assert_eq!(r.status(), StatusCode::OK);
+}

@@ -4777,6 +4777,178 @@
         }
       }
     },
+    "/v1/repos/{owner}/{name}/merge": {
+      "post": {
+        "tags": [
+          "merge_api"
+        ],
+        "summary": "Merge a branch or commit into a branch.",
+        "operationId": "merge",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "The namespace that owns the repository.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository's name within its owner.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MergeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "the outcome and, unless the source was already in the target, the commit the target now points at",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MergeReport"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request for a resolution the merge does not need, object_missing for resolved content that was not uploaded, ambiguous_commit for the source",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "needs the checkin permission, and the edit_policy permission when the merge brings a different policy file into the default branch",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "branch_not_found, or commit_not_found for the source",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "merge_conflict when a conflict has no resolution (nothing is written), merge_stale when the target moved, not_fast_forward, lock_required, lock_held or stale_base for a resolution on an exclusive path",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/repos/{owner}/{name}/merge/preview": {
+      "post": {
+        "tags": [
+          "merge_api"
+        ],
+        "summary": "Preview a merge.",
+        "operationId": "preview_merge",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "The namespace that owns the repository.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository's name within its owner.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MergeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "what the merge would do and what would conflict; nothing is written, and `message`, `expect_target` and `resolutions` are ignored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MergeReport"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "ambiguous_commit for the source, or invalid_request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "branch_not_found, or commit_not_found for the source",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "not_fast_forward when only a fast-forward was asked for",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/repos/{owner}/{name}/objects": {
       "put": {
         "tags": [],
@@ -7525,6 +7697,323 @@
           "team",
           "org_owner"
         ]
+      },
+      "MergeChange": {
+        "type": "object",
+        "description": "A path the merge changes in the target, with the content it ends up with.",
+        "required": [
+          "path",
+          "mode",
+          "content",
+          "file_mode",
+          "revision",
+          "inputs"
+        ],
+        "properties": {
+          "content": {
+            "type": "string",
+            "description": "The git blob id of the merged content."
+          },
+          "file_mode": {
+            "$ref": "#/components/schemas/FileMode"
+          },
+          "inputs": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/MergeInputs",
+                "description": "The versions to merge line by line, present only when no revision holds the result."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "mode": {
+            "$ref": "#/components/schemas/Mode"
+          },
+          "path": {
+            "type": "string"
+          },
+          "revision": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "A revision of the path that holds exactly this content and file mode, when one does.",
+            "minimum": 0
+          }
+        }
+      },
+      "MergeConflict": {
+        "type": "object",
+        "required": [
+          "path",
+          "mode",
+          "kind",
+          "inputs"
+        ],
+        "properties": {
+          "inputs": {
+            "$ref": "#/components/schemas/MergeInputs"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/MergeConflictKind"
+          },
+          "mode": {
+            "$ref": "#/components/schemas/Mode"
+          },
+          "path": {
+            "type": "string"
+          }
+        }
+      },
+      "MergeConflictKind": {
+        "type": "string",
+        "enum": [
+          "content",
+          "both_added",
+          "binary",
+          "delete_modify",
+          "file_mode",
+          "exclusive_conversion"
+        ]
+      },
+      "MergeFastForward": {
+        "type": "string",
+        "description": "Whether a merge may or must fast-forward.",
+        "enum": [
+          "allow",
+          "never",
+          "only"
+        ]
+      },
+      "MergeInputs": {
+        "type": "object",
+        "description": "The versions a path's merge is made from; a side is null where the path does not exist.",
+        "required": [
+          "base",
+          "ours",
+          "theirs",
+          "base_inline"
+        ],
+        "properties": {
+          "base": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/MergeSide"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "base_inline": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The base's bytes, base64, when no revision holds it (a virtual base), so a client can still merge against it."
+          },
+          "ours": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/MergeSide"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "theirs": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/MergeSide"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "MergeOutcome": {
+        "type": "string",
+        "enum": [
+          "up_to_date",
+          "fast_forward",
+          "merge",
+          "conflicted"
+        ]
+      },
+      "MergeReport": {
+        "type": "object",
+        "description": "What a merge does, or did.",
+        "required": [
+          "target",
+          "target_commit",
+          "source",
+          "bases",
+          "virtual_base",
+          "outcome",
+          "changes",
+          "conflicts",
+          "commit"
+        ],
+        "properties": {
+          "bases": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The merge base commits; more than one means a criss-cross history."
+          },
+          "changes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MergeChange"
+            },
+            "description": "Paths whose content changes in the target, ordered by path."
+          },
+          "commit": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The commit the merge wrote; null for a preview and for an up-to-date merge."
+          },
+          "conflicts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MergeConflict"
+            }
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/MergeOutcome"
+          },
+          "source": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string"
+          },
+          "target_commit": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The target's head the merge was computed on; null for a branch with no commits."
+          },
+          "virtual_base": {
+            "type": "boolean",
+            "description": "True when the bases were merged into a virtual one."
+          }
+        }
+      },
+      "MergeRequest": {
+        "type": "object",
+        "description": "A source (a branch, or a commit) merged into a target branch.",
+        "required": [
+          "source"
+        ],
+        "properties": {
+          "expect_target": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The commit the caller saw as the target's head; if the branch has moved the answer is `merge_stale`."
+          },
+          "fast_forward": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/MergeFastForward"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The merge commit's message; `Merge branch '<source>' into <target>` if omitted."
+          },
+          "resolutions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MergeResolution"
+            },
+            "description": "The content chosen for each conflicted path (and optionally for a path that merged cleanly)."
+          },
+          "source": {
+            "type": "string",
+            "description": "A branch name, or a commit id or abbreviation of at least 4 digits."
+          },
+          "target": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The branch that moves; the default branch if omitted."
+          }
+        }
+      },
+      "MergeResolution": {
+        "type": "object",
+        "description": "The content chosen for one path of a merge: an uploaded object, by its blob id.",
+        "required": [
+          "path",
+          "content"
+        ],
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "file_mode": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/FileMode",
+                "description": "Git's file mode of the content; regular if omitted."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "path": {
+            "type": "string"
+          }
+        }
+      },
+      "MergeSide": {
+        "type": "object",
+        "description": "One version of a path in a merge.",
+        "required": [
+          "revision",
+          "content",
+          "file_mode"
+        ],
+        "properties": {
+          "content": {
+            "type": "string",
+            "description": "The git blob id of the content."
+          },
+          "file_mode": {
+            "$ref": "#/components/schemas/FileMode"
+          },
+          "revision": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The revision that holds this version; null for the virtual base of a criss-cross merge.",
+            "minimum": 0
+          }
+        }
       },
       "MissingObjectsRequest": {
         "type": "object",

@@ -167,6 +167,145 @@ pub struct RenameBranchRequest {
     pub name: String,
 }
 
+/// Whether a merge may or must fast-forward.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MergeFastForward {
+    /// Fast-forward when the target is behind the source, otherwise make a merge commit.
+    #[default]
+    Allow,
+    /// Always make a merge commit when the histories differ.
+    Never,
+    /// Refuse (`not_fast_forward`) unless the target can fast-forward.
+    Only,
+}
+
+/// A source (a branch, or a commit) merged into a target branch.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct MergeRequest {
+    /// A branch name, or a commit id or abbreviation of at least 4 digits.
+    pub source: String,
+    /// The branch that moves; the default branch if omitted.
+    pub target: Option<String>,
+    pub fast_forward: Option<MergeFastForward>,
+    /// The merge commit's message; `Merge branch '<source>' into <target>` if omitted.
+    pub message: Option<String>,
+    /// The commit the caller saw as the target's head; if the branch has moved the answer is `merge_stale`.
+    pub expect_target: Option<String>,
+    /// The content chosen for each conflicted path (and optionally for a path that merged cleanly).
+    #[serde(default)]
+    pub resolutions: Vec<MergeResolution>,
+}
+
+/// The content chosen for one path of a merge: an uploaded object, by its blob id.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct MergeResolution {
+    pub path: String,
+    pub content: String,
+    /// Git's file mode of the content; regular if omitted.
+    pub file_mode: Option<FileMode>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MergeOutcome {
+    /// The source is already in the target.
+    UpToDate,
+    /// The target moves to the source's commit; no commit is made.
+    FastForward,
+    /// A merge commit with two parents.
+    Merge,
+    /// A preview only: paths conflict and need a resolution each.
+    Conflicted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MergeConflictKind {
+    /// Both sides changed the same lines of a text file.
+    Content,
+    /// Both sides added the path with different content.
+    BothAdded,
+    /// Both sides changed a file that cannot be merged line by line; the whole file is the unit of conflict.
+    Binary,
+    /// One side removed the path and the other changed it.
+    DeleteModify,
+    /// Both sides changed the git file mode differently.
+    FileMode,
+    /// A shared path changed on a branch that meets the path's conversion to exclusive (decision #195 item 4).
+    ExclusiveConversion,
+}
+
+/// One version of a path in a merge.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct MergeSide {
+    /// The revision that holds this version; null for the virtual base of a criss-cross merge.
+    #[schema(required = true)]
+    pub revision: Option<u64>,
+    /// The git blob id of the content.
+    pub content: String,
+    pub file_mode: FileMode,
+}
+
+/// The versions a path's merge is made from; a side is null where the path does not exist.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct MergeInputs {
+    #[schema(required = true)]
+    pub base: Option<MergeSide>,
+    #[schema(required = true)]
+    pub ours: Option<MergeSide>,
+    #[schema(required = true)]
+    pub theirs: Option<MergeSide>,
+    /// The base's bytes, base64, when no revision holds it (a virtual base), so a client can still merge against it.
+    #[schema(required = true)]
+    pub base_inline: Option<String>,
+}
+
+/// A path the merge changes in the target, with the content it ends up with.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct MergeChange {
+    pub path: String,
+    pub mode: Mode,
+    /// The git blob id of the merged content.
+    pub content: String,
+    pub file_mode: FileMode,
+    /// A revision of the path that holds exactly this content and file mode, when one does.
+    #[schema(required = true)]
+    pub revision: Option<u64>,
+    /// The versions to merge line by line, present only when no revision holds the result.
+    #[schema(required = true)]
+    pub inputs: Option<MergeInputs>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct MergeConflict {
+    pub path: String,
+    pub mode: Mode,
+    pub kind: MergeConflictKind,
+    pub inputs: MergeInputs,
+}
+
+/// What a merge does, or did.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct MergeReport {
+    pub target: String,
+    /// The target's head the merge was computed on; null for a branch with no commits.
+    #[schema(required = true)]
+    pub target_commit: Option<String>,
+    pub source: String,
+    /// The merge base commits; more than one means a criss-cross history.
+    pub bases: Vec<String>,
+    /// True when the bases were merged into a virtual one.
+    pub virtual_base: bool,
+    pub outcome: MergeOutcome,
+    /// Paths whose content changes in the target, ordered by path.
+    pub changes: Vec<MergeChange>,
+    pub conflicts: Vec<MergeConflict>,
+    /// The commit the merge wrote; null for a preview and for an up-to-date merge.
+    #[schema(required = true)]
+    pub commit: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct CheckoutRequest {
     pub path: String,
