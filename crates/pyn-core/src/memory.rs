@@ -109,6 +109,12 @@ impl State {
             }
         }
         st.sizes.insert(size_key, revision.size);
+        let previous = st
+            .revisions
+            .get(&key)
+            .and_then(|v| v.last())
+            .map(|r| r.hash.clone());
+        let hash = revision.hash(previous.as_ref());
         let created = Revision {
             id: RevisionId(head.map_or(1, |h| h.0 + 1)),
             path: revision.path,
@@ -120,6 +126,8 @@ impl State {
             mode: Some(revision.mode),
             changeset: revision.changeset,
             commit,
+            hash,
+            previous,
         };
         st.revisions
             .entry(key.clone())
@@ -140,6 +148,24 @@ pub struct MemoryMetadataStore {
 impl MemoryMetadataStore {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Rewrites a stored revision in place, the way an attacker with database access would.
+    #[cfg(feature = "test-support")]
+    pub fn tamper(
+        &self,
+        repo: &RepoId,
+        path: &RepoPath,
+        id: RevisionId,
+        f: impl FnOnce(&mut Revision),
+    ) {
+        let mut st = self.state.lock().unwrap();
+        let rev = st
+            .revisions
+            .get_mut(&(repo.clone(), path.clone()))
+            .and_then(|v| v.iter_mut().find(|r| r.id == id))
+            .expect("revision to tamper with");
+        f(rev);
     }
 }
 
@@ -1856,6 +1882,23 @@ impl MemoryAuditStore {
     pub fn new() -> Self {
         Self::default()
     }
+
+    /// Rewrites a stored event in place, the way an attacker with database access would.
+    #[cfg(feature = "test-support")]
+    pub fn tamper(&self, id: i64, f: impl FnOnce(&mut AuditEvent)) {
+        let mut events = self.events.lock().unwrap();
+        let (_, e) = events
+            .iter_mut()
+            .find(|(_, e)| e.id == id)
+            .expect("event to tamper with");
+        f(e);
+    }
+
+    /// Drops an event, as if deleted from the table.
+    #[cfg(feature = "test-support")]
+    pub fn remove(&self, id: i64) {
+        self.events.lock().unwrap().retain(|(_, e)| e.id != id);
+    }
 }
 
 #[async_trait]
@@ -1863,8 +1906,15 @@ impl AuditStore for MemoryAuditStore {
     async fn record(&self, scope: &AuditScope, event: NewAuditEvent) -> Result<()> {
         let mut events = self.events.lock().unwrap();
         let id = events.len() as i64 + 1;
+        let key = scope.key();
+        let previous = events
+            .iter()
+            .rev()
+            .find(|(k, _)| *k == key)
+            .map(|(_, e)| e.hash.clone());
+        let hash = event.hash(scope, previous.as_deref());
         events.push((
-            scope.key(),
+            key,
             AuditEvent {
                 id,
                 at: event.at,
@@ -1872,6 +1922,8 @@ impl AuditStore for MemoryAuditStore {
                 action: event.action,
                 path: event.path,
                 detail: event.detail,
+                previous,
+                hash,
             },
         ));
         Ok(())

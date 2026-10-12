@@ -34,6 +34,10 @@ string_id!(
     /// SHA-256 hex of a file's content; the `ObjectStore` key.
     ContentHash
 );
+string_id!(
+    /// SHA-256 hex over a revision's canonical encoding (docs/concepts/integrity.md).
+    RevisionHash
+);
 
 /// Repo-relative `/`-separated path; rejects absolute, `.`/`..` and backslash forms.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -107,6 +111,9 @@ pub struct Revision {
     pub changeset: Option<String>,
     /// The repository-wide commit this revision belongs to; see `Commit`.
     pub commit: u64,
+    pub hash: RevisionHash,
+    /// Hash of the path's previous revision; `None` for the first.
+    pub previous: Option<RevisionHash>,
 }
 
 /// One atomic write to the repository: a single checkin or a whole changeset. Commits are numbered 1, 2, ... in order,

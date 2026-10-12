@@ -11,6 +11,7 @@ pub mod contract;
 pub mod email;
 pub mod error;
 pub mod history;
+pub mod integrity;
 pub mod limits;
 pub mod memory;
 pub mod object;
@@ -47,6 +48,7 @@ pub use clock::{Clock, ManualClock, SystemClock};
 pub use email::{EmailMessage, EmailSender, MemoryEmailSender, NullEmailSender};
 pub use error::{PynError, Result};
 pub use history::{HISTORY_DEFAULT_LIMIT, HISTORY_MAX_LIMIT, HistoryCursor, HistoryPage};
+pub use integrity::{BreakKind, Problem, VerifyReport};
 pub use limits::{
     Limits, LimitsChange, MAX_LIMIT_VALUE, RepoUsage, StorageCap, StorageCaps, Usage,
 };
@@ -74,6 +76,6 @@ pub use service::{
 pub use store::MetadataStore;
 pub use tree::{DEFAULT_BRANCH, EntryKind, EntryMode, RepoSummary, TreeEntry};
 pub use types::{
-    ChangesetItem, Commit, ContentHash, Lock, NewRevision, RepoId, RepoPath, Revision, RevisionId,
-    UserId,
+    ChangesetItem, Commit, ContentHash, Lock, NewRevision, RepoId, RepoPath, Revision,
+    RevisionHash, RevisionId, UserId,
 };

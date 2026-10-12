@@ -1758,6 +1758,7 @@ dependencies = [
  "pyn-chunk",
  "pyn-core",
  "pyn-diff",
+ "pyn-hash",
  "pyn-proto",
  "pyn-server",
  "reqwest",
@@ -1782,6 +1783,7 @@ dependencies = [
  "hex",
  "pyn-chunk",
  "pyn-core",
+ "pyn-hash",
  "serde",
  "sha2 0.11.0",
  "ssh-key",
@@ -1809,6 +1811,21 @@ dependencies = [
  "tokio",
  "tokio-util",
  "zstd",
+]
+
+[[package]]
+name = "pyn-hash"
+version = "0.0.1"
+dependencies = [
+ "hex",
+ "sha2 0.11.0",
+]
+
+[[package]]
+name = "pyn-merge"
+version = "0.0.1"
+dependencies = [
+ "pyn-diff",
 ]
 
 [[package]]

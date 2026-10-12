@@ -5331,6 +5331,63 @@
         }
       }
     },
+    "/v1/repos/{owner}/{name}/verify": {
+      "get": {
+        "tags": [],
+        "summary": "Needs `read`; the audit log is also checked for callers with `view_audit`.",
+        "operationId": "verify",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "The namespace that owns the repository.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository's name within its owner.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "description": "check only this path; the audit log is then not checked",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VerifyReport"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "path_not_found for a path without revisions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/session": {
       "get": {
         "tags": [
@@ -5868,7 +5925,8 @@
           "at",
           "actor",
           "action",
-          "detail"
+          "detail",
+          "hash"
         ],
         "properties": {
           "action": {
@@ -5884,6 +5942,10 @@
           "detail": {
             "type": "string"
           },
+          "hash": {
+            "type": "string",
+            "description": "SHA-256 hex over the event's canonical encoding, which includes `previous`."
+          },
           "id": {
             "type": "integer",
             "format": "int64"
@@ -5893,6 +5955,13 @@
               "string",
               "null"
             ]
+          },
+          "previous": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The hash of the preceding event in the same log; absent for the first."
           }
         }
       },
@@ -7374,7 +7443,8 @@
           "author",
           "message",
           "created_at",
-          "commit"
+          "commit",
+          "hash"
         ],
         "properties": {
           "author": {
@@ -7401,6 +7471,10 @@
             "type": "string",
             "format": "date-time"
           },
+          "hash": {
+            "type": "string",
+            "description": "SHA-256 hex over the revision's canonical encoding (docs/concepts/integrity.md)."
+          },
           "id": {
             "type": "integer",
             "format": "int64",
@@ -7422,6 +7496,13 @@
           },
           "path": {
             "type": "string"
+          },
+          "previous": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The hash of the path's previous revision; absent for the first."
           },
           "restored_from": {
             "type": [
@@ -8120,6 +8201,75 @@
           "token": {
             "type": "string",
             "description": "The token from the verification link."
+          }
+        }
+      },
+      "VerifyProblem": {
+        "type": "object",
+        "description": "One break found by verification: `hash_mismatch` (a record's fields do not give its hash) or `broken_link` (it does\nnot follow the record before it). Revision breaks carry `path` and `revision`; audit breaks carry `event`.",
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "event": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "revision": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "VerifyReport": {
+        "type": "object",
+        "required": [
+          "paths",
+          "revisions",
+          "audit_events",
+          "problems"
+        ],
+        "properties": {
+          "audit_events": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Events checked; null when the audit log was not checked (a single path, or no `view_audit`).",
+            "minimum": 0
+          },
+          "paths": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "problems": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VerifyProblem"
+            }
+          },
+          "revisions": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
           }
         }
       },

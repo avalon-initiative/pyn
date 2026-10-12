@@ -9,7 +9,7 @@ use std::str::FromStr;
 use pyn_core::{
     ChangesetItem, Commit, ContentHash, HistoryCursor, Lock, MetadataStore, Mode, NewRevision,
     PathFilter, PynError, RepoId, RepoPath, RepoRecord, RepoSettings, RepoUpdate, RepoUsage,
-    Result, Revision, RevisionId, StorageCap, Usage, UserId, Visibility,
+    Result, Revision, RevisionHash, RevisionId, StorageCap, Usage, UserId, Visibility,
 };
 use sqlx::migrate::MigrateDatabase;
 use sqlx::postgres::{PgPoolOptions, PgRow};
@@ -22,6 +22,7 @@ const UNIQUE_VIOLATION: &str = "23505";
 
 mod access;
 mod audit;
+mod hashing;
 
 pub struct PgMetadataStore {
     pool: PgPool,
@@ -41,8 +42,7 @@ fn lock_from(row: &PgRow) -> Result<Lock> {
     })
 }
 
-const REVISION_COLUMNS: &str =
-    "id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no";
+const REVISION_COLUMNS: &str = "id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no, hash, previous_hash";
 
 fn revision_from(row: &PgRow) -> Result<Revision> {
     Ok(Revision {
@@ -61,6 +61,10 @@ fn revision_from(row: &PgRow) -> Result<Revision> {
             .transpose()?,
         changeset: row.get("changeset"),
         commit: row.get::<i64, _>("commit_no") as u64,
+        hash: RevisionHash::new(row.get::<Option<String>, _>("hash").unwrap_or_default()),
+        previous: row
+            .get::<Option<String>, _>("previous_hash")
+            .map(RevisionHash::new),
     })
 }
 
@@ -142,10 +146,22 @@ async fn append_revision(
     }
 
     let expected = expected_head.map_or(0, |r| r.0 as i64);
+    let previous: Option<RevisionHash> = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT hash FROM revisions WHERE repo = $1 AND path = $2 AND id = $3",
+    )
+    .bind(repo.as_str())
+    .bind(revision.path.as_str())
+    .bind(expected)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(db)?
+    .flatten()
+    .map(RevisionHash::new);
+    let hash = revision.hash(previous.as_ref());
     // Inserts only when the head still equals `expected`; a concurrent insert of the same id hits the primary key.
     let inserted = sqlx::query(
-        "INSERT INTO revisions (repo, path, id, content, author, message, created_at, restored_from, mode, size, changeset, commit_no)
-         SELECT $1, $2, $3, $4, $5, $6, $7, $9::bigint, $10, $11, $12, $13
+        "INSERT INTO revisions (repo, path, id, content, author, message, created_at, restored_from, mode, size, changeset, commit_no, hash, previous_hash)
+         SELECT $1, $2, $3, $4, $5, $6, $7, $9::bigint, $10, $11, $12, $13, $14, $15
          WHERE COALESCE((SELECT max(id) FROM revisions WHERE repo = $1 AND path = $2), 0) = $8
          RETURNING id",
     )
@@ -162,6 +178,8 @@ async fn append_revision(
     .bind(revision.size as i64)
     .bind(&revision.changeset)
     .bind(commit as i64)
+    .bind(hash.as_str())
+    .bind(previous.as_ref().map(RevisionHash::as_str))
     .fetch_optional(&mut **tx)
     .await;
 
@@ -230,6 +248,8 @@ async fn append_revision(
         mode: Some(revision.mode),
         changeset: revision.changeset,
         commit,
+        hash,
+        previous,
     })
 }
 
@@ -295,6 +315,7 @@ impl PgMetadataStore {
             .run(&pool)
             .await
             .map_err(|e| PynError::Storage(e.to_string()))?;
+        hashing::backfill(&pool).await?;
         Ok(Self {
             pool,
             scratch_schema: None,
@@ -530,7 +551,7 @@ impl MetadataStore for PgMetadataStore {
 
     async fn head_revision(&self, repo: &RepoId, path: &RepoPath) -> Result<Option<Revision>> {
         let row = sqlx::query(
-            "SELECT id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no FROM revisions
+            "SELECT id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no, hash, previous_hash FROM revisions
              WHERE repo = $1 AND path = $2 ORDER BY id DESC LIMIT 1",
         )
         .bind(repo.as_str())
@@ -586,7 +607,7 @@ impl MetadataStore for PgMetadataStore {
         id: RevisionId,
     ) -> Result<Option<Revision>> {
         let row = sqlx::query(
-            "SELECT id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no FROM revisions
+            "SELECT id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no, hash, previous_hash FROM revisions
              WHERE repo = $1 AND path = $2 AND id = $3",
         )
         .bind(repo.as_str())
@@ -667,7 +688,7 @@ impl MetadataStore for PgMetadataStore {
 
     async fn list_head_revisions(&self, repo: &RepoId) -> Result<Vec<Revision>> {
         let rows = sqlx::query(
-            "SELECT DISTINCT ON (path) id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no
+            "SELECT DISTINCT ON (path) id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no, hash, previous_hash
              FROM revisions WHERE repo = $1 ORDER BY path, id DESC",
         )
         .bind(repo.as_str())
@@ -679,7 +700,7 @@ impl MetadataStore for PgMetadataStore {
 
     async fn history(&self, repo: &RepoId, path: &RepoPath) -> Result<Vec<Revision>> {
         let rows = sqlx::query(
-            "SELECT id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no FROM revisions
+            "SELECT id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no, hash, previous_hash FROM revisions
              WHERE repo = $1 AND path = $2 ORDER BY id",
         )
         .bind(repo.as_str())
@@ -703,7 +724,7 @@ impl MetadataStore for PgMetadataStore {
         let mut out = Vec::new();
         loop {
             let rows = sqlx::query(
-                "SELECT id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no FROM revisions
+                "SELECT id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no, hash, previous_hash FROM revisions
                  WHERE repo = $1
                    AND ($2::timestamptz IS NULL
                         OR (created_at, path COLLATE \"C\", id) < ($2, $3::text COLLATE \"C\", $4::bigint))
@@ -1029,5 +1050,103 @@ mod tests {
         let snap = store.snapshot(&repo, 2).await.unwrap();
         let ids: Vec<u64> = snap.iter().map(|r| r.id.0).collect();
         assert_eq!(ids, vec![1, 1, 1]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "needs PYN_DATABASE_URL"]
+    async fn existing_revisions_and_events_are_hashed_once_in_chain_order() {
+        let url = std::env::var("PYN_DATABASE_URL").expect("PYN_DATABASE_URL must be set");
+        let store = PgMetadataStore::connect_in_scratch_schema(&url)
+            .await
+            .unwrap();
+        for stmt in [
+            "INSERT INTO revisions (repo, path, id, content, author, message, created_at, commit_no) VALUES
+               ('r', 'a', 1, 'h1', 'u', 'm1', '2026-01-01T00:00:00.123456Z', 1),
+               ('r', 'a', 2, 'h2', 'u', 'm2', '2026-01-02T00:00:00Z', 2),
+               ('r', 'b', 1, 'h3', 'u', 'm3', '2026-01-03T00:00:00Z', 3)",
+            "INSERT INTO audit_events (repo, at, actor, action, path, detail) VALUES
+               ('r', '2026-01-01T00:00:00Z', 'u', 'checkin', 'a', 'd1'),
+               ('@server', '2026-01-02T00:00:00Z', 'u', 'admin_granted', NULL, 'd2'),
+               ('r', '2026-01-03T00:00:00Z', 'u', 'checkin', 'a', 'd3')",
+        ] {
+            sqlx::query(stmt).execute(&store.pool).await.unwrap();
+        }
+        hashing::backfill(&store.pool).await.unwrap();
+
+        let repo = RepoId::new("r");
+        let a = store
+            .history(&repo, &RepoPath::new("a").unwrap())
+            .await
+            .unwrap();
+        assert!(pyn_core::integrity::verify_revisions(&a).is_empty());
+        assert_eq!(a[1].previous.as_ref(), Some(&a[0].hash));
+        let b = store
+            .history(&repo, &RepoPath::new("b").unwrap())
+            .await
+            .unwrap();
+        assert_eq!(b[0].previous, None);
+
+        let scope = pyn_core::AuditScope::Repo(repo);
+        let q = pyn_core::AuditQuery {
+            limit: 10,
+            ..Default::default()
+        };
+        let mut events = pyn_core::AuditStore::list(&store, &scope, &q)
+            .await
+            .unwrap();
+        events.reverse();
+        assert!(pyn_core::integrity::verify_audit(&scope, &events).is_empty());
+        assert_eq!(events.len(), 2);
+
+        let before: Vec<String> =
+            sqlx::query_scalar("SELECT hash FROM revisions ORDER BY repo, path, id")
+                .fetch_all(&store.pool)
+                .await
+                .unwrap();
+        hashing::backfill(&store.pool).await.unwrap();
+        let after: Vec<String> =
+            sqlx::query_scalar("SELECT hash FROM revisions ORDER BY repo, path, id")
+                .fetch_all(&store.pool)
+                .await
+                .unwrap();
+        assert_eq!(before, after, "a second run changes nothing");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "needs PYN_DATABASE_URL"]
+    async fn a_row_edited_in_sql_fails_verification() {
+        let url = std::env::var("PYN_DATABASE_URL").expect("PYN_DATABASE_URL must be set");
+        let store = PgMetadataStore::connect_in_scratch_schema(&url)
+            .await
+            .unwrap();
+        let repo = RepoId::new("r");
+        let path = RepoPath::new("a").unwrap();
+        for i in 0..2u64 {
+            let rev = NewRevision {
+                path: path.clone(),
+                content: ContentHash::new(format!("c{i}")),
+                author: UserId::new("u"),
+                message: "m".into(),
+                created_at: "2026-01-01T00:00:00.123456789Z".parse().unwrap(),
+                restored_from: None,
+                mode: Mode::Shared,
+                size: 1,
+                changeset: None,
+            };
+            let base = (i > 0).then_some(RevisionId(i));
+            store
+                .commit_revision(&repo, rev, base, None, Utc::now())
+                .await
+                .unwrap();
+        }
+        let revs = store.history(&repo, &path).await.unwrap();
+        assert!(pyn_core::integrity::verify_revisions(&revs).is_empty());
+
+        sqlx::query("UPDATE revisions SET message = 'x' WHERE id = 1")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        let revs = store.history(&repo, &path).await.unwrap();
+        assert_eq!(pyn_core::integrity::verify_revisions(&revs).len(), 1);
     }
 }

@@ -20,7 +20,10 @@ grants a **leased lock** (8 hours by default) if nobody else holds it and the us
 `pyn commit a b c -m "message"` commits several paths as one **changeset**: one message, and every stale-base and lock
 check must pass or nothing is applied (no revision is written and no lock is released). The revisions of a changeset share
 a changeset id, shown by the API, and each path still has its own per-path revision number. `.pyn/pyn.toml` is not part of
-a changeset; policy changes keep their own validated flow. Changeset hashing as in decision #65 is provisional.
+a changeset; policy changes keep their own validated flow. Each revision of a changeset is hashed like any other; hashing the commit as a whole comes with branches.
+
+Every revision and every audit event is hashed and chained to the one before it, so history is tamper-evident and `pyn verify`
+can check it; see [integrity](integrity.md).
 
 Every write is one numbered **commit**, and the repository as of any commit can be listed, cloned, compared and
 diffed; see [commits](commits.md).
