@@ -1,7 +1,7 @@
 mod merging;
 
-use std::collections::BTreeMap;
-use std::sync::{Arc, RwLock};
+use std::collections::{BTreeMap, HashMap};
+use std::sync::{Arc, Mutex, RwLock};
 
 use chrono::Duration;
 
@@ -20,6 +20,7 @@ use crate::object::ObjectStore;
 use crate::repo::DEFAULT_MAX_LOCKS_PER_USER;
 use crate::rules::{Mode, POLICY_PATH, PathFilter, Rules};
 use crate::store::MetadataStore;
+use crate::stranded::StrandedVersion;
 use crate::tree::{ACTIVITY_ACTIONS, EntryKind, RepoSummary, TreeEntry};
 use crate::types::{
     ChangesetItem, Commit, Lock, NewRevision, RepoId, RepoPath, Revision, RevisionId, UserId,
@@ -130,6 +131,16 @@ pub struct PolicyPreview {
     pub to_shared: Vec<RepoPath>,
     pub to_exclusive: Vec<RepoPath>,
     pub released_locks: Vec<Lock>,
+    /// Diverged shared versions on other branches of the paths that would become exclusive.
+    pub stranded: Vec<StrandedVersion>,
+}
+
+/// A recorded revision and what applying it did beyond the revision itself.
+#[derive(Debug, Clone)]
+pub struct Recorded {
+    pub revision: Revision,
+    /// Versions a policy change to exclusive stranded; empty for any other write.
+    pub stranded: Vec<StrandedVersion>,
 }
 
 /// Server-side policy for one repository. Enforcement lives here and in the `MetadataStore` primitives.
@@ -138,6 +149,8 @@ pub struct RepoService {
     /// The rules in force until the repository has a policy file.
     fallback: Arc<Rules>,
     applied: RwLock<Applied>,
+    /// Parsed policy files by revision, which never change.
+    parsed: Mutex<HashMap<RevisionId, Arc<Rules>>>,
     meta: Arc<dyn MetadataStore>,
     objects: Arc<dyn ObjectStore>,
     audit: Arc<dyn AuditStore>,
@@ -164,6 +177,7 @@ impl RepoService {
                 revision: None,
                 rules,
             }),
+            parsed: Mutex::new(HashMap::new()),
             meta,
             objects,
             audit,
@@ -221,6 +235,65 @@ impl RepoService {
 
     pub fn mode_for(&self, path: &RepoPath) -> Mode {
         self.rules().mode_for(path)
+    }
+
+    /// The effective policy of `branch`: the default branch's policy as of the latest policy commit the branch contains.
+    async fn rules_on(&self, branch: &str) -> Result<Arc<Rules>> {
+        if branch == DEFAULT_BRANCH {
+            return Ok(self.rules());
+        }
+        let head = self.head_of(branch).await?;
+        self.rules_at(head.as_ref()).await
+    }
+
+    /// The effective policy of `commit`; the fallback rules while no policy commit is in its ancestry.
+    async fn rules_at(&self, commit: Option<&ObjectId>) -> Result<Arc<Rules>> {
+        let Some(commit) = commit else {
+            return Ok(self.fallback.clone());
+        };
+        match self.policy_revision_at(commit).await? {
+            Some(rev) => self.rules_of(&rev).await,
+            None => Ok(self.fallback.clone()),
+        }
+    }
+
+    async fn rules_of(&self, rev: &Revision) -> Result<Arc<Rules>> {
+        if let Some(rules) = self.parsed.lock().unwrap().get(&rev.id) {
+            return Ok(rules.clone());
+        }
+        let rules = match self.parse_policy(&rev.content).await {
+            Ok(rules) => Arc::new(rules),
+            Err(_) => self.fallback.clone(),
+        };
+        self.parsed.lock().unwrap().insert(rev.id, rules.clone());
+        Ok(rules)
+    }
+
+    /// The highest-numbered revision of the policy file in `commit`'s ancestry that is a policy commit, that is, on the
+    /// default branch's history.
+    async fn policy_revision_at(&self, commit: &ObjectId) -> Result<Option<Revision>> {
+        let policy = RepoPath::new(POLICY_PATH)?;
+        let Some(tip) = self.default_head().await? else {
+            return Ok(None);
+        };
+        let Some(top) = self.meta.revision_at(&self.repo, commit, &policy).await? else {
+            return Ok(None);
+        };
+        if self.meta.is_ancestor(&self.repo, &top.commit, &tip).await? {
+            return Ok(Some(top));
+        }
+        for rev in self
+            .meta
+            .history(&self.repo, &policy, Some(commit))
+            .await?
+            .into_iter()
+            .rev()
+        {
+            if rev.id < top.id && self.meta.is_ancestor(&self.repo, &rev.commit, &tip).await? {
+                return Ok(Some(rev));
+            }
+        }
+        Ok(None)
     }
 
     pub fn lock_limit(&self) -> LockLimit {
@@ -282,7 +355,7 @@ impl RepoService {
         rev: &Revision,
         old: &Rules,
         new: &Rules,
-    ) -> Result<()> {
+    ) -> Result<Vec<StrandedVersion>> {
         let actor = &who.user;
         let now = self.clock.now();
         let found = self.conversions(old, new).await?;
@@ -303,26 +376,111 @@ impl RepoService {
             self.record(actor, AuditAction::ModeConverted, path, detail)
                 .await?;
         }
+        let mut conversions = BTreeMap::new();
         for path in &found.to_exclusive {
             let detail = match self.convert_to_exclusive(who, path, rev, new).await? {
-                Some(conv) => format!(
-                    "shared -> exclusive by policy r{}; conversion revision r{}",
-                    rev.id, conv.id
-                ),
+                Some(conv) => {
+                    conversions.insert(path.clone(), conv.id);
+                    format!(
+                        "shared -> exclusive by policy r{}; conversion revision r{}",
+                        rev.id, conv.id
+                    )
+                }
                 None => format!("shared -> exclusive by policy r{}", rev.id),
             };
             self.record(actor, AuditAction::ModeConverted, path, detail)
                 .await?;
         }
+        let stranded = self
+            .stranded_versions(&found.to_exclusive, &conversions)
+            .await?;
+        for v in &stranded {
+            let detail = format!(
+                "branch {} (created by {}): r{} by {} on {} is stranded by policy r{}{}",
+                v.branch,
+                v.branch_owner,
+                v.revision,
+                v.author,
+                v.created_at.format("%Y-%m-%d %H:%M UTC"),
+                rev.id,
+                v.conversion
+                    .map(|c| format!("; the path converted to exclusive at r{c}"))
+                    .unwrap_or_default()
+            );
+            self.record(actor, AuditAction::VersionStranded, &v.path, detail)
+                .await?;
+        }
         let detail = format!(
-            "r{} applied; {} lock(s) released, {} path(s) to shared, {} to exclusive",
+            "r{} applied; {} lock(s) released, {} path(s) to shared, {} to exclusive, {} stranded version(s)",
             rev.id,
             found.released_locks.len(),
             found.to_shared.len(),
-            found.to_exclusive.len()
+            found.to_exclusive.len(),
+            stranded.len()
         );
         self.record(actor, AuditAction::PolicyChanged, &rev.path, detail)
-            .await
+            .await?;
+        Ok(stranded)
+    }
+
+    /// The shared versions branches hold of `paths`, which are exclusive on the default branch: revisions made under
+    /// the shared mode that the default branch's history does not contain and whose content differs from the default
+    /// branch's. `conversions` names each path's conversion revision when it has been made.
+    async fn stranded_versions(
+        &self,
+        paths: &[RepoPath],
+        conversions: &BTreeMap<RepoPath, RevisionId>,
+    ) -> Result<Vec<StrandedVersion>> {
+        let Some(tip) = self.default_head().await? else {
+            return Ok(Vec::new());
+        };
+        let branches: Vec<Branch> = self
+            .branches()
+            .await?
+            .into_iter()
+            .filter(|b| !b.default && b.head.is_some())
+            .collect();
+        let mut found = Vec::new();
+        if branches.is_empty() {
+            return Ok(found);
+        }
+        for path in paths {
+            let mut diverged = Vec::new();
+            for rev in self.meta.history(&self.repo, path, None).await? {
+                if rev.mode == Some(Mode::Shared)
+                    && !self.meta.is_ancestor(&self.repo, &rev.commit, &tip).await?
+                {
+                    diverged.push(rev);
+                }
+            }
+            if diverged.is_empty() {
+                continue;
+            }
+            let current = self.meta.revision_at(&self.repo, &tip, path).await?;
+            for branch in &branches {
+                let Some(head) = branch.head else { continue };
+                let Some(held) = self.meta.revision_at(&self.repo, &head, path).await? else {
+                    continue;
+                };
+                let same = current
+                    .as_ref()
+                    .is_some_and(|c| c.content == held.content && c.file_mode == held.file_mode);
+                if same || !diverged.iter().any(|d| d.id == held.id) {
+                    continue;
+                }
+                found.push(StrandedVersion {
+                    path: path.clone(),
+                    branch: branch.name.clone(),
+                    branch_owner: branch.created_by.clone(),
+                    revision: held.id,
+                    commit: held.commit,
+                    author: held.author,
+                    created_at: held.created_at,
+                    conversion: conversions.get(path).copied(),
+                });
+            }
+        }
+        Ok(found)
     }
 
     /// Records the path's content on the default branch as the next revision of its single line under the new mode;
@@ -412,7 +570,18 @@ impl RepoService {
         user: &UserId,
         base: Option<RevisionId>,
     ) -> Result<Lock> {
-        if self.mode_for(path) != Mode::Exclusive {
+        self.checkout_on(DEFAULT_BRANCH, path, user, base).await
+    }
+
+    /// Like `checkout`, for a commit on `branch`: the path must be exclusive under the branch's effective policy.
+    pub async fn checkout_on(
+        &self,
+        branch: &str,
+        path: &RepoPath,
+        user: &UserId,
+        base: Option<RevisionId>,
+    ) -> Result<Lock> {
+        if self.rules_on(branch).await?.mode_for(path) != Mode::Exclusive {
             return Err(PynError::NotExclusive(path.clone()));
         }
         let head = self.head(path).await?.map(|r| r.id);
@@ -457,7 +626,11 @@ impl RepoService {
     pub async fn preview_policy(&self, who: &Principal, text: &str) -> Result<PolicyPreview> {
         who.require(Permission::EditPolicy)?;
         let new = Rules::from_toml(text)?;
-        self.conversions(&self.rules(), &new).await
+        let mut preview = self.conversions(&self.rules(), &new).await?;
+        preview.stranded = self
+            .stranded_versions(&preview.to_exclusive, &BTreeMap::new())
+            .await?;
+        Ok(preview)
     }
 
     /// Removes someone else's live lock. The reason is required because it goes into the audit log.
@@ -500,7 +673,7 @@ impl RepoService {
         write: Write,
         base: Option<RevisionId>,
         message: String,
-    ) -> Result<Revision> {
+    ) -> Result<Recorded> {
         let Write {
             content,
             file_mode,
@@ -517,7 +690,7 @@ impl RepoService {
         self.head(path).await?;
         let mode = match &parsed {
             Some(new) if bootstrap => new.mode_for(path),
-            _ => self.mode_for(path),
+            _ => self.rules_on(branch).await?.mode_for(path),
         };
         let lock_holder = (mode == Mode::Exclusive && !bootstrap).then_some(&who.user);
         let now = self.clock.now();
@@ -550,13 +723,17 @@ impl RepoService {
             .commit_changeset_on(&self.repo, branch, vec![item], now, cap)
             .await?;
         let rev = revs.remove(0);
+        let mut stranded = Vec::new();
         if on_default
             && let Some(new) = parsed
             && let Some(old) = self.apply(rev.id, new.clone())
         {
-            self.policy_applied(who, &rev, &old, &new).await?;
+            stranded = self.policy_applied(who, &rev, &old, &new).await?;
         }
-        Ok(rev)
+        Ok(Recorded {
+            revision: rev,
+            stranded,
+        })
     }
 
     /// Record a revision of `content` (already in the object store). Exclusive paths need the caller's
@@ -600,11 +777,29 @@ impl RepoService {
         base: Option<RevisionId>,
         message: String,
     ) -> Result<Revision> {
+        Ok(self
+            .checkin_recorded(branch, who, path, content, file_mode, base, message)
+            .await?
+            .revision)
+    }
+
+    /// Like `checkin_on`, with the stranded versions a policy change made.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn checkin_recorded(
+        &self,
+        branch: &str,
+        who: &Principal,
+        path: &RepoPath,
+        content: ObjectId,
+        file_mode: FileMode,
+        base: Option<RevisionId>,
+        message: String,
+    ) -> Result<Recorded> {
         check_file_mode(file_mode)?;
         if !self.objects.exists(&content).await? {
             return Err(PynError::ObjectMissing(content.to_string()));
         }
-        let rev = self
+        let recorded = self
             .commit(
                 branch,
                 who,
@@ -618,6 +813,7 @@ impl RepoService {
                 message,
             )
             .await?;
+        let rev = &recorded.revision;
         self.record(
             &who.user,
             AuditAction::Checkin,
@@ -625,7 +821,7 @@ impl RepoService {
             format!("r{}: {}", rev.id, rev.message),
         )
         .await?;
-        Ok(rev)
+        Ok(recorded)
     }
 
     /// Checks several paths in as one atomic commit with one message: every stale-base, lock and storage check
@@ -674,6 +870,7 @@ impl RepoService {
         let now = self.clock.now();
         let changeset = changeset_id()?;
         let cap = self.storage_cap().await?;
+        let rules = self.rules_on(branch).await?;
         let mut items = Vec::with_capacity(entries.len());
         for e in entries {
             let size = self
@@ -681,7 +878,7 @@ impl RepoService {
                 .size(&e.content)
                 .await?
                 .ok_or_else(|| PynError::ObjectMissing(e.content.to_string()))?;
-            let mode = self.mode_for(&e.path);
+            let mode = rules.mode_for(&e.path);
             items.push(ChangesetItem {
                 revision: NewRevision {
                     path: e.path,
@@ -753,7 +950,25 @@ impl RepoService {
         confirm: &str,
         message: Option<String>,
     ) -> Result<Revision> {
-        if self.mode_for(path) != Mode::Exclusive {
+        Ok(self
+            .restore_recorded(branch, who, path, source, base, confirm, message)
+            .await?
+            .revision)
+    }
+
+    /// Like `restore_on`, with the stranded versions a restored policy file made.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn restore_recorded(
+        &self,
+        branch: &str,
+        who: &Principal,
+        path: &RepoPath,
+        source: RevisionId,
+        base: RevisionId,
+        confirm: &str,
+        message: Option<String>,
+    ) -> Result<Recorded> {
+        if self.rules_on(branch).await?.mode_for(path) != Mode::Exclusive {
             return Err(PynError::NotExclusive(path.clone()));
         }
         let expected = format!("{path}@r{base}");
@@ -777,7 +992,7 @@ impl RepoService {
             return Err(PynError::ObjectMissing(old.content.to_string()));
         }
         let message = message.unwrap_or_else(|| format!("Restore r{source}"));
-        let rev = self
+        let recorded = self
             .commit(
                 branch,
                 who,
@@ -795,10 +1010,10 @@ impl RepoService {
             &who.user,
             AuditAction::Restore,
             path,
-            format!("r{} restored from r{source}", rev.id),
+            format!("r{} restored from r{source}", recorded.revision.id),
         )
         .await?;
-        Ok(rev)
+        Ok(recorded)
     }
 
     pub async fn locks(&self) -> Result<Vec<Lock>> {
@@ -818,9 +1033,10 @@ impl RepoService {
         limit: usize,
     ) -> Result<Vec<FileEntry>> {
         let now = self.clock.now();
+        let rules = self.rules_on(branch).await?;
         let mut entries: BTreeMap<RepoPath, FileEntry> = BTreeMap::new();
         for rev in self.heads_on(branch).await? {
-            let mode = self.mode_for(&rev.path);
+            let mode = rules.mode_for(&rev.path);
             entries.insert(
                 rev.path.clone(),
                 FileEntry {
@@ -834,7 +1050,7 @@ impl RepoService {
         }
         for lock in self.meta.list_locks(&self.repo, now).await? {
             let path = lock.path.clone();
-            let mode = self.mode_for(&path);
+            let mode = rules.mode_for(&path);
             entries
                 .entry(path.clone())
                 .or_insert_with(|| FileEntry {
@@ -877,6 +1093,7 @@ impl RepoService {
 
     /// Like `tree`, as of the head of `branch`.
     pub async fn tree_on(&self, branch: &str, dir: Option<&RepoPath>) -> Result<Vec<TreeEntry>> {
+        let rules = self.rules_on(branch).await?;
         let paths = self.live_paths(branch).await?;
         let prefix = dir.map_or(String::new(), |d| format!("{d}/"));
         let mut children: BTreeMap<(EntryKind, String), TreeEntry> = BTreeMap::new();
@@ -888,7 +1105,7 @@ impl RepoService {
                 Some((first, _)) => (EntryKind::Folder, first),
                 None => (EntryKind::File, rest),
             };
-            let mode = self.mode_for(path);
+            let mode = rules.mode_for(path);
             match children.entry((kind, name.to_string())) {
                 std::collections::btree_map::Entry::Vacant(v) => {
                     let child = RepoPath::new(format!("{prefix}{name}"))?;
@@ -1444,29 +1661,6 @@ impl RepoService {
         Ok(CommitPage { commits, next })
     }
 
-    /// The rules in force at `commit`, whose snapshot is `revisions`: the policy file in it when that revision is on the
-    /// default branch's history. A commit that is not on that history takes the default branch's current rules, as a
-    /// policy file made only on another branch is not policy.
-    async fn rules_in(&self, commit: &ObjectId, revisions: &[Revision]) -> Result<Arc<Rules>> {
-        let on_default = |at: ObjectId| async move {
-            match self.default_head().await? {
-                Some(tip) => self.meta.is_ancestor(&self.repo, &at, &tip).await,
-                None => Ok(false),
-            }
-        };
-        match revisions.iter().find(|r| r.path.as_str() == POLICY_PATH) {
-            Some(policy) if on_default(policy.commit).await? => {
-                match self.parse_policy(&policy.content).await {
-                    Ok(rules) => Ok(Arc::new(rules)),
-                    Err(_) => Ok(self.fallback.clone()),
-                }
-            }
-            Some(_) => Ok(self.rules()),
-            None if on_default(*commit).await? => Ok(self.fallback.clone()),
-            None => Ok(self.rules()),
-        }
-    }
-
     /// Every path as of `commit` (the head of the default branch when `None`). A path's mode is the one
     /// `.pyn/pyn.toml` gives it at that commit, and its revision is the highest-numbered one made in the commit or an
     /// ancestor.
@@ -1496,7 +1690,7 @@ impl RepoService {
         };
         let revisions = self.meta.snapshot(&self.repo, &id).await?;
         revisions.iter().try_for_each(Revision::verify)?;
-        let rules = self.rules_in(&id, &revisions).await?;
+        let rules = self.rules_at(Some(&id)).await?;
         let entries = revisions
             .into_iter()
             .map(|revision| SnapshotEntry {

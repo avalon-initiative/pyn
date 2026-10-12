@@ -27,6 +27,7 @@ pub mod repositories;
 pub mod rules;
 pub mod service;
 pub mod store;
+pub mod stranded;
 pub mod tree;
 pub mod types;
 
@@ -79,10 +80,11 @@ pub use repo_policy::{
 pub use repositories::Repositories;
 pub use rules::{Mode, PathFilter, Rules};
 pub use service::{
-    ChangeEntry, CommitPage, FileEntry, LockLimit, PolicyPreview, RepoService, ServiceConfig,
-    Snapshot, SnapshotEntry,
+    ChangeEntry, CommitPage, FileEntry, LockLimit, PolicyPreview, Recorded, RepoService,
+    ServiceConfig, Snapshot, SnapshotEntry,
 };
 pub use store::MetadataStore;
+pub use stranded::{ConversionNote, StrandedVersion};
 pub use tree::{EntryKind, EntryMode, RepoSummary, TreeEntry};
 pub use types::{
     ChangesetItem, Commit, Lock, NewRevision, Person, RepoId, RepoPath, Revision, RevisionHash,

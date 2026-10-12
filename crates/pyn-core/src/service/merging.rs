@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::ops::Bound;
 use std::pin::Pin;
+use std::sync::Arc;
 
 use pyn_merge::{Outcome, merge_text, render_markers};
 use pyn_object::{FileMode, ObjectId};
@@ -18,7 +19,8 @@ use crate::merge::{
     MAX_TEXT_MERGE, MergeOutcome, MergeReport, MergeRequest, MergeWrite, Pick, Resolution, Side,
     Version, decide,
 };
-use crate::rules::{Mode, POLICY_PATH};
+use crate::rules::{Mode, POLICY_PATH, Rules};
+use crate::stranded::{ConversionNote, StrandedVersion};
 use crate::types::{ChangesetItem, NewRevision, RepoPath, Revision};
 
 /// What the merge does to one path.
@@ -47,6 +49,8 @@ struct Plan {
     bases: Vec<ObjectId>,
     virtual_base: bool,
     outcome: MergeOutcome,
+    /// The policy the merge is decided under: the later of the two sides' effective policies.
+    rules: Arc<Rules>,
     paths: Vec<PathPlan>,
 }
 
@@ -205,6 +209,7 @@ impl RepoService {
             bases: Vec::new(),
             virtual_base: false,
             outcome: MergeOutcome::Merge,
+            rules: self.merge_rules(target, &source).await?,
             paths: Vec::new(),
         };
         let Some(head) = target.head else {
@@ -242,7 +247,7 @@ impl RepoService {
         };
         plan.bases = base.bases;
         plan.virtual_base = base.virtual_base;
-        let rules = self.rules();
+        let rules = plan.rules.clone();
         let paths: BTreeSet<&RepoPath> = ours.keys().chain(theirs.keys()).collect();
         let names: BTreeSet<&str> = paths.iter().map(|p| p.as_str()).collect();
         for path in &names {
@@ -290,6 +295,23 @@ impl RepoService {
             MergeOutcome::Merge
         };
         Ok(plan)
+    }
+
+    /// The policy a merge into `target` is decided under: the default branch's current one, or for another branch the
+    /// later of the target's and the source's effective policies.
+    async fn merge_rules(&self, target: &Branch, source: &ObjectId) -> Result<Arc<Rules>> {
+        if target.default {
+            return Ok(self.rules());
+        }
+        let ours = match &target.head {
+            Some(head) => self.policy_revision_at(head).await?,
+            None => None,
+        };
+        let theirs = self.policy_revision_at(source).await?;
+        match ours.into_iter().chain(theirs).max_by_key(|r| r.id) {
+            Some(rev) => self.rules_of(&rev).await,
+            None => Ok(self.fallback.clone()),
+        }
     }
 
     /// The tree the merge of `a` and `b` is made against: their merge base, or a virtual one when they have several.
@@ -485,7 +507,7 @@ impl RepoService {
         settle(ours, theirs, merged, file_mode)
     }
 
-    /// An exclusive path takes the later revision; only a shared version that diverged from the conversion conflicts.
+    /// An exclusive path takes the later revision; only a shared version outside the other side's history conflicts.
     async fn exclusive_verdict(
         &self,
         ours: Option<&Revision>,
@@ -497,25 +519,68 @@ impl RepoService {
             (Some(_), None) | (None, None) => Ok(Verdict::Keep),
             (None, Some(t)) => Ok(Verdict::Point(Box::new(t.clone()))),
             (Some(o), Some(t)) => {
-                let (later, earlier, later_head) = if o.id > t.id {
-                    (o, t, ours_head)
-                } else {
-                    (t, o, source)
-                };
-                let diverged = earlier.mode == Some(Mode::Shared)
-                    && !self
-                        .meta
-                        .is_ancestor(&self.repo, &earlier.commit, &later_head)
-                        .await?;
-                Ok(if diverged {
-                    Verdict::Conflict(ConflictKind::ExclusiveConversion)
-                } else if o.id > t.id {
+                let same = version_of(o) == version_of(t);
+                if !same
+                    && (self.is_diverged(o, &source).await?
+                        || self.is_diverged(t, &ours_head).await?)
+                {
+                    return Ok(Verdict::Conflict(ConflictKind::ExclusiveConversion));
+                }
+                Ok(if o.id > t.id {
                     Verdict::Keep
                 } else {
-                    Verdict::Point(Box::new(later.clone()))
+                    Verdict::Point(Box::new(t.clone()))
                 })
             }
         }
+    }
+
+    /// Whether `rev` is a shared version the history ending at `other` does not contain.
+    async fn is_diverged(&self, rev: &Revision, other: &ObjectId) -> Result<bool> {
+        Ok(rev.mode == Some(Mode::Shared)
+            && !self
+                .meta
+                .is_ancestor(&self.repo, &rev.commit, other)
+                .await?)
+    }
+
+    /// What a conversion conflict met: the conversion revision on the side that holds it, and the diverged version.
+    async fn conversion_note(&self, plan: &Plan, p: &PathPlan) -> Result<Option<ConversionNote>> {
+        let (Some(o), Some(t), Some(head)) = (&p.ours, &p.theirs, plan.target.head) else {
+            return Ok(None);
+        };
+        let (diverged, other_head) = if self.is_diverged(o, &plan.source).await? {
+            (o, plan.source)
+        } else {
+            (t, head)
+        };
+        let line = self
+            .meta
+            .history(&self.repo, &p.path, Some(&other_head))
+            .await?;
+        let Some(conv) = line
+            .windows(2)
+            .rev()
+            .find(|w| w[0].mode == Some(Mode::Shared) && w[1].mode == Some(Mode::Exclusive))
+            .map(|w| w[1].clone())
+        else {
+            return Ok(None);
+        };
+        let policy = RepoPath::new(POLICY_PATH)?;
+        let policy = self
+            .meta
+            .revision_at(&self.repo, &conv.commit, &policy)
+            .await?
+            .map(|r| r.id);
+        Ok(Some(ConversionNote {
+            revision: conv.id,
+            policy,
+            by: conv.author,
+            at: conv.created_at,
+            diverged: diverged.id,
+            diverged_by: diverged.author.clone(),
+            diverged_at: diverged.created_at,
+        }))
     }
 
     /// Applies the person's resolutions to the plan, each to a path the merge touches.
@@ -585,7 +650,7 @@ impl RepoService {
                         .is_some_and(|o| version_of(o) == version_of(&t));
                     if !same {
                         changes.push(Change {
-                            mode: self.mode_for(&path),
+                            mode: plan.rules.mode_for(&path),
                             path,
                             content: t.content,
                             file_mode: t.file_mode,
@@ -597,7 +662,7 @@ impl RepoService {
             } else {
                 for (path, t) in self.snapshot_tree(&plan.source).await? {
                     changes.push(Change {
-                        mode: self.mode_for(&path),
+                        mode: plan.rules.mode_for(&path),
                         path,
                         content: t.content,
                         file_mode: t.file_mode,
@@ -611,11 +676,17 @@ impl RepoService {
             let (content, file_mode, holder) = match &p.verdict {
                 Verdict::Keep => continue,
                 Verdict::Conflict(kind) => {
+                    let conversion = if *kind == ConflictKind::ExclusiveConversion {
+                        self.conversion_note(plan, p).await?
+                    } else {
+                        None
+                    };
                     conflicts.push(Conflict {
                         path: p.path.clone(),
                         mode: p.mode,
                         kind: *kind,
                         inputs: self.inputs(p).await?,
+                        conversion,
                     });
                     continue;
                 }
@@ -660,6 +731,7 @@ impl RepoService {
             changes,
             conflicts,
             commit,
+            stranded: Vec::new(),
         })
     }
 
@@ -677,17 +749,21 @@ impl RepoService {
     }
 
     /// Applies the policy at `commit` if it is newer than the one in force, converting paths as a policy commit does.
-    async fn apply_arrived_policy(&self, who: &Principal, commit: &ObjectId) -> Result<()> {
+    async fn apply_arrived_policy(
+        &self,
+        who: &Principal,
+        commit: &ObjectId,
+    ) -> Result<Vec<StrandedVersion>> {
         let policy = RepoPath::new(POLICY_PATH)?;
         let Some(rev) = self.meta.revision_at(&self.repo, commit, &policy).await? else {
-            return Ok(());
+            return Ok(Vec::new());
         };
         let rules = self.parse_policy(&rev.content).await?;
         if let Some(old) = self.apply(rev.id, rules) {
             let new = self.rules();
-            self.policy_applied(who, &rev, &old, &new).await?;
+            return self.policy_applied(who, &rev, &old, &new).await;
         }
-        Ok(())
+        Ok(Vec::new())
     }
 
     async fn write_fast_forward(
@@ -726,10 +802,14 @@ impl RepoService {
             ),
         )
         .await?;
-        if target.default {
-            self.apply_arrived_policy(who, &plan.source).await?;
-        }
-        self.report(plan, Some(plan.source)).await
+        let stranded = if target.default {
+            self.apply_arrived_policy(who, &plan.source).await?
+        } else {
+            Vec::new()
+        };
+        let mut report = self.report(plan, Some(plan.source)).await?;
+        report.stranded = stranded;
+        Ok(report)
     }
 
     async fn write_merge(
@@ -836,9 +916,13 @@ impl RepoService {
             )
             .await?;
         }
-        if target.default {
-            self.apply_arrived_policy(who, &written.commit).await?;
-        }
-        self.report(plan, Some(written.commit)).await
+        let stranded = if target.default {
+            self.apply_arrived_policy(who, &written.commit).await?
+        } else {
+            Vec::new()
+        };
+        let mut report = self.report(plan, Some(written.commit)).await?;
+        report.stranded = stranded;
+        Ok(report)
     }
 }

@@ -670,7 +670,11 @@ pub async fn an_exclusive_path_converted_to_shared_merges_by_content(store: Stor
         .await
         .unwrap();
     assert_eq!(h.svc.mode_for(&map), Mode::Shared);
-    put_on(&h, "feature", "bob", &map, "ONE\n2\n3\n", Some(1)).await;
+    h.svc
+        .checkout_on("feature", &map, &user("bob"), Some(RevisionId(2)))
+        .await
+        .unwrap();
+    put_on(&h, "feature", "bob", &map, "ONE\n2\n3\n", Some(2)).await;
     let done = h
         .svc
         .merge(&who("alice"), request("main", "feature"))

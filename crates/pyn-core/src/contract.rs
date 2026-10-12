@@ -37,6 +37,8 @@ const RULES: &str = "[meta]\ndefault = \"shared\"\n[exclusive]\npaths = [\"Conte
 
 mod merging;
 pub use merging::*;
+mod branch_policy;
+pub use branch_policy::*;
 
 struct Harness {
     store: Store,
@@ -2884,7 +2886,9 @@ pub async fn a_policy_file_on_another_branch_is_not_policy(store: Store) {
     );
 }
 
-pub async fn a_conversion_on_the_default_branch_applies_to_a_branch_that_diverged(store: Store) {
+pub async fn a_conversion_on_the_default_branch_reaches_a_branch_when_it_picks_up_the_policy(
+    store: Store,
+) {
     let h = harness(store);
     let (a, policy) = (path("Source/a.cpp"), path(".pyn/pyn.toml"));
     put_on(&h, "main", "alice", &a, "base", None).await;
@@ -2914,8 +2918,6 @@ pub async fn a_conversion_on_the_default_branch_applies_to_a_branch_that_diverge
     assert_eq!(conversion.mode, Some(crate::Mode::Exclusive));
     assert!(diverged.id < conversion.id);
 
-    let main = h.svc.snapshot_on("main").await.unwrap();
-    let feature = h.svc.snapshot_on("feature").await.unwrap();
     let pick = |s: &crate::Snapshot| {
         s.entries
             .iter()
@@ -2923,41 +2925,36 @@ pub async fn a_conversion_on_the_default_branch_applies_to_a_branch_that_diverge
             .map(|e| (e.revision.id, e.mode))
             .unwrap()
     };
+    let main = h.svc.snapshot_on("main").await.unwrap();
+    let feature = h.svc.snapshot_on("feature").await.unwrap();
     assert_eq!(pick(&main), (conversion.id, crate::Mode::Exclusive));
-    assert_eq!(pick(&feature), (diverged.id, crate::Mode::Exclusive));
+    assert_eq!(
+        pick(&feature),
+        (diverged.id, crate::Mode::Shared),
+        "the branch keeps its policy until it picks up the policy commit"
+    );
 
-    let err = h
+    let later = put_on(&h, "feature", "bob", &a, "more", Some(diverged.id.0)).await;
+    assert_eq!(later.mode, Some(crate::Mode::Shared));
+    assert!(later.id > conversion.id, "made after the conversion");
+
+    let preview = h
         .svc
-        .checkin_on(
-            "feature",
-            &who("bob"),
-            &a,
-            blob(&h, "more").await,
-            FileMode::Regular,
-            Some(diverged.id),
-            "x".into(),
-        )
-        .await
-        .unwrap_err();
-    assert!(matches!(err, PynError::LockRequired(_)), "{err}");
-    h.svc
-        .checkout(&a, &user("bob"), Some(conversion.id))
+        .merge_preview(&crate::MergeRequest {
+            source: "main".into(),
+            target: Some("feature".into()),
+            fast_forward: crate::FastForward::Allow,
+            message: None,
+            expect_target: None,
+            resolutions: Vec::new(),
+        })
         .await
         .unwrap();
-    let err = h
-        .svc
-        .checkin_on(
-            "feature",
-            &who("bob"),
-            &a,
-            blob(&h, "more").await,
-            FileMode::Regular,
-            Some(diverged.id),
-            "x".into(),
-        )
-        .await
-        .unwrap_err();
-    assert!(matches!(err, PynError::StaleBase { .. }), "{err}");
+    assert_eq!(preview.conflicts.len(), 1);
+    assert_eq!(
+        preview.conflicts[0].kind,
+        crate::ConflictKind::ExclusiveConversion
+    );
 }
 
 pub async fn verify_checks_every_branch_and_a_commit_names_its_parent(store: Store) {
@@ -3044,7 +3041,7 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_shared_path_can_diverge_on_two_branches);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_changeset_on_a_branch_is_one_commit_there_and_atomic);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_policy_file_on_another_branch_is_not_policy);
-        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_conversion_on_the_default_branch_applies_to_a_branch_that_diverged);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_conversion_on_the_default_branch_reaches_a_branch_when_it_picks_up_the_policy);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; verify_checks_every_branch_and_a_commit_names_its_parent);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; merge_bases_are_the_lowest_common_ancestors);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_merge_fast_forwards_or_is_up_to_date_without_a_new_commit);
@@ -3064,6 +3061,13 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_merge_computed_on_an_old_head_is_refused);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_merge_needs_the_checkin_permission_and_an_existing_source);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_policy_file_arriving_by_merge_is_policy_on_the_default_branch);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_branch_keeps_the_policy_it_has_until_it_picks_up_a_later_one);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_policy_file_on_a_branch_only_counts_once_it_reaches_the_default_branch);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; shared_to_exclusive_strands_diverged_branches_without_refusing);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_merge_after_a_conversion_shows_what_happened_and_when);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_version_made_on_a_stale_branch_after_the_conversion_is_still_diverged);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; exclusive_to_shared_releases_locks_and_never_strands);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_policy_arriving_by_merge_reports_the_versions_it_strands);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; merges_racing_into_one_branch_each_land_or_are_told_to_retry);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_file_on_one_side_and_a_folder_on_the_other_cannot_merge);
     };

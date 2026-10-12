@@ -5,6 +5,7 @@ use pyn_object::{FileMode, Kind, ObjectId, hash_object};
 use crate::error::{PynError, Result};
 use crate::object::REPO_ALGORITHM;
 use crate::rules::Mode;
+use crate::stranded::{ConversionNote, StrandedVersion};
 use crate::types::ChangesetItem;
 use crate::types::{Person, RepoPath, Revision, RevisionId};
 
@@ -75,6 +76,8 @@ pub struct Conflict {
     pub mode: Mode,
     pub kind: ConflictKind,
     pub inputs: Inputs,
+    /// For an `ExclusiveConversion`: what happened to the path and when, when the history shows it.
+    pub conversion: Option<ConversionNote>,
 }
 
 /// A path the merge changes in the target, with the content it ends up with.
@@ -103,6 +106,8 @@ pub struct MergeReport {
     pub conflicts: Vec<Conflict>,
     /// The commit the merge wrote: the merge commit, or the source's commit for a fast-forward.
     pub commit: Option<ObjectId>,
+    /// Versions the policy a merge into the default branch brought stranded; empty otherwise.
+    pub stranded: Vec<StrandedVersion>,
 }
 
 /// A person's chosen content for one path of a merge.
