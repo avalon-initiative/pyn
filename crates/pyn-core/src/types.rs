@@ -143,6 +143,8 @@ pub struct Revision {
     pub author: UserId,
     /// The structured author the v2 hash covers; `None` for a v1 revision.
     pub person: Option<Person>,
+    /// The encoding `hash` uses (`pyn_hash::REVISION_V1` or `REVISION_V2`); it must agree with `person`.
+    pub hash_version: u32,
     pub message: String,
     pub created_at: DateTime<Utc>,
     /// Set when this revision restores the content of an earlier one.

@@ -2,7 +2,8 @@
 
 use chrono::{DateTime, Utc};
 use pyn_hash::{
-    AuditFields, RevisionFields, RevisionV2Fields, audit_hash, revision_hash, revision_hash_v2,
+    AuditFields, REVISION_V1, REVISION_V2, RevisionFields, RevisionV2Fields, audit_hash,
+    revision_hash, revision_hash_v2,
 };
 use pyn_object::ObjectId;
 
@@ -29,6 +30,7 @@ impl NewRevision {
             legacy_content: None,
             author: self.author,
             person: Some(self.person),
+            hash_version: REVISION_V2,
             message: self.message,
             created_at: self.created_at,
             restored_from: self.restored_from,
@@ -45,9 +47,28 @@ impl NewRevision {
 }
 
 impl Revision {
-    /// The hash its own fields and `previous` give, by the encoding its version uses; equals `hash` unless the
-    /// record was altered.
+    /// The hash its own fields and `previous` give, by the encoding `hash_version` names; empty when the version
+    /// disagrees with the stored fields, so it never equals a stored hash.
     pub fn expected_hash(&self) -> RevisionHash {
+        self.checked_hash()
+            .unwrap_or_else(|_| RevisionHash::new(""))
+    }
+
+    /// Why `hash_version` cannot be used with the stored fields, if so.
+    pub fn version_problem(&self) -> Option<String> {
+        let what = match (self.hash_version, &self.person) {
+            (REVISION_V1, None) | (REVISION_V2, Some(_)) => return None,
+            (REVISION_V1, Some(_)) => "version 1 but has a structured author".to_string(),
+            (REVISION_V2, None) => "version 2 but has no structured author".to_string(),
+            (v, _) => format!("unknown version {v}"),
+        };
+        Some(format!("{}@r{} hash is {what}", self.path, self.id))
+    }
+
+    fn checked_hash(&self) -> Result<RevisionHash> {
+        if let Some(problem) = self.version_problem() {
+            return Err(PynError::HistoryCorrupt(problem));
+        }
         let previous = self.previous.as_ref().map(RevisionHash::as_str);
         let hash = match &self.person {
             Some(person) => revision_hash_v2(&RevisionV2Fields {
@@ -82,11 +103,11 @@ impl Revision {
                 })
             }
         };
-        RevisionHash::new(hash)
+        Ok(RevisionHash::new(hash))
     }
 
     pub fn verify(&self) -> Result<()> {
-        if self.expected_hash() == self.hash {
+        if self.checked_hash()? == self.hash {
             Ok(())
         } else {
             Err(PynError::HistoryCorrupt(format!(
@@ -106,6 +127,8 @@ pub enum BreakKind {
     Link,
     /// A commit's tree is not the tree of the repository state it names.
     Tree,
+    /// A revision's `hash_version` disagrees with its stored fields, or names no known encoding.
+    Version,
 }
 
 impl BreakKind {
@@ -114,6 +137,7 @@ impl BreakKind {
             Self::Hash => "hash_mismatch",
             Self::Link => "broken_link",
             Self::Tree => "tree_mismatch",
+            Self::Version => "version_mismatch",
         }
     }
 }
@@ -123,7 +147,9 @@ pub fn verify_revisions(revisions: &[Revision]) -> Vec<(RevisionId, BreakKind)> 
     let mut breaks = Vec::new();
     let mut prior: Option<&Revision> = None;
     for r in revisions {
-        if r.expected_hash() != r.hash {
+        if r.version_problem().is_some() {
+            breaks.push((r.id, BreakKind::Version));
+        } else if r.expected_hash() != r.hash {
             breaks.push((r.id, BreakKind::Hash));
         }
         let linked = match prior {

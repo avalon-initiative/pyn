@@ -5,6 +5,9 @@ use sha2::{Digest, Sha256};
 
 pub const REVISION_TAG: &str = "pyn-revision-v1";
 pub const REVISION_V2_TAG: &str = "pyn-revision-v2";
+/// The `hash_version` a revision stores for each revision encoding.
+pub const REVISION_V1: u32 = 1;
+pub const REVISION_V2: u32 = 2;
 pub const AUDIT_TAG: &str = "pyn-audit-v1";
 
 /// The fields a revision hash covers. `previous` is the hash of the path's previous revision, `None` for the first.

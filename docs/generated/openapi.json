@@ -7621,6 +7621,7 @@
           "path",
           "content",
           "author",
+          "hash_version",
           "message",
           "created_at",
           "file_mode",
@@ -7667,7 +7668,13 @@
           },
           "hash": {
             "type": "string",
-            "description": "SHA-256 hex over the revision's canonical encoding, v1 or v2 by `author_identity` (docs/concepts/integrity.md)."
+            "description": "SHA-256 hex over the revision's canonical encoding, by `hash_version` (docs/concepts/integrity.md)."
+          },
+          "hash_version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The encoding `hash` uses: 1 or 2. Version 2 requires `author_identity`, version 1 forbids it.",
+            "minimum": 0
           },
           "id": {
             "type": "integer",
@@ -8411,7 +8418,7 @@
       },
       "VerifyProblem": {
         "type": "object",
-        "description": "One break found by verification: `hash_mismatch` (a record's fields do not give its hash) or `broken_link` (it does\nnot follow the record before it). Revision breaks carry `path` and `revision`; audit breaks carry `event`.",
+        "description": "One break found by verification: `hash_mismatch` (a record's fields do not give its hash), `version_mismatch` (a revision's `hash_version` disagrees with its stored fields) or `broken_link` (it does\nnot follow the record before it). Revision breaks carry `path` and `revision`; audit breaks carry `event`.",
         "required": [
           "kind"
         ],

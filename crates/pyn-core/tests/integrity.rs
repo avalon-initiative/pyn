@@ -209,30 +209,7 @@ async fn verifying_an_unknown_path_is_not_found() {
 
 #[test]
 fn a_migrated_revision_still_verifies_against_its_frozen_v1_hash() {
-    let empty_blob = pyn_core::ObjectId::from_hex(
-        pyn_core::REPO_ALGORITHM,
-        "473a0f4c3be8a93681a267e3b1e9a7dcda1185436fe141f7749120a303721813",
-    )
-    .unwrap();
-    let mut rev = pyn_core::Revision {
-        id: RevisionId(1),
-        path: RepoPath::new("Content/a.umap").unwrap(),
-        content: empty_blob,
-        legacy_content: Some(
-            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".into(),
-        ),
-        author: UserId::new("alice"),
-        person: None,
-        message: "first".into(),
-        created_at: Utc.timestamp_micros(1_700_000_000_123_456).unwrap(),
-        restored_from: None,
-        mode: None,
-        file_mode: pyn_core::FileMode::Regular,
-        changeset: None,
-        commit: empty_blob,
-        hash: RevisionHash::new("9c4caa53e94d5fa8fb261cb765f73725506641df99e225605e83f179ae0d9b52"),
-        previous: None,
-    };
+    let mut rev = v1_revision();
     assert!(rev.verify().is_ok());
     rev.legacy_content = None;
     assert!(
@@ -285,4 +262,89 @@ async fn a_v2_revision_covers_its_file_mode_and_commit() {
         r.commit = r.content;
     });
     assert!(w.svc.head(&a).await.is_err());
+}
+
+#[tokio::test]
+async fn a_flipped_hash_version_is_a_version_problem_not_a_silent_reencode() {
+    let w = world();
+    let a = three_revisions(&w).await;
+    w.meta.tamper(&w.repo, &a, RevisionId(2), |r| {
+        assert_eq!(r.hash_version, 2);
+        r.hash_version = 1;
+    });
+    let report = w.svc.verify(Some(&a), false).await.unwrap();
+    let found: Vec<_> = report
+        .problems
+        .iter()
+        .map(|p| (p.kind, p.revision))
+        .collect();
+    assert_eq!(found, vec![(BreakKind::Version, Some(RevisionId(2)))]);
+    let err = w.svc.read(&a, Some(RevisionId(2))).await.unwrap_err();
+    assert!(
+        is_corrupt(&err)
+            && err
+                .to_string()
+                .contains("version 1 but has a structured author"),
+        "{err}"
+    );
+    assert!(is_corrupt(&w.svc.history(&a).await.unwrap_err()));
+
+    w.meta.tamper(&w.repo, &a, RevisionId(2), |r| {
+        r.hash_version = 2;
+        r.person = None;
+    });
+    let report = w.svc.verify(Some(&a), false).await.unwrap();
+    assert_eq!(report.problems[0].kind, BreakKind::Version);
+    let err = w.svc.head(&a).await;
+    assert!(err.is_ok(), "r3 is the head and is intact");
+    let err = w.svc.read(&a, Some(RevisionId(2))).await.unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("version 2 but has no structured author"),
+        "{err}"
+    );
+
+    w.meta
+        .tamper(&w.repo, &a, RevisionId(2), |r| r.hash_version = 3);
+    let err = w.svc.read(&a, Some(RevisionId(2))).await.unwrap_err();
+    assert!(err.to_string().contains("unknown version 3"), "{err}");
+}
+
+#[test]
+fn a_v1_revision_with_a_structured_author_or_v2_without_is_inconsistent() {
+    let mut rev = v1_revision();
+    assert!(rev.version_problem().is_none());
+    rev.hash_version = 2;
+    assert!(rev.version_problem().is_some() && rev.verify().is_err());
+    rev.hash_version = 1;
+    rev.person = Some(pyn_core::Person::new("alice", "a@example.com", 0));
+    assert!(rev.version_problem().is_some() && rev.verify().is_err());
+}
+
+fn v1_revision() -> pyn_core::Revision {
+    let empty_blob = pyn_core::ObjectId::from_hex(
+        pyn_core::REPO_ALGORITHM,
+        "473a0f4c3be8a93681a267e3b1e9a7dcda1185436fe141f7749120a303721813",
+    )
+    .unwrap();
+    pyn_core::Revision {
+        id: RevisionId(1),
+        path: RepoPath::new("Content/a.umap").unwrap(),
+        content: empty_blob,
+        legacy_content: Some(
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".into(),
+        ),
+        author: UserId::new("alice"),
+        person: None,
+        hash_version: 1,
+        message: "first".into(),
+        created_at: Utc.timestamp_micros(1_700_000_000_123_456).unwrap(),
+        restored_from: None,
+        mode: None,
+        file_mode: pyn_core::FileMode::Regular,
+        changeset: None,
+        commit: empty_blob,
+        hash: RevisionHash::new("9c4caa53e94d5fa8fb261cb765f73725506641df99e225605e83f179ae0d9b52"),
+        previous: None,
+    }
 }

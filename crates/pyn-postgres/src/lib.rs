@@ -46,7 +46,7 @@ fn lock_from(row: &PgRow) -> Result<Lock> {
     })
 }
 
-const REVISION_COLUMNS: &str = "id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no, hash, previous_hash, content_v1, commit_id, file_mode, author_name, author_email, author_offset";
+const REVISION_COLUMNS: &str = "id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no, hash, previous_hash, content_v1, commit_id, file_mode, author_name, author_email, author_offset, hash_version";
 
 fn object_id(hex: &str, what: &str) -> Result<ObjectId> {
     ObjectId::from_hex(REPO_ALGORITHM, hex).map_err(|e| PynError::Storage(format!("{what}: {e}")))
@@ -86,6 +86,7 @@ fn revision_from(row: &PgRow) -> Result<Revision> {
         legacy_content: row.get("content_v1"),
         author: UserId::new(row.get::<String, _>("author")),
         person,
+        hash_version: row.get::<i32, _>("hash_version") as u32,
         message: row.get("message"),
         created_at: row.get("created_at"),
         restored_from: row
@@ -208,8 +209,8 @@ async fn append_revision(
     // Inserts only when the head still equals `expected`; a concurrent insert of the same id hits the primary key.
     let inserted = sqlx::query(
         "INSERT INTO revisions (repo, path, id, content, author, message, created_at, restored_from, mode, size, changeset,
-                                commit_no, hash, previous_hash, commit_id, file_mode, author_name, author_email, author_offset)
-         SELECT $1, $2, $3, $4, $5, $6, $7, $9::bigint, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20
+                                commit_no, hash, previous_hash, commit_id, file_mode, author_name, author_email, author_offset, hash_version)
+         SELECT $1, $2, $3, $4, $5, $6, $7, $9::bigint, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21
          WHERE COALESCE((SELECT max(id) FROM revisions WHERE repo = $1 AND path = $2), 0) = $8
          RETURNING id",
     )
@@ -233,6 +234,7 @@ async fn append_revision(
     .bind(&person.name)
     .bind(&person.email)
     .bind(person.offset_minutes)
+    .bind(created.hash_version as i32)
     .fetch_optional(&mut **tx)
     .await;
 
@@ -731,7 +733,7 @@ impl MetadataStore for PgMetadataStore {
 
     async fn head_revision(&self, repo: &RepoId, path: &RepoPath) -> Result<Option<Revision>> {
         let row = sqlx::query(
-            "SELECT id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no, hash, previous_hash, content_v1, commit_id, file_mode, author_name, author_email, author_offset FROM revisions
+            "SELECT id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no, hash, previous_hash, content_v1, commit_id, file_mode, author_name, author_email, author_offset, hash_version FROM revisions
              WHERE repo = $1 AND path = $2 ORDER BY id DESC LIMIT 1",
         )
         .bind(repo.as_str())
@@ -792,7 +794,7 @@ impl MetadataStore for PgMetadataStore {
         id: RevisionId,
     ) -> Result<Option<Revision>> {
         let row = sqlx::query(
-            "SELECT id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no, hash, previous_hash, content_v1, commit_id, file_mode, author_name, author_email, author_offset FROM revisions
+            "SELECT id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no, hash, previous_hash, content_v1, commit_id, file_mode, author_name, author_email, author_offset, hash_version FROM revisions
              WHERE repo = $1 AND path = $2 AND id = $3",
         )
         .bind(repo.as_str())
@@ -901,7 +903,7 @@ impl MetadataStore for PgMetadataStore {
 
     async fn list_head_revisions(&self, repo: &RepoId) -> Result<Vec<Revision>> {
         let rows = sqlx::query(
-            "SELECT DISTINCT ON (path) id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no, hash, previous_hash, content_v1, commit_id, file_mode, author_name, author_email, author_offset
+            "SELECT DISTINCT ON (path) id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no, hash, previous_hash, content_v1, commit_id, file_mode, author_name, author_email, author_offset, hash_version
              FROM revisions WHERE repo = $1 ORDER BY path, id DESC",
         )
         .bind(repo.as_str())
@@ -913,7 +915,7 @@ impl MetadataStore for PgMetadataStore {
 
     async fn history(&self, repo: &RepoId, path: &RepoPath) -> Result<Vec<Revision>> {
         let rows = sqlx::query(
-            "SELECT id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no, hash, previous_hash, content_v1, commit_id, file_mode, author_name, author_email, author_offset FROM revisions
+            "SELECT id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no, hash, previous_hash, content_v1, commit_id, file_mode, author_name, author_email, author_offset, hash_version FROM revisions
              WHERE repo = $1 AND path = $2 ORDER BY id",
         )
         .bind(repo.as_str())
@@ -937,7 +939,7 @@ impl MetadataStore for PgMetadataStore {
         let mut out = Vec::new();
         loop {
             let rows = sqlx::query(
-                "SELECT id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no, hash, previous_hash, content_v1, commit_id, file_mode, author_name, author_email, author_offset FROM revisions
+                "SELECT id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no, hash, previous_hash, content_v1, commit_id, file_mode, author_name, author_email, author_offset, hash_version FROM revisions
                  WHERE repo = $1
                    AND ($2::timestamptz IS NULL
                         OR (created_at, path COLLATE \"C\", id) < ($2, $3::text COLLATE \"C\", $4::bigint))
@@ -1245,12 +1247,12 @@ mod tests {
             "DROP TABLE repo_commits",
             "ALTER TABLE revisions DROP COLUMN commit_no",
             "DELETE FROM _sqlx_migrations WHERE version = 22",
-            "INSERT INTO revisions (repo, path, id, content, author, message, created_at, changeset) VALUES
-               ('r', 'a', 1, repeat('1', 64), 'u', 'm', now() - interval '3 hours', NULL),
-               ('r', 'b', 1, repeat('2', 64), 'u', 'm', now() - interval '2 hours', 'cs'),
-               ('r', 'c', 1, repeat('2', 64), 'u', 'm', now() - interval '2 hours', 'cs'),
-               ('r', 'a', 2, repeat('3', 64), 'u', 'm', now() - interval '1 hours', NULL),
-               ('other', 'a', 1, repeat('1', 64), 'u', 'm', now(), NULL)",
+            "INSERT INTO revisions (repo, path, id, content, author, message, created_at, changeset, hash_version) VALUES
+               ('r', 'a', 1, repeat('1', 64), 'u', 'm', now() - interval '3 hours', NULL, 1),
+               ('r', 'b', 1, repeat('2', 64), 'u', 'm', now() - interval '2 hours', 'cs', 1),
+               ('r', 'c', 1, repeat('2', 64), 'u', 'm', now() - interval '2 hours', 'cs', 1),
+               ('r', 'a', 2, repeat('3', 64), 'u', 'm', now() - interval '1 hours', NULL, 1),
+               ('other', 'a', 1, repeat('1', 64), 'u', 'm', now(), NULL, 1)",
         ] {
             sqlx::query(stmt).execute(&store.pool).await.unwrap();
         }
@@ -1279,7 +1281,7 @@ mod tests {
             assert!(
                 c.revisions
                     .iter()
-                    .all(|r| r.commit == c.id && r.person.is_none())
+                    .all(|r| r.commit == c.id && r.person.is_none() && r.hash_version == 1)
             );
         }
         let snap = store.snapshot(&repo, &commits[1].id).await.unwrap();
@@ -1297,10 +1299,10 @@ mod tests {
             .await
             .unwrap();
         for stmt in [
-            "INSERT INTO revisions (repo, path, id, content, author, message, created_at, commit_no) VALUES
-               ('r', 'a', 1, repeat('1', 64), 'u', 'm1', '2026-01-01T00:00:00.123456Z', 1),
-               ('r', 'a', 2, repeat('2', 64), 'u', 'm2', '2026-01-02T00:00:00Z', 2),
-               ('r', 'b', 1, repeat('3', 64), 'u', 'm3', '2026-01-03T00:00:00Z', 3)",
+            "INSERT INTO revisions (repo, path, id, content, author, message, created_at, commit_no, hash_version) VALUES
+               ('r', 'a', 1, repeat('1', 64), 'u', 'm1', '2026-01-01T00:00:00.123456Z', 1, 1),
+               ('r', 'a', 2, repeat('2', 64), 'u', 'm2', '2026-01-02T00:00:00Z', 2, 1),
+               ('r', 'b', 1, repeat('3', 64), 'u', 'm3', '2026-01-03T00:00:00Z', 3, 1)",
             "INSERT INTO audit_events (repo, at, actor, action, path, detail) VALUES
                ('r', '2026-01-01T00:00:00Z', 'u', 'checkin', 'a', 'd1'),
                ('@server', '2026-01-02T00:00:00Z', 'u', 'admin_granted', NULL, 'd2'),
@@ -1387,6 +1389,18 @@ mod tests {
             .unwrap();
         let revs = store.history(&repo, &path).await.unwrap();
         assert_eq!(pyn_core::integrity::verify_revisions(&revs).len(), 1);
+
+        sqlx::query("UPDATE revisions SET message = 'm' WHERE id = 1")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE revisions SET hash_version = 1 WHERE id = 2")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        let revs = store.history(&repo, &path).await.unwrap();
+        let found = pyn_core::integrity::verify_revisions(&revs);
+        assert_eq!(found, vec![(RevisionId(2), pyn_core::BreakKind::Version)]);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1406,8 +1420,8 @@ mod tests {
         let ghost = "ab".repeat(32);
         for content in [old.to_hex(), ghost.clone()] {
             sqlx::query(
-                "INSERT INTO revisions (repo, path, id, content, author, message, created_at, commit_no, content_v1)
-                 VALUES ('r', $1, 1, $2, 'u', 'm', '2026-01-01T00:00:00Z', 1, $2)",
+                "INSERT INTO revisions (repo, path, id, content, author, message, created_at, commit_no, content_v1, hash_version)
+                 VALUES ('r', $1, 1, $2, 'u', 'm', '2026-01-01T00:00:00Z', 1, $2, 1)",
             )
             .bind(&content[..4])
             .bind(&content)

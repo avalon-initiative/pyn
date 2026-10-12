@@ -67,6 +67,8 @@ pub struct Revision {
     /// The structured author the v2 hash covers; absent for a v1 revision, whose hash predates it.
     #[serde(default)]
     pub author_identity: Option<Person>,
+    /// The encoding `hash` uses: 1 or 2. Version 2 requires `author_identity`, version 1 forbids it.
+    pub hash_version: u32,
     pub message: String,
     pub created_at: DateTime<Utc>,
     /// Set when this revision restored the content of an earlier one.
@@ -79,7 +81,7 @@ pub struct Revision {
     pub file_mode: FileMode,
     /// The id of the commit this revision belongs to; see `Commit`.
     pub commit: String,
-    /// SHA-256 hex over the revision's canonical encoding, v1 or v2 by `author_identity` (docs/concepts/integrity.md).
+    /// SHA-256 hex over the revision's canonical encoding, by `hash_version` (docs/concepts/integrity.md).
     pub hash: String,
     /// The hash of the path's previous revision; absent for the first.
     pub previous: Option<String>,
@@ -1095,7 +1097,7 @@ pub struct OwnerUsage {
     pub repositories: Vec<RepoUsage>,
 }
 
-/// One break found by verification: `hash_mismatch` (a record's fields do not give its hash) or `broken_link` (it does
+/// One break found by verification: `hash_mismatch` (a record's fields do not give its hash), `version_mismatch` (a revision's `hash_version` disagrees with its stored fields) or `broken_link` (it does
 /// not follow the record before it). Revision breaks carry `path` and `revision`; audit breaks carry `event`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct VerifyProblem {

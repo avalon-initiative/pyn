@@ -101,3 +101,22 @@ fn a_rewritten_commit_is_reported_from_its_recomputed_id() {
     );
     assert_eq!(rows.len(), 2, "{rows:?}");
 }
+
+#[test]
+fn a_flipped_hash_version_is_reported_as_a_version_mismatch() {
+    let env = start();
+    env.seed("alice", "Source/a.ts", "one", None);
+    env.meta.tamper(
+        &RepoId::new("t"),
+        &RepoPath::new("Source/a.ts").unwrap(),
+        RevisionId(1),
+        |r| r.hash_version = 1,
+    );
+    let home = env.dir("home");
+
+    let out = env.run(&home, "alice", &["verify"]);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out.stderr));
+    let rows = common::cell_rows(&text(&out.stdout));
+    assert_eq!(rows[1], ["version_mismatch", "r1", "Source/a.ts"]);
+    assert_eq!(rows.len(), 2, "{rows:?}");
+}

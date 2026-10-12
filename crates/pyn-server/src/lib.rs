@@ -691,6 +691,7 @@ fn revision_dto(r: pyn_core::Revision) -> api::Revision {
         legacy_content: r.legacy_content,
         author: r.author.to_string(),
         author_identity: r.person.map(person_dto),
+        hash_version: r.hash_version,
         message: r.message,
         created_at: r.created_at,
         restored_from: r.restored_from.map(|r| r.0),

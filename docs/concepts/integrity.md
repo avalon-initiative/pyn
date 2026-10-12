@@ -52,9 +52,12 @@ str(commit_id)          the git commit id of the commit that made the revision, 
 ```
 
 A v2 hash covers the commit id, and the commit id covers the tree and the parent, so the revision, its commit and the
-repository state at that commit cannot be changed independently. A revision is v2 exactly when its structured author is
-stored with it (`revisions.author_name`, `author_email` and `author_offset` in PostgreSQL, `author_identity` in the API);
-rows without it keep their v1 hash and are never rewritten. New revisions are always v2.
+repository state at that commit cannot be changed independently. Which encoding a revision uses is stored with it as `hash_version` (`1` or `2`;
+`revisions.hash_version` in PostgreSQL, `hash_version` in the API), never inferred. Rows that existed before v2 are version 1 and keep their hash, never
+rewritten; new revisions are always version 2. A version must agree with the stored fields: version 2 needs the structured
+author (`revisions.author_name`, `author_email` and `author_offset` in PostgreSQL, `author_identity` in the API) and
+version 1 must not have one. A disagreement, or a version that names no known encoding, is corrupt history: it is never re-encoded to
+make it fit.
 
 **Audit event**, in this order:
 
@@ -108,19 +111,21 @@ events leaves a valid chain. A client that remembers a head hash can detect that
 ## Where hashes are checked
 
 - Every revision the server returns is checked against its own hash first. The full history of a path is also checked for
-  its links. A mismatch is a `500 history_corrupt` naming the path and revision, never silently served.
+  its links. A mismatch, or a `hash_version` that disagrees with the stored fields, is a `500 history_corrupt` naming the
+  path and revision, never silently served.
 - A commit chains from the stored head hash only after the head has been checked, so a tampered head cannot be extended.
 - Every commit the server returns is checked against its own id (recomputed from its tree, parents, author, committer
   and message); a mismatch is a `500 history_corrupt`. Verification also checks each commit's parent link and that the
   head commit's tree is the tree of the head snapshot, and reports `hash_mismatch`, `broken_link` and `tree_mismatch`
-  problems with the `commit` id.
+  problems with the `commit` id. A revision whose `hash_version` disagrees with its stored fields is reported as
+  `version_mismatch`.
 - Audit events are checked when they are read, and the whole chain when verified.
 - `GET /v1/repos/{owner}/{name}/verify?path=` checks a path, or every path and the repository's audit log, and reports every
   break instead of stopping at the first. It needs `read`; the audit log is checked only for callers with `view_audit`.
-- `pyn verify [<path>]` prints the report and exits 1 when anything is broken. It also recomputes the revision hashes (v1 and v2) and the commit ids it
-  fetches on the client, so a server that reports "ok" cannot hide a mismatch.
+- `pyn verify [<path>]` prints the report and exits 1 when anything is broken. It also selects each revision's encoding from
+  `hash_version`, recomputes the revision hashes (v1 and v2) and the commit ids it fetches on the client, so a server that reports "ok" cannot hide a mismatch.
 
-Revisions in the API carry `hash` and `previous`; audit events carry `hash` and `previous`.
+Revisions in the API carry `hash`, `hash_version` and `previous`; audit events carry `hash` and `previous`.
 
 ## Content ids and v1
 

@@ -3,7 +3,9 @@
 use std::collections::BTreeMap;
 
 use anyhow::Result;
-use pyn_hash::{RevisionFields, RevisionV2Fields, revision_hash, revision_hash_v2};
+use pyn_hash::{
+    REVISION_V1, REVISION_V2, RevisionFields, RevisionV2Fields, revision_hash, revision_hash_v2,
+};
 use pyn_object::{ObjectId, Signature};
 use pyn_proto as api;
 
@@ -93,6 +95,14 @@ fn served_revisions(api: &Api, path: Option<&str>) -> Result<Vec<api::Revision>>
             return Ok(all);
         }
     }
+}
+
+/// Whether the revision's `hash_version` disagrees with its stored fields.
+fn version_problem(r: &api::Revision) -> bool {
+    !matches!(
+        (r.hash_version, &r.author_identity),
+        (REVISION_V1, None) | (REVISION_V2, Some(_))
+    )
 }
 
 fn expected(r: &api::Revision) -> String {
@@ -222,7 +232,9 @@ fn check_chains(revs: &[api::Revision]) -> Vec<Finding> {
         let mut prior: Option<&api::Revision> = None;
         for r in chain {
             let at = |kind: &str| (kind.to_string(), format!("r{}", r.id), path.to_string());
-            if expected(r) != r.hash {
+            if version_problem(r) {
+                out.push(at("version_mismatch"));
+            } else if expected(r) != r.hash {
                 out.push(at("hash_mismatch"));
             }
             let linked = match prior {
