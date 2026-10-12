@@ -182,9 +182,10 @@ pub fn download(
         let mut req = api
             .get(&api.repo_route("/content")?)
             .query(&[("path", path)]);
-        if let Some(r) = revision {
-            req = req.query(&[("revision", r)]);
-        }
+        req = match revision {
+            Some(r) => req.query(&[("revision", r)]),
+            None => api.on_branch(req),
+        };
         if have > 0 {
             req = req.header("range", format!("bytes={have}-"));
         }

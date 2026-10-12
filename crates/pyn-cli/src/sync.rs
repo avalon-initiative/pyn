@@ -25,7 +25,7 @@ fn wants_read_only(entry: &api::FileEntry, me: &str) -> bool {
     entry.mode == api::Mode::Exclusive && entry.lock.as_ref().is_none_or(|l| l.owner != me)
 }
 
-fn fetch(
+pub fn fetch(
     backend: &dyn Backend,
     ws: &Workspace,
     entry: &api::FileEntry,

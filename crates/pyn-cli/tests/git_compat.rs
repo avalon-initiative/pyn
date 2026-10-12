@@ -86,7 +86,7 @@ fn git_only_commands_say_so_and_unknown_ones_are_not_commands() {
     );
 
     let (code, err) = run(&["checkout", "Source/a.cpp"]);
-    assert_eq!(code, Some(1));
+    assert_eq!(code, Some(128));
     assert!(err.contains("pyn lock"), "{err}");
 
     let (code, err) = run(&["frobnicate"]);

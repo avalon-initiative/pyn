@@ -1,0 +1,621 @@
+//! `pyn branch`, `pyn switch` and `pyn checkout` on a pyn server, and the workspace's current branch.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result, bail};
+use clap::Args;
+use pyn_proto as api;
+use reqwest::Method;
+
+use crate::backend::Backend;
+use crate::client::Api;
+use crate::localfile;
+use crate::snapshot::{self, short};
+use crate::sync::{self, mode_name};
+use crate::workspace::{FileState, Workspace, set_read_only};
+
+/// The server's default branch, which a workspace is on until it switches.
+pub const DEFAULT_BRANCH: &str = "main";
+
+fn state_path(ws: &Workspace) -> PathBuf {
+    ws.dir.join("local_only").join("state").join("branch")
+}
+
+/// The branch the workspace is on, if it has switched; `None` means the default branch.
+pub fn current(ws: Option<&Workspace>) -> Option<String> {
+    let text = std::fs::read_to_string(state_path(ws?)).ok()?;
+    Some(text.trim().to_string()).filter(|b| !b.is_empty())
+}
+
+/// The name to show for the workspace's branch.
+pub fn name(ws: Option<&Workspace>) -> String {
+    current(ws).unwrap_or_else(|| DEFAULT_BRANCH.to_string())
+}
+
+fn set_current(ws: &Workspace, branch: &str) -> Result<()> {
+    let path = state_path(ws);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(&path, format!("{branch}\n"))
+        .with_context(|| format!("writing {}", path.display()))
+}
+
+/// Prints which branch a workspace command is about, on standard output.
+pub fn print_header(ws: Option<&Workspace>) {
+    if ws.is_some() {
+        println!("On branch {}", name(ws));
+    }
+}
+
+/// Like `print_header`, on standard error, for output that scripts read.
+pub fn note_branch(ws: Option<&Workspace>) {
+    if ws.is_some() {
+        eprintln!("On branch {}", name(ws));
+    }
+}
+
+/// List, create, rename or delete branches.
+#[derive(Debug, Args)]
+pub struct BranchArgs {
+    /// `<name> [<start>]` creates a branch; with -d or -D the branches to delete; with -m `[<old>] <new>`.
+    names: Vec<String>,
+    /// Delete a branch whose commits are all on the default branch.
+    #[arg(short = 'd', long)]
+    delete: bool,
+    /// Delete a branch even when it has commits the default branch lacks.
+    #[arg(short = 'D')]
+    force_delete: bool,
+    /// Rename a branch (the current one if only the new name is given).
+    #[arg(short = 'm', long = "move")]
+    rename: bool,
+    /// List branches (the default with no arguments).
+    #[arg(short = 'l', long)]
+    list: bool,
+    /// With the list, show each branch's commit and message.
+    #[arg(short = 'v', long)]
+    verbose: bool,
+    /// Print the current branch's name.
+    #[arg(long)]
+    show_current: bool,
+}
+
+/// Switch the workspace to another branch.
+#[derive(Debug, Args)]
+pub struct SwitchArgs {
+    /// The branch to switch to; with -c, where the new branch starts.
+    start: Option<String>,
+    /// Create the branch and switch to it.
+    #[arg(short = 'c', long)]
+    create: Option<String>,
+    /// Discard local changes that the switch would overwrite.
+    #[arg(short = 'f', long, alias = "discard-changes")]
+    force: bool,
+}
+
+/// Switch branches, or restore files from the workspace's revisions or from another commit.
+#[derive(Debug, Args)]
+pub struct CheckoutArgs {
+    /// A branch to switch to, or with `--` the branch or commit to take the files from; with -b, where the new
+    /// branch starts.
+    args: Vec<String>,
+    /// Files to restore: to the revision the workspace has, or to the one the named commit has.
+    #[arg(last = true)]
+    paths: Vec<String>,
+    /// Create the branch and switch to it.
+    #[arg(short = 'b')]
+    create: Option<String>,
+    /// Discard local changes that the switch would overwrite.
+    #[arg(short = 'f', long)]
+    force: bool,
+}
+
+fn branches(api: &Api) -> Result<Vec<api::Branch>> {
+    Ok(api.send(api.get(&api.repo_route("/branches")?))?.json()?)
+}
+
+fn branch_route(api: &Api, name: &str) -> Result<String> {
+    api.repo_route(&format!("/branches/{name}"))
+}
+
+/// A branch by name; `None` when the server has no such branch.
+fn find(api: &Api, name: &str) -> Result<Option<api::Branch>> {
+    match api.send(api.get(&branch_route(api, name)?)) {
+        Ok(resp) => Ok(Some(resp.json()?)),
+        Err(e) => match e.downcast_ref::<crate::client::ApiError>() {
+            Some(err) if err.code == "branch_not_found" => Ok(None),
+            _ => Err(e),
+        },
+    }
+}
+
+/// What the server takes as a start point: a branch name as it is, a commit reference as the commit's full id.
+fn start_point(backend: &dyn Backend, api: &Api, spec: &str) -> Result<String> {
+    if find(api, spec)?.is_some() {
+        return Ok(spec.to_string());
+    }
+    match snapshot::parse_commit(spec) {
+        Some(_) => snapshot::resolve(backend, spec),
+        None => Ok(spec.to_string()),
+    }
+}
+
+fn create(
+    backend: &dyn Backend,
+    api: &Api,
+    ws: Option<&Workspace>,
+    new: &str,
+    start: Option<&str>,
+) -> Result<api::Branch> {
+    let start = match (start, current(ws)) {
+        (Some(s), _) => Some(start_point(backend, api, s)?),
+        (None, here) => here,
+    };
+    let body = api::CreateBranchRequest {
+        name: new.to_string(),
+        start,
+    };
+    Ok(api
+        .send(
+            api.request(Method::POST, &api.repo_route("/branches")?)
+                .json(&body),
+        )?
+        .json()?)
+}
+
+pub fn branch_command(
+    backend: &dyn Backend,
+    ws: Option<&Workspace>,
+    args: BranchArgs,
+) -> Result<()> {
+    let api = backend.pyn_server("branch")?;
+    let BranchArgs {
+        names,
+        delete,
+        force_delete,
+        rename,
+        list,
+        verbose,
+        show_current,
+    } = args;
+    let modes = [delete || force_delete, rename, list || show_current].map(usize::from);
+    if modes.iter().sum::<usize>() > 1 {
+        bail!("choose one of --delete, --move and --list");
+    }
+    if show_current {
+        println!("{}", name(ws));
+        return Ok(());
+    }
+    if delete || force_delete {
+        if names.is_empty() {
+            bail!("name the branches to delete");
+        }
+        return delete_branches(api, ws, &names, force_delete);
+    }
+    if rename {
+        let (old, new) = match names.as_slice() {
+            [new] => (name(ws), new.clone()),
+            [old, new] => (old.clone(), new.clone()),
+            _ => bail!("`pyn branch -m` takes `[<old>] <new>`"),
+        };
+        let body = api::RenameBranchRequest { name: new.clone() };
+        api.send(
+            api.request(Method::PATCH, &branch_route(api, &old)?)
+                .json(&body),
+        )?;
+        if let Some(w) = ws
+            && name(ws) == old
+        {
+            set_current(w, &new)?;
+        }
+        return Ok(());
+    }
+    match names.as_slice() {
+        [] => list_branches(backend, api, ws, verbose),
+        _ if list => bail!("`pyn branch --list` takes no branch names"),
+        [new] => create(backend, api, ws, new, None).map(drop),
+        [new, start] => create(backend, api, ws, new, Some(start)).map(drop),
+        _ => bail!("`pyn branch` takes `<name> [<start>]`"),
+    }
+}
+
+fn list_branches(
+    backend: &dyn Backend,
+    api: &Api,
+    ws: Option<&Workspace>,
+    verbose: bool,
+) -> Result<()> {
+    let here = name(ws);
+    let mut all = branches(api)?;
+    all.sort_by(|a, b| a.name.cmp(&b.name));
+    let width = all
+        .iter()
+        .map(|b| b.name.chars().count())
+        .max()
+        .unwrap_or(0);
+    for b in all {
+        let mark = if b.name == here { '*' } else { ' ' };
+        if !verbose {
+            println!("{mark} {}", b.name);
+            continue;
+        }
+        let (id, subject) = match &b.commit {
+            Some(c) => {
+                let message = backend.commit(c)?.message;
+                (
+                    short(c).to_string(),
+                    message.lines().next().unwrap_or_default().to_string(),
+                )
+            }
+            None => ("-".to_string(), "(no commits yet)".to_string()),
+        };
+        println!("{mark} {:<width$}  {id}  {subject}", b.name);
+    }
+    Ok(())
+}
+
+fn delete_branches(api: &Api, ws: Option<&Workspace>, names: &[String], force: bool) -> Result<()> {
+    let here = name(ws);
+    for n in names {
+        if ws.is_some() && *n == here {
+            bail!(
+                "cannot delete branch '{n}': this workspace is on it; switch to another branch first"
+            );
+        }
+        let Some(found) = find(api, n)? else {
+            bail!("branch '{n}' not found");
+        };
+        let mut req = api.request(Method::DELETE, &branch_route(api, n)?);
+        if force {
+            req = req.query(&[("force", true)]);
+        }
+        api.send(req).map_err(|e| not_merged_hint(e, n))?;
+        let was = found
+            .commit
+            .map_or_else(String::new, |c| format!(" (was {})", short(&c)));
+        println!("Deleted branch {n}{was}.");
+    }
+    Ok(())
+}
+
+fn not_merged_hint(err: anyhow::Error, branch: &str) -> anyhow::Error {
+    match err.downcast_ref::<crate::client::ApiError>() {
+        Some(e) if e.code == "branch_not_merged" => anyhow::anyhow!(
+            "the branch '{branch}' is not fully merged into the default branch; \
+             if you are sure you want to delete it, run `pyn branch -D {branch}`"
+        ),
+        _ => err,
+    }
+}
+
+pub fn switch_command(
+    backend: &dyn Backend,
+    ws: Option<&Workspace>,
+    args: SwitchArgs,
+) -> Result<()> {
+    let api = backend.pyn_server("switch")?;
+    let ws = ws.context("`pyn switch` works inside a workspace; run `pyn clone` first")?;
+    match (args.create, args.start) {
+        (Some(new), start) => {
+            let made = create(backend, api, Some(ws), &new, start.as_deref())?;
+            go(backend, api, ws, &made.name, args.force)
+        }
+        (None, Some(target)) => {
+            if find(api, &target)?.is_none() {
+                bail!(
+                    "invalid reference: {target}; `pyn switch` takes a branch (see `pyn branch`)"
+                );
+            }
+            go(backend, api, ws, &target, args.force)
+        }
+        (None, None) => bail!("missing branch name; see `pyn branch`"),
+    }
+}
+
+pub fn checkout_command(
+    backend: &dyn Backend,
+    ws: Option<&Workspace>,
+    cwd: &Path,
+    args: CheckoutArgs,
+    rp: &dyn Fn(&str) -> Result<String>,
+) -> Result<()> {
+    let api = backend.pyn_server("checkout")?;
+    let ws = ws.context(
+        "`pyn checkout` switches branches and restores files inside a workspace; run `pyn clone` first. \
+         To take an exclusive lock use `pyn lock <path>`",
+    )?;
+    let CheckoutArgs {
+        args: before,
+        paths,
+        create: new,
+        force,
+    } = args;
+    if !paths.is_empty() {
+        if new.is_some() {
+            bail!("`pyn checkout -b` cannot be combined with paths");
+        }
+        let source = match before.as_slice() {
+            [] => None,
+            [one] => Some(one.as_str()),
+            _ => bail!("`pyn checkout <commit> -- <paths>` takes one commit"),
+        };
+        return restore_paths(backend, api, ws, cwd, source, &paths, rp);
+    }
+    if let Some(new) = new {
+        if before.len() > 1 {
+            bail!("`pyn checkout -b <name>` takes at most one start point");
+        }
+        let made = create(
+            backend,
+            api,
+            Some(ws),
+            &new,
+            before.first().map(String::as_str),
+        )?;
+        return go(backend, api, ws, &made.name, force);
+    }
+    match before.as_slice() {
+        [] => bail!("missing branch name; see `pyn branch`"),
+        [target] if find(api, target)?.is_some() => go(backend, api, ws, target, force),
+        [target] if Path::new(target).exists() || ws.root.join(target).exists() => {
+            restore_paths(backend, api, ws, cwd, None, &before, rp)
+        }
+        [target] if snapshot::parse_commit(target).is_some() => bail!(
+            "'{target}' is a commit, not a branch; pyn has no detached HEAD. \
+             Create a branch there with `pyn checkout -b <name> {target}`, or bring the files to it with \
+             `pyn update --revision {target}`"
+        ),
+        [target] => bail!(
+            "pathspec '{target}' did not match any branch or file; to take an exclusive lock use `pyn lock <path>`"
+        ),
+        _ => bail!("`pyn checkout` takes one branch; name files after `--`"),
+    }
+}
+
+/// What each path needs, and the paths whose local changes are in the way with why.
+type Plan = (BTreeMap<String, Step>, Vec<(String, &'static str)>);
+
+/// What switching does to one path.
+enum Step {
+    Fetch(api::SnapshotEntry),
+    Adopt(api::SnapshotEntry),
+    Remove,
+}
+
+fn state_of(entry: &api::SnapshotEntry) -> FileState {
+    FileState {
+        revision: entry.revision,
+        hash: entry.content.clone(),
+        legacy: false,
+        mode: mode_name(entry.mode).to_string(),
+        file_mode: entry.file_mode,
+    }
+}
+
+fn same_content(known: &FileState, want: &api::SnapshotEntry) -> bool {
+    !known.legacy
+        && known.hash == want.content
+        && !localfile::mode_differs(known.file_mode, want.file_mode)
+}
+
+/// What each path needs for the workspace to match `snapshot`, and the paths whose local changes are in the way.
+fn plan(
+    ws: &Workspace,
+    state: &BTreeMap<String, FileState>,
+    snapshot: &[api::SnapshotEntry],
+) -> Result<Plan> {
+    let wanted: BTreeMap<&str, &api::SnapshotEntry> =
+        snapshot.iter().map(|e| (e.path.as_str(), e)).collect();
+    let paths: BTreeSet<&str> = state
+        .keys()
+        .map(String::as_str)
+        .chain(wanted.keys().copied())
+        .collect();
+    let (mut steps, mut conflicts) = (BTreeMap::new(), Vec::new());
+    for path in paths {
+        let (known, want) = (state.get(path), wanted.get(path).copied());
+        let target = ws.abs(path);
+        let on_disk = localfile::exists(&target);
+        let modified = match known {
+            Some(k) if on_disk => {
+                let (file_mode, bytes) = localfile::read(&target)?;
+                k.changed(file_mode, &bytes)
+            }
+            Some(_) => true,
+            None => false,
+        };
+        match (known, want) {
+            (Some(k), Some(w)) if same_content(k, w) => {
+                steps.insert(path.to_string(), Step::Adopt(w.clone()));
+            }
+            (Some(_), Some(w)) => {
+                if modified {
+                    conflicts.push((path.to_string(), "local changes would be overwritten"));
+                }
+                steps.insert(path.to_string(), Step::Fetch(w.clone()));
+            }
+            (Some(_), None) => {
+                if modified && on_disk {
+                    conflicts.push((path.to_string(), "local changes would be lost"));
+                }
+                steps.insert(path.to_string(), Step::Remove);
+            }
+            (None, Some(w)) if on_disk => {
+                let (file_mode, bytes) = localfile::read(&target)?;
+                let same = crate::workspace::hash_of(&bytes) == w.content
+                    && !localfile::mode_differs(w.file_mode, file_mode);
+                if same {
+                    steps.insert(path.to_string(), Step::Adopt(w.clone()));
+                } else {
+                    conflicts.push((path.to_string(), "an untracked file would be overwritten"));
+                    steps.insert(path.to_string(), Step::Fetch(w.clone()));
+                }
+            }
+            (None, Some(w)) => {
+                steps.insert(path.to_string(), Step::Fetch(w.clone()));
+            }
+            (None, None) => {}
+        }
+    }
+    Ok((steps, conflicts))
+}
+
+fn remove_empty_parents(ws: &Workspace, path: &str) {
+    let mut dir = ws.abs(path);
+    while dir.pop() && dir != ws.root && dir.starts_with(&ws.root) {
+        if std::fs::remove_dir(&dir).is_err() {
+            break;
+        }
+    }
+}
+
+/// Brings the workspace to the head of `target`, refusing first if local changes are in the way.
+fn go(backend: &dyn Backend, api: &Api, ws: &Workspace, target: &str, force: bool) -> Result<()> {
+    let already = name(Some(ws)) == target;
+    let found = find(api, target)?.with_context(|| format!("branch '{target}' not found"))?;
+    let (_, snap) = match &found.commit {
+        Some(head) => backend.snapshot(Some(head))?,
+        None => (None, Vec::new()),
+    };
+    let mut state = ws.load_state()?;
+    let (steps, conflicts) = plan(ws, &state, &snap)?;
+    if !conflicts.is_empty() && !force {
+        let mut message = String::from("local changes would be overwritten by the switch:\n");
+        for (path, why) in &conflicts {
+            message.push_str(&format!("\t{path} ({why})\n"));
+        }
+        message.push_str(
+            "commit them, put them back with `pyn checkout -- <path>`, or discard them with --force; nothing was changed",
+        );
+        bail!(message);
+    }
+    let locks: Vec<api::Lock> = api.send(api.get(&api.repo_route("/locks")?))?.json()?;
+    let me = backend.whoami()?;
+    let applied = apply(backend, ws, &mut state, steps, &locks, &me);
+    ws.save_state(&state)?;
+    applied?;
+    set_current(ws, target)?;
+    if already {
+        eprintln!("Already on '{target}'");
+    } else {
+        eprintln!("Switched to branch '{target}'");
+    }
+    Ok(())
+}
+
+fn apply(
+    backend: &dyn Backend,
+    ws: &Workspace,
+    state: &mut BTreeMap<String, FileState>,
+    steps: BTreeMap<String, Step>,
+    locks: &[api::Lock],
+    me: &str,
+) -> Result<()> {
+    for (path, step) in steps {
+        match step {
+            Step::Adopt(w) => {
+                state.insert(path, state_of(&w));
+            }
+            Step::Remove => {
+                let target = ws.abs(&path);
+                set_read_only(&target, false)?;
+                let _ = std::fs::remove_file(&target);
+                remove_empty_parents(ws, &path);
+                state.remove(&path);
+            }
+            Step::Fetch(w) => {
+                let entry = file_entry(&w, locks);
+                let fetched = sync::fetch(backend, ws, &entry, w.revision, me)?;
+                state.insert(path, fetched);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn file_entry(w: &api::SnapshotEntry, locks: &[api::Lock]) -> api::FileEntry {
+    api::FileEntry {
+        path: w.path.clone(),
+        mode: w.mode,
+        revision: Some(w.revision),
+        file_mode: w.file_mode,
+        lock: locks.iter().find(|l| l.path == w.path).cloned(),
+    }
+}
+
+/// Puts files back: to the revision the workspace has, or to the one `source` (a branch or commit) has.
+fn restore_paths(
+    backend: &dyn Backend,
+    api: &Api,
+    ws: &Workspace,
+    cwd: &Path,
+    source: Option<&str>,
+    paths: &[String],
+    rp: &dyn Fn(&str) -> Result<String>,
+) -> Result<()> {
+    let state = ws.load_state()?;
+    let snap = match source {
+        Some(spec) => {
+            let commit = match find(api, spec)? {
+                Some(b) => b.commit.context("that branch has no commits yet")?,
+                None => snapshot::resolve(backend, spec)?,
+            };
+            Some(backend.snapshot(Some(&commit))?.1)
+        }
+        None => None,
+    };
+    let known: BTreeSet<&str> = match &snap {
+        Some(s) => s.iter().map(|e| e.path.as_str()).collect(),
+        None => state.keys().map(String::as_str).collect(),
+    };
+    let mut chosen = BTreeSet::new();
+    for arg in paths {
+        let prefix = if arg == "." && cwd == ws.root {
+            String::new()
+        } else {
+            rp(arg)?
+        };
+        let before = chosen.len();
+        for p in &known {
+            let inside = prefix.is_empty()
+                || *p == prefix
+                || p.strip_prefix(prefix.as_str())
+                    .is_some_and(|rest| rest.starts_with('/'));
+            if inside {
+                chosen.insert(p.to_string());
+            }
+        }
+        if chosen.len() == before && !chosen.iter().any(|c| *c == prefix) {
+            bail!("pathspec '{arg}' did not match any file known to pyn");
+        }
+    }
+    let locks: Vec<api::Lock> = api.send(api.get(&api.repo_route("/locks")?))?.json()?;
+    let me = backend.whoami()?;
+    for path in &chosen {
+        let (entry, revision) = match &snap {
+            Some(s) => {
+                let w = s.iter().find(|e| &e.path == path).expect("chosen from it");
+                (file_entry(w, &locks), w.revision)
+            }
+            None => {
+                let k = &state[path];
+                let mode = if k.mode == "exclusive" {
+                    api::Mode::Exclusive
+                } else {
+                    api::Mode::Shared
+                };
+                let entry = api::FileEntry {
+                    path: path.clone(),
+                    mode,
+                    revision: Some(k.revision),
+                    file_mode: k.file_mode,
+                    lock: locks.iter().find(|l| &l.path == path).cloned(),
+                };
+                (entry, k.revision)
+            }
+        };
+        sync::fetch(backend, ws, &entry, revision, &me)?;
+    }
+    Ok(())
+}

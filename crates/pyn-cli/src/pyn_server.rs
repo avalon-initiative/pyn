@@ -37,7 +37,7 @@ impl Backend for PynServer {
 
     fn tree(&self, path: Option<&str>) -> Result<api::TreeListing> {
         let api = &self.api;
-        let mut req = api.get(&api.repo_route("/tree")?);
+        let mut req = api.on_branch(api.get(&api.repo_route("/tree")?));
         if let Some(p) = path {
             req = req.query(&[("path", p)]);
         }
@@ -47,16 +47,17 @@ impl Backend for PynServer {
     fn head_commit(&self) -> Result<Option<String>> {
         let api = &self.api;
         let page: api::CommitPage = api
-            .send(api.get(&api.repo_route("/commits")?).query(&[("limit", 1)]))?
+            .send(api.on_branch(api.get(&api.repo_route("/commits")?).query(&[("limit", 1)])))?
             .json()?;
         Ok(page.commits.into_iter().next().map(|c| c.id))
     }
 
     fn commit_page(&self, before: Option<&str>, limit: usize) -> Result<api::CommitPage> {
         let api = &self.api;
-        let mut req = api
-            .get(&api.repo_route("/commits")?)
-            .query(&[("limit", limit)]);
+        let mut req = api.on_branch(
+            api.get(&api.repo_route("/commits")?)
+                .query(&[("limit", limit)]),
+        );
         if let Some(b) = before {
             req = req.query(&[("before", b)]);
         }
@@ -76,9 +77,10 @@ impl Backend for PynServer {
         let mut after: Option<String> = None;
         loop {
             let mut req = api.get(&api.repo_route("/snapshot")?);
-            if let Some(c) = commit {
-                req = req.query(&[("commit", c)]);
-            }
+            req = match commit {
+                Some(c) => req.query(&[("commit", c)]),
+                None => api.on_branch(req),
+            };
             if let Some(a) = &after {
                 req = req.query(&[("after", a)]);
             }
@@ -112,9 +114,10 @@ impl Backend for PynServer {
         let mut req = api
             .get(&api.repo_route("/content")?)
             .query(&[("path", path)]);
-        if let Some(r) = revision {
-            req = req.query(&[("revision", r)]);
-        }
+        req = match revision {
+            Some(r) => req.query(&[("revision", r)]),
+            None => api.on_branch(req),
+        };
         api.send(req)?.copy_to(out)?;
         Ok(())
     }
@@ -133,20 +136,28 @@ impl Backend for PynServer {
 
     fn commit_file(&self, request: &api::CheckinRequest) -> Result<api::Revision> {
         let api = &self.api;
+        let request = api::CheckinRequest {
+            branch: api.branch.clone(),
+            ..request.clone()
+        };
         Ok(api
             .send(
                 api.request(Method::POST, &api.repo_route("/checkin")?)
-                    .json(request),
+                    .json(&request),
             )?
             .json()?)
     }
 
     fn commit_changeset(&self, request: &api::ChangesetRequest) -> Result<api::ChangesetResponse> {
         let api = &self.api;
+        let request = api::ChangesetRequest {
+            branch: api.branch.clone(),
+            ..request.clone()
+        };
         Ok(api
             .send(
                 api.request(Method::POST, &api.repo_route("/changesets")?)
-                    .json(request),
+                    .json(&request),
             )?
             .json()?)
     }
@@ -155,8 +166,10 @@ impl Backend for PynServer {
         let api = &self.api;
         let page: api::HistoryPage = api
             .send(
-                api.get(&api.repo_route("/history")?)
-                    .query(&[("path", path)]),
+                api.on_branch(
+                    api.get(&api.repo_route("/history")?)
+                        .query(&[("path", path)]),
+                ),
             )?
             .json()?;
         Ok(page.revisions)
@@ -171,7 +184,7 @@ impl Backend for PynServer {
             query.extend(filter.map(|f| ("filter", f.to_string())));
             query.extend(before.take().map(|b| ("before", b)));
             let page: api::HistoryPage = api
-                .send(api.get(&api.repo_route("/history")?).query(&query))?
+                .send(api.on_branch(api.get(&api.repo_route("/history")?).query(&query)))?
                 .json()?;
             revs.extend(page.revisions);
             before = page.next_cursor;
@@ -184,10 +197,14 @@ impl Backend for PynServer {
 
     fn restore(&self, request: &api::RestoreRequest) -> Result<api::Revision> {
         let api = &self.api;
+        let request = api::RestoreRequest {
+            branch: api.branch.clone(),
+            ..request.clone()
+        };
         Ok(api
             .send(
                 api.request(Method::POST, &api.repo_route("/restore")?)
-                    .json(request),
+                    .json(&request),
             )?
             .json()?)
     }

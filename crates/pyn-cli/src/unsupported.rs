@@ -2,8 +2,6 @@
 
 const GIT_ONLY: &[&str] = &[
     "init",
-    "branch",
-    "switch",
     "merge",
     "fetch",
     "pull",
@@ -66,11 +64,6 @@ fn convert_message() -> String {
 pub fn message(name: &str) -> String {
     if name == "convert" {
         return convert_message();
-    }
-    if name == "checkout" {
-        return "pyn: 'checkout' is reserved for switching branches and restoring paths, as in git, \
-                which pyn does not support yet; to take an exclusive lock use `pyn lock <path>`."
-            .into();
     }
     if GIT_ONLY.contains(&name) {
         format!(

@@ -136,7 +136,7 @@ fn status_and_update_at_a_commit_move_the_workspace_both_ways() {
     );
     assert!(!ws.join("Source/b.txt").exists());
     let out = env.ok(&ws, "alice", &["status", "--revision", "HEAD~3"]);
-    assert_eq!(out.trim(), "everything is up to date");
+    assert_eq!(out.trim(), "On branch main\neverything is up to date");
 
     std::fs::write(ws.join("Source/a.txt"), "mine").unwrap();
     let out = env.ok(&ws, "alice", &["update", "--revision", "HEAD"]);

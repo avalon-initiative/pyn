@@ -32,7 +32,9 @@ fn status_prints_an_aligned_table_with_a_summary() {
     env.seed("bob", "Source/fresh.cpp", "fresh", None);
 
     let out = env.ok(&ws, "alice", &["status"]);
-    let lines: Vec<&str> = out.lines().collect();
+    let (branch, rest) = out.split_once('\n').unwrap();
+    assert_eq!(branch, "On branch main");
+    let lines: Vec<&str> = rest.lines().collect();
     assert_eq!(
         cells(lines[0]),
         ["MODE", "REV", "STAGED", "STATE", "LOCK", "PATH"],
@@ -87,7 +89,7 @@ fn a_clean_workspace_says_so() {
         &["clone", &env.source(REPO), ws.to_str().unwrap()],
     );
     let out = env.ok(&ws.canonicalize().unwrap(), "alice", &["status"]);
-    assert_eq!(out.trim(), "everything is up to date");
+    assert_eq!(out.trim(), "On branch main\neverything is up to date");
 }
 
 #[test]
