@@ -13,6 +13,7 @@ Markdown only; `make docs-check` verifies relative links and anchors.
 - [Running several server copies: what is safe and what is not](concepts/scale-out.md)
 - [Content storage: streaming, ranges and the planned chunked format](concepts/storage.md)
 - [The `.pyn/` folder](concepts/workspace.md)
+- [Git compatibility: where the CLI follows git and where it deliberately differs](concepts/git-compatibility.md)
 - [Phase 1 scope](phase-1.md)
 
 ## API contract

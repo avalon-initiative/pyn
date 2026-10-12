@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
@@ -15,6 +16,7 @@ mod sync;
 mod table;
 mod time;
 mod transfer;
+mod unsupported;
 mod userconfig;
 mod workspace;
 
@@ -96,6 +98,8 @@ enum Command {
     /// Read and write settings, per workspace or for your user.
     #[command(subcommand)]
     Config(ConfigCommand),
+    #[command(external_subcommand)]
+    External(Vec<OsString>),
     /// Show who you are signed in as and, in a repository, what you may do there.
     Whoami,
     /// Link SSH public keys to your account.
@@ -136,6 +140,7 @@ enum Command {
         reason: Option<String>,
     },
     /// Upload files as the next revision of each path, atomically as one commit; releases their locks.
+    #[command(visible_alias = "commit")]
     Checkin {
         #[arg(required = true)]
         paths: Vec<String>,
@@ -162,8 +167,12 @@ enum Command {
     /// Make an older revision the new head. Needs the lock and the restore permission, and asks for confirmation.
     Restore {
         path: String,
-        /// The older revision whose content becomes the new head.
-        revision: u64,
+        /// The older revision whose content becomes the new head (or use --source).
+        #[arg(conflicts_with = "source", required_unless_present = "source")]
+        revision: Option<u64>,
+        /// The older revision to restore from, as in `git restore --source`.
+        #[arg(short = 's', long)]
+        source: Option<u64>,
         #[arg(short, long)]
         message: Option<String>,
         /// Skip the typed confirmation.
@@ -192,9 +201,9 @@ enum Command {
         /// Only paths matching this glob; without a slash it matches at any depth (`*.ts`, `Source/**`).
         #[arg(long, conflicts_with = "path")]
         filter: Option<String>,
-        /// How many revisions to show for the repository view.
-        #[arg(long, default_value_t = 50, conflicts_with = "path")]
-        limit: usize,
+        /// Show at most this many revisions (50 for the repository view, all for a path).
+        #[arg(short = 'n', long = "max-count", visible_alias = "limit")]
+        limit: Option<usize>,
     },
     /// Manage your API tokens.
     #[command(subcommand)]
@@ -570,8 +579,26 @@ enum RoleCommand {
     },
 }
 
-fn main() -> Result<()> {
-    let cli = Cli::parse();
+fn main() {
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(e) => {
+            let code = if e.use_stderr() { 129 } else { 0 };
+            let _ = e.print();
+            std::process::exit(code);
+        }
+    };
+    if let Command::External(args) = &cli.command {
+        eprintln!("{}", unsupported::message(&args[0].to_string_lossy()));
+        std::process::exit(1);
+    }
+    if let Err(e) = run(cli) {
+        eprintln!("fatal: {e:#}");
+        std::process::exit(128);
+    }
+}
+
+fn run(cli: Cli) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let ws = Workspace::discover(&cwd);
     let user_config = userconfig::path()?;
@@ -638,6 +665,7 @@ fn main() -> Result<()> {
     };
 
     match cli.command {
+        Command::External(_) => unreachable!("handled before run"),
         Command::Login {
             username,
             password_stdin,
@@ -1135,8 +1163,14 @@ fn main() -> Result<()> {
             limit,
         } => {
             let (revs, repo_wide) = match path {
-                Some(path) => (path_history(&api, &rp(&path)?)?, false),
-                None => (repo_history(&api, filter.as_deref(), limit)?, true),
+                Some(path) => {
+                    let revs = path_history(&api, &rp(&path)?)?.into_iter().rev();
+                    (revs.take(limit.unwrap_or(usize::MAX)).collect(), false)
+                }
+                None => (
+                    repo_history(&api, filter.as_deref(), limit.unwrap_or(50))?,
+                    true,
+                ),
             };
             let rows: Vec<Vec<String>> = revs
                 .into_iter()
@@ -1166,9 +1200,13 @@ fn main() -> Result<()> {
         Command::Restore {
             path,
             revision,
+            source,
             message,
             yes,
-        } => restore(&api, rp(&path)?, revision, message, yes)?,
+        } => {
+            let revision = revision.or(source).expect("clap requires a revision");
+            restore(&api, rp(&path)?, revision, message, yes)?
+        }
         Command::Unlock {
             path, force: false, ..
         } => {
