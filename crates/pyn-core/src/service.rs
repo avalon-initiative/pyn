@@ -23,6 +23,13 @@ use crate::types::{
 };
 use pyn_object::{FileMode, ObjectId};
 
+/// What one revision writes: the content, its file mode and the revision it restores, if any.
+struct Write {
+    content: ObjectId,
+    file_mode: FileMode,
+    restored_from: Option<RevisionId>,
+}
+
 fn check_file_mode(mode: FileMode) -> Result<()> {
     match mode {
         FileMode::Regular | FileMode::Executable | FileMode::Symlink => Ok(()),
@@ -471,12 +478,15 @@ impl RepoService {
         &self,
         who: &Principal,
         path: &RepoPath,
-        content: ObjectId,
-        file_mode: FileMode,
+        write: Write,
         base: Option<RevisionId>,
         message: String,
-        restored_from: Option<RevisionId>,
     ) -> Result<Revision> {
+        let Write {
+            content,
+            file_mode,
+            restored_from,
+        } = write;
         let policy = path.as_str() == POLICY_PATH;
         let parsed = if policy {
             Some(self.check_policy_edit(who, &content).await?)
@@ -551,7 +561,17 @@ impl RepoService {
             return Err(PynError::ObjectMissing(content.to_string()));
         }
         let rev = self
-            .commit(who, path, content, file_mode, base, message, None)
+            .commit(
+                who,
+                path,
+                Write {
+                    content,
+                    file_mode,
+                    restored_from: None,
+                },
+                base,
+                message,
+            )
             .await?;
         self.record(
             &who.user,
@@ -688,11 +708,13 @@ impl RepoService {
             .commit(
                 who,
                 path,
-                old.content,
-                old.file_mode,
+                Write {
+                    content: old.content,
+                    file_mode: old.file_mode,
+                    restored_from: Some(source),
+                },
                 Some(base),
                 message,
-                Some(source),
             )
             .await?;
         self.record(

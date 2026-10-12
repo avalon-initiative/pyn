@@ -240,3 +240,49 @@ fn a_migrated_revision_still_verifies_against_its_frozen_v1_hash() {
         "without the stored input the hash does not reproduce"
     );
 }
+
+#[tokio::test]
+async fn a_tampered_commit_or_tree_is_reported_by_verify() {
+    let w = world();
+    let (a, b) = (path("Source/a.cpp"), path("Source/b.cpp"));
+    commit(&w, &a, "one").await;
+    commit(&w, &b, "two").await;
+    let head = w.svc.head_commit().await.unwrap().unwrap();
+    let first = w.svc.commits(None, None).await.unwrap().commits[1].id;
+
+    w.meta
+        .tamper_commit(&w.repo, &first, |c| c.message = "forged".into());
+    let report = w.svc.verify(None, false).await.unwrap();
+    let kinds: Vec<_> = report.problems.iter().map(|p| (p.kind, p.commit)).collect();
+    assert_eq!(kinds, vec![(BreakKind::Hash, Some(first))]);
+    assert!(w.svc.get_commit(&first).await.is_err());
+
+    let w = world();
+    commit(&w, &a, "one").await;
+    let only = w.svc.head_commit().await.unwrap().unwrap();
+    w.meta.tamper_commit(&w.repo, &only, |c| c.tree = only);
+    let report = w.svc.verify(None, false).await.unwrap();
+    assert!(
+        report.problems.iter().any(|p| p.kind == BreakKind::Hash),
+        "{report:?}"
+    );
+    assert_ne!(head, only);
+}
+
+#[tokio::test]
+async fn a_v2_revision_covers_its_file_mode_and_commit() {
+    let w = world();
+    let a = path("Source/a.cpp");
+    commit(&w, &a, "one").await;
+    let rev = w.svc.head(&a).await.unwrap().unwrap();
+    assert!(rev.person.is_some());
+    w.meta.tamper(&w.repo, &a, rev.id, |r| {
+        r.file_mode = pyn_core::FileMode::Executable;
+    });
+    assert!(w.svc.head(&a).await.is_err());
+    w.meta.tamper(&w.repo, &a, rev.id, |r| {
+        r.file_mode = pyn_core::FileMode::Regular;
+        r.commit = r.content;
+    });
+    assert!(w.svc.head(&a).await.is_err());
+}

@@ -200,6 +200,20 @@ impl MemoryMetadataStore {
     }
 }
 
+#[cfg(feature = "test-support")]
+impl MemoryMetadataStore {
+    /// Rewrites a stored commit record in place, the way an attacker with database access would.
+    pub fn tamper_commit(&self, repo: &RepoId, id: &ObjectId, f: impl FnOnce(&mut Commit)) {
+        let mut st = self.state.lock().unwrap();
+        let commit = st
+            .commits
+            .get_mut(repo)
+            .and_then(|v| v.iter_mut().find(|c| &c.id == id))
+            .expect("commit to tamper with");
+        f(commit);
+    }
+}
+
 fn history_key(r: &Revision) -> (DateTime<Utc>, &str, RevisionId) {
     (r.created_at, r.path.as_str(), r.id)
 }

@@ -1873,6 +1873,38 @@ pub async fn a_commit_is_found_by_a_unique_prefix(store: Store) {
     }
 }
 
+pub async fn a_snapshots_modes_come_from_the_policy_file_at_that_commit(store: Store) {
+    let h = harness(store);
+    let map = path("Content/a.umap");
+    let c = blob(&h, "v1").await;
+    h.svc.checkout(&map, &user("alice"), None).await.unwrap();
+    let before = h
+        .svc
+        .checkin(&who("alice"), &map, c, None, "map".into())
+        .await
+        .unwrap();
+    let shared = blob(&h, "[meta]\ndefault = \"shared\"\n").await;
+    let policy = path(".pyn/pyn.toml");
+    let after = h
+        .svc
+        .checkin(&who("alice"), &policy, shared, None, "policy".into())
+        .await
+        .unwrap();
+
+    let old = h.svc.snapshot(Some(&before.commit)).await.unwrap();
+    assert_eq!(old.entries[0].mode, crate::Mode::Exclusive);
+    let new = h.svc.snapshot(Some(&after.commit)).await.unwrap();
+    let modes: Vec<_> = new
+        .entries
+        .iter()
+        .map(|e| (e.path.clone(), e.mode))
+        .collect();
+    assert_eq!(
+        modes,
+        vec![(policy, crate::Mode::Exclusive), (map, crate::Mode::Shared)]
+    );
+}
+
 pub async fn a_rejected_write_makes_no_commit(store: Store) {
     let h = harness(store);
     let (a, b) = (path("Source/a.cpp"), path("Source/b.cpp"));
@@ -2302,6 +2334,7 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_rejected_write_makes_no_commit);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_commit_is_a_real_git_commit_over_a_git_tree);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_file_cannot_become_a_folder_or_back);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_snapshots_modes_come_from_the_policy_file_at_that_commit);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_commit_is_found_by_a_unique_prefix);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_snapshot_is_every_path_as_of_a_commit);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_changeset_lands_every_path_as_one_commit);
