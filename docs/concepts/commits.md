@@ -3,7 +3,7 @@
 A **commit** is one atomic write to a repository: a single `pyn commit`, or a whole [changeset](README.md#exclusive-files-and-locks).
 Commits are git commits (decision #245): each has git's commit id, the SHA-256 hash of the commit object, and is named by
 that hash or an abbreviation of it. A rejected write makes no commit. A commit is made on a [branch](branches.md) and has the
-branch's head as its parent; a merge commit (#236) will have two.
+branch's head as its parent; a [merge commit](merging.md) has two, the target's head first.
 
 ## The commit record
 
@@ -64,7 +64,7 @@ The CLI follows git where it has an equivalent; the differences are listed below
 - `pyn log --commits [--limit n]` lists commits (`COMMIT`, `AUTHOR`, `WHEN`, `FILES`, `MESSAGE`); `COMMIT` is the abbreviated hash. `pyn log` keeps listing revisions.
 - A commit is written as its hash or an abbreviation of at least 4 hex digits (`pyn log --commits` shows 10), `HEAD` (the
   head of the workspace's [branch](branches.md)), or either followed by `~N` (N commits back along the first parent) or `^` (the
-  parent; `^^` is two back). There are no merge commits yet, so `^2` names no commit. `cN` numbers no longer exist. An argument that is also the name of something in the current
+  parent; `^^` is two back). Only the first parent is followed, so `^2` names no commit. `cN` numbers no longer exist. An argument that is also the name of something in the current
   directory is read as a path by `pyn diff`.
 - `pyn clone --revision <commit> <source> [dir]` creates a workspace with every file as of that commit.
 - `pyn status --revision <commit>` compares the workspace with that commit instead of the newest: `behind (<commit> has rM)` for a

@@ -116,8 +116,40 @@ refers to. `pyn update` skips a staged file and says so. An index in a newer ver
 
 ## Merging
 
-*Provisional until the merge command lands in this change set.* A merge in progress is recorded in
-`.pyn/local_only/state/merge.toml`; see [merging](merging.md#conflicts-and-resolution) for the flow.
+`pyn merge <branch>` merges into the workspace's branch ([merging](merging.md) has the rules). A merge that fast-forwards or merges
+cleanly is done when the command returns, and the workspace follows it. A merge with conflicts, or one stopped with
+`--no-commit`, is **in progress** until `pyn commit` concludes it or `pyn merge --abort` gives it up. While it is in progress:
+
+- The files that merged cleanly are in the working tree, text conflicts are in it with diff3 markers (`<<<<<<< HEAD`,
+  `||||||| base`, `=======`, `>>>>>>> <branch>`), and a binary conflict or a conflict on an exclusive path leaves our version in the
+  file. `pyn checkout --ours -- <path>` and `--theirs` put either side's version in the file.
+- `pyn status` says `You have unmerged paths`, and its `STATE` column says `unmerged (both modified)` (or `both added`, `deleted
+  on one side`, `converted to exclusive`) for each path still to resolve, and `merged` for the paths that merged cleanly.
+- `pyn add <path>` marks a conflicted path resolved by staging what is in the file, even when it still equals our version, and warns
+  if conflict markers remain. An exclusive path does not need its lock to be staged, only to be concluded with a version that
+  is not the newest (the server asks, and the message names `pyn lock --base N <path>`).
+- `pyn commit` (with or without `-m`) concludes the merge once every conflicted path is staged. Anything else staged must be a
+  path of the merge. A partial `pyn commit <path>`, `pyn merge`, `pyn switch` and `pyn update` are refused.
+
+The record is `.pyn/local_only/state/merge.toml`:
+
+```toml
+version = 1
+branch = "main"                  # the branch being merged into
+source = "feature"               # what was typed; the commit it named is source_commit
+source_commit = "<commit id>"
+target_commit = "<commit id>"    # the branch's head when the merge started; the merge fails with merge_stale if it moved
+message = "Merge branch 'feature' into main"
+
+[paths."Source/a.cpp"]
+mode = "shared"
+conflict = "both modified"       # absent for a path that merged cleanly
+[paths."Source/a.cpp".ours]
+revision = 3
+file_mode = "100644"
+```
+
+Nothing is sent to the server until the merge is concluded, so aborting changes nothing there.
 
 ## Listing output
 

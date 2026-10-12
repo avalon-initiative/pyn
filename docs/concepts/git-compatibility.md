@@ -89,7 +89,7 @@ The commands named in decision #218.
 | `git restore --staged <path>...` | `pyn restore --staged <path>...` (`-S`) | same | Puts the staged entries under the paths back to the last commit and leaves the files alone. On a git home `--source <commit>` takes the entries from that commit, as git; on a pyn server there is no commit to take them from and it is a usage error. |
 | `git restore <path>` (the work tree), `--worktree`, `-p`, `--ours`, `--theirs` | none | unsupported | Usage error (`129`), or on a git home the "not supported yet" message naming #254. |
 | `git branch`, `git switch`, `git checkout` | `pyn branch`, `pyn switch`, `pyn checkout` | supported | See [branching and merging](#branching-and-merging). On a git home they say what is needed (#254). |
-| `git merge` | none | planned | Git-command message. Merge flow #236 and the merge library #234, under epic #205. |
+| `git merge` | `pyn merge` | supported | See [branching and merging](#branching-and-merging). On a git home it says what is needed (#254). |
 | `git fetch`, `git pull`, `git push` | none | planned | Git-command message. Remotes and sync #237 under epic #205 (worked with #223). Today a commit goes straight to the server and `pyn update` brings the workspace forward. |
 | `git remote` | none | planned | Git-command message. #237 (also listed in #223). There is one remote today, set by `--server` and `--repo` or `pyn config set server` and `repo`. |
 | `git tag` | none | planned | Git-command message. #223. |
@@ -117,7 +117,7 @@ Commands people reach for that are not in the daily set.
 
 ## Branching and merging
 
-Branches exist on a pyn server ([branches](branches.md)); merge and remotes do not and fail with a message today. The model is
+Branches and merge exist on a pyn server ([branches](branches.md), [merging](merging.md)); remotes do not and fail with a message today. The model is
 decision #233 (commit graph, per-commit trees, branch heads); policy per branch is #238; exclusive paths keep one linear
 history across branches (decision #28).
 
@@ -126,7 +126,7 @@ history across branches (decision #28).
 | `git branch [<name> [<start>]]`, `-d`, `-D`, `-m`, `-l`, `-v`, `--show-current` | `pyn branch ...` | supported | `-d` refuses a branch that is not on the default branch (git: not merged into `HEAD`). `-a` and `-r` need remotes (#237) and `-M`, `-c` and patterns are not built; they are usage errors. The workspace's branch cannot be deleted. |
 | `git switch <branch>`, `-c <new> [<start>]`, `-f` | `pyn switch ...` | supported | Local changes carry over where the target branch has the same file, and stop the switch (nothing changed, the paths listed) where it does not; `-f` discards them. `-`, `--detach` and `-C` are not built. Prints `Switched to branch '<name>'` on standard error, as git. |
 | `git checkout <branch>`, `-b <new> [<start>]`, `-f`, `[<tree-ish>] -- <path>...` | `pyn checkout ...` | supported | Reserved for git's meaning. `-- <path>` restores from the revision the workspace has (git: the index; a staged path must be unstaged first), `<branch\|commit> -- <path>` from that branch or commit. There is no detached HEAD: `checkout <commit>` is refused with what to use instead. Taking a lock is `pyn lock`. |
-| `git merge <branch>`, `--abort`, `--no-ff` | `pyn merge ...` | planned | #236, with #234. Shared files merge three-way; exclusive files are never merged and conflict only by lock. |
+| `git merge <branch\|commit>`, `-m`, `--no-ff`, `--ff-only`, `--no-commit`, `--abort`, `--continue` | `pyn merge ...` | supported | Shared files merge three-way with diff3 conflict markers; a binary conflicts as a whole file. Exclusive files take the later revision, and conflict only where a path became exclusive while a branch edited it (a person chooses, taking the lock). A conflicted merge leaves the workspace as git does and is concluded with `pyn add` and `pyn commit` (no `-m` needed), or given up with `--abort`. Differences: `--preview` (pyn's own) reports what would merge and conflict and changes nothing; a merge needs a clean index and no local edits to the files it touches; `--squash`, `-s`, `-X`, `--no-verify`, `--edit`, `--signoff`, `-S` and `--ff` are usage errors. `git checkout --ours` and `--theirs` are `pyn checkout --ours\|--theirs -- <path>`. `pyn status` marks unmerged paths in its `STATE` column. Recursive merge of criss-cross histories as git does, with the base of a conflict shown as `merged common ancestors`. |
 | `git rebase`, `git cherry-pick`, `git revert` | none | unsupported | See [Not planned](#not-planned). |
 
 ## Remotes

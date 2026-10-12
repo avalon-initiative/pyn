@@ -77,9 +77,9 @@ Merging branches takes the later pointer, and since edits are serialized by the 
 
 ## Shared files, in Phase 1
 
-Shared files follow git's workflow once branches and merge exist (Phase 2), built in house with no dependency on git.
-Until then a shared commit must also be based on the current head, so a stale edit is rejected rather than silently
-overwriting someone else's work.
+Shared files follow git's workflow, built in house with no dependency on git: [branches](branches.md) and [merging](merging.md)
+(a three-way text merge, a whole-file conflict for binaries). A shared commit must be based on the revision the branch has, so
+a stale edit is rejected rather than silently overwriting someone else's work.
 
 ## Terminology
 

@@ -2,8 +2,8 @@
 
 A **branch** is a name that points at a [commit](commits.md). Commits are git commits, so a commit's id covers its parents,
 and a branch moves only by committing on it. Decisions #233 and #245 set the model; this page is how a pyn server holds it.
-Merging branches (#236), remotes (#237), per-branch policy and the stranded-version report (#238) are separate work and are
-not done here.
+[Merging](merging.md) branches is described on its own page. Remotes (#237), per-branch policy and the stranded-version report
+(#238) are separate work and are not done here.
 
 ## Branches and the default branch
 
@@ -38,9 +38,8 @@ The v2 encoding is unchanged: it already covers the commit id, and the commit id
 - An **exclusive** path has one linear history shared by every branch (decision #28). A commit on any branch appends to it
   under the path's lock, and it must be based on the path's newest revision on any branch, so the revisions form one line
   and never conflict. The branch's own pointer to the path does not have to be the newest: the commit moves it. A
-  workspace on a branch that lacks the newest revision is told to update before it can lock (`stale_base`), and until
-  merge exists (#236) the only way to take that revision is to fetch it by number (`pyn get <path> --rev N`) and lock with
-  `--base N`.
+  workspace on a branch that lacks the newest revision is told to update before it can lock (`stale_base`); merging the
+  branch that has it (`pyn merge`) brings it, or `pyn get <path> --rev N` fetches it by number to lock with `--base N`.
 - A **shared** path may be written on several branches at once. Its base is the revision the branch itself has, so two
   branches can both append a revision to the path; each branch sees the highest-numbered one in its own ancestry.
 
@@ -48,8 +47,8 @@ The v2 encoding is unchanged: it already covers the commit id, and the commit id
 
 A path's revision at a commit is its highest-numbered revision made in that commit or in an ancestor of it (decision #245
 item 9). The server keeps this as a cache per commit, `commit_pointers`: for each commit, the paths whose pointer differs
-from its first parent. Today that is exactly the revisions the commit made; a merge commit (#236) adds the paths where the
-other parent's pointer is higher, so a merge takes the later pointer by construction. A snapshot is read by walking the
+from its first parent. For an ordinary commit that is exactly the revisions it made; a [merge commit](merging.md) also has the
+paths where the other parent's revision is higher, so a merge takes the later pointer by construction. A snapshot is read by walking the
 first-parent chain and taking, per path, the pointer nearest the commit. Writing a commit costs one row per revision it
 made, not one per file in the repository, and the cache is never rewritten: it is part of what `pyn verify` can recompute
 from the revisions and their commits.
@@ -63,7 +62,7 @@ branch cannot change a path's mode:
 
 - A commit to `.pyn/pyn.toml` on another branch is allowed (it needs the `edit_policy` permission, the file must parse and,
   as for any path, the file's own mode decides whether it needs a lock) but it is only a file there. It applies nothing and
-  releases no lock until a merge lands it on the default branch.
+  releases no lock until a [merge](merging.md#what-a-merge-commit-holds) lands it on the default branch.
 - A snapshot's modes come from the policy revision in the snapshot when that revision is on the default branch's history;
   a policy revision made only on another branch is ignored, and a commit that is not on the default branch's history takes
   the default branch's current policy.
