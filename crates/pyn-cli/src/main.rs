@@ -167,7 +167,7 @@ enum Command {
         #[arg(long)]
         base: Option<u64>,
     },
-    /// Give up your lock without checking in; with --force, remove someone else's (needs force_unlock and a reason).
+    /// Give up your lock without committing; with --force, remove someone else's (needs force_unlock and a reason).
     Unlock {
         path: String,
         /// Remove another user's lock instead of giving up your own.
@@ -178,8 +178,7 @@ enum Command {
         reason: Option<String>,
     },
     /// Upload files as the next revision of each path, atomically as one commit; releases their locks.
-    #[command(visible_alias = "commit")]
-    Checkin {
+    Commit {
         #[arg(required = true)]
         paths: Vec<String>,
         /// Local file to upload for a single path; in a workspace, the file at the path by default.
@@ -1171,7 +1170,7 @@ fn run(cli: Cli) -> Result<()> {
             }
             println!("locked {} until {}", l.path, time::local(l.expires_at));
         }
-        Command::Checkin {
+        Command::Commit {
             paths,
             file,
             base,
@@ -1181,7 +1180,7 @@ fn run(cli: Cli) -> Result<()> {
                 bail!("--file and --base need a single path");
             }
             let Some(w) = &ws else {
-                bail!("checking in several paths needs a workspace");
+                bail!("committing several paths needs a workspace");
             };
             let known = w.load_state().unwrap_or_default();
             let mut entries = Vec::new();
@@ -1205,11 +1204,11 @@ fn run(cli: Cli) -> Result<()> {
                 .map_err(|e| behind_hint(e, true))?
                 .json()?;
             for (rev, (path, hash)) in r.revisions.iter().zip(&hashes) {
-                sync::after_checkin(&api, w, path, rev.id, hash)?;
+                sync::after_commit(&api, w, path, rev.id, hash)?;
                 println!("{} is now at revision {}", rev.path, rev.id);
             }
         }
-        Command::Checkin {
+        Command::Commit {
             paths,
             file,
             base,
@@ -1240,7 +1239,7 @@ fn run(cli: Cli) -> Result<()> {
                 .map_err(|e| behind_hint(e, ws.is_some()))?
                 .json()?;
             if let Some(w) = &ws {
-                sync::after_checkin(&api, w, &path, r.id, &hash)?;
+                sync::after_commit(&api, w, &path, r.id, &hash)?;
             }
             println!("{} is now at revision {}", r.path, r.id);
         }

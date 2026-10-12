@@ -28,7 +28,7 @@ fn log_of_a_path_is_newest_first_and_takes_max_count() {
 }
 
 #[test]
-fn commit_is_the_same_command_as_checkin() {
+fn commit_checks_several_paths_in_as_one_commit() {
     let env = start();
     env.seed("alice", "Source/a.cpp", "one", None);
     let ws = env.dir("ws");

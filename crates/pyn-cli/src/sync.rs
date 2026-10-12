@@ -324,7 +324,7 @@ pub fn after_unlock(ws: &Workspace, path: &str) -> Result<()> {
 }
 
 /// Records the new revision, and makes an exclusive file read-only again now that its lock is gone.
-pub fn after_checkin(
+pub fn after_commit(
     api: &Api,
     ws: &Workspace,
     path: &str,

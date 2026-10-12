@@ -1,6 +1,6 @@
 # Commits, snapshots and diff
 
-A **commit** is one atomic write to a repository: a single `pyn checkin`, or a whole [changeset](README.md#exclusive-files-and-locks).
+A **commit** is one atomic write to a repository: a single `pyn commit`, or a whole [changeset](README.md#exclusive-files-and-locks).
 Commits are numbered 1, 2, 3, ... per repository in the order they landed and shown as `c1`, `c2`, ... A commit carries its
 author, time and message and the revisions it made. A rejected write makes no commit and uses no number. (Commit hashes as
 in decision #65 are provisional; until they land a commit is identified by its number.)

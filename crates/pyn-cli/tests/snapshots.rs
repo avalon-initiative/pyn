@@ -223,7 +223,7 @@ fn diff_against_a_commit_compares_the_workspace_and_reports_binary_files() {
         &home,
         "alice",
         &[
-            "checkin",
+            "commit",
             "blob.bin",
             "--file",
             bin.to_str().unwrap(),
@@ -236,7 +236,7 @@ fn diff_against_a_commit_compares_the_workspace_and_reports_binary_files() {
         &home,
         "alice",
         &[
-            "checkin",
+            "commit",
             "blob.bin",
             "--file",
             bin.to_str().unwrap(),

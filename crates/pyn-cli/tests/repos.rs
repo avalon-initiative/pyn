@@ -111,7 +111,7 @@ fn a_workspace_remembers_its_repository() {
             &[
                 "--repo",
                 &format!("alice/{name}"),
-                "checkin",
+                "commit",
                 &format!("{name}.txt"),
                 "--file",
                 "f",
@@ -307,7 +307,7 @@ fn a_new_repository_starts_with_a_policy_file_the_owner_can_replace() {
         &[
             "--repo",
             "alice/open",
-            "checkin",
+            "commit",
             "a.txt",
             "--file",
             "a.txt",

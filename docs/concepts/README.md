@@ -15,14 +15,14 @@ server hosts many, addressed as `owner/name`.
 
 Exclusive files are materialized **read-only** on disk. To edit one, a user runs `pyn lock <path>`; the server
 grants a **leased lock** (8 hours by default) if nobody else holds it and the user's copy is at the current head.
-`pyn checkin` (also `pyn commit`, see [git compatibility](git-compatibility.md)) uploads the new content, creates the next revision and releases the lock; `pyn unlock <path>` gives the lock up without a checkin.
+`pyn commit` (see [git compatibility](git-compatibility.md)) uploads the new content, creates the next revision and releases the lock; `pyn unlock <path>` gives the lock up without committing.
 
-`pyn checkin a b c -m "message"` checks several paths in as one **changeset**: one message, and every stale-base and lock
+`pyn commit a b c -m "message"` commits several paths as one **changeset**: one message, and every stale-base and lock
 check must pass or nothing is applied (no revision is written and no lock is released). The revisions of a changeset share
 a changeset id, shown by the API, and each path still has its own per-path revision number. `.pyn/pyn.toml` is not part of
 a changeset; policy changes keep their own validated flow. Changeset hashing as in decision #65 is provisional.
 
-Every checkin or changeset is one numbered **commit**, and the repository as of any commit can be listed, cloned, compared and
+Every write is one numbered **commit**, and the repository as of any commit can be listed, cloned, compared and
 diffed; see [commits](commits.md).
 
 The server is the only enforcer. A checkin of an exclusive path is rejected unless the caller holds a live lock *and*

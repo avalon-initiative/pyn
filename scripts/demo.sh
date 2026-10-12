@@ -61,7 +61,7 @@ save() {
   if [ -n "$(revisions "$user" "$path")" ]; then return; fi
   [ -n "$lock" ] && as "$user" lock "$path" >/dev/null
   printf '%s\n' "$content" > "$tmp/file"
-  as "$user" checkin "$path" --file "$tmp/file" -m "$message" >/dev/null
+  as "$user" commit "$path" --file "$tmp/file" -m "$message" >/dev/null
   echo "  $user: $path"
 }
 

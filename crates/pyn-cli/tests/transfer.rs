@@ -31,7 +31,7 @@ fn a_large_file_uploads_in_chunks_and_downloads_back_identical() {
         &[
             "--repo",
             REPO,
-            "checkin",
+            "commit",
             "Source/big.bin",
             "--file",
             src.to_str().unwrap(),
@@ -73,7 +73,7 @@ fn an_interrupted_download_continues_from_the_partial_file() {
         &[
             "--repo",
             REPO,
-            "checkin",
+            "commit",
             "Source/big.bin",
             "--file",
             src.to_str().unwrap(),

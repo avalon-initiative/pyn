@@ -11,7 +11,7 @@ fn read_only(path: &Path) -> bool {
 }
 
 #[test]
-fn a_workspace_tracks_what_you_cloned_and_handles_locks_and_checkins() {
+fn a_workspace_tracks_what_you_cloned_and_handles_locks_and_commits() {
     let env = start();
     env.seed("alice", "Source/a.cpp", "int a;", None);
     env.seed("alice", "Content/m.umap", "map one", None);
@@ -69,14 +69,14 @@ fn a_workspace_tracks_what_you_cloned_and_handles_locks_and_checkins() {
     );
 
     std::fs::write(ws.join("Content/m.umap"), "map two").unwrap();
-    let out = env.ok(&content, "alice", &["checkin", "m.umap", "-m", "second"]);
+    let out = env.ok(&content, "alice", &["commit", "m.umap", "-m", "second"]);
     assert!(out.contains("revision 2"), "{out}");
     assert!(
         read_only(&ws.join("Content/m.umap")),
-        "checkin locks it down again"
+        "commit locks it down again"
     );
 
-    let out = env.ok(&ws, "alice", &["checkin", "Source/a.cpp", "-m", "edit"]);
+    let out = env.ok(&ws, "alice", &["commit", "Source/a.cpp", "-m", "edit"]);
     assert!(
         out.contains("revision 2"),
         "the base revision came from the workspace: {out}"
@@ -222,7 +222,7 @@ fn ignore_rules_and_settings_work_per_workspace_and_per_user() {
 }
 
 #[test]
-fn checkin_takes_several_paths_as_one_atomic_commit() {
+fn commit_takes_several_paths_as_one_atomic_commit() {
     let env = start();
     env.seed("alice", "Source/a.cpp", "int a;", None);
     env.seed("alice", "Source/b.cpp", "int b;", None);
@@ -239,7 +239,7 @@ fn checkin_takes_several_paths_as_one_atomic_commit() {
     let out = env.ok(
         &ws,
         "alice",
-        &["checkin", "Source/a.cpp", "Source/b.cpp", "-m", "both"],
+        &["commit", "Source/a.cpp", "Source/b.cpp", "-m", "both"],
     );
     assert_eq!(out.matches("is now at revision 2").count(), 2, "{out}");
     assert!(
@@ -253,7 +253,7 @@ fn checkin_takes_several_paths_as_one_atomic_commit() {
     let err = env.fails(
         &ws,
         "alice",
-        &["checkin", "Source/b.cpp", "Source/a.cpp", "-m", "stale"],
+        &["commit", "Source/b.cpp", "Source/a.cpp", "-m", "stale"],
     );
     assert!(err.contains("stale_base"), "{err}");
     let log = env.ok(&ws, "alice", &["log", "Source/b.cpp"]);
@@ -263,7 +263,7 @@ fn checkin_takes_several_paths_as_one_atomic_commit() {
         &ws,
         "alice",
         &[
-            "checkin",
+            "commit",
             "Source/a.cpp",
             "Source/b.cpp",
             "--base",

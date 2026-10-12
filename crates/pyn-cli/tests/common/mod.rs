@@ -237,7 +237,7 @@ impl Env {
             self.ok(&dir, user, &args);
         }
         let mut args = vec![
-            "checkin",
+            "commit",
             path,
             "--file",
             file.to_str().unwrap(),

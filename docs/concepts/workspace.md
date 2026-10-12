@@ -51,8 +51,8 @@ a folder named after the repository, downloads every file at its head revision (
 you are inside the workspace and take paths relative to your current directory.
 
 - **Read-only exclusive files.** Exclusive files are read-only until you hold the lock. `pyn lock` makes the file
-  writable; `pyn checkin` and `pyn unlock` make it read-only again. Shared files are always writable.
-- **No base revisions to remember.** `lock` and `checkin` use the revision the workspace has, so `--base` is only for
+  writable; `pyn commit` and `pyn unlock` make it read-only again. Shared files are always writable.
+- **No base revisions to remember.** `lock` and `commit` use the revision the workspace has, so `--base` is only for
   working outside a workspace. If the server has moved on, the command tells you to run `pyn update`.
 - **`pyn status`** prints a table of what differs, one row per file, with the columns `MODE`, `REV`, `STATE`, `LOCK` and
   `PATH`, then a one-line summary of counts (modified, behind, new, untracked, locked by you, locked by others). `STATE`
@@ -64,7 +64,7 @@ you are inside the workspace and take paths relative to your current directory.
 - **`pyn update`** downloads new and newer files. A file with local changes is never overwritten; it is reported as skipped.
   `--revision <commit>` brings the workspace to a past (or newer) commit instead, and `pyn status --revision <commit>` compares
   with it; `pyn diff` shows the changes themselves. See [commits](commits.md).
-- **`pyn checkin <path>...`** uploads the files at the given paths in the workspace as one atomic commit with one message
+- **`pyn commit <path>...`** uploads the files at the given paths in the workspace as one atomic commit with one message
   (`-m`); with several paths, all succeed or none do. Outside a workspace, one path and `--file <file>` name the upload.
 
 ## Listing output
