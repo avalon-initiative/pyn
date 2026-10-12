@@ -23,6 +23,7 @@ use utoipa::{IntoParams, OpenApi, PartialSchema, ToSchema};
 mod access_api;
 mod admin_api;
 pub mod auth;
+mod branch_api;
 mod client;
 pub mod email;
 mod limits_api;
@@ -168,7 +169,12 @@ struct RepoAddress {
         verify,
         list_commits,
         get_commit,
-        snapshot
+        snapshot,
+        branch_api::list_branches,
+        branch_api::get_branch,
+        branch_api::create_branch,
+        branch_api::delete_branch,
+        branch_api::rename_branch
     ),
     components(schemas(
         api::Lock,
@@ -178,6 +184,9 @@ struct RepoAddress {
         api::VerifyProblem,
         api::Commit,
         api::CommitPage,
+        api::Branch,
+        api::CreateBranchRequest,
+        api::RenameBranchRequest,
         api::SnapshotEntry,
         api::SnapshotPage,
         api::CheckoutRequest,
@@ -465,6 +474,16 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/repos/{owner}/{name}/commits", get(list_commits))
         .route("/v1/repos/{owner}/{name}/commits/{commit}", get(get_commit))
         .route("/v1/repos/{owner}/{name}/snapshot", get(snapshot))
+        .route(
+            "/v1/repos/{owner}/{name}/branches",
+            get(branch_api::list_branches).post(branch_api::create_branch),
+        )
+        .route(
+            "/v1/repos/{owner}/{name}/branches/{*branch}",
+            get(branch_api::get_branch)
+                .delete(branch_api::delete_branch)
+                .patch(branch_api::rename_branch),
+        )
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             session_api::csrf_guard,
@@ -509,6 +528,8 @@ impl IntoResponse for ApiError {
             | PynError::LastSignInMethod
             | PynError::AlreadyInitialised
             | PynError::ServiceCredentialExists(_)
+            | PynError::BranchExists(_)
+            | PynError::BranchNotMerged(_)
             | PynError::ConfirmationRequired { .. } => StatusCode::CONFLICT,
             PynError::NotLockHolder(_)
             | PynError::Forbidden(_)
@@ -546,13 +567,14 @@ impl IntoResponse for ApiError {
             | PynError::TeamMemberNotFound { .. }
             | PynError::CreationRuleNotFound { .. }
             | PynError::PathNotFound(_) => StatusCode::NOT_FOUND,
-            PynError::RevisionNotFound { .. } | PynError::CommitNotFound(_) => {
-                StatusCode::NOT_FOUND
-            }
+            PynError::RevisionNotFound { .. }
+            | PynError::CommitNotFound(_)
+            | PynError::BranchNotFound(_) => StatusCode::NOT_FOUND,
             PynError::InvalidPath(_)
             | PynError::InvalidRules(_)
             | PynError::InvalidRequest(_)
             | PynError::AmbiguousCommit(_)
+            | PynError::InvalidBranchName(_)
             | PynError::InvalidInvite(_)
             | PynError::InvalidVerification(_)
             | PynError::InvalidRepoName(_)
@@ -672,6 +694,11 @@ pub(crate) async fn authorize_read(
     let (open, principal) = open_visible(state, who.as_ref(), owner, name).await?;
     principal.require(Permission::Read)?;
     Ok(open)
+}
+
+/// The branch a request names, the default branch when it names none.
+fn branch_of(named: Option<&str>) -> &str {
+    named.unwrap_or(pyn_core::DEFAULT_BRANCH)
 }
 
 fn lock_dto(l: pyn_core::Lock) -> api::Lock {
@@ -828,6 +855,7 @@ async fn release(
     (status = 409, body = api::ErrorBody, description = "lock_required, lock_held or stale_base"),
     (status = 400, body = api::ErrorBody, description = "object_missing, invalid_path, or invalid_rules for a malformed .pyn/pyn.toml"),
     (status = 403, body = api::ErrorBody, description = "checking in .pyn/pyn.toml needs the edit_policy permission"),
+    (status = 404, body = api::ErrorBody, description = "branch_not_found"),
 ))]
 async fn checkin(
     State(s): State<AppState>,
@@ -839,7 +867,8 @@ async fn checkin(
         authorize_repo(&s, &headers, &owner, &name, Some(Permission::Checkin)).await?;
     let rev = repo
         .service
-        .checkin_as(
+        .checkin_on(
+            branch_of(req.branch.as_deref()),
             &who,
             &RepoPath::new(req.path)?,
             parse_object_id(&req.content)?,
@@ -855,6 +884,7 @@ async fn checkin(
     (status = 200, body = api::ChangesetResponse),
     (status = 409, body = api::ErrorBody, description = "lock_required, lock_held or stale_base; nothing was checked in"),
     (status = 400, body = api::ErrorBody, description = "object_missing, invalid_path, or invalid_request for an empty or repeated path or .pyn/pyn.toml"),
+    (status = 404, body = api::ErrorBody, description = "branch_not_found"),
 ))]
 /// Check several paths in atomically as one commit with one message.
 async fn changeset(
@@ -879,7 +909,7 @@ async fn changeset(
         .collect::<Result<Vec<_>, PynError>>()?;
     let revs = repo
         .service
-        .checkin_changeset(&who, entries, req.message)
+        .checkin_changeset_on(branch_of(req.branch.as_deref()), &who, entries, req.message)
         .await?;
     let changeset = revs
         .first()
@@ -894,6 +924,7 @@ async fn changeset(
 #[utoipa::path(post, path = "/v1/repos/{owner}/{name}/restore", params(RepoAddress), request_body = api::RestoreRequest, responses(
     (status = 200, body = api::Revision),
     (status = 403, body = api::ErrorBody, description = "needs the restore permission"),
+    (status = 404, body = api::ErrorBody, description = "branch_not_found"),
     (status = 409, body = api::ErrorBody, description = "lock_required, lock_held, stale_base or confirmation_required"),
 ))]
 async fn restore(
@@ -906,7 +937,8 @@ async fn restore(
         authorize_repo(&s, &headers, &owner, &name, Some(Permission::Restore)).await?;
     let rev = repo
         .service
-        .restore(
+        .restore_on(
+            branch_of(req.branch.as_deref()),
             &who,
             &RepoPath::new(req.path)?,
             RevisionId(req.revision),
@@ -1058,6 +1090,7 @@ async fn assemble_object(
 
 #[derive(Deserialize)]
 struct HistoryQuery {
+    branch: Option<String>,
     path: Option<String>,
     filter: Option<String>,
     before: Option<String>,
@@ -1067,11 +1100,13 @@ struct HistoryQuery {
 /// Readable without credentials when the repository is public; otherwise 404 unless the caller has a role.
 #[utoipa::path(get, path = "/v1/repos/{owner}/{name}/history",
     params(RepoAddress,
+           ("branch" = Option<String>, Query, description = "the branch to read; the default branch if omitted"),
            ("path" = Option<String>, Query, description = "one path's revisions, oldest first; excludes the other parameters"),
            ("filter" = Option<String>, Query, description = "glob over paths for repository history; no slash matches at any depth"),
            ("before" = Option<String>, Query, description = "the previous page's next_cursor"),
            ("limit" = Option<usize>, Query, description = "page size, default 50, max 200")),
     responses((status = 200, body = api::HistoryPage),
+              (status = 404, body = api::ErrorBody, description = "branch_not_found"),
               (status = 400, body = api::ErrorBody, description = "invalid_request for a bad filter or cursor, or path combined with them")))]
 async fn history(
     State(s): State<AppState>,
@@ -1087,7 +1122,10 @@ async fn history(
             )
             .into());
         }
-        let revs = repo.service.history(&RepoPath::new(path)?).await?;
+        let revs = repo
+            .service
+            .history_on(branch_of(q.branch.as_deref()), &RepoPath::new(path)?)
+            .await?;
         return Ok(Json(api::HistoryPage {
             revisions: revs.into_iter().map(revision_dto).collect(),
             next_cursor: None,
@@ -1097,7 +1135,12 @@ async fn history(
     let before = q.before.as_deref().map(HistoryCursor::decode).transpose()?;
     let page = repo
         .service
-        .repo_history(filter.as_ref(), before.as_ref(), q.limit)
+        .repo_history_on(
+            branch_of(q.branch.as_deref()),
+            filter.as_ref(),
+            before.as_ref(),
+            q.limit,
+        )
         .await?;
     Ok(Json(api::HistoryPage {
         revisions: page.revisions.into_iter().map(revision_dto).collect(),
@@ -1151,6 +1194,7 @@ async fn verify(
 
 #[derive(Deserialize)]
 struct CommitsQuery {
+    branch: Option<String>,
     before: Option<String>,
     limit: Option<usize>,
 }
@@ -1158,9 +1202,11 @@ struct CommitsQuery {
 /// Readable without credentials when the repository is public; otherwise 404 unless the caller has a role.
 #[utoipa::path(get, path = "/v1/repos/{owner}/{name}/commits",
     params(RepoAddress,
+           ("branch" = Option<String>, Query, description = "list the commits this branch contains; the default branch if omitted"),
            ("before" = Option<String>, Query, description = "return commits older than this commit (an id or unique abbreviation)"),
            ("limit" = Option<usize>, Query, description = "page size, default 50, max 200")),
-    responses((status = 200, body = api::CommitPage)))]
+    responses((status = 200, body = api::CommitPage),
+              (status = 404, body = api::ErrorBody, description = "branch_not_found")))]
 async fn list_commits(
     State(s): State<AppState>,
     headers: HeaderMap,
@@ -1172,7 +1218,10 @@ async fn list_commits(
         Some(spec) => Some(repo.service.resolve_commit(&spec).await?),
         None => None,
     };
-    let page = repo.service.commits(before.as_ref(), q.limit).await?;
+    let page = repo
+        .service
+        .commits_on(branch_of(q.branch.as_deref()), before.as_ref(), q.limit)
+        .await?;
     Ok(Json(api::CommitPage {
         commits: page.commits.into_iter().map(commit_dto).collect(),
         next_before: page.next.map(|n| n.to_hex()),
@@ -1197,6 +1246,7 @@ async fn get_commit(
 
 #[derive(Deserialize)]
 struct SnapshotQuery {
+    branch: Option<String>,
     commit: Option<String>,
     after: Option<String>,
     limit: Option<usize>,
@@ -1205,11 +1255,12 @@ struct SnapshotQuery {
 /// Readable without credentials when the repository is public; otherwise 404 unless the caller has a role.
 #[utoipa::path(get, path = "/v1/repos/{owner}/{name}/snapshot",
     params(RepoAddress,
-           ("commit" = Option<String>, Query, description = "commit id or unique abbreviation; the newest if omitted"),
+           ("commit" = Option<String>, Query, description = "commit id or unique abbreviation; excludes branch"),
+           ("branch" = Option<String>, Query, description = "the branch whose head is shown; the default branch if neither commit nor branch is given"),
            ("after" = Option<String>, Query, description = "return paths after this one"),
            ("limit" = Option<usize>, Query, description = "page size, default 200, max 1000")),
     responses((status = 200, body = api::SnapshotPage),
-              (status = 404, body = api::ErrorBody, description = "commit_not_found"),
+              (status = 404, body = api::ErrorBody, description = "commit_not_found or branch_not_found"),
               (status = 400, body = api::ErrorBody, description = "ambiguous_commit")))]
 async fn snapshot(
     State(s): State<AppState>,
@@ -1220,11 +1271,22 @@ async fn snapshot(
     let repo = authorize_read(&s, &headers, &owner, &name).await?;
     let limit = q.limit.unwrap_or(200).clamp(1, 1000);
     let after = q.after.map(RepoPath::new).transpose()?;
-    let commit = match q.commit {
-        Some(spec) => Some(repo.service.resolve_commit(&spec).await?),
-        None => None,
+    let snap = match (q.commit, q.branch) {
+        (Some(_), Some(_)) => {
+            return Err(
+                PynError::InvalidRequest("commit and branch exclude each other".into()).into(),
+            );
+        }
+        (Some(spec), None) => {
+            let commit = repo.service.resolve_commit(&spec).await?;
+            repo.service.snapshot(Some(&commit)).await?
+        }
+        (None, branch) => {
+            repo.service
+                .snapshot_on(branch_of(branch.as_deref()))
+                .await?
+        }
     };
-    let snap = repo.service.snapshot(commit.as_ref()).await?;
     let mut entries: Vec<_> = snap
         .entries
         .into_iter()
@@ -1251,6 +1313,7 @@ async fn snapshot(
 
 #[derive(Deserialize)]
 struct FilesQuery {
+    branch: Option<String>,
     after: Option<String>,
     limit: Option<usize>,
 }
@@ -1264,9 +1327,11 @@ fn mode_dto(mode: pyn_core::Mode) -> api::Mode {
 
 /// Readable without credentials when the repository is public; otherwise 404 unless the caller has a role.
 #[utoipa::path(get, path = "/v1/repos/{owner}/{name}/files",
-    params(RepoAddress, ("after" = Option<String>, Query, description = "return paths after this one"),
+    params(RepoAddress, ("branch" = Option<String>, Query, description = "the branch to read; the default branch if omitted"),
+           ("after" = Option<String>, Query, description = "return paths after this one"),
            ("limit" = Option<usize>, Query, description = "page size, default 200, max 1000")),
-    responses((status = 200, body = api::FilePage)))]
+    responses((status = 200, body = api::FilePage),
+              (status = 404, body = api::ErrorBody, description = "branch_not_found")))]
 async fn list_files(
     State(s): State<AppState>,
     headers: HeaderMap,
@@ -1276,7 +1341,10 @@ async fn list_files(
     let repo = authorize_read(&s, &headers, &owner, &name).await?;
     let limit = q.limit.unwrap_or(200).clamp(1, 1000);
     let after = q.after.map(RepoPath::new).transpose()?;
-    let mut files = repo.service.files(after.as_ref(), limit + 1).await?;
+    let mut files = repo
+        .service
+        .files_on(branch_of(q.branch.as_deref()), after.as_ref(), limit + 1)
+        .await?;
     let next_after = (files.len() > limit).then(|| {
         files.truncate(limit);
         files[limit - 1].path.to_string()
@@ -1299,15 +1367,17 @@ async fn list_files(
 
 #[derive(Deserialize)]
 struct TreeQuery {
+    branch: Option<String>,
     path: Option<String>,
 }
 
 /// Readable without credentials when the repository is public; otherwise 404 unless the caller has a role.
 #[utoipa::path(get, path = "/v1/repos/{owner}/{name}/tree",
-    params(RepoAddress, ("path" = Option<String>, Query, description = "folder to list; the root if omitted or empty")),
+    params(RepoAddress, ("branch" = Option<String>, Query, description = "the branch to read; the default branch if omitted"),
+           ("path" = Option<String>, Query, description = "folder to list; the root if omitted or empty")),
     responses((status = 200, body = api::TreeListing),
               (status = 400, body = api::ErrorBody, description = "invalid_path, or the path is a file"),
-              (status = 404, body = api::ErrorBody, description = "path_not_found")))]
+              (status = 404, body = api::ErrorBody, description = "path_not_found or branch_not_found")))]
 async fn tree(
     State(s): State<AppState>,
     headers: HeaderMap,
@@ -1320,7 +1390,10 @@ async fn tree(
     let dir = (!trimmed.is_empty())
         .then(|| RepoPath::new(trimmed))
         .transpose()?;
-    let entries = repo.service.tree(dir.as_ref()).await?;
+    let entries = repo
+        .service
+        .tree_on(branch_of(q.branch.as_deref()), dir.as_ref())
+        .await?;
     Ok(Json(api::TreeListing {
         path: trimmed.to_string(),
         entries: entries.into_iter().map(tree_entry_dto).collect(),
@@ -1403,6 +1476,7 @@ impl ToSchema for FileContent {}
 
 #[derive(Deserialize)]
 struct ContentQuery {
+    branch: Option<String>,
     path: String,
     revision: Option<u64>,
 }
@@ -1410,11 +1484,12 @@ struct ContentQuery {
 /// Readable without credentials when the repository is public; otherwise 404 unless the caller has a role.
 #[utoipa::path(get, path = "/v1/repos/{owner}/{name}/content",
     params(RepoAddress, ("path" = String, Query, description = "repo-relative path"),
-           ("revision" = Option<u64>, Query, description = "revision number; the head if omitted")),
+           ("revision" = Option<u64>, Query, description = "revision number; the path's revision on the branch if omitted"),
+           ("branch" = Option<String>, Query, description = "the branch whose revision is read when no revision is given; the default branch if omitted")),
     responses((status = 200, content_type = "application/octet-stream", body = inline(FileContent)),
               (status = 206, content_type = "application/octet-stream", body = inline(FileContent), description = "the part named by a single-range `Range: bytes=` header"),
               (status = 416, description = "the range lies outside the content; `Content-Range: bytes */<length>`"),
-              (status = 404, body = api::ErrorBody, description = "revision_not_found")))]
+              (status = 404, body = api::ErrorBody, description = "revision_not_found or branch_not_found")))]
 async fn get_content(
     State(s): State<AppState>,
     headers: HeaderMap,
@@ -1423,6 +1498,7 @@ async fn get_content(
 ) -> ApiResult<Response> {
     let repo = authorize_read(&s, &headers, &owner, &name).await?;
     let path = RepoPath::new(q.path)?;
+    let branch = branch_of(q.branch.as_deref());
     let revision = q.revision.map(RevisionId);
     let wanted = headers
         .get(axum::http::header::RANGE)
@@ -1431,7 +1507,7 @@ async fn get_content(
         Some(text) => {
             let (_, found) = repo
                 .service
-                .read_stream(&path, revision, Some(0..0))
+                .read_stream_on(branch, &path, revision, Some(0..0))
                 .await?;
             match parse_range(text, found.total) {
                 Some(r) => Some(r),
@@ -1442,7 +1518,7 @@ async fn get_content(
     };
     let (rev, found) = repo
         .service
-        .read_stream(&path, revision, range.clone())
+        .read_stream_on(branch, &path, revision, range.clone())
         .await?;
     let mut res = Response::new(axum::body::Body::from_stream(
         tokio_util::io::ReaderStream::new(found.reader),

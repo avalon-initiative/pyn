@@ -3355,6 +3355,371 @@
         }
       }
     },
+    "/v1/repos/{owner}/{name}/branches": {
+      "get": {
+        "tags": [
+          "branch_api"
+        ],
+        "summary": "Readable without credentials when the repository is public; otherwise 404 unless the caller has a role.",
+        "operationId": "list_branches",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "The namespace that owns the repository.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository's name within its owner.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "the default branch first, then by name",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Branch"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "branch_api"
+        ],
+        "summary": "Create a branch at a commit.",
+        "operationId": "create_branch",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "The namespace that owns the repository.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository's name within its owner.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateBranchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Branch"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_branch_name, commit_not_found or ambiguous_commit for the start point, or invalid_request when the repository has no commit to start from",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "needs the checkin permission",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "branch_exists: the name is taken, or is a folder of another branch's name",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/repos/{owner}/{name}/branches/{branch}": {
+      "get": {
+        "tags": [
+          "branch_api"
+        ],
+        "operationId": "get_branch",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "The namespace that owns the repository.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository's name within its owner.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "branch",
+            "in": "path",
+            "description": "the branch's name; a slash may be sent as is or as %2F",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Branch"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "branch_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "branch_api"
+        ],
+        "summary": "Delete a branch's name; its commits stay.",
+        "operationId": "delete_branch",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "The namespace that owns the repository.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository's name within its owner.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "branch",
+            "in": "path",
+            "description": "the branch's name; a slash may be sent as is or as %2F",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "force",
+            "in": "query",
+            "description": "delete a branch whose commits are not all on the default branch",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "400": {
+            "description": "invalid_request for the default branch",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "needs the checkin permission",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "branch_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "branch_not_merged without force",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "branch_api"
+        ],
+        "summary": "Rename a branch other than the default one.",
+        "operationId": "rename_branch",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "The namespace that owns the repository.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository's name within its owner.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "branch",
+            "in": "path",
+            "description": "the branch's name; a slash may be sent as is or as %2F",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RenameBranchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Branch"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_branch_name, or invalid_request for the default branch",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "needs the checkin permission",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "branch_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "branch_exists",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/repos/{owner}/{name}/changesets": {
       "post": {
         "tags": [],
@@ -3402,6 +3767,16 @@
           },
           "400": {
             "description": "object_missing, invalid_path, or invalid_request for an empty or repeated path or .pyn/pyn.toml",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "branch_not_found",
             "content": {
               "application/json": {
                 "schema": {
@@ -3479,6 +3854,16 @@
           },
           "403": {
             "description": "checking in .pyn/pyn.toml needs the edit_policy permission",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "branch_not_found",
             "content": {
               "application/json": {
                 "schema": {
@@ -3593,6 +3978,15 @@
             }
           },
           {
+            "name": "branch",
+            "in": "query",
+            "description": "list the commits this branch contains; the default branch if omitted",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "before",
             "in": "query",
             "description": "return commits older than this commit (an id or unique abbreviation)",
@@ -3618,6 +4012,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/CommitPage"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "branch_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -3728,12 +4132,21 @@
           {
             "name": "revision",
             "in": "query",
-            "description": "revision number; the head if omitted",
+            "description": "revision number; the path's revision on the branch if omitted",
             "required": false,
             "schema": {
               "type": "integer",
               "format": "int64",
               "minimum": 0
+            }
+          },
+          {
+            "name": "branch",
+            "in": "query",
+            "description": "the branch whose revision is read when no revision is given; the default branch if omitted",
+            "required": false,
+            "schema": {
+              "type": "string"
             }
           }
         ],
@@ -3760,7 +4173,7 @@
             }
           },
           "404": {
-            "description": "revision_not_found",
+            "description": "revision_not_found or branch_not_found",
             "content": {
               "application/json": {
                 "schema": {
@@ -3800,6 +4213,15 @@
             }
           },
           {
+            "name": "branch",
+            "in": "query",
+            "description": "the branch to read; the default branch if omitted",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "after",
             "in": "query",
             "description": "return paths after this one",
@@ -3825,6 +4247,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/FilePage"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "branch_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -3925,6 +4357,15 @@
             }
           },
           {
+            "name": "branch",
+            "in": "query",
+            "description": "the branch to read; the default branch if omitted",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "path",
             "in": "query",
             "description": "one path's revisions, oldest first; excludes the other parameters",
@@ -3974,6 +4415,16 @@
           },
           "400": {
             "description": "invalid_request for a bad filter or cursor, or path combined with them",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "branch_not_found",
             "content": {
               "application/json": {
                 "schema": {
@@ -4771,6 +5222,16 @@
               }
             }
           },
+          "404": {
+            "description": "branch_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "409": {
             "description": "lock_required, lock_held, stale_base or confirmation_required",
             "content": {
@@ -4933,7 +5394,16 @@
           {
             "name": "commit",
             "in": "query",
-            "description": "commit id or unique abbreviation; the newest if omitted",
+            "description": "commit id or unique abbreviation; excludes branch",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "branch",
+            "in": "query",
+            "description": "the branch whose head is shown; the default branch if neither commit nor branch is given",
             "required": false,
             "schema": {
               "type": "string"
@@ -4980,7 +5450,7 @@
             }
           },
           "404": {
-            "description": "commit_not_found",
+            "description": "commit_not_found or branch_not_found",
             "content": {
               "application/json": {
                 "schema": {
@@ -5280,6 +5750,15 @@
             }
           },
           {
+            "name": "branch",
+            "in": "query",
+            "description": "the branch to read; the default branch if omitted",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "path",
             "in": "query",
             "description": "folder to list; the root if omitted or empty",
@@ -5310,7 +5789,7 @@
             }
           },
           "404": {
-            "description": "path_not_found",
+            "description": "path_not_found or branch_not_found",
             "content": {
               "application/json": {
                 "schema": {
@@ -6089,6 +6568,39 @@
           }
         }
       },
+      "Branch": {
+        "type": "object",
+        "description": "A branch: a name pointing at a commit. The default branch's `.pyn/pyn.toml` is the repository's policy.",
+        "required": [
+          "name",
+          "commit",
+          "default",
+          "created_at",
+          "created_by"
+        ],
+        "properties": {
+          "commit": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The commit the branch points at; null only for the default branch of a repository with no commits."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "created_by": {
+            "type": "string"
+          },
+          "default": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
       "ChangePasswordRequest": {
         "type": "object",
         "required": [
@@ -6151,6 +6663,13 @@
           "message"
         ],
         "properties": {
+          "branch": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The branch the commit is made on; the default branch if omitted."
+          },
           "entries": {
             "type": "array",
             "items": {
@@ -6195,7 +6714,15 @@
               "null"
             ],
             "format": "int64",
+            "description": "A shared path's revision on the branch, or an exclusive path's newest revision on any branch.",
             "minimum": 0
+          },
+          "branch": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The branch the commit is made on; the default branch if omitted."
           },
           "content": {
             "type": "string",
@@ -6242,7 +6769,7 @@
       },
       "Commit": {
         "type": "object",
-        "description": "One atomic write: a single checkin or a whole changeset, recorded as a git commit on the repository's single\nmainline. `id` is the git commit id, so a commit can be fetched with a unique abbreviation of at least 4 digits.",
+        "description": "One atomic write: a single checkin or a whole changeset, recorded as a git commit on a branch. `id` is the git\ncommit id, so a commit can be fetched with a unique abbreviation of at least 4 digits.",
         "required": [
           "id",
           "parents",
@@ -6283,7 +6810,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Empty for the first commit."
+            "description": "Empty for the first commit of the repository, otherwise the commit it was made on top of."
           },
           "revisions": {
             "type": "array",
@@ -6325,6 +6852,25 @@
               "null"
             ],
             "description": "Pass as `before` to fetch the next, older page; null on the last page."
+          }
+        }
+      },
+      "CreateBranchRequest": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Git ref rules apply: no spaces, none of `~ ^ : ? * [ \\`, no `..`."
+          },
+          "start": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A branch name, or a commit id or abbreviation of at least 4 digits; the default branch's head if omitted."
           }
         }
       },
@@ -7347,6 +7893,17 @@
           }
         }
       },
+      "RenameBranchRequest": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        }
+      },
       "RepoInfo": {
         "type": "object",
         "required": [
@@ -7472,12 +8029,10 @@
           "branch_count": {
             "type": "integer",
             "format": "int32",
-            "description": "Provisional: always 1 until branches arrive.",
             "minimum": 0
           },
           "default_branch": {
-            "type": "string",
-            "description": "Provisional: the single mainline until branches arrive."
+            "type": "string"
           },
           "exclusive_files": {
             "type": "integer",
@@ -7487,7 +8042,7 @@
           "files": {
             "type": "integer",
             "format": "int64",
-            "description": "Paths with at least one revision.",
+            "description": "Paths with at least one revision on the default branch.",
             "minimum": 0
           },
           "locks": {
@@ -7592,6 +8147,13 @@
             "format": "int64",
             "description": "The current head the caller is looking at; must still be the head.",
             "minimum": 0
+          },
+          "branch": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The branch the restore is committed on; the default branch if omitted."
           },
           "confirm": {
             "type": "string",

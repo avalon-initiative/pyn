@@ -87,12 +87,12 @@ pub struct Revision {
     pub previous: Option<String>,
 }
 
-/// One atomic write: a single checkin or a whole changeset, recorded as a git commit on the repository's single
-/// mainline. `id` is the git commit id, so a commit can be fetched with a unique abbreviation of at least 4 digits.
+/// One atomic write: a single checkin or a whole changeset, recorded as a git commit on a branch. `id` is the git
+/// commit id, so a commit can be fetched with a unique abbreviation of at least 4 digits.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct Commit {
     pub id: String,
-    /// Empty for the first commit.
+    /// Empty for the first commit of the repository, otherwise the commit it was made on top of.
     pub parents: Vec<String>,
     /// The id of the root git tree of the repository as of this commit.
     pub tree: String,
@@ -142,6 +142,31 @@ pub struct SnapshotPage {
     pub next_after: Option<String>,
 }
 
+/// A branch: a name pointing at a commit. The default branch's `.pyn/pyn.toml` is the repository's policy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct Branch {
+    pub name: String,
+    /// The commit the branch points at; null only for the default branch of a repository with no commits.
+    #[schema(required = true)]
+    pub commit: Option<String>,
+    pub default: bool,
+    pub created_at: DateTime<Utc>,
+    pub created_by: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct CreateBranchRequest {
+    /// Git ref rules apply: no spaces, none of `~ ^ : ? * [ \`, no `..`.
+    pub name: String,
+    /// A branch name, or a commit id or abbreviation of at least 4 digits; the default branch's head if omitted.
+    pub start: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct RenameBranchRequest {
+    pub name: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct CheckoutRequest {
     pub path: String,
@@ -159,6 +184,8 @@ pub struct RestoreRequest {
     /// `<path>@r<base_revision>`, confirming the caller knows which head is being replaced.
     pub confirm: String,
     pub message: Option<String>,
+    /// The branch the restore is committed on; the default branch if omitted.
+    pub branch: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -174,8 +201,11 @@ pub struct CheckinRequest {
     /// Defaults to `100644`.
     #[serde(default)]
     pub file_mode: Option<FileMode>,
+    /// A shared path's revision on the branch, or an exclusive path's newest revision on any branch.
     pub base_revision: Option<u64>,
     pub message: String,
+    /// The branch the commit is made on; the default branch if omitted.
+    pub branch: Option<String>,
 }
 
 /// One path of a changeset.
@@ -195,6 +225,8 @@ pub struct ChangesetEntry {
 pub struct ChangesetRequest {
     pub entries: Vec<ChangesetEntry>,
     pub message: String,
+    /// The branch the commit is made on; the default branch if omitted.
+    pub branch: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -287,11 +319,9 @@ pub struct ActivityEntry {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct RepoSummary {
-    /// Provisional: the single mainline until branches arrive.
     pub default_branch: String,
-    /// Provisional: always 1 until branches arrive.
     pub branch_count: u32,
-    /// Paths with at least one revision.
+    /// Paths with at least one revision on the default branch.
     pub files: u64,
     pub exclusive_files: u64,
     pub shared_files: u64,

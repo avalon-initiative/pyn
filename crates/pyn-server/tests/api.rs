@@ -3378,3 +3378,313 @@ async fn an_object_is_keyed_by_its_blob_id_and_must_match_its_declared_length() 
         assert_eq!(err.code, "length_mismatch");
     }
 }
+
+async fn error_code(r: axum::response::Response) -> String {
+    body_json::<api::ErrorBody>(r).await.code
+}
+
+#[tokio::test]
+async fn branches_are_created_committed_on_read_and_deleted() {
+    let app = router(state_with(false, RegistrationMode::Open).await);
+    let alice = register_and_sign_in(&app, "alice").await;
+    create_repo(&app, &alice, "game").await;
+    let base = "/v1/repos/alice/game";
+    let (one, two) = (
+        put_blob(&app, "game", &alice, "one").await,
+        put_blob(&app, "game", &alice, "two").await,
+    );
+    let checkin = |branch: Option<&str>, path: &str, content: &str, base_rev: Option<u64>| {
+        serde_json::json!({"path": path, "content": content, "base_revision": base_rev,
+                           "message": "m", "branch": branch})
+    };
+
+    let r = send(&app, "GET", &format!("{base}/branches"), &alice, None).await;
+    let branches: Vec<api::Branch> = body_json(r).await;
+    assert_eq!(
+        branches
+            .iter()
+            .map(|b| (&*b.name, b.default, b.commit.is_some()))
+            .collect::<Vec<_>>(),
+        vec![("main", true, false)]
+    );
+    let made = |name: &str| serde_json::json!({"name": name});
+    let r = send(
+        &app,
+        "POST",
+        &format!("{base}/branches"),
+        &alice,
+        Some(made("early")),
+    )
+    .await;
+    assert_eq!(
+        r.status(),
+        StatusCode::BAD_REQUEST,
+        "no commit to branch from yet"
+    );
+
+    let r = send(
+        &app,
+        "POST",
+        &format!("{base}/checkin"),
+        &alice,
+        Some(checkin(None, "a.txt", &one, None)),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let r = send(
+        &app,
+        "POST",
+        &format!("{base}/branches"),
+        &alice,
+        Some(made("topic/one")),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let topic: api::Branch = body_json(r).await;
+    assert!(!topic.default && topic.created_by == "alice");
+    for (name, status, code) in [
+        ("topic/one", StatusCode::CONFLICT, "branch_exists"),
+        ("topic", StatusCode::CONFLICT, "branch_exists"),
+        ("bad name", StatusCode::BAD_REQUEST, "invalid_branch_name"),
+    ] {
+        let r = send(
+            &app,
+            "POST",
+            &format!("{base}/branches"),
+            &alice,
+            Some(made(name)),
+        )
+        .await;
+        assert_eq!(r.status(), status, "{name}");
+        assert_eq!(error_code(r).await, code);
+    }
+
+    let r = send(
+        &app,
+        "POST",
+        &format!("{base}/checkin"),
+        &alice,
+        Some(checkin(Some("topic/one"), "b.txt", &two, None)),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let r = send(
+        &app,
+        "POST",
+        &format!("{base}/checkin"),
+        &alice,
+        Some(checkin(Some("nope"), "c.txt", &two, None)),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::NOT_FOUND);
+    assert_eq!(error_code(r).await, "branch_not_found");
+    let r = send(
+        &app,
+        "POST",
+        &format!("{base}/checkin"),
+        &alice,
+        Some(checkin(None, "a.txt", &two, Some(1))),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+
+    let r = send(
+        &app,
+        "GET",
+        &format!("{base}/branches/topic/one"),
+        &alice,
+        None,
+    )
+    .await;
+    let got: api::Branch = body_json(r).await;
+    assert_eq!(got.name, "topic/one");
+    let r = send(
+        &app,
+        "GET",
+        &format!("{base}/branches/topic%2Fone"),
+        &alice,
+        None,
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+
+    let paths = |page: api::SnapshotPage| {
+        page.entries
+            .into_iter()
+            .map(|e| (e.path, e.revision))
+            .collect::<Vec<_>>()
+    };
+    let r = send(
+        &app,
+        "GET",
+        &format!("{base}/snapshot?branch=topic/one"),
+        &alice,
+        None,
+    )
+    .await;
+    assert_eq!(
+        paths(body_json(r).await),
+        vec![("a.txt".to_string(), 1), ("b.txt".to_string(), 1)]
+    );
+    let r = send(&app, "GET", &format!("{base}/snapshot"), &alice, None).await;
+    assert_eq!(paths(body_json(r).await), vec![("a.txt".to_string(), 2)]);
+    let r = send(
+        &app,
+        "GET",
+        &format!(
+            "{base}/snapshot?branch=main&commit={}",
+            topic.commit.clone().unwrap()
+        ),
+        &alice,
+        None,
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+    let r = send(
+        &app,
+        "GET",
+        &format!("{base}/commits?branch=topic/one"),
+        &alice,
+        None,
+    )
+    .await;
+    let log: api::CommitPage = body_json(r).await;
+    assert_eq!(log.commits.len(), 2);
+    let r = send(&app, "GET", &format!("{base}/commits"), &alice, None).await;
+    let log: api::CommitPage = body_json(r).await;
+    assert_eq!(log.commits.len(), 2);
+    assert_eq!(log.commits[0].parents, vec![topic.commit.clone().unwrap()]);
+    let r = send(
+        &app,
+        "GET",
+        &format!("{base}/tree?branch=topic/one"),
+        &alice,
+        None,
+    )
+    .await;
+    let listing: api::TreeListing = body_json(r).await;
+    assert_eq!(listing.entries.len(), 2);
+    let r = send(
+        &app,
+        "GET",
+        &format!("{base}/files?branch=topic/one"),
+        &alice,
+        None,
+    )
+    .await;
+    let files: api::FilePage = body_json(r).await;
+    assert_eq!(files.entries.len(), 2);
+    let r = send(
+        &app,
+        "GET",
+        &format!("{base}/history?branch=topic/one"),
+        &alice,
+        None,
+    )
+    .await;
+    let history: api::HistoryPage = body_json(r).await;
+    assert_eq!(history.revisions.len(), 2);
+    let r = send(
+        &app,
+        "GET",
+        &format!("{base}/content?path=a.txt&branch=topic/one"),
+        &alice,
+        None,
+    )
+    .await;
+    assert_eq!(r.headers()[api::REVISION_HEADER], "1");
+    let r = send(
+        &app,
+        "GET",
+        &format!("{base}/content?path=a.txt"),
+        &alice,
+        None,
+    )
+    .await;
+    assert_eq!(r.headers()[api::REVISION_HEADER], "2");
+    let r = send(&app, "GET", &format!("{base}/summary"), &alice, None).await;
+    let summary: api::RepoSummary = body_json(r).await;
+    assert_eq!(
+        (summary.default_branch.as_str(), summary.branch_count),
+        ("main", 2)
+    );
+
+    let r = send(
+        &app,
+        "PATCH",
+        &format!("{base}/branches/topic/one"),
+        &alice,
+        Some(made("topic/two")),
+    )
+    .await;
+    assert_eq!(body_json::<api::Branch>(r).await.name, "topic/two");
+    let r = send(
+        &app,
+        "DELETE",
+        &format!("{base}/branches/topic/two"),
+        &alice,
+        None,
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::CONFLICT);
+    assert_eq!(error_code(r).await, "branch_not_merged");
+    let r = send(
+        &app,
+        "DELETE",
+        &format!("{base}/branches/topic/two?force=true"),
+        &alice,
+        None,
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::NO_CONTENT);
+    let r = send(
+        &app,
+        "DELETE",
+        &format!("{base}/branches/main"),
+        &alice,
+        None,
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+    let r = send(
+        &app,
+        "GET",
+        &format!("{base}/branches/topic/two"),
+        &alice,
+        None,
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn a_reader_may_list_branches_but_not_create_them() {
+    let app = router(state_with(false, RegistrationMode::Open).await);
+    let alice = register_and_sign_in(&app, "alice").await;
+    let bob = register_and_sign_in(&app, "bob").await;
+    create_repo(&app, &alice, "game").await;
+    let base = "/v1/repos/alice/game";
+    let one = put_blob(&app, "game", &alice, "one").await;
+    send(&app, "POST", &format!("{base}/checkin"), &alice, Some(serde_json::json!({"path": "a.txt", "content": one, "base_revision": null, "message": "m"}))).await;
+    send(
+        &app,
+        "PUT",
+        &format!("{base}/members/bob"),
+        &alice,
+        Some(serde_json::json!({"role": "reader"})),
+    )
+    .await;
+    let r = send(&app, "GET", &format!("{base}/branches"), &bob, None).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let r = send(
+        &app,
+        "POST",
+        &format!("{base}/branches"),
+        &bob,
+        Some(serde_json::json!({"name": "x"})),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::FORBIDDEN);
+    let r = send(&app, "DELETE", &format!("{base}/branches/x"), &bob, None).await;
+    assert_eq!(r.status(), StatusCode::FORBIDDEN);
+}
