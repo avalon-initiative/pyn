@@ -52,6 +52,8 @@ pub struct FileEntry {
     pub path: RepoPath,
     pub mode: Mode,
     pub revision: Option<RevisionId>,
+    /// The head revision's file mode; regular when the path has no revision yet.
+    pub file_mode: FileMode,
     pub lock: Option<Lock>,
 }
 
@@ -743,6 +745,7 @@ impl RepoService {
                     path: rev.path,
                     mode,
                     revision: Some(rev.id),
+                    file_mode: rev.file_mode,
                     lock: None,
                 },
             );
@@ -756,6 +759,7 @@ impl RepoService {
                     path,
                     mode,
                     revision: None,
+                    file_mode: FileMode::Regular,
                     lock: None,
                 })
                 .lock = Some(lock);

@@ -1286,6 +1286,7 @@ async fn list_files(
             path: f.path.to_string(),
             mode: mode_dto(f.mode),
             revision: f.revision.map(|r| r.0),
+            file_mode: file_mode_dto(f.file_mode),
             lock: f.lock.map(lock_dto),
         })
         .collect();

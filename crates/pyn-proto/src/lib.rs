@@ -221,6 +221,8 @@ pub struct FileEntry {
     pub mode: Mode,
     /// Head revision; absent if the path is locked but has no revision yet.
     pub revision: Option<u64>,
+    /// The head revision's git file mode; `100644` when there is no revision.
+    pub file_mode: FileMode,
     pub lock: Option<Lock>,
 }
 

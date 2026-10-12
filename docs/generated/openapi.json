@@ -6670,9 +6670,14 @@
         "type": "object",
         "required": [
           "path",
-          "mode"
+          "mode",
+          "file_mode"
         ],
         "properties": {
+          "file_mode": {
+            "$ref": "#/components/schemas/FileMode",
+            "description": "The head revision's git file mode; `100644` when there is no revision."
+          },
           "lock": {
             "oneOf": [
               {
