@@ -15,7 +15,7 @@ server hosts many, addressed as `owner/name`.
 
 Exclusive files are materialized **read-only** on disk. To edit one, a user runs `pyn lock <path>`; the server
 grants a **leased lock** (8 hours by default) if nobody else holds it and the user's copy is at the current head.
-`pyn checkin` uploads the new content, creates the next revision and releases the lock; `pyn unlock <path>` gives the lock up without a checkin.
+`pyn checkin` (also `pyn commit`, see [git compatibility](git-compatibility.md)) uploads the new content, creates the next revision and releases the lock; `pyn unlock <path>` gives the lock up without a checkin.
 
 `pyn checkin a b c -m "message"` checks several paths in as one **changeset**: one message, and every stale-base and lock
 check must pass or nothing is applied (no revision is written and no lock is released). The revisions of a changeset share
@@ -51,7 +51,7 @@ Sign-in sessions are not logged. The log is kept per repository, and a token's e
 Any revision of a file can be fetched read-only, without a lock: `pyn get <path> --rev N`.
 
 Making an older revision the working version again is a **restore**, and it is guarded because it changes the head for
-everyone. `pyn restore <path> <revision>` needs the live lock on the path, the `restore` permission, and a typed
+everyone. `pyn restore <path> <revision>` (or `pyn restore --source <revision> <path>`) needs the live lock on the path, the `restore` permission, and a typed
 confirmation of the head being replaced. The server enforces all three; the confirmation is sent as `<path>@r<head>`, so a
 script cannot restore by accident.
 
