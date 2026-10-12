@@ -10,6 +10,17 @@ pub fn local(t: DateTime<Utc>) -> String {
     format_in(t, &Local)
 }
 
+/// A commit time as git prints it, in the offset recorded with it: `Mon Nov 20 00:13:20 2023 +0200`.
+pub fn git_date(seconds: i64, offset_minutes: i32) -> String {
+    let offset = chrono::FixedOffset::east_opt(offset_minutes * 60)
+        .unwrap_or_else(|| chrono::FixedOffset::east_opt(0).expect("zero is a valid offset"));
+    DateTime::from_timestamp(seconds, 0)
+        .unwrap_or_default()
+        .with_timezone(&offset)
+        .format("%a %b %-d %H:%M:%S %Y %z")
+        .to_string()
+}
+
 /// Like [`local`] in an explicit timezone.
 pub fn format_in<Tz: TimeZone>(t: DateTime<Utc>, tz: &Tz) -> String
 where
@@ -62,6 +73,15 @@ mod tests {
 
     fn east(hours: i32) -> FixedOffset {
         FixedOffset::east_opt(hours * 3600).unwrap()
+    }
+
+    #[test]
+    fn git_dates_use_the_recorded_offset_and_an_unpadded_day() {
+        assert_eq!(git_date(1_700_000_000, 0), "Tue Nov 14 22:13:20 2023 +0000");
+        assert_eq!(git_date(1_700_000_000, 120), "Wed Nov 15 00:13:20 2023 +0200");
+        assert_eq!(git_date(1_700_000_000, -330), "Tue Nov 14 16:43:20 2023 -0530");
+        assert_eq!(git_date(1_680_000_000, 0), "Tue Mar 28 10:40:00 2023 +0000");
+        assert_eq!(git_date(1_678_000_000, 0), "Sun Mar 5 07:06:40 2023 +0000");
     }
 
     #[test]

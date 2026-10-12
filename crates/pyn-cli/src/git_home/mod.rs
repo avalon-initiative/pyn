@@ -1,0 +1,382 @@
+//! The backend for a repository that lives in git: a real `.git` read through `pyn-gitwork`, never written.
+//! Nothing here changes what git sees; the only file pyn adds is its own `.pyn/` folder, hidden by `info/exclude`.
+
+mod commands;
+
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result, anyhow, bail};
+use chrono::{DateTime, Utc};
+use pyn_gitwork::{Pathspec, Repo};
+use pyn_object::{FileMode, ObjectId, Signature};
+use pyn_proto as api;
+
+use crate::backend::Backend;
+use crate::workspace::{self, Workspace};
+
+pub use commands::run;
+
+pub struct GitHome {
+    repo: Repo,
+    /// The work tree root with a `.pyn` folder beside `.git`, whether or not it exists yet.
+    ws: Workspace,
+}
+
+/// A `.pyn` is a pyn server workspace once a clone has recorded which revision each file is at.
+fn is_server_workspace(ws: &Workspace) -> bool {
+    ws.dir.join("local_only/state/files.toml").is_file()
+}
+
+fn user_dirs() -> (Option<PathBuf>, Option<PathBuf>) {
+    let dir = |name| {
+        std::env::var_os(name)
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+    };
+    (dir("HOME"), dir("XDG_CONFIG_HOME"))
+}
+
+fn nearest_git(start: &Path) -> Option<&Path> {
+    start.ancestors().find(|p| p.join(".git").exists())
+}
+
+/// The git home `start` is in, if any: the nearest of `.git` and `.pyn` decides, and where both sit in one folder
+/// a `.pyn` that a clone filled in (a pyn server workspace) wins over the `.git`.
+pub fn detect(start: &Path) -> Result<Option<GitHome>> {
+    let Some(git_root) = nearest_git(start) else {
+        return Ok(None);
+    };
+    if let Some(ws) = Workspace::discover(start)
+        && is_server_workspace(&ws)
+        && !(git_root.starts_with(&ws.root) && git_root != ws.root)
+    {
+        return Ok(None);
+    }
+    let (home, xdg) = user_dirs();
+    let repo = Repo::open(git_root, home.as_deref(), xdg.as_deref())
+        .with_context(|| format!("opening the git repository at {}", git_root.display()))?;
+    let root = repo.root()?.to_path_buf();
+    let ws = Workspace {
+        dir: root.join(workspace::DIR),
+        root,
+    };
+    Ok(Some(GitHome { repo, ws }))
+}
+
+fn unavailable(what: &str) -> anyhow::Error {
+    anyhow!("{what} is not available on a git repository yet")
+}
+
+fn person(sig: &Signature) -> api::Person {
+    api::Person {
+        name: String::from_utf8_lossy(&sig.name).into_owned(),
+        email: String::from_utf8_lossy(&sig.email).into_owned(),
+        offset_minutes: sig.offset_minutes,
+    }
+}
+
+fn file_mode(mode: FileMode) -> Option<api::FileMode> {
+    match mode {
+        FileMode::Regular => Some(api::FileMode::Regular),
+        FileMode::Executable => Some(api::FileMode::Executable),
+        FileMode::Symlink => Some(api::FileMode::Symlink),
+        FileMode::Tree | FileMode::Gitlink => None,
+    }
+}
+
+fn path_string(path: &[u8]) -> String {
+    String::from_utf8_lossy(path).into_owned()
+}
+
+impl GitHome {
+    fn api_commit(&self, id: &ObjectId) -> Result<api::Commit> {
+        let c = self.repo.commit(id)?;
+        let signature = c.gpgsig().map(|s| String::from_utf8_lossy(s).into_owned());
+        Ok(api::Commit {
+            id: id.to_hex(),
+            parents: c.parents.iter().map(ObjectId::to_hex).collect(),
+            tree: c.tree.to_hex(),
+            author: person(&c.author),
+            committer: person(&c.committer),
+            created_at: DateTime::<Utc>::from_timestamp(c.author.time, 0).unwrap_or_default(),
+            message: String::from_utf8_lossy(&c.message).into_owned(),
+            signature,
+            changeset: None,
+            revisions: Vec::new(),
+        })
+    }
+}
+
+impl Backend for GitHome {
+    fn whoami(&self) -> Result<String> {
+        self.repo
+            .config()
+            .get("user.name")
+            .map(str::to_string)
+            .context("user.name is not set in the git configuration")
+    }
+
+    fn list_files(&self) -> Result<Vec<api::FileEntry>> {
+        let index = self.repo.read_index()?;
+        Ok(self
+            .repo
+            .index_leaves(&index)
+            .into_iter()
+            .filter_map(|(path, e)| {
+                Some(api::FileEntry {
+                    path: path_string(&path),
+                    mode: api::Mode::Shared,
+                    revision: None,
+                    file_mode: file_mode(e.mode)?,
+                    lock: None,
+                })
+            })
+            .collect())
+    }
+
+    fn tree(&self, path: Option<&str>) -> Result<api::TreeListing> {
+        let path = path.unwrap_or("").trim_matches('/');
+        let Some(head) = self.repo.head_commit()? else {
+            return Ok(api::TreeListing {
+                path: path.into(),
+                entries: Vec::new(),
+            });
+        };
+        let mut tree = self.repo.commit(&head)?.tree;
+        if !path.is_empty() {
+            let found = self.repo.entry_at(&tree, path.as_bytes())?;
+            match found {
+                Some(e) if e.mode.is_tree() => tree = e.id,
+                _ => bail!("{path} is not a folder in HEAD"),
+            }
+        }
+        let mut entries: Vec<api::TreeEntry> = Vec::new();
+        for e in self.repo.tree(&tree)? {
+            let name = path_string(&e.name);
+            let kind = if e.mode.is_tree() {
+                api::TreeEntryKind::Folder
+            } else if file_mode(e.mode).is_some() {
+                api::TreeEntryKind::File
+            } else {
+                continue;
+            };
+            entries.push(api::TreeEntry {
+                path: if path.is_empty() {
+                    name.clone()
+                } else {
+                    format!("{path}/{name}")
+                },
+                name,
+                kind,
+                mode: api::TreeMode::Shared,
+                last_change: None,
+                lock: None,
+            });
+        }
+        entries.sort_by(|a, b| {
+            (a.kind == api::TreeEntryKind::File, &a.name)
+                .cmp(&(b.kind == api::TreeEntryKind::File, &b.name))
+        });
+        Ok(api::TreeListing {
+            path: path.into(),
+            entries,
+        })
+    }
+
+    fn head_commit(&self) -> Result<Option<String>> {
+        Ok(self.repo.head_commit()?.map(|id| id.to_hex()))
+    }
+
+    fn commit_page(&self, before: Option<&str>, limit: usize) -> Result<api::CommitPage> {
+        let start: Vec<ObjectId> = match before {
+            Some(b) => self.repo.commit(&self.repo.resolve(b)?)?.parents,
+            None => self.repo.head_commit()?.into_iter().collect(),
+        };
+        let mut log = self.repo.log(&start, Pathspec::default())?;
+        let mut commits = Vec::new();
+        while commits.len() < limit {
+            let Some(entry) = log.next_entry()? else {
+                break;
+            };
+            commits.push(self.api_commit(&entry.id)?);
+        }
+        let more = commits.len() == limit && log.next_entry()?.is_some();
+        let next_before = more.then(|| commits.last().map(|c| c.id.clone())).flatten();
+        Ok(api::CommitPage {
+            commits,
+            next_before,
+        })
+    }
+
+    fn commit(&self, id: &str) -> Result<api::Commit> {
+        self.api_commit(&self.repo.resolve(id)?)
+    }
+
+    fn snapshot(&self, commit: Option<&str>) -> Result<(Option<String>, Vec<api::SnapshotEntry>)> {
+        let id = match commit {
+            Some(c) => Some(self.repo.resolve(c)?),
+            None => self.repo.head_commit()?,
+        };
+        let Some(id) = id else {
+            return Ok((None, Vec::new()));
+        };
+        let tree = self.repo.commit(&id)?.tree;
+        let entries = self
+            .repo
+            .flatten(Some(&tree), &Pathspec::default())?
+            .into_iter()
+            .filter_map(|(path, e)| {
+                Some(api::SnapshotEntry {
+                    path: path_string(&path),
+                    mode: api::Mode::Shared,
+                    revision: 0,
+                    content: e.id.to_hex(),
+                    file_mode: file_mode(e.mode)?,
+                })
+            })
+            .collect();
+        Ok((Some(id.to_hex()), entries))
+    }
+
+    fn blob(&self, id: &str, probe: Option<usize>) -> Result<Vec<u8>> {
+        let id = ObjectId::from_hex(self.repo.algorithm(), id)?;
+        let mut bytes = self.repo.blob(&id)?;
+        if let Some(n) = probe {
+            bytes.truncate(n);
+        }
+        Ok(bytes)
+    }
+
+    fn content(&self, _: &str, _: u64, _: Option<usize>) -> Result<Vec<u8>> {
+        Err(unavailable("reading a file at a pyn revision"))
+    }
+
+    fn read(&self, _: &str, _: Option<u64>, _: &mut dyn std::io::Write) -> Result<()> {
+        Err(unavailable("`pyn get`"))
+    }
+
+    fn download(&self, _: &str, _: Option<u64>, _: &Path) -> Result<(u64, String)> {
+        Err(unavailable("`pyn get`"))
+    }
+
+    fn upload(&self, _: &Path) -> Result<String> {
+        Err(unavailable("writing objects"))
+    }
+
+    fn upload_bytes(&self, _: Vec<u8>) -> Result<String> {
+        Err(unavailable("writing objects"))
+    }
+
+    fn commit_file(&self, _: &api::CheckinRequest) -> Result<api::Revision> {
+        Err(unavailable("`pyn commit`"))
+    }
+
+    fn commit_changeset(&self, _: &api::ChangesetRequest) -> Result<api::ChangesetResponse> {
+        Err(unavailable("`pyn commit`"))
+    }
+
+    fn path_history(&self, _: &str) -> Result<Vec<api::Revision>> {
+        Err(unavailable("per-path revisions"))
+    }
+
+    fn repo_history(&self, _: Option<&str>, _: usize) -> Result<Vec<api::Revision>> {
+        Err(unavailable("per-path revisions"))
+    }
+
+    fn restore(&self, _: &api::RestoreRequest) -> Result<api::Revision> {
+        Err(unavailable("`pyn restore`"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn git_dir(at: &Path) {
+        let git = at.join(".git");
+        std::fs::create_dir_all(git.join("objects")).unwrap();
+        std::fs::create_dir_all(git.join("refs/heads")).unwrap();
+        std::fs::write(git.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::write(git.join("config"), "[core]\n").unwrap();
+    }
+
+    fn server_workspace(at: &Path) {
+        let state = at.join(".pyn/local_only/state");
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::write(state.join("files.toml"), "version = 2\n").unwrap();
+    }
+
+    fn is_git(at: &Path) -> bool {
+        detect(at).unwrap().is_some()
+    }
+
+    #[test]
+    fn a_git_directory_alone_is_a_git_home_and_nothing_is_not() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        assert!(!is_git(&root));
+        git_dir(&root);
+        std::fs::create_dir_all(root.join("a/b")).unwrap();
+        assert!(is_git(&root) && is_git(&root.join("a/b")));
+    }
+
+    #[test]
+    fn a_pyn_folder_that_no_clone_filled_in_does_not_change_the_home() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        git_dir(&root);
+        std::fs::create_dir_all(root.join(".pyn/local_only")).unwrap();
+        std::fs::write(
+            root.join(".pyn/pyn.toml"),
+            "[meta]\ndefault = \"exclusive\"\n",
+        )
+        .unwrap();
+        assert!(is_git(&root));
+    }
+
+    #[test]
+    fn a_pyn_server_workspace_beside_a_git_directory_wins() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        git_dir(&root);
+        server_workspace(&root);
+        assert!(!is_git(&root));
+    }
+
+    #[test]
+    fn a_repository_setting_alone_does_not_make_a_server_workspace() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        git_dir(&root);
+        std::fs::create_dir_all(root.join(".pyn/local_only")).unwrap();
+        std::fs::write(root.join(".pyn/local_only/config.toml"), "repo = \"a/b\"\n").unwrap();
+        assert!(is_git(&root));
+    }
+
+    #[test]
+    fn the_nearer_of_the_two_decides_when_they_are_in_different_folders() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        git_dir(&root);
+        let clone = root.join("clones/game");
+        std::fs::create_dir_all(&clone).unwrap();
+        server_workspace(&clone);
+        assert!(
+            !is_git(&clone),
+            "a clone made inside a git repository is a pyn workspace"
+        );
+        assert!(is_git(&root.join("clones")));
+
+        let outer = tempfile::tempdir().unwrap();
+        let outer = outer.path().canonicalize().unwrap();
+        server_workspace(&outer);
+        let vendored = outer.join("vendor/lib");
+        std::fs::create_dir_all(&vendored).unwrap();
+        git_dir(&vendored);
+        assert!(
+            is_git(&vendored),
+            "a git repository inside a pyn workspace is a git home"
+        );
+        assert!(!is_git(&outer));
+    }
+}

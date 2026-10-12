@@ -13,6 +13,7 @@ mod backend;
 mod client;
 mod credentials;
 mod diff;
+mod git_home;
 mod limits;
 mod localfile;
 mod pyn_server;
@@ -105,6 +106,8 @@ enum Command {
         #[arg(long)]
         revision: Option<String>,
     },
+    /// Set up pyn in an existing git repository: hide `.pyn/` from git and create its local state folder.
+    Init,
     /// Fetch new and newer files; files with local changes are left alone.
     Update {
         /// Only these paths; everything if omitted.
@@ -671,6 +674,10 @@ enum RoleCommand {
 }
 
 fn main() {
+    if let Some(name) = subcommand_refused_on_git() {
+        eprintln!("{}", unsupported::message_on_git(&name));
+        std::process::exit(1);
+    }
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(e) => {
@@ -680,7 +687,13 @@ fn main() {
         }
     };
     if let Command::External(args) = &cli.command {
-        eprintln!("{}", unsupported::message(&args[0].to_string_lossy()));
+        let name = args[0].to_string_lossy();
+        let message = if in_git_home() {
+            unsupported::message_on_git(&name)
+        } else {
+            unsupported::message(&name)
+        };
+        eprintln!("{message}");
         std::process::exit(1);
     }
     if let Err(e) = run(cli) {
@@ -689,8 +702,40 @@ fn main() {
     }
 }
 
+fn in_git_home() -> bool {
+    std::env::current_dir()
+        .ok()
+        .and_then(|cwd| git_home::detect(&cwd).ok().flatten())
+        .is_some()
+}
+
+/// The subcommand named on the command line when a git repository cannot take it, so its arguments are never parsed.
+fn subcommand_refused_on_git() -> Option<String> {
+    let mut args = std::env::args().skip(1);
+    let name = loop {
+        let arg = args.next()?;
+        match arg.as_str() {
+            "--server" | "--token" | "--user" | "--repo" => {
+                args.next();
+            }
+            a if a.starts_with('-') => {}
+            _ => break arg,
+        }
+    };
+    (unsupported::REFUSED_BEFORE_PARSING.contains(&name.as_str()) && in_git_home()).then_some(name)
+}
+
 fn run(cli: Cli) -> Result<()> {
     let cwd = std::env::current_dir()?;
+    if !matches!(cli.command, Command::Clone { .. } | Command::Config(_))
+        && let Some(git) = git_home::detect(&cwd)?
+    {
+        return git_home::run(cli.command, &git, &cwd);
+    }
+    if matches!(cli.command, Command::Init) {
+        eprintln!("{}", unsupported::message("init"));
+        std::process::exit(1);
+    }
     let ws = Workspace::discover(&cwd);
     let user_config = userconfig::path()?;
     let (mine, mut yours) = (
@@ -758,6 +803,7 @@ fn run(cli: Cli) -> Result<()> {
 
     match cli.command {
         Command::External(_) => unreachable!("handled before run"),
+        Command::Init => unreachable!("handled before the server is consulted"),
         Command::Login {
             username,
             password_stdin,
@@ -1009,48 +1055,8 @@ fn run(cli: Cli) -> Result<()> {
                 .collect();
             table::show(&["OWNER", "EXPIRES", "PATH"], &rows, "no locks");
         }
-        Command::Files => {
-            let rows: Vec<Vec<String>> = backend
-                .list_files()?
-                .into_iter()
-                .map(|f| {
-                    vec![
-                        sync::mode_name(f.mode).to_string(),
-                        f.revision.map_or("-".to_string(), |r| format!("r{r}")),
-                        f.lock.map_or("-".to_string(), |l| l.owner),
-                        f.path,
-                    ]
-                })
-                .collect();
-            table::show(&["MODE", "REV", "LOCKED BY", "PATH"], &rows, "no files");
-        }
-        Command::Ls { path } => {
-            let listing = backend.tree(path.as_deref())?;
-            let rows: Vec<Vec<String>> = listing
-                .entries
-                .iter()
-                .map(|e| {
-                    let slash = if e.kind == api::TreeEntryKind::Folder {
-                        "/"
-                    } else {
-                        ""
-                    };
-                    vec![
-                        format!("{:?}", e.mode).to_lowercase(),
-                        e.lock.as_ref().map_or("-".to_string(), |l| l.owner.clone()),
-                        format!("{}{slash}", e.name),
-                        e.last_change.as_ref().map_or("-".to_string(), |r| {
-                            format!("{} ({}, r{})", r.message, r.author, r.id)
-                        }),
-                    ]
-                })
-                .collect();
-            table::show(
-                &["MODE", "LOCKED BY", "NAME", "LAST CHANGE"],
-                &rows,
-                "empty",
-            );
-        }
+        Command::Files => files_command(&backend)?,
+        Command::Ls { path } => ls_command(&backend, path.as_deref())?,
         Command::Summary => {
             let api = backend.pyn_server("summary")?;
             let s: api::RepoSummary = api.send(api.get(&api.repo_route("/summary")?))?.json()?;
@@ -1486,6 +1492,52 @@ fn run(cli: Cli) -> Result<()> {
             println!("updated {role}");
         }
     }
+    Ok(())
+}
+
+fn files_command(backend: &dyn Backend) -> Result<()> {
+    let rows: Vec<Vec<String>> = backend
+        .list_files()?
+        .into_iter()
+        .map(|f| {
+            vec![
+                sync::mode_name(f.mode).to_string(),
+                f.revision.map_or("-".to_string(), |r| format!("r{r}")),
+                f.lock.map_or("-".to_string(), |l| l.owner),
+                f.path,
+            ]
+        })
+        .collect();
+    table::show(&["MODE", "REV", "LOCKED BY", "PATH"], &rows, "no files");
+    Ok(())
+}
+
+fn ls_command(backend: &dyn Backend, path: Option<&str>) -> Result<()> {
+    let listing = backend.tree(path)?;
+    let rows: Vec<Vec<String>> = listing
+        .entries
+        .iter()
+        .map(|e| {
+            let slash = if e.kind == api::TreeEntryKind::Folder {
+                "/"
+            } else {
+                ""
+            };
+            vec![
+                format!("{:?}", e.mode).to_lowercase(),
+                e.lock.as_ref().map_or("-".to_string(), |l| l.owner.clone()),
+                format!("{}{slash}", e.name),
+                e.last_change.as_ref().map_or("-".to_string(), |r| {
+                    format!("{} ({}, r{})", r.message, r.author, r.id)
+                }),
+            ]
+        })
+        .collect();
+    table::show(
+        &["MODE", "LOCKED BY", "NAME", "LAST CHANGE"],
+        &rows,
+        "empty",
+    );
     Ok(())
 }
 

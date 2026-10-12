@@ -23,7 +23,59 @@ const GIT_ONLY: &[&str] = &[
     "clean",
 ];
 
+/// A git command, or a pyn command that wraps one, that a git home will gain with a named issue.
+const PLANNED_ON_GIT: &[(&str, &str)] = &[
+    ("add", "the staging index, #253"),
+    (
+        "commit",
+        "the staging index, #253, and writing commits, #254",
+    ),
+    (
+        "restore",
+        "the staging index, #253, and writing to the work tree, #254",
+    ),
+    ("branch", "writing branches, #254"),
+    ("switch", "writing branches, #254"),
+    ("checkout", "writing branches and the work tree, #254"),
+    ("merge", "merging, #254"),
+    ("tag", "writing tags, #254"),
+    ("stash", "stashing, #254"),
+    ("fetch", "git transport, #255"),
+    ("pull", "git transport, #255"),
+    ("push", "git transport, #255"),
+    ("remote", "git transport, #255"),
+    ("update", "git transport, #255"),
+];
+
+/// The commands whose arguments only make sense on a pyn server, so a git home refuses before parsing them.
+pub const REFUSED_BEFORE_PARSING: &[&str] = &["commit", "restore", "update", "get"];
+
+/// What to print for `name` in a git repository: which issue will provide it, or the general message.
+pub fn message_on_git(name: &str) -> String {
+    if name == "convert" {
+        return convert_message();
+    }
+    match PLANNED_ON_GIT.iter().find(|(n, _)| *n == name) {
+        Some((_, what)) => {
+            format!("pyn: '{name}' is not supported on a git repository yet; it needs {what}.")
+        }
+        None if name == "get" => {
+            "pyn: 'get' reads a file at a pyn revision, which a git repository does not \
+                                  have; see docs/concepts/git-compatibility.md."
+                .into()
+        }
+        None => message(name),
+    }
+}
+
+fn convert_message() -> String {
+    "pyn: 'convert' is not available yet; moving a git repository to a pyn server is #95.".into()
+}
+
 pub fn message(name: &str) -> String {
+    if name == "convert" {
+        return convert_message();
+    }
     if name == "checkout" {
         return "pyn: 'checkout' is reserved for switching branches and restoring paths, as in git, \
                 which pyn does not support yet; to take an exclusive lock use `pyn lock <path>`."

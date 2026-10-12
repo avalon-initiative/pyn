@@ -19,8 +19,17 @@ const STAT_GRAPH_WIDTH: usize = 40;
 
 #[derive(Clone)]
 pub enum Source {
-    Remote { revision: u64 },
-    Local { file: PathBuf },
+    /// A path's revision on a pyn server.
+    Remote {
+        revision: u64,
+    },
+    /// A stored object, addressed by its id.
+    Object {
+        id: String,
+    },
+    Local {
+        file: PathBuf,
+    },
 }
 
 #[derive(Clone)]
@@ -45,6 +54,7 @@ pub struct Format {
     pub kind: Kind,
 }
 
+/// Revision 0 marks an entry with no per-path revision, as in a git home; it is read by its content id.
 pub fn tree_of_snapshot(entries: &[api::SnapshotEntry]) -> Tree {
     entries
         .iter()
@@ -52,8 +62,14 @@ pub fn tree_of_snapshot(entries: &[api::SnapshotEntry]) -> Tree {
             let blob = Blob {
                 hash: e.content.clone(),
                 mode: e.file_mode,
-                source: Source::Remote {
-                    revision: e.revision,
+                source: if e.revision == 0 {
+                    Source::Object {
+                        id: e.content.clone(),
+                    }
+                } else {
+                    Source::Remote {
+                        revision: e.revision,
+                    }
                 },
             };
             (e.path.clone(), blob)
@@ -113,6 +129,7 @@ fn bytes(backend: &dyn Backend, path: &str, blob: &Blob, probe: bool) -> Result<
             Ok(buf)
         }
         Source::Remote { revision } => backend.content(path, *revision, probe.then_some(PROBE)),
+        Source::Object { id } => backend.blob(id, probe.then_some(PROBE)),
     }
 }
 
@@ -185,7 +202,9 @@ fn patch(
         (Some(a), Some(_)) => tail = format!(" {}", a.mode.as_str()),
         (None, None) => {}
     }
-    let _ = writeln!(out, "index {}..{}{tail}", abbrev(old), abbrev(new));
+    if old.zip(new).is_none_or(|(a, b)| a.hash != b.hash) {
+        let _ = writeln!(out, "index {}..{}{tail}", abbrev(old), abbrev(new));
+    }
     let (from, to) = (
         old.map_or("/dev/null".to_string(), |_| format!("a/{path}")),
         new.map_or("/dev/null".to_string(), |_| format!("b/{path}")),
@@ -292,18 +311,23 @@ pub fn compare(
             .filter_map(|(_, c)| c.map(total))
             .max()
             .unwrap_or(0);
-        let num_w = widest.to_string().len();
+        let binary = stat_rows.iter().any(|(_, c)| c.is_none());
+        let num_w = widest
+            .to_string()
+            .len()
+            .max(if binary { "Bin".len() } else { 0 });
         let (mut added, mut deleted) = (0, 0);
         for (path, counts) in &stat_rows {
             match counts {
                 Some((a, d)) => {
                     added += a;
                     deleted += d;
+                    let graph = stat_graph(*a, *d, widest);
                     let _ = writeln!(
                         out,
-                        " {path:<name_w$} | {:>num_w$} {}",
+                        " {path:<name_w$} | {:>num_w$}{}{graph}",
                         a + d,
-                        stat_graph(*a, *d, widest)
+                        if graph.is_empty() { "" } else { " " },
                     );
                 }
                 None => {

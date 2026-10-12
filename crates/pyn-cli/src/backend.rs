@@ -17,7 +17,8 @@ impl std::fmt::Display for NeedsPynServer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "`pyn {}` needs a pyn server; this repository's home does not provide it",
+            "`pyn {}` needs a pyn server, and this repository is a git repository; \
+             `pyn convert` moves it to a pyn server",
             self.feature
         )
     }
@@ -52,6 +53,11 @@ pub trait Backend {
 
     /// Every path as of `commit` (an id or abbreviation; the newest if `None`), and the full id used.
     fn snapshot(&self, commit: Option<&str>) -> Result<(Option<String>, Vec<api::SnapshotEntry>)>;
+
+    /// A stored object's content by its id (a git blob); `probe` asks for only the first bytes when the home can.
+    fn blob(&self, _id: &str, _probe: Option<usize>) -> Result<Vec<u8>> {
+        anyhow::bail!("this home does not serve objects by id")
+    }
 
     /// A file's content at a revision; `probe` asks for only the first bytes when the home can.
     fn content(&self, path: &str, revision: u64, probe: Option<usize>) -> Result<Vec<u8>>;
@@ -147,7 +153,8 @@ mod tests {
         assert!(err.downcast_ref::<NeedsPynServer>().is_some());
         assert_eq!(
             err.to_string(),
-            "`pyn lock` needs a pyn server; this repository's home does not provide it"
+            "`pyn lock` needs a pyn server, and this repository is a git repository; \
+             `pyn convert` moves it to a pyn server"
         );
     }
 }
