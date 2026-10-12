@@ -114,6 +114,11 @@ and the staged content is `.pyn/local_only/staged/<blob id>` (a symbolic link's 
 `local_only/`, so they are never shared; an empty index has no file, and committing or unstaging removes content nothing
 refers to. `pyn update` skips a staged file and says so. An index in a newer version than this pyn understands is refused.
 
+## Merging
+
+*Provisional until the merge command lands in this change set.* A merge in progress is recorded in
+`.pyn/local_only/state/merge.toml`; see [merging](merging.md#conflicts-and-resolution) for the flow.
+
 ## Listing output
 
 Every command that lists things (`status`, `locks`, `files`, `ls`, `log`, `audit`, `summary`, `repo list`, `repo explore`, `key list`,
