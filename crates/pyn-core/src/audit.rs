@@ -56,10 +56,13 @@ pub enum AuditAction {
     ExternalIdentityUnlinked,
     InviteCreated,
     InviteRevoked,
+    BranchCreated,
+    BranchDeleted,
+    BranchRenamed,
 }
 
 impl AuditAction {
-    pub const ALL: [AuditAction; 44] = [
+    pub const ALL: [AuditAction; 47] = [
         AuditAction::Checkout,
         AuditAction::Release,
         AuditAction::Checkin,
@@ -104,6 +107,9 @@ impl AuditAction {
         AuditAction::ExternalIdentityUnlinked,
         AuditAction::InviteCreated,
         AuditAction::InviteRevoked,
+        AuditAction::BranchCreated,
+        AuditAction::BranchDeleted,
+        AuditAction::BranchRenamed,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -152,6 +158,9 @@ impl AuditAction {
             Self::ExternalIdentityUnlinked => "external_identity_unlinked",
             Self::InviteCreated => "invite_created",
             Self::InviteRevoked => "invite_revoked",
+            Self::BranchCreated => "branch_created",
+            Self::BranchDeleted => "branch_deleted",
+            Self::BranchRenamed => "branch_renamed",
         }
     }
 }

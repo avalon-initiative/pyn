@@ -4,6 +4,7 @@ pub mod access;
 pub mod access_service;
 pub mod audit;
 pub mod auth;
+pub mod branch;
 pub mod chunking;
 pub mod clock;
 pub mod commit_record;
@@ -44,6 +45,7 @@ pub use access_service::{
 };
 pub use audit::{AuditAction, AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent};
 pub use auth::AuthProvider;
+pub use branch::{Branch, DEFAULT_BRANCH, validate_branch_name};
 pub use chunking::ChunkedStore;
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use email::{EmailMessage, EmailSender, MemoryEmailSender, NullEmailSender};
@@ -76,7 +78,7 @@ pub use service::{
     Snapshot, SnapshotEntry,
 };
 pub use store::MetadataStore;
-pub use tree::{DEFAULT_BRANCH, EntryKind, EntryMode, RepoSummary, TreeEntry};
+pub use tree::{EntryKind, EntryMode, RepoSummary, TreeEntry};
 pub use types::{
     ChangesetItem, Commit, Lock, NewRevision, Person, RepoId, RepoPath, Revision, RevisionHash,
     RevisionId, UserId,

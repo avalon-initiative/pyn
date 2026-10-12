@@ -5,6 +5,7 @@ use chrono::Duration;
 
 use crate::access::{Permission, Principal};
 use crate::audit::{AuditAction, AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent};
+use crate::branch::{Branch, DEFAULT_BRANCH, conflicts, validate_branch_name};
 use crate::clock::Clock;
 use crate::commit_record::{TreeChange, tree_of};
 use crate::error::{PynError, Result};
@@ -17,7 +18,7 @@ use crate::object::ObjectStore;
 use crate::repo::DEFAULT_MAX_LOCKS_PER_USER;
 use crate::rules::{Mode, POLICY_PATH, PathFilter, Rules};
 use crate::store::MetadataStore;
-use crate::tree::{ACTIVITY_ACTIONS, DEFAULT_BRANCH, EntryKind, RepoSummary, TreeEntry};
+use crate::tree::{ACTIVITY_ACTIONS, EntryKind, RepoSummary, TreeEntry};
 use crate::types::{
     ChangesetItem, Commit, Lock, NewRevision, RepoId, RepoPath, Revision, RevisionId, UserId,
 };
@@ -195,6 +196,19 @@ impl RepoService {
             .await
     }
 
+    async fn record_repo(&self, actor: &UserId, action: AuditAction, detail: String) -> Result<()> {
+        let event = NewAuditEvent {
+            at: self.clock.now(),
+            actor: actor.clone(),
+            action,
+            path: None,
+            detail,
+        };
+        self.audit
+            .record(&AuditScope::Repo(self.repo.clone()), event)
+            .await
+    }
+
     pub fn repo(&self) -> &RepoId {
         &self.repo
     }
@@ -218,7 +232,10 @@ impl RepoService {
     /// Applies the head of `.pyn/pyn.toml` if it is newer than the applied one; otherwise the current rules stay.
     pub async fn load_policy(&self) -> Result<()> {
         let policy = RepoPath::new(POLICY_PATH)?;
-        if let Some(head) = self.meta.head_revision(&self.repo, &policy).await? {
+        let Some(tip) = self.default_head().await? else {
+            return Ok(());
+        };
+        if let Some(head) = self.meta.revision_at(&self.repo, &tip, &policy).await? {
             if self
                 .applied
                 .read()
@@ -306,8 +323,8 @@ impl RepoService {
             .await
     }
 
-    /// Records the path's current content as the next revision under the new mode; no lock is needed.
-    /// Retries when a concurrent checkin moves the head; `None` if the path has no revision.
+    /// Records the path's content on the default branch as the next revision of its single line under the new mode;
+    /// no lock is needed. Retries when a concurrent checkin moves the line; `None` if the default branch lacks the path.
     async fn convert_to_exclusive(
         &self,
         who: &Principal,
@@ -316,18 +333,19 @@ impl RepoService {
         new: &Rules,
     ) -> Result<Option<Revision>> {
         for _ in 0..3 {
-            let Some(head) = self.head(path).await? else {
+            let Some(current) = self.revision_on(DEFAULT_BRANCH, path).await? else {
                 return Ok(None);
             };
+            let line = self.head(path).await?.map(|r| r.id);
             let size = self
                 .objects
-                .size(&head.content)
+                .size(&current.content)
                 .await?
-                .ok_or_else(|| PynError::ObjectMissing(head.content.to_string()))?;
+                .ok_or_else(|| PynError::ObjectMissing(current.content.to_string()))?;
             let revision = NewRevision {
                 path: path.clone(),
-                content: head.content,
-                file_mode: head.file_mode,
+                content: current.content,
+                file_mode: current.file_mode,
                 author: who.user.clone(),
                 person: who.person(),
                 message: format!("Convert to exclusive: policy r{}", policy.id),
@@ -339,14 +357,7 @@ impl RepoService {
             };
             match self
                 .meta
-                .commit_revision_capped(
-                    &self.repo,
-                    revision,
-                    Some(head.id),
-                    None,
-                    self.clock.now(),
-                    None,
-                )
+                .commit_revision_capped(&self.repo, revision, line, None, self.clock.now(), None)
                 .await
             {
                 Err(PynError::StaleBase { .. }) => continue,
@@ -358,12 +369,14 @@ impl RepoService {
         )))
     }
 
-    /// Paths whose resolved mode differs between `old` and `new`, and the live locks on those becoming shared.
+    /// Paths of the default branch whose resolved mode differs between `old` and `new`, and the live locks on those becoming shared.
     async fn conversions(&self, old: &Rules, new: &Rules) -> Result<PolicyPreview> {
         let mut preview = PolicyPreview::default();
         let mut paths: BTreeMap<RepoPath, ()> = BTreeMap::new();
-        for rev in self.meta.list_head_revisions(&self.repo).await? {
-            paths.insert(rev.path, ());
+        if let Some(tip) = self.default_head().await? {
+            for rev in self.meta.snapshot(&self.repo, &tip).await? {
+                paths.insert(rev.path, ());
+            }
         }
         let locks = self.meta.list_locks(&self.repo, self.clock.now()).await?;
         for lock in &locks {
@@ -474,10 +487,12 @@ impl RepoService {
         check_events(&scope, self.audit.list(&scope, query).await?)
     }
 
-    /// Appends the revision under the rules in force; a policy revision is validated first and applied once recorded.
-    /// The first policy revision is the owner's bootstrap: no lock, and the mode it declares for itself applies.
+    /// Appends the revision on `branch` under the rules in force; a policy revision is validated first and, on the
+    /// default branch, applied once recorded. The first policy revision is the owner's bootstrap: no lock, and the mode
+    /// it declares for itself applies.
     async fn commit(
         &self,
+        branch: &str,
         who: &Principal,
         path: &RepoPath,
         write: Write,
@@ -495,7 +510,8 @@ impl RepoService {
         } else {
             None
         };
-        let bootstrap = policy && base.is_none();
+        let on_default = branch == DEFAULT_BRANCH;
+        let bootstrap = policy && on_default && base.is_none();
         self.head(path).await?;
         let mode = match &parsed {
             Some(new) if bootstrap => new.mode_for(path),
@@ -522,11 +538,18 @@ impl RepoService {
             size,
             changeset: None,
         };
-        let rev = self
+        let item = ChangesetItem {
+            revision,
+            expected_head: base,
+            lock_holder: lock_holder.cloned(),
+        };
+        let mut revs = self
             .meta
-            .commit_revision_capped(&self.repo, revision, base, lock_holder, now, cap)
+            .commit_changeset_on(&self.repo, branch, vec![item], now, cap)
             .await?;
-        if let Some(new) = parsed
+        let rev = revs.remove(0);
+        if on_default
+            && let Some(new) = parsed
             && let Some(old) = self.apply(rev.id, new.clone())
         {
             self.policy_applied(who, &rev, &old, &new).await?;
@@ -558,12 +581,30 @@ impl RepoService {
         base: Option<RevisionId>,
         message: String,
     ) -> Result<Revision> {
+        self.checkin_on(DEFAULT_BRANCH, who, path, content, file_mode, base, message)
+            .await
+    }
+
+    /// Like `checkin_as`, as a commit on `branch`. A shared path's `base` is its revision on the branch; an exclusive
+    /// path's is its newest revision on any branch.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn checkin_on(
+        &self,
+        branch: &str,
+        who: &Principal,
+        path: &RepoPath,
+        content: ObjectId,
+        file_mode: FileMode,
+        base: Option<RevisionId>,
+        message: String,
+    ) -> Result<Revision> {
         check_file_mode(file_mode)?;
         if !self.objects.exists(&content).await? {
             return Err(PynError::ObjectMissing(content.to_string()));
         }
         let rev = self
             .commit(
+                branch,
                 who,
                 path,
                 Write {
@@ -589,6 +630,18 @@ impl RepoService {
     /// passes or nothing is written. `.pyn/pyn.toml` is not allowed here; it has its own validated flow.
     pub async fn checkin_changeset(
         &self,
+        who: &Principal,
+        entries: Vec<ChangeEntry>,
+        message: String,
+    ) -> Result<Vec<Revision>> {
+        self.checkin_changeset_on(DEFAULT_BRANCH, who, entries, message)
+            .await
+    }
+
+    /// Like `checkin_changeset`, as one commit on `branch`.
+    pub async fn checkin_changeset_on(
+        &self,
+        branch: &str,
         who: &Principal,
         entries: Vec<ChangeEntry>,
         message: String,
@@ -647,7 +700,7 @@ impl RepoService {
         }
         let revs = self
             .meta
-            .commit_changeset_capped(&self.repo, items, now, cap)
+            .commit_changeset_on(&self.repo, branch, items, now, cap)
             .await?;
         for rev in &revs {
             self.record(
@@ -682,6 +735,22 @@ impl RepoService {
         confirm: &str,
         message: Option<String>,
     ) -> Result<Revision> {
+        self.restore_on(DEFAULT_BRANCH, who, path, source, base, confirm, message)
+            .await
+    }
+
+    /// Like `restore`, as a commit on `branch`.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn restore_on(
+        &self,
+        branch: &str,
+        who: &Principal,
+        path: &RepoPath,
+        source: RevisionId,
+        base: RevisionId,
+        confirm: &str,
+        message: Option<String>,
+    ) -> Result<Revision> {
         if self.mode_for(path) != Mode::Exclusive {
             return Err(PynError::NotExclusive(path.clone()));
         }
@@ -708,6 +777,7 @@ impl RepoService {
         let message = message.unwrap_or_else(|| format!("Restore r{source}"));
         let rev = self
             .commit(
+                branch,
                 who,
                 path,
                 Write {
@@ -735,9 +805,19 @@ impl RepoService {
 
     /// Paths with a revision or a live lock, ordered by path, starting after `after`.
     pub async fn files(&self, after: Option<&RepoPath>, limit: usize) -> Result<Vec<FileEntry>> {
+        self.files_on(DEFAULT_BRANCH, after, limit).await
+    }
+
+    /// Like `files`, with each path's revision as of the head of `branch`.
+    pub async fn files_on(
+        &self,
+        branch: &str,
+        after: Option<&RepoPath>,
+        limit: usize,
+    ) -> Result<Vec<FileEntry>> {
         let now = self.clock.now();
         let mut entries: BTreeMap<RepoPath, FileEntry> = BTreeMap::new();
-        for rev in self.meta.list_head_revisions(&self.repo).await? {
+        for rev in self.heads_on(branch).await? {
             let mode = self.mode_for(&rev.path);
             entries.insert(
                 rev.path.clone(),
@@ -771,10 +851,13 @@ impl RepoService {
             .collect())
     }
 
-    /// Head revision and live lock of every path that has either, ordered by path.
-    async fn live_paths(&self) -> Result<BTreeMap<RepoPath, (Option<Revision>, Option<Lock>)>> {
+    /// Revision on `branch` and live lock of every path that has either, ordered by path.
+    async fn live_paths(
+        &self,
+        branch: &str,
+    ) -> Result<BTreeMap<RepoPath, (Option<Revision>, Option<Lock>)>> {
         let mut paths: BTreeMap<RepoPath, (Option<Revision>, Option<Lock>)> = BTreeMap::new();
-        for rev in self.meta.list_head_revisions(&self.repo).await? {
+        for rev in self.heads_on(branch).await? {
             paths.insert(rev.path.clone(), (Some(rev), None));
         }
         for lock in self.meta.list_locks(&self.repo, self.clock.now()).await? {
@@ -787,7 +870,12 @@ impl RepoService {
     /// The children of `dir` (the root when `None`): folders first, then files, each by name. A folder's mode is
     /// `Mixed` unless every file under it has the same mode.
     pub async fn tree(&self, dir: Option<&RepoPath>) -> Result<Vec<TreeEntry>> {
-        let paths = self.live_paths().await?;
+        self.tree_on(DEFAULT_BRANCH, dir).await
+    }
+
+    /// Like `tree`, as of the head of `branch`.
+    pub async fn tree_on(&self, branch: &str, dir: Option<&RepoPath>) -> Result<Vec<TreeEntry>> {
+        let paths = self.live_paths(branch).await?;
         let prefix = dir.map_or(String::new(), |d| format!("{d}/"));
         let mut children: BTreeMap<(EntryKind, String), TreeEntry> = BTreeMap::new();
         for (path, (rev, lock)) in &paths {
@@ -843,7 +931,7 @@ impl RepoService {
 
     /// Counts, live locks and the newest `activity_limit` file and lock events.
     pub async fn summary(&self, activity_limit: usize) -> Result<RepoSummary> {
-        let paths = self.live_paths().await?;
+        let paths = self.live_paths(DEFAULT_BRANCH).await?;
         let (mut files, mut exclusive_files, mut updated_at) = (0, 0, None);
         for (path, (rev, _)) in &paths {
             let Some(rev) = rev else { continue };
@@ -870,7 +958,7 @@ impl RepoService {
         activity.truncate(activity_limit);
         Ok(RepoSummary {
             default_branch: DEFAULT_BRANCH.to_string(),
-            branch_count: 1,
+            branch_count: self.branches().await?.len() as u32,
             files,
             exclusive_files,
             shared_files: files - exclusive_files,
@@ -880,20 +968,23 @@ impl RepoService {
         })
     }
 
-    /// A revision and its content; the head when `revision` is `None`.
+    /// A revision and its content; the head of the default branch when `revision` is `None`.
     pub async fn read(
         &self,
         path: &RepoPath,
         revision: Option<RevisionId>,
     ) -> Result<(Revision, Vec<u8>)> {
-        let found = match revision {
-            Some(id) => self.meta.get_revision(&self.repo, path, id).await?,
-            None => self.meta.head_revision(&self.repo, path).await?,
-        };
-        let rev = found.ok_or_else(|| PynError::RevisionNotFound {
-            path: path.clone(),
-            revision: revision.map_or("(head)".to_string(), |r| r.to_string()),
-        })?;
+        self.read_on(DEFAULT_BRANCH, path, revision).await
+    }
+
+    /// Like `read`, taking the path's revision at the head of `branch` when `revision` is `None`.
+    pub async fn read_on(
+        &self,
+        branch: &str,
+        path: &RepoPath,
+        revision: Option<RevisionId>,
+    ) -> Result<(Revision, Vec<u8>)> {
+        let rev = self.find_revision(branch, path, revision).await?;
         rev.verify()?;
         let bytes = self
             .objects
@@ -903,6 +994,22 @@ impl RepoService {
         Ok((rev, bytes))
     }
 
+    async fn find_revision(
+        &self,
+        branch: &str,
+        path: &RepoPath,
+        revision: Option<RevisionId>,
+    ) -> Result<Revision> {
+        let found = match revision {
+            Some(id) => self.meta.get_revision(&self.repo, path, id).await?,
+            None => self.revision_on(branch, path).await?,
+        };
+        found.ok_or_else(|| PynError::RevisionNotFound {
+            path: path.clone(),
+            revision: revision.map_or("(head)".to_string(), |r| r.to_string()),
+        })
+    }
+
     /// Like `read`, but streams the content, or the byte `range` of it.
     pub async fn read_stream(
         &self,
@@ -910,14 +1017,19 @@ impl RepoService {
         revision: Option<RevisionId>,
         range: Option<std::ops::Range<u64>>,
     ) -> Result<(Revision, crate::ObjectRead)> {
-        let found = match revision {
-            Some(id) => self.meta.get_revision(&self.repo, path, id).await?,
-            None => self.meta.head_revision(&self.repo, path).await?,
-        };
-        let rev = found.ok_or_else(|| PynError::RevisionNotFound {
-            path: path.clone(),
-            revision: revision.map_or("(head)".to_string(), |r| r.to_string()),
-        })?;
+        self.read_stream_on(DEFAULT_BRANCH, path, revision, range)
+            .await
+    }
+
+    /// Like `read_stream`, taking the path's revision at the head of `branch` when `revision` is `None`.
+    pub async fn read_stream_on(
+        &self,
+        branch: &str,
+        path: &RepoPath,
+        revision: Option<RevisionId>,
+        range: Option<std::ops::Range<u64>>,
+    ) -> Result<(Revision, crate::ObjectRead)> {
+        let rev = self.find_revision(branch, path, revision).await?;
         rev.verify()?;
         let read = self
             .objects
@@ -927,15 +1039,33 @@ impl RepoService {
         Ok((rev, read))
     }
 
+    /// The path's revision at the head of `branch`, checked against its hash.
+    pub async fn revision_on(&self, branch: &str, path: &RepoPath) -> Result<Option<Revision>> {
+        let Some(tip) = self.head_of(branch).await? else {
+            return Ok(None);
+        };
+        let rev = self.meta.revision_at(&self.repo, &tip, path).await?;
+        rev.iter().try_for_each(Revision::verify)?;
+        Ok(rev)
+    }
+
+    /// Every path's revision at the head of `branch`, ordered by path.
+    async fn heads_on(&self, branch: &str) -> Result<Vec<Revision>> {
+        match self.head_of(branch).await? {
+            Some(tip) => self.meta.snapshot(&self.repo, &tip).await,
+            None => Ok(Vec::new()),
+        }
+    }
+
     pub async fn head(&self, path: &RepoPath) -> Result<Option<Revision>> {
         let head = self.meta.head_revision(&self.repo, path).await?;
         head.iter().try_for_each(Revision::verify)?;
         Ok(head)
     }
 
-    /// A path's revisions, oldest first, after checking each hash and the links between them.
+    /// A path's revisions on every branch, oldest first, after checking each hash and the links between them.
     pub async fn history(&self, path: &RepoPath) -> Result<Vec<Revision>> {
-        let revisions = self.meta.history(&self.repo, path).await?;
+        let revisions = self.meta.history(&self.repo, path, None).await?;
         if let Some((id, kind)) = verify_revisions(&revisions).first() {
             return Err(PynError::HistoryCorrupt(format!(
                 "{path}@r{id}: {}",
@@ -943,6 +1073,17 @@ impl RepoService {
             )));
         }
         Ok(revisions)
+    }
+
+    /// The part of a path's history that `branch` contains, oldest first; the whole line is checked first.
+    pub async fn history_on(&self, branch: &str, path: &RepoPath) -> Result<Vec<Revision>> {
+        let all = self.history(path).await?;
+        let Some(tip) = self.head_of(branch).await? else {
+            return Ok(Vec::new());
+        };
+        let kept = self.meta.history(&self.repo, path, Some(&tip)).await?;
+        let ids: std::collections::BTreeSet<_> = kept.iter().map(|r| r.id).collect();
+        Ok(all.into_iter().filter(|r| ids.contains(&r.id)).collect())
     }
 
     /// Checks every path's revision chain, and the audit log when `audit` is set, reporting all breaks instead of
@@ -960,7 +1101,7 @@ impl RepoService {
         };
         let mut report = VerifyReport::default();
         for p in paths {
-            let revisions = self.meta.history(&self.repo, &p).await?;
+            let revisions = self.meta.history(&self.repo, &p, None).await?;
             if revisions.is_empty() {
                 return Err(PynError::PathNotFound(p.to_string()));
             }
@@ -1014,14 +1155,15 @@ impl RepoService {
         Ok(report)
     }
 
-    /// Checks every commit's id against its fields, its parent link, and the head commit's tree against the snapshot.
+    /// Checks every commit's id against its fields and its parent links, and each branch head's tree against the
+    /// snapshot at that head.
     async fn verify_commits(&self, report: &mut VerifyReport) -> Result<()> {
         let mut all = Vec::new();
         let mut before = None;
         loop {
             let page = self
                 .meta
-                .commits(&self.repo, before.as_ref(), HISTORY_MAX_LIMIT)
+                .commits(&self.repo, None, before.as_ref(), HISTORY_MAX_LIMIT)
                 .await?;
             let Some(last) = page.last() else { break };
             before = Some(last.id);
@@ -1036,18 +1178,22 @@ impl RepoService {
             event: None,
             commit: Some(c.id),
         };
-        let mut prior: Option<&Commit> = None;
+        let mut seen = std::collections::HashSet::new();
         for c in &all {
             if c.expected_id()? != c.id {
                 report.problems.push(problem(BreakKind::Hash, c));
             }
-            let linked = c.parents.first() == prior.map(|p| &p.id) && c.parents.len() <= 1;
+            let linked = c.parents.iter().all(|p| seen.contains(p))
+                && (!c.parents.is_empty() || seen.is_empty());
             if !linked {
                 report.problems.push(problem(BreakKind::Link, c));
             }
-            prior = Some(c);
+            seen.insert(c.id);
         }
-        if let Some(head) = all.last() {
+        for branch in self.meta.list_branches(&self.repo).await? {
+            let Some(head) = branch.head.and_then(|h| all.iter().find(|c| c.id == h)) else {
+                continue;
+            };
             let files = self
                 .meta
                 .snapshot(&self.repo, &head.id)
@@ -1073,12 +1219,30 @@ impl RepoService {
         before: Option<&HistoryCursor>,
         limit: Option<usize>,
     ) -> Result<HistoryPage> {
+        self.repo_history_on(DEFAULT_BRANCH, filter, before, limit)
+            .await
+    }
+
+    /// Like `repo_history`, limited to the revisions `branch` contains.
+    pub async fn repo_history_on(
+        &self,
+        branch: &str,
+        filter: Option<&PathFilter>,
+        before: Option<&HistoryCursor>,
+        limit: Option<usize>,
+    ) -> Result<HistoryPage> {
         let limit = limit
             .unwrap_or(HISTORY_DEFAULT_LIMIT)
             .clamp(1, HISTORY_MAX_LIMIT);
+        let Some(tip) = self.head_of(branch).await? else {
+            return Ok(HistoryPage {
+                revisions: Vec::new(),
+                next: None,
+            });
+        };
         let mut revisions = self
             .meta
-            .repo_history(&self.repo, filter, before, limit + 1)
+            .repo_history(&self.repo, Some(&tip), filter, before, limit + 1)
             .await?;
         revisions.iter().try_for_each(Revision::verify)?;
         let next = (revisions.len() > limit).then(|| {
@@ -1088,8 +1252,125 @@ impl RepoService {
         Ok(HistoryPage { revisions, next })
     }
 
+    /// The head of the default branch; `None` for a repository with no commits.
     pub async fn head_commit(&self) -> Result<Option<ObjectId>> {
-        self.meta.head_commit(&self.repo).await
+        self.default_head().await
+    }
+
+    async fn default_head(&self) -> Result<Option<ObjectId>> {
+        self.head_of(DEFAULT_BRANCH).await
+    }
+
+    /// The head of `branch`; `BranchNotFound` unless it is the default branch, which exists from the start.
+    pub async fn head_of(&self, branch: &str) -> Result<Option<ObjectId>> {
+        Ok(self.branch(branch).await?.head)
+    }
+
+    /// A branch by name. The default branch always exists, empty until its first commit.
+    pub async fn branch(&self, name: &str) -> Result<Branch> {
+        match self.meta.get_branch(&self.repo, name).await? {
+            Some(b) => Ok(b),
+            None if name == DEFAULT_BRANCH => Ok(self.empty_default()),
+            None => Err(PynError::BranchNotFound(name.to_string())),
+        }
+    }
+
+    fn empty_default(&self) -> Branch {
+        Branch {
+            name: DEFAULT_BRANCH.to_string(),
+            head: None,
+            default: true,
+            created_at: self.clock.now(),
+            created_by: UserId::new(""),
+        }
+    }
+
+    /// The branches, the default one first, then by name.
+    pub async fn branches(&self) -> Result<Vec<Branch>> {
+        let mut all = self.meta.list_branches(&self.repo).await?;
+        if !all.iter().any(|b| b.default) {
+            all.insert(0, self.empty_default());
+        }
+        Ok(all)
+    }
+
+    /// Makes `name` at `start`: a branch name, a commit id or abbreviation, or the default branch's head if `None`.
+    pub async fn create_branch(
+        &self,
+        who: &Principal,
+        name: &str,
+        start: Option<&str>,
+    ) -> Result<Branch> {
+        who.require(Permission::Checkin)?;
+        validate_branch_name(name)?;
+        if self
+            .branches()
+            .await?
+            .iter()
+            .any(|b| conflicts(&b.name, name))
+        {
+            return Err(PynError::BranchExists(name.to_string()));
+        }
+        let at = match start {
+            None => self.default_head().await?,
+            Some(spec) => match self.meta.get_branch(&self.repo, spec).await? {
+                Some(b) => b.head,
+                None => Some(self.resolve_commit(spec).await?),
+            },
+        }
+        .ok_or_else(|| {
+            PynError::InvalidRequest("there is no commit to start the branch from yet".into())
+        })?;
+        let now = self.clock.now();
+        let branch = self
+            .meta
+            .create_branch(&self.repo, name, &at, &who.user, now)
+            .await?;
+        self.record_repo(
+            &who.user,
+            AuditAction::BranchCreated,
+            format!("{name} at {at}"),
+        )
+        .await?;
+        Ok(branch)
+    }
+
+    /// Removes the name. Without `force` the branch must be contained in the default branch, so no commit is lost
+    /// from view; the default branch is never deleted.
+    pub async fn delete_branch(&self, who: &Principal, name: &str, force: bool) -> Result<()> {
+        who.require(Permission::Checkin)?;
+        let branch = self.branch(name).await?;
+        if branch.default {
+            return Err(PynError::InvalidRequest(
+                "the default branch cannot be deleted".into(),
+            ));
+        }
+        if !force
+            && let (Some(head), Some(tip)) = (branch.head, self.default_head().await?)
+            && !self.meta.is_ancestor(&self.repo, &head, &tip).await?
+        {
+            return Err(PynError::BranchNotMerged(name.to_string()));
+        }
+        self.meta
+            .delete_branch(&self.repo, name, branch.head.as_ref())
+            .await?;
+        let at = branch.head.map_or_else(String::new, |h| format!(" at {h}"));
+        self.record_repo(&who.user, AuditAction::BranchDeleted, format!("{name}{at}"))
+            .await
+    }
+
+    /// Renames a branch other than the default one.
+    pub async fn rename_branch(&self, who: &Principal, from: &str, to: &str) -> Result<Branch> {
+        who.require(Permission::Checkin)?;
+        validate_branch_name(to)?;
+        let branch = self.meta.rename_branch(&self.repo, from, to).await?;
+        self.record_repo(
+            &who.user,
+            AuditAction::BranchRenamed,
+            format!("{from} to {to}"),
+        )
+        .await?;
+        Ok(branch)
     }
 
     /// A full commit id, or an unambiguous prefix of at least `MIN_COMMIT_PREFIX` hex digits.
@@ -1118,19 +1399,38 @@ impl RepoService {
         Ok(commit)
     }
 
-    /// Commits newest first; `limit` defaults to 50 and is capped at 200.
+    /// Commits of the default branch newest first; `limit` defaults to 50 and is capped at 200.
     pub async fn commits(
         &self,
         before: Option<&ObjectId>,
         limit: Option<usize>,
     ) -> Result<CommitPage> {
+        self.commits_on(DEFAULT_BRANCH, before, limit).await
+    }
+
+    /// The commits `branch` contains, newest first, paged like `commits`.
+    pub async fn commits_on(
+        &self,
+        branch: &str,
+        before: Option<&ObjectId>,
+        limit: Option<usize>,
+    ) -> Result<CommitPage> {
+        let Some(tip) = self.head_of(branch).await? else {
+            return Ok(CommitPage {
+                commits: Vec::new(),
+                next: None,
+            });
+        };
         let limit = limit
             .unwrap_or(HISTORY_DEFAULT_LIMIT)
             .clamp(1, HISTORY_MAX_LIMIT);
         if let Some(b) = before {
             self.get_commit(b).await?;
         }
-        let mut commits = self.meta.commits(&self.repo, before, limit + 1).await?;
+        let mut commits = self
+            .meta
+            .commits(&self.repo, Some(&tip), before, limit + 1)
+            .await?;
         for c in &commits {
             c.verify()?;
             c.revisions.iter().try_for_each(Revision::verify)?;
@@ -1142,27 +1442,50 @@ impl RepoService {
         Ok(CommitPage { commits, next })
     }
 
-    /// The rules the policy file in `revisions` sets, or the fallback when it has none.
-    async fn rules_in(&self, revisions: &[Revision]) -> Arc<Rules> {
-        let Some(policy) = revisions.iter().find(|r| r.path.as_str() == POLICY_PATH) else {
-            return self.fallback.clone();
+    /// The rules in force at `commit`, whose snapshot is `revisions`: the policy file in it when that revision is on the
+    /// default branch's history. A commit that is not on that history takes the default branch's current rules, as a
+    /// policy file made only on another branch is not policy.
+    async fn rules_in(&self, commit: &ObjectId, revisions: &[Revision]) -> Result<Arc<Rules>> {
+        let on_default = |at: ObjectId| async move {
+            match self.default_head().await? {
+                Some(tip) => self.meta.is_ancestor(&self.repo, &at, &tip).await,
+                None => Ok(false),
+            }
         };
-        match self.parse_policy(&policy.content).await {
-            Ok(rules) => Arc::new(rules),
-            Err(_) => self.fallback.clone(),
+        match revisions.iter().find(|r| r.path.as_str() == POLICY_PATH) {
+            Some(policy) if on_default(policy.commit).await? => {
+                match self.parse_policy(&policy.content).await {
+                    Ok(rules) => Ok(Arc::new(rules)),
+                    Err(_) => Ok(self.fallback.clone()),
+                }
+            }
+            Some(_) => Ok(self.rules()),
+            None if on_default(*commit).await? => Ok(self.fallback.clone()),
+            None => Ok(self.rules()),
         }
     }
 
-    /// Every path as of `commit` (the newest when `None`). A path's mode is the one `.pyn/pyn.toml` gives it at that
-    /// commit, and its revision is the newest one made in the commit or an ancestor.
+    /// Every path as of `commit` (the head of the default branch when `None`). A path's mode is the one
+    /// `.pyn/pyn.toml` gives it at that commit, and its revision is the highest-numbered one made in the commit or an
+    /// ancestor.
     pub async fn snapshot(&self, commit: Option<&ObjectId>) -> Result<Snapshot> {
         let id = match commit {
             Some(id) => {
                 self.get_commit(id).await?;
                 Some(*id)
             }
-            None => self.head_commit().await?,
+            None => self.default_head().await?,
         };
+        self.snapshot_at(id).await
+    }
+
+    /// Like `snapshot`, as of the head of `branch`.
+    pub async fn snapshot_on(&self, branch: &str) -> Result<Snapshot> {
+        let head = self.head_of(branch).await?;
+        self.snapshot_at(head).await
+    }
+
+    async fn snapshot_at(&self, id: Option<ObjectId>) -> Result<Snapshot> {
         let Some(id) = id else {
             return Ok(Snapshot {
                 commit: None,
@@ -1171,7 +1494,7 @@ impl RepoService {
         };
         let revisions = self.meta.snapshot(&self.repo, &id).await?;
         revisions.iter().try_for_each(Revision::verify)?;
-        let rules = self.rules_in(&revisions).await;
+        let rules = self.rules_in(&id, &revisions).await?;
         let entries = revisions
             .into_iter()
             .map(|revision| SnapshotEntry {

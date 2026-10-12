@@ -63,6 +63,18 @@ pub enum PynError {
     CommitNotFound(String),
     #[error("{0} matches more than one commit; use more characters")]
     AmbiguousCommit(String),
+    #[error("the repository has no branch {0}")]
+    BranchNotFound(String),
+    #[error("a branch named {0} already exists, or is a folder of one that does")]
+    BranchExists(String),
+    #[error(
+        "invalid branch name {0:?}: use git's ref rules, with no spaces and none of ~ ^ : ? * [ \\ or .."
+    )]
+    InvalidBranchName(String),
+    #[error(
+        "the branch {0} is not fully merged into the default branch; delete it with force to discard it"
+    )]
+    BranchNotMerged(String),
     #[error("restoring replaces the head; to confirm, pass {expected}")]
     ConfirmationRequired { expected: String },
     #[error("this server has not been set up yet; complete the first-run setup")]
@@ -217,6 +229,10 @@ impl PynError {
             Self::RevisionNotFound { .. } => "revision_not_found",
             Self::CommitNotFound(_) => "commit_not_found",
             Self::AmbiguousCommit(_) => "ambiguous_commit",
+            Self::BranchNotFound(_) => "branch_not_found",
+            Self::BranchExists(_) => "branch_exists",
+            Self::InvalidBranchName(_) => "invalid_branch_name",
+            Self::BranchNotMerged(_) => "branch_not_merged",
             Self::ConfirmationRequired { .. } => "confirmation_required",
             Self::NotInitialised => "not_initialised",
             Self::AlreadyInitialised => "already_initialised",

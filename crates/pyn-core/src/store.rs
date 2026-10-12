@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
+use crate::branch::{Branch, DEFAULT_BRANCH};
 use crate::error::Result;
 use crate::history::HistoryCursor;
 use crate::limits::{RepoUsage, StorageCap, Usage};
@@ -61,10 +62,10 @@ pub trait MetadataStore: Send + Sync {
         now: DateTime<Utc>,
     ) -> Result<Vec<(RepoId, Lock)>>;
 
+    /// The path's newest revision on any branch: the end of its single line of history.
     async fn head_revision(&self, repo: &RepoId, path: &RepoPath) -> Result<Option<Revision>>;
 
-    /// Append a revision iff the head is `expected_head`, else `StaleBase`. With `lock_holder`,
-    /// also require that user's live lock in the same step and release it.
+    /// Append a revision on the default branch; see `commit_changeset_on`.
     async fn commit_revision(
         &self,
         repo: &RepoId,
@@ -87,17 +88,70 @@ pub trait MetadataStore: Send + Sync {
         lock_holder: Option<&UserId>,
         now: DateTime<Utc>,
         cap: Option<StorageCap>,
-    ) -> Result<Revision>;
+    ) -> Result<Revision> {
+        let item = ChangesetItem {
+            revision,
+            expected_head,
+            lock_holder: lock_holder.cloned(),
+        };
+        let mut revs = self
+            .commit_changeset_on(repo, DEFAULT_BRANCH, vec![item], now, cap)
+            .await?;
+        Ok(revs.remove(0))
+    }
 
-    /// Appends every item's revision, or none: the first item that fails its stale-base, lock or storage check is the
-    /// error and nothing is written. Paths are distinct; each exclusive item's lock is released with its append.
+    /// Appends every item's revision as one commit on the default branch, or none.
     async fn commit_changeset_capped(
         &self,
         repo: &RepoId,
         items: Vec<ChangesetItem>,
         now: DateTime<Utc>,
         cap: Option<StorageCap>,
+    ) -> Result<Vec<Revision>> {
+        self.commit_changeset_on(repo, DEFAULT_BRANCH, items, now, cap)
+            .await
+    }
+
+    /// Appends every item's revision as one commit on `branch` and moves the branch to it, or writes nothing: the
+    /// first item that fails its stale-base, lock or storage check is the error. Paths are distinct; each exclusive
+    /// item's lock is released with its append. A shared item's base is its revision at the branch head; an
+    /// exclusive item's is the path's newest revision on any branch, so its history stays one line. `BranchNotFound`
+    /// for an unknown branch.
+    async fn commit_changeset_on(
+        &self,
+        repo: &RepoId,
+        branch: &str,
+        items: Vec<ChangesetItem>,
+        now: DateTime<Utc>,
+        cap: Option<StorageCap>,
     ) -> Result<Vec<Revision>>;
+
+    /// The branches of the repository, the default one first, then by name.
+    async fn list_branches(&self, repo: &RepoId) -> Result<Vec<Branch>>;
+
+    async fn get_branch(&self, repo: &RepoId, name: &str) -> Result<Option<Branch>>;
+
+    /// A branch at commit `at`; `BranchExists` if the name is taken, `CommitNotFound` if `at` is not a commit.
+    async fn create_branch(
+        &self,
+        repo: &RepoId,
+        name: &str,
+        at: &ObjectId,
+        by: &UserId,
+        now: DateTime<Utc>,
+    ) -> Result<Branch>;
+
+    /// Removes the name only. `BranchNotFound`, or `InvalidRequest` for the default branch or when `expected` is given
+    /// and the branch has moved off it.
+    async fn delete_branch(
+        &self,
+        repo: &RepoId,
+        name: &str,
+        expected: Option<&ObjectId>,
+    ) -> Result<()>;
+
+    /// `BranchNotFound`, `BranchExists`, or `InvalidRequest` for the default branch.
+    async fn rename_branch(&self, repo: &RepoId, from: &str, to: &str) -> Result<Branch>;
 
     async fn get_revision(
         &self,
@@ -105,11 +159,6 @@ pub trait MetadataStore: Send + Sync {
         path: &RepoPath,
         id: RevisionId,
     ) -> Result<Option<Revision>>;
-
-    /// The newest commit on the mainline; `None` for a repository with none. Every successful `commit_revision_capped`
-    /// and `commit_changeset_capped` appends exactly one commit whose parent is the previous newest, atomically with
-    /// its revisions and trees, and a rejected one leaves the mainline alone.
-    async fn head_commit(&self, repo: &RepoId) -> Result<Option<ObjectId>>;
 
     async fn get_commit(&self, repo: &RepoId, id: &ObjectId) -> Result<Option<Commit>>;
 
@@ -121,32 +170,57 @@ pub trait MetadataStore: Send + Sync {
         limit: usize,
     ) -> Result<Vec<ObjectId>>;
 
-    /// At most `limit` commits, newest first, strictly older than commit `before` when given.
+    /// At most `limit` commits, newest first, strictly older than commit `before` when given: those reachable from
+    /// `tip` (itself included), or every commit of the repository when `tip` is `None`.
     async fn commits(
         &self,
         repo: &RepoId,
+        tip: Option<&ObjectId>,
         before: Option<&ObjectId>,
         limit: usize,
     ) -> Result<Vec<Commit>>;
 
+    /// Whether `ancestor` is `descendant` or one of its ancestors.
+    async fn is_ancestor(
+        &self,
+        repo: &RepoId,
+        ancestor: &ObjectId,
+        descendant: &ObjectId,
+    ) -> Result<bool>;
+
+    /// The path's revision at `commit`: its highest-numbered revision made in the commit or an ancestor.
+    async fn revision_at(
+        &self,
+        repo: &RepoId,
+        commit: &ObjectId,
+        path: &RepoPath,
+    ) -> Result<Option<Revision>>;
+
     /// The body of a stored git tree, as `commit.tree` and the entries inside it name them.
     async fn get_tree(&self, repo: &RepoId, id: &ObjectId) -> Result<Option<Vec<u8>>>;
 
-    /// The repository's state as of `commit`: for every path, its newest revision made in `commit` or an ancestor,
-    /// ordered by path. `commit` must exist.
+    /// The repository's state as of `commit`: for every path, its highest-numbered revision made in `commit` or an
+    /// ancestor, ordered by path. `commit` must exist.
     async fn snapshot(&self, repo: &RepoId, commit: &ObjectId) -> Result<Vec<Revision>>;
 
-    /// The head revision of every path that has one, ordered by path.
+    /// The newest revision of every path that has one, on any branch, ordered by path.
     async fn list_head_revisions(&self, repo: &RepoId) -> Result<Vec<Revision>>;
 
-    /// One path's revisions, oldest first.
-    async fn history(&self, repo: &RepoId, path: &RepoPath) -> Result<Vec<Revision>>;
+    /// One path's revisions, oldest first; with `within`, only those made in that commit or an ancestor.
+    async fn history(
+        &self,
+        repo: &RepoId,
+        path: &RepoPath,
+        within: Option<&ObjectId>,
+    ) -> Result<Vec<Revision>>;
 
     /// At most `limit` revisions of the repository matching `filter`, newest first by (created_at, path, id) with paths
-    /// compared bytewise, strictly before `before` when given.
+    /// compared bytewise, strictly before `before` when given; with `within`, only those made in that commit or an
+    /// ancestor.
     async fn repo_history(
         &self,
         repo: &RepoId,
+        within: Option<&ObjectId>,
         filter: Option<&PathFilter>,
         before: Option<&HistoryCursor>,
         limit: usize,

@@ -6,9 +6,6 @@ use crate::audit::{AuditAction, AuditEvent};
 use crate::rules::Mode;
 use crate::types::{Lock, RepoPath, Revision};
 
-/// The only branch until branches exist.
-pub const DEFAULT_BRANCH: &str = "main";
-
 /// Audit actions that describe work on files; administrative events stay behind `view_audit`.
 pub const ACTIVITY_ACTIONS: [AuditAction; 5] = [
     AuditAction::Checkout,

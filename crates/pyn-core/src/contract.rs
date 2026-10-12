@@ -2283,6 +2283,693 @@ pub async fn racing_checkins_cannot_exceed_the_storage_cap(store: Store) {
     );
 }
 
+fn restricted(name: &str, permissions: &[Permission]) -> Principal {
+    Principal {
+        user: user(name),
+        permissions: permissions.iter().copied().collect(),
+        email: None,
+    }
+}
+
+async fn put_on(
+    h: &Harness,
+    branch: &str,
+    who_: &str,
+    p: &RepoPath,
+    text: &str,
+    base: Option<u64>,
+) -> crate::Revision {
+    let c = blob(h, text).await;
+    h.svc
+        .checkin_on(
+            branch,
+            &who(who_),
+            p,
+            c,
+            FileMode::Regular,
+            base.map(RevisionId),
+            format!("{text} on {branch}"),
+        )
+        .await
+        .unwrap()
+}
+
+pub async fn a_branch_starts_at_a_commit_and_moves_only_by_committing(store: Store) {
+    let h = harness(store);
+    let (a, b) = (path("Source/a.cpp"), path("Source/b.cpp"));
+    let err = h
+        .svc
+        .create_branch(&who("alice"), "feature", None)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::InvalidRequest(_)), "{err}");
+    let branches = h.svc.branches().await.unwrap();
+    assert_eq!(
+        branches
+            .iter()
+            .map(|b| (&*b.name, b.default, b.head))
+            .collect::<Vec<_>>(),
+        vec![("main", true, None)]
+    );
+
+    let first = put_on(&h, "main", "alice", &a, "one", None).await;
+    let made = h
+        .svc
+        .create_branch(&who("bob"), "feature", None)
+        .await
+        .unwrap();
+    assert_eq!(
+        (made.head, made.default, made.created_by),
+        (Some(first.commit), false, user("bob"))
+    );
+    let on_feature = put_on(&h, "feature", "bob", &b, "two", None).await;
+    let on_main = put_on(&h, "main", "alice", &a, "three", Some(1)).await;
+
+    let heads: Vec<_> = h
+        .svc
+        .branches()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|b| (b.name, b.head))
+        .collect();
+    assert_eq!(
+        heads,
+        vec![
+            ("main".to_string(), Some(on_main.commit)),
+            ("feature".to_string(), Some(on_feature.commit)),
+        ]
+    );
+    let feature = h.svc.get_commit(&on_feature.commit).await.unwrap();
+    assert_eq!(feature.parents, vec![first.commit]);
+    let main = h.svc.get_commit(&on_main.commit).await.unwrap();
+    assert_eq!(main.parents, vec![first.commit]);
+    assert_ne!(feature.tree, main.tree);
+
+    let log = |branch: &'static str| {
+        let svc = h.svc.clone();
+        async move {
+            svc.commits_on(branch, None, None)
+                .await
+                .unwrap()
+                .commits
+                .into_iter()
+                .map(|c| c.id)
+                .collect::<Vec<_>>()
+        }
+    };
+    assert_eq!(log("main").await, vec![on_main.commit, first.commit]);
+    assert_eq!(log("feature").await, vec![on_feature.commit, first.commit]);
+
+    let state = |branch: &'static str| {
+        let svc = h.svc.clone();
+        async move {
+            svc.snapshot_on(branch)
+                .await
+                .unwrap()
+                .entries
+                .into_iter()
+                .map(|e| (e.path.to_string(), e.revision.id.0))
+                .collect::<Vec<_>>()
+        }
+    };
+    assert_eq!(state("main").await, vec![("Source/a.cpp".to_string(), 2)]);
+    assert_eq!(
+        state("feature").await,
+        vec![
+            ("Source/a.cpp".to_string(), 1),
+            ("Source/b.cpp".to_string(), 1)
+        ]
+    );
+    let files: Vec<_> = h
+        .svc
+        .files_on("feature", None, 10)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|f| f.path.to_string())
+        .collect();
+    assert_eq!(files, vec!["Source/a.cpp", "Source/b.cpp"]);
+    let top: Vec<_> = h
+        .svc
+        .tree_on("main", None)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|e| e.name)
+        .collect();
+    assert_eq!(top, vec!["Source"]);
+    assert_eq!(
+        h.svc
+            .tree_on("main", Some(&path("Source")))
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        h.svc
+            .tree_on("feature", Some(&path("Source")))
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
+    let (rev, bytes) = h.svc.read_on("main", &a, None).await.unwrap();
+    assert_eq!((rev.id, bytes), (RevisionId(2), b"three".to_vec()));
+    let (rev, bytes) = h.svc.read_on("feature", &a, None).await.unwrap();
+    assert_eq!((rev.id, bytes), (RevisionId(1), b"one".to_vec()));
+    assert_eq!(h.svc.summary(5).await.unwrap().branch_count, 2);
+}
+
+pub async fn branch_names_are_validated_unique_and_never_a_folder_of_another(store: Store) {
+    let h = harness(store);
+    let a = path("Source/a.cpp");
+    let first = put_on(&h, "main", "alice", &a, "one", None).await;
+    let make = |name: &'static str, start: Option<&'static str>| {
+        let svc = h.svc.clone();
+        async move { svc.create_branch(&who("alice"), name, start).await }
+    };
+    for bad in ["", "a b", "-x", "a..b", "x.lock", "HEAD", "a~1"] {
+        let err = make(bad, None).await.unwrap_err();
+        assert!(
+            matches!(err, PynError::InvalidBranchName(_)),
+            "{bad}: {err}"
+        );
+    }
+    make("topic/one", None).await.unwrap();
+    for taken in ["topic/one", "main", "topic", "topic/one/deeper"] {
+        let err = make(taken, None).await.unwrap_err();
+        assert!(matches!(err, PynError::BranchExists(_)), "{taken}: {err}");
+    }
+    make("topic/two", Some("topic/one")).await.unwrap();
+    let hex = first.commit.to_hex();
+    let by_hex = h
+        .svc
+        .create_branch(&who("alice"), "from-hex", Some(&hex[..8]))
+        .await
+        .unwrap();
+    assert_eq!(by_hex.head, Some(first.commit));
+    let err = make("elsewhere", Some("0000deadbeef")).await.unwrap_err();
+    assert!(matches!(err, PynError::CommitNotFound(_)), "{err}");
+    let err = h
+        .svc
+        .create_branch(&restricted("eve", &[Permission::Read]), "denied", None)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::Forbidden(_)), "{err}");
+    assert_eq!(h.svc.branches().await.unwrap().len(), 4);
+}
+
+pub async fn deleting_a_branch_needs_it_merged_unless_forced_and_never_the_default(store: Store) {
+    let h = harness(store);
+    let (a, b) = (path("Source/a.cpp"), path("Source/b.cpp"));
+    put_on(&h, "main", "alice", &a, "one", None).await;
+    for name in ["same", "ahead"] {
+        h.svc
+            .create_branch(&who("alice"), name, None)
+            .await
+            .unwrap();
+    }
+    let ahead = put_on(&h, "ahead", "alice", &b, "two", None).await;
+
+    let err = h
+        .svc
+        .delete_branch(&who("alice"), "main", true)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::InvalidRequest(_)), "{err}");
+    let err = h
+        .svc
+        .delete_branch(&who("alice"), "nope", false)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::BranchNotFound(_)), "{err}");
+    let err = h
+        .svc
+        .delete_branch(&who("alice"), "ahead", false)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::BranchNotMerged(_)), "{err}");
+    h.svc
+        .delete_branch(&who("alice"), "same", false)
+        .await
+        .unwrap();
+    h.svc
+        .delete_branch(&who("alice"), "ahead", true)
+        .await
+        .unwrap();
+
+    let names: Vec<_> = h
+        .svc
+        .branches()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|b| b.name)
+        .collect();
+    assert_eq!(names, vec!["main"]);
+    let kept = h.svc.get_commit(&ahead.commit).await.unwrap();
+    assert_eq!(kept.revisions.len(), 1);
+    assert_eq!(h.svc.history(&b).await.unwrap().len(), 1);
+    let err = h
+        .svc
+        .checkin_on(
+            "ahead",
+            &who("alice"),
+            &b,
+            blob(&h, "x").await,
+            FileMode::Regular,
+            None,
+            "x".into(),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::BranchNotFound(_)), "{err}");
+}
+
+pub async fn a_branch_can_be_renamed_except_the_default(store: Store) {
+    let h = harness(store);
+    put_on(&h, "main", "alice", &path("Source/a.cpp"), "one", None).await;
+    for name in ["old", "other"] {
+        h.svc
+            .create_branch(&who("alice"), name, None)
+            .await
+            .unwrap();
+    }
+    let renamed = h
+        .svc
+        .rename_branch(&who("alice"), "old", "new/name")
+        .await
+        .unwrap();
+    assert_eq!(renamed.name, "new/name");
+    for (from, to) in [("main", "x"), ("missing", "x"), ("other", "new/name")] {
+        assert!(
+            h.svc.rename_branch(&who("alice"), from, to).await.is_err(),
+            "{from} to {to}"
+        );
+    }
+    let err = h
+        .svc
+        .rename_branch(&who("alice"), "other", "new")
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::BranchExists(_)), "{err}");
+    let err = h
+        .svc
+        .rename_branch(&who("alice"), "other", "bad name")
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::InvalidBranchName(_)), "{err}");
+    let names: Vec<_> = h
+        .svc
+        .branches()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|b| b.name)
+        .collect();
+    assert_eq!(names, vec!["main", "new/name", "other"]);
+}
+
+pub async fn an_exclusive_path_keeps_one_line_of_revisions_across_branches(store: Store) {
+    let h = harness(store);
+    let map = path("Content/a.umap");
+    h.svc.checkout(&map, &user("alice"), None).await.unwrap();
+    let r1 = put_on(&h, "main", "alice", &map, "v1", None).await;
+    h.svc
+        .create_branch(&who("alice"), "feature", None)
+        .await
+        .unwrap();
+
+    h.svc
+        .checkout(&map, &user("bob"), Some(RevisionId(1)))
+        .await
+        .unwrap();
+    let r2 = put_on(&h, "feature", "bob", &map, "v2", Some(1)).await;
+    assert_eq!(
+        (r2.id, r2.previous.clone()),
+        (RevisionId(2), Some(r1.hash.clone()))
+    );
+
+    h.svc
+        .checkout(&map, &user("alice"), Some(RevisionId(1)))
+        .await
+        .unwrap_err();
+    h.svc
+        .checkout(&map, &user("alice"), Some(RevisionId(2)))
+        .await
+        .unwrap();
+    let blocked = h
+        .svc
+        .checkin_on(
+            "main",
+            &who("alice"),
+            &map,
+            blob(&h, "v3").await,
+            FileMode::Regular,
+            Some(RevisionId(1)),
+            "stale".into(),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            blocked,
+            PynError::StaleBase {
+                actual: Some(RevisionId(2)),
+                ..
+            }
+        ),
+        "{blocked}"
+    );
+    let r3 = put_on(&h, "main", "alice", &map, "v3", Some(2)).await;
+    assert_eq!(
+        (r3.id, r3.previous.clone()),
+        (RevisionId(3), Some(r2.hash.clone()))
+    );
+
+    let line: Vec<_> = h
+        .svc
+        .history(&map)
+        .await
+        .unwrap()
+        .iter()
+        .map(|r| r.id.0)
+        .collect();
+    assert_eq!(line, vec![1, 2, 3]);
+    let of = |branch: &'static str| {
+        let svc = h.svc.clone();
+        let map = map.clone();
+        async move {
+            svc.history_on(branch, &map)
+                .await
+                .unwrap()
+                .iter()
+                .map(|r| r.id.0)
+                .collect::<Vec<_>>()
+        }
+    };
+    assert_eq!(of("main").await, vec![1, 3]);
+    assert_eq!(of("feature").await, vec![1, 2]);
+    let pointer = |branch: &'static str| {
+        let svc = h.svc.clone();
+        let map = map.clone();
+        async move { svc.revision_on(branch, &map).await.unwrap().unwrap().id.0 }
+    };
+    assert_eq!((pointer("main").await, pointer("feature").await), (3, 2));
+    assert!(h.svc.verify(None, true).await.unwrap().problems.is_empty());
+}
+
+pub async fn a_shared_path_can_diverge_on_two_branches(store: Store) {
+    let h = harness(store);
+    let a = path("Source/a.cpp");
+    put_on(&h, "main", "alice", &a, "base", None).await;
+    h.svc
+        .create_branch(&who("alice"), "feature", None)
+        .await
+        .unwrap();
+    let on_feature = put_on(&h, "feature", "bob", &a, "feature edit", Some(1)).await;
+    let on_main = put_on(&h, "main", "alice", &a, "main edit", Some(1)).await;
+    assert_eq!((on_feature.id, on_main.id), (RevisionId(2), RevisionId(3)));
+    assert_eq!(on_main.previous, Some(on_feature.hash.clone()));
+
+    let stale = h
+        .svc
+        .checkin_on(
+            "feature",
+            &who("bob"),
+            &a,
+            blob(&h, "again").await,
+            FileMode::Regular,
+            Some(RevisionId(1)),
+            "x".into(),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            stale,
+            PynError::StaleBase {
+                actual: Some(RevisionId(2)),
+                ..
+            }
+        ),
+        "{stale}"
+    );
+    let ahead = put_on(&h, "feature", "bob", &a, "second", Some(2)).await;
+    assert_eq!(ahead.id, RevisionId(4));
+    let content = |branch: &'static str| {
+        let svc = h.svc.clone();
+        let a = a.clone();
+        async move { svc.read_on(branch, &a, None).await.unwrap().1 }
+    };
+    assert_eq!(content("main").await, b"main edit".to_vec());
+    assert_eq!(content("feature").await, b"second".to_vec());
+    assert!(h.svc.verify(None, true).await.unwrap().problems.is_empty());
+}
+
+pub async fn a_changeset_on_a_branch_is_one_commit_there_and_atomic(store: Store) {
+    let h = harness(store);
+    let (a, b, map) = (
+        path("Source/a.cpp"),
+        path("Source/b.cpp"),
+        path("Content/a.umap"),
+    );
+    put_on(&h, "main", "alice", &a, "one", None).await;
+    h.svc
+        .create_branch(&who("alice"), "feature", None)
+        .await
+        .unwrap();
+    let before = h.svc.head_of("feature").await.unwrap();
+    h.svc.checkout(&map, &user("bob"), None).await.unwrap();
+    let (c1, c2) = (blob(&h, "x").await, blob(&h, "y").await);
+
+    let err = h
+        .svc
+        .checkin_changeset_on(
+            "feature",
+            &who("bob"),
+            vec![entry(&b, &c1, None), entry(&a, &c2, None)],
+            "bad".into(),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::StaleBase { .. }), "{err}");
+    assert_eq!(h.svc.head_of("feature").await.unwrap(), before);
+    assert_eq!(h.svc.history(&b).await.unwrap().len(), 0);
+
+    let revs = h
+        .svc
+        .checkin_changeset_on(
+            "feature",
+            &who("bob"),
+            vec![
+                entry(&b, &c1, None),
+                entry(&map, &c2, None),
+                entry(&a, &c2, Some(1)),
+            ],
+            "good".into(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(revs.len(), 3);
+    assert_eq!(
+        h.svc.head_of("feature").await.unwrap(),
+        Some(revs[0].commit)
+    );
+    let main_paths: Vec<_> = h
+        .svc
+        .snapshot_on("main")
+        .await
+        .unwrap()
+        .entries
+        .iter()
+        .map(|e| e.path.to_string())
+        .collect();
+    assert_eq!(main_paths, vec!["Source/a.cpp"]);
+    let on_feature = h.svc.commits_on("feature", None, None).await.unwrap();
+    assert_eq!(on_feature.commits[0].revisions.len(), 3);
+}
+
+pub async fn a_policy_file_on_another_branch_is_not_policy(store: Store) {
+    let h = harness(store);
+    let (a, policy) = (path("Source/a.cpp"), path(".pyn/pyn.toml"));
+    put_on(&h, "main", "alice", &a, "one", None).await;
+    put_on(
+        &h,
+        "main",
+        "alice",
+        &policy,
+        "[meta]\ndefault = \"shared\"\n",
+        None,
+    )
+    .await;
+    h.svc
+        .create_branch(&who("alice"), "feature", None)
+        .await
+        .unwrap();
+
+    let wide = blob(&h, "[meta]\ndefault = \"exclusive\"\n").await;
+    h.svc
+        .checkout(&policy, &user("alice"), Some(RevisionId(1)))
+        .await
+        .unwrap();
+    let on_feature = h
+        .svc
+        .checkin_on(
+            "feature",
+            &who("alice"),
+            &policy,
+            wide,
+            FileMode::Regular,
+            Some(RevisionId(1)),
+            "policy".into(),
+        )
+        .await
+        .unwrap();
+    h.svc.load_policy().await.unwrap();
+    assert_eq!(h.svc.mode_for(&a), crate::Mode::Shared);
+    let snap = h.svc.snapshot(Some(&on_feature.commit)).await.unwrap();
+    assert!(
+        snap.entries
+            .iter()
+            .any(|e| e.path == a && e.mode == crate::Mode::Shared)
+    );
+    let on_main = h.svc.snapshot_on("main").await.unwrap();
+    assert!(
+        on_main
+            .entries
+            .iter()
+            .all(|e| e.revision.commit != on_feature.commit)
+    );
+
+    let broken = blob(&h, "not = [valid").await;
+    let err = h
+        .svc
+        .checkin_on(
+            "feature",
+            &who("alice"),
+            &policy,
+            broken,
+            FileMode::Regular,
+            Some(RevisionId(2)),
+            "bad".into(),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::InvalidRules(_)), "{err}");
+    let weak = restricted("eve", &[Permission::Read, Permission::Checkin]);
+    let err = h
+        .svc
+        .checkin_on(
+            "feature",
+            &weak,
+            &policy,
+            wide,
+            FileMode::Regular,
+            Some(RevisionId(2)),
+            "x".into(),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, PynError::Forbidden(Permission::EditPolicy)),
+        "{err}"
+    );
+}
+
+pub async fn a_conversion_on_the_default_branch_applies_to_a_branch_that_diverged(store: Store) {
+    let h = harness(store);
+    let (a, policy) = (path("Source/a.cpp"), path(".pyn/pyn.toml"));
+    put_on(&h, "main", "alice", &a, "base", None).await;
+    h.svc
+        .create_branch(&who("alice"), "feature", None)
+        .await
+        .unwrap();
+    let diverged = put_on(&h, "feature", "bob", &a, "feature edit", Some(1)).await;
+
+    let exclusive = blob(
+        &h,
+        "[meta]\ndefault = \"shared\"\n[exclusive]\npaths = [\"Source/\"]\n",
+    )
+    .await;
+    h.svc
+        .checkin(
+            &who("alice"),
+            &policy,
+            exclusive,
+            None,
+            "Source is exclusive".into(),
+        )
+        .await
+        .unwrap();
+    let line = h.svc.history(&a).await.unwrap();
+    let conversion = line.last().unwrap();
+    assert_eq!(conversion.mode, Some(crate::Mode::Exclusive));
+    assert!(diverged.id < conversion.id);
+
+    let main = h.svc.snapshot_on("main").await.unwrap();
+    let feature = h.svc.snapshot_on("feature").await.unwrap();
+    let pick = |s: &crate::Snapshot| {
+        s.entries
+            .iter()
+            .find(|e| e.path == a)
+            .map(|e| (e.revision.id, e.mode))
+            .unwrap()
+    };
+    assert_eq!(pick(&main), (conversion.id, crate::Mode::Exclusive));
+    assert_eq!(pick(&feature), (diverged.id, crate::Mode::Exclusive));
+
+    let err = h
+        .svc
+        .checkin_on(
+            "feature",
+            &who("bob"),
+            &a,
+            blob(&h, "more").await,
+            FileMode::Regular,
+            Some(diverged.id),
+            "x".into(),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::LockRequired(_)), "{err}");
+    h.svc
+        .checkout(&a, &user("bob"), Some(conversion.id))
+        .await
+        .unwrap();
+    let err = h
+        .svc
+        .checkin_on(
+            "feature",
+            &who("bob"),
+            &a,
+            blob(&h, "more").await,
+            FileMode::Regular,
+            Some(diverged.id),
+            "x".into(),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::StaleBase { .. }), "{err}");
+}
+
+pub async fn verify_checks_every_branch_and_a_commit_names_its_parent(store: Store) {
+    let h = harness(store);
+    let (a, b) = (path("Source/a.cpp"), path("Source/b.cpp"));
+    put_on(&h, "main", "alice", &a, "one", None).await;
+    h.svc
+        .create_branch(&who("alice"), "feature", None)
+        .await
+        .unwrap();
+    put_on(&h, "feature", "alice", &b, "two", None).await;
+    put_on(&h, "main", "alice", &a, "three", Some(1)).await;
+    let report = h.svc.verify(None, true).await.unwrap();
+    assert!(report.problems.is_empty(), "{:?}", report.problems);
+    assert_eq!(report.commits, 3);
+}
+
 /// Generates one `#[tokio::test]` per contract case for the store built by `$factory`.
 #[macro_export]
 macro_rules! contract_tests {
@@ -2344,6 +3031,16 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_changeset_past_the_storage_cap_applies_nothing);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; checkin_past_the_storage_cap_is_refused_unless_it_adds_nothing);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; racing_checkins_cannot_exceed_the_storage_cap);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_branch_starts_at_a_commit_and_moves_only_by_committing);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; branch_names_are_validated_unique_and_never_a_folder_of_another);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; deleting_a_branch_needs_it_merged_unless_forced_and_never_the_default);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_branch_can_be_renamed_except_the_default);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; an_exclusive_path_keeps_one_line_of_revisions_across_branches);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_shared_path_can_diverge_on_two_branches);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_changeset_on_a_branch_is_one_commit_there_and_atomic);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_policy_file_on_another_branch_is_not_policy);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_conversion_on_the_default_branch_applies_to_a_branch_that_diverged);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; verify_checks_every_branch_and_a_commit_names_its_parent);
     };
     (@one $factory:expr; [$(#[$attr:meta])*]; $name:ident) => {
         #[tokio::test(flavor = "multi_thread")]
@@ -2846,34 +3543,54 @@ impl MetadataStore for HookedMeta {
         self.inner.head_revision(repo, path).await
     }
 
-    async fn commit_revision_capped(
+    async fn commit_changeset_on(
         &self,
         repo: &RepoId,
-        revision: crate::NewRevision,
-        expected_head: Option<RevisionId>,
-        lock_holder: Option<&UserId>,
-        now: chrono::DateTime<Utc>,
-        cap: Option<crate::StorageCap>,
-    ) -> crate::Result<crate::Revision> {
-        self.inner
-            .commit_revision_capped(repo, revision, expected_head, lock_holder, now, cap)
-            .await
-    }
-
-    async fn commit_changeset_capped(
-        &self,
-        repo: &RepoId,
+        branch: &str,
         items: Vec<crate::ChangesetItem>,
         now: chrono::DateTime<Utc>,
         cap: Option<crate::StorageCap>,
     ) -> crate::Result<Vec<crate::Revision>> {
         self.inner
-            .commit_changeset_capped(repo, items, now, cap)
+            .commit_changeset_on(repo, branch, items, now, cap)
             .await
     }
 
-    async fn head_commit(&self, repo: &RepoId) -> crate::Result<Option<ObjectId>> {
-        self.inner.head_commit(repo).await
+    async fn list_branches(&self, repo: &RepoId) -> crate::Result<Vec<crate::Branch>> {
+        self.inner.list_branches(repo).await
+    }
+
+    async fn get_branch(&self, repo: &RepoId, name: &str) -> crate::Result<Option<crate::Branch>> {
+        self.inner.get_branch(repo, name).await
+    }
+
+    async fn create_branch(
+        &self,
+        repo: &RepoId,
+        name: &str,
+        at: &ObjectId,
+        by: &UserId,
+        now: chrono::DateTime<Utc>,
+    ) -> crate::Result<crate::Branch> {
+        self.inner.create_branch(repo, name, at, by, now).await
+    }
+
+    async fn delete_branch(
+        &self,
+        repo: &RepoId,
+        name: &str,
+        expected: Option<&ObjectId>,
+    ) -> crate::Result<()> {
+        self.inner.delete_branch(repo, name, expected).await
+    }
+
+    async fn rename_branch(
+        &self,
+        repo: &RepoId,
+        from: &str,
+        to: &str,
+    ) -> crate::Result<crate::Branch> {
+        self.inner.rename_branch(repo, from, to).await
     }
 
     async fn get_commit(
@@ -2896,10 +3613,29 @@ impl MetadataStore for HookedMeta {
     async fn commits(
         &self,
         repo: &RepoId,
+        tip: Option<&ObjectId>,
         before: Option<&ObjectId>,
         limit: usize,
     ) -> crate::Result<Vec<crate::Commit>> {
-        self.inner.commits(repo, before, limit).await
+        self.inner.commits(repo, tip, before, limit).await
+    }
+
+    async fn is_ancestor(
+        &self,
+        repo: &RepoId,
+        ancestor: &ObjectId,
+        descendant: &ObjectId,
+    ) -> crate::Result<bool> {
+        self.inner.is_ancestor(repo, ancestor, descendant).await
+    }
+
+    async fn revision_at(
+        &self,
+        repo: &RepoId,
+        commit: &ObjectId,
+        path: &RepoPath,
+    ) -> crate::Result<Option<crate::Revision>> {
+        self.inner.revision_at(repo, commit, path).await
     }
 
     async fn get_tree(&self, repo: &RepoId, id: &ObjectId) -> crate::Result<Option<Vec<u8>>> {
@@ -2927,18 +3663,26 @@ impl MetadataStore for HookedMeta {
         self.inner.list_head_revisions(repo).await
     }
 
-    async fn history(&self, repo: &RepoId, path: &RepoPath) -> crate::Result<Vec<crate::Revision>> {
-        self.inner.history(repo, path).await
+    async fn history(
+        &self,
+        repo: &RepoId,
+        path: &RepoPath,
+        within: Option<&ObjectId>,
+    ) -> crate::Result<Vec<crate::Revision>> {
+        self.inner.history(repo, path, within).await
     }
 
     async fn repo_history(
         &self,
         repo: &RepoId,
+        within: Option<&ObjectId>,
         filter: Option<&crate::PathFilter>,
         before: Option<&crate::HistoryCursor>,
         limit: usize,
     ) -> crate::Result<Vec<crate::Revision>> {
-        self.inner.repo_history(repo, filter, before, limit).await
+        self.inner
+            .repo_history(repo, within, filter, before, limit)
+            .await
     }
 
     async fn create_repo_capped(
