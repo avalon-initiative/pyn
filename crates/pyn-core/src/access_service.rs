@@ -2026,7 +2026,10 @@ impl AccessService {
     ) -> Result<Vec<AuditEvent>> {
         self.require_server_admin(actor).await?;
         match &self.audit {
-            Some(store) => store.list(&AuditScope::Server, query).await,
+            Some(store) => crate::integrity::check_events(
+                &AuditScope::Server,
+                store.list(&AuditScope::Server, query).await?,
+            ),
             None => Ok(Vec::new()),
         }
     }

@@ -180,6 +180,9 @@ pub struct AuditEvent {
     pub action: AuditAction,
     pub path: Option<RepoPath>,
     pub detail: String,
+    /// Hash of the preceding event in the same log; `None` for the first.
+    pub previous: Option<String>,
+    pub hash: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -226,9 +229,10 @@ impl From<&RepoId> for AuditScope {
     }
 }
 
-/// Append-only record of administrative and locking events. Events are never changed or removed.
+/// Append-only record of administrative and locking events, hash-chained per scope. Events are never changed or removed.
 #[async_trait]
 pub trait AuditStore: Send + Sync {
+    /// Appends the event, chained to the scope's newest one in the same atomic step.
     async fn record(&self, scope: &AuditScope, event: NewAuditEvent) -> Result<()>;
 
     async fn list(&self, scope: &AuditScope, query: &AuditQuery) -> Result<Vec<AuditEvent>>;

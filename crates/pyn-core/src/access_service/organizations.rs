@@ -173,7 +173,10 @@ impl AccessService {
         self.org(name).await?;
         self.require_org_owner(name, &actor.user).await?;
         match &self.audit {
-            Some(store) => store.list(&AuditScope::Org(name.clone()), query).await,
+            Some(store) => {
+                let scope = AuditScope::Org(name.clone());
+                crate::integrity::check_events(&scope, store.list(&scope, query).await?)
+            }
             None => Ok(Vec::new()),
         }
     }

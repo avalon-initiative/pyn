@@ -175,6 +175,8 @@ pub enum PynError {
     NotOrgRepo(String),
     #[error("storage error: {0}")]
     Storage(String),
+    #[error("history fails verification: {0}")]
+    HistoryCorrupt(String),
 }
 
 fn inactive_message(status: AccountStatus) -> &'static str {
@@ -270,6 +272,7 @@ impl PynError {
             Self::CreationRuleNotFound { .. } => "creation_rule_not_found",
             Self::NotOrgRepo(_) => "not_org_repo",
             Self::Storage(_) => "storage",
+            Self::HistoryCorrupt(_) => "history_corrupt",
         }
     }
 }

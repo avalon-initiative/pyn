@@ -8,6 +8,7 @@ use crate::audit::{AuditAction, AuditEvent, AuditQuery, AuditScope, AuditStore, 
 use crate::clock::Clock;
 use crate::error::{PynError, Result};
 use crate::history::{HISTORY_DEFAULT_LIMIT, HISTORY_MAX_LIMIT, HistoryCursor, HistoryPage};
+use crate::integrity::{Problem, VerifyReport, check_events, verify_audit, verify_revisions};
 use crate::limits::{StorageCap, StorageCaps};
 use crate::object::ObjectStore;
 use crate::repo::DEFAULT_MAX_LOCKS_PER_USER;
@@ -287,7 +288,7 @@ impl RepoService {
         new: &Rules,
     ) -> Result<Option<Revision>> {
         for _ in 0..3 {
-            let Some(head) = self.meta.head_revision(&self.repo, path).await? else {
+            let Some(head) = self.head(path).await? else {
                 return Ok(None);
             };
             let size = self
@@ -369,11 +370,7 @@ impl RepoService {
         if self.mode_for(path) != Mode::Exclusive {
             return Err(PynError::NotExclusive(path.clone()));
         }
-        let head = self
-            .meta
-            .head_revision(&self.repo, path)
-            .await?
-            .map(|r| r.id);
+        let head = self.head(path).await?.map(|r| r.id);
         if head != base {
             return Err(PynError::StaleBase {
                 path: path.clone(),
@@ -443,9 +440,8 @@ impl RepoService {
 
     /// Audit events, newest first.
     pub async fn audit(&self, query: &AuditQuery) -> Result<Vec<AuditEvent>> {
-        self.audit
-            .list(&AuditScope::Repo(self.repo.clone()), query)
-            .await
+        let scope = AuditScope::Repo(self.repo.clone());
+        check_events(&scope, self.audit.list(&scope, query).await?)
     }
 
     /// Appends the revision under the rules in force; a policy revision is validated first and applied once recorded.
@@ -466,6 +462,7 @@ impl RepoService {
             None
         };
         let bootstrap = policy && base.is_none();
+        self.head(path).await?;
         let mode = match &parsed {
             Some(new) if bootstrap => new.mode_for(path),
             _ => self.mode_for(path),
@@ -551,6 +548,9 @@ impl RepoService {
                     e.path
                 )));
             }
+        }
+        for e in &entries {
+            self.head(&e.path).await?;
         }
         let now = self.clock.now();
         let changeset = changeset_id()?;
@@ -782,11 +782,8 @@ impl RepoService {
                 limit: activity_limit,
                 ..AuditQuery::default()
             };
-            activity.extend(
-                self.audit
-                    .list(&AuditScope::Repo(self.repo.clone()), &query)
-                    .await?,
-            );
+            let scope = AuditScope::Repo(self.repo.clone());
+            activity.extend(check_events(&scope, self.audit.list(&scope, &query).await?)?);
         }
         activity.sort_by_key(|e| std::cmp::Reverse(e.id));
         activity.truncate(activity_limit);
@@ -816,6 +813,7 @@ impl RepoService {
             path: path.clone(),
             revision: revision.map_or("(head)".to_string(), |r| r.to_string()),
         })?;
+        rev.verify()?;
         let bytes = self
             .objects
             .get(&rev.content)
@@ -839,6 +837,7 @@ impl RepoService {
             path: path.clone(),
             revision: revision.map_or("(head)".to_string(), |r| r.to_string()),
         })?;
+        rev.verify()?;
         let read = self
             .objects
             .read(&rev.content, range)
@@ -848,11 +847,85 @@ impl RepoService {
     }
 
     pub async fn head(&self, path: &RepoPath) -> Result<Option<Revision>> {
-        self.meta.head_revision(&self.repo, path).await
+        let head = self.meta.head_revision(&self.repo, path).await?;
+        head.iter().try_for_each(Revision::verify)?;
+        Ok(head)
     }
 
+    /// A path's revisions, oldest first, after checking each hash and the links between them.
     pub async fn history(&self, path: &RepoPath) -> Result<Vec<Revision>> {
-        self.meta.history(&self.repo, path).await
+        let revisions = self.meta.history(&self.repo, path).await?;
+        if let Some((id, kind)) = verify_revisions(&revisions).first() {
+            return Err(PynError::HistoryCorrupt(format!(
+                "{path}@r{id}: {}",
+                kind.as_str()
+            )));
+        }
+        Ok(revisions)
+    }
+
+    /// Checks every path's revision chain, and the audit log when `audit` is set, reporting all breaks instead of
+    /// stopping at the first. With `path`, only that path.
+    pub async fn verify(&self, path: Option<&RepoPath>, audit: bool) -> Result<VerifyReport> {
+        let paths = match path {
+            Some(p) => vec![p.clone()],
+            None => self
+                .meta
+                .list_head_revisions(&self.repo)
+                .await?
+                .into_iter()
+                .map(|r| r.path)
+                .collect(),
+        };
+        let mut report = VerifyReport::default();
+        for p in paths {
+            let revisions = self.meta.history(&self.repo, &p).await?;
+            if revisions.is_empty() {
+                return Err(PynError::PathNotFound(p.to_string()));
+            }
+            report.paths += 1;
+            report.revisions += revisions.len() as u64;
+            for (id, kind) in verify_revisions(&revisions) {
+                report.problems.push(Problem {
+                    kind,
+                    path: Some(p.clone()),
+                    revision: Some(id),
+                    event: None,
+                });
+            }
+        }
+        if audit && path.is_none() {
+            let scope = AuditScope::Repo(self.repo.clone());
+            let mut events = Vec::new();
+            let mut before = None;
+            loop {
+                let page = self
+                    .audit
+                    .list(
+                        &scope,
+                        &AuditQuery {
+                            before,
+                            limit: HISTORY_MAX_LIMIT,
+                            ..AuditQuery::default()
+                        },
+                    )
+                    .await?;
+                let Some(last) = page.last() else { break };
+                before = Some(last.id);
+                events.extend(page);
+            }
+            events.reverse();
+            report.audit_events = Some(events.len() as u64);
+            for (id, kind) in verify_audit(&scope, &events) {
+                report.problems.push(Problem {
+                    kind,
+                    path: None,
+                    revision: None,
+                    event: Some(id),
+                });
+            }
+        }
+        Ok(report)
     }
 
     /// Repository-wide history, newest first; `limit` defaults to 50 and is capped at 200.
@@ -869,6 +942,7 @@ impl RepoService {
             .meta
             .repo_history(&self.repo, filter, before, limit + 1)
             .await?;
+        revisions.iter().try_for_each(Revision::verify)?;
         let next = (revisions.len() > limit).then(|| {
             revisions.truncate(limit);
             HistoryCursor::of(&revisions[limit - 1])
@@ -881,10 +955,13 @@ impl RepoService {
     }
 
     pub async fn get_commit(&self, id: u64) -> Result<Commit> {
-        self.meta
+        let commit = self
+            .meta
             .get_commit(&self.repo, id)
             .await?
-            .ok_or(PynError::CommitNotFound(id))
+            .ok_or(PynError::CommitNotFound(id))?;
+        commit.revisions.iter().try_for_each(Revision::verify)?;
+        Ok(commit)
     }
 
     /// Commits newest first; `limit` defaults to 50 and is capped at 200.
@@ -893,6 +970,9 @@ impl RepoService {
             .unwrap_or(HISTORY_DEFAULT_LIMIT)
             .clamp(1, HISTORY_MAX_LIMIT);
         let mut commits = self.meta.commits(&self.repo, before, limit + 1).await?;
+        for c in &commits {
+            c.revisions.iter().try_for_each(Revision::verify)?;
+        }
         let next = (commits.len() > limit).then(|| {
             commits.truncate(limit);
             commits[limit - 1].id
@@ -911,6 +991,7 @@ impl RepoService {
         };
         let mut entries = Vec::new();
         for revision in self.meta.snapshot(&self.repo, id).await? {
+            revision.verify()?;
             let mode = revision
                 .mode
                 .unwrap_or_else(|| self.mode_for(&revision.path));
