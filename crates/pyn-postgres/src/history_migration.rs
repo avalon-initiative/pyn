@@ -73,7 +73,7 @@ impl PgMetadataStore {
                 })?;
                 let person = Person::for_user(&UserId::new(g.author.clone()), None);
                 let mut draft = draft_commit(
-                    parent.as_ref().map(|p| p.0),
+                    parent.as_ref().map(|p| p.0).into_iter().collect(),
                     built,
                     &person,
                     &g.message,

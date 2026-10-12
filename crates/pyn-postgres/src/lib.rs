@@ -8,7 +8,8 @@ use chrono::{DateTime, Utc};
 use std::str::FromStr;
 
 use pyn_core::branch::{DEFAULT_BRANCH, conflicts};
-use pyn_core::commit_record::{CommitDraft, TreeEdit, draft_commit};
+use pyn_core::commit_record::{CommitDraft, TreeChange, TreeEdit, draft_commit};
+use pyn_core::merge::{MergeWrite, MergeWritten};
 use pyn_core::{
     Branch, ChangesetItem, Commit, FileMode, HistoryCursor, Lock, MetadataStore, Mode, ObjectId,
     PathFilter, Person, PynError, REPO_ALGORITHM, RepoId, RepoPath, RepoRecord, RepoSettings,
@@ -339,6 +340,30 @@ async fn draft(
     parent: Option<&ObjectId>,
     items: &[ChangesetItem],
 ) -> Result<CommitDraft> {
+    let changes = items.iter().map(|i| i.revision.tree_change()).collect();
+    let first = &items[0].revision;
+    draft_with(
+        tx,
+        repo,
+        parent,
+        parent.copied().into_iter().collect(),
+        changes,
+        (&first.person, &first.message, first.created_at),
+        first.changeset.clone(),
+    )
+    .await
+}
+
+/// The commit with `parents` over the tree of commit `parent` with `changes` put in, with the trees it adds.
+async fn draft_with(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    repo: &RepoId,
+    parent: Option<&ObjectId>,
+    parents: Vec<ObjectId>,
+    changes: Vec<TreeChange>,
+    (author, message, at): (&Person, &str, DateTime<Utc>),
+    changeset: Option<String>,
+) -> Result<CommitDraft> {
     let parent_tree = match parent {
         Some(id) => {
             let tree: String =
@@ -352,7 +377,6 @@ async fn draft(
         }
         None => None,
     };
-    let changes = items.iter().map(|i| i.revision.tree_change()).collect();
     let mut edit = TreeEdit::new(parent_tree, changes);
     while let Some(id) = edit.wanted() {
         let body: Vec<u8> =
@@ -364,15 +388,7 @@ async fn draft(
                 .map_err(db)?;
         edit.supply(id, &body)?;
     }
-    let first = &items[0].revision;
-    draft_commit(
-        parent.copied(),
-        edit.finish()?,
-        &first.person,
-        &first.message,
-        first.created_at,
-        first.changeset.clone(),
-    )
+    draft_commit(parents, edit.finish()?, author, message, at, changeset)
 }
 
 /// Writes the draft's trees, its commit row as commit number `seq` and the pointers of the revisions it made, and moves
@@ -911,6 +927,175 @@ impl MetadataStore for PgMetadataStore {
         store_commit(&mut tx, repo, seq, branch, &draft, &out).await?;
         tx.commit().await.map_err(db)?;
         Ok(out)
+    }
+
+    async fn commit_merge_on(
+        &self,
+        repo: &RepoId,
+        branch: &str,
+        merge: MergeWrite,
+        now: DateTime<Utc>,
+        cap: Option<StorageCap>,
+    ) -> Result<MergeWritten> {
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        let seq = next_commit(&mut tx, repo).await?;
+        let head: Option<Option<String>> = sqlx::query_scalar(
+            "SELECT head FROM branches WHERE repo = $1 AND name = $2 FOR UPDATE",
+        )
+        .bind(repo.as_str())
+        .bind(branch)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db)?;
+        let head = head
+            .ok_or_else(|| PynError::BranchNotFound(branch.to_string()))?
+            .map(|h| object_id(&h, "branch head"))
+            .transpose()?;
+        if head != Some(merge.expected_head) {
+            return Err(PynError::MergeStale(branch.to_string()));
+        }
+        let known: bool =
+            sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM commits WHERE repo = $1 AND id = $2)")
+                .bind(repo.as_str())
+                .bind(merge.other.to_hex())
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(db)?;
+        if !known {
+            return Err(PynError::CommitNotFound(merge.other.to_string()));
+        }
+        let paths: Vec<String> = merge
+            .items
+            .iter()
+            .map(|i| i.revision.path.as_str().to_string())
+            .collect();
+        let at_branch: HashMap<String, i64> =
+            pointers(&mut *tx, repo, &merge.expected_head, Some(&paths))
+                .await?
+                .into_iter()
+                .collect();
+        let changes = merge
+            .adopted
+            .iter()
+            .map(|r| TreeChange {
+                path: r.path.clone(),
+                mode: r.file_mode,
+                id: r.content,
+            })
+            .chain(merge.items.iter().map(|i| i.revision.tree_change()))
+            .collect();
+        let draft = draft_with(
+            &mut tx,
+            repo,
+            Some(&merge.expected_head),
+            vec![merge.expected_head, merge.other],
+            changes,
+            (&merge.author, &merge.message, now),
+            None,
+        )
+        .await?;
+        let mut made = Vec::with_capacity(merge.items.len());
+        for item in merge.items {
+            let commit = (seq, draft.record.id);
+            made.push(
+                append_revision(&mut tx, repo, item, now, cap.as_ref(), commit, &at_branch).await?,
+            );
+        }
+        let pointed: Vec<Revision> = merge.adopted.iter().chain(&made).cloned().collect();
+        store_commit(&mut tx, repo, seq, branch, &draft, &pointed).await?;
+        tx.commit().await.map_err(db)?;
+        Ok(MergeWritten {
+            commit: draft.record.id,
+            revisions: made,
+        })
+    }
+
+    async fn fast_forward_branch(
+        &self,
+        repo: &RepoId,
+        branch: &str,
+        from: Option<&ObjectId>,
+        to: &ObjectId,
+    ) -> Result<()> {
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        // The repository's writes are serialized on this row, as `next_commit` does.
+        sqlx::query("SELECT last FROM repo_commits WHERE repo = $1 FOR UPDATE")
+            .bind(repo.as_str())
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(db)?;
+        let known: bool =
+            sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM commits WHERE repo = $1 AND id = $2)")
+                .bind(repo.as_str())
+                .bind(to.to_hex())
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(db)?;
+        if !known {
+            return Err(PynError::CommitNotFound(to.to_string()));
+        }
+        let moved = sqlx::query(
+            "UPDATE branches SET head = $3 WHERE repo = $1 AND name = $2 AND head IS NOT DISTINCT FROM $4",
+        )
+        .bind(repo.as_str())
+        .bind(branch)
+        .bind(to.to_hex())
+        .bind(from.map(ObjectId::to_hex))
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?
+        .rows_affected();
+        if moved == 0 {
+            let exists: bool = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM branches WHERE repo = $1 AND name = $2)",
+            )
+            .bind(repo.as_str())
+            .bind(branch)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(db)?;
+            return Err(if exists {
+                PynError::MergeStale(branch.to_string())
+            } else {
+                PynError::BranchNotFound(branch.to_string())
+            });
+        }
+        tx.commit().await.map_err(db)
+    }
+
+    async fn merge_bases(
+        &self,
+        repo: &RepoId,
+        a: &ObjectId,
+        b: &ObjectId,
+    ) -> Result<Vec<ObjectId>> {
+        let ids: Vec<String> = sqlx::query_scalar(
+            "WITH RECURSIVE
+             from_a(id) AS (
+                 SELECT $1::text
+                 UNION
+                 SELECT p FROM from_a JOIN commits c ON c.repo = $3 AND c.id = from_a.id CROSS JOIN LATERAL unnest(c.parents) AS p
+             ),
+             from_b(id) AS (
+                 SELECT $2::text
+                 UNION
+                 SELECT p FROM from_b JOIN commits c ON c.repo = $3 AND c.id = from_b.id CROSS JOIN LATERAL unnest(c.parents) AS p
+             ),
+             common(id) AS (SELECT id FROM from_a INTERSECT SELECT id FROM from_b),
+             shadowed(id) AS (
+                 SELECT p FROM common JOIN commits c ON c.repo = $3 AND c.id = common.id CROSS JOIN LATERAL unnest(c.parents) AS p
+                 UNION
+                 SELECT p FROM shadowed JOIN commits c ON c.repo = $3 AND c.id = shadowed.id CROSS JOIN LATERAL unnest(c.parents) AS p
+             )
+             SELECT id FROM common WHERE id NOT IN (SELECT id FROM shadowed) ORDER BY id COLLATE \"C\"",
+        )
+        .bind(a.to_hex())
+        .bind(b.to_hex())
+        .bind(repo.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        ids.iter().map(|i| object_id(i, "commit id")).collect()
     }
 
     async fn list_branches(&self, repo: &RepoId) -> Result<Vec<Branch>> {
