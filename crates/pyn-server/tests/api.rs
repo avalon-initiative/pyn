@@ -3231,10 +3231,15 @@ async fn commits_and_snapshots_are_served_per_commit() {
         put_blob(&app, "game", &alice, "two").await,
     );
     let entry = |path: &str, content: &str, base: Option<u64>| serde_json::json!({"path": path, "content": content, "base_revision": base});
+    let script = serde_json::json!({"path": "run.sh", "content": one, "file_mode": "100755"});
     for (entries, message) in [
         (vec![entry("a.txt", &one, None)], "first"),
         (
-            vec![entry("a.txt", &two, Some(1)), entry("b.txt", &one, None)],
+            vec![
+                entry("a.txt", &two, Some(1)),
+                entry("b.txt", &one, None),
+                script,
+            ],
             "second",
         ),
     ] {
@@ -3252,15 +3257,42 @@ async fn commits_and_snapshots_are_served_per_commit() {
     let r = send(&app, "GET", "/v1/repos/alice/game/commits", &alice, None).await;
     assert_eq!(r.status(), StatusCode::OK);
     let page: api::CommitPage = body_json(r).await;
-    let ids: Vec<u64> = page.commits.iter().map(|c| c.id).collect();
-    assert_eq!(ids, vec![2, 1]);
-    assert_eq!(page.commits[0].revisions.len(), 2);
-    assert!(page.commits[0].revisions.iter().all(|r| r.commit == 2));
+    let ids: Vec<&str> = page.commits.iter().map(|c| c.id.as_str()).collect();
+    assert_eq!(ids.len(), 2);
+    let (second, first_id) = (ids[0].to_string(), ids[1].to_string());
+    assert_eq!(second.len(), 64);
+    assert_eq!(page.commits[0].parents, vec![first_id.clone()]);
+    assert!(page.commits[1].parents.is_empty());
+    assert_eq!(page.commits[0].author.name, "alice");
+    assert_eq!(page.commits[0].revisions.len(), 3);
+    assert!(page.commits[0].revisions.iter().all(|r| r.commit == second));
+    assert!(
+        page.commits[0]
+            .revisions
+            .iter()
+            .all(|r| r.author_identity.is_some())
+    );
+    let modes: Vec<_> = page.commits[0]
+        .revisions
+        .iter()
+        .map(|r| (r.path.as_str(), r.file_mode))
+        .collect();
+    assert_eq!(
+        modes,
+        vec![
+            ("a.txt", api::FileMode::Regular),
+            ("b.txt", api::FileMode::Regular),
+            ("run.sh", api::FileMode::Executable)
+        ]
+    );
 
     let r = send(
         &app,
         "GET",
-        "/v1/repos/alice/game/commits?before=2&limit=1",
+        &format!(
+            "/v1/repos/alice/game/commits?before={}&limit=1",
+            &second[..8]
+        ),
         &alice,
         None,
     )
@@ -3269,20 +3301,18 @@ async fn commits_and_snapshots_are_served_per_commit() {
     assert_eq!(older.commits[0].message, "first");
     assert_eq!(older.next_before, None);
 
-    let r = send(&app, "GET", "/v1/repos/alice/game/commits/1", &alice, None).await;
+    let uri = format!("/v1/repos/alice/game/commits/{}", &first_id[..10]);
+    let r = send(&app, "GET", &uri, &alice, None).await;
     let first: api::Commit = body_json(r).await;
-    assert_eq!(first.revisions.len(), 1);
+    assert_eq!(
+        (first.id.as_str(), first.revisions.len()),
+        (first_id.as_str(), 1)
+    );
 
-    let r = send(
-        &app,
-        "GET",
-        "/v1/repos/alice/game/snapshot?commit=1",
-        &alice,
-        None,
-    )
-    .await;
+    let uri = format!("/v1/repos/alice/game/snapshot?commit={first_id}");
+    let r = send(&app, "GET", &uri, &alice, None).await;
     let at_one: api::SnapshotPage = body_json(r).await;
-    assert_eq!(at_one.commit, 1);
+    assert_eq!(at_one.commit.as_deref(), Some(first_id.as_str()));
     let shape: Vec<(&str, u64, &str)> = at_one
         .entries
         .iter()
@@ -3292,8 +3322,9 @@ async fn commits_and_snapshots_are_served_per_commit() {
 
     let r = send(&app, "GET", "/v1/repos/alice/game/snapshot", &alice, None).await;
     let head: api::SnapshotPage = body_json(r).await;
-    assert_eq!(head.commit, 2);
-    assert_eq!(head.entries.len(), 2);
+    assert_eq!(head.commit.as_deref(), Some(second.as_str()));
+    assert_eq!(head.entries.len(), 3);
+    assert_eq!(head.entries[2].file_mode, api::FileMode::Executable);
     assert_eq!(head.entries[0].content, two);
 
     let r = send(
@@ -3309,7 +3340,9 @@ async fn commits_and_snapshots_are_served_per_commit() {
 
     for uri in [
         "/v1/repos/alice/game/commits/9",
-        "/v1/repos/alice/game/snapshot?commit=9",
+        "/v1/repos/alice/game/commits/deadbeef",
+        "/v1/repos/alice/game/snapshot?commit=deadbeef",
+        "/v1/repos/alice/game/commits?before=deadbeef",
     ] {
         let r = send(&app, "GET", uri, &alice, None).await;
         assert_eq!(r.status(), StatusCode::NOT_FOUND, "{uri}");

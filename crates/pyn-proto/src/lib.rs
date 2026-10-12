@@ -22,6 +22,37 @@ pub struct MyLock {
     pub expires_at: DateTime<Utc>,
 }
 
+/// Git's file mode for a file: regular, executable or symbolic link (whose content is the link target).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub enum FileMode {
+    #[default]
+    #[serde(rename = "100644")]
+    Regular,
+    #[serde(rename = "100755")]
+    Executable,
+    #[serde(rename = "120000")]
+    Symlink,
+}
+
+impl FileMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Regular => "100644",
+            Self::Executable => "100755",
+            Self::Symlink => "120000",
+        }
+    }
+}
+
+/// A commit's author or committer, apart from the time (the commit's `created_at`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct Person {
+    pub name: String,
+    pub email: String,
+    /// Minutes east of UTC.
+    pub offset_minutes: i32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct Revision {
     pub id: u64,
@@ -33,6 +64,9 @@ pub struct Revision {
     #[serde(default)]
     pub legacy_content: Option<String>,
     pub author: String,
+    /// The structured author the v2 hash covers; absent for a v1 revision, whose hash predates it.
+    #[serde(default)]
+    pub author_identity: Option<Person>,
     pub message: String,
     pub created_at: DateTime<Utc>,
     /// Set when this revision restored the content of an earlier one.
@@ -41,22 +75,32 @@ pub struct Revision {
     pub mode: Option<Mode>,
     /// Shared by the revisions checked in together as one changeset; absent for a single-path checkin.
     pub changeset: Option<String>,
-    /// The repository-wide commit this revision belongs to; see `Commit`.
-    pub commit: u64,
-    /// SHA-256 hex over the revision's canonical encoding (docs/concepts/integrity.md).
+    /// The git file mode of the content.
+    pub file_mode: FileMode,
+    /// The id of the commit this revision belongs to; see `Commit`.
+    pub commit: String,
+    /// SHA-256 hex over the revision's canonical encoding, v1 or v2 by `author_identity` (docs/concepts/integrity.md).
     pub hash: String,
     /// The hash of the path's previous revision; absent for the first.
     pub previous: Option<String>,
 }
 
-/// One atomic write: a single checkin or a whole changeset. Commits are numbered 1, 2, ... per repository, and the
-/// repository as of commit N is the newest revision at or before N of every path.
+/// One atomic write: a single checkin or a whole changeset, recorded as a git commit on the repository's single
+/// mainline. `id` is the git commit id, so a commit can be fetched with a unique abbreviation of at least 4 digits.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct Commit {
-    pub id: u64,
-    pub author: String,
-    pub message: String,
+    pub id: String,
+    /// Empty for the first commit.
+    pub parents: Vec<String>,
+    /// The id of the root git tree of the repository as of this commit.
+    pub tree: String,
+    pub author: Person,
+    pub committer: Person,
+    /// The author and committer time, in whole seconds.
     pub created_at: DateTime<Utc>,
+    pub message: String,
+    /// The commit's `gpgsig` header, when it is signed.
+    pub signature: Option<String>,
     /// Set when the commit was made as a changeset.
     pub changeset: Option<String>,
     /// The revisions the commit made, ordered by path.
@@ -69,25 +113,26 @@ pub struct CommitPage {
     pub commits: Vec<Commit>,
     /// Pass as `before` to fetch the next, older page; null on the last page.
     #[schema(required = true)]
-    pub next_before: Option<u64>,
+    pub next_before: Option<String>,
 }
 
-/// A path as of a commit. A shared path is identified by its `content` id, an exclusive one by its `revision`.
+/// A path as of a commit: the revision the commit's ancestry gives it. `mode` is what `.pyn/pyn.toml` says at that commit.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct SnapshotEntry {
     pub path: String,
-    /// The mode recorded with the revision.
     pub mode: Mode,
     pub revision: u64,
     /// The content's git blob id at that revision.
     pub content: String,
+    pub file_mode: FileMode,
 }
 
 /// The whole repository as of one commit.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct SnapshotPage {
-    /// The commit the entries are as of; 0 for a repository with no commits.
-    pub commit: u64,
+    /// The id of the commit the entries are as of; null for a repository with no commits.
+    #[schema(required = true)]
+    pub commit: Option<String>,
     /// Ordered by path.
     pub entries: Vec<SnapshotEntry>,
     /// Pass as `after` to fetch the next page; null on the last page.
@@ -124,6 +169,9 @@ pub struct CheckinRequest {
     pub path: String,
     /// Blob id returned by `PUT /v1/repos/{owner}/{name}/objects`.
     pub content: String,
+    /// Defaults to `100644`.
+    #[serde(default)]
+    pub file_mode: Option<FileMode>,
     pub base_revision: Option<u64>,
     pub message: String,
 }
@@ -134,6 +182,9 @@ pub struct ChangesetEntry {
     pub path: String,
     /// Blob id returned by `PUT /v1/repos/{owner}/{name}/objects`.
     pub content: String,
+    /// Defaults to `100644`.
+    #[serde(default)]
+    pub file_mode: Option<FileMode>,
     pub base_revision: Option<u64>,
 }
 
@@ -1050,12 +1101,16 @@ pub struct VerifyProblem {
     pub path: Option<String>,
     pub revision: Option<u64>,
     pub event: Option<i64>,
+    /// The commit id, for a problem in a commit record.
+    #[serde(default)]
+    pub commit: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct VerifyReport {
     pub paths: u64,
     pub revisions: u64,
+    pub commits: u64,
     /// Events checked; null when the audit log was not checked (a single path, or no `view_audit`).
     #[schema(required = true)]
     pub audit_events: Option<u64>,

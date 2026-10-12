@@ -207,6 +207,8 @@ struct RepoAddress {
         api::ActivityEntry,
         api::RepoSummary,
         api::Mode,
+        api::FileMode,
+        api::Person,
         api::SetupStatus,
         api::SetupRequest,
         api::SetupCompleted,
@@ -688,12 +690,14 @@ fn revision_dto(r: pyn_core::Revision) -> api::Revision {
         content: r.content.to_hex(),
         legacy_content: r.legacy_content,
         author: r.author.to_string(),
+        author_identity: r.person.map(person_dto),
         message: r.message,
         created_at: r.created_at,
         restored_from: r.restored_from.map(|r| r.0),
         mode: r.mode.map(mode_dto),
+        file_mode: file_mode_dto(r.file_mode),
         changeset: r.changeset,
-        commit: r.commit,
+        commit: r.commit.to_hex(),
         hash: r.hash.to_string(),
         previous: r.previous.map(|h| h.to_string()),
     }
@@ -712,12 +716,40 @@ pub(crate) fn audit_entry_dto(e: pyn_core::AuditEvent, with_path: bool) -> api::
     }
 }
 
+fn person_dto(p: pyn_core::Person) -> api::Person {
+    api::Person {
+        name: p.name,
+        email: p.email,
+        offset_minutes: p.offset_minutes,
+    }
+}
+
+fn file_mode_dto(m: pyn_core::FileMode) -> api::FileMode {
+    match m {
+        pyn_core::FileMode::Executable => api::FileMode::Executable,
+        pyn_core::FileMode::Symlink => api::FileMode::Symlink,
+        _ => api::FileMode::Regular,
+    }
+}
+
+fn file_mode_from(m: Option<api::FileMode>) -> pyn_core::FileMode {
+    match m.unwrap_or_default() {
+        api::FileMode::Regular => pyn_core::FileMode::Regular,
+        api::FileMode::Executable => pyn_core::FileMode::Executable,
+        api::FileMode::Symlink => pyn_core::FileMode::Symlink,
+    }
+}
+
 fn commit_dto(c: pyn_core::Commit) -> api::Commit {
     api::Commit {
-        id: c.id,
-        author: c.author.to_string(),
-        message: c.message,
+        id: c.id.to_hex(),
+        parents: c.parents.iter().map(|p| p.to_hex()).collect(),
+        tree: c.tree.to_hex(),
+        author: person_dto(c.author),
+        committer: person_dto(c.committer),
         created_at: c.created_at,
+        message: c.message,
+        signature: c.signature,
         changeset: c.changeset,
         revisions: c.revisions.into_iter().map(revision_dto).collect(),
     }
@@ -806,10 +838,11 @@ async fn checkin(
         authorize_repo(&s, &headers, &owner, &name, Some(Permission::Checkin)).await?;
     let rev = repo
         .service
-        .checkin(
+        .checkin_as(
             &who,
             &RepoPath::new(req.path)?,
             parse_object_id(&req.content)?,
+            file_mode_from(req.file_mode),
             req.base_revision.map(RevisionId),
             req.message,
         )
@@ -838,6 +871,7 @@ async fn changeset(
             Ok(ChangeEntry {
                 path: RepoPath::new(e.path)?,
                 content: parse_object_id(&e.content)?,
+                file_mode: file_mode_from(e.file_mode),
                 base: e.base_revision.map(RevisionId),
             })
         })
@@ -1098,6 +1132,7 @@ async fn verify(
     Ok(Json(api::VerifyReport {
         paths: report.paths,
         revisions: report.revisions,
+        commits: report.commits,
         audit_events: report.audit_events,
         problems: report
             .problems
@@ -1107,6 +1142,7 @@ async fn verify(
                 path: p.path.map(|p| p.to_string()),
                 revision: p.revision.map(|r| r.0),
                 event: p.event,
+                commit: p.commit.map(|c| c.to_hex()),
             })
             .collect(),
     }))
@@ -1114,14 +1150,14 @@ async fn verify(
 
 #[derive(Deserialize)]
 struct CommitsQuery {
-    before: Option<u64>,
+    before: Option<String>,
     limit: Option<usize>,
 }
 
 /// Readable without credentials when the repository is public; otherwise 404 unless the caller has a role.
 #[utoipa::path(get, path = "/v1/repos/{owner}/{name}/commits",
     params(RepoAddress,
-           ("before" = Option<u64>, Query, description = "return commits older than this number"),
+           ("before" = Option<String>, Query, description = "return commits older than this commit (an id or unique abbreviation)"),
            ("limit" = Option<usize>, Query, description = "page size, default 50, max 200")),
     responses((status = 200, body = api::CommitPage)))]
 async fn list_commits(
@@ -1131,30 +1167,36 @@ async fn list_commits(
     Query(q): Query<CommitsQuery>,
 ) -> ApiResult<Json<api::CommitPage>> {
     let repo = authorize_read(&s, &headers, &owner, &name).await?;
-    let page = repo.service.commits(q.before, q.limit).await?;
+    let before = match q.before {
+        Some(spec) => Some(repo.service.resolve_commit(&spec).await?),
+        None => None,
+    };
+    let page = repo.service.commits(before.as_ref(), q.limit).await?;
     Ok(Json(api::CommitPage {
         commits: page.commits.into_iter().map(commit_dto).collect(),
-        next_before: page.next,
+        next_before: page.next.map(|n| n.to_hex()),
     }))
 }
 
 /// Readable without credentials when the repository is public; otherwise 404 unless the caller has a role.
 #[utoipa::path(get, path = "/v1/repos/{owner}/{name}/commits/{commit}",
-    params(RepoAddress, ("commit" = u64, Path, description = "commit number")),
+    params(RepoAddress, ("commit" = String, Path, description = "commit id, or a unique abbreviation of at least 4 hex digits")),
     responses((status = 200, body = api::Commit),
-              (status = 404, body = api::ErrorBody, description = "commit_not_found")))]
+              (status = 404, body = api::ErrorBody, description = "commit_not_found"),
+              (status = 400, body = api::ErrorBody, description = "ambiguous_commit")))]
 async fn get_commit(
     State(s): State<AppState>,
     headers: HeaderMap,
-    Path((owner, name, commit)): Path<(String, String, u64)>,
+    Path((owner, name, commit)): Path<(String, String, String)>,
 ) -> ApiResult<Json<api::Commit>> {
     let repo = authorize_read(&s, &headers, &owner, &name).await?;
-    Ok(Json(commit_dto(repo.service.get_commit(commit).await?)))
+    let id = repo.service.resolve_commit(&commit).await?;
+    Ok(Json(commit_dto(repo.service.get_commit(&id).await?)))
 }
 
 #[derive(Deserialize)]
 struct SnapshotQuery {
-    commit: Option<u64>,
+    commit: Option<String>,
     after: Option<String>,
     limit: Option<usize>,
 }
@@ -1162,11 +1204,12 @@ struct SnapshotQuery {
 /// Readable without credentials when the repository is public; otherwise 404 unless the caller has a role.
 #[utoipa::path(get, path = "/v1/repos/{owner}/{name}/snapshot",
     params(RepoAddress,
-           ("commit" = Option<u64>, Query, description = "commit number; the newest if omitted"),
+           ("commit" = Option<String>, Query, description = "commit id or unique abbreviation; the newest if omitted"),
            ("after" = Option<String>, Query, description = "return paths after this one"),
            ("limit" = Option<usize>, Query, description = "page size, default 200, max 1000")),
     responses((status = 200, body = api::SnapshotPage),
-              (status = 404, body = api::ErrorBody, description = "commit_not_found")))]
+              (status = 404, body = api::ErrorBody, description = "commit_not_found"),
+              (status = 400, body = api::ErrorBody, description = "ambiguous_commit")))]
 async fn snapshot(
     State(s): State<AppState>,
     headers: HeaderMap,
@@ -1176,7 +1219,11 @@ async fn snapshot(
     let repo = authorize_read(&s, &headers, &owner, &name).await?;
     let limit = q.limit.unwrap_or(200).clamp(1, 1000);
     let after = q.after.map(RepoPath::new).transpose()?;
-    let snap = repo.service.snapshot(q.commit).await?;
+    let commit = match q.commit {
+        Some(spec) => Some(repo.service.resolve_commit(&spec).await?),
+        None => None,
+    };
+    let snap = repo.service.snapshot(commit.as_ref()).await?;
     let mut entries: Vec<_> = snap
         .entries
         .into_iter()
@@ -1187,6 +1234,7 @@ async fn snapshot(
             mode: mode_dto(e.mode),
             revision: e.revision.id.0,
             content: e.revision.content.to_string(),
+            file_mode: file_mode_dto(e.revision.file_mode),
         })
         .collect();
     let next_after = (entries.len() > limit).then(|| {
@@ -1194,7 +1242,7 @@ async fn snapshot(
         entries[limit - 1].path.clone()
     });
     Ok(Json(api::SnapshotPage {
-        commit: snap.commit,
+        commit: snap.commit.map(|c| c.to_hex()),
         entries,
         next_after,
     }))

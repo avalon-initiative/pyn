@@ -3595,12 +3595,10 @@
           {
             "name": "before",
             "in": "query",
-            "description": "return commits older than this number",
+            "description": "return commits older than this commit (an id or unique abbreviation)",
             "required": false,
             "schema": {
-              "type": "integer",
-              "format": "int64",
-              "minimum": 0
+              "type": "string"
             }
           },
           {
@@ -3654,12 +3652,10 @@
           {
             "name": "commit",
             "in": "path",
-            "description": "commit number",
+            "description": "commit id, or a unique abbreviation of at least 4 hex digits",
             "required": true,
             "schema": {
-              "type": "integer",
-              "format": "int64",
-              "minimum": 0
+              "type": "string"
             }
           }
         ],
@@ -3669,6 +3665,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Commit"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "ambiguous_commit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -4927,12 +4933,10 @@
           {
             "name": "commit",
             "in": "query",
-            "description": "commit number; the newest if omitted",
+            "description": "commit id or unique abbreviation; the newest if omitted",
             "required": false,
             "schema": {
-              "type": "integer",
-              "format": "int64",
-              "minimum": 0
+              "type": "string"
             }
           },
           {
@@ -4961,6 +4965,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SnapshotPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "ambiguous_commit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -6113,6 +6127,17 @@
             "type": "string",
             "description": "Blob id returned by `PUT /v1/repos/{owner}/{name}/objects`."
           },
+          "file_mode": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/FileMode",
+                "description": "Defaults to `100644`."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "path": {
             "type": "string"
           }
@@ -6176,6 +6201,17 @@
             "type": "string",
             "description": "Blob id returned by `PUT /v1/repos/{owner}/{name}/objects`."
           },
+          "file_mode": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/FileMode",
+                "description": "Defaults to `100644`."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "message": {
             "type": "string"
           },
@@ -6206,17 +6242,20 @@
       },
       "Commit": {
         "type": "object",
-        "description": "One atomic write: a single checkin or a whole changeset. Commits are numbered 1, 2, ... per repository, and the\nrepository as of commit N is the newest revision at or before N of every path.",
+        "description": "One atomic write: a single checkin or a whole changeset, recorded as a git commit on the repository's single\nmainline. `id` is the git commit id, so a commit can be fetched with a unique abbreviation of at least 4 digits.",
         "required": [
           "id",
+          "parents",
+          "tree",
           "author",
-          "message",
+          "committer",
           "created_at",
+          "message",
           "revisions"
         ],
         "properties": {
           "author": {
-            "type": "string"
+            "$ref": "#/components/schemas/Person"
           },
           "changeset": {
             "type": [
@@ -6225,17 +6264,26 @@
             ],
             "description": "Set when the commit was made as a changeset."
           },
+          "committer": {
+            "$ref": "#/components/schemas/Person"
+          },
           "created_at": {
             "type": "string",
-            "format": "date-time"
+            "format": "date-time",
+            "description": "The author and committer time, in whole seconds."
           },
           "id": {
-            "type": "integer",
-            "format": "int64",
-            "minimum": 0
+            "type": "string"
           },
           "message": {
             "type": "string"
+          },
+          "parents": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Empty for the first commit."
           },
           "revisions": {
             "type": "array",
@@ -6243,6 +6291,17 @@
               "$ref": "#/components/schemas/Revision"
             },
             "description": "The revisions the commit made, ordered by path."
+          },
+          "signature": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The commit's `gpgsig` header, when it is signed."
+          },
+          "tree": {
+            "type": "string",
+            "description": "The id of the root git tree of the repository as of this commit."
           }
         }
       },
@@ -6262,12 +6321,10 @@
           },
           "next_before": {
             "type": [
-              "integer",
+              "string",
               "null"
             ],
-            "format": "int64",
-            "description": "Pass as `before` to fetch the next, older page; null on the last page.",
-            "minimum": 0
+            "description": "Pass as `before` to fetch the next, older page; null on the last page."
           }
         }
       },
@@ -6642,6 +6699,15 @@
             "minimum": 0
           }
         }
+      },
+      "FileMode": {
+        "type": "string",
+        "description": "Git's file mode for a file: regular, executable or symbolic link (whose content is the link target).",
+        "enum": [
+          "100644",
+          "100755",
+          "120000"
+        ]
       },
       "FilePage": {
         "type": "object",
@@ -7114,6 +7180,28 @@
           }
         }
       },
+      "Person": {
+        "type": "object",
+        "description": "A commit's author or committer, apart from the time (the commit's `created_at`).",
+        "required": [
+          "name",
+          "email",
+          "offset_minutes"
+        ],
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "offset_minutes": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Minutes east of UTC."
+          }
+        }
+      },
       "PolicyPreview": {
         "type": "object",
         "description": "What a proposed policy would change in the repository, without applying it.",
@@ -7530,12 +7618,24 @@
           "author",
           "message",
           "created_at",
+          "file_mode",
           "commit",
           "hash"
         ],
         "properties": {
           "author": {
             "type": "string"
+          },
+          "author_identity": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Person",
+                "description": "The structured author the v2 hash covers; absent for a v1 revision, whose hash predates it."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "changeset": {
             "type": [
@@ -7545,10 +7645,8 @@
             "description": "Shared by the revisions checked in together as one changeset; absent for a single-path checkin."
           },
           "commit": {
-            "type": "integer",
-            "format": "int64",
-            "description": "The repository-wide commit this revision belongs to; see `Commit`.",
-            "minimum": 0
+            "type": "string",
+            "description": "The id of the commit this revision belongs to; see `Commit`."
           },
           "content": {
             "type": "string",
@@ -7558,9 +7656,13 @@
             "type": "string",
             "format": "date-time"
           },
+          "file_mode": {
+            "$ref": "#/components/schemas/FileMode",
+            "description": "The git file mode of the content."
+          },
           "hash": {
             "type": "string",
-            "description": "SHA-256 hex over the revision's canonical encoding (docs/concepts/integrity.md)."
+            "description": "SHA-256 hex over the revision's canonical encoding, v1 or v2 by `author_identity` (docs/concepts/integrity.md)."
           },
           "id": {
             "type": "integer",
@@ -7901,21 +8003,24 @@
       },
       "SnapshotEntry": {
         "type": "object",
-        "description": "A path as of a commit. A shared path is identified by its `content` id, an exclusive one by its `revision`.",
+        "description": "A path as of a commit: the revision the commit's ancestry gives it. `mode` is what `.pyn/pyn.toml` says at that commit.",
         "required": [
           "path",
           "mode",
           "revision",
-          "content"
+          "content",
+          "file_mode"
         ],
         "properties": {
           "content": {
             "type": "string",
             "description": "The content's git blob id at that revision."
           },
+          "file_mode": {
+            "$ref": "#/components/schemas/FileMode"
+          },
           "mode": {
-            "$ref": "#/components/schemas/Mode",
-            "description": "The mode recorded with the revision."
+            "$ref": "#/components/schemas/Mode"
           },
           "path": {
             "type": "string"
@@ -7937,10 +8042,11 @@
         ],
         "properties": {
           "commit": {
-            "type": "integer",
-            "format": "int64",
-            "description": "The commit the entries are as of; 0 for a repository with no commits.",
-            "minimum": 0
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The id of the commit the entries are as of; null for a repository with no commits."
           },
           "entries": {
             "type": "array",
@@ -8305,6 +8411,13 @@
           "kind"
         ],
         "properties": {
+          "commit": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The commit id, for a problem in a commit record."
+          },
           "event": {
             "type": [
               "integer",
@@ -8336,6 +8449,7 @@
         "required": [
           "paths",
           "revisions",
+          "commits",
           "audit_events",
           "problems"
         ],
@@ -8347,6 +8461,11 @@
             ],
             "format": "int64",
             "description": "Events checked; null when the audit log was not checked (a single path, or no `view_audit`).",
+            "minimum": 0
+          },
+          "commits": {
+            "type": "integer",
+            "format": "int64",
             "minimum": 0
           },
           "paths": {
