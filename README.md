@@ -1,12 +1,57 @@
 # pyn
 
-Version control that merges what can be merged and locks what shouldn't be. Git-style collaboration for files that
-can be merged, Perforce-style exclusive locks (server-enforced, leased locks) for files that shouldn't be edited
-concurrently. Which is which is set per path in [`pyn.toml`](docs/concepts/pyn-toml.md).
+Version control that merges what can be merged and locks what shouldn't be.
 
-Local proof of concept, Phase 1 only (single mainline per repository, shared + exclusive paths, leased locks,
-lock/checkin, log), on a server that hosts many [repositories](docs/concepts/repositories.md). This repo holds the server, the `pyn` command-line client, and the shared libraries. The web UI is
-`pyn-web` (a separate repo).
+Git is great for text. It fails on files that cannot be merged: a `.uasset`, a `.glb`, a scene, a texture, a binary
+blob. Two people edit the same one, and the second has to throw their work away. Teams that hit this bolt on Git LFS
+locking or move to Perforce, and then live in two tools.
+
+pyn is one tool for both. It works like git day to day, and when a path should only ever have one editor, you mark it
+`exclusive` and the server enforces a leased lock on it. A repository with no exclusive paths behaves like any other
+version-controlled repository, and git is enough for it. pyn is for when you sometimes need the lock, and want to have it
+without switching tools later.
+
+## How it works
+
+Each path in a repository is either:
+
+- **shared**: edited concurrently and merged, as in git.
+- **exclusive**: one editor at a time. `pyn lock <path>` takes a lease (8 hours by default), the file is otherwise
+  read-only, and `pyn commit` uploads the change and releases the lock. Locks expire, so an abandoned one cannot block a
+  file forever.
+
+Which is which is a versioned part of the repository, set per path in `.pyn/pyn.toml`:
+
+```toml
+[meta]
+default = "shared"
+
+[exclusive]
+paths = ["Content/", "**/*.uasset", "**/*.glb"]
+
+[shared]
+paths = ["Source/", "docs/"]
+```
+
+The mode is a policy choice, not a file-type rule: a text file can be exclusive and a binary can be shared. See the
+[`pyn.toml` specification](docs/concepts/pyn-toml.md).
+
+The CLI uses git's command names, flags and output shapes wherever pyn has an equivalent (`clone`, `status`, `commit`,
+`log`, `diff`, `show`, `restore`), so `alias git=pyn` is the goal for everyday flows. Every difference is listed in the
+[git compatibility table](docs/concepts/git-compatibility.md). History is tamper-evident (`pyn verify`), and pyn has no
+dependency on git.
+
+## Status
+
+An early, local proof of concept. What works today: a server hosting many repositories, the `pyn` CLI, the web UI
+([`pyn-web`](https://github.com/avalon-initiative/pyn-web)), shared and exclusive paths, leased locks, atomic
+multi-path commits, per-path and per-commit history, diff and show, restore, chunked content storage, accounts,
+organizations and teams, roles, API tokens and SSH keys, optional OpenID Connect sign-in, and an audit log.
+
+Not built yet: branches, merge, remotes (`push`, `pull`, `fetch`), tags, stash, and git import and export. Today a
+repository has a single mainline, and a shared file's commit must be based on the current head, so a stale edit is
+rejected rather than silently overwriting someone else's work. The git-style rows in the compatibility table marked
+*planned* are the roadmap.
 
 ## Run it
 
@@ -19,8 +64,8 @@ make dev                 # builds, starts the server in the background, creates 
 It prints the URL and the sign-ins: `root` / `demo-password` (owns `root/demo`), `alice` / `alice-password` and
 `bob` / `bob-password` (`bob` owns the public `bob/tools`). `root/demo` has nested folders, the policy in
 [`scripts/demo.pyn.toml`](scripts/demo.pyn.toml) (shared `Source/`, `docs/`; exclusive `Content/`, `*.uasset`) and four
-locks held by alice and bob. `make dev` is safe to repeat, `make stop` stops the server and `make demo` re-seeds a server that is
-already running. Log: `_running/logs/pyn.log`. Set `PYN_ADDR` for another port and `PYN_DATABASE_URL` (via `.env`) to keep the data in PostgreSQL.
+locks held by alice and bob. `make dev` is safe to repeat, `make stop` stops the server and `make demo` re-seeds a server
+that is already running. Log: `_running/logs/pyn.log`.
 
 Drive it from the CLI; `make dev` keeps each account's sign-in under `_running/demo-config/<user>`:
 
@@ -31,45 +76,22 @@ export PYN_SERVER=http://127.0.0.1:7878 PYN_REPO=root/demo PYN_CONFIG_DIR=_runni
 ./target/debug/pyn lock Content/World/Main.umap # lock_held (409): alice has it
 ```
 
-And in the browser, with the web app from the `pyn-web` repo (it proxies `/v1` to `http://127.0.0.1:7878`, or to `PYN_API` if set):
+And in the browser, with the web app from the `pyn-web` repo (it proxies `/v1` to `http://127.0.0.1:7878`, or to
+`PYN_API` if set):
 
 ```bash
 cd ../pyn-web && npm ci && npm run dev    # http://localhost:5173, sign in as alice or bob
 ```
 
 For your own server instead of the demo: `cp .env.example .env`, then `make run` (foreground, reads `.env`). A new
-server is uninitialised and prints a one-time setup token in its log; `pyn setup <name> --setup-token <token>` (or `POST /v1/setup`)
-creates the first administrator, then `pyn login <name>`. See [first-run setup](docs/concepts/access.md#first-run-setup).
+server is uninitialised and prints a one-time setup token in its log; `pyn setup <name> --setup-token <token>` (or
+`POST /v1/setup`) creates the first administrator, then `pyn login <name>`. See
+[first-run setup](docs/concepts/access.md#first-run-setup) and [configuration](docs/configuration.md) for every
+environment variable.
 
-| Variable | Meaning |
-| --- | --- |
-| `PYN_DATABASE_URL` | PostgreSQL connection URL; unset means in-memory metadata |
-| `PYN_CREATE_DATABASE` | `true` creates the database if it does not exist |
-| `PYN_DATA_DIR` | Directory for uploaded content; unset means in-memory |
-| `PYN_INSTANCES` | How many server copies share the database, default 1; above 1 the server refuses to start without `PYN_DATABASE_URL` and `PYN_DATA_DIR` (a shared volume), and every copy needs the same `PYN_SETUP_TOKEN` until set up |
-| `PYN_CONFIG` | Fallback policy for repositories that have no `.pyn/pyn.toml` yet; unset means everything is exclusive (`make dev` uses `scripts/demo.pyn.toml`) |
-| `PYN_ADDR` | Listen address, default `127.0.0.1:7878` |
-| `PYN_DEV_AUTH` | `true` accepts the `X-Pyn-User` header with every permission; for server tests only, not used by `make dev` |
-| `PYN_SETUP_TOKEN` | The one-time token that authorises first-run setup, at least 16 characters; unset, the server generates one and prints it to its log. Ignored once the server is set up |
-| `PYN_TOKEN` | Token the CLI signs in with, instead of the sign-in saved by `pyn login` (`PYN_USER` with `PYN_DEV_AUTH`) |
-| `PYN_REGISTRATION` | `invite` (default), `open` or `closed`: how people create accounts; the choice made in first-run setup replaces it |
-| `PYN_ORG_CREATION` | `anyone` (default) or `admins`: who may create organizations; `admins` limits it to server administrators |
-| `PYN_MAX_LOCKS_ALLOWED_PER_USER` | How many locks one user may hold in a repository, default 5; a repository setting or its `pyn.toml` can override it |
-| `PYN_DEFAULT_MAX_REPOSITORIES`, `PYN_DEFAULT_MAX_ORG_MEMBERS`, `PYN_DEFAULT_MAX_STORAGE_BYTES` | Optional defaults for per-owner [limits](docs/concepts/limits.md); unset (the norm for a self-hosted server) means unlimited |
-| `PYN_OIDC_ISSUER`, `PYN_OIDC_CLIENT_ID`, `PYN_OIDC_CLIENT_SECRET` | Optional sign-in with an OpenID Connect provider; unset (the norm) means password only. See [external sign-in](docs/concepts/external-sign-in.md), which also covers `PYN_OIDC_NAME`, `PYN_OIDC_USERNAME_CLAIM`, `PYN_OIDC_CREATE_ACCOUNTS`, `PYN_OIDC_REDIRECT_URL` and `PYN_PASSWORD_SIGN_IN` |
-| `PYN_EMAIL_VERIFICATION` | On unless `false`: open sign-up needs an email address and the account stays inactive until its link is followed |
-| `PYN_REQUIRE_APPROVAL` | `true` holds new open sign-ups until a server administrator approves them |
-| `PYN_PUBLIC_URL` | Where the web app lives, for links in emails; default `http://<PYN_ADDR>`; the address given in first-run setup replaces it |
-| `PYN_EMAIL` | How email is sent; only `log` (writes messages to the server log) exists |
-| `PYN_RATE_SIGN_IN_ACCOUNT`, `PYN_RATE_SIGN_IN_CLIENT`, `PYN_RATE_REGISTER_CLIENT`, `PYN_RATE_MAIL_PER_EMAIL` | Rate limits, defaults 5, 30, 10 and 3; see [access](docs/concepts/access.md#protecting-open-registration) |
-| `PYN_TRUST_FORWARDED_FOR` | `true` takes the client address from the last `X-Forwarded-For` entry; only behind a proxy that sets it |
-| `PYN_PASSWORD_HASHES` | Most password hashes at once, default the number of CPUs |
-| `PYN_SESSION_DAYS` | How long a `pyn login` lasts, default 30 |
-| `PYN_CONFIG_DIR` | Where the CLI keeps `credentials.toml`, default `~/.config/pyn` |
-| `PYN_CLI_CONFIG` | The CLI's user settings file, default `~/.config/pyn/config.toml` (not the server's `PYN_CONFIG`); `pyn config init` creates it, and the first command in a terminal offers to |
-| `PYN_REPO` | The repository (`owner/name`) the CLI acts on, unless a workspace or `--repo` says otherwise |
+## Layout
 
-`make test-live` runs the tests that need a database (`PYN_DATABASE_URL`); each uses its own temporary schema.
-Documentation lives in [docs/](docs/README.md).
+This repo holds the server, the CLI and the shared libraries; the web UI is `pyn-web`, built on the component library
+`pyn-common-ui`. Documentation lives in [docs/](docs/README.md): start with the [concepts](docs/concepts/README.md).
 
-> **Not for production.** Never run with `PYN_DEV_AUTH=true` on a network you do not control.
+Licensed under Apache-2.0.

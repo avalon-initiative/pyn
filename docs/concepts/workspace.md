@@ -94,7 +94,7 @@ like the rest of `.pyn/`, so a team keeps one list.
 `.pyn/local_only/ignore` has the same syntax and is for exclusions that are yours alone, as `.git/info/exclude` is in
 git. It is applied in addition to `.pyn/ignore`: a path is ignored if either file matches, and there are no negations,
 so neither file can un-ignore what the other lists. It is never versioned or pushed and affects only that workspace.
-`pyn status` and checkin read both files. `.pyn/local_only/` itself is always ignored and never needs an entry.
+`pyn status` and commit read both files. `.pyn/local_only/` itself is always ignored and never needs an entry.
 
 The split elsewhere in `.pyn/` follows the same rule: the policy (`pyn.toml`) and the shared ignore are repository
 content, while `config.toml`, `state/` and `cache/` are per-machine and live only in `local_only/`.

@@ -41,7 +41,7 @@ Over HTTP a client can send a large file as chunks (decision #76: plain HTTP, no
    not store.
 3. `PUT .../objects` each missing chunk; a chunk is an ordinary object (at most 4 MiB for assembly).
 4. `POST .../objects/assemble` with the ordered chunk hashes. The server reads the chunks, computes the hash of their
-   concatenation (the client cannot claim one), stores the manifest, and returns that hash to use in a checkin.
+   concatenation (the client cannot claim one), stores the manifest, and returns that hash to use in a commit.
 
 Repeating the sequence after a failure uploads only what is still missing. `GET .../content` sends `X-Pyn-Content` (the
 content hash) and honours `Range`, so the CLI downloads through a `.pyn-part` file, continues a partial one with a `Range`

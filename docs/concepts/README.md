@@ -5,7 +5,7 @@ server hosts many, addressed as `owner/name`.
 
 1. **File content history.** Every path has immutable, numbered revisions (1, 2, 3, ...). A restore appends a new
    revision with old content; nothing is ever rewritten.
-2. **Collaboration policy.** Each path is `shared` (git-style: concurrent edits are allowed and merged later) or
+2. **Collaboration policy.** Each path is `shared` (git-style: concurrent edits are allowed; merging them arrives with branches, see [git compatibility](git-compatibility.md)) or
    `exclusive` (one editor at a time, enforced by the server). Policy is decided by [`pyn.toml`](pyn-toml.md) and is
    not a file-type classification: a text file can be exclusive and a binary can be shared.
 3. **Branch state.** A branch records which revision of each path it references. An exclusive file is still part of
@@ -28,7 +28,7 @@ can check it; see [integrity](integrity.md).
 Every write is one numbered **commit**, and the repository as of any commit can be listed, cloned, compared and
 diffed; see [commits](commits.md).
 
-The server is the only enforcer. A checkin of an exclusive path is rejected unless the caller holds a live lock *and*
+The server is the only enforcer. A commit of an exclusive path is rejected unless the caller holds a live lock *and*
 the base revision equals the current head, so bypassing the CLI (uploading directly) cannot skip the lock. The
 read-only bit on disk is a convenience that stops editors from silently making unshippable edits.
 
@@ -73,7 +73,7 @@ Merging branches takes the later pointer, and since edits are serialized by the 
 ## Shared files, in Phase 1
 
 Shared files follow git's workflow once branches and merge exist (Phase 2), built in house with no dependency on git.
-Until then a shared checkin must also be based on the current head, so a stale edit is rejected rather than silently
+Until then a shared commit must also be based on the current head, so a stale edit is rejected rather than silently
 overwriting someone else's work.
 
 ## Terminology
@@ -81,4 +81,4 @@ overwriting someone else's work.
 - **Path**: repo-relative, `/`-separated, no `.`/`..` segments.
 - **Revision**: one immutable version of one path, numbered per path.
 - **Lease**: how long a lock lasts before it expires on its own.
-- **Base revision**: the revision a client's copy was taken from; sent with lock and checkin.
+- **Base revision**: the revision a client's copy was taken from; sent with lock and commit.

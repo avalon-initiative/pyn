@@ -72,7 +72,7 @@ events leaves a valid chain. A client that remembers a head hash can detect that
 
 - Every revision the server returns is checked against its own hash first. The full history of a path is also checked for
   its links. A mismatch is a `500 history_corrupt` naming the path and revision, never silently served.
-- A checkin chains from the stored head hash only after the head has been checked, so a tampered head cannot be extended.
+- A commit chains from the stored head hash only after the head has been checked, so a tampered head cannot be extended.
 - Audit events are checked when they are read, and the whole chain when verified.
 - `GET /v1/repos/{owner}/{name}/verify?path=` checks a path, or every path and the repository's audit log, and reports every
   break instead of stopping at the first. It needs `read`; the audit log is checked only for callers with `view_audit`.

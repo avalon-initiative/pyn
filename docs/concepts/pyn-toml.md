@@ -1,7 +1,7 @@
 # `pyn.toml`
 
 The repository's collaboration policy, stored at `.pyn/pyn.toml` (see [the `.pyn/` folder](workspace.md)): which paths are `exclusive` (one editor at a time, enforced by the server) and
-which are `shared` (concurrent edits, merged later).
+which are `shared` (concurrent edits; merge is planned, see [git compatibility](git-compatibility.md)).
 
 ```toml
 [meta]

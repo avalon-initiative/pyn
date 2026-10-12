@@ -2,10 +2,13 @@
 
 Prove one thing: a team can safely collaborate on a repository containing both mergeable source and exclusive assets.
 
-In scope: repository rules, shared and exclusive paths, lock, unlock, checkin, leased locks with expiry, per-path
-history (`pyn log`), restore. A single mainline per repository; in-memory storage until the Postgres and token work
-landed. Phase 1 was delivered with one repository per server; a server now hosts many, see
-[repositories](concepts/repositories.md).
+Phase 1 is complete. Scope: repository rules, shared and exclusive paths, lock, unlock, commit, leased locks with
+expiry, per-path history (`pyn log`), restore, on a single mainline per repository.
 
-Out of scope until later phases: branches, workspaces, changesets, merge and conflict handling, pull requests,
-reviews, CI, organizations, SSO, Git import/export, engine and editor integrations, large-file chunking.
+Built since, beyond Phase 1: many repositories per server ([repositories](concepts/repositories.md)), accounts,
+organizations and teams, OpenID Connect sign-in, persistent and chunked content storage, commits, diff and show,
+tamper-evident history, and the web UI.
+
+Still ahead: branches, merge and conflict handling, remotes, pull requests, reviews, CI, Git import/export, and engine
+and editor integrations. The git-style commands not yet built are listed as *planned* in
+[git compatibility](concepts/git-compatibility.md).
