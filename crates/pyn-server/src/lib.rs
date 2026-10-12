@@ -10,8 +10,9 @@ use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router};
 use pyn_core::repositories::OpenRepo;
 use pyn_core::{
-    AccessService, AuditAction, AuditQuery, AuthProvider, ContentHash, HistoryCursor, Identity,
-    ObjectStore, PathFilter, Permission, Principal, PynError, RepoPath, Repositories, RevisionId,
+    AccessService, AuditAction, AuditQuery, AuthProvider, ChangeEntry, ContentHash, HistoryCursor,
+    Identity, ObjectStore, PathFilter, Permission, Principal, PynError, RepoPath, Repositories,
+    RevisionId,
 };
 use pyn_proto as api;
 use serde::Deserialize;
@@ -154,6 +155,7 @@ struct RepoAddress {
         checkout,
         release,
         checkin,
+        changeset,
         restore,
         force_unlock,
         preview_policy,
@@ -179,6 +181,9 @@ struct RepoAddress {
         api::AuditEntry,
         api::AuditPage,
         api::CheckinRequest,
+        api::ChangesetEntry,
+        api::ChangesetRequest,
+        api::ChangesetResponse,
         api::PutObjectResponse,
         api::ErrorBody,
         api::FileEntry,
@@ -424,6 +429,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/repos/{owner}/{name}/checkout", post(checkout))
         .route("/v1/repos/{owner}/{name}/release", post(release))
         .route("/v1/repos/{owner}/{name}/checkin", post(checkin))
+        .route("/v1/repos/{owner}/{name}/changesets", post(changeset))
         .route("/v1/repos/{owner}/{name}/restore", post(restore))
         .route("/v1/repos/{owner}/{name}/force-unlock", post(force_unlock))
         .route(
@@ -665,6 +671,7 @@ fn revision_dto(r: pyn_core::Revision) -> api::Revision {
         created_at: r.created_at,
         restored_from: r.restored_from.map(|r| r.0),
         mode: r.mode.map(mode_dto),
+        changeset: r.changeset,
     }
 }
 
@@ -760,6 +767,45 @@ async fn checkin(
         )
         .await?;
     Ok(Json(revision_dto(rev)))
+}
+
+#[utoipa::path(post, path = "/v1/repos/{owner}/{name}/changesets", params(RepoAddress), request_body = api::ChangesetRequest, responses(
+    (status = 200, body = api::ChangesetResponse),
+    (status = 409, body = api::ErrorBody, description = "lock_required, lock_held or stale_base; nothing was checked in"),
+    (status = 400, body = api::ErrorBody, description = "object_missing, invalid_path, or invalid_request for an empty or repeated path or .pyn/pyn.toml"),
+))]
+/// Check several paths in atomically as one commit with one message.
+async fn changeset(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path((owner, name)): Path<(String, String)>,
+    Json(req): Json<api::ChangesetRequest>,
+) -> ApiResult<Json<api::ChangesetResponse>> {
+    let (repo, who) =
+        authorize_repo(&s, &headers, &owner, &name, Some(Permission::Checkin)).await?;
+    let entries = req
+        .entries
+        .into_iter()
+        .map(|e| {
+            Ok(ChangeEntry {
+                path: RepoPath::new(e.path)?,
+                content: ContentHash::new(e.content),
+                base: e.base_revision.map(RevisionId),
+            })
+        })
+        .collect::<Result<Vec<_>, PynError>>()?;
+    let revs = repo
+        .service
+        .checkin_changeset(&who, entries, req.message)
+        .await?;
+    let changeset = revs
+        .first()
+        .and_then(|r| r.changeset.clone())
+        .unwrap_or_default();
+    Ok(Json(api::ChangesetResponse {
+        changeset,
+        revisions: revs.into_iter().map(revision_dto).collect(),
+    }))
 }
 
 #[utoipa::path(post, path = "/v1/repos/{owner}/{name}/restore", params(RepoAddress), request_body = api::RestoreRequest, responses(

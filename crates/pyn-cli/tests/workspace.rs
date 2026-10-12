@@ -220,3 +220,57 @@ fn ignore_rules_and_settings_work_per_workspace_and_per_user() {
     let outside = env.fails(&ws, "alice", &["lock", "../elsewhere.txt"]);
     assert!(outside.contains("outside the workspace"), "{outside}");
 }
+
+#[test]
+fn checkin_takes_several_paths_as_one_atomic_commit() {
+    let env = start();
+    env.seed("alice", "Source/a.cpp", "int a;", None);
+    env.seed("alice", "Source/b.cpp", "int b;", None);
+    let ws = env.dir("ws");
+    env.ok(
+        &env.dir("home"),
+        "alice",
+        &["clone", &env.source(REPO), ws.to_str().unwrap()],
+    );
+    let ws = ws.canonicalize().unwrap();
+
+    std::fs::write(ws.join("Source/a.cpp"), "int a = 1;").unwrap();
+    std::fs::write(ws.join("Source/b.cpp"), "int b = 1;").unwrap();
+    let out = env.ok(
+        &ws,
+        "alice",
+        &["checkin", "Source/a.cpp", "Source/b.cpp", "-m", "both"],
+    );
+    assert_eq!(out.matches("is now at revision 2").count(), 2, "{out}");
+    assert!(
+        env.ok(&ws, "alice", &["status"])
+            .contains("everything is up to date")
+    );
+
+    env.seed("bob", "Source/a.cpp", "int a = 2;", Some(2));
+    std::fs::write(ws.join("Source/a.cpp"), "int a = 3;").unwrap();
+    std::fs::write(ws.join("Source/b.cpp"), "int b = 3;").unwrap();
+    let err = env.fails(
+        &ws,
+        "alice",
+        &["checkin", "Source/b.cpp", "Source/a.cpp", "-m", "stale"],
+    );
+    assert!(err.contains("stale_base"), "{err}");
+    let log = env.ok(&ws, "alice", &["log", "Source/b.cpp"]);
+    assert_eq!(log.lines().count(), 3, "b.cpp was not checked in: {log}");
+
+    let err = env.fails(
+        &ws,
+        "alice",
+        &[
+            "checkin",
+            "Source/a.cpp",
+            "Source/b.cpp",
+            "--base",
+            "1",
+            "-m",
+            "x",
+        ],
+    );
+    assert!(err.contains("single path"), "{err}");
+}

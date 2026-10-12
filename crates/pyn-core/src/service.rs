@@ -15,8 +15,14 @@ use crate::rules::{Mode, POLICY_PATH, PathFilter, Rules};
 use crate::store::MetadataStore;
 use crate::tree::{ACTIVITY_ACTIONS, DEFAULT_BRANCH, EntryKind, RepoSummary, TreeEntry};
 use crate::types::{
-    ContentHash, Lock, NewRevision, RepoId, RepoPath, Revision, RevisionId, UserId,
+    ChangesetItem, ContentHash, Lock, NewRevision, RepoId, RepoPath, Revision, RevisionId, UserId,
 };
+
+fn changeset_id() -> Result<String> {
+    let mut buf = [0u8; 16];
+    getrandom::fill(&mut buf).map_err(|e| PynError::Storage(format!("no randomness: {e}")))?;
+    Ok(hex::encode(buf))
+}
 
 /// One path in a repository listing: its policy, head revision and live lock.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,6 +31,14 @@ pub struct FileEntry {
     pub mode: Mode,
     pub revision: Option<RevisionId>,
     pub lock: Option<Lock>,
+}
+
+/// One path of a changeset as the caller names it: the uploaded content and the revision it was based on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChangeEntry {
+    pub path: RepoPath,
+    pub content: ContentHash,
+    pub base: Option<RevisionId>,
 }
 
 #[derive(Debug, Clone)]
@@ -264,6 +278,7 @@ impl RepoService {
                 restored_from: None,
                 mode: new.mode_for(path),
                 size,
+                changeset: None,
             };
             match self
                 .meta
@@ -436,13 +451,7 @@ impl RepoService {
             .size(&content)
             .await?
             .ok_or_else(|| PynError::ObjectMissing(content.to_string()))?;
-        let cap = match &self.storage {
-            Some((owner, caps)) => caps.storage_cap(owner).await?.map(|max_bytes| StorageCap {
-                owner: owner.clone(),
-                max_bytes,
-            }),
-            None => None,
-        };
+        let cap = self.storage_cap().await?;
         let revision = NewRevision {
             path: path.clone(),
             content,
@@ -452,6 +461,7 @@ impl RepoService {
             restored_from,
             mode,
             size,
+            changeset: None,
         };
         let rev = self
             .meta
@@ -487,6 +497,86 @@ impl RepoService {
         )
         .await?;
         Ok(rev)
+    }
+
+    /// Checks several paths in as one atomic commit with one message: every stale-base, lock and storage check
+    /// passes or nothing is written. `.pyn/pyn.toml` is not allowed here; it has its own validated flow.
+    pub async fn checkin_changeset(
+        &self,
+        who: &Principal,
+        entries: Vec<ChangeEntry>,
+        message: String,
+    ) -> Result<Vec<Revision>> {
+        if entries.is_empty() {
+            return Err(PynError::InvalidRequest(
+                "a changeset needs at least one path".into(),
+            ));
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for e in &entries {
+            if e.path.as_str() == POLICY_PATH {
+                return Err(PynError::InvalidRequest(format!(
+                    "{POLICY_PATH} cannot be part of a changeset"
+                )));
+            }
+            if !seen.insert(&e.path) {
+                return Err(PynError::InvalidRequest(format!(
+                    "{} appears twice in the changeset",
+                    e.path
+                )));
+            }
+        }
+        let now = self.clock.now();
+        let changeset = changeset_id()?;
+        let cap = self.storage_cap().await?;
+        let mut items = Vec::with_capacity(entries.len());
+        for e in entries {
+            let size = self
+                .objects
+                .size(&e.content)
+                .await?
+                .ok_or_else(|| PynError::ObjectMissing(e.content.to_string()))?;
+            let mode = self.mode_for(&e.path);
+            items.push(ChangesetItem {
+                revision: NewRevision {
+                    path: e.path,
+                    content: e.content,
+                    author: who.user.clone(),
+                    message: message.clone(),
+                    created_at: now,
+                    restored_from: None,
+                    mode,
+                    size,
+                    changeset: Some(changeset.clone()),
+                },
+                expected_head: e.base,
+                lock_holder: (mode == Mode::Exclusive).then(|| who.user.clone()),
+            });
+        }
+        let revs = self
+            .meta
+            .commit_changeset_capped(&self.repo, items, now, cap)
+            .await?;
+        for rev in &revs {
+            self.record(
+                &who.user,
+                AuditAction::Checkin,
+                &rev.path,
+                format!("r{}: {} (changeset {changeset})", rev.id, rev.message),
+            )
+            .await?;
+        }
+        Ok(revs)
+    }
+
+    async fn storage_cap(&self) -> Result<Option<StorageCap>> {
+        match &self.storage {
+            Some((owner, caps)) => Ok(caps.storage_cap(owner).await?.map(|max_bytes| StorageCap {
+                owner: owner.clone(),
+                max_bytes,
+            })),
+            None => Ok(None),
+        }
     }
 
     /// Makes an older revision's content the new head as a fresh revision marked `restored_from`; history is untouched.

@@ -249,7 +249,7 @@ tokens, password), create repositories in its own namespace and read public repo
 | `GET /v1/orgs/{org}/audit` | the organization's audit log (owners; `?before=`, `?limit=`) |
 | `GET /v1/repos/{owner}/{name}/me` | who you are and what you may do there |
 | `GET /v1/repos/{owner}/{name}/{tree,summary}` | [folder listing and summary](browsing.md) |
-| `/v1/repos/{owner}/{name}/{locks,files,content,checkout,release,checkin,restore,force-unlock,audit,objects,history}` | the file and lock operations |
+| `/v1/repos/{owner}/{name}/{locks,files,content,checkout,release,checkin,changesets,restore,force-unlock,audit,objects,history}` | the file and lock operations |
 | `/v1/repos/{owner}/{name}/{members,roles,invites,users}` | who has access |
 
 Account routes do not name a repository: `/v1/register` (and `/v1/register/verify`, `/v1/register/resend`), `/v1/admin`, `/v1/login`, `/v1/session`, `/v1/me`, `/v1/me/password`,

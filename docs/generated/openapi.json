@@ -3355,6 +3355,74 @@
         }
       }
     },
+    "/v1/repos/{owner}/{name}/changesets": {
+      "post": {
+        "tags": [],
+        "summary": "Check several paths in atomically as one commit with one message.",
+        "operationId": "changeset",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "The namespace that owns the repository.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository's name within its owner.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangesetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChangesetResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "object_missing, invalid_path, or invalid_request for an empty or repeated path or .pyn/pyn.toml",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "lock_required, lock_held or stale_base; nothing was checked in",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/repos/{owner}/{name}/checkin": {
       "post": {
         "tags": [],
@@ -5674,6 +5742,69 @@
           }
         }
       },
+      "ChangesetEntry": {
+        "type": "object",
+        "description": "One path of a changeset.",
+        "required": [
+          "path",
+          "content"
+        ],
+        "properties": {
+          "base_revision": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "content": {
+            "type": "string",
+            "description": "Hash returned by `PUT /v1/repos/{owner}/{name}/objects`."
+          },
+          "path": {
+            "type": "string"
+          }
+        }
+      },
+      "ChangesetRequest": {
+        "type": "object",
+        "description": "Paths checked in together: every base and lock check passes or nothing is written.",
+        "required": [
+          "entries",
+          "message"
+        ],
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChangesetEntry"
+            }
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      },
+      "ChangesetResponse": {
+        "type": "object",
+        "required": [
+          "changeset",
+          "revisions"
+        ],
+        "properties": {
+          "changeset": {
+            "type": "string"
+          },
+          "revisions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Revision"
+            },
+            "description": "One revision per requested path, in request order."
+          }
+        }
+      },
       "CheckinRequest": {
         "type": "object",
         "required": [
@@ -6984,6 +7115,13 @@
         "properties": {
           "author": {
             "type": "string"
+          },
+          "changeset": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Shared by the revisions checked in together as one changeset; absent for a single-path checkin."
           },
           "content": {
             "type": "string",

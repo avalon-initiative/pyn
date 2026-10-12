@@ -135,10 +135,12 @@ enum Command {
         #[arg(long, requires = "force")]
         reason: Option<String>,
     },
-    /// Upload a file as the next revision of `path`. Releases the lock.
+    /// Upload files as the next revision of each path, atomically as one commit; releases their locks.
     Checkin {
-        path: String,
-        /// Local file to upload; in a workspace, the file at `path` by default.
+        #[arg(required = true)]
+        paths: Vec<String>,
+        /// Local file to upload for a single path; in a workspace, the file at the path by default.
+        #[arg(long)]
         file: Option<std::path::PathBuf>,
         #[arg(long)]
         base: Option<u64>,
@@ -1033,12 +1035,50 @@ fn main() -> Result<()> {
             println!("locked {} until {}", l.path, time::local(l.expires_at));
         }
         Command::Checkin {
-            path,
+            paths,
+            file,
+            base,
+            message,
+        } if paths.len() > 1 => {
+            if file.is_some() || base.is_some() {
+                bail!("--file and --base need a single path");
+            }
+            let Some(w) = &ws else {
+                bail!("checking in several paths needs a workspace");
+            };
+            let known = w.load_state().unwrap_or_default();
+            let mut entries = Vec::new();
+            let mut hashes = Vec::new();
+            for p in &paths {
+                let path = rp(p)?;
+                let hash = transfer::upload_file(&api, &w.abs(&path))?;
+                entries.push(api::ChangesetEntry {
+                    path: path.clone(),
+                    content: hash.clone(),
+                    base_revision: known.get(&path).map(|k| k.revision),
+                });
+                hashes.push((path, hash));
+            }
+            let body = api::ChangesetRequest { entries, message };
+            let r: api::ChangesetResponse = api
+                .send(
+                    api.request(Method::POST, &api.repo_route("/changesets")?)
+                        .json(&body),
+                )
+                .map_err(|e| behind_hint(e, true))?
+                .json()?;
+            for (rev, (path, hash)) in r.revisions.iter().zip(&hashes) {
+                sync::after_checkin(&api, w, path, rev.id, hash)?;
+                println!("{} is now at revision {}", rev.path, rev.id);
+            }
+        }
+        Command::Checkin {
+            paths,
             file,
             base,
             message,
         } => {
-            let path = rp(&path)?;
+            let path = rp(&paths[0])?;
             let file = match (file, &ws) {
                 (Some(file), _) => file,
                 (None, Some(w)) => w.abs(&path),

@@ -61,7 +61,8 @@ you are inside the workspace and take paths relative to your current directory.
   `locked, not checked in yet`; `pyn update` has nothing to fetch for it. Clean, unlocked files are left out, and a
   workspace with no differences and no locks prints `everything is up to date`.
 - **`pyn update`** downloads new and newer files. A file with local changes is never overwritten; it is reported as skipped.
-- **`pyn checkin <path>`** uploads the file at `<path>` in the workspace; a file name is only needed outside one.
+- **`pyn checkin <path>...`** uploads the files at the given paths in the workspace as one atomic commit with one message
+  (`-m`); with several paths, all succeed or none do. Outside a workspace, one path and `--file <file>` name the upload.
 
 ## Listing output
 

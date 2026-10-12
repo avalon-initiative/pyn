@@ -29,7 +29,7 @@ use crate::repo_policy::{
 use crate::rules::PathFilter;
 use crate::store::MetadataStore;
 use crate::types::{
-    ContentHash, Lock, NewRevision, RepoId, RepoPath, Revision, RevisionId, UserId,
+    ChangesetItem, ContentHash, Lock, NewRevision, RepoId, RepoPath, Revision, RevisionId, UserId,
 };
 
 type Key = (RepoId, RepoPath);
@@ -50,6 +50,76 @@ impl State {
             .filter(|((r, _), _)| self.repos.get(r).is_some_and(|rec| &rec.owner == owner))
             .map(|(_, size)| size)
             .sum()
+    }
+
+    fn commit(
+        &mut self,
+        repo: &RepoId,
+        revision: NewRevision,
+        expected_head: Option<RevisionId>,
+        lock_holder: Option<&UserId>,
+        now: DateTime<Utc>,
+        cap: Option<&StorageCap>,
+    ) -> Result<Revision> {
+        let st = self;
+        let key = (repo.clone(), revision.path.clone());
+
+        if let Some(user) = lock_holder {
+            match st.locks.get(&key) {
+                Some(l) if live(l, now) && &l.owner == user => {}
+                Some(l) if live(l, now) => {
+                    return Err(PynError::LockHeld {
+                        path: revision.path,
+                        owner: l.owner.clone(),
+                        expires_at: l.expires_at,
+                    });
+                }
+                _ => return Err(PynError::LockRequired(revision.path)),
+            }
+        }
+
+        let head = st.revisions.get(&key).and_then(|v| v.last()).map(|r| r.id);
+        if head != expected_head {
+            return Err(PynError::StaleBase {
+                path: revision.path,
+                expected: expected_head,
+                actual: head,
+            });
+        }
+
+        let size_key = (repo.clone(), revision.content.clone());
+        if let Some(cap) = cap
+            && !st.sizes.contains_key(&size_key)
+        {
+            let used = st.stored_by(&cap.owner);
+            if used + revision.size > cap.max_bytes {
+                return Err(PynError::StorageLimitReached {
+                    owner: cap.owner.to_string(),
+                    limit: cap.max_bytes,
+                    used,
+                });
+            }
+        }
+        st.sizes.insert(size_key, revision.size);
+        let created = Revision {
+            id: RevisionId(head.map_or(1, |h| h.0 + 1)),
+            path: revision.path,
+            content: revision.content,
+            author: revision.author,
+            message: revision.message,
+            created_at: revision.created_at,
+            restored_from: revision.restored_from,
+            mode: Some(revision.mode),
+            changeset: revision.changeset,
+        };
+        st.revisions
+            .entry(key.clone())
+            .or_default()
+            .push(created.clone());
+        if lock_holder.is_some() {
+            st.locks.remove(&key);
+        }
+        Ok(created)
     }
 }
 
@@ -209,63 +279,67 @@ impl MetadataStore for MemoryMetadataStore {
         cap: Option<StorageCap>,
     ) -> Result<Revision> {
         let mut st = self.state.lock().unwrap();
-        let key = (repo.clone(), revision.path.clone());
+        st.commit(
+            repo,
+            revision,
+            expected_head,
+            lock_holder,
+            now,
+            cap.as_ref(),
+        )
+    }
 
-        if let Some(user) = lock_holder {
-            match st.locks.get(&key) {
-                Some(l) if live(l, now) && &l.owner == user => {}
-                Some(l) if live(l, now) => {
-                    return Err(PynError::LockHeld {
-                        path: revision.path,
-                        owner: l.owner.clone(),
-                        expires_at: l.expires_at,
-                    });
+    async fn commit_changeset_capped(
+        &self,
+        repo: &RepoId,
+        items: Vec<ChangesetItem>,
+        now: DateTime<Utc>,
+        cap: Option<StorageCap>,
+    ) -> Result<Vec<Revision>> {
+        let mut st = self.state.lock().unwrap();
+        let undo: Vec<_> = items
+            .iter()
+            .map(|i| {
+                let key = (repo.clone(), i.revision.path.clone());
+                let size = (repo.clone(), i.revision.content.clone());
+                let prior = (
+                    st.locks.get(&key).cloned(),
+                    st.revisions.get(&key).map_or(0, Vec::len),
+                    st.sizes.get(&size).copied(),
+                );
+                (key, size, prior)
+            })
+            .collect();
+        let mut out = Vec::with_capacity(items.len());
+        for item in items {
+            match st.commit(
+                repo,
+                item.revision,
+                item.expected_head,
+                item.lock_holder.as_ref(),
+                now,
+                cap.as_ref(),
+            ) {
+                Ok(rev) => out.push(rev),
+                Err(e) => {
+                    for (key, size, (lock, len, stored)) in undo {
+                        if let Some(v) = st.revisions.get_mut(&key) {
+                            v.truncate(len);
+                        }
+                        match lock {
+                            Some(l) => st.locks.insert(key, l),
+                            None => st.locks.remove(&key),
+                        };
+                        match stored {
+                            Some(n) => st.sizes.insert(size, n),
+                            None => st.sizes.remove(&size),
+                        };
+                    }
+                    return Err(e);
                 }
-                _ => return Err(PynError::LockRequired(revision.path)),
             }
         }
-
-        let head = st.revisions.get(&key).and_then(|v| v.last()).map(|r| r.id);
-        if head != expected_head {
-            return Err(PynError::StaleBase {
-                path: revision.path,
-                expected: expected_head,
-                actual: head,
-            });
-        }
-
-        let size_key = (repo.clone(), revision.content.clone());
-        if let Some(cap) = &cap
-            && !st.sizes.contains_key(&size_key)
-        {
-            let used = st.stored_by(&cap.owner);
-            if used + revision.size > cap.max_bytes {
-                return Err(PynError::StorageLimitReached {
-                    owner: cap.owner.to_string(),
-                    limit: cap.max_bytes,
-                    used,
-                });
-            }
-        }
-        st.sizes.insert(size_key, revision.size);
-        let created = Revision {
-            id: RevisionId(head.map_or(1, |h| h.0 + 1)),
-            path: revision.path,
-            content: revision.content,
-            author: revision.author,
-            message: revision.message,
-            created_at: revision.created_at,
-            restored_from: revision.restored_from,
-            mode: Some(revision.mode),
-        };
-        st.revisions
-            .entry(key.clone())
-            .or_default()
-            .push(created.clone());
-        if lock_holder.is_some() {
-            st.locks.remove(&key);
-        }
-        Ok(created)
+        Ok(out)
     }
 
     async fn get_revision(

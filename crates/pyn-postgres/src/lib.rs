@@ -7,8 +7,8 @@ use chrono::{DateTime, Utc};
 use std::str::FromStr;
 
 use pyn_core::{
-    ContentHash, HistoryCursor, Lock, MetadataStore, Mode, NewRevision, PathFilter, PynError,
-    RepoId, RepoPath, RepoRecord, RepoSettings, RepoUpdate, RepoUsage, Result, Revision,
+    ChangesetItem, ContentHash, HistoryCursor, Lock, MetadataStore, Mode, NewRevision, PathFilter,
+    PynError, RepoId, RepoPath, RepoRecord, RepoSettings, RepoUpdate, RepoUsage, Result, Revision,
     RevisionId, StorageCap, Usage, UserId, Visibility,
 };
 use sqlx::migrate::MigrateDatabase;
@@ -56,6 +56,7 @@ fn revision_from(row: &PgRow) -> Result<Revision> {
             .get::<Option<String>, _>("mode")
             .map(|m| mode_from(&m))
             .transpose()?,
+        changeset: row.get("changeset"),
     })
 }
 
@@ -85,6 +86,139 @@ fn repo_from(row: &PgRow) -> Result<RepoRecord> {
             max_locks: row.get::<Option<i32>, _>("max_locks").map(|n| n as u32),
         },
         created_at: row.get("created_at"),
+    })
+}
+
+/// Appends the revision inside `tx` if its head, lock and storage checks pass; the caller commits.
+async fn append_revision(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    repo: &RepoId,
+    revision: NewRevision,
+    expected_head: Option<RevisionId>,
+    lock_holder: Option<&UserId>,
+    now: DateTime<Utc>,
+    cap: Option<&StorageCap>,
+) -> Result<Revision> {
+    if let Some(cap) = cap {
+        // Serializes this owner's capped writes so the usage read below cannot go stale.
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+            .bind(format!("pyn:storage:{}", cap.owner))
+            .execute(&mut **tx)
+            .await
+            .map_err(db)?;
+    }
+
+    if let Some(user) = lock_holder {
+        let row = sqlx::query(
+            "SELECT owner, expires_at FROM locks WHERE repo = $1 AND path = $2 FOR UPDATE",
+        )
+        .bind(repo.as_str())
+        .bind(revision.path.as_str())
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(db)?;
+        match row {
+            Some(r) if r.get::<DateTime<Utc>, _>("expires_at") > now => {
+                let owner: String = r.get("owner");
+                if owner != user.as_str() {
+                    return Err(PynError::LockHeld {
+                        path: revision.path,
+                        owner: UserId::new(owner),
+                        expires_at: r.get("expires_at"),
+                    });
+                }
+            }
+            _ => return Err(PynError::LockRequired(revision.path)),
+        }
+    }
+
+    let expected = expected_head.map_or(0, |r| r.0 as i64);
+    // Inserts only when the head still equals `expected`; a concurrent insert of the same id hits the primary key.
+    let inserted = sqlx::query(
+        "INSERT INTO revisions (repo, path, id, content, author, message, created_at, restored_from, mode, size, changeset)
+         SELECT $1, $2, $3, $4, $5, $6, $7, $9::bigint, $10, $11, $12
+         WHERE COALESCE((SELECT max(id) FROM revisions WHERE repo = $1 AND path = $2), 0) = $8
+         RETURNING id",
+    )
+    .bind(repo.as_str())
+    .bind(revision.path.as_str())
+    .bind(expected + 1)
+    .bind(revision.content.as_str())
+    .bind(revision.author.as_str())
+    .bind(&revision.message)
+    .bind(revision.created_at)
+    .bind(expected)
+    .bind(revision.restored_from.map(|r| r.0 as i64))
+    .bind(mode_str(revision.mode))
+    .bind(revision.size as i64)
+    .bind(&revision.changeset)
+    .fetch_optional(&mut **tx)
+    .await;
+
+    let stale = |actual| PynError::StaleBase {
+        path: revision.path.clone(),
+        expected: expected_head,
+        actual,
+    };
+    match inserted {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            let head: Option<i64> =
+                sqlx::query_scalar("SELECT max(id) FROM revisions WHERE repo = $1 AND path = $2")
+                    .bind(repo.as_str())
+                    .bind(revision.path.as_str())
+                    .fetch_one(&mut **tx)
+                    .await
+                    .map_err(db)?;
+            return Err(stale(head.map(|h| RevisionId(h as u64))));
+        }
+        Err(sqlx::Error::Database(e)) if e.code().as_deref() == Some(UNIQUE_VIOLATION) => {
+            return Err(stale(None));
+        }
+        Err(e) => return Err(db(e)),
+    }
+
+    if let Some(cap) = cap {
+        let known: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM revisions
+                            WHERE repo = $1 AND content = $2 AND size > 0 AND NOT (path = $4 AND id = $3))",
+        )
+        .bind(repo.as_str())
+        .bind(revision.content.as_str())
+        .bind(expected + 1)
+        .bind(revision.path.as_str())
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(db)?;
+        if !known {
+            let total = owner_stored(tx, &cap.owner).await?;
+            if total as u64 > cap.max_bytes {
+                return Err(PynError::StorageLimitReached {
+                    owner: cap.owner.to_string(),
+                    limit: cap.max_bytes,
+                    used: total as u64 - revision.size,
+                });
+            }
+        }
+    }
+    if lock_holder.is_some() {
+        sqlx::query("DELETE FROM locks WHERE repo = $1 AND path = $2")
+            .bind(repo.as_str())
+            .bind(revision.path.as_str())
+            .execute(&mut **tx)
+            .await
+            .map_err(db)?;
+    }
+    Ok(Revision {
+        id: RevisionId((expected + 1) as u64),
+        path: revision.path,
+        content: revision.content,
+        author: revision.author,
+        message: revision.message,
+        created_at: revision.created_at,
+        restored_from: revision.restored_from,
+        mode: Some(revision.mode),
+        changeset: revision.changeset,
     })
 }
 
@@ -371,7 +505,7 @@ impl MetadataStore for PgMetadataStore {
 
     async fn head_revision(&self, repo: &RepoId, path: &RepoPath) -> Result<Option<Revision>> {
         let row = sqlx::query(
-            "SELECT id, path, content, author, message, created_at, restored_from, mode FROM revisions
+            "SELECT id, path, content, author, message, created_at, restored_from, mode, changeset FROM revisions
              WHERE repo = $1 AND path = $2 ORDER BY id DESC LIMIT 1",
         )
         .bind(repo.as_str())
@@ -392,128 +526,45 @@ impl MetadataStore for PgMetadataStore {
         cap: Option<StorageCap>,
     ) -> Result<Revision> {
         let mut tx = self.pool.begin().await.map_err(db)?;
-        if let Some(cap) = &cap {
-            // Serializes this owner's capped writes so the usage read below cannot go stale.
-            sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
-                .bind(format!("pyn:storage:{}", cap.owner))
-                .execute(&mut *tx)
-                .await
-                .map_err(db)?;
-        }
-
-        if let Some(user) = lock_holder {
-            let row = sqlx::query(
-                "SELECT owner, expires_at FROM locks WHERE repo = $1 AND path = $2 FOR UPDATE",
-            )
-            .bind(repo.as_str())
-            .bind(revision.path.as_str())
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(db)?;
-            match row {
-                Some(r) if r.get::<DateTime<Utc>, _>("expires_at") > now => {
-                    let owner: String = r.get("owner");
-                    if owner != user.as_str() {
-                        return Err(PynError::LockHeld {
-                            path: revision.path,
-                            owner: UserId::new(owner),
-                            expires_at: r.get("expires_at"),
-                        });
-                    }
-                }
-                _ => return Err(PynError::LockRequired(revision.path)),
-            }
-        }
-
-        let expected = expected_head.map_or(0, |r| r.0 as i64);
-        // Inserts only when the head still equals `expected`; a concurrent insert of the same id hits the primary key.
-        let inserted = sqlx::query(
-            "INSERT INTO revisions (repo, path, id, content, author, message, created_at, restored_from, mode, size)
-             SELECT $1, $2, $3, $4, $5, $6, $7, $9::bigint, $10, $11
-             WHERE COALESCE((SELECT max(id) FROM revisions WHERE repo = $1 AND path = $2), 0) = $8
-             RETURNING id",
+        let rev = append_revision(
+            &mut tx,
+            repo,
+            revision,
+            expected_head,
+            lock_holder,
+            now,
+            cap.as_ref(),
         )
-        .bind(repo.as_str())
-        .bind(revision.path.as_str())
-        .bind(expected + 1)
-        .bind(revision.content.as_str())
-        .bind(revision.author.as_str())
-        .bind(&revision.message)
-        .bind(revision.created_at)
-        .bind(expected)
-        .bind(revision.restored_from.map(|r| r.0 as i64))
-        .bind(mode_str(revision.mode))
-        .bind(revision.size as i64)
-        .fetch_optional(&mut *tx)
-        .await;
+        .await?;
+        tx.commit().await.map_err(db)?;
+        Ok(rev)
+    }
 
-        let stale = |actual| PynError::StaleBase {
-            path: revision.path.clone(),
-            expected: expected_head,
-            actual,
-        };
-        match inserted {
-            Ok(Some(_)) => {}
-            Ok(None) => {
-                let head: Option<i64> = sqlx::query_scalar(
-                    "SELECT max(id) FROM revisions WHERE repo = $1 AND path = $2",
+    async fn commit_changeset_capped(
+        &self,
+        repo: &RepoId,
+        items: Vec<ChangesetItem>,
+        now: DateTime<Utc>,
+        cap: Option<StorageCap>,
+    ) -> Result<Vec<Revision>> {
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        let mut out = Vec::with_capacity(items.len());
+        for item in items {
+            out.push(
+                append_revision(
+                    &mut tx,
+                    repo,
+                    item.revision,
+                    item.expected_head,
+                    item.lock_holder.as_ref(),
+                    now,
+                    cap.as_ref(),
                 )
-                .bind(repo.as_str())
-                .bind(revision.path.as_str())
-                .fetch_one(&mut *tx)
-                .await
-                .map_err(db)?;
-                return Err(stale(head.map(|h| RevisionId(h as u64))));
-            }
-            Err(sqlx::Error::Database(e)) if e.code().as_deref() == Some(UNIQUE_VIOLATION) => {
-                return Err(stale(None));
-            }
-            Err(e) => return Err(db(e)),
-        }
-
-        if let Some(cap) = &cap {
-            let known: bool = sqlx::query_scalar(
-                "SELECT EXISTS (SELECT 1 FROM revisions
-                                WHERE repo = $1 AND content = $2 AND size > 0 AND NOT (path = $4 AND id = $3))",
-            )
-            .bind(repo.as_str())
-            .bind(revision.content.as_str())
-            .bind(expected + 1)
-            .bind(revision.path.as_str())
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(db)?;
-            if !known {
-                let total = owner_stored(&mut tx, &cap.owner).await?;
-                if total as u64 > cap.max_bytes {
-                    return Err(PynError::StorageLimitReached {
-                        owner: cap.owner.to_string(),
-                        limit: cap.max_bytes,
-                        used: total as u64 - revision.size,
-                    });
-                }
-            }
-        }
-        if lock_holder.is_some() {
-            sqlx::query("DELETE FROM locks WHERE repo = $1 AND path = $2")
-                .bind(repo.as_str())
-                .bind(revision.path.as_str())
-                .execute(&mut *tx)
-                .await
-                .map_err(db)?;
+                .await?,
+            );
         }
         tx.commit().await.map_err(db)?;
-
-        Ok(Revision {
-            id: RevisionId((expected + 1) as u64),
-            path: revision.path,
-            content: revision.content,
-            author: revision.author,
-            message: revision.message,
-            created_at: revision.created_at,
-            restored_from: revision.restored_from,
-            mode: Some(revision.mode),
-        })
+        Ok(out)
     }
 
     async fn get_revision(
@@ -523,7 +574,7 @@ impl MetadataStore for PgMetadataStore {
         id: RevisionId,
     ) -> Result<Option<Revision>> {
         let row = sqlx::query(
-            "SELECT id, path, content, author, message, created_at, restored_from, mode FROM revisions
+            "SELECT id, path, content, author, message, created_at, restored_from, mode, changeset FROM revisions
              WHERE repo = $1 AND path = $2 AND id = $3",
         )
         .bind(repo.as_str())
@@ -537,7 +588,7 @@ impl MetadataStore for PgMetadataStore {
 
     async fn list_head_revisions(&self, repo: &RepoId) -> Result<Vec<Revision>> {
         let rows = sqlx::query(
-            "SELECT DISTINCT ON (path) id, path, content, author, message, created_at, restored_from, mode
+            "SELECT DISTINCT ON (path) id, path, content, author, message, created_at, restored_from, mode, changeset
              FROM revisions WHERE repo = $1 ORDER BY path, id DESC",
         )
         .bind(repo.as_str())
@@ -549,7 +600,7 @@ impl MetadataStore for PgMetadataStore {
 
     async fn history(&self, repo: &RepoId, path: &RepoPath) -> Result<Vec<Revision>> {
         let rows = sqlx::query(
-            "SELECT id, path, content, author, message, created_at, restored_from, mode FROM revisions
+            "SELECT id, path, content, author, message, created_at, restored_from, mode, changeset FROM revisions
              WHERE repo = $1 AND path = $2 ORDER BY id",
         )
         .bind(repo.as_str())
@@ -573,7 +624,7 @@ impl MetadataStore for PgMetadataStore {
         let mut out = Vec::new();
         loop {
             let rows = sqlx::query(
-                "SELECT id, path, content, author, message, created_at, restored_from, mode FROM revisions
+                "SELECT id, path, content, author, message, created_at, restored_from, mode, changeset FROM revisions
                  WHERE repo = $1
                    AND ($2::timestamptz IS NULL
                         OR (created_at, path COLLATE \"C\", id) < ($2, $3::text COLLATE \"C\", $4::bigint))

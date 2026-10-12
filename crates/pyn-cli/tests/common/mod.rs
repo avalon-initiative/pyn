@@ -236,7 +236,14 @@ impl Env {
             args.extend(&extra);
             self.ok(&dir, user, &args);
         }
-        let mut args = vec!["checkin", path, file.to_str().unwrap(), "-m", "seed"];
+        let mut args = vec![
+            "checkin",
+            path,
+            "--file",
+            file.to_str().unwrap(),
+            "-m",
+            "seed",
+        ];
         args.extend(&extra);
         self.ok(&dir, user, &args);
     }

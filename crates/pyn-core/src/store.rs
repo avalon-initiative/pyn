@@ -6,7 +6,9 @@ use crate::history::HistoryCursor;
 use crate::limits::{RepoUsage, StorageCap, Usage};
 use crate::repo::{RepoRecord, RepoUpdate};
 use crate::rules::PathFilter;
-use crate::types::{Lock, NewRevision, RepoId, RepoPath, Revision, RevisionId, UserId};
+use crate::types::{
+    ChangesetItem, Lock, NewRevision, RepoId, RepoPath, Revision, RevisionId, UserId,
+};
 
 /// Persistence for the repository registry, locks and revisions. Each method is one atomic check-and-write; policy lives in
 /// `RepoService`. A lock with `expires_at <= now` counts as absent.
@@ -84,6 +86,16 @@ pub trait MetadataStore: Send + Sync {
         now: DateTime<Utc>,
         cap: Option<StorageCap>,
     ) -> Result<Revision>;
+
+    /// Appends every item's revision, or none: the first item that fails its stale-base, lock or storage check is the
+    /// error and nothing is written. Paths are distinct; each exclusive item's lock is released with its append.
+    async fn commit_changeset_capped(
+        &self,
+        repo: &RepoId,
+        items: Vec<ChangesetItem>,
+        now: DateTime<Utc>,
+        cap: Option<StorageCap>,
+    ) -> Result<Vec<Revision>>;
 
     async fn get_revision(
         &self,

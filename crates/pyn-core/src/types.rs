@@ -103,6 +103,8 @@ pub struct Revision {
     pub restored_from: Option<RevisionId>,
     /// The path's mode when the revision was made; `None` for revisions that predate recording.
     pub mode: Option<Mode>,
+    /// Shared by the revisions a changeset checked in together; `None` for a single-path checkin.
+    pub changeset: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -116,6 +118,15 @@ pub struct NewRevision {
     pub mode: Mode,
     /// Length of the content in bytes.
     pub size: u64,
+    pub changeset: Option<String>,
+}
+
+/// One path of a changeset: its revision, the head it must be based on and, for an exclusive path, the lock holder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChangesetItem {
+    pub revision: NewRevision,
+    pub expected_head: Option<RevisionId>,
+    pub lock_holder: Option<UserId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

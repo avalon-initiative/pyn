@@ -23,9 +23,9 @@ use crate::{
     Repositories,
 };
 use crate::{
-    AuditAction, AuditQuery, AuditScope, AuditStore, ContentHash, ManualClock, MetadataStore,
-    ObjectStore, PynError, RepoId, RepoPath, RepoRecord, RepoService, RepoSettings, RepoUpdate,
-    RevisionId, Rules, ServiceConfig, UserId, Visibility,
+    AuditAction, AuditQuery, AuditScope, AuditStore, ChangeEntry, ContentHash, ManualClock,
+    MetadataStore, ObjectStore, PynError, RepoId, RepoPath, RepoRecord, RepoService, RepoSettings,
+    RepoUpdate, RevisionId, Rules, ServiceConfig, UserId, Visibility,
 };
 
 pub type Store = Arc<dyn MetadataStore>;
@@ -1584,6 +1584,147 @@ pub async fn usage_counts_distinct_content_once_per_repository(store: Store) {
     );
 }
 
+fn entry(p: &RepoPath, content: &ContentHash, base: Option<u64>) -> ChangeEntry {
+    ChangeEntry {
+        path: p.clone(),
+        content: content.clone(),
+        base: base.map(RevisionId),
+    }
+}
+
+pub async fn a_changeset_lands_every_path_as_one_commit(store: Store) {
+    let h = harness(store);
+    let (src, map) = (path("Source/a.cpp"), path("Content/a.umap"));
+    h.svc.checkout(&map, &user("alice"), None).await.unwrap();
+    let (c1, c2) = (blob(&h, "one").await, blob(&h, "two").await);
+    let revs = h
+        .svc
+        .checkin_changeset(
+            &who("alice"),
+            vec![entry(&src, &c1, None), entry(&map, &c2, None)],
+            "both".into(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(revs.len(), 2);
+    assert!(revs[0].changeset.is_some());
+    assert_eq!(revs[0].changeset, revs[1].changeset);
+    assert!(revs.iter().all(|r| r.message == "both"));
+    assert_eq!(
+        h.svc.history(&map).await.unwrap()[0].changeset,
+        revs[1].changeset
+    );
+    assert!(h.svc.locks().await.unwrap().is_empty());
+    let single = h
+        .svc
+        .checkin(&who("alice"), &src, c2, Some(RevisionId(1)), "solo".into())
+        .await
+        .unwrap();
+    assert_eq!(single.changeset, None);
+}
+
+pub async fn a_changeset_with_a_stale_path_applies_nothing(store: Store) {
+    let h = harness(store);
+    let (a, b) = (path("Source/a.cpp"), path("Source/b.cpp"));
+    let c = blob(&h, "v1").await;
+    h.svc
+        .checkin(&who("alice"), &b, c.clone(), None, "seed".into())
+        .await
+        .unwrap();
+    let err = h
+        .svc
+        .checkin_changeset(
+            &who("alice"),
+            vec![entry(&a, &c, None), entry(&b, &c, None)],
+            "stale".into(),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, PynError::StaleBase { ref path, .. } if path == &b),
+        "{err}"
+    );
+    assert!(h.svc.head(&a).await.unwrap().is_none());
+    assert_eq!(h.svc.history(&b).await.unwrap().len(), 1);
+}
+
+pub async fn a_changeset_without_a_lock_applies_nothing_and_keeps_other_locks(store: Store) {
+    let h = harness(store);
+    let (src, held, free) = (
+        path("Source/a.cpp"),
+        path("Content/held.umap"),
+        path("Content/free.umap"),
+    );
+    h.svc.checkout(&held, &user("alice"), None).await.unwrap();
+    h.svc.checkout(&free, &user("bob"), None).await.unwrap();
+    let c = blob(&h, "v1").await;
+    let err = h
+        .svc
+        .checkin_changeset(
+            &who("alice"),
+            vec![
+                entry(&src, &c, None),
+                entry(&held, &c, None),
+                entry(&free, &c, None),
+            ],
+            "no lock".into(),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::LockHeld { .. }), "{err}");
+    for p in [&src, &held, &free] {
+        assert!(h.svc.head(p).await.unwrap().is_none(), "{p}");
+    }
+    let locks = h.svc.locks().await.unwrap();
+    assert_eq!(locks.len(), 2, "a refused changeset releases no lock");
+}
+
+pub async fn a_changeset_rejects_empty_duplicate_policy_and_unknown_content(store: Store) {
+    let h = harness(store);
+    let a = path("Source/a.cpp");
+    let c = blob(&h, "v1").await;
+    let who = who("alice");
+    let call = |entries: Vec<ChangeEntry>| h.svc.checkin_changeset(&who, entries, "m".into());
+    let err = call(vec![]).await.unwrap_err();
+    assert!(matches!(err, PynError::InvalidRequest(_)), "{err}");
+    let err = call(vec![entry(&a, &c, None), entry(&a, &c, None)])
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::InvalidRequest(_)), "{err}");
+    let err = call(vec![entry(&path(".pyn/pyn.toml"), &c, None)])
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::InvalidRequest(_)), "{err}");
+    let missing = ContentHash::new("0".repeat(64));
+    let err = call(vec![entry(&a, &missing, None)]).await.unwrap_err();
+    assert!(matches!(err, PynError::ObjectMissing(_)), "{err}");
+    assert!(h.svc.head(&a).await.unwrap().is_none());
+}
+
+pub async fn a_changeset_past_the_storage_cap_applies_nothing(store: Store) {
+    let h = harness(store.clone());
+    let svc = capped_service(&store, &h, "game", Some(10));
+    store
+        .create_repo(repo_record("game", "alice", "game"))
+        .await
+        .unwrap();
+    let (a, b) = (path("Source/a"), path("Source/b"));
+    let (six, other) = (blob(&h, "123456").await, blob(&h, "abcdef").await);
+    let err = svc
+        .checkin_changeset(
+            &who("alice"),
+            vec![entry(&a, &six, None), entry(&b, &other, None)],
+            "big".into(),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::StorageLimitReached { .. }), "{err}");
+    assert!(svc.head(&a).await.unwrap().is_none());
+    svc.checkin(&who("alice"), &a, six, None, "fits".into())
+        .await
+        .unwrap();
+}
+
 pub async fn checkin_past_the_storage_cap_is_refused_unless_it_adds_nothing(store: Store) {
     let h = harness(store.clone());
     let game = capped_service(&store, &h, "game", Some(10));
@@ -1760,6 +1901,11 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; repository_creation_stops_at_the_owners_cap);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; racing_repository_creations_cannot_exceed_the_cap);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; usage_counts_distinct_content_once_per_repository);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_changeset_lands_every_path_as_one_commit);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_changeset_with_a_stale_path_applies_nothing);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_changeset_without_a_lock_applies_nothing_and_keeps_other_locks);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_changeset_rejects_empty_duplicate_policy_and_unknown_content);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_changeset_past_the_storage_cap_applies_nothing);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; checkin_past_the_storage_cap_is_refused_unless_it_adds_nothing);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; racing_checkins_cannot_exceed_the_storage_cap);
     };
@@ -2275,6 +2421,18 @@ impl MetadataStore for HookedMeta {
     ) -> crate::Result<crate::Revision> {
         self.inner
             .commit_revision_capped(repo, revision, expected_head, lock_holder, now, cap)
+            .await
+    }
+
+    async fn commit_changeset_capped(
+        &self,
+        repo: &RepoId,
+        items: Vec<crate::ChangesetItem>,
+        now: chrono::DateTime<Utc>,
+        cap: Option<crate::StorageCap>,
+    ) -> crate::Result<Vec<crate::Revision>> {
+        self.inner
+            .commit_changeset_capped(repo, items, now, cap)
             .await
     }
 

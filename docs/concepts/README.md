@@ -17,6 +17,11 @@ Exclusive files are materialized **read-only** on disk. To edit one, a user runs
 grants a **leased lock** (8 hours by default) if nobody else holds it and the user's copy is at the current head.
 `pyn checkin` uploads the new content, creates the next revision and releases the lock; `pyn unlock <path>` gives the lock up without a checkin.
 
+`pyn checkin a b c -m "message"` checks several paths in as one **changeset**: one message, and every stale-base and lock
+check must pass or nothing is applied (no revision is written and no lock is released). The revisions of a changeset share
+a changeset id, shown by the API, and each path still has its own per-path revision number. `.pyn/pyn.toml` is not part of
+a changeset; policy changes keep their own validated flow. Changeset hashing as in decision #65 is provisional.
+
 The server is the only enforcer. A checkin of an exclusive path is rejected unless the caller holds a live lock *and*
 the base revision equals the current head, so bypassing the CLI (uploading directly) cannot skip the lock. The
 read-only bit on disk is a convenience that stops editors from silently making unshippable edits.

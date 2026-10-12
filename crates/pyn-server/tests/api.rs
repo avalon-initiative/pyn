@@ -3139,3 +3139,75 @@ async fn chunks_are_checked_for_and_assembled_into_one_object() {
         .unwrap();
     assert_eq!(r.status(), StatusCode::BAD_REQUEST);
 }
+
+#[tokio::test]
+async fn a_changeset_checks_in_every_path_or_none() {
+    let app = router(state_with(false, RegistrationMode::Open).await);
+    let alice = register_and_sign_in(&app, "alice").await;
+    create_repo(&app, &alice, "game").await;
+    let uri = "/v1/repos/alice/game/changesets";
+    let (one, two) = (
+        put_blob(&app, "game", &alice, "one").await,
+        put_blob(&app, "game", &alice, "two").await,
+    );
+    let entry = |path: &str, content: &str, base: Option<u64>| serde_json::json!({"path": path, "content": content, "base_revision": base});
+
+    let r = send(
+        &app,
+        "POST",
+        uri,
+        &alice,
+        Some(serde_json::json!({
+            "entries": [entry("a.txt", &one, None), entry("b.txt", &two, None)],
+            "message": "both",
+        })),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let done: api::ChangesetResponse = body_json(r).await;
+    assert_eq!(done.revisions.len(), 2);
+    assert!(
+        done.revisions
+            .iter()
+            .all(|r| r.changeset.as_deref() == Some(done.changeset.as_str()) && r.message == "both")
+    );
+
+    let r = send(
+        &app,
+        "POST",
+        uri,
+        &alice,
+        Some(serde_json::json!({
+            "entries": [entry("c.txt", &one, None), entry("b.txt", &one, None)],
+            "message": "stale",
+        })),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::CONFLICT);
+    let err: api::ErrorBody = body_json(r).await;
+    assert_eq!(err.code, "stale_base");
+    let r = send(
+        &app,
+        "GET",
+        "/v1/repos/alice/game/history?path=c.txt",
+        &alice,
+        None,
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let history: api::HistoryPage = body_json(r).await;
+    assert!(
+        history.revisions.is_empty(),
+        "a refused changeset leaves nothing"
+    );
+
+    let r = send(
+        &app,
+        "POST",
+        uri,
+        &alice,
+        Some(serde_json::json!({"entries": [], "message": "none"})),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+}

@@ -35,6 +35,8 @@ pub struct Revision {
     pub restored_from: Option<u64>,
     /// The path's mode when the revision was made; absent for revisions that predate recording it.
     pub mode: Option<Mode>,
+    /// Shared by the revisions checked in together as one changeset; absent for a single-path checkin.
+    pub changeset: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -68,6 +70,29 @@ pub struct CheckinRequest {
     pub content: String,
     pub base_revision: Option<u64>,
     pub message: String,
+}
+
+/// One path of a changeset.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ChangesetEntry {
+    pub path: String,
+    /// Hash returned by `PUT /v1/repos/{owner}/{name}/objects`.
+    pub content: String,
+    pub base_revision: Option<u64>,
+}
+
+/// Paths checked in together: every base and lock check passes or nothing is written.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ChangesetRequest {
+    pub entries: Vec<ChangesetEntry>,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ChangesetResponse {
+    pub changeset: String,
+    /// One revision per requested path, in request order.
+    pub revisions: Vec<Revision>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
