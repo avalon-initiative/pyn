@@ -1,0 +1,21 @@
+diff --git a/src/important.tmp b/src/important.tmp
+new file mode 100644
+index 0000000..14f5162
+--- /dev/null
++++ b/src/important.tmp
+@@ -0,0 +1 @@
++x
+diff --git a/src/lib.rs b/src/lib.rs
+index dccbb7a..daabaaa 100755
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1 +1 @@
+-pub fn f() {}
++pub fn f() { 2 }
+diff --git a/staged.txt b/staged.txt
+new file mode 100644
+index 0000000..52a5771
+--- /dev/null
++++ b/staged.txt
+@@ -0,0 +1 @@
++staged

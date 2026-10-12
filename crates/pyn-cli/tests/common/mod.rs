@@ -2,6 +2,8 @@
 //! Each test binary uses a different part of this, so unused helpers are expected.
 #![allow(dead_code)]
 
+pub mod gitfix;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::Arc;

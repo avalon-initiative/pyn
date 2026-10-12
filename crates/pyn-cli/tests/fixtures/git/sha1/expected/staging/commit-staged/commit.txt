@@ -1,0 +1,6 @@
+tree 28e82e4ebd1316117fae4ebca5388f4b0d5c1758
+parent 06fbff9729778f6ff2a07d62d4566e7ddaf81437
+author Staging Author <staging@example.com> 1700000000 +0200
+committer Staging Committer <committer@example.com> 1700000100 -0530
+
+staged only

@@ -311,12 +311,12 @@ fn plan(git: &GitHome, index: &Index, specs: &Specs, update: bool, force: bool) 
     if !force {
         for (_, prefix) in &specs.named {
             let bytes = prefix.as_bytes();
-            let is_file =
-                std::fs::symlink_metadata(fs_path(root, bytes)).is_ok_and(|m| !m.is_dir());
+            let Ok(meta) = std::fs::symlink_metadata(fs_path(root, bytes)) else {
+                continue;
+            };
             if !prefix.is_empty()
-                && is_file
-                && !tracked.contains(bytes)
-                && ignores.hides(git, bytes, false)?
+                && !tracked.iter().any(|p| under(p, bytes))
+                && ignores.hides(git, bytes, meta.is_dir())?
                 && !out.ignored.iter().any(|p| p == bytes)
             {
                 out.ignored.push(bytes.to_vec());

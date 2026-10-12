@@ -223,8 +223,9 @@ fn diff_exit_codes_follow_git() {
     assert_eq!(quiet.status.code(), Some(1));
     assert!(quiet.stdout.is_empty());
 
-    let staged = env.fails(&ws, "alice", &["diff", "--cached"]);
-    assert!(staged.contains("no staging area"), "{staged}");
+    let staged = env.run(&ws, "alice", &["diff", "--cached", "--exit-code"]);
+    assert_eq!(staged.status.code(), Some(0), "nothing is staged");
+    assert!(staged.stdout.is_empty());
 }
 
 #[test]

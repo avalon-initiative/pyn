@@ -1,0 +1,43 @@
+diff --git a/new.txt b/new.txt
+new file mode 100644
+index 0000000..6f50df3
+--- /dev/null
++++ b/new.txt
+@@ -0,0 +1 @@
++new
+diff --git a/newdir/a.txt b/newdir/a.txt
+new file mode 100644
+index 0000000..f8625e4
+--- /dev/null
++++ b/newdir/a.txt
+@@ -0,0 +1 @@
++a
+diff --git a/newdir/b.txt b/newdir/b.txt
+new file mode 100644
+index 0000000..9b69d30
+--- /dev/null
++++ b/newdir/b.txt
+@@ -0,0 +1 @@
++b
+diff --git a/newlink b/newlink
+new file mode 120000
+index 0000000..decdc4f
+--- /dev/null
++++ b/newlink
+@@ -0,0 +1 @@
++new.txt
+\ No newline at end of file
+diff --git a/src/lib.rs b/src/lib.rs
+index dccbb7a..5524b78 100755
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1 +1 @@
+-pub fn f() {}
++pub fn f() { 1 }
+diff --git a/staged.txt b/staged.txt
+new file mode 100644
+index 0000000..52a5771
+--- /dev/null
++++ b/staged.txt
+@@ -0,0 +1 @@
++staged

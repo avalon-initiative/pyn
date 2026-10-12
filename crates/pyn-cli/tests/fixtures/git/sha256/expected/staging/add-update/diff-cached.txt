@@ -1,0 +1,29 @@
+diff --git a/README.md b/README.md
+index fe76325..e5624bc 100644
+--- a/README.md
++++ b/README.md
+@@ -1,2 +1,3 @@
+ hello
+ world
++more
+diff --git a/data.bin b/data.bin
+deleted file mode 100644
+index b386500..0000000
+Binary files a/data.bin and /dev/null differ
+diff --git a/feature.txt b/feature.txt
+old mode 100644
+new mode 100755
+diff --git a/src/lib.rs b/src/lib.rs
+index dccbb7a..daabaaa 100755
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1 +1 @@
+-pub fn f() {}
++pub fn f() { 2 }
+diff --git a/staged.txt b/staged.txt
+new file mode 100644
+index 0000000..52a5771
+--- /dev/null
++++ b/staged.txt
+@@ -0,0 +1 @@
++staged
