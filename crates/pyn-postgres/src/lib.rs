@@ -1051,4 +1051,102 @@ mod tests {
         let ids: Vec<u64> = snap.iter().map(|r| r.id.0).collect();
         assert_eq!(ids, vec![1, 1, 1]);
     }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "needs PYN_DATABASE_URL"]
+    async fn existing_revisions_and_events_are_hashed_once_in_chain_order() {
+        let url = std::env::var("PYN_DATABASE_URL").expect("PYN_DATABASE_URL must be set");
+        let store = PgMetadataStore::connect_in_scratch_schema(&url)
+            .await
+            .unwrap();
+        for stmt in [
+            "INSERT INTO revisions (repo, path, id, content, author, message, created_at, commit_no) VALUES
+               ('r', 'a', 1, 'h1', 'u', 'm1', '2026-01-01T00:00:00.123456Z', 1),
+               ('r', 'a', 2, 'h2', 'u', 'm2', '2026-01-02T00:00:00Z', 2),
+               ('r', 'b', 1, 'h3', 'u', 'm3', '2026-01-03T00:00:00Z', 3)",
+            "INSERT INTO audit_events (repo, at, actor, action, path, detail) VALUES
+               ('r', '2026-01-01T00:00:00Z', 'u', 'checkin', 'a', 'd1'),
+               ('@server', '2026-01-02T00:00:00Z', 'u', 'admin_granted', NULL, 'd2'),
+               ('r', '2026-01-03T00:00:00Z', 'u', 'checkin', 'a', 'd3')",
+        ] {
+            sqlx::query(stmt).execute(&store.pool).await.unwrap();
+        }
+        hashing::backfill(&store.pool).await.unwrap();
+
+        let repo = RepoId::new("r");
+        let a = store
+            .history(&repo, &RepoPath::new("a").unwrap())
+            .await
+            .unwrap();
+        assert!(pyn_core::integrity::verify_revisions(&a).is_empty());
+        assert_eq!(a[1].previous.as_ref(), Some(&a[0].hash));
+        let b = store
+            .history(&repo, &RepoPath::new("b").unwrap())
+            .await
+            .unwrap();
+        assert_eq!(b[0].previous, None);
+
+        let scope = pyn_core::AuditScope::Repo(repo);
+        let q = pyn_core::AuditQuery {
+            limit: 10,
+            ..Default::default()
+        };
+        let mut events = pyn_core::AuditStore::list(&store, &scope, &q)
+            .await
+            .unwrap();
+        events.reverse();
+        assert!(pyn_core::integrity::verify_audit(&scope, &events).is_empty());
+        assert_eq!(events.len(), 2);
+
+        let before: Vec<String> =
+            sqlx::query_scalar("SELECT hash FROM revisions ORDER BY repo, path, id")
+                .fetch_all(&store.pool)
+                .await
+                .unwrap();
+        hashing::backfill(&store.pool).await.unwrap();
+        let after: Vec<String> =
+            sqlx::query_scalar("SELECT hash FROM revisions ORDER BY repo, path, id")
+                .fetch_all(&store.pool)
+                .await
+                .unwrap();
+        assert_eq!(before, after, "a second run changes nothing");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "needs PYN_DATABASE_URL"]
+    async fn a_row_edited_in_sql_fails_verification() {
+        let url = std::env::var("PYN_DATABASE_URL").expect("PYN_DATABASE_URL must be set");
+        let store = PgMetadataStore::connect_in_scratch_schema(&url)
+            .await
+            .unwrap();
+        let repo = RepoId::new("r");
+        let path = RepoPath::new("a").unwrap();
+        for i in 0..2u64 {
+            let rev = NewRevision {
+                path: path.clone(),
+                content: ContentHash::new(format!("c{i}")),
+                author: UserId::new("u"),
+                message: "m".into(),
+                created_at: "2026-01-01T00:00:00.123456789Z".parse().unwrap(),
+                restored_from: None,
+                mode: Mode::Shared,
+                size: 1,
+                changeset: None,
+            };
+            let base = (i > 0).then_some(RevisionId(i));
+            store
+                .commit_revision(&repo, rev, base, None, Utc::now())
+                .await
+                .unwrap();
+        }
+        let revs = store.history(&repo, &path).await.unwrap();
+        assert!(pyn_core::integrity::verify_revisions(&revs).is_empty());
+
+        sqlx::query("UPDATE revisions SET message = 'x' WHERE id = 1")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        let revs = store.history(&repo, &path).await.unwrap();
+        assert_eq!(pyn_core::integrity::verify_revisions(&revs).len(), 1);
+    }
 }
