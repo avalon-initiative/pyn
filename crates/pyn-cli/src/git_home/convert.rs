@@ -6,6 +6,7 @@ use std::path::PathBuf;
 
 use anyhow::{Result, bail};
 use pyn_gitwork::{Ignore, Level, parse_rules};
+use pyn_object::FileMode;
 
 use super::{GitHome, path_string, user_dirs};
 
@@ -180,12 +181,14 @@ fn why(git: &GitHome, conv: &Conv) -> Option<String> {
 /// Fails, naming the first path git would convert; warns once about paths a Git LFS filter owns.
 pub(super) fn refuse_conversions<'a>(
     git: &GitHome,
-    paths: impl IntoIterator<Item = &'a [u8]>,
+    files: impl IntoIterator<Item = (&'a [u8], FileMode)>,
 ) -> Result<()> {
     let mut cache: BTreeMap<Vec<u8>, ()> = BTreeMap::new();
     let mut lfs = false;
-    for path in paths {
-        if cache.insert(path.to_vec(), ()).is_some() {
+    for (path, mode) in files {
+        if matches!(mode, FileMode::Symlink | FileMode::Gitlink | FileMode::Tree)
+            || cache.insert(path.to_vec(), ()).is_some()
+        {
             continue;
         }
         let conv = attributes_of(git, path)?;

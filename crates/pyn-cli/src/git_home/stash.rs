@@ -106,7 +106,7 @@ fn find(git: &GitHome, name: Option<&str>) -> Result<(usize, ObjectId)> {
     };
     match all.get(n) {
         Some(e) => Ok((n, e.new)),
-        None if all.is_empty() => return Err(Refused("No stash entries found.".into()).into()),
+        None if all.is_empty() => Err(Refused("No stash entries found.".into()).into()),
         None => bail!("log for 'stash' only has {} entries.", all.len()),
     }
 }
@@ -262,6 +262,27 @@ fn apply(git: &GitHome, name: Option<&str>, pop: bool) -> Result<()> {
     let version = opened.index.version;
     let base_tree = commit_tree(git, &stash.parents[0])?;
     let current_tree = tree_of_entries(git, entries_of(&opened.index), version)?;
+    let restore_untracked: BTreeMap<Vec<u8>, Entry> = match stash.parents.get(2) {
+        Some(u) => {
+            let tree = commit_tree(git, u)?;
+            git.repo.flatten(Some(&tree), &Pathspec::default())?
+        }
+        None => BTreeMap::new(),
+    };
+    let incoming =
+        git.repo
+            .diff_trees(Some(&base_tree), Some(&stash.tree), &Pathspec::default())?;
+    convert::refuse_conversions(
+        git,
+        incoming
+            .iter()
+            .filter_map(|c| c.new.map(|e| (c.path.as_slice(), e.mode)))
+            .chain(
+                restore_untracked
+                    .iter()
+                    .map(|(p, e)| (p.as_slice(), e.mode)),
+            ),
+    )?;
     let merged = merge_trees(
         git,
         Some(&base_tree),
@@ -280,7 +301,6 @@ fn apply(git: &GitHome, name: Option<&str>, pop: bool) -> Result<()> {
     };
     let none = HashSet::new();
     let mut blocked = Blocked::default();
-    let mut writes: Vec<&[u8]> = Vec::new();
     for (path, resolved) in &merged.paths {
         let here = ours.get(path);
         let changes = match resolved {
@@ -290,9 +310,6 @@ fn apply(git: &GitHome, name: Option<&str>, pop: bool) -> Result<()> {
         if !changes {
             continue;
         }
-        if !matches!(resolved, Resolved::Take(None)) {
-            writes.push(path);
-        }
         match here {
             Some(_) if matches!(dirty.get(path), Some(Kind::Modified | Kind::TypeChange)) => {
                 blocked.local.push(path.clone());
@@ -301,22 +318,9 @@ fn apply(git: &GitHome, name: Option<&str>, pop: bool) -> Result<()> {
             _ => {}
         }
     }
-    let restore_untracked: BTreeMap<Vec<u8>, Entry> = match stash.parents.get(2) {
-        Some(u) => {
-            let tree = commit_tree(git, u)?;
-            git.repo.flatten(Some(&tree), &Pathspec::default())?
-        }
-        None => BTreeMap::new(),
-    };
     if !blocked.local.is_empty() || !blocked.untracked.is_empty() {
         blocked.report("merge", "merge", 1);
     }
-    convert::refuse_conversions(
-        git,
-        writes
-            .into_iter()
-            .chain(restore_untracked.keys().map(Vec::as_slice)),
-    )?;
     let in_the_way: Vec<&Vec<u8>> = restore_untracked
         .keys()
         .filter(|p| {

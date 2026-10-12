@@ -854,11 +854,6 @@ pub fn commit(git: &GitHome, messages: &[String], all: bool) -> Result<()> {
     let author = identity(git, "author")?;
     let committer = identity(git, "committer")?;
     let opened = git.open_index()?;
-    if opened.index.entries.iter().any(|e| e.stage > 0) {
-        bail!(
-            "Committing is not possible because you have unmerged files; resolve them and stage them with `pyn add`"
-        );
-    }
     let mut entries = entries_of(&opened.index);
     let mut staged_now = false;
     if all {

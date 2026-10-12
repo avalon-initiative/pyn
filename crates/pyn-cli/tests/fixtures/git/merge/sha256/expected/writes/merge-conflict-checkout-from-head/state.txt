@@ -1,0 +1,10 @@
+== MERGE_HEAD
+3fcc24faf78877dacd1efb6a51a5390c2aefe1b75f4d11d5a20ec99582bae2c2
+== MERGE_MSG
+Merge branch 'conflict'
+
+# Conflicts:
+#	a.txt
+== MERGE_MODE
+== ORIG_HEAD
+4d59c4deaa4ad373083260d59fba79a096709cda797fcc5ed24cb5913cc6e83d

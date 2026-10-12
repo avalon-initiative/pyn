@@ -111,6 +111,9 @@ fn run(repo: &Repo, s: &Scenario) -> (i32, String) {
             }
             _ => {
                 let out = repo.run_in(&cwd, &args);
+                if std::env::var("SCENARIO").is_ok() {
+                    eprintln!("pyn {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+                }
                 code = out.status.code().unwrap();
                 stdout = String::from_utf8_lossy(&out.stdout).into_owned();
             }
@@ -189,4 +192,81 @@ fn every_scenario_leaves_what_git_left() {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// Needs a git binary: runs the commands pyn writes with, then has git check and continue what pyn wrote
+/// (`git fsck --strict`, `git status`, `git log`, `git merge --abort`), and has pyn continue what git started.
+/// Run with `cargo test -p pyn-cli --test git_writes -- --ignored`.
+#[test]
+#[ignore = "runs the real git binary"]
+fn git_accepts_what_pyn_wrote_and_pyn_accepts_what_git_wrote() {
+    use std::process::Command;
+    for format in FORMATS {
+        let repo = Repo::merge(format);
+        let git = |args: &[&str]| -> String {
+            let out = Command::new("git")
+                .args(args)
+                .current_dir(&repo.main)
+                .env("HOME", &repo.home)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_AUTHOR_NAME", "Round Trip")
+                .env("GIT_AUTHOR_EMAIL", "round@example.com")
+                .env("GIT_COMMITTER_NAME", "Round Trip")
+                .env("GIT_COMMITTER_EMAIL", "round@example.com")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{format}: git {args:?}: {}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8(out.stdout).unwrap()
+        };
+        repo.ok(&["branch", "topic", "old"]);
+        repo.ok(&["tag", "light"]);
+        repo.ok(&["tag", "-a", "-m", "annotated by pyn", "noted"]);
+        repo.ok(&["switch", "topic"]);
+        repo.ok(&["switch", "main"]);
+        repo.ok(&["checkout", "--detach", "clean"]);
+        repo.ok(&["switch", "main"]);
+        repo.ok(&["merge", "clean"]);
+        git(&["fsck", "--strict"]);
+        assert_eq!(git(&["status", "--porcelain"]), "");
+        assert!(git(&["log", "--oneline", "-n", "1"]).contains("Merge branch 'clean'"));
+        assert!(git(&["reflog"]).contains("merge clean: Merge made by the 'ort' strategy."));
+        assert!(git(&["cat-file", "-t", "noted"]).starts_with("tag"));
+        git(&["branch", "-D", "topic"]);
+
+        repo.ok(&["branch", "rival", "conflict"]);
+        let out = repo.run_in(&repo.main, &["merge", "rival"]);
+        assert_eq!(out.status.code(), Some(1));
+        assert!(git(&["status", "--porcelain"]).contains("UU a.txt"));
+        git(&["merge", "--abort"]);
+        assert_eq!(git(&["status", "--porcelain"]), "");
+        let out = repo.run_in(&repo.main, &["merge", "rival"]);
+        assert_eq!(out.status.code(), Some(1));
+        fs::write(repo.main.join("a.txt"), "resolved\n").unwrap();
+        git(&["add", "a.txt"]);
+        git(&["commit", "--no-edit"]);
+        git(&["fsck", "--strict"]);
+        assert_eq!(git(&["status", "--porcelain"]), "");
+
+        let out = repo.run_in(&repo.main, &["merge", "moddel"]);
+        assert_eq!(out.status.code(), Some(1));
+        git(&["merge", "--abort"]);
+
+        if format == "sha1" {
+            fs::write(repo.main.join("main-only.txt"), "stash me\n").unwrap();
+            repo.ok(&["stash"]);
+            git(&["fsck", "--strict"]);
+            assert!(git(&["stash", "list"]).contains("WIP on main"));
+            git(&["stash", "pop"]);
+            repo.ok(&["stash"]);
+            repo.ok(&["stash", "pop"]);
+            assert!(git(&["status", "--porcelain"]).contains("main-only.txt"));
+        }
+        repo.ok(&["restore", "main-only.txt"]);
+        git(&["fsck", "--strict"]);
+    }
 }

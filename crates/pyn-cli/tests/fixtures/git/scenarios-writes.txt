@@ -158,3 +158,13 @@ stash-pop-without-stash-refused	main	main	.	stash pop
 stash-drop-unknown-refused	main	main	.	stash ;; stash drop stash@{3}
 stash-during-merge-refused	merge	main	.	merge conflict ;; stash
 stash-clean-after-stash	main	main	.	stash ;; status
+merge-conflict-checkout-ours	merge	main	.	merge conflict ;; checkout --ours -- a.txt
+merge-conflict-checkout-theirs	merge	main	.	merge conflict ;; checkout --theirs -- a.txt
+merge-conflict-checkout-path-unmerged-refused	merge	main	.	merge conflict ;; checkout -- a.txt
+merge-conflict-restore-unmerged-refused	merge	main	.	merge conflict ;; restore a.txt
+merge-conflict-checkout-from-head	merge	main	.	merge conflict ;; checkout HEAD -- a.txt
+merge-conflict-add-then-status	merge	main	.	merge conflict ;; @write a.txt fine\n ;; add a.txt
+merge-conflict-restore-staged	merge	main	.	merge conflict ;; restore --staged a.txt
+merge-conflict-commit-all	merge	main	.	merge conflict ;; @write a.txt fine\n ;; commit -a -m all
+merge-conflict-remove-file-then-add	merge	main	.	merge moddel ;; add del.txt
+merge-modify-delete-resolved-by-deleting	merge	main	.	merge moddel ;; @write del.txt gone\n ;; add del.txt ;; commit -m resolved

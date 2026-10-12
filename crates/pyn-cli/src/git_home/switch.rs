@@ -12,13 +12,14 @@ use pyn_object::ObjectId;
 use super::refwrite::BRANCHES;
 use super::stage::{
     Entries, entries_of, index_of, put_entry, raw_mode, refuse_in_progress, remove_entry,
-    resolve_specs, under,
+    resolve_specs, under, warn_about_hooks_for,
 };
 use super::worktree::{Mode, move_tree, remove_entry_file, write_entry};
 use super::{GitHome, Refused, convert, path_string};
 use crate::branch::{CheckoutArgs, SwitchArgs};
 
 const ABBREV: usize = 7;
+const CHECKOUT_HOOKS: [&str; 1] = ["post-checkout"];
 
 fn abbrev(id: &ObjectId) -> String {
     id.to_hex()[..ABBREV].to_string()
@@ -190,6 +191,7 @@ fn go(git: &GitHome, go: Go) -> Result<()> {
             println!("{letter}\t{}", path_string(&path));
         }
     }
+    warn_about_hooks_for(git, &CHECKOUT_HOOKS);
     match &go.landing {
         Landing::NewBranch { name, .. } => eprintln!("Switched to a new branch '{name}'"),
         Landing::Branch(name) if same_branch => eprintln!("Already on '{name}'"),
@@ -279,7 +281,7 @@ fn restore_paths(git: &GitHome, cwd: &Path, paths: &[String], r: Restore) -> Res
                     && *stage > 0
                     && !entries.contains_key(&(path.clone(), 0))
                 {
-                    bail!("path '{}' is unmerged", path_string(path));
+                    return Err(Refused(format!("path '{}' is unmerged", path_string(path))).into());
                 }
             }
             found
@@ -308,7 +310,7 @@ fn restore_paths(git: &GitHome, cwd: &Path, paths: &[String], r: Restore) -> Res
         Vec::new()
     };
     if r.to_worktree {
-        convert::refuse_conversions(git, sources.keys().map(Vec::as_slice))?;
+        convert::refuse_conversions(git, sources.iter().map(|(p, e)| (p.as_slice(), e.mode)))?;
     }
     for (path, entry) in &sources {
         let written = if r.to_worktree {
@@ -332,6 +334,9 @@ fn restore_paths(git: &GitHome, cwd: &Path, paths: &[String], r: Restore) -> Res
     }
     if r.to_index {
         git.save_index(&opened, &index_of(opened.index.version, entries))?;
+    }
+    if r.to_index && r.to_worktree {
+        warn_about_hooks_for(git, &CHECKOUT_HOOKS);
     }
     Ok(sources.len() + doomed.len())
 }

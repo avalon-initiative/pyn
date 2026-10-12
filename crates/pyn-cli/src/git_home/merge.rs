@@ -85,6 +85,11 @@ fn write_state(git: &GitHome, name: &str, text: &str) -> Result<()> {
     std::fs::write(&path, text).map_err(|e| anyhow!("writing {}: {e}", path.display()))
 }
 
+/// `ORIG_HEAD` is where `HEAD` was before a merge, as git leaves it for `git reset --merge`.
+fn write_orig_head(git: &GitHome, id: &ObjectId) -> Result<()> {
+    write_state(git, "ORIG_HEAD", &format!("{id}\n"))
+}
+
 pub fn merge(git: &GitHome, args: MergeArgs) -> Result<()> {
     if args.preview {
         bail!("`pyn merge --preview` needs a pyn server; a git repository has no merge preview");
@@ -115,8 +120,8 @@ pub fn merge(git: &GitHome, args: MergeArgs) -> Result<()> {
     let Some(ours) = head.id() else {
         return fast_forward(git, &opened, None, &theirs, &spec);
     };
-    write_state(git, "ORIG_HEAD", &format!("{ours}\n"))?;
     if git.is_ancestor(&theirs, &ours)? {
+        write_orig_head(git, &ours)?;
         println!("Already up to date.");
         return Ok(());
     }
@@ -125,6 +130,7 @@ pub fn merge(git: &GitHome, args: MergeArgs) -> Result<()> {
         return fast_forward(git, &opened, Some(ours), &theirs, &spec);
     }
     if args.ff_only {
+        write_orig_head(git, &ours)?;
         bail!("Not possible to fast-forward, aborting.");
     }
     true_merge(git, &args, &opened, ours, theirs, &spec, &what)
@@ -143,9 +149,13 @@ fn fast_forward(
     };
     let new_tree = git.repo.commit(theirs)?.tree;
     if let Err(blocked) = move_tree(git, opened, old_tree.as_ref(), Some(&new_tree), Mode::Safe)? {
+        if let Some(ours) = &ours {
+            write_orig_head(git, ours)?;
+        }
         blocked.report("merge", "merge", 2);
     }
     if let Some(ours) = &ours {
+        write_orig_head(git, ours)?;
         println!("Updating {}..{}", short(ours), short(theirs));
     }
     git.move_head(theirs, &format!("merge {spec}: Fast-forward"))?;
@@ -180,6 +190,15 @@ fn true_merge(
     let tree_of = |c: &ObjectId| -> Result<ObjectId> { Ok(git.repo.commit(c)?.tree) };
     let (base_tree, ours_tree, theirs_tree) = (tree_of(&base)?, tree_of(&ours)?, tree_of(&theirs)?);
     let base_label = short(&base);
+    let incoming =
+        git.repo
+            .diff_trees(Some(&base_tree), Some(&theirs_tree), &Pathspec::default())?;
+    convert::refuse_conversions(
+        git,
+        incoming
+            .iter()
+            .filter_map(|c| c.new.map(|e| (c.path.as_slice(), e.mode))),
+    )?;
     let merged = merge_trees(
         git,
         Some(&base_tree),
@@ -206,7 +225,6 @@ fn true_merge(
         ignore: git.repo.ignore()?,
     };
     let none = std::collections::HashSet::new();
-    let mut writes: Vec<&[u8]> = Vec::new();
     for (path, resolved) in &merged.paths {
         let here = head_leaves.get(path);
         let touches_tree = match resolved {
@@ -215,9 +233,6 @@ fn true_merge(
         };
         if !touches_tree {
             continue;
-        }
-        if let Resolved::Take(Some(_)) | Resolved::Conflict(_) = resolved {
-            writes.push(path);
         }
         match here {
             Some(_) if matches!(dirty.get(path), Some(Kind::Modified | Kind::TypeChange)) => {
@@ -230,6 +245,7 @@ fn true_merge(
     if !blocked.local.is_empty() || !blocked.untracked.is_empty() {
         blocked.local.sort();
         blocked.local.dedup();
+        write_orig_head(git, &ours)?;
         if index_differs {
             git.log_ref(
                 "HEAD",
@@ -241,8 +257,7 @@ fn true_merge(
         }
         blocked.report("merge", "merge", 2);
     }
-    convert::refuse_conversions(git, writes)?;
-
+    write_orig_head(git, &ours)?;
     let mut entries: Entries = entries_of(&opened.index);
     let mut conflicted: Vec<Vec<u8>> = Vec::new();
     for (path, resolved) in &merged.paths {
@@ -424,8 +439,7 @@ fn abort(git: &GitHome) -> Result<()> {
     convert::refuse_conversions(
         git,
         redo.iter()
-            .filter(|p| committed.contains_key(*p))
-            .map(Vec::as_slice),
+            .filter_map(|p| committed.get(p).map(|e| (p.as_slice(), e.mode))),
     )?;
     for path in &redo {
         remove_entry(&mut entries, path);

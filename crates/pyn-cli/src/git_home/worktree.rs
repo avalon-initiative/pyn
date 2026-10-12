@@ -392,9 +392,10 @@ pub(super) fn move_tree(
     };
     convert::refuse_conversions(
         git,
-        acts.iter()
-            .filter(|(_, a)| matches!(a, Act::Write(_)))
-            .map(|(p, _)| p.as_slice()),
+        acts.iter().filter_map(|(p, a)| match a {
+            Act::Write(e) => Some((p.as_slice(), e.mode)),
+            Act::Remove => None,
+        }),
     )?;
     let mut entries: Entries = entries_of(&opened.index);
     if mode == Mode::Force {
