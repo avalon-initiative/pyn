@@ -9,10 +9,12 @@ use reqwest::blocking::Client;
 
 mod address;
 mod admin;
+mod backend;
 mod client;
 mod credentials;
 mod diff;
 mod limits;
+mod pyn_server;
 mod snapshot;
 mod sync;
 mod table;
@@ -23,7 +25,9 @@ mod userconfig;
 mod verify;
 mod workspace;
 
+use backend::Backend;
 use client::Api;
+use pyn_server::PynServer;
 use workspace::{Settings, Workspace, resolve};
 
 use userconfig::DEFAULT_SERVER;
@@ -731,13 +735,14 @@ fn run(cli: Cli) -> Result<()> {
     let token = cli
         .token
         .or_else(|| credentials::load(&base).map(|saved| saved.token));
-    let api = Api {
+    let repo_name = repo.clone();
+    let backend = PynServer::new(Api {
         http: Client::new(),
         base,
         token,
         user: resolve(cli.user, mine.user.as_ref(), yours.user.as_ref(), None),
         repo,
-    };
+    });
     let rp = |p: &str| -> Result<String> {
         match &ws {
             Some(w) => w.repo_path(&cwd, p),
@@ -756,6 +761,7 @@ fn run(cli: Cli) -> Result<()> {
             username,
             password_stdin,
         } => {
+            let api = backend.pyn_server("login")?;
             let password = credentials::read_password("Password: ", password_stdin)?;
             let body = api::LoginRequest {
                 username: username.clone(),
@@ -781,6 +787,7 @@ fn run(cli: Cli) -> Result<()> {
             );
         }
         Command::Logout => {
+            let api = backend.pyn_server("logout")?;
             let Some(saved) = credentials::load(&api.base) else {
                 println!("not signed in on {}", api.base);
                 return Ok(());
@@ -800,6 +807,7 @@ fn run(cli: Cli) -> Result<()> {
             email,
             password_stdin,
         } => {
+            let api = backend.pyn_server("register")?;
             let password = credentials::read_new_password(password_stdin)?;
             let body = api::RegisterRequest {
                 username: username.clone(),
@@ -823,6 +831,7 @@ fn run(cli: Cli) -> Result<()> {
             }
         }
         Command::Password { password_stdin } => {
+            let api = backend.pyn_server("password")?;
             let current = credentials::read_password("Current password: ", password_stdin)?;
             let new = credentials::read_new_password(password_stdin)?;
             let body = api::ChangePasswordRequest {
@@ -833,6 +842,7 @@ fn run(cli: Cli) -> Result<()> {
             println!("password changed");
         }
         Command::Key(KeyCommand::Add { file, title }) => {
+            let api = backend.pyn_server("key")?;
             let file = file.map_or_else(default_public_key, Ok)?;
             let key = std::fs::read_to_string(&file)
                 .with_context(|| format!("reading {}", file.display()))?;
@@ -846,6 +856,7 @@ fn run(cli: Cli) -> Result<()> {
             );
         }
         Command::Key(KeyCommand::List { for_user }) => {
+            let api = backend.pyn_server("key")?;
             let mut req = api.get("/v1/keys");
             if let Some(user) = &for_user {
                 req = req.query(&[("user", user)]);
@@ -865,6 +876,7 @@ fn run(cli: Cli) -> Result<()> {
             );
         }
         Command::Key(KeyCommand::Remove { id, for_user }) => {
+            let api = backend.pyn_server("key")?;
             let mut req = api.request(Method::DELETE, &format!("/v1/keys/{id}"));
             if let Some(user) = &for_user {
                 req = req.query(&[("user", user)]);
@@ -873,6 +885,7 @@ fn run(cli: Cli) -> Result<()> {
             println!("removed {id}");
         }
         Command::Invite(InviteCommand::Create { role, hours }) => {
+            let api = backend.pyn_server("invite")?;
             let body = api::CreateInviteRequest { role, hours };
             let made: api::CreatedInvite = api
                 .send(
@@ -889,6 +902,7 @@ fn run(cli: Cli) -> Result<()> {
             );
         }
         Command::Invite(InviteCommand::List) => {
+            let api = backend.pyn_server("invite")?;
             let invites: Vec<api::InviteInfo> =
                 api.send(api.get(&api.repo_route("/invites")?))?.json()?;
             let rows: Vec<Vec<String>> = invites
@@ -907,6 +921,7 @@ fn run(cli: Cli) -> Result<()> {
             table::show(&["ID", "ROLE", "EXPIRES", "STATE"], &rows, "no invitations");
         }
         Command::Invite(InviteCommand::Revoke { id }) => {
+            let api = backend.pyn_server("invite")?;
             api.send(api.request(Method::DELETE, &api.repo_route(&format!("/invites/{id}"))?))?;
             println!("revoked {id}");
         }
@@ -915,6 +930,7 @@ fn run(cli: Cli) -> Result<()> {
             role,
             password_stdin,
         }) => {
+            let api = backend.pyn_server("user")?;
             let password = credentials::read_new_password(password_stdin)?;
             let body = api::AddUserRequest {
                 username: username.clone(),
@@ -928,6 +944,7 @@ fn run(cli: Cli) -> Result<()> {
             println!("added {username} as {role}");
         }
         Command::Whoami => {
+            let api = backend.pyn_server("whoami")?;
             if api.repo.is_some() {
                 let me: api::Me = api.send(api.get(&api.repo_route("/me")?))?.json()?;
                 println!("{}\t{}", me.user, me.permissions.join(","));
@@ -936,8 +953,8 @@ fn run(cli: Cli) -> Result<()> {
                 println!("{}", me.user);
             }
         }
-        Command::Repo(cmd) => repo_command(&api, cmd)?,
-        Command::Org(cmd) => org_command(&api, cmd)?,
+        Command::Repo(cmd) => repo_command(backend.pyn_server("repo")?, cmd)?,
+        Command::Org(cmd) => org_command(backend.pyn_server("org")?, cmd)?,
         Command::Setup {
             username,
             setup_token,
@@ -947,7 +964,7 @@ fn run(cli: Cli) -> Result<()> {
             registration,
             password_stdin,
         } => admin::setup(
-            &api,
+            backend.pyn_server("setup")?,
             admin::SetupArgs {
                 username,
                 setup_token,
@@ -959,10 +976,11 @@ fn run(cli: Cli) -> Result<()> {
             },
             interactive(),
         )?,
-        Command::Admin(cmd) => admin::run(&api, cmd)?,
-        Command::Usage { owner } => limits::usage(&api, owner)?,
-        Command::Team(cmd) => team_command(&api, cmd)?,
+        Command::Admin(cmd) => admin::run(backend.pyn_server("admin")?, cmd)?,
+        Command::Usage { owner } => limits::usage(backend.pyn_server("usage")?, owner)?,
+        Command::Team(cmd) => team_command(backend.pyn_server("team")?, cmd)?,
         Command::Locks { mine: true } => {
+            let api = backend.pyn_server("locks")?;
             let locks: Vec<api::MyLock> = api.send(api.get("/v1/me/locks"))?.json()?;
             let rows: Vec<Vec<String>> = locks
                 .into_iter()
@@ -982,6 +1000,7 @@ fn run(cli: Cli) -> Result<()> {
             );
         }
         Command::Locks { mine: false } => {
+            let api = backend.pyn_server("locks")?;
             let locks: Vec<api::Lock> = api.send(api.get(&api.repo_route("/locks")?))?.json()?;
             let rows: Vec<Vec<String>> = locks
                 .into_iter()
@@ -990,35 +1009,22 @@ fn run(cli: Cli) -> Result<()> {
             table::show(&["OWNER", "EXPIRES", "PATH"], &rows, "no locks");
         }
         Command::Files => {
-            let mut after: Option<String> = None;
-            let mut rows: Vec<Vec<String>> = Vec::new();
-            loop {
-                let mut req = api.get(&api.repo_route("/files")?);
-                if let Some(a) = &after {
-                    req = req.query(&[("after", a)]);
-                }
-                let page: api::FilePage = api.send(req)?.json()?;
-                for f in page.entries {
-                    rows.push(vec![
+            let rows: Vec<Vec<String>> = backend
+                .list_files()?
+                .into_iter()
+                .map(|f| {
+                    vec![
                         sync::mode_name(f.mode).to_string(),
                         f.revision.map_or("-".to_string(), |r| format!("r{r}")),
                         f.lock.map_or("-".to_string(), |l| l.owner),
                         f.path,
-                    ]);
-                }
-                match page.next_after {
-                    Some(next) => after = Some(next),
-                    None => break,
-                }
-            }
+                    ]
+                })
+                .collect();
             table::show(&["MODE", "REV", "LOCKED BY", "PATH"], &rows, "no files");
         }
         Command::Ls { path } => {
-            let mut req = api.get(&api.repo_route("/tree")?);
-            if let Some(p) = &path {
-                req = req.query(&[("path", p)]);
-            }
-            let listing: api::TreeListing = api.send(req)?.json()?;
+            let listing = backend.tree(path.as_deref())?;
             let rows: Vec<Vec<String>> = listing
                 .entries
                 .iter()
@@ -1045,6 +1051,7 @@ fn run(cli: Cli) -> Result<()> {
             );
         }
         Command::Summary => {
+            let api = backend.pyn_server("summary")?;
             let s: api::RepoSummary = api.send(api.get(&api.repo_route("/summary")?))?.json()?;
             println!(
                 "{} ({} branch), {} files ({} exclusive, {} shared)",
@@ -1080,7 +1087,7 @@ fn run(cli: Cli) -> Result<()> {
             }
         }
         Command::Clone { dir, revision, .. } => {
-            let repo = api.repo.clone().expect("clone names a repository");
+            let repo = repo_name.expect("clone names a repository");
             let dir = dir.unwrap_or_else(|| {
                 address::split_repo(&repo)
                     .map(|(_, n)| n.into())
@@ -1091,17 +1098,23 @@ fn run(cli: Cli) -> Result<()> {
             } else {
                 cwd.join(dir)
             };
-            let commit = revision.map(|r| snapshot::resolve(&api, &r)).transpose()?;
-            sync::clone_into(&api, &target, &server, &repo, commit)?;
+            let commit = revision
+                .map(|r| snapshot::resolve(&backend, &r))
+                .transpose()?;
+            sync::clone_into(&backend, &target, &server, &repo, commit)?;
         }
         Command::Status { revision } => {
-            let commit = revision.map(|r| snapshot::resolve(&api, &r)).transpose()?;
-            sync::status(&api, in_workspace("status")?, commit)?
+            let commit = revision
+                .map(|r| snapshot::resolve(&backend, &r))
+                .transpose()?;
+            sync::status(&backend, in_workspace("status")?, commit)?
         }
         Command::Update { paths, revision } => {
             let only = paths.iter().map(|p| rp(p)).collect::<Result<Vec<_>>>()?;
-            let commit = revision.map(|r| snapshot::resolve(&api, &r)).transpose()?;
-            sync::update(&api, in_workspace("update")?, &only, commit)?;
+            let commit = revision
+                .map(|r| snapshot::resolve(&backend, &r))
+                .transpose()?;
+            sync::update(&backend, in_workspace("update")?, &only, commit)?;
         }
         Command::Diff {
             args,
@@ -1117,7 +1130,7 @@ fn run(cli: Cli) -> Result<()> {
                 );
             }
             let differs = diff_command(
-                &api,
+                &backend,
                 ws.as_ref(),
                 &args,
                 &paths,
@@ -1130,9 +1143,10 @@ fn run(cli: Cli) -> Result<()> {
             }
         }
         Command::Show { commit, format } => {
-            show_command(&api, commit.as_deref(), &format.format())?
+            show_command(&backend, commit.as_deref(), &format.format())?
         }
         Command::Policy(PolicyCommand::Preview { file }) => {
+            let api = backend.pyn_server("policy")?;
             let content = std::fs::read_to_string(&file)
                 .with_context(|| format!("reading {}", file.display()))?;
             let body = api::PolicyPreviewRequest { content };
@@ -1161,6 +1175,7 @@ fn run(cli: Cli) -> Result<()> {
         }
         Command::Config(cmd) => config_command(cmd, ws.as_ref(), &mine, &yours, &user_config)?,
         Command::Lock { path, base } => {
+            let api = backend.pyn_server("lock")?;
             let path = rp(&path)?;
             let known = ws
                 .as_ref()
@@ -1199,7 +1214,7 @@ fn run(cli: Cli) -> Result<()> {
             let mut hashes = Vec::new();
             for p in &paths {
                 let path = rp(p)?;
-                let hash = transfer::upload_file(&api, &w.abs(&path))?;
+                let hash = backend.upload(&w.abs(&path))?;
                 entries.push(api::ChangesetEntry {
                     path: path.clone(),
                     content: hash.clone(),
@@ -1208,15 +1223,11 @@ fn run(cli: Cli) -> Result<()> {
                 hashes.push((path, hash));
             }
             let body = api::ChangesetRequest { entries, message };
-            let r: api::ChangesetResponse = api
-                .send(
-                    api.request(Method::POST, &api.repo_route("/changesets")?)
-                        .json(&body),
-                )
-                .map_err(|e| behind_hint(e, true))?
-                .json()?;
+            let r = backend
+                .commit_changeset(&body)
+                .map_err(|e| behind_hint(e, true))?;
             for (rev, (path, hash)) in r.revisions.iter().zip(&hashes) {
-                sync::after_commit(&api, w, path, rev.id, hash)?;
+                sync::after_commit(&backend, w, path, rev.id, hash)?;
                 println!("{} is now at revision {}", rev.path, rev.id);
             }
         }
@@ -1236,22 +1247,18 @@ fn run(cli: Cli) -> Result<()> {
                 .as_ref()
                 .and_then(|w| w.load_state().ok())
                 .and_then(|s| s.get(&path).map(|k| k.revision));
-            let hash = transfer::upload_file(&api, &file)?;
+            let hash = backend.upload(&file)?;
             let body = api::CheckinRequest {
                 path: path.clone(),
                 content: hash.clone(),
                 base_revision: base.or(known),
                 message,
             };
-            let r: api::Revision = api
-                .send(
-                    api.request(Method::POST, &api.repo_route("/checkin")?)
-                        .json(&body),
-                )
-                .map_err(|e| behind_hint(e, ws.is_some()))?
-                .json()?;
+            let r = backend
+                .commit_file(&body)
+                .map_err(|e| behind_hint(e, ws.is_some()))?;
             if let Some(w) = &ws {
-                sync::after_commit(&api, w, &path, r.id, &hash)?;
+                sync::after_commit(&backend, w, &path, r.id, &hash)?;
             }
             println!("{} is now at revision {}", r.path, r.id);
         }
@@ -1259,22 +1266,14 @@ fn run(cli: Cli) -> Result<()> {
             let path = rp(&path)?;
             match output {
                 Some(file) => {
-                    let (revision, _) = transfer::download(&api, &path, rev, &file)?;
+                    let (revision, _) = backend.download(&path, rev, &file)?;
                     let len = std::fs::metadata(&file)?.len();
                     println!(
                         "wrote {path} at revision {revision} ({len} bytes) to {}",
                         file.display()
                     );
                 }
-                None => {
-                    let mut req = api
-                        .get(&api.repo_route("/content")?)
-                        .query(&[("path", path.as_str())]);
-                    if let Some(r) = rev {
-                        req = req.query(&[("revision", r)]);
-                    }
-                    api.send(req)?.copy_to(&mut std::io::stdout())?;
-                }
+                None => backend.read(&path, rev, &mut std::io::stdout())?,
             }
         }
         Command::Log {
@@ -1286,7 +1285,7 @@ fn run(cli: Cli) -> Result<()> {
             let mut rows: Vec<Vec<String>> = Vec::new();
             let mut before = None;
             while rows.len() < limit {
-                let page = snapshot::commit_page(&api, before, (limit - rows.len()).min(200))?;
+                let page = backend.commit_page(before, (limit - rows.len()).min(200))?;
                 for c in page.commits {
                     rows.push(vec![
                         format!("c{}", c.id),
@@ -1315,11 +1314,11 @@ fn run(cli: Cli) -> Result<()> {
         } => {
             let (revs, repo_wide) = match path {
                 Some(path) => {
-                    let revs = path_history(&api, &rp(&path)?)?.into_iter().rev();
+                    let revs = backend.path_history(&rp(&path)?)?.into_iter().rev();
                     (revs.take(limit.unwrap_or(usize::MAX)).collect(), false)
                 }
                 None => (
-                    repo_history(&api, filter.as_deref(), limit.unwrap_or(50))?,
+                    backend.repo_history(filter.as_deref(), limit.unwrap_or(50))?,
                     true,
                 ),
             };
@@ -1349,8 +1348,9 @@ fn run(cli: Cli) -> Result<()> {
             table::show(header, &rows, "no history");
         }
         Command::Verify { path, verbose } => {
+            let api = backend.pyn_server("verify")?;
             let path = path.map(|p| rp(&p)).transpose()?;
-            if !verify::run(&api, path.as_deref(), verbose)? {
+            if !verify::run(api, path.as_deref(), verbose)? {
                 std::process::exit(1);
             }
         }
@@ -1362,11 +1362,12 @@ fn run(cli: Cli) -> Result<()> {
             yes,
         } => {
             let revision = revision.or(source).expect("clap requires a revision");
-            restore(&api, rp(&path)?, revision, message, yes)?
+            restore(&backend, rp(&path)?, revision, message, yes)?
         }
         Command::Unlock {
             path, force: false, ..
         } => {
+            let api = backend.pyn_server("unlock")?;
             let path = rp(&path)?;
             let body = api::ReleaseRequest { path: path.clone() };
             api.send(
@@ -1383,6 +1384,7 @@ fn run(cli: Cli) -> Result<()> {
             reason: Some(reason),
             ..
         } => {
+            let api = backend.pyn_server("unlock")?;
             let path = rp(&path)?;
             let body = api::ForceUnlockRequest {
                 path: path.clone(),
@@ -1404,6 +1406,7 @@ fn run(cli: Cli) -> Result<()> {
             before,
             limit,
         } => {
+            let api = backend.pyn_server("audit")?;
             let path = path.map(|p| rp(&p)).transpose()?;
             let mut req = api
                 .get(&api.repo_route("/audit")?)
@@ -1440,8 +1443,9 @@ fn run(cli: Cli) -> Result<()> {
                 eprintln!("more: --before {next}");
             }
         }
-        Command::Token(cmd) => token_command(&api, cmd)?,
+        Command::Token(cmd) => token_command(backend.pyn_server("token")?, cmd)?,
         Command::Member(MemberCommand::List) => {
+            let api = backend.pyn_server("member")?;
             let members: Vec<api::Member> =
                 api.send(api.get(&api.repo_route("/members")?))?.json()?;
             let rows: Vec<Vec<String>> = members
@@ -1451,6 +1455,7 @@ fn run(cli: Cli) -> Result<()> {
             table::show(&["ROLE", "SOURCE", "USER"], &rows, "no members");
         }
         Command::Member(MemberCommand::Set { user, role }) => {
+            let api = backend.pyn_server("member")?;
             let body = api::SetMemberRequest { role: role.clone() };
             api.send(
                 api.request(Method::PUT, &api.repo_route(&format!("/members/{user}"))?)
@@ -1459,6 +1464,7 @@ fn run(cli: Cli) -> Result<()> {
             println!("{user} is now {role}");
         }
         Command::Role(RoleCommand::List) => {
+            let api = backend.pyn_server("role")?;
             let grants: Vec<api::RoleGrant> =
                 api.send(api.get(&api.repo_route("/roles")?))?.json()?;
             let rows: Vec<Vec<String>> = grants
@@ -1468,6 +1474,7 @@ fn run(cli: Cli) -> Result<()> {
             table::show(&["ROLE", "PERMISSIONS"], &rows, "no roles");
         }
         Command::Role(RoleCommand::Set { role, permissions }) => {
+            let api = backend.pyn_server("role")?;
             let body = api::SetRoleRequest { permissions };
             api.send(
                 api.request(Method::PUT, &api.repo_route(&format!("/roles/{role}"))?)
@@ -1481,7 +1488,7 @@ fn run(cli: Cli) -> Result<()> {
 
 /// Splits the leading commit references from the paths and prints the comparison; true if anything differs.
 fn diff_command(
-    api: &Api,
+    backend: &dyn Backend,
     ws: Option<&Workspace>,
     args: &[String],
     paths: &[String],
@@ -1519,10 +1526,8 @@ fn diff_command(
         )
     };
     let snapshot_tree = |r: &str| -> Result<diff::Tree> {
-        let commit = snapshot::resolve(api, r)?;
-        Ok(diff::tree_of_snapshot(
-            &snapshot::fetch(api, Some(commit))?.1,
-        ))
+        let commit = snapshot::resolve(backend, r)?;
+        Ok(diff::tree_of_snapshot(&backend.snapshot(Some(commit))?.1))
     };
     let (old, new) = match refs.as_slice() {
         [] => {
@@ -1545,28 +1550,28 @@ fn diff_command(
         _ => unreachable!("at most two commits are taken"),
     };
     let mut out = String::new();
-    let differs = diff::compare(api, &old, &new, &only, format, &mut out)?;
+    let differs = diff::compare(backend, &old, &new, &only, format, &mut out)?;
     if !quiet {
         print!("{out}");
     }
     Ok(differs)
 }
 
-fn show_command(api: &Api, commit: Option<&str>, format: &diff::Format) -> Result<()> {
+fn show_command(backend: &dyn Backend, commit: Option<&str>, format: &diff::Format) -> Result<()> {
     let id = match commit {
-        Some(c) => snapshot::resolve(api, c)?,
-        None => snapshot::resolve(api, "HEAD")?,
+        Some(c) => snapshot::resolve(backend, c)?,
+        None => snapshot::resolve(backend, "HEAD")?,
     };
-    let found = snapshot::commit(api, id)?;
-    let new = diff::tree_of_snapshot(&snapshot::fetch(api, Some(id))?.1);
+    let found = backend.commit(id)?;
+    let new = diff::tree_of_snapshot(&backend.snapshot(Some(id))?.1);
     let old = if id > 1 {
-        diff::tree_of_snapshot(&snapshot::fetch(api, Some(id - 1))?.1)
+        diff::tree_of_snapshot(&backend.snapshot(Some(id - 1))?.1)
     } else {
         diff::Tree::new()
     };
     let only: Vec<String> = found.revisions.iter().map(|r| r.path.clone()).collect();
     let mut body = String::new();
-    diff::compare(api, &old, &new, &only, format, &mut body)?;
+    diff::compare(backend, &old, &new, &only, format, &mut body)?;
     print!("{}", diff::commit_header(&found));
     if !body.is_empty() {
         println!();
@@ -1575,44 +1580,14 @@ fn show_command(api: &Api, commit: Option<&str>, format: &diff::Format) -> Resul
     Ok(())
 }
 
-fn path_history(api: &Api, path: &str) -> Result<Vec<api::Revision>> {
-    let page: api::HistoryPage = api
-        .send(
-            api.get(&api.repo_route("/history")?)
-                .query(&[("path", path)]),
-        )?
-        .json()?;
-    Ok(page.revisions)
-}
-
-/// Follows the server's cursor until `limit` revisions are collected or history ends.
-fn repo_history(api: &Api, filter: Option<&str>, limit: usize) -> Result<Vec<api::Revision>> {
-    let mut revs: Vec<api::Revision> = Vec::new();
-    let mut before: Option<String> = None;
-    while revs.len() < limit {
-        let mut query = vec![("limit", (limit - revs.len()).min(200).to_string())];
-        query.extend(filter.map(|f| ("filter", f.to_string())));
-        query.extend(before.take().map(|b| ("before", b)));
-        let page: api::HistoryPage = api
-            .send(api.get(&api.repo_route("/history")?).query(&query))?
-            .json()?;
-        revs.extend(page.revisions);
-        before = page.next_cursor;
-        if before.is_none() {
-            break;
-        }
-    }
-    Ok(revs)
-}
-
 fn restore(
-    api: &Api,
+    backend: &dyn Backend,
     path: String,
     revision: u64,
     message: Option<String>,
     yes: bool,
 ) -> Result<()> {
-    let revs = path_history(api, &path)?;
+    let revs = backend.path_history(&path)?;
     let head = revs
         .last()
         .with_context(|| format!("{path} has no revisions"))?;
@@ -1646,12 +1621,7 @@ fn restore(
         confirm: format!("{path}@r{}", head.id),
         message,
     };
-    let r: api::Revision = api
-        .send(
-            api.request(Method::POST, &api.repo_route("/restore")?)
-                .json(&body),
-        )?
-        .json()?;
+    let r = backend.restore(&body)?;
     println!(
         "{} is now at revision {}, restored from r{revision}",
         r.path, r.id

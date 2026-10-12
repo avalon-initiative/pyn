@@ -6,8 +6,7 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 use pyn_proto as api;
 
-use crate::client::Api;
-use crate::snapshot;
+use crate::backend::Backend;
 use crate::table;
 use crate::workspace::{FileState, Settings, Workspace, hash_of, set_read_only};
 
@@ -18,18 +17,13 @@ pub fn mode_name(mode: api::Mode) -> &'static str {
     }
 }
 
-fn whoami(api: &Api) -> Result<String> {
-    let me: api::Account = api.send(api.get("/v1/me"))?.json()?;
-    Ok(me.user)
-}
-
 /// Exclusive files stay read-only until their owner holds the lock.
 fn wants_read_only(entry: &api::FileEntry, me: &str) -> bool {
     entry.mode == api::Mode::Exclusive && entry.lock.as_ref().is_none_or(|l| l.owner != me)
 }
 
 fn fetch(
-    api: &Api,
+    backend: &dyn Backend,
     ws: &Workspace,
     entry: &api::FileEntry,
     revision: u64,
@@ -37,7 +31,7 @@ fn fetch(
 ) -> Result<FileState> {
     let target = ws.abs(&entry.path);
     set_read_only(&target, false)?;
-    let (_, hash) = crate::transfer::download(api, &entry.path, Some(revision), &target)?;
+    let (_, hash) = backend.download(&entry.path, Some(revision), &target)?;
     set_read_only(&target, wants_read_only(entry, me))?;
     Ok(FileState {
         revision,
@@ -48,12 +42,12 @@ fn fetch(
 
 /// The server's files with the revision each had as of `commit` (the head if `None`); a path the commit does not
 /// have, such as one created later, has no revision.
-pub fn entries_at(api: &Api, commit: Option<u64>) -> Result<Vec<api::FileEntry>> {
-    let mut entries = api.list_files()?;
+pub fn entries_at(backend: &dyn Backend, commit: Option<u64>) -> Result<Vec<api::FileEntry>> {
+    let mut entries = backend.list_files()?;
     let Some(commit) = commit else {
         return Ok(entries);
     };
-    let (_, snap) = snapshot::fetch(api, Some(commit))?;
+    let (_, snap) = backend.snapshot(Some(commit))?;
     let snap: BTreeMap<&str, &api::SnapshotEntry> =
         snap.iter().map(|e| (e.path.as_str(), e)).collect();
     for entry in &mut entries {
@@ -70,7 +64,7 @@ pub fn entries_at(api: &Api, commit: Option<u64>) -> Result<Vec<api::FileEntry>>
 
 /// Creates a workspace in `root` and downloads every file as of `commit` (the head if `None`).
 pub fn clone_into(
-    api: &Api,
+    backend: &dyn Backend,
     root: &Path,
     server: &str,
     repo: &str,
@@ -89,13 +83,16 @@ pub fn clone_into(
     }
     .save(&ws.config_path())?;
 
-    let me = whoami(api)?;
+    let me = backend.whoami()?;
     let mut state = BTreeMap::new();
-    for entry in entries_at(api, commit)? {
+    for entry in entries_at(backend, commit)? {
         let Some(revision) = entry.revision else {
             continue;
         };
-        state.insert(entry.path.clone(), fetch(api, &ws, &entry, revision, &me)?);
+        state.insert(
+            entry.path.clone(),
+            fetch(backend, &ws, &entry, revision, &me)?,
+        );
     }
     ws.save_state(&state)?;
     let at = commit.map_or(String::new(), |c| format!(" at c{c}"));
@@ -120,14 +117,14 @@ fn time_left(expires_at: chrono::DateTime<chrono::Utc>) -> String {
 }
 
 /// Lists what differs between the workspace and the server as a table; clean, unlocked files are left out.
-pub fn status(api: &Api, ws: &Workspace, commit: Option<u64>) -> Result<()> {
-    let entries: BTreeMap<String, api::FileEntry> = entries_at(api, commit)?
+pub fn status(backend: &dyn Backend, ws: &Workspace, commit: Option<u64>) -> Result<()> {
+    let entries: BTreeMap<String, api::FileEntry> = entries_at(backend, commit)?
         .into_iter()
         .map(|e| (e.path.clone(), e))
         .collect();
     let state = ws.load_state()?;
     let local: BTreeSet<String> = ws.scan()?.into_iter().collect();
-    let me = whoami(api)?;
+    let me = backend.whoami()?;
     let paths: BTreeSet<&String> = entries
         .keys()
         .chain(state.keys())
@@ -245,11 +242,16 @@ pub fn status(api: &Api, ws: &Workspace, commit: Option<u64>) -> Result<()> {
 
 /// Fetches files that are new or behind, or with `commit` brings every file to that commit's revision, removing files
 /// it does not have. Anything with local changes is left alone and reported.
-pub fn update(api: &Api, ws: &Workspace, only: &[String], commit: Option<u64>) -> Result<()> {
-    let me = whoami(api)?;
+pub fn update(
+    backend: &dyn Backend,
+    ws: &Workspace,
+    only: &[String],
+    commit: Option<u64>,
+) -> Result<()> {
+    let me = backend.whoami()?;
     let mut state = ws.load_state()?;
     let (mut updated, mut removed, mut skipped) = (0, 0, Vec::new());
-    for entry in entries_at(api, commit)? {
+    for entry in entries_at(backend, commit)? {
         if !only.is_empty() && !only.contains(&entry.path) {
             continue;
         }
@@ -293,7 +295,7 @@ pub fn update(api: &Api, ws: &Workspace, only: &[String], commit: Option<u64>) -
             }
             _ => {}
         }
-        state.insert(entry.path.clone(), fetch(api, ws, &entry, head, &me)?);
+        state.insert(entry.path.clone(), fetch(backend, ws, &entry, head, &me)?);
         updated += 1;
     }
     ws.save_state(&state)?;
@@ -325,7 +327,7 @@ pub fn after_unlock(ws: &Workspace, path: &str) -> Result<()> {
 
 /// Records the new revision, and makes an exclusive file read-only again now that its lock is gone.
 pub fn after_commit(
-    api: &Api,
+    backend: &dyn Backend,
     ws: &Workspace,
     path: &str,
     revision: u64,
@@ -334,7 +336,7 @@ pub fn after_commit(
     let mut state = ws.load_state()?;
     let mode = match state.get(path) {
         Some(k) => k.mode.clone(),
-        None => api
+        None => backend
             .list_files()?
             .into_iter()
             .find(|e| e.path == path)

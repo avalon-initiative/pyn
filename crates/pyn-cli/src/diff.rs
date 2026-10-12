@@ -8,8 +8,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use pyn_proto as api;
 
-use crate::client::Api;
-use crate::snapshot;
+use crate::backend::Backend;
 use crate::time;
 use crate::workspace::{FileState, Workspace, hash_of};
 
@@ -95,7 +94,7 @@ pub fn tree_of_disk<'a>(ws: &Workspace, paths: impl Iterator<Item = &'a String>)
     Ok(tree)
 }
 
-fn bytes(api: &Api, path: &str, blob: &Blob, probe: bool) -> Result<Vec<u8>> {
+fn bytes(backend: &dyn Backend, path: &str, blob: &Blob, probe: bool) -> Result<Vec<u8>> {
     match &blob.source {
         Source::Local { file } => {
             let mut f = std::fs::File::open(file).with_context(|| format!("reading {path}"))?;
@@ -107,9 +106,7 @@ fn bytes(api: &Api, path: &str, blob: &Blob, probe: bool) -> Result<Vec<u8>> {
             }
             Ok(buf)
         }
-        Source::Remote { revision } => {
-            snapshot::content(api, path, *revision, probe.then_some(PROBE))
-        }
+        Source::Remote { revision } => backend.content(path, *revision, probe.then_some(PROBE)),
     }
 }
 
@@ -119,13 +116,18 @@ struct Contents {
     binary: bool,
 }
 
-fn contents(api: &Api, path: &str, old: Option<&Blob>, new: Option<&Blob>) -> Result<Contents> {
+fn contents(
+    backend: &dyn Backend,
+    path: &str,
+    old: Option<&Blob>,
+    new: Option<&Blob>,
+) -> Result<Contents> {
     let old_probe = old
-        .map(|b| bytes(api, path, b, true))
+        .map(|b| bytes(backend, path, b, true))
         .transpose()?
         .unwrap_or_default();
     let new_probe = new
-        .map(|b| bytes(api, path, b, true))
+        .map(|b| bytes(backend, path, b, true))
         .transpose()?
         .unwrap_or_default();
     if pyn_diff::is_binary(&old_probe) || pyn_diff::is_binary(&new_probe) {
@@ -137,7 +139,7 @@ fn contents(api: &Api, path: &str, old: Option<&Blob>, new: Option<&Blob>) -> Re
     }
     let full = |blob: Option<&Blob>, probe: Vec<u8>| -> Result<Vec<u8>> {
         match blob {
-            Some(b) if probe.len() >= PROBE => bytes(api, path, b, false),
+            Some(b) if probe.len() >= PROBE => bytes(backend, path, b, false),
             _ => Ok(probe),
         }
     };
@@ -221,7 +223,7 @@ fn selected(path: &str, only: &[String]) -> bool {
 
 /// Appends the difference between `old` and `new` (limited to `only` when given) to `out`; true if any file differs.
 pub fn compare(
-    api: &Api,
+    backend: &dyn Backend,
     old: &Tree,
     new: &Tree,
     only: &[String],
@@ -250,11 +252,11 @@ pub fn compare(
                 let _ = writeln!(out, "{letter}\t{path}");
             }
             Kind::Patch => {
-                let c = contents(api, path, a, b)?;
+                let c = contents(backend, path, a, b)?;
                 out.push_str(&patch(path, a, b, &c, format.context));
             }
             Kind::Stat => {
-                let c = contents(api, path, a, b)?;
+                let c = contents(backend, path, a, b)?;
                 let counts = (!c.binary).then(|| pyn_diff::line_counts(&c.old, &c.new));
                 stat_rows.push((path.clone(), counts));
             }
