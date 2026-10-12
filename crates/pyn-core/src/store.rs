@@ -7,7 +7,7 @@ use crate::limits::{RepoUsage, StorageCap, Usage};
 use crate::repo::{RepoRecord, RepoUpdate};
 use crate::rules::PathFilter;
 use crate::types::{
-    ChangesetItem, Lock, NewRevision, RepoId, RepoPath, Revision, RevisionId, UserId,
+    ChangesetItem, Commit, Lock, NewRevision, RepoId, RepoPath, Revision, RevisionId, UserId,
 };
 
 /// Persistence for the repository registry, locks and revisions. Each method is one atomic check-and-write; policy lives in
@@ -103,6 +103,24 @@ pub trait MetadataStore: Send + Sync {
         path: &RepoPath,
         id: RevisionId,
     ) -> Result<Option<Revision>>;
+
+    /// The number of the newest commit; 0 for a repository with none. Every successful `commit_revision_capped` and
+    /// `commit_changeset_capped` makes the next number, atomically with its appends, and a rejected one leaves it alone.
+    async fn head_commit(&self, repo: &RepoId) -> Result<u64>;
+
+    async fn get_commit(&self, repo: &RepoId, id: u64) -> Result<Option<Commit>>;
+
+    /// At most `limit` commits, newest first, strictly before commit `before` when given.
+    async fn commits(
+        &self,
+        repo: &RepoId,
+        before: Option<u64>,
+        limit: usize,
+    ) -> Result<Vec<Commit>>;
+
+    /// The repository's state as of `commit`: the newest revision at or before it of every path that has one,
+    /// ordered by path.
+    async fn snapshot(&self, repo: &RepoId, commit: u64) -> Result<Vec<Revision>>;
 
     /// The head revision of every path that has one, ordered by path.
     async fn list_head_revisions(&self, repo: &RepoId) -> Result<Vec<Revision>>;

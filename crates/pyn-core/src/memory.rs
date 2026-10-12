@@ -29,7 +29,8 @@ use crate::repo_policy::{
 use crate::rules::PathFilter;
 use crate::store::MetadataStore;
 use crate::types::{
-    ChangesetItem, ContentHash, Lock, NewRevision, RepoId, RepoPath, Revision, RevisionId, UserId,
+    ChangesetItem, Commit, ContentHash, Lock, NewRevision, RepoId, RepoPath, Revision, RevisionId,
+    UserId,
 };
 
 type Key = (RepoId, RepoPath);
@@ -41,6 +42,8 @@ struct State {
     repos: HashMap<RepoId, RepoRecord>,
     /// Length of each distinct content in each repository.
     sizes: HashMap<(RepoId, ContentHash), u64>,
+    /// Newest commit number per repository.
+    commits: HashMap<RepoId, u64>,
 }
 
 impl State {
@@ -55,12 +58,17 @@ impl State {
     fn commit(
         &mut self,
         repo: &RepoId,
-        revision: NewRevision,
-        expected_head: Option<RevisionId>,
-        lock_holder: Option<&UserId>,
+        item: ChangesetItem,
         now: DateTime<Utc>,
         cap: Option<&StorageCap>,
+        commit: u64,
     ) -> Result<Revision> {
+        let ChangesetItem {
+            revision,
+            expected_head,
+            lock_holder,
+        } = item;
+        let lock_holder = lock_holder.as_ref();
         let st = self;
         let key = (repo.clone(), revision.path.clone());
 
@@ -111,6 +119,7 @@ impl State {
             restored_from: revision.restored_from,
             mode: Some(revision.mode),
             changeset: revision.changeset,
+            commit,
         };
         st.revisions
             .entry(key.clone())
@@ -279,14 +288,15 @@ impl MetadataStore for MemoryMetadataStore {
         cap: Option<StorageCap>,
     ) -> Result<Revision> {
         let mut st = self.state.lock().unwrap();
-        st.commit(
-            repo,
+        let commit = st.commits.get(repo).copied().unwrap_or(0) + 1;
+        let item = ChangesetItem {
             revision,
             expected_head,
-            lock_holder,
-            now,
-            cap.as_ref(),
-        )
+            lock_holder: lock_holder.cloned(),
+        };
+        let rev = st.commit(repo, item, now, cap.as_ref(), commit)?;
+        st.commits.insert(repo.clone(), commit);
+        Ok(rev)
     }
 
     async fn commit_changeset_capped(
@@ -297,6 +307,7 @@ impl MetadataStore for MemoryMetadataStore {
         cap: Option<StorageCap>,
     ) -> Result<Vec<Revision>> {
         let mut st = self.state.lock().unwrap();
+        let commit = st.commits.get(repo).copied().unwrap_or(0) + 1;
         let undo: Vec<_> = items
             .iter()
             .map(|i| {
@@ -312,14 +323,7 @@ impl MetadataStore for MemoryMetadataStore {
             .collect();
         let mut out = Vec::with_capacity(items.len());
         for item in items {
-            match st.commit(
-                repo,
-                item.revision,
-                item.expected_head,
-                item.lock_holder.as_ref(),
-                now,
-                cap.as_ref(),
-            ) {
+            match st.commit(repo, item, now, cap.as_ref(), commit) {
                 Ok(rev) => out.push(rev),
                 Err(e) => {
                     for (key, size, (lock, len, stored)) in undo {
@@ -339,6 +343,62 @@ impl MetadataStore for MemoryMetadataStore {
                 }
             }
         }
+        st.commits.insert(repo.clone(), commit);
+        Ok(out)
+    }
+
+    async fn head_commit(&self, repo: &RepoId) -> Result<u64> {
+        let st = self.state.lock().unwrap();
+        Ok(st.commits.get(repo).copied().unwrap_or(0))
+    }
+
+    async fn get_commit(&self, repo: &RepoId, id: u64) -> Result<Option<Commit>> {
+        let st = self.state.lock().unwrap();
+        Ok(Commit::from_revisions(
+            st.revisions
+                .iter()
+                .filter(|((r, _), _)| r == repo)
+                .flat_map(|(_, revs)| revs)
+                .filter(|r| r.commit == id)
+                .cloned()
+                .collect(),
+        ))
+    }
+
+    async fn commits(
+        &self,
+        repo: &RepoId,
+        before: Option<u64>,
+        limit: usize,
+    ) -> Result<Vec<Commit>> {
+        let st = self.state.lock().unwrap();
+        let mut by_commit: std::collections::BTreeMap<u64, Vec<Revision>> = Default::default();
+        for rev in st
+            .revisions
+            .iter()
+            .filter(|((r, _), _)| r == repo)
+            .flat_map(|(_, revs)| revs)
+            .filter(|r| before.is_none_or(|b| r.commit < b))
+        {
+            by_commit.entry(rev.commit).or_default().push(rev.clone());
+        }
+        Ok(by_commit
+            .into_values()
+            .rev()
+            .take(limit)
+            .filter_map(Commit::from_revisions)
+            .collect())
+    }
+
+    async fn snapshot(&self, repo: &RepoId, commit: u64) -> Result<Vec<Revision>> {
+        let st = self.state.lock().unwrap();
+        let mut out: Vec<Revision> = st
+            .revisions
+            .iter()
+            .filter(|((r, _), _)| r == repo)
+            .filter_map(|(_, revs)| revs.iter().rev().find(|r| r.commit <= commit).cloned())
+            .collect();
+        out.sort_by(|a, b| a.path.cmp(&b.path));
         Ok(out)
     }
 
@@ -496,6 +556,7 @@ impl MetadataStore for MemoryMetadataStore {
         st.locks.retain(|(r, _), _| r != id);
         st.revisions.retain(|(r, _), _| r != id);
         st.sizes.retain(|(r, _), _| r != id);
+        st.commits.remove(id);
         Ok(st.repos.remove(id).is_some())
     }
 

@@ -73,6 +73,6 @@ and never shift later pages. A cursor that does not parse is `400 invalid_reques
 
 `pyn log <path>` (alias `pyn history`) lists one path's revisions, oldest first (`REV`, `AUTHOR`, `WHEN`, `MESSAGE`). `pyn log` without a
 path lists the repository's, newest first, with a `PATH` column after `MESSAGE`; `--filter <glob>` narrows it and
-`--limit <n>` (default 50) sets how many to show, following the cursor as needed.
+`--limit <n>` (default 50) sets how many to show, following the cursor as needed. `pyn log --commits` lists [commits](commits.md) instead.
 
 `pyn ls [path]` prints the listing and `pyn summary` the summary, as tables in the format described in [workspace](workspace.md#listing-output).

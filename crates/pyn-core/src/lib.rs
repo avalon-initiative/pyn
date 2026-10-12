@@ -67,9 +67,13 @@ pub use repo_policy::{
 };
 pub use repositories::Repositories;
 pub use rules::{Mode, PathFilter, Rules};
-pub use service::{ChangeEntry, FileEntry, LockLimit, PolicyPreview, RepoService, ServiceConfig};
+pub use service::{
+    ChangeEntry, CommitPage, FileEntry, LockLimit, PolicyPreview, RepoService, ServiceConfig,
+    Snapshot, SnapshotEntry,
+};
 pub use store::MetadataStore;
 pub use tree::{DEFAULT_BRANCH, EntryKind, EntryMode, RepoSummary, TreeEntry};
 pub use types::{
-    ChangesetItem, ContentHash, Lock, NewRevision, RepoId, RepoPath, Revision, RevisionId, UserId,
+    ChangesetItem, Commit, ContentHash, Lock, NewRevision, RepoId, RepoPath, Revision, RevisionId,
+    UserId,
 };

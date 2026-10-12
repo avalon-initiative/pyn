@@ -7,9 +7,9 @@ use chrono::{DateTime, Utc};
 use std::str::FromStr;
 
 use pyn_core::{
-    ChangesetItem, ContentHash, HistoryCursor, Lock, MetadataStore, Mode, NewRevision, PathFilter,
-    PynError, RepoId, RepoPath, RepoRecord, RepoSettings, RepoUpdate, RepoUsage, Result, Revision,
-    RevisionId, StorageCap, Usage, UserId, Visibility,
+    ChangesetItem, Commit, ContentHash, HistoryCursor, Lock, MetadataStore, Mode, NewRevision,
+    PathFilter, PynError, RepoId, RepoPath, RepoRecord, RepoSettings, RepoUpdate, RepoUsage,
+    Result, Revision, RevisionId, StorageCap, Usage, UserId, Visibility,
 };
 use sqlx::migrate::MigrateDatabase;
 use sqlx::postgres::{PgPoolOptions, PgRow};
@@ -41,6 +41,9 @@ fn lock_from(row: &PgRow) -> Result<Lock> {
     })
 }
 
+const REVISION_COLUMNS: &str =
+    "id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no";
+
 fn revision_from(row: &PgRow) -> Result<Revision> {
     Ok(Revision {
         id: RevisionId(row.get::<i64, _>("id") as u64),
@@ -57,6 +60,7 @@ fn revision_from(row: &PgRow) -> Result<Revision> {
             .map(|m| mode_from(&m))
             .transpose()?,
         changeset: row.get("changeset"),
+        commit: row.get::<i64, _>("commit_no") as u64,
     })
 }
 
@@ -93,12 +97,17 @@ fn repo_from(row: &PgRow) -> Result<RepoRecord> {
 async fn append_revision(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     repo: &RepoId,
-    revision: NewRevision,
-    expected_head: Option<RevisionId>,
-    lock_holder: Option<&UserId>,
+    item: ChangesetItem,
     now: DateTime<Utc>,
     cap: Option<&StorageCap>,
+    commit: u64,
 ) -> Result<Revision> {
+    let ChangesetItem {
+        revision,
+        expected_head,
+        lock_holder,
+    } = item;
+    let lock_holder = lock_holder.as_ref();
     if let Some(cap) = cap {
         // Serializes this owner's capped writes so the usage read below cannot go stale.
         sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
@@ -135,8 +144,8 @@ async fn append_revision(
     let expected = expected_head.map_or(0, |r| r.0 as i64);
     // Inserts only when the head still equals `expected`; a concurrent insert of the same id hits the primary key.
     let inserted = sqlx::query(
-        "INSERT INTO revisions (repo, path, id, content, author, message, created_at, restored_from, mode, size, changeset)
-         SELECT $1, $2, $3, $4, $5, $6, $7, $9::bigint, $10, $11, $12
+        "INSERT INTO revisions (repo, path, id, content, author, message, created_at, restored_from, mode, size, changeset, commit_no)
+         SELECT $1, $2, $3, $4, $5, $6, $7, $9::bigint, $10, $11, $12, $13
          WHERE COALESCE((SELECT max(id) FROM revisions WHERE repo = $1 AND path = $2), 0) = $8
          RETURNING id",
     )
@@ -152,6 +161,7 @@ async fn append_revision(
     .bind(mode_str(revision.mode))
     .bind(revision.size as i64)
     .bind(&revision.changeset)
+    .bind(commit as i64)
     .fetch_optional(&mut **tx)
     .await;
 
@@ -219,7 +229,22 @@ async fn append_revision(
         restored_from: revision.restored_from,
         mode: Some(revision.mode),
         changeset: revision.changeset,
+        commit,
     })
+}
+
+/// Takes the repository's next commit number; the row lock serializes the repository's writes until the transaction ends.
+async fn next_commit(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, repo: &RepoId) -> Result<u64> {
+    let n: i64 = sqlx::query_scalar(
+        "INSERT INTO repo_commits (repo, last) VALUES ($1, 1)
+         ON CONFLICT (repo) DO UPDATE SET last = repo_commits.last + 1
+         RETURNING last",
+    )
+    .bind(repo.as_str())
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(db)?;
+    Ok(n as u64)
 }
 
 /// Bytes of distinct content across the owner's repositories.
@@ -505,7 +530,7 @@ impl MetadataStore for PgMetadataStore {
 
     async fn head_revision(&self, repo: &RepoId, path: &RepoPath) -> Result<Option<Revision>> {
         let row = sqlx::query(
-            "SELECT id, path, content, author, message, created_at, restored_from, mode, changeset FROM revisions
+            "SELECT id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no FROM revisions
              WHERE repo = $1 AND path = $2 ORDER BY id DESC LIMIT 1",
         )
         .bind(repo.as_str())
@@ -526,16 +551,13 @@ impl MetadataStore for PgMetadataStore {
         cap: Option<StorageCap>,
     ) -> Result<Revision> {
         let mut tx = self.pool.begin().await.map_err(db)?;
-        let rev = append_revision(
-            &mut tx,
-            repo,
+        let commit = next_commit(&mut tx, repo).await?;
+        let item = ChangesetItem {
             revision,
             expected_head,
-            lock_holder,
-            now,
-            cap.as_ref(),
-        )
-        .await?;
+            lock_holder: lock_holder.cloned(),
+        };
+        let rev = append_revision(&mut tx, repo, item, now, cap.as_ref(), commit).await?;
         tx.commit().await.map_err(db)?;
         Ok(rev)
     }
@@ -548,20 +570,10 @@ impl MetadataStore for PgMetadataStore {
         cap: Option<StorageCap>,
     ) -> Result<Vec<Revision>> {
         let mut tx = self.pool.begin().await.map_err(db)?;
+        let commit = next_commit(&mut tx, repo).await?;
         let mut out = Vec::with_capacity(items.len());
         for item in items {
-            out.push(
-                append_revision(
-                    &mut tx,
-                    repo,
-                    item.revision,
-                    item.expected_head,
-                    item.lock_holder.as_ref(),
-                    now,
-                    cap.as_ref(),
-                )
-                .await?,
-            );
+            out.push(append_revision(&mut tx, repo, item, now, cap.as_ref(), commit).await?);
         }
         tx.commit().await.map_err(db)?;
         Ok(out)
@@ -574,7 +586,7 @@ impl MetadataStore for PgMetadataStore {
         id: RevisionId,
     ) -> Result<Option<Revision>> {
         let row = sqlx::query(
-            "SELECT id, path, content, author, message, created_at, restored_from, mode, changeset FROM revisions
+            "SELECT id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no FROM revisions
              WHERE repo = $1 AND path = $2 AND id = $3",
         )
         .bind(repo.as_str())
@@ -586,9 +598,76 @@ impl MetadataStore for PgMetadataStore {
         row.as_ref().map(revision_from).transpose()
     }
 
+    async fn head_commit(&self, repo: &RepoId) -> Result<u64> {
+        let last: Option<i64> = sqlx::query_scalar("SELECT last FROM repo_commits WHERE repo = $1")
+            .bind(repo.as_str())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(db)?;
+        Ok(last.unwrap_or(0) as u64)
+    }
+
+    async fn get_commit(&self, repo: &RepoId, id: u64) -> Result<Option<Commit>> {
+        let rows = sqlx::query(AssertSqlSafe(format!(
+            "SELECT {REVISION_COLUMNS} FROM revisions WHERE repo = $1 AND commit_no = $2"
+        )))
+        .bind(repo.as_str())
+        .bind(id as i64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(Commit::from_revisions(
+            rows.iter().map(revision_from).collect::<Result<_>>()?,
+        ))
+    }
+
+    async fn commits(
+        &self,
+        repo: &RepoId,
+        before: Option<u64>,
+        limit: usize,
+    ) -> Result<Vec<Commit>> {
+        let rows = sqlx::query(AssertSqlSafe(format!(
+            "SELECT {REVISION_COLUMNS} FROM revisions
+             WHERE repo = $1 AND commit_no IN (
+                 SELECT DISTINCT commit_no FROM revisions
+                 WHERE repo = $1 AND ($2::bigint IS NULL OR commit_no < $2)
+                 ORDER BY commit_no DESC LIMIT $3)
+             ORDER BY commit_no DESC, path COLLATE \"C\""
+        )))
+        .bind(repo.as_str())
+        .bind(before.map(|b| b as i64))
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        let mut out: Vec<Vec<Revision>> = Vec::new();
+        for row in &rows {
+            let rev = revision_from(row)?;
+            match out.last_mut() {
+                Some(group) if group[0].commit == rev.commit => group.push(rev),
+                _ => out.push(vec![rev]),
+            }
+        }
+        Ok(out.into_iter().filter_map(Commit::from_revisions).collect())
+    }
+
+    async fn snapshot(&self, repo: &RepoId, commit: u64) -> Result<Vec<Revision>> {
+        let rows = sqlx::query(AssertSqlSafe(format!(
+            "SELECT DISTINCT ON (path) {REVISION_COLUMNS} FROM revisions
+             WHERE repo = $1 AND commit_no <= $2 ORDER BY path, id DESC"
+        )))
+        .bind(repo.as_str())
+        .bind(commit as i64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        rows.iter().map(revision_from).collect()
+    }
+
     async fn list_head_revisions(&self, repo: &RepoId) -> Result<Vec<Revision>> {
         let rows = sqlx::query(
-            "SELECT DISTINCT ON (path) id, path, content, author, message, created_at, restored_from, mode, changeset
+            "SELECT DISTINCT ON (path) id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no
              FROM revisions WHERE repo = $1 ORDER BY path, id DESC",
         )
         .bind(repo.as_str())
@@ -600,7 +679,7 @@ impl MetadataStore for PgMetadataStore {
 
     async fn history(&self, repo: &RepoId, path: &RepoPath) -> Result<Vec<Revision>> {
         let rows = sqlx::query(
-            "SELECT id, path, content, author, message, created_at, restored_from, mode, changeset FROM revisions
+            "SELECT id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no FROM revisions
              WHERE repo = $1 AND path = $2 ORDER BY id",
         )
         .bind(repo.as_str())
@@ -624,7 +703,7 @@ impl MetadataStore for PgMetadataStore {
         let mut out = Vec::new();
         loop {
             let rows = sqlx::query(
-                "SELECT id, path, content, author, message, created_at, restored_from, mode, changeset FROM revisions
+                "SELECT id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no FROM revisions
                  WHERE repo = $1
                    AND ($2::timestamptz IS NULL
                         OR (created_at, path COLLATE \"C\", id) < ($2, $3::text COLLATE \"C\", $4::bigint))
@@ -840,6 +919,7 @@ impl MetadataStore for PgMetadataStore {
         for stmt in [
             "DELETE FROM locks WHERE repo = $1",
             "DELETE FROM revisions WHERE repo = $1",
+            "DELETE FROM repo_commits WHERE repo = $1",
         ] {
             sqlx::query(stmt)
                 .bind(id.as_str())
@@ -916,5 +996,38 @@ mod tests {
         let store = rewound_store().await;
         migrate(&store).await;
         assert!(store.list_repos(None).await.unwrap().is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "needs PYN_DATABASE_URL"]
+    async fn existing_revisions_get_commit_numbers_in_time_order_with_changesets_grouped() {
+        let url = std::env::var("PYN_DATABASE_URL").expect("PYN_DATABASE_URL must be set");
+        let store = PgMetadataStore::connect_in_scratch_schema(&url)
+            .await
+            .unwrap();
+        for stmt in [
+            "DROP TABLE repo_commits",
+            "ALTER TABLE revisions DROP COLUMN commit_no",
+            "DELETE FROM _sqlx_migrations WHERE version = 22",
+            "INSERT INTO revisions (repo, path, id, content, author, message, created_at, changeset) VALUES
+               ('r', 'a', 1, 'h1', 'u', 'm', now() - interval '3 hours', NULL),
+               ('r', 'b', 1, 'h2', 'u', 'm', now() - interval '2 hours', 'cs'),
+               ('r', 'c', 1, 'h2', 'u', 'm', now() - interval '2 hours', 'cs'),
+               ('r', 'a', 2, 'h3', 'u', 'm', now() - interval '1 hours', NULL),
+               ('other', 'a', 1, 'h1', 'u', 'm', now(), NULL)",
+        ] {
+            sqlx::query(stmt).execute(&store.pool).await.unwrap();
+        }
+        migrate(&store).await;
+
+        let repo = RepoId::new("r");
+        assert_eq!(store.head_commit(&repo).await.unwrap(), 3);
+        assert_eq!(store.head_commit(&RepoId::new("other")).await.unwrap(), 1);
+        let commits = store.commits(&repo, None, 10).await.unwrap();
+        let shape: Vec<(u64, usize)> = commits.iter().map(|c| (c.id, c.revisions.len())).collect();
+        assert_eq!(shape, vec![(3, 1), (2, 2), (1, 1)]);
+        let snap = store.snapshot(&repo, 2).await.unwrap();
+        let ids: Vec<u64> = snap.iter().map(|r| r.id.0).collect();
+        assert_eq!(ids, vec![1, 1, 1]);
     }
 }

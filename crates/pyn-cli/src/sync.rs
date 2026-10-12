@@ -7,6 +7,7 @@ use anyhow::{Context, Result, bail};
 use pyn_proto as api;
 
 use crate::client::Api;
+use crate::snapshot;
 use crate::table;
 use crate::workspace::{FileState, Settings, Workspace, hash_of, set_read_only};
 
@@ -45,8 +46,36 @@ fn fetch(
     })
 }
 
-/// Creates a workspace in `root` and downloads every file at its head revision.
-pub fn clone_into(api: &Api, root: &Path, server: &str, repo: &str) -> Result<()> {
+/// The server's files with the revision each had as of `commit` (the head if `None`); a path the commit does not
+/// have, such as one created later, has no revision.
+pub fn entries_at(api: &Api, commit: Option<u64>) -> Result<Vec<api::FileEntry>> {
+    let mut entries = api.list_files()?;
+    let Some(commit) = commit else {
+        return Ok(entries);
+    };
+    let (_, snap) = snapshot::fetch(api, Some(commit))?;
+    let snap: BTreeMap<&str, &api::SnapshotEntry> =
+        snap.iter().map(|e| (e.path.as_str(), e)).collect();
+    for entry in &mut entries {
+        match snap.get(entry.path.as_str()) {
+            Some(s) => {
+                entry.revision = Some(s.revision);
+                entry.mode = s.mode;
+            }
+            None => entry.revision = None,
+        }
+    }
+    Ok(entries)
+}
+
+/// Creates a workspace in `root` and downloads every file as of `commit` (the head if `None`).
+pub fn clone_into(
+    api: &Api,
+    root: &Path,
+    server: &str,
+    repo: &str,
+    commit: Option<u64>,
+) -> Result<()> {
     if root.exists() && std::fs::read_dir(root)?.next().is_some() {
         bail!("{} already exists and is not empty", root.display());
     }
@@ -62,15 +91,16 @@ pub fn clone_into(api: &Api, root: &Path, server: &str, repo: &str) -> Result<()
 
     let me = whoami(api)?;
     let mut state = BTreeMap::new();
-    for entry in api.list_files()? {
+    for entry in entries_at(api, commit)? {
         let Some(revision) = entry.revision else {
             continue;
         };
         state.insert(entry.path.clone(), fetch(api, &ws, &entry, revision, &me)?);
     }
     ws.save_state(&state)?;
+    let at = commit.map_or(String::new(), |c| format!(" at c{c}"));
     println!(
-        "cloned {} files from {repo} into {}",
+        "cloned {} files from {repo}{at} into {}",
         state.len(),
         root.display()
     );
@@ -90,9 +120,8 @@ fn time_left(expires_at: chrono::DateTime<chrono::Utc>) -> String {
 }
 
 /// Lists what differs between the workspace and the server as a table; clean, unlocked files are left out.
-pub fn status(api: &Api, ws: &Workspace) -> Result<()> {
-    let entries: BTreeMap<String, api::FileEntry> = api
-        .list_files()?
+pub fn status(api: &Api, ws: &Workspace, commit: Option<u64>) -> Result<()> {
+    let entries: BTreeMap<String, api::FileEntry> = entries_at(api, commit)?
         .into_iter()
         .map(|e| (e.path.clone(), e))
         .collect();
@@ -105,7 +134,7 @@ pub fn status(api: &Api, ws: &Workspace) -> Result<()> {
         .chain(local.iter())
         .collect();
 
-    let (mut modified, mut behind, mut new, mut untracked) = (0, 0, 0, 0);
+    let (mut modified, mut behind, mut ahead, mut new, mut untracked) = (0, 0, 0, 0, 0);
     let (mut mine, mut theirs) = (0, 0);
     let mut rows: Vec<Vec<String>> = Vec::new();
     for path in paths {
@@ -118,9 +147,25 @@ pub fn status(api: &Api, ws: &Workspace) -> Result<()> {
                     notes.push("modified".into());
                     modified += 1;
                 }
-                if let Some(head) = entry.and_then(|e| e.revision).filter(|h| *h > k.revision) {
-                    notes.push(format!("behind (head r{head})"));
-                    behind += 1;
+                let theirs = entry.and_then(|e| e.revision);
+                match (commit, theirs) {
+                    (None, Some(head)) if head > k.revision => {
+                        notes.push(format!("behind (head r{head})"));
+                        behind += 1;
+                    }
+                    (Some(c), Some(rev)) if rev > k.revision => {
+                        notes.push(format!("behind (c{c} has r{rev})"));
+                        behind += 1;
+                    }
+                    (Some(c), Some(rev)) if rev < k.revision => {
+                        notes.push(format!("ahead (c{c} has r{rev})"));
+                        ahead += 1;
+                    }
+                    (Some(c), None) if entry.is_some() => {
+                        notes.push(format!("ahead (not in c{c})"));
+                        ahead += 1;
+                    }
+                    _ => {}
                 }
             }
             (Some(_), false) => {
@@ -140,7 +185,7 @@ pub fn status(api: &Api, ws: &Workspace) -> Result<()> {
                 if entry.is_some_and(|e| e.revision.is_some()) {
                     notes.push("new".into());
                     new += 1;
-                } else {
+                } else if entry.is_some_and(|e| e.lock.is_some()) {
                     notes.push("locked, not checked in yet".into());
                 }
             }
@@ -186,23 +231,43 @@ pub fn status(api: &Api, ws: &Workspace) -> Result<()> {
         "{}",
         table::render(&["MODE", "REV", "STATE", "LOCK", "PATH"], &rows)
     );
+    let ahead = if commit.is_some() {
+        format!("{ahead} ahead, ")
+    } else {
+        String::new()
+    };
     println!(
-        "{modified} modified, {behind} behind, {new} new, {untracked} untracked, \
+        "{modified} modified, {behind} behind, {ahead}{new} new, {untracked} untracked, \
          {mine} locked by you, {theirs} locked by others"
     );
     Ok(())
 }
 
-/// Fetches files that are new or behind. Anything with local changes is left alone and reported.
-pub fn update(api: &Api, ws: &Workspace, only: &[String]) -> Result<()> {
+/// Fetches files that are new or behind, or with `commit` brings every file to that commit's revision, removing files
+/// it does not have. Anything with local changes is left alone and reported.
+pub fn update(api: &Api, ws: &Workspace, only: &[String], commit: Option<u64>) -> Result<()> {
     let me = whoami(api)?;
     let mut state = ws.load_state()?;
-    let (mut updated, mut skipped) = (0, Vec::new());
-    for entry in api.list_files()? {
+    let (mut updated, mut removed, mut skipped) = (0, 0, Vec::new());
+    for entry in entries_at(api, commit)? {
         if !only.is_empty() && !only.contains(&entry.path) {
             continue;
         }
-        let Some(head) = entry.revision else { continue };
+        let Some(head) = entry.revision else {
+            if let (Some(c), Some(known)) = (commit, state.get(&entry.path).map(|k| k.hash.clone()))
+            {
+                let target = ws.abs(&entry.path);
+                if target.is_file() && hash_of(&std::fs::read(&target)?) != known {
+                    skipped.push(format!("{}: local changes; not in c{c}", entry.path));
+                } else {
+                    set_read_only(&target, false)?;
+                    let _ = std::fs::remove_file(&target);
+                    state.remove(&entry.path);
+                    removed += 1;
+                }
+            }
+            continue;
+        };
         let target = ws.abs(&entry.path);
         let on_disk = target.is_file();
         match state.get(&entry.path) {
@@ -232,7 +297,11 @@ pub fn update(api: &Api, ws: &Workspace, only: &[String]) -> Result<()> {
         updated += 1;
     }
     ws.save_state(&state)?;
-    println!("updated {updated} file(s)");
+    if removed > 0 {
+        println!("updated {updated} file(s), removed {removed}");
+    } else {
+        println!("updated {updated} file(s)");
+    }
     for line in skipped {
         println!("skipped {line}");
     }

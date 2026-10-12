@@ -105,6 +105,37 @@ pub struct Revision {
     pub mode: Option<Mode>,
     /// Shared by the revisions a changeset checked in together; `None` for a single-path checkin.
     pub changeset: Option<String>,
+    /// The repository-wide commit this revision belongs to; see `Commit`.
+    pub commit: u64,
+}
+
+/// One atomic write to the repository: a single checkin or a whole changeset. Commits are numbered 1, 2, ... in order,
+/// and the repository's state at commit N is the newest revision of every path made at or before N.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Commit {
+    pub id: u64,
+    pub author: UserId,
+    pub message: String,
+    pub created_at: DateTime<Utc>,
+    pub changeset: Option<String>,
+    /// The revisions it made, ordered by path.
+    pub revisions: Vec<Revision>,
+}
+
+impl Commit {
+    /// Groups revisions of one commit; `None` if there are none.
+    pub fn from_revisions(mut revisions: Vec<Revision>) -> Option<Self> {
+        revisions.sort_by(|a, b| a.path.cmp(&b.path));
+        let first = revisions.first()?;
+        Some(Self {
+            id: first.commit,
+            author: first.author.clone(),
+            message: first.message.clone(),
+            created_at: first.created_at,
+            changeset: first.changeset.clone(),
+            revisions,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -57,6 +57,8 @@ pub enum PynError {
     NotLocked(RepoPath),
     #[error("{path} has no revision {revision}")]
     RevisionNotFound { path: RepoPath, revision: String },
+    #[error("the repository has no commit {0}")]
+    CommitNotFound(u64),
     #[error("restoring replaces the head; to confirm, pass {expected}")]
     ConfirmationRequired { expected: String },
     #[error("this server has not been set up yet; complete the first-run setup")]
@@ -206,6 +208,7 @@ impl PynError {
             Self::StaleBase { .. } => "stale_base",
             Self::ObjectMissing(_) => "object_missing",
             Self::RevisionNotFound { .. } => "revision_not_found",
+            Self::CommitNotFound(_) => "commit_not_found",
             Self::ConfirmationRequired { .. } => "confirmation_required",
             Self::NotInitialised => "not_initialised",
             Self::AlreadyInitialised => "already_initialised",

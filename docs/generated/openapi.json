@@ -3568,6 +3568,124 @@
         }
       }
     },
+    "/v1/repos/{owner}/{name}/commits": {
+      "get": {
+        "tags": [],
+        "summary": "Readable without credentials when the repository is public; otherwise 404 unless the caller has a role.",
+        "operationId": "list_commits",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "The namespace that owns the repository.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository's name within its owner.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "description": "return commits older than this number",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "page size, default 50, max 200",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommitPage"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/repos/{owner}/{name}/commits/{commit}": {
+      "get": {
+        "tags": [],
+        "summary": "Readable without credentials when the repository is public; otherwise 404 unless the caller has a role.",
+        "operationId": "get_commit",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "The namespace that owns the repository.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository's name within its owner.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "commit",
+            "in": "path",
+            "description": "commit number",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Commit"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "commit_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/repos/{owner}/{name}/content": {
       "get": {
         "tags": [],
@@ -4685,6 +4803,84 @@
           "204": {},
           "403": {
             "description": "needs manage_roles",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/repos/{owner}/{name}/snapshot": {
+      "get": {
+        "tags": [],
+        "summary": "Readable without credentials when the repository is public; otherwise 404 unless the caller has a role.",
+        "operationId": "snapshot",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "The namespace that owns the repository.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository's name within its owner.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "commit",
+            "in": "query",
+            "description": "commit number; the newest if omitted",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "description": "return paths after this one",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "page size, default 200, max 1000",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SnapshotPage"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "commit_not_found",
             "content": {
               "application/json": {
                 "schema": {
@@ -5850,6 +6046,73 @@
           },
           "path": {
             "type": "string"
+          }
+        }
+      },
+      "Commit": {
+        "type": "object",
+        "description": "One atomic write: a single checkin or a whole changeset. Commits are numbered 1, 2, ... per repository, and the\nrepository as of commit N is the newest revision at or before N of every path.",
+        "required": [
+          "id",
+          "author",
+          "message",
+          "created_at",
+          "revisions"
+        ],
+        "properties": {
+          "author": {
+            "type": "string"
+          },
+          "changeset": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Set when the commit was made as a changeset."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "message": {
+            "type": "string"
+          },
+          "revisions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Revision"
+            },
+            "description": "The revisions the commit made, ordered by path."
+          }
+        }
+      },
+      "CommitPage": {
+        "type": "object",
+        "required": [
+          "commits",
+          "next_before"
+        ],
+        "properties": {
+          "commits": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Commit"
+            },
+            "description": "Newest first."
+          },
+          "next_before": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Pass as `before` to fetch the next, older page; null on the last page.",
+            "minimum": 0
           }
         }
       },
@@ -7110,7 +7373,8 @@
           "content",
           "author",
           "message",
-          "created_at"
+          "created_at",
+          "commit"
         ],
         "properties": {
           "author": {
@@ -7122,6 +7386,12 @@
               "null"
             ],
             "description": "Shared by the revisions checked in together as one changeset; absent for a single-path checkin."
+          },
+          "commit": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The repository-wide commit this revision belongs to; see `Commit`.",
+            "minimum": 0
           },
           "content": {
             "type": "string",
@@ -7451,6 +7721,65 @@
           "password": {
             "type": "boolean",
             "description": "Whether anyone may sign in with a password. When false, server administrators still can."
+          }
+        }
+      },
+      "SnapshotEntry": {
+        "type": "object",
+        "description": "A path as of a commit. A shared path is identified by its `content` hash, an exclusive one by its `revision`.",
+        "required": [
+          "path",
+          "mode",
+          "revision",
+          "content"
+        ],
+        "properties": {
+          "content": {
+            "type": "string",
+            "description": "SHA-256 hex of the content at that revision."
+          },
+          "mode": {
+            "$ref": "#/components/schemas/Mode",
+            "description": "The mode recorded with the revision."
+          },
+          "path": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "SnapshotPage": {
+        "type": "object",
+        "description": "The whole repository as of one commit.",
+        "required": [
+          "commit",
+          "entries",
+          "next_after"
+        ],
+        "properties": {
+          "commit": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The commit the entries are as of; 0 for a repository with no commits.",
+            "minimum": 0
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SnapshotEntry"
+            },
+            "description": "Ordered by path."
+          },
+          "next_after": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass as `after` to fetch the next page; null on the last page."
           }
         }
       },

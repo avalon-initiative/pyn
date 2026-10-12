@@ -3211,3 +3211,100 @@ async fn a_changeset_checks_in_every_path_or_none() {
     .await;
     assert_eq!(r.status(), StatusCode::BAD_REQUEST);
 }
+
+#[tokio::test]
+async fn commits_and_snapshots_are_served_per_commit() {
+    let app = router(state_with(false, RegistrationMode::Open).await);
+    let alice = register_and_sign_in(&app, "alice").await;
+    create_repo(&app, &alice, "game").await;
+    let (one, two) = (
+        put_blob(&app, "game", &alice, "one").await,
+        put_blob(&app, "game", &alice, "two").await,
+    );
+    let entry = |path: &str, content: &str, base: Option<u64>| serde_json::json!({"path": path, "content": content, "base_revision": base});
+    for (entries, message) in [
+        (vec![entry("a.txt", &one, None)], "first"),
+        (
+            vec![entry("a.txt", &two, Some(1)), entry("b.txt", &one, None)],
+            "second",
+        ),
+    ] {
+        let r = send(
+            &app,
+            "POST",
+            "/v1/repos/alice/game/changesets",
+            &alice,
+            Some(serde_json::json!({"entries": entries, "message": message})),
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::OK);
+    }
+
+    let r = send(&app, "GET", "/v1/repos/alice/game/commits", &alice, None).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let page: api::CommitPage = body_json(r).await;
+    let ids: Vec<u64> = page.commits.iter().map(|c| c.id).collect();
+    assert_eq!(ids, vec![2, 1]);
+    assert_eq!(page.commits[0].revisions.len(), 2);
+    assert!(page.commits[0].revisions.iter().all(|r| r.commit == 2));
+
+    let r = send(
+        &app,
+        "GET",
+        "/v1/repos/alice/game/commits?before=2&limit=1",
+        &alice,
+        None,
+    )
+    .await;
+    let older: api::CommitPage = body_json(r).await;
+    assert_eq!(older.commits[0].message, "first");
+    assert_eq!(older.next_before, None);
+
+    let r = send(&app, "GET", "/v1/repos/alice/game/commits/1", &alice, None).await;
+    let first: api::Commit = body_json(r).await;
+    assert_eq!(first.revisions.len(), 1);
+
+    let r = send(
+        &app,
+        "GET",
+        "/v1/repos/alice/game/snapshot?commit=1",
+        &alice,
+        None,
+    )
+    .await;
+    let at_one: api::SnapshotPage = body_json(r).await;
+    assert_eq!(at_one.commit, 1);
+    let shape: Vec<(&str, u64, &str)> = at_one
+        .entries
+        .iter()
+        .map(|e| (e.path.as_str(), e.revision, e.content.as_str()))
+        .collect();
+    assert_eq!(shape, vec![("a.txt", 1, one.as_str())]);
+
+    let r = send(&app, "GET", "/v1/repos/alice/game/snapshot", &alice, None).await;
+    let head: api::SnapshotPage = body_json(r).await;
+    assert_eq!(head.commit, 2);
+    assert_eq!(head.entries.len(), 2);
+    assert_eq!(head.entries[0].content, two);
+
+    let r = send(
+        &app,
+        "GET",
+        "/v1/repos/alice/game/snapshot?limit=1",
+        &alice,
+        None,
+    )
+    .await;
+    let paged: api::SnapshotPage = body_json(r).await;
+    assert_eq!(paged.next_after.as_deref(), Some("a.txt"));
+
+    for uri in [
+        "/v1/repos/alice/game/commits/9",
+        "/v1/repos/alice/game/snapshot?commit=9",
+    ] {
+        let r = send(&app, "GET", uri, &alice, None).await;
+        assert_eq!(r.status(), StatusCode::NOT_FOUND, "{uri}");
+        let err: api::ErrorBody = body_json(r).await;
+        assert_eq!(err.code, "commit_not_found");
+    }
+}

@@ -46,7 +46,7 @@ it, whereas the local settings layer in the order above.
 ## Working in a workspace
 
 `pyn clone <server>/owner/name [dir]` (or `pyn clone owner/name` on the configured server) creates the folder, which defaults to
-a folder named after the repository, downloads every file at its head revision, records the repository in
+a folder named after the repository, downloads every file at its head revision (or as of a commit with `--revision`, see [commits](commits.md)), records the repository in
 `.pyn/local_only/config.toml`, and records in `.pyn/local_only/state/` which revision each file is at and a hash of its content. After that, commands work from wherever
 you are inside the workspace and take paths relative to your current directory.
 
@@ -62,6 +62,8 @@ you are inside the workspace and take paths relative to your current directory.
   `locked, not checked in yet`; `pyn update` has nothing to fetch for it. Clean, unlocked files are left out, and a
   workspace with no differences and no locks prints `everything is up to date`.
 - **`pyn update`** downloads new and newer files. A file with local changes is never overwritten; it is reported as skipped.
+  `--revision <commit>` brings the workspace to a past (or newer) commit instead, and `pyn status --revision <commit>` compares
+  with it; `pyn diff` shows the changes themselves. See [commits](commits.md).
 - **`pyn checkin <path>...`** uploads the files at the given paths in the workspace as one atomic commit with one message
   (`-m`); with several paths, all succeed or none do. Outside a workspace, one path and `--file <file>` name the upload.
 

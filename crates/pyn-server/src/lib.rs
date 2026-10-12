@@ -163,12 +163,19 @@ struct RepoAddress {
         put_object,
         missing_objects,
         assemble_object,
-        history
+        history,
+        list_commits,
+        get_commit,
+        snapshot
     ),
     components(schemas(
         api::Lock,
         api::Revision,
         api::HistoryPage,
+        api::Commit,
+        api::CommitPage,
+        api::SnapshotEntry,
+        api::SnapshotPage,
         api::CheckoutRequest,
         api::ReleaseRequest,
         api::RestoreRequest,
@@ -447,6 +454,9 @@ pub fn router(state: AppState) -> Router {
             post(assemble_object),
         )
         .route("/v1/repos/{owner}/{name}/history", get(history))
+        .route("/v1/repos/{owner}/{name}/commits", get(list_commits))
+        .route("/v1/repos/{owner}/{name}/commits/{commit}", get(get_commit))
+        .route("/v1/repos/{owner}/{name}/snapshot", get(snapshot))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             session_api::csrf_guard,
@@ -528,7 +538,9 @@ impl IntoResponse for ApiError {
             | PynError::TeamMemberNotFound { .. }
             | PynError::CreationRuleNotFound { .. }
             | PynError::PathNotFound(_) => StatusCode::NOT_FOUND,
-            PynError::RevisionNotFound { .. } => StatusCode::NOT_FOUND,
+            PynError::RevisionNotFound { .. } | PynError::CommitNotFound(_) => {
+                StatusCode::NOT_FOUND
+            }
             PynError::InvalidPath(_)
             | PynError::InvalidRules(_)
             | PynError::InvalidRequest(_)
@@ -672,6 +684,18 @@ fn revision_dto(r: pyn_core::Revision) -> api::Revision {
         restored_from: r.restored_from.map(|r| r.0),
         mode: r.mode.map(mode_dto),
         changeset: r.changeset,
+        commit: r.commit,
+    }
+}
+
+fn commit_dto(c: pyn_core::Commit) -> api::Commit {
+    api::Commit {
+        id: c.id,
+        author: c.author.to_string(),
+        message: c.message,
+        created_at: c.created_at,
+        changeset: c.changeset,
+        revisions: c.revisions.into_iter().map(revision_dto).collect(),
     }
 }
 
@@ -968,6 +992,94 @@ async fn history(
     Ok(Json(api::HistoryPage {
         revisions: page.revisions.into_iter().map(revision_dto).collect(),
         next_cursor: page.next.map(|c| c.encode()),
+    }))
+}
+
+#[derive(Deserialize)]
+struct CommitsQuery {
+    before: Option<u64>,
+    limit: Option<usize>,
+}
+
+/// Readable without credentials when the repository is public; otherwise 404 unless the caller has a role.
+#[utoipa::path(get, path = "/v1/repos/{owner}/{name}/commits",
+    params(RepoAddress,
+           ("before" = Option<u64>, Query, description = "return commits older than this number"),
+           ("limit" = Option<usize>, Query, description = "page size, default 50, max 200")),
+    responses((status = 200, body = api::CommitPage)))]
+async fn list_commits(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path((owner, name)): Path<(String, String)>,
+    Query(q): Query<CommitsQuery>,
+) -> ApiResult<Json<api::CommitPage>> {
+    let repo = authorize_read(&s, &headers, &owner, &name).await?;
+    let page = repo.service.commits(q.before, q.limit).await?;
+    Ok(Json(api::CommitPage {
+        commits: page.commits.into_iter().map(commit_dto).collect(),
+        next_before: page.next,
+    }))
+}
+
+/// Readable without credentials when the repository is public; otherwise 404 unless the caller has a role.
+#[utoipa::path(get, path = "/v1/repos/{owner}/{name}/commits/{commit}",
+    params(RepoAddress, ("commit" = u64, Path, description = "commit number")),
+    responses((status = 200, body = api::Commit),
+              (status = 404, body = api::ErrorBody, description = "commit_not_found")))]
+async fn get_commit(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path((owner, name, commit)): Path<(String, String, u64)>,
+) -> ApiResult<Json<api::Commit>> {
+    let repo = authorize_read(&s, &headers, &owner, &name).await?;
+    Ok(Json(commit_dto(repo.service.get_commit(commit).await?)))
+}
+
+#[derive(Deserialize)]
+struct SnapshotQuery {
+    commit: Option<u64>,
+    after: Option<String>,
+    limit: Option<usize>,
+}
+
+/// Readable without credentials when the repository is public; otherwise 404 unless the caller has a role.
+#[utoipa::path(get, path = "/v1/repos/{owner}/{name}/snapshot",
+    params(RepoAddress,
+           ("commit" = Option<u64>, Query, description = "commit number; the newest if omitted"),
+           ("after" = Option<String>, Query, description = "return paths after this one"),
+           ("limit" = Option<usize>, Query, description = "page size, default 200, max 1000")),
+    responses((status = 200, body = api::SnapshotPage),
+              (status = 404, body = api::ErrorBody, description = "commit_not_found")))]
+async fn snapshot(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path((owner, name)): Path<(String, String)>,
+    Query(q): Query<SnapshotQuery>,
+) -> ApiResult<Json<api::SnapshotPage>> {
+    let repo = authorize_read(&s, &headers, &owner, &name).await?;
+    let limit = q.limit.unwrap_or(200).clamp(1, 1000);
+    let after = q.after.map(RepoPath::new).transpose()?;
+    let snap = repo.service.snapshot(q.commit).await?;
+    let mut entries: Vec<_> = snap
+        .entries
+        .into_iter()
+        .filter(|e| after.as_ref().is_none_or(|a| &e.path > a))
+        .take(limit + 1)
+        .map(|e| api::SnapshotEntry {
+            path: e.path.to_string(),
+            mode: mode_dto(e.mode),
+            revision: e.revision.id.0,
+            content: e.revision.content.to_string(),
+        })
+        .collect();
+    let next_after = (entries.len() > limit).then(|| {
+        entries.truncate(limit);
+        entries[limit - 1].path.clone()
+    });
+    Ok(Json(api::SnapshotPage {
+        commit: snap.commit,
+        entries,
+        next_after,
     }))
 }
 

@@ -37,6 +37,54 @@ pub struct Revision {
     pub mode: Option<Mode>,
     /// Shared by the revisions checked in together as one changeset; absent for a single-path checkin.
     pub changeset: Option<String>,
+    /// The repository-wide commit this revision belongs to; see `Commit`.
+    pub commit: u64,
+}
+
+/// One atomic write: a single checkin or a whole changeset. Commits are numbered 1, 2, ... per repository, and the
+/// repository as of commit N is the newest revision at or before N of every path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct Commit {
+    pub id: u64,
+    pub author: String,
+    pub message: String,
+    pub created_at: DateTime<Utc>,
+    /// Set when the commit was made as a changeset.
+    pub changeset: Option<String>,
+    /// The revisions the commit made, ordered by path.
+    pub revisions: Vec<Revision>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct CommitPage {
+    /// Newest first.
+    pub commits: Vec<Commit>,
+    /// Pass as `before` to fetch the next, older page; null on the last page.
+    #[schema(required = true)]
+    pub next_before: Option<u64>,
+}
+
+/// A path as of a commit. A shared path is identified by its `content` hash, an exclusive one by its `revision`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct SnapshotEntry {
+    pub path: String,
+    /// The mode recorded with the revision.
+    pub mode: Mode,
+    pub revision: u64,
+    /// SHA-256 hex of the content at that revision.
+    pub content: String,
+}
+
+/// The whole repository as of one commit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct SnapshotPage {
+    /// The commit the entries are as of; 0 for a repository with no commits.
+    pub commit: u64,
+    /// Ordered by path.
+    pub entries: Vec<SnapshotEntry>,
+    /// Pass as `after` to fetch the next page; null on the last page.
+    #[schema(required = true)]
+    pub next_after: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]

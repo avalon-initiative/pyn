@@ -22,6 +22,9 @@ check must pass or nothing is applied (no revision is written and no lock is rel
 a changeset id, shown by the API, and each path still has its own per-path revision number. `.pyn/pyn.toml` is not part of
 a changeset; policy changes keep their own validated flow. Changeset hashing as in decision #65 is provisional.
 
+Every checkin or changeset is one numbered **commit**, and the repository as of any commit can be listed, cloned, compared and
+diffed; see [commits](commits.md).
+
 The server is the only enforcer. A checkin of an exclusive path is rejected unless the caller holds a live lock *and*
 the base revision equals the current head, so bypassing the CLI (uploading directly) cannot skip the lock. The
 read-only bit on disk is a convenience that stops editors from silently making unshippable edits.

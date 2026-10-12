@@ -10,7 +10,9 @@ mod address;
 mod admin;
 mod client;
 mod credentials;
+mod diff;
 mod limits;
+mod snapshot;
 mod sync;
 mod table;
 mod time;
@@ -76,6 +78,9 @@ enum Command {
         source: String,
         /// Where to put it; defaults to a folder named after the repository.
         dir: Option<std::path::PathBuf>,
+        /// Check out the repository as of this commit (`cN`, `HEAD~N`) instead of the newest.
+        #[arg(long)]
+        revision: Option<String>,
     },
     /// Create, list and delete repositories.
     #[command(subcommand)]
@@ -87,11 +92,44 @@ enum Command {
     #[command(subcommand)]
     Team(TeamCommand),
     /// Show what differs between this workspace and the server.
-    Status,
+    Status {
+        /// Compare with the repository as of this commit (`cN`, `HEAD~N`) instead of the newest.
+        #[arg(long)]
+        revision: Option<String>,
+    },
     /// Fetch new and newer files; files with local changes are left alone.
     Update {
         /// Only these paths; everything if omitted.
         paths: Vec<String>,
+        /// Bring the files to the repository as of this commit (`cN`, `HEAD~N`), older or newer than the workspace.
+        #[arg(long)]
+        revision: Option<String>,
+    },
+    /// Show changes between the workspace and a commit, between two commits, or since the last update.
+    Diff {
+        /// Up to two commits (`HEAD`, `HEAD~2`, `c7`, or `c3..c7`), then paths.
+        args: Vec<String>,
+        /// Paths to limit the diff to, after `--`.
+        #[arg(last = true)]
+        paths: Vec<String>,
+        #[command(flatten)]
+        format: DiffFormat,
+        /// Exit with 1 if there are differences, 0 if none.
+        #[arg(long)]
+        exit_code: bool,
+        /// Print nothing; exit with 1 if there are differences.
+        #[arg(short, long)]
+        quiet: bool,
+        /// Not supported: pyn has no staging area.
+        #[arg(long, alias = "staged", hide = true)]
+        cached: bool,
+    },
+    /// Show a commit: its message and what it changed (the newest commit if none is named).
+    Show {
+        /// `HEAD`, `HEAD~N` or `cN`.
+        commit: Option<String>,
+        #[command(flatten)]
+        format: DiffFormat,
     },
     /// Read and write settings, per workspace or for your user.
     #[command(subcommand)]
@@ -195,6 +233,9 @@ enum Command {
         /// How many revisions to show for the repository view.
         #[arg(long, default_value_t = 50, conflicts_with = "path")]
         limit: usize,
+        /// List commits instead of revisions.
+        #[arg(long, conflicts_with_all = ["path", "filter"])]
+        commits: bool,
     },
     /// Manage your API tokens.
     #[command(subcommand)]
@@ -234,6 +275,40 @@ enum Command {
     /// List or change what each role grants.
     #[command(subcommand)]
     Role(RoleCommand),
+}
+
+#[derive(clap::Args)]
+struct DiffFormat {
+    /// Lines of context around each change.
+    #[arg(short = 'U', long = "unified", value_name = "N", default_value_t = 3)]
+    context: usize,
+    /// Show a diffstat instead of the patch.
+    #[arg(long, conflicts_with_all = ["name_only", "name_status"])]
+    stat: bool,
+    /// Show only the names of changed files.
+    #[arg(long, conflicts_with = "name_status")]
+    name_only: bool,
+    /// Show the names and the kind of change (A, M, D) of changed files.
+    #[arg(long)]
+    name_status: bool,
+}
+
+impl DiffFormat {
+    fn format(&self) -> diff::Format {
+        let kind = if self.stat {
+            diff::Kind::Stat
+        } else if self.name_only {
+            diff::Kind::NameOnly
+        } else if self.name_status {
+            diff::Kind::NameStatus
+        } else {
+            diff::Kind::Patch
+        };
+        diff::Format {
+            context: self.context,
+            kind,
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -965,7 +1040,7 @@ fn main() -> Result<()> {
                 );
             }
         }
-        Command::Clone { dir, .. } => {
+        Command::Clone { dir, revision, .. } => {
             let repo = api.repo.clone().expect("clone names a repository");
             let dir = dir.unwrap_or_else(|| {
                 address::split_repo(&repo)
@@ -977,12 +1052,46 @@ fn main() -> Result<()> {
             } else {
                 cwd.join(dir)
             };
-            sync::clone_into(&api, &target, &server, &repo)?;
+            let commit = revision.map(|r| snapshot::resolve(&api, &r)).transpose()?;
+            sync::clone_into(&api, &target, &server, &repo, commit)?;
         }
-        Command::Status => sync::status(&api, in_workspace("status")?)?,
-        Command::Update { paths } => {
+        Command::Status { revision } => {
+            let commit = revision.map(|r| snapshot::resolve(&api, &r)).transpose()?;
+            sync::status(&api, in_workspace("status")?, commit)?
+        }
+        Command::Update { paths, revision } => {
             let only = paths.iter().map(|p| rp(p)).collect::<Result<Vec<_>>>()?;
-            sync::update(&api, in_workspace("update")?, &only)?;
+            let commit = revision.map(|r| snapshot::resolve(&api, &r)).transpose()?;
+            sync::update(&api, in_workspace("update")?, &only, commit)?;
+        }
+        Command::Diff {
+            args,
+            paths,
+            format,
+            exit_code,
+            quiet,
+            cached,
+        } => {
+            if cached {
+                bail!(
+                    "pyn has no staging area: `pyn diff` compares the workspace with the last update"
+                );
+            }
+            let differs = diff_command(
+                &api,
+                ws.as_ref(),
+                &args,
+                &paths,
+                &format.format(),
+                quiet,
+                &rp,
+            )?;
+            if differs && (exit_code || quiet) {
+                std::process::exit(1);
+            }
+        }
+        Command::Show { commit, format } => {
+            show_command(&api, commit.as_deref(), &format.format())?
         }
         Command::Policy(PolicyCommand::Preview { file }) => {
             let content = std::fs::read_to_string(&file)
@@ -1130,9 +1239,39 @@ fn main() -> Result<()> {
             }
         }
         Command::Log {
+            commits: true,
+            limit,
+            ..
+        } => {
+            let mut rows: Vec<Vec<String>> = Vec::new();
+            let mut before = None;
+            while rows.len() < limit {
+                let page = snapshot::commit_page(&api, before, (limit - rows.len()).min(200))?;
+                for c in page.commits {
+                    rows.push(vec![
+                        format!("c{}", c.id),
+                        c.author,
+                        time::local(c.created_at),
+                        c.revisions.len().to_string(),
+                        c.message,
+                    ]);
+                }
+                before = page.next_before;
+                if before.is_none() {
+                    break;
+                }
+            }
+            table::show(
+                &["COMMIT", "AUTHOR", "WHEN", "FILES", "MESSAGE"],
+                &rows,
+                "no commits",
+            );
+        }
+        Command::Log {
             path,
             filter,
             limit,
+            ..
         } => {
             let (revs, repo_wide) = match path {
                 Some(path) => (path_history(&api, &rp(&path)?)?, false),
@@ -1280,6 +1419,102 @@ fn main() -> Result<()> {
             )?;
             println!("updated {role}");
         }
+    }
+    Ok(())
+}
+
+/// Splits the leading commit references from the paths and prints the comparison; true if anything differs.
+fn diff_command(
+    api: &Api,
+    ws: Option<&Workspace>,
+    args: &[String],
+    paths: &[String],
+    format: &diff::Format,
+    quiet: bool,
+    rp: &dyn Fn(&str) -> Result<String>,
+) -> Result<bool> {
+    let mut refs: Vec<String> = Vec::new();
+    let mut rest = args;
+    while refs.len() < 2
+        && let Some((first, tail)) = rest.split_first()
+    {
+        if let Some((a, b)) = first.split_once("..")
+            && refs.is_empty()
+            && snapshot::parse_commit(a, false).is_some()
+            && snapshot::parse_commit(b, false).is_some()
+        {
+            refs.extend([a.to_string(), b.to_string()]);
+        } else if snapshot::parse_commit(first, false).is_some() {
+            refs.push(first.clone());
+        } else {
+            break;
+        }
+        rest = tail;
+    }
+    let only = rest
+        .iter()
+        .chain(paths)
+        .filter(|p| p.as_str() != ".")
+        .map(|p| rp(p))
+        .collect::<Result<Vec<_>>>()?;
+    let ws_needed = || -> Result<&Workspace> {
+        ws.context(
+            "`pyn diff` with fewer than two commits compares the workspace; run it inside one",
+        )
+    };
+    let snapshot_tree = |r: &str| -> Result<diff::Tree> {
+        let commit = snapshot::resolve(api, r)?;
+        Ok(diff::tree_of_snapshot(
+            &snapshot::fetch(api, Some(commit))?.1,
+        ))
+    };
+    let (old, new) = match refs.as_slice() {
+        [] => {
+            let ws = ws_needed()?;
+            let old = diff::tree_of_state(&ws.load_state()?);
+            let new = diff::tree_of_disk(ws, old.keys())?;
+            (old, new)
+        }
+        [one] => {
+            let ws = ws_needed()?;
+            let old = snapshot_tree(one)?;
+            let tracked: std::collections::BTreeSet<String> = old
+                .keys()
+                .cloned()
+                .chain(ws.load_state()?.into_keys())
+                .collect();
+            (old, diff::tree_of_disk(ws, tracked.iter())?)
+        }
+        [a, b] => (snapshot_tree(a)?, snapshot_tree(b)?),
+        _ => unreachable!("at most two commits are taken"),
+    };
+    let mut out = String::new();
+    let differs = diff::compare(api, &old, &new, &only, format, &mut out)?;
+    if !quiet {
+        print!("{out}");
+    }
+    Ok(differs)
+}
+
+fn show_command(api: &Api, commit: Option<&str>, format: &diff::Format) -> Result<()> {
+    let id = match commit {
+        Some(c) => snapshot::resolve(api, c)?,
+        None => snapshot::resolve(api, "HEAD")?,
+    };
+    let found = snapshot::commit(api, id)?;
+    let new = diff::tree_of_snapshot(&snapshot::fetch(api, Some(id))?.1);
+    let old = if id > 1 {
+        diff::tree_of_snapshot(&snapshot::fetch(api, Some(id - 1))?.1)
+    } else {
+        diff::Tree::new()
+    };
+    let only: Vec<String> = found.revisions.iter().map(|r| r.path.clone()).collect();
+    let mut body = String::new();
+    diff::compare(api, &old, &new, &only, format, &mut body)?;
+    print!("{}", diff::commit_header(&found));
+    if !body.is_empty() {
+        println!();
+        print!("{body}");
     }
     Ok(())
 }

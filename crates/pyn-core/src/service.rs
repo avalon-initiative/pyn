@@ -15,7 +15,8 @@ use crate::rules::{Mode, POLICY_PATH, PathFilter, Rules};
 use crate::store::MetadataStore;
 use crate::tree::{ACTIVITY_ACTIONS, DEFAULT_BRANCH, EntryKind, RepoSummary, TreeEntry};
 use crate::types::{
-    ChangesetItem, ContentHash, Lock, NewRevision, RepoId, RepoPath, Revision, RevisionId, UserId,
+    ChangesetItem, Commit, ContentHash, Lock, NewRevision, RepoId, RepoPath, Revision, RevisionId,
+    UserId,
 };
 
 fn changeset_id() -> Result<String> {
@@ -39,6 +40,31 @@ pub struct ChangeEntry {
     pub path: RepoPath,
     pub content: ContentHash,
     pub base: Option<RevisionId>,
+}
+
+/// One path of a snapshot: the revision the commit points at, with the mode it had then.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SnapshotEntry {
+    pub path: RepoPath,
+    pub mode: Mode,
+    pub revision: Revision,
+}
+
+/// The whole repository as of one commit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Snapshot {
+    /// The commit number; 0 for a repository with no commits.
+    pub commit: u64,
+    /// Ordered by path.
+    pub entries: Vec<SnapshotEntry>,
+}
+
+/// One page of commits, newest first.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitPage {
+    pub commits: Vec<Commit>,
+    /// Pass back as `before` for the next, older page; `None` on the last page.
+    pub next: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -848,5 +874,55 @@ impl RepoService {
             HistoryCursor::of(&revisions[limit - 1])
         });
         Ok(HistoryPage { revisions, next })
+    }
+
+    pub async fn head_commit(&self) -> Result<u64> {
+        self.meta.head_commit(&self.repo).await
+    }
+
+    pub async fn get_commit(&self, id: u64) -> Result<Commit> {
+        self.meta
+            .get_commit(&self.repo, id)
+            .await?
+            .ok_or(PynError::CommitNotFound(id))
+    }
+
+    /// Commits newest first; `limit` defaults to 50 and is capped at 200.
+    pub async fn commits(&self, before: Option<u64>, limit: Option<usize>) -> Result<CommitPage> {
+        let limit = limit
+            .unwrap_or(HISTORY_DEFAULT_LIMIT)
+            .clamp(1, HISTORY_MAX_LIMIT);
+        let mut commits = self.meta.commits(&self.repo, before, limit + 1).await?;
+        let next = (commits.len() > limit).then(|| {
+            commits.truncate(limit);
+            commits[limit - 1].id
+        });
+        Ok(CommitPage { commits, next })
+    }
+
+    /// Every path as of commit `id` (the newest when `None`); a path's mode is the one recorded with its revision.
+    pub async fn snapshot(&self, id: Option<u64>) -> Result<Snapshot> {
+        let id = match id {
+            Some(id) => {
+                self.get_commit(id).await?;
+                id
+            }
+            None => self.head_commit().await?,
+        };
+        let mut entries = Vec::new();
+        for revision in self.meta.snapshot(&self.repo, id).await? {
+            let mode = revision
+                .mode
+                .unwrap_or_else(|| self.mode_for(&revision.path));
+            entries.push(SnapshotEntry {
+                path: revision.path.clone(),
+                mode,
+                revision,
+            });
+        }
+        Ok(Snapshot {
+            commit: id,
+            entries,
+        })
     }
 }

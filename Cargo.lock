@@ -1757,6 +1757,7 @@ dependencies = [
  "hex",
  "pyn-chunk",
  "pyn-core",
+ "pyn-diff",
  "pyn-proto",
  "pyn-server",
  "reqwest",
@@ -1788,6 +1789,10 @@ dependencies = [
  "tokio",
  "toml",
 ]
+
+[[package]]
+name = "pyn-diff"
+version = "0.0.1"
 
 [[package]]
 name = "pyn-fs"
