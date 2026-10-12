@@ -24,12 +24,12 @@ Which is which is a versioned part of the repository, set per path in `.pyn/pyn.
 
 ```toml
 [meta]
-default = "shared"
+default = "shared"              # what a path becomes when no rule below matches it
 
-[exclusive]
-paths = ["Content/", "**/*.uasset", "**/*.glb"]
+[exclusive]                     # one editor at a time: take a lock with `pyn lock`, release it by committing
+paths = ["Content/", "**/*.uasset", "**/*.glb"]    # folders, globs or single files
 
-[shared]
+[shared]                        # edited concurrently, merged like git
 paths = ["Source/", "docs/"]
 ```
 
@@ -91,7 +91,14 @@ environment variable.
 
 ## Layout
 
-This repo holds the server, the CLI and the shared libraries; the web UI is `pyn-web`, built on the component library
-`pyn-common-ui`. Documentation lives in [docs/](docs/README.md): start with the [concepts](docs/concepts/README.md).
+pyn is a few repositories, each public under [avalon-initiative](https://github.com/avalon-initiative):
+
+| Repository | What it holds |
+| --- | --- |
+| [`pyn`](https://github.com/avalon-initiative/pyn) (this one) | The server, the `pyn` CLI, the shared libraries and the [documentation](docs/README.md) |
+| [`pyn-web`](https://github.com/avalon-initiative/pyn-web) | The web UI: routing, the API client and the views that talk to the server |
+| [`pyn-common-ui`](https://github.com/avalon-initiative/pyn-common-ui) | The shared Vue component library the web UI is built on (presentation only) |
+
+New to pyn? Start with the [concepts](docs/concepts/README.md).
 
 Licensed under Apache-2.0.
