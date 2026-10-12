@@ -1,0 +1,9 @@
+Auto-merging a.txt
+Merge made by the 'ort' strategy.
+ a.txt          | 2 +-
+ b.txt          | 0
+ clean-only.txt | 1 +
+ link           | 2 +-
+ 4 files changed, 3 insertions(+), 2 deletions(-)
+ mode change 100644 => 100755 b.txt
+ create mode 100644 clean-only.txt

@@ -1,0 +1,3 @@
+Auto-merging new.txt
+CONFLICT (add/add): Merge conflict in new.txt
+Automatic merge failed; fix conflicts and then commit the result.

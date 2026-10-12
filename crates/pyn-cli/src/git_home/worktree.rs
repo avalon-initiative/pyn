@@ -36,8 +36,8 @@ impl Blocked {
         self.unmerged.is_empty() && self.local.is_empty() && self.untracked.is_empty()
     }
 
-    /// Prints git's messages for `verb` (`checkout`, `merge`...) and ends the command with status 1.
-    pub(super) fn report(&self, verb: &str, advice: &str) -> ! {
+    /// Prints git's messages for `verb` (`checkout`, `merge`...) and ends the command with `status`.
+    pub(super) fn report(&self, verb: &str, advice: &str, status: i32) -> ! {
         let list = |paths: &[Vec<u8>]| {
             for p in paths {
                 eprintln!("\t{}", path_string(p));
@@ -64,7 +64,7 @@ impl Blocked {
             eprintln!("Please move or remove them before you {advice}.");
         }
         eprintln!("Aborting");
-        std::process::exit(1);
+        std::process::exit(status);
     }
 }
 
@@ -115,7 +115,7 @@ fn ancestors(path: &[u8]) -> Vec<&[u8]> {
 }
 
 /// Why writing `path` would lose something that is not tracked, if it would.
-fn in_the_way(
+pub(super) fn in_the_way(
     git: &GitHome,
     ignores: &Ignores,
     path: &[u8],
@@ -305,8 +305,13 @@ fn prune_empty_parents(root: &Path, path: &[u8]) {
     }
 }
 
-/// Writes one tree entry into the work tree and returns its index entry with the file's stat data.
-pub(super) fn write_entry(git: &GitHome, path: &[u8], entry: &Entry) -> Result<IndexEntry> {
+/// Writes `bytes` as the file, link or (for a submodule) folder at `path`, replacing what is there.
+pub(super) fn write_bytes(
+    git: &GitHome,
+    path: &[u8],
+    mode: FileMode,
+    bytes: &[u8],
+) -> Result<std::fs::Metadata> {
     let root = git.repo.root()?;
     let file = fs_path(root, path);
     for a in ancestors(path) {
@@ -324,26 +329,26 @@ pub(super) fn write_entry(git: &GitHome, path: &[u8], entry: &Entry) -> Result<I
         }
     }
     clear(&file).with_context(|| format!("replacing {}", file.display()))?;
-    match entry.mode {
+    match mode {
         FileMode::Gitlink => std::fs::create_dir_all(&file)?,
-        FileMode::Symlink => {
-            let target = git.repo.blob(&entry.id)?;
-            if git.repo.bool_setting("core.symlinks", true) {
-                create_link(&target, &file)
-            } else {
-                create_file(&file, &target, false)
-            }
-            .with_context(|| format!("writing {}", file.display()))?;
+        FileMode::Symlink if git.repo.bool_setting("core.symlinks", true) => {
+            create_link(bytes, &file).with_context(|| format!("writing {}", file.display()))?
         }
-        mode => {
-            let bytes = git.repo.blob(&entry.id)?;
-            create_file(&file, &bytes, mode == FileMode::Executable)
-                .with_context(|| format!("writing {}", file.display()))?;
-        }
+        _ => create_file(&file, bytes, mode == FileMode::Executable)
+            .with_context(|| format!("writing {}", file.display()))?,
     }
+    Ok(std::fs::symlink_metadata(&file)?)
+}
+
+/// Writes one tree entry into the work tree and returns its index entry with the file's stat data.
+pub(super) fn write_entry(git: &GitHome, path: &[u8], entry: &Entry) -> Result<IndexEntry> {
+    let bytes = match entry.mode {
+        FileMode::Gitlink => Vec::new(),
+        _ => git.repo.blob(&entry.id)?,
+    };
+    let meta = write_bytes(git, path, entry.mode, &bytes)?;
     let mut written = IndexEntry::new(path, raw_mode(entry.mode), entry.id);
     if entry.mode != FileMode::Gitlink {
-        let meta = std::fs::symlink_metadata(&file)?;
         stat_fields(&mut written, &meta);
     }
     Ok(written)

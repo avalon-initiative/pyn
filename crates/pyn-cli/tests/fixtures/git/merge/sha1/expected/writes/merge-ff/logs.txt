@@ -1,0 +1,4 @@
+== logs/HEAD
+42afe410ca98e0ccbdd992aa42a766dd0c537860 14507c733d3b7dccd8684536073241a336daf47e Staging Committer <committer@example.com> 1700000100 -0530	merge ff: Fast-forward
+== logs/refs/heads/main
+42afe410ca98e0ccbdd992aa42a766dd0c537860 14507c733d3b7dccd8684536073241a336daf47e Staging Committer <committer@example.com> 1700000100 -0530	merge ff: Fast-forward

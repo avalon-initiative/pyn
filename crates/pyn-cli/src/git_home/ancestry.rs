@@ -23,4 +23,50 @@ impl GitHome {
         }
         Ok(false)
     }
+
+    /// Every commit reachable from `start`, `start` included.
+    fn reachable(&self, start: &ObjectId) -> Result<HashSet<ObjectId>> {
+        let mut seen = HashSet::new();
+        let mut queue = VecDeque::from([*start]);
+        while let Some(id) = queue.pop_front() {
+            if !seen.insert(id) {
+                continue;
+            }
+            queue.extend(self.repo.commit(&id)?.parents);
+        }
+        Ok(seen)
+    }
+
+    /// The best common ancestors of `a` and `b`: those that no other common ancestor descends from.
+    pub(super) fn merge_bases(&self, a: &ObjectId, b: &ObjectId) -> Result<Vec<ObjectId>> {
+        let from_a = self.reachable(a)?;
+        let mut candidates: Vec<ObjectId> = Vec::new();
+        let mut seen = HashSet::new();
+        let mut queue = VecDeque::from([*b]);
+        while let Some(id) = queue.pop_front() {
+            if !seen.insert(id) {
+                continue;
+            }
+            if from_a.contains(&id) {
+                candidates.push(id);
+                continue;
+            }
+            queue.extend(self.repo.commit(&id)?.parents);
+        }
+        let mut best = Vec::new();
+        for (i, c) in candidates.iter().enumerate() {
+            let mut covered = false;
+            for (j, other) in candidates.iter().enumerate() {
+                if i != j && self.is_ancestor(c, other)? {
+                    covered = true;
+                    break;
+                }
+            }
+            if !covered {
+                best.push(*c);
+            }
+        }
+        best.sort_by_key(ObjectId::to_hex);
+        Ok(best)
+    }
 }

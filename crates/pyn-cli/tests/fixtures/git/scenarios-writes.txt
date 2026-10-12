@@ -2,7 +2,7 @@
 # Each command is run with git to record <format>/expected/writes/<name>/ (regenerate-writes.sh) and with pyn by
 # tests/git_writes.rs, which compares what is left on disk. "+" in an argument is a space. Special commands:
 #   @write <path> <text>   writes the file (text with "+" for spaces and "\n" for a newline)
-#   @resume                `git commit --no-edit` for git, `pyn commit` for pyn (finishes a merge)
+#   @resume                `git commit --no-edit --cleanup=strip` for git, `pyn commit` for pyn (finishes a merge)
 # A name starting with "out-" also compares the standard output of the last command.
 # fixture: main = the dirty scenario repository (worktree/, linked/); merge = the clean merge repository.
 # tree: main or linked.
@@ -94,3 +94,43 @@ out-tag-list	main	main	.	tag
 out-tag-list-pattern	main	main	.	tag -l l*
 out-tag-delete	main	main	.	tag -d light
 tag-dash-name-refused	main	main	.	tag -- -x
+merge-ff	merge	main	.	merge ff
+merge-ff-no-ff	merge	main	.	merge --no-ff ff -m ff+as+merge
+merge-ff-only	merge	main	.	merge --ff-only ff
+merge-ff-only-refused	merge	main	.	merge --ff-only clean
+merge-up-to-date	merge	main	.	merge old
+merge-up-to-date-no-ff	merge	main	.	merge --no-ff old
+merge-clean	merge	main	.	merge clean
+merge-clean-message	merge	main	.	merge clean -m Merge+clean+side
+merge-clean-no-commit	merge	main	.	merge --no-commit clean
+merge-clean-no-commit-no-ff	merge	main	.	merge --no-commit --no-ff clean
+merge-clean-no-commit-resume	merge	main	.	merge --no-commit clean ;; @resume
+merge-clean-in-subdir	merge	main	dir	merge clean
+merge-clean-on-other-branch	merge	main	.	switch -c work ;; merge clean
+merge-clean-on-detached	merge	main	.	switch --detach ;; merge clean
+merge-conflict	merge	main	.	merge conflict
+merge-conflict-no-ff	merge	main	.	merge --no-ff conflict -m custom+message
+merge-conflict-status	merge	main	.	merge conflict ;; status
+merge-conflict-resolved	merge	main	.	merge conflict ;; @write a.txt resolved\nline\n ;; @write b.txt bee+resolved\n ;; add a.txt b.txt ;; @resume
+merge-conflict-resolved-with-message	merge	main	.	merge conflict ;; @write a.txt resolved\n ;; @write b.txt resolved\n ;; add a.txt b.txt ;; commit -m resolved+it
+merge-conflict-commit-unresolved-refused	merge	main	.	merge conflict ;; commit -m nope
+merge-conflict-add-one-then-commit-refused	merge	main	.	merge conflict ;; @write a.txt resolved\n ;; add a.txt ;; commit -m nope
+merge-abort	merge	main	.	merge conflict ;; merge --abort
+merge-abort-keeps-unrelated-local-changes	merge	main	.	@write main-only.txt local+edit\n ;; merge conflict ;; merge --abort
+merge-abort-after-partial-resolution	merge	main	.	merge conflict ;; @write a.txt resolved\n ;; add a.txt ;; merge --abort
+merge-abort-without-merge-refused	merge	main	.	merge --abort
+merge-continue-without-merge-refused	merge	main	.	merge --continue
+merge-twice-refused	merge	main	.	merge conflict ;; merge clean
+merge-switch-during-merge-refused	merge	main	.	merge conflict ;; switch clean
+merge-modify-delete	merge	main	.	merge moddel
+merge-add-add	merge	main	.	merge addadd
+merge-dirty-file-refused	merge	main	.	@write a.txt local+edit\n ;; merge clean
+merge-dirty-unrelated-file-allowed	merge	main	.	@write dir/x.txt local+edit\n ;; merge clean
+merge-staged-change-refused	merge	main	.	@write dir/x.txt staged\n ;; add dir/x.txt ;; merge clean
+merge-untracked-in-the-way-refused	merge	main	.	@write clean-only.txt mine\n ;; merge clean
+merge-unknown-refused	merge	main	.	merge nope
+merge-tag	merge	main	.	tag at-clean clean ;; merge at-clean
+merge-annotated-tag	merge	main	.	tag -a -m release at-clean clean ;; merge at-clean
+merge-mode-and-symlink-changes	merge	main	.	merge clean ;; status
+merge-then-switch-back	merge	main	.	merge clean ;; switch -c after ;; switch main
+merge-in-unborn-branch	merge	main	.	switch -c work ;; merge ff

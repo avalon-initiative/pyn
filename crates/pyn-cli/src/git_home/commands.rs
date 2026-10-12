@@ -65,7 +65,7 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
         Command::Init => init(git),
         Command::Files => crate::files_command(git),
         Command::Ls { path } => crate::ls_command(git, path.as_deref()),
-        Command::Merge(_) => refuse("merge"),
+        Command::Merge(args) => super::merge::merge(git, args),
         Command::Branch(args) => super::branches::branch(git, args),
         Command::Switch(args) => super::switch::switch(git, args),
         Command::Checkout(args) => super::switch::checkout(git, cwd, args),

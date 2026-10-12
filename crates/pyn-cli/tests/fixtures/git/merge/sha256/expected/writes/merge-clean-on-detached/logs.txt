@@ -1,0 +1,3 @@
+== logs/HEAD
+4d59c4deaa4ad373083260d59fba79a096709cda797fcc5ed24cb5913cc6e83d 4d59c4deaa4ad373083260d59fba79a096709cda797fcc5ed24cb5913cc6e83d Staging Committer <committer@example.com> 1700000100 -0530	checkout: moving from main to HEAD
+4d59c4deaa4ad373083260d59fba79a096709cda797fcc5ed24cb5913cc6e83d 2558593c8611dce634003f4c885f17036cdfceaf92d9a00632c27be58149651f Staging Committer <committer@example.com> 1700000100 -0530	merge clean: Merge made by the 'ort' strategy.

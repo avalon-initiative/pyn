@@ -281,10 +281,10 @@ fn plan(git: &GitHome, index: &Index, specs: &Specs, update: bool, force: bool) 
             continue;
         }
         match kind {
-            Kind::Unmerged => bail!(
-                "'{}' is unmerged; pyn cannot resolve merge conflicts yet",
-                path_string(&path)
-            ),
+            Kind::Unmerged => {
+                let present = std::fs::symlink_metadata(fs_path(git.repo.root()?, &path)).is_ok();
+                ops.insert(path, if present { Op::Put } else { Op::Remove })
+            }
             Kind::Deleted => ops.insert(path, Op::Remove),
             _ => ops.insert(path, Op::Put),
         };
@@ -741,6 +741,12 @@ pub(super) fn refuse_in_progress(git: &GitHome) -> Result<()> {
 fn refuse_states(git: &GitHome, states: &[&str]) -> Result<()> {
     let dir = git.repo.git().git_dir();
     if let Some(name) = states.iter().find(|n| dir.join(n).exists()) {
+        if *name == "MERGE_HEAD" {
+            bail!(
+                "a merge is in progress; resolve the conflicts and finish it with `pyn add` and `pyn commit`, \
+                 or give it up with `pyn merge --abort`"
+            );
+        }
         bail!(
             "a merge, cherry-pick, revert or rebase is in progress ({name}); \
              pyn cannot continue it, so finish or abort it with git first"
@@ -750,12 +756,17 @@ fn refuse_states(git: &GitHome, states: &[&str]) -> Result<()> {
 }
 
 pub(super) fn warn_about_hooks(git: &GitHome) {
+    warn_about_hooks_for(git, &HOOKS);
+}
+
+/// Warns once that git hooks exist and were not run.
+pub(super) fn warn_about_hooks_for(git: &GitHome, names: &[&str]) {
     let common = git.repo.git().common_dir();
     let hooks = match git.repo.config().get("core.hookspath") {
         Some(p) => common.join(p),
         None => common.join("hooks"),
     };
-    if HOOKS.iter().any(|h| hooks.join(h).is_file()) {
+    if names.iter().any(|h| hooks.join(h).is_file()) {
         eprintln!(
             "warning: pyn does not run git hooks; the ones in {} were skipped",
             hooks.display()
@@ -790,11 +801,7 @@ fn merge_message(git: &GitHome) -> Result<Option<Vec<u8>>> {
         return Ok(None);
     };
     let text = String::from_utf8_lossy(&bytes);
-    let kept: Vec<String> = text
-        .lines()
-        .filter(|l| !l.starts_with('#'))
-        .map(str::to_string)
-        .collect();
+    let kept: Vec<&str> = text.lines().filter(|l| !l.starts_with('#')).collect();
     Ok(Some(clean_message(&[kept.join("\n")])))
 }
 
@@ -847,6 +854,11 @@ pub fn commit(git: &GitHome, messages: &[String], all: bool) -> Result<()> {
         let plan = plan(git, &opened.index, &specs, true, false)?;
         staged_now = !plan.ops.is_empty();
         apply(git, &mut entries, &plan.ops, false, false)?;
+    }
+    if entries.keys().any(|(_, stage)| *stage > 0) {
+        bail!(
+            "Committing is not possible because you have unmerged files; resolve them and stage them with `pyn add`"
+        );
     }
     let index = index_of(opened.index.version, entries);
     let tree = write_tree(git, &index)?;

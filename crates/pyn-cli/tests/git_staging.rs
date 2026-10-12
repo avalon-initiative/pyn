@@ -564,8 +564,15 @@ fn unmerged_paths_and_a_lock_file_stop_staging() {
     let (code, err) = repo.fails(&["commit", "-m", "x"]);
     assert_eq!(code, 128);
     assert!(err.contains("unmerged"), "{err}");
-    let (_, err) = repo.fails(&["add", "README.md"]);
-    assert!(err.contains("unmerged"), "{err}");
+    repo.ok(&["add", "README.md"]);
+    let index = Index::read(&path, Algorithm::Sha1).unwrap();
+    let stages: Vec<u8> = index
+        .entries
+        .iter()
+        .filter(|e| e.path == b"README.md")
+        .map(|e| e.stage)
+        .collect();
+    assert_eq!(stages, [0], "adding an unmerged path resolves it");
 
     let repo = Repo::new("sha1");
     fs::write(repo.main.join(".git/index.lock"), "").unwrap();

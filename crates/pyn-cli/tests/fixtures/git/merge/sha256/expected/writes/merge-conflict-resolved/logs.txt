@@ -1,0 +1,4 @@
+== logs/HEAD
+4d59c4deaa4ad373083260d59fba79a096709cda797fcc5ed24cb5913cc6e83d eb57455a0c08fd3de7f0cb35c47e336fad509d0a3fa22190cfb2f60239257380 Staging Committer <committer@example.com> 1700000100 -0530	commit (merge): Merge branch 'conflict'
+== logs/refs/heads/main
+4d59c4deaa4ad373083260d59fba79a096709cda797fcc5ed24cb5913cc6e83d eb57455a0c08fd3de7f0cb35c47e336fad509d0a3fa22190cfb2f60239257380 Staging Committer <committer@example.com> 1700000100 -0530	commit (merge): Merge branch 'conflict'

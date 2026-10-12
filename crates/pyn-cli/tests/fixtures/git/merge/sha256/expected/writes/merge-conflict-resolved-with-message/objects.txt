@@ -1,0 +1,8 @@
+== HEAD
+tree 1bab0adba7f1c54603fea715c5087331ab28f0e7fcab418c4d90ed6609d3e0ce
+parent 4d59c4deaa4ad373083260d59fba79a096709cda797fcc5ed24cb5913cc6e83d
+parent 3fcc24faf78877dacd1efb6a51a5390c2aefe1b75f4d11d5a20ec99582bae2c2
+author Staging Author <staging@example.com> 1700000000 +0200
+committer Staging Committer <committer@example.com> 1700000100 -0530
+
+resolved it

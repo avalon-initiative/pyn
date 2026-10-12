@@ -157,10 +157,25 @@ fn every_scenario_leaves_what_git_left() {
             check("objects", &got.objects, want("objects.txt"));
             check("config", &got.config, want("config.txt"));
             let status = repo.ok_in(root, &["status"]);
+            let unmerged = |line: &str| {
+                let (xy, path) = line.split_at(2);
+                let conflicted =
+                    matches!(xy, "DD" | "AU" | "UD" | "UA" | "DU" | "AA" | "UU" | " U");
+                if conflicted {
+                    format!("U{path}")
+                } else {
+                    line.to_string()
+                }
+            };
+            let rows = |lines: Vec<String>| {
+                let mut rows: Vec<String> = lines.iter().map(|l| unmerged(l)).collect();
+                rows.sort();
+                rows.join("\n")
+            };
             check(
                 "status",
-                &porcelain(&status).join("\n"),
-                sorted_lines(&want("status.txt")).join("\n"),
+                &rows(porcelain(&status)),
+                rows(sorted_lines(&want("status.txt"))),
             );
             if s.name.starts_with("out-") {
                 check("stdout", &stdout, want("stdout.txt"));

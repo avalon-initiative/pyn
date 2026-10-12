@@ -32,28 +32,28 @@ const STATE_VERSION: u32 = 1;
 #[derive(Debug, Args)]
 pub struct MergeArgs {
     /// The branch, or commit, to merge into the current branch.
-    source: Option<String>,
+    pub(crate) source: Option<String>,
     /// The merge commit's message; repeat for more paragraphs.
     #[arg(short = 'm', long = "message")]
-    message: Vec<String>,
+    pub(crate) message: Vec<String>,
     /// Make a merge commit even when the branch could fast-forward.
     #[arg(long)]
-    no_ff: bool,
+    pub(crate) no_ff: bool,
     /// Refuse to merge unless the branch can fast-forward.
     #[arg(long, conflicts_with = "no_ff")]
-    ff_only: bool,
+    pub(crate) ff_only: bool,
     /// Perform the merge but stop before committing it.
     #[arg(long)]
-    no_commit: bool,
+    pub(crate) no_commit: bool,
     /// Give up a merge in progress and put the files back.
     #[arg(long, conflicts_with_all = ["source", "no_ff", "ff_only", "no_commit", "message", "preview", "continue_merge"])]
-    abort: bool,
+    pub(crate) abort: bool,
     /// Conclude a merge in progress, as `pyn commit` does.
     #[arg(long = "continue", conflicts_with_all = ["source", "no_ff", "ff_only", "no_commit", "preview"])]
-    continue_merge: bool,
+    pub(crate) continue_merge: bool,
     /// Show what would merge and what would conflict, and change nothing.
     #[arg(long)]
-    preview: bool,
+    pub(crate) preview: bool,
 }
 
 /// One side of a conflicted path, as the workspace needs it to take that side later.

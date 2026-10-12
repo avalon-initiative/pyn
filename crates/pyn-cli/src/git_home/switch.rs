@@ -167,7 +167,7 @@ fn go(git: &GitHome, go: Go) -> Result<()> {
     );
     let mode = if go.force { Mode::Force } else { Mode::Safe };
     if let Err(blocked) = move_tree(git, &opened, old_tree.as_ref(), new_tree.as_ref(), mode)? {
-        blocked.report("checkout", "switch branches");
+        blocked.report("checkout", "switch branches", 1);
     }
     let message = format!("checkout: moving from {from} to {label}");
     match (&branch_ref, &target) {

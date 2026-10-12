@@ -5,10 +5,12 @@ mod ancestry;
 mod branches;
 mod commands;
 mod convert;
+mod merge;
 mod refwrite;
 mod stage;
 mod switch;
 mod tags;
+mod treemerge;
 mod worktree;
 
 use std::path::{Path, PathBuf};

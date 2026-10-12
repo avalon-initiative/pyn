@@ -1,0 +1,5 @@
+Updating 4d59c4d..5675fb7
+Fast-forward
+ ff.txt | 1 +
+ 1 file changed, 1 insertion(+)
+ create mode 100644 ff.txt

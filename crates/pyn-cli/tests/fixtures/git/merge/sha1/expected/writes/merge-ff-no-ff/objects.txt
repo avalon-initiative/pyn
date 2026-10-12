@@ -1,0 +1,8 @@
+== HEAD
+tree e7f34830b381928e0add3e0fc97a853ab09bd720
+parent 42afe410ca98e0ccbdd992aa42a766dd0c537860
+parent 14507c733d3b7dccd8684536073241a336daf47e
+author Staging Author <staging@example.com> 1700000000 +0200
+committer Staging Committer <committer@example.com> 1700000100 -0530
+
+ff as merge

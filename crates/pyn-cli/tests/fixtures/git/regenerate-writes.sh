@@ -73,7 +73,7 @@ scenario() {
       if [ "${argv[0]}" = "@write" ]; then
         printf "${argv[2]}" > "${argv[1]}"
       elif [ "${argv[0]}" = "@resume" ]; then
-        git commit -q --no-edit > "$out/stdout.txt" 2>/dev/null || code=$?
+        git commit -q --no-edit --cleanup=strip > "$out/stdout.txt" 2>/dev/null || code=$?
       else
         git -c merge.conflictStyle=diff3 -c advice.detachedHead=false "${argv[@]}" > "$out/stdout.txt" 2>/dev/null || code=$?
       fi
@@ -88,6 +88,7 @@ scenario() {
 }
 
 for format in sha1 sha256; do
+  rm -rf "$here/$format/expected/writes" "$here/merge/$format/expected/writes"
   while IFS=$'\t' read -r name fixture tree sub cmds; do
     case "$name" in ''|'#'*) continue ;; esac
     scenario "$format" "$name" "$fixture" "$tree" "$sub" "$cmds"

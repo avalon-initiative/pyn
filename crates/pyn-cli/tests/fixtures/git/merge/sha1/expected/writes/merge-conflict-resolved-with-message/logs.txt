@@ -1,0 +1,4 @@
+== logs/HEAD
+42afe410ca98e0ccbdd992aa42a766dd0c537860 52072f1eef80897261773c3d18662f4e749f85ea Staging Committer <committer@example.com> 1700000100 -0530	commit (merge): resolved it
+== logs/refs/heads/main
+42afe410ca98e0ccbdd992aa42a766dd0c537860 52072f1eef80897261773c3d18662f4e749f85ea Staging Committer <committer@example.com> 1700000100 -0530	commit (merge): resolved it

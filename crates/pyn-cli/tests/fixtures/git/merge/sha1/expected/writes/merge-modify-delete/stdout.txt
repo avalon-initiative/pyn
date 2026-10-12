@@ -1,0 +1,2 @@
+CONFLICT (modify/delete): del.txt deleted in moddel and modified in HEAD.  Version HEAD of del.txt left in tree.
+Automatic merge failed; fix conflicts and then commit the result.
