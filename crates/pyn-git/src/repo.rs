@@ -77,6 +77,8 @@ impl Repository {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => git_dir.clone(),
             Err(e) => return Err(io_at(&git_dir.join("commondir"))(e)),
         };
+        let canon = |p: PathBuf| std::fs::canonicalize(&p).map_err(io_at(&p));
+        let (git_dir, common_dir) = (canon(git_dir)?, canon(common_dir)?);
         let config = Config::read(&common_dir.join("config"))?;
         let algorithm = config.object_format()?;
         if config
