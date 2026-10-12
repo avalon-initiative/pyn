@@ -1794,6 +1794,7 @@ dependencies = [
  "pyn-chunk",
  "pyn-core",
  "pyn-diff",
+ "pyn-gitwork",
  "pyn-hash",
  "pyn-object",
  "pyn-proto",
@@ -1861,6 +1862,16 @@ dependencies = [
  "pyn-object",
  "sha1-checked",
  "sha2 0.11.0",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
+name = "pyn-gitwork"
+version = "0.0.1"
+dependencies = [
+ "pyn-git",
+ "pyn-object",
  "tempfile",
  "thiserror",
 ]

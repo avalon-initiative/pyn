@@ -1,0 +1,17 @@
+[package]
+name = "pyn-gitwork"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+pyn-git = { version = "0.0.1", path = "../pyn-git" }
+pyn-object = { version = "0.0.1", path = "../pyn-object" }
+thiserror = "2.0.21"
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[lints]
+workspace = true
