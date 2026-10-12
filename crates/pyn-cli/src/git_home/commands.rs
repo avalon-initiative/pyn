@@ -112,20 +112,6 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
         Command::Restore { .. } => refuse("restore"),
         Command::Update { .. } => refuse("update"),
         Command::Get { .. } => refuse("get"),
-        Command::Login { .. } => server_only("login"),
-        Command::Logout => server_only("logout"),
-        Command::Register { .. } => server_only("register"),
-        Command::Password { .. } => server_only("password"),
-        Command::Key(_) => server_only("key"),
-        Command::Invite(_) => server_only("invite"),
-        Command::User(_) => server_only("user"),
-        Command::Whoami => server_only("whoami"),
-        Command::Repo(_) => server_only("repo"),
-        Command::Org(_) => server_only("org"),
-        Command::Team(_) => server_only("team"),
-        Command::Setup { .. } => server_only("setup"),
-        Command::Admin(_) => server_only("admin"),
-        Command::Usage { .. } => server_only("usage"),
         Command::Locks { .. } => server_only("locks"),
         Command::Lock { .. } => server_only("lock"),
         Command::Unlock { .. } => server_only("unlock"),
@@ -133,9 +119,23 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
         Command::Audit { .. } => server_only("audit"),
         Command::Verify { .. } => server_only("verify"),
         Command::Summary => server_only("summary"),
-        Command::Token(_) => server_only("token"),
-        Command::Member(_) => server_only("member"),
-        Command::Role(_) => server_only("role"),
+        Command::Login { .. }
+        | Command::Logout
+        | Command::Register { .. }
+        | Command::Password { .. }
+        | Command::Key(_)
+        | Command::Invite(_)
+        | Command::User(_)
+        | Command::Whoami
+        | Command::Repo(_)
+        | Command::Org(_)
+        | Command::Team(_)
+        | Command::Setup { .. }
+        | Command::Admin(_)
+        | Command::Usage { .. }
+        | Command::Token(_)
+        | Command::Member(_)
+        | Command::Role(_) => unreachable!("run from anywhere, not through a git home"),
         Command::Clone { .. } | Command::Config(_) | Command::External(_) => {
             unreachable!("handled before a git home is consulted")
         }
