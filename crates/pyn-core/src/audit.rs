@@ -26,6 +26,7 @@ pub enum AuditAction {
     RepoUpdated,
     RepoDeleted,
     PolicyChanged,
+    ModeConverted,
     AccountApproved,
     AccountDisabled,
     AccountEnabled,
@@ -58,7 +59,7 @@ pub enum AuditAction {
 }
 
 impl AuditAction {
-    pub const ALL: [AuditAction; 43] = [
+    pub const ALL: [AuditAction; 44] = [
         AuditAction::Checkout,
         AuditAction::Release,
         AuditAction::Checkin,
@@ -73,6 +74,7 @@ impl AuditAction {
         AuditAction::RepoUpdated,
         AuditAction::RepoDeleted,
         AuditAction::PolicyChanged,
+        AuditAction::ModeConverted,
         AuditAction::AccountApproved,
         AuditAction::AccountDisabled,
         AuditAction::AccountEnabled,
@@ -120,6 +122,7 @@ impl AuditAction {
             Self::RepoUpdated => "repo_updated",
             Self::RepoDeleted => "repo_deleted",
             Self::PolicyChanged => "policy_changed",
+            Self::ModeConverted => "mode_converted",
             Self::AccountApproved => "account_approved",
             Self::AccountDisabled => "account_disabled",
             Self::AccountEnabled => "account_enabled",

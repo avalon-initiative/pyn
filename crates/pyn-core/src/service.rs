@@ -187,7 +187,8 @@ impl RepoService {
         Some(std::mem::replace(&mut applied.rules, Arc::new(rules)))
     }
 
-    /// Releases live locks on paths the new policy makes shared and audits the change.
+    /// Applies a recorded policy revision's conversions: releases locks on paths that became shared, gives paths that
+    /// became exclusive a conversion revision of their current content, and audits each step.
     async fn policy_applied(
         &self,
         actor: &UserId,
@@ -196,25 +197,118 @@ impl RepoService {
         new: &Rules,
     ) -> Result<()> {
         let now = self.clock.now();
-        let mut released = 0;
-        for lock in self.meta.list_locks(&self.repo, now).await? {
-            if old.mode_for(&lock.path) == Mode::Exclusive
-                && new.mode_for(&lock.path) == Mode::Shared
-                && self
-                    .meta
-                    .force_release_lock(&self.repo, &lock.path, now)
-                    .await?
-                    .is_some()
+        let found = self.conversions(old, new).await?;
+        for lock in &found.released_locks {
+            if self
+                .meta
+                .force_release_lock(&self.repo, &lock.path, now)
+                .await?
+                .is_some()
             {
-                released += 1;
                 let detail = format!("released {}'s lock: now shared by policy", lock.owner);
                 self.record(actor, AuditAction::ForceUnlock, &lock.path, detail)
                     .await?;
             }
         }
-        let detail = format!("r{} applied; {released} lock(s) released", rev.id);
+        for path in &found.to_shared {
+            let detail = format!("exclusive -> shared by policy r{}", rev.id);
+            self.record(actor, AuditAction::ModeConverted, path, detail)
+                .await?;
+        }
+        for path in &found.to_exclusive {
+            let detail = match self.convert_to_exclusive(actor, path, rev, new).await? {
+                Some(conv) => format!(
+                    "shared -> exclusive by policy r{}; conversion revision r{}",
+                    rev.id, conv.id
+                ),
+                None => format!("shared -> exclusive by policy r{}", rev.id),
+            };
+            self.record(actor, AuditAction::ModeConverted, path, detail)
+                .await?;
+        }
+        let detail = format!(
+            "r{} applied; {} lock(s) released, {} path(s) to shared, {} to exclusive",
+            rev.id,
+            found.released_locks.len(),
+            found.to_shared.len(),
+            found.to_exclusive.len()
+        );
         self.record(actor, AuditAction::PolicyChanged, &rev.path, detail)
             .await
+    }
+
+    /// Records the path's current content as the next revision under the new mode; no lock is needed.
+    /// Retries when a concurrent checkin moves the head; `None` if the path has no revision.
+    async fn convert_to_exclusive(
+        &self,
+        actor: &UserId,
+        path: &RepoPath,
+        policy: &Revision,
+        new: &Rules,
+    ) -> Result<Option<Revision>> {
+        for _ in 0..3 {
+            let Some(head) = self.meta.head_revision(&self.repo, path).await? else {
+                return Ok(None);
+            };
+            let size = self
+                .objects
+                .size(&head.content)
+                .await?
+                .ok_or_else(|| PynError::ObjectMissing(head.content.to_string()))?;
+            let revision = NewRevision {
+                path: path.clone(),
+                content: head.content,
+                author: actor.clone(),
+                message: format!("Convert to exclusive: policy r{}", policy.id),
+                created_at: self.clock.now(),
+                restored_from: None,
+                mode: new.mode_for(path),
+                size,
+            };
+            match self
+                .meta
+                .commit_revision_capped(
+                    &self.repo,
+                    revision,
+                    Some(head.id),
+                    None,
+                    self.clock.now(),
+                    None,
+                )
+                .await
+            {
+                Err(PynError::StaleBase { .. }) => continue,
+                other => return other.map(Some),
+            }
+        }
+        Err(PynError::InvalidRequest(format!(
+            "{path} kept changing while converting it to exclusive"
+        )))
+    }
+
+    /// Paths whose resolved mode differs between `old` and `new`, and the live locks on those becoming shared.
+    async fn conversions(&self, old: &Rules, new: &Rules) -> Result<PolicyPreview> {
+        let mut preview = PolicyPreview::default();
+        let mut paths: BTreeMap<RepoPath, ()> = BTreeMap::new();
+        for rev in self.meta.list_head_revisions(&self.repo).await? {
+            paths.insert(rev.path, ());
+        }
+        let locks = self.meta.list_locks(&self.repo, self.clock.now()).await?;
+        for lock in &locks {
+            paths.insert(lock.path.clone(), ());
+        }
+        for path in paths.into_keys() {
+            match (old.mode_for(&path), new.mode_for(&path)) {
+                (Mode::Exclusive, Mode::Shared) => preview.to_shared.push(path),
+                (Mode::Shared, Mode::Exclusive) => preview.to_exclusive.push(path),
+                _ => {}
+            }
+        }
+        preview.released_locks = locks
+            .into_iter()
+            .filter(|l| preview.to_shared.contains(&l.path))
+            .collect();
+        Ok(preview)
     }
 
     /// Validates a policy revision before it is recorded: `who` needs the policy permission and the file must parse.
@@ -280,28 +374,7 @@ impl RepoService {
     pub async fn preview_policy(&self, who: &Principal, text: &str) -> Result<PolicyPreview> {
         who.require(Permission::EditPolicy)?;
         let new = Rules::from_toml(text)?;
-        let old = self.rules();
-        let mut preview = PolicyPreview::default();
-        let mut paths: BTreeMap<RepoPath, ()> = BTreeMap::new();
-        for rev in self.meta.list_head_revisions(&self.repo).await? {
-            paths.insert(rev.path, ());
-        }
-        let locks = self.meta.list_locks(&self.repo, self.clock.now()).await?;
-        for lock in &locks {
-            paths.insert(lock.path.clone(), ());
-        }
-        for path in paths.into_keys() {
-            match (old.mode_for(&path), new.mode_for(&path)) {
-                (Mode::Exclusive, Mode::Shared) => preview.to_shared.push(path),
-                (Mode::Shared, Mode::Exclusive) => preview.to_exclusive.push(path),
-                _ => {}
-            }
-        }
-        preview.released_locks = locks
-            .into_iter()
-            .filter(|l| preview.to_shared.contains(&l.path))
-            .collect();
-        Ok(preview)
+        self.conversions(&self.rules(), &new).await
     }
 
     /// Removes someone else's live lock. The reason is required because it goes into the audit log.

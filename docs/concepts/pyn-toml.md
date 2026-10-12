@@ -88,10 +88,15 @@ file. Restoring an older revision of the file goes through the same checks and a
 If the head of the file cannot be parsed when the repository is opened, the server refuses to open the repository rather
 than guess at a policy.
 
-- **Exclusive to shared** is always allowed. Live locks on the paths that become shared are released, each recorded in the
-  audit log as a `force_unlock` by whoever made the change, and the change itself as `policy_changed`. There is no
-  notification to the holders yet.
-- **Shared to exclusive** is never refused. Branches that hold diverged versions of the path become stranded: their
+Conversions are computed per path, so a folder rule converts path by path. Each converted path is recorded in the audit
+log as `mode_converted`, and the change itself as `policy_changed`. Storage is unaffected: nothing is copied or moved.
+
+- **Exclusive to shared** is always allowed. The path keeps its single linear history. Live locks on it are released,
+  each recorded in the audit log as a `force_unlock` by whoever made the change. There is no notification to the holders
+  yet.
+- **Shared to exclusive**: the path's current content is recorded as the next revision of its history (a conversion
+  revision, made under the exclusive mode and authored by whoever made the change), and later changes need the lock.
+  It is never refused. Branches that hold diverged versions of the path become stranded: their
   versions stay in history but can no longer merge into the path's single line. The server reports the affected branches
   and revisions to whoever made the change and to the branch owners, and shows it again at merge time. To keep a stranded
   version, take the lock and check it in as the new head. *Provisional:* until branches exist there is nothing to strand,

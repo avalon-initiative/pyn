@@ -783,3 +783,188 @@ async fn a_preview_lists_conversions_and_released_locks_without_applying_them() 
         .unwrap_err();
     assert!(matches!(err, PynError::InvalidRules(_)), "{err}");
 }
+
+async fn audit_of(
+    w: &World,
+    svc: &RepoService,
+    action: AuditAction,
+) -> Vec<(Option<RepoPath>, String)> {
+    let query = AuditQuery {
+        limit: 200,
+        action: Some(action),
+        ..Default::default()
+    };
+    let log = w
+        .audit
+        .list(&pyn_core::AuditScope::Repo(svc.repo().clone()), &query)
+        .await
+        .unwrap();
+    log.into_iter().rev().map(|e| (e.path, e.detail)).collect()
+}
+
+#[tokio::test]
+async fn exclusive_to_shared_keeps_history_releases_locks_and_audits_each_path() {
+    let w = world();
+    let svc = make_repo(&w, "game").await;
+    let alice = admin("alice");
+    put_policy(&w, &svc, &alice, EXCLUSIVE_POLICY, None)
+        .await
+        .unwrap();
+    let (a, b) = (path("Content/a.umap"), path("Content/b.umap"));
+    let bob = admin("bob");
+    for (p, text) in [(&a, "1"), (&b, "2")] {
+        svc.checkout(p, &bob.user, None).await.unwrap();
+        let c = blob(&w, text).await;
+        svc.checkin(&bob, p, c, None, "add".into()).await.unwrap();
+    }
+    svc.checkout(&a, &bob.user, Some(RevisionId(1)))
+        .await
+        .unwrap();
+    svc.checkout(&path(POLICY), &alice.user, Some(RevisionId(1)))
+        .await
+        .unwrap();
+    put_policy(&w, &svc, &alice, SHARED_POLICY_ALL, Some(1))
+        .await
+        .unwrap();
+
+    assert_eq!(svc.mode_for(&a), Mode::Shared);
+    assert!(svc.locks().await.unwrap().is_empty());
+    let history = svc.history(&a).await.unwrap();
+    assert_eq!(history.len(), 1, "no conversion revision: history is kept");
+    assert_eq!(history[0].mode, Some(Mode::Exclusive));
+    let c = blob(&w, "3").await;
+    svc.checkin(&bob, &a, c, Some(RevisionId(1)), "shared now".into())
+        .await
+        .unwrap();
+
+    let converted = audit_of(&w, &svc, AuditAction::ModeConverted).await;
+    let paths: Vec<_> = converted.iter().filter_map(|(p, _)| p.clone()).collect();
+    assert!(paths.contains(&a) && paths.contains(&b), "{converted:?}");
+    assert!(
+        converted
+            .iter()
+            .all(|(_, d)| d.contains("exclusive -> shared"))
+    );
+    let released = audit_of(&w, &svc, AuditAction::ForceUnlock).await;
+    assert_eq!(released.len(), 1, "{released:?}");
+    assert_eq!(released[0].0.as_ref(), Some(&a));
+}
+
+#[tokio::test]
+async fn shared_to_exclusive_records_a_conversion_revision_and_then_needs_a_lock() {
+    let w = world();
+    let svc = make_repo(&w, "game").await;
+    let alice = admin("alice");
+    put_policy(&w, &svc, &alice, SHARED_POLICY_ALL, None)
+        .await
+        .unwrap();
+    let (src, map) = (path("Source/a.cpp"), path("Content/a.umap"));
+    let c = blob(&w, "x").await;
+    svc.checkin(&alice, &src, c.clone(), None, "add".into())
+        .await
+        .unwrap();
+    svc.checkin(&alice, &map, c.clone(), None, "add".into())
+        .await
+        .unwrap();
+    svc.checkout(&path(POLICY), &alice.user, Some(RevisionId(1)))
+        .await
+        .unwrap();
+    put_policy(&w, &svc, &alice, EXCLUSIVE_POLICY, Some(1))
+        .await
+        .unwrap();
+
+    let history = svc.history(&map).await.unwrap();
+    assert_eq!(history.len(), 2);
+    let (first, conv) = (&history[0], &history[1]);
+    assert_eq!(first.mode, Some(Mode::Shared));
+    assert_eq!(conv.mode, Some(Mode::Exclusive));
+    assert_eq!(conv.content, c, "the current content carries over");
+    assert_eq!(conv.restored_from, None);
+    assert_eq!(
+        svc.history(&src).await.unwrap().len(),
+        1,
+        "unchanged paths get none"
+    );
+
+    let c2 = blob(&w, "y").await;
+    let err = svc
+        .checkin(&alice, &map, c2.clone(), Some(conv.id), "edit".into())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::LockRequired(_)), "{err}");
+    svc.checkout(&map, &alice.user, Some(conv.id))
+        .await
+        .unwrap();
+    svc.checkin(&alice, &map, c2, Some(conv.id), "edit".into())
+        .await
+        .unwrap();
+
+    let converted = audit_of(&w, &svc, AuditAction::ModeConverted).await;
+    let entry = converted
+        .iter()
+        .find(|(p, _)| p.as_ref() == Some(&map))
+        .unwrap();
+    assert!(entry.1.contains("shared -> exclusive"), "{entry:?}");
+    assert!(entry.1.contains(&format!("r{}", conv.id)), "{entry:?}");
+}
+
+#[tokio::test]
+async fn a_folder_rule_converts_path_by_path() {
+    let w = world();
+    let svc = make_repo(&w, "game").await;
+    let alice = admin("alice");
+    let both = "[meta]\ndefault = \"shared\"\n[exclusive]\npaths = [\"Content/\", \"Art/\"]\n";
+    put_policy(&w, &svc, &alice, both, None).await.unwrap();
+    let (keep, drop, new) = (path("Art/b.psd"), path("Content/a.umap"), path("Docs/n.md"));
+    for p in [&keep, &drop] {
+        svc.checkout(p, &alice.user, None).await.unwrap();
+        let c = blob(&w, "x").await;
+        svc.checkin(&alice, p, c, None, "add".into()).await.unwrap();
+    }
+    let c = blob(&w, "n").await;
+    svc.checkin(&alice, &new, c, None, "add".into())
+        .await
+        .unwrap();
+
+    svc.checkout(&path(POLICY), &alice.user, Some(RevisionId(1)))
+        .await
+        .unwrap();
+    let swapped = "[meta]\ndefault = \"shared\"\n[exclusive]\npaths = [\"Art/\", \"Docs/\"]\n";
+    put_policy(&w, &svc, &alice, swapped, Some(1))
+        .await
+        .unwrap();
+
+    let converted = audit_of(&w, &svc, AuditAction::ModeConverted).await;
+    let by_path = |p: &RepoPath| {
+        converted
+            .iter()
+            .find(|(q, _)| q.as_ref() == Some(p))
+            .map(|(_, d)| d.clone())
+    };
+    assert!(by_path(&drop).unwrap().contains("exclusive -> shared"));
+    assert!(by_path(&new).unwrap().contains("shared -> exclusive"));
+    assert_eq!(by_path(&keep), None, "an unchanged path is not converted");
+    assert_eq!(svc.history(&new).await.unwrap().len(), 2);
+    assert_eq!(svc.history(&keep).await.unwrap().len(), 1);
+    assert_eq!(svc.history(&drop).await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_policy_change_that_converts_nothing_audits_no_conversions() {
+    let w = world();
+    let svc = make_repo(&w, "game").await;
+    let alice = admin("alice");
+    put_policy(&w, &svc, &alice, EXCLUSIVE_POLICY, None)
+        .await
+        .unwrap();
+    svc.checkout(&path(POLICY), &alice.user, Some(RevisionId(1)))
+        .await
+        .unwrap();
+    let same = format!("{EXCLUSIVE_POLICY}\n# tweak\n");
+    put_policy(&w, &svc, &alice, &same, Some(1)).await.unwrap();
+    assert!(
+        audit_of(&w, &svc, AuditAction::ModeConverted)
+            .await
+            .is_empty()
+    );
+}

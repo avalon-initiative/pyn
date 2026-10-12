@@ -3305,7 +3305,7 @@
           {
             "name": "action",
             "in": "query",
-            "description": "checkout, release, checkin, restore, force_unlock, member_added, role_changed, role_permissions_changed, team_access_set, team_access_removed, token_created, token_revoked, repo_created, repo_updated, repo_deleted, invite_created, invite_revoked or policy_changed",
+            "description": "checkout, release, checkin, restore, force_unlock, member_added, role_changed, role_permissions_changed, team_access_set, team_access_removed, token_created, token_revoked, repo_created, repo_updated, repo_deleted, invite_created, invite_revoked, policy_changed or mode_converted",
             "required": false,
             "schema": {
               "type": "string"
