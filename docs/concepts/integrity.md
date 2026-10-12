@@ -2,7 +2,8 @@
 
 Decision #65. Every revision carries a hash that covers its own fields and the hash of the previous revision of the same
 path, and every audit event carries a hash that covers its fields and the hash of the event before it. Altering or removing
-anything in the past changes every later hash, so the break can be found. Hashes are pyn's own, not git's.
+anything in the past changes every later hash, so the break can be found. These hashes are pyn's own, not git's; a
+[commit](commits.md) is identified by git's own commit id, which revision v2 covers.
 
 ## Encoding (frozen)
 
@@ -30,6 +31,30 @@ str(message)
 opt_u64(restored_from)  the number of the revision restored from; absent unless the revision is a restore
 ```
 
+**Revision v2** (decision #245, made since the commit record landed), in this order:
+
+```text
+str("pyn-revision-v2")
+str(path)
+str(file_mode)          git's octal mode: 100644, 100755 or 120000
+str(blob_algorithm)     the blob id's hash algorithm: sha256 (sha1 for a git home)
+str(blob_id)            the content's git blob id, lowercase hex
+opt_str(previous)       hash of the path's previous revision (v1 or v2); absent for the first
+str(user)               the author's account name
+str(author_name)        the structured author: name and email as written into the commit
+str(author_email)
+time(created_at)
+i32(author_offset)      minutes east of UTC as a signed 32-bit big-endian integer
+str(message)
+opt_u64(restored_from)
+str(commit_algorithm)
+str(commit_id)          the git commit id of the commit that made the revision, lowercase hex
+```
+
+A v2 hash covers the commit id, and the commit id covers the tree and the parent, so the revision, its commit and the
+repository state at that commit cannot be changed independently. Which version a revision uses is stored with it
+(`hash_version`); v1 rows are never rewritten.
+
 **Audit event**, in this order:
 
 ```text
@@ -46,7 +71,15 @@ str(detail)
 The first byte string of each encoding is a domain tag, so a revision hash can never equal an audit hash. The encoding is
 part of the contract: a change to any byte needs a new tag (`...-v2`) and a new column, never an edit of these.
 
-Test vectors (also asserted in `crates/pyn-hash`), with content string `e3b0c442...b855` (the SHA-256 of the empty file, as stored before blob ids), author `alice`
+Test vectors (also asserted in `crates/pyn-hash`). v2 first, with blob id `473a0f4c...1813` (the empty blob, SHA-256),
+user `alice`, author `Alice <alice@example.com>`, time `1700000000123456` and commit id `ab` repeated 32 times:
+
+| Input | Hash |
+| --- | --- |
+| v2 revision `Content/a.umap`, mode `100644`, no previous, offset 0, message `first` | `5b9cb79dd9a6deb197f72c532eb669b72d1e0820c6a8cb56bbc5d0fc838d52ed` |
+| the same with mode `100755`, previous set to the hash above, name `Alice Liddell`, offset -330, message `restore`, restored from 1, commit id `cd` repeated 32 times | `3d2323ad77d4713b6667982fe3f18a4613bdd068a56c023af00a61caa7e5bbe8` |
+
+v1 and audit vectors, with content string `e3b0c442...b855` (the SHA-256 of the empty file, as stored before blob ids), author `alice`
 and time `1700000000123456`:
 
 | Input | Hash |
