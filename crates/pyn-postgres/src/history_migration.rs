@@ -104,6 +104,17 @@ impl PgMetadataStore {
                     .execute(&mut *tx)
                     .await
                     .map_err(db)?;
+                    sqlx::query(
+                        "INSERT INTO commit_pointers (repo, commit_id, path, revision) VALUES ($1, $2, $3, $4)
+                         ON CONFLICT DO NOTHING",
+                    )
+                    .bind(repo)
+                    .bind(draft.record.id.to_hex())
+                    .bind(path)
+                    .bind(id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(db)?;
                 }
                 parent = Some((draft.record.id, draft.record.tree));
                 report.commits += 1;

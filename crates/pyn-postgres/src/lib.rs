@@ -1,17 +1,19 @@
 //! PostgreSQL `MetadataStore`. Every lock and revision operation is one atomic statement or transaction.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use std::str::FromStr;
 
+use pyn_core::branch::{DEFAULT_BRANCH, conflicts};
 use pyn_core::commit_record::{CommitDraft, TreeEdit, draft_commit};
 use pyn_core::{
-    ChangesetItem, Commit, FileMode, HistoryCursor, Lock, MetadataStore, Mode, NewRevision,
-    ObjectId, PathFilter, Person, PynError, REPO_ALGORITHM, RepoId, RepoPath, RepoRecord,
-    RepoSettings, RepoUpdate, RepoUsage, Result, Revision, RevisionHash, RevisionId, StorageCap,
-    Usage, UserId, Visibility,
+    Branch, ChangesetItem, Commit, FileMode, HistoryCursor, Lock, MetadataStore, Mode, ObjectId,
+    PathFilter, Person, PynError, REPO_ALGORITHM, RepoId, RepoPath, RepoRecord, RepoSettings,
+    RepoUpdate, RepoUsage, Result, Revision, RevisionHash, RevisionId, StorageCap, Usage, UserId,
+    Visibility,
 };
 use sqlx::migrate::MigrateDatabase;
 use sqlx::postgres::{PgPoolOptions, PgRow};
@@ -24,6 +26,7 @@ const UNIQUE_VIOLATION: &str = "23505";
 
 mod access;
 mod audit;
+mod branch_migration;
 mod content_ids;
 mod hashing;
 mod history_migration;
@@ -47,6 +50,20 @@ fn lock_from(row: &PgRow) -> Result<Lock> {
 }
 
 const REVISION_COLUMNS: &str = "id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no, hash, previous_hash, content_v1, commit_id, file_mode, author_name, author_email, author_offset, hash_version";
+
+/// The first-parent chain from commit `$2` of repository `$1`, nearest first.
+const CHAIN: &str = "WITH RECURSIVE chain(id, parent, depth) AS (
+        SELECT id, parent, 0 FROM commits WHERE repo = $1 AND id = $2
+        UNION ALL
+        SELECT c.id, c.parent, chain.depth + 1 FROM chain JOIN commits c ON c.repo = $1 AND c.id = chain.parent
+    )";
+
+/// Commit `$1`'s ancestors through every parent, itself included, as `anc(id)`; empty when `$1` is NULL.
+const ANCESTORS: &str = "WITH RECURSIVE anc(id) AS (
+        SELECT $1::text WHERE $1::text IS NOT NULL
+        UNION
+        SELECT p FROM anc JOIN commits c ON c.repo = $2 AND c.id = anc.id CROSS JOIN LATERAL unnest(c.parents) AS p
+    )";
 
 fn object_id(hex: &str, what: &str) -> Result<ObjectId> {
     ObjectId::from_hex(REPO_ALGORITHM, hex).map_err(|e| PynError::Storage(format!("{what}: {e}")))
@@ -146,6 +163,7 @@ async fn append_revision(
     now: DateTime<Utc>,
     cap: Option<&StorageCap>,
     commit: (u64, ObjectId),
+    at_branch: &HashMap<String, i64>,
 ) -> Result<Revision> {
     let ChangesetItem {
         revision,
@@ -187,12 +205,31 @@ async fn append_revision(
     }
 
     let expected = expected_head.map_or(0, |r| r.0 as i64);
+    let line: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(max(id), 0) FROM revisions WHERE repo = $1 AND path = $2",
+    )
+    .bind(repo.as_str())
+    .bind(revision.path.as_str())
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(db)?;
+    let base = match revision.mode {
+        Mode::Exclusive => line,
+        Mode::Shared => at_branch.get(revision.path.as_str()).copied().unwrap_or(0),
+    };
+    if base != expected {
+        return Err(PynError::StaleBase {
+            path: revision.path,
+            expected: expected_head,
+            actual: (base > 0).then_some(RevisionId(base as u64)),
+        });
+    }
     let previous: Option<RevisionHash> = sqlx::query_scalar::<_, Option<String>>(
         "SELECT hash FROM revisions WHERE repo = $1 AND path = $2 AND id = $3",
     )
     .bind(repo.as_str())
     .bind(revision.path.as_str())
-    .bind(expected)
+    .bind(line)
     .fetch_optional(&mut **tx)
     .await
     .map_err(db)?
@@ -204,9 +241,9 @@ async fn append_revision(
         revision.mode,
         revision.content,
     );
-    let created = revision.create(RevisionId((expected + 1) as u64), previous, commit.1);
+    let created = revision.create(RevisionId((line + 1) as u64), previous, commit.1);
     let person = created.person.as_ref().expect("a new revision is v2");
-    // Inserts only when the head still equals `expected`; a concurrent insert of the same id hits the primary key.
+    // The repository's writes are serialized by `next_commit`; the guard still refuses a line that moved.
     let inserted = sqlx::query(
         "INSERT INTO revisions (repo, path, id, content, author, message, created_at, restored_from, mode, size, changeset,
                                 commit_no, hash, previous_hash, commit_id, file_mode, author_name, author_email, author_offset, hash_version)
@@ -216,12 +253,12 @@ async fn append_revision(
     )
     .bind(repo.as_str())
     .bind(path.as_str())
-    .bind(expected + 1)
+    .bind(line + 1)
     .bind(content.to_hex())
     .bind(created.author.as_str())
     .bind(&created.message)
     .bind(created.created_at)
-    .bind(expected)
+    .bind(line)
     .bind(created.restored_from.map(|r| r.0 as i64))
     .bind(mode_str(mode))
     .bind(size as i64)
@@ -268,7 +305,7 @@ async fn append_revision(
         )
         .bind(repo.as_str())
         .bind(content.to_hex())
-        .bind(expected + 1)
+        .bind(line + 1)
         .bind(path.as_str())
         .fetch_one(&mut **tx)
         .await
@@ -295,24 +332,25 @@ async fn append_revision(
     Ok(created)
 }
 
-/// The commit that appending `items` after the repository's newest commit makes, with the trees it adds.
+/// The commit that appending `items` after `parent` (a commit id) makes, with the trees it adds.
 async fn draft(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     repo: &RepoId,
+    parent: Option<&ObjectId>,
     items: &[ChangesetItem],
 ) -> Result<CommitDraft> {
-    let parent: Option<(String, String)> =
-        sqlx::query_as("SELECT id, tree FROM commits WHERE repo = $1 ORDER BY seq DESC LIMIT 1")
-            .bind(repo.as_str())
-            .fetch_optional(&mut **tx)
-            .await
-            .map_err(db)?;
-    let (parent_id, parent_tree) = match parent {
-        Some((id, tree)) => (
-            Some(object_id(&id, "commit id")?),
-            Some(object_id(&tree, "commit tree")?),
-        ),
-        None => (None, None),
+    let parent_tree = match parent {
+        Some(id) => {
+            let tree: String =
+                sqlx::query_scalar("SELECT tree FROM commits WHERE repo = $1 AND id = $2")
+                    .bind(repo.as_str())
+                    .bind(id.to_hex())
+                    .fetch_one(&mut **tx)
+                    .await
+                    .map_err(db)?;
+            Some(object_id(&tree, "commit tree")?)
+        }
+        None => None,
     };
     let changes = items.iter().map(|i| i.revision.tree_change()).collect();
     let mut edit = TreeEdit::new(parent_tree, changes);
@@ -328,7 +366,7 @@ async fn draft(
     }
     let first = &items[0].revision;
     draft_commit(
-        parent_id,
+        parent.copied(),
         edit.finish()?,
         &first.person,
         &first.message,
@@ -337,12 +375,15 @@ async fn draft(
     )
 }
 
-/// Writes the draft's trees and its commit row as commit number `seq`.
+/// Writes the draft's trees, its commit row as commit number `seq` and the pointers of the revisions it made, and moves
+/// `branch` to it.
 async fn store_commit(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     repo: &RepoId,
     seq: u64,
+    branch: &str,
     draft: &CommitDraft,
+    revisions: &[Revision],
 ) -> Result<()> {
     for (id, body) in &draft.trees {
         sqlx::query(
@@ -355,7 +396,27 @@ async fn store_commit(
         .await
         .map_err(db)?;
     }
-    insert_commit(tx, repo, seq, &draft.record).await
+    insert_commit(tx, repo, seq, &draft.record).await?;
+    for r in revisions {
+        sqlx::query(
+            "INSERT INTO commit_pointers (repo, commit_id, path, revision) VALUES ($1, $2, $3, $4)",
+        )
+        .bind(repo.as_str())
+        .bind(draft.record.id.to_hex())
+        .bind(r.path.as_str())
+        .bind(r.id.0 as i64)
+        .execute(&mut **tx)
+        .await
+        .map_err(db)?;
+    }
+    sqlx::query("UPDATE branches SET head = $3 WHERE repo = $1 AND name = $2")
+        .bind(repo.as_str())
+        .bind(branch)
+        .bind(draft.record.id.to_hex())
+        .execute(&mut **tx)
+        .await
+        .map_err(db)?;
+    Ok(())
 }
 
 async fn insert_commit(
@@ -366,8 +427,8 @@ async fn insert_commit(
 ) -> Result<()> {
     sqlx::query(
         "INSERT INTO commits (repo, seq, id, parent, tree, author_name, author_email, author_offset,
-                              committer_name, committer_email, committer_offset, created_at, message, signature, changeset)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
+                              committer_name, committer_email, committer_offset, created_at, message, signature, changeset, parents)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)",
     )
     .bind(repo.as_str())
     .bind(seq as i64)
@@ -384,24 +445,24 @@ async fn insert_commit(
     .bind(&c.message)
     .bind(&c.signature)
     .bind(&c.changeset)
+    .bind(c.parents.iter().map(ObjectId::to_hex).collect::<Vec<_>>())
     .execute(&mut **tx)
     .await
     .map_err(db)?;
     Ok(())
 }
 
-const COMMIT_COLUMNS: &str = "id, parent, tree, author_name, author_email, author_offset, committer_name, committer_email, committer_offset, created_at, message, signature, changeset";
+const COMMIT_COLUMNS: &str = "id, parents, tree, author_name, author_email, author_offset, committer_name, committer_email, committer_offset, created_at, message, signature, changeset";
 
 /// A commit record without its revisions.
 fn commit_from(row: &PgRow) -> Result<Commit> {
     Ok(Commit {
         id: object_id(&row.get::<String, _>("id"), "commit id")?,
         parents: row
-            .get::<Option<String>, _>("parent")
-            .map(|p| object_id(&p, "commit parent"))
-            .transpose()?
-            .into_iter()
-            .collect(),
+            .get::<Vec<String>, _>("parents")
+            .iter()
+            .map(|p| object_id(p, "commit parent"))
+            .collect::<Result<_>>()?,
         tree: object_id(&row.get::<String, _>("tree"), "commit tree")?,
         author: Person {
             name: row.get("author_name"),
@@ -447,6 +508,63 @@ async fn owner_stored(
     )
     .bind(owner.as_str())
     .fetch_one(&mut **tx)
+    .await
+    .map_err(db)
+}
+
+fn branch_from(row: &PgRow) -> Result<Branch> {
+    Ok(Branch {
+        name: row.get("name"),
+        head: row
+            .get::<Option<String>, _>("head")
+            .map(|h| object_id(&h, "branch head"))
+            .transpose()?,
+        default: row.get("is_default"),
+        created_at: row.get("created_at"),
+        created_by: UserId::new(row.get::<String, _>("created_by")),
+    })
+}
+
+/// A repository written to without being registered still has its default branch.
+async fn ensure_default_branch(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    repo: &RepoId,
+    by: &UserId,
+    now: DateTime<Utc>,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO branches (repo, name, head, is_default, created_at, created_by)
+         VALUES ($1, $2, NULL, true, $3, $4) ON CONFLICT DO NOTHING",
+    )
+    .bind(repo.as_str())
+    .bind(DEFAULT_BRANCH)
+    .bind(now)
+    .bind(by.as_str())
+    .execute(&mut **tx)
+    .await
+    .map_err(db)?;
+    Ok(())
+}
+
+/// The revision number at `commit` of each path (of `only` when given) that has one: the nearest pointer along the
+/// first-parent chain.
+async fn pointers<'e, E: sqlx::Executor<'e, Database = Postgres>>(
+    exec: E,
+    repo: &RepoId,
+    commit: &ObjectId,
+    only: Option<&[String]>,
+) -> Result<Vec<(String, i64)>> {
+    sqlx::query_as(AssertSqlSafe(format!(
+        "{CHAIN}
+         SELECT DISTINCT ON (p.path) p.path, p.revision
+         FROM chain JOIN commit_pointers p ON p.repo = $1 AND p.commit_id = chain.id
+         WHERE $3::text[] IS NULL OR p.path = ANY($3)
+         ORDER BY p.path, chain.depth"
+    )))
+    .bind(repo.as_str())
+    .bind(commit.to_hex())
+    .bind(only)
+    .fetch_all(exec)
     .await
     .map_err(db)
 }
@@ -744,29 +862,10 @@ impl MetadataStore for PgMetadataStore {
         row.as_ref().map(revision_from).transpose()
     }
 
-    async fn commit_revision_capped(
+    async fn commit_changeset_on(
         &self,
         repo: &RepoId,
-        revision: NewRevision,
-        expected_head: Option<RevisionId>,
-        lock_holder: Option<&UserId>,
-        now: DateTime<Utc>,
-        cap: Option<StorageCap>,
-    ) -> Result<Revision> {
-        let item = ChangesetItem {
-            revision,
-            expected_head,
-            lock_holder: lock_holder.cloned(),
-        };
-        let mut revs = self
-            .commit_changeset_capped(repo, vec![item], now, cap)
-            .await?;
-        Ok(revs.remove(0))
-    }
-
-    async fn commit_changeset_capped(
-        &self,
-        repo: &RepoId,
+        branch: &str,
         items: Vec<ChangesetItem>,
         now: DateTime<Utc>,
         cap: Option<StorageCap>,
@@ -776,15 +875,178 @@ impl MetadataStore for PgMetadataStore {
         }
         let mut tx = self.pool.begin().await.map_err(db)?;
         let seq = next_commit(&mut tx, repo).await?;
-        let draft = draft(&mut tx, repo, &items).await?;
+        if branch == DEFAULT_BRANCH {
+            ensure_default_branch(&mut tx, repo, &items[0].revision.author, now).await?;
+        }
+        let head: Option<Option<String>> =
+            sqlx::query_scalar("SELECT head FROM branches WHERE repo = $1 AND name = $2")
+                .bind(repo.as_str())
+                .bind(branch)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(db)?;
+        let head = head
+            .ok_or_else(|| PynError::BranchNotFound(branch.to_string()))?
+            .map(|h| object_id(&h, "branch head"))
+            .transpose()?;
+        let paths: Vec<String> = items
+            .iter()
+            .map(|i| i.revision.path.as_str().to_string())
+            .collect();
+        let at_branch: HashMap<String, i64> = match &head {
+            Some(h) => pointers(&mut *tx, repo, h, Some(&paths))
+                .await?
+                .into_iter()
+                .collect(),
+            None => HashMap::new(),
+        };
+        let draft = draft(&mut tx, repo, head.as_ref(), &items).await?;
         let mut out = Vec::with_capacity(items.len());
         for item in items {
             let commit = (seq, draft.record.id);
-            out.push(append_revision(&mut tx, repo, item, now, cap.as_ref(), commit).await?);
+            out.push(
+                append_revision(&mut tx, repo, item, now, cap.as_ref(), commit, &at_branch).await?,
+            );
         }
-        store_commit(&mut tx, repo, seq, &draft).await?;
+        store_commit(&mut tx, repo, seq, branch, &draft, &out).await?;
         tx.commit().await.map_err(db)?;
         Ok(out)
+    }
+
+    async fn list_branches(&self, repo: &RepoId) -> Result<Vec<Branch>> {
+        let rows = sqlx::query(
+            "SELECT name, head, is_default, created_at, created_by FROM branches
+             WHERE repo = $1 ORDER BY is_default DESC, name COLLATE \"C\"",
+        )
+        .bind(repo.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        rows.iter().map(branch_from).collect()
+    }
+
+    async fn get_branch(&self, repo: &RepoId, name: &str) -> Result<Option<Branch>> {
+        let row = sqlx::query(
+            "SELECT name, head, is_default, created_at, created_by FROM branches
+             WHERE repo = $1 AND name = $2",
+        )
+        .bind(repo.as_str())
+        .bind(name)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db)?;
+        row.as_ref().map(branch_from).transpose()
+    }
+
+    async fn create_branch(
+        &self,
+        repo: &RepoId,
+        name: &str,
+        at: &ObjectId,
+        by: &UserId,
+        now: DateTime<Utc>,
+    ) -> Result<Branch> {
+        let known: bool =
+            sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM commits WHERE repo = $1 AND id = $2)")
+                .bind(repo.as_str())
+                .bind(at.to_hex())
+                .fetch_one(&self.pool)
+                .await
+                .map_err(db)?;
+        if !known {
+            return Err(PynError::CommitNotFound(at.to_string()));
+        }
+        let inserted = sqlx::query(
+            "INSERT INTO branches (repo, name, head, is_default, created_at, created_by)
+             VALUES ($1, $2, $3, false, $4, $5)",
+        )
+        .bind(repo.as_str())
+        .bind(name)
+        .bind(at.to_hex())
+        .bind(now)
+        .bind(by.as_str())
+        .execute(&self.pool)
+        .await;
+        match inserted {
+            Ok(_) => Ok(Branch {
+                name: name.to_string(),
+                head: Some(*at),
+                default: false,
+                created_at: now,
+                created_by: by.clone(),
+            }),
+            Err(e) if is_unique_violation(&e) => Err(PynError::BranchExists(name.to_string())),
+            Err(e) => Err(db(e)),
+        }
+    }
+
+    async fn delete_branch(
+        &self,
+        repo: &RepoId,
+        name: &str,
+        expected: Option<&ObjectId>,
+    ) -> Result<()> {
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        let row: Option<(Option<String>, bool)> = sqlx::query_as(
+            "SELECT head, is_default FROM branches WHERE repo = $1 AND name = $2 FOR UPDATE",
+        )
+        .bind(repo.as_str())
+        .bind(name)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db)?;
+        let (head, default) = row.ok_or_else(|| PynError::BranchNotFound(name.to_string()))?;
+        if default {
+            return Err(PynError::InvalidRequest(
+                "the default branch cannot be deleted".into(),
+            ));
+        }
+        if expected.is_some_and(|e| head.as_deref() != Some(e.to_hex().as_str())) {
+            return Err(PynError::InvalidRequest(format!(
+                "{name} moved while it was being deleted"
+            )));
+        }
+        sqlx::query("DELETE FROM branches WHERE repo = $1 AND name = $2")
+            .bind(repo.as_str())
+            .bind(name)
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
+        tx.commit().await.map_err(db)
+    }
+
+    async fn rename_branch(&self, repo: &RepoId, from: &str, to: &str) -> Result<Branch> {
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        let names: Vec<(String, bool)> =
+            sqlx::query_as("SELECT name, is_default FROM branches WHERE repo = $1 FOR UPDATE")
+                .bind(repo.as_str())
+                .fetch_all(&mut *tx)
+                .await
+                .map_err(db)?;
+        let (_, default) = names
+            .iter()
+            .find(|(n, _)| n == from)
+            .ok_or_else(|| PynError::BranchNotFound(from.to_string()))?;
+        if *default {
+            return Err(PynError::InvalidRequest(
+                "the default branch cannot be renamed".into(),
+            ));
+        }
+        if names.iter().any(|(n, _)| n != from && conflicts(n, to)) {
+            return Err(PynError::BranchExists(to.to_string()));
+        }
+        let row = sqlx::query(
+            "UPDATE branches SET name = $3 WHERE repo = $1 AND name = $2
+             RETURNING name, head, is_default, created_at, created_by",
+        )
+        .bind(repo.as_str())
+        .bind(from)
+        .bind(to)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(db)?;
+        tx.commit().await.map_err(db)?;
+        branch_from(&row)
     }
 
     async fn get_revision(
@@ -804,16 +1066,6 @@ impl MetadataStore for PgMetadataStore {
         .await
         .map_err(db)?;
         row.as_ref().map(revision_from).transpose()
-    }
-
-    async fn head_commit(&self, repo: &RepoId) -> Result<Option<ObjectId>> {
-        let id: Option<String> =
-            sqlx::query_scalar("SELECT id FROM commits WHERE repo = $1 ORDER BY seq DESC LIMIT 1")
-                .bind(repo.as_str())
-                .fetch_optional(&self.pool)
-                .await
-                .map_err(db)?;
-        id.map(|i| object_id(&i, "commit id")).transpose()
     }
 
     async fn get_commit(&self, repo: &RepoId, id: &ObjectId) -> Result<Option<Commit>> {
@@ -852,14 +1104,18 @@ impl MetadataStore for PgMetadataStore {
     async fn commits(
         &self,
         repo: &RepoId,
+        tip: Option<&ObjectId>,
         before: Option<&ObjectId>,
         limit: usize,
     ) -> Result<Vec<Commit>> {
         let rows = sqlx::query(AssertSqlSafe(format!(
-            "SELECT {COMMIT_COLUMNS} FROM commits
-             WHERE repo = $1 AND ($2::text IS NULL OR seq < (SELECT seq FROM commits WHERE repo = $1 AND id = $2))
-             ORDER BY seq DESC LIMIT $3"
+            "{ANCESTORS}
+             SELECT {COMMIT_COLUMNS} FROM commits
+             WHERE repo = $2 AND ($1::text IS NULL OR id IN (SELECT id FROM anc))
+               AND ($3::text IS NULL OR seq < (SELECT seq FROM commits WHERE repo = $2 AND id = $3))
+             ORDER BY seq DESC LIMIT $4"
         )))
+        .bind(tip.map(ObjectId::to_hex))
         .bind(repo.as_str())
         .bind(before.map(ObjectId::to_hex))
         .bind(limit as i64)
@@ -878,6 +1134,36 @@ impl MetadataStore for PgMetadataStore {
         Ok(commits)
     }
 
+    async fn is_ancestor(
+        &self,
+        repo: &RepoId,
+        ancestor: &ObjectId,
+        descendant: &ObjectId,
+    ) -> Result<bool> {
+        sqlx::query_scalar(AssertSqlSafe(format!(
+            "{ANCESTORS} SELECT EXISTS (SELECT 1 FROM anc WHERE id = $3)"
+        )))
+        .bind(descendant.to_hex())
+        .bind(repo.as_str())
+        .bind(ancestor.to_hex())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(db)
+    }
+
+    async fn revision_at(
+        &self,
+        repo: &RepoId,
+        commit: &ObjectId,
+        path: &RepoPath,
+    ) -> Result<Option<Revision>> {
+        let found = pointers(&self.pool, repo, commit, Some(&[path.as_str().to_string()])).await?;
+        let Some((_, id)) = found.into_iter().next() else {
+            return Ok(None);
+        };
+        self.get_revision(repo, path, RevisionId(id as u64)).await
+    }
+
     async fn get_tree(&self, repo: &RepoId, id: &ObjectId) -> Result<Option<Vec<u8>>> {
         sqlx::query_scalar("SELECT body FROM trees WHERE repo = $1 AND id = $2")
             .bind(repo.as_str())
@@ -889,9 +1175,13 @@ impl MetadataStore for PgMetadataStore {
 
     async fn snapshot(&self, repo: &RepoId, commit: &ObjectId) -> Result<Vec<Revision>> {
         let rows = sqlx::query(AssertSqlSafe(format!(
-            "SELECT DISTINCT ON (path COLLATE \"C\") {REVISION_COLUMNS} FROM revisions
-             WHERE repo = $1 AND commit_no <= (SELECT seq FROM commits WHERE repo = $1 AND id = $2)
-             ORDER BY path COLLATE \"C\", id DESC"
+            "{CHAIN}, latest AS (
+                 SELECT DISTINCT ON (p.path COLLATE \"C\") p.path AS lpath, p.revision AS lrev
+                 FROM chain JOIN commit_pointers p ON p.repo = $1 AND p.commit_id = chain.id
+                 ORDER BY p.path COLLATE \"C\", chain.depth
+             )
+             SELECT {REVISION_COLUMNS} FROM revisions JOIN latest ON path = lpath AND id = lrev
+             WHERE repo = $1 ORDER BY path COLLATE \"C\""
         )))
         .bind(repo.as_str())
         .bind(commit.to_hex())
@@ -913,11 +1203,19 @@ impl MetadataStore for PgMetadataStore {
         rows.iter().map(revision_from).collect()
     }
 
-    async fn history(&self, repo: &RepoId, path: &RepoPath) -> Result<Vec<Revision>> {
-        let rows = sqlx::query(
-            "SELECT id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no, hash, previous_hash, content_v1, commit_id, file_mode, author_name, author_email, author_offset, hash_version FROM revisions
-             WHERE repo = $1 AND path = $2 ORDER BY id",
-        )
+    async fn history(
+        &self,
+        repo: &RepoId,
+        path: &RepoPath,
+        within: Option<&ObjectId>,
+    ) -> Result<Vec<Revision>> {
+        let rows = sqlx::query(AssertSqlSafe(format!(
+            "{ANCESTORS}
+             SELECT {REVISION_COLUMNS} FROM revisions
+             WHERE repo = $2 AND path = $3 AND ($1::text IS NULL OR commit_id IN (SELECT id FROM anc))
+             ORDER BY id"
+        )))
+        .bind(within.map(ObjectId::to_hex))
         .bind(repo.as_str())
         .bind(path.as_str())
         .fetch_all(&self.pool)
@@ -929,6 +1227,7 @@ impl MetadataStore for PgMetadataStore {
     async fn repo_history(
         &self,
         repo: &RepoId,
+        within: Option<&ObjectId>,
         filter: Option<&PathFilter>,
         before: Option<&HistoryCursor>,
         limit: usize,
@@ -938,14 +1237,17 @@ impl MetadataStore for PgMetadataStore {
         let mut cursor = before.cloned();
         let mut out = Vec::new();
         loop {
-            let rows = sqlx::query(
-                "SELECT id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no, hash, previous_hash, content_v1, commit_id, file_mode, author_name, author_email, author_offset, hash_version FROM revisions
-                 WHERE repo = $1
-                   AND ($2::timestamptz IS NULL
-                        OR (created_at, path COLLATE \"C\", id) < ($2, $3::text COLLATE \"C\", $4::bigint))
+            let rows = sqlx::query(AssertSqlSafe(format!(
+                "{ANCESTORS}
+                 SELECT {REVISION_COLUMNS} FROM revisions
+                 WHERE repo = $2
+                   AND ($1::text IS NULL OR commit_id IN (SELECT id FROM anc))
+                   AND ($3::timestamptz IS NULL
+                        OR (created_at, path COLLATE \"C\", id) < ($3, $4::text COLLATE \"C\", $5::bigint))
                  ORDER BY created_at DESC, path COLLATE \"C\" DESC, id DESC
-                 LIMIT $5",
-            )
+                 LIMIT $6"
+            )))
+            .bind(within.map(ObjectId::to_hex))
             .bind(repo.as_str())
             .bind(cursor.as_ref().map(|c| c.created_at))
             .bind(cursor.as_ref().map(|c| c.path.as_str().to_string()))
@@ -1020,6 +1322,7 @@ impl MetadataStore for PgMetadataStore {
         .await;
         match inserted {
             Ok(_) => {
+                ensure_default_branch(&mut tx, &repo.id, &repo.owner, repo.created_at).await?;
                 tx.commit().await.map_err(db)?;
                 Ok(repo)
             }
@@ -1157,6 +1460,8 @@ impl MetadataStore for PgMetadataStore {
             "DELETE FROM revisions WHERE repo = $1",
             "DELETE FROM repo_commits WHERE repo = $1",
             "DELETE FROM commits WHERE repo = $1",
+            "DELETE FROM commit_pointers WHERE repo = $1",
+            "DELETE FROM branches WHERE repo = $1",
             "DELETE FROM trees WHERE repo = $1",
         ] {
             sqlx::query(stmt)
@@ -1178,6 +1483,7 @@ impl MetadataStore for PgMetadataStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pyn_core::NewRevision;
 
     async fn rewound_store() -> PgMetadataStore {
         let url = std::env::var("PYN_DATABASE_URL").expect("PYN_DATABASE_URL must be set");
@@ -1262,17 +1568,9 @@ mod tests {
         assert_eq!(store.migrate_history().await.unwrap(), Default::default());
 
         let repo = RepoId::new("r");
-        assert!(
-            store
-                .head_commit(&RepoId::new("other"))
-                .await
-                .unwrap()
-                .is_some()
-        );
-        let commits = store.commits(&repo, None, 10).await.unwrap();
+        let commits = store.commits(&repo, None, None, 10).await.unwrap();
         let shape: Vec<usize> = commits.iter().map(|c| c.revisions.len()).collect();
         assert_eq!(shape, vec![1, 2, 1]);
-        assert_eq!(store.head_commit(&repo).await.unwrap(), Some(commits[0].id));
         assert_eq!(commits[0].parents, vec![commits[1].id]);
         assert_eq!(commits[1].parents, vec![commits[2].id]);
         assert!(commits[2].parents.is_empty());
@@ -1289,6 +1587,35 @@ mod tests {
         assert_eq!(ids, vec![1, 1, 1]);
         let head = store.snapshot(&repo, &commits[0].id).await.unwrap();
         assert_eq!(head.len(), 3);
+
+        assert_eq!(store.migrate_branches().await.unwrap().pointers, 0);
+        sqlx::query("DELETE FROM commit_pointers")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM branches")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        let done = store.migrate_branches().await.unwrap();
+        assert_eq!((done.branches, done.pointers), (2, 5));
+        assert_eq!(store.migrate_branches().await.unwrap(), Default::default());
+        let main = store.get_branch(&repo, "main").await.unwrap().unwrap();
+        assert_eq!((main.default, main.head), (true, Some(commits[0].id)));
+        let other = store
+            .get_branch(&RepoId::new("other"), "main")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(other.head.is_some());
+        let migrated = store.snapshot(&repo, &commits[0].id).await.unwrap();
+        let ids: Vec<u64> = migrated.iter().map(|r| r.id.0).collect();
+        assert_eq!(ids, vec![2, 1, 1]);
+        let at = store
+            .revision_at(&repo, &commits[1].id, &RepoPath::new("a").unwrap())
+            .await
+            .unwrap();
+        assert_eq!(at.map(|r| r.id.0), Some(1));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1314,13 +1641,13 @@ mod tests {
 
         let repo = RepoId::new("r");
         let a = store
-            .history(&repo, &RepoPath::new("a").unwrap())
+            .history(&repo, &RepoPath::new("a").unwrap(), None)
             .await
             .unwrap();
         assert!(pyn_core::integrity::verify_revisions(&a).is_empty());
         assert_eq!(a[1].previous.as_ref(), Some(&a[0].hash));
         let b = store
-            .history(&repo, &RepoPath::new("b").unwrap())
+            .history(&repo, &RepoPath::new("b").unwrap(), None)
             .await
             .unwrap();
         assert_eq!(b[0].previous, None);
@@ -1380,14 +1707,14 @@ mod tests {
                 .await
                 .unwrap();
         }
-        let revs = store.history(&repo, &path).await.unwrap();
+        let revs = store.history(&repo, &path, None).await.unwrap();
         assert!(pyn_core::integrity::verify_revisions(&revs).is_empty());
 
         sqlx::query("UPDATE revisions SET message = 'x' WHERE id = 1")
             .execute(&store.pool)
             .await
             .unwrap();
-        let revs = store.history(&repo, &path).await.unwrap();
+        let revs = store.history(&repo, &path, None).await.unwrap();
         assert_eq!(pyn_core::integrity::verify_revisions(&revs).len(), 1);
 
         sqlx::query("UPDATE revisions SET message = 'm' WHERE id = 1")
@@ -1398,7 +1725,7 @@ mod tests {
             .execute(&store.pool)
             .await
             .unwrap();
-        let revs = store.history(&repo, &path).await.unwrap();
+        let revs = store.history(&repo, &path, None).await.unwrap();
         let found = pyn_core::integrity::verify_revisions(&revs);
         assert_eq!(found, vec![(RevisionId(2), pyn_core::BreakKind::Version)]);
     }
@@ -1434,6 +1761,7 @@ mod tests {
             .history(
                 &RepoId::new("r"),
                 &RepoPath::new(&old.to_hex()[..4]).unwrap(),
+                None,
             )
             .await
             .unwrap();
@@ -1447,6 +1775,7 @@ mod tests {
             .history(
                 &RepoId::new("r"),
                 &RepoPath::new(&old.to_hex()[..4]).unwrap(),
+                None,
             )
             .await
             .unwrap();
@@ -1463,7 +1792,11 @@ mod tests {
         assert!(pyn_core::integrity::verify_revisions(&after).is_empty());
 
         store.migrate_history().await.unwrap();
-        let head = store.head_commit(&RepoId::new("r")).await.unwrap().unwrap();
+        let head = store
+            .commits(&RepoId::new("r"), None, None, 1)
+            .await
+            .unwrap()[0]
+            .id;
         let commit = store
             .get_commit(&RepoId::new("r"), &head)
             .await

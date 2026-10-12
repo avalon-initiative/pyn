@@ -152,6 +152,14 @@ async fn main() -> anyhow::Result<()> {
                 "migrated existing history into git commits"
             );
         }
+        let branches = pg.migrate_branches().await?;
+        if branches.branches > 0 || branches.pointers > 0 {
+            tracing::info!(
+                branches = branches.branches,
+                pointers = branches.pointers,
+                "created default branches for existing repositories"
+            );
+        }
     }
 
     let clock = Arc::new(SystemClock);
