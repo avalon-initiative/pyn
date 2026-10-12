@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/pyn-core", "crates/pyn-proto", "crates/pyn-server", "crates/pyn-cli", "crates/pyn-fs", "crates/pyn-postgres", "crates/pyn-oidc", "crates/pyn-chunk", "crates/pyn-diff", "crates/pyn-hash"]
+members = ["crates/pyn-core", "crates/pyn-proto", "crates/pyn-server", "crates/pyn-cli", "crates/pyn-fs", "crates/pyn-postgres", "crates/pyn-oidc", "crates/pyn-chunk", "crates/pyn-diff", "crates/pyn-hash", "crates/pyn-merge"]
 
 [workspace.package]
 version = "0.0.1"
