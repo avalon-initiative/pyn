@@ -1,0 +1,34 @@
+== HEAD
+tree 0da8fb7feaba30dc43dc0bd2878659f5ae2ecf16469aab2c65831a0defa0701b
+parent 61e35e652f78d2c7e93d996572c3b51dd5ac8710c7119897a3af0514d46daa0f
+parent f67558d8fc5b724df47c38473b6959d7e88b8cb232488551fa6cff6590889f99
+author Fixture Author <author@example.com> 1700432000 +0200
+committer Fixture Committer <committer@example.com> 1700432000 -0530
+
+Merge branch 'feature'
+== refs/tags/light
+tree 2f163c2320cd3dcfdc6d07c87014e0126b6c7a95c9e405fc2b515111d02258c9
+parent a7e87492297d30a6c96097d7c456f888705436a8c0d6daf5e6f365ab598cc59f
+author Fixture Author <author@example.com> 1700172800 +0200
+committer Fixture Committer <committer@example.com> 1700172800 -0530
+
+second commit
+
+A body paragraph that
+spans two lines.
+
+    indented line
+== refs/tags/t1
+object 941cd002cda4ba2e72e1afadf90c6e9e6798ad6428d364ac7c4f1b477e25eac9
+type commit
+tag t1
+tagger Staging Committer <committer@example.com> 1700000100 -0530
+
+annotated tag
+== refs/tags/v1
+object 941cd002cda4ba2e72e1afadf90c6e9e6798ad6428d364ac7c4f1b477e25eac9
+type commit
+tag v1
+tagger Fixture Committer <committer@example.com> 1700432000 +0000
+
+release one

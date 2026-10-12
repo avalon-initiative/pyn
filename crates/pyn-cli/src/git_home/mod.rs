@@ -8,6 +8,7 @@ mod convert;
 mod refwrite;
 mod stage;
 mod switch;
+mod tags;
 mod worktree;
 
 use std::path::{Path, PathBuf};
@@ -22,6 +23,7 @@ use crate::backend::Backend;
 use crate::workspace::{self, Workspace};
 
 pub use commands::run;
+pub use tags::TagArgs;
 
 /// A refusal git reports as `error: <message>` with exit status 1, rather than as a fatal error.
 #[derive(Debug)]

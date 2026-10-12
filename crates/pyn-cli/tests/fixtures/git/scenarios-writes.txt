@@ -73,3 +73,24 @@ restore-symlink	main	main	.	restore --source=HEAD~3 link
 restore-unknown-path	main	main	.	restore nope.txt
 restore-in-subdir	main	main	src	restore lib.rs
 restore-in-linked	main	linked	.	restore feature.txt wt-only.txt
+tag-lightweight	main	main	.	tag t1
+tag-lightweight-at	main	main	.	tag t1 HEAD~2
+tag-lightweight-of-annotated	main	main	.	tag t1 v1
+tag-annotated	main	main	.	tag -a -m annotated+tag t1
+tag-annotated-implied	main	main	.	tag -m two+words t1 HEAD~1
+tag-annotated-multi-paragraph	main	main	.	tag -a -m first -m second t1
+tag-annotated-of-annotated	main	main	.	tag -a -m nested t2 v1
+tag-annotated-no-message-refused	main	main	.	tag -a t1
+tag-exists-refused	main	main	.	tag light
+tag-force	main	main	.	tag -f light HEAD~1
+tag-force-annotated	main	main	.	tag -f -a -m again v1 HEAD~2
+tag-delete	main	main	.	tag -d light
+tag-delete-annotated	main	main	.	tag -d v1
+tag-delete-missing	main	main	.	tag -d nope
+tag-delete-several	main	main	.	tag -d light v1
+tag-invalid-name-refused	main	main	.	tag bad..name
+tag-in-linked	main	linked	.	tag -a -m linked t1
+out-tag-list	main	main	.	tag
+out-tag-list-pattern	main	main	.	tag -l l*
+out-tag-delete	main	main	.	tag -d light
+tag-dash-name-refused	main	main	.	tag -- -x

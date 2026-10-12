@@ -1,0 +1,2 @@
+Deleted tag 'light' (was d7a4047)
+Deleted tag 'v1' (was a87f87a)

@@ -9,6 +9,7 @@ use super::GitHome;
 use super::stage::local_offset_minutes;
 
 pub(super) const BRANCHES: &str = "refs/heads/";
+pub(super) const TAGS: &str = "refs/tags/";
 
 enum LogPolicy {
     Never,

@@ -1,0 +1,22 @@
+== HEAD
+tree 0da8fb7feaba30dc43dc0bd2878659f5ae2ecf16469aab2c65831a0defa0701b
+parent 61e35e652f78d2c7e93d996572c3b51dd5ac8710c7119897a3af0514d46daa0f
+parent f67558d8fc5b724df47c38473b6959d7e88b8cb232488551fa6cff6590889f99
+author Fixture Author <author@example.com> 1700432000 +0200
+committer Fixture Committer <committer@example.com> 1700432000 -0530
+
+Merge branch 'feature'
+== refs/tags/light
+tree 42346feaa625fa4573344ea61f771c4757339498259cb69d75a795f7fcf33f95
+parent d7a4047bb6ef2f4b1c6a3f44128bdf6b9fb626aae4324cd480d4c8ae78541363
+author Fixture Author <author@example.com> 1700345600 +0200
+committer Fixture Committer <committer@example.com> 1700345600 -0530
+
+third commit
+== refs/tags/v1
+object 941cd002cda4ba2e72e1afadf90c6e9e6798ad6428d364ac7c4f1b477e25eac9
+type commit
+tag v1
+tagger Fixture Committer <committer@example.com> 1700432000 +0000
+
+release one

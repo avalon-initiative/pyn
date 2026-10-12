@@ -1,0 +1,34 @@
+== HEAD
+tree 925b798892f9e24e5c194b0796d0fb3375905594
+parent 128036cd7ff9bf9ad5ab698f051ca2426f98a070
+parent 4f4bd5dea8c2ef81d4b06b3b7008b42204bf4a8f
+author Fixture Author <author@example.com> 1700432000 +0200
+committer Fixture Committer <committer@example.com> 1700432000 -0530
+
+Merge branch 'feature'
+== refs/tags/light
+tree 9d0de2b6ca194770d47d142bf45ea282eb0c4f60
+parent 02d7c3ea59480eec7a83420f38fb89ec69c75750
+author Fixture Author <author@example.com> 1700172800 +0200
+committer Fixture Committer <committer@example.com> 1700172800 -0530
+
+second commit
+
+A body paragraph that
+spans two lines.
+
+    indented line
+== refs/tags/t1
+object 128036cd7ff9bf9ad5ab698f051ca2426f98a070
+type commit
+tag t1
+tagger Staging Committer <committer@example.com> 1700000100 -0530
+
+two words
+== refs/tags/v1
+object 06fbff9729778f6ff2a07d62d4566e7ddaf81437
+type commit
+tag v1
+tagger Fixture Committer <committer@example.com> 1700432000 +0000
+
+release one

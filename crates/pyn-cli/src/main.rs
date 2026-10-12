@@ -112,6 +112,8 @@ enum Command {
     Checkout(branch::CheckoutArgs),
     /// Merge a branch into the current branch.
     Merge(merging::MergeArgs),
+    /// Create, list and delete tags (a git repository only).
+    Tag(git_home::TagArgs),
     /// Show what differs between this workspace and the server.
     Status {
         /// Compare with the repository as of this commit (`HEAD~N`, a commit hash) instead of the newest.
@@ -1207,6 +1209,10 @@ fn run(cli: Cli) -> Result<()> {
                 .map(|r| snapshot::resolve(&backend, &r))
                 .transpose()?;
             sync::clone_into(&backend, &target, &server, &repo, commit.as_deref())?;
+        }
+        Command::Tag(_) => {
+            eprintln!("{}", unsupported::message("tag"));
+            std::process::exit(1);
         }
         Command::Merge(args) => merging::merge_command(&backend, ws.as_ref(), args)?,
         Command::Branch(args) => branch::branch_command(&backend, ws.as_ref(), args)?,
