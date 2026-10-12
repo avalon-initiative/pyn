@@ -23,8 +23,9 @@ Divergence rules:
    is an unknown command. The server's `checkin` permission, route and audit action keep their names (API contract).
 6. **pyn-owned commands are listed as pyn only** and are never given a git name: `lock`, `unlock`, `locks`, `policy`,
    `audit`, and the account, organization, team and server administration commands.
-7. **Git's object format and wire protocol are out of scope** (decision #30). No git dependency; commits are identified
-   by `cN`, `HEAD` and `HEAD~N` until hashes land (#206). A git import and export bridge may come later.
+7. **Commits are git commits** (decision #245): identified by their git commit id (SHA-256 on a pyn server), shown
+   abbreviated, and named by hash, `HEAD`, `~N` and `^`; there are no `cN` numbers. Git's wire protocol is still not
+   implemented here, and there is no dependency on git (decision #30). A git import and export bridge may come later.
 8. **Listings are aligned tables** with the path or variable column last, not git's free-form blocks. This is a
    repository-wide difference: it keeps columns such as mode, lock and revision readable.
 
@@ -55,7 +56,7 @@ The commands named in decision #218.
 | `git init` | none | planned | Fails with the git-command message. Repositories are created on the server with `pyn repo create` and then cloned; a local `init` has no issue yet (epic #219). |
 | `git clone <repo> [<dir>]` | `pyn clone <source> [<dir>]` | same | Source is `<server>/owner/name`, or `owner/name` on the configured server. Output is one summary line, not progress. |
 | `git clone --depth`, `-b`, `--branch`, `--bare`, `--mirror`, `-o`, `-n`, `--recurse-submodules` | none | unsupported | Usage error (`129`). `-b` and `--branch` become possible with branches (#235). Every clone has full history on the server; there is no local object store to shallow. |
-| `pyn clone --revision <commit>` | | pyn only | Clone as of a commit (`cN`, `HEAD~N`). Git does this with `clone` then `checkout`. |
+| `pyn clone --revision <commit>` | | pyn only | Clone as of a commit (a hash, `HEAD~N`). Git does this with `clone` then `checkout`. |
 | `git status` | `pyn status` | different | Table with mode, revision, state, lock and path plus a summary line, because mode and lock state have no place in git's layout. |
 | `git status -s`, `--short`, `--porcelain`, `-b`, `<pathspec>...` | none | unsupported | Usage error (`129`). A stable machine format is not scheduled. |
 | `pyn status --revision <commit>` | | pyn only | Compare the workspace with a past commit (`behind` / `ahead`). |
@@ -68,11 +69,11 @@ The commands named in decision #218.
 | `git log --oneline`, `--graph`, `--stat`, `-p`, `--author`, `--since`, `--grep`, `--format`, `--follow`, `<rev>..<rev>`, `<rev> -- <path>` | none | unsupported | Usage error (`129`). A revision range is read as a path. Branch-aware log arrives with #235. |
 | `pyn log --commits` | | pyn only | List commits (`COMMIT`, `AUTHOR`, `WHEN`, `FILES`, `MESSAGE`) instead of revisions. |
 | `pyn log --filter <glob>` | | pyn only | Only paths matching the glob. |
-| `git diff [<c1> [<c2>]] [-- <path>...]` | `pyn diff [<c1> [<c2>]] [-- <path>...]` | different | Unified output as git, computed in the CLI. Commits are `cN`, `HEAD`, `HEAD~N`, or `c1..c2`; two commits work outside a workspace. With no commit it compares with the last update (git compares with the index). Created and deleted files always print mode `100644`. |
+| `git diff [<c1> [<c2>]] [-- <path>...]` | `pyn diff [<c1> [<c2>]] [-- <path>...]` | different | Unified output as git, computed in the CLI. Commits are hashes (or abbreviations of 4 or more digits), `HEAD`, `~N`, `^`, or `a..b`; two commits work outside a workspace. With no commit it compares with the last update (git compares with the index). File modes print as in git, including `old mode` and `new mode`. |
 | `git diff -U<n>`, `--unified=<n>`, `--stat`, `--name-only`, `--name-status`, `--exit-code`, `-q` | same | same | `--name-status` prints `A`, `M`, `D` only. |
 | `git diff --cached`, `--staged` | none | unsupported | `fatal: pyn has no staging area` (`128`). |
 | `git diff --shortstat`, `-w`, `--word-diff`, `--color`, `--no-index`, `--check`, `-M`, `-C` | none | unsupported | Usage error (`129`). |
-| `git show [<commit>]` | `pyn show [<commit>]` | different | Commit header (`commit`, `Author:`, `Date:`), message, then the commit's diff. The newest commit if none is named. Commit names are `cN`, `HEAD`, `HEAD~N`. |
+| `git show [<commit>]` | `pyn show [<commit>]` | different | Commit header (`commit`, `Author:`, `Date:`), message, then the commit's diff. The newest commit if none is named. The author line carries the email. |
 | `git show -U<n>`, `--stat`, `--name-only`, `--name-status` | same | same | |
 | `git show <rev>:<path>` | `pyn get <path> [--rev N] [-o <file>]` | different | `show` takes commits only (`HEAD:foo` fails with `fatal: ... is not a commit`, `128`). File content at a revision is `pyn get`, to stdout or a file. `--rev` is a per-path revision, not a commit. |
 | `git show --oneline`, `-s`, `--format`, `<tag>`, `<object>` | none | unsupported | Usage error (`129`) or `fatal: ... is not a commit`. |

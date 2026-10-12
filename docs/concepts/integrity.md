@@ -52,8 +52,9 @@ str(commit_id)          the git commit id of the commit that made the revision, 
 ```
 
 A v2 hash covers the commit id, and the commit id covers the tree and the parent, so the revision, its commit and the
-repository state at that commit cannot be changed independently. Which version a revision uses is stored with it
-(`hash_version`); v1 rows are never rewritten.
+repository state at that commit cannot be changed independently. A revision is v2 exactly when its structured author is
+stored with it (`revisions.author_name`, `author_email` and `author_offset` in PostgreSQL, `author_identity` in the API);
+rows without it keep their v1 hash and are never rewritten. New revisions are always v2.
 
 **Audit event**, in this order:
 
@@ -91,13 +92,15 @@ and time `1700000000123456`:
 
 ## What is covered, and what is not
 
-Covered: path, content hash, previous hash, author, time, message and restore source (revisions); scope, previous hash,
-time, actor, action, path and detail (audit events).
+Covered: path, content hash, previous hash, author, time, message and restore source (revisions, v1); v2 adds the git
+file mode, the structured author, the blob id with its algorithm and the commit id; scope, previous hash, time, actor,
+action, path and detail (audit events).
 
-Not covered, on purpose: the per-path revision number (its position in the chain fixes it), the recorded `mode`, the
-changeset id and the commit number. A [commit](commits.md) will be identified by its own hash over its parents and its tree,
-with the mode recorded per tree entry (decisions #65 and #233), which covers these. Until commit hashes exist, grouping of
-revisions into commits and the recorded mode are not tamper-evident. Provisional.
+Not covered by the revision hash, on purpose: the per-path revision number (its position in the chain fixes it), the
+recorded `shared` or `exclusive` mode (`.pyn/pyn.toml` at the commit decides it, and the commit id covers that file) and the
+changeset id. A [commit](commits.md) is identified by its git commit id over its parents, its tree (every path's blob id and
+file mode) and its author, committer and message. Revisions made before v2 are not tied to their commit by their own hash,
+only by the commit record that lists them; the migrated commits themselves are covered from the moment they were created.
 
 A hash chain shows that what is there is consistent, not that nothing was cut off the end: removing the newest revisions or
 events leaves a valid chain. A client that remembers a head hash can detect that; signed revisions (#60) will prove authorship.
@@ -107,10 +110,14 @@ events leaves a valid chain. A client that remembers a head hash can detect that
 - Every revision the server returns is checked against its own hash first. The full history of a path is also checked for
   its links. A mismatch is a `500 history_corrupt` naming the path and revision, never silently served.
 - A commit chains from the stored head hash only after the head has been checked, so a tampered head cannot be extended.
+- Every commit the server returns is checked against its own id (recomputed from its tree, parents, author, committer
+  and message); a mismatch is a `500 history_corrupt`. Verification also checks each commit's parent link and that the
+  head commit's tree is the tree of the head snapshot, and reports `hash_mismatch`, `broken_link` and `tree_mismatch`
+  problems with the `commit` id.
 - Audit events are checked when they are read, and the whole chain when verified.
 - `GET /v1/repos/{owner}/{name}/verify?path=` checks a path, or every path and the repository's audit log, and reports every
   break instead of stopping at the first. It needs `read`; the audit log is checked only for callers with `view_audit`.
-- `pyn verify [<path>]` prints the report and exits 1 when anything is broken. It also recomputes the revision hashes it
+- `pyn verify [<path>]` prints the report and exits 1 when anything is broken. It also recomputes the revision hashes (v1 and v2) and the commit ids it
   fetches on the client, so a server that reports "ok" cannot hide a mismatch.
 
 Revisions in the API carry `hash` and `previous`; audit events carry `hash` and `previous`.
@@ -122,15 +129,24 @@ Decision #245 changed the content id from the SHA-256 of the bytes to the git bl
 Revisions that existed before it keep a stored copy of the string they were hashed with (`revisions.content_v1` in
 PostgreSQL, `legacy_content` in the API), so their hashes still reproduce; `pyn verify` and the server use that string
 in place of `content` when it is present. A revision whose `legacy_content` is stripped no longer verifies. Revision v2
-(which covers the blob id and algorithm explicitly) is planned with the commit record.
+covers the blob id and its algorithm explicitly.
 
 ## Existing data
+
+History that predates the commit record is migrated once at startup (`migrate_history`, after the content ids are
+re-keyed): each old commit number becomes a commit on a single mainline in the same order, with the previous one as its
+parent, the author `<user> <<user>@pyn.invalid>` at offset 0, the first revision's message, the whole second as its time,
+and the git tree of the repository as of that number (every file as `100644`, since modes were not recorded). The
+revisions keep their v1 hashes, which still verify, and are pointed at their commit. The step runs in one transaction,
+skips anything already migrated and refuses a repository that has both a file `a` and a path under `a/`, which a git tree
+cannot hold.
 
 A database from before hashing is hashed once at startup: revisions in order of number within each path, audit events in
 order of id within each log. The hashes cover the history as it stands then, so they prove nothing about what happened before
 that moment. The step is idempotent and skips anything already hashed.
 
-## Commit numbers
+## Commits
 
-Commits keep their `cN` numbers as per-repository aliases on the mainline (display, `HEAD~N`). When commit hashes land with
-branches (#205), a commit is named by its hash and `cN` remains an alias resolved on the default branch only. Provisional.
+A commit's id is its git commit id (see [commits](commits.md)). `cN` numbers are gone: commits are named by hash, with
+`HEAD~N` and `^`. Each commit's `parents` link it to the one before, so the mainline is a hash chain too, and the id covers
+the tree, so it covers every path's content and file mode as of that commit.

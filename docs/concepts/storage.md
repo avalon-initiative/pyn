@@ -66,6 +66,14 @@ Old keys stay until garbage collection. A revision whose object is missing is lo
 idempotent. Revision hashes keep covering the old content hash: see [tamper-evident history](integrity.md#existing-data).
 The CLI converts its `.pyn/local_only/state/files.toml` when it next reads it.
 
+## Trees and commits
+
+Alongside the content, PostgreSQL keeps each commit's git tree objects (`trees`, keyed by repository and tree id, holding
+git's tree encoding) and the commit records (`commits`). A commit's tree reuses its parent's unchanged subtrees. Blobs stay
+in the object store; a tree names them by blob id and file mode. After the content ids are re-keyed the server migrates the
+history into commits once (see [tamper-evident history](integrity.md#existing-data)); the memory store keeps the same
+records in process.
+
 ## Planned (provisional)
 
 - Mark-and-sweep garbage collection with a retention window.

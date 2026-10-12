@@ -64,6 +64,11 @@ you are inside the workspace and take paths relative to your current directory.
 - **`pyn update`** downloads new and newer files. A file with local changes is never overwritten; it is reported as skipped.
   `--revision <commit>` brings the workspace to a past (or newer) commit instead, and `pyn status --revision <commit>` compares
   with it; `pyn diff` shows the changes themselves. See [commits](commits.md).
+- **File modes and symbolic links.** The executable bit (`100755`) and symbolic links (`120000`) are tracked as in git.
+  `pyn commit` records a file's mode with its content; a symbolic link is committed as its target path and is never
+  followed. `pyn clone` and `pyn update` recreate both (on systems with an executable bit and symlinks), and a mode change
+  alone shows as `modified` in `pyn status` and as `old mode`/`new mode` in `pyn diff`. The mode is stored with each
+  revision and in `.pyn/local_only/state/files.toml` (`file_mode`).
 - **`pyn commit <path>...`** uploads the files at the given paths in the workspace as one atomic commit with one message
   (`-m`); with several paths, all succeed or none do. Outside a workspace, one path and `--file <file>` name the upload.
 
