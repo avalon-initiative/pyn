@@ -194,9 +194,8 @@ fn every_scenario_leaves_what_git_left() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
-/// Needs a git binary: runs the commands pyn writes with, then has git check and continue what pyn wrote
-/// (`git fsck --strict`, `git status`, `git log`, `git merge --abort`), and has pyn continue what git started.
-/// Run with `cargo test -p pyn-cli --test git_writes -- --ignored`.
+/// Needs a git binary: has git check and continue what pyn wrote (`fsck --strict`, `status`, `log`, `merge --abort`)
+/// and pyn continue what git started. Run with `cargo test -p pyn-cli --test git_writes -- --ignored`.
 #[test]
 #[ignore = "runs the real git binary"]
 fn git_accepts_what_pyn_wrote_and_pyn_accepts_what_git_wrote() {

@@ -278,13 +278,7 @@ fn true_merge(
             }
             Resolved::Conflict(c) => {
                 conflicted.push(path.clone());
-                report_conflict(
-                    git,
-                    path,
-                    c.kind,
-                    spec,
-                    c.ours.is_some() && c.theirs.is_some(),
-                )?;
+                report_conflict(path, c.kind, spec, c.ours.is_some() && c.theirs.is_some())?;
                 if let Worktree::Write { mode, bytes } = &c.worktree {
                     write_bytes(git, path, *mode, bytes)?;
                 }
@@ -357,15 +351,8 @@ fn true_merge(
     Ok(())
 }
 
-fn report_conflict(
-    git: &GitHome,
-    path: &[u8],
-    kind: Conflicting,
-    theirs: &str,
-    both: bool,
-) -> Result<()> {
+fn report_conflict(path: &[u8], kind: Conflicting, theirs: &str, both: bool) -> Result<()> {
     let name = path_string(path);
-    let _ = git;
     match kind {
         Conflicting::Content | Conflicting::Binary if both => {
             if kind == Conflicting::Binary {

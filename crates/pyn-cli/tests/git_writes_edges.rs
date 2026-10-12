@@ -5,7 +5,6 @@ mod common;
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
 
 use common::gitfix::*;
 use pyn_git::Repository;
@@ -665,7 +664,7 @@ fn local_changes_are_listed_after_a_switch_that_carries_them() {
     );
 }
 
-fn orphan_commit(repo: &Repo, format: &str) -> ObjectId {
+fn orphan_commit(repo: &Repo) -> ObjectId {
     let git = Repository::open(&repo.main).unwrap();
     let who = Signature {
         name: b"Orphan".to_vec(),
@@ -674,7 +673,6 @@ fn orphan_commit(repo: &Repo, format: &str) -> ObjectId {
         offset_minutes: 0,
     };
     let db = git.objects().unwrap();
-    let alg = Algorithm::from_name(format).unwrap();
     let tree = db.write(Kind::Tree, b"").unwrap();
     let commit = Commit {
         tree,
@@ -684,7 +682,6 @@ fn orphan_commit(repo: &Repo, format: &str) -> ObjectId {
         extra_headers: vec![],
         message: b"unrelated\n".to_vec(),
     };
-    let _ = alg;
     db.write(Kind::Commit, &commit.encode()).unwrap()
 }
 
@@ -692,7 +689,7 @@ fn orphan_commit(repo: &Repo, format: &str) -> ObjectId {
 fn histories_without_a_common_start_or_with_several_are_refused() {
     for format in FORMATS {
         let repo = Repo::merge(format);
-        let id = orphan_commit(&repo, format);
+        let id = orphan_commit(&repo);
         repo.ok(&["branch", "unrelated", &id.to_hex()]);
         let before = snapshot(&repo.main);
         let (code, err) = repo.fails(&["merge", "unrelated"]);
@@ -970,5 +967,4 @@ fn the_conflict_files_are_diff3_with_the_branch_names() {
             && text.contains("=======\nline two theirs\n>>>>>>> conflict\n"),
         "{text}"
     );
-    let _ = Path::new("");
 }
