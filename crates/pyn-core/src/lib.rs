@@ -52,12 +52,13 @@ pub use integrity::{BreakKind, Problem, VerifyReport};
 pub use limits::{
     Limits, LimitsChange, MAX_LIMIT_VALUE, RepoUsage, StorageCap, StorageCaps, Usage,
 };
-pub use object::{ObjectRead, ObjectReader, ObjectStore};
+pub use object::{KeyHasher, Keying, ObjectRead, ObjectReader, ObjectStore, REPO_ALGORITHM};
 pub use oidc::{
     AuthorizationRequest, CodeExchange, ExternalClaims, ExternalCreate, ExternalIdentity,
     IdentityUnlink, NewExternalAccount, OidcFlow, OidcProvider, pkce_challenge,
 };
 pub use passwords::{InlinePasswords, PasswordWorker};
+pub use pyn_object::ObjectId;
 pub use ratelimit::{RateLimitStore, RateState};
 pub use repo::{
     DEFAULT_MAX_LOCKS_PER_USER, MAX_LOCKS_PER_USER_CEILING, RepoRecord, RepoSettings, RepoUpdate,
@@ -76,6 +77,6 @@ pub use service::{
 pub use store::MetadataStore;
 pub use tree::{DEFAULT_BRANCH, EntryKind, EntryMode, RepoSummary, TreeEntry};
 pub use types::{
-    ChangesetItem, Commit, ContentHash, Lock, NewRevision, RepoId, RepoPath, Revision,
-    RevisionHash, RevisionId, UserId,
+    ChangesetItem, Commit, Lock, NewRevision, RepoId, RepoPath, Revision, RevisionHash, RevisionId,
+    UserId,
 };

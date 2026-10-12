@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use pyn_core::chunking::{Manifest, SMALL_OBJECT};
 use pyn_core::memory::MemoryObjectStore;
-use pyn_core::{ChunkedStore, ObjectStore, PynError};
+use pyn_core::{ChunkedStore, Keying, ObjectId, ObjectStore, PynError};
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncReadExt;
 
@@ -24,7 +24,7 @@ fn stores() -> (ChunkedStore, Arc<MemoryObjectStore>) {
     (ChunkedStore::new(inner.clone()), inner)
 }
 
-async fn manifest_of(inner: &MemoryObjectStore, key: &pyn_core::ContentHash) -> Manifest {
+async fn manifest_of(inner: &MemoryObjectStore, key: &ObjectId) -> Manifest {
     Manifest::decode(&inner.get_manifest(key).await.unwrap().unwrap()).unwrap()
 }
 
@@ -42,10 +42,19 @@ async fn large_objects_are_chunked_and_read_back_whole_and_in_ranges() {
     let (s, inner) = stores();
     let data = noise(9_000_000, 7);
     let hash = s
-        .put_stream(Box::pin(Cursor::new(data.clone())), None)
+        .put_stream(
+            Box::pin(Cursor::new(data.clone())),
+            Keying::Blob {
+                len: data.len() as u64,
+            },
+            None,
+        )
         .await
         .unwrap();
-    assert_eq!(hash.as_str(), hex::encode(Sha256::digest(&data)));
+    let expected =
+        pyn_object::hash_object(pyn_object::Algorithm::Sha256, pyn_object::Kind::Blob, &data)
+            .unwrap();
+    assert_eq!(hash, expected);
 
     let m = manifest_of(&inner, &hash).await;
     assert_eq!(m.total, data.len() as u64);
@@ -56,6 +65,16 @@ async fn large_objects_are_chunked_and_read_back_whole_and_in_ranges() {
             .all(|(_, len)| (256 << 10..=4 << 20).contains(&(*len as usize)))
     );
     assert!(last.1 as usize <= 4 << 20);
+    let mut offset = 0usize;
+    for (id, len) in &m.chunks {
+        let bytes = &data[offset..offset + *len as usize];
+        assert_eq!(
+            id.to_hex(),
+            hex::encode(Sha256::digest(bytes)),
+            "chunks keep the raw SHA-256"
+        );
+        offset += *len as usize;
+    }
     assert_eq!(s.size(&hash).await.unwrap(), Some(data.len() as u64));
     assert!(s.exists(&hash).await.unwrap());
     assert_eq!(s.get(&hash).await.unwrap().unwrap(), data);
@@ -100,7 +119,11 @@ async fn an_insertion_leaves_most_chunks_shared() {
 async fn the_limit_applies_to_chunked_streams() {
     let (s, _) = stores();
     let err = s
-        .put_stream(Box::pin(Cursor::new(noise(5_000_000, 9))), Some(4_000_000))
+        .put_stream(
+            Box::pin(Cursor::new(noise(5_000_000, 9))),
+            Keying::Blob { len: 5_000_000 },
+            Some(4_000_000),
+        )
         .await
         .unwrap_err();
     assert!(
@@ -120,19 +143,51 @@ async fn a_missing_chunk_is_a_read_error() {
     assert_eq!(s.chunks_of(&hash).await.unwrap().len(), m.chunks.len());
 }
 
+fn id(byte: &str) -> ObjectId {
+    ObjectId::from_hex(pyn_object::Algorithm::Sha256, &byte.repeat(32)).unwrap()
+}
+
 #[test]
 fn manifests_round_trip_and_reject_damage() {
     let m = Manifest {
         total: 7,
-        chunks: vec![
-            (pyn_core::ContentHash::new("ab"), 3),
-            (pyn_core::ContentHash::new("cd"), 4),
-        ],
+        chunks: vec![(id("ab"), 3), (id("cd"), 4)],
     };
     assert_eq!(Manifest::decode(&m.encode()).unwrap(), m);
     assert!(Manifest::decode(b"garbage").is_err());
     assert!(
-        Manifest::decode(b"pyn-manifest 1\n9\nab 3\n").is_err(),
+        Manifest::decode(format!("pyn-manifest 1\n9\n{} 3\n", "ab".repeat(32)).as_bytes()).is_err(),
         "sizes must add up"
     );
+}
+
+#[tokio::test]
+async fn assembled_chunks_get_the_blob_id_of_their_concatenation() {
+    let (s, inner) = stores();
+    let data = noise(2_000_000, 5);
+    let (first, second) = data.split_at(1_000_000);
+    let chunks = [
+        inner.put_chunk(first.to_vec()).await.unwrap(),
+        inner.put_chunk(second.to_vec()).await.unwrap(),
+    ];
+    let id = s.assemble(&chunks, None).await.unwrap();
+    let expected =
+        pyn_object::hash_object(pyn_object::Algorithm::Sha256, pyn_object::Kind::Blob, &data)
+            .unwrap();
+    assert_eq!(id, expected);
+    assert_eq!(s.get(&id).await.unwrap().unwrap(), data);
+}
+
+#[tokio::test]
+async fn a_declared_length_that_is_wrong_is_refused_for_chunked_streams() {
+    let (s, _) = stores();
+    let err = s
+        .put_stream(
+            Box::pin(Cursor::new(noise(3_000_000, 2))),
+            Keying::Blob { len: 2_999_999 },
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::LengthMismatch { .. }), "{err}");
 }

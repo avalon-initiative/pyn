@@ -10,8 +10,8 @@ use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router};
 use pyn_core::repositories::OpenRepo;
 use pyn_core::{
-    AccessService, AuditAction, AuditQuery, AuthProvider, ChangeEntry, ContentHash, HistoryCursor,
-    Identity, ObjectStore, PathFilter, Permission, Principal, PynError, RepoPath, Repositories,
+    AccessService, AuditAction, AuditQuery, AuthProvider, ChangeEntry, HistoryCursor, Identity,
+    Keying, ObjectStore, PathFilter, Permission, Principal, PynError, RepoPath, Repositories,
     RevisionId,
 };
 use pyn_proto as api;
@@ -161,6 +161,7 @@ struct RepoAddress {
         preview_policy,
         audit,
         put_object,
+        put_chunk,
         missing_objects,
         assemble_object,
         history,
@@ -448,6 +449,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/v1/repos/{owner}/{name}/audit", get(audit))
         .route("/v1/repos/{owner}/{name}/objects", put(put_object))
+        .route("/v1/repos/{owner}/{name}/objects/chunk", put(put_chunk))
         .route(
             "/v1/repos/{owner}/{name}/objects/missing",
             post(missing_objects),
@@ -554,6 +556,7 @@ impl IntoResponse for ApiError {
             | PynError::ReservedName(_)
             | PynError::NotOrgRepo(_)
             | PynError::NotExclusive(_)
+            | PynError::LengthMismatch { .. }
             | PynError::ObjectMissing(_) => StatusCode::BAD_REQUEST,
             PynError::Storage(_) | PynError::HistoryCorrupt(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
@@ -681,7 +684,8 @@ fn revision_dto(r: pyn_core::Revision) -> api::Revision {
     api::Revision {
         id: r.id.0,
         path: r.path.to_string(),
-        content: r.content.to_string(),
+        content: r.content.to_hex(),
+        legacy_content: r.legacy_content,
         author: r.author.to_string(),
         message: r.message,
         created_at: r.created_at,
@@ -804,7 +808,7 @@ async fn checkin(
         .checkin(
             &who,
             &RepoPath::new(req.path)?,
-            ContentHash::new(req.content),
+            parse_object_id(&req.content)?,
             req.base_revision.map(RevisionId),
             req.message,
         )
@@ -832,7 +836,7 @@ async fn changeset(
         .map(|e| {
             Ok(ChangeEntry {
                 path: RepoPath::new(e.path)?,
-                content: ContentHash::new(e.content),
+                content: parse_object_id(&e.content)?,
                 base: e.base_revision.map(RevisionId),
             })
         })
@@ -878,10 +882,54 @@ async fn restore(
     Ok(Json(revision_dto(rev)))
 }
 
-#[utoipa::path(put, path = "/v1/repos/{owner}/{name}/objects", params(RepoAddress), request_body(content = Vec<u8>, content_type = "application/octet-stream"),
-    responses((status = 200, body = api::PutObjectResponse),
+/// The request body as a reader, with the length its `Content-Length` header (or an exact body size) declares.
+fn upload(
+    headers: &HeaderMap,
+    body: axum::body::Body,
+) -> Result<(pyn_core::ObjectReader, u64), PynError> {
+    use axum::body::HttpBody;
+    use futures_util::TryStreamExt;
+    let declared = headers
+        .get(axum::http::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok())
+        .or_else(|| body.size_hint().exact())
+        .ok_or_else(|| {
+            PynError::InvalidRequest(
+                "a Content-Length header declaring the size is required".into(),
+            )
+        })?;
+    let reader =
+        tokio_util::io::StreamReader::new(body.into_data_stream().map_err(std::io::Error::other));
+    Ok((Box::pin(reader), declared))
+}
+
+#[utoipa::path(put, path = "/v1/repos/{owner}/{name}/objects", params(RepoAddress), request_body(content = Vec<u8>, content_type = "application/octet-stream", description = "the content; its `Content-Length` is the declared length that the blob id's header covers"),
+    responses((status = 200, body = api::PutObjectResponse, description = "the content's git blob id"),
+              (status = 400, body = api::ErrorBody, description = "invalid_request without a `Content-Length`; length_mismatch when the body is not that long"),
               (status = 413, body = api::ErrorBody, description = "object_too_large: the upload exceeds the server's per-object limit")))]
 async fn put_object(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path((owner, name)): Path<(String, String)>,
+    body: axum::body::Body,
+) -> ApiResult<Json<api::PutObjectResponse>> {
+    authorize_repo(&s, &headers, &owner, &name, Some(Permission::Checkin)).await?;
+    let (reader, len) = upload(&headers, body)?;
+    let id = s
+        .objects
+        .put_stream(reader, Keying::Blob { len }, Some(MAX_OBJECT_BYTES))
+        .await?;
+    Ok(Json(api::PutObjectResponse {
+        content: id.to_hex(),
+    }))
+}
+
+#[utoipa::path(put, path = "/v1/repos/{owner}/{name}/objects/chunk", params(RepoAddress), request_body(content = Vec<u8>, content_type = "application/octet-stream", description = "one chunk, at most 4 MiB"),
+    responses((status = 200, body = api::PutObjectResponse, description = "the chunk's key: the SHA-256 hex of its bytes"),
+              (status = 400, body = api::ErrorBody, description = "invalid_request for a chunk over 4 MiB"),
+              (status = 413, body = api::ErrorBody, description = "object_too_large")))]
+async fn put_chunk(
     State(s): State<AppState>,
     headers: HeaderMap,
     Path((owner, name)): Path<(String, String)>,
@@ -891,26 +939,33 @@ async fn put_object(
     use futures_util::TryStreamExt;
     let reader =
         tokio_util::io::StreamReader::new(body.into_data_stream().map_err(std::io::Error::other));
-    let hash = s
+    let key = s
         .objects
-        .put_stream(Box::pin(reader), Some(MAX_OBJECT_BYTES))
-        .await?;
+        .put_stream(
+            Box::pin(reader),
+            Keying::Raw,
+            Some(pyn_chunk::MAX_CHUNK as u64),
+        )
+        .await
+        .map_err(|e| match e {
+            PynError::ObjectTooLarge { limit } => {
+                PynError::InvalidRequest(format!("a chunk is at most {limit} bytes"))
+            }
+            other => other,
+        })?;
     Ok(Json(api::PutObjectResponse {
-        content: hash.to_string(),
+        content: key.to_hex(),
     }))
 }
 
 const MAX_HASHES_PER_REQUEST: usize = 10_000;
 
-fn parse_hash(text: &str) -> Result<pyn_core::ContentHash, PynError> {
-    let ok = text.len() == 64 && text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
-    if ok {
-        Ok(pyn_core::ContentHash::new(text))
-    } else {
-        Err(PynError::InvalidRequest(format!(
-            "{text:?} is not a SHA-256 hex hash"
-        )))
-    }
+fn parse_object_id(text: &str) -> Result<pyn_core::ObjectId, PynError> {
+    let lowercase = !text.bytes().any(|b| b.is_ascii_uppercase());
+    pyn_core::ObjectId::from_hex(pyn_core::REPO_ALGORITHM, text)
+        .ok()
+        .filter(|_| lowercase)
+        .ok_or_else(|| PynError::InvalidRequest(format!("{text:?} is not a SHA-256 hex id")))
 }
 
 #[utoipa::path(post, path = "/v1/repos/{owner}/{name}/objects/missing", params(RepoAddress), request_body = api::MissingObjectsRequest, responses(
@@ -932,7 +987,7 @@ async fn missing_objects(
     }
     let mut missing = Vec::new();
     for text in req.hashes {
-        if !s.objects.exists(&parse_hash(&text)?).await? {
+        if !s.objects.exists(&parse_object_id(&text)?).await? {
             missing.push(text);
         }
     }
@@ -940,7 +995,7 @@ async fn missing_objects(
 }
 
 #[utoipa::path(post, path = "/v1/repos/{owner}/{name}/objects/assemble", params(RepoAddress), request_body = api::AssembleObjectRequest, responses(
-    (status = 200, body = api::PutObjectResponse, description = "the hash of the chunks' concatenation, ready to check in"),
+    (status = 200, body = api::PutObjectResponse, description = "the blob id of the chunks' concatenation, ready to check in"),
     (status = 400, body = api::ErrorBody, description = "invalid_request for a malformed hash, an oversized chunk or too many chunks; object_missing when a chunk was not uploaded"),
     (status = 413, body = api::ErrorBody, description = "object_too_large"),
 ))]
@@ -957,11 +1012,11 @@ async fn assemble_object(
     let chunks = req
         .chunks
         .iter()
-        .map(|c| parse_hash(c))
+        .map(|c| parse_object_id(c))
         .collect::<Result<Vec<_>, _>>()?;
     let hash = s.objects.assemble(&chunks, Some(MAX_OBJECT_BYTES)).await?;
     Ok(Json(api::PutObjectResponse {
-        content: hash.to_string(),
+        content: hash.to_hex(),
     }))
 }
 
@@ -1355,7 +1410,7 @@ async fn get_content(
     );
     h.insert(
         axum::http::HeaderName::from_static(api::CONTENT_HASH_HEADER),
-        HeaderValue::from_str(rev.content.as_str()).expect("hex is ASCII"),
+        HeaderValue::from_str(&rev.content.to_hex()).expect("hex is ASCII"),
     );
     h.insert(
         axum::http::header::ACCEPT_RANGES,

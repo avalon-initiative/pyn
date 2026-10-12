@@ -88,7 +88,7 @@ fn served_revisions(api: &Api, path: Option<&str>) -> Result<Vec<api::Revision>>
 fn expected(r: &api::Revision) -> String {
     revision_hash(&RevisionFields {
         path: &r.path,
-        content: &r.content,
+        content: r.legacy_content.as_deref().unwrap_or(&r.content),
         previous: r.previous.as_deref(),
         author: &r.author,
         created_micros: r.created_at.timestamp_micros(),

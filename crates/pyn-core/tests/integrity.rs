@@ -206,3 +206,35 @@ async fn verifying_an_unknown_path_is_not_found() {
     let err = w.svc.verify(Some(&path("nope")), false).await.unwrap_err();
     assert!(matches!(err, PynError::PathNotFound(_)), "{err}");
 }
+
+#[test]
+fn a_migrated_revision_still_verifies_against_its_frozen_v1_hash() {
+    let empty_blob = pyn_core::ObjectId::from_hex(
+        pyn_core::REPO_ALGORITHM,
+        "473a0f4c3be8a93681a267e3b1e9a7dcda1185436fe141f7749120a303721813",
+    )
+    .unwrap();
+    let mut rev = pyn_core::Revision {
+        id: RevisionId(1),
+        path: RepoPath::new("Content/a.umap").unwrap(),
+        content: empty_blob,
+        legacy_content: Some(
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".into(),
+        ),
+        author: UserId::new("alice"),
+        message: "first".into(),
+        created_at: Utc.timestamp_micros(1_700_000_000_123_456).unwrap(),
+        restored_from: None,
+        mode: None,
+        changeset: None,
+        commit: 1,
+        hash: RevisionHash::new("9c4caa53e94d5fa8fb261cb765f73725506641df99e225605e83f179ae0d9b52"),
+        previous: None,
+    };
+    assert!(rev.verify().is_ok());
+    rev.legacy_content = None;
+    assert!(
+        rev.verify().is_err(),
+        "without the stored input the hash does not reproduce"
+    );
+}

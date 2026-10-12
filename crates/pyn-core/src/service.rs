@@ -16,9 +16,9 @@ use crate::rules::{Mode, POLICY_PATH, PathFilter, Rules};
 use crate::store::MetadataStore;
 use crate::tree::{ACTIVITY_ACTIONS, DEFAULT_BRANCH, EntryKind, RepoSummary, TreeEntry};
 use crate::types::{
-    ChangesetItem, Commit, ContentHash, Lock, NewRevision, RepoId, RepoPath, Revision, RevisionId,
-    UserId,
+    ChangesetItem, Commit, Lock, NewRevision, RepoId, RepoPath, Revision, RevisionId, UserId,
 };
+use pyn_object::ObjectId;
 
 fn changeset_id() -> Result<String> {
     let mut buf = [0u8; 16];
@@ -39,7 +39,7 @@ pub struct FileEntry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChangeEntry {
     pub path: RepoPath,
-    pub content: ContentHash,
+    pub content: ObjectId,
     pub base: Option<RevisionId>,
 }
 
@@ -207,7 +207,7 @@ impl RepoService {
         Ok(())
     }
 
-    async fn parse_policy(&self, content: &ContentHash) -> Result<Rules> {
+    async fn parse_policy(&self, content: &ObjectId) -> Result<Rules> {
         let bytes = self
             .objects
             .get(content)
@@ -354,7 +354,7 @@ impl RepoService {
     }
 
     /// Validates a policy revision before it is recorded: `who` needs the policy permission and the file must parse.
-    async fn check_policy_edit(&self, who: &Principal, content: &ContentHash) -> Result<Rules> {
+    async fn check_policy_edit(&self, who: &Principal, content: &ObjectId) -> Result<Rules> {
         who.require(Permission::EditPolicy)?;
         self.parse_policy(content).await
     }
@@ -450,7 +450,7 @@ impl RepoService {
         &self,
         who: &Principal,
         path: &RepoPath,
-        content: ContentHash,
+        content: ObjectId,
         base: Option<RevisionId>,
         message: String,
         restored_from: Option<RevisionId>,
@@ -504,7 +504,7 @@ impl RepoService {
         &self,
         who: &Principal,
         path: &RepoPath,
-        content: ContentHash,
+        content: ObjectId,
         base: Option<RevisionId>,
         message: String,
     ) -> Result<Revision> {

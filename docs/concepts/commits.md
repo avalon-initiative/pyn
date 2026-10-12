@@ -11,7 +11,7 @@ The repository as of commit N is the newest revision at or before N of every pat
 from the revisions, so nothing is stored twice.
 
 - a **shared** path is identified by the hash of its content at that commit;
-- an **exclusive** path is identified by the revision the commit points at (decision #28), together with its content hash.
+- an **exclusive** path is identified by the revision the commit points at (decision #28), together with its blob id.
 
 Each entry also carries the mode recorded with that revision, so a snapshot shows a path as it was when it changed. There is one
 mainline until branches exist, so a commit's number is its position on it. Rolling an exclusive file back is not involved:
@@ -58,7 +58,7 @@ current directory inside a workspace. Options: `-U<n>` / `--unified=<n>` lines o
 #### Diff output
 
 Output is the unified format git prints: `diff --git a/<path> b/<path>`, `new file mode` or `deleted file mode`, an `index
-<old>..<new>` line with seven characters of each content hash, `--- a/<path>` and `+++ b/<path>` (`/dev/null` for a created or
+<old>..<new>` line with seven characters of each blob id, `--- a/<path>` and `+++ b/<path>` (`/dev/null` for a created or
 deleted file), then `@@ -a,b +c,d @@` hunks, with `\ No newline at end of file` where it applies. A file with a NUL byte in its
 first 8000 bytes is binary and prints `Binary files a/<path> and b/<path> differ`; only that first block of it is fetched.
 The diff is Myers' algorithm, built in with no dependency on git (decision #30), computed in the CLI. For inputs with more than

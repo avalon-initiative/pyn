@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use pyn_core::{ContentHash, ObjectStore, PynError};
+use pyn_core::{Keying, ObjectId, ObjectStore, PynError, REPO_ALGORITHM};
 use pyn_fs::FsObjectStore;
 
 async fn store() -> (FsObjectStore, tempfile::TempDir) {
@@ -18,8 +18,8 @@ async fn put_then_get_round_trips() {
     let (s, _dir) = store().await;
     let hash = s.put(b"hello".to_vec()).await.unwrap();
     assert_eq!(
-        hash.as_str(),
-        "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+        hash.to_hex(),
+        "8aec4e4876f854f688d0ebfc8f37598f38e5fd6903cccc850ca36591175aeb60"
     );
     assert_eq!(s.get(&hash).await.unwrap().unwrap(), b"hello");
     assert!(s.exists(&hash).await.unwrap());
@@ -40,31 +40,55 @@ async fn put_is_idempotent_and_survives_reopen() {
 #[tokio::test]
 async fn unknown_objects_are_absent() {
     let (s, _dir) = store().await;
-    let missing = ContentHash::new("ab".repeat(32));
+    let missing = ObjectId::from_hex(REPO_ALGORITHM, &"ab".repeat(32)).unwrap();
     assert!(!s.exists(&missing).await.unwrap());
     assert!(s.get(&missing).await.unwrap().is_none());
 }
 
 #[tokio::test]
-async fn malformed_hashes_cannot_reach_the_filesystem() {
+async fn only_sha256_ids_are_stored() {
     let (s, _dir) = store().await;
-    for bad in [
-        "",
-        "../../etc/passwd",
-        "AB",
-        &"g".repeat(64),
-        &"A".repeat(64),
-    ] {
-        let err = s.exists(&ContentHash::new(bad)).await.unwrap_err();
-        assert!(matches!(err, PynError::ObjectMissing(_)), "{bad:?}: {err}");
+    let sha1 = ObjectId::from_hex(pyn_object::Algorithm::Sha1, &"ab".repeat(20)).unwrap();
+    let err = s.exists(&sha1).await.unwrap_err();
+    assert!(matches!(err, PynError::ObjectMissing(_)), "{err}");
+}
+
+#[tokio::test]
+async fn a_chunk_is_keyed_by_the_raw_sha256_of_its_bytes() {
+    let (s, _dir) = store().await;
+    let raw = s.put_chunk(b"hello".to_vec()).await.unwrap();
+    assert_eq!(
+        raw.to_hex(),
+        "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+    );
+    assert_ne!(raw, s.put(b"hello".to_vec()).await.unwrap());
+}
+
+#[tokio::test]
+async fn a_body_that_is_not_the_declared_length_is_refused() {
+    let (s, dir) = store().await;
+    for (len, body) in [(4u64, &b"hello"[..]), (6, &b"hello"[..])] {
+        let err = s
+            .put_stream(
+                Box::pin(std::io::Cursor::new(body.to_vec())),
+                Keying::Blob { len },
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, PynError::LengthMismatch { .. }), "{err}");
     }
+    let stored = std::fs::read_dir(dir.path().join("objects"))
+        .unwrap()
+        .count();
+    assert_eq!(stored, 0, "nothing is left behind");
 }
 
 #[tokio::test]
 async fn a_tampered_object_is_reported_not_returned() {
     let (s, _dir) = store().await;
     let hash = s.put(b"original".to_vec()).await.unwrap();
-    let path = s.root().join(&hash.as_str()[..2]).join(&hash.as_str()[2..]);
+    let path = s.root().join(&hash.to_hex()[..2]).join(&hash.to_hex()[2..]);
     std::fs::write(path, b"tampered").unwrap();
     assert!(matches!(s.get(&hash).await, Err(PynError::Storage(_))));
 }
@@ -92,7 +116,11 @@ async fn streams_in_ranges_and_deletes() {
     let (s, dir) = store().await;
     let data: Vec<u8> = (0..200_000u32).map(|i| (i % 253) as u8).collect();
     let hash = s
-        .put_stream(Box::pin(std::io::Cursor::new(data.clone())), None)
+        .put_stream(
+            Box::pin(std::io::Cursor::new(data.clone())),
+            Keying::Blob { len: 200_000 },
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(hash, s.put(data.clone()).await.unwrap());
@@ -128,7 +156,11 @@ async fn streams_in_ranges_and_deletes() {
 async fn an_oversized_stream_is_refused_and_leaves_nothing() {
     let (s, dir) = store().await;
     let err = s
-        .put_stream(Box::pin(std::io::Cursor::new(vec![7u8; 1000])), Some(999))
+        .put_stream(
+            Box::pin(std::io::Cursor::new(vec![7u8; 1000])),
+            Keying::Blob { len: 1000 },
+            Some(999),
+        )
         .await
         .unwrap_err();
     assert!(

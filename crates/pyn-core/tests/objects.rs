@@ -1,12 +1,16 @@
 use pyn_core::memory::MemoryObjectStore;
-use pyn_core::{ObjectStore, PynError};
+use pyn_core::{Keying, ObjectStore, PynError};
 use tokio::io::AsyncReadExt;
 
 #[tokio::test]
 async fn the_memory_store_streams_ranges_and_deletes() {
     let s = MemoryObjectStore::new();
     let hash = s
-        .put_stream(Box::pin(std::io::Cursor::new(b"0123456789".to_vec())), None)
+        .put_stream(
+            Box::pin(std::io::Cursor::new(b"0123456789".to_vec())),
+            Keying::Blob { len: 10 },
+            None,
+        )
         .await
         .unwrap();
     let mut part = s.read(&hash, Some(2..5)).await.unwrap().unwrap();
@@ -23,7 +27,11 @@ async fn the_memory_store_streams_ranges_and_deletes() {
 async fn the_memory_store_refuses_more_than_the_limit() {
     let s = MemoryObjectStore::new();
     let err = s
-        .put_stream(Box::pin(std::io::Cursor::new(vec![0u8; 11])), Some(10))
+        .put_stream(
+            Box::pin(std::io::Cursor::new(vec![0u8; 11])),
+            Keying::Blob { len: 11 },
+            Some(10),
+        )
         .await
         .unwrap_err();
     assert!(

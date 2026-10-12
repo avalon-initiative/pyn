@@ -21,7 +21,8 @@ primitives below are used, so the encoding is unambiguous and needs no escaping.
 ```text
 str("pyn-revision-v1")
 str(path)               repository-relative path, as stored
-str(content)            the content hash: SHA-256 hex of the uncompressed content
+str(content)            the content string: the git blob id hex for revisions made since decision #245,
+                        the SHA-256 hex of the bare content for revisions made before (see below)
 opt_str(previous)       hash of the path's previous revision; absent for the first
 str(author)
 time(created_at)
@@ -45,7 +46,7 @@ str(detail)
 The first byte string of each encoding is a domain tag, so a revision hash can never equal an audit hash. The encoding is
 part of the contract: a change to any byte needs a new tag (`...-v2`) and a new column, never an edit of these.
 
-Test vectors (also asserted in `crates/pyn-hash`), with content hash `e3b0c442...b855` (the empty file), author `alice`
+Test vectors (also asserted in `crates/pyn-hash`), with content string `e3b0c442...b855` (the SHA-256 of the empty file, as stored before blob ids), author `alice`
 and time `1700000000123456`:
 
 | Input | Hash |
@@ -80,6 +81,15 @@ events leaves a valid chain. A client that remembers a head hash can detect that
   fetches on the client, so a server that reports "ok" cannot hide a mismatch.
 
 Revisions in the API carry `hash` and `previous`; audit events carry `hash` and `previous`.
+
+## Content ids and v1
+
+Decision #245 changed the content id from the SHA-256 of the bytes to the git blob id. The v1 encoding is not touched:
+`str(content)` covers whatever string the revision was hashed with. Revisions made after the change cover the blob id hex.
+Revisions that existed before it keep a stored copy of the string they were hashed with (`revisions.content_v1` in
+PostgreSQL, `legacy_content` in the API), so their hashes still reproduce; `pyn verify` and the server use that string
+in place of `content` when it is present. A revision whose `legacy_content` is stripped no longer verifies. Revision v2
+(which covers the blob id and algorithm explicitly) is planned with the commit record.
 
 ## Existing data
 

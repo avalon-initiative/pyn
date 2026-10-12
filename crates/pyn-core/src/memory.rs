@@ -5,7 +5,7 @@ use std::sync::Mutex;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
-use sha2::{Digest, Sha256};
+use pyn_object::ObjectId;
 
 use crate::access::{
     AccountKind, AccountRecord, AccountStatus, InviteId, InviteRecord, NewAccount, OrgRole,
@@ -19,7 +19,7 @@ use crate::audit::{AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent
 use crate::error::{PynError, Result};
 use crate::history::HistoryCursor;
 use crate::limits::{Limits, LimitsChange, RepoUsage, StorageCap, Usage};
-use crate::object::{ObjectRead, ObjectReader, ObjectStore};
+use crate::object::{KeyHasher, Keying, ObjectRead, ObjectReader, ObjectStore};
 use crate::oidc::{ExternalCreate, ExternalIdentity, IdentityUnlink, NewExternalAccount, OidcFlow};
 use crate::ratelimit::{RateLimitStore, RateState};
 use crate::repo::{RepoRecord, RepoUpdate, Visibility};
@@ -29,8 +29,7 @@ use crate::repo_policy::{
 use crate::rules::PathFilter;
 use crate::store::MetadataStore;
 use crate::types::{
-    ChangesetItem, Commit, ContentHash, Lock, NewRevision, RepoId, RepoPath, Revision, RevisionId,
-    UserId,
+    ChangesetItem, Commit, Lock, NewRevision, RepoId, RepoPath, Revision, RevisionId, UserId,
 };
 
 type Key = (RepoId, RepoPath);
@@ -41,7 +40,7 @@ struct State {
     revisions: HashMap<Key, Vec<Revision>>,
     repos: HashMap<RepoId, RepoRecord>,
     /// Length of each distinct content in each repository.
-    sizes: HashMap<(RepoId, ContentHash), u64>,
+    sizes: HashMap<(RepoId, ObjectId), u64>,
     /// Newest commit number per repository.
     commits: HashMap<RepoId, u64>,
 }
@@ -95,7 +94,7 @@ impl State {
             });
         }
 
-        let size_key = (repo.clone(), revision.content.clone());
+        let size_key = (repo.clone(), revision.content);
         if let Some(cap) = cap
             && !st.sizes.contains_key(&size_key)
         {
@@ -119,6 +118,7 @@ impl State {
             id: RevisionId(head.map_or(1, |h| h.0 + 1)),
             path: revision.path,
             content: revision.content,
+            legacy_content: None,
             author: revision.author,
             message: revision.message,
             created_at: revision.created_at,
@@ -338,7 +338,7 @@ impl MetadataStore for MemoryMetadataStore {
             .iter()
             .map(|i| {
                 let key = (repo.clone(), i.revision.path.clone());
-                let size = (repo.clone(), i.revision.content.clone());
+                let size = (repo.clone(), i.revision.content);
                 let prior = (
                     st.locks.get(&key).cloned(),
                     st.revisions.get(&key).map_or(0, Vec::len),
@@ -613,8 +613,8 @@ impl MetadataStore for MemoryMetadataStore {
 
 #[derive(Default)]
 pub struct MemoryObjectStore {
-    objects: Mutex<HashMap<ContentHash, Vec<u8>>>,
-    manifests: Mutex<HashMap<ContentHash, Vec<u8>>>,
+    objects: Mutex<HashMap<ObjectId, Vec<u8>>>,
+    manifests: Mutex<HashMap<ObjectId, Vec<u8>>>,
 }
 
 impl MemoryObjectStore {
@@ -625,16 +625,23 @@ impl MemoryObjectStore {
 
 #[async_trait]
 impl ObjectStore for MemoryObjectStore {
-    async fn put_stream(&self, reader: ObjectReader, max: Option<u64>) -> Result<ContentHash> {
+    async fn put_stream(
+        &self,
+        reader: ObjectReader,
+        keying: Keying,
+        max: Option<u64>,
+    ) -> Result<ObjectId> {
         let bytes = crate::object::read_limited(reader, max).await?;
-        let hash = ContentHash::new(hex::encode(Sha256::digest(&bytes)));
-        self.objects.lock().unwrap().insert(hash.clone(), bytes);
+        let mut hasher = KeyHasher::new(keying);
+        hasher.update(&bytes)?;
+        let hash = hasher.finish()?;
+        self.objects.lock().unwrap().insert(hash, bytes);
         Ok(hash)
     }
 
     async fn read(
         &self,
-        hash: &ContentHash,
+        hash: &ObjectId,
         range: Option<std::ops::Range<u64>>,
     ) -> Result<Option<ObjectRead>> {
         let Some(bytes) = self.objects.lock().unwrap().get(hash).cloned() else {
@@ -650,27 +657,27 @@ impl ObjectStore for MemoryObjectStore {
         }))
     }
 
-    async fn delete(&self, hash: &ContentHash) -> Result<bool> {
+    async fn delete(&self, hash: &ObjectId) -> Result<bool> {
         let blob = self.objects.lock().unwrap().remove(hash).is_some();
         let manifest = self.manifests.lock().unwrap().remove(hash).is_some();
         Ok(blob || manifest)
     }
 
-    async fn put_manifest(&self, key: &ContentHash, bytes: Vec<u8>) -> Result<()> {
-        self.manifests.lock().unwrap().insert(key.clone(), bytes);
+    async fn put_manifest(&self, key: &ObjectId, bytes: Vec<u8>) -> Result<()> {
+        self.manifests.lock().unwrap().insert(*key, bytes);
         Ok(())
     }
 
-    async fn get_manifest(&self, key: &ContentHash) -> Result<Option<Vec<u8>>> {
+    async fn get_manifest(&self, key: &ObjectId) -> Result<Option<Vec<u8>>> {
         Ok(self.manifests.lock().unwrap().get(key).cloned())
     }
 
-    async fn exists(&self, hash: &ContentHash) -> Result<bool> {
+    async fn exists(&self, hash: &ObjectId) -> Result<bool> {
         Ok(self.objects.lock().unwrap().contains_key(hash)
             || self.manifests.lock().unwrap().contains_key(hash))
     }
 
-    async fn size(&self, hash: &ContentHash) -> Result<Option<u64>> {
+    async fn size(&self, hash: &ObjectId) -> Result<Option<u64>> {
         Ok(self
             .objects
             .lock()

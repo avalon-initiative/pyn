@@ -7,11 +7,13 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use pyn_chunk::{MAX_CHUNK, SMALL_OBJECT, cut_point};
+use pyn_object::{Algorithm, ObjectHasher};
 use pyn_proto as api;
 use reqwest::Method;
 use sha2::{Digest, Sha256};
 
 use crate::client::Api;
+use crate::workspace::hash_of;
 
 const HASHES_PER_REQUEST: usize = 5000;
 
@@ -21,18 +23,19 @@ struct Piece {
     hash: String,
 }
 
-fn put_blob(api: &Api, bytes: Vec<u8>) -> Result<String> {
+fn put_bytes(api: &Api, route: &str, bytes: Vec<u8>) -> Result<String> {
     let put: api::PutObjectResponse = api
         .send(
-            api.request(Method::PUT, &api.repo_route("/objects")?)
+            api.request(Method::PUT, &api.repo_route(route)?)
                 .body(bytes),
         )?
         .json()?;
     Ok(put.content)
 }
 
-/// Cuts the file into chunks, reading it once.
-fn pieces_of(file: &mut File) -> Result<Vec<Piece>> {
+/// Cuts the file into chunks, reading it once, and returns them with the file's blob id.
+fn pieces_of(file: &mut File, len: u64) -> Result<(Vec<Piece>, String)> {
+    let mut whole = ObjectHasher::blob(Algorithm::Sha256, len);
     let mut pieces = Vec::new();
     let mut buf: Vec<u8> = Vec::new();
     let mut offset = 0u64;
@@ -48,6 +51,7 @@ fn pieces_of(file: &mut File) -> Result<Vec<Piece>> {
             }
         }
         let cut = cut_point(&buf);
+        whole.update(&buf[..cut])?;
         pieces.push(Piece {
             offset,
             len: cut,
@@ -56,7 +60,7 @@ fn pieces_of(file: &mut File) -> Result<Vec<Piece>> {
         offset += cut as u64;
         buf.drain(..cut);
     }
-    Ok(pieces)
+    Ok((pieces, whole.finish()?.to_hex()))
 }
 
 fn missing(api: &Api, hashes: &[&str]) -> Result<HashSet<String>> {
@@ -76,7 +80,7 @@ fn missing(api: &Api, hashes: &[&str]) -> Result<HashSet<String>> {
     Ok(out)
 }
 
-/// Uploads `path` and returns its content hash. Small files go up whole; larger ones go up as chunks and only the
+/// Uploads `path` and returns its blob id. Small files go up whole; larger ones go up as chunks and only the
 /// chunks the server lacks are sent, so repeating a failed upload continues where it stopped.
 pub fn upload_file(api: &Api, path: &Path) -> Result<String> {
     let mut file = File::open(path).with_context(|| format!("reading {}", path.display()))?;
@@ -84,9 +88,17 @@ pub fn upload_file(api: &Api, path: &Path) -> Result<String> {
     if len as usize <= SMALL_OBJECT {
         let mut bytes = Vec::with_capacity(len as usize);
         file.read_to_end(&mut bytes)?;
-        return put_blob(api, bytes);
+        let expected = hash_of(&bytes);
+        let stored = put_bytes(api, "/objects", bytes)?;
+        if stored != expected {
+            bail!(
+                "the server stored {} as {stored}, expected {expected}",
+                path.display()
+            );
+        }
+        return Ok(stored);
     }
-    let pieces = pieces_of(&mut file)?;
+    let (pieces, expected) = pieces_of(&mut file, len)?;
     let hashes: Vec<&str> = pieces.iter().map(|p| p.hash.as_str()).collect();
     let mut need = missing(api, &hashes)?;
     for piece in &pieces {
@@ -96,7 +108,7 @@ pub fn upload_file(api: &Api, path: &Path) -> Result<String> {
         file.seek(SeekFrom::Start(piece.offset))?;
         let mut bytes = vec![0u8; piece.len];
         file.read_exact(&mut bytes)?;
-        let stored = put_blob(api, bytes)?;
+        let stored = put_bytes(api, "/objects/chunk", bytes)?;
         if stored != piece.hash {
             bail!(
                 "the server stored a chunk as {stored}, expected {}",
@@ -113,6 +125,13 @@ pub fn upload_file(api: &Api, path: &Path) -> Result<String> {
                 .json(&body),
         )?
         .json()?;
+    if put.content != expected {
+        bail!(
+            "the server assembled {} as {}, expected {expected}",
+            path.display(),
+            put.content
+        );
+    }
     Ok(put.content)
 }
 
@@ -123,15 +142,15 @@ fn part_path(dest: &Path) -> PathBuf {
 }
 
 fn hash_file(path: &Path) -> Result<String> {
-    let mut hasher = Sha256::new();
     let mut file = File::open(path)?;
+    let mut hasher = ObjectHasher::blob(Algorithm::Sha256, file.metadata()?.len());
     let mut buf = vec![0u8; 256 << 10];
     loop {
         let n = file.read(&mut buf)?;
         if n == 0 {
-            return Ok(hex::encode(hasher.finalize()));
+            return Ok(hasher.finish()?.to_hex());
         }
-        hasher.update(&buf[..n]);
+        hasher.update(&buf[..n])?;
     }
 }
 

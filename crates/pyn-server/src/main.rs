@@ -40,6 +40,7 @@ struct Stores {
     access: Arc<dyn AccessStore>,
     audit: Arc<dyn AuditStore>,
     limits: Arc<dyn RateLimitStore>,
+    postgres: Option<Arc<PgMetadataStore>>,
     kind: &'static str,
 }
 
@@ -52,7 +53,8 @@ async fn stores() -> anyhow::Result<Stores> {
                 meta: pg.clone(),
                 access: pg.clone(),
                 audit: pg.clone(),
-                limits: pg,
+                limits: pg.clone(),
+                postgres: Some(pg),
                 kind: "postgres",
             }
         }
@@ -61,6 +63,7 @@ async fn stores() -> anyhow::Result<Stores> {
             access: Arc::new(MemoryAccessStore::new()),
             audit: Arc::new(MemoryAuditStore::new()),
             limits: Arc::new(MemoryRateLimitStore::new()),
+            postgres: None,
             kind: "in-memory",
         },
     })
@@ -116,6 +119,7 @@ async fn main() -> anyhow::Result<()> {
         access: access_store,
         audit,
         limits,
+        postgres,
         kind: meta_kind,
     } = stores().await?;
     let instances: u32 = number("PYN_INSTANCES", 1)?;
@@ -128,6 +132,19 @@ async fn main() -> anyhow::Result<()> {
         Ok(dir) => Arc::new(ChunkedStore::new(Arc::new(FsObjectStore::open(dir).await?))),
         Err(_) => Arc::new(ChunkedStore::new(Arc::new(MemoryObjectStore::new()))),
     };
+    if let Some(pg) = postgres {
+        let done = pg.migrate_content_ids(objects.as_ref()).await?;
+        if done.migrated > 0 || !done.missing.is_empty() {
+            tracing::info!(
+                migrated = done.migrated,
+                missing = done.missing.len(),
+                "re-keyed stored content to git blob ids"
+            );
+        }
+        for old in &done.missing {
+            tracing::warn!(content = %old, "stored content not found; its revisions keep the SHA-256 content id");
+        }
+    }
 
     let clock = Arc::new(SystemClock);
     let defaults = AccessConfig::default();
