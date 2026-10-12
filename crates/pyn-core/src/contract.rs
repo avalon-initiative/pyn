@@ -496,6 +496,87 @@ pub async fn summary_counts_files_locks_and_file_activity(store: Store) {
     );
 }
 
+pub async fn revisions_form_a_hash_chain_per_path(store: Store) {
+    let h = harness(store);
+    let a = path("Source/a.cpp");
+    let b = path("Source/b.cpp");
+    commit(&h, &a, "one").await;
+    commit(&h, &b, "other").await;
+    commit(&h, &a, "two").await;
+    h.clock.advance(chrono::Duration::nanoseconds(1_234_567));
+    commit(&h, &a, "three").await;
+
+    let revs = h.svc.history(&a).await.unwrap();
+    assert_eq!(revs.len(), 3);
+    assert_eq!(revs[0].previous, None);
+    assert_eq!(revs[1].previous.as_ref(), Some(&revs[0].hash));
+    assert_eq!(revs[2].previous.as_ref(), Some(&revs[1].hash));
+    for r in &revs {
+        assert_eq!(r.hash, r.expected_hash(), "{r:?}");
+        assert_eq!(r.hash.as_str().len(), 64);
+    }
+    let other = h.svc.history(&b).await.unwrap();
+    assert_eq!(other[0].previous, None, "chains are per path");
+    assert_ne!(other[0].hash, revs[0].hash);
+}
+
+pub async fn a_restore_is_chained_and_its_source_is_covered(store: Store) {
+    let h = harness(store);
+    let a = path("Content/a.umap");
+    exclusive_history(&h, &a, &["one", "two"]).await;
+    h.svc
+        .checkout(&a, &user("alice"), Some(RevisionId(2)))
+        .await
+        .unwrap();
+    let restored = h
+        .svc
+        .restore(
+            &who("alice"),
+            &a,
+            RevisionId(1),
+            RevisionId(2),
+            "Content/a.umap@r2",
+            None,
+        )
+        .await
+        .unwrap();
+    let revs = h.svc.history(&a).await.unwrap();
+    assert_eq!(restored.previous.as_ref(), Some(&revs[1].hash));
+    assert_eq!(restored.restored_from, Some(RevisionId(1)));
+    let mut forged = restored.clone();
+    forged.restored_from = Some(RevisionId(2));
+    assert_ne!(forged.expected_hash(), restored.hash);
+}
+
+pub async fn a_changeset_chains_each_of_its_paths(store: Store) {
+    let h = harness(store);
+    let (a, b) = (path("Source/a.cpp"), path("Source/b.cpp"));
+    commit(&h, &a, "one").await;
+    let entries = vec![
+        ChangeEntry {
+            path: a.clone(),
+            content: blob(&h, "two").await,
+            base: Some(RevisionId(1)),
+        },
+        ChangeEntry {
+            path: b.clone(),
+            content: blob(&h, "new").await,
+            base: None,
+        },
+    ];
+    let revs = h
+        .svc
+        .checkin_changeset(&who("alice"), entries, "both".into())
+        .await
+        .unwrap();
+    let first = h.svc.history(&a).await.unwrap();
+    assert_eq!(revs[0].previous.as_ref(), Some(&first[0].hash));
+    assert_eq!(revs[1].previous, None);
+    let report = h.svc.verify(None, true).await.unwrap();
+    assert!(report.problems.is_empty(), "{report:?}");
+    assert_eq!((report.paths, report.revisions), (2, 3));
+}
+
 pub async fn old_revisions_can_be_read_back(store: Store) {
     let h = harness(store);
     let a = path("Source/a.cpp");
@@ -2056,6 +2137,9 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; the_lock_limit_counts_one_repository_at_a_time);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; racing_checkouts_cannot_exceed_the_lock_limit);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; operations_are_recorded_in_the_audit_log);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; revisions_form_a_hash_chain_per_path);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_restore_is_chained_and_its_source_is_covered);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_changeset_chains_each_of_its_paths);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; repositories_are_registered_found_and_listed_in_order);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; public_repositories_are_listed_in_pages_after_an_address);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_repository_name_is_unique_per_owner);
@@ -5659,6 +5743,77 @@ pub async fn audit_scopes_keep_repository_organization_and_server_logs_apart(sto
     assert!(none.is_empty());
 }
 
+pub async fn audit_events_are_hash_chained_per_scope(store: Audit) {
+    let scopes = [
+        AuditScope::Repo(RepoId::new("game")),
+        AuditScope::Org(user("game")),
+        AuditScope::Server,
+    ];
+    for minute in 0..3 {
+        for scope in &scopes {
+            let mut e = event(
+                "alice",
+                AuditAction::Checkout,
+                Some("Content/a.umap"),
+                minute,
+            );
+            e.at += chrono::Duration::nanoseconds(123_456_789 + minute);
+            store.record(scope, e).await.unwrap();
+        }
+    }
+    for scope in &scopes {
+        let mut events = store
+            .list(
+                scope,
+                &AuditQuery {
+                    limit: 10,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        events.reverse();
+        assert_eq!(events.len(), 3, "{scope:?}");
+        assert_eq!(events[0].previous, None);
+        assert_eq!(events[1].previous.as_ref(), Some(&events[0].hash));
+        assert_eq!(events[2].previous.as_ref(), Some(&events[1].hash));
+        assert!(
+            crate::integrity::verify_audit(scope, &events).is_empty(),
+            "{scope:?}"
+        );
+    }
+}
+
+pub async fn racing_audit_records_keep_one_unbroken_chain(store: Audit) {
+    let scope = AuditScope::Repo(RepoId::new("game"));
+    let mut tasks = Vec::new();
+    for i in 0..8 {
+        let (store, scope) = (store.clone(), scope.clone());
+        tasks.push(tokio::spawn(async move {
+            store
+                .record(&scope, event("alice", AuditAction::Checkout, None, i))
+                .await
+                .unwrap();
+        }));
+    }
+    for t in tasks {
+        t.await.unwrap();
+    }
+    let mut events = store
+        .list(
+            &scope,
+            &AuditQuery {
+                limit: 20,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    events.reverse();
+    assert_eq!(events.len(), 8);
+    assert!(crate::integrity::verify_audit(&scope, &events).is_empty());
+}
+
 /// Generates one `#[tokio::test]` per audit-store case for the store built by `$factory`.
 #[macro_export]
 macro_rules! audit_contract_tests {
@@ -5666,6 +5821,8 @@ macro_rules! audit_contract_tests {
         $crate::audit_contract_tests!(@one $factory; [$(#[$attr])*]; audit_events_list_newest_first_with_filters);
         $crate::audit_contract_tests!(@one $factory; [$(#[$attr])*]; audit_events_page_backwards);
         $crate::audit_contract_tests!(@one $factory; [$(#[$attr])*]; audit_scopes_keep_repository_organization_and_server_logs_apart);
+        $crate::audit_contract_tests!(@one $factory; [$(#[$attr])*]; audit_events_are_hash_chained_per_scope);
+        $crate::audit_contract_tests!(@one $factory; [$(#[$attr])*]; racing_audit_records_keep_one_unbroken_chain);
     };
     (@one $factory:expr; [$(#[$attr:meta])*]; $name:ident) => {
         #[tokio::test(flavor = "multi_thread")]

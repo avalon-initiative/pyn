@@ -149,6 +149,24 @@ impl MemoryMetadataStore {
     pub fn new() -> Self {
         Self::default()
     }
+
+    /// Rewrites a stored revision in place, the way an attacker with database access would.
+    #[cfg(feature = "test-support")]
+    pub fn tamper(
+        &self,
+        repo: &RepoId,
+        path: &RepoPath,
+        id: RevisionId,
+        f: impl FnOnce(&mut Revision),
+    ) {
+        let mut st = self.state.lock().unwrap();
+        let rev = st
+            .revisions
+            .get_mut(&(repo.clone(), path.clone()))
+            .and_then(|v| v.iter_mut().find(|r| r.id == id))
+            .expect("revision to tamper with");
+        f(rev);
+    }
 }
 
 fn history_key(r: &Revision) -> (DateTime<Utc>, &str, RevisionId) {
@@ -1863,6 +1881,23 @@ pub struct MemoryAuditStore {
 impl MemoryAuditStore {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Rewrites a stored event in place, the way an attacker with database access would.
+    #[cfg(feature = "test-support")]
+    pub fn tamper(&self, id: i64, f: impl FnOnce(&mut AuditEvent)) {
+        let mut events = self.events.lock().unwrap();
+        let (_, e) = events
+            .iter_mut()
+            .find(|(_, e)| e.id == id)
+            .expect("event to tamper with");
+        f(e);
+    }
+
+    /// Drops an event, as if deleted from the table.
+    #[cfg(feature = "test-support")]
+    pub fn remove(&self, id: i64) {
+        self.events.lock().unwrap().retain(|(_, e)| e.id != id);
     }
 }
 
