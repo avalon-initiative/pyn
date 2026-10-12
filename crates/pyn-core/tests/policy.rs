@@ -78,6 +78,7 @@ fn writer(name: &str) -> Principal {
     Principal {
         user: UserId::new(name),
         permissions: BTreeSet::from([Permission::Read, Permission::Lock, Permission::Checkin]),
+        email: None,
     }
 }
 
@@ -485,7 +486,9 @@ async fn a_stored_policy_that_no_longer_parses_fails_the_repository_closed() {
             NewRevision {
                 path: path(POLICY),
                 content: bad,
+                file_mode: pyn_core::FileMode::Regular,
                 author: UserId::new("alice"),
+                person: pyn_core::Person::for_user(&UserId::new("alice"), None),
                 message: "old".into(),
                 created_at: Utc::now(),
                 restored_from: None,

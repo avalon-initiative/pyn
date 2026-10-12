@@ -550,6 +550,7 @@ impl IntoResponse for ApiError {
             PynError::InvalidPath(_)
             | PynError::InvalidRules(_)
             | PynError::InvalidRequest(_)
+            | PynError::AmbiguousCommit(_)
             | PynError::InvalidInvite(_)
             | PynError::InvalidVerification(_)
             | PynError::InvalidRepoName(_)

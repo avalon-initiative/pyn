@@ -182,6 +182,8 @@ impl Identity {
 pub struct Principal {
     pub user: UserId,
     pub permissions: BTreeSet<Permission>,
+    /// The account's email, recorded as the author's in the commits the caller makes.
+    pub email: Option<String>,
 }
 
 impl Principal {
@@ -202,7 +204,13 @@ impl Principal {
         Self {
             user,
             permissions: Permission::ALL.into(),
+            email: None,
         }
+    }
+
+    /// The git identity commits made by this caller carry.
+    pub fn person(&self) -> crate::types::Person {
+        crate::types::Person::for_user(&self.user, self.email.as_deref())
     }
 }
 

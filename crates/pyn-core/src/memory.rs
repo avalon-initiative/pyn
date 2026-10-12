@@ -16,6 +16,7 @@ use crate::access_service::{
     AccessStore, AccountDisable, AdminRevoke, OrgDeleteMark, OrgMemberChange,
 };
 use crate::audit::{AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent};
+use crate::commit_record::{CommitDraft, TreeEdit, draft_commit};
 use crate::error::{PynError, Result};
 use crate::history::HistoryCursor;
 use crate::limits::{Limits, LimitsChange, RepoUsage, StorageCap, Usage};
@@ -41,8 +42,9 @@ struct State {
     repos: HashMap<RepoId, RepoRecord>,
     /// Length of each distinct content in each repository.
     sizes: HashMap<(RepoId, ObjectId), u64>,
-    /// Newest commit number per repository.
-    commits: HashMap<RepoId, u64>,
+    /// The mainline of each repository, oldest first; the records carry no revisions.
+    commits: HashMap<RepoId, Vec<Commit>>,
+    trees: HashMap<(RepoId, ObjectId), Vec<u8>>,
 }
 
 impl State {
@@ -54,13 +56,57 @@ impl State {
             .sum()
     }
 
+    /// The commit that appending `items` to the mainline would make, with the trees it adds.
+    fn draft(&self, repo: &RepoId, items: &[ChangesetItem]) -> Result<CommitDraft> {
+        let parent = self.commits.get(repo).and_then(|v| v.last());
+        let changes = items.iter().map(|i| i.revision.tree_change()).collect();
+        let mut edit = TreeEdit::new(parent.map(|c| c.tree), changes);
+        while let Some(id) = edit.wanted() {
+            let body = self
+                .trees
+                .get(&(repo.clone(), id))
+                .ok_or_else(|| PynError::Storage(format!("tree {id} is missing")))?;
+            edit.supply(id, body)?;
+        }
+        draft_commit(parent.map(|c| c.id), edit.finish()?, &items[0].revision)
+    }
+
+    fn full_commit(&self, repo: &RepoId, id: &ObjectId) -> Option<Commit> {
+        let mut commit = self
+            .commits
+            .get(repo)?
+            .iter()
+            .find(|c| &c.id == id)?
+            .clone();
+        commit.revisions = self
+            .revisions
+            .iter()
+            .filter(|((r, _), _)| r == repo)
+            .flat_map(|(_, revs)| revs)
+            .filter(|r| &r.commit == id)
+            .cloned()
+            .collect();
+        commit.revisions.sort_by(|a, b| a.path.cmp(&b.path));
+        Some(commit)
+    }
+
+    fn append_commit(&mut self, repo: &RepoId, draft: CommitDraft) {
+        for (id, body) in draft.trees {
+            self.trees.insert((repo.clone(), id), body);
+        }
+        self.commits
+            .entry(repo.clone())
+            .or_default()
+            .push(draft.record);
+    }
+
     fn commit(
         &mut self,
         repo: &RepoId,
         item: ChangesetItem,
         now: DateTime<Utc>,
         cap: Option<&StorageCap>,
-        commit: u64,
+        commit: &ObjectId,
     ) -> Result<Revision> {
         let ChangesetItem {
             revision,
@@ -113,22 +159,7 @@ impl State {
             .get(&key)
             .and_then(|v| v.last())
             .map(|r| r.hash.clone());
-        let hash = revision.hash(previous.as_ref());
-        let created = Revision {
-            id: RevisionId(head.map_or(1, |h| h.0 + 1)),
-            path: revision.path,
-            content: revision.content,
-            legacy_content: None,
-            author: revision.author,
-            message: revision.message,
-            created_at: revision.created_at,
-            restored_from: revision.restored_from,
-            mode: Some(revision.mode),
-            changeset: revision.changeset,
-            commit,
-            hash,
-            previous,
-        };
+        let created = revision.create(RevisionId(head.map_or(1, |h| h.0 + 1)), previous, *commit);
         st.revisions
             .entry(key.clone())
             .or_default()
@@ -314,14 +345,16 @@ impl MetadataStore for MemoryMetadataStore {
         cap: Option<StorageCap>,
     ) -> Result<Revision> {
         let mut st = self.state.lock().unwrap();
-        let commit = st.commits.get(repo).copied().unwrap_or(0) + 1;
         let item = ChangesetItem {
             revision,
             expected_head,
             lock_holder: lock_holder.cloned(),
         };
-        let rev = st.commit(repo, item, now, cap.as_ref(), commit)?;
-        st.commits.insert(repo.clone(), commit);
+        let items = [item];
+        let draft = st.draft(repo, &items)?;
+        let [item] = items;
+        let rev = st.commit(repo, item, now, cap.as_ref(), &draft.record.id)?;
+        st.append_commit(repo, draft);
         Ok(rev)
     }
 
@@ -333,7 +366,7 @@ impl MetadataStore for MemoryMetadataStore {
         cap: Option<StorageCap>,
     ) -> Result<Vec<Revision>> {
         let mut st = self.state.lock().unwrap();
-        let commit = st.commits.get(repo).copied().unwrap_or(0) + 1;
+        let draft = st.draft(repo, &items)?;
         let undo: Vec<_> = items
             .iter()
             .map(|i| {
@@ -349,7 +382,7 @@ impl MetadataStore for MemoryMetadataStore {
             .collect();
         let mut out = Vec::with_capacity(items.len());
         for item in items {
-            match st.commit(repo, item, now, cap.as_ref(), commit) {
+            match st.commit(repo, item, now, cap.as_ref(), &draft.record.id) {
                 Ok(rev) => out.push(rev),
                 Err(e) => {
                     for (key, size, (lock, len, stored)) in undo {
@@ -369,60 +402,84 @@ impl MetadataStore for MemoryMetadataStore {
                 }
             }
         }
-        st.commits.insert(repo.clone(), commit);
+        st.append_commit(repo, draft);
         Ok(out)
     }
 
-    async fn head_commit(&self, repo: &RepoId) -> Result<u64> {
+    async fn head_commit(&self, repo: &RepoId) -> Result<Option<ObjectId>> {
         let st = self.state.lock().unwrap();
-        Ok(st.commits.get(repo).copied().unwrap_or(0))
+        Ok(st.commits.get(repo).and_then(|v| v.last()).map(|c| c.id))
     }
 
-    async fn get_commit(&self, repo: &RepoId, id: u64) -> Result<Option<Commit>> {
+    async fn get_commit(&self, repo: &RepoId, id: &ObjectId) -> Result<Option<Commit>> {
         let st = self.state.lock().unwrap();
-        Ok(Commit::from_revisions(
-            st.revisions
-                .iter()
-                .filter(|((r, _), _)| r == repo)
-                .flat_map(|(_, revs)| revs)
-                .filter(|r| r.commit == id)
-                .cloned()
-                .collect(),
-        ))
+        Ok(st.full_commit(repo, id))
+    }
+
+    async fn commits_by_prefix(
+        &self,
+        repo: &RepoId,
+        prefix: &str,
+        limit: usize,
+    ) -> Result<Vec<ObjectId>> {
+        let st = self.state.lock().unwrap();
+        Ok(st
+            .commits
+            .get(repo)
+            .into_iter()
+            .flatten()
+            .filter(|c| c.id.to_hex().starts_with(prefix))
+            .take(limit)
+            .map(|c| c.id)
+            .collect())
     }
 
     async fn commits(
         &self,
         repo: &RepoId,
-        before: Option<u64>,
+        before: Option<&ObjectId>,
         limit: usize,
     ) -> Result<Vec<Commit>> {
         let st = self.state.lock().unwrap();
-        let mut by_commit: std::collections::BTreeMap<u64, Vec<Revision>> = Default::default();
-        for rev in st
-            .revisions
+        let all = st.commits.get(repo).map_or(&[][..], Vec::as_slice);
+        let end = match before {
+            Some(b) => all.iter().position(|c| &c.id == b).unwrap_or(0),
+            None => all.len(),
+        };
+        Ok(all[..end]
             .iter()
-            .filter(|((r, _), _)| r == repo)
-            .flat_map(|(_, revs)| revs)
-            .filter(|r| before.is_none_or(|b| r.commit < b))
-        {
-            by_commit.entry(rev.commit).or_default().push(rev.clone());
-        }
-        Ok(by_commit
-            .into_values()
             .rev()
             .take(limit)
-            .filter_map(Commit::from_revisions)
+            .filter_map(|c| st.full_commit(repo, &c.id))
             .collect())
     }
 
-    async fn snapshot(&self, repo: &RepoId, commit: u64) -> Result<Vec<Revision>> {
+    async fn get_tree(&self, repo: &RepoId, id: &ObjectId) -> Result<Option<Vec<u8>>> {
         let st = self.state.lock().unwrap();
+        Ok(st.trees.get(&(repo.clone(), *id)).cloned())
+    }
+
+    async fn snapshot(&self, repo: &RepoId, commit: &ObjectId) -> Result<Vec<Revision>> {
+        let st = self.state.lock().unwrap();
+        let mainline = st.commits.get(repo).map_or(&[][..], Vec::as_slice);
+        let position: HashMap<&ObjectId, usize> = mainline
+            .iter()
+            .enumerate()
+            .map(|(i, c)| (&c.id, i))
+            .collect();
+        let Some(&at) = position.get(commit) else {
+            return Ok(Vec::new());
+        };
         let mut out: Vec<Revision> = st
             .revisions
             .iter()
             .filter(|((r, _), _)| r == repo)
-            .filter_map(|(_, revs)| revs.iter().rev().find(|r| r.commit <= commit).cloned())
+            .filter_map(|(_, revs)| {
+                revs.iter()
+                    .rev()
+                    .find(|r| position.get(&r.commit).is_some_and(|&p| p <= at))
+                    .cloned()
+            })
             .collect();
         out.sort_by(|a, b| a.path.cmp(&b.path));
         Ok(out)
@@ -583,6 +640,7 @@ impl MetadataStore for MemoryMetadataStore {
         st.revisions.retain(|(r, _), _| r != id);
         st.sizes.retain(|(r, _), _| r != id);
         st.commits.remove(id);
+        st.trees.retain(|(r, _), _| r != id);
         Ok(st.repos.remove(id).is_some())
     }
 

@@ -1,7 +1,10 @@
 //! Hashes of revisions and audit events and their verification; the encoding is in `pyn-hash`.
 
 use chrono::{DateTime, Utc};
-use pyn_hash::{AuditFields, RevisionFields, audit_hash, revision_hash};
+use pyn_hash::{
+    AuditFields, RevisionFields, RevisionV2Fields, audit_hash, revision_hash, revision_hash_v2,
+};
+use pyn_object::ObjectId;
 
 use crate::audit::{AuditEvent, AuditScope, NewAuditEvent};
 use crate::error::{PynError, Result};
@@ -12,36 +15,74 @@ fn micros(at: DateTime<Utc>) -> i64 {
 }
 
 impl NewRevision {
-    /// The hash this revision gets when appended after `previous`.
-    pub fn hash(&self, previous: Option<&RevisionHash>) -> RevisionHash {
-        RevisionHash::new(revision_hash(&RevisionFields {
-            path: self.path.as_str(),
-            content: &self.content.to_hex(),
-            previous: previous.map(RevisionHash::as_str),
-            author: self.author.as_str(),
-            created_micros: micros(self.created_at),
-            message: &self.message,
-            restored_from: self.restored_from.map(|r| r.0),
-        }))
+    /// The revision this becomes as revision `id` of its path after `previous`, in `commit`; always the v2 encoding.
+    pub fn create(
+        self,
+        id: RevisionId,
+        previous: Option<RevisionHash>,
+        commit: ObjectId,
+    ) -> Revision {
+        let mut rev = Revision {
+            id,
+            path: self.path,
+            content: self.content,
+            legacy_content: None,
+            author: self.author,
+            person: Some(self.person),
+            message: self.message,
+            created_at: self.created_at,
+            restored_from: self.restored_from,
+            mode: Some(self.mode),
+            file_mode: self.file_mode,
+            changeset: self.changeset,
+            commit,
+            hash: RevisionHash::new(""),
+            previous,
+        };
+        rev.hash = rev.expected_hash();
+        rev
     }
 }
 
 impl Revision {
-    /// The hash its own fields and `previous` give; equals `hash` unless the record was altered.
+    /// The hash its own fields and `previous` give, by the encoding its version uses; equals `hash` unless the
+    /// record was altered.
     pub fn expected_hash(&self) -> RevisionHash {
-        let content = self
-            .legacy_content
-            .clone()
-            .unwrap_or_else(|| self.content.to_hex());
-        RevisionHash::new(revision_hash(&RevisionFields {
-            path: self.path.as_str(),
-            content: &content,
-            previous: self.previous.as_ref().map(RevisionHash::as_str),
-            author: self.author.as_str(),
-            created_micros: micros(self.created_at),
-            message: &self.message,
-            restored_from: self.restored_from.map(|r| r.0),
-        }))
+        let previous = self.previous.as_ref().map(RevisionHash::as_str);
+        let hash = match &self.person {
+            Some(person) => revision_hash_v2(&RevisionV2Fields {
+                path: self.path.as_str(),
+                file_mode: self.file_mode.as_str(),
+                blob_algorithm: self.content.algorithm().name(),
+                blob_id: &self.content.to_hex(),
+                previous,
+                user: self.author.as_str(),
+                author_name: &person.name,
+                author_email: &person.email,
+                created_micros: micros(self.created_at),
+                author_offset_minutes: person.offset_minutes,
+                message: &self.message,
+                restored_from: self.restored_from.map(|r| r.0),
+                commit_algorithm: self.commit.algorithm().name(),
+                commit_id: &self.commit.to_hex(),
+            }),
+            None => {
+                let content = self
+                    .legacy_content
+                    .clone()
+                    .unwrap_or_else(|| self.content.to_hex());
+                revision_hash(&RevisionFields {
+                    path: self.path.as_str(),
+                    content: &content,
+                    previous,
+                    author: self.author.as_str(),
+                    created_micros: micros(self.created_at),
+                    message: &self.message,
+                    restored_from: self.restored_from.map(|r| r.0),
+                })
+            }
+        };
+        RevisionHash::new(hash)
     }
 
     pub fn verify(&self) -> Result<()> {
@@ -63,6 +104,8 @@ pub enum BreakKind {
     Hash,
     /// `previous` is not the hash of the record before it, or the first record has one.
     Link,
+    /// A commit's tree is not the tree of the repository state it names.
+    Tree,
 }
 
 impl BreakKind {
@@ -70,6 +113,7 @@ impl BreakKind {
         match self {
             Self::Hash => "hash_mismatch",
             Self::Link => "broken_link",
+            Self::Tree => "tree_mismatch",
         }
     }
 }
@@ -163,6 +207,7 @@ pub struct Problem {
     pub path: Option<RepoPath>,
     pub revision: Option<RevisionId>,
     pub event: Option<i64>,
+    pub commit: Option<ObjectId>,
 }
 
 /// The result of verifying a path, or a repository's revisions and audit log. `audit_events` is `None` when the log was not checked.
@@ -170,6 +215,7 @@ pub struct Problem {
 pub struct VerifyReport {
     pub paths: u64,
     pub revisions: u64,
+    pub commits: u64,
     pub audit_events: Option<u64>,
     pub problems: Vec<Problem>,
 }

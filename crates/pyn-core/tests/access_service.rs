@@ -386,6 +386,7 @@ async fn role_definitions_need_a_role_in_the_repository() {
     let outsider = Principal {
         user: user("x"),
         permissions: perms(&[Read]),
+        email: None,
     };
     assert!(matches!(
         w.svc.role_definitions(&outsider, &w.repo, "a/game").await,

@@ -785,10 +785,15 @@ impl AccessService {
         Ok(self.store.role_definitions(repo).await?.get(role).clone())
     }
 
+    async fn account_email(&self, user: &UserId) -> Result<Option<String>> {
+        Ok(self.store.account(user).await?.and_then(|a| a.email))
+    }
+
     pub async fn principal(&self, repo: &RepoId, user: &UserId) -> Result<Principal> {
         Ok(Principal {
             user: user.clone(),
             permissions: self.role_permissions(repo, user).await?,
+            email: self.account_email(user).await?,
         })
     }
 
@@ -852,6 +857,7 @@ impl AccessService {
             Credential::Service(_) => Ok(Principal {
                 user: who.user.clone(),
                 permissions: BTreeSet::new(),
+                email: None,
             }),
             Credential::Token(record) => {
                 if !record.repos.is_empty() && !record.repos.contains(repo) {
@@ -861,6 +867,7 @@ impl AccessService {
                 Ok(Principal {
                     user: who.user.clone(),
                     permissions: record.permissions.intersection(&role).copied().collect(),
+                    email: self.account_email(&who.user).await?,
                 })
             }
         }

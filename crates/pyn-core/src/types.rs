@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{PynError, Result};
 use crate::rules::Mode;
-use pyn_object::ObjectId;
+use pyn_object::{FileMode, ObjectId};
 
 macro_rules! string_id {
     ($(#[$m:meta])* $name:ident) => {
@@ -92,6 +92,46 @@ impl std::fmt::Display for RevisionId {
     }
 }
 
+/// A commit's author or committer as git records it, apart from the time: the commit's own time applies.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Person {
+    pub name: String,
+    pub email: String,
+    /// Minutes east of UTC.
+    pub offset_minutes: i32,
+}
+
+impl Person {
+    /// Strips the characters git's identity line cannot hold; an empty name becomes `unknown`.
+    pub fn new(name: &str, email: &str, offset_minutes: i32) -> Self {
+        let clean = |s: &str| {
+            s.chars()
+                .filter(|c| !matches!(c, '<' | '>' | '\n' | '\0'))
+                .collect::<String>()
+                .trim()
+                .to_string()
+        };
+        let name = clean(name);
+        Self {
+            name: if name.is_empty() {
+                "unknown".to_string()
+            } else {
+                name
+            },
+            email: clean(email),
+            offset_minutes,
+        }
+    }
+
+    /// The account's name and email, UTC; the `.invalid` placeholder stands in for an account without an email.
+    pub fn for_user(user: &UserId, email: Option<&str>) -> Self {
+        match email {
+            Some(e) => Self::new(user.as_str(), e, 0),
+            None => Self::new(user.as_str(), &format!("{user}@pyn.invalid"), 0),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Revision {
     pub id: RevisionId,
@@ -101,55 +141,52 @@ pub struct Revision {
     /// The content string the v1 hash covers, when it is not the blob id: revisions migrated from SHA-256 content hashes.
     pub legacy_content: Option<String>,
     pub author: UserId,
+    /// The structured author the v2 hash covers; `None` for a v1 revision.
+    pub person: Option<Person>,
     pub message: String,
     pub created_at: DateTime<Utc>,
     /// Set when this revision restores the content of an earlier one.
     pub restored_from: Option<RevisionId>,
     /// The path's mode when the revision was made; `None` for revisions that predate recording.
     pub mode: Option<Mode>,
+    /// Git's file mode of the content: regular, executable or symlink.
+    pub file_mode: FileMode,
     /// Shared by the revisions a changeset checked in together; `None` for a single-path checkin.
     pub changeset: Option<String>,
-    /// The repository-wide commit this revision belongs to; see `Commit`.
-    pub commit: u64,
+    /// The id of the commit this revision belongs to.
+    pub commit: ObjectId,
     pub hash: RevisionHash,
     /// Hash of the path's previous revision; `None` for the first.
     pub previous: Option<RevisionHash>,
 }
 
-/// One atomic write to the repository: a single checkin or a whole changeset. Commits are numbered 1, 2, ... in order,
-/// and the repository's state at commit N is the newest revision of every path made at or before N.
+/// One atomic write: a single checkin or a whole changeset, recorded as a git commit on the single mainline. Its id is
+/// the git commit id over `tree`, `parents`, the author and committer and the message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Commit {
-    pub id: u64,
-    pub author: UserId,
-    pub message: String,
+    pub id: ObjectId,
+    pub parents: Vec<ObjectId>,
+    /// The root git tree of the repository as of this commit.
+    pub tree: ObjectId,
+    pub author: Person,
+    pub committer: Person,
+    /// Whole seconds; the author and committer time.
     pub created_at: DateTime<Utc>,
+    pub message: String,
+    /// The commit's `gpgsig` header, if it is signed.
+    pub signature: Option<String>,
     pub changeset: Option<String>,
     /// The revisions it made, ordered by path.
     pub revisions: Vec<Revision>,
-}
-
-impl Commit {
-    /// Groups revisions of one commit; `None` if there are none.
-    pub fn from_revisions(mut revisions: Vec<Revision>) -> Option<Self> {
-        revisions.sort_by(|a, b| a.path.cmp(&b.path));
-        let first = revisions.first()?;
-        Some(Self {
-            id: first.commit,
-            author: first.author.clone(),
-            message: first.message.clone(),
-            created_at: first.created_at,
-            changeset: first.changeset.clone(),
-            revisions,
-        })
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewRevision {
     pub path: RepoPath,
     pub content: ObjectId,
+    pub file_mode: FileMode,
     pub author: UserId,
+    pub person: Person,
     pub message: String,
     pub created_at: DateTime<Utc>,
     pub restored_from: Option<RevisionId>,

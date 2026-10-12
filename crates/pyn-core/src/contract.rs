@@ -23,9 +23,9 @@ use crate::{
     Repositories,
 };
 use crate::{
-    AuditAction, AuditQuery, AuditScope, AuditStore, ChangeEntry, ManualClock, MetadataStore,
-    ObjectId, ObjectStore, PynError, RepoId, RepoPath, RepoRecord, RepoService, RepoSettings,
-    RepoUpdate, RevisionId, Rules, ServiceConfig, UserId, Visibility,
+    AuditAction, AuditQuery, AuditScope, AuditStore, ChangeEntry, FileMode, ManualClock,
+    MetadataStore, ObjectId, ObjectStore, PynError, RepoId, RepoPath, RepoRecord, RepoService,
+    RepoSettings, RepoUpdate, RevisionId, Rules, ServiceConfig, UserId, Visibility,
 };
 
 pub type Store = Arc<dyn MetadataStore>;
@@ -556,11 +556,13 @@ pub async fn a_changeset_chains_each_of_its_paths(store: Store) {
         ChangeEntry {
             path: a.clone(),
             content: blob(&h, "two").await,
+            file_mode: FileMode::Regular,
             base: Some(RevisionId(1)),
         },
         ChangeEntry {
             path: b.clone(),
             content: blob(&h, "new").await,
+            file_mode: FileMode::Regular,
             base: None,
         },
     ];
@@ -1663,18 +1665,19 @@ fn entry(p: &RepoPath, content: &ObjectId, base: Option<u64>) -> ChangeEntry {
     ChangeEntry {
         path: p.clone(),
         content: *content,
+        file_mode: FileMode::Regular,
         base: base.map(RevisionId),
     }
 }
 
-pub async fn every_write_is_one_numbered_commit_and_a_changeset_is_one(store: Store) {
+pub async fn every_write_is_one_commit_and_a_changeset_is_one(store: Store) {
     let h = harness(store);
     let (a, b, map) = (
         path("Source/a.cpp"),
         path("Source/b.cpp"),
         path("Content/a.umap"),
     );
-    assert_eq!(h.svc.head_commit().await.unwrap(), 0);
+    assert_eq!(h.svc.head_commit().await.unwrap(), None);
     let (c1, c2) = (blob(&h, "one").await, blob(&h, "two").await);
     let first = h
         .svc
@@ -1696,33 +1699,186 @@ pub async fn every_write_is_one_numbered_commit_and_a_changeset_is_one(store: St
         .checkin(&who("alice"), &a, c2, Some(RevisionId(1)), "third".into())
         .await
         .unwrap();
-    assert_eq!(first.commit, 1);
-    assert_eq!((both[0].commit, both[1].commit), (2, 2));
-    assert_eq!(third.commit, 3);
-    assert_eq!(h.svc.head_commit().await.unwrap(), 3);
+    assert_eq!(both[0].commit, both[1].commit);
+    let ids = [first.commit, both[0].commit, third.commit];
+    assert_eq!(
+        ids.iter().collect::<std::collections::HashSet<_>>().len(),
+        3
+    );
+    assert_eq!(h.svc.head_commit().await.unwrap(), Some(third.commit));
 
-    let pair = h.svc.get_commit(2).await.unwrap();
-    assert_eq!((pair.id, pair.message.as_str()), (2, "pair"));
-    assert_eq!(pair.author, user("bob"));
+    let pair = h.svc.get_commit(&both[0].commit).await.unwrap();
+    assert_eq!(pair.message, "pair");
+    assert_eq!(pair.author.name, "bob");
+    assert_eq!(pair.parents, vec![first.commit]);
     assert_eq!(pair.changeset, both[0].changeset);
     let paths: Vec<_> = pair.revisions.iter().map(|r| r.path.clone()).collect();
     assert_eq!(paths, vec![map, b]);
+    let root = h.svc.get_commit(&first.commit).await.unwrap();
+    assert!(root.parents.is_empty());
 
     let page = h.svc.commits(None, Some(2)).await.unwrap();
-    let ids: Vec<u64> = page.commits.iter().map(|c| c.id).collect();
-    assert_eq!((ids, page.next), (vec![3, 2], Some(2)));
-    let rest = h.svc.commits(page.next, Some(2)).await.unwrap();
-    let ids: Vec<u64> = rest.commits.iter().map(|c| c.id).collect();
-    assert_eq!((ids, rest.next), (vec![1], None));
-    let err = h.svc.get_commit(4).await.unwrap_err();
-    assert!(matches!(err, PynError::CommitNotFound(4)), "{err}");
+    let got: Vec<_> = page.commits.iter().map(|c| c.id).collect();
+    assert_eq!((got, page.next), (vec![ids[2], ids[1]], Some(ids[1])));
+    let rest = h.svc.commits(page.next.as_ref(), Some(2)).await.unwrap();
+    let got: Vec<_> = rest.commits.iter().map(|c| c.id).collect();
+    assert_eq!((got, rest.next), (vec![ids[0]], None));
+
+    let unknown = ObjectId::from_hex(crate::REPO_ALGORITHM, &"0".repeat(64)).unwrap();
+    let err = h.svc.get_commit(&unknown).await.unwrap_err();
+    assert!(matches!(err, PynError::CommitNotFound(_)), "{err}");
 }
 
-pub async fn a_rejected_write_does_not_use_up_a_commit_number(store: Store) {
+pub async fn a_commit_is_a_real_git_commit_over_a_git_tree(store: Store) {
+    use pyn_object::{Algorithm, Kind, TreeEntry, encode_tree, hash_object};
+    let h = harness(store);
+    let (src, nested) = (path("Source/a.cpp"), path("Source/deep/b.cpp"));
+    let (c1, c2) = (blob(&h, "one").await, blob(&h, "two").await);
+    h.svc
+        .checkin_as(
+            &who("alice"),
+            &src,
+            c1,
+            FileMode::Executable,
+            None,
+            "one".into(),
+        )
+        .await
+        .unwrap();
+    let rev = h
+        .svc
+        .checkin_as(
+            &who("alice"),
+            &nested,
+            c2,
+            FileMode::Symlink,
+            None,
+            "two".into(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(rev.file_mode, FileMode::Symlink);
+
+    let tree = |entries: Vec<TreeEntry>| {
+        let body = encode_tree(&entries).unwrap();
+        hash_object(Algorithm::Sha256, Kind::Tree, &body).unwrap()
+    };
+    let deep = tree(vec![TreeEntry {
+        mode: FileMode::Symlink,
+        name: b"b.cpp".to_vec(),
+        id: c2,
+    }]);
+    let source = tree(vec![
+        TreeEntry {
+            mode: FileMode::Executable,
+            name: b"a.cpp".to_vec(),
+            id: c1,
+        },
+        TreeEntry {
+            mode: FileMode::Tree,
+            name: b"deep".to_vec(),
+            id: deep,
+        },
+    ]);
+    let root = tree(vec![TreeEntry {
+        mode: FileMode::Tree,
+        name: b"Source".to_vec(),
+        id: source,
+    }]);
+
+    let commit = h.svc.get_commit(&rev.commit).await.unwrap();
+    assert_eq!(commit.tree, root);
+    let first = commit.parents[0];
+    let by_hand = pyn_object::Commit {
+        tree: root,
+        parents: vec![first],
+        author: pyn_object::Signature {
+            name: b"alice".to_vec(),
+            email: b"alice@pyn.invalid".to_vec(),
+            time: commit.created_at.timestamp(),
+            offset_minutes: 0,
+        },
+        committer: pyn_object::Signature {
+            name: b"alice".to_vec(),
+            email: b"alice@pyn.invalid".to_vec(),
+            time: commit.created_at.timestamp(),
+            offset_minutes: 0,
+        },
+        extra_headers: vec![],
+        message: b"two\n".to_vec(),
+    };
+    assert_eq!(by_hand.id(Algorithm::Sha256).unwrap(), commit.id);
+    commit.verify().unwrap();
+    assert_eq!(rev.person.as_ref().unwrap().email, "alice@pyn.invalid");
+    let report = h.svc.verify(None, false).await.unwrap();
+    assert!(report.problems.is_empty(), "{report:?}");
+    assert_eq!(report.commits, 2);
+}
+
+pub async fn a_file_cannot_become_a_folder_or_back(store: Store) {
+    let h = harness(store);
+    let c = blob(&h, "x").await;
+    h.svc
+        .checkin(&who("alice"), &path("Source/a"), c, None, "file".into())
+        .await
+        .unwrap();
+    let err = h
+        .svc
+        .checkin(&who("alice"), &path("Source/a/b"), c, None, "folder".into())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::InvalidRequest(_)), "{err}");
+    assert!(h.svc.head(&path("Source/a/b")).await.unwrap().is_none());
+    let err = h
+        .svc
+        .checkin(&who("alice"), &path("Source"), c, None, "file".into())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::InvalidRequest(_)), "{err}");
+}
+
+pub async fn a_commit_is_found_by_a_unique_prefix(store: Store) {
+    let h = harness(store);
+    let c = blob(&h, "x").await;
+    let mut ids = Vec::new();
+    for i in 0..40 {
+        let p = path(&format!("Source/f{i}.cpp"));
+        let r = h
+            .svc
+            .checkin(&who("alice"), &p, c, None, format!("m{i}"))
+            .await
+            .unwrap();
+        ids.push(r.commit);
+    }
+    for id in &ids {
+        let hex = id.to_hex();
+        assert_eq!(h.svc.resolve_commit(&hex).await.unwrap(), *id);
+        assert_eq!(h.svc.resolve_commit(&hex[..40]).await.unwrap(), *id);
+    }
+    let err = h.svc.resolve_commit("").await.unwrap_err();
+    assert!(matches!(err, PynError::CommitNotFound(_)), "{err}");
+    let err = h.svc.resolve_commit("abc").await.unwrap_err();
+    assert!(matches!(err, PynError::CommitNotFound(_)), "{err}");
+    let err = h.svc.resolve_commit("zzzz").await.unwrap_err();
+    assert!(matches!(err, PynError::CommitNotFound(_)), "{err}");
+    let shared = ids.iter().map(|i| i.to_hex()[..1].to_string()).find(|p| {
+        ids.iter()
+            .filter(|i| i.to_hex().starts_with(p.as_str()))
+            .count()
+            > 1
+    });
+    if let Some(p) = shared.filter(|p| p.len() >= 4) {
+        let err = h.svc.resolve_commit(&p).await.unwrap_err();
+        assert!(matches!(err, PynError::AmbiguousCommit(_)), "{err}");
+    }
+}
+
+pub async fn a_rejected_write_makes_no_commit(store: Store) {
     let h = harness(store);
     let (a, b) = (path("Source/a.cpp"), path("Source/b.cpp"));
     let c = blob(&h, "v1").await;
-    h.svc
+    let one = h
+        .svc
         .checkin(&who("alice"), &a, c, None, "one".into())
         .await
         .unwrap();
@@ -1738,19 +1894,21 @@ pub async fn a_rejected_write_does_not_use_up_a_commit_number(store: Store) {
         )
         .await
         .unwrap_err();
-    assert_eq!(h.svc.head_commit().await.unwrap(), 1);
+    assert_eq!(h.svc.head_commit().await.unwrap(), Some(one.commit));
+    assert_eq!(h.svc.commits(None, None).await.unwrap().commits.len(), 1);
     let next = h
         .svc
         .checkin(&who("alice"), &b, c, None, "two".into())
         .await
         .unwrap();
-    assert_eq!(next.commit, 2);
+    let commit = h.svc.get_commit(&next.commit).await.unwrap();
+    assert_eq!(commit.parents, vec![one.commit]);
 }
 
 pub async fn a_snapshot_is_every_path_as_of_a_commit(store: Store) {
     let h = harness(store);
     let empty = h.svc.snapshot(None).await.unwrap();
-    assert_eq!((empty.commit, empty.entries.len()), (0, 0));
+    assert_eq!((empty.commit, empty.entries.len()), (None, 0));
 
     let (src, map) = (path("Source/a.cpp"), path("Content/a.umap"));
     let (c1, c2, c3) = (
@@ -1758,35 +1916,48 @@ pub async fn a_snapshot_is_every_path_as_of_a_commit(store: Store) {
         blob(&h, "two").await,
         blob(&h, "three").await,
     );
-    h.svc
-        .checkin(&who("alice"), &src, c1, None, "src".into())
-        .await
-        .unwrap();
+    let mut commits = Vec::new();
+    commits.push(
+        h.svc
+            .checkin(&who("alice"), &src, c1, None, "src".into())
+            .await
+            .unwrap()
+            .commit,
+    );
     h.svc.checkout(&map, &user("alice"), None).await.unwrap();
-    h.svc
-        .checkin(&who("alice"), &map, c1, None, "map".into())
-        .await
-        .unwrap();
-    h.svc
-        .checkin(&who("alice"), &src, c2, Some(RevisionId(1)), "src 2".into())
-        .await
-        .unwrap();
+    commits.push(
+        h.svc
+            .checkin(&who("alice"), &map, c1, None, "map".into())
+            .await
+            .unwrap()
+            .commit,
+    );
+    commits.push(
+        h.svc
+            .checkin(&who("alice"), &src, c2, Some(RevisionId(1)), "src 2".into())
+            .await
+            .unwrap()
+            .commit,
+    );
     h.svc
         .checkout(&map, &user("alice"), Some(RevisionId(1)))
         .await
         .unwrap();
-    h.svc
-        .checkin(&who("alice"), &map, c3, Some(RevisionId(1)), "map 2".into())
-        .await
-        .unwrap();
+    commits.push(
+        h.svc
+            .checkin(&who("alice"), &map, c3, Some(RevisionId(1)), "map 2".into())
+            .await
+            .unwrap()
+            .commit,
+    );
 
-    let one = h.svc.snapshot(Some(1)).await.unwrap();
-    assert_eq!(one.commit, 1);
+    let one = h.svc.snapshot(Some(&commits[0])).await.unwrap();
+    assert_eq!(one.commit, Some(commits[0]));
     assert_eq!(one.entries.len(), 1);
     assert_eq!(one.entries[0].path, src);
     assert_eq!(one.entries[0].revision.content, c1);
 
-    let three = h.svc.snapshot(Some(3)).await.unwrap();
+    let three = h.svc.snapshot(Some(&commits[2])).await.unwrap();
     let got: Vec<_> = three
         .entries
         .iter()
@@ -1801,7 +1972,7 @@ pub async fn a_snapshot_is_every_path_as_of_a_commit(store: Store) {
     );
 
     let head = h.svc.snapshot(None).await.unwrap();
-    assert_eq!(head.commit, 4);
+    assert_eq!(head.commit, Some(commits[3]));
     let by_path: Vec<_> = head
         .entries
         .iter()
@@ -1810,8 +1981,9 @@ pub async fn a_snapshot_is_every_path_as_of_a_commit(store: Store) {
     assert_eq!(by_path, vec![(map, RevisionId(2)), (src, RevisionId(2))]);
     assert_eq!(head.entries[0].revision.content, c3);
 
-    let err = h.svc.snapshot(Some(5)).await.unwrap_err();
-    assert!(matches!(err, PynError::CommitNotFound(5)), "{err}");
+    let unknown = ObjectId::from_hex(crate::REPO_ALGORITHM, &"1".repeat(64)).unwrap();
+    let err = h.svc.snapshot(Some(&unknown)).await.unwrap_err();
+    assert!(matches!(err, PynError::CommitNotFound(_)), "{err}");
 }
 
 pub async fn a_changeset_lands_every_path_as_one_commit(store: Store) {
@@ -2126,8 +2298,11 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; repository_creation_stops_at_the_owners_cap);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; racing_repository_creations_cannot_exceed_the_cap);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; usage_counts_distinct_content_once_per_repository);
-        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; every_write_is_one_numbered_commit_and_a_changeset_is_one);
-        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_rejected_write_does_not_use_up_a_commit_number);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; every_write_is_one_commit_and_a_changeset_is_one);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_rejected_write_makes_no_commit);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_commit_is_a_real_git_commit_over_a_git_tree);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_file_cannot_become_a_folder_or_back);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_commit_is_found_by_a_unique_prefix);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_snapshot_is_every_path_as_of_a_commit);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_changeset_lands_every_path_as_one_commit);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_changeset_with_a_stale_path_applies_nothing);
@@ -2664,24 +2839,45 @@ impl MetadataStore for HookedMeta {
             .await
     }
 
-    async fn head_commit(&self, repo: &RepoId) -> crate::Result<u64> {
+    async fn head_commit(&self, repo: &RepoId) -> crate::Result<Option<ObjectId>> {
         self.inner.head_commit(repo).await
     }
 
-    async fn get_commit(&self, repo: &RepoId, id: u64) -> crate::Result<Option<crate::Commit>> {
+    async fn get_commit(
+        &self,
+        repo: &RepoId,
+        id: &ObjectId,
+    ) -> crate::Result<Option<crate::Commit>> {
         self.inner.get_commit(repo, id).await
+    }
+
+    async fn commits_by_prefix(
+        &self,
+        repo: &RepoId,
+        prefix: &str,
+        limit: usize,
+    ) -> crate::Result<Vec<ObjectId>> {
+        self.inner.commits_by_prefix(repo, prefix, limit).await
     }
 
     async fn commits(
         &self,
         repo: &RepoId,
-        before: Option<u64>,
+        before: Option<&ObjectId>,
         limit: usize,
     ) -> crate::Result<Vec<crate::Commit>> {
         self.inner.commits(repo, before, limit).await
     }
 
-    async fn snapshot(&self, repo: &RepoId, commit: u64) -> crate::Result<Vec<crate::Revision>> {
+    async fn get_tree(&self, repo: &RepoId, id: &ObjectId) -> crate::Result<Option<Vec<u8>>> {
+        self.inner.get_tree(repo, id).await
+    }
+
+    async fn snapshot(
+        &self,
+        repo: &RepoId,
+        commit: &ObjectId,
+    ) -> crate::Result<Vec<crate::Revision>> {
         self.inner.snapshot(repo, commit).await
     }
 
@@ -3558,6 +3754,7 @@ pub async fn effective_roles_resolve_across_direct_team_and_owner_grants(store: 
             Permission::Checkin,
         ]
         .into(),
+        email: None,
     };
     assert!(matches!(
         access

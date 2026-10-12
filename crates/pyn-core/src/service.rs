@@ -6,9 +6,12 @@ use chrono::Duration;
 use crate::access::{Permission, Principal};
 use crate::audit::{AuditAction, AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent};
 use crate::clock::Clock;
+use crate::commit_record::{TreeChange, tree_of};
 use crate::error::{PynError, Result};
 use crate::history::{HISTORY_DEFAULT_LIMIT, HISTORY_MAX_LIMIT, HistoryCursor, HistoryPage};
-use crate::integrity::{Problem, VerifyReport, check_events, verify_audit, verify_revisions};
+use crate::integrity::{
+    BreakKind, Problem, VerifyReport, check_events, verify_audit, verify_revisions,
+};
 use crate::limits::{StorageCap, StorageCaps};
 use crate::object::ObjectStore;
 use crate::repo::DEFAULT_MAX_LOCKS_PER_USER;
@@ -18,7 +21,17 @@ use crate::tree::{ACTIVITY_ACTIONS, DEFAULT_BRANCH, EntryKind, RepoSummary, Tree
 use crate::types::{
     ChangesetItem, Commit, Lock, NewRevision, RepoId, RepoPath, Revision, RevisionId, UserId,
 };
-use pyn_object::ObjectId;
+use pyn_object::{FileMode, ObjectId};
+
+fn check_file_mode(mode: FileMode) -> Result<()> {
+    match mode {
+        FileMode::Regular | FileMode::Executable | FileMode::Symlink => Ok(()),
+        other => Err(PynError::InvalidRequest(format!(
+            "file mode {} cannot be recorded for a file",
+            other.as_str()
+        ))),
+    }
+}
 
 fn changeset_id() -> Result<String> {
     let mut buf = [0u8; 16];
@@ -40,10 +53,11 @@ pub struct FileEntry {
 pub struct ChangeEntry {
     pub path: RepoPath,
     pub content: ObjectId,
+    pub file_mode: FileMode,
     pub base: Option<RevisionId>,
 }
 
-/// One path of a snapshot: the revision the commit points at, with the mode it had then.
+/// One path of a snapshot: the revision the commit points at, with the mode `.pyn/pyn.toml` gave it at that commit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SnapshotEntry {
     pub path: RepoPath,
@@ -54,8 +68,8 @@ pub struct SnapshotEntry {
 /// The whole repository as of one commit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Snapshot {
-    /// The commit number; 0 for a repository with no commits.
-    pub commit: u64,
+    /// The commit the entries are as of; `None` for a repository with no commits.
+    pub commit: Option<ObjectId>,
     /// Ordered by path.
     pub entries: Vec<SnapshotEntry>,
 }
@@ -65,7 +79,7 @@ pub struct Snapshot {
 pub struct CommitPage {
     pub commits: Vec<Commit>,
     /// Pass back as `before` for the next, older page; `None` on the last page.
-    pub next: Option<u64>,
+    pub next: Option<ObjectId>,
 }
 
 #[derive(Debug, Clone)]
@@ -109,6 +123,8 @@ pub struct PolicyPreview {
 /// Server-side policy for one repository. Enforcement lives here and in the `MetadataStore` primitives.
 pub struct RepoService {
     repo: RepoId,
+    /// The rules in force until the repository has a policy file.
+    fallback: Arc<Rules>,
     applied: RwLock<Applied>,
     meta: Arc<dyn MetadataStore>,
     objects: Arc<dyn ObjectStore>,
@@ -128,11 +144,13 @@ impl RepoService {
         clock: Arc<dyn Clock>,
         config: ServiceConfig,
     ) -> Self {
+        let rules = Arc::new(rules);
         Self {
             repo,
+            fallback: rules.clone(),
             applied: RwLock::new(Applied {
                 revision: None,
-                rules: Arc::new(rules),
+                rules,
             }),
             meta,
             objects,
@@ -232,11 +250,12 @@ impl RepoService {
     /// became exclusive a conversion revision of their current content, and audits each step.
     async fn policy_applied(
         &self,
-        actor: &UserId,
+        who: &Principal,
         rev: &Revision,
         old: &Rules,
         new: &Rules,
     ) -> Result<()> {
+        let actor = &who.user;
         let now = self.clock.now();
         let found = self.conversions(old, new).await?;
         for lock in &found.released_locks {
@@ -257,7 +276,7 @@ impl RepoService {
                 .await?;
         }
         for path in &found.to_exclusive {
-            let detail = match self.convert_to_exclusive(actor, path, rev, new).await? {
+            let detail = match self.convert_to_exclusive(who, path, rev, new).await? {
                 Some(conv) => format!(
                     "shared -> exclusive by policy r{}; conversion revision r{}",
                     rev.id, conv.id
@@ -282,7 +301,7 @@ impl RepoService {
     /// Retries when a concurrent checkin moves the head; `None` if the path has no revision.
     async fn convert_to_exclusive(
         &self,
-        actor: &UserId,
+        who: &Principal,
         path: &RepoPath,
         policy: &Revision,
         new: &Rules,
@@ -299,7 +318,9 @@ impl RepoService {
             let revision = NewRevision {
                 path: path.clone(),
                 content: head.content,
-                author: actor.clone(),
+                file_mode: head.file_mode,
+                author: who.user.clone(),
+                person: who.person(),
                 message: format!("Convert to exclusive: policy r{}", policy.id),
                 created_at: self.clock.now(),
                 restored_from: None,
@@ -451,6 +472,7 @@ impl RepoService {
         who: &Principal,
         path: &RepoPath,
         content: ObjectId,
+        file_mode: FileMode,
         base: Option<RevisionId>,
         message: String,
         restored_from: Option<RevisionId>,
@@ -478,7 +500,9 @@ impl RepoService {
         let revision = NewRevision {
             path: path.clone(),
             content,
+            file_mode,
             author: who.user.clone(),
+            person: who.person(),
             message,
             created_at: now,
             restored_from,
@@ -493,7 +517,7 @@ impl RepoService {
         if let Some(new) = parsed
             && let Some(old) = self.apply(rev.id, new.clone())
         {
-            self.policy_applied(&who.user, &rev, &old, &new).await?;
+            self.policy_applied(who, &rev, &old, &new).await?;
         }
         Ok(rev)
     }
@@ -508,10 +532,27 @@ impl RepoService {
         base: Option<RevisionId>,
         message: String,
     ) -> Result<Revision> {
+        self.checkin_as(who, path, content, FileMode::Regular, base, message)
+            .await
+    }
+
+    /// Like `checkin`, with the git file mode the content has: regular, executable or symlink.
+    pub async fn checkin_as(
+        &self,
+        who: &Principal,
+        path: &RepoPath,
+        content: ObjectId,
+        file_mode: FileMode,
+        base: Option<RevisionId>,
+        message: String,
+    ) -> Result<Revision> {
+        check_file_mode(file_mode)?;
         if !self.objects.exists(&content).await? {
             return Err(PynError::ObjectMissing(content.to_string()));
         }
-        let rev = self.commit(who, path, content, base, message, None).await?;
+        let rev = self
+            .commit(who, path, content, file_mode, base, message, None)
+            .await?;
         self.record(
             &who.user,
             AuditAction::Checkin,
@@ -550,6 +591,7 @@ impl RepoService {
             }
         }
         for e in &entries {
+            check_file_mode(e.file_mode)?;
             self.head(&e.path).await?;
         }
         let now = self.clock.now();
@@ -567,7 +609,9 @@ impl RepoService {
                 revision: NewRevision {
                     path: e.path,
                     content: e.content,
+                    file_mode: e.file_mode,
                     author: who.user.clone(),
+                    person: who.person(),
                     message: message.clone(),
                     created_at: now,
                     restored_from: None,
@@ -641,7 +685,15 @@ impl RepoService {
         }
         let message = message.unwrap_or_else(|| format!("Restore r{source}"));
         let rev = self
-            .commit(who, path, old.content, Some(base), message, Some(source))
+            .commit(
+                who,
+                path,
+                old.content,
+                old.file_mode,
+                Some(base),
+                message,
+                Some(source),
+            )
             .await?;
         self.record(
             &who.user,
@@ -894,8 +946,12 @@ impl RepoService {
                     path: Some(p.clone()),
                     revision: Some(id),
                     event: None,
+                    commit: None,
                 });
             }
+        }
+        if path.is_none() {
+            self.verify_commits(&mut report).await?;
         }
         if audit && path.is_none() {
             let scope = AuditScope::Repo(self.repo.clone());
@@ -925,10 +981,63 @@ impl RepoService {
                     path: None,
                     revision: None,
                     event: Some(id),
+                    commit: None,
                 });
             }
         }
         Ok(report)
+    }
+
+    /// Checks every commit's id against its fields, its parent link, and the head commit's tree against the snapshot.
+    async fn verify_commits(&self, report: &mut VerifyReport) -> Result<()> {
+        let mut all = Vec::new();
+        let mut before = None;
+        loop {
+            let page = self
+                .meta
+                .commits(&self.repo, before.as_ref(), HISTORY_MAX_LIMIT)
+                .await?;
+            let Some(last) = page.last() else { break };
+            before = Some(last.id);
+            all.extend(page);
+        }
+        all.reverse();
+        report.commits = all.len() as u64;
+        let problem = |kind, c: &Commit| Problem {
+            kind,
+            path: None,
+            revision: None,
+            event: None,
+            commit: Some(c.id),
+        };
+        let mut prior: Option<&Commit> = None;
+        for c in &all {
+            if c.expected_id()? != c.id {
+                report.problems.push(problem(BreakKind::Hash, c));
+            }
+            let linked = c.parents.first() == prior.map(|p| &p.id) && c.parents.len() <= 1;
+            if !linked {
+                report.problems.push(problem(BreakKind::Link, c));
+            }
+            prior = Some(c);
+        }
+        if let Some(head) = all.last() {
+            let files = self
+                .meta
+                .snapshot(&self.repo, &head.id)
+                .await?
+                .iter()
+                .map(|r| TreeChange {
+                    path: r.path.clone(),
+                    mode: r.file_mode,
+                    id: r.content,
+                })
+                .collect();
+            if tree_of(files)?.root != head.tree {
+                report.problems.push(problem(BreakKind::Tree, head));
+            }
+        }
+        Ok(())
     }
 
     /// Repository-wide history, newest first; `limit` defaults to 50 and is capped at 200.
@@ -953,27 +1062,51 @@ impl RepoService {
         Ok(HistoryPage { revisions, next })
     }
 
-    pub async fn head_commit(&self) -> Result<u64> {
+    pub async fn head_commit(&self) -> Result<Option<ObjectId>> {
         self.meta.head_commit(&self.repo).await
     }
 
-    pub async fn get_commit(&self, id: u64) -> Result<Commit> {
+    /// A full commit id, or an unambiguous prefix of at least `MIN_COMMIT_PREFIX` hex digits.
+    pub async fn resolve_commit(&self, spec: &str) -> Result<ObjectId> {
+        let spec = spec.trim();
+        let hex = spec.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+        if !hex || spec.len() < MIN_COMMIT_PREFIX {
+            return Err(PynError::CommitNotFound(spec.to_string()));
+        }
+        let mut found = self.meta.commits_by_prefix(&self.repo, spec, 2).await?;
+        match found.len() {
+            0 => Err(PynError::CommitNotFound(spec.to_string())),
+            1 => Ok(found.remove(0)),
+            _ => Err(PynError::AmbiguousCommit(spec.to_string())),
+        }
+    }
+
+    pub async fn get_commit(&self, id: &ObjectId) -> Result<Commit> {
         let commit = self
             .meta
             .get_commit(&self.repo, id)
             .await?
-            .ok_or(PynError::CommitNotFound(id))?;
+            .ok_or_else(|| PynError::CommitNotFound(id.to_string()))?;
+        commit.verify()?;
         commit.revisions.iter().try_for_each(Revision::verify)?;
         Ok(commit)
     }
 
     /// Commits newest first; `limit` defaults to 50 and is capped at 200.
-    pub async fn commits(&self, before: Option<u64>, limit: Option<usize>) -> Result<CommitPage> {
+    pub async fn commits(
+        &self,
+        before: Option<&ObjectId>,
+        limit: Option<usize>,
+    ) -> Result<CommitPage> {
         let limit = limit
             .unwrap_or(HISTORY_DEFAULT_LIMIT)
             .clamp(1, HISTORY_MAX_LIMIT);
+        if let Some(b) = before {
+            self.get_commit(b).await?;
+        }
         let mut commits = self.meta.commits(&self.repo, before, limit + 1).await?;
         for c in &commits {
+            c.verify()?;
             c.revisions.iter().try_for_each(Revision::verify)?;
         }
         let next = (commits.len() > limit).then(|| {
@@ -983,30 +1116,50 @@ impl RepoService {
         Ok(CommitPage { commits, next })
     }
 
-    /// Every path as of commit `id` (the newest when `None`); a path's mode is the one recorded with its revision.
-    pub async fn snapshot(&self, id: Option<u64>) -> Result<Snapshot> {
-        let id = match id {
+    /// The rules the policy file in `revisions` sets, or the fallback when it has none.
+    async fn rules_in(&self, revisions: &[Revision]) -> Arc<Rules> {
+        let Some(policy) = revisions.iter().find(|r| r.path.as_str() == POLICY_PATH) else {
+            return self.fallback.clone();
+        };
+        match self.parse_policy(&policy.content).await {
+            Ok(rules) => Arc::new(rules),
+            Err(_) => self.fallback.clone(),
+        }
+    }
+
+    /// Every path as of `commit` (the newest when `None`). A path's mode is the one `.pyn/pyn.toml` gives it at that
+    /// commit, and its revision is the newest one made in the commit or an ancestor.
+    pub async fn snapshot(&self, commit: Option<&ObjectId>) -> Result<Snapshot> {
+        let id = match commit {
             Some(id) => {
                 self.get_commit(id).await?;
-                id
+                Some(*id)
             }
             None => self.head_commit().await?,
         };
-        let mut entries = Vec::new();
-        for revision in self.meta.snapshot(&self.repo, id).await? {
-            revision.verify()?;
-            let mode = revision
-                .mode
-                .unwrap_or_else(|| self.mode_for(&revision.path));
-            entries.push(SnapshotEntry {
-                path: revision.path.clone(),
-                mode,
-                revision,
+        let Some(id) = id else {
+            return Ok(Snapshot {
+                commit: None,
+                entries: Vec::new(),
             });
-        }
+        };
+        let revisions = self.meta.snapshot(&self.repo, &id).await?;
+        revisions.iter().try_for_each(Revision::verify)?;
+        let rules = self.rules_in(&revisions).await;
+        let entries = revisions
+            .into_iter()
+            .map(|revision| SnapshotEntry {
+                path: revision.path.clone(),
+                mode: rules.mode_for(&revision.path),
+                revision,
+            })
+            .collect();
         Ok(Snapshot {
-            commit: id,
+            commit: Some(id),
             entries,
         })
     }
 }
+
+/// The shortest commit abbreviation the server resolves.
+pub const MIN_COMMIT_PREFIX: usize = 4;

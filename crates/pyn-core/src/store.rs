@@ -6,6 +6,8 @@ use crate::history::HistoryCursor;
 use crate::limits::{RepoUsage, StorageCap, Usage};
 use crate::repo::{RepoRecord, RepoUpdate};
 use crate::rules::PathFilter;
+use pyn_object::ObjectId;
+
 use crate::types::{
     ChangesetItem, Commit, Lock, NewRevision, RepoId, RepoPath, Revision, RevisionId, UserId,
 };
@@ -104,23 +106,35 @@ pub trait MetadataStore: Send + Sync {
         id: RevisionId,
     ) -> Result<Option<Revision>>;
 
-    /// The number of the newest commit; 0 for a repository with none. Every successful `commit_revision_capped` and
-    /// `commit_changeset_capped` makes the next number, atomically with its appends, and a rejected one leaves it alone.
-    async fn head_commit(&self, repo: &RepoId) -> Result<u64>;
+    /// The newest commit on the mainline; `None` for a repository with none. Every successful `commit_revision_capped`
+    /// and `commit_changeset_capped` appends exactly one commit whose parent is the previous newest, atomically with
+    /// its revisions and trees, and a rejected one leaves the mainline alone.
+    async fn head_commit(&self, repo: &RepoId) -> Result<Option<ObjectId>>;
 
-    async fn get_commit(&self, repo: &RepoId, id: u64) -> Result<Option<Commit>>;
+    async fn get_commit(&self, repo: &RepoId, id: &ObjectId) -> Result<Option<Commit>>;
 
-    /// At most `limit` commits, newest first, strictly before commit `before` when given.
+    /// Ids of at most `limit` commits whose hex starts with `prefix` (lowercase).
+    async fn commits_by_prefix(
+        &self,
+        repo: &RepoId,
+        prefix: &str,
+        limit: usize,
+    ) -> Result<Vec<ObjectId>>;
+
+    /// At most `limit` commits, newest first, strictly older than commit `before` when given.
     async fn commits(
         &self,
         repo: &RepoId,
-        before: Option<u64>,
+        before: Option<&ObjectId>,
         limit: usize,
     ) -> Result<Vec<Commit>>;
 
-    /// The repository's state as of `commit`: the newest revision at or before it of every path that has one,
-    /// ordered by path.
-    async fn snapshot(&self, repo: &RepoId, commit: u64) -> Result<Vec<Revision>>;
+    /// The body of a stored git tree, as `commit.tree` and the entries inside it name them.
+    async fn get_tree(&self, repo: &RepoId, id: &ObjectId) -> Result<Option<Vec<u8>>>;
+
+    /// The repository's state as of `commit`: for every path, its newest revision made in `commit` or an ancestor,
+    /// ordered by path. `commit` must exist.
+    async fn snapshot(&self, repo: &RepoId, commit: &ObjectId) -> Result<Vec<Revision>>;
 
     /// The head revision of every path that has one, ordered by path.
     async fn list_head_revisions(&self, repo: &RepoId) -> Result<Vec<Revision>>;

@@ -173,6 +173,7 @@ impl Repositories {
             _ if public => Some(Principal {
                 user: who.map_or_else(|| UserId::new(""), |w| w.user.clone()),
                 permissions: [Permission::Read].into(),
+                email: None,
             }),
             _ => None,
         })
