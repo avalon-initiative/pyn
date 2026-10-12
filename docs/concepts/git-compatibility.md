@@ -87,13 +87,14 @@ The commands named in decision #218.
 | `git show --oneline`, `-s`, `--format`, `<tag>`, `<object>` | none | unsupported | Usage error (`129`) or `fatal: ... is not a commit`. |
 | `git restore --source=<rev> <path>` | `pyn restore --source <rev> <path>` (or `pyn restore <path> <rev>`) | different | pyn's restore appends a new revision on the server: it needs the lock, the `restore` permission and a typed confirmation (`--yes` skips it); `-m` sets the message. The revision is required (git defaults to the index or HEAD) and `-s` is the short form of `--source`. Git's restore only edits the working tree. |
 | `git restore --staged <path>...` | `pyn restore --staged <path>...` (`-S`) | same | Puts the staged entries under the paths back to the last commit and leaves the files alone. On a git home `--source <commit>` takes the entries from that commit, as git; on a pyn server there is no commit to take them from and it is a usage error. |
-| `git restore <path>` (the work tree), `--worktree`, `-p`, `--ours`, `--theirs` | none | unsupported | Usage error (`129`), or on a git home the "not supported yet" message naming #254. |
-| `git branch`, `git switch`, `git checkout` | `pyn branch`, `pyn switch`, `pyn checkout` | supported | See [branching and merging](#branching-and-merging). On a git home they say what is needed (#254). |
-| `git merge` | `pyn merge` | supported | See [branching and merging](#branching-and-merging). On a git home it says what is needed (#254). |
+| `git restore [-s <rev>] [-S] [-W] <path>...` (the work tree) | `pyn restore ...` on a git home | git home only | Takes the paths from the index (or `--source`) into the work tree, and with `--staged --worktree` into both. See [Branches, switching and the work tree](#branches-switching-and-the-work-tree). On a pyn server `--worktree` is a usage error (`129`): a restore there makes an older revision the new head. |
+| `git restore -p`, `--ours`, `--theirs`, `--merge` | none | unsupported | Usage error (`129`). On a git home `pyn checkout --ours -- <path>` and `--theirs` take a side of an unmerged path. |
+| `git branch`, `git switch`, `git checkout` | `pyn branch`, `pyn switch`, `pyn checkout` | supported | See [branching and merging](#branching-and-merging). On a git home they work on `.git` as git does, see [Branches, switching and the work tree](#branches-switching-and-the-work-tree). |
+| `git merge` | `pyn merge` | supported | See [branching and merging](#branching-and-merging). On a git home it merges as git does, see [Merging](#merging). |
 | `git fetch`, `git pull`, `git push` | none | planned | Git-command message. Remotes and sync #237 under epic #205 (worked with #223). Today a commit goes straight to the server and `pyn update` brings the workspace forward. |
 | `git remote` | none | planned | Git-command message. #237 (also listed in #223). There is one remote today, set by `--server` and `--repo` or `pyn config set server` and `repo`. |
-| `git tag` | none | planned | Git-command message. #223. |
-| `git stash` | none | planned | Git-command message. #223. |
+| `git tag [-a] [-m <msg>] [-f] [<name> [<commit>]]`, `-d`, `-l` | `pyn tag ...` on a git home | git home only | See [Tags](#tags). On a pyn server it prints the git-command message (a server's commits are named by hash and have no tags yet, #223). |
+| `git stash [push] [-u] [-m <msg>]`, `list`, `pop`, `apply`, `drop`, `clear` | `pyn stash ...` on a git home | git home only | See [Stashing](#stashing). On a pyn server it prints the git-command message. |
 
 `pyn update [<path>...]` is the pre-branch stand-in for `fetch` plus `pull`: it fast-forwards files without local
 changes and never overwrites an edit, reporting skipped files. `--revision <commit>` moves the workspace to an older or
@@ -177,11 +178,13 @@ through its own implementation of git's object store, refs and index, with no gi
 `.pyn/pyn.toml` there is ignored: no path is exclusive, and the commands that need a pyn server refuse and name it. Going
 from a git home to a pyn server is one explicit step, `pyn convert` (issue #95), which does not exist yet.
 
-**Nothing git sees changes except what you asked for.** Tracked files, notes, hooks and line endings are never touched, and
-the work tree is only ever read. Reading commands change nothing in `.git/`. `pyn init` writes `info/exclude` once. `pyn
-add`, `pyn restore --staged` and `pyn commit -a` write the index, and `pyn commit` adds objects and moves the current branch;
-those are the changes asked for, and [staging](#staging-and-committing) lists exactly what each writes. A test asserts that
-the `.git` directory and the work tree are byte-identical before and after every reading command and after every refusal.
+**Nothing git sees changes except what you asked for.** Hooks, notes, configuration and line endings are never touched, and
+the work tree changes only where a command you ran says it does (`switch`, `checkout`, `restore`, `merge`, `stash`), never
+over local changes you have not saved unless you forced it. Reading commands change nothing in `.git/`. `pyn init` writes
+`info/exclude` once. Each writing command writes what git writes for the same command (objects, refs, reflog lines, the index,
+`ORIG_HEAD` and the `MERGE_*` files), and the sections below list exactly what. A test asserts that the `.git` directory and
+the work tree are byte-identical before and after every reading command and after every refusal, and the writing commands
+are compared with what git left on disk for the same commands.
 
 ### Which home
 
@@ -217,6 +220,10 @@ whatever the rules say.
 | `log [-n <n>] [<path or rev>]` | Git's output: commit blocks, newest first across all parents, with git's history simplification for a path. The argument is a path if one exists (now or at `HEAD`), else a revision. `--commits` is the pyn table. `--filter` fails. |
 | `files`, `ls` | `files` lists the index and `ls` lists `HEAD`'s tree. Every entry is `shared`, with no revision, lock or last change. |
 | `add`, `restore --staged`, `commit` | See [staging](#staging-and-committing). |
+| `branch`, `switch`, `checkout`, `restore` | See [Branches, switching and the work tree](#branches-switching-and-the-work-tree). |
+| `merge` | See [Merging](#merging). |
+| `tag` | See [Tags](#tags). |
+| `stash` | See [Stashing](#stashing). |
 | `init` | See above. |
 | `login`, `logout`, `register`, `password`, `key`, `token`, `user`, `org`, `team`, `repo`, `usage`, `setup`, `admin`, `whoami`, `member`, `role`, `invite` | Run as anywhere else; see [Refused commands](#refused-commands). |
 | `lock`, `unlock`, `locks`, `policy`, `audit`, `verify`, `summary` | Refuse; see [Refused commands](#refused-commands). |
@@ -235,6 +242,10 @@ Differences from git, all deliberate or not yet done:
 - `log` and `show` print no ref decorations; commit abbreviations are 7 digits and are not lengthened to stay unique;
   `diff --stat` prints `Bin` without sizes for a binary file.
 - A nested repository that the index does not track is one untracked `dir/`.
+- `merge` and `stash apply` detect no renames, write diff3 conflict markers whatever `merge.conflictStyle` says, merge only when
+  there is one merge base, and do not write `AUTO_MERGE`; `switch` and `checkout` do not warn about commits left behind by
+  leaving a detached `HEAD`, and print their own wording where git's differs (`Fast-forward` without a diffstat, the status
+  after `stash pop` in pyn's table).
 
 ### Staging and committing
 
@@ -254,7 +265,7 @@ while it was working; an existing `index.lock` stops the command.
 excludes file; a file or folder named on the command line that they hide is refused with git's message and exit status `1`
 (the other paths are still staged) unless `-f` is given, and a hidden file met while walking a folder is skipped silently. A
 nested git repository is skipped with a warning (pyn adds no submodules), and `.pyn/local_only` is never added. An unmerged
-path is refused.
+path is staged as the file is, which resolves it.
 
 **`commit`.** A linear commit on the current branch:
 
@@ -266,16 +277,143 @@ path is refused.
 4. The index becomes trees (written as loose objects), and the commit has `HEAD` as its only parent. A tree equal to the parent's
    is `nothing to commit` (exit `1`). The message gets git's whitespace cleanup: no trailing blanks, no leading or trailing blank
    lines, a final newline.
-5. The index is written (only with `-a`), then the branch ref is moved through its `.lock` file after checking `HEAD` did not move.
+5. The index is written (only with `-a`), then the branch ref is moved through its `.lock` file after checking `HEAD` did not move,
+   and the reflog lines are appended (see [Reflogs](#reflogs)).
 
-There is no reflog entry, no hook runs (a warning names hooks that exist), and no `COMMIT_EDITMSG` is written. A commit made
-this way has the object id git would give the same tree, parent, identity, dates and message. `commit <path>` is refused; `add`
-the paths and run `commit`.
+No hook runs (a warning names hooks that exist), and no `COMMIT_EDITMSG` is written. A commit made this way has the object id
+git would give the same tree, parent, identity, dates and message. `commit <path>` is refused; `add` the paths and run
+`commit`.
+
+**Finishing a merge.** While `MERGE_HEAD` exists `commit` makes a merge commit: the merged-in commits are further parents, and
+without `-m` the message is `MERGE_MSG` with its `#` comment lines removed (what git's editor flow leaves; `git commit
+--no-edit` keeps them). An empty merge is allowed, and unmerged entries are refused. `commit -a` stages a resolved file first.
+`add` of an unmerged path stages the file as it is (or its removal) and clears the conflict stages. `commit` removes `MERGE_HEAD`,
+`MERGE_MSG` and `MERGE_MODE`. A cherry-pick, revert or rebase in progress still stops it.
 
 **`restore --staged`.** Replaces the index entries under the paths with `HEAD`'s (or `--source`'s), removing entries `HEAD`
 lacks. The replaced entries carry no stat data, so git re-reads those files on its next status.
 
 **`diff --cached`.** `HEAD` (or the named commit) against the index, in the same output as `diff`.
+
+### Branches, switching and the work tree
+
+`branch`, `switch`, `checkout` and `restore` write refs, the index and the work tree as git does, through the same lock files and
+with the same reflog lines.
+
+**`branch`.** Lists (`*` marks the current branch, `+` a branch checked out in another work tree, `(HEAD detached at <id>)` first),
+`-v` adds the abbreviated commit and subject, `--list <pattern>` filters with shell patterns, `--show-current` prints the name.
+`branch <name> [<start>]` creates a branch at `HEAD` or the start point (any revision) with the reflog line `branch: Created from
+<start>`, and refuses an existing name or one that clashes with a folder of refs. `-d` deletes a branch merged into `HEAD`, `-D` any
+branch; both refuse a branch checked out in a work tree, and delete its reflog and its `[branch "<name>"]` configuration section
+(the section is rewritten as plain text, nothing else in `config` changes). `-m [<old>] <new>` renames the ref and its reflog,
+moves the configuration section and, for the current branch, points `HEAD` at the new name. `-M`, `-c`, `-f`, `-a`, `-r`, `-u` and
+`--contains` are not built (usage errors).
+
+**`switch` and `checkout`.** Move `HEAD`, the index and the work tree from `HEAD`'s tree to the target's with git's two-way merge rules:
+
+- A file that is the same in both trees keeps whatever local change it has; a file that differs is written only if the work tree
+  file and the index entry still match `HEAD`. Otherwise nothing is changed and the command prints `error: Your local changes to
+  the following files would be overwritten by checkout:` with the paths, and exits `1`.
+- A file the target adds, where an untracked file exists, stops the command the same way (`The following untracked working tree
+  files would be overwritten`). An untracked file that an ignore rule hides is overwritten, as in git. A folder holding untracked
+  files is never replaced by a file, even with `-f`.
+- `-f` makes the index and the work tree the target, local changes included; untracked files elsewhere stay.
+- Files are written with the executable bit of the tree entry; symlinks become links (files holding the target when
+  `core.symlinks=false`); `core.filemode=false` is honored when deciding what is a local change. Folders emptied by a removal are
+  removed.
+- Unmerged index entries, a merge, cherry-pick, revert or rebase in progress, and a sparse checkout refuse the command.
+- `switch -c <new> [<start>]` and `checkout -b` create the branch first (an unborn branch just points `HEAD` at the name),
+  `switch -` and `checkout -` return to the previous branch (read from the `HEAD` reflog), `--detach` and `checkout <commit>` (or a
+  tag) detach `HEAD` and print git's advice about it (`advice.detachedHead=false` turns it off). `switch <commit>` is refused
+  without `--detach`. A branch checked out in another work tree is refused.
+- After a switch that carried local changes the paths are listed as `M\t<path>`, `A\t<path>` and so on, as git does, and
+  `Switched to branch '<name>'`, `Switched to a new branch '<name>'` or `Already on '<name>'` goes to standard error.
+- The `HEAD` reflog gets `checkout: moving from <old> to <new>`; a created branch gets `branch: Created from <start>`.
+
+`checkout [<tree-ish>] -- <path>...` takes the paths from the index or the commit into the work tree (and, from a commit, into the
+index); `checkout <path>` without `--` works when nothing else has that name; `--ours` and `--theirs` write a side of an unmerged
+path and leave it unmerged. A path no tree or index entry has is `error: pathspec '<path>' did not match any file(s) known to
+git` (`1`); an unmerged path is `error: path '<path>' is unmerged`.
+
+**`restore`.** `restore <path>...` writes the index entries into the work tree; `--source <rev>` writes that commit's files instead
+and, as in git, removes tracked files the commit lacks; `--staged --worktree` does both for index and work tree, from `HEAD` unless
+`--source` is given; `--staged` alone is described under [staging](#staging-and-committing). The paths are prefixes (no globs).
+
+### Merging
+
+`merge <branch|tag|commit>` follows git's `ort` results for what pyn handles, with these steps:
+
+1. It refuses a merge, rebase, cherry-pick or revert already in progress, unmerged entries, and an unknown name (`1`). `ORIG_HEAD`
+   is written, as git does, once the target is known.
+2. If the target is an ancestor of `HEAD` it prints `Already up to date.`. If `HEAD` is an ancestor it fast-forwards, moving the
+   index and work tree with the rules above and logging `merge <name>: Fast-forward`; `--no-ff` makes a merge commit instead and
+   `--ff-only` refuses when it cannot (`Not possible to fast-forward, aborting.`, `128`).
+3. Otherwise there must be exactly one merge base. No base is `refusing to merge unrelated histories`; several (a criss-cross)
+   is refused, because pyn does not build a virtual base yet, and nothing is changed.
+4. The trees are merged path by path: a side that changed alone wins, a path both changed is merged line by line with the
+   three-way merge of `pyn-merge`, a file mode changed on one side is taken, and a binary or symlink changed on both is a
+   conflict. Renames are not detected, so a rename on one side and an edit on the other is a modify/delete conflict where git
+   would merge cleanly; a path that is a file on one side and a folder on the other is refused before anything changes.
+5. As in git's `ort` the index must equal `HEAD` and the files the merge changes must be clean (`error: Your local changes to the
+   following files would be overwritten by merge:`, exit `2`).
+6. A clean result becomes a commit with the two parents, `Merge branch '<name>'` (`tag`, `commit` and `remote-tracking branch` as
+   git words them; ` into <branch>` unless the branch is `main` or `master`; an annotated tag's message follows) or `-m`, and the
+   reflog line `merge <name>: Merge made by the 'ort' strategy.`. `--no-commit` stops before the commit with `MERGE_HEAD`,
+   `MERGE_MSG` and `MERGE_MODE` written.
+7. A conflict leaves the file with **diff3** markers (`<<<<<<< HEAD`, `||||||| <base abbreviation>`, `=======`,
+   `>>>>>>> <name>`; git's default is the two-sided style unless `merge.conflictStyle` says diff3, and pyn always writes diff3),
+   the unmerged index entries at stages 1, 2 and 3 (only the sides that exist), and `MERGE_HEAD`, `MERGE_MSG` (with git's
+   `# Conflicts:` list) and `MERGE_MODE` (`no-ff` or empty). It prints `Auto-merging <path>`, `CONFLICT (content|add/add|modify/delete):
+   ...` and `Automatic merge failed; fix conflicts and then commit the result.`, and exits `1`. git sees an ordinary conflicted merge:
+   `git status`, `git add`, `git commit` and `git merge --abort` work on it, and `pyn add`, `pyn commit` and `pyn merge --abort`
+   work on one git started.
+
+`merge --abort` is `reset --merge`: it puts back the index and the files the merge changed (and any path you staged since) and
+keeps unrelated local changes, but stops (`not uptodate`) if a path you staged has been edited again. `merge --continue` is
+`commit`. `merge --preview` needs a pyn server. `--squash` and strategies are not built. `AUTO_MERGE` is not written.
+
+### Tags
+
+`tag` lists `refs/tags` sorted (`-l <pattern>` filters). `tag <name> [<object>]` writes a lightweight tag at `HEAD` or the object
+(a tag name tags the tag object itself); `-a`, or just `-m`, writes an annotated tag: a tag object with the tagger from
+`GIT_COMMITTER_*` or `user.name` and `user.email` (an error without them), the object's type, and the cleaned message, byte for
+byte as git writes it. There is no editor, so `-a` needs `-m`. `-f` replaces a tag (`Updated tag '<name>' (was <id>)`), `-d` deletes
+(`Deleted tag '<name>' (was <id>)`). Signing (`tag.gpgsign`) is refused. Tags get no reflog unless `core.logAllRefUpdates=always`.
+
+### Stashing
+
+A stash is the commit git makes: the work tree's tracked files as the tree, with `HEAD`, a commit of the index, and with `-u` a
+parentless commit of the untracked (not ignored) files as its parents, on `refs/stash` with a reflog line `WIP on <branch>:
+<abbreviation> <subject>` (`On <branch>: <message>` with `-m`). The reflog is the list, so pyn writes `logs/refs/stash` (always, as
+git does) and keeps its chain consistent when an entry is dropped. After saving, the index and tracked files are reset to `HEAD`
+(`ORIG_HEAD` and a `reset: moving to HEAD` line follow, as git's), and with `-u` the untracked files are removed; ignored files
+stay. `list` prints `stash@{N}: <message>`. `apply` and `pop` merge the stash's changes onto the current index and work tree
+with the same tree merge as `merge` (labels `Updated upstream`, `Stash base` and `Stashed changes`), stage files the stash adds,
+leave other changes unstaged, restore untracked files that do not already exist, and print the status; `pop` then drops the entry
+(`Dropped refs/stash@{N} (<id>)`). A conflict, or local changes to a file the stash touches, keeps the stash. `drop` and `clear`
+remove entries. `stash push -- <path>`, `show`, `branch`, `create`, `store`, `--index`, `-k` and `-p` are not built.
+
+git 2.43 cannot stash in a SHA-256 repository, so the SHA-256 stash is tested for consistency, not against git.
+
+### Reflogs
+
+pyn appends the reflog lines git would, when `core.logAllRefUpdates` would: `HEAD`, `refs/heads/*`, `refs/remotes/*` and
+`refs/notes/*` get a log created (the default in a work tree, and `true`); `always` creates one for every ref; `false` creates
+none; an existing log is appended to either way. The lines are `commit: <subject>` (`commit (initial)`, `commit (merge)`),
+`checkout: moving from <old> to <new>`, `branch: Created from <start>`, `Branch: renamed <old> to <new>`, `merge <name>:
+Fast-forward` or `Merge made by the 'ort' strategy.`, `reset: moving to HEAD` and the stash message. A line names the committer
+identity (with the committer date from `GIT_COMMITTER_DATE`); with no identity configured a reflog line falls back to the login name
+so branching and switching still work. A moved branch is also logged in `HEAD`'s log, as git does.
+
+### What pyn will not write
+
+Any command that would write a work tree file stops first, and changes nothing, when git would convert what it writes: `core.autocrlf`
+set to true, `core.eol=crlf` with a `text` attribute, `eol=crlf`, a `filter` other than Git LFS, `ident` or `working-tree-encoding`
+(`.gitattributes` in the work tree, `.git/info/attributes` and the global attributes file are read; `-text`, `binary`, `eol=lf`,
+symlinks and submodules are never converted). A Git LFS filter writes the pointer file as it is, with a warning (decision #245).
+The same limit applies to `status`, which compares raw bytes (#273). Hooks are never run; one warning names the hooks that exist
+for the command (`post-checkout`, `pre-merge-commit`, `commit-msg` and the like). Sparse checkouts, submodule updates, the split
+index and `GIT_DIR` are not supported, and `rebase`, `cherry-pick`, `revert`, `--squash` and remotes are not built (#255 for remotes).
 
 ### Refused commands
 
@@ -300,10 +438,7 @@ holds for `user add`, `whoami` (it prints the account when no repository is give
 Commands a git home will gain fail with exit `1`, as the other git-only commands do, and name the issue:
 
 | Command | Needs |
-| --- | --- |
-| `restore` (work tree) | Writing the work tree, #254. |
-| `branch`, `switch`, `checkout`, `merge`, `tag`, `stash` | Writing refs, the work tree and objects, #254. |
-| `fetch`, `pull`, `push`, `remote`, `update` | Git transport, #255. |
+| --- | --- || `fetch`, `pull`, `push`, `remote`, `update` | Git transport, #255. |
 | `get` | Per-path revisions, which git has no equivalent of; not scheduled. |
 
 `pyn convert` fails with `pyn: 'convert' is not available yet` and names #95.
