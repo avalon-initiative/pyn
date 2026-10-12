@@ -19,7 +19,8 @@ Exclusive files are materialized **read-only** on disk. To edit one, a user runs
 grants a **leased lock** (8 hours by default) if nobody else holds it and the user's copy is at the current head.
 `pyn commit` (see [git compatibility](git-compatibility.md)) uploads the new content, creates the next revision and releases the lock; `pyn unlock <path>` gives the lock up without committing.
 
-`pyn commit a b c -m "message"` commits several paths as one **changeset**: one message, and every stale-base and lock
+`pyn commit a b c -m "message"` commits several paths as one **changeset**, and so does `pyn commit -m "message"` for what
+`pyn add` staged (see [staging](workspace.md#staging)): one message, and every stale-base and lock
 check must pass or nothing is applied (no revision is written and no lock is released). The revisions of a changeset share
 a changeset id, shown by the API, and each path still has its own per-path revision number. `.pyn/pyn.toml` is not part of
 a changeset; policy changes keep their own validated flow. Each revision of a changeset is hashed like any other and

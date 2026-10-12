@@ -98,7 +98,8 @@ The diff is Myers' algorithm, built in with no dependency on git (decision #30),
 
 #### Differences from git
 
-- There is no staging area, so `--cached` and `--staged` are refused with a message; `pyn diff` compares with the last update.
+- `pyn diff` compares the work tree with the staged content, as git does (the last update where nothing is staged), and `--cached` or
+  `--staged` compares the staged content with the last update; see [staging](workspace.md#staging).
 - File modes are tracked: created and deleted files print their git mode, and a changed mode prints `old mode` and `new mode`.
 - `status --revision`, `update --revision` and `log --commits` have no git equivalent; they are pyn's way to reach a past state
   until branches exist.

@@ -60,9 +60,10 @@ you are inside the workspace and take paths relative to your current directory.
   writable; `pyn commit` and `pyn unlock` make it read-only again. Shared files are always writable.
 - **No base revisions to remember.** `lock` and `commit` use the revision the workspace has, so `--base` is only for
   working outside a workspace. If the server has moved on, the command tells you to run `pyn update`.
-- **`pyn status`** prints a table of what differs, one row per file, with the columns `MODE`, `REV`, `STATE`, `LOCK` and
-  `PATH`, then a one-line summary of counts (modified, behind, new, untracked, locked by you, locked by others). `STATE`
-  is `modified` (an edit or a local deletion), `behind (head rN)`, `new` (on the server, not downloaded yet),
+- **`pyn status`** prints a table of what differs, one row per file, with the columns `MODE`, `REV`, `STAGED`, `STATE`,
+  `LOCK` and `PATH`, then a one-line summary of counts (staged, modified, behind, new, untracked, locked by you, locked by
+  others). `STAGED` is `added` or `modified` for a path in the staging index and `-` otherwise. `STATE`
+  is `modified` (an edit after what was staged, or since the last update when nothing is staged, or a local deletion), `behind (head rN)`, `new` (on the server, not downloaded yet),
   `untracked`, or `clean` for a file that is only listed because it is locked. `LOCK` shows the holder (`you` for your
   own locks) and the time left, for example `alice · 7h 59m`. A path that is locked but has no revision yet shows
   `locked, not checked in yet`; `pyn update` has nothing to fetch for it. Clean, unlocked files are left out, and a
@@ -75,8 +76,41 @@ you are inside the workspace and take paths relative to your current directory.
   followed. `pyn clone` and `pyn update` recreate both (on systems with an executable bit and symlinks), and a mode change
   alone shows as `modified` in `pyn status` and as `old mode`/`new mode` in `pyn diff`. The mode is stored with each
   revision and in `.pyn/local_only/state/files.toml` (`file_mode`).
-- **`pyn commit <path>...`** uploads the files at the given paths in the workspace as one atomic commit with one message
-  (`-m`); with several paths, all succeed or none do. Outside a workspace, one path and `--file <file>` name the upload.
+- **`pyn add`, `pyn commit`** stage changes and record them as one commit; see [Staging](#staging). **`pyn commit <path>...`** still
+  uploads the files at the given paths as one atomic commit with one message (`-m`), whatever is staged; with several paths,
+  all succeed or none do. Outside a workspace, one path and `--file <file>` name the upload.
+
+## Staging
+
+Shared files follow git (decision #245, issue #253): `pyn add <path>...` stages a file, a folder or `.`, and `pyn commit -m
+<message>` records everything staged as **one** commit, which can span many files and goes to the server as one changeset
+(all paths succeed or none do). `-u` and `--update` stage only files already tracked, `-A` and `--all` also take new ones (with
+no path, from the whole workspace), `-n` and `--dry-run` list what would be staged, `-v` prints each path, and `-f` stages
+files `.pyn/ignore` hides, which are otherwise refused with exit status `1`. `pyn commit -a` (and `-am "message"`) stages every
+changed tracked file first; new files are not included. `pyn restore --staged <path>...` takes paths out of the staged set and
+leaves the files alone. `pyn diff --cached` shows what is staged against the last update, and `pyn diff` shows the edits made
+since. A tracked file that was deleted cannot be staged: a pyn server records no deletions yet, so `add` warns and skips it.
+
+Exclusive files are different. `pyn add` on an exclusive path fails early, staging nothing, unless you hold its lock, and
+the message names `pyn lock <path>`. Lock, edit, commit stays the exclusive flow, and the commit releases the lock. The check
+is a convenience: the server still enforces the lock when it receives the commit. A new file's mode is only known to the
+server, so `add` cannot refuse it, and the commit is where an unlocked exclusive path is turned away.
+
+`add` copies the file's content aside when it stages it, so an edit made afterwards stays unstaged and the commit sends what
+was staged. The staging index is `.pyn/local_only/state/index.toml`:
+
+```toml
+version = 1
+
+[entries."Source/a.cpp"]
+hash = "<blob id of the staged content>"
+file_mode = "regular"          # regular, executable or symlink
+base_revision = 3              # the revision the workspace was at; the commit is rejected if the server moved on
+```
+
+and the staged content is `.pyn/local_only/staged/<blob id>` (a symbolic link's target for a link). Both live in
+`local_only/`, so they are never shared; an empty index has no file, and committing or unstaging removes content nothing
+refers to. `pyn update` skips a staged file and says so. An index in a newer version than this pyn understands is refused.
 
 ## Listing output
 

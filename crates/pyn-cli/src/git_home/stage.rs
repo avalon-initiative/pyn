@@ -840,3 +840,63 @@ pub fn commit(git: &GitHome, messages: &[String], all: bool) -> Result<()> {
     println!("{changed} file(s) changed");
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn messages_get_git_whitespace_cleanup() {
+        let clean = |m: &[&str]| {
+            String::from_utf8(clean_message(
+                &m.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+            ))
+            .unwrap()
+        };
+        assert_eq!(
+            clean(&["  \n\nsubject   \n\n\n\nbody \n\n"]),
+            "subject\n\nbody\n"
+        );
+        assert_eq!(clean(&["one", "two"]), "one\n\ntwo\n");
+        assert_eq!(clean(&["indented\n    line"]), "indented\n    line\n");
+    }
+
+    #[test]
+    fn dates_are_read_as_git_reads_them() {
+        assert_eq!(
+            parse_date("1700000000 +0200").unwrap(),
+            (1_700_000_000, 120)
+        );
+        assert_eq!(
+            parse_date("@1700000000 -0530").unwrap(),
+            (1_700_000_000, -330)
+        );
+        assert_eq!(
+            parse_date("2023-11-14T22:13:20+02:00").unwrap(),
+            (1_699_992_800, 120)
+        );
+        assert!(parse_date("yesterday").is_err());
+    }
+
+    #[test]
+    fn a_file_replaces_a_folder_and_a_folder_replaces_a_file_in_the_index() {
+        let id = ObjectId::from_bytes(pyn_object::Algorithm::Sha1, &[1; 20]).unwrap();
+        let entry = |p: &str| IndexEntry::new(p.as_bytes(), 0o100644, id);
+        let mut entries = Entries::new();
+        for p in ["a/b", "a/c", "z"] {
+            entries.insert((p.as_bytes().to_vec(), 0), entry(p));
+        }
+        put_entry(&mut entries, entry("a"));
+        let paths: Vec<&[u8]> = entries.keys().map(|(p, _)| p.as_slice()).collect();
+        assert_eq!(paths, [b"a".as_slice(), b"z"]);
+        put_entry(&mut entries, entry("z/inner"));
+        let paths: Vec<&[u8]> = entries.keys().map(|(p, _)| p.as_slice()).collect();
+        assert_eq!(paths, [b"a".as_slice(), b"z/inner"]);
+    }
+
+    #[test]
+    fn names_are_under_a_folder_only_at_a_slash() {
+        assert!(under(b"src/a", b"src") && under(b"src", b"src") && under(b"x", b""));
+        assert!(!under(b"srcx/a", b"src"));
+    }
+}

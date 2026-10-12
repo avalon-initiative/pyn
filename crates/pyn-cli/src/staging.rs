@@ -422,3 +422,26 @@ pub fn commit(backend: &dyn Backend, ws: &Workspace, message: &str, all: bool) -
     }
     Index::default().save(ws)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn names_are_under_a_folder_only_at_a_slash() {
+        assert!(under("src/a", "src") && under("src", "src") && under("x", ""));
+        assert!(!under("srcx/a", "src"));
+    }
+
+    #[test]
+    fn a_staged_entry_differs_when_content_or_mode_does() {
+        let entry = Entry {
+            hash: hash_of(b"one"),
+            file_mode: api::FileMode::Regular,
+            base_revision: Some(1),
+        };
+        assert!(!entry.differs(api::FileMode::Regular, b"one"));
+        assert!(entry.differs(api::FileMode::Regular, b"two"));
+        assert_eq!(entry.differs(api::FileMode::Executable, b"one"), cfg!(unix));
+    }
+}

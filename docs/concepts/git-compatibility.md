@@ -14,7 +14,7 @@ Divergence rules:
 1. **Every divergence is deliberate and listed.** A command, flag or argument form that differs from git has a row with a
    reason. If it is not in a table below, pyn behaves as git does or the gap is a bug.
 2. **Never silently different.** A flag or argument form pyn cannot honour fails with a message; it is never ignored and
-   never does something else. Where a `fatal:` message explains the refusal (for example `--cached`), the table says so.
+   never does something else. Where a `fatal:` message explains the refusal (for example a commit named to `diff --cached` on a pyn server), the table says so.
 3. **A git command with no pyn equivalent says so.** It prints `pyn: '<cmd>' is a git command pyn does not support yet; see
    docs/concepts/git-compatibility.md.` and exits `1`, not a usage error. A name that is neither pyn's nor a known git
    command prints `pyn: '<cmd>' is not a pyn command. See 'pyn --help'.` and exits `1`, as git does for an unknown command.
@@ -61,28 +61,33 @@ The commands named in decision #218.
 | `git clone <repo> [<dir>]` | `pyn clone <source> [<dir>]` | same | Source is `<server>/owner/name`, or `owner/name` on the configured server. Output is one summary line, not progress. |
 | `git clone --depth`, `-b`, `--branch`, `--bare`, `--mirror`, `-o`, `-n`, `--recurse-submodules` | none | unsupported | Usage error (`129`). `-b` and `--branch` become possible with branches (#235). Every clone has full history on the server; there is no local object store to shallow. |
 | `pyn clone --revision <commit>` | | pyn only | Clone as of a commit (a hash, `HEAD~N`). Git does this with `clone` then `checkout`. |
-| `git status` | `pyn status` | different | Table with mode, revision, state, lock and path plus a summary line, because mode and lock state have no place in git's layout. On a git home the table is `STAGED`, `UNSTAGED`, `PATH` with git's states. |
+| `git status` | `pyn status` | different | Table with mode, revision, staged, state, lock and path plus a summary line, because mode and lock state have no place in git's layout. `STAGED` is `added` or `modified` for a staged path, and `STATE` then describes what changed after it was staged. On a git home the table is `STAGED`, `UNSTAGED`, `PATH` with git's states. |
 | `git status -s`, `--short`, `--porcelain`, `-b`, `<pathspec>...` | none | unsupported | Usage error (`129`). A stable machine format is not scheduled. `pyn status --revision` fails on a git home. |
 | `pyn status --revision <commit>` | | pyn only | Compare the workspace with a past commit (`behind` / `ahead`). |
-| `git add <path>...` | none | planned | Fails with the git-command message. On a pyn server `commit` takes paths directly; on a git home `add` arrives with the staging index (#253). |
-| `git commit -m <msg> [<path>...]` | `pyn commit -m <msg> <path>...` | different | One atomic commit of the named paths, uploaded to the server; there is no index and no local-only commit, so commit and publish are one step (no `push` needed). Paths are required and `-m` is required (no editor). Releases the locks it held. Output is `<path> is now at revision N`, not git's summary. |
-| `git commit -a`, `-F`, `--amend`, `--allow-empty`, `-s`, `-S`, `--no-verify`, `--author`, `--date`, `-v` | none | unsupported | Usage error (`129`). Commits are immutable on the server, so `--amend` will not exist; `-F` is not accepted because `--file` already means the content file. |
+| `git add <path>...` | `pyn add <path>...` | same | Stages a path, a folder or `.`; a path is required unless `-u` or `-A` is given. On an exclusive path of a pyn server it fails unless you hold the lock (see below). |
+| `git add -u`, `-A`, `-n`, `-v`, `-f` and their long forms | same | same | `-u` and `--update` stage tracked files only; `-A` and `--all` take new files too and, with no path, cover the whole repository. `-n` and `--dry-run` print `add '<path>'` and `remove '<path>'` and stage nothing. Ignored files are refused (exit `1`, as git) without `-f`. |
+| `git add -p`, `-i`, `-e`, `--intent-to-add`, `--chmod`, `--renormalize`, `--pathspec-from-file`, glob and magic pathspecs | none | unsupported | Usage error (`129`), or `pathspec ... did not match any files` for a glob the shell did not expand. A path is a file or a folder, taken relative to where you stand. |
+| `git commit -m <msg>` | `pyn commit -m <msg>` | different | Commits what is staged as one unit of work. On a pyn server it is one changeset uploaded to the server, so commit and publish are one step (no `push` needed), it releases the locks it held, and the output is `<path> is now at revision N` for each file. On a git home it is a git commit on the current branch and prints `[<branch> <id>] <subject>`. `-m` is required (no editor) and repeats for more paragraphs. Nothing staged exits `1` with a message. |
+| `git commit -a`, `-am <msg>` | `pyn commit -a`, `-am <msg>` | same | Stages every changed tracked file, then commits; new files are not included. |
+| `git commit <path>...` | `pyn commit -m <msg> <path>...` | different | On a pyn server: one atomic commit of the named paths as they are on disk, whatever is staged (git's `--only`). Not available on a git home, which says to `add` the paths first. |
+| `git commit -F`, `--amend`, `--allow-empty`, `-s`, `-S`, `--no-verify`, `--author`, `--date`, `-v` | none | unsupported | Usage error (`129`). Commits are immutable on the server, so `--amend` will not exist; `-F` is not accepted because `--file` already means the content file. |
 | `pyn commit --file <local>` | | pyn only | Content file for a single path. In a workspace the file at the path is the default. |
 | `pyn commit --base <rev>` | | pyn only | The revision the edit started from; the server rejects the commit if the head moved on an exclusive path. |
 | `git log [-n <n>] [<path>]` | `pyn log [-n <n>] [<path>]` (alias `history`) | different | Without a path, newest first, 50 by default. With a path, oldest first and all revisions (git prints newest first). Output is a table of per-path revisions, not commit blocks. `-n` is also `--max-count`; `--limit` is an alias. On a git home it is git's output (see below). |
 | `git log --oneline`, `--graph`, `--stat`, `-p`, `--author`, `--since`, `--grep`, `--format`, `--follow`, `<rev>..<rev>`, `<rev> -- <path>` | none | unsupported | Usage error (`129`). A revision range is read as a path. Branch-aware log arrives with #235. |
 | `pyn log --commits` | | pyn only | List commits (`COMMIT`, `AUTHOR`, `WHEN`, `FILES`, `MESSAGE`) instead of revisions. |
 | `pyn log --filter <glob>` | | pyn only | Only paths matching the glob. |
-| `git diff [<c1> [<c2>]] [-- <path>...]` | `pyn diff [<c1> [<c2>]] [-- <path>...]` | different | Unified output as git, computed in the CLI. Commits are hashes (or abbreviations of 4 or more digits), `HEAD`, `~N`, `^`, or `a..b`; two commits work outside a workspace. With no commit it compares with the last update (git compares with the index; on a git home pyn does too). File modes print as in git, including `old mode` and `new mode`. |
+| `git diff [<c1> [<c2>]] [-- <path>...]` | `pyn diff [<c1> [<c2>]] [-- <path>...]` | different | Unified output as git, computed in the CLI. Commits are hashes (or abbreviations of 4 or more digits), `HEAD`, `~N`, `^`, or `a..b`; two commits work outside a workspace. With no commit it compares the work tree with the index: the staged content, or the last update for what is not staged. File modes print as in git, including `old mode` and `new mode`. |
 | `git diff -U<n>`, `--unified=<n>`, `--stat`, `--name-only`, `--name-status`, `--exit-code`, `-q` | same | same | `--name-status` prints `A`, `M`, `D` only. |
-| `git diff --cached`, `--staged` | none | unsupported | `fatal: pyn has no staging area` (`128`). |
+| `git diff --cached`, `--staged` | `pyn diff --cached`, `--staged` | different | The staged content against the last commit (the last update on a pyn server). On a git home it takes one optional commit to compare with, as git; on a pyn server it takes none. |
 | `git diff --shortstat`, `-w`, `--word-diff`, `--color`, `--no-index`, `--check`, `-M`, `-C` | none | unsupported | Usage error (`129`). |
 | `git show [<commit>]` | `pyn show [<commit>]` | different | Commit header (`commit`, `Author:`, `Date:`), message, then the commit's diff. The newest commit if none is named. The author line carries the email. On a git home the output is git's, except for merge commits (see below). |
 | `git show -U<n>`, `--stat`, `--name-only`, `--name-status` | same | same | |
 | `git show <rev>:<path>` | `pyn get <path> [--rev N] [-o <file>]` | different | `show` takes commits only (`HEAD:foo` fails with `fatal: ... is not a commit`, `128`). File content at a revision is `pyn get`, to stdout or a file. `--rev` is a per-path revision, not a commit. |
 | `git show --oneline`, `-s`, `--format`, `<tag>`, `<object>` | none | unsupported | Usage error (`129`) or `fatal: ... is not a commit`. |
 | `git restore --source=<rev> <path>` | `pyn restore --source <rev> <path>` (or `pyn restore <path> <rev>`) | different | pyn's restore appends a new revision on the server: it needs the lock, the `restore` permission and a typed confirmation (`--yes` skips it); `-m` sets the message. The revision is required (git defaults to the index or HEAD) and `-s` is the short form of `--source`. Git's restore only edits the working tree. |
-| `git restore --staged`, `--worktree`, `-p`, `--ours`, `--theirs`, `<pathspec>...` | none | unsupported | Usage error (`129`). One path per call. |
+| `git restore --staged <path>...` | `pyn restore --staged <path>...` (`-S`) | same | Puts the staged entries under the paths back to the last commit and leaves the files alone. On a git home `--source <commit>` takes the entries from that commit, as git; on a pyn server there is no commit to take them from and it is a usage error. |
+| `git restore <path>` (the work tree), `--worktree`, `-p`, `--ours`, `--theirs` | none | unsupported | Usage error (`129`), or on a git home the "not supported yet" message naming #254. |
 | `git branch`, `git switch`, `git checkout` | none | planned | Git-command message (`checkout` has its own, see rule 4). Branch core #235 under epic #205 (decision #233), with git's flags. |
 | `git merge` | none | planned | Git-command message. Merge flow #236 and the merge library #234, under epic #205. |
 | `git fetch`, `git pull`, `git push` | none | planned | Git-command message. Remotes and sync #237 under epic #205 (worked with #223). Today a commit goes straight to the server and `pyn update` brings the workspace forward. |
@@ -158,7 +163,7 @@ schedules them.
 
 | Git | Reason |
 | --- | --- |
-| `git reset`, `git clean` | No index and no local history to reset; `pyn restore` and `pyn update` cover the daily cases. |
+| `git reset`, `git clean` | No local history to reset; `pyn restore --staged`, `pyn restore` and `pyn update` cover the daily cases. |
 | `git rm`, `git mv` | Not a CLI verb yet; no issue schedules removing or renaming paths from the CLI. |
 | `git rebase`, `git cherry-pick`, `git revert` | History is append-only on the server. |
 | `git blame`, `git grep` | Not scheduled. |
@@ -171,9 +176,11 @@ through its own implementation of git's object store, refs and index, with no gi
 `.pyn/pyn.toml` there is ignored: no path is exclusive, and the commands that need a pyn server refuse and name it. Going
 from a git home to a pyn server is one explicit step, `pyn convert` (issue #95), which does not exist yet.
 
-**Nothing git sees is ever changed.** Tracked files, refs, notes, hooks, line endings and the index are only read. The one
-file pyn writes inside `.git/` is `info/exclude`, once, from `pyn init`. A test asserts that the `.git` directory and the
-work tree are byte-identical before and after every command.
+**Nothing git sees changes except what you asked for.** Tracked files, notes, hooks and line endings are never touched, and
+the work tree is only ever read. Reading commands change nothing in `.git/`. `pyn init` writes `info/exclude` once. `pyn
+add`, `pyn restore --staged` and `pyn commit -a` write the index, and `pyn commit` adds objects and moves the current branch;
+those are the changes asked for, and [staging](#staging-and-committing) lists exactly what each writes. A test asserts that
+the `.git` directory and the work tree are byte-identical before and after every reading command and after every refusal.
 
 ### Which home
 
@@ -204,10 +211,11 @@ whatever the rules say.
 | Command | On a git home |
 | --- | --- |
 | `status` | Header (`On branch main`, or `HEAD detached at <id>`), a `STAGED`, `UNSTAGED`, `PATH` table, and a count line; `nothing to commit, working tree clean` when clean. States are `added`, `modified`, `deleted`, `typechange`, `untracked` and `unmerged`. Staged is `HEAD` against the index, unstaged is the index against the work tree, so a path can be in both. A folder with nothing tracked in it is listed once, as `dir/`. Paths are from the repository root. Mode changes count as modified; symlinks are compared by their target. |
-| `diff` | Index against the work tree; one commit against the work tree (the paths in the commit or the index); two commits, or `a..b`. A name that is both a revision and a file needs `--`. Shows `old mode` and `new mode`, symlinks and binary files as git does. `--cached` and `--staged` fail naming #253. |
+| `diff` | Index against the work tree; one commit against the work tree (the paths in the commit or the index); two commits, or `a..b`. A name that is both a revision and a file needs `--`. Shows `old mode` and `new mode`, symlinks and binary files as git does. `--cached` and `--staged` compare the index with `HEAD` (or with one named commit). |
 | `show [<rev>]` | Commit header and message, then the diff against the first parent. A merge commit prints no diff (git prints a combined diff, which pyn does not compute). |
 | `log [-n <n>] [<path or rev>]` | Git's output: commit blocks, newest first across all parents, with git's history simplification for a path. The argument is a path if one exists (now or at `HEAD`), else a revision. `--commits` is the pyn table. `--filter` fails. |
 | `files`, `ls` | `files` lists the index and `ls` lists `HEAD`'s tree. Every entry is `shared`, with no revision, lock or last change. |
+| `add`, `restore --staged`, `commit` | See [staging](#staging-and-committing). |
 | `init` | See above. |
 | `config`, `clone` | Unchanged: they do not depend on the repository's home. A clone made inside a git repository is its own pyn workspace. |
 
@@ -225,6 +233,47 @@ Differences from git, all deliberate or not yet done:
   `diff --stat` prints `Bin` without sizes for a binary file.
 - A nested repository that the index does not track is one untracked `dir/`.
 
+### Staging and committing
+
+`add`, `restore --staged`, `commit` and `diff --cached` work on git's own index, so git sees the same state and the two tools
+can be mixed freely.
+
+**Index.** `.git/index` of the work tree (a linked worktree has its own) is read and written through `pyn-git`. Versions 2, 3
+and 4 are read and the version found is the version written (a new index is version 2); the entry stat data, the stage
+bits, assume-valid, skip-worktree and intent-to-add flags are kept. The optional cache extensions (`TREE`, `UNTR`, `REUC`,
+`FSMN` and the like) are not kept: git rebuilds them, at the cost of one slower first command. A split or sparse index is
+refused. The file is written through `index.lock` and a rename, as git does, and pyn first checks that nobody changed the index
+while it was working; an existing `index.lock` stops the command.
+
+**`add`.** Writes the blob of each file as a loose object and a stage 0 entry with the file's stat data, mode (`100644`,
+`100755`, or `120000` for a symlink, whose target is the blob) and id. A tracked file that was deleted is staged as a removal.
+`core.filemode=false` keeps the index's mode. Ignore rules are `.gitignore` in every folder, `.git/info/exclude` and the global
+excludes file; a file or folder named on the command line that they hide is refused with git's message and exit status `1`
+(the other paths are still staged) unless `-f` is given, and a hidden file met while walking a folder is skipped silently. A
+nested git repository is skipped with a warning (pyn adds no submodules), and `.pyn/local_only` is never added. An unmerged
+path is refused.
+
+**`commit`.** A linear commit on the current branch:
+
+1. It refuses, changing nothing, a detached `HEAD`, a merge, cherry-pick, revert, rebase or sequencer in progress,
+   unmerged index entries, and `commit.gpgsign=true` (pyn cannot sign yet).
+2. The author and committer are `GIT_AUTHOR_*` and `GIT_COMMITTER_*` (name, email, date) when set, else `author.*` and
+   `committer.*`, else `user.name` and `user.email`; without a name and email it stops. The time zone is the system's.
+3. With `-a`, every changed tracked file is staged first, in memory; the index is written only once the commit is built.
+4. The index becomes trees (written as loose objects), and the commit has `HEAD` as its only parent. A tree equal to the parent's
+   is `nothing to commit` (exit `1`). The message gets git's whitespace cleanup: no trailing blanks, no leading or trailing blank
+   lines, a final newline.
+5. The index is written (only with `-a`), then the branch ref is moved through its `.lock` file after checking `HEAD` did not move.
+
+There is no reflog entry, no hook runs (a warning names hooks that exist), and no `COMMIT_EDITMSG` is written. A commit made
+this way has the object id git would give the same tree, parent, identity, dates and message. `commit <path>` is refused; `add`
+the paths and run `commit`.
+
+**`restore --staged`.** Replaces the index entries under the paths with `HEAD`'s (or `--source`'s), removing entries `HEAD`
+lacks. The replaced entries carry no stat data, so git re-reads those files on its next status.
+
+**`diff --cached`.** `HEAD` (or the named commit) against the index, in the same output as `diff`.
+
 ### Refused commands
 
 The commands only a pyn server provides refuse with exit `128` and this message, naming the home that has them:
@@ -241,8 +290,7 @@ Commands a git home will gain fail with exit `1`, as the other git-only commands
 
 | Command | Needs |
 | --- | --- |
-| `add` | The staging index, #253. |
-| `commit`, `restore` | The staging index, #253, and writing commits and the work tree, #254. |
+| `restore` (work tree) | Writing the work tree, #254. |
 | `branch`, `switch`, `checkout`, `merge`, `tag`, `stash` | Writing refs, the work tree and objects, #254. |
 | `fetch`, `pull`, `push`, `remote`, `update` | Git transport, #255. |
 | `get` | Per-path revisions, which git has no equivalent of; not scheduled. |
