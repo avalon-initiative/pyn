@@ -31,7 +31,7 @@ Divergence rules:
    repository-wide difference: it keeps columns such as mode, lock and revision readable.
 
 9. **A repository has one home** (decision #245): a pyn server or git. In a git repository pyn behaves as git, through its own
-   implementation, and commands that only a pyn server provides refuse and say so; see [On a git home](#on-a-git-home).
+   implementation, and commands that act on the repository and only a pyn server provides refuse and say so; see [On a git home](#on-a-git-home).
 
 Exit codes follow git: `0` success, `128` for a failure (message prefixed `fatal: `), `129` for a usage error such as
 an unknown flag on a supported command (raised by the argument parser, which names the flag and the command's usage),
@@ -218,6 +218,8 @@ whatever the rules say.
 | `files`, `ls` | `files` lists the index and `ls` lists `HEAD`'s tree. Every entry is `shared`, with no revision, lock or last change. |
 | `add`, `restore --staged`, `commit` | See [staging](#staging-and-committing). |
 | `init` | See above. |
+| `login`, `logout`, `register`, `password`, `key`, `token`, `user`, `org`, `team`, `repo`, `usage`, `setup`, `admin`, `whoami`, `member`, `role`, `invite` | Run as anywhere else; see [Refused commands](#refused-commands). |
+| `lock`, `unlock`, `locks`, `policy`, `audit`, `verify`, `summary` | Refuse; see [Refused commands](#refused-commands). |
 | `config`, `clone` | Unchanged: they do not depend on the repository's home. A clone made inside a git repository is its own pyn workspace. |
 
 Revisions are `HEAD`, `@`, a branch, a tag (annotated tags are followed to their commit), a full or abbreviated id of 4 or
@@ -277,15 +279,23 @@ lacks. The replaced entries carry no stat data, so git re-reads those files on i
 
 ### Refused commands
 
-The commands only a pyn server provides refuse with exit `128` and this message, naming the home that has them:
+Only the commands that act on the repository in the working directory refuse, with exit `128` and this message, naming the
+home that has them:
 
 ```text
 fatal: `pyn lock` needs a pyn server, and this repository is a git repository; `pyn convert` moves it to a pyn server
 ```
 
-These are `lock`, `unlock`, `locks`, `policy`, `audit`, `verify`, `summary`, `whoami`, and the account, organization, team,
-repository and server administration commands (`login`, `logout`, `register`, `password`, `key`, `invite`, `user`, `repo`,
-`org`, `team`, `setup`, `admin`, `usage`, `token`, `member`, `role`).
+These are `lock`, `unlock`, `locks`, `policy`, `audit`, `verify` and `summary`.
+
+The account and server-level commands run from anywhere, including inside a git repository, because they address a server
+through the global config (`--server`, `PYN_SERVER`, the user config file) and not the repository in the working directory:
+`login`, `logout`, `register`, `password`, `key`, `token`, `user`, `org`, `team`, `repo`, `usage`, `setup`, `admin` and
+`whoami`. So are `member`, `role` and `invite`, which address one repository on a server: a git home has no workspace to name
+it, so the repository comes from `--repo owner/name`, `PYN_REPO` or the user config, and without one they fail with
+`no repository: this is a git repository, so pass --repo owner/name (or set PYN_REPO)` instead of the refusal above. The same
+holds for `user add`, `whoami` (it prints the account when no repository is given) and `token create` without `--repos`. A
+`.pyn` folder in a git repository is never read for these commands.
 
 Commands a git home will gain fail with exit `1`, as the other git-only commands do, and name the issue:
 

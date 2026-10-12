@@ -445,7 +445,7 @@ fn init_outside_a_git_repository_says_it_is_not_supported_yet() {
 }
 
 #[test]
-fn server_commands_refuse_and_name_the_pyn_server() {
+fn repository_commands_refuse_and_name_the_pyn_server() {
     let repo = Repo::new("sha1");
     let before = snapshot(&repo.main);
     for args in [
@@ -457,19 +457,6 @@ fn server_commands_refuse_and_name_the_pyn_server() {
         vec!["audit"],
         vec!["verify"],
         vec!["summary"],
-        vec!["whoami"],
-        vec!["login", "alice"],
-        vec!["logout"],
-        vec!["repo", "list"],
-        vec!["org", "list"],
-        vec!["team", "list", "acme"],
-        vec!["admin", "grant", "bob"],
-        vec!["token", "list"],
-        vec!["member", "list"],
-        vec!["role", "list"],
-        vec!["usage"],
-        vec!["key", "list"],
-        vec!["invite", "list"],
     ] {
         let (code, err) = repo.fails(&args);
         assert_eq!(code, 128, "{args:?}: {err}");

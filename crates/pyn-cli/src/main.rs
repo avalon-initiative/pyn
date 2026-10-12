@@ -759,18 +759,52 @@ fn subcommand_refused_on_git() -> Option<String> {
     (unsupported::REFUSED_BEFORE_PARSING.contains(&name.as_str()) && in_git_home()).then_some(name)
 }
 
+/// Commands that address a server through the global config, so a git repository does not stop them.
+fn runs_anywhere(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::Login { .. }
+            | Command::Logout
+            | Command::Register { .. }
+            | Command::Password { .. }
+            | Command::Key(_)
+            | Command::Token(_)
+            | Command::User(_)
+            | Command::Org(_)
+            | Command::Team(_)
+            | Command::Repo(_)
+            | Command::Usage { .. }
+            | Command::Setup { .. }
+            | Command::Admin(_)
+            | Command::Whoami
+            | Command::Member(_)
+            | Command::Role(_)
+            | Command::Invite(_)
+    )
+}
+
 fn run(cli: Cli) -> Result<()> {
     let cwd = std::env::current_dir()?;
-    if !matches!(cli.command, Command::Clone { .. } | Command::Config(_))
-        && let Some(git) = git_home::detect(&cwd)?
+    let git = if matches!(cli.command, Command::Clone { .. } | Command::Config(_)) {
+        None
+    } else {
+        git_home::detect(&cwd)?
+    };
+    if let Some(git) = &git
+        && !runs_anywhere(&cli.command)
     {
-        return git_home::run(cli.command, &git, &cwd);
+        return git_home::run(cli.command, git, &cwd);
     }
+    let on_git = git.is_some();
     if matches!(cli.command, Command::Init) {
         eprintln!("{}", unsupported::message("init"));
         std::process::exit(1);
     }
-    let ws = Workspace::discover(&cwd);
+    let ws = if on_git {
+        None
+    } else {
+        Workspace::discover(&cwd)
+    };
     let user_config = userconfig::path()?;
     let (mine, mut yours) = (
         ws.as_ref().map(Workspace::settings).unwrap_or_default(),
@@ -823,6 +857,7 @@ fn run(cli: Cli) -> Result<()> {
         user: resolve(cli.user, mine.user.as_ref(), yours.user.as_ref(), None),
         repo,
         branch: branch::current(ws.as_ref()),
+        on_git,
     });
     let rp = |p: &str| -> Result<String> {
         match &ws {
@@ -2361,14 +2396,15 @@ fn token_command(api: &Api, cmd: TokenCommand) -> Result<()> {
             repos,
             expires_days,
         } => {
-            let repos =
-                if repos.is_empty() {
-                    vec![api.repo.clone().context(
-                        "name the repositories the token is for with --repos owner/name",
-                    )?]
-                } else {
-                    repos
-                };
+            let repos = if repos.is_empty() {
+                vec![api.repo.clone().context(if api.on_git {
+                        "this is a git repository, so name the repositories the token is for with --repos owner/name"
+                    } else {
+                        "name the repositories the token is for with --repos owner/name"
+                    })?]
+            } else {
+                repos
+            };
             let body = api::CreateTokenRequest {
                 name,
                 permissions,

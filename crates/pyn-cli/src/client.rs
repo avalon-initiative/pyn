@@ -12,15 +12,23 @@ pub struct Api {
     pub repo: Option<String>,
     /// The branch the workspace is on; reads and commits go to it, and the server's default branch when `None`.
     pub branch: Option<String>,
+    /// The working directory is a git repository, so no workspace can name the repository.
+    pub on_git: bool,
 }
 
 impl Api {
     /// The route for something inside the current repository, such as `/files`.
     pub fn repo_route(&self, tail: &str) -> Result<String> {
-        let repo = self.repo.as_ref().context(
-            "no repository: run this inside a workspace, or pass --repo owner/name (or set PYN_REPO)",
-        )?;
+        let repo = self.repo.as_ref().context(self.no_repo_message())?;
         Ok(format!("/v1/repos/{repo}{tail}"))
+    }
+
+    pub fn no_repo_message(&self) -> &'static str {
+        if self.on_git {
+            "no repository: this is a git repository, so pass --repo owner/name (or set PYN_REPO)"
+        } else {
+            "no repository: run this inside a workspace, or pass --repo owner/name (or set PYN_REPO)"
+        }
     }
 
     pub fn request(&self, method: Method, path: &str) -> RequestBuilder {
