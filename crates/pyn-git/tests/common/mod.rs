@@ -12,15 +12,37 @@ pub struct Fixture {
 }
 
 pub const FIXTURES: [Fixture; 5] = [
-    Fixture { name: "sha1-loose", algorithm: Algorithm::Sha1, index_version: 2 },
-    Fixture { name: "sha1-packed", algorithm: Algorithm::Sha1, index_version: 4 },
-    Fixture { name: "sha1-refdelta", algorithm: Algorithm::Sha1, index_version: 2 },
-    Fixture { name: "sha256-loose", algorithm: Algorithm::Sha256, index_version: 4 },
-    Fixture { name: "sha256-packed", algorithm: Algorithm::Sha256, index_version: 2 },
+    Fixture {
+        name: "sha1-loose",
+        algorithm: Algorithm::Sha1,
+        index_version: 2,
+    },
+    Fixture {
+        name: "sha1-packed",
+        algorithm: Algorithm::Sha1,
+        index_version: 4,
+    },
+    Fixture {
+        name: "sha1-refdelta",
+        algorithm: Algorithm::Sha1,
+        index_version: 2,
+    },
+    Fixture {
+        name: "sha256-loose",
+        algorithm: Algorithm::Sha256,
+        index_version: 4,
+    },
+    Fixture {
+        name: "sha256-packed",
+        algorithm: Algorithm::Sha256,
+        index_version: 2,
+    },
 ];
 
 pub fn fixture_dir(name: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name)
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(name)
 }
 
 pub fn expected(name: &str, file: &str) -> Vec<Vec<String>> {
@@ -39,9 +61,7 @@ pub fn copy_dir(from: &Path, to: &Path) {
             copy_dir(&entry.path(), &target);
         } else {
             fs::copy(entry.path(), &target).unwrap();
-            let mut perms = fs::metadata(&target).unwrap().permissions();
-            perms.set_readonly(false);
-            fs::set_permissions(&target, perms).unwrap();
+            make_writable(&target);
         }
     }
 }
@@ -55,4 +75,9 @@ pub fn copy_git_dir(name: &str, tmp: &Path, dest: &str) -> PathBuf {
 
 pub fn id(algorithm: Algorithm, hex: &str) -> ObjectId {
     ObjectId::from_hex(algorithm, hex).unwrap()
+}
+
+pub fn make_writable(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o644)).unwrap();
 }

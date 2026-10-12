@@ -95,13 +95,19 @@ fn refs_and_head_match_git() {
             Ref::Direct(oid) => assert_eq!(oid.to_hex(), head, "{}", f.name),
         }
         let tip = refs.resolve("HEAD").unwrap().unwrap();
-        assert_eq!(repo.objects().unwrap().read(&tip).unwrap().kind, Kind::Commit);
+        assert_eq!(
+            repo.objects().unwrap().read(&tip).unwrap().kind,
+            Kind::Commit
+        );
     }
 }
 
 #[test]
 fn detached_head_and_packed_refs_with_peeled_tags() {
-    assert!(matches!(open("sha1-refdelta").refs().head().unwrap(), Ref::Direct(_)));
+    assert!(matches!(
+        open("sha1-refdelta").refs().head().unwrap(),
+        Ref::Direct(_)
+    ));
     for name in ["sha1-packed", "sha256-packed"] {
         let packed = open(name).refs().packed().unwrap();
         assert_eq!(packed.len(), 4, "{name}");
@@ -119,7 +125,10 @@ fn unborn_and_missing_refs() {
     std::fs::write(git_dir.join("HEAD"), "ref: refs/heads/nothing\n").unwrap();
     let repo = Repository::open(&tmp.path().join("r")).unwrap();
     let refs = repo.refs();
-    assert_eq!(refs.head().unwrap(), Ref::Symbolic("refs/heads/nothing".into()));
+    assert_eq!(
+        refs.head().unwrap(),
+        Ref::Symbolic("refs/heads/nothing".into())
+    );
     assert_eq!(refs.resolve("HEAD").unwrap(), None);
     assert!(refs.read("refs/../x").is_err());
 }
@@ -150,7 +159,12 @@ fn index_reencodes_in_every_version() {
             let mut copy = index.clone();
             copy.version = version;
             let bytes = copy.encode(f.algorithm).unwrap();
-            assert_eq!(Index::parse(&bytes, f.algorithm).unwrap(), copy, "{} v{version}", f.name);
+            assert_eq!(
+                Index::parse(&bytes, f.algorithm).unwrap(),
+                copy,
+                "{} v{version}",
+                f.name
+            );
         }
     }
 }
@@ -175,18 +189,30 @@ fn linked_worktree_through_a_git_file() {
     std::fs::write(wt.join(".git"), "gitdir: ../main/.git/worktrees/wt1\n").unwrap();
 
     let repo = Repository::open(&wt).unwrap();
-    assert_eq!(repo.git_dir(), main.join("worktrees/wt1").canonicalize().unwrap());
+    assert_eq!(
+        repo.git_dir(),
+        main.join("worktrees/wt1").canonicalize().unwrap()
+    );
     assert_eq!(repo.common_dir(), main.canonicalize().unwrap());
     assert_eq!(repo.work_tree(), Some(wt.as_path()));
-    assert_eq!(repo.refs().head().unwrap(), Ref::Symbolic("refs/heads/wt-branch".into()));
+    assert_eq!(
+        repo.refs().head().unwrap(),
+        Ref::Symbolic("refs/heads/wt-branch".into())
+    );
     let tip = repo.refs().resolve("HEAD").unwrap().unwrap();
     assert_eq!(repo.refs().resolve("refs/heads/side").unwrap(), Some(tip));
-    assert_eq!(repo.objects().unwrap().read(&tip).unwrap().kind, Kind::Commit);
+    assert_eq!(
+        repo.objects().unwrap().read(&tip).unwrap().kind,
+        Kind::Commit
+    );
     let wt_index = repo.read_index().unwrap().unwrap();
     assert!(!wt_index.entries.is_empty());
 
     let from_main = Repository::open(&tmp.path().join("main")).unwrap();
-    assert_eq!(from_main.refs().head().unwrap(), Ref::Symbolic("refs/heads/main".into()));
+    assert_eq!(
+        from_main.refs().head().unwrap(),
+        Ref::Symbolic("refs/heads/main".into())
+    );
     assert_ne!(from_main.refs().resolve("HEAD").unwrap().unwrap(), tip);
 
     std::fs::create_dir_all(wt.join("nested/deeper")).unwrap();
@@ -212,7 +238,10 @@ fn submodule_style_git_file_with_absolute_path() {
 #[test]
 fn bad_git_files_fail_cleanly() {
     let tmp = tempfile::tempdir().unwrap();
-    for (i, body) in ["nonsense\n", "gitdir:\n", "gitdir: ../missing\n"].iter().enumerate() {
+    for (i, body) in ["nonsense\n", "gitdir:\n", "gitdir: ../missing\n"]
+        .iter()
+        .enumerate()
+    {
         let d = tmp.path().join(format!("w{i}"));
         std::fs::create_dir_all(&d).unwrap();
         std::fs::write(d.join(".git"), body).unwrap();
@@ -226,8 +255,22 @@ fn unsupported_configurations_are_refused() {
     let tmp = tempfile::tempdir().unwrap();
     let git_dir = copy_git_dir("sha1-loose", tmp.path(), "a/.git");
     let config = std::fs::read_to_string(git_dir.join("config")).unwrap();
-    std::fs::write(git_dir.join("config"), format!("{config}[extensions]\n\trefstorage = reftable\n")).unwrap();
-    assert!(matches!(Repository::open(&tmp.path().join("a")), Err(Error::Unsupported(_))));
-    std::fs::write(git_dir.join("config"), format!("{config}[extensions]\n\tobjectformat = md5\n")).unwrap();
-    assert!(matches!(Repository::open(&tmp.path().join("a")), Err(Error::Unsupported(_))));
+    std::fs::write(
+        git_dir.join("config"),
+        format!("{config}[extensions]\n\trefstorage = reftable\n"),
+    )
+    .unwrap();
+    assert!(matches!(
+        Repository::open(&tmp.path().join("a")),
+        Err(Error::Unsupported(_))
+    ));
+    std::fs::write(
+        git_dir.join("config"),
+        format!("{config}[extensions]\n\tobjectformat = md5\n"),
+    )
+    .unwrap();
+    assert!(matches!(
+        Repository::open(&tmp.path().join("a")),
+        Err(Error::Unsupported(_))
+    ));
 }

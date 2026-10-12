@@ -39,7 +39,10 @@ impl ObjectDb {
         let list = dir.join("info/alternates");
         if depth < MAX_ALTERNATE_DEPTH && list.is_file() {
             let text = fs::read_to_string(&list).map_err(io_at(&list))?;
-            for line in text.lines().filter(|l| !l.is_empty() && !l.starts_with('#')) {
+            for line in text
+                .lines()
+                .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            {
                 let path = dir.join(line);
                 if path.is_dir() {
                     alternates.push(Self::open_depth(&path, algorithm, depth + 1)?);
@@ -77,7 +80,8 @@ impl ObjectDb {
         let mut found = Vec::new();
         for entry in rd {
             let path = entry.map_err(io_at(&pack_dir))?.path();
-            if path.extension().is_some_and(|e| e == "idx") && path.with_extension("pack").is_file() {
+            if path.extension().is_some_and(|e| e == "idx") && path.with_extension("pack").is_file()
+            {
                 found.push(path);
             }
         }
@@ -174,10 +178,16 @@ impl ObjectDb {
             .read_to_end(&mut data)
             .map_err(|e| corrupt("loose object", format!("{id}: {e}")))?;
         if data.len() as u64 != len {
-            return Err(corrupt("loose object", format!("{id}: length differs from header")));
+            return Err(corrupt(
+                "loose object",
+                format!("{id}: length differs from header"),
+            ));
         }
         if hash_object(self.algorithm, kind, &data)? != *id {
-            return Err(corrupt("loose object", format!("{id}: content does not match its id")));
+            return Err(corrupt(
+                "loose object",
+                format!("{id}: content does not match its id"),
+            ));
         }
         Ok(Some(Object { kind, data }))
     }

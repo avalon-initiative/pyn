@@ -97,9 +97,8 @@ impl Config {
     pub fn object_format(&self) -> Result<Algorithm> {
         match self.get("extensions.objectformat") {
             None => Ok(Algorithm::Sha1),
-            Some(name) => Algorithm::from_name(&name.to_ascii_lowercase()).ok_or_else(|| {
-                crate::Error::Unsupported(format!("object format {name:?}"))
-            }),
+            Some(name) => Algorithm::from_name(&name.to_ascii_lowercase())
+                .ok_or_else(|| crate::Error::Unsupported(format!("object format {name:?}"))),
         }
     }
 
@@ -125,9 +124,7 @@ impl Config {
         let (section, key) = (section.to_ascii_lowercase(), key.to_ascii_lowercase());
         self.entries
             .iter()
-            .filter(|e| {
-                e.section == section && e.key == key && e.subsection.as_deref() == sub
-            })
+            .filter(|e| e.section == section && e.key == key && e.subsection.as_deref() == sub)
             .collect()
     }
 }
@@ -320,7 +317,6 @@ impl<'a> Parser<'a> {
         }
         Ok(out)
     }
-
 }
 
 /// Interior whitespace is kept; trailing whitespace is dropped because it is only flushed before more text.

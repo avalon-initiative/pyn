@@ -34,7 +34,10 @@ pub fn resolve_git_dir(dot_git: &Path) -> Result<PathBuf> {
     let base = dot_git.parent().unwrap_or(Path::new("."));
     let dir = base.join(target);
     if !dir.is_dir() {
-        return Err(corrupt(".git file", format!("{} is not a directory", dir.display())));
+        return Err(corrupt(
+            ".git file",
+            format!("{} is not a directory", dir.display()),
+        ));
     }
     Ok(dir)
 }
@@ -129,7 +132,11 @@ impl Repository {
     }
 
     pub fn refs(&self) -> RefStore {
-        RefStore::new(self.git_dir.clone(), self.common_dir.clone(), self.algorithm)
+        RefStore::new(
+            self.git_dir.clone(),
+            self.common_dir.clone(),
+            self.algorithm,
+        )
     }
 
     pub fn index_path(&self) -> PathBuf {

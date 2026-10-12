@@ -80,7 +80,11 @@ impl Pack {
         }
         let count = be32(&idx[8 + 255 * 4..]) as usize;
         let fixed = min
-            .checked_add(count.checked_mul(hl + 8).ok_or_else(|| corrupt("pack index", "count"))?)
+            .checked_add(
+                count
+                    .checked_mul(hl + 8)
+                    .ok_or_else(|| corrupt("pack index", "count"))?,
+            )
             .ok_or_else(|| corrupt("pack index", "count"))?;
         if idx.len() < fixed {
             return Err(corrupt("pack index", "truncated tables"));
@@ -114,7 +118,10 @@ impl Pack {
         let mut trailer = vec![0u8; hl];
         read_exact_at(&file, &mut trailer, pack_len - hl as u64, &pack_path)?;
         if trailer != idx[idx.len() - 2 * hl..idx.len() - hl] {
-            return Err(corrupt("pack", "trailer differs from the index (truncated or replaced)"));
+            return Err(corrupt(
+                "pack",
+                "trailer differs from the index (truncated or replaced)",
+            ));
         }
         Ok(Self {
             algorithm,
@@ -183,7 +190,11 @@ impl Pack {
         let want = id.as_bytes();
         let first = want[0] as usize;
         let hi = be32(&self.idx[8 + first * 4..]) as usize;
-        let lo = if first == 0 { 0 } else { be32(&self.idx[8 + (first - 1) * 4..]) as usize };
+        let lo = if first == 0 {
+            0
+        } else {
+            be32(&self.idx[8 + (first - 1) * 4..]) as usize
+        };
         let (mut lo, mut hi) = (lo, hi);
         while lo < hi {
             let mid = lo + (hi - lo) / 2;
@@ -201,12 +212,15 @@ impl Pack {
     }
 
     pub fn ids(&self) -> impl Iterator<Item = ObjectId> + '_ {
-        (0..self.count).map(|i| ObjectId::from_bytes(self.algorithm, self.id_at(i)).expect("length checked"))
+        (0..self.count)
+            .map(|i| ObjectId::from_bytes(self.algorithm, self.id_at(i)).expect("length checked"))
     }
 
     /// How `id` is stored, without resolving deltas.
     pub fn entry_kind(&self, id: &ObjectId) -> Result<Option<EntryKind>> {
-        let Some(i) = self.find(id) else { return Ok(None) };
+        let Some(i) = self.find(id) else {
+            return Ok(None);
+        };
         let (raw, _) = self.read_raw(self.offset_at(i)?)?;
         Ok(Some(match raw {
             Raw::Base(k) => EntryKind::Base(k),
@@ -217,10 +231,15 @@ impl Pack {
 
     /// Reads and fully resolves `id`, verifying its hash.
     pub fn read(&self, id: &ObjectId) -> Result<Option<Object>> {
-        let Some(i) = self.find(id) else { return Ok(None) };
+        let Some(i) = self.find(id) else {
+            return Ok(None);
+        };
         let object = self.read_at(self.offset_at(i)?)?;
         if hash_object(self.algorithm, object.kind, &object.data)? != *id {
-            return Err(corrupt("pack", format!("object {id} does not match its hash")));
+            return Err(corrupt(
+                "pack",
+                format!("object {id} does not match its hash"),
+            ));
         }
         Ok(Some(object))
     }
@@ -301,7 +320,11 @@ impl Pack {
                         .ok_or_else(|| corrupt("pack", "offset overflow"))?
                         + u64::from(c & 0x7f);
                 }
-                Raw::Ofs(offset.checked_sub(back).ok_or_else(|| corrupt("pack", "delta base before the pack"))?)
+                Raw::Ofs(
+                    offset
+                        .checked_sub(back)
+                        .ok_or_else(|| corrupt("pack", "delta base before the pack"))?,
+                )
             }
             7 => {
                 let mut raw_id = vec![0u8; self.hl()];
@@ -316,7 +339,10 @@ impl Pack {
             .read_to_end(&mut data)
             .map_err(|e| corrupt("pack", format!("inflate failed: {e}")))?;
         if data.len() as u64 != size {
-            return Err(corrupt("pack", "inflated size differs from the entry header"));
+            return Err(corrupt(
+                "pack",
+                "inflated size differs from the entry header",
+            ));
         }
         Ok((raw, data))
     }

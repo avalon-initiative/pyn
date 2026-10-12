@@ -65,8 +65,8 @@ impl IndexEntry {
     }
 }
 
-/// The index file. Cache extensions (TREE, REUC, UNTR, FSMN and so on) are skipped on read and never written,
-/// which git accepts and rebuilds; split and sparse indexes are refused.
+/// The index file. Cache extensions (TREE, UNTR, ...) are skipped on read and never written; split and
+/// sparse indexes are refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Index {
     /// 2, 3 or 4. Writing upgrades 2 to 3 when an entry needs extended flags.
@@ -142,18 +142,28 @@ impl Index {
         }
         let mut sorted: Vec<&IndexEntry> = self.entries.iter().collect();
         sorted.sort_by(|a, b| (&a.path, a.stage).cmp(&(&b.path, b.stage)));
-        if sorted.windows(2).any(|w| w[0].path == w[1].path && w[0].stage == w[1].stage) {
+        if sorted
+            .windows(2)
+            .any(|w| w[0].path == w[1].path && w[0].stage == w[1].stage)
+        {
             return Err(invalid("index", "duplicate path and stage"));
         }
 
         let mut out = Vec::new();
         out.extend_from_slice(b"DIRC");
         out.extend_from_slice(&version.to_be_bytes());
-        out.extend_from_slice(&u32::try_from(sorted.len()).map_err(|_| invalid("index", "too many entries"))?.to_be_bytes());
+        out.extend_from_slice(
+            &u32::try_from(sorted.len())
+                .map_err(|_| invalid("index", "too many entries"))?
+                .to_be_bytes(),
+        );
         let mut prev: &[u8] = &[];
         for e in sorted {
             if e.id.algorithm() != algorithm {
-                return Err(invalid("index", "entry id algorithm differs from the repository"));
+                return Err(invalid(
+                    "index",
+                    "entry id algorithm differs from the repository",
+                ));
             }
             if e.path.is_empty() || e.path.contains(&0) || e.stage > 3 {
                 return Err(invalid("index", "bad path or stage"));
@@ -168,7 +178,8 @@ impl Index {
             }
             out.extend_from_slice(e.id.as_bytes());
             let extended = version >= 3 && e.needs_extended();
-            let mut flags = u16::from(e.stage) << FLAG_STAGE_SHIFT | (e.path.len().min(0xfff) as u16);
+            let mut flags =
+                u16::from(e.stage) << FLAG_STAGE_SHIFT | (e.path.len().min(0xfff) as u16);
             if e.assume_valid {
                 flags |= FLAG_ASSUME_VALID;
             }
@@ -278,8 +289,14 @@ fn parse_entry(
     }
     Ok((
         IndexEntry {
-            ctime: Timestamp { seconds: word(0), nanos: word(1) },
-            mtime: Timestamp { seconds: word(2), nanos: word(3) },
+            ctime: Timestamp {
+                seconds: word(0),
+                nanos: word(1),
+            },
+            mtime: Timestamp {
+                seconds: word(2),
+                nanos: word(3),
+            },
             dev: word(4),
             ino: word(5),
             mode: word(6),
@@ -340,7 +357,17 @@ mod tests {
 
     #[test]
     fn varint_round_trips() {
-        for v in [0u64, 1, 127, 128, 129, 16511, 16512, 1 << 21, u32::MAX as u64] {
+        for v in [
+            0u64,
+            1,
+            127,
+            128,
+            129,
+            16511,
+            16512,
+            1 << 21,
+            u32::MAX as u64,
+        ] {
             let mut b = Vec::new();
             write_offset_varint(&mut b, v);
             assert_eq!(read_offset_varint(&b).unwrap(), (v, b.len()), "{v}");

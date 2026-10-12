@@ -41,7 +41,10 @@ impl RefStore {
     }
 
     fn dir_for(&self, name: &str) -> &Path {
-        if PER_WORKTREE.iter().any(|p| name == *p || name.starts_with(p)) {
+        if PER_WORKTREE
+            .iter()
+            .any(|p| name == *p || name.starts_with(p))
+        {
             &self.git_dir
         } else {
             &self.common_dir
@@ -206,8 +209,7 @@ fn parse_packed(algorithm: Algorithm, bytes: &[u8]) -> Result<Vec<PackedRef>> {
         check_name(name)?;
         out.push(PackedRef {
             name: name.to_owned(),
-            id: ObjectId::from_hex(algorithm, hex)
-                .map_err(|_| corrupt("packed-refs", "bad id"))?,
+            id: ObjectId::from_hex(algorithm, hex).map_err(|_| corrupt("packed-refs", "bad id"))?,
             peeled: None,
         });
     }
@@ -243,10 +245,25 @@ mod tests {
 
     #[test]
     fn names() {
-        for ok in ["HEAD", "refs/heads/main", "refs/tags/v1.0", "refs/heads/a-b/c"] {
+        for ok in [
+            "HEAD",
+            "refs/heads/main",
+            "refs/tags/v1.0",
+            "refs/heads/a-b/c",
+        ] {
             assert!(check_name(ok).is_ok(), "{ok}");
         }
-        for bad in ["", "/x", "refs/../x", "refs/heads/a.lock", ".hidden", "a b", "a//b", "a/", "x\u{0}y"] {
+        for bad in [
+            "",
+            "/x",
+            "refs/../x",
+            "refs/heads/a.lock",
+            ".hidden",
+            "a b",
+            "a//b",
+            "a/",
+            "x\u{0}y",
+        ] {
             assert!(check_name(bad).is_err(), "{bad:?}");
         }
     }
@@ -255,10 +272,15 @@ mod tests {
     fn packed_with_peeled() {
         let a = "a".repeat(40);
         let b = "b".repeat(40);
-        let text = format!("# pack-refs with: peeled fully-peeled sorted \n{a} refs/tags/v1\n^{b}\n{b} refs/heads/main\n");
+        let text = format!(
+            "# pack-refs with: peeled fully-peeled sorted \n{a} refs/tags/v1\n^{b}\n{b} refs/heads/main\n"
+        );
         let refs = parse_packed(Algorithm::Sha1, text.as_bytes()).unwrap();
         assert_eq!(refs.len(), 2);
-        assert_eq!(refs[0].peeled, Some(ObjectId::from_hex(Algorithm::Sha1, &b).unwrap()));
+        assert_eq!(
+            refs[0].peeled,
+            Some(ObjectId::from_hex(Algorithm::Sha1, &b).unwrap())
+        );
         assert!(refs[1].peeled.is_none());
         assert!(parse_packed(Algorithm::Sha1, b"zz refs/x\n").is_err());
         assert!(parse_packed(Algorithm::Sha256, text.as_bytes()).is_err());
