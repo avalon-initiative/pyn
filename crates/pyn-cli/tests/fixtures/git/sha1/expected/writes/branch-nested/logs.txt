@@ -1,0 +1,4 @@
+== logs/refs/heads/topic/deep
+0000000000000000000000000000000000000000 128036cd7ff9bf9ad5ab698f051ca2426f98a070 Staging Committer <committer@example.com> 1700000100 -0530	branch: Created from HEAD~1
+== logs/refs/heads/topic2/a/b
+0000000000000000000000000000000000000000 02d7c3ea59480eec7a83420f38fb89ec69c75750 Staging Committer <committer@example.com> 1700000100 -0530	branch: Created from HEAD~3

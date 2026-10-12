@@ -267,9 +267,9 @@ fn commit_moves_the_branch_and_adds_objects_and_nothing_else() {
         repo.ok(&["commit", "-m", "staged only"]);
         let moved = changed(&before, &snapshot(&repo.main));
         assert!(
-            moved
-                .iter()
-                .all(|k| k == ".git/refs/heads/main" || k.starts_with(".git/objects/")),
+            moved.iter().all(|k| k == ".git/refs/heads/main"
+                || k.starts_with(".git/objects/")
+                || k.starts_with(".git/logs")),
             "{format}: {moved:?}"
         );
         repo.ok(&["commit", "-a", "-m", "all"]);
@@ -277,6 +277,7 @@ fn commit_moves_the_branch_and_adds_objects_and_nothing_else() {
         assert!(
             moved.iter().all(|k| k == ".git/refs/heads/main"
                 || k == ".git/index"
+                || k.starts_with(".git/logs")
                 || k.starts_with(".git/objects/")),
             "{format}: {moved:?}"
         );
@@ -395,16 +396,16 @@ fn commit_refuses_what_it_cannot_do_safely_and_changes_nothing() {
 
     git_dir_file(
         &repo,
-        "MERGE_HEAD",
+        "CHERRY_PICK_HEAD",
         "0000000000000000000000000000000000000000\n",
     );
     let (code, err) = repo.fails(&["commit", "-m", "x"]);
     assert_eq!(code, 128);
     assert!(
-        err.contains("in progress") && err.contains("MERGE_HEAD"),
+        err.contains("in progress") && err.contains("CHERRY_PICK_HEAD"),
         "{err}"
     );
-    fs::remove_file(repo.main.join(".git/MERGE_HEAD")).unwrap();
+    fs::remove_file(repo.main.join(".git/CHERRY_PICK_HEAD")).unwrap();
     assert_eq!(snapshot(&repo.main), before);
 
     fs::create_dir(repo.main.join(".git/rebase-merge")).unwrap();

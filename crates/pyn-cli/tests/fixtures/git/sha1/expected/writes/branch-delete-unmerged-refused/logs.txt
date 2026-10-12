@@ -1,0 +1,7 @@
+== logs/HEAD
+06fbff9729778f6ff2a07d62d4566e7ddaf81437 06fbff9729778f6ff2a07d62d4566e7ddaf81437 Staging Committer <committer@example.com> 1700000100 -0530	checkout: moving from main to work
+06fbff9729778f6ff2a07d62d4566e7ddaf81437 81f83c4b28e2c22fcfc3b7fc0319b71d1be33232 Staging Committer <committer@example.com> 1700000100 -0530	commit: work
+81f83c4b28e2c22fcfc3b7fc0319b71d1be33232 06fbff9729778f6ff2a07d62d4566e7ddaf81437 Staging Committer <committer@example.com> 1700000100 -0530	checkout: moving from work to main
+== logs/refs/heads/work
+0000000000000000000000000000000000000000 06fbff9729778f6ff2a07d62d4566e7ddaf81437 Staging Committer <committer@example.com> 1700000100 -0530	branch: Created from HEAD
+06fbff9729778f6ff2a07d62d4566e7ddaf81437 81f83c4b28e2c22fcfc3b7fc0319b71d1be33232 Staging Committer <committer@example.com> 1700000100 -0530	commit: work

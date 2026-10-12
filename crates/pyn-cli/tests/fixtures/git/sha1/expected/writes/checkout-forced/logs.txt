@@ -1,0 +1,4 @@
+== logs/HEAD
+06fbff9729778f6ff2a07d62d4566e7ddaf81437 02d7c3ea59480eec7a83420f38fb89ec69c75750 Staging Committer <committer@example.com> 1700000100 -0530	checkout: moving from main to old
+== logs/refs/heads/old
+0000000000000000000000000000000000000000 02d7c3ea59480eec7a83420f38fb89ec69c75750 Staging Committer <committer@example.com> 1700000100 -0530	branch: Created from HEAD~3

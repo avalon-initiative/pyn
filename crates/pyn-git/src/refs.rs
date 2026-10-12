@@ -28,7 +28,7 @@ pub struct PackedRef {
 pub struct RefStore {
     git_dir: PathBuf,
     common_dir: PathBuf,
-    algorithm: Algorithm,
+    pub(crate) algorithm: Algorithm,
 }
 
 impl RefStore {
@@ -40,7 +40,7 @@ impl RefStore {
         }
     }
 
-    fn dir_for(&self, name: &str) -> &Path {
+    pub(crate) fn dir_for(&self, name: &str) -> &Path {
         if PER_WORKTREE
             .iter()
             .any(|p| name == *p || name.starts_with(p))
@@ -134,31 +134,130 @@ impl RefStore {
 
     /// Creates or moves a direct ref through a `.lock` file, as git does.
     pub fn update(&self, name: &str, id: &ObjectId) -> Result<()> {
+        self.update_checked(name, Expect::Any, id)
+    }
+
+    /// Like [`RefStore::update`], but fails unless the ref is as `expect` says once the lock is held.
+    pub fn update_checked(&self, name: &str, expect: Expect, id: &ObjectId) -> Result<()> {
         check_name(name)?;
         if id.algorithm() != self.algorithm {
             return Err(invalid("ref", "id algorithm differs from the repository"));
         }
-        self.write_ref(name, format!("{id}\n"))
+        self.write_ref(name, expect, format!("{id}\n"))
     }
 
     pub fn set_symbolic(&self, name: &str, target: &str) -> Result<()> {
         check_name(name)?;
         check_name(target)?;
-        self.write_ref(name, format!("ref: {target}\n"))
+        self.write_ref(name, Expect::Any, format!("ref: {target}\n"))
     }
 
-    fn write_ref(&self, name: &str, content: String) -> Result<()> {
+    fn write_ref(&self, name: &str, expect: Expect, content: String) -> Result<()> {
         let path = self.dir_for(name).join(name);
         let parent = path.parent().expect("ref path has a parent");
         fs::create_dir_all(parent).map_err(io_at(parent))?;
-        let lock = PathBuf::from(format!("{}.lock", path.display()));
+        let lock = lock_path(&path);
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock)
+            .map_err(io_at(&lock))?;
+        let result = self.check_expect(name, expect).and_then(|()| {
+            file.write_all(content.as_bytes())
+                .and_then(|()| file.sync_all())
+                .and_then(|()| fs::rename(&lock, &path))
+                .map_err(io_at(&path))
+        });
+        if result.is_err() {
+            let _ = fs::remove_file(&lock);
+        }
+        result
+    }
+
+    fn check_expect(&self, name: &str, expect: Expect) -> Result<()> {
+        let current = match self.read(name)? {
+            Some(Ref::Direct(id)) => Some(id),
+            _ => None,
+        };
+        let ok = match expect {
+            Expect::Any => true,
+            Expect::Absent => current.is_none(),
+            Expect::Id(id) => current == Some(id),
+        };
+        if ok {
+            Ok(())
+        } else {
+            Err(Error::RefChanged(name.to_owned()))
+        }
+    }
+
+    /// Removes a ref, loose and packed, through its `.lock` file; fails if it is not as `expect` says.
+    pub fn delete(&self, name: &str, expect: Expect) -> Result<()> {
+        check_name(name)?;
+        let path = self.dir_for(name).join(name);
+        let parent = path.parent().expect("ref path has a parent");
+        fs::create_dir_all(parent).map_err(io_at(parent))?;
+        let lock = lock_path(&path);
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock)
+            .map_err(io_at(&lock))?;
+        let result = self.check_expect(name, expect).and_then(|()| {
+            match fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(io_at(&path)(e)),
+            }
+            self.remove_packed(name)
+        });
+        let _ = fs::remove_file(&lock);
+        if result.is_ok() {
+            self.prune_empty_dirs(parent);
+        }
+        result
+    }
+
+    fn remove_packed(&self, name: &str) -> Result<()> {
+        let path = self.common_dir.join("packed-refs");
+        let bytes = match fs::read(&path) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(io_at(&path)(e)),
+        };
+        if !parse_packed(self.algorithm, &bytes)?
+            .iter()
+            .any(|p| p.name == name)
+        {
+            return Ok(());
+        }
+        let text = String::from_utf8_lossy(&bytes).into_owned();
+        let mut kept = String::new();
+        let mut skipping = false;
+        for line in text.split_inclusive('\n') {
+            if line.starts_with('^') {
+                if skipping {
+                    continue;
+                }
+            } else if !line.starts_with('#') {
+                skipping = line
+                    .trim_end()
+                    .split_once(' ')
+                    .is_some_and(|(_, n)| n == name);
+                if skipping {
+                    continue;
+                }
+            }
+            kept.push_str(line);
+        }
+        let lock = lock_path(&path);
         let mut file = OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&lock)
             .map_err(io_at(&lock))?;
         let result = file
-            .write_all(content.as_bytes())
+            .write_all(kept.as_bytes())
             .and_then(|()| file.sync_all())
             .and_then(|()| fs::rename(&lock, &path));
         if let Err(e) = result {
@@ -167,6 +266,33 @@ impl RefStore {
         }
         Ok(())
     }
+
+    /// Removes empty folders from `dir` upward, keeping `refs/` and its first level (`heads`, `tags`).
+    fn prune_empty_dirs(&self, dir: &Path) {
+        let refs = self.common_dir.join("refs");
+        let mut dir = dir.to_path_buf();
+        while dir.starts_with(&refs) && dir.parent() != Some(refs.as_path()) && dir != refs {
+            if fs::remove_dir(&dir).is_err() {
+                break;
+            }
+            match dir.parent() {
+                Some(p) => dir = p.to_path_buf(),
+                None => break,
+            }
+        }
+    }
+}
+
+/// What a ref must hold when a write or delete gets the lock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Expect {
+    Any,
+    Absent,
+    Id(ObjectId),
+}
+
+pub(crate) fn lock_path(path: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.lock", path.display()))
 }
 
 fn walk(dir: &Path, name: &str, out: &mut Vec<String>) -> Result<()> {

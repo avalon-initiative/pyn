@@ -1,0 +1,2 @@
+== logs/HEAD
+06fbff9729778f6ff2a07d62d4566e7ddaf81437 06fbff9729778f6ff2a07d62d4566e7ddaf81437 Staging Committer <committer@example.com> 1700000100 -0530	checkout: moving from main to main

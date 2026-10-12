@@ -1,0 +1,25 @@
+== HEAD
+tree 0d3a83eea1ae1a8644eec0a4ed0531072c26e135
+author Fixture Author <author@example.com> 1700086400 +0200
+committer Fixture Committer <committer@example.com> 1700086400 -0530
+
+initial commit
+== refs/tags/light
+tree 9d0de2b6ca194770d47d142bf45ea282eb0c4f60
+parent 02d7c3ea59480eec7a83420f38fb89ec69c75750
+author Fixture Author <author@example.com> 1700172800 +0200
+committer Fixture Committer <committer@example.com> 1700172800 -0530
+
+second commit
+
+A body paragraph that
+spans two lines.
+
+    indented line
+== refs/tags/v1
+object 06fbff9729778f6ff2a07d62d4566e7ddaf81437
+type commit
+tag v1
+tagger Fixture Committer <committer@example.com> 1700432000 +0000
+
+release one

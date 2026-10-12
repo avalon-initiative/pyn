@@ -14,10 +14,10 @@ use pyn_object::{
 
 use super::{GitHome, path_string};
 
-const GITLINK: u32 = 0o160000;
+pub(super) const GITLINK: u32 = 0o160000;
 const LOCAL_ONLY: &str = ".pyn/local_only";
 /// States that a commit made by pyn would silently ignore, so it refuses them.
-const IN_PROGRESS: [&str; 6] = [
+pub(super) const IN_PROGRESS: [&str; 6] = [
     "MERGE_HEAD",
     "CHERRY_PICK_HEAD",
     "REVERT_HEAD",
@@ -40,7 +40,7 @@ pub struct AddOptions {
     pub force: bool,
 }
 
-fn raw_mode(mode: FileMode) -> u32 {
+pub(super) fn raw_mode(mode: FileMode) -> u32 {
     match mode {
         FileMode::Regular => 0o100644,
         FileMode::Executable => 0o100755,
@@ -50,7 +50,7 @@ fn raw_mode(mode: FileMode) -> u32 {
     }
 }
 
-fn leaf_mode(raw: u32) -> FileMode {
+pub(super) fn leaf_mode(raw: u32) -> FileMode {
     match raw {
         GITLINK => FileMode::Gitlink,
         0o120000 => FileMode::Symlink,
@@ -60,12 +60,12 @@ fn leaf_mode(raw: u32) -> FileMode {
 }
 
 /// The index as read, with its raw bytes so a write can tell whether anything else changed it meanwhile.
-struct OpenIndex {
-    raw: Option<Vec<u8>>,
-    index: Index,
+pub(super) struct OpenIndex {
+    pub(super) raw: Option<Vec<u8>>,
+    pub(super) index: Index,
 }
 
-fn read_raw(path: &Path) -> Result<Option<Vec<u8>>> {
+pub(super) fn read_raw(path: &Path) -> Result<Option<Vec<u8>>> {
     match std::fs::read(path) {
         Ok(bytes) => Ok(Some(bytes)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -74,7 +74,7 @@ fn read_raw(path: &Path) -> Result<Option<Vec<u8>>> {
 }
 
 impl GitHome {
-    fn open_index(&self) -> Result<OpenIndex> {
+    pub(super) fn open_index(&self) -> Result<OpenIndex> {
         let raw = read_raw(&self.repo.git().index_path())?;
         let index = match &raw {
             Some(bytes) => Index::parse(bytes, self.repo.algorithm())?,
@@ -83,7 +83,7 @@ impl GitHome {
         Ok(OpenIndex { raw, index })
     }
 
-    fn save_index(&self, opened: &OpenIndex, index: &Index) -> Result<()> {
+    pub(super) fn save_index(&self, opened: &OpenIndex, index: &Index) -> Result<()> {
         if read_raw(&self.repo.git().index_path())? != opened.raw {
             bail!("the index changed while pyn was working; run the command again");
         }
@@ -92,12 +92,12 @@ impl GitHome {
 }
 
 /// The repository paths the arguments name, with `""` (everything) when one of them is the root.
-struct Specs {
-    spec: Pathspec,
-    named: Vec<(String, String)>,
+pub(super) struct Specs {
+    pub(super) spec: Pathspec,
+    pub(super) named: Vec<(String, String)>,
 }
 
-fn resolve_specs(git: &GitHome, cwd: &Path, args: &[String]) -> Result<Specs> {
+pub(super) fn resolve_specs(git: &GitHome, cwd: &Path, args: &[String]) -> Result<Specs> {
     let named = args
         .iter()
         .map(|a| Ok((a.clone(), git.ws.repo_prefix(cwd, a)?)))
@@ -110,7 +110,7 @@ fn resolve_specs(git: &GitHome, cwd: &Path, args: &[String]) -> Result<Specs> {
     Ok(Specs { spec, named })
 }
 
-fn under(path: &[u8], prefix: &[u8]) -> bool {
+pub(super) fn under(path: &[u8], prefix: &[u8]) -> bool {
     prefix.is_empty()
         || path == prefix
         || (path.starts_with(prefix) && path.get(prefix.len()) == Some(&b'/'))
@@ -133,12 +133,12 @@ fn require_matches(
     Ok(())
 }
 
-struct Ignores {
-    ignore: pyn_gitwork::Ignore,
+pub(super) struct Ignores {
+    pub(super) ignore: pyn_gitwork::Ignore,
 }
 
 impl Ignores {
-    fn level(git: &GitHome, dir: &[u8]) -> Result<Option<Level>> {
+    pub(super) fn level(git: &GitHome, dir: &[u8]) -> Result<Option<Level>> {
         let file = fs_path(git.repo.root()?, dir).join(".gitignore");
         match std::fs::symlink_metadata(&file) {
             Ok(m) if m.is_file() => {
@@ -155,7 +155,7 @@ impl Ignores {
     }
 
     /// Whether the path, or a folder above it, is hidden by ignore rules.
-    fn hides(&self, git: &GitHome, path: &[u8], is_dir: bool) -> Result<bool> {
+    pub(super) fn hides(&self, git: &GitHome, path: &[u8], is_dir: bool) -> Result<bool> {
         let mut levels = Vec::new();
         let mut dir_end = 0;
         let mut dir: &[u8] = b"";
@@ -341,13 +341,13 @@ fn plan(git: &GitHome, index: &Index, specs: &Specs, update: bool, force: bool) 
 }
 
 #[cfg(unix)]
-fn link_target(path: &Path) -> Result<Vec<u8>> {
+pub(super) fn link_target(path: &Path) -> Result<Vec<u8>> {
     use std::os::unix::ffi::OsStringExt;
     Ok(std::fs::read_link(path)?.into_os_string().into_vec())
 }
 
 #[cfg(not(unix))]
-fn link_target(path: &Path) -> Result<Vec<u8>> {
+pub(super) fn link_target(path: &Path) -> Result<Vec<u8>> {
     Ok(std::fs::read_link(path)?
         .to_string_lossy()
         .into_owned()
@@ -355,7 +355,7 @@ fn link_target(path: &Path) -> Result<Vec<u8>> {
 }
 
 #[cfg(unix)]
-fn stat_fields(entry: &mut IndexEntry, meta: &Metadata) {
+pub(super) fn stat_fields(entry: &mut IndexEntry, meta: &Metadata) {
     use std::os::unix::fs::MetadataExt;
     let time = |s: i64, n: i64| Timestamp {
         seconds: s as u32,
@@ -371,13 +371,17 @@ fn stat_fields(entry: &mut IndexEntry, meta: &Metadata) {
 }
 
 #[cfg(not(unix))]
-fn stat_fields(entry: &mut IndexEntry, meta: &Metadata) {
+pub(super) fn stat_fields(entry: &mut IndexEntry, meta: &Metadata) {
     entry.size = meta.len() as u32;
     let _ = Timestamp::default();
 }
 
 /// Writes the file's blob and returns the index entry for it; `existing` keeps the mode where `core.filemode` is off.
-fn stage_file(git: &GitHome, path: &[u8], existing: Option<&IndexEntry>) -> Result<IndexEntry> {
+pub(super) fn stage_file(
+    git: &GitHome,
+    path: &[u8],
+    existing: Option<&IndexEntry>,
+) -> Result<IndexEntry> {
     let file = fs_path(git.repo.root()?, path);
     let meta =
         std::fs::symlink_metadata(&file).with_context(|| format!("reading {}", file.display()))?;
@@ -404,9 +408,9 @@ fn stage_file(git: &GitHome, path: &[u8], existing: Option<&IndexEntry>) -> Resu
     Ok(entry)
 }
 
-type Entries = BTreeMap<(Vec<u8>, u8), IndexEntry>;
+pub(super) type Entries = BTreeMap<(Vec<u8>, u8), IndexEntry>;
 
-fn entries_of(index: &Index) -> Entries {
+pub(super) fn entries_of(index: &Index) -> Entries {
     index
         .entries
         .iter()
@@ -414,7 +418,7 @@ fn entries_of(index: &Index) -> Entries {
         .collect()
 }
 
-fn index_of(version: u32, entries: Entries) -> Index {
+pub(super) fn index_of(version: u32, entries: Entries) -> Index {
     Index {
         version,
         entries: entries.into_values().collect(),
@@ -422,7 +426,7 @@ fn index_of(version: u32, entries: Entries) -> Index {
 }
 
 /// Puts `entry` in place of whatever file or folder the index had at its path or above it.
-fn put_entry(entries: &mut Entries, entry: IndexEntry) {
+pub(super) fn put_entry(entries: &mut Entries, entry: IndexEntry) {
     let path = entry.path.clone();
     for (i, b) in path.iter().enumerate() {
         if *b == b'/' {
@@ -447,7 +451,7 @@ fn put_entry(entries: &mut Entries, entry: IndexEntry) {
     entries.insert((path, 0), entry);
 }
 
-fn remove_entry(entries: &mut Entries, path: &[u8]) {
+pub(super) fn remove_entry(entries: &mut Entries, path: &[u8]) {
     for stage in 0..=3 {
         entries.remove(&(path.to_vec(), stage));
     }
@@ -616,7 +620,7 @@ fn write_dir(
 }
 
 /// Writes the trees for the index's resolved entries and returns the root tree's id.
-fn write_tree(git: &GitHome, index: &Index) -> Result<ObjectId> {
+pub(super) fn write_tree(git: &GitHome, index: &Index) -> Result<ObjectId> {
     let mut items: Vec<(&[u8], FileMode, ObjectId)> = index
         .entries
         .iter()
@@ -627,7 +631,7 @@ fn write_tree(git: &GitHome, index: &Index) -> Result<ObjectId> {
     write_dir(git, &items, 0)
 }
 
-fn local_offset_minutes() -> i32 {
+pub(super) fn local_offset_minutes() -> i32 {
     chrono::Local::now().offset().local_minus_utc() / 60
 }
 
@@ -673,12 +677,12 @@ fn clean_ident(text: &str) -> String {
         .to_string()
 }
 
-fn env(name: &str) -> Option<String> {
+pub(super) fn env(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|v| !v.is_empty())
 }
 
 /// The author or committer: `GIT_<ROLE>_*`, then `<role>.name` and `<role>.email`, then `user.*`.
-fn identity(git: &GitHome, role: &str) -> Result<Signature> {
+pub(super) fn identity(git: &GitHome, role: &str) -> Result<Signature> {
     let upper = role.to_ascii_uppercase();
     let config = git.repo.config();
     let pick = |var: &str, key: &str| {
@@ -712,7 +716,7 @@ fn identity(git: &GitHome, role: &str) -> Result<Signature> {
 
 /// Git's `whitespace` cleanup for a message given with `-m`: trailing blanks off every line, no leading or
 /// trailing empty lines, runs of empty lines collapsed, and a final newline.
-fn clean_message(messages: &[String]) -> Vec<u8> {
+pub(super) fn clean_message(messages: &[String]) -> Vec<u8> {
     let text = messages.join("\n\n");
     let mut lines: Vec<&str> = Vec::new();
     for line in text.lines().map(str::trim_end) {
@@ -729,21 +733,23 @@ fn clean_message(messages: &[String]) -> Vec<u8> {
     out.into_bytes()
 }
 
-fn refuse_unsafe_state(git: &GitHome) -> Result<()> {
+/// Stops, naming the state, while a merge, cherry-pick, revert or rebase is in progress.
+pub(super) fn refuse_in_progress(git: &GitHome) -> Result<()> {
+    refuse_states(git, &IN_PROGRESS)
+}
+
+fn refuse_states(git: &GitHome, states: &[&str]) -> Result<()> {
     let dir = git.repo.git().git_dir();
-    if let Some(name) = IN_PROGRESS.iter().find(|n| dir.join(n).exists()) {
+    if let Some(name) = states.iter().find(|n| dir.join(n).exists()) {
         bail!(
             "a merge, cherry-pick, revert or rebase is in progress ({name}); \
              pyn cannot continue it, so finish or abort it with git first"
         );
     }
-    if git.repo.bool_setting("commit.gpgsign", false) {
-        bail!("commit.gpgsign is set and pyn cannot sign commits yet; unset it to commit with pyn");
-    }
     Ok(())
 }
 
-fn warn_about_hooks(git: &GitHome) {
+pub(super) fn warn_about_hooks(git: &GitHome) {
     let common = git.repo.git().common_dir();
     let hooks = match git.repo.config().get("core.hookspath") {
         Some(p) => common.join(p),
@@ -757,9 +763,57 @@ fn warn_about_hooks(git: &GitHome) {
     }
 }
 
-/// `pyn commit` on a branch: one commit with the index as its tree, then the branch moves to it.
+/// The commits a merge in progress is merging in (`MERGE_HEAD`), empty when there is none.
+pub(super) fn merge_heads(git: &GitHome) -> Result<Vec<ObjectId>> {
+    let path = git.repo.git().git_dir().join("MERGE_HEAD");
+    let Some(bytes) = read_raw(&path)? else {
+        return Ok(Vec::new());
+    };
+    String::from_utf8_lossy(&bytes)
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| Ok(ObjectId::from_hex(git.repo.algorithm(), l.trim())?))
+        .collect()
+}
+
+/// Removes the files that mark a merge in progress.
+pub(super) fn clear_merge_state(git: &GitHome) {
+    let dir = git.repo.git().git_dir();
+    for name in ["MERGE_HEAD", "MERGE_MSG", "MERGE_MODE", "AUTO_MERGE"] {
+        let _ = std::fs::remove_file(dir.join(name));
+    }
+}
+
+/// `MERGE_MSG` with its comment lines dropped, as `git commit` uses it.
+fn merge_message(git: &GitHome) -> Result<Option<Vec<u8>>> {
+    let Some(bytes) = read_raw(&git.repo.git().git_dir().join("MERGE_MSG"))? else {
+        return Ok(None);
+    };
+    let text = String::from_utf8_lossy(&bytes);
+    let kept: Vec<String> = text
+        .lines()
+        .filter(|l| !l.starts_with('#'))
+        .map(str::to_string)
+        .collect();
+    Ok(Some(clean_message(&[kept.join("\n")])))
+}
+
+/// `pyn commit` on a branch: one commit with the index as its tree, then the branch moves to it. During a merge
+/// the commit has the merged-in commits as further parents and the merge's own message unless `-m` is given.
 pub fn commit(git: &GitHome, messages: &[String], all: bool) -> Result<()> {
-    refuse_unsafe_state(git)?;
+    refuse_states(
+        git,
+        &[
+            "CHERRY_PICK_HEAD",
+            "REVERT_HEAD",
+            "rebase-merge",
+            "rebase-apply",
+            "sequencer",
+        ],
+    )?;
+    if git.repo.bool_setting("commit.gpgsign", false) {
+        bail!("commit.gpgsign is set and pyn cannot sign commits yet; unset it to commit with pyn");
+    }
     let head = git.repo.head()?;
     let (branch_ref, parent) = match (&head, git.repo.git().refs().head()?) {
         (Head::Branch { id, .. }, Ref::Symbolic(target)) => (target, *id),
@@ -767,11 +821,21 @@ pub fn commit(git: &GitHome, messages: &[String], all: bool) -> Result<()> {
             "HEAD is detached; pyn commits only on a branch, so create or switch to one with git first"
         ),
     };
+    let merged = merge_heads(git)?;
+    let message = match (messages.is_empty(), merge_message(git)?) {
+        (false, _) => clean_message(messages),
+        (true, Some(m)) if !merged.is_empty() => m,
+        _ => crate::usage_error(
+            "the following required arguments were not provided:\n  --message <MESSAGE>",
+        ),
+    };
     let author = identity(git, "author")?;
     let committer = identity(git, "committer")?;
     let opened = git.open_index()?;
     if opened.index.entries.iter().any(|e| e.stage > 0) {
-        bail!("the index has unmerged paths; pyn cannot resolve merge conflicts yet");
+        bail!(
+            "Committing is not possible because you have unmerged files; resolve them and stage them with `pyn add`"
+        );
     }
     let mut entries = entries_of(&opened.index);
     let mut staged_now = false;
@@ -790,15 +854,14 @@ pub fn commit(git: &GitHome, messages: &[String], all: bool) -> Result<()> {
         Some(p) => git.repo.commit(&p)?.tree,
         None => hash_object(git.repo.algorithm(), ObjectKind::Tree, b"")?,
     };
-    if tree == parent_tree {
+    if tree == parent_tree && merged.is_empty() {
         eprintln!("nothing to commit; stage changes with `pyn add`, or use `pyn commit -a`");
         std::process::exit(1);
     }
     warn_about_hooks(git);
-    let message = clean_message(messages);
     let record = Commit {
         tree,
-        parents: parent.into_iter().collect(),
+        parents: parent.into_iter().chain(merged.iter().copied()).collect(),
         author,
         committer,
         extra_headers: Vec::new(),
@@ -811,19 +874,29 @@ pub fn commit(git: &GitHome, messages: &[String], all: bool) -> Result<()> {
     if staged_now {
         git.save_index(&opened, &index)?;
     }
-    if git.repo.head()? != head {
-        bail!("HEAD moved while committing; run the command again");
-    }
-    git.repo.git().refs().update(&branch_ref, &id)?;
     let Head::Branch { name, .. } = &head else {
         unreachable!("checked above");
     };
+    let subject = String::from_utf8_lossy(&message);
+    let first = subject.lines().next().unwrap_or_default();
+    let kind = match (parent.is_none(), merged.is_empty()) {
+        (true, _) => " (initial)",
+        (_, false) => " (merge)",
+        _ => "",
+    };
+    git.move_ref(
+        &branch_ref,
+        parent.as_ref(),
+        &id,
+        &format!("commit{kind}: {first}"),
+    )
+    .context("HEAD moved while committing; run the command again")?;
+    clear_merge_state(git);
     let root = if parent.is_none() {
         " (root-commit)"
     } else {
         ""
     };
-    let subject = String::from_utf8_lossy(&message);
     let changed = git
         .repo
         .diff_trees(
@@ -832,11 +905,7 @@ pub fn commit(git: &GitHome, messages: &[String], all: bool) -> Result<()> {
             &Pathspec::default(),
         )?
         .len();
-    println!(
-        "[{name}{root} {}] {}",
-        &id.to_hex()[..7],
-        subject.lines().next().unwrap_or_default()
-    );
+    println!("[{name}{root} {}] {first}", &id.to_hex()[..7]);
     println!("{changed} file(s) changed");
     Ok(())
 }

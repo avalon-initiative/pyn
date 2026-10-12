@@ -61,38 +61,41 @@ pub fn note_branch(ws: Option<&Workspace>) {
 #[derive(Debug, Args)]
 pub struct BranchArgs {
     /// `<name> [<start>]` creates a branch; with -d or -D the branches to delete; with -m `[<old>] <new>`.
-    names: Vec<String>,
+    pub(crate) names: Vec<String>,
     /// Delete a branch whose commits are all on the default branch.
     #[arg(short = 'd', long)]
-    delete: bool,
+    pub(crate) delete: bool,
     /// Delete a branch even when it has commits the default branch lacks.
     #[arg(short = 'D')]
-    force_delete: bool,
+    pub(crate) force_delete: bool,
     /// Rename a branch (the current one if only the new name is given).
     #[arg(short = 'm', long = "move")]
-    rename: bool,
+    pub(crate) rename: bool,
     /// List branches (the default with no arguments).
     #[arg(short = 'l', long)]
-    list: bool,
+    pub(crate) list: bool,
     /// With the list, show each branch's commit and message.
     #[arg(short = 'v', long)]
-    verbose: bool,
+    pub(crate) verbose: bool,
     /// Print the current branch's name.
     #[arg(long)]
-    show_current: bool,
+    pub(crate) show_current: bool,
 }
 
 /// Switch the workspace to another branch.
 #[derive(Debug, Args)]
 pub struct SwitchArgs {
     /// The branch to switch to; with -c, where the new branch starts.
-    start: Option<String>,
+    pub(crate) start: Option<String>,
     /// Create the branch and switch to it.
     #[arg(short = 'c', long)]
-    create: Option<String>,
+    pub(crate) create: Option<String>,
     /// Discard local changes that the switch would overwrite.
     #[arg(short = 'f', long, alias = "discard-changes")]
-    force: bool,
+    pub(crate) force: bool,
+    /// Check out a commit with a detached HEAD (a git repository only).
+    #[arg(short = 'd', long)]
+    pub(crate) detach: bool,
 }
 
 /// Switch branches, or restore files from the workspace's revisions or from another commit.
@@ -100,22 +103,25 @@ pub struct SwitchArgs {
 pub struct CheckoutArgs {
     /// A branch to switch to, or with `--` the branch or commit to take the files from; with -b, where the new
     /// branch starts.
-    args: Vec<String>,
+    pub(crate) args: Vec<String>,
     /// Files to restore: to the revision the workspace has, or to the one the named commit has.
     #[arg(last = true)]
-    paths: Vec<String>,
+    pub(crate) paths: Vec<String>,
     /// Create the branch and switch to it.
     #[arg(short = 'b')]
-    create: Option<String>,
+    pub(crate) create: Option<String>,
     /// Discard local changes that the switch would overwrite.
     #[arg(short = 'f', long)]
-    force: bool,
+    pub(crate) force: bool,
+    /// Check out a commit with a detached HEAD (a git repository only).
+    #[arg(long)]
+    pub(crate) detach: bool,
     /// During a merge, take the current branch's version of the conflicted files.
     #[arg(long, conflicts_with = "theirs")]
-    ours: bool,
+    pub(crate) ours: bool,
     /// During a merge, take the merged-in version of the conflicted files.
     #[arg(long)]
-    theirs: bool,
+    pub(crate) theirs: bool,
 }
 
 fn branches(api: &Api) -> Result<Vec<api::Branch>> {
@@ -302,6 +308,11 @@ pub fn switch_command(
     args: SwitchArgs,
 ) -> Result<()> {
     let api = backend.pyn_server("switch")?;
+    if args.detach {
+        bail!(
+            "`pyn switch --detach` needs a git repository; a pyn server's branches always have a head"
+        );
+    }
     let ws = ws.context("`pyn switch` works inside a workspace; run `pyn clone` first")?;
     match (args.create, args.start) {
         (Some(new), start) => {
@@ -328,6 +339,11 @@ pub fn checkout_command(
     rp: &dyn Fn(&str) -> Result<String>,
 ) -> Result<()> {
     let api = backend.pyn_server("checkout")?;
+    if args.detach {
+        bail!(
+            "`pyn checkout --detach` needs a git repository; a pyn server's branches always have a head"
+        );
+    }
     let ws = ws.context(
         "`pyn checkout` switches branches and restores files inside a workspace; run `pyn clone` first. \
          To take an exclusive lock use `pyn lock <path>`",
@@ -337,6 +353,7 @@ pub fn checkout_command(
         paths,
         create: new,
         force,
+        detach: _,
         ours,
         theirs,
     } = args;

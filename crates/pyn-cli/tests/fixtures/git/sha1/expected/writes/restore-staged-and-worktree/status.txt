@@ -1,0 +1,9 @@
+ M README.md
+ D data.bin
+ M feature.txt
+?? keep.out
+?? new.txt
+?? newdir/
+?? newlink
+?? src/important.tmp
+?? sub/

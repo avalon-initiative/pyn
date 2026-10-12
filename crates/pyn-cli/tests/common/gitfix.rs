@@ -50,6 +50,26 @@ pub struct Repo {
 }
 
 impl Repo {
+    /// The clean merge repository (`fixtures/git/merge`): branches that merge cleanly, conflict and fast-forward.
+    pub fn merge(format: &'static str) -> Self {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let (main, home) = (root.join("main"), root.join("home"));
+        fs::create_dir_all(&home).unwrap();
+        copy_tree(&fixtures().join("merge/worktree"), &main);
+        copy_tree(
+            &fixtures().join("merge").join(format).join("dot-git"),
+            &main.join(".git"),
+        );
+        Self {
+            format,
+            _tmp: tmp,
+            linked: main.clone(),
+            main,
+            home,
+        }
+    }
+
     pub fn new(format: &'static str) -> Self {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().canonicalize().unwrap();
@@ -197,4 +217,116 @@ pub fn sorted_lines(text: &str) -> Vec<String> {
     let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
     lines.sort();
     lines
+}
+
+/// One line of `scenarios-writes.txt`.
+pub struct Scenario {
+    pub name: String,
+    pub fixture: String,
+    pub linked: bool,
+    pub sub: String,
+    pub commands: Vec<Vec<String>>,
+}
+
+pub fn scenarios() -> Vec<Scenario> {
+    let text = fs::read_to_string(fixtures().join("scenarios-writes.txt")).unwrap();
+    text.lines()
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(|line| {
+            let cols: Vec<&str> = line.split('\t').collect();
+            Scenario {
+                name: cols[0].to_string(),
+                fixture: cols[1].to_string(),
+                linked: cols[2] == "linked",
+                sub: if cols[3] == "." {
+                    String::new()
+                } else {
+                    cols[3].to_string()
+                },
+                commands: cols[4]
+                    .split(" ;; ")
+                    .map(|c| c.split_whitespace().map(|a| a.replace('+', " ")).collect())
+                    .collect(),
+            }
+        })
+        .collect()
+}
+
+impl Repo {
+    pub fn expected_writes(&self, fixture: &str, name: &str, file: &str) -> String {
+        let base = if fixture == "merge" {
+            fixtures().join("merge").join(self.format)
+        } else {
+            fixtures().join(self.format)
+        };
+        fs::read_to_string(base.join("expected/writes").join(name).join(file))
+            .unwrap_or_else(|_| panic!("{} {name}/{file} is not in the fixtures", self.format))
+    }
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// The work tree as the fixture script dumps it: every file and link, with permissions and content hash.
+pub fn tree_dump(root: &Path) -> String {
+    fn walk(root: &Path, dir: &Path, out: &mut Vec<String>) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            let rel = format!("./{}", path.strip_prefix(root).unwrap().display());
+            let meta = fs::symlink_metadata(&path).unwrap();
+            if rel == "./.git" {
+                continue;
+            }
+            if meta.file_type().is_symlink() {
+                out.push(format!(
+                    "{rel} -> {}",
+                    fs::read_link(&path).unwrap().display()
+                ));
+            } else if meta.is_dir() {
+                walk(root, &path, out);
+            } else {
+                out.push(format!(
+                    "{rel} {:o} {}",
+                    meta.permissions().mode() & 0o777,
+                    sha256_hex(&fs::read(&path).unwrap())
+                ));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(root, root, &mut out);
+    out.sort();
+    out.iter().map(|l| format!("{l}\n")).collect()
+}
+
+/// The reflog files, as the fixture script dumps them.
+pub fn logs_dump(common: &Path) -> String {
+    fn walk(base: &Path, dir: &Path, out: &mut Vec<String>) {
+        let Ok(rd) = fs::read_dir(dir) else { return };
+        for entry in rd {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                walk(base, &path, out);
+            } else {
+                out.push(path.strip_prefix(base).unwrap().display().to_string());
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(common, &common.join("logs"), &mut files);
+    if let Ok(rd) = fs::read_dir(common.join("worktrees")) {
+        for entry in rd {
+            walk(common, &entry.unwrap().path().join("logs"), &mut files);
+        }
+    }
+    files.sort();
+    files
+        .iter()
+        .map(|f| format!("== {f}\n{}", fs::read_to_string(common.join(f)).unwrap()))
+        .collect()
 }

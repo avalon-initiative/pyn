@@ -1,0 +1,10 @@
+ M README.md
+ D data.bin
+MM src/lib.rs
+A  staged.txt
+?? keep.out
+?? new.txt
+?? newdir/
+?? newlink
+?? src/important.tmp
+?? sub/

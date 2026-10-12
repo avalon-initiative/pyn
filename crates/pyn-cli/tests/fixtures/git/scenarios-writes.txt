@@ -1,0 +1,75 @@
+# One scenario per line: name, fixture, work tree, folder, then commands separated by " ;; ".
+# Each command is run with git to record <format>/expected/writes/<name>/ (regenerate-writes.sh) and with pyn by
+# tests/git_writes.rs, which compares what is left on disk. "+" in an argument is a space. Special commands:
+#   @write <path> <text>   writes the file (text with "+" for spaces and "\n" for a newline)
+#   @resume                `git commit --no-edit` for git, `pyn commit` for pyn (finishes a merge)
+# A name starting with "out-" also compares the standard output of the last command.
+# fixture: main = the dirty scenario repository (worktree/, linked/); merge = the clean merge repository.
+# tree: main or linked.
+branch-create	main	main	.	branch topic
+branch-create-start	main	main	.	branch topic HEAD~2
+branch-create-tag-start	main	main	.	branch topic v1
+branch-exists-refused	main	main	.	branch feature
+branch-nested	main	main	.	branch topic/deep HEAD~1 ;; branch topic2/a/b HEAD~3
+branch-nested-clash-refused	main	main	.	branch topic HEAD~1 ;; branch topic/deep
+branch-delete-merged	main	main	.	branch topic HEAD~1 ;; branch -d topic
+branch-delete-unmerged-refused	main	main	.	switch -c work ;; commit -m work ;; switch -f main ;; branch -d work
+branch-delete-forced	main	main	.	switch -c work ;; commit -m work ;; switch -f main ;; branch -D work
+branch-delete-checked-out-refused	main	main	.	branch -d main
+branch-delete-linked-refused	main	main	.	branch -D feature
+branch-delete-missing	main	main	.	branch -d nope
+branch-rename-current	main	main	.	branch -m trunk
+branch-rename-other	main	main	.	branch old HEAD~3 ;; branch -m old older
+branch-rename-onto-existing-refused	main	main	.	branch -m feature
+out-branch-list	main	main	.	branch
+out-branch-list-v	main	main	.	branch -v
+out-branch-list-pattern	main	main	.	branch --list f*
+out-branch-show-current	main	main	.	branch --show-current
+out-branch-list-detached	main	main	.	checkout --detach HEAD~1 ;; branch
+out-branch-list-linked	main	linked	.	branch -v
+switch-dirty-refused	main	main	.	branch old HEAD~3 ;; switch old
+switch-dirty-forced	main	main	.	branch old HEAD~3 ;; switch -f old
+switch-carries-local-changes	main	main	.	branch other HEAD~1 ;; switch other
+switch-new-branch	main	main	.	switch -c topic
+switch-new-branch-start	main	main	.	switch -c topic HEAD~1
+switch-new-branch-start-refused	main	main	.	switch -c topic HEAD~3
+switch-new-branch-start-forced	main	main	.	switch -f -c topic HEAD~3
+switch-previous	main	main	.	branch other HEAD~1 ;; switch other ;; switch -
+switch-to-current	main	main	.	switch main
+switch-commit-refused	main	main	.	switch HEAD~1
+switch-detach	main	main	.	switch --detach HEAD~1
+switch-detach-forced	main	main	.	switch -f --detach HEAD~3
+switch-missing	main	main	.	switch nope
+switch-linked-branch-refused	main	main	.	switch feature
+switch-in-linked	main	linked	.	switch -c wt-topic
+switch-in-linked-main-refused	main	linked	.	switch main
+switch-in-subdir	main	main	src	branch other HEAD~1 ;; switch other
+checkout-branch	main	main	.	branch other HEAD~1 ;; checkout other
+checkout-branch-refused	main	main	.	branch old HEAD~3 ;; checkout old
+checkout-new-branch	main	main	.	checkout -b topic
+checkout-new-branch-start	main	main	.	checkout -b topic HEAD~1
+checkout-commit-detached	main	main	.	checkout HEAD~1
+checkout-tag-detached	main	main	.	checkout light
+checkout-previous	main	main	.	branch other HEAD~1 ;; checkout other ;; checkout -
+checkout-forced	main	main	.	branch old HEAD~3 ;; checkout -f old
+checkout-paths-from-index	main	main	.	checkout -- README.md data.bin
+checkout-paths-from-index-folder	main	main	.	checkout -- src
+checkout-path-without-dashes	main	main	.	checkout README.md
+checkout-paths-from-commit	main	main	.	checkout HEAD~3 -- README.md src
+checkout-paths-from-commit-new-file	main	main	.	checkout HEAD~2 -- docs
+checkout-paths-from-branch	main	main	.	checkout feature -- feature.txt
+checkout-unknown-path	main	main	.	checkout -- nope.txt
+checkout-dot	main	main	.	checkout -- .
+restore-worktree	main	main	.	restore README.md data.bin
+restore-worktree-folder	main	main	.	restore src
+restore-worktree-dot	main	main	.	restore .
+restore-source	main	main	.	restore --source=HEAD~3 README.md
+restore-source-folder-removes	main	main	.	restore --source=HEAD~3 --worktree .
+restore-source-new-folder	main	main	.	restore --source HEAD~2 docs
+restore-staged-and-worktree	main	main	.	restore --staged --worktree src/lib.rs staged.txt
+restore-staged-and-worktree-source	main	main	.	restore --source=HEAD~3 --staged --worktree README.md
+restore-mode	main	main	.	restore feature.txt
+restore-symlink	main	main	.	restore --source=HEAD~3 link
+restore-unknown-path	main	main	.	restore nope.txt
+restore-in-subdir	main	main	src	restore lib.rs
+restore-in-linked	main	linked	.	restore feature.txt wt-only.txt

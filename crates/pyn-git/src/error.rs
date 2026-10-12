@@ -15,6 +15,8 @@ pub enum Error {
     ObjectNotFound(ObjectId),
     #[error("reference {0} not found")]
     RefNotFound(String),
+    #[error("reference {0} changed while it was being updated")]
+    RefChanged(String),
     #[error("corrupt {what}: {detail}")]
     Corrupt { what: &'static str, detail: String },
     #[error("{what} checksum mismatch")]

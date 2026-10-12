@@ -1,0 +1,5 @@
+== logs/HEAD
+06fbff9729778f6ff2a07d62d4566e7ddaf81437 0000000000000000000000000000000000000000 Staging Committer <committer@example.com> 1700000100 -0530	Branch: renamed refs/heads/main to refs/heads/trunk
+0000000000000000000000000000000000000000 06fbff9729778f6ff2a07d62d4566e7ddaf81437 Staging Committer <committer@example.com> 1700000100 -0530	Branch: renamed refs/heads/main to refs/heads/trunk
+== logs/refs/heads/trunk
+06fbff9729778f6ff2a07d62d4566e7ddaf81437 06fbff9729778f6ff2a07d62d4566e7ddaf81437 Staging Committer <committer@example.com> 1700000100 -0530	Branch: renamed refs/heads/main to refs/heads/trunk

@@ -320,7 +320,6 @@ fn every_command_leaves_the_git_directory_and_work_tree_untouched() {
             vec!["verify"],
             vec!["commit", "-m", "x", "README.md"],
             vec!["add", "-n", "README.md"],
-            vec!["branch", "x"],
             vec!["diff", "--cached"],
             vec!["restore", "README.md", "1"],
             vec!["status", "--revision", "HEAD"],
@@ -472,14 +471,6 @@ fn repository_commands_refuse_and_name_the_pyn_server() {
 fn commands_a_git_home_will_gain_name_the_issue() {
     let repo = Repo::new("sha1");
     for (args, issue) in [
-        (vec!["restore", "--source", "1", "a"], "#254"),
-        (vec!["restore", "a"], "#254"),
-        (vec!["branch"], "#254"),
-        (vec!["switch", "main"], "#254"),
-        (vec!["checkout", "main"], "#254"),
-        (vec!["merge", "feature"], "#254"),
-        (vec!["tag", "x"], "#254"),
-        (vec!["stash"], "#254"),
         (vec!["fetch"], "#255"),
         (vec!["pull"], "#255"),
         (vec!["push"], "#255"),
