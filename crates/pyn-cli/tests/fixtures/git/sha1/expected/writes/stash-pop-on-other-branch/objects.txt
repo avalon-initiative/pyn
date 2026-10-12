@@ -1,0 +1,33 @@
+== HEAD
+tree 8108979145c39dbc09fc5cd031996880020227a6
+parent aefcf544acfbe5010466f38cd7557664e7b4a68b
+author Fixture Author <author@example.com> 1700345600 +0200
+committer Fixture Committer <committer@example.com> 1700345600 -0530
+
+third commit
+== refs/stash
+tree ccac44e525bd60091357820912b4a2a3499ab3c2
+parent 06fbff9729778f6ff2a07d62d4566e7ddaf81437
+parent 93e8f09654fe8f026db0cea3b3d7120df0cf0af8
+author Staging Author <staging@example.com> 1700000000 +0200
+committer Staging Committer <committer@example.com> 1700000100 -0530
+
+WIP on main: 06fbff9 Merge branch 'feature'== refs/tags/light
+tree 9d0de2b6ca194770d47d142bf45ea282eb0c4f60
+parent 02d7c3ea59480eec7a83420f38fb89ec69c75750
+author Fixture Author <author@example.com> 1700172800 +0200
+committer Fixture Committer <committer@example.com> 1700172800 -0530
+
+second commit
+
+A body paragraph that
+spans two lines.
+
+    indented line
+== refs/tags/v1
+object 06fbff9729778f6ff2a07d62d4566e7ddaf81437
+type commit
+tag v1
+tagger Fixture Committer <committer@example.com> 1700432000 +0000
+
+release one

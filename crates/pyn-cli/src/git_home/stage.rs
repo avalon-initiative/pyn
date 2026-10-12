@@ -490,6 +490,21 @@ fn apply(
     Ok(())
 }
 
+/// Files in the work tree that the index does not track and no ignore rule hides.
+pub(super) fn untracked_files(git: &GitHome, index: &Index) -> Result<Vec<Vec<u8>>> {
+    let specs = Specs {
+        spec: Pathspec::default(),
+        named: Vec::new(),
+    };
+    let tracked: HashSet<&[u8]> = index.entries.iter().map(|e| e.path.as_slice()).collect();
+    let found = plan(git, index, &specs, false, false)?;
+    Ok(found
+        .ops
+        .into_keys()
+        .filter(|p| !tracked.contains(p.as_slice()))
+        .collect())
+}
+
 /// `pyn add`: returns whether some named path was refused (the exit status is then 1, as in git).
 pub fn add(git: &GitHome, cwd: &Path, options: &AddOptions) -> Result<bool> {
     let opened = git.open_index()?;

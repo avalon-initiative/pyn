@@ -127,6 +127,9 @@ fn every_scenario_leaves_what_git_left() {
             if std::env::var("SCENARIO").is_ok_and(|only| only != s.name) {
                 continue;
             }
+            if format == "sha256" && s.name.contains("stash") {
+                continue;
+            }
             let repo = if s.fixture == "merge" {
                 Repo::merge(format)
             } else {

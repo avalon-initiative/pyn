@@ -70,6 +70,7 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
         Command::Switch(args) => super::switch::switch(git, args),
         Command::Checkout(args) => super::switch::checkout(git, cwd, args),
         Command::Tag(args) => super::tags::tag(git, args),
+        Command::Stash(args) => super::stash::stash(git, args),
         Command::Add {
             paths,
             update,
@@ -184,7 +185,7 @@ fn short(id: &ObjectId) -> String {
     id.to_hex()[..ABBREV].to_string()
 }
 
-fn status(git: &GitHome) -> Result<()> {
+pub(super) fn status(git: &GitHome) -> Result<()> {
     let status = git.repo.status()?;
     let line = match &status.head {
         Head::Branch { name, id: Some(_) } => format!("On branch {name}"),

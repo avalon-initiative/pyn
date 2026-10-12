@@ -1,0 +1,25 @@
+Auto-merging README.md
+CONFLICT (content): Merge conflict in README.md
+On branch main
+Changes to be committed:
+  (use "git restore --staged <file>..." to unstage)
+	deleted:    data.bin
+	modified:   feature.txt
+	modified:   src/lib.rs
+	new file:   staged.txt
+
+Unmerged paths:
+  (use "git restore --staged <file>..." to unstage)
+  (use "git add <file>..." to mark resolution)
+	both modified:   README.md
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	keep.out
+	new.txt
+	newdir/
+	newlink
+	src/important.tmp
+	sub/
+
+The stash entry is kept in case you need it again.

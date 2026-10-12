@@ -1,0 +1,7 @@
+== logs/HEAD
+06fbff9729778f6ff2a07d62d4566e7ddaf81437 06fbff9729778f6ff2a07d62d4566e7ddaf81437 Staging Committer <committer@example.com> 1700000100 -0530	reset: moving to HEAD
+06fbff9729778f6ff2a07d62d4566e7ddaf81437 06fbff9729778f6ff2a07d62d4566e7ddaf81437 Staging Committer <committer@example.com> 1700000100 -0530	reset: moving to HEAD
+06fbff9729778f6ff2a07d62d4566e7ddaf81437 06fbff9729778f6ff2a07d62d4566e7ddaf81437 Staging Committer <committer@example.com> 1700000100 -0530	reset: moving to HEAD
+== logs/refs/stash
+0000000000000000000000000000000000000000 e74c0c382c646d29f39ba1e42526681f2b87d1c3 Staging Committer <committer@example.com> 1700000100 -0530	WIP on main: 06fbff9 Merge branch 'feature'
+e74c0c382c646d29f39ba1e42526681f2b87d1c3 07a43d3f40029d8d9bd643236d158b564507169c Staging Committer <committer@example.com> 1700000100 -0530	WIP on main: 06fbff9 Merge branch 'feature'

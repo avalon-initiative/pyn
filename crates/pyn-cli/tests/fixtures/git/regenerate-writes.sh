@@ -91,6 +91,8 @@ for format in sha1 sha256; do
   rm -rf "$here/$format/expected/writes" "$here/merge/$format/expected/writes"
   while IFS=$'\t' read -r name fixture tree sub cmds; do
     case "$name" in ''|'#'*) continue ;; esac
+    # git 2.43 cannot stash in a SHA-256 repository ("Cannot save the current status")
+    case "$name" in *stash*) [ "$format" = sha256 ] && continue ;; esac
     scenario "$format" "$name" "$fixture" "$tree" "$sub" "$cmds"
   done < "$here/scenarios-writes.txt"
 done

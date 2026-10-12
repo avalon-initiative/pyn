@@ -1,0 +1,11 @@
+ M README.md
+ D data.bin
+ M feature.txt
+ M src/lib.rs
+A  staged.txt
+?? keep.out
+?? new.txt
+?? newdir/
+?? newlink
+?? src/important.tmp
+?? sub/

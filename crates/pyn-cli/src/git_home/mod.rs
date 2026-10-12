@@ -8,6 +8,7 @@ mod convert;
 mod merge;
 mod refwrite;
 mod stage;
+mod stash;
 mod switch;
 mod tags;
 mod treemerge;
@@ -25,6 +26,7 @@ use crate::backend::Backend;
 use crate::workspace::{self, Workspace};
 
 pub use commands::run;
+pub use stash::StashArgs;
 pub use tags::TagArgs;
 
 /// A refusal git reports as `error: <message>` with exit status 1, rather than as a fatal error.

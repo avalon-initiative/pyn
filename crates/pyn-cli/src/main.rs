@@ -114,6 +114,8 @@ enum Command {
     Merge(merging::MergeArgs),
     /// Create, list and delete tags (a git repository only).
     Tag(git_home::TagArgs),
+    /// Save, list and restore local changes (a git repository only).
+    Stash(git_home::StashArgs),
     /// Show what differs between this workspace and the server.
     Status {
         /// Compare with the repository as of this commit (`HEAD~N`, a commit hash) instead of the newest.
@@ -1212,6 +1214,10 @@ fn run(cli: Cli) -> Result<()> {
         }
         Command::Tag(_) => {
             eprintln!("{}", unsupported::message("tag"));
+            std::process::exit(1);
+        }
+        Command::Stash(_) => {
+            eprintln!("{}", unsupported::message("stash"));
             std::process::exit(1);
         }
         Command::Merge(args) => merging::merge_command(&backend, ws.as_ref(), args)?,

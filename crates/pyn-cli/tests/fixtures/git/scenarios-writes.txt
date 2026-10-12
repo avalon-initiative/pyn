@@ -134,3 +134,27 @@ merge-annotated-tag	merge	main	.	tag -a -m release at-clean clean ;; merge at-cl
 merge-mode-and-symlink-changes	merge	main	.	merge clean ;; status
 merge-then-switch-back	merge	main	.	merge clean ;; switch -c after ;; switch main
 merge-in-unborn-branch	merge	main	.	switch -c work ;; merge ff
+stash	main	main	.	stash
+stash-push-message	main	main	.	stash push -m my+saved+work
+stash-include-untracked	main	main	.	stash -u
+stash-in-subdir	main	main	src	stash
+stash-in-linked	main	linked	.	stash
+stash-nothing-to-save	merge	main	.	stash
+stash-nothing-to-save-untracked-only	merge	main	.	@write fresh.txt new\n ;; stash
+stash-untracked-only	merge	main	.	@write fresh.txt new\n ;; stash -u
+stash-pop	main	main	.	stash ;; stash pop
+stash-apply	main	main	.	stash ;; stash apply
+stash-pop-untracked	main	main	.	stash -u ;; stash pop
+stash-pop-on-other-branch	main	main	.	stash ;; switch -c other HEAD~1 ;; stash pop
+stash-pop-conflict	main	main	.	stash ;; @write README.md different\n ;; add README.md ;; commit -m other+readme ;; stash pop
+stash-pop-dirty-refused	main	main	.	stash ;; @write README.md local\n ;; stash pop
+stash-pop-untracked-in-the-way-refused	main	main	.	stash -u ;; @write new.txt mine\n ;; stash pop
+stash-drop	main	main	.	stash ;; stash drop
+stash-clear	main	main	.	stash ;; stash clear
+out-stash-list	main	main	.	stash ;; @write README.md two\n ;; stash ;; stash list
+stash-two-pop-older	main	main	.	stash ;; @write README.md two\n ;; stash ;; stash pop stash@{1}
+stash-three-drop-middle	main	main	.	stash ;; @write README.md two\n ;; stash ;; @write README.md three\n ;; stash ;; stash drop stash@{1}
+stash-pop-without-stash-refused	main	main	.	stash pop
+stash-drop-unknown-refused	main	main	.	stash ;; stash drop stash@{3}
+stash-during-merge-refused	merge	main	.	merge conflict ;; stash
+stash-clean-after-stash	main	main	.	stash ;; status

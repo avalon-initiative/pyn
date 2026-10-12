@@ -21,7 +21,6 @@ const GIT_ONLY: &[&str] = &[
 
 /// A git command, or a pyn command that wraps one, that a git home will gain with a named issue.
 const PLANNED_ON_GIT: &[(&str, &str)] = &[
-    ("stash", "stashing (#254)"),
     ("fetch", "git transport (#255)"),
     ("pull", "git transport (#255)"),
     ("push", "git transport (#255)"),
