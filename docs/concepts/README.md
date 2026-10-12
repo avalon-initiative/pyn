@@ -10,8 +10,8 @@ server hosts many, addressed as `owner/name`.
 2. **Collaboration policy.** Each path is `shared` (git-style: concurrent edits are allowed; merging them arrives with branches, see [git compatibility](git-compatibility.md)) or
    `exclusive` (one editor at a time, enforced by the server). Policy is decided by [`pyn.toml`](pyn-toml.md) and is
    not a file-type classification: a text file can be exclusive and a binary can be shared.
-3. **Branch state.** A branch records which revision of each path it references. An exclusive file is still part of
-   branch history; the lock only controls who may modify it *right now*.
+3. **Branch state.** A [branch](branches.md) is a name pointing at a commit, and a commit's state gives the revision of each
+   path it references. An exclusive file is still part of branch history; the lock only controls who may modify it *right now*.
 
 ## Exclusive files and locks
 
@@ -70,8 +70,9 @@ restores.
 ## Exclusive files and branches
 
 A lock covers a path across every branch. An exclusive path does not branch: it has one linear history shared by all
-branches. A branch (and each commit) records a pointer to a revision of each exclusive path, which is how a past state of
-the whole project is shown. Rolling a branch back moves its pointers only; the file's own history and head do not change.
+branches, and a commit on any branch appends to it under the lock. Each commit has a revision of every path (for an
+exclusive path, derived from the commit's ancestry and cached per commit; see [branches](branches.md)), which is how a past
+state of the whole project is shown. Rolling a branch back moves its pointers only; the file's own history and head do not change.
 Merging branches takes the later pointer, and since edits are serialized by the lock there is no content conflict.
 
 ## Shared files, in Phase 1

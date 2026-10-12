@@ -9,6 +9,7 @@ Built since, beyond Phase 1: many repositories per server ([repositories](concep
 organizations and teams, OpenID Connect sign-in, persistent and chunked content storage, commits, diff and show,
 tamper-evident history, and the web UI.
 
-Still ahead: branches, merge and conflict handling, remotes, pull requests, reviews, CI, Git import/export, and engine
+Branches (create, list, rename, delete, commit on a branch, switch) have landed ([branches](concepts/branches.md)). Still ahead:
+merge and conflict handling, per-branch policy, remotes, pull requests, reviews, CI, Git import/export, and engine
 and editor integrations. The git-style commands not yet built are listed as *planned* in
 [git compatibility](concepts/git-compatibility.md).

@@ -75,8 +75,9 @@ invalid values are errors too: with a safe default, a typo like `[exlusive]` mus
 ## Changing policy
 
 The server is the only authority on a path's mode. Each repository enforces the `.pyn/pyn.toml` at its own head, and a
-branch cannot override a path's mode. (Branches do not exist yet; when they do, only the default branch's copy counts, and
-edits on other branches take effect when merged.)
+branch cannot override a path's mode. Only the default branch's copy counts: a commit to `.pyn/pyn.toml` on another
+[branch](branches.md#policy-and-modes) is a change to a file there, and takes effect when it is merged into the default
+branch (merge is #236; until per-branch policy, #238, the default branch's policy applies to every branch).
 
 A policy change is a check-in of `.pyn/pyn.toml`, made by someone with the `edit_policy` permission. It can arrive through
 a pull request or as a direct commit; which one is the team's choice. The server validates the file before recording it: it
@@ -99,8 +100,8 @@ log as `mode_converted`, and the change itself as `policy_changed`. Storage is u
   It is never refused. Branches that hold diverged versions of the path become stranded: their
   versions stay in history but can no longer merge into the path's single line. The server reports the affected branches
   and revisions to whoever made the change and to the branch owners, and shows it again at merge time. To keep a stranded
-  version, take the lock and check it in as the new head. *Provisional:* until branches exist there is nothing to strand,
-  and the report arrives with them.
+  version, take the lock and check it in as the new head. *Provisional:* the diverged versions are kept and cannot be committed
+  on without the lock (see [branches](branches.md#policy-and-modes)), but the report of them arrives with #238.
 
 **Preview.** `pyn policy preview <file>` (`POST /v1/repos/{owner}/{name}/policy/preview`, needs `edit_policy`) reports which paths
 would change mode in each direction and which live locks would be released, without applying anything. The conversion rules

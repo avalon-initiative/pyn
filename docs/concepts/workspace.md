@@ -11,7 +11,7 @@ anything related to pyn.
   local_only/       never tracked
     ignore          personal ignore patterns, added to the shared ignore
     config.toml     workspace settings: server, repository, identity
-    state/          which revision each local file is at
+    state/          which revision each local file is at, and which branch the workspace is on
     cache/          downloaded content
 ```
 
@@ -60,6 +60,8 @@ you are inside the workspace and take paths relative to your current directory.
   writable; `pyn commit` and `pyn unlock` make it read-only again. Shared files are always writable.
 - **No base revisions to remember.** `lock` and `commit` use the revision the workspace has, so `--base` is only for
   working outside a workspace. If the server has moved on, the command tells you to run `pyn update`.
+- **Branches.** A workspace is on one [branch](branches.md), `main` until `pyn switch` or `pyn checkout` changes it, and every
+  command works on that branch. `pyn status` starts with `On branch <name>`.
 - **`pyn status`** prints a table of what differs, one row per file, with the columns `MODE`, `REV`, `STAGED`, `STATE`,
   `LOCK` and `PATH`, then a one-line summary of counts (staged, modified, behind, new, untracked, locked by you, locked by
   others). `STAGED` is `added` or `modified` for a path in the staging index and `-` otherwise. `STATE`

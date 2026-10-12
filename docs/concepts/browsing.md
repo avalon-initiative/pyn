@@ -1,7 +1,8 @@
 # Browsing a repository
 
-Two read-only routes feed a repository landing page: a folder listing and a summary. Both need `read` and describe the single
-mainline; there is no revision or branch parameter yet. Sections marked *provisional* are not settled and may change.
+Two read-only routes feed a repository landing page: a folder listing and a summary. Both need `read`. The folder listing takes
+an optional `branch` (the default branch when omitted) and the summary describes the default branch; there is no other
+revision parameter yet. Sections marked *provisional* are not settled and may change.
 
 ## Folder listing
 
@@ -29,8 +30,8 @@ nothing yet does not make a folder `mixed`. *Provisional*
 
 `GET /v1/repos/{owner}/{name}/summary?activity=<n>` returns what a landing page's side panel needs:
 
-- `default_branch` and `branch_count`: always `main` and `1`. Branches, tags and their counts come with branches
-  (pyn#29). *Provisional*
+- `default_branch` and `branch_count`: the default branch's name (`main`) and how many [branches](branches.md) the repository has.
+  Tags are not counted yet. *Provisional*
 - `files`, `exclusive_files`, `shared_files`: paths with at least one revision, split by current mode.
 - `updated_at`: the time of the newest revision.
 - `locks`: every live lock with its holder, ordered by path.

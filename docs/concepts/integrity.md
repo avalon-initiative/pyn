@@ -115,8 +115,8 @@ events leaves a valid chain. A client that remembers a head hash can detect that
   path and revision, never silently served.
 - A commit chains from the stored head hash only after the head has been checked, so a tampered head cannot be extended.
 - Every commit the server returns is checked against its own id (recomputed from its tree, parents, author, committer
-  and message); a mismatch is a `500 history_corrupt`. Verification also checks each commit's parent link and that the
-  head commit's tree is the tree of the head snapshot, and reports `hash_mismatch`, `broken_link` and `tree_mismatch`
+  and message); a mismatch is a `500 history_corrupt`. Verification also checks each commit's parent links and that each
+  branch head's tree is the tree of the snapshot at that head, and reports `hash_mismatch`, `broken_link` and `tree_mismatch`
   problems with the `commit` id. A revision whose `hash_version` disagrees with its stored fields is reported as
   `version_mismatch`.
 - Audit events are checked when they are read, and the whole chain when verified.
@@ -144,7 +144,7 @@ parent, the author `<user> <<user>@pyn.invalid>` at offset 0, the first revision
 and the git tree of the repository as of that number (every file as `100644`, since modes were not recorded). The
 revisions keep their v1 hashes, which still verify, and are pointed at their commit. The step runs in one transaction,
 skips anything already migrated and refuses a repository that has both a file `a` and a path under `a/`, which a git tree
-cannot hold.
+cannot hold. The default [branch](branches.md#existing-data) of each repository is then created at the newest commit.
 
 A database from before hashing is hashed once at startup: revisions in order of number within each path, audit events in
 order of id within each log. The hashes cover the history as it stands then, so they prove nothing about what happened before
@@ -153,5 +153,7 @@ that moment. The step is idempotent and skips anything already hashed.
 ## Commits
 
 A commit's id is its git commit id (see [commits](commits.md)). `cN` numbers are gone: commits are named by hash, with
-`HEAD~N` and `^`. Each commit's `parents` link it to the one before, so the mainline is a hash chain too, and the id covers
-the tree, so it covers every path's content and file mode as of that commit.
+`HEAD~N` and `^`. Each commit's `parents` link it to the commit it was made on, so every branch is a hash chain too, and the
+id covers the tree, so it covers every path's content and file mode as of that commit. Verification checks every commit of
+every branch, that each commit's parents are older commits of the repository, and each branch head's tree against the
+snapshot at that head.

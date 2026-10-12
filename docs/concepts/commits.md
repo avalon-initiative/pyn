@@ -2,8 +2,8 @@
 
 A **commit** is one atomic write to a repository: a single `pyn commit`, or a whole [changeset](README.md#exclusive-files-and-locks).
 Commits are git commits (decision #245): each has git's commit id, the SHA-256 hash of the commit object, and is named by
-that hash or an abbreviation of it. A rejected write makes no commit. There is one mainline until branches exist (#235),
-so a commit has at most one parent.
+that hash or an abbreviation of it. A rejected write makes no commit. A commit is made on a [branch](branches.md) and has the
+branch's head as its parent; a merge commit (#236) will have two.
 
 ## The commit record
 
@@ -13,7 +13,7 @@ A commit carries what a git commit carries:
   name and email (an account without an email gets `<name>@pyn.invalid`), the time of the write, and offset `+0000`;
   the author and committer are the same person. The offset is part of the record so that imported commits (#95) keep
   theirs;
-- the **parents**: none for the first commit, else the previous one;
+- the **parents**: none for the first commit of a repository, else the head of the branch it was made on;
 - the **message**;
 - room for a **signature** (a `gpgsig` header), which signed commits (#60) will fill;
 - the **tree**: a git tree of every file in the repository as of this commit, with nested trees and per-entry git file
@@ -22,7 +22,7 @@ A commit carries what a git commit carries:
 The commit id is the git commit id of exactly those fields, so the encoding is git's and the id would be the same in a git
 repository of the same object format (SHA-256 for a pyn server). The id covers the tree and the parent, so changing any
 file, mode or earlier commit changes every later id, and a [revision's v2 hash](integrity.md) covers its commit id.
-Existing history was migrated once into this mainline; see [integrity](integrity.md#existing-data).
+Existing history was migrated once into a single mainline, now the default branch; see [integrity](integrity.md#existing-data).
 
 ## The tree of a commit
 
@@ -30,8 +30,8 @@ The tree of a commit is stored with it, built from its parent's tree by replacin
 the folders on the changed paths are rewritten. A repository's state as of a commit is read from the revisions:
 
 - a path's **revision at a commit** is its highest-numbered revision whose commit is that commit or an ancestor of it
-  (decision #245 item 9). On the single mainline that is the newest revision at or before the commit, a range lookup that
-  needs no stored copy; a per-commit cache of these pointers arrives with branches, when the lookup needs a walk;
+  (decision #245 item 9). The server caches it per commit and reads it by walking the commit's first-parent chain; see
+  [branches](branches.md#the-revision-of-a-path-at-a-commit);
 - a path's **mode** (`shared` or `exclusive`) is what `.pyn/pyn.toml` says at that commit: the policy file in the
   commit's own snapshot, or the server's fallback rules while the repository has none;
 - an exclusive path is not special in the tree: its entry is the blob of the revision it has at that commit, like any
@@ -45,9 +45,9 @@ for an old commit reads old revisions and never changes any file's history.
 
 | Request | Returns |
 | --- | --- |
-| `GET /v1/repos/{owner}/{name}/commits?before=&limit=` | commits newest first (default 50, max 200), each with its revisions; `next_before` pages back |
+| `GET /v1/repos/{owner}/{name}/commits?branch=&before=&limit=` | the commits a branch contains (the default branch's if omitted), newest first (default 50, max 200), each with its revisions; `next_before` pages back |
 | `GET /v1/repos/{owner}/{name}/commits/{commit}` | one commit; `404 commit_not_found` for an id the repository does not have |
-| `GET /v1/repos/{owner}/{name}/snapshot?commit=&after=&limit=` | the snapshot of a commit (the newest if omitted), ordered by path, 200 per page (max 1000); `commit` is null for an empty repository |
+| `GET /v1/repos/{owner}/{name}/snapshot?commit=&branch=&after=&limit=` | the snapshot of a commit, or of a branch's head (the default branch's if neither is given), ordered by path, 200 per page (max 1000); `commit` is null for an empty repository |
 
 A commit is given as its full id or as an abbreviation of at least 4 lowercase hex digits; an abbreviation that matches
 more than one commit is `400 ambiguous_commit`. `HEAD~N` and `^` are resolved by clients, which walk `parents`.
@@ -63,8 +63,8 @@ The CLI follows git where it has an equivalent; the differences are listed below
 
 - `pyn log --commits [--limit n]` lists commits (`COMMIT`, `AUTHOR`, `WHEN`, `FILES`, `MESSAGE`); `COMMIT` is the abbreviated hash. `pyn log` keeps listing revisions.
 - A commit is written as its hash or an abbreviation of at least 4 hex digits (`pyn log --commits` shows 10), `HEAD` (the
-  newest), or either followed by `~N` (N commits back) or `^` (the parent; `^^` is two back). There is one mainline, so
-  `^2` names no commit. `cN` numbers no longer exist. An argument that is also the name of something in the current
+  head of the workspace's [branch](branches.md)), or either followed by `~N` (N commits back along the first parent) or `^` (the
+  parent; `^^` is two back). There are no merge commits yet, so `^2` names no commit. `cN` numbers no longer exist. An argument that is also the name of something in the current
   directory is read as a path by `pyn diff`.
 - `pyn clone --revision <commit> <source> [dir]` creates a workspace with every file as of that commit.
 - `pyn status --revision <commit>` compares the workspace with that commit instead of the newest: `behind (<commit> has rM)` for a
@@ -101,6 +101,6 @@ The diff is Myers' algorithm, built in with no dependency on git (decision #30),
 - `pyn diff` compares the work tree with the staged content, as git does (the last update where nothing is staged), and `--cached` or
   `--staged` compares the staged content with the last update; see [staging](workspace.md#staging).
 - File modes are tracked: created and deleted files print their git mode, and a changed mode prints `old mode` and `new mode`.
-- `status --revision`, `update --revision` and `log --commits` have no git equivalent; they are pyn's way to reach a past state
-  until branches exist.
+- `status --revision`, `update --revision` and `log --commits` have no git equivalent; they are pyn's way to reach a past commit of the
+  workspace's branch. Another line of work is a [branch](branches.md): `pyn switch`.
 
