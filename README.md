@@ -45,13 +45,13 @@ dependency on git.
 
 An early, local proof of concept. What works today: a server hosting many repositories, the `pyn` CLI, the web UI
 ([`pyn-web`](https://github.com/avalon-initiative/pyn-web)), shared and exclusive paths, leased locks, atomic
-multi-path commits, per-path and per-commit history, diff and show, restore, chunked content storage, accounts,
+multi-path commits, per-path and per-commit history, branches and merge (three-way text merge, whole-file conflicts for
+binaries, `pyn merge --abort`), diff and show, restore, chunked content storage, accounts,
 organizations and teams, roles, API tokens and SSH keys, optional OpenID Connect sign-in, and an audit log.
 
-Not built yet: branches, merge, remotes (`push`, `pull`, `fetch`), tags, stash, and git import and export. Today a
-repository has a single mainline, and a shared file's commit must be based on the current head, so a stale edit is
-rejected rather than silently overwriting someone else's work. The git-style rows in the compatibility table marked
-*planned* are the roadmap.
+Not built yet: remotes (`push`, `pull`, `fetch`), tags, stash, per-branch policy, and git import and export. A shared file's
+commit must be based on the revision its branch has, so a stale edit is rejected rather than silently overwriting someone
+else's work. The git-style rows in the compatibility table marked *planned* are the roadmap.
 
 ## Run it
 

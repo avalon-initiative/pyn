@@ -62,6 +62,8 @@ Three-way by content, on the base, ours and theirs versions of the path:
   **whole-file conflict**; a binary file is never merged;
 - one side removed the path and the other edited it: a whole-file conflict. A pyn server does not record deletions yet, so
   this cannot arise today; the rule is in place for when it can;
+- a path that is a file on one side and a folder on the other cannot merge (`invalid_request`): resolving it means removing
+  one, and a pyn server does not record deletions yet;
 - the git file mode (regular, executable, symbolic link) merges the same way, independently of the content; both sides
   changing it differently is a conflict.
 

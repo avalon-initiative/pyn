@@ -943,3 +943,26 @@ pub async fn merges_racing_into_one_branch_each_land_or_are_told_to_retry(store:
     assert_eq!(files.len(), 7, "{files:?}");
     verified(&h).await;
 }
+
+pub async fn a_file_on_one_side_and_a_folder_on_the_other_cannot_merge(store: Store) {
+    let h = harness(store);
+    put_on(&h, "main", "alice", &path("Source/keep.cpp"), "k\n", None).await;
+    branch_at(&h, "feature", "main").await;
+    put_on(&h, "feature", "alice", &path("Source/x"), "file\n", None).await;
+    put_on(&h, "main", "alice", &path("Source/x/y.cpp"), "y\n", None).await;
+    let err = h
+        .svc
+        .merge_preview(&request("feature", "main"))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, PynError::InvalidRequest(m) if m.contains("Source/x")),
+        "{err}"
+    );
+    let err = h
+        .svc
+        .merge(&who("alice"), request("feature", "main"))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::InvalidRequest(_)), "{err}");
+}

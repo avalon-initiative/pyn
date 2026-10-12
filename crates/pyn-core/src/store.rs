@@ -127,10 +127,8 @@ pub trait MetadataStore: Send + Sync {
         cap: Option<StorageCap>,
     ) -> Result<Vec<Revision>>;
 
-    /// Writes a merge commit on `branch`, or nothing: its parents are the branch's head, which must be
-    /// `expected_head` (`MergeStale` otherwise), and `other`; its tree is the head's with every adopted revision's
-    /// and every new revision's content put in. Each adopted revision becomes the path's pointer; each item is
-    /// appended as in `commit_changeset_on`, all or none.
+    /// Writes a merge commit on `branch` or nothing: its parents are the head, which must be `expected_head`
+    /// (`MergeStale` otherwise), and `other`. Adopted and new revisions go in its tree and become the paths' pointers.
     async fn commit_merge_on(
         &self,
         repo: &RepoId,

@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
+use std::ops::Bound;
 use std::pin::Pin;
 
 use pyn_merge::{Outcome, merge_text, render_markers};
@@ -243,6 +244,20 @@ impl RepoService {
         plan.virtual_base = base.virtual_base;
         let rules = self.rules();
         let paths: BTreeSet<&RepoPath> = ours.keys().chain(theirs.keys()).collect();
+        let names: BTreeSet<&str> = paths.iter().map(|p| p.as_str()).collect();
+        for path in &names {
+            let folder = format!("{path}/");
+            if names
+                .range::<str, _>((Bound::Included(folder.as_str()), Bound::Unbounded))
+                .next()
+                .is_some_and(|p| p.starts_with(&folder))
+            {
+                return Err(PynError::InvalidRequest(format!(
+                    "{path} is a file on one side and a folder on the other; \
+                     a pyn server cannot record deletions yet, so the branches cannot be merged"
+                )));
+            }
+        }
         for path in paths {
             let (o, t) = (ours.get(path), theirs.get(path));
             if let (Some(o), Some(t)) = (o, t)
