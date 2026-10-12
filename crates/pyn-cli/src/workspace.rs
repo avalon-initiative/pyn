@@ -167,6 +167,10 @@ impl Workspace {
         self.dir.join(LOCAL_ONLY).join("state").join("files.toml")
     }
 
+    pub fn is_ignored(&self, repo_path: &str) -> Result<bool> {
+        Ok(self.ignore_set()?.is_match(repo_path))
+    }
+
     fn ignore_path(&self) -> PathBuf {
         self.dir.join("ignore")
     }
@@ -226,6 +230,15 @@ impl Workspace {
 
     /// Turns a path typed relative to `cwd` into the repository path (`/`-separated, from the workspace root).
     pub fn repo_path(&self, cwd: &Path, arg: &str) -> Result<String> {
+        let repo = self.repo_prefix(cwd, arg)?;
+        if repo.is_empty() {
+            bail!("{arg} is the workspace root, not a file");
+        }
+        Ok(repo)
+    }
+
+    /// Like [`Self::repo_path`], but the workspace root itself is the empty path, which every path is under.
+    pub fn repo_prefix(&self, cwd: &Path, arg: &str) -> Result<String> {
         let joined = if Path::new(arg).is_absolute() {
             PathBuf::from(arg)
         } else {
@@ -254,9 +267,6 @@ impl Workspace {
             .components()
             .map(|c| c.as_os_str().to_string_lossy().into_owned())
             .collect();
-        if repo.is_empty() {
-            bail!("{arg} is the workspace root, not a file");
-        }
         Ok(repo.join("/"))
     }
 
@@ -272,7 +282,16 @@ impl Workspace {
 
     /// Every file in the workspace that is not ignored and not local-only, as repository paths.
     pub fn scan(&self) -> Result<Vec<String>> {
-        let ignore = self.ignore_set()?;
+        self.scan_with(true)
+    }
+
+    /// Like [`Self::scan`]; without `respect_ignore` the ignored files are listed too.
+    pub fn scan_with(&self, respect_ignore: bool) -> Result<Vec<String>> {
+        let ignore = if respect_ignore {
+            self.ignore_set()?
+        } else {
+            build_ignore("")?
+        };
         let local_only = self.dir.join(LOCAL_ONLY);
         let mut found = Vec::new();
         let mut stack = vec![self.root.clone()];

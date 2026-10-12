@@ -1794,6 +1794,7 @@ dependencies = [
  "pyn-chunk",
  "pyn-core",
  "pyn-diff",
+ "pyn-git",
  "pyn-gitwork",
  "pyn-hash",
  "pyn-object",

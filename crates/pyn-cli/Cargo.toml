@@ -17,6 +17,7 @@ globset = "0.4.20"
 hex = "0.4.3"
 pyn-chunk = { version = "0.0.1", path = "../pyn-chunk" }
 pyn-diff = { version = "0.0.1", path = "../pyn-diff" }
+pyn-git = { version = "0.0.1", path = "../pyn-git" }
 pyn-gitwork = { version = "0.0.1", path = "../pyn-gitwork" }
 pyn-hash = { version = "0.0.1", path = "../pyn-hash" }
 pyn-object = { version = "0.0.1", path = "../pyn-object" }

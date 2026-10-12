@@ -2,7 +2,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use pyn_proto as api;
 use reqwest::Method;
 use reqwest::blocking::Client;
@@ -18,6 +18,7 @@ mod limits;
 mod localfile;
 mod pyn_server;
 mod snapshot;
+mod staging;
 mod sync;
 mod table;
 mod time;
@@ -131,8 +132,8 @@ enum Command {
         /// Print nothing; exit with 1 if there are differences.
         #[arg(short, long)]
         quiet: bool,
-        /// Not supported: pyn has no staging area.
-        #[arg(long, alias = "staged", hide = true)]
+        /// Compare the staged changes with the last commit instead of the work tree with the staged changes.
+        #[arg(long, alias = "staged")]
         cached: bool,
     },
     /// Show a commit: its message and what it changed (the newest commit if none is named).
@@ -186,17 +187,40 @@ enum Command {
         #[arg(long, requires = "force")]
         reason: Option<String>,
     },
-    /// Upload files as the next revision of each path, atomically as one commit; releases their locks.
+    /// Stage changes for the next commit: paths, folders or `.`. Exclusive paths need your lock first.
+    Add {
+        #[arg(required_unless_present_any = ["update", "all"])]
+        paths: Vec<String>,
+        /// Stage changes to files that are already tracked, not new files.
+        #[arg(short = 'u', long)]
+        update: bool,
+        /// Stage new, changed and deleted files; with no path, in the whole repository.
+        #[arg(short = 'A', long, conflicts_with = "update")]
+        all: bool,
+        /// Show what would be staged without staging it.
+        #[arg(short = 'n', long)]
+        dry_run: bool,
+        #[arg(short, long)]
+        verbose: bool,
+        /// Stage files that ignore rules hide.
+        #[arg(short, long)]
+        force: bool,
+    },
+    /// Commit the staged changes as one unit of work (or the named paths as they are); releases their locks.
     Commit {
-        #[arg(required = true)]
+        /// Commit only these paths, as they are on disk, instead of the staged changes.
         paths: Vec<String>,
         /// Local file to upload for a single path; in a workspace, the file at the path by default.
         #[arg(long)]
         file: Option<std::path::PathBuf>,
         #[arg(long)]
         base: Option<u64>,
-        #[arg(short, long)]
-        message: String,
+        /// The commit message; repeat for more paragraphs.
+        #[arg(short, long, required = true)]
+        message: Vec<String>,
+        /// Stage every changed tracked file first, as in git; new files are not included.
+        #[arg(short = 'a', long)]
+        all: bool,
     },
     /// Fetch a file's content at a revision (the head if omitted).
     Get {
@@ -210,15 +234,18 @@ enum Command {
     /// Inspect policy changes before committing them.
     #[command(subcommand)]
     Policy(PolicyCommand),
-    /// Make an older revision the new head. Needs the lock and the restore permission, and asks for confirmation.
+    /// Make an older revision the new head (needs the lock and the restore permission, asks for confirmation), or
+    /// with --staged take paths out of the staged changes.
     Restore {
-        path: String,
-        /// The older revision whose content becomes the new head (or use --source).
-        #[arg(conflicts_with = "source", required_unless_present = "source")]
-        revision: Option<u64>,
-        /// The older revision to restore from, as in `git restore --source`.
+        /// A path and its older revision (or use --source), or with --staged the paths to unstage.
+        #[arg(required = true)]
+        args: Vec<String>,
+        /// The older revision to restore from, as in `git restore --source`; with --staged on a git repository, a commit.
         #[arg(short = 's', long)]
-        source: Option<u64>,
+        source: Option<String>,
+        /// Unstage the paths instead: put the staged changes back to the last commit.
+        #[arg(short = 'S', long)]
+        staged: bool,
         #[arg(short, long)]
         message: Option<String>,
         /// Skip the typed confirmation.
@@ -1131,20 +1158,13 @@ fn run(cli: Cli) -> Result<()> {
             quiet,
             cached,
         } => {
-            if cached {
-                bail!(
-                    "pyn has no staging area: `pyn diff` compares the workspace with the last update"
-                );
-            }
-            let differs = diff_command(
-                &backend,
-                ws.as_ref(),
-                &args,
-                &paths,
-                &format.format(),
-                quiet,
-                &rp,
-            )?;
+            let named = DiffArgs {
+                args: &args,
+                paths: &paths,
+                cached,
+            };
+            let differs =
+                diff_command(&backend, ws.as_ref(), &named, &format.format(), quiet, &rp)?;
             if differs && (exit_code || quiet) {
                 std::process::exit(1);
             }
@@ -1204,11 +1224,47 @@ fn run(cli: Cli) -> Result<()> {
             }
             println!("locked {} until {}", l.path, time::local(l.expires_at));
         }
+        Command::Add {
+            paths,
+            update,
+            dry_run,
+            verbose,
+            force,
+            ..
+        } => {
+            let args = staging::AddArgs {
+                paths,
+                update,
+                dry_run,
+                verbose,
+                force,
+            };
+            if staging::add(&backend, in_workspace("add")?, &cwd, &args)? {
+                std::process::exit(1);
+            }
+        }
         Command::Commit {
             paths,
             file,
             base,
             message,
+            all,
+        } if paths.is_empty() => {
+            if file.is_some() || base.is_some() {
+                bail!("--file and --base need a path");
+            }
+            let w = in_workspace("commit")?;
+            staging::commit(&backend, w, &message.join("\n\n"), all)?;
+        }
+        Command::Commit { all: true, .. } => {
+            bail!("`commit -a` commits every changed tracked file; name no paths with it")
+        }
+        Command::Commit {
+            paths,
+            file,
+            base,
+            message,
+            ..
         } if paths.len() > 1 => {
             if file.is_some() || base.is_some() {
                 bail!("--file and --base need a single path");
@@ -1216,6 +1272,7 @@ fn run(cli: Cli) -> Result<()> {
             let Some(w) = &ws else {
                 bail!("committing several paths needs a workspace");
             };
+            let message = message.join("\n\n");
             let known = w.load_state().unwrap_or_default();
             let mut entries = Vec::new();
             let mut hashes = Vec::new();
@@ -1234,17 +1291,22 @@ fn run(cli: Cli) -> Result<()> {
             let r = backend
                 .commit_changeset(&body)
                 .map_err(|e| behind_hint(e, true))?;
+            let mut done = Vec::new();
             for (rev, (path, hash, file_mode)) in r.revisions.iter().zip(&hashes) {
                 sync::after_commit(&backend, w, path, rev.id, hash, *file_mode)?;
                 println!("{} is now at revision {}", rev.path, rev.id);
+                done.push(path.clone());
             }
+            staging::Index::forget(w, &done)?;
         }
         Command::Commit {
             paths,
             file,
             base,
             message,
+            ..
         } => {
+            let message = message.join("\n\n");
             let path = rp(&paths[0])?;
             let file = match (file, &ws) {
                 (Some(file), _) => file,
@@ -1268,6 +1330,7 @@ fn run(cli: Cli) -> Result<()> {
                 .map_err(|e| behind_hint(e, ws.is_some()))?;
             if let Some(w) = &ws {
                 sync::after_commit(&backend, w, &path, r.id, &hash, file_mode)?;
+                staging::Index::forget(w, std::slice::from_ref(&path))?;
             }
             println!("{} is now at revision {}", r.path, r.id);
         }
@@ -1364,13 +1427,26 @@ fn run(cli: Cli) -> Result<()> {
             }
         }
         Command::Restore {
-            path,
-            revision,
+            args,
+            source,
+            staged: true,
+            ..
+        } => {
+            if source.is_some() {
+                usage_error(
+                    "`restore --staged --source` needs a git repository; a pyn server has no commit to restore the index from",
+                );
+            }
+            staging::unstage(in_workspace("restore --staged")?, &cwd, &args)?;
+        }
+        Command::Restore {
+            args,
             source,
             message,
             yes,
+            ..
         } => {
-            let revision = revision.or(source).expect("clap requires a revision");
+            let (path, revision) = restore_target(&args, source.as_deref());
             restore(&backend, rp(&path)?, revision, message, yes)?
         }
         Command::Unlock {
@@ -1546,16 +1622,27 @@ fn is_commit_arg(arg: &str) -> bool {
     snapshot::parse_commit(arg).is_some() && !std::path::Path::new(arg).exists()
 }
 
+/// What `pyn diff` was asked to compare: the commits and paths named, and whether it is the staged changes.
+struct DiffArgs<'a> {
+    args: &'a [String],
+    paths: &'a [String],
+    cached: bool,
+}
+
 /// Splits the leading commit references from the paths and prints the comparison; true if anything differs.
 fn diff_command(
     backend: &dyn Backend,
     ws: Option<&Workspace>,
-    args: &[String],
-    paths: &[String],
+    named: &DiffArgs,
     format: &diff::Format,
     quiet: bool,
     rp: &dyn Fn(&str) -> Result<String>,
 ) -> Result<bool> {
+    let DiffArgs {
+        args,
+        paths,
+        cached,
+    } = *named;
     let mut refs: Vec<String> = Vec::new();
     let mut rest = args;
     while refs.len() < 2
@@ -1590,9 +1677,22 @@ fn diff_command(
         Ok(diff::tree_of_snapshot(&backend.snapshot(Some(&commit))?.1))
     };
     let (old, new) = match refs.as_slice() {
+        [] if cached => {
+            let ws = ws_needed()?;
+            let staged = diff::tree_of_staged(ws, &staging::Index::load(ws)?);
+            let mut old = diff::tree_of_state(&ws.load_state()?);
+            old.retain(|p, _| staged.contains_key(p));
+            (old, staged)
+        }
+        [_] | [_, _] if cached => {
+            bail!(
+                "`pyn diff --cached` compares the staged changes with the last commit and takes no commit"
+            )
+        }
         [] => {
             let ws = ws_needed()?;
-            let old = diff::tree_of_state(&ws.load_state()?);
+            let mut old = diff::tree_of_state(&ws.load_state()?);
+            old.extend(diff::tree_of_staged(ws, &staging::Index::load(ws)?));
             let new = diff::tree_of_disk(ws, old.keys())?;
             (old, new)
         }
@@ -1637,6 +1737,29 @@ fn show_command(backend: &dyn Backend, commit: Option<&str>, format: &diff::Form
         print!("{body}");
     }
     Ok(())
+}
+
+/// A usage error, reported and exited as the argument parser does.
+fn usage_error(message: &str) -> ! {
+    let e = Cli::command().error(clap::error::ErrorKind::InvalidValue, message);
+    let _ = e.print();
+    std::process::exit(129);
+}
+
+/// The path and the older revision a `restore` names, as `<path> <revision>` or `<path> --source <revision>`.
+fn restore_target(args: &[String], source: Option<&str>) -> (String, u64) {
+    let revision = |text: &str| -> u64 {
+        text.parse()
+            .unwrap_or_else(|_| usage_error(&format!("'{text}' is not a revision number")))
+    };
+    match (args, source) {
+        ([path], Some(source)) => (path.clone(), revision(source)),
+        ([path, rev], None) => (path.clone(), revision(rev)),
+        ([_], None) => usage_error(
+            "a revision is required: `restore <path> <REVISION>` or `--source <revision>`",
+        ),
+        _ => usage_error("`restore` takes one path and one revision, or one path with --source"),
+    }
 }
 
 fn restore(

@@ -9,6 +9,7 @@ use pyn_proto as api;
 use crate::backend::Backend;
 use crate::localfile;
 use crate::snapshot::short;
+use crate::staging;
 use crate::table;
 use crate::workspace::{FileState, Settings, Workspace, set_read_only};
 
@@ -129,25 +130,37 @@ pub fn status(backend: &dyn Backend, ws: &Workspace, commit: Option<&str>) -> Re
         .map(|e| (e.path.clone(), e))
         .collect();
     let state = ws.load_state()?;
+    let index = staging::Index::load(ws)?;
     let local: BTreeSet<String> = ws.scan()?.into_iter().collect();
     let me = backend.whoami()?;
     let paths: BTreeSet<&String> = entries
         .keys()
         .chain(state.keys())
         .chain(local.iter())
+        .chain(index.entries.keys())
         .collect();
 
-    let (mut modified, mut behind, mut ahead, mut new, mut untracked) = (0, 0, 0, 0, 0);
+    let (mut staged, mut modified, mut behind, mut ahead, mut new, mut untracked) =
+        (0, 0, 0, 0, 0, 0);
     let (mut mine, mut theirs) = (0, 0);
     let mut rows: Vec<Vec<String>> = Vec::new();
     for path in paths {
         let (known, entry) = (state.get(path), entries.get(path));
         let on_disk = localfile::exists(&ws.abs(path));
         let mut notes: Vec<String> = Vec::new();
+        let staged_entry = index.entries.get(path);
+        let stage =
+            staged_entry.map_or("-", |_| if known.is_some() { "modified" } else { "added" });
+        staged += usize::from(staged_entry.is_some());
+        let dirty = |file_mode, bytes: &[u8]| match (staged_entry, known) {
+            (Some(s), _) => s.differs(file_mode, bytes),
+            (None, Some(k)) => k.changed(file_mode, bytes),
+            (None, None) => true,
+        };
         match (known, on_disk) {
             (Some(k), true) => {
                 let (file_mode, bytes) = localfile::read(&ws.abs(path))?;
-                if k.changed(file_mode, &bytes) {
+                if dirty(file_mode, &bytes) {
                     notes.push("modified".into());
                     modified += 1;
                 }
@@ -175,6 +188,13 @@ pub fn status(backend: &dyn Backend, ws: &Workspace, commit: Option<&str>) -> Re
             (Some(_), false) => {
                 notes.push("deleted locally".into());
                 modified += 1;
+            }
+            (None, true) if staged_entry.is_some() => {
+                let (file_mode, bytes) = localfile::read(&ws.abs(path))?;
+                if dirty(file_mode, &bytes) {
+                    notes.push("modified".into());
+                    modified += 1;
+                }
             }
             (None, true) if local.contains(path) => {
                 let on_server = entry.is_some_and(|e| e.revision.is_some());
@@ -208,7 +228,7 @@ pub fn status(backend: &dyn Backend, ws: &Workspace, commit: Option<&str>) -> Re
                 time_left(lock.expires_at)
             )
         });
-        if notes.is_empty() && lock.is_none() {
+        if notes.is_empty() && lock.is_none() && staged_entry.is_none() {
             continue;
         }
         let mode = entry.map_or_else(
@@ -218,6 +238,7 @@ pub fn status(backend: &dyn Backend, ws: &Workspace, commit: Option<&str>) -> Re
         rows.push(vec![
             mode.to_string(),
             known.map_or("-".to_string(), |k| format!("r{}", k.revision)),
+            stage.to_string(),
             if notes.is_empty() {
                 "clean".to_string()
             } else {
@@ -233,7 +254,7 @@ pub fn status(backend: &dyn Backend, ws: &Workspace, commit: Option<&str>) -> Re
     }
     println!(
         "{}",
-        table::render(&["MODE", "REV", "STATE", "LOCK", "PATH"], &rows)
+        table::render(&["MODE", "REV", "STAGED", "STATE", "LOCK", "PATH"], &rows)
     );
     let ahead = if commit.is_some() {
         format!("{ahead} ahead, ")
@@ -241,8 +262,8 @@ pub fn status(backend: &dyn Backend, ws: &Workspace, commit: Option<&str>) -> Re
         String::new()
     };
     println!(
-        "{modified} modified, {behind} behind, {ahead}{new} new, {untracked} untracked, \
-         {mine} locked by you, {theirs} locked by others"
+        "{staged} staged, {modified} modified, {behind} behind, {ahead}{new} new, \
+         {untracked} untracked, {mine} locked by you, {theirs} locked by others"
     );
     Ok(())
 }
@@ -257,9 +278,17 @@ pub fn update(
 ) -> Result<()> {
     let me = backend.whoami()?;
     let mut state = ws.load_state()?;
+    let index = staging::Index::load(ws)?;
     let (mut updated, mut removed, mut skipped) = (0, 0, Vec::new());
     for entry in entries_at(backend, commit)? {
         if !only.is_empty() && !only.contains(&entry.path) {
+            continue;
+        }
+        if index.entries.contains_key(&entry.path) {
+            skipped.push(format!(
+                "{}: staged; commit it or `pyn restore --staged` it first",
+                entry.path
+            ));
             continue;
         }
         let Some(head) = entry.revision else {

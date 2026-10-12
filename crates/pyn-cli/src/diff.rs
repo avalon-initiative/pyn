@@ -94,6 +94,24 @@ pub fn tree_of_state(state: &BTreeMap<String, FileState>) -> Tree {
         .collect()
 }
 
+/// The staged content of every staged path, read from where the index keeps it.
+pub fn tree_of_staged(ws: &Workspace, index: &crate::staging::Index) -> Tree {
+    index
+        .entries
+        .iter()
+        .map(|(p, e)| {
+            let blob = Blob {
+                hash: e.hash.clone(),
+                mode: e.file_mode,
+                source: Source::Local {
+                    file: crate::staging::content_path(ws, &e.hash),
+                },
+            };
+            (p.clone(), blob)
+        })
+        .collect()
+}
+
 /// The files on disk for `paths`; those that do not exist are left out.
 pub fn tree_of_disk<'a>(ws: &Workspace, paths: impl Iterator<Item = &'a String>) -> Result<Tree> {
     let mut tree = Tree::new();

@@ -8,7 +8,7 @@ use anyhow::{Result, bail};
 use pyn_gitwork::{Change, Entry, Head, Kind, Pathspec, fs_path, hash_worktree_file};
 use pyn_object::{Commit as GitCommit, ObjectId};
 
-use super::{GitHome, file_mode, path_string};
+use super::{GitHome, file_mode, path_string, stage};
 use crate::backend::Backend;
 use crate::diff::{self, Blob, Source, Tree};
 use crate::{Command, table, time, unsupported};
@@ -42,10 +42,7 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
             quiet,
             cached,
         } => {
-            if cached {
-                bail!("`pyn diff --cached` needs the staging index, which comes with #253");
-            }
-            let differs = diff(git, cwd, &args, &paths, &format.format(), quiet)?;
+            let differs = diff(git, cwd, &args, &paths, &format.format(), quiet, cached)?;
             if differs && (exit_code || quiet) {
                 std::process::exit(1);
             }
@@ -68,7 +65,50 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
         Command::Init => init(git),
         Command::Files => crate::files_command(git),
         Command::Ls { path } => crate::ls_command(git, path.as_deref()),
-        Command::Commit { .. } => refuse("commit"),
+        Command::Add {
+            paths,
+            update,
+            dry_run,
+            verbose,
+            force,
+            ..
+        } => {
+            let options = stage::AddOptions {
+                paths,
+                update,
+                dry_run,
+                verbose,
+                force,
+            };
+            if stage::add(git, cwd, &options)? {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
+        Command::Commit {
+            paths,
+            file,
+            base,
+            message,
+            all,
+        } => {
+            if !paths.is_empty() {
+                bail!(
+                    "`pyn commit <path>` is not available on a git repository; \
+                     stage the paths with `pyn add` and run `pyn commit`"
+                );
+            }
+            if file.is_some() || base.is_some() {
+                bail!("`pyn commit --file` and `--base` need a pyn server");
+            }
+            stage::commit(git, &message, all)
+        }
+        Command::Restore {
+            args,
+            source,
+            staged: true,
+            ..
+        } => stage::restore_staged(git, cwd, &args, source.as_deref()),
         Command::Restore { .. } => refuse("restore"),
         Command::Update { .. } => refuse("update"),
         Command::Get { .. } => refuse("get"),
@@ -259,6 +299,7 @@ fn diff(
     paths: &[String],
     format: &diff::Format,
     quiet: bool,
+    cached: bool,
 ) -> Result<bool> {
     let (revs, loose) = split_revisions(git, cwd, args, !paths.is_empty())?;
     let only = repo_paths(git, cwd, &[loose.as_slice(), paths].concat())?;
@@ -266,6 +307,30 @@ fn diff(
     let repo = &git.repo;
     let (mut old, mut new) = (Tree::new(), Tree::new());
     match revs.as_slice() {
+        [] | [_] if cached => {
+            let tree = match revs.first() {
+                Some(id) => Some(repo.commit(id)?.tree),
+                None => match repo.head_commit()? {
+                    Some(head) => Some(repo.commit(&head)?.tree),
+                    None => None,
+                },
+            };
+            let committed = repo.flatten(tree.as_ref(), &spec)?;
+            let index = repo.read_index()?;
+            let mut staged = repo.index_leaves(&index);
+            staged.retain(|p, _| spec.matches(p));
+            for (path, e) in &committed {
+                if let Some(b) = entry_blob(e) {
+                    old.insert(path_string(path), b);
+                }
+            }
+            for (path, e) in &staged {
+                if let Some(b) = entry_blob(e) {
+                    new.insert(path_string(path), b);
+                }
+            }
+        }
+        [_, _] if cached => bail!("`pyn diff --cached` takes at most one commit"),
         [] => {
             let index = repo.read_index()?;
             let leaves = repo.index_leaves(&index);

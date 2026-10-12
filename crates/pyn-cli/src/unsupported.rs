@@ -2,7 +2,6 @@
 
 const GIT_ONLY: &[&str] = &[
     "init",
-    "add",
     "branch",
     "switch",
     "merge",
@@ -25,15 +24,7 @@ const GIT_ONLY: &[&str] = &[
 
 /// A git command, or a pyn command that wraps one, that a git home will gain with a named issue.
 const PLANNED_ON_GIT: &[(&str, &str)] = &[
-    ("add", "the staging index (#253)"),
-    (
-        "commit",
-        "the staging index (#253) and writing commits (#254)",
-    ),
-    (
-        "restore",
-        "the staging index (#253) and writing the work tree (#254)",
-    ),
+    ("restore", "writing the work tree (#254)"),
     ("branch", "writing branches (#254)"),
     ("switch", "writing branches (#254)"),
     ("checkout", "writing branches and the work tree (#254)"),
@@ -48,7 +39,7 @@ const PLANNED_ON_GIT: &[(&str, &str)] = &[
 ];
 
 /// The commands whose arguments only make sense on a pyn server, so a git home refuses before parsing them.
-pub const REFUSED_BEFORE_PARSING: &[&str] = &["commit", "restore", "update", "get"];
+pub const REFUSED_BEFORE_PARSING: &[&str] = &["update", "get"];
 
 /// What to print for `name` in a git repository: which issue will provide it, or the general message.
 pub fn message_on_git(name: &str) -> String {

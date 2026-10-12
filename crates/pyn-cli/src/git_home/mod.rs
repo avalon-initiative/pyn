@@ -2,6 +2,7 @@
 //! Nothing here changes what git sees; the only file pyn adds is its own `.pyn/` folder, hidden by `info/exclude`.
 
 mod commands;
+mod stage;
 
 use std::path::{Path, PathBuf};
 
