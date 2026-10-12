@@ -140,6 +140,10 @@ impl Workspace {
         self.dir.join("ignore")
     }
 
+    fn personal_ignore_path(&self) -> PathBuf {
+        self.dir.join(LOCAL_ONLY).join("ignore")
+    }
+
     pub fn settings(&self) -> Settings {
         Settings::load(&self.config_path()).unwrap_or_default()
     }
@@ -205,10 +209,13 @@ impl Workspace {
         Ok(repo.join("/"))
     }
 
-    /// Patterns from `.pyn/ignore`, one per line; `#` starts a comment. `dir/` ignores a folder anywhere, a pattern
-    /// without a `/` matches at any depth, and a pattern with one is relative to the workspace root.
+    /// Patterns from `.pyn/ignore` plus the personal `.pyn/local_only/ignore`, one per line; `#` starts a comment.
+    /// `dir/` ignores a folder anywhere, a pattern without a `/` matches at any depth, and a pattern with one is
+    /// relative to the workspace root.
     pub fn ignore_set(&self) -> Result<GlobSet> {
-        let text = std::fs::read_to_string(self.ignore_path()).unwrap_or_default();
+        let mut text = std::fs::read_to_string(self.ignore_path()).unwrap_or_default();
+        text.push('\n');
+        text.push_str(&std::fs::read_to_string(self.personal_ignore_path()).unwrap_or_default());
         build_ignore(&text)
     }
 
@@ -419,5 +426,23 @@ mod tests {
         }
         std::fs::write(dir.path().join(".pyn/ignore"), "*.log\nbuild/\n").unwrap();
         assert_eq!(w.scan().unwrap(), [".pyn/ignore", "Source/b.cpp", "a.cpp"]);
+    }
+
+    #[test]
+    fn personal_ignore_adds_to_the_shared_file_without_listing_local_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let w = Workspace::create(dir.path()).unwrap();
+        for f in ["a.cpp", "notes.txt", "debug.log", "scratch/x"] {
+            let p = dir.path().join(f);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, "x").unwrap();
+        }
+        std::fs::write(dir.path().join(".pyn/ignore"), "*.log\n").unwrap();
+        std::fs::write(
+            dir.path().join(".pyn/local_only/ignore"),
+            "# mine\nnotes.txt\nscratch/\n",
+        )
+        .unwrap();
+        assert_eq!(w.scan().unwrap(), [".pyn/ignore", "a.cpp"]);
     }
 }

@@ -9,6 +9,7 @@ anything related to pyn.
   pyn.toml          the repository's collaboration policy (shared)
   ignore            paths pyn leaves alone (shared)
   local_only/       never tracked
+    ignore          personal ignore patterns, added to the shared ignore
     config.toml     workspace settings: server, repository, identity
     state/          which revision each local file is at
     cache/          downloaded content
@@ -85,6 +86,16 @@ month (`Jun 09 2026`), a time is `HH:MM` on a 24-hour clock with no seconds or f
 A pattern ending in `/` ignores that folder wherever it appears (`node_modules/`), a pattern without a `/` matches at any
 depth (`*.log`), and a pattern containing a `/` is relative to the workspace root (`Saved/cache.bin`). The file is shared
 like the rest of `.pyn/`, so a team keeps one list.
+
+### Personal ignore
+
+`.pyn/local_only/ignore` has the same syntax and is for exclusions that are yours alone, as `.git/info/exclude` is in
+git. It is applied in addition to `.pyn/ignore`: a path is ignored if either file matches, and there are no negations,
+so neither file can un-ignore what the other lists. It is never versioned or pushed and affects only that workspace.
+`pyn status` and checkin read both files. `.pyn/local_only/` itself is always ignored and never needs an entry.
+
+The split elsewhere in `.pyn/` follows the same rule: the policy (`pyn.toml`) and the shared ignore are repository
+content, while `config.toml`, `state/` and `cache/` are per-machine and live only in `local_only/`.
 
 ## Settings
 
