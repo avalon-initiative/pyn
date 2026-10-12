@@ -68,3 +68,36 @@ fn a_tampered_audit_log_is_reported() {
     let rows = common::cell_rows(&text(&out.stdout));
     assert_eq!(rows[1], ["hash_mismatch", "event 1", "(audit log)"]);
 }
+
+#[test]
+fn a_rewritten_commit_is_reported_from_its_recomputed_id() {
+    let env = start();
+    env.seed("alice", "Source/a.ts", "one", None);
+    env.seed("alice", "Source/b.ts", "two", None);
+    let home = env.dir("home");
+    let shown = env.ok(&home, "alice", &["show", "HEAD~1", "--name-only"]);
+    let id = shown
+        .lines()
+        .next()
+        .unwrap()
+        .trim_start_matches("commit ")
+        .to_string();
+    env.meta.tamper_commit(
+        &RepoId::new("t"),
+        &pyn_core::ObjectId::parse(&id).unwrap(),
+        |c| c.message = "rewritten".into(),
+    );
+
+    let out = env.run(&home, "alice", &["verify"]);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out.stderr));
+    let rows = common::cell_rows(&text(&out.stdout));
+    assert_eq!(
+        rows[1],
+        [
+            "hash_mismatch",
+            &format!("commit {}", &id[..10]),
+            "(commits)"
+        ]
+    );
+    assert_eq!(rows.len(), 2, "{rows:?}");
+}

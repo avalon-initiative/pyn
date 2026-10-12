@@ -9,6 +9,7 @@ use anyhow::{Context, Result};
 use pyn_proto as api;
 
 use crate::backend::Backend;
+use crate::localfile;
 use crate::time;
 use crate::workspace::{FileState, Workspace, hash_of};
 
@@ -25,6 +26,7 @@ pub enum Source {
 #[derive(Clone)]
 pub struct Blob {
     pub hash: String,
+    pub mode: api::FileMode,
     pub source: Source,
 }
 
@@ -49,6 +51,7 @@ pub fn tree_of_snapshot(entries: &[api::SnapshotEntry]) -> Tree {
         .map(|e| {
             let blob = Blob {
                 hash: e.content.clone(),
+                mode: e.file_mode,
                 source: Source::Remote {
                     revision: e.revision,
                 },
@@ -65,6 +68,7 @@ pub fn tree_of_state(state: &BTreeMap<String, FileState>) -> Tree {
         .map(|(p, k)| {
             let blob = Blob {
                 hash: k.hash.clone(),
+                mode: k.file_mode,
                 source: Source::Remote {
                     revision: k.revision,
                 },
@@ -79,14 +83,15 @@ pub fn tree_of_disk<'a>(ws: &Workspace, paths: impl Iterator<Item = &'a String>)
     let mut tree = Tree::new();
     for path in paths {
         let file = ws.abs(path);
-        if !file.is_file() {
+        if !localfile::exists(&file) {
             continue;
         }
-        let hash = hash_of(&std::fs::read(&file).with_context(|| format!("reading {path}"))?);
+        let (mode, bytes) = localfile::read(&file)?;
         tree.insert(
             path.clone(),
             Blob {
-                hash,
+                hash: hash_of(&bytes),
+                mode,
                 source: Source::Local { file },
             },
         );
@@ -96,6 +101,7 @@ pub fn tree_of_disk<'a>(ws: &Workspace, paths: impl Iterator<Item = &'a String>)
 
 fn bytes(backend: &dyn Backend, path: &str, blob: &Blob, probe: bool) -> Result<Vec<u8>> {
     match &blob.source {
+        Source::Local { file } if localfile::is_symlink(file) => Ok(localfile::read(file)?.1),
         Source::Local { file } => {
             let mut f = std::fs::File::open(file).with_context(|| format!("reading {path}"))?;
             let mut buf = Vec::new();
@@ -160,16 +166,25 @@ fn patch(
     context: usize,
 ) -> String {
     let mut out = format!("diff --git a/{path} b/{path}\n");
+    let mut tail = String::new();
     match (old, new) {
-        (None, _) => out.push_str("new file mode 100644\n"),
-        (_, None) => out.push_str("deleted file mode 100644\n"),
-        _ => {}
+        (None, Some(b)) => {
+            let _ = writeln!(out, "new file mode {}", b.mode.as_str());
+        }
+        (Some(a), None) => {
+            let _ = writeln!(out, "deleted file mode {}", a.mode.as_str());
+        }
+        (Some(a), Some(b)) if a.mode != b.mode => {
+            let _ = writeln!(
+                out,
+                "old mode {}\nnew mode {}",
+                a.mode.as_str(),
+                b.mode.as_str()
+            );
+        }
+        (Some(a), Some(_)) => tail = format!(" {}", a.mode.as_str()),
+        (None, None) => {}
     }
-    let tail = if old.is_some() && new.is_some() {
-        " 100644"
-    } else {
-        ""
-    };
     let _ = writeln!(out, "index {}..{}{tail}", abbrev(old), abbrev(new));
     let (from, to) = (
         old.map_or("/dev/null".to_string(), |_| format!("a/{path}")),
@@ -235,7 +250,10 @@ pub fn compare(
     let mut differs = false;
     for path in paths {
         let (a, b) = (old.get(path), new.get(path));
-        if !selected(path, only) || a.zip(b).is_some_and(|(a, b)| a.hash == b.hash) {
+        if !selected(path, only)
+            || a.zip(b)
+                .is_some_and(|(a, b)| a.hash == b.hash && a.mode == b.mode)
+        {
             continue;
         }
         differs = true;
@@ -301,9 +319,10 @@ pub fn compare(
 /// The `commit`, `Author:` and `Date:` lines and the indented message, as `git show` prints them.
 pub fn commit_header(c: &api::Commit) -> String {
     let mut out = format!(
-        "commit c{}\nAuthor: {}\nDate:   {}\n\n",
+        "commit {}\nAuthor: {} <{}>\nDate:   {}\n\n",
         c.id,
-        c.author,
+        c.author.name,
+        c.author.email,
         time::local(c.created_at)
     );
     for line in c.message.lines() {

@@ -4,7 +4,7 @@ mod common;
 
 use common::{REPO, start};
 
-/// Four commits: c1 a, c2 Content/m, c3 a edited, c4 b added.
+/// Four commits, oldest first: a, Content/m, a edited, b added (HEAD~3 to HEAD).
 fn history(env: &common::Env) {
     env.seed("alice", "Source/a.txt", "one\ntwo\nthree\n", None);
     env.seed("alice", "Content/m.umap", "map one", None);
@@ -31,20 +31,66 @@ fn log_commits_lists_every_write_newest_first() {
     let rows = common::cell_rows(&out);
     assert_eq!(rows[0], ["COMMIT", "AUTHOR", "WHEN", "FILES", "MESSAGE"]);
     let ids: Vec<&str> = rows[1..].iter().map(|r| r[0].as_str()).collect();
-    assert_eq!(ids, ["c4", "c3", "c2", "c1"], "{out}");
+    assert_eq!(ids.len(), 4, "{out}");
+    for id in &ids {
+        assert!(
+            id.len() == 10 && id.bytes().all(|b| b.is_ascii_hexdigit()),
+            "an abbreviated hash, not a number: {id}"
+        );
+    }
+    assert_eq!(rows[1][1], "alice");
+}
+
+#[test]
+fn commits_are_named_by_abbreviated_hash_head_steps_and_caret() {
+    let env = start();
+    history(&env);
+    let home = env.dir("home");
+    let log = common::cell_rows(&env.ok(&home, "alice", &["log", "--commits"]));
+    let ids: Vec<String> = log[1..].iter().map(|r| r[0].clone()).collect();
+
+    let show = |rev: &str| env.ok(&home, "alice", &["show", "--name-only", rev]);
+    for (i, id) in ids.iter().enumerate() {
+        let by_hash = show(id);
+        assert!(by_hash.starts_with("commit "), "{by_hash}");
+        assert_eq!(show(&format!("HEAD~{i}")), by_hash);
+        assert_eq!(
+            show(&id[..6]),
+            by_hash,
+            "a shorter prefix names the same commit"
+        );
+        if i + 1 < ids.len() {
+            assert_eq!(show(&format!("{id}~1")), show(&ids[i + 1]));
+            assert_eq!(show(&format!("{id}^")), show(&ids[i + 1]));
+        }
+    }
+    assert_eq!(show("HEAD^"), show(&ids[1]));
+    assert_eq!(show("HEAD^^"), show(&ids[2]));
+
+    let full = env.ok(&home, "alice", &["show", "--name-only", &ids[3]]);
+    let long = full.lines().next().unwrap().trim_start_matches("commit ");
+    assert_eq!(long.len(), 64, "{full}");
+    assert!(long.starts_with(&ids[3]));
+
+    let err = env.fails(&home, "alice", &["show", "c3"]);
+    assert!(err.contains("not a commit"), "{err}");
+    let err = env.fails(&home, "alice", &["show", "HEAD~9"]);
+    assert!(err.contains("before the first commit"), "{err}");
+    let err = env.fails(&home, "alice", &["show", "HEAD^2"]);
+    assert!(err.contains("not a commit"), "{err}");
 }
 
 #[test]
 fn clone_at_a_commit_has_the_files_as_they_were() {
     let env = start();
     history(&env);
-    let ws = clone_at(&env, "old", &["c2"]);
+    let ws = clone_at(&env, "old", &["HEAD~2"]);
     assert_eq!(
         std::fs::read_to_string(ws.join("Source/a.txt")).unwrap(),
         "one\ntwo\nthree\n"
     );
     assert!(ws.join("Content/m.umap").is_file());
-    assert!(!ws.join("Source/b.txt").exists(), "b came after c2");
+    assert!(!ws.join("Source/b.txt").exists(), "b came after HEAD~2");
 
     let head = clone_at(&env, "head~1", &["HEAD~1"]);
     assert_eq!(
@@ -56,7 +102,7 @@ fn clone_at_a_commit_has_the_files_as_they_were() {
     let none = env.fails(
         &env.dir("home"),
         "alice",
-        &["clone", "--revision", "c9", &env.source(REPO), "x"],
+        &["clone", "--revision", "deadbeef", &env.source(REPO), "x"],
     );
     assert!(none.contains("commit_not_found"), "{none}");
 }
@@ -73,23 +119,27 @@ fn status_and_update_at_a_commit_move_the_workspace_both_ways() {
     );
     let ws = ws.canonicalize().unwrap();
 
-    let out = env.ok(&ws, "alice", &["status", "--revision", "c1"]);
-    assert!(out.contains("ahead (c1 has r1)"), "{out}");
-    assert!(out.contains("ahead (not in c1)"), "{out}");
+    let first = common::cell_rows(&env.ok(&ws, "alice", &["log", "--commits"]))
+        .pop()
+        .unwrap()[0]
+        .clone();
+    let out = env.ok(&ws, "alice", &["status", "--revision", &first]);
+    assert!(out.contains(&format!("ahead ({first} has r1)")), "{out}");
+    assert!(out.contains(&format!("ahead (not in {first})")), "{out}");
     assert!(out.contains("3 ahead"), "{out}");
 
-    let out = env.ok(&ws, "alice", &["update", "--revision", "c1"]);
+    let out = env.ok(&ws, "alice", &["update", "--revision", &first]);
     assert!(out.contains("updated 1 file(s), removed 2"), "{out}");
     assert_eq!(
         std::fs::read_to_string(ws.join("Source/a.txt")).unwrap(),
         "one\ntwo\nthree\n"
     );
     assert!(!ws.join("Source/b.txt").exists());
-    let out = env.ok(&ws, "alice", &["status", "--revision", "c1"]);
+    let out = env.ok(&ws, "alice", &["status", "--revision", "HEAD~3"]);
     assert_eq!(out.trim(), "everything is up to date");
 
     std::fs::write(ws.join("Source/a.txt"), "mine").unwrap();
-    let out = env.ok(&ws, "alice", &["update", "--revision", "c4"]);
+    let out = env.ok(&ws, "alice", &["update", "--revision", "HEAD"]);
     assert!(out.contains("skipped Source/a.txt: local changes"), "{out}");
     assert_eq!(
         std::fs::read_to_string(ws.join("Source/a.txt")).unwrap(),
@@ -182,12 +232,12 @@ fn diff_between_commits_works_outside_a_workspace() {
     let env = start();
     history(&env);
     let home = env.dir("home");
-    let out = env.ok(&home, "alice", &["diff", "c1", "c3"]);
+    let out = env.ok(&home, "alice", &["diff", "HEAD~3", "HEAD~1"]);
     assert!(out.contains("-two\n+2\n"), "{out}");
-    assert!(!out.contains("b.txt"), "b is not in c3: {out}");
-    assert_eq!(env.ok(&home, "alice", &["diff", "c1..c3"]), out);
+    assert!(!out.contains("b.txt"), "b is not in HEAD~1: {out}");
+    assert_eq!(env.ok(&home, "alice", &["diff", "HEAD~3..HEAD~1"]), out);
 
-    let names = env.ok(&home, "alice", &["diff", "--name-status", "c1", "HEAD"]);
+    let names = env.ok(&home, "alice", &["diff", "--name-status", "HEAD~3", "HEAD"]);
     assert_eq!(
         names,
         "A\tContent/m.umap\nM\tSource/a.txt\nA\tSource/b.txt\n"
@@ -195,20 +245,24 @@ fn diff_between_commits_works_outside_a_workspace() {
     let only = env.ok(
         &home,
         "alice",
-        &["diff", "--name-only", "c1", "HEAD", "Source/b.txt"],
+        &["diff", "--name-only", "HEAD~3", "HEAD", "Source/b.txt"],
     );
     assert_eq!(only, "Source/b.txt\n");
 
-    let stat = env.ok(&home, "alice", &["diff", "--stat", "c1", "HEAD", "Source"]);
+    let stat = env.ok(
+        &home,
+        "alice",
+        &["diff", "--stat", "HEAD~3", "HEAD", "Source"],
+    );
     let lines: Vec<&str> = stat.lines().collect();
     assert_eq!(lines[0], " Source/a.txt | 2 +-");
     assert_eq!(lines[1], " Source/b.txt | 1 +");
     assert_eq!(lines[2], " 2 files changed, 2 insertions(+), 1 deletion(-)");
 
-    let wide = env.ok(&home, "alice", &["diff", "-U0", "c1", "c3"]);
+    let wide = env.ok(&home, "alice", &["diff", "-U0", "HEAD~3", "HEAD~1"]);
     assert!(wide.contains("@@ -2 +2 @@\n-two\n+2\n"), "{wide}");
 
-    let err = env.fails(&home, "alice", &["diff", "c1", "c7"]);
+    let err = env.fails(&home, "alice", &["diff", "HEAD~3", "deadbeef"]);
     assert!(err.contains("commit_not_found"), "{err}");
 }
 
@@ -247,19 +301,19 @@ fn diff_against_a_commit_compares_the_workspace_and_reports_binary_files() {
         ],
     );
 
-    let out = env.ok(&home, "alice", &["diff", "c5", "c6"]);
+    let out = env.ok(&home, "alice", &["diff", "HEAD~1", "HEAD"]);
     assert!(
         out.contains("Binary files a/blob.bin and b/blob.bin differ"),
         "{out}"
     );
     assert!(!out.contains("@@"), "{out}");
-    let added = env.ok(&home, "alice", &["diff", "c4", "c5"]);
+    let added = env.ok(&home, "alice", &["diff", "HEAD~2", "HEAD~1"]);
     assert!(added.contains("new file mode 100644"), "{added}");
     assert!(
         added.contains("Binary files /dev/null and b/blob.bin differ"),
         "{added}"
     );
-    let stat = env.ok(&home, "alice", &["diff", "--stat", "c5", "c6"]);
+    let stat = env.ok(&home, "alice", &["diff", "--stat", "HEAD~1", "HEAD"]);
     assert!(stat.contains("blob.bin | Bin"), "{stat}");
 
     let ws = env.dir("ws");
@@ -269,13 +323,13 @@ fn diff_against_a_commit_compares_the_workspace_and_reports_binary_files() {
         &[
             "clone",
             "--revision",
-            "c2",
+            "HEAD~4",
             &env.source(REPO),
             ws.to_str().unwrap(),
         ],
     );
     let ws = ws.canonicalize().unwrap();
-    let out = env.ok(&ws, "alice", &["diff", "c4"]);
+    let out = env.ok(&ws, "alice", &["diff", "HEAD~2"]);
     assert!(
         out.contains("-2\n+two\n") || out.contains("-one\n"),
         "{out}"
@@ -287,10 +341,13 @@ fn show_prints_the_commit_and_what_it_changed() {
     let env = start();
     history(&env);
     let home = env.dir("home");
-    let out = env.ok(&home, "alice", &["show", "c3"]);
+    let out = env.ok(&home, "alice", &["show", "HEAD~1"]);
     let lines: Vec<&str> = out.lines().collect();
-    assert_eq!(lines[0], "commit c3");
-    assert_eq!(lines[1], "Author: alice");
+    assert!(
+        lines[0].len() == "commit ".len() + 64 && lines[0].starts_with("commit "),
+        "{out}"
+    );
+    assert_eq!(lines[1], "Author: alice <alice@pyn.invalid>");
     assert!(lines[2].starts_with("Date:   "), "{out}");
     assert_eq!(lines[3], "");
     assert_eq!(lines[4], "    seed");
@@ -302,9 +359,9 @@ fn show_prints_the_commit_and_what_it_changed() {
     assert!(!out.contains("b.txt"));
 
     let head = env.ok(&home, "alice", &["show", "--name-status"]);
-    assert!(head.starts_with("commit c4\n"), "{head}");
+    assert!(head.starts_with("commit "), "{head}");
     assert!(head.ends_with("A\tSource/b.txt\n"), "{head}");
 
-    let first = env.ok(&home, "alice", &["show", "c1", "--stat"]);
+    let first = env.ok(&home, "alice", &["show", "HEAD~3", "--stat"]);
     assert!(first.contains("Source/a.txt | 3 +++"), "{first}");
 }

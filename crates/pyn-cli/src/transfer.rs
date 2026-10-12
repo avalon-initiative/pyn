@@ -33,6 +33,16 @@ fn put_bytes(api: &Api, route: &str, bytes: Vec<u8>) -> Result<String> {
     Ok(put.content)
 }
 
+/// Uploads `bytes` as one object, for content too small to need chunks, and returns its blob id.
+pub fn upload_bytes(api: &Api, bytes: Vec<u8>) -> Result<String> {
+    let expected = hash_of(&bytes);
+    let stored = put_bytes(api, "/objects", bytes)?;
+    if stored != expected {
+        bail!("the server stored the content as {stored}, expected {expected}");
+    }
+    Ok(stored)
+}
+
 /// Cuts the file into chunks, reading it once, and returns them with the file's blob id.
 fn pieces_of(file: &mut File, len: u64) -> Result<(Vec<Piece>, String)> {
     let mut whole = ObjectHasher::blob(Algorithm::Sha256, len);

@@ -14,6 +14,7 @@ mod client;
 mod credentials;
 mod diff;
 mod limits;
+mod localfile;
 mod pyn_server;
 mod snapshot;
 mod sync;
@@ -85,7 +86,7 @@ enum Command {
         source: String,
         /// Where to put it; defaults to a folder named after the repository.
         dir: Option<std::path::PathBuf>,
-        /// Check out the repository as of this commit (`cN`, `HEAD~N`) instead of the newest.
+        /// Check out the repository as of this commit (`HEAD~N`, a commit hash) instead of the newest.
         #[arg(long)]
         revision: Option<String>,
     },
@@ -100,7 +101,7 @@ enum Command {
     Team(TeamCommand),
     /// Show what differs between this workspace and the server.
     Status {
-        /// Compare with the repository as of this commit (`cN`, `HEAD~N`) instead of the newest.
+        /// Compare with the repository as of this commit (`HEAD~N`, a commit hash) instead of the newest.
         #[arg(long)]
         revision: Option<String>,
     },
@@ -108,13 +109,13 @@ enum Command {
     Update {
         /// Only these paths; everything if omitted.
         paths: Vec<String>,
-        /// Bring the files to the repository as of this commit (`cN`, `HEAD~N`), older or newer than the workspace.
+        /// Bring the files to the repository as of this commit (`HEAD~N`, a commit hash), older or newer than the workspace.
         #[arg(long)]
         revision: Option<String>,
     },
     /// Show changes between the workspace and a commit, between two commits, or since the last update.
     Diff {
-        /// Up to two commits (`HEAD`, `HEAD~2`, `c7`, or `c3..c7`), then paths.
+        /// Up to two commits (`HEAD`, `HEAD~2`, `HEAD^`, a commit hash, or `a1b2c3d4..HEAD`), then paths.
         args: Vec<String>,
         /// Paths to limit the diff to, after `--`.
         #[arg(last = true)]
@@ -133,7 +134,7 @@ enum Command {
     },
     /// Show a commit: its message and what it changed (the newest commit if none is named).
     Show {
-        /// `HEAD`, `HEAD~N` or `cN`.
+        /// `HEAD`, `HEAD~N`, `HEAD^` or a commit hash (an abbreviation of at least 4 digits is enough).
         commit: Option<String>,
         #[command(flatten)]
         format: DiffFormat,
@@ -1101,20 +1102,20 @@ fn run(cli: Cli) -> Result<()> {
             let commit = revision
                 .map(|r| snapshot::resolve(&backend, &r))
                 .transpose()?;
-            sync::clone_into(&backend, &target, &server, &repo, commit)?;
+            sync::clone_into(&backend, &target, &server, &repo, commit.as_deref())?;
         }
         Command::Status { revision } => {
             let commit = revision
                 .map(|r| snapshot::resolve(&backend, &r))
                 .transpose()?;
-            sync::status(&backend, in_workspace("status")?, commit)?
+            sync::status(&backend, in_workspace("status")?, commit.as_deref())?
         }
         Command::Update { paths, revision } => {
             let only = paths.iter().map(|p| rp(p)).collect::<Result<Vec<_>>>()?;
             let commit = revision
                 .map(|r| snapshot::resolve(&backend, &r))
                 .transpose()?;
-            sync::update(&backend, in_workspace("update")?, &only, commit)?;
+            sync::update(&backend, in_workspace("update")?, &only, commit.as_deref())?;
         }
         Command::Diff {
             args,
@@ -1214,20 +1215,21 @@ fn run(cli: Cli) -> Result<()> {
             let mut hashes = Vec::new();
             for p in &paths {
                 let path = rp(p)?;
-                let hash = backend.upload(&w.abs(&path))?;
+                let (file_mode, hash) = localfile::upload(&backend, &w.abs(&path))?;
                 entries.push(api::ChangesetEntry {
                     path: path.clone(),
                     content: hash.clone(),
+                    file_mode: Some(file_mode),
                     base_revision: known.get(&path).map(|k| k.revision),
                 });
-                hashes.push((path, hash));
+                hashes.push((path, hash, file_mode));
             }
             let body = api::ChangesetRequest { entries, message };
             let r = backend
                 .commit_changeset(&body)
                 .map_err(|e| behind_hint(e, true))?;
-            for (rev, (path, hash)) in r.revisions.iter().zip(&hashes) {
-                sync::after_commit(&backend, w, path, rev.id, hash)?;
+            for (rev, (path, hash, file_mode)) in r.revisions.iter().zip(&hashes) {
+                sync::after_commit(&backend, w, path, rev.id, hash, *file_mode)?;
                 println!("{} is now at revision {}", rev.path, rev.id);
             }
         }
@@ -1247,10 +1249,11 @@ fn run(cli: Cli) -> Result<()> {
                 .as_ref()
                 .and_then(|w| w.load_state().ok())
                 .and_then(|s| s.get(&path).map(|k| k.revision));
-            let hash = backend.upload(&file)?;
+            let (file_mode, hash) = localfile::upload(&backend, &file)?;
             let body = api::CheckinRequest {
                 path: path.clone(),
                 content: hash.clone(),
+                file_mode: Some(file_mode),
                 base_revision: base.or(known),
                 message,
             };
@@ -1258,7 +1261,7 @@ fn run(cli: Cli) -> Result<()> {
                 .commit_file(&body)
                 .map_err(|e| behind_hint(e, ws.is_some()))?;
             if let Some(w) = &ws {
-                sync::after_commit(&backend, w, &path, r.id, &hash)?;
+                sync::after_commit(&backend, w, &path, r.id, &hash, file_mode)?;
             }
             println!("{} is now at revision {}", r.path, r.id);
         }
@@ -1283,13 +1286,13 @@ fn run(cli: Cli) -> Result<()> {
         } => {
             let limit = limit.unwrap_or(50);
             let mut rows: Vec<Vec<String>> = Vec::new();
-            let mut before = None;
+            let mut before: Option<String> = None;
             while rows.len() < limit {
-                let page = backend.commit_page(before, (limit - rows.len()).min(200))?;
+                let page = backend.commit_page(before.as_deref(), (limit - rows.len()).min(200))?;
                 for c in page.commits {
                     rows.push(vec![
-                        format!("c{}", c.id),
-                        c.author,
+                        snapshot::short(&c.id).to_string(),
+                        c.author.name,
                         time::local(c.created_at),
                         c.revisions.len().to_string(),
                         c.message,
@@ -1486,6 +1489,11 @@ fn run(cli: Cli) -> Result<()> {
     Ok(())
 }
 
+/// A commit reference that is not also the name of something in the current directory.
+fn is_commit_arg(arg: &str) -> bool {
+    snapshot::parse_commit(arg).is_some() && !std::path::Path::new(arg).exists()
+}
+
 /// Splits the leading commit references from the paths and prints the comparison; true if anything differs.
 fn diff_command(
     backend: &dyn Backend,
@@ -1503,11 +1511,11 @@ fn diff_command(
     {
         if let Some((a, b)) = first.split_once("..")
             && refs.is_empty()
-            && snapshot::parse_commit(a, false).is_some()
-            && snapshot::parse_commit(b, false).is_some()
+            && is_commit_arg(a)
+            && is_commit_arg(b)
         {
             refs.extend([a.to_string(), b.to_string()]);
-        } else if snapshot::parse_commit(first, false).is_some() {
+        } else if is_commit_arg(first) {
             refs.push(first.clone());
         } else {
             break;
@@ -1527,7 +1535,7 @@ fn diff_command(
     };
     let snapshot_tree = |r: &str| -> Result<diff::Tree> {
         let commit = snapshot::resolve(backend, r)?;
-        Ok(diff::tree_of_snapshot(&backend.snapshot(Some(commit))?.1))
+        Ok(diff::tree_of_snapshot(&backend.snapshot(Some(&commit))?.1))
     };
     let (old, new) = match refs.as_slice() {
         [] => {
@@ -1562,12 +1570,11 @@ fn show_command(backend: &dyn Backend, commit: Option<&str>, format: &diff::Form
         Some(c) => snapshot::resolve(backend, c)?,
         None => snapshot::resolve(backend, "HEAD")?,
     };
-    let found = backend.commit(id)?;
-    let new = diff::tree_of_snapshot(&backend.snapshot(Some(id))?.1);
-    let old = if id > 1 {
-        diff::tree_of_snapshot(&backend.snapshot(Some(id - 1))?.1)
-    } else {
-        diff::Tree::new()
+    let found = backend.commit(&id)?;
+    let new = diff::tree_of_snapshot(&backend.snapshot(Some(&id))?.1);
+    let old = match found.parents.first() {
+        Some(parent) => diff::tree_of_snapshot(&backend.snapshot(Some(parent))?.1),
+        None => diff::Tree::new(),
     };
     let only: Vec<String> = found.revisions.iter().map(|r| r.path.clone()).collect();
     let mut body = String::new();
@@ -1644,6 +1651,7 @@ fn submit_policy(api: &Api, repo: &str, bytes: Vec<u8>) -> Result<()> {
     let body = api::CheckinRequest {
         path: POLICY_PATH.into(),
         content: put.content,
+        file_mode: None,
         base_revision: None,
         message: "Initial policy".into(),
     };

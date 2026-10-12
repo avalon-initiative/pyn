@@ -41,15 +41,17 @@ pub trait Backend {
 
     fn tree(&self, path: Option<&str>) -> Result<api::TreeListing>;
 
-    /// The newest commit number; 0 when the repository has none.
-    fn head_commit(&self) -> Result<u64>;
+    /// The newest commit's id; `None` when the repository has none.
+    fn head_commit(&self) -> Result<Option<String>>;
 
-    fn commit_page(&self, before: Option<u64>, limit: usize) -> Result<api::CommitPage>;
+    /// Commits newest first, strictly older than `before` (an id or abbreviation) when given.
+    fn commit_page(&self, before: Option<&str>, limit: usize) -> Result<api::CommitPage>;
 
-    fn commit(&self, id: u64) -> Result<api::Commit>;
+    /// A commit by id or unique abbreviation.
+    fn commit(&self, id: &str) -> Result<api::Commit>;
 
-    /// Every path as of `commit` (the newest if `None`), and the commit number used.
-    fn snapshot(&self, commit: Option<u64>) -> Result<(u64, Vec<api::SnapshotEntry>)>;
+    /// Every path as of `commit` (an id or abbreviation; the newest if `None`), and the full id used.
+    fn snapshot(&self, commit: Option<&str>) -> Result<(Option<String>, Vec<api::SnapshotEntry>)>;
 
     /// A file's content at a revision; `probe` asks for only the first bytes when the home can.
     fn content(&self, path: &str, revision: u64, probe: Option<usize>) -> Result<Vec<u8>>;
@@ -62,6 +64,9 @@ pub trait Backend {
 
     /// Stores a local file's content and returns its content id.
     fn upload(&self, file: &Path) -> Result<String>;
+
+    /// Stores `bytes` as one object and returns its content id.
+    fn upload_bytes(&self, bytes: Vec<u8>) -> Result<String>;
 
     fn commit_file(&self, request: &api::CheckinRequest) -> Result<api::Revision>;
 
@@ -92,16 +97,16 @@ mod tests {
         fn tree(&self, _: Option<&str>) -> Result<api::TreeListing> {
             unimplemented!()
         }
-        fn head_commit(&self) -> Result<u64> {
+        fn head_commit(&self) -> Result<Option<String>> {
             unimplemented!()
         }
-        fn commit_page(&self, _: Option<u64>, _: usize) -> Result<api::CommitPage> {
+        fn commit_page(&self, _: Option<&str>, _: usize) -> Result<api::CommitPage> {
             unimplemented!()
         }
-        fn commit(&self, _: u64) -> Result<api::Commit> {
+        fn commit(&self, _: &str) -> Result<api::Commit> {
             unimplemented!()
         }
-        fn snapshot(&self, _: Option<u64>) -> Result<(u64, Vec<api::SnapshotEntry>)> {
+        fn snapshot(&self, _: Option<&str>) -> Result<(Option<String>, Vec<api::SnapshotEntry>)> {
             unimplemented!()
         }
         fn content(&self, _: &str, _: u64, _: Option<usize>) -> Result<Vec<u8>> {
@@ -114,6 +119,9 @@ mod tests {
             unimplemented!()
         }
         fn upload(&self, _: &Path) -> Result<String> {
+            unimplemented!()
+        }
+        fn upload_bytes(&self, _: Vec<u8>) -> Result<String> {
             unimplemented!()
         }
         fn commit_file(&self, _: &api::CheckinRequest) -> Result<api::Revision> {

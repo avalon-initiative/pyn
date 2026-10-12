@@ -7,6 +7,8 @@ use anyhow::{Context, Result, bail};
 use pyn_proto as api;
 
 use crate::backend::Backend;
+use crate::localfile;
+use crate::snapshot::short;
 use crate::table;
 use crate::workspace::{FileState, Settings, Workspace, set_read_only};
 
@@ -32,18 +34,20 @@ fn fetch(
     let target = ws.abs(&entry.path);
     set_read_only(&target, false)?;
     let (_, hash) = backend.download(&entry.path, Some(revision), &target)?;
+    localfile::apply(&target, entry.file_mode)?;
     set_read_only(&target, wants_read_only(entry, me))?;
     Ok(FileState {
         revision,
         hash,
         legacy: false,
         mode: mode_name(entry.mode).to_string(),
+        file_mode: entry.file_mode,
     })
 }
 
 /// The server's files with the revision each had as of `commit` (the head if `None`); a path the commit does not
 /// have, such as one created later, has no revision.
-pub fn entries_at(backend: &dyn Backend, commit: Option<u64>) -> Result<Vec<api::FileEntry>> {
+pub fn entries_at(backend: &dyn Backend, commit: Option<&str>) -> Result<Vec<api::FileEntry>> {
     let mut entries = backend.list_files()?;
     let Some(commit) = commit else {
         return Ok(entries);
@@ -56,6 +60,7 @@ pub fn entries_at(backend: &dyn Backend, commit: Option<u64>) -> Result<Vec<api:
             Some(s) => {
                 entry.revision = Some(s.revision);
                 entry.mode = s.mode;
+                entry.file_mode = s.file_mode;
             }
             None => entry.revision = None,
         }
@@ -69,7 +74,7 @@ pub fn clone_into(
     root: &Path,
     server: &str,
     repo: &str,
-    commit: Option<u64>,
+    commit: Option<&str>,
 ) -> Result<()> {
     if root.exists() && std::fs::read_dir(root)?.next().is_some() {
         bail!("{} already exists and is not empty", root.display());
@@ -96,7 +101,7 @@ pub fn clone_into(
         );
     }
     ws.save_state(&state)?;
-    let at = commit.map_or(String::new(), |c| format!(" at c{c}"));
+    let at = commit.map_or(String::new(), |c| format!(" at {}", short(c)));
     println!(
         "cloned {} files from {repo}{at} into {}",
         state.len(),
@@ -118,7 +123,7 @@ fn time_left(expires_at: chrono::DateTime<chrono::Utc>) -> String {
 }
 
 /// Lists what differs between the workspace and the server as a table; clean, unlocked files are left out.
-pub fn status(backend: &dyn Backend, ws: &Workspace, commit: Option<u64>) -> Result<()> {
+pub fn status(backend: &dyn Backend, ws: &Workspace, commit: Option<&str>) -> Result<()> {
     let entries: BTreeMap<String, api::FileEntry> = entries_at(backend, commit)?
         .into_iter()
         .map(|e| (e.path.clone(), e))
@@ -137,11 +142,12 @@ pub fn status(backend: &dyn Backend, ws: &Workspace, commit: Option<u64>) -> Res
     let mut rows: Vec<Vec<String>> = Vec::new();
     for path in paths {
         let (known, entry) = (state.get(path), entries.get(path));
-        let on_disk = ws.abs(path).is_file();
+        let on_disk = localfile::exists(&ws.abs(path));
         let mut notes: Vec<String> = Vec::new();
         match (known, on_disk) {
             (Some(k), true) => {
-                if !k.matches(&std::fs::read(ws.abs(path))?) {
+                let (file_mode, bytes) = localfile::read(&ws.abs(path))?;
+                if k.changed(file_mode, &bytes) {
                     notes.push("modified".into());
                     modified += 1;
                 }
@@ -152,15 +158,15 @@ pub fn status(backend: &dyn Backend, ws: &Workspace, commit: Option<u64>) -> Res
                         behind += 1;
                     }
                     (Some(c), Some(rev)) if rev > k.revision => {
-                        notes.push(format!("behind (c{c} has r{rev})"));
+                        notes.push(format!("behind ({} has r{rev})", short(c)));
                         behind += 1;
                     }
                     (Some(c), Some(rev)) if rev < k.revision => {
-                        notes.push(format!("ahead (c{c} has r{rev})"));
+                        notes.push(format!("ahead ({} has r{rev})", short(c)));
                         ahead += 1;
                     }
                     (Some(c), None) if entry.is_some() => {
-                        notes.push(format!("ahead (not in c{c})"));
+                        notes.push(format!("ahead (not in {})", short(c)));
                         ahead += 1;
                     }
                     _ => {}
@@ -247,7 +253,7 @@ pub fn update(
     backend: &dyn Backend,
     ws: &Workspace,
     only: &[String],
-    commit: Option<u64>,
+    commit: Option<&str>,
 ) -> Result<()> {
     let me = backend.whoami()?;
     let mut state = ws.load_state()?;
@@ -259,8 +265,12 @@ pub fn update(
         let Some(head) = entry.revision else {
             if let (Some(c), Some(known)) = (commit, state.get(&entry.path)) {
                 let target = ws.abs(&entry.path);
-                if target.is_file() && !known.matches(&std::fs::read(&target)?) {
-                    skipped.push(format!("{}: local changes; not in c{c}", entry.path));
+                if localfile::exists(&target) && local_changes(known, &target)? {
+                    skipped.push(format!(
+                        "{}: local changes; not in {}",
+                        entry.path,
+                        short(c)
+                    ));
                 } else {
                     set_read_only(&target, false)?;
                     let _ = std::fs::remove_file(&target);
@@ -271,7 +281,7 @@ pub fn update(
             continue;
         };
         let target = ws.abs(&entry.path);
-        let on_disk = target.is_file();
+        let on_disk = localfile::exists(&target);
         match state.get(&entry.path) {
             Some(k) if k.revision == head => {
                 set_read_only(&target, wants_read_only(&entry, &me))?;
@@ -279,7 +289,7 @@ pub fn update(
                     mode_name(entry.mode).to_string();
                 continue;
             }
-            Some(k) if on_disk && !k.matches(&std::fs::read(&target)?) => {
+            Some(k) if on_disk && local_changes(k, &target)? => {
                 skipped.push(format!(
                     "{}: local changes; r{head} is available",
                     entry.path
@@ -310,6 +320,11 @@ pub fn update(
     Ok(())
 }
 
+fn local_changes(known: &FileState, path: &Path) -> Result<bool> {
+    let (file_mode, bytes) = localfile::read(path)?;
+    Ok(known.changed(file_mode, &bytes))
+}
+
 pub fn after_lock(ws: &Workspace, path: &str) -> Result<()> {
     set_read_only(&ws.abs(path), false)
 }
@@ -332,6 +347,7 @@ pub fn after_commit(
     path: &str,
     revision: u64,
     hash: &str,
+    file_mode: api::FileMode,
 ) -> Result<()> {
     let mut state = ws.load_state()?;
     let mode = match state.get(path) {
@@ -352,6 +368,7 @@ pub fn after_commit(
             hash: hash.to_string(),
             legacy: false,
             mode,
+            file_mode,
         },
     );
     ws.save_state(&state)

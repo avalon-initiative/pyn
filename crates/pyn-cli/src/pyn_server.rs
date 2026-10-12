@@ -44,15 +44,15 @@ impl Backend for PynServer {
         Ok(api.send(req)?.json()?)
     }
 
-    fn head_commit(&self) -> Result<u64> {
+    fn head_commit(&self) -> Result<Option<String>> {
         let api = &self.api;
         let page: api::CommitPage = api
             .send(api.get(&api.repo_route("/commits")?).query(&[("limit", 1)]))?
             .json()?;
-        Ok(page.commits.first().map_or(0, |c| c.id))
+        Ok(page.commits.into_iter().next().map(|c| c.id))
     }
 
-    fn commit_page(&self, before: Option<u64>, limit: usize) -> Result<api::CommitPage> {
+    fn commit_page(&self, before: Option<&str>, limit: usize) -> Result<api::CommitPage> {
         let api = &self.api;
         let mut req = api
             .get(&api.repo_route("/commits")?)
@@ -63,14 +63,14 @@ impl Backend for PynServer {
         Ok(api.send(req)?.json()?)
     }
 
-    fn commit(&self, id: u64) -> Result<api::Commit> {
+    fn commit(&self, id: &str) -> Result<api::Commit> {
         let api = &self.api;
         Ok(api
             .send(api.get(&api.repo_route(&format!("/commits/{id}"))?))?
             .json()?)
     }
 
-    fn snapshot(&self, commit: Option<u64>) -> Result<(u64, Vec<api::SnapshotEntry>)> {
+    fn snapshot(&self, commit: Option<&str>) -> Result<(Option<String>, Vec<api::SnapshotEntry>)> {
         let api = &self.api;
         let mut all = Vec::new();
         let mut after: Option<String> = None;
@@ -125,6 +125,10 @@ impl Backend for PynServer {
 
     fn upload(&self, file: &Path) -> Result<String> {
         transfer::upload_file(&self.api, file)
+    }
+
+    fn upload_bytes(&self, bytes: Vec<u8>) -> Result<String> {
+        transfer::upload_bytes(&self.api, bytes)
     }
 
     fn commit_file(&self, request: &api::CheckinRequest) -> Result<api::Revision> {

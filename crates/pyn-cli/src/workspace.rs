@@ -7,6 +7,7 @@ use std::path::{Component, Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use pyn_object::{Algorithm, Kind};
+use pyn_proto as api;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -85,6 +86,9 @@ pub struct FileState {
     pub legacy: bool,
     /// `shared` or `exclusive`, as the server last said.
     pub mode: String,
+    /// Git's file mode of the content at that revision.
+    #[serde(default)]
+    pub file_mode: api::FileMode,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -110,6 +114,11 @@ pub fn hash_of(bytes: &[u8]) -> String {
 }
 
 impl FileState {
+    /// Whether the file on disk, with this mode and content, differs from what this state recorded.
+    pub fn changed(&self, file_mode: api::FileMode, bytes: &[u8]) -> bool {
+        !self.matches(bytes) || crate::localfile::mode_differs(self.file_mode, file_mode)
+    }
+
     /// Whether `bytes` are the content this state recorded.
     pub fn matches(&self, bytes: &[u8]) -> bool {
         if self.legacy {
@@ -279,7 +288,7 @@ impl Workspace {
                 let kind = entry.file_type()?;
                 if kind.is_dir() {
                     stack.push(path);
-                } else if kind.is_file() {
+                } else if kind.is_file() || kind.is_symlink() {
                     let rel = path.strip_prefix(&self.root)?;
                     let repo = rel
                         .components()
@@ -324,6 +333,9 @@ pub fn build_ignore(text: &str) -> Result<GlobSet> {
 
 /// Exclusive files are read-only unless the person holds the lock; shared files are always writable.
 pub fn set_read_only(path: &Path, read_only: bool) -> Result<()> {
+    if crate::localfile::is_symlink(path) {
+        return Ok(());
+    }
     let Ok(meta) = std::fs::metadata(path) else {
         return Ok(());
     };
@@ -499,6 +511,7 @@ mod tests {
             hash: hex::encode(Sha256::digest(content)),
             legacy: false,
             mode: "shared".into(),
+            file_mode: api::FileMode::Regular,
         };
         let text = format!(
             "[files.\"same.txt\"]\nrevision = 1\nhash = \"{}\"\nmode = \"shared\"\n\n[files.\"edited.txt\"]\nrevision = 1\nhash = \"{}\"\nmode = \"shared\"\n",
