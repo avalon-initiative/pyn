@@ -121,6 +121,7 @@ Everything the workspace does, listing, `update`, `diff`, `log`, `commit`, `rest
 
 A switch plans every path before touching one. A file the target branch has with other content, or does not have, and
 that has local changes, and an untracked file in the way, stop the switch with a list of the paths and nothing changed;
-files that are the same on both branches keep their local changes, as in git; `-f` discards what is in the way. After a
+files that are the same on both branches keep their local changes, as in git, and so do changes staged for them (they are
+staged on the new branch's revision); `-f` discards what is in the way, staged changes included. After a
 switch the workspace is clean. `pyn checkout <commit>` is refused: pyn has no detached HEAD, use `pyn checkout -b <name>
 <commit>` or `pyn update --revision <commit>`.

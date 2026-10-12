@@ -12,6 +12,7 @@ use crate::backend::Backend;
 use crate::client::Api;
 use crate::localfile;
 use crate::snapshot::{self, short};
+use crate::staging::Index;
 use crate::sync::{self, mode_name};
 use crate::workspace::{FileState, Workspace, set_read_only};
 
@@ -403,6 +404,7 @@ fn same_content(known: &FileState, want: &api::SnapshotEntry) -> bool {
 fn plan(
     ws: &Workspace,
     state: &BTreeMap<String, FileState>,
+    index: &Index,
     snapshot: &[api::SnapshotEntry],
 ) -> Result<Plan> {
     let wanted: BTreeMap<&str, &api::SnapshotEntry> =
@@ -458,6 +460,12 @@ fn plan(
             (None, None) => {}
         }
     }
+    for path in index.entries.keys() {
+        let moves = matches!(steps.get(path), Some(Step::Fetch(_) | Step::Remove));
+        if moves && !conflicts.iter().any(|(p, _)| p == path) {
+            conflicts.push((path.clone(), "staged changes would be lost"));
+        }
+    }
     Ok((steps, conflicts))
 }
 
@@ -479,7 +487,8 @@ fn go(backend: &dyn Backend, api: &Api, ws: &Workspace, target: &str, force: boo
         None => (None, Vec::new()),
     };
     let mut state = ws.load_state()?;
-    let (steps, conflicts) = plan(ws, &state, &snap)?;
+    let mut index = Index::load(ws)?;
+    let (steps, conflicts) = plan(ws, &state, &index, &snap)?;
     if !conflicts.is_empty() && !force {
         let mut message = String::from("local changes would be overwritten by the switch:\n");
         for (path, why) in &conflicts {
@@ -492,9 +501,11 @@ fn go(backend: &dyn Backend, api: &Api, ws: &Workspace, target: &str, force: boo
     }
     let locks: Vec<api::Lock> = api.send(api.get(&api.repo_route("/locks")?))?.json()?;
     let me = backend.whoami()?;
+    carry_staged(&mut index, &steps);
     let applied = apply(backend, ws, &mut state, steps, &locks, &me);
     ws.save_state(&state)?;
     applied?;
+    index.save(ws)?;
     set_current(ws, target)?;
     if already {
         eprintln!("Already on '{target}'");
@@ -502,6 +513,19 @@ fn go(backend: &dyn Backend, api: &Api, ws: &Workspace, target: &str, force: boo
         eprintln!("Switched to branch '{target}'");
     }
     Ok(())
+}
+
+/// Staged changes to files both branches share stay staged, on the new branch's revision; the rest are dropped, which only
+/// happens when the switch is forced.
+fn carry_staged(index: &mut Index, steps: &BTreeMap<String, Step>) {
+    index.entries.retain(|path, entry| match steps.get(path) {
+        Some(Step::Adopt(w)) => {
+            entry.base_revision = Some(w.revision);
+            true
+        }
+        Some(Step::Fetch(_) | Step::Remove) => false,
+        None => true,
+    });
 }
 
 fn apply(
@@ -588,6 +612,14 @@ fn restore_paths(
         }
         if chosen.len() == before && !chosen.iter().any(|c| *c == prefix) {
             bail!("pathspec '{arg}' did not match any file known to pyn");
+        }
+    }
+    if snap.is_none() {
+        let index = Index::load(ws)?;
+        if let Some(staged) = chosen.iter().find(|p| index.entries.contains_key(*p)) {
+            bail!(
+                "{staged} is staged; unstage it with `pyn restore --staged {staged}` first, then restore the file"
+            );
         }
     }
     let locks: Vec<api::Lock> = api.send(api.get(&api.repo_route("/locks")?))?.json()?;

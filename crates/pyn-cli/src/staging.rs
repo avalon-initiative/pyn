@@ -412,6 +412,7 @@ pub fn commit(backend: &dyn Backend, ws: &Workspace, message: &str, all: bool) -
     let request = api::ChangesetRequest {
         entries,
         message: message.to_string(),
+        branch: None,
     };
     let response = backend
         .commit_changeset(&request)

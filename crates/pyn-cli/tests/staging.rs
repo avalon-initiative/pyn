@@ -37,7 +37,10 @@ fn write(ws: &std::path::Path, path: &str, text: &str) {
 fn staged_cell(env: &common::Env, ws: &std::path::Path, path: &str) -> String {
     let out = env.ok(ws, "alice", &["status"]);
     let rows = cell_rows(&out);
-    let header = &rows[0];
+    let header = rows
+        .iter()
+        .find(|r| r.iter().any(|c| c == "STAGED"))
+        .expect(&out);
     let col = header.iter().position(|c| c == "STAGED").unwrap();
     rows.iter()
         .find(|r| r.last().is_some_and(|c| c == path))

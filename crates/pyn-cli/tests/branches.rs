@@ -307,3 +307,42 @@ fn a_branch_deleted_elsewhere_is_reported_and_switch_recovers() {
             .contains("everything is up to date")
     );
 }
+
+#[test]
+fn staged_changes_follow_a_switch_only_where_both_branches_agree() {
+    let env = start();
+    env.seed("alice", "Source/a.cpp", "one", None);
+    env.seed("alice", "Source/b.cpp", "bee", None);
+    let ws = clone(&env, "ws");
+    env.ok(&ws, "alice", &["switch", "-c", "feature"]);
+    std::fs::write(ws.join("Source/b.cpp"), "feature bee").unwrap();
+    env.ok(&ws, "alice", &["add", "Source/b.cpp"]);
+    env.ok(&ws, "alice", &["commit", "-m", "feature b"]);
+    env.ok(&ws, "alice", &["switch", "main"]);
+
+    std::fs::write(ws.join("Source/a.cpp"), "staged a").unwrap();
+    env.ok(&ws, "alice", &["add", "Source/a.cpp"]);
+    env.ok(&ws, "alice", &["switch", "feature"]);
+    let status = env.ok(&ws, "alice", &["status"]);
+    assert!(
+        status.contains("added") || status.contains("modified"),
+        "{status}"
+    );
+    env.ok(&ws, "alice", &["commit", "-m", "a on feature"]);
+    assert_eq!(read(&ws, "Source/a.cpp"), "staged a");
+    env.ok(&ws, "alice", &["switch", "main"]);
+    assert_eq!(
+        read(&ws, "Source/a.cpp"),
+        "one",
+        "the commit went to feature only"
+    );
+
+    std::fs::write(ws.join("Source/b.cpp"), "staged b").unwrap();
+    env.ok(&ws, "alice", &["add", "Source/b.cpp"]);
+    let err = env.fails(&ws, "alice", &["switch", "feature"]);
+    assert!(err.contains("Source/b.cpp"), "{err}");
+    env.ok(&ws, "alice", &["switch", "--force", "feature"]);
+    assert_eq!(read(&ws, "Source/b.cpp"), "feature bee");
+    let status = env.ok(&ws, "alice", &["status"]);
+    assert!(status.contains("everything is up to date"), "{status}");
+}
