@@ -1,3 +1,5 @@
+mod merging;
+
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 

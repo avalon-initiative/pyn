@@ -16,6 +16,7 @@ pub mod history;
 pub mod integrity;
 pub mod limits;
 pub mod memory;
+pub mod merge;
 pub mod object;
 pub mod oidc;
 pub mod passwords;
@@ -54,6 +55,10 @@ pub use history::{HISTORY_DEFAULT_LIMIT, HISTORY_MAX_LIMIT, HistoryCursor, Histo
 pub use integrity::{BreakKind, Problem, VerifyReport};
 pub use limits::{
     Limits, LimitsChange, MAX_LIMIT_VALUE, RepoUsage, StorageCap, StorageCaps, Usage,
+};
+pub use merge::{
+    Change, Conflict, ConflictKind, FastForward, MergeOutcome, MergeReport, MergeRequest,
+    Resolution,
 };
 pub use object::{KeyHasher, Keying, ObjectRead, ObjectReader, ObjectStore, REPO_ALGORITHM};
 pub use oidc::{

@@ -75,6 +75,12 @@ pub enum PynError {
         "the branch {0} is not fully merged into the default branch; delete it with force to discard it"
     )]
     BranchNotMerged(String),
+    #[error("merge conflicts in {}; resolve them and send the resolutions", paths_list(.0))]
+    MergeConflict(Vec<RepoPath>),
+    #[error("{0} moved since the merge was computed; merge again")]
+    MergeStale(String),
+    #[error("{0} cannot be fast-forwarded to the source; its history has diverged")]
+    NotFastForward(String),
     #[error("restoring replaces the head; to confirm, pass {expected}")]
     ConfirmationRequired { expected: String },
     #[error("this server has not been set up yet; complete the first-run setup")]
@@ -195,6 +201,14 @@ pub enum PynError {
     HistoryCorrupt(String),
 }
 
+fn paths_list(paths: &[RepoPath]) -> String {
+    paths
+        .iter()
+        .map(RepoPath::as_str)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn inactive_message(status: AccountStatus) -> &'static str {
     match status {
         AccountStatus::PendingVerification => {
@@ -233,6 +247,9 @@ impl PynError {
             Self::BranchExists(_) => "branch_exists",
             Self::InvalidBranchName(_) => "invalid_branch_name",
             Self::BranchNotMerged(_) => "branch_not_merged",
+            Self::MergeConflict(_) => "merge_conflict",
+            Self::MergeStale(_) => "merge_stale",
+            Self::NotFastForward(_) => "not_fast_forward",
             Self::ConfirmationRequired { .. } => "confirmation_required",
             Self::NotInitialised => "not_initialised",
             Self::AlreadyInitialised => "already_initialised",

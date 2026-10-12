@@ -35,7 +35,11 @@ pub type RateLimits = Arc<dyn RateLimitStore>;
 
 const RULES: &str = "[meta]\ndefault = \"shared\"\n[exclusive]\npaths = [\"Content/\"]\n";
 
+mod merging;
+pub use merging::*;
+
 struct Harness {
+    store: Store,
     svc: Arc<RepoService>,
     objects: Arc<MemoryObjectStore>,
     audit: Arc<MemoryAuditStore>,
@@ -51,13 +55,14 @@ fn harness(store: Store) -> Harness {
     let svc = Arc::new(RepoService::new(
         RepoId::new("game"),
         Rules::from_toml(RULES).unwrap(),
-        store,
+        store.clone(),
         objects.clone(),
         audit.clone(),
         clock.clone(),
         ServiceConfig::default(),
     ));
     Harness {
+        store,
         svc,
         objects,
         audit,
@@ -3041,6 +3046,24 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_policy_file_on_another_branch_is_not_policy);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_conversion_on_the_default_branch_applies_to_a_branch_that_diverged);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; verify_checks_every_branch_and_a_commit_names_its_parent);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; merge_bases_are_the_lowest_common_ancestors);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_merge_fast_forwards_or_is_up_to_date_without_a_new_commit);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_merge_can_insist_on_a_commit_or_refuse_to_make_one);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_merge_of_diverged_branches_makes_a_commit_with_two_parents);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; text_changed_in_different_places_merges_into_a_new_revision);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; overlapping_text_changes_conflict_and_a_resolution_completes_the_merge);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_merge_rejects_a_resolution_for_a_path_it_does_not_touch);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_binary_file_changed_on_both_sides_is_a_whole_file_conflict);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; file_modes_merge_apart_from_content);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; an_exclusive_path_takes_the_later_revision_without_a_lock);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_shared_version_that_met_a_conversion_is_a_conflict_the_person_decides);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; choosing_the_diverged_version_of_a_converted_path_takes_the_lock);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; updating_a_branch_from_a_conversion_conflicts_the_same_way);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; an_exclusive_path_converted_to_shared_merges_by_content);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_criss_cross_merge_uses_a_virtual_base);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_merge_computed_on_an_old_head_is_refused);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_merge_needs_the_checkin_permission_and_an_existing_source);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_policy_file_arriving_by_merge_is_policy_on_the_default_branch);
     };
     (@one $factory:expr; [$(#[$attr:meta])*]; $name:ident) => {
         #[tokio::test(flavor = "multi_thread")]
@@ -3554,6 +3577,38 @@ impl MetadataStore for HookedMeta {
         self.inner
             .commit_changeset_on(repo, branch, items, now, cap)
             .await
+    }
+
+    async fn commit_merge_on(
+        &self,
+        repo: &RepoId,
+        branch: &str,
+        merge: crate::merge::MergeWrite,
+        now: chrono::DateTime<Utc>,
+        cap: Option<crate::StorageCap>,
+    ) -> crate::Result<crate::merge::MergeWritten> {
+        self.inner
+            .commit_merge_on(repo, branch, merge, now, cap)
+            .await
+    }
+
+    async fn fast_forward_branch(
+        &self,
+        repo: &RepoId,
+        branch: &str,
+        from: Option<&ObjectId>,
+        to: &ObjectId,
+    ) -> crate::Result<()> {
+        self.inner.fast_forward_branch(repo, branch, from, to).await
+    }
+
+    async fn merge_bases(
+        &self,
+        repo: &RepoId,
+        a: &ObjectId,
+        b: &ObjectId,
+    ) -> crate::Result<Vec<ObjectId>> {
+        self.inner.merge_bases(repo, a, b).await
     }
 
     async fn list_branches(&self, repo: &RepoId) -> crate::Result<Vec<crate::Branch>> {

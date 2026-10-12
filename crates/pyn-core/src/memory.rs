@@ -17,10 +17,11 @@ use crate::access_service::{
 };
 use crate::audit::{AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent};
 use crate::branch::{Branch, DEFAULT_BRANCH, conflicts};
-use crate::commit_record::{CommitDraft, TreeEdit, draft_commit};
+use crate::commit_record::{CommitDraft, TreeChange, TreeEdit, draft_commit};
 use crate::error::{PynError, Result};
 use crate::history::HistoryCursor;
 use crate::limits::{Limits, LimitsChange, RepoUsage, StorageCap, Usage};
+use crate::merge::{MergeWrite, MergeWritten};
 use crate::object::{KeyHasher, Keying, ObjectRead, ObjectReader, ObjectStore};
 use crate::oidc::{ExternalCreate, ExternalIdentity, IdentityUnlink, NewExternalAccount, OidcFlow};
 use crate::ratelimit::{RateLimitStore, RateState};
@@ -30,7 +31,9 @@ use crate::repo_policy::{
 };
 use crate::rules::{Mode, PathFilter};
 use crate::store::MetadataStore;
-use crate::types::{ChangesetItem, Commit, Lock, RepoId, RepoPath, Revision, RevisionId, UserId};
+use crate::types::{
+    ChangesetItem, Commit, Lock, Person, RepoId, RepoPath, Revision, RevisionId, UserId,
+};
 
 type Key = (RepoId, RepoPath);
 
@@ -126,6 +129,27 @@ impl State {
         items: &[ChangesetItem],
     ) -> Result<CommitDraft> {
         let changes = items.iter().map(|i| i.revision.tree_change()).collect();
+        let first = &items[0].revision;
+        self.draft_with(
+            repo,
+            parent,
+            parent.map(|c| c.id).into_iter().collect(),
+            changes,
+            (&first.person, &first.message, first.created_at),
+            first.changeset.clone(),
+        )
+    }
+
+    /// The commit with `parents` over `parent`'s tree with `changes` put in.
+    fn draft_with(
+        &self,
+        repo: &RepoId,
+        parent: Option<&Commit>,
+        parents: Vec<ObjectId>,
+        changes: Vec<TreeChange>,
+        (author, message, at): (&Person, &str, DateTime<Utc>),
+        changeset: Option<String>,
+    ) -> Result<CommitDraft> {
         let mut edit = TreeEdit::new(parent.map(|c| c.tree), changes);
         while let Some(id) = edit.wanted() {
             let body = self
@@ -134,15 +158,7 @@ impl State {
                 .ok_or_else(|| PynError::Storage(format!("tree {id} is missing")))?;
             edit.supply(id, body)?;
         }
-        let first = &items[0].revision;
-        draft_commit(
-            parent.map(|c| c.id),
-            edit.finish()?,
-            &first.person,
-            &first.message,
-            first.created_at,
-            first.changeset.clone(),
-        )
+        draft_commit(parents, edit.finish()?, author, message, at, changeset)
     }
 
     fn full_commit(&self, repo: &RepoId, id: &ObjectId) -> Option<Commit> {
@@ -191,6 +207,54 @@ impl State {
         {
             b.head = Some(id);
         }
+    }
+
+    /// Appends every item's revision as revision of `commit`, or none: a failing item undoes the ones before it.
+    fn apply_items(
+        &mut self,
+        repo: &RepoId,
+        items: Vec<ChangesetItem>,
+        now: DateTime<Utc>,
+        cap: Option<&StorageCap>,
+        commit: &ObjectId,
+        at_branch: &BTreeMap<RepoPath, RevisionId>,
+    ) -> Result<Vec<Revision>> {
+        let undo: Vec<_> = items
+            .iter()
+            .map(|i| {
+                let key = (repo.clone(), i.revision.path.clone());
+                let size = (repo.clone(), i.revision.content);
+                let prior = (
+                    self.locks.get(&key).cloned(),
+                    self.revisions.get(&key).map_or(0, Vec::len),
+                    self.sizes.get(&size).copied(),
+                );
+                (key, size, prior)
+            })
+            .collect();
+        let mut out = Vec::with_capacity(items.len());
+        for item in items {
+            match self.commit(repo, item, now, cap, commit, at_branch) {
+                Ok(rev) => out.push(rev),
+                Err(e) => {
+                    for (key, size, (lock, len, stored)) in undo {
+                        if let Some(v) = self.revisions.get_mut(&key) {
+                            v.truncate(len);
+                        }
+                        match lock {
+                            Some(l) => self.locks.insert(key, l),
+                            None => self.locks.remove(&key),
+                        };
+                        match stored {
+                            Some(n) => self.sizes.insert(size, n),
+                            None => self.sizes.remove(&size),
+                        };
+                    }
+                    return Err(e);
+                }
+            }
+        }
+        Ok(out)
     }
 
     fn commit(
@@ -465,43 +529,124 @@ impl MetadataStore for MemoryMetadataStore {
         let parent = head.and_then(|h| st.commit_record(repo, &h).cloned());
         let at_branch = head.map_or_else(BTreeMap::new, |h| st.pointers_at(repo, &h));
         let draft = st.draft(repo, parent.as_ref(), &items)?;
-        let undo: Vec<_> = items
-            .iter()
-            .map(|i| {
-                let key = (repo.clone(), i.revision.path.clone());
-                let size = (repo.clone(), i.revision.content);
-                let prior = (
-                    st.locks.get(&key).cloned(),
-                    st.revisions.get(&key).map_or(0, Vec::len),
-                    st.sizes.get(&size).copied(),
-                );
-                (key, size, prior)
-            })
-            .collect();
-        let mut out = Vec::with_capacity(items.len());
-        for item in items {
-            match st.commit(repo, item, now, cap.as_ref(), &draft.record.id, &at_branch) {
-                Ok(rev) => out.push(rev),
-                Err(e) => {
-                    for (key, size, (lock, len, stored)) in undo {
-                        if let Some(v) = st.revisions.get_mut(&key) {
-                            v.truncate(len);
-                        }
-                        match lock {
-                            Some(l) => st.locks.insert(key, l),
-                            None => st.locks.remove(&key),
-                        };
-                        match stored {
-                            Some(n) => st.sizes.insert(size, n),
-                            None => st.sizes.remove(&size),
-                        };
-                    }
-                    return Err(e);
-                }
-            }
-        }
+        let out = st.apply_items(repo, items, now, cap.as_ref(), &draft.record.id, &at_branch)?;
         st.append_commit(repo, branch, draft, &out);
         Ok(out)
+    }
+
+    async fn commit_merge_on(
+        &self,
+        repo: &RepoId,
+        branch: &str,
+        merge: MergeWrite,
+        now: DateTime<Utc>,
+        cap: Option<StorageCap>,
+    ) -> Result<MergeWritten> {
+        let mut st = self.state.lock().unwrap();
+        let head = st.branch(repo, branch)?.head;
+        if head != Some(merge.expected_head) {
+            return Err(PynError::MergeStale(branch.to_string()));
+        }
+        if st.commit_record(repo, &merge.other).is_none() {
+            return Err(PynError::CommitNotFound(merge.other.to_string()));
+        }
+        let parent = st
+            .commit_record(repo, &merge.expected_head)
+            .cloned()
+            .ok_or_else(|| PynError::CommitNotFound(merge.expected_head.to_string()))?;
+        let at_branch = st.pointers_at(repo, &merge.expected_head);
+        let changes = merge
+            .adopted
+            .iter()
+            .map(|r| TreeChange {
+                path: r.path.clone(),
+                mode: r.file_mode,
+                id: r.content,
+            })
+            .chain(merge.items.iter().map(|i| i.revision.tree_change()))
+            .collect();
+        let draft = st.draft_with(
+            repo,
+            Some(&parent),
+            vec![merge.expected_head, merge.other],
+            changes,
+            (&merge.author, &merge.message, now),
+            None,
+        )?;
+        let made = st.apply_items(
+            repo,
+            merge.items,
+            now,
+            cap.as_ref(),
+            &draft.record.id,
+            &at_branch,
+        )?;
+        let commit = draft.record.id;
+        let pointed: Vec<Revision> = merge
+            .adopted
+            .into_iter()
+            .chain(made.iter().cloned())
+            .collect();
+        st.append_commit(repo, branch, draft, &pointed);
+        Ok(MergeWritten {
+            commit,
+            revisions: made,
+        })
+    }
+
+    async fn fast_forward_branch(
+        &self,
+        repo: &RepoId,
+        branch: &str,
+        from: Option<&ObjectId>,
+        to: &ObjectId,
+    ) -> Result<()> {
+        let mut st = self.state.lock().unwrap();
+        if st.commit_record(repo, to).is_none() {
+            return Err(PynError::CommitNotFound(to.to_string()));
+        }
+        if st.branch(repo, branch)?.head.as_ref() != from {
+            return Err(PynError::MergeStale(branch.to_string()));
+        }
+        if let Some(b) = st
+            .branches
+            .get_mut(repo)
+            .and_then(|v| v.iter_mut().find(|b| b.name == branch))
+        {
+            b.head = Some(*to);
+        }
+        Ok(())
+    }
+
+    async fn merge_bases(
+        &self,
+        repo: &RepoId,
+        a: &ObjectId,
+        b: &ObjectId,
+    ) -> Result<Vec<ObjectId>> {
+        let st = self.state.lock().unwrap();
+        let from_b = st.ancestors(repo, b);
+        let common: Vec<ObjectId> = st
+            .ancestors(repo, a)
+            .into_iter()
+            .filter(|c| from_b.contains(c))
+            .collect();
+        let mut shadowed = HashSet::new();
+        for c in &common {
+            let parents = st
+                .commit_record(repo, c)
+                .map(|r| r.parents.clone())
+                .unwrap_or_default();
+            for p in parents {
+                shadowed.extend(st.ancestors(repo, &p));
+            }
+        }
+        let mut bases: Vec<ObjectId> = common
+            .into_iter()
+            .filter(|c| !shadowed.contains(c))
+            .collect();
+        bases.sort_by_key(ObjectId::to_hex);
+        Ok(bases)
     }
 
     async fn list_branches(&self, repo: &RepoId) -> Result<Vec<Branch>> {

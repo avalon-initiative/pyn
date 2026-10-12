@@ -1,0 +1,829 @@
+//! Merging branches: the plan for a merge, its preview and the write (docs/concepts/merging.md).
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::future::Future;
+use std::pin::Pin;
+
+use pyn_merge::{Outcome, merge_text, render_markers};
+use pyn_object::{FileMode, ObjectId};
+
+use super::RepoService;
+use crate::access::{Permission, Principal};
+use crate::audit::AuditAction;
+use crate::branch::Branch;
+use crate::error::{PynError, Result};
+use crate::merge::{
+    Change, Conflict, ConflictKind, Content, Decision, Entry, FastForward, Inputs, MAX_BASE_DEPTH,
+    MAX_TEXT_MERGE, MergeOutcome, MergeReport, MergeRequest, MergeWrite, Pick, Resolution, Side,
+    Version, decide,
+};
+use crate::rules::{Mode, POLICY_PATH};
+use crate::types::{ChangesetItem, NewRevision, RepoPath, Revision};
+
+/// What the merge does to one path.
+enum Verdict {
+    /// The target's revision stands.
+    Keep,
+    /// The path points at an existing revision.
+    Point(Revision),
+    /// A new revision of the path's line.
+    Write(Content, FileMode),
+    Conflict(ConflictKind),
+}
+
+struct PathPlan {
+    path: RepoPath,
+    mode: Mode,
+    base: Option<Entry>,
+    ours: Option<Revision>,
+    theirs: Option<Revision>,
+    verdict: Verdict,
+}
+
+struct Plan {
+    target: Branch,
+    source: ObjectId,
+    bases: Vec<ObjectId>,
+    virtual_base: bool,
+    outcome: MergeOutcome,
+    paths: Vec<PathPlan>,
+}
+
+/// The merged text of a path, or why it could not be merged.
+enum Merged {
+    Clean(Vec<u8>),
+    /// `markers` is the text with conflict markers; `None` for a whole-file conflict.
+    Conflict {
+        kind: ConflictKind,
+        markers: Option<Vec<u8>>,
+    },
+}
+
+type Tree = BTreeMap<RepoPath, Entry>;
+
+struct BaseTree {
+    tree: Tree,
+    bases: Vec<ObjectId>,
+    virtual_base: bool,
+}
+
+type Boxed<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
+
+fn version_of(rev: &Revision) -> Version {
+    Version {
+        content: rev.content,
+        file_mode: rev.file_mode,
+    }
+}
+
+fn side_of(rev: &Revision) -> Side {
+    Side {
+        revision: Some(rev.id),
+        content: rev.content,
+        file_mode: rev.file_mode,
+    }
+}
+
+/// Where the path ends up when `content` is its merged content: on a revision that already holds it, or a new one.
+fn settle(
+    ours: Option<&Revision>,
+    theirs: Option<&Revision>,
+    content: Content,
+    file_mode: FileMode,
+) -> Result<Verdict> {
+    let id = content.id()?;
+    let (natural, is_ours) = match (ours, theirs) {
+        (Some(o), Some(t)) if o.id >= t.id => (o, true),
+        (Some(_), Some(t)) => (t, false),
+        (Some(o), None) => (o, true),
+        (None, Some(t)) => (t, false),
+        (None, None) => return Ok(Verdict::Keep),
+    };
+    Ok(if natural.content == id && natural.file_mode == file_mode {
+        if is_ours {
+            Verdict::Keep
+        } else {
+            Verdict::Point(natural.clone())
+        }
+    } else {
+        Verdict::Write(content, file_mode)
+    })
+}
+
+impl RepoService {
+    /// What merging `source` into `target` would do, with nothing written.
+    pub async fn merge_preview(&self, request: &MergeRequest) -> Result<MergeReport> {
+        let (target, source, _) = self.merge_ends(request).await?;
+        let plan = self
+            .plan_merge(&target, source, request.fast_forward)
+            .await?;
+        self.report(&plan, None).await
+    }
+
+    /// Merges the source into the target: a fast-forward, or a merge commit with the target's head first. Conflicts
+    /// need a resolution each, or nothing is written and the answer is `MergeConflict`.
+    pub async fn merge(&self, who: &Principal, request: MergeRequest) -> Result<MergeReport> {
+        who.require(Permission::Checkin)?;
+        let (target, source, label) = self.merge_ends(&request).await?;
+        if let Some(expected) = request.expect_target
+            && target.head != Some(expected)
+        {
+            return Err(PynError::MergeStale(target.name));
+        }
+        let mut plan = self
+            .plan_merge(&target, source, request.fast_forward)
+            .await?;
+        match plan.outcome {
+            MergeOutcome::UpToDate | MergeOutcome::FastForward
+                if !request.resolutions.is_empty() =>
+            {
+                Err(PynError::InvalidRequest(
+                    "there is nothing to resolve: the merge has no conflicts".into(),
+                ))
+            }
+            MergeOutcome::UpToDate => self.report(&plan, None).await,
+            MergeOutcome::FastForward => self.write_fast_forward(who, &plan, &label).await,
+            MergeOutcome::Merge | MergeOutcome::Conflicted => {
+                self.resolve(&mut plan, &request.resolutions).await?;
+                let unresolved: Vec<RepoPath> = plan
+                    .paths
+                    .iter()
+                    .filter(|p| matches!(p.verdict, Verdict::Conflict(_)))
+                    .map(|p| p.path.clone())
+                    .collect();
+                if !unresolved.is_empty() {
+                    return Err(PynError::MergeConflict(unresolved));
+                }
+                plan.outcome = MergeOutcome::Merge;
+                let message = request
+                    .message
+                    .clone()
+                    .unwrap_or_else(|| format!("Merge branch '{label}' into {}", plan.target.name));
+                self.write_merge(who, &plan, &label, message).await
+            }
+        }
+    }
+
+    /// The target branch, the source commit, and the name the source goes by in messages.
+    async fn merge_ends(&self, request: &MergeRequest) -> Result<(Branch, ObjectId, String)> {
+        let target = match &request.target {
+            Some(name) => self.branch(name).await?,
+            None => self.branch(crate::branch::DEFAULT_BRANCH).await?,
+        };
+        let spec = request.source.trim();
+        let (source, label) = match self.meta.get_branch(&self.repo, spec).await? {
+            Some(b) => (
+                b.head.ok_or_else(|| {
+                    PynError::InvalidRequest(format!("the branch {spec} has no commits yet"))
+                })?,
+                spec.to_string(),
+            ),
+            None => {
+                let id = self.resolve_commit(spec).await?;
+                (id, format!("commit {}", &id.to_hex()[..10]))
+            }
+        };
+        Ok((target, source, label))
+    }
+
+    async fn snapshot_tree(&self, commit: &ObjectId) -> Result<BTreeMap<RepoPath, Revision>> {
+        let revisions = self.meta.snapshot(&self.repo, commit).await?;
+        revisions.iter().try_for_each(Revision::verify)?;
+        Ok(revisions.into_iter().map(|r| (r.path.clone(), r)).collect())
+    }
+
+    async fn plan_merge(
+        &self,
+        target: &Branch,
+        source: ObjectId,
+        fast_forward: FastForward,
+    ) -> Result<Plan> {
+        let mut plan = Plan {
+            target: target.clone(),
+            source,
+            bases: Vec::new(),
+            virtual_base: false,
+            outcome: MergeOutcome::Merge,
+            paths: Vec::new(),
+        };
+        let Some(head) = target.head else {
+            plan.outcome = MergeOutcome::FastForward;
+            return Ok(plan);
+        };
+        if head == source || self.meta.is_ancestor(&self.repo, &source, &head).await? {
+            plan.outcome = MergeOutcome::UpToDate;
+            plan.bases = vec![source];
+            return Ok(plan);
+        }
+        if self.meta.is_ancestor(&self.repo, &head, &source).await? {
+            plan.bases = vec![head];
+            if fast_forward != FastForward::Never {
+                plan.outcome = MergeOutcome::FastForward;
+                return Ok(plan);
+            }
+        } else if fast_forward == FastForward::Only {
+            return Err(PynError::NotFastForward(target.name.clone()));
+        }
+        let ours = self.snapshot_tree(&head).await?;
+        let theirs = self.snapshot_tree(&source).await?;
+        let base = if plan.bases.is_empty() {
+            self.base_tree(head, source, 0).await?
+        } else {
+            BaseTree {
+                tree: ours
+                    .values()
+                    .cloned()
+                    .map(|r| (r.path.clone(), Entry::of(r)))
+                    .collect(),
+                bases: plan.bases.clone(),
+                virtual_base: false,
+            }
+        };
+        plan.bases = base.bases;
+        plan.virtual_base = base.virtual_base;
+        let rules = self.rules();
+        let paths: BTreeSet<&RepoPath> = ours.keys().chain(theirs.keys()).collect();
+        for path in paths {
+            let (o, t) = (ours.get(path), theirs.get(path));
+            if let (Some(o), Some(t)) = (o, t)
+                && o.id == t.id
+            {
+                continue;
+            }
+            let mode = rules.mode_for(path);
+            let b = base.tree.get(path);
+            let verdict = match mode {
+                Mode::Shared => self.shared_verdict(b, o, t).await?,
+                Mode::Exclusive => self.exclusive_verdict(o, t, head, source).await?,
+            };
+            plan.paths.push(PathPlan {
+                path: path.clone(),
+                mode,
+                base: b.cloned(),
+                ours: o.cloned(),
+                theirs: t.cloned(),
+                verdict,
+            });
+        }
+        plan.outcome = if plan
+            .paths
+            .iter()
+            .any(|p| matches!(p.verdict, Verdict::Conflict(_)))
+        {
+            MergeOutcome::Conflicted
+        } else {
+            MergeOutcome::Merge
+        };
+        Ok(plan)
+    }
+
+    /// The tree the merge of `a` and `b` is made against: their merge base, or a virtual one when they have several.
+    fn base_tree<'a>(&'a self, a: ObjectId, b: ObjectId, depth: u8) -> Boxed<'a, BaseTree> {
+        Box::pin(async move {
+            let bases = self.meta.merge_bases(&self.repo, &a, &b).await?;
+            let Some((first, rest)) = bases.split_first() else {
+                return Ok(BaseTree {
+                    tree: Tree::new(),
+                    bases,
+                    virtual_base: false,
+                });
+            };
+            let mut tree: Tree = self
+                .snapshot_tree(first)
+                .await?
+                .into_values()
+                .map(|r| (r.path.clone(), Entry::of(r)))
+                .collect();
+            for next in rest {
+                let inner = if depth < MAX_BASE_DEPTH {
+                    self.base_tree(*first, *next, depth + 1).await?.tree
+                } else {
+                    Tree::new()
+                };
+                let other: Tree = self
+                    .snapshot_tree(next)
+                    .await?
+                    .into_values()
+                    .map(|r| (r.path.clone(), Entry::of(r)))
+                    .collect();
+                tree = self.merge_virtual(&inner, tree, other).await?;
+            }
+            let virtual_base = !rest.is_empty();
+            Ok(BaseTree {
+                tree,
+                bases,
+                virtual_base,
+            })
+        })
+    }
+
+    /// Merges two base trees into one that is never committed; what cannot merge keeps the conflict markers.
+    async fn merge_virtual(&self, base: &Tree, ours: Tree, theirs: Tree) -> Result<Tree> {
+        let paths: BTreeSet<RepoPath> = ours.keys().chain(theirs.keys()).cloned().collect();
+        let mut out = Tree::new();
+        for path in paths {
+            let (b, o, t) = (base.get(&path), ours.get(&path), theirs.get(&path));
+            let (bv, ov, tv) = (
+                b.map(Entry::version).transpose()?,
+                o.map(Entry::version).transpose()?,
+                t.map(Entry::version).transpose()?,
+            );
+            let entry = match decide(bv.as_ref(), ov.as_ref(), tv.as_ref()) {
+                Decision::Conflict(_) => o.or(t).cloned(),
+                Decision::Take { content, mode } => {
+                    let side = |p: Pick| if p == Pick::Theirs { t.or(o) } else { o.or(t) };
+                    let file_mode = side(mode).map(|e| e.file_mode);
+                    match (content, o, t, file_mode) {
+                        (Pick::Merge, Some(o), Some(t), Some(file_mode)) => {
+                            let merged = match self.merge_contents(b, o, t).await? {
+                                Merged::Clean(bytes)
+                                | Merged::Conflict {
+                                    markers: Some(bytes),
+                                    ..
+                                } => Content::Bytes(bytes),
+                                Merged::Conflict { markers: None, .. } => o.content.clone(),
+                            };
+                            Some(Entry {
+                                revision: None,
+                                content: merged,
+                                file_mode,
+                            })
+                        }
+                        (_, _, _, file_mode) => side(content).cloned().map(|mut e| {
+                            if file_mode.is_some_and(|m| m != e.file_mode) {
+                                e.revision = None;
+                                e.file_mode = file_mode.unwrap_or(e.file_mode);
+                            }
+                            e
+                        }),
+                    }
+                }
+            };
+            if let Some(entry) = entry {
+                out.insert(path, entry);
+            }
+        }
+        Ok(out)
+    }
+
+    async fn content_size(&self, content: &Content) -> Result<u64> {
+        match content {
+            Content::Bytes(b) => Ok(b.len() as u64),
+            Content::Blob(id) => self
+                .objects
+                .size(id)
+                .await?
+                .ok_or_else(|| PynError::ObjectMissing(id.to_string())),
+        }
+    }
+
+    async fn load(&self, content: &Content) -> Result<Vec<u8>> {
+        match content {
+            Content::Bytes(b) => Ok(b.clone()),
+            Content::Blob(id) => self
+                .objects
+                .get(id)
+                .await?
+                .ok_or_else(|| PynError::ObjectMissing(id.to_string())),
+        }
+    }
+
+    /// Merges two versions of a file line by line against their base; a file that is too large or binary is a conflict.
+    async fn merge_contents(
+        &self,
+        base: Option<&Entry>,
+        ours: &Entry,
+        theirs: &Entry,
+    ) -> Result<Merged> {
+        let sizes = [
+            Some(self.content_size(&ours.content).await?),
+            Some(self.content_size(&theirs.content).await?),
+            match base {
+                Some(b) => Some(self.content_size(&b.content).await?),
+                None => None,
+            },
+        ];
+        if sizes.iter().flatten().any(|s| *s > MAX_TEXT_MERGE) {
+            return Ok(Merged::Conflict {
+                kind: ConflictKind::Binary,
+                markers: None,
+            });
+        }
+        let base_bytes = match base {
+            Some(b) => self.load(&b.content).await?,
+            None => Vec::new(),
+        };
+        let (our_bytes, their_bytes) = (
+            self.load(&ours.content).await?,
+            self.load(&theirs.content).await?,
+        );
+        Ok(match merge_text(&base_bytes, &our_bytes, &their_bytes) {
+            Outcome::Clean(bytes) => Merged::Clean(bytes),
+            Outcome::Conflicted(chunks) => Merged::Conflict {
+                kind: if base.is_some() {
+                    ConflictKind::Content
+                } else {
+                    ConflictKind::BothAdded
+                },
+                markers: Some(render_markers(&chunks, "ours", "base", "theirs")),
+            },
+            Outcome::BinaryConflict => Merged::Conflict {
+                kind: ConflictKind::Binary,
+                markers: None,
+            },
+        })
+    }
+
+    async fn shared_verdict(
+        &self,
+        base: Option<&Entry>,
+        ours: Option<&Revision>,
+        theirs: Option<&Revision>,
+    ) -> Result<Verdict> {
+        let bv = base.map(Entry::version).transpose()?;
+        let (ov, tv) = (ours.map(version_of), theirs.map(version_of));
+        let (content, mode) = match decide(bv.as_ref(), ov.as_ref(), tv.as_ref()) {
+            Decision::Conflict(kind) => return Ok(Verdict::Conflict(kind)),
+            Decision::Take { content, mode } => (content, mode),
+        };
+        let file_mode = match (mode, ours, theirs) {
+            (Pick::Theirs, _, Some(t)) => t.file_mode,
+            (_, Some(o), _) => o.file_mode,
+            (_, None, Some(t)) => t.file_mode,
+            (_, None, None) => FileMode::Regular,
+        };
+        let merged = match (content, ours, theirs) {
+            (Pick::Merge, Some(o), Some(t)) => {
+                match self
+                    .merge_contents(base, &Entry::of(o.clone()), &Entry::of(t.clone()))
+                    .await?
+                {
+                    Merged::Clean(bytes) => Content::Bytes(bytes),
+                    Merged::Conflict { kind, .. } => return Ok(Verdict::Conflict(kind)),
+                }
+            }
+            (Pick::Theirs, _, Some(t)) => Content::Blob(t.content),
+            (_, Some(o), _) => Content::Blob(o.content),
+            (_, None, Some(t)) => Content::Blob(t.content),
+            (_, None, None) => return Ok(Verdict::Keep),
+        };
+        settle(ours, theirs, merged, file_mode)
+    }
+
+    /// An exclusive path takes the later revision; only a shared version that diverged from the conversion conflicts.
+    async fn exclusive_verdict(
+        &self,
+        ours: Option<&Revision>,
+        theirs: Option<&Revision>,
+        ours_head: ObjectId,
+        source: ObjectId,
+    ) -> Result<Verdict> {
+        match (ours, theirs) {
+            (Some(_), None) | (None, None) => Ok(Verdict::Keep),
+            (None, Some(t)) => Ok(Verdict::Point(t.clone())),
+            (Some(o), Some(t)) => {
+                let (later, earlier, later_head) = if o.id > t.id {
+                    (o, t, ours_head)
+                } else {
+                    (t, o, source)
+                };
+                let diverged = earlier.mode == Some(Mode::Shared)
+                    && !self
+                        .meta
+                        .is_ancestor(&self.repo, &earlier.commit, &later_head)
+                        .await?;
+                Ok(if diverged {
+                    Verdict::Conflict(ConflictKind::ExclusiveConversion)
+                } else if o.id > t.id {
+                    Verdict::Keep
+                } else {
+                    Verdict::Point(later.clone())
+                })
+            }
+        }
+    }
+
+    /// Applies the person's resolutions to the plan, each to a path the merge touches.
+    async fn resolve(&self, plan: &mut Plan, resolutions: &[Resolution]) -> Result<()> {
+        let mut by_path: BTreeMap<&RepoPath, &Resolution> = BTreeMap::new();
+        for r in resolutions {
+            if by_path.insert(&r.path, r).is_some() {
+                return Err(PynError::InvalidRequest(format!(
+                    "{} is resolved twice",
+                    r.path
+                )));
+            }
+            if !plan.paths.iter().any(|p| p.path == r.path) {
+                return Err(PynError::InvalidRequest(format!(
+                    "{} is not part of this merge",
+                    r.path
+                )));
+            }
+        }
+        for p in &mut plan.paths {
+            let Some(r) = by_path.get(&p.path) else {
+                continue;
+            };
+            if !self.objects.exists(&r.content).await? {
+                return Err(PynError::ObjectMissing(r.content.to_string()));
+            }
+            p.verdict = settle(
+                p.ours.as_ref(),
+                p.theirs.as_ref(),
+                Content::Blob(r.content),
+                r.file_mode,
+            )?;
+        }
+        Ok(())
+    }
+
+    async fn inputs(&self, p: &PathPlan) -> Result<Inputs> {
+        let mut inputs = Inputs {
+            base: None,
+            ours: p.ours.as_ref().map(side_of),
+            theirs: p.theirs.as_ref().map(side_of),
+            base_inline: None,
+        };
+        if let Some(b) = &p.base {
+            inputs.base = Some(Side {
+                revision: b.revision.as_ref().map(|r| r.id),
+                content: b.content.id()?,
+                file_mode: b.file_mode,
+            });
+            if b.revision.is_none() && self.content_size(&b.content).await? <= MAX_TEXT_MERGE {
+                inputs.base_inline = Some(self.load(&b.content).await?);
+            }
+        }
+        Ok(inputs)
+    }
+
+    /// The report of a plan: what changes in the target and what conflicts. `commit` is what was written, if anything.
+    async fn report(&self, plan: &Plan, commit: Option<ObjectId>) -> Result<MergeReport> {
+        let mut changes = Vec::new();
+        let mut conflicts = Vec::new();
+        if plan.outcome == MergeOutcome::FastForward {
+            if let Some(head) = plan.target.head {
+                let ours = self.snapshot_tree(&head).await?;
+                for (path, t) in self.snapshot_tree(&plan.source).await? {
+                    let same = ours
+                        .get(&path)
+                        .is_some_and(|o| version_of(o) == version_of(&t));
+                    if !same {
+                        changes.push(Change {
+                            mode: self.mode_for(&path),
+                            path,
+                            content: t.content,
+                            file_mode: t.file_mode,
+                            revision: Some(t.id),
+                            inputs: None,
+                        });
+                    }
+                }
+            } else {
+                for (path, t) in self.snapshot_tree(&plan.source).await? {
+                    changes.push(Change {
+                        mode: self.mode_for(&path),
+                        path,
+                        content: t.content,
+                        file_mode: t.file_mode,
+                        revision: Some(t.id),
+                        inputs: None,
+                    });
+                }
+            }
+        }
+        for p in &plan.paths {
+            let (content, file_mode, holder) = match &p.verdict {
+                Verdict::Keep => continue,
+                Verdict::Conflict(kind) => {
+                    conflicts.push(Conflict {
+                        path: p.path.clone(),
+                        mode: p.mode,
+                        kind: *kind,
+                        inputs: self.inputs(p).await?,
+                    });
+                    continue;
+                }
+                Verdict::Point(r) => (r.content, r.file_mode, Some(r.id)),
+                Verdict::Write(c, fm) => (c.id()?, *fm, None),
+            };
+            let same_as_ours = p
+                .ours
+                .as_ref()
+                .is_some_and(|o| o.content == content && o.file_mode == file_mode);
+            if same_as_ours {
+                continue;
+            }
+            let revision = holder.or_else(|| {
+                [p.theirs.as_ref(), p.ours.as_ref()]
+                    .into_iter()
+                    .flatten()
+                    .find(|r| r.content == content && r.file_mode == file_mode)
+                    .map(|r| r.id)
+            });
+            let inputs = if revision.is_none() {
+                Some(self.inputs(p).await?)
+            } else {
+                None
+            };
+            changes.push(Change {
+                path: p.path.clone(),
+                mode: p.mode,
+                content,
+                file_mode,
+                revision,
+                inputs,
+            });
+        }
+        Ok(MergeReport {
+            target: plan.target.name.clone(),
+            target_head: plan.target.head,
+            source: plan.source,
+            bases: plan.bases.clone(),
+            virtual_base: plan.virtual_base,
+            outcome: plan.outcome,
+            changes,
+            conflicts,
+            commit,
+        })
+    }
+
+    /// Checks a policy file arriving on the default branch: the merger may edit policy and the file must parse.
+    async fn check_arriving_policy(
+        &self,
+        who: &Principal,
+        target: &Branch,
+        content: &ObjectId,
+    ) -> Result<()> {
+        if target.default {
+            self.check_policy_edit(who, content).await?;
+        }
+        Ok(())
+    }
+
+    /// Applies the policy at `commit` if it is newer than the one in force, converting paths as a policy commit does.
+    async fn apply_arrived_policy(&self, who: &Principal, commit: &ObjectId) -> Result<()> {
+        let policy = RepoPath::new(POLICY_PATH)?;
+        let Some(rev) = self.meta.revision_at(&self.repo, commit, &policy).await? else {
+            return Ok(());
+        };
+        let rules = self.parse_policy(&rev.content).await?;
+        if let Some(old) = self.apply(rev.id, rules) {
+            let new = self.rules();
+            self.policy_applied(who, &rev, &old, &new).await?;
+        }
+        Ok(())
+    }
+
+    async fn write_fast_forward(
+        &self,
+        who: &Principal,
+        plan: &Plan,
+        label: &str,
+    ) -> Result<MergeReport> {
+        let target = &plan.target;
+        if target.default {
+            let policy = RepoPath::new(POLICY_PATH)?;
+            let arriving = self
+                .meta
+                .revision_at(&self.repo, &plan.source, &policy)
+                .await?;
+            let current = match &target.head {
+                Some(h) => self.meta.revision_at(&self.repo, h, &policy).await?,
+                None => None,
+            };
+            if let Some(rev) = arriving
+                && current.as_ref().map(|c| c.id) != Some(rev.id)
+            {
+                self.check_arriving_policy(who, target, &rev.content)
+                    .await?;
+            }
+        }
+        self.meta
+            .fast_forward_branch(&self.repo, &target.name, target.head.as_ref(), &plan.source)
+            .await?;
+        self.record_repo(
+            &who.user,
+            AuditAction::BranchMerged,
+            format!(
+                "{label} into {} (fast-forward to {})",
+                target.name, plan.source
+            ),
+        )
+        .await?;
+        if target.default {
+            self.apply_arrived_policy(who, &plan.source).await?;
+        }
+        self.report(plan, Some(plan.source)).await
+    }
+
+    async fn write_merge(
+        &self,
+        who: &Principal,
+        plan: &Plan,
+        label: &str,
+        message: String,
+    ) -> Result<MergeReport> {
+        let target = &plan.target;
+        let head = target
+            .head
+            .ok_or_else(|| PynError::InvalidRequest("the target has no commits".into()))?;
+        let now = self.clock.now();
+        let mut adopted = Vec::new();
+        let mut items = Vec::new();
+        let mut policy_content = None;
+        for p in &plan.paths {
+            let is_policy = p.path.as_str() == POLICY_PATH;
+            match &p.verdict {
+                Verdict::Keep | Verdict::Conflict(_) => {}
+                Verdict::Point(r) => {
+                    if is_policy {
+                        policy_content = Some(r.content);
+                    }
+                    adopted.push(r.clone());
+                }
+                Verdict::Write(content, file_mode) => {
+                    let blob = match content {
+                        Content::Blob(id) => *id,
+                        Content::Bytes(bytes) => self.objects.put(bytes.clone()).await?,
+                    };
+                    if is_policy {
+                        policy_content = Some(blob);
+                    }
+                    let size = self
+                        .objects
+                        .size(&blob)
+                        .await?
+                        .ok_or_else(|| PynError::ObjectMissing(blob.to_string()))?;
+                    let (expected_head, lock_holder) = match p.mode {
+                        Mode::Shared => (p.ours.as_ref().map(|r| r.id), None),
+                        Mode::Exclusive => (
+                            self.meta
+                                .head_revision(&self.repo, &p.path)
+                                .await?
+                                .map(|r| r.id),
+                            Some(who.user.clone()),
+                        ),
+                    };
+                    items.push(ChangesetItem {
+                        revision: NewRevision {
+                            path: p.path.clone(),
+                            content: blob,
+                            file_mode: *file_mode,
+                            author: who.user.clone(),
+                            person: who.person(),
+                            message: message.clone(),
+                            created_at: now,
+                            restored_from: None,
+                            mode: p.mode,
+                            size,
+                            changeset: None,
+                        },
+                        expected_head,
+                        lock_holder,
+                    });
+                }
+            }
+        }
+        if let Some(content) = &policy_content {
+            self.check_arriving_policy(who, target, content).await?;
+        }
+        let cap = self.storage_cap().await?;
+        let written = self
+            .meta
+            .commit_merge_on(
+                &self.repo,
+                &target.name,
+                MergeWrite {
+                    expected_head: head,
+                    other: plan.source,
+                    adopted,
+                    items,
+                    author: who.person(),
+                    message,
+                },
+                now,
+                cap,
+            )
+            .await?;
+        self.record_repo(
+            &who.user,
+            AuditAction::BranchMerged,
+            format!("{label} into {} at {}", target.name, written.commit),
+        )
+        .await?;
+        for rev in &written.revisions {
+            self.record(
+                &who.user,
+                AuditAction::Checkin,
+                &rev.path,
+                format!("r{}: {} (merge {})", rev.id, rev.message, written.commit),
+            )
+            .await?;
+        }
+        if target.default {
+            self.apply_arrived_policy(who, &written.commit).await?;
+        }
+        self.report(plan, Some(written.commit)).await
+    }
+}
