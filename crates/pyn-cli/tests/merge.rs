@@ -429,6 +429,59 @@ fn a_shared_file_that_became_exclusive_while_a_branch_edited_it_is_chosen_by_the
 }
 
 #[test]
+fn a_policy_change_reports_the_stranded_branches_and_a_later_merge_tells_the_story() {
+    let env = start();
+    env.seed("alice", "Source/a.cpp", "base\n", None);
+    let ws = clone(&env, "ws");
+    env.ok(&ws, "alice", &["switch", "-c", "feature"]);
+    commit(&env, &ws, "Source/a.cpp", "feature edit\n");
+
+    let policy = "[meta]\ndefault = \"shared\"\n[exclusive]\npaths = [\"Source/a.cpp\"]\n";
+    write(&ws, "proposed.toml", policy);
+    let preview = env.ok(&ws, "alice", &["policy", "preview", "proposed.toml"]);
+    assert!(
+        preview.contains("would strand") && preview.contains("feature") && preview.contains("r2"),
+        "{preview}"
+    );
+
+    let dir = env.dir("seed");
+    let file = dir.join("upload");
+    std::fs::write(&file, policy).unwrap();
+    let out = env.ok(
+        &dir,
+        "alice",
+        &[
+            "commit",
+            ".pyn/pyn.toml",
+            "--file",
+            file.to_str().unwrap(),
+            "-m",
+            "a.cpp is exclusive",
+        ],
+    );
+    assert!(
+        out.contains("can no longer merge")
+            && out.contains("feature")
+            && out.contains("Source/a.cpp"),
+        "{out}"
+    );
+    let audit = env.ok(&ws, "alice", &["audit", "--action", "version_stranded"]);
+    assert!(
+        audit.contains("feature") && audit.contains("stranded"),
+        "{audit}"
+    );
+
+    let (code, out, _) = run(&env, &ws, &["merge", "main"]);
+    assert_eq!(code, Some(1), "{out}");
+    assert!(
+        out.contains("became exclusive at r3")
+            && out.contains("version r2")
+            && out.contains("stranded"),
+        "{out}"
+    );
+}
+
+#[test]
 fn taking_the_newest_version_of_a_converted_file_needs_no_lock() {
     let env = start();
     env.seed("alice", "Source/a.cpp", "base\n", None);

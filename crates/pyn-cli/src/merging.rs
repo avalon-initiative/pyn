@@ -21,7 +21,9 @@ use crate::client::Api;
 use crate::localfile;
 use crate::snapshot::short;
 use crate::staging::{self, Index};
+use crate::stranded;
 use crate::sync::{self, mode_name};
+use crate::time;
 use crate::workspace::{FileState, Workspace, hash_of, set_read_only};
 
 const STATE_VERSION: u32 = 1;
@@ -279,6 +281,9 @@ fn print_preview(report: &api::MergeReport, source: &str) {
     if !rows.is_empty() {
         println!("{}", crate::table::render(&["RESULT", "PATH"], &rows));
     }
+    for story in report.conflicts.iter().filter_map(conversion_story) {
+        println!("{story}");
+    }
 }
 
 fn clean_or_bail(ws: &Workspace, report: &api::MergeReport) -> Result<()> {
@@ -385,6 +390,10 @@ pub fn merge_command(backend: &dyn Backend, ws: Option<&Workspace>, args: MergeA
             for c in &report.changes {
                 println!(" {}", c.path);
             }
+            stranded::print(
+                "The merged policy left shared versions on other branches that can no longer merge:",
+                &done.stranded,
+            );
             Ok(())
         }
         api::MergeOutcome::Merge if !args.no_commit => {
@@ -395,6 +404,10 @@ pub fn merge_command(backend: &dyn Backend, ws: Option<&Workspace>, args: MergeA
             }
             land(backend, api, ws, &commit, &report)?;
             println!("Merge made; {} is now at {}.", here, short(&commit));
+            stranded::print(
+                "The merged policy left shared versions on other branches that can no longer merge:",
+                &done.stranded,
+            );
             Ok(())
         }
         api::MergeOutcome::Merge | api::MergeOutcome::Conflicted => {
@@ -571,6 +584,23 @@ fn begin(
     std::process::exit(1);
 }
 
+fn conversion_story(c: &api::MergeConflict) -> Option<String> {
+    let n = c.conversion.as_ref()?;
+    let policy = n
+        .policy_revision
+        .map_or(String::new(), |p| format!(" by policy r{p}"));
+    Some(format!(
+        "  {} became exclusive at r{}{policy}, made by {} on {}; the shared version r{} by {} on {} was stranded.",
+        c.path,
+        n.revision,
+        n.by,
+        time::local(n.at),
+        n.diverged_revision,
+        n.diverged_by,
+        time::local(n.diverged_at),
+    ))
+}
+
 fn conversion_hint(c: &api::MergeConflict) -> String {
     let head = [&c.inputs.ours, &c.inputs.theirs]
         .into_iter()
@@ -578,8 +608,9 @@ fn conversion_hint(c: &api::MergeConflict) -> String {
         .filter_map(|s| s.revision)
         .max()
         .map_or(String::new(), |h| format!(" --base {h}"));
+    let story = conversion_story(c).map_or(String::new(), |s| format!("{s}\n"));
     format!(
-        "  {} is exclusive now and was changed on a branch that kept it shared; choose its next revision. \
+        "{story}  {} is exclusive now and was changed on a branch that kept it shared; choose its next revision. \
          To keep a version that is not the newest, take the lock first: `pyn lock{head} {}`.",
         c.path, c.path
     )
@@ -865,6 +896,10 @@ pub fn finish(
     Index::default().save(ws)?;
     clear(ws)?;
     println!("Merge made; {} is now at {}.", state.branch, short(&commit));
+    stranded::print(
+        "The merged policy left shared versions on other branches that can no longer merge:",
+        &done.stranded,
+    );
     Ok(())
 }
 

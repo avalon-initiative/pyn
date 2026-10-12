@@ -14,6 +14,7 @@ use pyn_proto as api;
 
 use crate::{
     ApiResult, AppState, RepoAddress, authorize_repo, file_mode_dto, file_mode_from, mode_dto,
+    stranded_dto,
 };
 
 fn object_id(hex: &str, what: &str) -> Result<ObjectId, PynError> {
@@ -92,6 +93,15 @@ fn conflict_dto(c: Conflict) -> api::MergeConflict {
             ConflictKind::ExclusiveConversion => api::MergeConflictKind::ExclusiveConversion,
         },
         inputs: inputs_dto(c.inputs),
+        conversion: c.conversion.map(|n| api::MergeConversion {
+            revision: n.revision.0,
+            policy_revision: n.policy.map(|p| p.0),
+            by: n.by.to_string(),
+            at: n.at,
+            diverged_revision: n.diverged.0,
+            diverged_by: n.diverged_by.to_string(),
+            diverged_at: n.diverged_at,
+        }),
     }
 }
 
@@ -111,6 +121,7 @@ fn report_dto(r: MergeReport) -> api::MergeReport {
         changes: r.changes.into_iter().map(change_dto).collect(),
         conflicts: r.conflicts.into_iter().map(conflict_dto).collect(),
         commit: r.commit.map(|c| c.to_hex()),
+        stranded: r.stranded.into_iter().map(stranded_dto).collect(),
     }
 }
 

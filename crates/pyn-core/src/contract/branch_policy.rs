@@ -100,12 +100,17 @@ pub async fn a_branch_keeps_the_policy_it_has_until_it_picks_up_a_later_one(stor
     let on_old = h.svc.files_on("old", None, 10).await.unwrap();
     assert!(on_old.iter().any(|f| f.path == a && f.mode == Mode::Shared));
 
+    let b = path("Source/b.cpp");
+    put_on(&h, "main", "alice", &b, "b\n", None).await;
     let err = h
         .svc
-        .checkout_on("old", &a, &user("bob"), Some(RevisionId(2)))
+        .checkout_on("old", &b, &user("bob"), Some(RevisionId(1)))
         .await
         .unwrap_err();
-    assert!(matches!(err, PynError::NotExclusive(_)), "{err}");
+    assert!(
+        matches!(err, PynError::NotExclusive(_)),
+        "shared in both: {err}"
+    );
     h.svc
         .checkout_on("new", &a, &user("bob"), Some(RevisionId(2)))
         .await

@@ -85,6 +85,30 @@ pub struct Revision {
     pub hash: String,
     /// The hash of the path's previous revision; absent for the first.
     pub previous: Option<String>,
+    /// Only in the response to checking in or restoring `.pyn/pyn.toml` on the default branch: the diverged shared
+    /// versions on other branches that the change stranded. Empty, and omitted, everywhere else.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stranded: Vec<StrandedVersion>,
+}
+
+/// A shared version a branch holds of a path that became exclusive on the default branch (decision #38). It stays in
+/// history but can no longer merge into the path's single line.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct StrandedVersion {
+    pub path: String,
+    /// The branch that holds the version.
+    pub branch: String,
+    /// Who created the branch; the audit log tells them (`version_stranded`).
+    pub branch_owner: String,
+    /// The stranded revision of the path.
+    pub revision: u64,
+    /// The commit the revision belongs to.
+    pub commit: String,
+    /// Who made the stranded revision.
+    pub author: String,
+    pub created_at: DateTime<Utc>,
+    /// The conversion revision the default branch made when the path became exclusive; absent in a preview.
+    pub conversion: Option<u64>,
 }
 
 /// One atomic write: a single checkin or a whole changeset, recorded as a git commit on a branch. `id` is the git
@@ -283,6 +307,25 @@ pub struct MergeConflict {
     pub mode: Mode,
     pub kind: MergeConflictKind,
     pub inputs: MergeInputs,
+    /// For `exclusive_conversion`: what happened to the path and when, when the history shows it.
+    #[serde(default)]
+    pub conversion: Option<MergeConversion>,
+}
+
+/// The conversion of a path to exclusive that a merge conflict met, and the shared version it stranded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct MergeConversion {
+    /// The conversion revision, the first of the path's exclusive line.
+    pub revision: u64,
+    /// The policy revision in force at the conversion.
+    pub policy_revision: Option<u64>,
+    /// Who made the policy change.
+    pub by: String,
+    pub at: DateTime<Utc>,
+    /// The diverged shared revision the conversion stranded, with its author and time.
+    pub diverged_revision: u64,
+    pub diverged_by: String,
+    pub diverged_at: DateTime<Utc>,
 }
 
 /// What a merge does, or did.
@@ -304,6 +347,10 @@ pub struct MergeReport {
     /// The commit the merge wrote; null for a preview and for an up-to-date merge.
     #[schema(required = true)]
     pub commit: Option<String>,
+    /// Shared versions on other branches that the policy file a merge into the default branch brought stranded;
+    /// empty for a preview and for every other merge.
+    #[serde(default)]
+    pub stranded: Vec<StrandedVersion>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -311,6 +358,10 @@ pub struct CheckoutRequest {
     pub path: String,
     /// Revision the caller's copy is at (omit if none); must equal the head.
     pub base_revision: Option<u64>,
+    /// The branch the lock is for: the path must be exclusive under that branch's effective policy. The default
+    /// branch if omitted.
+    #[serde(default)]
+    pub branch: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -891,6 +942,9 @@ pub struct PolicyPreview {
     pub to_exclusive: Vec<String>,
     /// Live locks that would be released because their path becomes shared.
     pub released_locks: Vec<Lock>,
+    /// Diverged shared versions on other branches of the paths that would become exclusive; each would be stranded.
+    #[serde(default)]
+    pub stranded: Vec<StrandedVersion>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]

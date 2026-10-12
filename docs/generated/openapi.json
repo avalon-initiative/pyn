@@ -3305,7 +3305,7 @@
           {
             "name": "action",
             "in": "query",
-            "description": "checkout, release, checkin, restore, force_unlock, member_added, role_changed, role_permissions_changed, team_access_set, team_access_removed, token_created, token_revoked, repo_created, repo_updated, repo_deleted, invite_created, invite_revoked, policy_changed or mode_converted",
+            "description": "checkout, release, checkin, restore, force_unlock, member_added, role_changed, role_permissions_changed, team_access_set, team_access_removed, token_created, token_revoked, repo_created, repo_updated, repo_deleted, invite_created, invite_revoked, policy_changed, mode_converted or version_stranded",
             "required": false,
             "schema": {
               "type": "string"
@@ -3931,7 +3931,17 @@
             }
           },
           "400": {
-            "description": "not_exclusive or invalid_path",
+            "description": "not_exclusive (under the branch's effective policy) or invalid_path",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "branch_not_found",
             "content": {
               "application/json": {
                 "schema": {
@@ -6934,6 +6944,13 @@
             "description": "Revision the caller's copy is at (omit if none); must equal the head.",
             "minimum": 0
           },
+          "branch": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The branch the lock is for: the path must be exclusive under that branch's effective policy. The default\nbranch if omitted."
+          },
           "path": {
             "type": "string"
           }
@@ -7754,6 +7771,17 @@
           "inputs"
         ],
         "properties": {
+          "conversion": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/MergeConversion",
+                "description": "For `exclusive_conversion`: what happened to the path and when, when the history shows it."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "inputs": {
             "$ref": "#/components/schemas/MergeInputs"
           },
@@ -7778,6 +7806,56 @@
           "file_mode",
           "exclusive_conversion"
         ]
+      },
+      "MergeConversion": {
+        "type": "object",
+        "description": "The conversion of a path to exclusive that a merge conflict met, and the shared version it stranded.",
+        "required": [
+          "revision",
+          "by",
+          "at",
+          "diverged_revision",
+          "diverged_by",
+          "diverged_at"
+        ],
+        "properties": {
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "by": {
+            "type": "string",
+            "description": "Who made the policy change."
+          },
+          "diverged_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "diverged_by": {
+            "type": "string"
+          },
+          "diverged_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The diverged shared revision the conversion stranded, with its author and time.",
+            "minimum": 0
+          },
+          "policy_revision": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The policy revision in force at the conversion.",
+            "minimum": 0
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The conversion revision, the first of the path's exclusive line.",
+            "minimum": 0
+          }
+        }
       },
       "MergeFastForward": {
         "type": "string",
@@ -7893,6 +7971,13 @@
           },
           "source": {
             "type": "string"
+          },
+          "stranded": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StrandedVersion"
+            },
+            "description": "Shared versions on other branches that the policy file a merge into the default branch brought stranded;\nempty for a preview and for every other merge."
           },
           "target": {
             "type": "string"
@@ -8257,6 +8342,13 @@
               "$ref": "#/components/schemas/Lock"
             },
             "description": "Live locks that would be released because their path becomes shared."
+          },
+          "stranded": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StrandedVersion"
+            },
+            "description": "Diverged shared versions on other branches of the paths that would become exclusive; each would be stranded."
           },
           "to_exclusive": {
             "type": "array",
@@ -8771,6 +8863,13 @@
             "format": "int64",
             "description": "Set when this revision restored the content of an earlier one.",
             "minimum": 0
+          },
+          "stranded": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StrandedVersion"
+            },
+            "description": "Only in the response to checking in or restoring `.pyn/pyn.toml` on the default branch: the diverged shared\nversions on other branches that the change stranded. Empty, and omitted, everywhere else."
           }
         }
       },
@@ -9164,6 +9263,59 @@
           },
           "user": {
             "type": "string"
+          }
+        }
+      },
+      "StrandedVersion": {
+        "type": "object",
+        "description": "A shared version a branch holds of a path that became exclusive on the default branch (decision #38). It stays in\nhistory but can no longer merge into the path's single line.",
+        "required": [
+          "path",
+          "branch",
+          "branch_owner",
+          "revision",
+          "commit",
+          "author",
+          "created_at"
+        ],
+        "properties": {
+          "author": {
+            "type": "string",
+            "description": "Who made the stranded revision."
+          },
+          "branch": {
+            "type": "string",
+            "description": "The branch that holds the version."
+          },
+          "branch_owner": {
+            "type": "string",
+            "description": "Who created the branch; the audit log tells them (`version_stranded`)."
+          },
+          "commit": {
+            "type": "string",
+            "description": "The commit the revision belongs to."
+          },
+          "conversion": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The conversion revision the default branch made when the path became exclusive; absent in a preview.",
+            "minimum": 0
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "path": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The stranded revision of the path.",
+            "minimum": 0
           }
         }
       },

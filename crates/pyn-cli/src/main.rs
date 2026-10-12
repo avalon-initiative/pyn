@@ -21,6 +21,7 @@ mod merging;
 mod pyn_server;
 mod snapshot;
 mod staging;
+mod stranded;
 mod sync;
 mod table;
 mod time;
@@ -1275,6 +1276,10 @@ fn run(cli: Cli) -> Result<()> {
             for lock in &found.released_locks {
                 println!("would release {}'s lock on {}", lock.owner, lock.path);
             }
+            stranded::print(
+                "Shared versions on other branches that this change would strand:",
+                &found.stranded,
+            );
         }
         Command::Config(cmd) => config_command(cmd, ws.as_ref(), &mine, &yours, &user_config)?,
         Command::Lock { path, base } => {
@@ -1287,6 +1292,7 @@ fn run(cli: Cli) -> Result<()> {
             let body = api::CheckoutRequest {
                 path: path.clone(),
                 base_revision: base.or(known),
+                branch: api.branch.clone(),
             };
             let l: api::Lock = api
                 .send(
@@ -1424,6 +1430,10 @@ fn run(cli: Cli) -> Result<()> {
                 staging::Index::forget(w, std::slice::from_ref(&path))?;
             }
             println!("{} is now at revision {}", r.path, r.id);
+            stranded::print(
+                "The policy change left shared versions on other branches that can no longer merge:",
+                &r.stranded,
+            );
         }
         Command::Get { path, rev, output } => {
             let path = rp(&path)?;

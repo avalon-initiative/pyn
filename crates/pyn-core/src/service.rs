@@ -401,7 +401,7 @@ impl RepoService {
                 v.branch_owner,
                 v.revision,
                 v.author,
-                v.created_at.format("%Y-%m-%d %H:%M UTC"),
+                v.created_at.format("%Y-%m-%d %H:%M:%S UTC"),
                 rev.id,
                 v.conversion
                     .map(|c| format!("; the path converted to exclusive at r{c}"))
@@ -573,7 +573,8 @@ impl RepoService {
         self.checkout_on(DEFAULT_BRANCH, path, user, base).await
     }
 
-    /// Like `checkout`, for a commit on `branch`: the path must be exclusive under the branch's effective policy.
+    /// Like `checkout`, for a commit on `branch`: the path must be exclusive under the branch's effective policy or the
+    /// default branch's, whose policy a merge brings the branch (resolving a conversion conflict takes the lock first).
     pub async fn checkout_on(
         &self,
         branch: &str,
@@ -581,7 +582,9 @@ impl RepoService {
         user: &UserId,
         base: Option<RevisionId>,
     ) -> Result<Lock> {
-        if self.rules_on(branch).await?.mode_for(path) != Mode::Exclusive {
+        if self.rules_on(branch).await?.mode_for(path) != Mode::Exclusive
+            && self.mode_for(path) != Mode::Exclusive
+        {
             return Err(PynError::NotExclusive(path.clone()));
         }
         let head = self.head(path).await?.map(|r| r.id);

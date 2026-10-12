@@ -200,6 +200,8 @@ struct RepoAddress {
         api::MergeChange,
         api::MergeConflict,
         api::MergeReport,
+        api::MergeConversion,
+        api::StrandedVersion,
         api::SnapshotEntry,
         api::SnapshotPage,
         api::CheckoutRequest,
@@ -749,7 +751,27 @@ fn revision_dto(r: pyn_core::Revision) -> api::Revision {
         commit: r.commit.to_hex(),
         hash: r.hash.to_string(),
         previous: r.previous.map(|h| h.to_string()),
+        stranded: Vec::new(),
     }
+}
+
+pub(crate) fn stranded_dto(v: pyn_core::StrandedVersion) -> api::StrandedVersion {
+    api::StrandedVersion {
+        path: v.path.to_string(),
+        branch: v.branch,
+        branch_owner: v.branch_owner.to_string(),
+        revision: v.revision.0,
+        commit: v.commit.to_hex(),
+        author: v.author.to_string(),
+        created_at: v.created_at,
+        conversion: v.conversion.map(|c| c.0),
+    }
+}
+
+fn recorded_dto(r: pyn_core::Recorded) -> api::Revision {
+    let mut dto = revision_dto(r.revision);
+    dto.stranded = r.stranded.into_iter().map(stranded_dto).collect();
+    dto
 }
 
 pub(crate) fn audit_entry_dto(e: pyn_core::AuditEvent, with_path: bool) -> api::AuditEntry {
@@ -831,7 +853,8 @@ async fn list_locks(
 #[utoipa::path(post, path = "/v1/repos/{owner}/{name}/checkout", params(RepoAddress), request_body = api::CheckoutRequest, responses(
     (status = 200, body = api::Lock),
     (status = 409, body = api::ErrorBody, description = "lock_held, lock_limit_reached or stale_base"),
-    (status = 400, body = api::ErrorBody, description = "not_exclusive or invalid_path"),
+    (status = 400, body = api::ErrorBody, description = "not_exclusive (under the branch's effective policy) or invalid_path"),
+    (status = 404, body = api::ErrorBody, description = "branch_not_found"),
 ))]
 /// Lock an exclusive path for the caller.
 async fn checkout(
@@ -844,7 +867,8 @@ async fn checkout(
     let user = who.user;
     let lock = repo
         .service
-        .checkout(
+        .checkout_on(
+            branch_of(req.branch.as_deref()),
             &RepoPath::new(req.path)?,
             &user,
             req.base_revision.map(RevisionId),
@@ -886,9 +910,9 @@ async fn checkin(
 ) -> ApiResult<Json<api::Revision>> {
     let (repo, who) =
         authorize_repo(&s, &headers, &owner, &name, Some(Permission::Checkin)).await?;
-    let rev = repo
+    let recorded = repo
         .service
-        .checkin_on(
+        .checkin_recorded(
             branch_of(req.branch.as_deref()),
             &who,
             &RepoPath::new(req.path)?,
@@ -898,7 +922,7 @@ async fn checkin(
             req.message,
         )
         .await?;
-    Ok(Json(revision_dto(rev)))
+    Ok(Json(recorded_dto(recorded)))
 }
 
 #[utoipa::path(post, path = "/v1/repos/{owner}/{name}/changesets", params(RepoAddress), request_body = api::ChangesetRequest, responses(
@@ -956,9 +980,9 @@ async fn restore(
 ) -> ApiResult<Json<api::Revision>> {
     let (repo, who) =
         authorize_repo(&s, &headers, &owner, &name, Some(Permission::Restore)).await?;
-    let rev = repo
+    let recorded = repo
         .service
-        .restore_on(
+        .restore_recorded(
             branch_of(req.branch.as_deref()),
             &who,
             &RepoPath::new(req.path)?,
@@ -968,7 +992,7 @@ async fn restore(
             req.message,
         )
         .await?;
-    Ok(Json(revision_dto(rev)))
+    Ok(Json(recorded_dto(recorded)))
 }
 
 /// The request body as a reader, with the length its `Content-Length` header (or an exact body size) declares.
@@ -1672,6 +1696,7 @@ async fn preview_policy(
         to_shared: found.to_shared.iter().map(ToString::to_string).collect(),
         to_exclusive: found.to_exclusive.iter().map(ToString::to_string).collect(),
         released_locks: found.released_locks.into_iter().map(lock_dto).collect(),
+        stranded: found.stranded.into_iter().map(stranded_dto).collect(),
     }))
 }
 
@@ -1687,7 +1712,7 @@ struct AuditQueryParams {
 #[utoipa::path(get, path = "/v1/repos/{owner}/{name}/audit", operation_id = "repo_audit",
     params(RepoAddress, ("path" = Option<String>, Query, description = "only events for this path"),
            ("actor" = Option<String>, Query, description = "only events by this user"),
-           ("action" = Option<String>, Query, description = "checkout, release, checkin, restore, force_unlock, member_added, role_changed, role_permissions_changed, team_access_set, team_access_removed, token_created, token_revoked, repo_created, repo_updated, repo_deleted, invite_created, invite_revoked, policy_changed or mode_converted"),
+           ("action" = Option<String>, Query, description = "checkout, release, checkin, restore, force_unlock, member_added, role_changed, role_permissions_changed, team_access_set, team_access_removed, token_created, token_revoked, repo_created, repo_updated, repo_deleted, invite_created, invite_revoked, policy_changed, mode_converted or version_stranded"),
            ("before" = Option<i64>, Query, description = "events older than this id"),
            ("limit" = Option<usize>, Query, description = "page size, default 50, max 500")),
     responses((status = 200, body = api::AuditPage), (status = 403, body = api::ErrorBody, description = "needs view_audit")))]

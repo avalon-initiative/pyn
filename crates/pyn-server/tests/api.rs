@@ -3956,3 +3956,102 @@ async fn a_conflicted_merge_writes_nothing_until_every_conflict_is_resolved() {
     let r = send(&app, "GET", &format!("{base}/verify"), &alice, None).await;
     assert_eq!(r.status(), StatusCode::OK);
 }
+
+#[tokio::test]
+async fn a_policy_change_returns_the_stranded_versions_and_a_merge_conflict_carries_the_conversion()
+{
+    let app = router(state_with(false, RegistrationMode::Open).await);
+    let alice = register_and_sign_in(&app, "alice").await;
+    create_repo(&app, &alice, "game").await;
+    let base = "/v1/repos/alice/game";
+    checkin_json(&app, &alice, "main", "Source/a.cpp", "base\n", None).await;
+    let r = send(
+        &app,
+        "POST",
+        &format!("{base}/branches"),
+        &alice,
+        Some(serde_json::json!({"name": "topic"})),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+    checkin_json(&app, &alice, "topic", "Source/a.cpp", "topic\n", Some(1)).await;
+
+    let policy = "[meta]\ndefault = \"shared\"\n[exclusive]\npaths = [\"Source/a.cpp\"]\n";
+    let r = send(
+        &app,
+        "POST",
+        &format!("{base}/policy/preview"),
+        &alice,
+        Some(serde_json::json!({"content": policy})),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let preview: api::PolicyPreview = body_json(r).await;
+    assert_eq!(preview.to_exclusive, ["Source/a.cpp"]);
+    assert_eq!(preview.stranded.len(), 1);
+    assert_eq!(
+        (
+            preview.stranded[0].branch.as_str(),
+            preview.stranded[0].revision,
+            preview.stranded[0].conversion
+        ),
+        ("topic", 2, None)
+    );
+
+    let content = put_blob(&app, "game", &alice, policy).await;
+    let r = send(
+        &app,
+        "POST",
+        &format!("{base}/checkin"),
+        &alice,
+        Some(
+            serde_json::json!({"path": ".pyn/pyn.toml", "content": content,
+                                "message": "a.cpp is exclusive"}),
+        ),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let rev: api::Revision = body_json(r).await;
+    assert_eq!(rev.stranded.len(), 1);
+    assert_eq!(rev.stranded[0].conversion, Some(3));
+    assert_eq!(rev.stranded[0].branch_owner, "alice");
+
+    let r = send(
+        &app,
+        "POST",
+        &format!("{base}/merge/preview"),
+        &alice,
+        Some(serde_json::json!({"source": "topic", "target": "main"})),
+    )
+    .await;
+    let report: api::MergeReport = body_json(r).await;
+    assert_eq!(report.outcome, api::MergeOutcome::Conflicted);
+    let note = report.conflicts[0].conversion.as_ref().unwrap();
+    assert_eq!(
+        (note.revision, note.policy_revision, note.diverged_revision),
+        (3, Some(1), 2)
+    );
+
+    let r = send(
+        &app,
+        "POST",
+        &format!("{base}/checkout"),
+        &alice,
+        Some(serde_json::json!({"path": "Source/b.cpp", "branch": "topic"})),
+    )
+    .await;
+    assert_eq!(
+        r.status(),
+        StatusCode::BAD_REQUEST,
+        "shared on the branch and on main"
+    );
+    let r = send(
+        &app,
+        "POST",
+        &format!("{base}/checkout"),
+        &alice,
+        Some(serde_json::json!({"path": "Source/a.cpp", "branch": "nope", "base_revision": 3})),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::NOT_FOUND);
+}
