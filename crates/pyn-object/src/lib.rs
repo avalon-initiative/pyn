@@ -1,0 +1,30 @@
+//! Git's object ids and encodings (blob, tree, commit, tag) as pure functions, parameterized by hash algorithm.
+//! No I/O; git is never invoked. SHA-1 uses collision detection, as git does.
+
+mod commit;
+mod hasher;
+mod id;
+mod tree;
+
+pub use commit::{Commit, Signature, Tag};
+pub use hasher::ObjectHasher;
+pub use id::{Algorithm, Kind, ObjectId, hash_object};
+pub use tree::{FileMode, TreeEntry, encode_tree, parse_tree};
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum Error {
+    #[error("SHA-1 collision attack detected in object data")]
+    Collision,
+    #[error("invalid object id: {0}")]
+    InvalidId(String),
+    #[error("unknown file mode {0:?}")]
+    InvalidMode(String),
+    #[error("invalid tree entry name")]
+    InvalidName,
+    #[error("duplicate tree entry name")]
+    DuplicateName,
+    #[error("malformed {0} object: {1}")]
+    Malformed(&'static str, &'static str),
+    #[error("declared length {declared} but {actual} bytes were supplied")]
+    LengthMismatch { declared: u64, actual: u64 },
+}

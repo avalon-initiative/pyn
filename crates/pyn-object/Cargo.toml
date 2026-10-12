@@ -1,0 +1,15 @@
+[package]
+name = "pyn-object"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+hex = "0.4.3"
+sha1-checked = { version = "0.10.0", default-features = false, features = ["std"] }
+sha2 = "0.11.0"
+thiserror = "2.0.21"
+
+[lints]
+workspace = true
