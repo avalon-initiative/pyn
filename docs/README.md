@@ -14,6 +14,7 @@ Markdown only; `make docs-check` verifies relative links and anchors.
 - [Content storage: streaming, ranges and the planned chunked format](concepts/storage.md)
 - [The `.pyn/` folder](concepts/workspace.md)
 - [Git compatibility: where the CLI follows git and where it deliberately differs](concepts/git-compatibility.md)
+- [Tamper-evident history: the frozen hash encoding, chained audit log, `pyn verify`](concepts/integrity.md)
 - [Phase 1 scope](phase-1.md)
 
 ## API contract
