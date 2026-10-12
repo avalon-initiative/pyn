@@ -68,7 +68,15 @@ impl State {
                 .ok_or_else(|| PynError::Storage(format!("tree {id} is missing")))?;
             edit.supply(id, body)?;
         }
-        draft_commit(parent.map(|c| c.id), edit.finish()?, &items[0].revision)
+        let first = &items[0].revision;
+        draft_commit(
+            parent.map(|c| c.id),
+            edit.finish()?,
+            &first.person,
+            &first.message,
+            first.created_at,
+            first.changeset.clone(),
+        )
     }
 
     fn full_commit(&self, repo: &RepoId, id: &ObjectId) -> Option<Commit> {

@@ -144,6 +144,14 @@ async fn main() -> anyhow::Result<()> {
         for old in &done.missing {
             tracing::warn!(content = %old, "stored content not found; its revisions keep the SHA-256 content id");
         }
+        let history = pg.migrate_history().await?;
+        if history.commits > 0 {
+            tracing::info!(
+                repositories = history.repositories,
+                commits = history.commits,
+                "migrated existing history into git commits"
+            );
+        }
     }
 
     let clock = Arc::new(SystemClock);

@@ -242,22 +242,25 @@ pub struct CommitDraft {
     pub trees: Vec<(ObjectId, Vec<u8>)>,
 }
 
-/// The commit for `first`'s message and author on top of `parent`, over the tree `build` made.
+/// The commit by `author` at `at` with `message` on top of `parent`, over the tree `build` made.
 pub fn draft_commit(
     parent: Option<ObjectId>,
     build: TreeBuild,
-    first: &NewRevision,
+    author: &Person,
+    message: &str,
+    at: DateTime<Utc>,
+    changeset: Option<String>,
 ) -> Result<CommitDraft> {
     let mut record = Commit {
         id: build.root,
         parents: parent.into_iter().collect(),
         tree: build.root,
-        author: first.person.clone(),
-        committer: first.person.clone(),
-        created_at: commit_time(first.created_at),
-        message: first.message.clone(),
+        author: author.clone(),
+        committer: author.clone(),
+        created_at: commit_time(at),
+        message: message.to_string(),
         signature: None,
-        changeset: first.changeset.clone(),
+        changeset,
         revisions: Vec::new(),
     };
     record.id = record.expected_id()?;
