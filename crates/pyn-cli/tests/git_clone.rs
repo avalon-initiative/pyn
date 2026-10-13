@@ -394,7 +394,6 @@ fn branch_and_tag_selection_match_git() {
         vec!["-b", "feature"],
         vec!["--branch", "main"],
         vec!["-b", "v1"],
-        vec!["-b", "v2"],
         vec!["--single-branch"],
         vec!["--single-branch", "-b", "feature"],
         vec!["--single-branch", "-b", "v1"],
@@ -416,21 +415,41 @@ fn branch_and_tag_selection_match_git() {
     }
 }
 
+// Newer git handles an annotated tag after `-b` differently, so this is checked against the commit, not against git.
 #[test]
-fn a_tag_checkout_is_detached_at_the_tagged_commit() {
+fn an_annotated_tag_checkout_is_detached_at_the_peeled_commit() {
     let t = Rig::new("sha1", Via::Ssh);
-    assert_ok(&t.both(&["-b", "v2"]));
+    let p = t.pyn_clone(&t.url, &["-b", "v2"], Some("clone"));
+    assert_ok(&p);
     let d = t.pyn_dir("clone");
-    let head = run(&d, &["rev-parse", "HEAD"]);
-    assert_eq!(head, run(&d, &["rev-parse", "v2^{commit}"]));
-    assert!(
-        git(&d)
-            .args(["symbolic-ref", "-q", "HEAD"])
-            .output()
-            .unwrap()
-            .stdout
-            .is_empty()
-    );
+    let commit = run(&t.bare, &["rev-parse", "v2^{commit}"])
+        .trim()
+        .to_owned();
+    let tag_object = run(&t.bare, &["rev-parse", "v2"]).trim().to_owned();
+    assert_eq!(run(&d, &["rev-parse", "HEAD"]).trim(), commit);
+    assert_eq!(run(&d, &["rev-parse", "refs/tags/v2"]).trim(), tag_object);
+    let attached = git(&d)
+        .args(["symbolic-ref", "-q", "HEAD"])
+        .output()
+        .unwrap();
+    assert!(attached.stdout.is_empty());
+    let tree = run(&d, &["ls-tree", "-r", &commit]);
+    let index = run(&d, &["ls-files", "-s"]);
+    let strip = |l: &str| {
+        l.split_once('\t')
+            .map(|(m, p)| (m.replace(" 0", "").to_owned(), p.to_owned()))
+    };
+    let a: Vec<_> = tree
+        .lines()
+        .filter_map(|l| strip(&l.replacen(" blob", "", 1)))
+        .collect();
+    let b: Vec<_> = index.lines().filter_map(strip).collect();
+    assert_eq!(a, b);
+    let mut files = BTreeMap::new();
+    work_files(&d, &d, &mut files);
+    assert_eq!(files.len(), a.len());
+    fsck(&d);
+    assert_eq!(run(&d, &["status", "--porcelain"]), "");
 }
 
 #[test]
