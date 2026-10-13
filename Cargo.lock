@@ -1871,6 +1871,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "pyn-gitwire"
+version = "0.0.1"
+dependencies = [
+ "pyn-object",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "pyn-gitwork"
 version = "0.0.1"
 dependencies = [
