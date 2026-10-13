@@ -14,6 +14,8 @@ const MIN_REFCOL: usize = 10;
 const SCREEN_WIDTH: usize = 80;
 
 pub struct Settings {
+    /// A clone writes no `FETCH_HEAD` and no reflog lines.
+    pub clone: bool,
     pub verbosity: i32,
     pub dry_run: bool,
     pub force: bool,
@@ -284,7 +286,7 @@ fn verdict(git: &GitHome, s: &Settings, e: &Entry, old: Option<ObjectId>) -> Ver
 
 /// Records `entries` in `FETCH_HEAD` and moves their local refs as git would; true when any could not be updated.
 pub fn store(git: &GitHome, s: &Settings, entries: &[Entry]) -> Result<bool> {
-    if !s.dry_run {
+    if !s.dry_run && !s.clone {
         append_fetch_head(git, entries, &s.url)?;
     }
     let refcol = refcol_width(git, s, entries);
@@ -308,9 +310,12 @@ pub fn store(git: &GitHome, s: &Settings, entries: &[Entry]) -> Result<bool> {
             let written = refs
                 .update_checked(local, expect, &e.id)
                 .map_err(anyhow::Error::from)
-                .and_then(|()| git.log_ref(local, old.as_ref(), &e.id, &message, false))
+                .and_then(|()| match s.clone {
+                    true => Ok(()),
+                    false => git.log_ref(local, old.as_ref(), &e.id, &message, false),
+                })
                 .and_then(|()| match git.head_target()? {
-                    Some(t) if t == *local => {
+                    Some(t) if t == *local && !s.clone => {
                         git.log_ref("HEAD", old.as_ref(), &e.id, &message, false)
                     }
                     _ => Ok(()),
@@ -420,6 +425,7 @@ mod tests {
     #[test]
     fn columns_follow_gits_format() {
         let s = Settings {
+            clone: false,
             verbosity: 0,
             dry_run: false,
             force: false,

@@ -1,6 +1,6 @@
 //! A reader and writer for git's on-disk formats, implemented in house: loose objects, packs (offset and
 //! reference deltas, pack index v2), refs and `packed-refs`, config (read and edit), refspecs, remotes, the index
-//! (v2 to v4) and `.git` files.
+//! (v2 to v4), `.git` files and `init` of an empty repository.
 //! Packs are read, ingested (`index_pack`, thin packs included) and written, and `reachable_objects` walks what a fetch needs.
 //! No git library or binary is involved. Depends only on `pyn-object` for ids and object encodings.
 
@@ -10,6 +10,7 @@ mod delta;
 mod error;
 mod index;
 mod ingest;
+mod init;
 mod odb;
 mod pack;
 mod pack_write;
@@ -26,6 +27,7 @@ pub use config_file::{ConfigFile, quote_value};
 pub use error::{Error, Result};
 pub use index::{Index, IndexEntry, Timestamp};
 pub use ingest::{IngestLimits, IngestedPack, index_pack};
+pub use init::init;
 pub use odb::{Object, ObjectDb};
 pub use pack::{EntryKind, Pack};
 pub use pack_write::{PackEntry, PackIndexEntry, PackSummary, PackWriter, write_pack};

@@ -3,6 +3,7 @@
 
 mod ancestry;
 mod branches;
+mod clone;
 mod commands;
 mod convert;
 mod fetch;
@@ -29,6 +30,7 @@ use pyn_proto as api;
 use crate::backend::Backend;
 use crate::workspace::{self, Workspace};
 
+pub use clone::{CloneOptions, clone};
 pub use commands::run;
 pub use fetch::FetchArgs;
 pub use remote::{RemoteArgs, on_server as remote_on_server};
@@ -120,6 +122,27 @@ fn path_string(path: &[u8]) -> String {
 }
 
 impl GitHome {
+    /// Opens the repository whose work tree root, or bare git directory, is `path`.
+    pub(super) fn open_at(path: &Path) -> Result<GitHome> {
+        let (home, xdg) = user_dirs();
+        let repo = Repo::open(path, home.as_deref(), xdg.as_deref())
+            .with_context(|| format!("opening the git repository at {}", path.display()))?;
+        let root = repo
+            .root()
+            .map_or_else(|_| path.to_path_buf(), Path::to_path_buf);
+        let ws = Workspace {
+            dir: root.join(workspace::DIR),
+            root,
+        };
+        Ok(GitHome { repo, ws })
+    }
+
+    /// Opens the same repository again, to see a configuration or object format changed on disk.
+    pub(super) fn reopen(&self) -> Result<GitHome> {
+        let git = self.repo.git();
+        Self::open_at(git.work_tree().unwrap_or(git.git_dir()))
+    }
+
     /// The git configuration a transport reads: the repository's, over the user's.
     pub fn config(&self) -> &pyn_git::Config {
         self.repo.config()

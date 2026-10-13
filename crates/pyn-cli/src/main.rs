@@ -19,6 +19,7 @@ mod limits;
 mod localfile;
 mod ls_remote;
 mod merging;
+mod probe;
 mod pyn_server;
 mod snapshot;
 mod staging;
@@ -86,15 +87,17 @@ enum Command {
         #[arg(long)]
         password_stdin: bool,
     },
-    /// Download a repository into a new workspace folder.
+    /// Download a repository into a new folder: from a pyn server, or from a git URL into a git repository.
     Clone {
-        /// `<server>/owner/name`, or `owner/name` on the configured server.
+        /// `<server>/owner/name` or `owner/name` for a pyn server; an `https://`, `ssh://` or `user@host:path` URL for git.
         source: String,
         /// Where to put it; defaults to a folder named after the repository.
         dir: Option<std::path::PathBuf>,
-        /// Check out the repository as of this commit (`HEAD~N`, a commit hash) instead of the newest.
+        /// Check out the repository as of this commit (`HEAD~N`, a commit hash) instead of the newest (a pyn server only).
         #[arg(long)]
         revision: Option<String>,
+        #[command(flatten)]
+        git: Box<git_home::CloneOptions>,
     },
     /// Create, list and delete repositories.
     #[command(subcommand)]
@@ -818,8 +821,52 @@ fn runs_anywhere(command: &Command) -> bool {
     )
 }
 
+/// Clones from a git remote when the address is one; `None` leaves it to the pyn server clone.
+fn clone_from_git(cli: &Cli, cwd: &std::path::Path) -> Result<Option<()>> {
+    let Command::Clone {
+        source,
+        dir,
+        revision,
+        git,
+    } = &cli.command
+    else {
+        return Ok(None);
+    };
+    let hint = match address::kind(source)? {
+        address::Kind::Git => None,
+        address::Kind::Pyn(_) => return Ok(None),
+        address::Kind::Http(src) => {
+            let server = src.server.as_deref().expect("an http source has a server");
+            match probe::decide(probe::run(server)) {
+                probe::Host::Pyn => return Ok(None),
+                probe::Host::Git { inconclusive } => inconclusive.map(|why| {
+                    format!(
+                        "{server} gave no answer as a pyn server ({why}); it was tried as a git remote. \
+                         If it is a pyn server, check that it is running"
+                    )
+                }),
+            }
+        }
+    };
+    if revision.is_some() {
+        usage_error("`--revision` applies to a pyn server, not a git remote");
+    }
+    git_home::clone(source, dir.as_deref(), cwd, git, hint.as_deref())?;
+    Ok(Some(()))
+}
+
 fn run(cli: Cli) -> Result<()> {
     let cwd = std::env::current_dir()?;
+    if clone_from_git(&cli, &cwd)?.is_some() {
+        return Ok(());
+    }
+    if let Command::Clone { git, .. } = &cli.command
+        && let Some(flag) = git.first_given()
+    {
+        usage_error(&format!(
+            "`{flag}` applies to a git remote, not a pyn server"
+        ));
+    }
     let git = if matches!(cli.command, Command::Clone { .. } | Command::Config(_)) {
         None
     } else {

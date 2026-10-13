@@ -96,7 +96,7 @@ fn tree_of(git: &GitHome, commit: Option<&ObjectId>) -> Result<Option<ObjectId>>
     })
 }
 
-fn detach_advice(git: &GitHome, label: &str, id: &ObjectId) -> Result<()> {
+pub(super) fn detach_advice(git: &GitHome, label: &str, id: &ObjectId) -> Result<()> {
     if git
         .repo
         .config()

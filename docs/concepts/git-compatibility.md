@@ -59,8 +59,9 @@ The commands named in decision #218.
 | Git | pyn | Status | Notes |
 | --- | --- | --- | --- |
 | `git init` | `pyn init` | different | In an existing git repository it adds `.pyn/` to `.git/info/exclude` and creates `.pyn/local_only/` (see [On a git home](#on-a-git-home)); it never creates a repository. Anywhere else it fails with the git-command message: repositories are created on the server with `pyn repo create` and then cloned, and a local `init` has no issue yet (epic #219). |
-| `git clone <repo> [<dir>]` | `pyn clone <source> [<dir>]` | same | Source is `<server>/owner/name`, or `owner/name` on the configured server. Output is one summary line, not progress. |
-| `git clone --depth`, `-b`, `--branch`, `--bare`, `--mirror`, `-o`, `-n`, `--recurse-submodules` | none | unsupported | Usage error (`129`). `-b` and `--branch` are possible now that [branches](branches.md) exist, and are not built yet. Every clone has full history on the server; there is no local object store to shallow. |
+| `git clone <repo> [<dir>]` | `pyn clone <source> [<dir>]` | same | A source that is `<server>/owner/name` or `owner/name` on the configured server is cloned from a pyn server, and prints one summary line, not progress. A git URL (`https://`, `ssh://`, `user@host:path`) is cloned into a git repository with git's behaviour, flags and output; see [Clone from a git URL](#clone-from-a-git-url), which also says how an `http(s)` address is told apart. |
+| `git clone -b`, `--bare`, `-o`, `-n`, `--single-branch`, `--no-tags`, `-c`, `-q`, `--progress` | `pyn clone ...` | git URL: supported | Git's behaviour. On a pyn server clone they are a usage error (`129`): that clone takes everything the server has, on its default branch. |
+| `git clone --depth`, `--shallow-*`, `--filter`, `--mirror`, `--recurse-submodules`, `--sparse`, `--reference`, `--separate-git-dir`, `--template`, `--local`, `--no-hardlinks` | none | unsupported | Usage error (`129`) naming the flag: shallow, partial, mirror and submodule clones are not built, and a local-path source is refused by the transport. |
 | `pyn clone --revision <commit>` | | pyn only | Clone as of a commit (a hash, `HEAD~N`). Git does this with `clone` then `checkout`. |
 | `git status` | `pyn status` | different | Header `On branch <name>`, then a table with mode, revision, staged, state, lock and path plus a summary line, because mode and lock state have no place in git's layout. `STAGED` is `added` or `modified` for a staged path, and `STATE` then describes what changed after it was staged. On a git home the table is `STAGED`, `UNSTAGED`, `PATH` with git's states. |
 | `git status -s`, `--short`, `--porcelain`, `-b`, `<pathspec>...` | none | unsupported | Usage error (`129`). A stable machine format is not scheduled. `pyn status --revision` fails on a git home. |
@@ -143,7 +144,7 @@ history across branches (decision #28).
 | `git fetch [<options>] [<remote>\|<url>] [<refspec>...]` | `pyn fetch ...` | git home: supported | Git's behaviour, flags, output and exit statuses; see [Fetch on a git home](#fetch-on-a-git-home). |
 | `git pull [<remote> <branch>]` | none (`pyn update`) | planned | #237. |
 | `git push [<remote> <branch>]` | none | planned | #237. Today `pyn commit` already writes to the server, so `push` has nothing to publish until local-only commits exist. |
-| `git clone` | `pyn clone` | same | See the daily set. |
+| `git clone` | `pyn clone` | same | See the daily set and [Clone from a git URL](#clone-from-a-git-url). |
 
 ### Remotes on a git home
 
@@ -251,6 +252,69 @@ the remotes one at a time whatever `-j` or `fetch.parallel` say, so `FETCH_HEAD`
 not be written names `pyn fetch --prune`, since `remote prune` is not built. `remote show` against the remote and
 `remote update` are not built.
 
+### Clone from a git URL
+
+`pyn clone [<options>] <url> [<dir>]` makes a new git repository from a git remote over the system `ssh` or smart HTTP, with no
+`git` program (see [Transports and credentials](#transports-and-credentials)). It prints `Cloning into '<dir>'...` (or
+`Cloning into bare repository '<dir>'...`) on standard error, the server's progress only with `--progress` or on a terminal, and
+nothing but errors with `-q`. A failure is `fatal: ...` with exit `128`; an unsupported flag is a usage error (`129`).
+
+**Which sources are git.** `ssh://`, `git+ssh://`, `ssh+git://`, scp-like `[user@]host:path`, and any other URL scheme or local path
+(refused with the transport's `local-path remotes are not supported yet`) are always git. A bare `owner/name` is a pyn server
+repository on the configured server, and `<server>/owner/name` over `http(s)` is a pyn server when the server says so. For an
+`http(s)` address whose last two path segments could be `owner/name`, pyn asks the part in front of them for
+`/openapi.json`, without credentials and within three seconds, and calls it a pyn server only when the answer is a JSON document
+that lists the `/v1/registration` route. A 404, another status, another document, or a URL with fewer than three path segments
+(`https://host/repo.git`, which has no `owner/name`) means a git host and is cloned as git with no probe. Nothing is printed about
+the probe on success.
+
+The probe can be inconclusive: a refused connection, a timeout, a TLS failure or a `5xx`. pyn then tries git, and when that fails
+the error ends with a `hint:` line saying the address gave no answer as a pyn server and may be one that is down. A pyn
+server that is down therefore shows up as a git failure, plus that hint. There is no flag to force either side; use `owner/name`
+with `--server`, or an `ssh://` URL, to be exact.
+
+**What it does.** The directory defaults as git names it: the last path part of the URL without a trailing slash, `/.git` or
+`.git` (a scp-like `host:path` and a URL with only a host work too), plus `.git` for `--bare`. A target that exists and is not an
+empty directory is `fatal: destination path '<dir>' already exists and is not an empty directory.` (`128`). pyn creates the
+directory and `.git`, sets `remote.<name>.url` (as typed), the fetch refspec `+refs/heads/*:refs/remotes/<name>/*` and, for
+`--no-tags`, `remote.<name>.tagOpt`, fetches the way [`pyn fetch`](#fetch-on-a-git-home) does (the repository is created
+with the remote's object format, so a SHA-256 remote gives a SHA-256 clone), then:
+
+- creates `refs/remotes/<name>/HEAD` when the remote's `HEAD` is a branch that was fetched, without regard to
+  `remote.<name>.followRemoteHEAD`;
+- picks the branch: `-b <name>`, else the branch the remote's `HEAD` names, else (a server that sends no symref) the branch at the
+  commit `HEAD` names, preferring `init.defaultBranch`; with `-b <tag>`, or a `HEAD` that no branch is at, `HEAD` is detached at that
+  commit (an annotated tag is peeled) and `Note: switching to` is printed unless `-q`; a `-b` that is neither a branch nor a tag is
+  `fatal: Remote branch <name> not found in upstream <origin>`;
+- creates `refs/heads/<branch>` at the remote's tip, sets `branch.<branch>.remote` and `.merge`, and points `HEAD` at it; `HEAD` and
+  the branch get the reflog line `clone: from <url>` (without credentials), as does `refs/remotes/<name>/HEAD`; the other
+  remote-tracking refs have no reflog and there is no `FETCH_HEAD`, as with git;
+- checks out the work tree and writes the index (file modes, executable bits and symlinks as in the commit); `-n` leaves both empty
+  and writes no index;
+- creates no `.pyn/`: the clone is an ordinary git repository, and the first pyn command that needs pyn state creates it.
+
+Tags: a full clone fetches every tag and stores no `tagOpt`; `--single-branch` follows only the tags that point into the history it
+fetched; `--no-tags` fetches none and stores `remote.<name>.tagOpt = --no-tags`. `--tags` is the default of a full clone.
+`--single-branch` narrows the fetch refspec to the cloned branch (or to `+refs/tags/<tag>:refs/tags/<tag>` for `-b <tag>`) and
+`--no-single-branch` undoes it. `--bare` creates `<dir>` as the git directory with `core.bare = true`, copies the heads to
+`refs/heads` and the tags to `refs/tags` (no remote-tracking refs, no fetch refspec, no branch tracking), and points `HEAD` at the
+branch. `-o <name>` names the remote. `-c <key>=<value>` is written to the new repository's config before the fetch, so transport
+settings such as `http.extraHeader` or `url.<base>.insteadOf` apply to it. `-v` and `-j` are accepted and change nothing.
+
+**Empty and unusual remotes.** An empty remote gives `warning: You appear to have cloned an empty repository.` (also with `-q`), an
+unborn `HEAD` on the branch the remote's `HEAD` names (or, when the server cannot say, `init.defaultBranch`, else `master`) with
+`branch.<name>.*` set, and no checkout. A remote whose `HEAD` names a branch it does not have, while other
+branches exist, keeps that unborn `HEAD`, fetches the rest and warns `remote HEAD refers to nonexistent ref, unable to checkout`.
+
+**Failure.** If the clone fails before the fetch is complete (an unreachable host, a failed sign-in, a bad `-b`), what it created is
+removed: the new directory, or only `.git` (or the contents of a bare target) when the directory already existed and was empty. A
+failure while checking out leaves the repository in place, as git does.
+
+Differences from git, all deliberate or not yet done: no hooks, templates or `description` file are created; there is no "Updating files" progress; `--mirror`, `--depth`,
+`--shallow-since`, `--shallow-exclude`, `--shallow-submodules`, `--filter`, `--also-filter-submodules`, `--recurse-submodules`,
+`--sparse`, `--reference`, `--reference-if-able`, `--dissociate`, `--separate-git-dir`, `--template`, `--local`, `--no-local`,
+`--no-hardlinks`, `--shared`, `--upload-pack`, `--server-option`, `--bundle-uri` and `--ref-format` are usage errors.
+
 ## Transports and credentials
 
 Decisions #245 and #255. pyn reaches a git remote without git: the protocol, the pack handling and the credential flow are
@@ -258,7 +322,7 @@ implemented in `pyn-gittransport`, `pyn-gitwire` and `pyn-git`. **git does not n
 program; `make boundary-check` fails when non-test source under `crates/` spawns one. The programs pyn can start are the system
 `ssh` client, and the credential helpers and askpass programs your own configuration names.
 
-`pyn ls-remote`, `pyn fetch` and `pyn remote add -f` use them; `pull`, `push` and `clone <git url>` arrive on top of the same
+`pyn ls-remote`, `pyn fetch`, `pyn remote add -f` and `pyn clone <git url>` use them; `pull` and `push` arrive on top of the same
 connections (epic #301). The library functions `fetch_objects` and `push_objects` (thin packs and offset deltas on fetch, a
 streamed pack file on push) are what those commands call.
 
@@ -427,7 +491,7 @@ whatever the rules say.
 | `init` | See above. |
 | `login`, `logout`, `register`, `password`, `key`, `token`, `user`, `org`, `team`, `repo`, `usage`, `setup`, `admin`, `whoami`, `member`, `role`, `invite` | Run as anywhere else; see [Refused commands](#refused-commands). |
 | `lock`, `unlock`, `locks`, `policy`, `audit`, `verify`, `summary` | Refuse; see [Refused commands](#refused-commands). |
-| `config`, `clone` | Unchanged: they do not depend on the repository's home. A clone made inside a git repository is its own pyn workspace. |
+| `config`, `clone` | Unchanged: they do not depend on the repository's home. A clone from a pyn server made inside a git repository is its own pyn workspace; a clone from a git URL is its own git repository. |
 
 Revisions are `HEAD`, `@`, a branch, a tag (annotated tags are followed to their commit), a full or abbreviated id of 4 or
 more digits, and any of `~N`, `^` and `^N` after one. SHA-1 and SHA-256 repositories are both read. Dates print in the
@@ -613,7 +677,7 @@ set to true, `core.eol=crlf` with a `text` attribute, `eol=crlf`, a `filter` oth
 symlinks and submodules are never converted). A Git LFS filter writes the pointer file as it is, with a warning (decision #245).
 The same limit applies to `status`, which compares raw bytes (#273). Hooks are never run; one warning names the hooks that exist
 for the command (`post-checkout`, `pre-merge-commit`, `commit-msg` and the like). Sparse checkouts, submodule updates, the split
-index and `GIT_DIR` are not supported, and `rebase`, `cherry-pick`, `revert`, `--squash` and anything that talks to a remote other than `ls-remote` and `fetch` are not built yet (`pull`, `push` and `clone`, epic #301; see [Transports and credentials](#transports-and-credentials)).
+index and `GIT_DIR` are not supported, and `rebase`, `cherry-pick`, `revert`, `--squash` and anything that talks to a remote other than `ls-remote`, `fetch` and `clone` are not built yet (`pull` and `push`, epic #301; see [Transports and credentials](#transports-and-credentials)).
 
 ### Refused commands
 

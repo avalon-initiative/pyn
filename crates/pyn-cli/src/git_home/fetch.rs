@@ -15,7 +15,8 @@ use pyn_object::{Algorithm, ObjectId};
 
 use super::GitHome;
 use super::fetch_apply::{Settings, prune, stale_refs, store, tidy_url, truncate_fetch_head};
-use super::fetch_map::{Entry, Inputs, TagMode, build, follow_tags};
+pub(super) use super::fetch_map::TagMode;
+use super::fetch_map::{Entry, Inputs, build, follow_tags};
 
 const DEFAULT_ABBREV: usize = 7;
 
@@ -107,7 +108,7 @@ pub struct FetchArgs {
 }
 
 #[derive(Clone, Copy)]
-struct Options {
+pub(super) struct Options {
     verbosity: i32,
     dry_run: bool,
     force: bool,
@@ -117,6 +118,8 @@ struct Options {
     prune: Option<bool>,
     prune_tags: Option<bool>,
     progress: Option<bool>,
+    /// A clone's fetch: no `FETCH_HEAD`, no reflog lines, no summary, and the remote's unborn `HEAD` is asked for.
+    clone: bool,
 }
 
 impl Options {
@@ -139,6 +142,20 @@ impl Options {
             prune: on_off(a.prune, a.no_prune),
             prune_tags: on_off(a.prune_tags, a.no_prune_tags),
             progress: on_off(a.progress, a.no_progress),
+            clone: false,
+        }
+    }
+
+    /// The fetch inside `pyn clone`: every ref is taken as the chosen refspecs say, forced and into the checked-out branch.
+    pub(super) fn for_clone(quiet: bool, progress: Option<bool>, tags: TagMode) -> Self {
+        Self {
+            verbosity: if quiet { -1 } else { 0 },
+            force: true,
+            update_head_ok: true,
+            tags,
+            progress,
+            clone: true,
+            ..Self::plain()
         }
     }
 
@@ -153,6 +170,7 @@ impl Options {
             prune: None,
             prune_tags: None,
             progress: None,
+            clone: false,
         }
     }
 }
@@ -307,8 +325,7 @@ fn adopt_format(git: &GitHome, format: Algorithm) -> Result<GitHome> {
     file.set("core", None, "repositoryformatversion", "1")?;
     file.set("extensions", None, "objectformat", format.name())?;
     file.write(&path)?;
-    let root = git.repo.root()?.to_path_buf();
-    super::detect(&root)?.ok_or_else(|| anyhow!("the repository at {} vanished", root.display()))
+    git.reopen()
 }
 
 fn open_session(
@@ -399,16 +416,38 @@ fn check_connected(git: &GitHome, wants: &[ObjectId]) -> Result<()> {
         .map_err(|e| anyhow!("remote did not send all necessary objects: {e}"))
 }
 
-struct Plan<'a> {
-    opts: &'a Options,
-    action: &'a str,
+/// Picks the refspecs once the remote's refs are known.
+pub(super) type Choose<'a> = &'a dyn Fn(&[RemoteRef]) -> Result<Vec<String>>;
+
+pub(super) struct Plan<'a> {
+    pub(super) opts: &'a Options,
+    pub(super) action: &'a str,
+    pub(super) choose: Option<Choose<'a>>,
+}
+
+/// What a fetch learned: whether a ref failed, and the remote's refs.
+pub(super) struct Fetched {
+    pub(super) failed: bool,
+    pub(super) remote_refs: Vec<RemoteRef>,
 }
 
 /// Fetches one remote or URL; true when some ref could not be updated.
 fn fetch_one(git: &GitHome, repo: Option<&str>, specs: &[String], plan: &Plan<'_>) -> Result<bool> {
+    Ok(fetch_core(git, repo, specs, plan)?.failed)
+}
+
+pub(super) fn fetch_core(
+    git: &GitHome,
+    repo: Option<&str>,
+    specs: &[String],
+    plan: &Plan<'_>,
+) -> Result<Fetched> {
     let o = plan.opts;
     let Some(target) = resolve_target(git, repo)? else {
-        return Ok(false);
+        return Ok(Fetched {
+            failed: false,
+            remote_refs: Vec::new(),
+        });
     };
     let conn = Connector::new(git.config().clone(), Env::process()).connect(&target.url, false)?;
     let url = tidy_url(&conn.display);
@@ -419,10 +458,12 @@ fn fetch_one(git: &GitHome, repo: Option<&str>, specs: &[String], plan: &Plan<'_
         prefixes: Vec::new(),
         symrefs: true,
         peel: true,
-        unborn: false,
+        unborn: o.clone,
     })?;
+    let chosen = plan.choose.map(|c| c(&remote_refs)).transpose()?;
+    let specs = chosen.as_deref().unwrap_or(specs);
 
-    if !o.append && !o.dry_run {
+    if !o.append && !o.dry_run && !o.clone {
         truncate_fetch_head(git)?;
     }
     let name = target.name.as_deref();
@@ -508,7 +549,8 @@ fn fetch_one(git: &GitHome, repo: Option<&str>, specs: &[String], plan: &Plan<'_
     }
 
     let settings = Settings {
-        verbosity: o.verbosity,
+        clone: o.clone,
+        verbosity: if o.clone { -1 } else { o.verbosity },
         dry_run: o.dry_run,
         force: o.force,
         abbrev: abbrev_len(git),
@@ -569,7 +611,10 @@ fn fetch_one(git: &GitHome, repo: Option<&str>, specs: &[String], plan: &Plan<'_
     if let (Some(n), true, true) = (name, cmdline.is_empty(), !o.dry_run) {
         follow_remote_head(git, n, &configured, &remote_refs, o.verbosity)?;
     }
-    Ok(failed)
+    Ok(Fetched {
+        failed,
+        remote_refs,
+    })
 }
 
 /// `remote.<name>.followRemoteHEAD`: keeps `refs/remotes/<name>/HEAD` pointing where the remote's `HEAD` does.
@@ -651,6 +696,7 @@ fn fetch_many(git: &GitHome, names: &[String], o: &Options) -> Result<bool> {
         let plan = Plan {
             opts: &appending,
             action: &action,
+            choose: None,
         };
         match fetch_one(git, Some(name), &[], &plan) {
             Ok(false) => {}
@@ -704,6 +750,7 @@ fn run(git: &GitHome, a: &FetchArgs, action: &str) -> Result<bool> {
     let plan = Plan {
         opts: &opts,
         action,
+        choose: None,
     };
     fetch_one(git, a.repository.as_deref(), &a.refspecs, &plan)
 }
@@ -733,6 +780,7 @@ pub fn after_add(git: &GitHome, name: &str) -> Result<()> {
     let plan = Plan {
         opts: &opts,
         action: &action,
+        choose: None,
     };
     if fetch_one(&fresh, Some(name), &[], &plan)? {
         std::process::exit(1);

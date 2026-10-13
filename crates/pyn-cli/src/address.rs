@@ -53,6 +53,41 @@ pub fn parse_source(text: &str) -> Result<Source> {
     })
 }
 
+/// How a clone source is read before any network use.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Kind {
+    /// `owner/name` on the configured server.
+    Pyn(Source),
+    /// An `http(s)` address that is a pyn server's when the server answers its API.
+    Http(Source),
+    /// A git remote: `ssh://`, `git+ssh://`, scp-like, a local path or any other URL.
+    Git,
+}
+
+/// `host:path`: a colon before the first slash, with no scheme.
+pub fn is_scp_like(text: &str) -> bool {
+    match text.find([':', '/']) {
+        Some(i) => text.as_bytes()[i] == b':' && i > 0,
+        None => false,
+    }
+}
+
+pub fn kind(text: &str) -> Result<Kind> {
+    let text = text.trim();
+    if let Some((scheme, _)) = text.split_once("://") {
+        return Ok(
+            match (scheme.to_ascii_lowercase().as_str(), parse_source(text)) {
+                ("http" | "https", Ok(source)) => Kind::Http(source),
+                _ => Kind::Git,
+            },
+        );
+    }
+    if is_scp_like(text) || text.starts_with(['/', '.', '~']) {
+        return Ok(Kind::Git);
+    }
+    parse_source(text).map(Kind::Pyn)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -98,5 +133,35 @@ mod tests {
         ] {
             assert!(parse_source(bad).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn a_clone_source_is_a_pyn_name_an_http_address_or_a_git_remote() {
+        let pyn = |s: &str| Kind::Pyn(parse_source(s).unwrap());
+        assert_eq!(kind("alice/game").unwrap(), pyn("alice/game"));
+        assert!(matches!(
+            kind("https://h/alice/game").unwrap(),
+            Kind::Http(_)
+        ));
+        assert!(matches!(
+            kind("https://github.com/org/r.git").unwrap(),
+            Kind::Http(_)
+        ));
+        for git in [
+            "https://h/repo.git",
+            "ssh://git@h/a/b.git",
+            "git+ssh://h/a/b",
+            "git@host:org/r.git",
+            "host:r",
+            "/srv/r",
+            "./r",
+            "../r",
+            "~/r",
+            "file:///srv/r",
+        ] {
+            assert_eq!(kind(git).unwrap(), Kind::Git, "{git}");
+        }
+        assert!(kind("game").is_err());
+        assert!(kind("a/b/c").is_err());
     }
 }
