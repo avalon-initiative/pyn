@@ -2,7 +2,7 @@
 
 A **branch** is a name that points at a [commit](commits.md). Commits are git commits, so a commit's id covers its parents,
 and a branch moves only by committing on it. Decisions #233 and #245 set the model; this page is how a pyn server holds it.
-[Merging](merging.md) branches is described on its own page. Remotes (#237) are separate work and are not done here.
+[Merging](merging.md) branches is described on its own page. Remotes are separate work, see [Remotes](git-compatibility.md#remotes).
 
 ## Branches and the default branch
 

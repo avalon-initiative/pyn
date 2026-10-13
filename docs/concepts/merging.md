@@ -3,7 +3,7 @@
 Merging brings the commits of one [branch](branches.md) (or any commit) into another. It follows git's model, extended only
 where exclusive files need it: shared paths are merged by content, exclusive paths take the later revision of their single
 line (decision #28), and a mode conversion that met parallel work is a conflict the person decides (decision #195).
-Remotes (#237) are separate work. In a git repository `pyn merge` follows git instead, see [Merging on a git home](git-compatibility.md#merging).
+Remotes are separate work, see [Remotes](git-compatibility.md#remotes). In a git repository `pyn merge` follows git instead, see [Merging on a git home](git-compatibility.md#merging).
 
 ## The operation
 
