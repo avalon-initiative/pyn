@@ -128,12 +128,21 @@ impl Pair {
             files_under(&self.git.join(".git/refs")),
             "{label}: refs ({HEAD_ID_NOTE})"
         );
-        assert_eq!(
-            files_under(&self.pyn.join(".git/logs")),
-            files_under(&self.git.join(".git/logs")),
-            "{label}: logs"
-        );
+        let logs = |root: &Path| symref_logs_by_name(files_under(&root.join(".git/logs")));
+        assert_eq!(logs(&self.pyn), logs(&self.git), "{label}: logs");
     }
+}
+
+/// Keeps only the names of remote `HEAD` logs: git's text for a renamed symbolic ref differs between versions.
+fn symref_logs_by_name(entries: Vec<String>) -> Vec<String> {
+    let is_remote_head = |e: &str| e.starts_with("refs/remotes/") && e.contains("/HEAD: ");
+    entries
+        .into_iter()
+        .map(|e| match e.split_once(": ") {
+            Some((name, _)) if is_remote_head(&e) => name.to_string(),
+            _ => e,
+        })
+        .collect()
 }
 
 /// Every file under `dir` with its text, and every folder, sorted.
