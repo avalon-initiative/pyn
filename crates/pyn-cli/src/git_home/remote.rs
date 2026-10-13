@@ -127,7 +127,7 @@ fn list(git: &GitHome, verbose: bool) {
 
 fn add(git: &GitHome, fetch: bool, name: &str, url: &str) -> Result<()> {
     if fetch {
-        return Err(Refused("`remote add -f` needs the git transport (#305)".into()).into());
+        return Err(Refused("`remote add -f` needs fetch (#306)".into()).into());
     }
     if !is_valid_remote_name(name) {
         fail(128, format!("fatal: '{name}' is not a valid remote name"));
@@ -322,7 +322,7 @@ pub fn remote(git: &GitHome, args: RemoteArgs) -> Result<()> {
         }
         Some(RemoteCommand::Show { name, .. }) => {
             existing(git, &name);
-            Err(Refused("`remote show` needs the git transport (#305)".into()).into())
+            Err(Refused("`remote show` needs fetch (#306)".into()).into())
         }
     }
 }

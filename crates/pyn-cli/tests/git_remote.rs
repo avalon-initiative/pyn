@@ -382,7 +382,7 @@ fn show_needs_the_transport() {
         let out = pair.pyn_cmd(&full);
         assert_eq!(out.status.code(), Some(1), "{args:?}");
         assert!(
-            String::from_utf8_lossy(&out.stderr).contains("needs the git transport (#305)"),
+            String::from_utf8_lossy(&out.stderr).contains("needs fetch (#306)"),
             "{args:?}"
         );
     }
