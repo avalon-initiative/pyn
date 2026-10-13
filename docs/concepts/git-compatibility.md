@@ -230,6 +230,14 @@ Remote-tracking refs get a reflog by `core.logAllRefUpdates` (the default and `t
 `storing head`, `storing tag`, `storing ref`, `fast-forward`, `forced-update` or `updating tag` (`fetch --append --no-auto-gc
 --no-write-commit-graph <name>` for each remote of `--all`). Updating the checked-out branch with `-u` logs `HEAD` too.
 
+`remote.<name>.followRemoteHEAD`, as in git 2.48 and later: after a fetch of a named remote with its configured refspecs (no
+refspec on the command line, not `--dry-run`), when the remote's `HEAD` is a symbolic ref to a branch that the refspecs map to an
+existing `refs/remotes/<name>/<branch>`, `refs/remotes/<name>/HEAD` is made a symbolic ref to it. `create` (the default) only creates
+it when missing; `warn` also creates it and prints a one-line warning, without changing it, when it points elsewhere;
+`warn-if-not-<branch>` warns only when the remote's `HEAD` is not `<branch>`; `always` also moves it; `never` does nothing. A
+detached or unborn remote `HEAD` changes nothing. The symbolic ref gets no reflog, and the warning wording is pyn's. `remote set-head`
+is not built.
+
 Object format. The remote's `object-format` must be the repository's: otherwise `fatal: mismatched algorithms: client sha1;
 server sha256` (`128`). A repository with no objects, refs or index takes the remote's format (it sets
 `core.repositoryformatversion = 1` and `extensions.objectformat`), which git itself refuses to do outside `clone`.

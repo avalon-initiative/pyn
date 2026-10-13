@@ -6,7 +6,7 @@ use std::io::{IsTerminal, Write};
 
 use anyhow::{Result, anyhow, bail};
 use clap::{ArgAction, Args};
-use pyn_git::{ConfigFile, Refspec, Remote, tracking};
+use pyn_git::{ConfigFile, Ref, Refspec, Remote, map_ref, tracking};
 use pyn_gittransport::exchange::{fetch_objects, fetch_with};
 use pyn_gittransport::{Connector, Env};
 use pyn_gitwire::{LsRefsOptions, RemoteRef, Transport, UploadPack};
@@ -417,7 +417,7 @@ fn fetch_one(git: &GitHome, repo: Option<&str>, specs: &[String], plan: &Plan<'_
     let git = adopted.as_ref().unwrap_or(git);
     let remote_refs: Vec<RemoteRef> = up.ls_refs(&LsRefsOptions {
         prefixes: Vec::new(),
-        symrefs: false,
+        symrefs: true,
         peel: true,
         unborn: false,
     })?;
@@ -566,7 +566,66 @@ fn fetch_one(git: &GitHome, repo: Option<&str>, specs: &[String], plan: &Plan<'_
             failed |= store(git, &settings, &extra)?;
         }
     }
+    if let (Some(n), true, true) = (name, cmdline.is_empty(), !o.dry_run) {
+        follow_remote_head(git, n, &configured, &remote_refs, o.verbosity)?;
+    }
     Ok(failed)
+}
+
+/// `remote.<name>.followRemoteHEAD`: keeps `refs/remotes/<name>/HEAD` pointing where the remote's `HEAD` does.
+fn follow_remote_head(
+    git: &GitHome,
+    name: &str,
+    configured: &[Refspec],
+    remote_refs: &[RemoteRef],
+    verbosity: i32,
+) -> Result<()> {
+    let mode = git
+        .config()
+        .get(&format!("remote.{name}.followremotehead"))
+        .unwrap_or("create")
+        .to_ascii_lowercase();
+    let Some(branch) = remote_refs
+        .iter()
+        .find(|r| r.name == "HEAD" && r.id.is_some())
+        .and_then(|r| r.symref_target.as_deref())
+    else {
+        return Ok(());
+    };
+    let prefix = format!("refs/remotes/{name}/");
+    let refs = git.repo.refs();
+    let Some(tracking) = map_ref(configured, branch)
+        .filter(|t| t.starts_with(&prefix) && refs.resolve(t).ok().flatten().is_some())
+    else {
+        return Ok(());
+    };
+    let head = format!("{prefix}HEAD");
+    let current = match refs.read(&head)? {
+        Some(Ref::Symbolic(t)) => Some(t),
+        Some(Ref::Direct(_)) => Some(String::new()),
+        None => None,
+    };
+    let short = branch.strip_prefix("refs/heads/").unwrap_or(branch);
+    let write = match (mode.as_str(), &current) {
+        ("never", _) => false,
+        (_, None) => true,
+        ("always", Some(c)) => *c != tracking,
+        (m, Some(c)) if *c != tracking && m.starts_with("warn") => {
+            let quiet = m.strip_prefix("warn-if-not-").is_some_and(|b| b == short);
+            if verbosity >= 0 && !quiet {
+                eprintln!(
+                    "warning: the HEAD of '{name}' is now '{short}' but {head} still points at '{}'; it is not updated",
+                    c.strip_prefix(&prefix).unwrap_or(c)
+                );
+            }
+            false
+        }
+        _ => false,
+    };
+    if write {
+        refs.set_symbolic(&head, &tracking)?;
+    }
+    Ok(())
 }
 
 /// The remote names in a `remotes.<group>` setting.

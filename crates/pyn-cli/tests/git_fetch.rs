@@ -247,8 +247,17 @@ fn summary(stderr: &str) -> Vec<String> {
         .collect()
 }
 
+/// Git before 2.48 does not create `refs/remotes/<remote>/HEAD`; the twins ignore it and its reflog.
+fn is_remote_head(name: &str) -> bool {
+    name.starts_with("refs/remotes/") && name.ends_with("/HEAD")
+}
+
 fn state(dir: &Path) -> String {
-    let refs = run(dir, &["for-each-ref", "--format=%(refname) %(objectname)"]);
+    let refs: String = run(dir, &["for-each-ref", "--format=%(refname) %(objectname)"])
+        .lines()
+        .filter(|l| !is_remote_head(l.split(' ').next().unwrap()))
+        .map(|l| format!("{l}\n"))
+        .collect();
     let fetch_head = fs::read_to_string(dir.join(".git/FETCH_HEAD"))
         .map(|t| {
             t.lines()
@@ -263,7 +272,9 @@ fn state(dir: &Path) -> String {
                 .join("\n")
         })
         .unwrap_or_else(|_| "<none>".into());
-    format!("{refs}--\n{fetch_head}\n--\n{:?}", reflogs(dir))
+    let mut logs = reflogs(dir);
+    logs.retain(|k, _| !is_remote_head(k));
+    format!("{refs}--\n{fetch_head}\n--\n{logs:?}")
 }
 
 fn reflogs(dir: &Path) -> BTreeMap<String, Vec<String>> {
@@ -793,4 +804,89 @@ fn a_ref_that_cannot_be_stored_fails_the_fetch_but_not_the_rest() {
     );
     assert!(run(&t.pyn, &["branch", "-r"]).contains("origin/aaa"));
     t.step(&["--prune"]);
+}
+
+fn remote_head(t: &Twin) -> Option<String> {
+    let out = git(&t.pyn)
+        .args(["symbolic-ref", "-q", "refs/remotes/origin/HEAD"])
+        .output()
+        .unwrap();
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_owned())
+}
+
+#[test]
+fn follow_remote_head_creates_and_keeps_the_remote_head() {
+    for (format, via) in [("sha1", Via::Ssh), ("sha256", Via::Http)] {
+        let t = Twin::new(format, via);
+        let p = t.pyn_cmd(&t.pyn, &["fetch", "--dry-run"]);
+        assert_eq!(p.code, 0);
+        assert_eq!(remote_head(&t), None, "dry run");
+        let p = t.pyn_cmd(&t.pyn, &["fetch", "origin", "main"]);
+        assert_eq!(p.code, 0, "{}", p.stderr);
+        assert_eq!(remote_head(&t), None, "command-line refspec");
+        let p = t.pyn_cmd(&t.pyn, &["fetch"]);
+        assert_eq!(p.code, 0, "{}", p.stderr);
+        assert_eq!(remote_head(&t).as_deref(), Some("refs/remotes/origin/main"));
+        assert!(!t.pyn.join(".git/logs/refs/remotes/origin/HEAD").exists());
+
+        run(
+            &t.pyn,
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/feature",
+            ],
+        );
+        let p = t.pyn_cmd(&t.pyn, &["fetch"]);
+        assert_eq!((p.code, p.stderr.as_str()), (0, ""));
+        assert_eq!(
+            remote_head(&t).as_deref(),
+            Some("refs/remotes/origin/feature"),
+            "create never updates"
+        );
+
+        t.configure("remote.origin.followRemoteHEAD", "warn");
+        let p = t.pyn_cmd(&t.pyn, &["fetch"]);
+        assert_eq!(p.code, 0);
+        assert!(p.stderr.contains("warning:"), "{}", p.stderr);
+        assert_eq!(
+            remote_head(&t).as_deref(),
+            Some("refs/remotes/origin/feature")
+        );
+        t.configure("remote.origin.followRemoteHEAD", "warn-if-not-main");
+        assert!(!t.pyn_cmd(&t.pyn, &["fetch"]).stderr.contains("warning:"));
+        t.configure("remote.origin.followRemoteHEAD", "warn-if-not-feature");
+        assert!(t.pyn_cmd(&t.pyn, &["fetch"]).stderr.contains("warning:"));
+        t.configure("remote.origin.followRemoteHEAD", "never");
+        t.pyn_cmd(&t.pyn, &["fetch"]);
+        assert_eq!(
+            remote_head(&t).as_deref(),
+            Some("refs/remotes/origin/feature")
+        );
+        t.configure("remote.origin.followRemoteHEAD", "always");
+        t.pyn_cmd(&t.pyn, &["fetch"]);
+        assert_eq!(remote_head(&t).as_deref(), Some("refs/remotes/origin/main"));
+    }
+}
+
+#[test]
+fn follow_remote_head_needs_a_symbolic_remote_head() {
+    let t = Twin::new("sha1", Via::Ssh);
+    run(&t.bare, &["symbolic-ref", "HEAD", "refs/heads/unborn"]);
+    assert_eq!(t.pyn_cmd(&t.pyn, &["fetch"]).code, 0);
+    assert_eq!(remote_head(&t), None, "unborn");
+    let main = run(&t.bare, &["rev-parse", "main"]);
+    run(&t.bare, &["update-ref", "--no-deref", "HEAD", main.trim()]);
+    assert_eq!(t.pyn_cmd(&t.pyn, &["fetch"]).code, 0);
+    assert_eq!(remote_head(&t), None, "detached");
+}
+
+#[test]
+fn remote_add_f_creates_the_remote_head() {
+    let t = Twin::build("sha256", Via::Ssh, false);
+    let p = t.pyn_cmd(&t.pyn, &["remote", "add", "-f", "origin", &t.url]);
+    assert_eq!(p.code, 0, "{}", p.stderr);
+    assert_eq!(remote_head(&t).as_deref(), Some("refs/remotes/origin/main"));
 }
