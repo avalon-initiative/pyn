@@ -2,13 +2,12 @@
 //!
 //! [`pkt`] and [`sideband`] are the framing, [`caps`] parses advertisements and negotiates the object
 //! format, [`UploadPack`] fetches (protocol v2, with a v0/v1 fallback) and [`ReceivePack`] pushes
-//! (v0/v1 `receive-pack`). Connections come from a [`Transport`]; [`process`] has one that runs a local
-//! `git` for tests. Shallow clones, push options, `wait-for-done` and v0 multi-round negotiation are not built.
+//! (v0/v1 `receive-pack`). Connections come from a [`Transport`]; the SSH and HTTP ones live in `pyn-gittransport`.
+//! Shallow clones, push options, `wait-for-done` and v0 multi-round negotiation are not built.
 
 pub mod caps;
 mod error;
 pub mod pkt;
-pub mod process;
 mod receive;
 pub mod sideband;
 mod transport;

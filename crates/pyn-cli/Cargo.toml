@@ -19,7 +19,9 @@ hex = "0.4.3"
 pyn-chunk = { version = "0.0.1", path = "../pyn-chunk" }
 pyn-diff = { version = "0.0.1", path = "../pyn-diff" }
 pyn-git = { version = "0.0.1", path = "../pyn-git" }
+pyn-gittransport = { version = "0.0.1", path = "../pyn-gittransport" }
 pyn-gitwork = { version = "0.0.1", path = "../pyn-gitwork" }
+pyn-gitwire = { version = "0.0.1", path = "../pyn-gitwire" }
 pyn-hash = { version = "0.0.1", path = "../pyn-hash" }
 pyn-merge = { version = "0.0.1", path = "../pyn-merge" }
 pyn-object = { version = "0.0.1", path = "../pyn-object" }
@@ -38,4 +40,4 @@ axum = "0.8.9"
 pyn-core = { path = "../pyn-core", features = ["test-support"] }
 pyn-server = { path = "../pyn-server" }
 tempfile = "3.27.0"
-tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros", "net"] }
+tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros", "net", "sync"] }

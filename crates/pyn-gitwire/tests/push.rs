@@ -1,7 +1,6 @@
 mod common;
 
 use common::*;
-use pyn_gitwire::process::{LocalGit, Shape};
 use pyn_gitwire::{
     Error, ProtocolVersion, PushOptions, PushReport, ReceivePack, RefResult, RefStatus, RefUpdate,
     Transport,

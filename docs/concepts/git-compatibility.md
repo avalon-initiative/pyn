@@ -25,8 +25,9 @@ Divergence rules:
 6. **pyn-owned commands are listed as pyn only** and are never given a git name: `lock`, `unlock`, `locks`, `policy`,
    `audit`, and the account, organization, team and server administration commands.
 7. **Commits are git commits** (decision #245): identified by their git commit id (SHA-256 on a pyn server), shown
-   abbreviated, and named by hash, `HEAD`, `~N` and `^`; there are no `cN` numbers. Git's wire protocol is still not
-   implemented here, and there is no dependency on git (decision #30). A git import and export bridge may come later.
+   abbreviated, and named by hash, `HEAD`, `~N` and `^`; there are no `cN` numbers. Git's wire protocol is spoken in process
+   (see [Transports and credentials](#transports-and-credentials)), and there is no dependency on git (decision #30): git does not
+   need to be installed. A git import and export bridge may come later.
 8. **Listings are aligned tables** with the path or variable column last, not git's free-form blocks. This is a
    repository-wide difference: it keeps columns such as mode, lock and revision readable.
 
@@ -135,6 +136,7 @@ history across branches (decision #28).
 | Git | pyn | Status | Notes |
 | --- | --- | --- | --- |
 | `git remote [-v]`, `add`, `remove`, `rename`, `set-url`, `get-url` | `pyn remote ...` | git home: supported | Configuration only, no network. Output, exit statuses and the resulting `.git/config`, refs and reflogs match git. See [Remotes on a git home](#remotes-on-a-git-home). On a pyn server: `remote` and `remote -v` only, see the table above. |
+| `git ls-remote [--heads] [--tags] [--refs] [--symref] [--exit-code] [<repository> [<pattern>...]]` | `pyn ls-remote ...` | same | Works on a git home and anywhere with a URL. Output is git's: `<id>`, a tab and the name, with `<tag>^{}` for a peeled tag and `ref: <target>`, a tab and `HEAD` for `--symref`. `<repository>` is a remote name (default `origin`, which prints `From <url>` on standard error as git does) or a URL; see [Transports and credentials](#transports-and-credentials). `--get-url`, `--sort`, `-o`, `-q` and `--upload-pack` are usage errors (`129`). |
 | `git remote show`, `add -f`, `prune`, `update`, `set-head`, `set-branches` | none | `show` and `add -f` need the transport (#305); the rest unsupported | `show` and `add -f` exit `1` and name #305 and change nothing; the others are usage errors (`129`). |
 | `git fetch [<remote>]` | none (`pyn update`) | planned | #237. |
 | `git pull [<remote> <branch>]` | none (`pyn update`) | planned | #237. |
@@ -160,6 +162,95 @@ Editing keeps every other line of `.git/config`, with its comments and order, an
 Differences from git: `<old>` and the `--delete` argument match as plain substrings, not regular expressions; `url.<base>.insteadOf` is not applied
 to the URLs shown; legacy `.git/remotes/` and `.git/branches/` files are not read; `remove` deletes the refs under
 `refs/remotes/<name>/` rather than those the fetch refspecs map.
+
+## Transports and credentials
+
+Decisions #245 and #255. pyn reaches a git remote without git: the protocol, the pack handling and the credential flow are
+implemented in `pyn-gittransport`, `pyn-gitwire` and `pyn-git`. **git does not need to be installed.** pyn never starts a `git`
+program; `make boundary-check` fails when non-test source under `crates/` spawns one. The programs pyn can start are the system
+`ssh` client, and the credential helpers and askpass programs your own configuration names.
+
+Today `pyn ls-remote` uses them; `fetch`, `pull`, `push`, `clone <git url>` and `remote add -f` arrive on top of the same
+connections (epic #301). The library functions `fetch_objects` and `push_objects` (thin packs and offset deltas on fetch, a
+streamed pack file on push) are what those commands will call.
+
+### URLs
+
+| Form | Transport |
+| --- | --- |
+| `https://host/path`, `http://host/path` | Smart HTTP |
+| `ssh://[user@]host[:port]/path`, `git+ssh://...`, `ssh+git://...` | System `ssh` |
+| `[user@]host:path` (scp-like; `[::1]:path` for IPv6) | System `ssh` |
+| `/path`, `./path`, `file:///path` | Not supported: `local-path remotes are not supported yet` (serving a local repository needs git itself) |
+| `git://host/path` | Not supported: unauthenticated and unencrypted |
+
+`url.<base>.insteadOf` and `pushInsteadOf` (longest matching prefix wins; `pushInsteadOf` first when pushing) are applied when
+connecting, so `remote -v` still shows what is configured. A password or token in a URL is never printed: messages show the URL
+without its user information, and error text from the network layer is redacted the same way.
+
+### ssh
+
+pyn runs `ssh` and, on the remote, `git-upload-pack '<path>'` or `git-receive-pack '<path>'` (the remote needs git installed,
+as it always does to serve git over ssh). The path is quoted for the remote shell. Your `ssh` does the rest: keys, agent,
+`known_hosts`, `~/.ssh/config`, jump hosts and prompts, which appear on your terminal.
+
+- The client is `GIT_SSH_COMMAND` (a shell command line), else `core.sshCommand`, else `GIT_SSH` (a program), else `ssh`.
+  A missing client is reported with what to install or set.
+- `GIT_SSH_VARIANT` or `ssh.variant` (`ssh`, `simple`, `plink`, `putty`, `tortoiseplink`) says how the client takes a port and
+  options; otherwise the name of the program decides, and an unrecognized program is treated as OpenSSH. `ssh` gets `-p <port>`
+  and `-o SendEnv=GIT_PROTOCOL`, `plink` and `putty` get `-P <port>`, `simple` gets neither and refuses a port. A host or user
+  that starts with `-` is refused.
+- Protocol version 2 is requested through `GIT_PROTOCOL=version=2`. A server that does not accept it answers in version 0 and
+  pyn carries on; pushes use version 0.
+- Exit status `255` is reported as a connection or sign-in failure, `127` as a missing `git-upload-pack` on the remote, and
+  any other status as the remote command failing; ssh's own messages come first on standard error.
+
+### Smart HTTP
+
+`GET <url>/info/refs?service=git-upload-pack` (`git-receive-pack` to push) and then one `POST` per request, with git's content
+types. The `# service=` line is checked. Dumb HTTP (an `info/refs` that is not a smart advertisement) is not supported and says so.
+
+- Redirects: only the first request follows them (`http.followRedirects`: `initial`, the default, `true` or `false`), the
+  repository URL is rebased onto the final location, and a redirect from https to http is refused. Credentials are sent only to
+  the host (scheme, name and port) they were found for, never to a host a redirect leads to; `http.extraHeader` is likewise
+  sent to the configured host only.
+- Request bodies up to 1 MiB are sent whole (fetch requests above 1 KiB are gzipped, as git does); a larger push streams as a
+  chunked upload and cannot be retried after a `401`, so the credentials must already be accepted (the `info/refs` request of a push
+  normally settles that).
+- Settings read: `http.extraHeader`, `http.proxy` (and the usual proxy environment variables; an empty value turns proxies off),
+  `http.sslVerify` and `GIT_SSL_NO_VERIFY`, `http.sslCAInfo` and `GIT_SSL_CAINFO`, `http.followRedirects`, each also scoped as
+  `http.<url>.<key>`. Not read: client certificates, `http.cookieFile`, `http.lowSpeedLimit`, `http.version`.
+- Only HTTP Basic authentication is supported; a server that asks for Digest, Negotiate or NTLM gets a message naming it.
+- `User-Agent` is `git/2.0 (pyn/<version>)`. The `git/` prefix is what hosts that gate smart HTTP on a git client look for; GitHub
+  accepts any agent, others differ.
+
+### Credentials
+
+The flow is git's, run in process, for HTTP remotes (ssh authenticates itself). On a `401` pyn takes the first source that has
+something new, and tries up to three prompts:
+
+1. Credentials in the URL: `https://user:password@host/...`, including `https://x-access-token:<token>@host/...`.
+2. `credential.helper` entries, repository config over global, with `credential.<url>.helper` sections that match the remote
+   (an empty value forgets the helpers before it), asked with `get`. `credential.username` and `credential.useHttpPath` are honoured.
+3. A URL with only a user name, `https://<token>@host/...`, is sent as that user with an empty password, which is how hosts
+   such as GitHub take a token.
+4. An askpass program (`GIT_ASKPASS`, `core.askPass`, `SSH_ASKPASS`, in that order), else a prompt on the terminal. Terminal
+   prompts need a terminal on standard input and are off when `GIT_TERMINAL_PROMPT=0`; with neither, pyn fails with
+   `terminal prompts disabled` rather than waiting.
+
+A credential that the server accepts is passed to every helper with `store` (except one that came from the URL, which pyn never
+copies into a helper); one that it refuses is passed with `erase`. A password is never logged, printed or sent to another host.
+
+| Helper | Behaviour |
+| --- | --- |
+| `store [--file <path>]` | In process. Reads `~/.git-credentials` then `$XDG_CONFIG_HOME/git/credentials` (or only `<path>`), one URL per line with percent-encoded user and password, as git's `store` does; writes the first file that exists (else `~/.git-credentials`) with mode `0600`. |
+| `cache` | There is no daemon in process; `git-credential-cache` is used through the helper protocol when it is on `PATH` and skipped otherwise. |
+| `!<command>` | Run through `sh` with `get`, `store` or `erase` appended. |
+| `/absolute/path [args]` | Run through `sh` the same way. |
+| any other name, such as `osxkeychain` or `manager` | The program `git-credential-<name>` through the helper protocol (`key=value` lines ended by a blank line on standard input; `get` replies on standard output), when it is on `PATH`. A helper that is not installed is skipped silently; one that fails is ignored, as git does. |
+
+Differences from git: no `credential.<url>.*` keys other than `helper`, `username` and `useHttpPath`; no `credential.interactive`,
+`credentialCache`, partial `capability` negotiation or `authtype`; no `include` directives in config files.
 
 ## pyn only
 
@@ -434,7 +525,7 @@ set to true, `core.eol=crlf` with a `text` attribute, `eol=crlf`, a `filter` oth
 symlinks and submodules are never converted). A Git LFS filter writes the pointer file as it is, with a warning (decision #245).
 The same limit applies to `status`, which compares raw bytes (#273). Hooks are never run; one warning names the hooks that exist
 for the command (`post-checkout`, `pre-merge-commit`, `commit-msg` and the like). Sparse checkouts, submodule updates, the split
-index and `GIT_DIR` are not supported, and `rebase`, `cherry-pick`, `revert`, `--squash` and anything that talks to a remote are not built (the transport, #255).
+index and `GIT_DIR` are not supported, and `rebase`, `cherry-pick`, `revert`, `--squash` and anything that talks to a remote other than `ls-remote` are not built yet (`fetch`, `pull`, `push` and `clone`, epic #301; see [Transports and credentials](#transports-and-credentials)).
 
 ### Refused commands
 
@@ -459,14 +550,16 @@ holds for `user add`, `whoami` (it prints the account when no repository is give
 Commands a git home will gain fail with exit `1`, as the other git-only commands do, and name the issue:
 
 | Command | Needs |
-| --- | --- || `fetch`, `pull`, `push`, `update` | Git transport, #255. |
+| --- | --- |
+| `fetch`, `pull`, `push`, `update` | Git transport, #255. |
 | `get` | Per-path revisions, which git has no equivalent of; not scheduled. |
 
 `pyn convert` fails with `pyn: 'convert' is not available yet` and names #95.
 
 ### Packs (library, provisional)
 
-`pyn-git` holds the pack plumbing the git transport (#255) will use; no command calls it yet.
+`pyn-git` holds the pack plumbing the git transport uses (see [Transports and credentials](#transports-and-credentials));
+`pyn-gittransport` calls it, and no command other than the tests exercises fetch or push yet.
 
 - **Ingest.** `index_pack` reads a pack from any stream, checks the header, every entry's zlib data, the object count and the
   trailing checksum, resolves offset and reference deltas, and computes each object id with git's rules (SHA-1 with collision

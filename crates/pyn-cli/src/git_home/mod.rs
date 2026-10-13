@@ -116,6 +116,15 @@ fn path_string(path: &[u8]) -> String {
 }
 
 impl GitHome {
+    /// The git configuration a transport reads: the repository's, over the user's.
+    pub fn config(&self) -> &pyn_git::Config {
+        self.repo.config()
+    }
+
+    pub fn algorithm(&self) -> pyn_object::Algorithm {
+        self.repo.algorithm()
+    }
+
     fn api_commit(&self, id: &ObjectId) -> Result<api::Commit> {
         let c = self.repo.commit(id)?;
         let signature = c.gpgsig().map(|s| String::from_utf8_lossy(s).into_owned());

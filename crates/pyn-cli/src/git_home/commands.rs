@@ -149,7 +149,8 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
         | Command::Usage { .. }
         | Command::Token(_)
         | Command::Member(_)
-        | Command::Role(_) => unreachable!("run from anywhere, not through a git home"),
+        | Command::Role(_)
+        | Command::LsRemote(_) => unreachable!("run from anywhere, not through a git home"),
         Command::Clone { .. } | Command::Config(_) | Command::External(_) => {
             unreachable!("handled before a git home is consulted")
         }

@@ -28,6 +28,14 @@ pub enum Error {
     Remote(String),
     #[error("server uses object format {server} but the repository uses {local}", server = server.name(), local = local.name())]
     ObjectFormatMismatch { server: Algorithm, local: Algorithm },
+    /// The connection failed: ssh exited abnormally, the HTTP request failed, the host was unreachable.
+    #[error("{0}")]
+    Connection(String),
+    /// The server refused the credentials, or none could be found.
+    #[error("{0}")]
+    Auth(String),
+    #[error("{0}")]
+    NotFound(String),
     #[error("server does not support {0}")]
     Unsupported(String),
     #[error("invalid request: {0}")]

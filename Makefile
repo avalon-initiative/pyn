@@ -25,7 +25,7 @@ help:
 	@echo "  make fmt           auto-format"
 	@echo "  make fmt-check     format check, no writes"
 	@echo "  make lint          clippy + docs link check + public-boundary check"
-	@echo "  make boundary-check  fail on private references or secrets in tracked files"
+	@echo "  make boundary-check  fail on private references, secrets, or a git spawn in runtime source"
 	@echo "  make openapi       regenerate docs/generated/openapi.json"
 	@echo "  make check         fmt-check + lint + test — what CI runs"
 	@echo "  make clean         remove build artifacts and PID/log files"

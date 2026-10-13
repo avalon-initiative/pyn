@@ -17,6 +17,7 @@ mod diff;
 mod git_home;
 mod limits;
 mod localfile;
+mod ls_remote;
 mod merging;
 mod pyn_server;
 mod snapshot;
@@ -118,6 +119,8 @@ enum Command {
     Stash(git_home::StashArgs),
     /// List and edit remotes; a pyn server has one, `origin`, set by `pyn config`.
     Remote(git_home::RemoteArgs),
+    /// List the references in a remote git repository (ssh or smart HTTP; works anywhere).
+    LsRemote(ls_remote::LsRemoteArgs),
     /// Show what differs between this workspace and the server.
     Status {
         /// Compare with the repository as of this commit (`HEAD~N`, a commit hash) instead of the newest.
@@ -797,6 +800,7 @@ fn runs_anywhere(command: &Command) -> bool {
             | Command::Member(_)
             | Command::Role(_)
             | Command::Invite(_)
+            | Command::LsRemote(_)
     )
 }
 
@@ -807,6 +811,9 @@ fn run(cli: Cli) -> Result<()> {
     } else {
         git_home::detect(&cwd)?
     };
+    if let Command::LsRemote(args) = &cli.command {
+        return ls_remote::run(args, git.as_ref());
+    }
     if let Command::Commit { message, .. } = &cli.command
         && message.is_empty()
         && git.is_none()
@@ -909,6 +916,7 @@ fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Command::External(_) => unreachable!("handled before run"),
         Command::Init => unreachable!("handled before the server is consulted"),
+        Command::LsRemote(_) => unreachable!("handled before the server is consulted"),
         Command::Login {
             username,
             password_stdin,

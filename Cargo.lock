@@ -1796,6 +1796,8 @@ dependencies = [
  "pyn-core",
  "pyn-diff",
  "pyn-git",
+ "pyn-gittransport",
+ "pyn-gitwire",
  "pyn-gitwork",
  "pyn-hash",
  "pyn-merge",
@@ -1868,6 +1870,22 @@ dependencies = [
  "sha2 0.11.0",
  "tempfile",
  "thiserror",
+]
+
+[[package]]
+name = "pyn-gittransport"
+version = "0.0.1"
+dependencies = [
+ "axum",
+ "flate2",
+ "pyn-git",
+ "pyn-gitwire",
+ "pyn-object",
+ "reqwest",
+ "rpassword",
+ "tempfile",
+ "thiserror",
+ "tokio",
 ]
 
 [[package]]

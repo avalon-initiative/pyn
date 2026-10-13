@@ -4,7 +4,9 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use pyn_gitwire::process::{LocalGit, Shape};
+mod process;
+
+pub use process::{LocalGit, Shape};
 use pyn_gitwire::{ProtocolVersion, Transport};
 use pyn_object::{Algorithm, ObjectId};
 use tempfile::TempDir;

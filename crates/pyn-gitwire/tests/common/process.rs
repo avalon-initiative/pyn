@@ -1,15 +1,13 @@
-//! A transport that runs `git upload-pack` / `git receive-pack` on a local repository, in both
+//! A test transport that runs `git upload-pack` / `git receive-pack` on a local repository, in both
 //! shapes: one duplex pipe, or stateless-rpc (one process per request, as smart HTTP does).
-//! It needs the `git` binary and exists to exercise the client; real connections live elsewhere.
 
 use std::ffi::OsString;
 use std::io::{self, Cursor, Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
-use crate::caps::ProtocolVersion;
-use crate::error::{Error, Result};
-use crate::transport::{Service, Session, Transport};
+use pyn_gitwire::ProtocolVersion;
+use pyn_gitwire::{Error, Result, Service, Session, Transport};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shape {

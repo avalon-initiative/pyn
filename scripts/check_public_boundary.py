@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail when the public tree references private code or packages, or carries secrets (decision #140)."""
+"""Fail when the public tree references private code or packages, carries secrets (decision #140), or spawns git at runtime."""
 import pathlib
 import re
 import subprocess
@@ -12,6 +12,8 @@ PRIVATE_NAME = re.compile(r"pyn-cloud", re.I)
 CARGO_EXTERNAL = re.compile(r"\b(git|registry|registry-index)\s*=\s*\"")
 CARGO_PATH = re.compile(r'path\s*=\s*"([^"]+)"')
 LOCK_SOURCE = re.compile(r'^source = "(?!registry\+https://github\.com/rust-lang/crates\.io-index)(.+)"', re.M)
+GIT_SPAWN = re.compile(r'(Command::new|\.command)\(\s*"git(-[\w-]+)?"')
+RUNTIME_SOURCE = re.compile(r"crates/[^/]+/(src/.+\.rs|build\.rs)$")
 SECRET_NAME = re.compile(r"(^|/)(\.env(\..*)?|\.npmrc|\.netrc|id_(rsa|dsa|ecdsa|ed25519)|.*\.(pem|p12|pfx|key))$")
 SECRET_ALLOWED = {".env.example"}
 SECRET_CONTENT = [
@@ -62,6 +64,8 @@ for name in files:
         problems.append(f"{name}: git dependency")
     if name != SELF and not name.endswith(".md") and PRIVATE_NAME.search(text):
         problems.append(f"{name}: references private code")
+    if RUNTIME_SOURCE.match(name) and GIT_SPAWN.search(text):
+        problems.append(f"{name}: spawns git; pyn never needs git installed (tests live under tests/)")
     for pat in SECRET_CONTENT:
         if pat.search(text):
             problems.append(f"{name}: secret-like content ({pat.pattern})")
