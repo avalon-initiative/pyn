@@ -29,6 +29,7 @@ struct Pair {
 
 fn git_cmd(home: &Path, cwd: &Path, args: &[&str]) -> Output {
     Command::new("git")
+        .args(["-c", "gc.auto=0", "-c", "maintenance.auto=false"])
         .args(args)
         .current_dir(cwd)
         .env("HOME", home)
