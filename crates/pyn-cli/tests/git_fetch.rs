@@ -204,12 +204,14 @@ fn out_of(o: std::process::Output) -> Out {
 }
 
 /// The summary lines by meaning: code, summary text, names and reason, and the kind of every other line.
+/// `error:` lines are dropped: their count and position vary by git version, and the exit status is compared.
 fn summary(stderr: &str) -> Vec<String> {
     let mut lines: Vec<&str> = stderr
         .lines()
         .filter(|l| !l.starts_with("POST ") && !l.starts_with("GET "))
         .filter(|l| *l != "fatal: the remote end hung up unexpectedly")
         .filter(|l| !l.starts_with(" '") && !l.starts_with("Fetching "))
+        .filter(|l| !l.starts_with("error:"))
         .collect();
     let mut seen = std::collections::HashSet::new();
     lines.retain(|l| seen.insert(*l));
