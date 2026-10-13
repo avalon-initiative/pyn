@@ -21,7 +21,7 @@ pub enum EntryKind {
     RefDelta,
 }
 
-enum Raw {
+pub(crate) enum Raw {
     Base(Kind),
     Ofs(u64),
     Ref(ObjectId),
@@ -38,9 +38,9 @@ pub struct Pack {
     pack_len: u64,
 }
 
-struct PosReader<'a> {
-    file: &'a File,
-    pos: u64,
+pub(crate) struct PosReader<'a> {
+    pub(crate) file: &'a File,
+    pub(crate) pos: u64,
 }
 
 impl Read for PosReader<'_> {
@@ -286,53 +286,12 @@ impl Pack {
                 pos: offset,
             },
         );
-        let truncated = |_| corrupt("pack", "truncated entry");
-        let mut byte = [0u8; 1];
-        r.read_exact(&mut byte).map_err(truncated)?;
-        let type_bits = (byte[0] >> 4) & 7;
-        let mut size = u64::from(byte[0] & 0x0f);
-        let mut shift = 4;
-        let mut b = byte[0];
-        while b & 0x80 != 0 {
-            r.read_exact(&mut byte).map_err(truncated)?;
-            b = byte[0];
-            if shift > 57 {
-                return Err(corrupt("pack", "entry size overflow"));
-            }
-            size |= u64::from(b & 0x7f) << shift;
-            shift += 7;
-        }
-        let raw = match type_bits {
-            1 => Raw::Base(Kind::Commit),
-            2 => Raw::Base(Kind::Tree),
-            3 => Raw::Base(Kind::Blob),
-            4 => Raw::Base(Kind::Tag),
-            6 => {
-                r.read_exact(&mut byte).map_err(truncated)?;
-                let mut c = byte[0];
-                let mut back = u64::from(c & 0x7f);
-                while c & 0x80 != 0 {
-                    r.read_exact(&mut byte).map_err(truncated)?;
-                    c = byte[0];
-                    back = back
-                        .checked_add(1)
-                        .and_then(|v| v.checked_mul(128))
-                        .ok_or_else(|| corrupt("pack", "offset overflow"))?
-                        + u64::from(c & 0x7f);
-                }
-                Raw::Ofs(
-                    offset
-                        .checked_sub(back)
-                        .ok_or_else(|| corrupt("pack", "delta base before the pack"))?,
-                )
-            }
-            7 => {
-                let mut raw_id = vec![0u8; self.hl()];
-                r.read_exact(&mut raw_id).map_err(truncated)?;
-                Raw::Ref(ObjectId::from_bytes(self.algorithm, &raw_id)?)
-            }
-            t => return Err(corrupt("pack", format!("unknown entry type {t}"))),
-        };
+        let (raw, size) =
+            read_entry_header(&mut r, offset, self.algorithm).map_err(|e| match e {
+                Error::Truncated(_) => corrupt("pack", "truncated entry"),
+                Error::Read(e) => corrupt("pack", format!("truncated entry: {e}")),
+                e => e,
+            })?;
         let mut data = Vec::with_capacity(size.min(64 << 20) as usize);
         ZlibDecoder::new(&mut r)
             .take(size + 1)
@@ -388,6 +347,69 @@ impl Pack {
         }
         Ok(())
     }
+}
+
+/// Parses the type, size and delta base of the entry that starts at `offset` in a pack.
+pub(crate) fn read_entry_header<R: Read>(
+    r: &mut R,
+    offset: u64,
+    algorithm: Algorithm,
+) -> Result<(Raw, u64)> {
+    let io = |e: std::io::Error| {
+        if e.kind() == std::io::ErrorKind::UnexpectedEof {
+            Error::Truncated("pack entry")
+        } else {
+            Error::Read(e)
+        }
+    };
+    let mut byte = [0u8; 1];
+    r.read_exact(&mut byte).map_err(io)?;
+    let type_bits = (byte[0] >> 4) & 7;
+    let mut size = u64::from(byte[0] & 0x0f);
+    let mut shift = 4;
+    let mut b = byte[0];
+    while b & 0x80 != 0 {
+        r.read_exact(&mut byte).map_err(io)?;
+        b = byte[0];
+        if shift > 57 {
+            return Err(corrupt("pack", "entry size overflow"));
+        }
+        size |= u64::from(b & 0x7f) << shift;
+        shift += 7;
+    }
+    let raw = match type_bits {
+        1 => Raw::Base(Kind::Commit),
+        2 => Raw::Base(Kind::Tree),
+        3 => Raw::Base(Kind::Blob),
+        4 => Raw::Base(Kind::Tag),
+        6 => {
+            r.read_exact(&mut byte).map_err(io)?;
+            let mut c = byte[0];
+            let mut back = u64::from(c & 0x7f);
+            while c & 0x80 != 0 {
+                r.read_exact(&mut byte).map_err(io)?;
+                c = byte[0];
+                back = back
+                    .checked_add(1)
+                    .and_then(|v| v.checked_mul(128))
+                    .ok_or_else(|| corrupt("pack", "offset overflow"))?
+                    + u64::from(c & 0x7f);
+            }
+            Raw::Ofs(
+                offset
+                    .checked_sub(back)
+                    .filter(|b| *b < offset)
+                    .ok_or_else(|| corrupt("pack", "delta base before the pack"))?,
+            )
+        }
+        7 => {
+            let mut raw_id = vec![0u8; algorithm.digest_len()];
+            r.read_exact(&mut raw_id).map_err(io)?;
+            Raw::Ref(ObjectId::from_bytes(algorithm, &raw_id)?)
+        }
+        t => return Err(corrupt("pack", format!("unknown entry type {t}"))),
+    };
+    Ok((raw, size))
 }
 
 fn be32(b: &[u8]) -> u32 {

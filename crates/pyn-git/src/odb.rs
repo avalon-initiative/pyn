@@ -72,7 +72,7 @@ impl ObjectDb {
     }
 
     /// Picks up packs created since the last scan; returns whether any were added.
-    fn rescan_packs(&self) -> Result<bool> {
+    pub(crate) fn rescan_packs(&self) -> Result<bool> {
         let pack_dir = self.dir.join("pack");
         let Ok(rd) = fs::read_dir(&pack_dir) else {
             return Ok(false);

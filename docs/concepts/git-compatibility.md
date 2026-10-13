@@ -464,6 +464,22 @@ Commands a git home will gain fail with exit `1`, as the other git-only commands
 
 `pyn convert` fails with `pyn: 'convert' is not available yet` and names #95.
 
+### Packs (library, provisional)
+
+`pyn-git` holds the pack plumbing the git transport (#255) will use; no command calls it yet.
+
+- **Ingest.** `index_pack` reads a pack from any stream, checks the header, every entry's zlib data, the object count and the
+  trailing checksum, resolves offset and reference deltas, and computes each object id with git's rules (SHA-1 with collision
+  detection, or SHA-256). A thin pack is completed: bases found in the object database are appended to the stored pack, so the
+  result is self-contained. The pack and its version 2 index are written to `objects/pack` through temporary files and renames,
+  and nothing is left behind on error. Limits cover the object count, object size, delta chain depth and pack size.
+- **Write.** `write_pack` writes the given objects as an undeltified version 2 pack and can produce the matching index.
+  `PackWriter` takes one entry at a time; new storage forms, such as deltas, are added as entry variants.
+- **Walk.** `reachable_objects` lists what `want` needs that `have` does not already imply (tags, commits newest first, then
+  trees and blobs), as `git rev-list --objects --objects-edge-aggressive want ^have` does, with the boundary commits.
+  A `have` this repository does not hold is ignored; any other missing object is an error. `commits_newest_first` and
+  `existing` support negotiation.
+
 ## Open items
 
 - Unknown flags on supported commands are a usage error (`129`) from the argument parser, not a message that says the git

@@ -19,6 +19,13 @@ fn varint(data: &[u8], pos: &mut usize) -> Result<u64> {
     }
 }
 
+/// The base and result sizes a delta declares.
+pub(crate) fn sizes(delta: &[u8]) -> Result<(u64, u64)> {
+    let mut pos = 0;
+    let src = varint(delta, &mut pos)?;
+    Ok((src, varint(delta, &mut pos)?))
+}
+
 /// Applies a git delta (copy and insert instructions) to `base`.
 pub(crate) fn apply(base: &[u8], delta: &[u8]) -> Result<Vec<u8>> {
     let mut pos = 0;

@@ -21,6 +21,14 @@ pub enum Error {
     Corrupt { what: &'static str, detail: String },
     #[error("{what} checksum mismatch")]
     Checksum { what: &'static str },
+    #[error("{0} is truncated")]
+    Truncated(&'static str),
+    #[error("{what} exceeds the limit of {limit}")]
+    Limit { what: &'static str, limit: u64 },
+    #[error("reading input: {0}")]
+    Read(std::io::Error),
+    #[error("writing output: {0}")]
+    Write(std::io::Error),
     #[error("unsupported: {0}")]
     Unsupported(String),
     #[error("{0} has multiple values")]
