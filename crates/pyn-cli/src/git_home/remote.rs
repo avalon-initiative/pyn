@@ -25,7 +25,7 @@ pub struct RemoteArgs {
 enum RemoteCommand {
     /// Define a remote with one URL and the default fetch refspec.
     Add {
-        /// Fetch the remote after adding it; needs the git transport.
+        /// Fetch the remote after adding it.
         #[arg(short = 'f', long)]
         fetch: bool,
         name: String,
@@ -63,7 +63,7 @@ enum RemoteCommand {
         all: bool,
         name: String,
     },
-    /// Describe a remote; asking the remote needs the git transport.
+    /// Describe a remote (not built yet).
     Show {
         #[arg(short = 'n')]
         no_query: bool,
@@ -126,16 +126,17 @@ fn list(git: &GitHome, verbose: bool) {
 }
 
 fn add(git: &GitHome, fetch: bool, name: &str, url: &str) -> Result<()> {
-    if fetch {
-        return Err(Refused("`remote add -f` needs fetch (#306)".into()).into());
-    }
     if !is_valid_remote_name(name) {
         fail(128, format!("fatal: '{name}' is not a valid remote name"));
     }
     if remote_names(git.repo.config()).iter().any(|n| n == name) {
         fail(3, format!("error: remote {name} already exists."));
     }
-    edit(git, |file| add_remote(file, name, url))
+    edit(git, |file| add_remote(file, name, url))?;
+    if fetch {
+        super::fetch::after_add(git, name)?;
+    }
+    Ok(())
 }
 
 /// Every ref under `refs/remotes/<remote>/`, including a symbolic `HEAD` whose target is gone.
@@ -322,7 +323,10 @@ pub fn remote(git: &GitHome, args: RemoteArgs) -> Result<()> {
         }
         Some(RemoteCommand::Show { name, .. }) => {
             existing(git, &name);
-            Err(Refused("`remote show` needs fetch (#306)".into()).into())
+            Err(
+                Refused("`remote show` is not built yet; `pyn remote -v` lists the URLs".into())
+                    .into(),
+            )
         }
     }
 }

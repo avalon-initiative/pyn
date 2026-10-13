@@ -92,7 +92,8 @@ The commands named in decision #218.
 | `git restore -p`, `--ours`, `--theirs`, `--merge` | none | unsupported | Usage error (`129`). On a git home `pyn checkout --ours -- <path>` and `--theirs` take a side of an unmerged path. |
 | `git branch`, `git switch`, `git checkout` | `pyn branch`, `pyn switch`, `pyn checkout` | supported | See [branching and merging](#branching-and-merging). On a git home they work on `.git` as git does, see [Branches, switching and the work tree](#branches-switching-and-the-work-tree). |
 | `git merge` | `pyn merge` | supported | See [branching and merging](#branching-and-merging). On a git home it merges as git does, see [Merging](#merging). |
-| `git fetch`, `git pull`, `git push` | none | planned | Git-command message. Remotes and sync #237 under epic #205 (worked with #223). Today a commit goes straight to the server and `pyn update` brings the workspace forward. |
+| `git fetch` | `pyn fetch` on a git home | git home only | See [Fetch on a git home](#fetch-on-a-git-home). On a pyn server it prints the git-command message until #310. |
+| `git pull`, `git push` | none | planned | Git-command message. Remotes and sync #237 under epic #205 (worked with #223). Today a commit goes straight to the server and `pyn update` brings the workspace forward. |
 | `git remote` | `pyn remote` | git home; pyn server partly | On a git home it lists and edits the remotes in `.git/config`, see [Remotes](#remotes). On a pyn server `pyn remote` and `pyn remote -v` show the one remote, `origin`: the server and repository set by `--server` and `--repo` or `pyn config set server` and `repo`; the editing subcommands say so and exit `1`. |
 | `git tag [-a] [-m <msg>] [-f] [<name> [<commit>]]`, `-d`, `-l` | `pyn tag ...` on a git home | git home only | See [Tags](#tags). On a pyn server it prints the git-command message (a server's commits are named by hash and have no tags yet, #223). |
 | `git stash [push] [-u] [-m <msg>]`, `list`, `pop`, `apply`, `drop`, `clear` | `pyn stash ...` on a git home | git home only | See [Stashing](#stashing). On a pyn server it prints the git-command message. |
@@ -137,8 +138,9 @@ history across branches (decision #28).
 | --- | --- | --- | --- |
 | `git remote [-v]`, `add`, `remove`, `rename`, `set-url`, `get-url` | `pyn remote ...` | git home: supported | Configuration only, no network. Output, exit statuses and the resulting `.git/config`, refs and reflogs match git. See [Remotes on a git home](#remotes-on-a-git-home). On a pyn server: `remote` and `remote -v` only, see the table above. |
 | `git ls-remote [--heads] [--tags] [--refs] [--symref] [--exit-code] [<repository> [<pattern>...]]` | `pyn ls-remote ...` | same | Works on a git home and anywhere with a URL. Output is git's: `<id>`, a tab and the name, with `<tag>^{}` for a peeled tag and `ref: <target>`, a tab and `HEAD` for `--symref`. `<repository>` is a remote name (default `origin`, which prints `From <url>` on standard error as git does) or a URL; see [Transports and credentials](#transports-and-credentials). `--get-url`, `--sort`, `-o`, `-q` and `--upload-pack` are usage errors (`129`). |
-| `git remote show`, `add -f`, `prune`, `update`, `set-head`, `set-branches` | none | `show` and `add -f` need fetch (#306); the rest unsupported | `show` and `add -f` exit `1` and name #306 and change nothing; the others are usage errors (`129`). |
-| `git fetch [<remote>]` | none (`pyn update`) | planned | #237. |
+| `git remote add -f` | `pyn remote add -f ...` | git home: supported | Adds the remote, then runs `pyn fetch <name>`. If the fetch fails the remote stays defined, as in git. |
+| `git remote show`, `prune`, `update`, `set-head`, `set-branches` | none | unsupported | `show` (with or without `-n`) exits `1` with `` `remote show` is not built yet ``; the others are usage errors (`129`). `pyn fetch --prune <remote>` does what `remote prune` does. |
+| `git fetch [<options>] [<remote>\|<url>] [<refspec>...]` | `pyn fetch ...` | git home: supported | Git's behaviour, flags, output and exit statuses; see [Fetch on a git home](#fetch-on-a-git-home). |
 | `git pull [<remote> <branch>]` | none (`pyn update`) | planned | #237. |
 | `git push [<remote> <branch>]` | none | planned | #237. Today `pyn commit` already writes to the server, so `push` has nothing to publish until local-only commits exist. |
 | `git clone` | `pyn clone` | same | See the daily set. |
@@ -152,7 +154,7 @@ history across branches (decision #28).
 | --- | --- |
 | `pyn remote` | The remote names, sorted, one per line. |
 | `pyn remote -v` | `<name>`, a tab and `<url> (fetch)` (the first URL), then one `<url> (push)` line for each push URL (`pushurl`, else each `url`). A remote with no URL prints `<name>` and a tab. |
-| `pyn remote add <name> <url>` | Writes `url` and the default `fetch = +refs/heads/*:refs/remotes/<name>/*`. An invalid name is `fatal: '<name>' is not a valid remote name` (`128`), an existing one `error: remote <name> already exists.` (`3`). `-f` needs fetch (#306). |
+| `pyn remote add <name> <url>` | Writes `url` and the default `fetch = +refs/heads/*:refs/remotes/<name>/*`. An invalid name is `fatal: '<name>' is not a valid remote name` (`128`), an existing one `error: remote <name> already exists.` (`3`). `-f` then fetches the remote (see [Fetch on a git home](#fetch-on-a-git-home)). |
 | `pyn remote remove\|rm <name>` | Deletes the `[remote]` section, every ref and reflog under `refs/remotes/<name>/`, and the `branch.<b>.remote`, `merge` and `pushRemote` of branches that tracked it, and `remote.pushDefault` if it named it. A missing remote is `error: No such remote: '<name>'` (`2`). |
 | `pyn remote rename <old> <new>` | Renames the section, moves `refs/remotes/<old>/*` (and its reflogs, with a `remote: renamed ...` line) to `<new>`, rewrites fetch refspecs whose destination is under `refs/remotes/<old>/`, and repoints `branch.<b>.remote`, `pushRemote` and `remote.pushDefault`. A refspec that does not fit is kept and reported as git does (`warning: Not updating non-default fetch refspec`). |
 | `pyn remote set-url [--push] <name> <new> [<old>]` | Sets the URL, or replaces the URLs that contain `<old>`. `--add` appends one, `--delete` removes the URLs that contain `<url>` (refusing to remove every non-push URL). |
@@ -163,6 +165,84 @@ Differences from git: `<old>` and the `--delete` argument match as plain substri
 to the URLs shown; legacy `.git/remotes/` and `.git/branches/` files are not read; `remove` deletes the refs under
 `refs/remotes/<name>/` rather than those the fetch refspecs map.
 
+### Fetch on a git home
+
+`pyn fetch [<remote>|<url>] [<refspec>...]` brings objects and refs from a git remote over the system `ssh` or smart HTTP, with
+no `git` program (see [Transports and credentials](#transports-and-credentials)). `<remote>` is a configured remote, a group
+(`remotes.<name>`), or a URL. With no argument the remote is the current branch's `branch.<name>.remote`, else `origin`, else the
+only remote there is; with none to pick it does nothing and exits `0`, as git does. A remote with no `url` is
+`fatal: '<name>' does not appear to be a git repository` (`128`). Only the first URL is fetched from; `url.<base>.insteadOf` is
+applied.
+
+| Option | Does |
+| --- | --- |
+| `<refspec>...` | Replace the configured `remote.<name>.fetch`. A name that matches nothing is `fatal: couldn't find remote ref <name>` (`128`); two sources for one local ref is `fatal: Cannot fetch both ... and ... to ...`. `tag <name>` means `refs/tags/<name>:refs/tags/<name>`. A destination without `refs/` is under `refs/heads/` (`heads/`, `tags/` and `remotes/` are under `refs/`). With no destination the value goes to `FETCH_HEAD` only. |
+| `--all` | Every remote in configuration order except those with `remote.<name>.skipFetchAll` or `skipDefaultUpdate`; prints `Fetching <name>` on standard output, reports a failure as `error: Could not fetch <name>` and goes on, and exits `1` if any failed. A repository argument or refspecs with it is `fatal` (`128`). `--multiple` takes every argument as a remote or group name. |
+| `-a`, `--append` | Append to `FETCH_HEAD` instead of replacing it. |
+| `-p`, `--prune`, `--no-prune` | Delete refs that a fetch refspec's destination covers whose source the remote lost, before fetching, printing `- [deleted]         (none)     -> <ref>`. Default: `remote.<name>.prune`, then `fetch.prune`. |
+| `-P`, `--prune-tags`, `--no-prune-tags` | With pruning, also `refs/tags/*:refs/tags/*` (fetching every tag and deleting the ones the remote lost). Default: `remote.<name>.pruneTags`, then `fetch.pruneTags`. |
+| `-t`, `--tags` | Also fetch every tag; `-n`, `--no-tags` fetches none, not even the ones that follow. `remote.<name>.tagOpt` (`--tags`, `--no-tags`) is the default. |
+| `-f`, `--force` | Update refs whatever the refspec's `+` says. |
+| `-u`, `--update-head-ok` | Allow fetching into the branch checked out in any work tree; without it that is `fatal: refusing to fetch into branch 'refs/heads/<b>' checked out at '<path>'` (`128`). |
+| `--dry-run` | Print the lines, change no ref, reflog or `FETCH_HEAD`. As in git the objects are still downloaded. |
+| `-v`, `-q` | `-v` also prints `= [up to date]` lines; `-q` prints nothing (the status is the same). |
+| `--progress`, `--no-progress` | The server's progress text, as `remote: <text>` lines. By default it is shown only when standard error is a terminal. |
+| `-j`, `--jobs` | Accepted; remotes are fetched one after the other. `fetch.parallel` is ignored. |
+| `--auto-gc`, `--write-commit-graph` and their `--no-` forms, `--no-recurse-submodules` | Accepted and ignored. |
+| `--depth`, `--deepen`, `--shallow-since`, `--shallow-exclude`, `--unshallow`, `--update-shallow` | Usage error (`129`): shallow fetch is not built. |
+| `--filter`, `--refetch` | Usage error (`129`): partial fetch is not built. |
+| `--atomic`, `--set-upstream`, `--recurse-submodules` | Usage error (`129`): not built. Any other unknown flag is a usage error as everywhere. |
+
+What a fetch does, in git's order:
+
+1. Asks the remote for its refs and maps them through the refspecs: the configured ones, or the command line's. Fetching named
+   refs also updates the configured tracking ref of each (`git fetch origin main` updates `origin/main`), printed but not
+   recorded in `FETCH_HEAD`. Unless `--no-tags`, a tag the remote has and the repository lacks is fetched when the object it
+   names, or the commit it points at, is here or arrives with the fetch (a second round fetches tags whose target arrived but
+   whose own object did not).
+2. Prunes, then downloads one pack (thin, offset deltas) and checks that everything the new tips reach is present before any ref moves.
+3. Writes `FETCH_HEAD`, then moves each local ref with a compare-and-swap through its lock file, so nothing is half updated. A
+   ref that cannot be written is reported `! ... (unable to update local ref)`, the rest still update, and the exit status is `1`.
+
+Each update line is ` <code> <summary>  <remote ref> -> <local ref>` on standard error after one `From <url>` line (the URL
+without user name, `.git` or trailing slashes), with git's columns. The summary column is `2 * abbrev + 3` wide and the ref column at
+least 10. Ids are `core.abbrev` digits (default 7) and are not lengthened to stay unique.
+
+| Line | Meaning |
+| --- | --- |
+| `* [new branch]`, `* [new tag]`, `* [new ref]` | A ref that did not exist (named by the remote ref: a branch fetched to `refs/tags/` is `[new branch]`). |
+| `  abc1234..def5678` | Fast-forward. |
+| `+ abc1234...def5678 ... (forced update)` | Not a fast-forward, allowed by `+` or `--force`. |
+| `! [rejected] ... (non-fast-forward)` | Not a fast-forward and not forced. Exit `1`. |
+| `! [rejected] ... (would clobber existing tag)` | A tag differs; `--force` gives `t [tag update]`. Exit `1`. |
+| `- [deleted]         (none)     -> <ref>` | Pruned. |
+| `* branch  main -> FETCH_HEAD` | A value that is only recorded in `FETCH_HEAD` (`tag`, `branch` or the ref's kind). |
+
+`FETCH_HEAD` is in the per-work-tree git directory: `<id>`, a tab, `not-for-merge` or nothing, a tab, `branch '<name>' of <url>`
+(`tag '<name>' of`, `remote-tracking branch`, or `<url>` alone for `HEAD`). Entries that are for merging come first: the ones
+named on the command line, the first configured refspec when it is not a pattern and the branch has no `merge`, and the
+`branch.<current>.merge` ref when the current branch's `branch.<name>.remote` is this remote. With only a URL, or a remote with no
+`fetch` refspec, `HEAD` is fetched (`fatal: couldn't find remote ref HEAD` when the remote's `HEAD` is unborn). It is emptied at
+the start of every fetch that is not `--append`, even when the fetch then fails.
+
+Remote-tracking refs get a reflog by `core.logAllRefUpdates` (the default and `true` log `refs/remotes/*`; `always` also logs tags;
+`false` logs nothing; an existing log is always appended to). The line is `fetch <arguments as typed>: <action>` with the action
+`storing head`, `storing tag`, `storing ref`, `fast-forward`, `forced-update` or `updating tag` (`fetch --append --no-auto-gc
+--no-write-commit-graph <name>` for each remote of `--all`). Updating the checked-out branch with `-u` logs `HEAD` too.
+
+Object format. The remote's `object-format` must be the repository's: otherwise `fatal: mismatched algorithms: client sha1;
+server sha256` (`128`). A repository with no objects, refs or index takes the remote's format (it sets
+`core.repositoryformatversion = 1` and `extensions.objectformat`), which git itself refuses to do outside `clone`.
+
+Differences from git, all deliberate or not yet done: `--dry-run` downloads objects like git does, but git lists auto-followed tags twice on a dry run and pyn once;
+ids are not lengthened to stay unique and do not scale with the repository's size; there is no per-object "Receiving objects" progress,
+only what the server sends; local-path and `file://` remotes are refused (see [Transports and credentials](#transports-and-credentials));
+`fetch.output`, `fetch.showForcedUpdates`, `fetch.recurseSubmodules`, `fetch.writeCommitGraph`, `remote.<name>.promisor`,
+`--refmap`, `--negotiation-tip`, `--server-option`, `--stdin` and `-4`/`-6` are not read or taken; `--all` runs
+the remotes one at a time whatever `-j` or `fetch.parallel` say, so `FETCH_HEAD` lists them in configuration order; the stale-ref hint after a ref could
+not be written names `pyn fetch --prune`, since `remote prune` is not built. `remote show` against the remote and
+`remote update` are not built.
+
 ## Transports and credentials
 
 Decisions #245 and #255. pyn reaches a git remote without git: the protocol, the pack handling and the credential flow are
@@ -170,9 +250,9 @@ implemented in `pyn-gittransport`, `pyn-gitwire` and `pyn-git`. **git does not n
 program; `make boundary-check` fails when non-test source under `crates/` spawns one. The programs pyn can start are the system
 `ssh` client, and the credential helpers and askpass programs your own configuration names.
 
-Today `pyn ls-remote` uses them; `fetch`, `pull`, `push`, `clone <git url>` and `remote add -f` arrive on top of the same
+`pyn ls-remote`, `pyn fetch` and `pyn remote add -f` use them; `pull`, `push` and `clone <git url>` arrive on top of the same
 connections (epic #301). The library functions `fetch_objects` and `push_objects` (thin packs and offset deltas on fetch, a
-streamed pack file on push) are what those commands will call.
+streamed pack file on push) are what those commands call.
 
 ### URLs
 
@@ -513,7 +593,7 @@ pyn appends the reflog lines git would, when `core.logAllRefUpdates` would: `HEA
 `refs/notes/*` get a log created (the default in a work tree, and `true`); `always` creates one for every ref; `false` creates
 none; an existing log is appended to either way. The lines are `commit: <subject>` (`commit (initial)`, `commit (merge)`),
 `checkout: moving from <old> to <new>`, `branch: Created from <start>`, `Branch: renamed <old> to <new>`, `merge <name>:
-Fast-forward` or `Merge made by the 'ort' strategy.`, `reset: moving to HEAD` and the stash message. A line names the committer
+Fast-forward` or `Merge made by the 'ort' strategy.`, `reset: moving to HEAD`, the stash message and, for a fetch, `fetch <arguments>: fast-forward` and its siblings (see [Fetch on a git home](#fetch-on-a-git-home)). A line names the committer
 identity (with the committer date from `GIT_COMMITTER_DATE`); with no identity configured a reflog line falls back to the login name
 so branching and switching still work. A moved branch is also logged in `HEAD`'s log, as git does.
 
@@ -525,7 +605,7 @@ set to true, `core.eol=crlf` with a `text` attribute, `eol=crlf`, a `filter` oth
 symlinks and submodules are never converted). A Git LFS filter writes the pointer file as it is, with a warning (decision #245).
 The same limit applies to `status`, which compares raw bytes (#273). Hooks are never run; one warning names the hooks that exist
 for the command (`post-checkout`, `pre-merge-commit`, `commit-msg` and the like). Sparse checkouts, submodule updates, the split
-index and `GIT_DIR` are not supported, and `rebase`, `cherry-pick`, `revert`, `--squash` and anything that talks to a remote other than `ls-remote` are not built yet (`fetch`, `pull`, `push` and `clone`, epic #301; see [Transports and credentials](#transports-and-credentials)).
+index and `GIT_DIR` are not supported, and `rebase`, `cherry-pick`, `revert`, `--squash` and anything that talks to a remote other than `ls-remote` and `fetch` are not built yet (`pull`, `push` and `clone`, epic #301; see [Transports and credentials](#transports-and-credentials)).
 
 ### Refused commands
 
@@ -551,7 +631,7 @@ Commands a git home will gain fail with exit `1`, as the other git-only commands
 
 | Command | Needs |
 | --- | --- |
-| `fetch`, `pull`, `push`, `update` | Git transport, #255. |
+| `pull`, `push`, `update` | Git transport, #255. |
 | `get` | Per-path revisions, which git has no equivalent of; not scheduled. |
 
 `pyn convert` fails with `pyn: 'convert' is not available yet` and names #95.
@@ -559,7 +639,7 @@ Commands a git home will gain fail with exit `1`, as the other git-only commands
 ### Packs (library, provisional)
 
 `pyn-git` holds the pack plumbing the git transport uses (see [Transports and credentials](#transports-and-credentials));
-`pyn-gittransport` calls it, and no command other than the tests exercises fetch or push yet.
+`pyn-gittransport` calls it; `pyn fetch` is its first command and push has none yet.
 
 - **Ingest.** `index_pack` reads a pack from any stream, checks the header, every entry's zlib data, the object count and the
   trailing checksum, resolves offset and reference deltas, and computes each object id with git's rules (SHA-1 with collision

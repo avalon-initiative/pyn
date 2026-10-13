@@ -119,6 +119,8 @@ enum Command {
     Stash(git_home::StashArgs),
     /// List and edit remotes; a pyn server has one, `origin`, set by `pyn config`.
     Remote(git_home::RemoteArgs),
+    /// Download objects and refs from a git remote (a git repository only).
+    Fetch(git_home::FetchArgs),
     /// List the references in a remote git repository (ssh or smart HTTP; works anywhere).
     LsRemote(ls_remote::LsRemoteArgs),
     /// Show what differs between this workspace and the server.
@@ -728,6 +730,13 @@ fn main() {
         eprintln!("{}", unsupported::message_on_git(&name));
         std::process::exit(1);
     }
+    if let Some(name) = first_subcommand()
+        && unsupported::REFUSED_OFF_GIT.contains(&name.as_str())
+        && !in_git_home()
+    {
+        eprintln!("{}", unsupported::message(&name));
+        std::process::exit(1);
+    }
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(e) => {
@@ -763,19 +772,24 @@ fn in_git_home() -> bool {
         .is_some()
 }
 
-/// The subcommand named on the command line when a git repository cannot take it, so its arguments are never parsed.
-fn subcommand_refused_on_git() -> Option<String> {
+/// The subcommand named on the command line, before any argument parsing.
+fn first_subcommand() -> Option<String> {
     let mut args = std::env::args().skip(1);
-    let name = loop {
+    loop {
         let arg = args.next()?;
         match arg.as_str() {
             "--server" | "--token" | "--user" | "--repo" => {
                 args.next();
             }
             a if a.starts_with('-') => {}
-            _ => break arg,
+            _ => return Some(arg),
         }
-    };
+    }
+}
+
+/// The subcommand named on the command line when a git repository cannot take it, so its arguments are never parsed.
+fn subcommand_refused_on_git() -> Option<String> {
+    let name = first_subcommand()?;
     (unsupported::REFUSED_BEFORE_PARSING.contains(&name.as_str()) && in_git_home()).then_some(name)
 }
 
@@ -1222,6 +1236,10 @@ fn run(cli: Cli) -> Result<()> {
                 .map(|r| snapshot::resolve(&backend, &r))
                 .transpose()?;
             sync::clone_into(&backend, &target, &server, &repo, commit.as_deref())?;
+        }
+        Command::Fetch(_) => {
+            eprintln!("{}", unsupported::message("fetch"));
+            std::process::exit(1);
         }
         Command::Tag(_) => {
             eprintln!("{}", unsupported::message("tag"));

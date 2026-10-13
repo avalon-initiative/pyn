@@ -370,27 +370,18 @@ fn a_packed_remote_branch_is_removed_too() {
 }
 
 #[test]
-fn show_needs_the_transport() {
+fn show_is_not_built() {
     let pair = Pair::new("", &[&["remote", "add", "o", "u"]]);
-    for args in [
-        vec!["show", "o"],
-        vec!["show", "-n", "o"],
-        vec!["add", "-f", "x", "u"],
-    ] {
+    for args in [vec!["show", "o"], vec!["show", "-n", "o"]] {
         let mut full = vec!["remote"];
         full.extend(&args);
         let out = pair.pyn_cmd(&full);
         assert_eq!(out.status.code(), Some(1), "{args:?}");
         assert!(
-            String::from_utf8_lossy(&out.stderr).contains("needs fetch (#306)"),
+            String::from_utf8_lossy(&out.stderr).contains("`remote show` is not built yet"),
             "{args:?}"
         );
     }
-    assert!(
-        !fs::read_to_string(pair.pyn.join(".git/config"))
-            .unwrap()
-            .contains("remote \"x\"")
-    );
 }
 
 #[test]

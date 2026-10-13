@@ -5,6 +5,9 @@ mod ancestry;
 mod branches;
 mod commands;
 mod convert;
+mod fetch;
+mod fetch_apply;
+mod fetch_map;
 mod merge;
 mod refwrite;
 mod remote;
@@ -27,6 +30,7 @@ use crate::backend::Backend;
 use crate::workspace::{self, Workspace};
 
 pub use commands::run;
+pub use fetch::FetchArgs;
 pub use remote::{RemoteArgs, on_server as remote_on_server};
 pub use stash::StashArgs;
 pub use tags::TagArgs;

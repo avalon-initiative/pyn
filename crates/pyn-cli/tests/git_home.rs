@@ -471,7 +471,6 @@ fn repository_commands_refuse_and_name_the_pyn_server() {
 fn commands_a_git_home_will_gain_name_the_issue() {
     let repo = Repo::new("sha1");
     for (args, issue) in [
-        (vec!["fetch"], "#255"),
         (vec!["pull"], "#255"),
         (vec!["push"], "#255"),
         (vec!["update"], "#255"),
