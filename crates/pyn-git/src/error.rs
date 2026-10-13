@@ -23,6 +23,8 @@ pub enum Error {
     Checksum { what: &'static str },
     #[error("unsupported: {0}")]
     Unsupported(String),
+    #[error("{0} has multiple values")]
+    MultipleValues(String),
     #[error("invalid {what}: {detail}")]
     Invalid { what: &'static str, detail: String },
 }

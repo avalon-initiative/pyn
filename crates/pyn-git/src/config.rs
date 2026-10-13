@@ -129,21 +129,38 @@ impl Config {
     }
 }
 
-struct Parser<'a> {
+pub(crate) struct Parser<'a> {
     chars: std::iter::Peekable<std::str::Chars<'a>>,
     line: usize,
-    section: Option<(String, Option<String>)>,
-    entries: Vec<Entry>,
+    pub(crate) section: Option<(String, Option<String>)>,
+    pub(crate) entries: Vec<Entry>,
 }
 
 impl<'a> Parser<'a> {
-    fn new(text: &'a str) -> Self {
+    pub(crate) fn new(text: &'a str) -> Self {
+        Self::at_line(text, 1)
+    }
+
+    pub(crate) fn at_line(text: &'a str, line: usize) -> Self {
         Self {
             chars: text.chars().peekable(),
-            line: 1,
+            line,
             section: None,
             entries: Vec::new(),
         }
+    }
+
+    /// Bytes of the input not consumed yet.
+    pub(crate) fn remaining(&self) -> usize {
+        self.chars.clone().map(char::len_utf8).sum()
+    }
+
+    pub(crate) fn bump(&mut self) {
+        self.chars.next();
+    }
+
+    pub(crate) fn peek(&mut self) -> Option<char> {
+        self.chars.peek().copied()
     }
 
     fn err<T>(&self, detail: &str) -> Result<T> {
@@ -183,7 +200,8 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn header(&mut self) -> Result<()> {
+    /// Parses a section header whose `[` is already consumed.
+    pub(crate) fn header(&mut self) -> Result<()> {
         let mut name = String::new();
         let mut sub = None;
         loop {
@@ -232,7 +250,7 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
-    fn variable(&mut self) -> Result<()> {
+    pub(crate) fn variable(&mut self) -> Result<()> {
         let mut key = String::new();
         while let Some(&c) = self.chars.peek() {
             if c.is_ascii_alphanumeric() || c == '-' {

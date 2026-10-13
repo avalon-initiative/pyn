@@ -116,6 +116,8 @@ enum Command {
     Tag(git_home::TagArgs),
     /// Save, list and restore local changes (a git repository only).
     Stash(git_home::StashArgs),
+    /// List and edit remotes; a pyn server has one, `origin`, set by `pyn config`.
+    Remote(git_home::RemoteArgs),
     /// Show what differs between this workspace and the server.
     Status {
         /// Compare with the repository as of this commit (`HEAD~N`, a commit hash) instead of the newest.
@@ -872,6 +874,7 @@ fn run(cli: Cli) -> Result<()> {
         .token
         .or_else(|| credentials::load(&base).map(|saved| saved.token));
     let repo_name = repo.clone();
+    let server_url = base.clone();
     let backend = PynServer::new(Api {
         http: Client::new(),
         base,
@@ -1219,6 +1222,9 @@ fn run(cli: Cli) -> Result<()> {
         Command::Stash(_) => {
             eprintln!("{}", unsupported::message("stash"));
             std::process::exit(1);
+        }
+        Command::Remote(args) => {
+            git_home::remote_on_server(&args, &server_url, repo_name.as_deref())?
         }
         Command::Merge(args) => merging::merge_command(&backend, ws.as_ref(), args)?,
         Command::Branch(args) => branch::branch_command(&backend, ws.as_ref(), args)?,

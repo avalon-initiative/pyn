@@ -474,7 +474,6 @@ fn commands_a_git_home_will_gain_name_the_issue() {
         (vec!["fetch"], "#255"),
         (vec!["pull"], "#255"),
         (vec!["push"], "#255"),
-        (vec!["remote", "-v"], "#255"),
         (vec!["update"], "#255"),
     ] {
         let out = repo.run_in(&repo.main, &args);

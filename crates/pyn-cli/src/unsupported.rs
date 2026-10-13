@@ -7,7 +7,6 @@ const GIT_ONLY: &[&str] = &[
     "push",
     "tag",
     "stash",
-    "remote",
     "reset",
     "rm",
     "mv",
@@ -24,7 +23,6 @@ const PLANNED_ON_GIT: &[(&str, &str)] = &[
     ("fetch", "git transport (#255)"),
     ("pull", "git transport (#255)"),
     ("push", "git transport (#255)"),
-    ("remote", "git transport (#255)"),
     ("update", "git transport (#255)"),
 ];
 

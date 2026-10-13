@@ -3,6 +3,7 @@
 
 use anyhow::{Result, bail};
 use globset::Glob;
+use pyn_git::ConfigFile;
 use pyn_gitwork::Head;
 use pyn_object::ObjectId;
 
@@ -23,49 +24,18 @@ struct Row {
     id: Option<ObjectId>,
 }
 
-fn rewrite_config(git: &GitHome, edit: impl Fn(&[&str]) -> Vec<String>) -> Result<()> {
-    let path = git.repo.git().common_dir().join("config");
-    let text = std::fs::read_to_string(&path)?;
-    let lines: Vec<&str> = text.split_inclusive('\n').collect();
-    let out: String = edit(&lines).concat();
-    if out == text {
-        return Ok(());
-    }
-    let lock = path.with_extension("lock");
-    std::fs::write(&lock, out)?;
-    std::fs::rename(&lock, &path)?;
-    Ok(())
-}
-
-fn is_branch_header(line: &str, name: &str) -> bool {
-    let t = line.trim();
-    t.strip_prefix('[')
-        .and_then(|r| r.strip_suffix(']'))
-        .and_then(|r| r.trim().strip_prefix("branch"))
-        .map(str::trim)
-        .is_some_and(|r| r == format!("\"{name}\""))
-}
-
 /// Drops the `[branch "name"]` section from the repository configuration, or renames it to `to`.
 fn move_config_section(git: &GitHome, name: &str, to: Option<&str>) -> Result<()> {
-    rewrite_config(git, |lines| {
-        let mut out = Vec::new();
-        let mut inside = false;
-        for line in lines {
-            if line.trim_start().starts_with('[') {
-                inside = is_branch_header(line, name);
-                if inside && let Some(to) = to {
-                    out.push(format!("[branch \"{to}\"]\n"));
-                    continue;
-                }
-            }
-            if inside && to.is_none() {
-                continue;
-            }
-            out.push((*line).to_string());
-        }
-        out
-    })
+    let path = git.repo.git().common_dir().join("config");
+    let mut file = ConfigFile::read(&path)?;
+    let changed = match to {
+        Some(to) => file.rename_section("branch", name, to)? > 0,
+        None => file.remove_section("branch", Some(name)),
+    };
+    if changed {
+        file.write(&path)?;
+    }
+    Ok(())
 }
 
 fn list(git: &GitHome, args: &BranchArgs) -> Result<()> {

@@ -136,7 +136,10 @@ impl RefStore {
         let path = self.reflog_path(name);
         if entries.is_empty() {
             return match fs::remove_file(&path) {
-                Ok(()) => Ok(()),
+                Ok(()) => {
+                    self.prune_log_dirs(name);
+                    Ok(())
+                }
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
                 Err(e) => Err(io_at(&path)(e)),
             };
@@ -170,6 +173,14 @@ impl RefStore {
         if let Some(parent) = to.parent() {
             fs::create_dir_all(parent).map_err(io_at(parent))?;
         }
-        fs::rename(&from, &to).map_err(io_at(&from))
+        fs::rename(&from, &to).map_err(io_at(&from))?;
+        self.prune_log_dirs(old);
+        Ok(())
+    }
+
+    fn prune_log_dirs(&self, name: &str) {
+        if let Some(parent) = self.reflog_path(name).parent() {
+            self.prune_empty_dirs(&self.dir_for(name).join("logs/refs"), parent);
+        }
     }
 }

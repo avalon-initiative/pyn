@@ -92,7 +92,7 @@ The commands named in decision #218.
 | `git branch`, `git switch`, `git checkout` | `pyn branch`, `pyn switch`, `pyn checkout` | supported | See [branching and merging](#branching-and-merging). On a git home they work on `.git` as git does, see [Branches, switching and the work tree](#branches-switching-and-the-work-tree). |
 | `git merge` | `pyn merge` | supported | See [branching and merging](#branching-and-merging). On a git home it merges as git does, see [Merging](#merging). |
 | `git fetch`, `git pull`, `git push` | none | planned | Git-command message. Remotes and sync #237 under epic #205 (worked with #223). Today a commit goes straight to the server and `pyn update` brings the workspace forward. |
-| `git remote` | none | planned | Git-command message. #237 (also listed in #223). There is one remote today, set by `--server` and `--repo` or `pyn config set server` and `repo`. |
+| `git remote` | `pyn remote` | git home; pyn server partly | On a git home it lists and edits the remotes in `.git/config`, see [Remotes](#remotes). On a pyn server `pyn remote` and `pyn remote -v` show the one remote, `origin`: the server and repository set by `--server` and `--repo` or `pyn config set server` and `repo`; the editing subcommands say so and exit `1`. |
 | `git tag [-a] [-m <msg>] [-f] [<name> [<commit>]]`, `-d`, `-l` | `pyn tag ...` on a git home | git home only | See [Tags](#tags). On a pyn server it prints the git-command message (a server's commits are named by hash and have no tags yet, #223). |
 | `git stash [push] [-u] [-m <msg>]`, `list`, `pop`, `apply`, `drop`, `clear` | `pyn stash ...` on a git home | git home only | See [Stashing](#stashing). On a pyn server it prints the git-command message. |
 
@@ -118,7 +118,7 @@ Commands people reach for that are not in the daily set.
 
 ## Branching and merging
 
-Branches and merge exist on a pyn server ([branches](branches.md), [merging](merging.md)); remotes do not and fail with a message today. The model is
+Branches and merge exist on a pyn server ([branches](branches.md), [merging](merging.md)); remotes on a pyn server are the one server and repository (see [Remotes](#remotes)). The model is
 decision #233 (commit graph, per-commit trees, branch heads); policy per branch is [branches](branches.md#policy-and-modes); exclusive paths keep one linear
 history across branches (decision #28).
 
@@ -134,11 +134,32 @@ history across branches (decision #28).
 
 | Git | pyn | Status | Notes |
 | --- | --- | --- | --- |
-| `git remote [-v]`, `add`, `remove`, `set-url` | none | planned | #237 and #223. |
+| `git remote [-v]`, `add`, `remove`, `rename`, `set-url`, `get-url` | `pyn remote ...` | git home: supported | Configuration only, no network. Output, exit statuses and the resulting `.git/config`, refs and reflogs match git. See [Remotes on a git home](#remotes-on-a-git-home). On a pyn server: `remote` and `remote -v` only, see the table above. |
+| `git remote show`, `add -f`, `prune`, `update`, `set-head`, `set-branches` | none | `show` and `add -f` need the transport (#305); the rest unsupported | `show` and `add -f` exit `1` and name #305 and change nothing; the others are usage errors (`129`). |
 | `git fetch [<remote>]` | none (`pyn update`) | planned | #237. |
 | `git pull [<remote> <branch>]` | none (`pyn update`) | planned | #237. |
 | `git push [<remote> <branch>]` | none | planned | #237. Today `pyn commit` already writes to the server, so `push` has nothing to publish until local-only commits exist. |
 | `git clone` | `pyn clone` | same | See the daily set. |
+
+### Remotes on a git home
+
+`pyn remote` reads and edits `remote.<name>.*` and `branch.<name>.*` in the repository's `.git/config` and the refs under
+`refs/remotes/`. It never contacts a remote.
+
+| Command | Does |
+| --- | --- |
+| `pyn remote` | The remote names, sorted, one per line. |
+| `pyn remote -v` | `<name>`, a tab and `<url> (fetch)` (the first URL), then one `<url> (push)` line for each push URL (`pushurl`, else each `url`). A remote with no URL prints `<name>` and a tab. |
+| `pyn remote add <name> <url>` | Writes `url` and the default `fetch = +refs/heads/*:refs/remotes/<name>/*`. An invalid name is `fatal: '<name>' is not a valid remote name` (`128`), an existing one `error: remote <name> already exists.` (`3`). `-f` needs the transport (#305). |
+| `pyn remote remove\|rm <name>` | Deletes the `[remote]` section, every ref and reflog under `refs/remotes/<name>/`, and the `branch.<b>.remote`, `merge` and `pushRemote` of branches that tracked it, and `remote.pushDefault` if it named it. A missing remote is `error: No such remote: '<name>'` (`2`). |
+| `pyn remote rename <old> <new>` | Renames the section, moves `refs/remotes/<old>/*` (and its reflogs, with a `remote: renamed ...` line) to `<new>`, rewrites fetch refspecs whose destination is under `refs/remotes/<old>/`, and repoints `branch.<b>.remote`, `pushRemote` and `remote.pushDefault`. A refspec that does not fit is kept and reported as git does (`warning: Not updating non-default fetch refspec`). |
+| `pyn remote set-url [--push] <name> <new> [<old>]` | Sets the URL, or replaces the URLs that contain `<old>`. `--add` appends one, `--delete` removes the URLs that contain `<url>` (refusing to remove every non-push URL). |
+| `pyn remote get-url [--push] [--all] <name>` | The first (or every) URL; with `--push` the push URLs. |
+
+Editing keeps every other line of `.git/config`, with its comments and order, and quotes values and subsection names as git does.
+Differences from git: `<old>` and the `--delete` argument match as plain substrings, not regular expressions; `url.<base>.insteadOf` is not applied
+to the URLs shown; legacy `.git/remotes/` and `.git/branches/` files are not read; `remove` deletes the refs under
+`refs/remotes/<name>/` rather than those the fetch refspecs map.
 
 ## pyn only
 
@@ -413,7 +434,7 @@ set to true, `core.eol=crlf` with a `text` attribute, `eol=crlf`, a `filter` oth
 symlinks and submodules are never converted). A Git LFS filter writes the pointer file as it is, with a warning (decision #245).
 The same limit applies to `status`, which compares raw bytes (#273). Hooks are never run; one warning names the hooks that exist
 for the command (`post-checkout`, `pre-merge-commit`, `commit-msg` and the like). Sparse checkouts, submodule updates, the split
-index and `GIT_DIR` are not supported, and `rebase`, `cherry-pick`, `revert`, `--squash` and remotes are not built (#255 for remotes).
+index and `GIT_DIR` are not supported, and `rebase`, `cherry-pick`, `revert`, `--squash` and anything that talks to a remote are not built (the transport, #255).
 
 ### Refused commands
 
@@ -438,7 +459,7 @@ holds for `user add`, `whoami` (it prints the account when no repository is give
 Commands a git home will gain fail with exit `1`, as the other git-only commands do, and name the issue:
 
 | Command | Needs |
-| --- | --- || `fetch`, `pull`, `push`, `remote`, `update` | Git transport, #255. |
+| --- | --- || `fetch`, `pull`, `push`, `update` | Git transport, #255. |
 | `get` | Per-path revisions, which git has no equivalent of; not scheduled. |
 
 `pyn convert` fails with `pyn: 'convert' is not available yet` and names #95.

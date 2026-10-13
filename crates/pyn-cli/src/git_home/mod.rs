@@ -7,6 +7,7 @@ mod commands;
 mod convert;
 mod merge;
 mod refwrite;
+mod remote;
 mod stage;
 mod stash;
 mod switch;
@@ -26,6 +27,7 @@ use crate::backend::Backend;
 use crate::workspace::{self, Workspace};
 
 pub use commands::run;
+pub use remote::{RemoteArgs, on_server as remote_on_server};
 pub use stash::StashArgs;
 pub use tags::TagArgs;
 

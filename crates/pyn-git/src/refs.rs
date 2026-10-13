@@ -213,7 +213,7 @@ impl RefStore {
         });
         let _ = fs::remove_file(&lock);
         if result.is_ok() {
-            self.prune_empty_dirs(parent);
+            self.prune_empty_dirs(&self.common_dir.join("refs"), parent);
         }
         result
     }
@@ -267,11 +267,10 @@ impl RefStore {
         Ok(())
     }
 
-    /// Removes empty folders from `dir` upward, keeping `refs/` and its first level (`heads`, `tags`).
-    fn prune_empty_dirs(&self, dir: &Path) {
-        let refs = self.common_dir.join("refs");
+    /// Removes empty folders from `dir` upward, keeping `base` and its first level (`heads`, `tags`).
+    pub(crate) fn prune_empty_dirs(&self, refs: &Path, dir: &Path) {
         let mut dir = dir.to_path_buf();
-        while dir.starts_with(&refs) && dir.parent() != Some(refs.as_path()) && dir != refs {
+        while dir.starts_with(refs) && dir.parent() != Some(refs) && dir != refs {
             if fs::remove_dir(&dir).is_err() {
                 break;
             }
