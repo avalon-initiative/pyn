@@ -1407,7 +1407,7 @@ impl RepoService {
         };
         let mut seen = std::collections::HashSet::new();
         for c in &all {
-            if c.expected_id()? != c.id {
+            if c.verify().is_err() {
                 report.problems.push(problem(BreakKind::Hash, c));
             }
             let linked = c.parents.iter().all(|p| seen.contains(p))

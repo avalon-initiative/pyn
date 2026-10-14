@@ -1844,6 +1844,47 @@ pub async fn a_file_cannot_become_a_folder_or_back(store: Store) {
     assert!(matches!(err, PynError::InvalidRequest(_)), "{err}");
 }
 
+pub async fn a_commit_keeps_its_exact_bytes_and_altered_bytes_fail_verify(store: Store) {
+    let h = harness(store);
+    let c = blob(&h, "x").await;
+    let rev = h
+        .svc
+        .checkin(&who("alice"), &path("Source/a.cpp"), c, None, "one".into())
+        .await
+        .unwrap();
+    let commit = h.svc.get_commit(&rev.commit).await.unwrap();
+    assert_eq!(commit.raw, commit.git_commit().encode());
+    let algorithm = commit.id.algorithm();
+    assert_eq!(
+        pyn_object::hash_object(algorithm, pyn_object::Kind::Commit, &commit.raw).unwrap(),
+        commit.id
+    );
+    let derived = crate::Commit::from_raw(algorithm, commit.raw.clone(), None).unwrap();
+    assert_eq!(
+        (derived.tree, &derived.parents),
+        (commit.tree, &commit.parents)
+    );
+    assert_eq!(derived.message, format!("{}\n", commit.message));
+    commit.verify().unwrap();
+
+    let mut flipped = commit.clone();
+    *flipped.raw.last_mut().unwrap() ^= 1;
+    assert!(flipped.verify().is_err());
+    let mut other_offset = commit.clone();
+    let at = other_offset.committer.offset_minutes + 60;
+    other_offset.raw = pyn_object::Commit {
+        committer: pyn_object::Signature {
+            offset_minutes: at,
+            ..pyn_object::Commit::parse(algorithm, &commit.raw)
+                .unwrap()
+                .committer
+        },
+        ..pyn_object::Commit::parse(algorithm, &commit.raw).unwrap()
+    }
+    .encode();
+    assert!(other_offset.verify().is_err(), "bytes that hash elsewhere");
+}
+
 pub async fn a_commit_is_found_by_a_unique_prefix(store: Store) {
     let h = harness(store);
     let c = blob(&h, "x").await;
@@ -3066,6 +3107,7 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_commit_is_a_real_git_commit_over_a_git_tree);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_file_cannot_become_a_folder_or_back);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_snapshots_modes_come_from_the_policy_file_at_that_commit);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_commit_keeps_its_exact_bytes_and_altered_bytes_fail_verify);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_commit_is_found_by_a_unique_prefix);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_snapshot_is_every_path_as_of_a_commit);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_changeset_lands_every_path_as_one_commit);

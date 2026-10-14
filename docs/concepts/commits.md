@@ -22,6 +22,10 @@ A commit carries what a git commit carries:
 The commit id is the git commit id of exactly those fields, so the encoding is git's and the id would be the same in a git
 repository of the same object format (SHA-256 for a pyn server). The id covers the tree and the parent, so changing any
 file, mode or earlier commit changes every later id, and a [revision's v2 hash](integrity.md) covers its commit id.
+The exact commit bytes are stored with each commit and the id is their hash; the fields above are what those bytes say.
+A server-created commit's bytes are the encoding of its fields, so every id is unchanged, and the bytes are what lets a
+commit built elsewhere keep its id (provisional: no path ingests such a commit yet). Commits that predate the stored
+bytes were re-encoded from their fields by a migration.
 Existing history was migrated once into a single mainline, now the default branch; see [integrity](integrity.md#existing-data).
 
 ## The tree of a commit

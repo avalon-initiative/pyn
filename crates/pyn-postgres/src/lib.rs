@@ -449,8 +449,8 @@ async fn insert_commit(
 ) -> Result<()> {
     sqlx::query(
         "INSERT INTO commits (repo, seq, id, parent, tree, author_name, author_email, author_offset,
-                              committer_name, committer_email, committer_offset, created_at, message, signature, changeset, parents)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)",
+                              committer_name, committer_email, committer_offset, created_at, message, signature, changeset, parents, raw)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)",
     )
     .bind(repo.as_str())
     .bind(seq as i64)
@@ -468,13 +468,14 @@ async fn insert_commit(
     .bind(&c.signature)
     .bind(&c.changeset)
     .bind(c.parents.iter().map(ObjectId::to_hex).collect::<Vec<_>>())
+    .bind(&c.raw)
     .execute(&mut **tx)
     .await
     .map_err(db)?;
     Ok(())
 }
 
-const COMMIT_COLUMNS: &str = "id, parents, tree, author_name, author_email, author_offset, committer_name, committer_email, committer_offset, created_at, message, signature, changeset";
+const COMMIT_COLUMNS: &str = "id, parents, tree, author_name, author_email, author_offset, committer_name, committer_email, committer_offset, created_at, message, signature, changeset, raw";
 
 /// A commit record without its revisions.
 fn commit_from(row: &PgRow) -> Result<Commit> {
@@ -500,6 +501,7 @@ fn commit_from(row: &PgRow) -> Result<Commit> {
         message: row.get("message"),
         signature: row.get("signature"),
         changeset: row.get("changeset"),
+        raw: row.get("raw"),
         revisions: Vec::new(),
     })
 }
@@ -1731,6 +1733,78 @@ mod tests {
         let store = rewound_store().await;
         migrate(&store).await;
         assert!(store.list_repos(None).await.unwrap().is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "needs PYN_DATABASE_URL"]
+    async fn existing_commits_get_the_bytes_their_ids_were_derived_from() {
+        use pyn_object::{Algorithm, Commit as GitCommit, Signature};
+        let url = std::env::var("PYN_DATABASE_URL").expect("PYN_DATABASE_URL must be set");
+        let store = PgMetadataStore::connect_in_scratch_schema(&url)
+            .await
+            .unwrap();
+        for stmt in [
+            "ALTER TABLE commits DROP COLUMN raw",
+            "DELETE FROM _sqlx_migrations WHERE version = 29",
+        ] {
+            sqlx::query(stmt).execute(&store.pool).await.unwrap();
+        }
+        let hex =
+            |c: char| ObjectId::from_hex(Algorithm::Sha256, &c.to_string().repeat(64)).unwrap();
+        let sig = |name: &str, offset| Signature {
+            name: name.as_bytes().to_vec(),
+            email: format!("{name}@pyn.invalid").into_bytes(),
+            time: 1_700_000_000,
+            offset_minutes: offset,
+        };
+        let cases = [
+            (vec![], 0, "root", None),
+            (vec![hex('1'), hex('2')], -330, "merge\n", None),
+            (
+                vec![hex('1')],
+                90,
+                "signed",
+                Some("-----BEGIN-----\n\nabc\n-----END-----"),
+            ),
+        ];
+        let mut ids = Vec::new();
+        for (seq, (parents, offset, message, signature)) in cases.iter().enumerate() {
+            let git = GitCommit {
+                tree: hex('a'),
+                parents: parents.clone(),
+                author: sig("alice", *offset),
+                committer: sig("alice", *offset),
+                extra_headers: signature
+                    .iter()
+                    .map(|s| (b"gpgsig".to_vec(), s.as_bytes().to_vec()))
+                    .collect(),
+                message: format!("{}\n", message.trim_end_matches('\n')).into_bytes(),
+            };
+            let id = git.id(Algorithm::Sha256).unwrap();
+            ids.push(id);
+            sqlx::query(
+                "INSERT INTO commits (repo, seq, id, parent, tree, author_name, author_email, author_offset,
+                                      committer_name, committer_email, committer_offset, created_at, message, signature, parents)
+                 VALUES ('r', $1, $2, $3, $4, 'alice', 'alice@pyn.invalid', $5, 'alice', 'alice@pyn.invalid', $5, to_timestamp(1700000000), $6, $7, $8)",
+            )
+            .bind(seq as i64 + 1)
+            .bind(id.to_hex())
+            .bind(parents.first().map(ObjectId::to_hex))
+            .bind(hex('a').to_hex())
+            .bind(offset)
+            .bind(message)
+            .bind(signature)
+            .bind(parents.iter().map(ObjectId::to_hex).collect::<Vec<_>>())
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        }
+        migrate(&store).await;
+        let repo = RepoId::new("r");
+        for id in ids {
+            let c = store.get_commit(&repo, &id).await.unwrap().unwrap();
+            c.verify().unwrap();
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]

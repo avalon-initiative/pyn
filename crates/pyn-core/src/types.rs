@@ -181,6 +181,8 @@ pub struct Commit {
     /// The commit's `gpgsig` header, if it is signed.
     pub signature: Option<String>,
     pub changeset: Option<String>,
+    /// The exact git commit bytes; `id` is their hash and the fields above are derived from them.
+    pub raw: Vec<u8>,
     /// The revisions it made, ordered by path.
     pub revisions: Vec<Revision>,
 }

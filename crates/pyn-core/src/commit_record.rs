@@ -217,22 +217,69 @@ impl Commit {
         }
     }
 
-    /// The id the record's fields give; equals `id` unless the record was altered.
+    /// The id the record's fields give; what a server-created commit is stored under.
     pub fn expected_id(&self) -> Result<ObjectId> {
         self.git_commit()
             .id(self.tree.algorithm())
             .map_err(object_error)
     }
 
+    /// The record the raw commit bytes describe, without revisions.
+    pub fn from_raw(algorithm: Algorithm, raw: Vec<u8>, changeset: Option<String>) -> Result<Self> {
+        let parsed = pyn_object::Commit::parse(algorithm, &raw).map_err(object_error)?;
+        let id = hash_object(algorithm, Kind::Commit, &raw).map_err(object_error)?;
+        let person = |s: &Signature| -> Result<Person> {
+            let text = |b: &[u8]| {
+                String::from_utf8(b.to_vec())
+                    .map_err(|_| PynError::Storage("commit identity is not UTF-8".into()))
+            };
+            Ok(Person {
+                name: text(&s.name)?,
+                email: text(&s.email)?,
+                offset_minutes: s.offset_minutes,
+            })
+        };
+        let text = |b: &[u8]| {
+            String::from_utf8(b.to_vec())
+                .map_err(|_| PynError::Storage("commit text is not UTF-8".into()))
+        };
+        Ok(Self {
+            id,
+            parents: parsed.parents.clone(),
+            tree: parsed.tree,
+            author: person(&parsed.author)?,
+            committer: person(&parsed.committer)?,
+            created_at: Utc
+                .timestamp_opt(parsed.committer.time, 0)
+                .single()
+                .ok_or_else(|| PynError::Storage("commit time out of range".into()))?,
+            message: text(&parsed.message)?,
+            signature: parsed.gpgsig().map(text).transpose()?,
+            changeset,
+            raw,
+            revisions: Vec::new(),
+        })
+    }
+
+    /// Checks that the raw bytes hash to `id` and that the record's fields are what they say.
     pub fn verify(&self) -> Result<()> {
-        if self.expected_id()? == self.id {
-            Ok(())
+        let bad = || PynError::HistoryCorrupt(format!("commit {} does not match its id", self.id));
+        let derived =
+            Self::from_raw(self.tree.algorithm(), self.raw.clone(), None).map_err(|_| bad())?;
+        let message = if self.message.ends_with('\n') {
+            self.message.clone()
         } else {
-            Err(PynError::HistoryCorrupt(format!(
-                "commit {} does not match its id",
-                self.id
-            )))
-        }
+            format!("{}\n", self.message)
+        };
+        let same = derived.id == self.id
+            && derived.tree == self.tree
+            && derived.parents == self.parents
+            && derived.author == self.author
+            && derived.committer == self.committer
+            && derived.created_at == self.created_at
+            && derived.message == message
+            && derived.signature == self.signature;
+        if same { Ok(()) } else { Err(bad()) }
     }
 }
 
@@ -261,8 +308,10 @@ pub fn draft_commit(
         message: message.to_string(),
         signature: None,
         changeset,
+        raw: Vec::new(),
         revisions: Vec::new(),
     };
+    record.raw = record.git_commit().encode();
     record.id = record.expected_id()?;
     Ok(CommitDraft {
         record,

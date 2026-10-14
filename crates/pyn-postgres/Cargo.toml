@@ -15,6 +15,7 @@ tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros"] }
 [dev-dependencies]
 pyn-core = { path = "../pyn-core", features = ["contract"] }
 hex = "0.4.3"
+pyn-object = { path = "../pyn-object" }
 sha2 = "0.11.0"
 tokio = { version = "1.53.2", features = ["macros", "rt-multi-thread"] }
 

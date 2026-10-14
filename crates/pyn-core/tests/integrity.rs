@@ -256,6 +256,17 @@ async fn a_tampered_commit_or_tree_is_reported_by_verify() {
     let w = world();
     commit(&w, &a, "one").await;
     let only = w.svc.head_commit().await.unwrap().unwrap();
+    w.meta.tamper_commit(&w.repo, &only, |c| c.raw.push(b'x'));
+    let report = w.svc.verify(None, false).await.unwrap();
+    assert_eq!(
+        report.problems.iter().map(|p| p.kind).collect::<Vec<_>>(),
+        vec![BreakKind::Hash]
+    );
+    assert!(w.svc.get_commit(&only).await.is_err());
+
+    let w = world();
+    commit(&w, &a, "one").await;
+    let only = w.svc.head_commit().await.unwrap().unwrap();
     w.meta.tamper_commit(&w.repo, &only, |c| c.tree = only);
     let report = w.svc.verify(None, false).await.unwrap();
     assert!(
