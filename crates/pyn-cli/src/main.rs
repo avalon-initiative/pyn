@@ -740,6 +740,7 @@ fn main() {
     if let Some(name) = first_subcommand()
         && unsupported::REFUSED_OFF_GIT.contains(&name.as_str())
         && !in_git_home()
+        && !in_pyn_workspace()
     {
         eprintln!("{}", unsupported::message(&name));
         std::process::exit(1);
@@ -770,6 +771,12 @@ fn main() {
         eprintln!("fatal: {e:#}");
         std::process::exit(128);
     }
+}
+
+fn in_pyn_workspace() -> bool {
+    std::env::current_dir()
+        .ok()
+        .is_some_and(|cwd| Workspace::discover(&cwd).is_some())
 }
 
 fn in_git_home() -> bool {
@@ -1288,17 +1295,19 @@ fn run(cli: Cli) -> Result<()> {
                 .transpose()?;
             sync::clone_into(&backend, &target, &server, &repo, commit.as_deref())?;
         }
-        Command::Fetch(_) => {
-            eprintln!("{}", unsupported::message("fetch"));
-            std::process::exit(1);
+        Command::Fetch(args) => {
+            require_bare(&args, "fetch");
+            update_as_remote(&backend, in_workspace("fetch")?, ws.as_ref())?;
         }
-        Command::Pull(_) => {
-            eprintln!("{}", unsupported::message("pull"));
-            std::process::exit(1);
+        Command::Pull(args) => {
+            require_bare(&args, "pull");
+            update_as_remote(&backend, in_workspace("pull")?, ws.as_ref())?;
         }
-        Command::Push(_) => {
-            eprintln!("{}", unsupported::message("push"));
-            std::process::exit(1);
+        Command::Push(args) => {
+            require_bare(&args, "push");
+            println!(
+                "Nothing to push: commits go straight to the server, so `pyn commit` has already published them."
+            );
         }
         Command::Tag(_) => {
             eprintln!("{}", unsupported::message("tag"));
@@ -1954,6 +1963,30 @@ fn show_command(backend: &dyn Backend, commit: Option<&str>, format: &diff::Form
         print!("{body}");
     }
     Ok(())
+}
+
+/// A pyn server remote has no options yet: anything but the bare command is a usage error.
+fn require_bare<T: std::fmt::Debug>(given: &T, name: &str) {
+    let bare = Cli::try_parse_from(["pyn", name])
+        .ok()
+        .map(|c| match c.command {
+            Command::Fetch(a) => format!("{a:?}"),
+            Command::Pull(a) => format!("{a:?}"),
+            Command::Push(a) => format!("{a:?}"),
+            _ => String::new(),
+        });
+    if bare.as_deref() != Some(&format!("{given:?}")) {
+        usage_error(&format!(
+            "`pyn {name}` takes no arguments on a pyn server; it runs `pyn update`"
+        ));
+    }
+}
+
+fn update_as_remote(backend: &dyn Backend, w: &Workspace, ws: Option<&Workspace>) -> Result<()> {
+    if let Some(w) = ws {
+        merging::refuse_during_merge(w, "update")?;
+    }
+    sync::update(backend, w, &[], None)
 }
 
 /// A usage error, reported and exited as the argument parser does.

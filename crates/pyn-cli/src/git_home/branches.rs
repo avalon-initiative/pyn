@@ -224,6 +224,9 @@ fn rename(git: &GitHome, names: &[String]) -> Result<()> {
 }
 
 pub fn branch(git: &GitHome, args: BranchArgs) -> Result<()> {
+    if args.all || args.remotes {
+        crate::usage_error("`branch -a` and `-r` are not built on a git repository");
+    }
     if args.show_current {
         if let Head::Branch { name, .. } = git.repo.head()? {
             println!("{name}");

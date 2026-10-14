@@ -80,6 +80,12 @@ pub struct BranchArgs {
     /// Print the current branch's name.
     #[arg(long)]
     pub(crate) show_current: bool,
+    /// List local and remote-tracking branches (a pyn server only).
+    #[arg(short = 'a', long)]
+    pub(crate) all: bool,
+    /// List remote-tracking branches (a pyn server only).
+    #[arg(short = 'r', long)]
+    pub(crate) remotes: bool,
 }
 
 /// Switch the workspace to another branch.
@@ -191,7 +197,12 @@ pub fn branch_command(
         list,
         verbose,
         show_current,
+        all,
+        remotes,
     } = args;
+    if (all || remotes) && (delete || force_delete || rename || show_current || !names.is_empty()) {
+        bail!("`pyn branch -a` and `-r` only list");
+    }
     let modes = [delete || force_delete, rename, list || show_current].map(usize::from);
     if modes.iter().sum::<usize>() > 1 {
         bail!("choose one of --delete, --move and --list");
@@ -225,7 +236,7 @@ pub fn branch_command(
         return Ok(());
     }
     match names.as_slice() {
-        [] => list_branches(backend, api, ws, verbose),
+        [] => list_branches(backend, api, ws, verbose, Scope::of(all, remotes)),
         _ if list => bail!("`pyn branch --list` takes no branch names"),
         [new] => create(backend, api, ws, new, None).map(drop),
         [new, start] => create(backend, api, ws, new, Some(start)).map(drop),
@@ -233,24 +244,57 @@ pub fn branch_command(
     }
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum Scope {
+    Local,
+    Remote,
+    All,
+}
+
+impl Scope {
+    fn of(all: bool, remotes: bool) -> Self {
+        match (all, remotes) {
+            (true, _) => Scope::All,
+            (_, true) => Scope::Remote,
+            _ => Scope::Local,
+        }
+    }
+}
+
+/// The server is the only remote, `origin`, and its branches are the same ones the workspace follows.
 fn list_branches(
     backend: &dyn Backend,
     api: &Api,
     ws: Option<&Workspace>,
     verbose: bool,
+    scope: Scope,
 ) -> Result<()> {
     let here = name(ws);
     let mut all = branches(api)?;
     all.sort_by(|a, b| a.name.cmp(&b.name));
-    let width = all
+    let mut rows: Vec<(char, String, &api::Branch)> = Vec::new();
+    if scope != Scope::Remote {
+        rows.extend(all.iter().map(|b| {
+            let mark = if b.name == here { '*' } else { ' ' };
+            (mark, b.name.clone(), b)
+        }));
+    }
+    if scope != Scope::Local {
+        let prefix = if scope == Scope::All {
+            "remotes/origin"
+        } else {
+            "origin"
+        };
+        rows.extend(all.iter().map(|b| (' ', format!("{prefix}/{}", b.name), b)));
+    }
+    let width = rows
         .iter()
-        .map(|b| b.name.chars().count())
+        .map(|(_, n, _)| n.chars().count())
         .max()
         .unwrap_or(0);
-    for b in all {
-        let mark = if b.name == here { '*' } else { ' ' };
+    for (mark, shown, b) in rows {
         if !verbose {
-            println!("{mark} {}", b.name);
+            println!("{mark} {shown}");
             continue;
         }
         let (id, subject) = match &b.commit {
@@ -263,7 +307,7 @@ fn list_branches(
             }
             None => ("-".to_string(), "(no commits yet)".to_string()),
         };
-        println!("{mark} {:<width$}  {id}  {subject}", b.name);
+        println!("{mark} {shown:<width$}  {id}  {subject}");
     }
     Ok(())
 }
