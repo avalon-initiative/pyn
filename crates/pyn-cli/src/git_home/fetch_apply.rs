@@ -150,7 +150,7 @@ fn append_fetch_head(git: &GitHome, entries: &[Entry], url: &str) -> Result<()> 
 }
 
 /// The commit `id` names, following annotated tags; `None` when it is not a commit or is missing.
-fn commit_of(git: &GitHome, id: &ObjectId) -> Option<ObjectId> {
+pub(super) fn commit_of(git: &GitHome, id: &ObjectId) -> Option<ObjectId> {
     let mut current = *id;
     for _ in 0..16 {
         let object = git.repo.objects().read_opt(&current).ok()??;

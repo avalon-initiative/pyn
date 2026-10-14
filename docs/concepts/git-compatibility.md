@@ -94,14 +94,15 @@ The commands named in decision #218.
 | `git branch`, `git switch`, `git checkout` | `pyn branch`, `pyn switch`, `pyn checkout` | supported | See [branching and merging](#branching-and-merging). On a git home they work on `.git` as git does, see [Branches, switching and the work tree](#branches-switching-and-the-work-tree). |
 | `git merge` | `pyn merge` | supported | See [branching and merging](#branching-and-merging). On a git home it merges as git does, see [Merging](#merging). |
 | `git fetch` | `pyn fetch` on a git home | git home only | See [Fetch on a git home](#fetch-on-a-git-home). On a pyn server it prints the git-command message until #310. |
-| `git pull`, `git push` | none | planned | Git-command message. On a git home `pull` is #309 and `push` is #308 (epic #301); on a pyn server see #310. Today a commit goes straight to the server and `pyn update` brings the workspace forward. |
+| `git pull` | `pyn pull` on a git home | git home only | Fetch, then merge through `pyn merge`; see [Pull on a git home](#pull-on-a-git-home). On a pyn server it prints the git-command message until #310; `pyn update` brings a server workspace forward meanwhile. |
+| `git push` | none | planned | Git-command message. On a git home `push` is #308 (epic #301); on a pyn server see #310. Today a commit goes straight to the server. |
 | `git remote` | `pyn remote` | git home; pyn server partly | On a git home it lists and edits the remotes in `.git/config`, see [Remotes](#remotes). On a pyn server `pyn remote` and `pyn remote -v` show the one remote, `origin`: the server and repository set by `--server` and `--repo` or `pyn config set server` and `repo`; the editing subcommands say so and exit `1`. |
 | `git tag [-a] [-m <msg>] [-f] [<name> [<commit>]]`, `-d`, `-l` | `pyn tag ...` on a git home | git home only | See [Tags](#tags). On a pyn server it prints the git-command message (a server's commits are named by hash and have no tags yet, #223). |
 | `git stash [push] [-u] [-m <msg>]`, `list`, `pop`, `apply`, `drop`, `clear` | `pyn stash ...` on a git home | git home only | See [Stashing](#stashing). On a pyn server it prints the git-command message. |
 
 `pyn update [<path>...]` is the pre-branch stand-in for `fetch` plus `pull`: it fast-forwards files without local
 changes and never overwrites an edit, reporting skipped files. `--revision <commit>` moves the workspace to an older or
-newer commit. It is pyn only, and is expected to become a thin layer over `pull` once `pull` (#309) lands.
+newer commit. It is pyn only; on a pyn server it is expected to become a thin layer over `pull` (#310). A git home has `pyn pull` instead, and `pyn update` is refused there.
 
 ## History and inspection
 
@@ -142,7 +143,7 @@ history across branches (decision #28).
 | `git remote add -f` | `pyn remote add -f ...` | git home: supported | Adds the remote, then runs `pyn fetch <name>`. If the fetch fails the remote stays defined, as in git. |
 | `git remote show`, `prune`, `update`, `set-head`, `set-branches` | none | unsupported | `show` (with or without `-n`) exits `1` with `` `remote show` is not built yet ``; the others are usage errors (`129`). `pyn fetch --prune <remote>` does what `remote prune` does. |
 | `git fetch [<options>] [<remote>\|<url>] [<refspec>...]` | `pyn fetch ...` | git home: supported | Git's behaviour, flags, output and exit statuses; see [Fetch on a git home](#fetch-on-a-git-home). |
-| `git pull [<remote> <branch>]` | none (`pyn update`) | planned | Git home: #309. Pyn server: #310 runs `update`. |
+| `git pull [<remote> <branch>]` | `pyn pull` | git home: supported | See [Pull on a git home](#pull-on-a-git-home). Pyn server: #310 runs `update`; until then the git-command message. |
 | `git push [<remote> <branch>]` | none | planned | Git home: #308. Pyn server: #310 says there is nothing to publish, because `pyn commit` already writes to the server; local commits and a real `push` there are decision #300, built in #313. |
 | `git clone` | `pyn clone` | same | See the daily set and [Clone from a git URL](#clone-from-a-git-url). |
 
@@ -252,6 +253,51 @@ the remotes one at a time whatever `-j` or `fetch.parallel` say, so `FETCH_HEAD`
 not be written names `pyn fetch --prune`, since `remote prune` is not built. `remote show` against the remote and
 `remote update` are not built.
 
+### Pull on a git home
+
+`pyn pull [<options>] [<repository> [<refspec>...]]` is `pyn fetch <repository> <refspec>...` (same remote choice, same output,
+`FETCH_HEAD` written) followed by `pyn merge` of the fetched merge candidates into the current branch, as `git pull` with the
+merge mode. Git's own prose is not copied everywhere: where a message names a command it names `pyn`.
+
+1. Before fetching: `--rebase`, `-r`, `pull.rebase` or `branch.<name>.rebase` other than false (`true`, `merges`, `interactive`)
+   is `fatal: rebase is not built; use --no-rebase` (`128`) with nothing fetched. `--no-rebase`, `pull.rebase=false` and
+   `branch.<name>.rebase=false` merge. With unmerged index entries it is `fatal: Exiting because of an unresolved conflict.`
+   and with `MERGE_HEAD` present `fatal: You have not concluded your merge (MERGE_HEAD exists).` (both `128`).
+2. The fetch. A failed fetch exits `1` (git's `pull` does, not `fetch`'s `128`); `--dry-run` fetches only and ends there.
+3. The merge candidates are the `FETCH_HEAD` lines that are not `not-for-merge`: the branch named by `branch.<name>.merge` when
+   no refspec is given, else what the command line fetched. None: git's explanation and exit `1` (`There is no tracking
+   information for the current branch.`, `You are not currently on a branch.`, `You asked to pull from the remote '<r>', but did
+   not specify a branch...`, `Your configuration specifies to merge with the ref '<ref>' from the remote, but no such ref was
+   fetched.`, or the wildcard note). More than one candidate is an octopus merge, which is not built: `fatal: octopus merges
+   are not built; name one branch to pull` (`128`, after the fetch).
+4. An unborn branch is pointed at the candidate and its tree is checked out, silently, as git does; several candidates are
+   `fatal: Cannot merge multiple branches into empty head.`
+5. Otherwise the candidate (peeled to a commit) is merged as in [Merging](#merging): `Already up to date.`, fast-forward
+   (`Updating <old>..<new>`, `Fast-forward`), or a merge commit titled `Merge branch '<name>' of <url>` (`tag`, `remote-tracking
+   branch` and `commit` for other refs, plain `Merge <url>` for a bare `HEAD`, and ` into <branch>` unless on `main` or
+   `master`). A conflict leaves `MERGE_HEAD`, `MERGE_MSG` and unmerged index entries and exits `1`. Local changes the merge would
+   overwrite stop it with `error: Your local changes to the following files would be overwritten by merge` (exit `1` for a
+   fast-forward, `2` for a merge commit, as git).
+6. Divergent branches (neither side contains the other) with no `--ff`, `--no-ff`, `--ff-only`, `--no-rebase`, `pull.ff` or
+   `pull.rebase` to say how to reconcile them are `fatal: Need to specify how to reconcile divergent branches.` (`128`, after the
+   fetch), with a hint.
+
+Integration config: `--ff`/`--no-ff`/`--ff-only` beat `pull.ff` (`true`, `false`, `only`), which beats `merge.ff`; `--ff-only`
+that cannot fast-forward is `fatal: Not possible to fast-forward, aborting.` (`128`).
+
+| Flag | Meaning |
+| --- | --- |
+| `-q`, `-v`, `--progress`, `--no-progress` | Forwarded to the fetch; `-q` also silences the merge's `Updating`, `Fast-forward`, `Auto-merging` and summary lines. |
+| `-p`, `--prune`, `--no-prune`, `-t`, `--tags`, `--no-tags`, `-f`, `--force`, `-a`, `--append`, `--dry-run` | As for `pyn fetch`. |
+| `--ff`, `--no-ff`, `--ff-only`, `--commit`, `--no-commit` | As for `pyn merge`; `--no-commit` stops before the commit with `MERGE_HEAD` set. |
+| `--no-edit` | Accepted: no editor is ever started. |
+| `--no-rebase`, `--rebase`, `-r` | `--no-rebase` merges; `--rebase` is refused as above. |
+| `--edit`, `-e`, `--squash`, `-s`/`--strategy`, `-X`/`--strategy-option`, `--autostash`, `-S`/`--gpg-sign`, `--signoff`, `--cleanup`, `--stat`, `-n`/`--no-stat`, `--recurse-submodules`, `--allow-unrelated-histories`, `--all` | Usage error (`129`): not built (`--all`: use `pyn fetch --all`). |
+
+Config read: `pull.ff`, `pull.rebase`, `branch.<name>.rebase`, `branch.<name>.merge`, `branch.<name>.remote`, `merge.ff`, plus what
+`pyn fetch` reads. The summary after a merge is `pyn merge`'s file count, not git's diffstat, and the message of an annotated tag
+is not appended to a tag merge's message. Pulling on a pyn server is #310 and still prints the git-command message.
+
 ### Clone from a git URL
 
 `pyn clone [<options>] <url> [<dir>]` makes a new git repository from a git remote over the system `ssh` or smart HTTP, with no
@@ -322,7 +368,7 @@ implemented in `pyn-gittransport`, `pyn-gitwire` and `pyn-git`. **git does not n
 program; `make boundary-check` fails when non-test source under `crates/` spawns one. The programs pyn can start are the system
 `ssh` client, and the credential helpers and askpass programs your own configuration names.
 
-`pyn ls-remote`, `pyn fetch`, `pyn remote add -f` and `pyn clone <git url>` use them; `pull` and `push` arrive on top of the same
+`pyn ls-remote`, `pyn fetch`, `pyn pull`, `pyn remote add -f` and `pyn clone <git url>` use them; `push` arrives on top of the same
 connections (epic #301). The library functions `fetch_objects` and `push_objects` (thin packs and offset deltas on fetch, a
 streamed pack file on push) are what those commands call.
 
@@ -677,7 +723,7 @@ set to true, `core.eol=crlf` with a `text` attribute, `eol=crlf`, a `filter` oth
 symlinks and submodules are never converted). A Git LFS filter writes the pointer file as it is, with a warning (decision #245).
 The same limit applies to `status`, which compares raw bytes (#273). Hooks are never run; one warning names the hooks that exist
 for the command (`post-checkout`, `pre-merge-commit`, `commit-msg` and the like). Sparse checkouts, submodule updates, the split
-index and `GIT_DIR` are not supported, and `rebase`, `cherry-pick`, `revert`, `--squash` and anything that talks to a remote other than `ls-remote`, `fetch` and `clone` are not built yet (`pull` and `push`, epic #301; see [Transports and credentials](#transports-and-credentials)).
+index and `GIT_DIR` are not supported, and `rebase`, `cherry-pick`, `revert`, `--squash` and anything that talks to a remote other than `ls-remote`, `fetch`, `clone` and `pull` are not built yet (`push`, epic #301; see [Transports and credentials](#transports-and-credentials)).
 
 ### Refused commands
 
@@ -703,7 +749,7 @@ Commands a git home will gain fail with exit `1`, as the other git-only commands
 
 | Command | Needs |
 | --- | --- |
-| `pull`, `push`, `update` | `pull` #309, `push` #308, `update` #310. |
+| `push`, `update` | `push` #308, `update` #310. |
 | `get` | Per-path revisions, which git has no equivalent of; not scheduled. |
 
 `pyn convert` fails with `pyn: 'convert' is not available yet` and names #95.

@@ -470,11 +470,7 @@ fn repository_commands_refuse_and_name_the_pyn_server() {
 #[test]
 fn commands_a_git_home_will_gain_name_the_issue() {
     let repo = Repo::new("sha1");
-    for (args, issue) in [
-        (vec!["pull"], "#255"),
-        (vec!["push"], "#255"),
-        (vec!["update"], "#255"),
-    ] {
+    for (args, issue) in [(vec!["push"], "#255"), (vec!["update"], "#255")] {
         let out = repo.run_in(&repo.main, &args);
         let err = String::from_utf8_lossy(&out.stderr);
         assert_eq!(out.status.code(), Some(1), "{args:?}: {err}");

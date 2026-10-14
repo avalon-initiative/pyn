@@ -124,6 +124,8 @@ enum Command {
     Remote(git_home::RemoteArgs),
     /// Download objects and refs from a git remote (a git repository only).
     Fetch(git_home::FetchArgs),
+    /// Fetch from a git remote and merge the result into the current branch (a git repository only).
+    Pull(git_home::PullArgs),
     /// List the references in a remote git repository (ssh or smart HTTP; works anywhere).
     LsRemote(ls_remote::LsRemoteArgs),
     /// Show what differs between this workspace and the server.
@@ -1286,6 +1288,10 @@ fn run(cli: Cli) -> Result<()> {
         }
         Command::Fetch(_) => {
             eprintln!("{}", unsupported::message("fetch"));
+            std::process::exit(1);
+        }
+        Command::Pull(_) => {
+            eprintln!("{}", unsupported::message("pull"));
             std::process::exit(1);
         }
         Command::Tag(_) => {

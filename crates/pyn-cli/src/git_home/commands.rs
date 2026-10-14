@@ -73,6 +73,7 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
         Command::Stash(args) => super::stash::stash(git, args),
         Command::Remote(args) => super::remote::remote(git, args),
         Command::Fetch(args) => super::fetch::fetch(git, args),
+        Command::Pull(args) => super::pull::pull(git, args),
         Command::Add {
             paths,
             update,
