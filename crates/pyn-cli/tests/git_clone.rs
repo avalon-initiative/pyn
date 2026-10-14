@@ -16,13 +16,6 @@ use std::process::Command;
 use gitsrv::*;
 use tempfile::{TempDir, tempdir};
 
-#[derive(Clone, Copy, PartialEq, Debug)]
-enum Via {
-    Ssh,
-    Http,
-    HttpAuth,
-}
-
 struct Out {
     code: i32,
     stderr: String,
@@ -37,13 +30,6 @@ struct Rig {
     shim: PathBuf,
     url: String,
     server: Option<Server>,
-}
-
-fn url_for(server: &Option<Server>, repo_path: &str, bare: &Path) -> String {
-    match server {
-        None => format!("ssh://git@example.invalid{}", bare.display()),
-        Some(s) => format!("{}/{repo_path}", s.url),
-    }
 }
 
 impl Rig {
@@ -68,21 +54,8 @@ impl Rig {
         let home = root.join("home");
         fs::create_dir_all(&home).unwrap();
         fs::write(home.join(".gitconfig"), "[init]\n\tdefaultBranch = main\n").unwrap();
-        let server = match via {
-            Via::Ssh => None,
-            Via::Http => Some(Server::start(&root, Opts::default())),
-            Via::HttpAuth => Some(Server::start(
-                &root,
-                Opts {
-                    auth: Some(("alice".into(), "s3cret".into())),
-                    ..Opts::default()
-                },
-            )),
-        };
-        let url = match (&server, via) {
-            (Some(s), Via::HttpAuth) => format!("http://alice:s3cret@{}/served.git", &s.url[7..]),
-            _ => url_for(&server, "served.git", &bare),
-        };
+        let server = via.serve(&root);
+        let url = via.url(&server, "served.git", &bare);
         Rig {
             work: root.join("seed"),
             shim: ssh_shim(&root, false),
@@ -354,13 +327,6 @@ fn state(dir: &Path, bare: bool) -> String {
 fn assert_ok(o: &Out) {
     assert_eq!(o.code, 0, "{}", o.stderr);
 }
-
-const ALL_WAYS: [(&str, Via); 4] = [
-    ("sha1", Via::Ssh),
-    ("sha256", Via::Ssh),
-    ("sha1", Via::Http),
-    ("sha256", Via::Http),
-];
 
 #[test]
 fn a_default_clone_matches_git_over_ssh_and_http_for_both_hash_formats() {

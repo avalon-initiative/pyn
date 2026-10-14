@@ -247,6 +247,53 @@ impl Drop for Server {
     }
 }
 
+/// How a test reaches its served repository: ssh through the shim, smart HTTP, or HTTP behind basic auth.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Via {
+    Ssh,
+    Http,
+    HttpAuth,
+}
+
+/// Both hash formats over ssh and plain HTTP.
+pub const ALL_WAYS: [(&str, Via); 4] = [
+    ("sha1", Via::Ssh),
+    ("sha256", Via::Ssh),
+    ("sha1", Via::Http),
+    ("sha256", Via::Http),
+];
+
+pub const AUTH_USER: &str = "alice";
+pub const AUTH_PASS: &str = "s3cret";
+
+impl Via {
+    /// The HTTP server over `root` (none for ssh, which needs only the shim).
+    pub fn serve(self, root: &Path) -> Option<Server> {
+        match self {
+            Via::Ssh => None,
+            Via::Http => Some(Server::start(root, Opts::default())),
+            Via::HttpAuth => Some(Server::start(
+                root,
+                Opts {
+                    auth: Some((AUTH_USER.into(), AUTH_PASS.into())),
+                    ..Opts::default()
+                },
+            )),
+        }
+    }
+
+    /// The URL of the repository `name` (a directory under the served root) whose bare path is `bare`.
+    pub fn url(self, server: &Option<Server>, name: &str, bare: &Path) -> String {
+        match (server, self) {
+            (None, _) => format!("ssh://git@example.invalid{}", bare.display()),
+            (Some(s), Via::HttpAuth) => {
+                format!("http://{AUTH_USER}:{AUTH_PASS}@{}/{name}", &s.url[7..])
+            }
+            (Some(s), _) => format!("{}/{name}", s.url),
+        }
+    }
+}
+
 pub fn basic(user: &str, pass: &str) -> String {
     const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let data = format!("{user}:{pass}").into_bytes();

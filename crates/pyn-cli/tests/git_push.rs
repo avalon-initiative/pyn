@@ -14,20 +14,6 @@ use std::process::Command;
 use gitsrv::*;
 use tempfile::{TempDir, tempdir};
 
-#[derive(Clone, Copy, PartialEq, Debug)]
-enum Via {
-    Ssh,
-    Http,
-    HttpAuth,
-}
-
-const ALL_WAYS: [(&str, Via); 4] = [
-    ("sha1", Via::Ssh),
-    ("sha256", Via::Ssh),
-    ("sha1", Via::Http),
-    ("sha256", Via::Http),
-];
-
 const SSH: (&str, Via) = ("sha1", Via::Ssh);
 
 struct Out {
@@ -77,17 +63,7 @@ impl Twin {
         let shim = ssh_shim(&root, false);
         let home = root.join("home");
         fs::create_dir_all(&home).unwrap();
-        let server = match via {
-            Via::Ssh => None,
-            Via::Http => Some(Server::start(&root, Opts::default())),
-            Via::HttpAuth => Some(Server::start(
-                &root,
-                Opts {
-                    auth: Some(("alice".into(), "s3cret".into())),
-                    ..Opts::default()
-                },
-            )),
-        };
+        let server = via.serve(&root);
         let side = names.map(|n| root.join(format!("{n}-side")));
         let t = Self {
             _tmp: tmp,
@@ -123,11 +99,7 @@ impl Twin {
             .to_str()
             .unwrap()
             .to_owned();
-        match (&self.server, self.via) {
-            (None, _) => format!("ssh://git@example.invalid{base}"),
-            (Some(s), Via::HttpAuth) => format!("http://alice:s3cret@{}/{name}", &s.url[7..]),
-            (Some(s), _) => format!("{}/{name}", s.url),
-        }
+        self.via.url(&self.server, &name, Path::new(&base))
     }
 
     /// Copies the seed's branches and tags into both sides (objects are identical, so ids are too).

@@ -461,6 +461,12 @@ program; `make boundary-check` fails when non-test source under `crates/` spawns
 connections (epic #301). The library functions `fetch_objects` and `push_objects` (thin packs and offset deltas on fetch, a
 streamed pack file on push) are what those commands call.
 
+Tests use real git as the oracle server (tests only, never at runtime): `crates/pyn-gittransport/tests/common/gitsrv.rs` holds
+the shared fixtures (bare repositories, the `GIT_SSH_COMMAND` shim, `git http-backend` behind a test HTTP server), and
+`crates/pyn-cli/tests/git_remote_matrix.rs` runs `ls-remote`, `clone`, `fetch`, `pull` and `push` over ssh, HTTP, HTTP with
+credentials, a local path and a `file://` URL, each for SHA-1 and SHA-256 repositories. The last two are not supported yet, so the matrix
+asserts that refusal. The per-command suites (`git_clone.rs`, `git_fetch.rs`, `git_pull.rs`, `git_push.rs`) go deeper on one command.
+
 ### URLs
 
 | Form | Transport |

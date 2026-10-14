@@ -13,20 +13,6 @@ use std::process::Command;
 use gitsrv::*;
 use tempfile::{TempDir, tempdir};
 
-#[derive(Clone, Copy, PartialEq, Debug)]
-enum Via {
-    Ssh,
-    Http,
-    HttpAuth,
-}
-
-const ALL_WAYS: [(&str, Via); 4] = [
-    ("sha1", Via::Ssh),
-    ("sha256", Via::Ssh),
-    ("sha1", Via::Http),
-    ("sha256", Via::Http),
-];
-
 struct Out {
     code: i32,
     stdout: String,
@@ -59,22 +45,8 @@ impl Twin {
         let shim = ssh_shim(&root, false);
         let home = root.join("home");
         fs::create_dir_all(&home).unwrap();
-        let server = match via {
-            Via::Ssh => None,
-            Via::Http => Some(Server::start(&root, Opts::default())),
-            Via::HttpAuth => Some(Server::start(
-                &root,
-                Opts {
-                    auth: Some(("alice".into(), "s3cret".into())),
-                    ..Opts::default()
-                },
-            )),
-        };
-        let url = match (&server, via) {
-            (None, _) => format!("ssh://git@example.invalid{}", bare.display()),
-            (Some(s), Via::HttpAuth) => format!("http://alice:s3cret@{}/served.git", &s.url[7..]),
-            (Some(s), _) => format!("{}/served.git", s.url),
-        };
+        let server = via.serve(&root);
+        let url = via.url(&server, "served.git", &bare);
         let t = Self {
             work: root.join("seed"),
             git: root.join("git-side"),
