@@ -94,7 +94,7 @@ The commands named in decision #218.
 | `git branch`, `git switch`, `git checkout` | `pyn branch`, `pyn switch`, `pyn checkout` | supported | See [branching and merging](#branching-and-merging). On a git home they work on `.git` as git does, see [Branches, switching and the work tree](#branches-switching-and-the-work-tree). |
 | `git merge` | `pyn merge` | supported | See [branching and merging](#branching-and-merging). On a git home it merges as git does, see [Merging](#merging). |
 | `git fetch` | `pyn fetch` on a git home | git home only | See [Fetch on a git home](#fetch-on-a-git-home). On a pyn server it prints the git-command message until #310. |
-| `git pull`, `git push` | none | planned | Git-command message. On a git home `pull` is #309 and `push` is #308 (epic #301); on a pyn server see #310. Today a commit goes straight to the server and `pyn update` brings the workspace forward. |
+| `git pull`, `git push` | none | planned | Git-command message. On a git home `pull` is #309 and `push` is built (see [Push on a git home](#push-on-a-git-home)); on a pyn server see #310. Today a commit goes straight to the server and `pyn update` brings the workspace forward. |
 | `git remote` | `pyn remote` | git home; pyn server partly | On a git home it lists and edits the remotes in `.git/config`, see [Remotes](#remotes). On a pyn server `pyn remote` and `pyn remote -v` show the one remote, `origin`: the server and repository set by `--server` and `--repo` or `pyn config set server` and `repo`; the editing subcommands say so and exit `1`. |
 | `git tag [-a] [-m <msg>] [-f] [<name> [<commit>]]`, `-d`, `-l` | `pyn tag ...` on a git home | git home only | See [Tags](#tags). On a pyn server it prints the git-command message (a server's commits are named by hash and have no tags yet, #223). |
 | `git stash [push] [-u] [-m <msg>]`, `list`, `pop`, `apply`, `drop`, `clear` | `pyn stash ...` on a git home | git home only | See [Stashing](#stashing). On a pyn server it prints the git-command message. |
@@ -143,7 +143,7 @@ history across branches (decision #28).
 | `git remote show`, `prune`, `update`, `set-head`, `set-branches` | none | unsupported | `show` (with or without `-n`) exits `1` with `` `remote show` is not built yet ``; the others are usage errors (`129`). `pyn fetch --prune <remote>` does what `remote prune` does. |
 | `git fetch [<options>] [<remote>\|<url>] [<refspec>...]` | `pyn fetch ...` | git home: supported | Git's behaviour, flags, output and exit statuses; see [Fetch on a git home](#fetch-on-a-git-home). |
 | `git pull [<remote> <branch>]` | none (`pyn update`) | planned | Git home: #309. Pyn server: #310 runs `update`. |
-| `git push [<remote> <branch>]` | none | planned | Git home: #308. Pyn server: #310 says there is nothing to publish, because `pyn commit` already writes to the server; local commits and a real `push` there are decision #300, built in #313. |
+| `git push [<options>] [<repository> [<refspec>...]]` | `pyn push ...` | git home: supported | Git's behaviour, flags, output and exit statuses; see [Push on a git home](#push-on-a-git-home). Pyn server: #310 says there is nothing to publish, because `pyn commit` already writes to the server; local commits and a real `push` there are decision #300, built in #313. |
 | `git clone` | `pyn clone` | same | See the daily set and [Clone from a git URL](#clone-from-a-git-url). |
 
 ### Remotes on a git home
@@ -315,6 +315,79 @@ Differences from git, all deliberate or not yet done: no hooks, templates or `de
 `--sparse`, `--reference`, `--reference-if-able`, `--dissociate`, `--separate-git-dir`, `--template`, `--local`, `--no-local`,
 `--no-hardlinks`, `--shared`, `--upload-pack`, `--server-option`, `--bundle-uri` and `--ref-format` are usage errors.
 
+### Push on a git home
+
+`pyn push [<options>] [<repository> [<refspec>...]]` sends commits and refs to a git remote over the system `ssh` or smart HTTP,
+with no `git` program (see [Transports and credentials](#transports-and-credentials)). It prints git's table on standard error
+and exits `0` when every ref was pushed, `1` when a ref was rejected or failed, `128` on a fatal error and `129` on a usage
+error.
+
+**Which remote.** `<repository>` is a remote name or a URL. Without one: `branch.<name>.pushRemote`, then `remote.pushDefault`,
+then `branch.<name>.remote`, else `origin`; with none configured it is `fatal: No configured push destination.` (`128`). The
+URLs are the remote's `pushurl`, else its `url`; every one is pushed to in turn. `url.<base>.pushInsteadOf` and `insteadOf` are
+applied. `remote.<name>.mirror` is a usage error.
+
+**What is pushed.** Each `<refspec>` is `[+]<src>[:<dst>]`:
+
+| Refspec | Meaning |
+| --- | --- |
+| `<name>` | The local ref to the ref of the same full name. |
+| `<src>:<dst>` | `<src>` is matched like git does (`main`, `heads/main`, `refs/heads/main`, `HEAD`, a revision). A short `<dst>` is matched against the remote's refs; if it matches none, `refs/heads/` or `refs/tags/` is added according to what `<src>` is, otherwise it is `error: The destination you provided is not a full refname` and the push fails (`1`). More than one match is an error. |
+| `+<src>:<dst>` | Allow a non-fast-forward update of that ref. |
+| `:<dst>`, `--delete <name>` | Delete the remote ref. A name the remote lacks is `error: unable to delete '<name>': remote ref does not exist`. |
+| `<src>*:<dst>*` | Every local ref that matches the pattern. |
+| `tag <name>` | `refs/tags/<name>:refs/tags/<name>`. |
+| `:` | Every local branch that the remote also has. |
+| `HEAD` | The current branch; on a detached `HEAD` it is `fatal: HEAD cannot be resolved to branch` (`128`). |
+
+With no refspec: `remote.<name>.push` if set, else `push.default`: `simple` (the default; the current branch to the upstream
+branch of the same name, and `fatal` when the branch has no upstream or the upstream has another name, or when pushing to a remote
+that is not the branch's own, in which case it acts as `current`), `current`, `upstream` (`tracking`), `matching` or `nothing`.
+`push.followTags` is read. A detached `HEAD` with no refspec is `fatal: You are not currently on a branch.` The advice that
+goes with these fatal errors names `pyn`. Refspecs that cannot be parsed are `fatal: invalid refspec` (`128`).
+
+| Option | Does |
+| --- | --- |
+| `-f`, `--force` | Update refs whatever the refspec's `+` says. |
+| `--force-with-lease[=<ref>[:<expect>]]`, `--no-force-with-lease` | Refuse (`[rejected] (stale info)`) unless the remote ref is where expected: the remote-tracking ref (none means the ref must not exist), or `<expect>`. With a ref it covers only that ref. A lease that holds forces the update. The options are not order-sensitive: `--no-force-with-lease` cancels all. |
+| `-d`, `--delete` | Delete the named remote refs. |
+| `--tags` | Push `refs/tags/*` (and only that when no other refspec is given). |
+| `--follow-tags`, `--no-follow-tags` | Also push the annotated tags that point into the history being sent and are missing on the remote. |
+| `--all`, `--branches` | Push every local branch. Not with refspecs or `--tags` (`fatal`). |
+| `-u`, `--set-upstream` | For each branch pushed (or up to date) write `branch.<name>.remote` and `.merge`, and print `branch '<name>' set up to track '<remote>/<branch>'.` on standard output. `branch.<name>.pushRemote` is not touched. |
+| `-n`, `--dry-run` | Contact the remote and print the table as if it succeeded; send nothing and change no ref, configuration or tracking ref. |
+| `--atomic` | All refs or none: a ref that fails the checks here makes the others `[rejected] (atomic push failed)` and nothing is sent; a server without the capability is `fatal`. |
+| `--porcelain` | `<flag> <tab> <from>:<to> <tab> <summary> (<reason>)` lines and a final `Done`, on standard output. |
+| `-q`, `-v` | `-q` prints errors only; `-v` also prints `Pushing to <url>`, `= [up to date]` lines and the tracking refs it updates. |
+| `--progress`, `--no-progress`, `--verify`, `--no-verify`, `--thin`, `--no-thin`, `-4`, `-6`, `--recurse-submodules=no` | Accepted and ignored. No hooks run; the server's own messages (`remote: ...`, including its hooks' output) are always shown. |
+| `--mirror`, `--prune`, `--signed`, `-o`, `--push-option`, `--recurse-submodules` (other than `no`), `--receive-pack`, `--exec`, `--repo`, `--force-if-includes` | Usage error (`129`) naming the flag. `--force-if-includes` is refused because ignoring it would push less safely than asked. |
+
+What a push does, in git's order:
+
+1. Connects and reads the remote's advertised refs, then works out, for each ref, create, fast-forward, forced update, delete or
+   nothing. An update is refused as `[rejected] (non-fast-forward)` when the old tip is not an ancestor of the new one,
+   `(fetch first)` when the remote's old tip is not in this repository, `(already exists)` for a tag that exists with another
+   value, `(needs force)` when either end is not a commit, and `(stale info)` for a failed lease. `+`, `--force` and a held lease
+   turn these into `(forced update)`. A ref that is not named by a refspec is never touched; a refspec that matches nothing is
+   `error: src refspec <name> does not match any` and fails the push (`1`) before anything is sent.
+2. Sends one pack with the objects the new tips need and the remote lacks (none when only deleting), then the ref commands, and
+   relays the server's messages as `remote: ...` lines. The server decides each ref: `[remote rejected] (<its reason>)`, for example a
+   `pre-receive` hook, `receive.denyNonFastForwards` or deleting its current branch.
+3. Prints `To <url>` (without user name or password) and then up to date lines (`-v`), the refs that were pushed, then the failures,
+   each ` <flag> <summary> <from> -> <to> (<reason>)` in git's columns. The summary column is `2 * abbrev + 3` wide, the ids are
+   `core.abbrev` digits (default 7). Then `-u`, then the tracking refs, then `error: failed to push some refs to '<url>'` and one
+   `hint:` block (naming `pyn pull`) for the first kind of rejection, unless `advice.pushUpdateRejected` or the specific
+   `advice.push...` setting is false; or `Everything up-to-date` when nothing needed sending.
+4. For a push to a named remote it moves each remote-tracking ref the remote's fetch refspecs map the pushed ref to (and deletes
+   it for a delete), for every ref that was pushed or already up to date, with the reflog line `update by push` (following
+   `core.logAllRefUpdates`, as fetch does).
+
+Differences from git, all deliberate or not yet done: no per-object "Enumerating objects" or "Writing objects" progress, only what the
+server sends; ids are not lengthened to stay unique; `push.autoSetupRemote`, `push.negotiate`, `push.gpgSign`, `push.recurseSubmodules`,
+`push.useForceIfIncludes` and `remote.<name>.receivepack` are not read; pre-push hooks are never run; `--dry-run` with `-u` prints `Would set upstream of ...`
+instead of setting anything; local-path and `file://` remotes are refused (see [Transports and credentials](#transports-and-credentials)).
+A push to a pyn server is not this command: see the push row above.
+
 ## Transports and credentials
 
 Decisions #245 and #255. pyn reaches a git remote without git: the protocol, the pack handling and the credential flow are
@@ -322,7 +395,7 @@ implemented in `pyn-gittransport`, `pyn-gitwire` and `pyn-git`. **git does not n
 program; `make boundary-check` fails when non-test source under `crates/` spawns one. The programs pyn can start are the system
 `ssh` client, and the credential helpers and askpass programs your own configuration names.
 
-`pyn ls-remote`, `pyn fetch`, `pyn remote add -f` and `pyn clone <git url>` use them; `pull` and `push` arrive on top of the same
+`pyn ls-remote`, `pyn fetch`, `pyn push`, `pyn remote add -f` and `pyn clone <git url>` use them; `pull` arrives on top of the same
 connections (epic #301). The library functions `fetch_objects` and `push_objects` (thin packs and offset deltas on fetch, a
 streamed pack file on push) are what those commands call.
 
@@ -677,7 +750,7 @@ set to true, `core.eol=crlf` with a `text` attribute, `eol=crlf`, a `filter` oth
 symlinks and submodules are never converted). A Git LFS filter writes the pointer file as it is, with a warning (decision #245).
 The same limit applies to `status`, which compares raw bytes (#273). Hooks are never run; one warning names the hooks that exist
 for the command (`post-checkout`, `pre-merge-commit`, `commit-msg` and the like). Sparse checkouts, submodule updates, the split
-index and `GIT_DIR` are not supported, and `rebase`, `cherry-pick`, `revert`, `--squash` and anything that talks to a remote other than `ls-remote`, `fetch` and `clone` are not built yet (`pull` and `push`, epic #301; see [Transports and credentials](#transports-and-credentials)).
+index and `GIT_DIR` are not supported, and `rebase`, `cherry-pick`, `revert`, `--squash` and anything that talks to a remote other than `ls-remote`, `fetch`, `push` and `clone` are not built yet (`pull`, epic #301; see [Transports and credentials](#transports-and-credentials)).
 
 ### Refused commands
 
@@ -703,7 +776,7 @@ Commands a git home will gain fail with exit `1`, as the other git-only commands
 
 | Command | Needs |
 | --- | --- |
-| `pull`, `push`, `update` | `pull` #309, `push` #308, `update` #310. |
+| `pull`, `update` | `pull` #309, `update` #310. |
 | `get` | Per-path revisions, which git has no equivalent of; not scheduled. |
 
 `pyn convert` fails with `pyn: 'convert' is not available yet` and names #95.
@@ -711,7 +784,7 @@ Commands a git home will gain fail with exit `1`, as the other git-only commands
 ### Packs (library, provisional)
 
 `pyn-git` holds the pack plumbing the git transport uses (see [Transports and credentials](#transports-and-credentials));
-`pyn-gittransport` calls it; `pyn fetch` is its first command and push has none yet.
+`pyn-gittransport` calls it; `pyn fetch` is its first command and `pyn push` sends packs it writes with `write_pack`.
 
 - **Ingest.** `index_pack` reads a pack from any stream, checks the header, every entry's zlib data, the object count and the
   trailing checksum, resolves offset and reference deltas, and computes each object id with git's rules (SHA-1 with collision
