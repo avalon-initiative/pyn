@@ -14,6 +14,7 @@ use pyn_gitwork::Head;
 use pyn_object::{Algorithm, ObjectId};
 
 use super::GitHome;
+use super::convert;
 use super::fetch_apply::{Settings, prune, stale_refs, store, tidy_url, truncate_fetch_head};
 pub(super) use super::fetch_map::TagMode;
 use super::fetch_map::{Entry, Inputs, build, follow_tags};
@@ -587,7 +588,23 @@ pub(super) fn fetch_core(
             bail!("remote did not send {} ({})", e.id, e.name);
         }
     }
+    let moved: Vec<ObjectId> = if o.clone || o.dry_run {
+        Vec::new()
+    } else {
+        entries
+            .iter()
+            .filter(|e| {
+                e.local
+                    .as_deref()
+                    .is_some_and(|l| tip_of(git, l) != Some(e.id))
+            })
+            .map(|e| e.id)
+            .collect()
+    };
     let mut failed = store(git, &settings, &entries)?;
+    for id in &moved {
+        convert::warn_lfs_in_commit(git, id)?;
+    }
 
     if tag_mode == TagMode::Default && map.autotags {
         let mut known = ref_names(git)?;
@@ -615,6 +632,10 @@ pub(super) fn fetch_core(
         failed,
         remote_refs,
     })
+}
+
+fn tip_of(git: &GitHome, name: &str) -> Option<ObjectId> {
+    git.repo.refs().resolve(name).ok().flatten()
 }
 
 /// `remote.<name>.followRemoteHEAD`: keeps `refs/remotes/<name>/HEAD` pointing where the remote's `HEAD` does.

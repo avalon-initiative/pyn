@@ -11,6 +11,7 @@ use pyn_gitwire::RemoteRef;
 use pyn_object::{Algorithm, ObjectId};
 
 use super::GitHome;
+use super::convert;
 use super::fetch::{Options, Plan, TagMode, fetch_core};
 use super::switch::detach_advice;
 use super::worktree::{Mode, move_tree};
@@ -526,6 +527,7 @@ fn finish(
         if let Err(blocked) = move_tree(&git, &opened, None, Some(&tree), Mode::Force)? {
             blocked.report("checkout", "clone", 128);
         }
+        convert::warn_lfs_in_commit(&git, &id)?;
         if let (Landing::Detached(_), false) = (&landing, opts.quiet) {
             detach_advice(&git, &id.to_hex(), &id)?;
         }

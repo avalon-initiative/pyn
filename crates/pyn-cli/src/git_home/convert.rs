@@ -3,10 +3,11 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Result, bail};
-use pyn_gitwork::{Ignore, Level, parse_rules};
-use pyn_object::FileMode;
+use pyn_gitwork::{Ignore, Level, Pathspec, parse_rules};
+use pyn_object::{FileMode, ObjectId};
 
 use super::{GitHome, path_string, user_dirs};
 
@@ -204,9 +205,59 @@ pub(super) fn refuse_conversions<'a>(
         }
     }
     if lfs {
+        warn_lfs();
+    }
+    Ok(())
+}
+
+static LFS_WARNED: AtomicBool = AtomicBool::new(false);
+
+/// Prints the Git LFS warning the first time it is asked for in this process.
+fn warn_lfs() {
+    if !LFS_WARNED.swap(true, Ordering::Relaxed) {
         eprintln!(
-            "warning: some paths use the Git LFS filter; pyn has no LFS client, so pointer files are written as they are"
+            "warning: some paths use the Git LFS filter; pyn has no LFS client, so pointer files are kept as they are"
         );
+    }
+}
+
+/// Warns if the `.gitattributes` files in `commit`'s tree apply `filter=lfs` to any of its paths.
+pub(super) fn warn_lfs_in_commit(git: &GitHome, commit: &ObjectId) -> Result<()> {
+    if LFS_WARNED.load(Ordering::Relaxed) {
+        return Ok(());
+    }
+    let Ok(commit) = git.repo.commit(commit) else {
+        return Ok(());
+    };
+    let files = git.repo.flatten(Some(&commit.tree), &Pathspec::default())?;
+    let mut attribute_files: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+    for (path, entry) in &files {
+        let name = path.rsplit(|b| *b == b'/').next().unwrap_or(path);
+        if name == b".gitattributes" && !matches!(entry.mode, FileMode::Symlink | FileMode::Gitlink)
+        {
+            let base = path[..path.len() - name.len()].to_vec();
+            attribute_files.push((base, git.repo.blob(&entry.id)?));
+        }
+    }
+    if !attribute_files
+        .iter()
+        .any(|(_, text)| String::from_utf8_lossy(text).contains("filter=lfs"))
+    {
+        return Ok(());
+    }
+    attribute_files.sort_by_key(|(base, _)| base.len());
+    for (path, entry) in &files {
+        if matches!(entry.mode, FileMode::Symlink | FileMode::Gitlink) {
+            continue;
+        }
+        let mut conv = Conv::new();
+        for (base, text) in &attribute_files {
+            apply_file(&mut conv, text, base, path);
+        }
+        if conv.filter == Attr::Value("lfs".into()) {
+            warn_lfs();
+            break;
+        }
     }
     Ok(())
 }

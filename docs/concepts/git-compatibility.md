@@ -809,10 +809,21 @@ so branching and switching still work. A moved branch is also logged in `HEAD`'s
 Any command that would write a work tree file stops first, and changes nothing, when git would convert what it writes: `core.autocrlf`
 set to true, `core.eol=crlf` with a `text` attribute, `eol=crlf`, a `filter` other than Git LFS, `ident` or `working-tree-encoding`
 (`.gitattributes` in the work tree, `.git/info/attributes` and the global attributes file are read; `-text`, `binary`, `eol=lf`,
-symlinks and submodules are never converted). A Git LFS filter writes the pointer file as it is, with a warning (decision #245).
+symlinks and submodules are never converted). A Git LFS filter writes the pointer file as it is, with a warning (decision #245; see [Git LFS](#git-lfs)).
 The same limit applies to `status`, which compares raw bytes (#273). Hooks are never run; one warning names the hooks that exist
 for the command (`post-checkout`, `pre-merge-commit`, `commit-msg` and the like). Sparse checkouts, submodule updates, the split
 index and `GIT_DIR` are not supported, and `rebase`, `cherry-pick`, `revert`, `--squash` and anything that talks to a remote other than `ls-remote`, `fetch`, `pull`, `push` and `clone` are not built yet (epic #301; see [Transports and credentials](#transports-and-credentials)).
+
+### Git LFS
+
+pyn has no LFS client (provisional: a client is not scheduled). `fetch`, `pull`, `clone`, `switch`/`checkout` and the other
+commands that write the work tree keep pointer files byte for byte: nothing is smudged, downloaded or cleaned, and `status`
+sees them as ordinary files. When `filter=lfs` applies to a path, the command prints one warning on standard error, once
+per invocation (so `pull` and `clone` warn once, not once per step). `fetch` and `pull` read the `.gitattributes` files in
+the tip of each ref that moved, `clone` in the commit it checks out (none for `--bare` or `-n`), and the work tree commands
+read the attributes as for [What pyn will not write](#what-pyn-will-not-write). Only `.gitattributes` files in the tree are
+read for `fetch` and `clone`, not `.git/info/attributes` or the global file. The warning wording is not part of the
+contract. Covered by `crates/pyn-cli/tests/git_lfs.rs` (#311).
 
 ### Refused commands
 
