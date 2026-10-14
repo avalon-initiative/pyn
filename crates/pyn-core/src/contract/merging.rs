@@ -507,6 +507,129 @@ pub async fn an_exclusive_path_takes_the_later_revision_without_a_lock(store: St
     verified(&h).await;
 }
 
+async fn diverged_setup(h: &Harness) -> (crate::RepoPath, crate::Revision, crate::Revision) {
+    let map = path("Content/a.umap");
+    h.svc.checkout(&map, &user("alice"), None).await.unwrap();
+    put_on(h, "main", "alice", &map, "v1", None).await;
+    branch_at(h, "feature", "main").await;
+    h.svc
+        .checkout_on("feature", &map, &user("bob"), Some(RevisionId(1)))
+        .await
+        .unwrap();
+    let on_feature = put_on(h, "feature", "bob", &map, "feature value", Some(1)).await;
+    h.svc
+        .checkout(&map, &user("alice"), Some(RevisionId(1)))
+        .await
+        .unwrap();
+    let on_main = put_on(h, "main", "alice", &map, "main value", Some(1)).await;
+    (map, on_feature, on_main)
+}
+
+pub async fn diverged_exclusive_pointers_conflict_and_a_person_picks_a_side_under_the_lock(
+    store: Store,
+) {
+    let h = harness(store);
+    let (map, on_feature, on_main) = diverged_setup(&h).await;
+    assert_eq!((on_feature.base, on_main.base), (Some(RevisionId(1)), Some(RevisionId(1))));
+
+    let preview = h
+        .svc
+        .merge_preview(&request("feature", "main"))
+        .await
+        .unwrap();
+    assert_eq!(preview.outcome, MergeOutcome::Conflicted);
+    assert_eq!(preview.conflicts.len(), 1);
+    let conflict = &preview.conflicts[0];
+    assert_eq!((conflict.path.clone(), conflict.mode), (map.clone(), Mode::Exclusive));
+    assert_eq!(
+        conflict.inputs.ours.as_ref().unwrap().revision,
+        Some(on_main.id)
+    );
+    assert_eq!(
+        conflict.inputs.theirs.as_ref().unwrap().revision,
+        Some(on_feature.id)
+    );
+    let err = h
+        .svc
+        .merge(&who("alice"), request("feature", "main"))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::MergeConflict(_)), "{err}");
+
+    // either side is a choice that needs the lock, and the choice becomes a new revision.
+    for (side, content) in [("theirs", on_feature.content), ("ours", on_main.content)] {
+        let mut choose = request("feature", "main");
+        choose.resolutions = vec![Resolution {
+            path: map.clone(),
+            content,
+            file_mode: FileMode::Regular,
+        }];
+        let err = h.svc.merge(&who("alice"), choose.clone()).await.unwrap_err();
+        assert!(matches!(err, PynError::LockRequired(_)), "{side}: {err}");
+    }
+    h.svc
+        .checkout(&map, &user("alice"), Some(on_main.id))
+        .await
+        .unwrap();
+    let mut choose = request("feature", "main");
+    choose.resolutions = vec![Resolution {
+        path: map.clone(),
+        content: on_feature.content,
+        file_mode: FileMode::Regular,
+    }];
+    let done = h.svc.merge(&who("alice"), choose).await.unwrap();
+    let commit = h.svc.get_commit(&done.commit.unwrap()).await.unwrap();
+    assert_eq!(commit.revisions.len(), 1);
+    let chosen = &commit.revisions[0];
+    assert_eq!(
+        (chosen.id, chosen.base, chosen.mode),
+        (RevisionId(4), Some(on_main.id), Some(Mode::Exclusive))
+    );
+    assert_eq!(text_on(&h, "main", "Content/a.umap").await, "feature value");
+    assert!(h.svc.locks().await.unwrap().is_empty());
+
+    // the choice descends from both sides, so the feature takes it without a conflict.
+    let back = h
+        .svc
+        .merge(&who("bob"), request("main", "feature"))
+        .await
+        .unwrap();
+    assert_eq!(back.outcome, MergeOutcome::FastForward);
+    assert_eq!(text_on(&h, "feature", "Content/a.umap").await, "feature value");
+    verified(&h).await;
+}
+
+pub async fn a_branch_that_kept_its_pointer_takes_the_descendant_later(store: Store) {
+    let h = harness(store);
+    let (map, _, on_main) = diverged_setup(&h).await;
+    let mut choose = request("feature", "main");
+    choose.resolutions = vec![Resolution {
+        path: map.clone(),
+        content: on_main.content,
+        file_mode: FileMode::Regular,
+    }];
+    h.svc
+        .checkout(&map, &user("alice"), Some(on_main.id))
+        .await
+        .unwrap();
+    h.svc.merge(&who("alice"), choose).await.unwrap();
+    // the feature moves on elsewhere, then picks up main: its own pointer is an ancestor of main's choice.
+    put_on(&h, "feature", "bob", &path("Source/x.cpp"), "x\n", None).await;
+    let preview = h
+        .svc
+        .merge_preview(&request("main", "feature"))
+        .await
+        .unwrap();
+    assert_eq!(preview.outcome, MergeOutcome::Merge);
+    assert!(preview.conflicts.is_empty(), "{:?}", preview.conflicts);
+    h.svc
+        .merge(&who("bob"), request("main", "feature"))
+        .await
+        .unwrap();
+    assert_eq!(text_on(&h, "feature", "Content/a.umap").await, "main value");
+    verified(&h).await;
+}
+
 async fn converted_setup(h: &Harness) -> (crate::RepoPath, crate::Revision, crate::Revision) {
     let a = path("Source/a.cpp");
     put_on(h, "main", "alice", &a, "base\n", None).await;

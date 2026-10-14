@@ -2599,43 +2599,75 @@ pub async fn a_branch_can_be_renamed_except_the_default(store: Store) {
     assert_eq!(names, vec!["main", "new/name", "other"]);
 }
 
-pub async fn an_exclusive_path_keeps_one_line_of_revisions_across_branches(store: Store) {
+pub async fn exclusive_revisions_form_a_tree_judged_against_each_branchs_pointer(store: Store) {
     let h = harness(store);
     let map = path("Content/a.umap");
     h.svc.checkout(&map, &user("alice"), None).await.unwrap();
     let r1 = put_on(&h, "main", "alice", &map, "v1", None).await;
+    assert_eq!(r1.base, None);
     h.svc
         .create_branch(&who("alice"), "feature", None)
         .await
         .unwrap();
 
     h.svc
-        .checkout(&map, &user("bob"), Some(RevisionId(1)))
+        .checkout_on("feature", &map, &user("bob"), Some(RevisionId(1)))
         .await
         .unwrap();
     let r2 = put_on(&h, "feature", "bob", &map, "v2", Some(1)).await;
     assert_eq!(
-        (r2.id, r2.previous.clone()),
-        (RevisionId(2), Some(r1.hash.clone()))
+        (r2.id, r2.base, r2.previous.clone()),
+        (RevisionId(2), Some(RevisionId(1)), Some(r1.hash.clone()))
     );
 
+    // main's pointer is still r1: the feature's revision does not move it.
+    let stale = h
+        .svc
+        .checkout(&map, &user("alice"), Some(RevisionId(2)))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            stale,
+            PynError::StaleBase {
+                actual: Some(RevisionId(1)),
+                ..
+            }
+        ),
+        "{stale}"
+    );
     h.svc
         .checkout(&map, &user("alice"), Some(RevisionId(1)))
         .await
+        .unwrap();
+    let r3 = put_on(&h, "main", "alice", &map, "v3", Some(1)).await;
+    assert_eq!(
+        (r3.id, r3.base, r3.previous.clone()),
+        (RevisionId(3), Some(RevisionId(1)), Some(r2.hash.clone()))
+    );
+
+    // the feature's own pointer is r2: r1 is stale there and r3 is not its base.
+    h.svc
+        .checkout_on("feature", &map, &user("bob"), Some(RevisionId(1)))
+        .await
         .unwrap_err();
     h.svc
-        .checkout(&map, &user("alice"), Some(RevisionId(2)))
+        .checkout_on("feature", &map, &user("bob"), Some(RevisionId(3)))
+        .await
+        .unwrap_err();
+    h.svc
+        .checkout_on("feature", &map, &user("bob"), Some(RevisionId(2)))
         .await
         .unwrap();
     let blocked = h
         .svc
         .checkin_on(
-            "main",
-            &who("alice"),
+            "feature",
+            &who("bob"),
             &map,
-            blob(&h, "v3").await,
+            blob(&h, "v4").await,
             FileMode::Regular,
-            Some(RevisionId(1)),
+            Some(RevisionId(3)),
             "stale".into(),
         )
         .await
@@ -2644,48 +2676,55 @@ pub async fn an_exclusive_path_keeps_one_line_of_revisions_across_branches(store
         matches!(
             blocked,
             PynError::StaleBase {
+                expected: Some(RevisionId(3)),
                 actual: Some(RevisionId(2)),
                 ..
             }
         ),
         "{blocked}"
     );
-    let r3 = put_on(&h, "main", "alice", &map, "v3", Some(2)).await;
-    assert_eq!(
-        (r3.id, r3.previous.clone()),
-        (RevisionId(3), Some(r2.hash.clone()))
-    );
+    let r4 = put_on(&h, "feature", "bob", &map, "v4", Some(2)).await;
+    assert_eq!((r4.id, r4.base), (RevisionId(4), Some(RevisionId(2))));
 
-    let line: Vec<_> = h
-        .svc
-        .history(&map)
-        .await
-        .unwrap()
-        .iter()
-        .map(|r| r.id.0)
-        .collect();
-    assert_eq!(line, vec![1, 2, 3]);
-    let of = |branch: &'static str| {
-        let svc = h.svc.clone();
-        let map = map.clone();
-        async move {
-            svc.history_on(branch, &map)
-                .await
-                .unwrap()
-                .iter()
-                .map(|r| r.id.0)
-                .collect::<Vec<_>>()
-        }
-    };
-    assert_eq!(of("main").await, vec![1, 3]);
-    assert_eq!(of("feature").await, vec![1, 2]);
+    let numbers = |revs: Vec<crate::Revision>| revs.iter().map(|r| r.id.0).collect::<Vec<_>>();
+    assert_eq!(numbers(h.svc.history(&map).await.unwrap()), vec![1, 2, 3, 4]);
+    assert_eq!(
+        numbers(h.svc.history_on("main", &map).await.unwrap()),
+        vec![1, 3]
+    );
+    assert_eq!(
+        numbers(h.svc.history_on("feature", &map).await.unwrap()),
+        vec![1, 2, 4]
+    );
     let pointer = |branch: &'static str| {
         let svc = h.svc.clone();
         let map = map.clone();
         async move { svc.revision_on(branch, &map).await.unwrap().unwrap().id.0 }
     };
-    assert_eq!((pointer("main").await, pointer("feature").await), (3, 2));
+    assert_eq!((pointer("main").await, pointer("feature").await), (3, 4));
     assert!(h.svc.verify(None, true).await.unwrap().problems.is_empty());
+}
+
+pub async fn a_single_branch_exclusive_path_is_a_line(store: Store) {
+    let h = harness(store);
+    let map = path("Content/a.umap");
+    let mut ids = Vec::new();
+    for (i, text) in ["a", "b", "c"].into_iter().enumerate() {
+        let base = (i > 0).then_some(i as u64);
+        h.svc
+            .checkout(&map, &user("alice"), base.map(RevisionId))
+            .await
+            .unwrap();
+        let r = put_on(&h, "main", "alice", &map, text, base).await;
+        ids.push((r.id.0, r.base.map(|b| b.0)));
+    }
+    assert_eq!(ids, vec![(1, None), (2, Some(1)), (3, Some(2))]);
+    let err = h
+        .svc
+        .checkout(&map, &user("alice"), Some(RevisionId(1)))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::StaleBase { .. }), "{err}");
 }
 
 pub async fn a_shared_path_can_diverge_on_two_branches(store: Store) {
@@ -3037,7 +3076,8 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; branch_names_are_validated_unique_and_never_a_folder_of_another);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; deleting_a_branch_needs_it_merged_unless_forced_and_never_the_default);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_branch_can_be_renamed_except_the_default);
-        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; an_exclusive_path_keeps_one_line_of_revisions_across_branches);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; exclusive_revisions_form_a_tree_judged_against_each_branchs_pointer);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_single_branch_exclusive_path_is_a_line);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_shared_path_can_diverge_on_two_branches);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_changeset_on_a_branch_is_one_commit_there_and_atomic);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_policy_file_on_another_branch_is_not_policy);
@@ -3053,6 +3093,8 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_binary_file_changed_on_both_sides_is_a_whole_file_conflict);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; file_modes_merge_apart_from_content);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; an_exclusive_path_takes_the_later_revision_without_a_lock);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; diverged_exclusive_pointers_conflict_and_a_person_picks_a_side_under_the_lock);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_branch_that_kept_its_pointer_takes_the_descendant_later);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_shared_version_that_met_a_conversion_is_a_conflict_the_person_decides);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; choosing_the_diverged_version_of_a_converted_path_takes_the_lock);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; updating_a_branch_from_a_conversion_conflicts_the_same_way);
