@@ -401,7 +401,7 @@ fn a_shared_file_that_became_exclusive_while_a_branch_edited_it_is_chosen_by_the
     let (code, out, _) = run(&env, &ws, &["merge", "main"]);
     assert_eq!(code, Some(1), "{out}");
     assert!(out.contains("CONFLICT (exclusive conversion)"), "{out}");
-    assert!(out.contains("pyn lock --base 3 Source/a.cpp"), "{out}");
+    assert!(out.contains("pyn lock --base 2 Source/a.cpp"), "{out}");
     assert_eq!(
         read(&ws, "Source/a.cpp"),
         "feature edit\n",
@@ -411,11 +411,11 @@ fn a_shared_file_that_became_exclusive_while_a_branch_edited_it_is_chosen_by_the
     env.ok(&ws, "alice", &["add", "Source/a.cpp"]);
     let err = env.fails(&ws, "alice", &["commit"]);
     assert!(
-        err.contains("lock_required") && err.contains("pyn lock --base 3 Source/a.cpp"),
+        err.contains("lock_required") && err.contains("pyn lock --base 2 Source/a.cpp"),
         "{err}"
     );
 
-    env.ok(&ws, "alice", &["lock", "--base", "3", "Source/a.cpp"]);
+    env.ok(&ws, "alice", &["lock", "--base", "2", "Source/a.cpp"]);
     let out = env.ok(&ws, "alice", &["commit"]);
     assert!(out.starts_with("Merge made;"), "{out}");
     assert_eq!(read(&ws, "Source/a.cpp"), "feature edit\n");
@@ -550,4 +550,32 @@ fn an_exclusive_file_takes_the_later_revision_and_stays_read_only_without_its_lo
     );
     let locks = env.ok(&ws, "alice", &["locks"]);
     assert!(!locks.contains("Content/m.umap"), "{locks}");
+}
+
+#[test]
+fn exclusive_files_each_branch_changed_are_chosen_by_the_person_under_the_lock() {
+    let env = start();
+    env.seed("alice", "Content/m.umap", "one", None);
+    let ws = clone(&env, "ws");
+    env.ok(&ws, "alice", &["switch", "-c", "feature"]);
+    env.ok(&ws, "alice", &["lock", "Content/m.umap"]);
+    commit(&env, &ws, "Content/m.umap", "feature value");
+    env.ok(&ws, "alice", &["switch", "main"]);
+    env.ok(&ws, "alice", &["lock", "Content/m.umap"]);
+    commit(&env, &ws, "Content/m.umap", "main value");
+
+    let (code, out, _) = run(&env, &ws, &["merge", "feature"]);
+    assert_eq!(code, Some(1), "{out}");
+    assert!(out.contains("Merge conflict in Content/m.umap"), "{out}");
+    assert!(out.contains("pyn lock --base 3 Content/m.umap"), "{out}");
+    assert_eq!(read(&ws, "Content/m.umap"), "main value", "ours stays");
+
+    env.ok(&ws, "alice", &["add", "Content/m.umap"]);
+    let err = env.fails(&ws, "alice", &["commit"]);
+    assert!(err.contains("lock_required"), "{err}");
+    env.ok(&ws, "alice", &["lock", "--base", "3", "Content/m.umap"]);
+    let out = env.ok(&ws, "alice", &["commit"]);
+    assert!(out.starts_with("Merge made;"), "{out}");
+    assert_eq!(read(&ws, "Content/m.umap"), "main value");
+    assert!(env.ok(&ws, "alice", &["verify"]).is_empty());
 }
