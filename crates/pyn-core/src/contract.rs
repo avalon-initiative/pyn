@@ -2687,7 +2687,10 @@ pub async fn exclusive_revisions_form_a_tree_judged_against_each_branchs_pointer
     assert_eq!((r4.id, r4.base), (RevisionId(4), Some(RevisionId(2))));
 
     let numbers = |revs: Vec<crate::Revision>| revs.iter().map(|r| r.id.0).collect::<Vec<_>>();
-    assert_eq!(numbers(h.svc.history(&map).await.unwrap()), vec![1, 2, 3, 4]);
+    assert_eq!(
+        numbers(h.svc.history(&map).await.unwrap()),
+        vec![1, 2, 3, 4]
+    );
     assert_eq!(
         numbers(h.svc.history_on("main", &map).await.unwrap()),
         vec![1, 3]

@@ -120,3 +120,23 @@ fn a_flipped_hash_version_is_reported_as_a_version_mismatch() {
     assert_eq!(rows[1], ["version_mismatch", "r1", "Source/a.ts"]);
     assert_eq!(rows.len(), 2, "{rows:?}");
 }
+
+#[test]
+fn a_base_that_is_not_an_older_revision_is_reported() {
+    let env = start();
+    env.seed("alice", "Source/a.ts", "one", None);
+    env.seed("alice", "Source/a.ts", "two", Some(1));
+    env.meta.tamper(
+        &RepoId::new("t"),
+        &RepoPath::new("Source/a.ts").unwrap(),
+        RevisionId(2),
+        |r| r.base = Some(RevisionId(7)),
+    );
+    let home = env.dir("home");
+
+    let out = env.run(&home, "alice", &["verify"]);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out.stderr));
+    let rows = common::cell_rows(&text(&out.stdout));
+    assert_eq!(rows[1], ["base_mismatch", "r2", "Source/a.ts"]);
+    assert_eq!(rows.len(), 2, "{rows:?}");
+}

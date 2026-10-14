@@ -530,7 +530,10 @@ pub async fn diverged_exclusive_pointers_conflict_and_a_person_picks_a_side_unde
 ) {
     let h = harness(store);
     let (map, on_feature, on_main) = diverged_setup(&h).await;
-    assert_eq!((on_feature.base, on_main.base), (Some(RevisionId(1)), Some(RevisionId(1))));
+    assert_eq!(
+        (on_feature.base, on_main.base),
+        (Some(RevisionId(1)), Some(RevisionId(1)))
+    );
 
     let preview = h
         .svc
@@ -540,7 +543,10 @@ pub async fn diverged_exclusive_pointers_conflict_and_a_person_picks_a_side_unde
     assert_eq!(preview.outcome, MergeOutcome::Conflicted);
     assert_eq!(preview.conflicts.len(), 1);
     let conflict = &preview.conflicts[0];
-    assert_eq!((conflict.path.clone(), conflict.mode), (map.clone(), Mode::Exclusive));
+    assert_eq!(
+        (conflict.path.clone(), conflict.mode),
+        (map.clone(), Mode::Exclusive)
+    );
     assert_eq!(
         conflict.inputs.ours.as_ref().unwrap().revision,
         Some(on_main.id)
@@ -564,7 +570,11 @@ pub async fn diverged_exclusive_pointers_conflict_and_a_person_picks_a_side_unde
             content,
             file_mode: FileMode::Regular,
         }];
-        let err = h.svc.merge(&who("alice"), choose.clone()).await.unwrap_err();
+        let err = h
+            .svc
+            .merge(&who("alice"), choose.clone())
+            .await
+            .unwrap_err();
         assert!(matches!(err, PynError::LockRequired(_)), "{side}: {err}");
     }
     h.svc
@@ -595,7 +605,10 @@ pub async fn diverged_exclusive_pointers_conflict_and_a_person_picks_a_side_unde
         .await
         .unwrap();
     assert_eq!(back.outcome, MergeOutcome::FastForward);
-    assert_eq!(text_on(&h, "feature", "Content/a.umap").await, "feature value");
+    assert_eq!(
+        text_on(&h, "feature", "Content/a.umap").await,
+        "feature value"
+    );
     verified(&h).await;
 }
 

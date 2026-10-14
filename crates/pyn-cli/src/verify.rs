@@ -233,6 +233,7 @@ fn check_chains(revs: &[api::Revision]) -> Vec<Finding> {
     let mut out = Vec::new();
     for (path, mut chain) in by_path {
         chain.sort_by_key(|r| r.id);
+        let ids: std::collections::HashSet<u64> = chain.iter().map(|r| r.id).collect();
         let mut prior: Option<&api::Revision> = None;
         for r in chain {
             let at = |kind: &str| (kind.to_string(), format!("r{}", r.id), path.to_string());
@@ -247,6 +248,9 @@ fn check_chains(revs: &[api::Revision]) -> Vec<Finding> {
             };
             if !linked {
                 out.push(at("broken_link"));
+            }
+            if r.base.is_some_and(|b| b >= r.id || !ids.contains(&b)) {
+                out.push(at("base_mismatch"));
             }
             prior = Some(r);
         }

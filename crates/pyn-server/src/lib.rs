@@ -751,6 +751,7 @@ fn revision_dto(r: pyn_core::Revision) -> api::Revision {
         commit: r.commit.to_hex(),
         hash: r.hash.to_string(),
         previous: r.previous.map(|h| h.to_string()),
+        base: r.base.map(|b| b.0),
         stranded: Vec::new(),
     }
 }

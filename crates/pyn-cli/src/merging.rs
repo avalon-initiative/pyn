@@ -74,7 +74,7 @@ struct Touched {
     ours: Option<SideNote>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     theirs: Option<SideNote>,
-    /// The newest revision of an exclusive path on any branch, which a lock must be based on.
+    /// The branch's revision of an exclusive path, which a lock must be based on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     line_head: Option<u64>,
 }
@@ -522,11 +522,7 @@ fn begin(
                 })
             })
         };
-        let line_head = [&c.inputs.ours, &c.inputs.theirs]
-            .into_iter()
-            .flatten()
-            .filter_map(|s| s.revision)
-            .max();
+        let line_head = c.inputs.ours.as_ref().and_then(|s| s.revision);
         paths.insert(
             c.path.clone(),
             Touched {
@@ -576,6 +572,9 @@ fn begin(
         if c.kind == api::MergeConflictKind::ExclusiveConversion {
             println!("{}", conversion_hint(c));
         }
+        if c.kind == api::MergeConflictKind::Binary && c.mode == api::Mode::Exclusive {
+            println!("{}", divergence_hint(c));
+        }
     }
     println!(
         "Automatic merge failed; fix conflicts, stage each with `pyn add <path>`, then run `pyn commit`.\n\
@@ -601,12 +600,25 @@ fn conversion_story(c: &api::MergeConflict) -> Option<String> {
     ))
 }
 
+fn divergence_hint(c: &api::MergeConflict) -> String {
+    let base = c
+        .inputs
+        .ours
+        .as_ref()
+        .and_then(|s| s.revision)
+        .map_or(String::new(), |h| format!(" --base {h}"));
+    format!(
+        "  {} is exclusive and each branch has its own revision of it; choose one, take the lock (`pyn lock{base} {}`) and commit.",
+        c.path, c.path
+    )
+}
+
 fn conversion_hint(c: &api::MergeConflict) -> String {
-    let head = [&c.inputs.ours, &c.inputs.theirs]
-        .into_iter()
-        .flatten()
-        .filter_map(|s| s.revision)
-        .max()
+    let head = c
+        .inputs
+        .ours
+        .as_ref()
+        .and_then(|s| s.revision)
         .map_or(String::new(), |h| format!(" --base {h}"));
     let story = conversion_story(c).map_or(String::new(), |s| format!("{s}\n"));
     format!(

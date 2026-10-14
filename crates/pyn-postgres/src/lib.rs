@@ -50,7 +50,7 @@ fn lock_from(row: &PgRow) -> Result<Lock> {
     })
 }
 
-const REVISION_COLUMNS: &str = "id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no, hash, previous_hash, content_v1, commit_id, file_mode, author_name, author_email, author_offset, hash_version";
+const REVISION_COLUMNS: &str = "id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no, hash, previous_hash, content_v1, commit_id, file_mode, author_name, author_email, author_offset, hash_version, base_id";
 
 /// The first-parent chain from commit `$2` of repository `$1`, nearest first.
 const CHAIN: &str = "WITH RECURSIVE chain(id, parent, depth) AS (
@@ -124,6 +124,9 @@ fn revision_from(row: &PgRow) -> Result<Revision> {
         previous: row
             .get::<Option<String>, _>("previous_hash")
             .map(RevisionHash::new),
+        base: row
+            .get::<Option<i64>, _>("base_id")
+            .map(|b| RevisionId(b as u64)),
     })
 }
 
@@ -214,10 +217,7 @@ async fn append_revision(
     .fetch_one(&mut **tx)
     .await
     .map_err(db)?;
-    let base = match revision.mode {
-        Mode::Exclusive => line,
-        Mode::Shared => at_branch.get(revision.path.as_str()).copied().unwrap_or(0),
-    };
+    let base = at_branch.get(revision.path.as_str()).copied().unwrap_or(0);
     if base != expected {
         return Err(PynError::StaleBase {
             path: revision.path,
@@ -242,12 +242,17 @@ async fn append_revision(
         revision.mode,
         revision.content,
     );
-    let created = revision.create(RevisionId((line + 1) as u64), previous, commit.1);
+    let created = revision.create(
+        RevisionId((line + 1) as u64),
+        previous,
+        expected_head,
+        commit.1,
+    );
     let person = created.person.as_ref().expect("a new revision is v2");
     // The repository's writes are serialized by `next_commit`; the guard still refuses a line that moved.
     let inserted = sqlx::query(
         "INSERT INTO revisions (repo, path, id, content, author, message, created_at, restored_from, mode, size, changeset,
-                                commit_no, hash, previous_hash, commit_id, file_mode, author_name, author_email, author_offset, hash_version)
+                                commit_no, hash, previous_hash, commit_id, file_mode, author_name, author_email, author_offset, hash_version, base_id)
          SELECT $1, $2, $3, $4, $5, $6, $7, $9::bigint, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21
          WHERE COALESCE((SELECT max(id) FROM revisions WHERE repo = $1 AND path = $2), 0) = $8
          RETURNING id",
@@ -273,6 +278,7 @@ async fn append_revision(
     .bind(&person.email)
     .bind(person.offset_minutes)
     .bind(created.hash_version as i32)
+    .bind(created.base.map(|b| b.0 as i64))
     .fetch_optional(&mut **tx)
     .await;
 
@@ -867,7 +873,7 @@ impl MetadataStore for PgMetadataStore {
 
     async fn head_revision(&self, repo: &RepoId, path: &RepoPath) -> Result<Option<Revision>> {
         let row = sqlx::query(
-            "SELECT id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no, hash, previous_hash, content_v1, commit_id, file_mode, author_name, author_email, author_offset, hash_version FROM revisions
+            "SELECT id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no, hash, previous_hash, content_v1, commit_id, file_mode, author_name, author_email, author_offset, hash_version, base_id FROM revisions
              WHERE repo = $1 AND path = $2 ORDER BY id DESC LIMIT 1",
         )
         .bind(repo.as_str())
@@ -1241,7 +1247,7 @@ impl MetadataStore for PgMetadataStore {
         id: RevisionId,
     ) -> Result<Option<Revision>> {
         let row = sqlx::query(
-            "SELECT id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no, hash, previous_hash, content_v1, commit_id, file_mode, author_name, author_email, author_offset, hash_version FROM revisions
+            "SELECT id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no, hash, previous_hash, content_v1, commit_id, file_mode, author_name, author_email, author_offset, hash_version, base_id FROM revisions
              WHERE repo = $1 AND path = $2 AND id = $3",
         )
         .bind(repo.as_str())
@@ -1378,7 +1384,7 @@ impl MetadataStore for PgMetadataStore {
 
     async fn list_head_revisions(&self, repo: &RepoId) -> Result<Vec<Revision>> {
         let rows = sqlx::query(
-            "SELECT DISTINCT ON (path) id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no, hash, previous_hash, content_v1, commit_id, file_mode, author_name, author_email, author_offset, hash_version
+            "SELECT DISTINCT ON (path) id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no, hash, previous_hash, content_v1, commit_id, file_mode, author_name, author_email, author_offset, hash_version, base_id
              FROM revisions WHERE repo = $1 ORDER BY path, id DESC",
         )
         .bind(repo.as_str())

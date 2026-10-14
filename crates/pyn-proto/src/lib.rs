@@ -83,8 +83,12 @@ pub struct Revision {
     pub commit: String,
     /// SHA-256 hex over the revision's canonical encoding, by `hash_version` (docs/concepts/integrity.md).
     pub hash: String,
-    /// The hash of the path's previous revision; absent for the first.
+    /// The hash of the path's previous revision by number; absent for the first.
     pub previous: Option<String>,
+    /// The revision this one was based on, the committing branch's revision of the path; absent when the branch had
+    /// none. Not covered by `hash`; `pyn verify` checks that it names an older revision of the path.
+    #[serde(default)]
+    pub base: Option<u64>,
     /// Only in the response to checking in or restoring `.pyn/pyn.toml` on the default branch: the diverged shared
     /// versions on other branches that the change stranded. Empty, and omitted, everywhere else.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1320,8 +1324,8 @@ pub struct OwnerUsage {
     pub repositories: Vec<RepoUsage>,
 }
 
-/// One break found by verification: `hash_mismatch` (a record's fields do not give its hash), `version_mismatch` (a revision's `hash_version` disagrees with its stored fields) or `broken_link` (it does
-/// not follow the record before it). Revision breaks carry `path` and `revision`; audit breaks carry `event`.
+/// One break found by verification: `hash_mismatch` (a record's fields do not give its hash), `version_mismatch` (a revision's `hash_version` disagrees with its stored fields), `broken_link` (it does
+/// not follow the record before it) or `base_mismatch` (a revision's base is not an older revision of its path). Revision breaks carry `path` and `revision`; audit breaks carry `event`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct VerifyProblem {
     pub kind: String,
