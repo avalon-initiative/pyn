@@ -21,6 +21,7 @@ impl NewRevision {
         self,
         id: RevisionId,
         previous: Option<RevisionHash>,
+        base: Option<RevisionId>,
         commit: ObjectId,
     ) -> Revision {
         let mut rev = Revision {
@@ -40,6 +41,7 @@ impl NewRevision {
             commit,
             hash: RevisionHash::new(""),
             previous,
+            base,
         };
         rev.hash = rev.expected_hash();
         rev
@@ -129,6 +131,8 @@ pub enum BreakKind {
     Tree,
     /// A revision's `hash_version` disagrees with its stored fields, or names no known encoding.
     Version,
+    /// A revision's base is not an older revision of the same path.
+    Base,
 }
 
 impl BreakKind {
@@ -138,6 +142,7 @@ impl BreakKind {
             Self::Link => "broken_link",
             Self::Tree => "tree_mismatch",
             Self::Version => "version_mismatch",
+            Self::Base => "base_mismatch",
         }
     }
 }
@@ -158,6 +163,11 @@ pub fn verify_revisions(revisions: &[Revision]) -> Vec<(RevisionId, BreakKind)> 
         };
         if !linked {
             breaks.push((r.id, BreakKind::Link));
+        }
+        if let Some(base) = r.base
+            && (base >= r.id || !revisions.iter().any(|o| o.id == base))
+        {
+            breaks.push((r.id, BreakKind::Base));
         }
         prior = Some(r);
     }

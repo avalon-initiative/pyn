@@ -158,8 +158,11 @@ pub struct Revision {
     /// The id of the commit this revision belongs to.
     pub commit: ObjectId,
     pub hash: RevisionHash,
-    /// Hash of the path's previous revision; `None` for the first.
+    /// Hash of the path's previous revision by number; `None` for the first.
     pub previous: Option<RevisionHash>,
+    /// The revision this one was based on: the committing branch's pointer for the path. Revisions of an exclusive
+    /// path form a tree through it; `None` when the branch had no revision of the path. Not covered by `hash`.
+    pub base: Option<RevisionId>,
 }
 
 /// One atomic write: a single checkin or a whole changeset, recorded as a git commit on the single mainline. Its id is

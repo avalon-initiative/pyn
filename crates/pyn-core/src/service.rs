@@ -496,7 +496,6 @@ impl RepoService {
             let Some(current) = self.revision_on(DEFAULT_BRANCH, path).await? else {
                 return Ok(None);
             };
-            let line = self.head(path).await?.map(|r| r.id);
             let size = self
                 .objects
                 .size(&current.content)
@@ -517,7 +516,14 @@ impl RepoService {
             };
             match self
                 .meta
-                .commit_revision_capped(&self.repo, revision, line, None, self.clock.now(), None)
+                .commit_revision_capped(
+                    &self.repo,
+                    revision,
+                    Some(current.id),
+                    None,
+                    self.clock.now(),
+                    None,
+                )
                 .await
             {
                 Err(PynError::StaleBase { .. }) => continue,
@@ -562,8 +568,8 @@ impl RepoService {
         self.parse_policy(content).await
     }
 
-    /// Take the lock on an exclusive path. `base` must equal the head so nobody edits a stale copy;
-    /// the holder renews by checking out again.
+    /// Take the lock on an exclusive path. `base` must equal the default branch's revision of it so nobody edits a
+    /// stale copy; the holder renews by checking out again.
     pub async fn checkout(
         &self,
         path: &RepoPath,
@@ -587,7 +593,7 @@ impl RepoService {
         {
             return Err(PynError::NotExclusive(path.clone()));
         }
-        let head = self.head(path).await?.map(|r| r.id);
+        let head = self.revision_on(branch, path).await?.map(|r| r.id);
         if head != base {
             return Err(PynError::StaleBase {
                 path: path.clone(),
@@ -740,7 +746,7 @@ impl RepoService {
     }
 
     /// Record a revision of `content` (already in the object store). Exclusive paths need the caller's
-    /// live lock; every path needs `base` == head. `.pyn/pyn.toml` also needs the policy permission.
+    /// live lock; every path needs `base` == the branch's revision of it. `.pyn/pyn.toml` also needs the policy permission.
     pub async fn checkin(
         &self,
         who: &Principal,
@@ -767,8 +773,7 @@ impl RepoService {
             .await
     }
 
-    /// Like `checkin_as`, as a commit on `branch`. A shared path's `base` is its revision on the branch; an exclusive
-    /// path's is its newest revision on any branch.
+    /// Like `checkin_as`, as a commit on `branch`. The `base` is the path's revision on that branch.
     #[allow(clippy::too_many_arguments)]
     pub async fn checkin_on(
         &self,
@@ -926,8 +931,8 @@ impl RepoService {
         }
     }
 
-    /// Makes an older revision's content the new head as a fresh revision marked `restored_from`; history is untouched.
-    /// Needs the caller's live lock, `base` equal to the head, and `confirm` naming the head being replaced.
+    /// Makes an older revision's content the branch's revision as a fresh one marked `restored_from`; history is untouched.
+    /// Needs the caller's live lock, `base` equal to the branch's revision, and `confirm` naming the one being replaced.
     pub async fn restore(
         &self,
         who: &Principal,

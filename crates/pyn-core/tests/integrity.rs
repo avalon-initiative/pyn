@@ -103,6 +103,25 @@ async fn an_altered_message_is_found_and_never_served() {
 }
 
 #[tokio::test]
+async fn a_base_that_is_not_an_older_revision_of_the_path_is_found() {
+    let w = world();
+    let a = three_revisions(&w).await;
+    let report = w.svc.verify(None, false).await.unwrap();
+    assert!(report.problems.is_empty(), "{report:?}");
+    for bad in [RevisionId(3), RevisionId(9)] {
+        w.meta
+            .tamper(&w.repo, &a, RevisionId(3), |r| r.base = Some(bad));
+        let report = w.svc.verify(Some(&a), false).await.unwrap();
+        let found: Vec<_> = report
+            .problems
+            .iter()
+            .map(|p| (p.kind, p.revision))
+            .collect();
+        assert_eq!(found, vec![(BreakKind::Base, Some(RevisionId(3)))], "{bad}");
+    }
+}
+
+#[tokio::test]
 async fn a_rewritten_chain_is_found_where_it_stops_matching() {
     let w = world();
     let a = three_revisions(&w).await;
@@ -346,5 +365,6 @@ fn v1_revision() -> pyn_core::Revision {
         commit: empty_blob,
         hash: RevisionHash::new("9c4caa53e94d5fa8fb261cb765f73725506641df99e225605e83f179ae0d9b52"),
         previous: None,
+        base: None,
     }
 }

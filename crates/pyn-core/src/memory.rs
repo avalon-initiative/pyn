@@ -29,7 +29,7 @@ use crate::repo::{RepoRecord, RepoUpdate, Visibility};
 use crate::repo_policy::{
     CreationEffect, CreationRule, CreationScope, CreationSubject, MemberCreation, RepoPolicy,
 };
-use crate::rules::{Mode, PathFilter};
+use crate::rules::PathFilter;
 use crate::store::MetadataStore;
 use crate::types::{
     ChangesetItem, Commit, Lock, Person, RepoId, RepoPath, Revision, RevisionId, UserId,
@@ -290,10 +290,7 @@ impl State {
         }
 
         let head = st.revisions.get(&key).and_then(|v| v.last()).map(|r| r.id);
-        let base = match revision.mode {
-            Mode::Exclusive => head,
-            Mode::Shared => at_branch.get(&revision.path).copied(),
-        };
+        let base = at_branch.get(&revision.path).copied();
         if base != expected_head {
             return Err(PynError::StaleBase {
                 path: revision.path,
@@ -321,7 +318,12 @@ impl State {
             .get(&key)
             .and_then(|v| v.last())
             .map(|r| r.hash.clone());
-        let created = revision.create(RevisionId(head.map_or(1, |h| h.0 + 1)), previous, *commit);
+        let created = revision.create(
+            RevisionId(head.map_or(1, |h| h.0 + 1)),
+            previous,
+            base,
+            *commit,
+        );
         st.revisions
             .entry(key.clone())
             .or_default()

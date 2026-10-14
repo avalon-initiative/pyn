@@ -507,7 +507,8 @@ impl RepoService {
         settle(ours, theirs, merged, file_mode)
     }
 
-    /// An exclusive path takes the later revision; only a shared version outside the other side's history conflicts.
+    /// An exclusive path takes the pointer that descends from the other; pointers that diverged, or a shared version
+    /// outside the other side's history, conflict.
     async fn exclusive_verdict(
         &self,
         ours: Option<&Revision>,
@@ -526,13 +527,45 @@ impl RepoService {
                 {
                     return Ok(Verdict::Conflict(ConflictKind::ExclusiveConversion));
                 }
-                Ok(if o.id > t.id {
-                    Verdict::Keep
+                if same {
+                    return Ok(if o.id > t.id {
+                        Verdict::Keep
+                    } else {
+                        Verdict::Point(Box::new(t.clone()))
+                    });
+                }
+                if self.descends(o, t).await? {
+                    Ok(Verdict::Keep)
+                } else if self.descends(t, o).await? {
+                    Ok(Verdict::Point(Box::new(t.clone())))
                 } else {
-                    Verdict::Point(Box::new(t.clone()))
-                })
+                    Ok(Verdict::Conflict(ConflictKind::Binary))
+                }
             }
         }
+    }
+
+    /// Whether `rev` is `ancestor` or follows it: through the recorded bases, or because the commit that made `rev`
+    /// has the one that made `ancestor` in its history (a merge's revision follows both sides).
+    async fn descends(&self, rev: &Revision, ancestor: &Revision) -> Result<bool> {
+        let mut at = rev.clone();
+        while let Some(base) = at.base {
+            if base == ancestor.id {
+                return Ok(true);
+            }
+            if base < ancestor.id {
+                break;
+            }
+            match self.meta.get_revision(&self.repo, &at.path, base).await? {
+                Some(next) => at = next,
+                None => break,
+            }
+        }
+        Ok(rev.id > ancestor.id
+            && self
+                .meta
+                .is_ancestor(&self.repo, &ancestor.commit, &rev.commit)
+                .await?)
     }
 
     /// Whether `rev` is a shared version the history ending at `other` does not contain.
@@ -607,12 +640,18 @@ impl RepoService {
             if !self.objects.exists(&r.content).await? {
                 return Err(PynError::ObjectMissing(r.content.to_string()));
             }
-            p.verdict = settle(
-                p.ours.as_ref(),
-                p.theirs.as_ref(),
-                Content::Blob(r.content),
-                r.file_mode,
-            )?;
+            p.verdict = if p.mode == Mode::Exclusive
+                && matches!(p.verdict, Verdict::Conflict(ConflictKind::Binary))
+            {
+                Verdict::Write(Content::Blob(r.content), r.file_mode)
+            } else {
+                settle(
+                    p.ours.as_ref(),
+                    p.theirs.as_ref(),
+                    Content::Blob(r.content),
+                    r.file_mode,
+                )?
+            };
         }
         Ok(())
     }
@@ -852,13 +891,7 @@ impl RepoService {
                         .ok_or_else(|| PynError::ObjectMissing(blob.to_string()))?;
                     let (expected_head, lock_holder) = match p.mode {
                         Mode::Shared => (p.ours.as_ref().map(|r| r.id), None),
-                        Mode::Exclusive => (
-                            self.meta
-                                .head_revision(&self.repo, &p.path)
-                                .await?
-                                .map(|r| r.id),
-                            Some(who.user.clone()),
-                        ),
+                        Mode::Exclusive => (p.ours.as_ref().map(|r| r.id), Some(who.user.clone())),
                     };
                     items.push(ChangesetItem {
                         revision: NewRevision {
