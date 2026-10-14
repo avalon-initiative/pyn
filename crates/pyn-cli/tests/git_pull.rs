@@ -434,28 +434,70 @@ fn divergent_history_needs_a_way_to_reconcile() {
 }
 
 #[test]
-fn rebase_is_refused_before_anything_happens() {
+fn rebase_configured_still_fast_forwards_and_stays_up_to_date() {
     type Case<'a> = (&'a [&'a str], Option<(&'a str, &'a str)>);
-    let cases: [Case; 4] = [
+    let cases: [Case; 5] = [
         (&["--rebase"], None),
         (&["-r"], None),
+        (&["--rebase=merges"], None),
         (&[], Some(("pull.rebase", "true"))),
-        (&[], Some(("branch.main.rebase", "merges"))),
+        (&[], Some(("branch.main.rebase", "interactive"))),
     ];
     for (args, config) in cases {
         let t = Twin::new("sha1", Via::Ssh);
         if let Some((k, v)) = config {
             t.configure(k, v);
         }
-        t.remote("n.txt", "new\n", "remote");
-        let before = state(&t.pyn);
+        let out = t.both_ok(args);
+        assert!(
+            !out.stderr.contains("rebase is not built"),
+            "{}",
+            out.stderr
+        );
+        let new = t.remote("n.txt", "new\n", "remote");
+        t.both_ok(args);
+        assert_eq!(t.head(&t.pyn), new, "{args:?} {config:?}");
+        t.both_ok(args);
+    }
+    let t = Twin::new("sha1", Via::Ssh);
+    t.configure("pull.rebase", "true");
+    t.local("l.txt", "local\n", "local");
+    t.both_ok(&[]);
+    assert!(t.pyn.join("l.txt").exists());
+}
+
+#[test]
+fn rebase_configured_pulls_into_an_unborn_branch() {
+    let t = Twin::unborn("sha1", Via::Ssh);
+    t.configure("pull.rebase", "true");
+    t.both_ok(&["origin", "main"]);
+    assert_eq!(t.head(&t.pyn), t.head(&t.seed));
+}
+
+#[test]
+fn rebase_configured_with_diverged_history_fails_after_the_fetch() {
+    let t = Twin::new("sha1", Via::Ssh);
+    t.local("l.txt", "local\n", "local");
+    let remote = t.remote("n.txt", "new\n", "remote");
+    for (args, config) in [(&["--rebase"][..], None), (&[][..], Some("true"))] {
+        if let Some(v) = config {
+            t.configure("pull.rebase", v);
+        }
+        let head = t.head(&t.pyn);
+        let files = tree_files(&t.pyn);
         let mut full = vec!["pull"];
         full.extend(args);
         let p = t.pyn_cmd(&t.pyn, &full);
-        assert_eq!(p.code, 128, "{args:?} {config:?}: {}", p.stderr);
-        assert!(p.stderr.contains("rebase is not built"), "{}", p.stderr);
-        assert_eq!(state(&t.pyn), before, "nothing was fetched");
+        assert_eq!(p.code, 128, "{}", p.stderr);
+        assert!(p.stderr.contains("use --no-rebase"), "{}", p.stderr);
+        assert_eq!(t.head(&t.pyn), head);
+        assert_eq!(tree_files(&t.pyn), files);
+        let tracked = run(&t.pyn, &["rev-parse", "refs/remotes/origin/main"]);
+        assert_eq!(tracked.trim(), remote, "the fetch stays");
+        assert!(!t.pyn.join(".git/MERGE_HEAD").exists());
     }
+    t.configure("pull.rebase", "true");
+    t.both_ok(&["--no-rebase", "--no-edit"]);
 }
 
 #[test]

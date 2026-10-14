@@ -391,10 +391,9 @@ pub fn pull(git: &GitHome, args: PullArgs) -> Result<()> {
         Head::Branch { name, .. } => Some(name.as_str()),
         Head::Detached(_) => None,
     };
-    if matches!(rebase_setting(git, &args, branch)?, Rebase::On) {
-        die("rebase is not built; use --no-rebase");
-    }
-    let rebase_unset = matches!(rebase_setting(git, &args, branch)?, Rebase::Unset);
+    let rebase = rebase_setting(git, &args, branch)?;
+    let rebase_on = matches!(rebase, Rebase::On);
+    let rebase_unset = matches!(rebase, Rebase::Unset);
     let how = integration(git, &args)?;
     if !args.dry_run {
         refuse_unfinished(git)?;
@@ -438,6 +437,20 @@ pub fn pull(git: &GitHome, args: PullArgs) -> Result<()> {
     }
     let candidate = &found[0];
     let theirs = peel(git, candidate)?;
+    if rebase_on {
+        if git.is_ancestor(&theirs, &ours)? {
+            if args.quiet == 0 {
+                match branch {
+                    Some(b) => println!("Current branch {b} is up to date."),
+                    None => println!("HEAD is up to date."),
+                }
+            }
+            return Ok(());
+        }
+        if !git.is_ancestor(&ours, &theirs)? {
+            die("rebase is not built; use --no-rebase");
+        }
+    }
     if rebase_unset
         && !how.stated
         && !git.is_ancestor(&theirs, &ours)?
@@ -454,8 +467,8 @@ pub fn pull(git: &GitHome, args: PullArgs) -> Result<()> {
         MergeArgs {
             source: Some(theirs.to_hex()),
             message: vec![message],
-            no_ff: how.no_ff,
-            ff_only: how.ff_only,
+            no_ff: how.no_ff && !rebase_on,
+            ff_only: how.ff_only || rebase_on,
             no_commit: args.no_commit,
             abort: false,
             continue_merge: false,

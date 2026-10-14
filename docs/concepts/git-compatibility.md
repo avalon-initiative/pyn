@@ -259,8 +259,12 @@ not be written names `pyn fetch --prune`, since `remote prune` is not built. `re
 `FETCH_HEAD` written) followed by `pyn merge` of the fetched merge candidates into the current branch, as `git pull` with the
 merge mode. Git's own prose is not copied everywhere: where a message names a command it names `pyn`.
 
-1. Before fetching: `--rebase`, `-r`, `pull.rebase` or `branch.<name>.rebase` other than false (`true`, `merges`, `interactive`)
-   is `fatal: rebase is not built; use --no-rebase` (`128`) with nothing fetched. `--no-rebase`, `pull.rebase=false` and
+1. Rebase is not built, but it is not refused up front: `--rebase`, `-r`, `pull.rebase` or `branch.<name>.rebase` set to `true`,
+   `merges` or `interactive` (and `--rebase=` those or `i`, `m`) is decided after the fetch. A candidate the branch already
+   contains prints `Current branch <b> is up to date.` and exits `0`; a branch that can fast-forward (or is unborn) fast-forwards
+   exactly as without rebase, with the same dirty-tree protection; a branch with local commits the candidate lacks needs a real
+   rebase and is `fatal: rebase is not built; use --no-rebase` (`128`) with the fetched refs kept and nothing else changed:
+   run `pyn pull --no-rebase`. `--no-rebase`, `--rebase=false`, `pull.rebase=false` and
    `branch.<name>.rebase=false` merge. With unmerged index entries it is `fatal: Exiting because of an unresolved conflict.`
    and with `MERGE_HEAD` present `fatal: You have not concluded your merge (MERGE_HEAD exists).` (both `128`).
 2. The fetch. A failed fetch exits `1` (git's `pull` does, not `fetch`'s `128`); `--dry-run` fetches only and ends there.
@@ -291,7 +295,7 @@ that cannot fast-forward is `fatal: Not possible to fast-forward, aborting.` (`1
 | `-p`, `--prune`, `--no-prune`, `-t`, `--tags`, `--no-tags`, `-f`, `--force`, `-a`, `--append`, `--dry-run` | As for `pyn fetch`. |
 | `--ff`, `--no-ff`, `--ff-only`, `--commit`, `--no-commit` | As for `pyn merge`; `--no-commit` stops before the commit with `MERGE_HEAD` set. |
 | `--no-edit` | Accepted: no editor is ever started. |
-| `--no-rebase`, `--rebase`, `-r` | `--no-rebase` merges; `--rebase` is refused as above. |
+| `--no-rebase`, `--rebase`, `-r` | `--no-rebase` merges; `--rebase` fast-forwards or stops as above. |
 | `--edit`, `-e`, `--squash`, `-s`/`--strategy`, `-X`/`--strategy-option`, `--autostash`, `-S`/`--gpg-sign`, `--signoff`, `--cleanup`, `--stat`, `-n`/`--no-stat`, `--recurse-submodules`, `--allow-unrelated-histories`, `--all` | Usage error (`129`): not built (`--all`: use `pyn fetch --all`). |
 
 Config read: `pull.ff`, `pull.rebase`, `branch.<name>.rebase`, `branch.<name>.merge`, `branch.<name>.remote`, `merge.ff`, plus what
