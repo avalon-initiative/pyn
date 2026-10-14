@@ -264,7 +264,7 @@ fn default_remote(git: &GitHome) -> Result<Option<String>> {
 }
 
 /// Remote names in the order the configuration first mentions them.
-fn remotes_in_order(git: &GitHome) -> Vec<String> {
+pub(super) fn remotes_in_order(git: &GitHome) -> Vec<String> {
     let mut seen = HashSet::new();
     git.config()
         .entries()
@@ -714,7 +714,7 @@ fn fetch_many(git: &GitHome, names: &[String], o: &Options) -> Result<bool> {
     Ok(failed)
 }
 
-fn run(git: &GitHome, a: &FetchArgs, action: &str) -> Result<bool> {
+pub(super) fn run(git: &GitHome, a: &FetchArgs, action: &str) -> Result<bool> {
     a.refuse_unsupported();
     let opts = Options::of(a);
     let config = git.config();

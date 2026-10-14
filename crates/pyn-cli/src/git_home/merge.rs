@@ -21,6 +21,23 @@ use super::{GitHome, Refused, convert, path_string};
 use crate::merging::MergeArgs;
 
 const ABBREV: usize = 7;
+
+/// Set by `pyn pull -q`: the informational lines below are not printed.
+pub(super) static QUIET: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The exit status when local changes block a fast-forward: 2 for `merge`, 1 for `pull`.
+pub(super) static BLOCKED_STATUS: std::sync::atomic::AtomicI32 =
+    std::sync::atomic::AtomicI32::new(2);
+
+fn blocked_status() -> i32 {
+    BLOCKED_STATUS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+fn say(text: &str) {
+    if !QUIET.load(std::sync::atomic::Ordering::Relaxed) {
+        println!("{text}");
+    }
+}
 const MERGE_HOOKS: [&str; 5] = [
     "pre-merge-commit",
     "prepare-commit-msg",
@@ -71,7 +88,7 @@ fn tag_message(git: &GitHome, spec: &str) -> Option<String> {
     Some(String::from_utf8_lossy(&tag.message).trim_end().to_string())
 }
 
-fn default_message(git: &GitHome, what: &str) -> Result<String> {
+pub(super) fn default_message(git: &GitHome, what: &str) -> Result<String> {
     let into = match git.repo.head()? {
         Head::Branch { name, .. } if name == "main" || name == "master" => String::new(),
         Head::Branch { name, .. } => format!(" into {name}"),
@@ -122,7 +139,7 @@ pub fn merge(git: &GitHome, args: MergeArgs) -> Result<()> {
     };
     if git.is_ancestor(&theirs, &ours)? {
         write_orig_head(git, &ours)?;
-        println!("Already up to date.");
+        say("Already up to date.");
         return Ok(());
     }
     let can_ff = git.is_ancestor(&ours, &theirs)?;
@@ -134,6 +151,16 @@ pub fn merge(git: &GitHome, args: MergeArgs) -> Result<()> {
         bail!("Not possible to fast-forward, aborting.");
     }
     true_merge(git, &args, &opened, ours, theirs, &spec, &what)
+}
+
+/// Checks `theirs` out onto an unborn branch and points the branch at it, without a word, as `git pull` does.
+pub(super) fn initial_checkout(git: &GitHome, theirs: &ObjectId, action: &str) -> Result<()> {
+    let opened = git.open_index()?;
+    let tree = git.repo.commit(theirs)?.tree;
+    if let Err(blocked) = move_tree(git, &opened, None, Some(&tree), Mode::Safe)? {
+        blocked.report("merge", "merge", blocked_status());
+    }
+    git.move_head(theirs, action)
 }
 
 fn fast_forward(
@@ -152,19 +179,19 @@ fn fast_forward(
         if let Some(ours) = &ours {
             write_orig_head(git, ours)?;
         }
-        blocked.report("merge", "merge", 2);
+        blocked.report("merge", "merge", blocked_status());
     }
     if let Some(ours) = &ours {
         write_orig_head(git, ours)?;
-        println!("Updating {}..{}", short(ours), short(theirs));
+        say(&format!("Updating {}..{}", short(ours), short(theirs)));
     }
     git.move_head(theirs, &format!("merge {spec}: Fast-forward"))?;
-    println!("Fast-forward");
+    say("Fast-forward");
     let changed = git
         .repo
         .diff_trees(old_tree.as_ref(), Some(&new_tree), &Pathspec::default())?
         .len();
-    println!("{changed} file(s) changed");
+    say(&format!("{changed} file(s) changed"));
     warn_about_hooks_for(git, &MERGE_HOOKS);
     Ok(())
 }
@@ -262,7 +289,7 @@ fn true_merge(
     let mut conflicted: Vec<Vec<u8>> = Vec::new();
     for (path, resolved) in &merged.paths {
         if merged.line_merged.contains(path) {
-            println!("Auto-merging {}", path_string(path));
+            say(&format!("Auto-merging {}", path_string(path)));
         }
         match resolved {
             Resolved::Take(Some(entry)) => {
@@ -341,12 +368,12 @@ fn true_merge(
         &id,
         &format!("merge {spec}: Merge made by the 'ort' strategy."),
     )?;
-    println!("Merge made by the 'ort' strategy.");
+    say("Merge made by the 'ort' strategy.");
     let changed = git
         .repo
         .diff_trees(Some(&ours_tree), Some(&tree), &Pathspec::default())?
         .len();
-    println!("{changed} file(s) changed");
+    say(&format!("{changed} file(s) changed"));
     warn_about_hooks_for(git, &MERGE_HOOKS);
     Ok(())
 }

@@ -19,13 +19,10 @@ const GIT_ONLY: &[&str] = &[
 ];
 
 /// A git command, or a pyn command that wraps one, that a git home will gain with a named issue.
-const PLANNED_ON_GIT: &[(&str, &str)] = &[
-    ("pull", "git transport (#255)"),
-    ("update", "git transport (#255)"),
-];
+const PLANNED_ON_GIT: &[(&str, &str)] = &[("update", "git transport (#255)")];
 
 /// The commands only a git home has, so any other home refuses before parsing their arguments.
-pub const REFUSED_OFF_GIT: &[&str] = &["fetch", "push"];
+pub const REFUSED_OFF_GIT: &[&str] = &["fetch", "pull", "push"];
 
 /// The commands whose arguments only make sense on a pyn server, so a git home refuses before parsing them.
 pub const REFUSED_BEFORE_PARSING: &[&str] = &["update", "get"];
