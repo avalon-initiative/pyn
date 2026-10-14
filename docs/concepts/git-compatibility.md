@@ -141,7 +141,7 @@ history across branches (decision #28).
 | `git remote [-v]`, `add`, `remove`, `rename`, `set-url`, `get-url` | `pyn remote ...` | git home: supported | Configuration only, no network. Output, exit statuses and the resulting `.git/config`, refs and reflogs match git. See [Remotes on a git home](#remotes-on-a-git-home). On a pyn server: `remote` and `remote -v` only, see the table above. |
 | `git ls-remote [--heads] [--tags] [--refs] [--symref] [--exit-code] [<repository> [<pattern>...]]` | `pyn ls-remote ...` | same | Works on a git home and anywhere with a URL. Output is git's: `<id>`, a tab and the name, with `<tag>^{}` for a peeled tag and `ref: <target>`, a tab and `HEAD` for `--symref`. `<repository>` is a remote name (default `origin`, which prints `From <url>` on standard error as git does) or a URL; see [Transports and credentials](#transports-and-credentials). `--get-url`, `--sort`, `-o`, `-q` and `--upload-pack` are usage errors (`129`). |
 | `git remote add -f` | `pyn remote add -f ...` | git home: supported | Adds the remote, then runs `pyn fetch <name>`. If the fetch fails the remote stays defined, as in git. |
-| `git remote show`, `prune`, `update`, `set-head`, `set-branches` | none | unsupported | `show` (with or without `-n`) exits `1` with `` `remote show` is not built yet ``; the others are usage errors (`129`). `pyn fetch --prune <remote>` does what `remote prune` does. |
+| `git remote show [-n] [<name>...]`, `prune [-n] <name>...`, `update [-p] [<group>\|<remote>...]`, `set-head <name> (-a \| -d \| <branch>)`, `set-branches [--add] <name> <branch>...` | `pyn remote ...` | git home: supported | Ask the remote over ssh or smart HTTP, with git's output and exit statuses; see [Querying remotes on a git home](#querying-remotes-on-a-git-home). Other options are usage errors (`129`). |
 | `git fetch [<options>] [<remote>\|<url>] [<refspec>...]` | `pyn fetch ...` | git home: supported | Git's behaviour, flags, output and exit statuses; see [Fetch on a git home](#fetch-on-a-git-home). |
 | `git pull [<remote> <branch>]` | `pyn pull` | git home: supported | See [Pull on a git home](#pull-on-a-git-home). Pyn server: runs `update`. |
 | `git push [<options>] [<repository> [<refspec>...]]` | `pyn push ...` | git home: supported | Git's behaviour, flags, output and exit statuses; see [Push on a git home](#push-on-a-git-home). Pyn server: says there is nothing to publish, because `pyn commit` already writes to the server; local commits and a real `push` there are decision #300, built in #313. |
@@ -162,7 +162,7 @@ until local commits exist (decision #300, built in #313).
 ### Remotes on a git home
 
 `pyn remote` reads and edits `remote.<name>.*` and `branch.<name>.*` in the repository's `.git/config` and the refs under
-`refs/remotes/`. It never contacts a remote.
+`refs/remotes/`. The subcommands in this table never contact a remote; those that do are under [Querying remotes on a git home](#querying-remotes-on-a-git-home).
 
 | Command | Does |
 | --- | --- |
@@ -178,6 +178,24 @@ Editing keeps every other line of `.git/config`, with its comments and order, an
 Differences from git: `<old>` and the `--delete` argument match as plain substrings, not regular expressions; `url.<base>.insteadOf` is not applied
 to the URLs shown; legacy `.git/remotes/` and `.git/branches/` files are not read; `remove` deletes the refs under
 `refs/remotes/<name>/` rather than those the fetch refspecs map.
+
+### Querying remotes on a git home
+
+These subcommands of `pyn remote` contact the remote (ssh or smart HTTP, see [Transports and credentials](#transports-and-credentials)) and
+change nothing except what is stated. A remote that cannot be reached is `fatal:` (`128`). A name that is not a configured remote is taken as a
+URL by `show -n`, `show` and `prune`, as git does.
+
+| Command | Does |
+| --- | --- |
+| `pyn remote show [-n] [<name>...]` | Per remote: `* remote <name>`, the `Fetch URL` and each `Push  URL` (the name when none is set), `HEAD branch` (`(unknown)` when the remote has none, a list when it is ambiguous, `(not queried)` with `-n`), `Remote branches` with `tracked`, `new (next fetch will store in remotes/<name>)` or `stale (use 'git remote prune' to remove)` (a stale ref keeps its full `refs/remotes/...` name, as in git), `Local branches configured for 'git pull'` (`merges with remote`, `rebases onto remote` and the interactive forms from `branch.<b>.rebase`) and `Local refs configured for 'git push'` with `up to date`, `fast-forwardable`, `local out of date`, `create` or `delete`, or `Local refs will be mirrored by 'git push'` with `remote.<name>.mirror`. Pushes come from `remote.<name>.push`, else every branch both sides have. `-n` lists the branches stored under the fetch refspecs and the push refspecs as written, with `(status not queried)`. With no name it lists the remotes. It stops at the first remote it cannot reach. |
+| `pyn remote prune [-n\|--dry-run] <name>...` | Deletes the refs a fetch refspec's destination covers whose source the remote lost (and their reflogs), printing `Pruning <name>`, `URL: <url>` and ` * [pruned] <ref>` (` * [would prune] <ref>` with `-n`) for each. Nothing stale prints nothing. |
+| `pyn remote [-v] update [-p\|--prune\|--no-prune] [<group>\|<remote>...]` | Fetches each, as `pyn fetch --multiple` does (`Fetching <name>` on standard output, `error: Could not fetch <name>` and exit `1` on a failure). A name is a `remotes.<group>` first, else a configured remote, else `fatal: no such remote or remote group: <name>` (`1`). With none, the `remotes.default` group, else every remote except those with `skipFetchAll` or `skipDefaultUpdate`; a lone remote picked that way is fetched with no heading, as git does. `-p` prunes as `fetch --prune`; otherwise `remote.<name>.prune` and `fetch.prune` decide. `-v` is `fetch -v`. |
+| `pyn remote set-head <name> (-a\|--auto \| -d\|--delete \| <branch>)` | Points `refs/remotes/<name>/HEAD` at `refs/remotes/<name>/<branch>`, at the branch the remote's `HEAD` names (`-a`, printing `<name>/HEAD set to <branch>`; `error: Cannot determine remote HEAD` or `error: Multiple remote HEAD branches...`, `1`, when it cannot tell), or deletes it. A branch with no tracking ref is `error: Not a valid ref: refs/remotes/<name>/<branch>` (`1`). Any other combination is a usage error. The wording of the `-a` message is that of git 2.43 and is provisional. |
+| `pyn remote set-branches [--add] <name> <branch>...` | Replaces (or with `--add`, extends) the `fetch` refspecs with `+refs/heads/<branch>:refs/remotes/<name>/<branch>`. A missing remote is `error: No such remote '<name>'` (`2`). At least one branch is required; git accepts none and leaves the remote with no refspec. |
+
+Differences from git: `show` reads `branch.<b>.rebase` only (not `pull.rebase`) and ignores `push.default`, as git's `show` does; a remote branch no fetch
+refspec maps is not listed and never shown as `skipped`; the push status of a tag or other non-commit is `local out of date` when the ids differ;
+`remote.<name>.followRemoteHEAD` and the legacy `.git/remotes/` files are not consulted by `set-head`.
 
 ### Fetch on a git home
 
@@ -250,7 +268,7 @@ existing `refs/remotes/<name>/<branch>`, `refs/remotes/<name>/HEAD` is made a sy
 it when missing; `warn` also creates it and prints a one-line warning, without changing it, when it points elsewhere;
 `warn-if-not-<branch>` warns only when the remote's `HEAD` is not `<branch>`; `always` also moves it; `never` does nothing. A
 detached or unborn remote `HEAD` changes nothing. The symbolic ref gets no reflog, and the warning wording is pyn's. `remote set-head`
-is not built.
+sets the same ref by hand, see [Querying remotes on a git home](#querying-remotes-on-a-git-home).
 
 Object format. The remote's `object-format` must be the repository's: otherwise `fatal: mismatched algorithms: client sha1;
 server sha256` (`128`). A repository with no objects, refs or index takes the remote's format (it sets
@@ -262,8 +280,7 @@ only what the server sends; local-path and `file://` remotes are refused (see [T
 `fetch.output`, `fetch.showForcedUpdates`, `fetch.recurseSubmodules`, `fetch.writeCommitGraph`, `remote.<name>.promisor`,
 `--refmap`, `--negotiation-tip`, `--server-option`, `--stdin` and `-4`/`-6` are not read or taken; `--all` runs
 the remotes one at a time whatever `-j` or `fetch.parallel` say, so `FETCH_HEAD` lists them in configuration order; the stale-ref hint after a ref could
-not be written names `pyn fetch --prune`, since `remote prune` is not built. `remote show` against the remote and
-`remote update` are not built.
+not be written names `pyn remote prune`.
 
 ### Pull on a git home
 

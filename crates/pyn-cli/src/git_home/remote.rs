@@ -9,6 +9,7 @@ use pyn_git::{
     remove_remote, rename_remote,
 };
 
+use super::remote_query as query;
 use super::{GitHome, Refused};
 
 /// List and edit remotes.
@@ -63,16 +64,54 @@ enum RemoteCommand {
         all: bool,
         name: String,
     },
-    /// Describe a remote (not built yet).
+    /// Describe a remote: its HEAD, its branches against the local refs, and the pull and push setup.
     Show {
+        /// Do not ask the remote; describe it from the stored refs.
         #[arg(short = 'n')]
         no_query: bool,
+        names: Vec<String>,
+    },
+    /// Fetch the named remotes and groups, or the default set.
+    Update {
+        /// Delete remote-tracking refs the remote no longer has.
+        #[arg(short, long, overrides_with = "no_prune")]
+        prune: bool,
+        #[arg(long, overrides_with = "prune")]
+        no_prune: bool,
+        names: Vec<String>,
+    },
+    /// Delete the remote-tracking refs whose branch the remote no longer has.
+    Prune {
+        /// Report what would be deleted and change nothing.
+        #[arg(short = 'n', long)]
+        dry_run: bool,
+        #[arg(required = true)]
+        names: Vec<String>,
+    },
+    /// Set, find or delete `refs/remotes/<name>/HEAD`.
+    SetHead {
+        /// Take the branch the remote's HEAD points at.
+        #[arg(short, long)]
+        auto: bool,
+        /// Delete the ref.
+        #[arg(short, long)]
+        delete: bool,
         name: String,
+        branch: Option<String>,
+    },
+    /// Replace (or with --add, extend) the branches a remote fetches.
+    SetBranches {
+        /// Keep the fetch refspecs already there.
+        #[arg(long)]
+        add: bool,
+        name: String,
+        #[arg(required = true)]
+        branches: Vec<String>,
     },
 }
 
 /// Prints `message` on standard error and exits with git's status for it.
-fn fail(code: i32, message: String) -> ! {
+pub(super) fn fail(code: i32, message: String) -> ! {
     eprintln!("{message}");
     std::process::exit(code)
 }
@@ -290,6 +329,20 @@ fn get_url(git: &GitHome, name: &str, push: bool, all: bool) {
     }
 }
 
+fn set_branches(git: &GitHome, add: bool, name: &str, branches: &[String]) -> Result<()> {
+    existing_for_url(git, name);
+    edit(git, |file| {
+        if !add {
+            file.unset_all("remote", Some(name), "fetch");
+        }
+        for b in branches {
+            let spec = format!("+refs/heads/{b}:refs/remotes/{name}/{b}");
+            file.add("remote", Some(name), "fetch", &spec)?;
+        }
+        Ok(())
+    })
+}
+
 pub fn remote(git: &GitHome, args: RemoteArgs) -> Result<()> {
     match args.command {
         None => {
@@ -321,13 +374,39 @@ pub fn remote(git: &GitHome, args: RemoteArgs) -> Result<()> {
             get_url(git, &name, push, all);
             Ok(())
         }
-        Some(RemoteCommand::Show { name, .. }) => {
-            existing(git, &name);
-            Err(
-                Refused("`remote show` is not built yet; `pyn remote -v` lists the URLs".into())
-                    .into(),
-            )
+        Some(RemoteCommand::Show { no_query, names }) => query::show(git, no_query, &names),
+        Some(RemoteCommand::Update {
+            prune,
+            no_prune,
+            names,
+        }) => query::update(
+            git,
+            prune.then_some(true).or(no_prune.then_some(false)),
+            args.verbose,
+            &names,
+        ),
+        Some(RemoteCommand::Prune { dry_run, names }) => query::prune(git, dry_run, &names),
+        Some(RemoteCommand::SetHead {
+            auto,
+            delete,
+            name,
+            branch,
+        }) => {
+            let action = match (auto, delete, branch.as_deref()) {
+                (true, false, None) => query::HeadAction::Auto,
+                (false, true, None) => query::HeadAction::Delete,
+                (false, false, Some(b)) => query::HeadAction::Set(b),
+                _ => crate::usage_error(
+                    "`pyn remote set-head` takes <name> and exactly one of <branch>, `-a` or `-d`",
+                ),
+            };
+            query::set_head(git, &name, action)
         }
+        Some(RemoteCommand::SetBranches {
+            add,
+            name,
+            branches,
+        }) => set_branches(git, add, &name, &branches),
     }
 }
 

@@ -352,7 +352,7 @@ pub fn store(git: &GitHome, s: &Settings, entries: &[Entry]) -> Result<bool> {
     }
     if let (true, true, Some(name)) = (blocked, s.verbosity >= 0, &s.remote) {
         eprintln!(
-            "error: some local refs could not be updated; try running\n 'pyn fetch --prune {name}' to remove any old, conflicting branches which may be blocking local refs"
+            "error: some local refs could not be updated; try running\n 'pyn remote prune {name}' to remove any old, conflicting branches which may be blocking local refs"
         );
     }
     Ok(failed)
@@ -362,7 +362,7 @@ pub fn store(git: &GitHome, s: &Settings, entries: &[Entry]) -> Result<bool> {
 pub fn stale_refs(
     git: &GitHome,
     specs: &[Refspec],
-    entries: &[Entry],
+    remote_names: &[&str],
 ) -> Result<Vec<(String, ObjectId)>> {
     let refs = git.repo.refs();
     let mut stale = Vec::new();
@@ -375,9 +375,9 @@ pub fn stale_refs(
             .filter(|s| s.dst.as_deref().is_some_and(|d| !d.is_empty()))
             .find_map(|s| s.source_of(&name));
         let Some(source) = source else { continue };
-        if !entries
+        if !remote_names
             .iter()
-            .any(|e| super::fetch_map::names_match(&source, &e.name))
+            .any(|n| super::fetch_map::names_match(&source, n))
         {
             stale.push((name, id));
         }
@@ -385,14 +385,20 @@ pub fn stale_refs(
     Ok(stale)
 }
 
+/// Deletes a ref and its reflog.
+pub fn delete_ref(git: &GitHome, name: &str, id: ObjectId) -> Result<()> {
+    let refs = git.repo.refs();
+    refs.delete(name, Expect::Id(id))?;
+    refs.write_reflog(name, &[])?;
+    Ok(())
+}
+
 /// Deletes the stale refs and their reflogs (or only reports them on a dry run).
 pub fn prune(git: &GitHome, s: &Settings, stale: &[(String, ObjectId)]) -> Result<()> {
     let refcol = MIN_REFCOL;
     for (name, id) in stale {
         if !s.dry_run {
-            let refs = git.repo.refs();
-            refs.delete(name, Expect::Id(*id))?;
-            refs.write_reflog(name, &[])?;
+            delete_ref(git, name, *id)?;
         }
         s.say(&display(
             s,

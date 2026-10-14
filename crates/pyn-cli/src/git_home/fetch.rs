@@ -7,7 +7,7 @@ use std::io::{IsTerminal, Write};
 use anyhow::{Result, anyhow, bail};
 use clap::{ArgAction, Args};
 use pyn_git::{ConfigFile, Ref, Refspec, Remote, map_ref, tracking};
-use pyn_gittransport::exchange::{fetch_objects, fetch_with};
+use pyn_gittransport::exchange::{fetch_objects, fetch_with, list_remote_refs};
 use pyn_gittransport::{Connector, Env};
 use pyn_gitwire::{LsRefsOptions, RemoteRef, Transport, UploadPack};
 use pyn_gitwork::Head;
@@ -156,6 +156,15 @@ impl Options {
             tags,
             progress,
             clone: true,
+            ..Self::plain()
+        }
+    }
+
+    /// `remote update`: `--prune` when asked, otherwise the configured default.
+    pub(super) fn for_update(prune: Option<bool>, verbose: bool) -> Self {
+        Self {
+            prune,
+            verbosity: i32::from(verbose),
             ..Self::plain()
         }
     }
@@ -417,6 +426,25 @@ fn check_connected(git: &GitHome, wants: &[ObjectId]) -> Result<()> {
         .map_err(|e| anyhow!("remote did not send all necessary objects: {e}"))
 }
 
+/// The refs a remote holds, from its URL, without fetching anything.
+pub(super) fn query_refs(git: &GitHome, url: &str) -> Result<Vec<RemoteRef>> {
+    let conn = Connector::new(git.config().clone(), Env::process()).connect(url, false)?;
+    let mut transport = conn.transport;
+    let opts = LsRefsOptions {
+        symrefs: true,
+        ..LsRefsOptions::default()
+    };
+    let (server, refs) = list_remote_refs(&mut *transport, None, &opts)?;
+    if server != git.algorithm() {
+        bail!(
+            "mismatched algorithms: client {}; server {}",
+            git.algorithm().name(),
+            server.name()
+        );
+    }
+    Ok(refs)
+}
+
 /// Picks the refspecs once the remote's refs are known.
 pub(super) type Choose<'a> = &'a dyn Fn(&[RemoteRef]) -> Result<Vec<String>>;
 
@@ -566,7 +594,8 @@ pub(super) fn fetch_core(
         } else {
             &cmdline
         };
-        prune(git, &settings, &stale_refs(git, specs, &entries)?)?;
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        prune(git, &settings, &stale_refs(git, specs, &names)?)?;
     }
 
     let mut relay = Relay {
@@ -695,7 +724,7 @@ fn follow_remote_head(
 }
 
 /// The remote names in a `remotes.<group>` setting.
-fn group_members(git: &GitHome, group: &str) -> Vec<String> {
+pub(super) fn group_members(git: &GitHome, group: &str) -> Vec<String> {
     git.config()
         .get_all(&format!("remotes.{group}"))
         .iter()
@@ -703,7 +732,19 @@ fn group_members(git: &GitHome, group: &str) -> Vec<String> {
         .collect()
 }
 
-fn fetch_many(git: &GitHome, names: &[String], o: &Options) -> Result<bool> {
+/// Every remote in configuration order except those with `skipFetchAll` or `skipDefaultUpdate`.
+pub(super) fn default_update_set(git: &GitHome) -> Vec<String> {
+    let config = git.config();
+    remotes_in_order(git)
+        .into_iter()
+        .filter(|n| {
+            let skip = |k: &str| config.get_bool(&format!("remote.{n}.{k}")).ok().flatten();
+            skip("skipfetchall") != Some(true) && skip("skipdefaultupdate") != Some(true)
+        })
+        .collect()
+}
+
+pub(super) fn fetch_many(git: &GitHome, names: &[String], o: &Options) -> Result<bool> {
     if !o.dry_run && !o.append {
         truncate_fetch_head(git)?;
     }
@@ -746,14 +787,7 @@ pub(super) fn run(git: &GitHome, a: &FetchArgs, action: &str) -> Result<bool> {
         if !a.refspecs.is_empty() {
             bail!("fetch --all does not make sense with refspecs");
         }
-        let names: Vec<String> = remotes_in_order(git)
-            .into_iter()
-            .filter(|n| {
-                let skip = |k: &str| config.get_bool(&format!("remote.{n}.{k}")).ok().flatten();
-                skip("skipfetchall") != Some(true) && skip("skipdefaultupdate") != Some(true)
-            })
-            .collect();
-        return fetch_many(git, &names, &opts);
+        return fetch_many(git, &default_update_set(git), &opts);
     }
     if a.multiple {
         let names: Vec<String> = a.repository.iter().chain(&a.refspecs).cloned().collect();
@@ -789,6 +823,23 @@ pub fn fetch(git: &GitHome, args: FetchArgs) -> Result<()> {
         std::process::exit(1);
     }
     Ok(())
+}
+
+/// `remote update` of one remote: a plain fetch with no heading; false when it fetched.
+pub(super) fn fetch_single(git: &GitHome, name: &str, o: &Options) -> bool {
+    let action = format!("fetch {name}");
+    let plan = Plan {
+        opts: o,
+        action: &action,
+        choose: None,
+    };
+    match fetch_one(git, Some(name), &[], &plan) {
+        Ok(failed) => failed,
+        Err(e) => {
+            eprintln!("fatal: {e:#}");
+            true
+        }
+    }
 }
 
 /// `pyn remote add -f`: fetches the remote just added.

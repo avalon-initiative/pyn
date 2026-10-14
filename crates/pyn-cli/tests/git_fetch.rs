@@ -678,8 +678,6 @@ fn unsupported_and_invalid_options_are_clear_usage_errors() {
     assert!(run(&t.pyn, &["for-each-ref"]).is_empty());
     let p = t.pyn_cmd(&t.pyn, &["fetch", "--bogus"]);
     assert_eq!(p.code, 129);
-    let p = t.pyn_cmd(&t.pyn, &["remote", "update"]);
-    assert_eq!(p.code, 129, "remote update stays unsupported: {}", p.stderr);
     let none = Twin::build("sha1", Via::Ssh, false);
     let p = none.pyn_cmd(&none.pyn, &["fetch"]);
     let g = none.git_cmd(&none.git, &["fetch"]);

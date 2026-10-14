@@ -15,6 +15,7 @@ mod push;
 mod push_plan;
 mod refwrite;
 mod remote;
+mod remote_query;
 mod stage;
 mod stash;
 mod switch;
