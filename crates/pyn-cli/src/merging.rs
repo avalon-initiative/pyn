@@ -6,13 +6,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+use crate::transport::Method;
 use anyhow::{Context, Result, bail};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use clap::Args;
 use pyn_merge::{Outcome, merge_text, render_markers};
 use pyn_proto as api;
-use reqwest::Method;
 use serde::{Deserialize, Serialize};
 
 use crate::backend::Backend;
@@ -225,9 +225,8 @@ fn request(source: &str, target: &str, fast_forward: api::MergeFastForward) -> a
 }
 
 fn post(api: &Api, tail: &str, body: &api::MergeRequest) -> Result<api::MergeReport> {
-    Ok(api
-        .send(api.request(Method::POST, &api.repo_route(tail)?).json(body))?
-        .json()?)
+    api.send(api.request(Method::POST, &api.repo_route(tail)?).json(body))?
+        .json()
 }
 
 fn conflict_label(kind: api::MergeConflictKind) -> &'static str {

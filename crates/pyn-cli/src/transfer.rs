@@ -5,11 +5,11 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
+use crate::transport::Method;
 use anyhow::{Context, Result, bail};
 use pyn_chunk::{MAX_CHUNK, SMALL_OBJECT, cut_point};
 use pyn_object::{Algorithm, ObjectHasher};
 use pyn_proto as api;
-use reqwest::Method;
 use sha2::{Digest, Sha256};
 
 use crate::client::Api;
@@ -198,17 +198,11 @@ pub fn download(
             Err(e) => return Err(e),
         };
         let found = resp
-            .headers()
-            .get(api::REVISION_HEADER)
-            .and_then(|v| v.to_str().ok())
+            .header(api::REVISION_HEADER)
             .and_then(|v| v.parse().ok())
             .unwrap_or(0);
-        let expected = resp
-            .headers()
-            .get(api::CONTENT_HASH_HEADER)
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_string);
-        let appending = resp.status() == reqwest::StatusCode::PARTIAL_CONTENT;
+        let expected = resp.header(api::CONTENT_HASH_HEADER).map(str::to_string);
+        let appending = resp.status == 206;
         let mut out = std::fs::OpenOptions::new()
             .create(true)
             .write(true)

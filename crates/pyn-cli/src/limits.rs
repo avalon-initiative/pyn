@@ -2,10 +2,10 @@
 
 use std::str::FromStr;
 
+use crate::transport::Method;
 use anyhow::{Result, bail};
 use clap::Subcommand;
 use pyn_proto as api;
-use reqwest::Method;
 
 use crate::client::Api;
 use crate::table;

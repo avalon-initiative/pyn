@@ -1,9 +1,9 @@
 //! Server administration: first-run setup, accounts, administrators, organizations and service credentials.
 
+use crate::transport::Method;
 use anyhow::{Result, bail};
 use clap::Subcommand;
 use pyn_proto as api;
-use reqwest::Method;
 
 use crate::client::Api;
 use crate::{credentials, table, time};
@@ -202,7 +202,7 @@ fn account_action(
     if let Some(b) = body {
         req = req.json(b);
     }
-    Ok(api.send(req)?.json()?)
+    api.send(req)?.json()
 }
 
 fn service_credential(api: &Api, cmd: ServiceCredentialCommand) -> Result<()> {

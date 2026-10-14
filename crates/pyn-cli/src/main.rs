@@ -4,8 +4,6 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, bail};
 use clap::{CommandFactory, Parser, Subcommand};
 use pyn_proto as api;
-use reqwest::Method;
-use reqwest::blocking::Client;
 
 mod address;
 mod admin;
@@ -15,6 +13,7 @@ mod client;
 mod credentials;
 mod diff;
 mod git_home;
+mod http_transport;
 mod limits;
 mod localfile;
 mod ls_remote;
@@ -28,6 +27,7 @@ mod sync;
 mod table;
 mod time;
 mod transfer;
+mod transport;
 mod unsupported;
 mod userconfig;
 mod verify;
@@ -36,6 +36,7 @@ mod workspace;
 use backend::Backend;
 use client::Api;
 use pyn_server::PynServer;
+use transport::Method;
 use workspace::{Settings, Workspace, resolve};
 
 use userconfig::DEFAULT_SERVER;
@@ -955,7 +956,7 @@ fn run(cli: Cli) -> Result<()> {
     let repo_name = repo.clone();
     let server_url = base.clone();
     let backend = PynServer::new(Api {
-        http: Client::new(),
+        transport: Box::new(http_transport::HttpTransport::new(base.clone())),
         base,
         token,
         user: resolve(cli.user, mine.user.as_ref(), yours.user.as_ref(), None),
@@ -1025,10 +1026,10 @@ fn run(cli: Cli) -> Result<()> {
                 return Ok(());
             };
             if let Some(id) = credentials::token_id(&saved.token) {
-                let _ = api
-                    .request(Method::DELETE, &format!("/v1/tokens/{id}"))
-                    .bearer_auth(&saved.token)
-                    .send();
+                let _ = api.send(
+                    api.request(Method::DELETE, &format!("/v1/tokens/{id}"))
+                        .bearer_auth(&saved.token),
+                );
             }
             credentials::remove(&api.base)?;
             println!("signed out {} from {}", saved.user, api.base);

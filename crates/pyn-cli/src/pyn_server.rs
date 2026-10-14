@@ -2,9 +2,9 @@
 
 use std::path::Path;
 
+use crate::transport::Method;
 use anyhow::Result;
 use pyn_proto as api;
-use reqwest::Method;
 
 use crate::backend::Backend;
 use crate::client::Api;
@@ -41,7 +41,7 @@ impl Backend for PynServer {
         if let Some(p) = path {
             req = req.query(&[("path", p)]);
         }
-        Ok(api.send(req)?.json()?)
+        api.send(req)?.json()
     }
 
     fn head_commit(&self) -> Result<Option<String>> {
@@ -61,14 +61,13 @@ impl Backend for PynServer {
         if let Some(b) = before {
             req = req.query(&[("before", b)]);
         }
-        Ok(api.send(req)?.json()?)
+        api.send(req)?.json()
     }
 
     fn commit(&self, id: &str) -> Result<api::Commit> {
         let api = &self.api;
-        Ok(api
-            .send(api.get(&api.repo_route(&format!("/commits/{id}"))?))?
-            .json()?)
+        api.send(api.get(&api.repo_route(&format!("/commits/{id}"))?))?
+            .json()
     }
 
     fn snapshot(&self, commit: Option<&str>) -> Result<(Option<String>, Vec<api::SnapshotEntry>)> {
@@ -140,12 +139,11 @@ impl Backend for PynServer {
             branch: api.branch.clone(),
             ..request.clone()
         };
-        Ok(api
-            .send(
-                api.request(Method::POST, &api.repo_route("/checkin")?)
-                    .json(&request),
-            )?
-            .json()?)
+        api.send(
+            api.request(Method::POST, &api.repo_route("/checkin")?)
+                .json(&request),
+        )?
+        .json()
     }
 
     fn commit_changeset(&self, request: &api::ChangesetRequest) -> Result<api::ChangesetResponse> {
@@ -154,12 +152,11 @@ impl Backend for PynServer {
             branch: api.branch.clone(),
             ..request.clone()
         };
-        Ok(api
-            .send(
-                api.request(Method::POST, &api.repo_route("/changesets")?)
-                    .json(&request),
-            )?
-            .json()?)
+        api.send(
+            api.request(Method::POST, &api.repo_route("/changesets")?)
+                .json(&request),
+        )?
+        .json()
     }
 
     fn path_history(&self, path: &str) -> Result<Vec<api::Revision>> {
@@ -201,11 +198,10 @@ impl Backend for PynServer {
             branch: api.branch.clone(),
             ..request.clone()
         };
-        Ok(api
-            .send(
-                api.request(Method::POST, &api.repo_route("/restore")?)
-                    .json(&request),
-            )?
-            .json()?)
+        api.send(
+            api.request(Method::POST, &api.repo_route("/restore")?)
+                .json(&request),
+        )?
+        .json()
     }
 }

@@ -3,10 +3,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+use crate::transport::Method;
 use anyhow::{Context, Result, bail};
 use clap::Args;
 use pyn_proto as api;
-use reqwest::Method;
 
 use crate::backend::Backend;
 use crate::client::Api;
@@ -131,7 +131,7 @@ pub struct CheckoutArgs {
 }
 
 fn branches(api: &Api) -> Result<Vec<api::Branch>> {
-    Ok(api.send(api.get(&api.repo_route("/branches")?))?.json()?)
+    api.send(api.get(&api.repo_route("/branches")?))?.json()
 }
 
 fn branch_route(api: &Api, name: &str) -> Result<String> {
@@ -175,12 +175,11 @@ fn create(
         name: new.to_string(),
         start,
     };
-    Ok(api
-        .send(
-            api.request(Method::POST, &api.repo_route("/branches")?)
-                .json(&body),
-        )?
-        .json()?)
+    api.send(
+        api.request(Method::POST, &api.repo_route("/branches")?)
+            .json(&body),
+    )?
+    .json()
 }
 
 pub fn branch_command(

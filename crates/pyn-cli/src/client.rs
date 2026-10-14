@@ -1,10 +1,11 @@
 use anyhow::{Context, Result, bail};
 use pyn_proto as api;
-use reqwest::Method;
-use reqwest::blocking::{Client, RequestBuilder, Response};
 
+use crate::transport::{Auth, Call, Method, Reply, Transport};
+
+/// A session with a pyn server: the transport it travels over and who and what it acts on.
 pub struct Api {
-    pub http: Client,
+    pub transport: Box<dyn Transport>,
     pub base: String,
     pub token: Option<String>,
     pub user: Option<String>,
@@ -31,34 +32,35 @@ impl Api {
         }
     }
 
-    pub fn request(&self, method: Method, path: &str) -> RequestBuilder {
-        let req = self.http.request(method, format!("{}{path}", self.base));
-        match (&self.token, &self.user) {
-            (Some(token), _) => req.bearer_auth(token),
-            (None, Some(user)) => req.header(api::DEV_USER_HEADER, user),
-            _ => req,
-        }
+    pub fn request(&self, method: Method, path: &str) -> Call {
+        let mut call = Call::new(method, path);
+        call.auth = match (&self.token, &self.user) {
+            (Some(token), _) => Auth::Token(token.clone()),
+            (None, Some(user)) => Auth::DevUser(user.clone()),
+            _ => Auth::Anonymous,
+        };
+        call
     }
 
     /// A request that carries no credentials, for signing in and registering.
-    pub fn anonymous(&self, method: Method, path: &str) -> RequestBuilder {
-        self.http.request(method, format!("{}{path}", self.base))
+    pub fn anonymous(&self, method: Method, path: &str) -> Call {
+        Call::new(method, path)
     }
 
-    pub fn get(&self, path: &str) -> RequestBuilder {
+    pub fn get(&self, path: &str) -> Call {
         self.request(Method::GET, path)
     }
 
     /// `req` limited to the workspace's branch.
-    pub fn on_branch(&self, req: RequestBuilder) -> RequestBuilder {
+    pub fn on_branch(&self, req: Call) -> Call {
         match &self.branch {
             Some(b) => req.query(&[("branch", b)]),
             None => req,
         }
     }
 
-    pub fn send(&self, req: RequestBuilder) -> Result<Response> {
-        ok(req.send()?)
+    pub fn send(&self, call: Call) -> Result<Reply> {
+        ok(self.transport.send(call)?)
     }
 
     /// Every file the server lists, following pages.
@@ -97,18 +99,25 @@ impl std::fmt::Display for ApiError {
 impl std::error::Error for ApiError {}
 
 /// Turn a non-2xx response into an error with the server's code and message.
-pub fn ok(resp: Response) -> Result<Response> {
-    if resp.status().is_success() {
+pub fn ok(resp: Reply) -> Result<Reply> {
+    if resp.is_success() {
         return Ok(resp);
     }
-    let status = resp.status();
+    let status = resp.status;
     match resp.json::<api::ErrorBody>() {
         Ok(e) => Err(ApiError {
             code: e.code,
-            status: status.as_u16(),
+            status,
             message: crate::time::localize(&e.message),
         }
         .into()),
-        Err(_) => bail!("server returned {status}"),
+        Err(_) => bail!("server returned {}", status_line(status)),
+    }
+}
+
+fn status_line(status: u16) -> String {
+    match reqwest::StatusCode::from_u16(status) {
+        Ok(s) => s.to_string(),
+        Err(_) => status.to_string(),
     }
 }
