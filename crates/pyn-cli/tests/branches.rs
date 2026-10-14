@@ -246,7 +246,7 @@ fn checkout_follows_gits_forms() {
 }
 
 #[test]
-fn exclusive_files_keep_one_line_across_branches() {
+fn exclusive_files_have_a_pointer_per_branch() {
     let env = start();
     env.seed("alice", "Content/m.umap", "map one", None);
     let ws = clone(&env, "ws");
@@ -262,14 +262,21 @@ fn exclusive_files_keep_one_line_across_branches() {
 
     let other = clone(&env, "other");
     assert_eq!(read(&other, "Content/m.umap"), "map one");
-    let err = env.fails(&other, "bob", &["lock", "Content/m.umap"]);
+    env.ok(&other, "bob", &["lock", "Content/m.umap"]);
+    std::fs::write(other.join("Content/m.umap"), "map three").unwrap();
+    let out = env.ok(
+        &other,
+        "bob",
+        &["commit", "Content/m.umap", "-m", "main map"],
+    );
     assert!(
-        err.contains("stale_base"),
-        "a branch that lacks the newest revision cannot lock: {err}"
+        out.contains("revision 3"),
+        "main's pointer was r1, not the feature's r2: {out}"
     );
 
     env.ok(&ws, "alice", &["switch", "main"]);
-    assert_eq!(read(&ws, "Content/m.umap"), "map one");
+    env.ok(&ws, "alice", &["pull"]);
+    assert_eq!(read(&ws, "Content/m.umap"), "map three");
     assert!(
         std::fs::metadata(ws.join("Content/m.umap"))
             .unwrap()
@@ -285,8 +292,8 @@ fn exclusive_files_keep_one_line_across_branches() {
     let history = env.ok(&ws, "alice", &["log", "Content/m.umap"]);
     assert_eq!(
         history.lines().count(),
-        2,
-        "main's view stops at r1: {history}"
+        3,
+        "main's view is r1 and r3, not the feature's r2: {history}"
     );
 }
 
