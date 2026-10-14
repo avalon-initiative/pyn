@@ -69,11 +69,13 @@ restores.
 
 ## Exclusive files and branches
 
-A lock covers a path across every branch. An exclusive path does not branch: it has one linear history shared by all
-branches, and a commit on any branch appends to it under the lock. Each commit has a revision of every path (for an
-exclusive path, derived from the commit's ancestry and cached per commit; see [branches](branches.md)), which is how a past
-state of the whole project is shown. Rolling a branch back moves its pointers only; the file's own history and head do not change.
-Merging branches takes the later pointer, and since edits are serialized by the lock there is no content conflict.
+A lock covers a path across every branch, so writers are serialized. The revisions of an exclusive path form a tree
+(decision #299): each records the revision it was based on, and a commit must be based on the committing branch's own
+revision of the path, so a branch's value is never moved by another branch's commit. Each commit has a revision of every
+path (for an exclusive path, derived from the commit's ancestry and cached per commit; see [branches](branches.md)), which
+is how a past state of the whole project is shown. Rolling a branch back moves its pointers only.
+Merging takes the pointer that descends from the other; when both branches changed the file, a person chooses a side and
+takes the lock ([merging](merging.md#exclusive-paths)).
 
 ## Shared files, in Phase 1
 

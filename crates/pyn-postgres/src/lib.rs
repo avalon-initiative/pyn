@@ -253,7 +253,7 @@ async fn append_revision(
     let inserted = sqlx::query(
         "INSERT INTO revisions (repo, path, id, content, author, message, created_at, restored_from, mode, size, changeset,
                                 commit_no, hash, previous_hash, commit_id, file_mode, author_name, author_email, author_offset, hash_version, base_id)
-         SELECT $1, $2, $3, $4, $5, $6, $7, $9::bigint, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21
+         SELECT $1, $2, $3, $4, $5, $6, $7, $9::bigint, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22::bigint
          WHERE COALESCE((SELECT max(id) FROM revisions WHERE repo = $1 AND path = $2), 0) = $8
          RETURNING id",
     )

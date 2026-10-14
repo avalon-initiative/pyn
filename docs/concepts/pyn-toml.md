@@ -98,7 +98,7 @@ than guess at a policy.
 Conversions are computed per path, so a folder rule converts path by path. Each converted path is recorded in the audit
 log as `mode_converted`, and the change itself as `policy_changed`. Storage is unaffected: nothing is copied or moved.
 
-- **Exclusive to shared** is always allowed. The path keeps its single linear history. Live locks on it are released,
+- **Exclusive to shared** is always allowed. The path keeps its history. Live locks on it are released,
   each recorded in the audit log as a `force_unlock` by whoever made the change. There is no notification to the holders
   yet.
 - **Shared to exclusive**: the path's current content is recorded as the next revision of its history (a conversion

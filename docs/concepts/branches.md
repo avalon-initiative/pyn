@@ -28,17 +28,21 @@ points at it. Writes to one repository are serialized, so the head a commit buil
 written. Reading the history, a snapshot, a folder listing, the file list or a file's content likewise names a branch, and
 the default branch when it does not.
 
-## Revisions and the single line of a path
+## Revisions and the tree of a path
 
 Revisions stay one table per repository: a path's revisions are numbered `1, 2, 3, ...` in the order they were written,
 whichever branch wrote them, and each [revision hash](integrity.md) chains to the path's previous revision in that order.
 The v2 encoding is unchanged: it already covers the commit id, and the commit id covers the parents.
 
-- An **exclusive** path has one linear history shared by every branch (decision #28). A commit on any branch appends to it
-  under the path's lock, and it must be based on the path's newest revision on any branch, so the revisions form one line
-  and never conflict. The branch's own pointer to the path does not have to be the newest: the commit moves it. A
-  workspace on a branch that lacks the newest revision is told to update before it can lock (`stale_base`); merging the
-  branch that has it (`pyn merge`) brings it, or `pyn get <path> --rev N` fetches it by number to lock with `--base N`.
+- The revisions of an **exclusive** path form a tree (decision #299, which supersedes #28). Each records the revision it
+  was based on (`base`, stored beside the revision and not covered by its hash; `null` when the branch had none), and
+  numbers stay global and increasing. A commit appends under the path's lock, which is one per path across branches, and
+  it must be based on the committing branch's own pointer for the path, so a commit on one branch never moves another
+  branch's pointer and carries no unreleased content into it. A request whose base is not the branch's pointer is
+  refused with `stale_base`; a workspace that lacks the branch's newest revision is told to update first (`pyn merge`
+  brings another branch's), or `pyn get <path> --rev N` fetches a revision by number to lock with `--base N`.
+  A single branch therefore sees one line, exactly as before. Revisions written before bases were recorded are based on
+  the revision before them.
 - A **shared** path may be written on several branches at once. Its base is the revision the branch itself has, so two
   branches can both append a revision to the path; each branch sees the highest-numbered one in its own ancestry.
 
@@ -47,7 +51,7 @@ The v2 encoding is unchanged: it already covers the commit id, and the commit id
 A path's revision at a commit is its highest-numbered revision made in that commit or in an ancestor of it (decision #245
 item 9). The server keeps this as a cache per commit, `commit_pointers`: for each commit, the paths whose pointer differs
 from its first parent. For an ordinary commit that is exactly the revisions it made; a [merge commit](merging.md) also has the
-paths where the other parent's revision is higher, so a merge takes the later pointer by construction. A snapshot is read by walking the
+paths where the other parent's revision is higher, so a merge that takes the descendant pointer records it. A snapshot is read by walking the
 first-parent chain and taking, per path, the pointer nearest the commit. Writing a commit costs one row per revision it
 made, not one per file in the repository, and the cache is never rewritten: it is part of what `pyn verify` can recompute
 from the revisions and their commits.
@@ -79,8 +83,8 @@ for a branch when that branch has the policy commit").
 The effective policy is what the branch's own operations use, each by the branch it names:
 
 - a checkin, changeset or restore on a branch records revisions under the mode the branch's policy gives the path, and a
-  path that is exclusive there needs the caller's lock (`lock_required`) and a base on the newest revision of its line,
-  while a shared one is based on the branch's own revision;
+  path that is exclusive there needs the caller's lock (`lock_required`) and a base on the branch's own revision of it,
+  as a shared one has;
 - a lock request names the branch it is for (`branch`, the default branch if omitted) and is refused with `not_exclusive`
   only when the path is shared under the branch's policy and under the default branch's, so a branch that is about to take
   a conversion can still take the lock that resolving it needs;

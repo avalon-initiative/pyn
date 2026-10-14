@@ -1,8 +1,8 @@
 # Merging
 
 Merging brings the commits of one [branch](branches.md) (or any commit) into another. It follows git's model, extended only
-where exclusive files need it: shared paths are merged by content, exclusive paths take the later revision of their single
-line (decision #28), and a mode conversion that met parallel work is a conflict the person decides (decision #195).
+where exclusive files need it: shared paths are merged by content, exclusive paths take the pointer that descends from the other and conflict when both sides changed
+(decision #299), and a mode conversion that met parallel work is a conflict the person decides (decision #195).
 Remotes are separate work, see [Remotes](git-compatibility.md#remotes). In a git repository `pyn merge` follows git instead, see [Merging on a git home](git-compatibility.md#merging).
 
 ## The operation
@@ -71,10 +71,17 @@ Three-way by content, on the base, ours and theirs versions of the path:
 
 ### Exclusive paths
 
-An exclusive path has one linear history shared by every branch, so there is no content merge: the merge takes the
-**later revision** (the higher-numbered one) of the path (decision #28 and decision #245 item 9: a path's revision at a
-commit is the highest-numbered revision in its ancestry, so a merge takes the later pointer by construction). It needs no
-lock and writes no revision.
+An exclusive path has no content merge. Its revisions form a tree: each records the revision it was based on, and a
+branch's pointer is its revision at the branch head (decision #299, #245 item 9). The merge compares the two pointers:
+
+- the same content, or one pointer **descends** from the other (through the recorded bases, or because the commit that
+  made it has the other's commit in its history, as a merge's choice has): the merge takes the descendant. It needs no
+  lock and writes no revision;
+- **diverged** pointers, each branch having changed the file since they split: no automatic pick. The path is a conflict
+  that is never merged (reported as `binary`, the whole-file conflict kind, with mode `exclusive`; both revisions and the
+  base are given) and blocks only itself. A person chooses a side, or new content, and takes the lock; the choice is
+  always recorded as a new revision based on the target's pointer, so it follows both sides and later merges between
+  the branches do not conflict again.
 
 The one exception is a path that was **converted** from shared to exclusive while another branch kept changing it as a
 shared path (decision #195 item 4). A version of it that was made under the shared mode and that the other side's history
@@ -84,10 +91,9 @@ a different one, the path is a conflict that is never merged automatically, and 
 merge is computed as usual. Two sides with the same content never conflict. It is reported as `exclusive_conversion`, with
 both versions and the base, and with **what happened and when** (`conversion`): the conversion revision, the policy
 revision in force and who made the change and when, and the diverged version that was stranded with its author and time.
-`pyn merge` prints it as one sentence per path. The person chooses the content that becomes the next revision of the path's
-single line, which may be either version or something new, and takes the lock as for any exclusive edit (`lock_required`
+`pyn merge` prints it as one sentence per path. The person chooses the content that becomes the next revision of the path, which may be either version or something new, and takes the lock as for any exclusive edit (`lock_required`
 otherwise; the lock request may name the branch being merged into even though that branch has not picked the policy up yet);
-the new revision is based on the newest revision of the path on any branch. Choosing the content the later revision already
+the new revision is based on the target's pointer for the path, which the lock is requested against (`--base`). In this conversion conflict, choosing the content the taken revision already
 has needs no lock and writes nothing.
 
 The same report was given when the conversion happened: see [stranded versions](pyn-toml.md#stranded-versions).
@@ -100,11 +106,11 @@ shared path from then on.
 - **Parents**: the target's head, then the source's commit.
 - **Tree**: the target's tree with every path whose merged content differs from the target's replaced. Trees are plain git
   trees (decision #245 item 9).
-- **Revisions**: a path whose merged content equals the later revision's (the usual case: only one side changed it)
+- **Revisions**: a path whose merged content equals the taken revision's (the usual case: only one side changed it)
   writes no revision; the commit records a **pointer** to that revision, as every commit does ([branches](branches.md#the-revision-of-a-path-at-a-commit)).
-  A path whose merged content is new (a text merge, or a resolution) or is not the content of the later revision gets a
+  A path whose merged content is new (a text merge, or a resolution) or is not the content of the taken revision gets a
   new **merge revision**, appended to the path's line like any checkin and covered by the commit's id and its own hash. A
-  shared path's new revision is based on the target's revision; an exclusive path's on the newest of the line.
+  new revision is based on the target's revision of the path, shared or exclusive.
 - **Message**: `Merge branch '<source>' into <target>` unless one is given. The author and committer are the person who
   merged.
 - **Policy**: a merge into the default branch that brings a different `.pyn/pyn.toml` is a policy commit: the file must

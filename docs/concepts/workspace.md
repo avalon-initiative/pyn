@@ -126,8 +126,8 @@ cleanly is done when the command returns, and the workspace follows it. A merge 
 - `pyn status` says `You have unmerged paths`, and its `STATE` column says `unmerged (both modified)` (or `both added`, `deleted
   on one side`, `converted to exclusive`) for each path still to resolve, and `merged` for the paths that merged cleanly.
 - `pyn add <path>` marks a conflicted path resolved by staging what is in the file, even when it still equals our version, and warns
-  if conflict markers remain. An exclusive path does not need its lock to be staged, only to be concluded with a version that
-  is not the newest (the server asks, and the message names `pyn lock --base N <path>`).
+  if conflict markers remain. An exclusive path does not need its lock to be staged, only to be concluded with a new revision
+  (a diverged path always needs one; the server asks, and the message names `pyn lock --base N <path>`).
 - `pyn commit` (with or without `-m`) concludes the merge once every conflicted path is staged. Anything else staged must be a
   path of the merge. A partial `pyn commit <path>`, `pyn merge`, `pyn switch` and `pyn update` are refused.
 
