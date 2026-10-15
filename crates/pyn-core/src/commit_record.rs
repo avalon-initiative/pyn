@@ -180,7 +180,7 @@ impl TreeEdit {
         if entries.is_empty() && !dir.is_empty() {
             return Ok(None);
         }
-        let body = encode_tree(&entries).map_err(object_error)?;
+        let body = encode_tree(algorithm, &entries).map_err(object_error)?;
         let id = hash_object(algorithm, Kind::Tree, &body).map_err(object_error)?;
         out.push((id, body));
         Ok(Some(id))
@@ -322,7 +322,10 @@ pub fn draft_commit(
         raw: Vec::new(),
         revisions: Vec::new(),
     };
-    record.raw = record.git_commit().encode();
+    record.raw = record
+        .git_commit()
+        .encode(record.tree.algorithm())
+        .map_err(object_error)?;
     record.id = record.expected_id()?;
     Ok(CommitDraft {
         record,

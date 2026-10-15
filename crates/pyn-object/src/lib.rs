@@ -19,6 +19,11 @@ pub enum Error {
     InvalidId(String),
     #[error("unknown file mode {0:?}")]
     InvalidMode(String),
+    #[error("object id uses {actual:?} but the repository uses {expected:?}")]
+    AlgorithmMismatch {
+        expected: Algorithm,
+        actual: Algorithm,
+    },
     #[error("invalid tree entry name")]
     InvalidName,
     #[error("duplicate tree entry name")]

@@ -63,10 +63,11 @@ fn valid_name(name: &[u8]) -> bool {
     !name.is_empty() && name != b"." && name != b".." && !name.iter().any(|&b| b == b'/' || b == 0)
 }
 
-/// Sorts the entries into git's order and encodes the tree body.
-pub fn encode_tree(entries: &[TreeEntry]) -> Result<Vec<u8>, Error> {
+/// Sorts the entries into git's order and encodes the tree body. Every id must use `algorithm`.
+pub fn encode_tree(algorithm: Algorithm, entries: &[TreeEntry]) -> Result<Vec<u8>, Error> {
     let mut seen = HashSet::new();
     for e in entries {
+        e.id.expect(algorithm)?;
         if !valid_name(&e.name) {
             return Err(Error::InvalidName);
         }

@@ -682,7 +682,8 @@ fn orphan_commit(repo: &Repo) -> ObjectId {
         extra_headers: vec![],
         message: b"unrelated\n".to_vec(),
     };
-    db.write(Kind::Commit, &commit.encode()).unwrap()
+    db.write(Kind::Commit, &commit.encode(git.algorithm()).unwrap())
+        .unwrap()
 }
 
 #[test]

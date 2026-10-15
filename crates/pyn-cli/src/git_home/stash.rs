@@ -135,7 +135,7 @@ fn commit_with(
     Ok(git
         .repo
         .objects()
-        .write(ObjectKind::Commit, &record.encode())?)
+        .write(ObjectKind::Commit, &record.encode(git.algorithm())?)?)
 }
 
 fn tree_of_entries(git: &GitHome, entries: Entries, version: u32) -> Result<ObjectId> {

@@ -32,9 +32,19 @@ mod content_ids;
 mod hashing;
 mod history_migration;
 
+/// Which clock judges lease expiry and rate-limit windows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimeSource {
+    /// The database's clock, so skewed server copies agree.
+    Database,
+    /// The `now` the caller passes; lets tests drive time.
+    Caller,
+}
+
 pub struct PgMetadataStore {
     pool: PgPool,
     scratch_schema: Option<String>,
+    time: TimeSource,
 }
 
 fn db(e: sqlx::Error) -> PynError {
@@ -165,7 +175,7 @@ async fn append_revision(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     repo: &RepoId,
     item: ChangesetItem,
-    now: DateTime<Utc>,
+    lease_now: Option<DateTime<Utc>>,
     cap: Option<&StorageCap>,
     commit: (u64, ObjectId),
     at_branch: &HashMap<String, i64>,
@@ -187,15 +197,17 @@ async fn append_revision(
 
     if let Some(user) = lock_holder {
         let row = sqlx::query(
-            "SELECT owner, expires_at FROM locks WHERE repo = $1 AND path = $2 FOR UPDATE",
+            "SELECT owner, expires_at, expires_at > COALESCE($3, clock_timestamp()) AS live
+             FROM locks WHERE repo = $1 AND path = $2 FOR UPDATE",
         )
         .bind(repo.as_str())
         .bind(revision.path.as_str())
+        .bind(lease_now)
         .fetch_optional(&mut **tx)
         .await
         .map_err(db)?;
         match row {
-            Some(r) if r.get::<DateTime<Utc>, _>("expires_at") > now => {
+            Some(r) if r.get::<bool, _>("live") => {
                 let owner: String = r.get("owner");
                 if owner != user.as_str() {
                     return Err(PynError::LockHeld {
@@ -645,7 +657,34 @@ impl PgMetadataStore {
         Ok(Self {
             pool,
             scratch_schema: None,
+            time: TimeSource::Database,
         })
+    }
+
+    /// Selects the clock for lease and rate-limit comparisons.
+    pub fn with_time_source(mut self, time: TimeSource) -> Self {
+        self.time = time;
+        self
+    }
+
+    /// The `now` to bind for `COALESCE($n, now())`: `None` defers to the database.
+    fn bound_now(&self, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+        (self.time == TimeSource::Caller).then_some(now)
+    }
+
+    /// Lease time inside `tx`: the database's clock, or `now`.
+    async fn lease_now(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        now: DateTime<Utc>,
+    ) -> Result<DateTime<Utc>> {
+        if self.time == TimeSource::Caller {
+            return Ok(now);
+        }
+        sqlx::query_scalar("SELECT clock_timestamp()")
+            .fetch_one(&mut **tx)
+            .await
+            .map_err(db)
     }
 
     /// For tests: an isolated schema in the target database, dropped when the store is dropped.
@@ -680,6 +719,7 @@ impl PgMetadataStore {
             .map_err(db)?;
         let mut store = Self::from_pool(pool).await?;
         store.scratch_schema = Some(schema);
+        store.time = TimeSource::Caller;
         Ok(store)
     }
 }
@@ -733,12 +773,14 @@ impl MetadataStore for PgMetadataStore {
                 .execute(&mut *tx)
                 .await
                 .map_err(db)?;
+            let lease = self.lease_now(&mut tx, now).await?;
+            let expires_at = lease + (expires_at - now);
             let live: bool = sqlx::query_scalar(
                 "SELECT EXISTS (SELECT 1 FROM locks WHERE repo = $1 AND path = $2 AND expires_at > $3)",
             )
             .bind(repo.as_str())
             .bind(path.as_str())
-            .bind(now)
+            .bind(lease)
             .fetch_one(&mut *tx)
             .await
             .map_err(db)?;
@@ -748,7 +790,7 @@ impl MetadataStore for PgMetadataStore {
                 )
                 .bind(repo.as_str())
                 .bind(owner.as_str())
-                .bind(now)
+                .bind(lease)
                 .fetch_one(&mut *tx)
                 .await
                 .map_err(db)?;
@@ -760,7 +802,7 @@ impl MetadataStore for PgMetadataStore {
                 .bind(repo.as_str())
                 .bind(path.as_str())
                 .bind(owner.as_str())
-                .bind(now)
+                .bind(lease)
                 .bind(expires_at)
                 .fetch_optional(&mut *tx)
                 .await
@@ -790,12 +832,12 @@ impl MetadataStore for PgMetadataStore {
         now: DateTime<Utc>,
     ) -> Result<()> {
         let done = sqlx::query(
-            "DELETE FROM locks WHERE repo = $1 AND path = $2 AND owner = $3 AND expires_at > $4",
+            "DELETE FROM locks WHERE repo = $1 AND path = $2 AND owner = $3 AND expires_at > COALESCE($4, now())",
         )
         .bind(repo.as_str())
         .bind(path.as_str())
         .bind(owner.as_str())
-        .bind(now)
+        .bind(self.bound_now(now))
         .execute(&self.pool)
         .await
         .map_err(db)?;
@@ -813,11 +855,11 @@ impl MetadataStore for PgMetadataStore {
     ) -> Result<Option<Lock>> {
         let row = sqlx::query(
             "SELECT path, owner, acquired_at, expires_at FROM locks
-             WHERE repo = $1 AND path = $2 AND expires_at > $3",
+             WHERE repo = $1 AND path = $2 AND expires_at > COALESCE($3, now())",
         )
         .bind(repo.as_str())
         .bind(path.as_str())
-        .bind(now)
+        .bind(self.bound_now(now))
         .fetch_optional(&self.pool)
         .await
         .map_err(db)?;
@@ -831,12 +873,12 @@ impl MetadataStore for PgMetadataStore {
         now: DateTime<Utc>,
     ) -> Result<Option<Lock>> {
         let row = sqlx::query(
-            "DELETE FROM locks WHERE repo = $1 AND path = $2 AND expires_at > $3
+            "DELETE FROM locks WHERE repo = $1 AND path = $2 AND expires_at > COALESCE($3, now())
              RETURNING path, owner, acquired_at, expires_at",
         )
         .bind(repo.as_str())
         .bind(path.as_str())
-        .bind(now)
+        .bind(self.bound_now(now))
         .fetch_optional(&self.pool)
         .await
         .map_err(db)?;
@@ -846,10 +888,10 @@ impl MetadataStore for PgMetadataStore {
     async fn list_locks(&self, repo: &RepoId, now: DateTime<Utc>) -> Result<Vec<Lock>> {
         let rows = sqlx::query(
             "SELECT path, owner, acquired_at, expires_at FROM locks
-             WHERE repo = $1 AND expires_at > $2 ORDER BY path",
+             WHERE repo = $1 AND expires_at > COALESCE($2, now()) ORDER BY path",
         )
         .bind(repo.as_str())
-        .bind(now)
+        .bind(self.bound_now(now))
         .fetch_all(&self.pool)
         .await
         .map_err(db)?;
@@ -863,10 +905,10 @@ impl MetadataStore for PgMetadataStore {
     ) -> Result<Vec<(RepoId, Lock)>> {
         let rows = sqlx::query(
             "SELECT repo, path, owner, acquired_at, expires_at FROM locks
-             WHERE owner = $1 AND expires_at > $2 ORDER BY repo COLLATE \"C\", path COLLATE \"C\"",
+             WHERE owner = $1 AND expires_at > COALESCE($2, now()) ORDER BY repo COLLATE \"C\", path COLLATE \"C\"",
         )
         .bind(owner.as_str())
-        .bind(now)
+        .bind(self.bound_now(now))
         .fetch_all(&self.pool)
         .await
         .map_err(db)?;
@@ -931,7 +973,16 @@ impl MetadataStore for PgMetadataStore {
         for item in items {
             let commit = (seq, draft.record.id);
             out.push(
-                append_revision(&mut tx, repo, item, now, cap.as_ref(), commit, &at_branch).await?,
+                append_revision(
+                    &mut tx,
+                    repo,
+                    item,
+                    self.bound_now(now),
+                    cap.as_ref(),
+                    commit,
+                    &at_branch,
+                )
+                .await?,
             );
         }
         store_commit(&mut tx, repo, seq, branch, &draft, &out).await?;
@@ -997,15 +1048,17 @@ impl MetadataStore for PgMetadataStore {
         }
         for path in last_use.keys() {
             let row = sqlx::query(
-                "SELECT owner, expires_at FROM locks WHERE repo = $1 AND path = $2 FOR UPDATE",
+                "SELECT owner, expires_at, expires_at > COALESCE($3, clock_timestamp()) AS live
+                 FROM locks WHERE repo = $1 AND path = $2 FOR UPDATE",
             )
             .bind(repo.as_str())
             .bind(path)
+            .bind(self.bound_now(now))
             .fetch_optional(&mut *tx)
             .await
             .map_err(db)?;
             match row {
-                Some(r) if r.get::<DateTime<Utc>, _>("expires_at") > now => {
+                Some(r) if r.get::<bool, _>("live") => {
                     let owner: String = r.get("owner");
                     if owner != pusher.as_str() {
                         return Err(PynError::LockHeld {
@@ -1046,8 +1099,16 @@ impl MetadataStore for PgMetadataStore {
                 };
                 let commit = (seq, c.record.id);
                 revs.push(
-                    append_revision(&mut tx, repo, item, now, cap.as_ref(), commit, &at_branch)
-                        .await?,
+                    append_revision(
+                        &mut tx,
+                        repo,
+                        item,
+                        self.bound_now(now),
+                        cap.as_ref(),
+                        commit,
+                        &at_branch,
+                    )
+                    .await?,
                 );
             }
             for r in &revs {
@@ -1142,7 +1203,16 @@ impl MetadataStore for PgMetadataStore {
         for item in merge.items {
             let commit = (seq, draft.record.id);
             made.push(
-                append_revision(&mut tx, repo, item, now, cap.as_ref(), commit, &at_branch).await?,
+                append_revision(
+                    &mut tx,
+                    repo,
+                    item,
+                    self.bound_now(now),
+                    cap.as_ref(),
+                    commit,
+                    &at_branch,
+                )
+                .await?,
             );
         }
         let pointed: Vec<Revision> = merge.adopted.iter().chain(&made).cloned().collect();

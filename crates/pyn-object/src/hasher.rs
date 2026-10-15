@@ -78,3 +78,30 @@ impl ObjectHasher {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The pair collides only as raw bytes from offset 0, so it bypasses the object header.
+    fn raw_sha1_hasher(data: &[u8]) -> ObjectHasher {
+        let mut h = Sha1::new();
+        h.update(data);
+        ObjectHasher {
+            state: State::Sha1(Box::new(h)),
+            algorithm: Algorithm::Sha1,
+            declared: data.len() as u64,
+            seen: data.len() as u64,
+        }
+    }
+
+    #[test]
+    fn finish_rejects_sha1_colliding_pair() {
+        for data in [
+            &include_bytes!("../tests/fixtures/sha-mbles-1.bin")[..],
+            &include_bytes!("../tests/fixtures/sha-mbles-2.bin")[..],
+        ] {
+            assert_eq!(raw_sha1_hasher(data).finish(), Err(Error::Collision));
+        }
+    }
+}
