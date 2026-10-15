@@ -1337,7 +1337,13 @@ impl RepoService {
             }
             report.paths += 1;
             report.revisions += revisions.len() as u64;
-            for (id, kind) in verify_revisions(&revisions) {
+            let mut found = verify_revisions(&revisions);
+            for id in self.pointer_mismatches(&revisions).await? {
+                if !found.contains(&(id, BreakKind::Base)) {
+                    found.push((id, BreakKind::Base));
+                }
+            }
+            for (id, kind) in found {
                 report.problems.push(Problem {
                     kind,
                     path: Some(p.clone()),
@@ -1383,6 +1389,28 @@ impl RepoService {
             }
         }
         Ok(report)
+    }
+
+    /// Exclusive revisions whose stored base is not the path's pointer at the first parent of their commit.
+    async fn pointer_mismatches(&self, revisions: &[Revision]) -> Result<Vec<RevisionId>> {
+        let mut bad = Vec::new();
+        for r in revisions.iter().filter(|r| r.mode == Some(Mode::Exclusive)) {
+            let Some(commit) = self.meta.get_commit(&self.repo, &r.commit).await? else {
+                continue;
+            };
+            let expected = match commit.parents.first() {
+                Some(parent) => self
+                    .meta
+                    .revision_at(&self.repo, parent, &r.path)
+                    .await?
+                    .map(|p| p.id),
+                None => None,
+            };
+            if expected != r.base {
+                bad.push(r.id);
+            }
+        }
+        Ok(bad)
     }
 
     /// Checks every commit's id against its fields and its parent links, and each branch head's tree against the

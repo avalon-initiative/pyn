@@ -118,8 +118,9 @@ events leaves a valid chain. A client that remembers a head hash can detect that
   its tree, parents, author, committer, time and message fields say; a mismatch is a `500 history_corrupt`. Verification also checks each commit's parent links and that each
   branch head's tree is the tree of the snapshot at that head, and reports `hash_mismatch`, `broken_link` and `tree_mismatch`
   problems with the `commit` id. A revision whose `hash_version` disagrees with its stored fields is reported as
-  `version_mismatch`, and one whose `base` is not an older revision of the same path as `base_mismatch`. The base is stored
-  beside the revision and is not covered by the hash, so existing hashes stay valid.
+  `version_mismatch`. A revision whose `base` is not an older revision of the same path, or, for an exclusive revision on any
+  branch, is not the path's pointer at the first parent of its commit ([branches](branches.md)), is `base_mismatch`. The base is
+  stored beside the revision and is not covered by the hash, so existing hashes stay valid.
 - Audit events are checked when they are read, and the whole chain when verified.
 - `GET /v1/repos/{owner}/{name}/verify?path=` checks a path, or every path and the repository's audit log, and reports every
   break instead of stopping at the first. It needs `read`; the audit log is checked only for callers with `view_audit`.
