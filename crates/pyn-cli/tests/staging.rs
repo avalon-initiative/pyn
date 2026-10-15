@@ -262,17 +262,12 @@ fn ignored_files_need_force_and_dry_run_stages_nothing() {
 }
 
 #[test]
-fn update_leaves_a_staged_file_alone_and_a_deleted_file_is_not_staged() {
+fn update_leaves_a_staged_file_alone() {
     let env = start();
     env.seed("alice", "Source/a.cpp", "one", None);
-    env.seed("alice", "Source/gone.cpp", "one", None);
     let ws = clone(&env);
     write(&ws, "Source/a.cpp", "two");
     env.ok(&ws, "alice", &["add", "Source/a.cpp"]);
-    std::fs::remove_file(ws.join("Source/gone.cpp")).unwrap();
-    let out = env.run(&ws, "alice", &["add", "-u"]);
-    assert!(out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("Source/gone.cpp was deleted"));
 
     env.seed("bob", "Source/a.cpp", "bob", Some(1));
     let out = env.ok(&ws, "alice", &["update"]);
@@ -283,6 +278,134 @@ fn update_leaves_a_staged_file_alone_and_a_deleted_file_is_not_staged() {
     );
     let err = env.fails(&ws, "alice", &["commit", "-m", "late"]);
     assert!(err.contains("behind") || err.contains("head"), "{err}");
+}
+
+#[test]
+fn a_deleted_file_is_staged_and_committed_as_a_deletion() {
+    let env = start();
+    env.seed("alice", "Source/a.cpp", "one", None);
+    env.seed("alice", "Source/gone.cpp", "one", None);
+    let ws = clone(&env);
+    std::fs::remove_file(ws.join("Source/gone.cpp")).unwrap();
+    assert!(
+        env.ok(&ws, "alice", &["status"])
+            .contains("deleted locally")
+    );
+
+    let out = env.ok(&ws, "alice", &["add", "-n", "-u"]);
+    assert!(out.contains("remove 'Source/gone.cpp'"), "{out}");
+    env.ok(&ws, "alice", &["add", "Source/gone.cpp"]);
+    assert_eq!(staged_cell(&env, &ws, "Source/gone.cpp"), "deleted");
+    let status = env.ok(&ws, "alice", &["status"]);
+    assert!(!status.contains("deleted locally"), "{status}");
+    assert_eq!(env.ok(&ws, "alice", &["diff"]), "", "nothing unstaged");
+    let cached = env.ok(&ws, "alice", &["diff", "--cached"]);
+    assert!(
+        cached.contains("deleted file mode 100644") && cached.contains("-one"),
+        "{cached}"
+    );
+
+    let out = env.ok(&ws, "alice", &["commit", "-m", "drop gone"]);
+    assert!(
+        out.contains("Source/gone.cpp was deleted at revision 2"),
+        "{out}"
+    );
+    assert!(
+        env.ok(&ws, "alice", &["status"])
+            .contains("everything is up to date")
+    );
+    assert!(!env.ok(&ws, "alice", &["files"]).contains("Source/gone.cpp"));
+    let log = env.ok(&ws, "alice", &["log", "Source/gone.cpp"]);
+    assert!(log.contains("drop gone (deleted)"), "{log}");
+    assert_eq!(env.ok(&ws, "alice", &["verify"]), "");
+    let audit = env.ok(&ws, "alice", &["audit", "--action", "delete"]);
+    assert!(audit.contains("Source/gone.cpp"), "{audit}");
+    let err = env.fails(&ws, "alice", &["commit", "-m", "again"]);
+    assert!(err.contains("nothing to commit"), "{err}");
+}
+
+#[test]
+fn commit_all_stages_a_deletion_with_the_edits() {
+    let env = start();
+    env.seed("alice", "Source/a.cpp", "one", None);
+    env.seed("alice", "Source/b.cpp", "one", None);
+    let ws = clone(&env);
+    write(&ws, "Source/a.cpp", "two");
+    std::fs::remove_file(ws.join("Source/b.cpp")).unwrap();
+    let out = env.ok(&ws, "alice", &["commit", "-am", "edit and drop"]);
+    assert!(
+        out.contains("Source/a.cpp is now at revision 2")
+            && out.contains("Source/b.cpp was deleted at revision 2"),
+        "{out}"
+    );
+    let files = env.ok(&ws, "alice", &["files"]);
+    assert!(
+        files.contains("Source/a.cpp") && !files.contains("Source/b.cpp"),
+        "{files}"
+    );
+}
+
+#[test]
+fn a_deleted_exclusive_file_needs_its_lock_and_can_be_restored() {
+    let env = start();
+    env.seed("alice", "Content/m.umap", "map one", None);
+    let ws = clone(&env);
+    let map = ws.join("Content/m.umap");
+    make_writable(&map);
+    std::fs::remove_file(&map).unwrap();
+
+    let err = env.fails(&ws, "alice", &["add", "-u"]);
+    assert!(
+        err.contains("Content/m.umap is exclusive and you do not hold its lock")
+            && err.contains("pyn lock Content/m.umap"),
+        "{err}"
+    );
+    env.ok(&ws, "alice", &["lock", "Content/m.umap"]);
+    std::fs::remove_file(&map).ok();
+    env.ok(&ws, "alice", &["add", "-u"]);
+    assert_eq!(staged_cell(&env, &ws, "Content/m.umap"), "deleted");
+    env.ok(&ws, "alice", &["commit", "-m", "remove the map"]);
+    let locks = env.ok(&ws, "alice", &["locks", "--mine"]);
+    assert!(locks.contains("no locks"), "{locks}");
+
+    env.ok(&ws, "alice", &["lock", "Content/m.umap"]);
+    env.ok(
+        &ws,
+        "alice",
+        &["restore", "--source", "1", "--yes", "Content/m.umap"],
+    );
+    env.ok(&ws, "alice", &["update"]);
+    assert_eq!(std::fs::read_to_string(&map).unwrap(), "map one");
+    assert!(
+        env.ok(&ws, "alice", &["status"])
+            .contains("everything is up to date")
+    );
+}
+
+#[test]
+fn update_removes_a_file_the_server_deleted_unless_it_has_local_changes() {
+    let env = start();
+    env.seed("alice", "Source/a.cpp", "one", None);
+    env.seed("alice", "Source/b.cpp", "one", None);
+    let ws = clone(&env);
+    let other = env.dir("other");
+    env.ok(
+        &env.dir("home"),
+        "bob",
+        &["clone", &env.source(REPO), other.to_str().unwrap()],
+    );
+    let other = other.canonicalize().unwrap();
+    for path in ["Source/a.cpp", "Source/b.cpp"] {
+        std::fs::remove_file(ws.join(path)).unwrap();
+    }
+    env.ok(&ws, "alice", &["commit", "-am", "drop both"]);
+
+    write(&other, "Source/b.cpp", "bob edit");
+    let out = env.ok(&other, "bob", &["update"]);
+    assert!(out.contains("removed 1"), "{out}");
+    assert!(out.contains("Source/b.cpp: local changes"), "{out}");
+    assert!(!other.join("Source/a.cpp").exists());
+    assert!(other.join("Source/b.cpp").exists());
 }
 
 #[test]

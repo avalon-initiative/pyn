@@ -103,6 +103,18 @@ impl ObjectId {
         self.algorithm
     }
 
+    /// Errors unless this id uses `algorithm`.
+    pub fn expect(&self, algorithm: Algorithm) -> Result<(), Error> {
+        if self.algorithm == algorithm {
+            Ok(())
+        } else {
+            Err(Error::AlgorithmMismatch {
+                expected: algorithm,
+                actual: self.algorithm,
+            })
+        }
+    }
+
     pub fn as_bytes(&self) -> &[u8] {
         &self.bytes[..self.algorithm.digest_len()]
     }

@@ -904,6 +904,7 @@ impl RepoService {
                             created_at: now,
                             restored_from: None,
                             mode: p.mode,
+                            deleted: false,
                             size,
                             changeset: None,
                         },

@@ -117,7 +117,9 @@ fn create(git: &GitHome, args: &TagArgs, name: &str, target: Option<&str>) -> Re
             tagger: Some(identity(git, "committer")?),
             message: clean_message(&args.message),
         };
-        git.repo.objects().write(Kind::Tag, &tag.encode())?
+        git.repo
+            .objects()
+            .write(Kind::Tag, &tag.encode(git.algorithm())?)?
     } else {
         object
     };

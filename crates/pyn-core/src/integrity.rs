@@ -2,8 +2,8 @@
 
 use chrono::{DateTime, Utc};
 use pyn_hash::{
-    AuditFields, REVISION_V1, REVISION_V2, RevisionFields, RevisionV2Fields, audit_hash,
-    revision_hash, revision_hash_v2,
+    AuditFields, REVISION_V1, REVISION_V2, REVISION_V3, RevisionFields, RevisionV2Fields,
+    audit_hash, revision_hash, revision_hash_v2, revision_hash_v3,
 };
 use pyn_object::ObjectId;
 
@@ -16,7 +16,7 @@ fn micros(at: DateTime<Utc>) -> i64 {
 }
 
 impl NewRevision {
-    /// The revision this becomes as revision `id` of its path after `previous`, in `commit`; always the v2 encoding.
+    /// The revision this becomes as revision `id` of its path after `previous`, in `commit`; v2, or v3 for a deletion.
     pub fn create(
         self,
         id: RevisionId,
@@ -31,12 +31,17 @@ impl NewRevision {
             legacy_content: None,
             author: self.author,
             person: Some(self.person),
-            hash_version: REVISION_V2,
+            hash_version: if self.deleted {
+                REVISION_V3
+            } else {
+                REVISION_V2
+            },
             message: self.message,
             created_at: self.created_at,
             restored_from: self.restored_from,
             mode: Some(self.mode),
             file_mode: self.file_mode,
+            deleted: self.deleted,
             changeset: self.changeset,
             commit,
             hash: RevisionHash::new(""),
@@ -58,11 +63,18 @@ impl Revision {
 
     /// Why `hash_version` cannot be used with the stored fields, if so.
     pub fn version_problem(&self) -> Option<String> {
-        let what = match (self.hash_version, &self.person) {
-            (REVISION_V1, None) | (REVISION_V2, Some(_)) => return None,
-            (REVISION_V1, Some(_)) => "version 1 but has a structured author".to_string(),
-            (REVISION_V2, None) => "version 2 but has no structured author".to_string(),
-            (v, _) => format!("unknown version {v}"),
+        let what = match (self.hash_version, &self.person, self.deleted) {
+            (REVISION_V1, None, false) | (REVISION_V2, Some(_), false) => return None,
+            (REVISION_V3, Some(_), true) => return None,
+            (REVISION_V1, Some(_), _) => "version 1 but has a structured author".to_string(),
+            (REVISION_V2 | REVISION_V3, None, _) => {
+                format!("version {} but has no structured author", self.hash_version)
+            }
+            (REVISION_V1 | REVISION_V2, _, true) => {
+                format!("version {} but deletes the path", self.hash_version)
+            }
+            (REVISION_V3, _, false) => "version 3 but does not delete the path".to_string(),
+            (v, _, _) => format!("unknown version {v}"),
         };
         Some(format!("{}@r{} hash is {what}", self.path, self.id))
     }
@@ -73,22 +85,29 @@ impl Revision {
         }
         let previous = self.previous.as_ref().map(RevisionHash::as_str);
         let hash = match &self.person {
-            Some(person) => revision_hash_v2(&RevisionV2Fields {
-                path: self.path.as_str(),
-                file_mode: self.file_mode.as_str(),
-                blob_algorithm: self.content.algorithm().name(),
-                blob_id: &self.content.to_hex(),
-                previous,
-                user: self.author.as_str(),
-                author_name: &person.name,
-                author_email: &person.email,
-                created_micros: micros(self.created_at),
-                author_offset_minutes: person.offset_minutes,
-                message: &self.message,
-                restored_from: self.restored_from.map(|r| r.0),
-                commit_algorithm: self.commit.algorithm().name(),
-                commit_id: &self.commit.to_hex(),
-            }),
+            Some(person) => {
+                let fields = RevisionV2Fields {
+                    path: self.path.as_str(),
+                    file_mode: self.file_mode.as_str(),
+                    blob_algorithm: self.content.algorithm().name(),
+                    blob_id: &self.content.to_hex(),
+                    previous,
+                    user: self.author.as_str(),
+                    author_name: &person.name,
+                    author_email: &person.email,
+                    created_micros: micros(self.created_at),
+                    author_offset_minutes: person.offset_minutes,
+                    message: &self.message,
+                    restored_from: self.restored_from.map(|r| r.0),
+                    commit_algorithm: self.commit.algorithm().name(),
+                    commit_id: &self.commit.to_hex(),
+                };
+                if self.deleted {
+                    revision_hash_v3(&fields)
+                } else {
+                    revision_hash_v2(&fields)
+                }
+            }
             None => {
                 let content = self
                     .legacy_content
