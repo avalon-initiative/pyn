@@ -363,7 +363,7 @@ fn true_merge(
     let id = git
         .repo
         .objects()
-        .write(ObjectKind::Commit, &record.encode())?;
+        .write(ObjectKind::Commit, &record.encode(git.algorithm())?)?;
     git.move_head(
         &id,
         &format!("merge {spec}: Merge made by the 'ort' strategy."),

@@ -48,7 +48,8 @@ fn commit_raw(
         extra_headers: vec![],
         message: message.to_vec(),
     }
-    .encode()
+    .encode(Algorithm::Sha256)
+    .unwrap()
 }
 
 fn built_from(raw: Vec<u8>, trees: Vec<(ObjectId, Vec<u8>)>) -> Built {

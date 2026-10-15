@@ -1773,7 +1773,7 @@ pub async fn a_commit_is_a_real_git_commit_over_a_git_tree(store: Store) {
     assert_eq!(rev.file_mode, FileMode::Symlink);
 
     let tree = |entries: Vec<TreeEntry>| {
-        let body = encode_tree(&entries).unwrap();
+        let body = encode_tree(Algorithm::Sha256, &entries).unwrap();
         hash_object(Algorithm::Sha256, Kind::Tree, &body).unwrap()
     };
     let deep = tree(vec![TreeEntry {
@@ -1859,7 +1859,10 @@ pub async fn a_commit_keeps_its_exact_bytes_and_altered_bytes_fail_verify(store:
         .await
         .unwrap();
     let commit = h.svc.get_commit(&rev.commit).await.unwrap();
-    assert_eq!(commit.raw, commit.git_commit().encode());
+    assert_eq!(
+        commit.raw,
+        commit.git_commit().encode(commit.id.algorithm()).unwrap()
+    );
     let algorithm = commit.id.algorithm();
     assert_eq!(
         pyn_object::hash_object(algorithm, pyn_object::Kind::Commit, &commit.raw).unwrap(),
@@ -1887,7 +1890,8 @@ pub async fn a_commit_keeps_its_exact_bytes_and_altered_bytes_fail_verify(store:
         },
         ..pyn_object::Commit::parse(algorithm, &commit.raw).unwrap()
     }
-    .encode();
+    .encode(algorithm)
+    .unwrap();
     assert!(other_offset.verify().is_err(), "bytes that hash elsewhere");
 }
 
