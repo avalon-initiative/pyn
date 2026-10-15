@@ -25,7 +25,8 @@ fn world() -> World {
     let repo = RepoId::new("game");
     let svc = RepoService::new(
         repo.clone(),
-        Rules::from_toml("[meta]\ndefault = \"shared\"\n").unwrap(),
+        Rules::from_toml("[meta]\ndefault = \"shared\"\n[exclusive]\npaths = [\"Content/\"]\n")
+            .unwrap(),
         meta.clone(),
         objects.clone(),
         audit.clone(),
@@ -119,6 +120,66 @@ async fn a_base_that_is_not_an_older_revision_of_the_path_is_found() {
             .collect();
         assert_eq!(found, vec![(BreakKind::Base, Some(RevisionId(3)))], "{bad}");
     }
+}
+
+#[tokio::test]
+async fn a_base_that_is_not_the_branchs_pointer_is_found_on_any_branch() {
+    let w = world();
+    let map = path("Content/a.umap");
+    let put = |branch: &'static str, text: &'static str, base: Option<u64>| {
+        let (svc, objects, map) = (&w.svc, &w.objects, map.clone());
+        async move {
+            let who = alice();
+            svc.checkout_on(branch, &map, &who.user, base.map(RevisionId))
+                .await
+                .unwrap();
+            let c = objects.put(text.as_bytes().to_vec()).await.unwrap();
+            svc.checkin_on(
+                branch,
+                &who,
+                &map,
+                c,
+                pyn_core::FileMode::Regular,
+                base.map(RevisionId),
+                text.into(),
+            )
+            .await
+            .unwrap()
+        }
+    };
+    put("main", "one", None).await;
+    w.svc
+        .create_branch(&alice(), "feature", None)
+        .await
+        .unwrap();
+    put("feature", "two", Some(1)).await;
+    put("main", "three", Some(1)).await;
+    put("feature", "four", Some(2)).await;
+    let report = w.svc.verify(None, false).await.unwrap();
+    assert!(report.problems.is_empty(), "{report:?}");
+
+    // r3 and r4 each name an older revision of the path, but not their own branch's pointer.
+    for (id, wrong) in [(3, 2), (4, 1)] {
+        let original = w.svc.history(&map).await.unwrap()[id as usize - 1].base;
+        w.meta.tamper(&w.repo, &map, RevisionId(id), |r| {
+            r.base = Some(RevisionId(wrong))
+        });
+        let report = w.svc.verify(Some(&map), false).await.unwrap();
+        let found: Vec<_> = report
+            .problems
+            .iter()
+            .map(|p| (p.kind, p.revision))
+            .collect();
+        assert_eq!(
+            found,
+            vec![(BreakKind::Base, Some(RevisionId(id)))],
+            "r{id}"
+        );
+        w.meta
+            .tamper(&w.repo, &map, RevisionId(id), |r| r.base = original);
+    }
+    let report = w.svc.verify(None, false).await.unwrap();
+    assert!(report.problems.is_empty(), "{report:?}");
 }
 
 #[tokio::test]

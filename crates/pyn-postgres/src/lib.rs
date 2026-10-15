@@ -2229,4 +2229,64 @@ mod tests {
                 .is_some()
         );
     }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "needs PYN_DATABASE_URL"]
+    async fn verify_finds_a_tampered_base_on_a_branch() {
+        use pyn_core::memory::{MemoryAuditStore, MemoryObjectStore};
+        use pyn_core::{
+            BreakKind, FileMode, ManualClock, ObjectStore, Principal, RepoService, Rules,
+            ServiceConfig, UserId,
+        };
+        use std::sync::Arc;
+
+        let url = std::env::var("PYN_DATABASE_URL").expect("PYN_DATABASE_URL must be set");
+        let store = Arc::new(
+            PgMetadataStore::connect_in_scratch_schema(&url)
+                .await
+                .unwrap(),
+        );
+        let objects = Arc::new(MemoryObjectStore::new());
+        let svc = RepoService::new(
+            RepoId::new("r"),
+            Rules::from_toml("[meta]\ndefault = \"exclusive\"\n").unwrap(),
+            store.clone(),
+            objects.clone(),
+            Arc::new(MemoryAuditStore::new()),
+            Arc::new(ManualClock::new(Utc::now())),
+            ServiceConfig::default(),
+        );
+        let who = Principal::unrestricted(UserId::new("alice"));
+        let path = RepoPath::new("Content/a.umap").unwrap();
+        let put = |branch: &'static str, text: &'static str, base: Option<u64>| {
+            let (svc, objects, who, path) = (&svc, &objects, &who, &path);
+            async move {
+                let base = base.map(RevisionId);
+                svc.checkout_on(branch, path, &who.user, base)
+                    .await
+                    .unwrap();
+                let c = objects.put(text.as_bytes().to_vec()).await.unwrap();
+                svc.checkin_on(branch, who, path, c, FileMode::Regular, base, text.into())
+                    .await
+                    .unwrap();
+            }
+        };
+        put("main", "one", None).await;
+        svc.create_branch(&who, "feature", None).await.unwrap();
+        put("feature", "two", Some(1)).await;
+        put("main", "three", Some(1)).await;
+        assert!(svc.verify(None, false).await.unwrap().problems.is_empty());
+
+        sqlx::query("UPDATE revisions SET base_id = 2 WHERE id = 3")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        let report = svc.verify(None, false).await.unwrap();
+        let found: Vec<_> = report
+            .problems
+            .iter()
+            .map(|p| (p.kind, p.revision))
+            .collect();
+        assert_eq!(found, vec![(BreakKind::Base, Some(RevisionId(3)))]);
+    }
 }

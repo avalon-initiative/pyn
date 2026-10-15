@@ -3137,6 +3137,7 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_conversion_on_the_default_branch_reaches_a_branch_when_it_picks_up_the_policy);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; verify_checks_every_branch_and_a_commit_names_its_parent);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; merge_bases_are_the_lowest_common_ancestors);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_revision_after_a_merge_is_based_on_the_pointer_the_merge_left);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_merge_fast_forwards_or_is_up_to_date_without_a_new_commit);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_merge_can_insist_on_a_commit_or_refuse_to_make_one);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_merge_of_diverged_branches_makes_a_commit_with_two_parents);
