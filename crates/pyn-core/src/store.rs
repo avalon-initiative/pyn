@@ -231,7 +231,8 @@ pub trait MetadataStore: Send + Sync {
         descendant: &ObjectId,
     ) -> Result<bool>;
 
-    /// The path's revision at `commit`: its highest-numbered revision made in the commit or an ancestor.
+    /// The path's revision at `commit`: its highest-numbered revision made in the commit or an ancestor. A deletion
+    /// revision counts: it is the pointer a later write is based on.
     async fn revision_at(
         &self,
         repo: &RepoId,
@@ -242,8 +243,8 @@ pub trait MetadataStore: Send + Sync {
     /// The body of a stored git tree, as `commit.tree` and the entries inside it name them.
     async fn get_tree(&self, repo: &RepoId, id: &ObjectId) -> Result<Option<Vec<u8>>>;
 
-    /// The repository's state as of `commit`: for every path, its highest-numbered revision made in `commit` or an
-    /// ancestor, ordered by path. `commit` must exist.
+    /// The repository's state as of `commit`: for every path it holds, its highest-numbered revision made in `commit`
+    /// or an ancestor, ordered by path. A path whose revision deletes it is left out. `commit` must exist.
     async fn snapshot(&self, repo: &RepoId, commit: &ObjectId) -> Result<Vec<Revision>>;
 
     /// The newest revision of every path that has one, on any branch, ordered by path.

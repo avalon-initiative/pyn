@@ -26,6 +26,29 @@ a changeset id, shown by the API, and each path still has its own per-path revis
 a changeset; policy changes keep their own validated flow. Each revision of a changeset is hashed like any other and
 covers the commit it was made in, which covers the whole tree.
 
+## Deleting a path
+
+A changeset can also remove paths: `pyn add` stages a tracked file that was deleted from the workspace, `pyn add -u` and
+`pyn commit -a` do it for every such file, and `pyn commit` sends the removals with the rest as one changeset (the API takes them
+as `deletions`, each with the revision the caller saw). A deletion is a normal revision of the path, marked `deleted`, with its
+author, time, message and `restored_from` empty, and it gets an audit event, `delete`. Nothing is erased: the path's earlier
+revisions stay in history and `pyn log <path>` shows the deletion, and `pyn get <path> --rev N` still reads an older revision. The
+path leaves the branch's files, trees and snapshots, and its content cannot be read at the head.
+
+- An exclusive path needs the caller's live lock, which the deletion consumes like a checkin; without it the changeset is refused
+  (`lock_required`, or `lock_held`) and nothing is written. A shared path follows the shared rules: the base must be the branch's
+  revision (`stale_base` otherwise).
+- A path the branch does not have, or has already deleted, cannot be deleted: `404 path_not_found`, and nothing is written.
+- A deletion is judged and recorded on one branch; other branches keep the path until a merge brings the deletion (a merge that
+  meets a deletion on one side and an edit on the other is a conflict, as before).
+- The path can be written again. A caller that sees no file may send no base; the server takes the deletion revision as the
+  base, so the new revision continues the path's numbering. A deleted exclusive path comes back the same way, by locking it
+  (`pyn lock <path>`, no base) and checking in new content, or by restoring an earlier revision, which needs the lock too.
+  A restore cannot use a deletion revision as its source.
+- `.pyn/pyn.toml` cannot be deleted in a changeset, like it cannot be written in one. Resolving a merge conflict by deleting the
+  file is not supported yet.
+- A deletion revision is hashed with its own [encoding, v3](integrity.md), over the content and mode of the version it removed.
+
 Every revision and every audit event is hashed and chained to the one before it, so history is tamper-evident and `pyn verify`
 can check it; see [integrity](integrity.md).
 
@@ -44,7 +67,7 @@ by default); see [the lock limit](pyn-toml.md#lock-limit).
 Locks expire, but sometimes one has to be removed at once. `pyn unlock --force --reason "..." <path>` removes someone else's live
 lock. It needs the `force_unlock` permission, and the reason is mandatory because it is recorded.
 
-The audit log is an append-only record of lock, revision and access events: checkout, release, checkin, restore, force unlock,
+The audit log is an append-only record of lock, revision and access events: checkout, release, checkin, delete, restore, force unlock,
 member added, role changed, role permissions changed, token created, token revoked, repository created, updated and deleted, and a [version stranded](pyn-toml.md#stranded-versions) by a policy change, each with who, when, the path and a short detail (for a force unlock, whose lock was removed and why). `pyn audit` shows it
 newest first and can filter by path, user and action; it needs the `view_audit` permission. Events are never changed or
 removed.

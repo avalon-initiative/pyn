@@ -3222,6 +3222,101 @@ async fn a_changeset_checks_in_every_path_or_none() {
 }
 
 #[tokio::test]
+async fn a_changeset_removes_paths_and_keeps_them_in_history() {
+    let app = router(state_with(false, RegistrationMode::Open).await);
+    let alice = register_and_sign_in(&app, "alice").await;
+    create_repo(&app, &alice, "game").await;
+    let uri = "/v1/repos/alice/game/changesets";
+    let one = put_blob(&app, "game", &alice, "one").await;
+    let entry =
+        |path: &str| serde_json::json!({"path": path, "content": one, "base_revision": null});
+    let r = send(
+        &app,
+        "POST",
+        uri,
+        &alice,
+        Some(serde_json::json!({"entries": [entry("a.txt"), entry("b.txt")], "message": "two"})),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+
+    let r = send(
+        &app,
+        "POST",
+        uri,
+        &alice,
+        Some(serde_json::json!({
+            "entries": [],
+            "deletions": [{"path": "a.txt", "base_revision": 1}],
+            "message": "drop a",
+        })),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let done: api::ChangesetResponse = body_json(r).await;
+    assert_eq!(done.revisions.len(), 1);
+    let gone = &done.revisions[0];
+    assert!(
+        (gone.deleted, gone.id, gone.hash_version) == (true, 2, 3),
+        "{gone:?}"
+    );
+
+    let r = send(&app, "GET", "/v1/repos/alice/game/snapshot", &alice, None).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let snap: api::SnapshotPage = body_json(r).await;
+    let paths: Vec<&str> = snap.entries.iter().map(|e| e.path.as_str()).collect();
+    assert_eq!(paths, ["b.txt"]);
+    let r = send(
+        &app,
+        "GET",
+        "/v1/repos/alice/game/history?path=a.txt",
+        &alice,
+        None,
+    )
+    .await;
+    let history: api::HistoryPage = body_json(r).await;
+    assert_eq!(
+        history
+            .revisions
+            .iter()
+            .map(|r| r.deleted)
+            .collect::<Vec<_>>(),
+        [false, true]
+    );
+    let r = send(
+        &app,
+        "GET",
+        "/v1/repos/alice/game/content?path=a.txt",
+        &alice,
+        None,
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::NOT_FOUND);
+
+    for (path, base, status, code) in [
+        ("a.txt", Some(2), StatusCode::NOT_FOUND, "path_not_found"),
+        ("nope.txt", None, StatusCode::NOT_FOUND, "path_not_found"),
+        ("b.txt", Some(5), StatusCode::CONFLICT, "stale_base"),
+    ] {
+        let r = send(
+            &app,
+            "POST",
+            uri,
+            &alice,
+            Some(serde_json::json!({
+                "entries": [],
+                "deletions": [{"path": path, "base_revision": base}],
+                "message": "refused",
+            })),
+        )
+        .await;
+        assert_eq!(r.status(), status, "{path}");
+        let err: api::ErrorBody = body_json(r).await;
+        assert_eq!(err.code, code, "{path}");
+    }
+}
+
+#[tokio::test]
 async fn commits_and_snapshots_are_served_per_commit() {
     let app = router(state_with(false, RegistrationMode::Open).await);
     let alice = register_and_sign_in(&app, "alice").await;

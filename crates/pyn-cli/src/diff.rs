@@ -99,6 +99,7 @@ pub fn tree_of_staged(ws: &Workspace, index: &crate::staging::Index) -> Tree {
     index
         .entries
         .iter()
+        .filter(|(_, e)| !e.deleted)
         .map(|(p, e)| {
             let blob = Blob {
                 hash: e.hash.clone(),

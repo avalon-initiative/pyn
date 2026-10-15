@@ -64,6 +64,7 @@ fn snapshot_tree(files: &Files) -> crate::commit_record::TreeBuild {
                 path: path(p),
                 mode: *mode,
                 id: *id,
+                removed: false,
             })
             .collect(),
     )

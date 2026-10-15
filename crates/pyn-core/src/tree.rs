@@ -7,10 +7,11 @@ use crate::rules::Mode;
 use crate::types::{Lock, RepoPath, Revision};
 
 /// Audit actions that describe work on files; administrative events stay behind `view_audit`.
-pub const ACTIVITY_ACTIONS: [AuditAction; 5] = [
+pub const ACTIVITY_ACTIONS: [AuditAction; 6] = [
     AuditAction::Checkout,
     AuditAction::Release,
     AuditAction::Checkin,
+    AuditAction::Delete,
     AuditAction::Restore,
     AuditAction::ForceUnlock,
 ];
