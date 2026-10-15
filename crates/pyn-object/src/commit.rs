@@ -24,6 +24,17 @@ impl Signature {
     }
 
     fn parse(line: &[u8], what: &'static str) -> Result<Self, Error> {
+        let sig = Self::parse_lenient(line, what)?;
+        let mut check = Vec::new();
+        sig.encode(&mut check);
+        if check != line {
+            return Err(Error::Malformed(what, "non-canonical signature line"));
+        }
+        Ok(sig)
+    }
+
+    /// Like `parse`, but accepts what does not re-encode identically, such as the `-0000` timezone.
+    fn parse_lenient(line: &[u8], what: &'static str) -> Result<Self, Error> {
         let bad = |why| Error::Malformed(what, why);
         let gt = line
             .iter()
@@ -52,18 +63,12 @@ impl Signature {
         }
         let hours: i32 = tz[1..3].parse().map_err(|_| bad("bad timezone"))?;
         let mins: i32 = tz[3..5].parse().map_err(|_| bad("bad timezone"))?;
-        let sig = Self {
+        Ok(Self {
             name,
             email,
             time,
             offset_minutes: sign * (hours * 60 + mins),
-        };
-        let mut check = Vec::new();
-        sig.encode(&mut check);
-        if check != line {
-            return Err(bad("non-canonical signature line"));
-        }
-        Ok(sig)
+        })
     }
 }
 
@@ -126,11 +131,44 @@ fn take(
 }
 
 fn parse_id(algorithm: Algorithm, v: &[u8], what: &'static str) -> Result<ObjectId, Error> {
-    let s = std::str::from_utf8(v).map_err(|_| Error::Malformed(what, "bad object id"))?;
-    if s.bytes().any(|b| b.is_ascii_uppercase()) {
+    if v.iter().any(u8::is_ascii_uppercase) {
         return Err(Error::Malformed(what, "uppercase object id"));
     }
+    parse_id_lenient(algorithm, v, what)
+}
+
+fn parse_id_lenient(algorithm: Algorithm, v: &[u8], what: &'static str) -> Result<ObjectId, Error> {
+    let s = std::str::from_utf8(v).map_err(|_| Error::Malformed(what, "bad object id"))?;
     ObjectId::from_hex(algorithm, s)
+}
+
+/// An object read leniently: the parsed fields plus the exact bytes it was stored as, so its id is unchanged.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Raw<T> {
+    pub object: T,
+    kind: Kind,
+    bytes: Vec<u8>,
+}
+
+impl<T> Raw<T> {
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.bytes
+    }
+
+    /// The id of the original bytes, not of a re-encoding.
+    pub fn id(&self, algorithm: Algorithm) -> Result<ObjectId, Error> {
+        crate::hash_object(algorithm, self.kind, &self.bytes)
+    }
+}
+
+/// Removes and returns the first header called `name`.
+fn pull(headers: &mut Vec<Header>, name: &[u8]) -> Option<Vec<u8>> {
+    let at = headers.iter().position(|(n, _)| n == name)?;
+    Some(headers.remove(at).1)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -195,6 +233,38 @@ impl Commit {
             return Err(Error::Malformed(W, "not canonical"));
         }
         Ok(commit)
+    }
+
+    /// Reads a commit git accepts but `parse` rejects: any header order, `-0000`, uppercase hex.
+    /// The result keeps the original bytes; `encode` of the fields may differ from them.
+    pub fn parse_lenient(algorithm: Algorithm, body: &[u8]) -> Result<Raw<Self>, Error> {
+        const W: &str = "commit";
+        let (block, message) = split_message(body, W)?;
+        let mut headers = parse_headers(block, W)?;
+        let tree = pull(&mut headers, b"tree").ok_or(Error::Malformed(W, "missing tree"))?;
+        let tree = parse_id_lenient(algorithm, &tree, W)?;
+        let mut parents = Vec::new();
+        while let Some(p) = pull(&mut headers, b"parent") {
+            parents.push(parse_id_lenient(algorithm, &p, W)?);
+        }
+        let mut sig = |name: &[u8]| {
+            let v = pull(&mut headers, name).ok_or(Error::Malformed(W, "missing signature"))?;
+            Signature::parse_lenient(&v, W)
+        };
+        let author = sig(b"author")?;
+        let committer = sig(b"committer")?;
+        Ok(Raw {
+            object: Self {
+                tree,
+                parents,
+                author,
+                committer,
+                extra_headers: headers,
+                message: message.to_vec(),
+            },
+            kind: Kind::Commit,
+            bytes: body.to_vec(),
+        })
     }
 
     pub fn id(&self, algorithm: Algorithm) -> Result<ObjectId, Error> {
@@ -263,6 +333,36 @@ impl Tag {
             return Err(Error::Malformed(W, "not canonical"));
         }
         Ok(tag)
+    }
+
+    /// Reads a tag git accepts but `parse` rejects: any header order, `-0000`, uppercase hex.
+    pub fn parse_lenient(algorithm: Algorithm, body: &[u8]) -> Result<Raw<Self>, Error> {
+        const W: &str = "tag";
+        let (block, message) = split_message(body, W)?;
+        let mut headers = parse_headers(block, W)?;
+        let mut need =
+            |name: &[u8]| pull(&mut headers, name).ok_or(Error::Malformed(W, "missing header"));
+        let object = parse_id_lenient(algorithm, &need(b"object")?, W)?;
+        let kind =
+            Kind::from_name(&need(b"type")?).ok_or(Error::Malformed(W, "unknown object type"))?;
+        let name = need(b"tag")?;
+        let tagger = pull(&mut headers, b"tagger")
+            .map(|v| Signature::parse_lenient(&v, W))
+            .transpose()?;
+        if !headers.is_empty() {
+            return Err(Error::Malformed(W, "unexpected header"));
+        }
+        Ok(Raw {
+            object: Self {
+                object,
+                kind,
+                name,
+                tagger,
+                message: message.to_vec(),
+            },
+            kind: Kind::Tag,
+            bytes: body.to_vec(),
+        })
     }
 
     pub fn id(&self, algorithm: Algorithm) -> Result<ObjectId, Error> {

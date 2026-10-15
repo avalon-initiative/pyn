@@ -1,12 +1,13 @@
 //! Git's object ids and encodings (blob, tree, commit, tag) as pure functions, parameterized by hash algorithm.
-//! No I/O; git is never invoked. SHA-1 uses collision detection, as git does.
+//! `Commit::parse` and `Tag::parse` accept only canonical objects; `parse_lenient` reads what git tolerates and keeps the
+//! original bytes (`Raw`), so an object read from a git repository keeps its id. No I/O; git is never invoked. SHA-1 uses collision detection, as git does.
 
 mod commit;
 mod hasher;
 mod id;
 mod tree;
 
-pub use commit::{Commit, Signature, Tag};
+pub use commit::{Commit, Raw, Signature, Tag};
 pub use hasher::ObjectHasher;
 pub use id::{Algorithm, Kind, ObjectId, hash_object};
 pub use tree::{FileMode, TreeEntry, encode_tree, parse_tree};

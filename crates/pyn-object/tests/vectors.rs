@@ -415,3 +415,160 @@ fn signature_offsets_encode_both_signs() {
         c.parents.clear();
     }
 }
+
+const TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+const PARENT: &str = "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391";
+
+/// Hashes `body` as `kind` with the git binary (oracle); `None` when git is unavailable.
+fn git_id(kind: &str, body: &[u8]) -> Option<String> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let mut child = Command::new("git")
+        .args(["hash-object", "--literally", "-t", kind, "--stdin"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .ok()?;
+    child.stdin.take().unwrap().write_all(body).unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success());
+    Some(String::from_utf8(out.stdout).unwrap().trim().to_string())
+}
+
+fn non_canonical_commits() -> Vec<(&'static str, Vec<u8>)> {
+    let sig = |tz: &str| format!("A <a@x> 1700000000 {tz}");
+    let up_tree = TREE.to_uppercase();
+    vec![
+        (
+            "minus_zero_tz",
+            format!(
+                "tree {TREE}\nauthor {}\ncommitter {}\n\nm\n",
+                sig("-0000"),
+                sig("+0000")
+            ),
+        ),
+        (
+            "committer_before_author",
+            format!(
+                "tree {TREE}\ncommitter {}\nauthor {}\n\nm\n",
+                sig("+0000"),
+                sig("+0100")
+            ),
+        ),
+        (
+            "uppercase_hex",
+            format!(
+                "tree {up_tree}\nparent {}\nauthor {}\ncommitter {}\n\nm\n",
+                PARENT.to_uppercase(),
+                sig("+0000"),
+                sig("+0000")
+            ),
+        ),
+        (
+            "extra_before_author",
+            format!(
+                "tree {TREE}\nencoding UTF-8\nauthor {}\ncommitter {}\n\nm\n",
+                sig("+0000"),
+                sig("+0000")
+            ),
+        ),
+    ]
+    .into_iter()
+    .map(|(n, s)| (n, s.into_bytes()))
+    .collect()
+}
+
+#[test]
+fn lenient_commit_keeps_the_id_git_computes() {
+    for (name, body) in non_canonical_commits() {
+        {
+            let algo = Algorithm::Sha1;
+            assert!(
+                Commit::parse(algo, &body).is_err(),
+                "{name} is strict-rejected"
+            );
+            let raw = Commit::parse_lenient(algo, &body).expect(name);
+            assert_eq!(raw.bytes(), body, "{name}");
+            let id = raw.id(algo).unwrap();
+            assert_eq!(
+                id,
+                hash_object(algo, Kind::Commit, &body).unwrap(),
+                "{name}"
+            );
+            if let Some(git) = git_id("commit", &body) {
+                assert_eq!(id.to_hex(), git, "{name} vs git");
+            }
+        }
+    }
+}
+
+#[test]
+fn lenient_commit_reads_the_fields() {
+    let all = non_canonical_commits();
+    let body = |n: &str| all.iter().find(|(m, _)| *m == n).unwrap().1.clone();
+    let a = Algorithm::Sha1;
+    let tz = Commit::parse_lenient(a, &body("minus_zero_tz"))
+        .unwrap()
+        .object;
+    assert_eq!(tz.author.offset_minutes, 0);
+    let order = Commit::parse_lenient(a, &body("committer_before_author"))
+        .unwrap()
+        .object;
+    assert_eq!(order.author.offset_minutes, 60);
+    assert_eq!(order.committer.offset_minutes, 0);
+    let up = Commit::parse_lenient(a, &body("uppercase_hex"))
+        .unwrap()
+        .object;
+    assert_eq!(up.tree.to_hex(), TREE);
+    assert_eq!(up.parents[0].to_hex(), PARENT);
+    let extra = Commit::parse_lenient(a, &body("extra_before_author"))
+        .unwrap()
+        .object;
+    assert_eq!(
+        extra.extra_headers,
+        [(b"encoding".to_vec(), b"UTF-8".to_vec())]
+    );
+}
+
+#[test]
+fn lenient_commit_accepts_canonical_and_still_rejects_garbage() {
+    for algo in ALGOS {
+        let rows = fixtures(algo);
+        for name in ["commit_root", "commit_gpgsig", "commit_merge"] {
+            let raw = Commit::parse_lenient(algo, &rows[name].body).unwrap();
+            assert_eq!(raw.object, Commit::parse(algo, &rows[name].body).unwrap());
+            assert_eq!(raw.id(algo).unwrap(), rows[name].id, "{name}");
+        }
+    }
+    let a = Algorithm::Sha1;
+    let sig = "A <a@x> 1 +0000";
+    for bad in [
+        format!("author {sig}\ncommitter {sig}\n\nm"),
+        format!("tree {TREE}\ncommitter {sig}\n\nm"),
+        format!("tree {TREE}\nauthor {sig}\n\nm"),
+        format!("tree {TREE}\nauthor {sig}\ncommitter A <a@x> 1 +00\n\nm"),
+        format!("tree zz\nauthor {sig}\ncommitter {sig}\n\nm"),
+        format!("tree {TREE}\nauthor {sig}\ncommitter {sig}\nno blank line"),
+    ] {
+        assert!(Commit::parse_lenient(a, bad.as_bytes()).is_err(), "{bad}");
+    }
+}
+
+#[test]
+fn lenient_tag_keeps_the_id_git_computes() {
+    let body = format!(
+        "object {}\ntype commit\ntag v1\ntagger A <a@x> 1700000000 -0000\n\nrel\n",
+        PARENT.to_uppercase()
+    )
+    .into_bytes();
+    let a = Algorithm::Sha1;
+    assert!(Tag::parse(a, &body).is_err());
+    let raw = Tag::parse_lenient(a, &body).unwrap();
+    assert_eq!(raw.object.object.to_hex(), PARENT);
+    assert_eq!(raw.object.kind, Kind::Commit);
+    let id = raw.id(a).unwrap();
+    assert_eq!(id, hash_object(a, Kind::Tag, &body).unwrap());
+    if let Some(git) = git_id("tag", &body) {
+        assert_eq!(id.to_hex(), git);
+    }
+}
