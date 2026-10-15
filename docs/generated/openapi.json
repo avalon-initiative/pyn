@@ -3305,7 +3305,7 @@
           {
             "name": "action",
             "in": "query",
-            "description": "checkout, release, checkin, restore, force_unlock, member_added, role_changed, role_permissions_changed, team_access_set, team_access_removed, token_created, token_revoked, repo_created, repo_updated, repo_deleted, invite_created, invite_revoked, policy_changed, mode_converted or version_stranded",
+            "description": "checkout, release, checkin, delete, restore, force_unlock, member_added, role_changed, role_permissions_changed, team_access_set, team_access_removed, token_created, token_revoked, repo_created, repo_updated, repo_deleted, invite_created, invite_revoked, policy_changed, mode_converted or version_stranded",
             "required": false,
             "schema": {
               "type": "string"
@@ -3723,7 +3723,7 @@
     "/v1/repos/{owner}/{name}/changesets": {
       "post": {
         "tags": [],
-        "summary": "Check several paths in atomically as one commit with one message.",
+        "summary": "Check several paths in and remove others atomically as one commit with one message.",
         "operationId": "changeset",
         "parameters": [
           {
@@ -3766,7 +3766,7 @@
             }
           },
           "400": {
-            "description": "object_missing, invalid_path, or invalid_request for an empty or repeated path or .pyn/pyn.toml",
+            "description": "object_missing, invalid_path, or invalid_request for an empty changeset, a repeated path or .pyn/pyn.toml",
             "content": {
               "application/json": {
                 "schema": {
@@ -3776,7 +3776,7 @@
             }
           },
           "404": {
-            "description": "branch_not_found",
+            "description": "branch_not_found, or path_not_found for a deletion of a path the branch does not have",
             "content": {
               "application/json": {
                 "schema": {
@@ -6801,6 +6801,27 @@
           }
         }
       },
+      "ChangesetDeletion": {
+        "type": "object",
+        "description": "One path a changeset removes. The path stays in history as a deletion revision (`Revision.deleted`).",
+        "required": [
+          "path"
+        ],
+        "properties": {
+          "base_revision": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The path's revision on the branch: the one being removed.",
+            "minimum": 0
+          },
+          "path": {
+            "type": "string"
+          }
+        }
+      },
       "ChangesetEntry": {
         "type": "object",
         "description": "One path of a changeset.",
@@ -6839,7 +6860,7 @@
       },
       "ChangesetRequest": {
         "type": "object",
-        "description": "Paths checked in together: every base and lock check passes or nothing is written.",
+        "description": "Paths checked in and removed together: every base and lock check passes or nothing is written. An exclusive path,\nwritten or removed, needs the caller's live lock, which the commit consumes.",
         "required": [
           "entries",
           "message"
@@ -6851,6 +6872,13 @@
               "null"
             ],
             "description": "The branch the commit is made on; the default branch if omitted."
+          },
+          "deletions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChangesetDeletion"
+            },
+            "description": "Paths to remove; a changeset needs at least one entry or deletion."
           },
           "entries": {
             "type": "array",
@@ -6878,7 +6906,7 @@
             "items": {
               "$ref": "#/components/schemas/Revision"
             },
-            "description": "One revision per requested path, in request order."
+            "description": "One revision per requested path: the entries in request order, then the deletions."
           }
         }
       },
@@ -8813,6 +8841,10 @@
           "created_at": {
             "type": "string",
             "format": "date-time"
+          },
+          "deleted": {
+            "type": "boolean",
+            "description": "The revision removes the path from its branch; `content` and `file_mode` are those of the version removed.\nIts `hash_version` is 3."
           },
           "file_mode": {
             "$ref": "#/components/schemas/FileMode",

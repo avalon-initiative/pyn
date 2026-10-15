@@ -17,12 +17,13 @@ fn object_error(e: pyn_object::Error) -> PynError {
     PynError::Storage(format!("git object: {e}"))
 }
 
-/// One file to set in a tree.
+/// One file to set in a tree, or with `removed` to take out of it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TreeChange {
     pub path: RepoPath,
     pub mode: FileMode,
     pub id: ObjectId,
+    pub removed: bool,
 }
 
 /// The root of a built tree and the trees it added, as `(id, body)`.
@@ -93,7 +94,9 @@ impl TreeEdit {
     pub fn finish(self) -> Result<TreeBuild> {
         let algorithm = self.algorithm();
         let mut trees = Vec::new();
-        let root = self.build("", self.root.as_ref(), algorithm, &mut trees)?;
+        let root = self
+            .build("", self.root.as_ref(), algorithm, &mut trees)?
+            .ok_or_else(|| PynError::Storage("the root tree is never dropped".into()))?;
         Ok(TreeBuild { root, trees })
     }
 
@@ -105,13 +108,14 @@ impl TreeEdit {
             .unwrap_or(Algorithm::Sha256)
     }
 
+    /// The tree of `dir` with the changes in, or `None` when it ends up empty (git has no empty folders).
     fn build(
         &self,
         dir: &str,
         existing: Option<&ObjectId>,
         algorithm: Algorithm,
         out: &mut Vec<(ObjectId, Vec<u8>)>,
-    ) -> Result<ObjectId> {
+    ) -> Result<Option<ObjectId>> {
         let mut entries = match existing {
             Some(id) => self
                 .loaded
@@ -142,11 +146,13 @@ impl TreeEdit {
                         )));
                     }
                     entries.retain(|e| e.name != rest.as_bytes());
-                    entries.push(TreeEntry {
-                        mode: c.mode,
-                        name: rest.as_bytes().to_vec(),
-                        id: c.id,
-                    });
+                    if !c.removed {
+                        entries.push(TreeEntry {
+                            mode: c.mode,
+                            name: rest.as_bytes().to_vec(),
+                            id: c.id,
+                        });
+                    }
                 }
                 Some((first, _)) => {
                     subdirs.insert(first.to_string());
@@ -161,18 +167,23 @@ impl TreeEdit {
                 )));
             }
             let child_existing = current.map(|e| e.id);
-            let id = self.build(&join(dir, &name), child_existing.as_ref(), algorithm, out)?;
+            let child = self.build(&join(dir, &name), child_existing.as_ref(), algorithm, out)?;
             entries.retain(|e| e.name != name.as_bytes());
-            entries.push(TreeEntry {
-                mode: FileMode::Tree,
-                name: name.into_bytes(),
-                id,
-            });
+            if let Some(id) = child {
+                entries.push(TreeEntry {
+                    mode: FileMode::Tree,
+                    name: name.into_bytes(),
+                    id,
+                });
+            }
+        }
+        if entries.is_empty() && !dir.is_empty() {
+            return Ok(None);
         }
         let body = encode_tree(&entries).map_err(object_error)?;
         let id = hash_object(algorithm, Kind::Tree, &body).map_err(object_error)?;
         out.push((id, body));
-        Ok(id)
+        Ok(Some(id))
     }
 }
 
@@ -325,6 +336,7 @@ impl NewRevision {
             path: self.path.clone(),
             mode: self.file_mode,
             id: self.content,
+            removed: self.deleted,
         }
     }
 }

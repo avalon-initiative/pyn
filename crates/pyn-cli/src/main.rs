@@ -1502,6 +1502,7 @@ fn run(cli: Cli) -> Result<()> {
             }
             let body = api::ChangesetRequest {
                 entries,
+                deletions: Vec::new(),
                 message,
                 branch: None,
             };
@@ -1621,9 +1622,11 @@ fn run(cli: Cli) -> Result<()> {
             let rows: Vec<Vec<String>> = revs
                 .into_iter()
                 .map(|r| {
-                    let restored = r
-                        .restored_from
-                        .map_or(String::new(), |n| format!(" (restored from r{n})"));
+                    let restored = match (r.deleted, r.restored_from) {
+                        (true, _) => " (deleted)".to_string(),
+                        (false, Some(n)) => format!(" (restored from r{n})"),
+                        (false, None) => String::new(),
+                    };
                     let mut row = vec![
                         format!("r{}", r.id),
                         r.author,
@@ -1906,9 +1909,10 @@ fn diff_command(
     let (old, new) = match refs.as_slice() {
         [] if cached => {
             let ws = ws_needed()?;
-            let staged = diff::tree_of_staged(ws, &staging::Index::load(ws)?);
+            let index = staging::Index::load(ws)?;
+            let staged = diff::tree_of_staged(ws, &index);
             let mut old = diff::tree_of_state(&ws.load_state()?);
-            old.retain(|p, _| staged.contains_key(p));
+            old.retain(|p, _| index.entries.contains_key(p));
             (old, staged)
         }
         [_] | [_, _] if cached => {
@@ -1918,8 +1922,10 @@ fn diff_command(
         }
         [] => {
             let ws = ws_needed()?;
+            let index = staging::Index::load(ws)?;
             let mut old = diff::tree_of_state(&ws.load_state()?);
-            old.extend(diff::tree_of_staged(ws, &staging::Index::load(ws)?));
+            old.extend(diff::tree_of_staged(ws, &index));
+            old.retain(|p, _| !index.entries.get(p).is_some_and(|e| e.deleted));
             let new = diff::tree_of_disk(ws, old.keys())?;
             (old, new)
         }

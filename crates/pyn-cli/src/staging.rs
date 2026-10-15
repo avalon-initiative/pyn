@@ -2,7 +2,7 @@
 //!
 //! The index is `.pyn/local_only/state/index.toml` and the staged content is kept beside it in
 //! `.pyn/local_only/staged/<blob id>`, so edits made after `add` stay unstaged. Nothing here is sent to the server
-//! until `commit`, which sends the whole staged set as one changeset.
+//! until `commit`, which sends the whole staged set as one changeset. A staged deletion has no content.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -18,18 +18,23 @@ use crate::{localfile, sync};
 const INDEX_VERSION: u32 = 1;
 
 /// A staged file: its content (by blob id), its mode, and the revision the workspace was at when it was staged.
+/// A deletion has an empty `hash` and the mode and revision of the file removed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Entry {
     pub hash: String,
     pub file_mode: api::FileMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub deleted: bool,
 }
 
 impl Entry {
     /// Whether the file on disk, with this mode and content, differs from what is staged.
     pub fn differs(&self, file_mode: api::FileMode, bytes: &[u8]) -> bool {
-        self.hash != hash_of(bytes) || localfile::mode_differs(self.file_mode, file_mode)
+        self.deleted
+            || self.hash != hash_of(bytes)
+            || localfile::mode_differs(self.file_mode, file_mode)
     }
 }
 
@@ -189,6 +194,8 @@ enum Op {
         file_mode: api::FileMode,
         bytes: Vec<u8>,
     },
+    /// The file is gone from disk: stage its removal.
+    Delete { file_mode: api::FileMode },
     /// The file is back to what the last commit has, so nothing is staged for it.
     Unstage,
 }
@@ -209,9 +216,18 @@ fn plan(ws: &Workspace, index: &Index, specs: &Specs, args: &AddArgs) -> Result<
         }
         let file = ws.abs(path);
         if !localfile::exists(&file) {
-            eprintln!(
-                "warning: {path} was deleted; a pyn server cannot record deletions yet, so it is not staged"
-            );
+            if conflicted.contains(path) {
+                eprintln!(
+                    "warning: {path} was deleted; a merge conflict cannot be resolved by deleting the file, so it is not staged"
+                );
+            } else if !index.entries.get(path).is_some_and(|s| s.deleted) {
+                ops.insert(
+                    path.clone(),
+                    Op::Delete {
+                        file_mode: known.file_mode,
+                    },
+                );
+            }
             continue;
         }
         let (file_mode, bytes) = localfile::read(&file)?;
@@ -306,7 +322,9 @@ pub fn add(backend: &dyn Backend, ws: &Workspace, cwd: &Path, args: &AddArgs) ->
     let puts: Vec<&String> = plan
         .ops
         .iter()
-        .filter(|(p, op)| matches!(op, Op::Put { .. }) && !conflicted.contains(*p))
+        .filter(|(p, op)| {
+            matches!(op, Op::Put { .. } | Op::Delete { .. }) && !conflicted.contains(*p)
+        })
         .map(|(p, _)| p)
         .collect();
     require_locks(backend, &puts)?;
@@ -330,6 +348,24 @@ pub fn add(backend: &dyn Backend, ws: &Workspace, cwd: &Path, args: &AddArgs) ->
                         hash,
                         file_mode,
                         base_revision: state.get(&path).map(|k| k.revision),
+                        deleted: false,
+                    },
+                );
+            }
+            Op::Delete { file_mode } => {
+                if args.dry_run || args.verbose {
+                    println!("remove '{path}'");
+                }
+                if args.dry_run {
+                    continue;
+                }
+                index.entries.insert(
+                    path.clone(),
+                    Entry {
+                        hash: String::new(),
+                        file_mode,
+                        base_revision: state.get(&path).map(|k| k.revision),
+                        deleted: true,
                     },
                 );
             }
@@ -394,7 +430,18 @@ pub fn commit(backend: &dyn Backend, ws: &Workspace, message: &str, all: bool) -
         std::process::exit(1);
     }
     let mut entries = Vec::new();
+    let mut deletions = Vec::new();
+    let mut written = Vec::new();
+    let mut removed = Vec::new();
     for (path, staged) in &index.entries {
+        if staged.deleted {
+            deletions.push(api::ChangesetDeletion {
+                path: path.clone(),
+                base_revision: staged.base_revision,
+            });
+            removed.push(path);
+            continue;
+        }
         let file = content_path(ws, &staged.hash);
         let sent = if staged.file_mode == api::FileMode::Symlink {
             backend.upload_bytes(std::fs::read(&file)?)?
@@ -413,18 +460,29 @@ pub fn commit(backend: &dyn Backend, ws: &Workspace, message: &str, all: bool) -
             file_mode: Some(staged.file_mode),
             base_revision: staged.base_revision,
         });
+        written.push((path, staged));
     }
     let request = api::ChangesetRequest {
         entries,
+        deletions,
         message: message.to_string(),
         branch: None,
     };
     let response = backend
         .commit_changeset(&request)
         .map_err(|e| crate::behind_hint(e, true))?;
-    for (rev, (path, staged)) in response.revisions.iter().zip(&index.entries) {
+    let (made, gone) = response.revisions.split_at(written.len());
+    for (rev, (path, staged)) in made.iter().zip(&written) {
         sync::after_commit(backend, ws, path, rev.id, &staged.hash, staged.file_mode)?;
         println!("{} is now at revision {}", rev.path, rev.id);
+    }
+    let mut state = ws.load_state()?;
+    for (rev, path) in gone.iter().zip(&removed) {
+        state.remove(path.as_str());
+        println!("{} was deleted at revision {}", rev.path, rev.id);
+    }
+    if !removed.is_empty() {
+        ws.save_state(&state)?;
     }
     Index::default().save(ws)
 }
@@ -445,6 +503,7 @@ mod tests {
             hash: hash_of(b"one"),
             file_mode: api::FileMode::Regular,
             base_revision: Some(1),
+            deleted: false,
         };
         assert!(!entry.differs(api::FileMode::Regular, b"one"));
         assert!(entry.differs(api::FileMode::Regular, b"two"));

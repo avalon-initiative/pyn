@@ -51,12 +51,16 @@ str(commit_algorithm)
 str(commit_id)          the git commit id of the commit that made the revision, lowercase hex
 ```
 
+**Revision v3** is the revision of a deletion: exactly the v2 fields in the same order under the tag `pyn-revision-v3`, where
+`file_mode` and `blob_id` are those of the version the deletion removed and `previous` is the hash of the path's last revision.
+The tag alone tells it apart from v2, so no field is added and the v2 encoding is untouched.
+
 A v2 hash covers the commit id, and the commit id covers the tree and the parent, so the revision, its commit and the
-repository state at that commit cannot be changed independently. Which encoding a revision uses is stored with it as `hash_version` (`1` or `2`;
+repository state at that commit cannot be changed independently. Which encoding a revision uses is stored with it as `hash_version` (`1`, `2` or `3`;
 `revisions.hash_version` in PostgreSQL, `hash_version` in the API), never inferred. Rows that existed before v2 are version 1 and keep their hash, never
-rewritten; new revisions are always version 2. A version must agree with the stored fields: version 2 needs the structured
-author (`revisions.author_name`, `author_email` and `author_offset` in PostgreSQL, `author_identity` in the API) and
-version 1 must not have one. A disagreement, or a version that names no known encoding, is corrupt history: it is never re-encoded to
+rewritten; new revisions are version 2, or version 3 when they delete the path. A version must agree with the stored fields: versions 2 and 3 need the structured
+author (`revisions.author_name`, `author_email` and `author_offset` in PostgreSQL, `author_identity` in the API),
+version 1 must not have one, and version 3 is exactly the revisions with `deleted` set (`revisions.deleted`, `deleted` in the API). A disagreement, or a version that names no known encoding, is corrupt history: it is never re-encoded to
 make it fit.
 
 **Audit event**, in this order:
@@ -82,6 +86,7 @@ user `alice`, author `Alice <alice@example.com>`, time `1700000000123456` and co
 | --- | --- |
 | v2 revision `Content/a.umap`, mode `100644`, no previous, offset 0, message `first` | `5b9cb79dd9a6deb197f72c532eb669b72d1e0820c6a8cb56bbc5d0fc838d52ed` |
 | the same with mode `100755`, previous set to the hash above, name `Alice Liddell`, offset -330, message `restore`, restored from 1, commit id `cd` repeated 32 times | `3d2323ad77d4713b6667982fe3f18a4613bdd068a56c023af00a61caa7e5bbe8` |
+| v3 revision (a deletion) with the fields of the first v2 row | `081218b2d39da72996468114f21b3281bc73fdaddba7118b06d189d7e8c4ad8d` |
 
 v1 and audit vectors, with content string `e3b0c442...b855` (the SHA-256 of the empty file, as stored before blob ids), author `alice`
 and time `1700000000123456`:
@@ -118,13 +123,14 @@ events leaves a valid chain. A client that remembers a head hash can detect that
   its tree, parents, author, committer, time and message fields say; a mismatch is a `500 history_corrupt`. Verification also checks each commit's parent links and that each
   branch head's tree is the tree of the snapshot at that head, and reports `hash_mismatch`, `broken_link` and `tree_mismatch`
   problems with the `commit` id. A revision whose `hash_version` disagrees with its stored fields is reported as
-  `version_mismatch`, and one whose `base` is not an older revision of the same path as `base_mismatch`. The base is stored
-  beside the revision and is not covered by the hash, so existing hashes stay valid.
+  `version_mismatch`. A revision whose `base` is not an older revision of the same path, or, for an exclusive revision on any
+  branch, is not the path's pointer at the first parent of its commit ([branches](branches.md)), is `base_mismatch`. The base is
+  stored beside the revision and is not covered by the hash, so existing hashes stay valid.
 - Audit events are checked when they are read, and the whole chain when verified.
 - `GET /v1/repos/{owner}/{name}/verify?path=` checks a path, or every path and the repository's audit log, and reports every
   break instead of stopping at the first. It needs `read`; the audit log is checked only for callers with `view_audit`.
 - `pyn verify [<path>]` prints the report and exits 1 when anything is broken. It also selects each revision's encoding from
-  `hash_version`, recomputes the revision hashes (v1 and v2) and the commit ids it fetches on the client, so a server that reports "ok" cannot hide a mismatch.
+  `hash_version`, recomputes the revision hashes (v1, v2 and v3) and the commit ids it fetches on the client, so a server that reports "ok" cannot hide a mismatch.
 
 Revisions in the API carry `hash`, `hash_version`, `previous` and `base`; audit events carry `hash` and `previous`.
 

@@ -25,7 +25,8 @@ fn world() -> World {
     let repo = RepoId::new("game");
     let svc = RepoService::new(
         repo.clone(),
-        Rules::from_toml("[meta]\ndefault = \"shared\"\n").unwrap(),
+        Rules::from_toml("[meta]\ndefault = \"shared\"\n[exclusive]\npaths = [\"Content/\"]\n")
+            .unwrap(),
         meta.clone(),
         objects.clone(),
         audit.clone(),
@@ -119,6 +120,66 @@ async fn a_base_that_is_not_an_older_revision_of_the_path_is_found() {
             .collect();
         assert_eq!(found, vec![(BreakKind::Base, Some(RevisionId(3)))], "{bad}");
     }
+}
+
+#[tokio::test]
+async fn a_base_that_is_not_the_branchs_pointer_is_found_on_any_branch() {
+    let w = world();
+    let map = path("Content/a.umap");
+    let put = |branch: &'static str, text: &'static str, base: Option<u64>| {
+        let (svc, objects, map) = (&w.svc, &w.objects, map.clone());
+        async move {
+            let who = alice();
+            svc.checkout_on(branch, &map, &who.user, base.map(RevisionId))
+                .await
+                .unwrap();
+            let c = objects.put(text.as_bytes().to_vec()).await.unwrap();
+            svc.checkin_on(
+                branch,
+                &who,
+                &map,
+                c,
+                pyn_core::FileMode::Regular,
+                base.map(RevisionId),
+                text.into(),
+            )
+            .await
+            .unwrap()
+        }
+    };
+    put("main", "one", None).await;
+    w.svc
+        .create_branch(&alice(), "feature", None)
+        .await
+        .unwrap();
+    put("feature", "two", Some(1)).await;
+    put("main", "three", Some(1)).await;
+    put("feature", "four", Some(2)).await;
+    let report = w.svc.verify(None, false).await.unwrap();
+    assert!(report.problems.is_empty(), "{report:?}");
+
+    // r3 and r4 each name an older revision of the path, but not their own branch's pointer.
+    for (id, wrong) in [(3, 2), (4, 1)] {
+        let original = w.svc.history(&map).await.unwrap()[id as usize - 1].base;
+        w.meta.tamper(&w.repo, &map, RevisionId(id), |r| {
+            r.base = Some(RevisionId(wrong))
+        });
+        let report = w.svc.verify(Some(&map), false).await.unwrap();
+        let found: Vec<_> = report
+            .problems
+            .iter()
+            .map(|p| (p.kind, p.revision))
+            .collect();
+        assert_eq!(
+            found,
+            vec![(BreakKind::Base, Some(RevisionId(id)))],
+            "r{id}"
+        );
+        w.meta
+            .tamper(&w.repo, &map, RevisionId(id), |r| r.base = original);
+    }
+    let report = w.svc.verify(None, false).await.unwrap();
+    assert!(report.problems.is_empty(), "{report:?}");
 }
 
 #[tokio::test]
@@ -335,9 +396,50 @@ async fn a_flipped_hash_version_is_a_version_problem_not_a_silent_reencode() {
     );
 
     w.meta
-        .tamper(&w.repo, &a, RevisionId(2), |r| r.hash_version = 3);
+        .tamper(&w.repo, &a, RevisionId(2), |r| r.hash_version = 4);
     let err = w.svc.read(&a, Some(RevisionId(2))).await.unwrap_err();
-    assert!(err.to_string().contains("unknown version 3"), "{err}");
+    assert!(err.to_string().contains("unknown version 4"), "{err}");
+}
+
+#[tokio::test]
+async fn a_deletion_revision_is_v3_and_its_flag_cannot_be_flipped() {
+    let w = world();
+    let a = three_revisions(&w).await;
+    let removed = w
+        .svc
+        .checkin_changes_on(
+            "main",
+            &alice(),
+            Vec::new(),
+            vec![pyn_core::Deletion {
+                path: a.clone(),
+                base: Some(RevisionId(3)),
+            }],
+            "remove".into(),
+        )
+        .await
+        .unwrap();
+    assert_eq!((removed[0].hash_version, removed[0].deleted), (3, true));
+    let report = w.svc.verify(Some(&a), false).await.unwrap();
+    assert!(report.problems.is_empty(), "{:?}", report.problems);
+
+    w.meta
+        .tamper(&w.repo, &a, RevisionId(4), |r| r.deleted = false);
+    let report = w.svc.verify(Some(&a), false).await.unwrap();
+    assert_eq!(report.problems[0].kind, BreakKind::Version);
+    w.meta.tamper(&w.repo, &a, RevisionId(4), |r| {
+        r.deleted = true;
+        r.hash_version = 2;
+    });
+    let report = w.svc.verify(Some(&a), false).await.unwrap();
+    assert_eq!(report.problems[0].kind, BreakKind::Version);
+    w.meta.tamper(&w.repo, &a, RevisionId(4), |r| {
+        r.hash_version = 3;
+        r.content = removed[0].content;
+        r.message = "other".into();
+    });
+    let report = w.svc.verify(Some(&a), false).await.unwrap();
+    assert_eq!(report.problems[0].kind, BreakKind::Hash);
 }
 
 #[test]
@@ -372,6 +474,7 @@ fn v1_revision() -> pyn_core::Revision {
         restored_from: None,
         mode: None,
         file_mode: pyn_core::FileMode::Regular,
+        deleted: false,
         changeset: None,
         commit: empty_blob,
         hash: RevisionHash::new("9c4caa53e94d5fa8fb261cb765f73725506641df99e225605e83f179ae0d9b52"),

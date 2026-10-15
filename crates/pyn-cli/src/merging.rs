@@ -883,6 +883,9 @@ pub fn finish(
     }
     let mut resolutions = Vec::new();
     for (path, staged) in &index.entries {
+        if staged.deleted {
+            bail!("{path} is staged as deleted; a merge cannot be concluded by deleting a file");
+        }
         let file = staging::content_path(ws, &staged.hash);
         let sent = if staged.file_mode == api::FileMode::Symlink {
             backend.upload_bytes(std::fs::read(&file)?)?

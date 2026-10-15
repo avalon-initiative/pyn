@@ -507,6 +507,31 @@ pub async fn an_exclusive_path_takes_the_later_revision_without_a_lock(store: St
     verified(&h).await;
 }
 
+pub async fn a_revision_after_a_merge_is_based_on_the_pointer_the_merge_left(store: Store) {
+    let h = harness(store);
+    let map = path("Content/a.umap");
+    h.svc.checkout(&map, &user("alice"), None).await.unwrap();
+    put_on(&h, "main", "alice", &map, "v1", None).await;
+    branch_at(&h, "feature", "main").await;
+    h.svc
+        .checkout_on("feature", &map, &user("bob"), Some(RevisionId(1)))
+        .await
+        .unwrap();
+    let r2 = put_on(&h, "feature", "bob", &map, "v2", Some(1)).await;
+    h.svc
+        .merge(&who("alice"), request("feature", "main"))
+        .await
+        .unwrap();
+
+    h.svc
+        .checkout(&map, &user("alice"), Some(r2.id))
+        .await
+        .unwrap();
+    let r3 = put_on(&h, "main", "alice", &map, "v3", Some(2)).await;
+    assert_eq!(r3.base, Some(r2.id));
+    verified(&h).await;
+}
+
 async fn diverged_setup(h: &Harness) -> (crate::RepoPath, crate::Revision, crate::Revision) {
     let map = path("Content/a.umap");
     h.svc.checkout(&map, &user("alice"), None).await.unwrap();
