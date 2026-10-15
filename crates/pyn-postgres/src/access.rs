@@ -1797,14 +1797,14 @@ impl RateLimitStore for PgMetadataStore {
     async fn hit(&self, key: &str, window: Duration, now: DateTime<Utc>) -> Result<RateState> {
         let row = sqlx::query(
             "INSERT INTO rate_limits (key, count, resets_at)
-             VALUES ($1, 1, $2::timestamptz + make_interval(secs => $3))
+             VALUES ($1, 1, COALESCE($2::timestamptz, now()) + make_interval(secs => $3))
              ON CONFLICT (key) DO UPDATE SET
-                count = CASE WHEN rate_limits.resets_at <= $2 THEN 1 ELSE rate_limits.count + 1 END,
-                resets_at = CASE WHEN rate_limits.resets_at <= $2 THEN EXCLUDED.resets_at ELSE rate_limits.resets_at END
+                count = CASE WHEN rate_limits.resets_at <= COALESCE($2::timestamptz, now()) THEN 1 ELSE rate_limits.count + 1 END,
+                resets_at = CASE WHEN rate_limits.resets_at <= COALESCE($2::timestamptz, now()) THEN EXCLUDED.resets_at ELSE rate_limits.resets_at END
              RETURNING count, resets_at",
         )
         .bind(key)
-        .bind(now)
+        .bind(self.bound_now(now))
         .bind(window.num_seconds() as f64)
         .fetch_one(&self.pool)
         .await
@@ -1817,10 +1817,10 @@ impl RateLimitStore for PgMetadataStore {
 
     async fn state(&self, key: &str, now: DateTime<Utc>) -> Result<Option<RateState>> {
         let row = sqlx::query(
-            "SELECT count, resets_at FROM rate_limits WHERE key = $1 AND resets_at > $2",
+            "SELECT count, resets_at FROM rate_limits WHERE key = $1 AND resets_at > COALESCE($2, now())",
         )
         .bind(key)
-        .bind(now)
+        .bind(self.bound_now(now))
         .fetch_optional(&self.pool)
         .await
         .map_err(db)?;
@@ -1840,8 +1840,8 @@ impl RateLimitStore for PgMetadataStore {
     }
 
     async fn sweep(&self, now: DateTime<Utc>) -> Result<()> {
-        sqlx::query("DELETE FROM rate_limits WHERE resets_at <= $1")
-            .bind(now)
+        sqlx::query("DELETE FROM rate_limits WHERE resets_at <= COALESCE($1, now())")
+            .bind(self.bound_now(now))
             .execute(&self.pool)
             .await
             .map_err(db)?;

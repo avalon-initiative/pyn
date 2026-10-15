@@ -227,6 +227,7 @@ impl RepoService {
                         path: RepoPath::new(path)?,
                         mode: e.mode,
                         id: e.id,
+                        removed: false,
                     });
                 }
             }
@@ -287,6 +288,7 @@ impl RepoService {
                 created_at: record.created_at,
                 restored_from: None,
                 mode,
+                deleted: false,
                 size,
                 changeset: None,
             });

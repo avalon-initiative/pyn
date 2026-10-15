@@ -7,7 +7,7 @@ LOG_DIR := $(RUN_DIR)/logs
 PID_FILE := $(PID_DIR)/pyn.pid
 LOG_FILE := $(LOG_DIR)/pyn.log
 
-.PHONY: dev demo docs-check boundary-check openapi help build run start stop restart status test test-live fmt fmt-check lint check clean
+.PHONY: dev demo docs-check boundary-check openapi help build run start stop restart status test test-live e2e fmt fmt-check lint check clean
 
 help:
 	@echo "pyn — local dev commands"
@@ -22,6 +22,7 @@ help:
 	@echo "  make status        report whether the background process is running"
 	@echo "  make test          run the test suite"
 	@echo "  make test-live     also run tests gated on real infra (Postgres)"
+	@echo "  make e2e           end-to-end suite: real pyn and pyn-server binaries on temporary repositories"
 	@echo "  make fmt           auto-format"
 	@echo "  make fmt-check     format check, no writes"
 	@echo "  make lint          clippy + docs link check + public-boundary check"
@@ -71,6 +72,9 @@ test:
 
 test-live:
 	cargo test --workspace -- --ignored
+
+e2e:
+	cargo test -p pyn-cli --test e2e
 
 fmt:
 	cargo fmt --all

@@ -143,7 +143,8 @@ pub struct Revision {
     pub author: UserId,
     /// The structured author the v2 hash covers; `None` for a v1 revision.
     pub person: Option<Person>,
-    /// The encoding `hash` uses (`pyn_hash::REVISION_V1` or `REVISION_V2`); it must agree with `person`.
+    /// The encoding `hash` uses (`pyn_hash::REVISION_V1`, `REVISION_V2` or `REVISION_V3`); it must agree with
+    /// `person` and `deleted`.
     pub hash_version: u32,
     pub message: String,
     pub created_at: DateTime<Utc>,
@@ -153,6 +154,8 @@ pub struct Revision {
     pub mode: Option<Mode>,
     /// Git's file mode of the content: regular, executable or symlink.
     pub file_mode: FileMode,
+    /// The revision removes the path; `content` and `file_mode` are those of the version it removed.
+    pub deleted: bool,
     /// Shared by the revisions a changeset checked in together; `None` for a single-path checkin.
     pub changeset: Option<String>,
     /// The id of the commit this revision belongs to.
@@ -198,6 +201,8 @@ pub struct NewRevision {
     pub created_at: DateTime<Utc>,
     pub restored_from: Option<RevisionId>,
     pub mode: Mode,
+    /// Removes the path; `content` and `file_mode` are those of the version removed.
+    pub deleted: bool,
     /// Length of the content in bytes.
     pub size: u64,
     pub changeset: Option<String>,

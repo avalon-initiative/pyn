@@ -4,7 +4,8 @@ use std::collections::BTreeMap;
 
 use anyhow::Result;
 use pyn_hash::{
-    REVISION_V1, REVISION_V2, RevisionFields, RevisionV2Fields, revision_hash, revision_hash_v2,
+    REVISION_V1, REVISION_V2, REVISION_V3, RevisionFields, RevisionV2Fields, revision_hash,
+    revision_hash_v2, revision_hash_v3,
 };
 use pyn_object::{ObjectId, Signature};
 use pyn_proto as api;
@@ -100,8 +101,8 @@ fn served_revisions(api: &Api, path: Option<&str>) -> Result<Vec<api::Revision>>
 /// Whether the revision's `hash_version` disagrees with its stored fields.
 fn version_problem(r: &api::Revision) -> bool {
     !matches!(
-        (r.hash_version, &r.author_identity),
-        (REVISION_V1, None) | (REVISION_V2, Some(_))
+        (r.hash_version, &r.author_identity, r.deleted),
+        (REVISION_V1, None, false) | (REVISION_V2, Some(_), false) | (REVISION_V3, Some(_), true)
     )
 }
 
@@ -118,7 +119,7 @@ fn expected(r: &api::Revision) -> String {
         });
     };
     let algorithm = |hex: &str| ObjectId::parse(hex).map_or("unknown", |id| id.algorithm().name());
-    revision_hash_v2(&RevisionV2Fields {
+    let fields = RevisionV2Fields {
         path: &r.path,
         file_mode: r.file_mode.as_str(),
         blob_algorithm: algorithm(&r.content),
@@ -133,7 +134,12 @@ fn expected(r: &api::Revision) -> String {
         restored_from: r.restored_from,
         commit_algorithm: algorithm(&r.commit),
         commit_id: &r.commit,
-    })
+    };
+    if r.deleted {
+        revision_hash_v3(&fields)
+    } else {
+        revision_hash_v2(&fields)
+    }
 }
 
 fn served_commits(api: &Api) -> Result<Vec<api::Commit>> {

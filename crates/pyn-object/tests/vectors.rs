@@ -70,9 +70,12 @@ fn every_fixture_hashes_and_round_trips() {
             );
             let again = match row.kind {
                 Kind::Blob => row.body.clone(),
-                Kind::Tree => encode_tree(&parse_tree(algo, &row.body).unwrap()).unwrap(),
-                Kind::Commit => Commit::parse(algo, &row.body).unwrap().encode(),
-                Kind::Tag => Tag::parse(algo, &row.body).unwrap().encode(),
+                Kind::Tree => encode_tree(algo, &parse_tree(algo, &row.body).unwrap()).unwrap(),
+                Kind::Commit => Commit::parse(algo, &row.body)
+                    .unwrap()
+                    .encode(algo)
+                    .unwrap(),
+                Kind::Tag => Tag::parse(algo, &row.body).unwrap().encode(algo).unwrap(),
             };
             assert_eq!(again, row.body, "{name} round trip");
         }
@@ -154,7 +157,7 @@ fn trees_match_git() {
             entry(FileMode::Regular, b"foo-bar", id("blob_hello")),
             entry(FileMode::Tree, b"foo", id("tree_empty")),
         ];
-        assert_eq!(encode_tree(&mixed).unwrap(), rows["tree_mixed"].body);
+        assert_eq!(encode_tree(algo, &mixed).unwrap(), rows["tree_mixed"].body);
         let parsed = parse_tree(algo, &rows["tree_mixed"].body).unwrap();
         let names: Vec<&[u8]> = parsed.iter().map(|e| e.name.as_slice()).collect();
         // The directory `foo` sorts as `foo/`: after `foo.c`, before `foo0`.
@@ -168,8 +171,11 @@ fn trees_match_git() {
             entry(FileMode::Regular, b"\xff\xfe", id("blob_hello")),
             entry(FileMode::Regular, b"a", id("blob_binary")),
         ];
-        assert_eq!(encode_tree(&nonutf).unwrap(), rows["tree_nonutf8"].body);
-        assert_eq!(encode_tree(&[]).unwrap(), rows["tree_empty"].body);
+        assert_eq!(
+            encode_tree(algo, &nonutf).unwrap(),
+            rows["tree_nonutf8"].body
+        );
+        assert_eq!(encode_tree(algo, &[]).unwrap(), rows["tree_empty"].body);
         assert!(rows["tree_empty"].body.is_empty());
     }
     let empty = hash_object(Algorithm::Sha1, Kind::Tree, b"").unwrap();
@@ -256,7 +262,7 @@ fn commits_match_git() {
             ),
         ];
         for (name, c) in cases {
-            assert_eq!(c.encode(), rows[name].body, "{name}");
+            assert_eq!(c.encode(algo).unwrap(), rows[name].body, "{name}");
             assert_eq!(c.id(algo).unwrap(), rows[name].id, "{name}");
             assert_eq!(Commit::parse(algo, &rows[name].body).unwrap(), c, "{name}");
         }
@@ -281,7 +287,7 @@ fn signed_commit_with_encoding_round_trips() {
         let mut built = c.clone();
         built.extra_headers.truncate(1);
         built.extra_headers.push((b"gpgsig".to_vec(), sig.to_vec()));
-        assert_eq!(built.encode(), rows["commit_gpgsig"].body);
+        assert_eq!(built.encode(algo).unwrap(), rows["commit_gpgsig"].body);
     }
 }
 
@@ -312,7 +318,7 @@ fn tags_match_git() {
             ),
         ];
         for (name, t) in cases {
-            assert_eq!(t.encode(), rows[name].body, "{name}");
+            assert_eq!(t.encode(algo).unwrap(), rows[name].body, "{name}");
             assert_eq!(t.id(algo).unwrap(), rows[name].id, "{name}");
             assert_eq!(Tag::parse(algo, &rows[name].body).unwrap(), t, "{name}");
         }
@@ -327,14 +333,20 @@ fn tree_rejects_bad_input() {
     let id = ObjectId::from_bytes(Algorithm::Sha1, &[1; 20]).unwrap();
     let file = |n: &[u8]| entry(FileMode::Regular, n, id);
     for bad in [&b""[..], b".", b"..", b"a/b", b"a\0b"] {
-        assert_eq!(encode_tree(&[file(bad)]), Err(Error::InvalidName));
+        assert_eq!(
+            encode_tree(Algorithm::Sha1, &[file(bad)]),
+            Err(Error::InvalidName)
+        );
     }
     assert_eq!(
-        encode_tree(&[file(b"a"), file(b"a")]),
+        encode_tree(Algorithm::Sha1, &[file(b"a"), file(b"a")]),
         Err(Error::DuplicateName)
     );
     assert_eq!(
-        encode_tree(&[file(b"a"), entry(FileMode::Tree, b"a", id)]),
+        encode_tree(
+            Algorithm::Sha1,
+            &[file(b"a"), entry(FileMode::Tree, b"a", id)]
+        ),
         Err(Error::DuplicateName)
     );
 
@@ -409,11 +421,94 @@ fn signature_offsets_encode_both_signs() {
             alice(5, minutes),
             b"m",
         );
-        let body = String::from_utf8(c.encode()).unwrap();
+        let body = String::from_utf8(c.encode(Algorithm::Sha1).unwrap()).unwrap();
         assert!(body.contains(&format!("> 5 {text}\n")), "{text}");
         assert_eq!(Commit::parse(Algorithm::Sha1, body.as_bytes()).unwrap(), c);
         c.parents.clear();
     }
+}
+
+fn mismatched_ids() -> (ObjectId, ObjectId) {
+    let sha1 = ObjectId::from_bytes(Algorithm::Sha1, &[1; 20]).unwrap();
+    let sha256 = ObjectId::from_bytes(Algorithm::Sha256, &[1; 32]).unwrap();
+    (sha1, sha256)
+}
+
+fn mismatch(expected: Algorithm, actual: Algorithm) -> Error {
+    Error::AlgorithmMismatch { expected, actual }
+}
+
+#[test]
+fn tree_rejects_other_algorithm_id() {
+    let (sha1, sha256) = mismatched_ids();
+    let entries = [
+        entry(FileMode::Regular, b"a", sha256),
+        entry(FileMode::Regular, b"b", sha1),
+    ];
+    assert_eq!(
+        encode_tree(Algorithm::Sha256, &entries),
+        Err(mismatch(Algorithm::Sha256, Algorithm::Sha1))
+    );
+    assert_eq!(
+        encode_tree(Algorithm::Sha1, &entries),
+        Err(mismatch(Algorithm::Sha1, Algorithm::Sha256))
+    );
+}
+
+fn commit_with(tree: ObjectId, parents: Vec<ObjectId>) -> Commit {
+    Commit {
+        tree,
+        parents,
+        author: alice(1, 0),
+        committer: alice(1, 0),
+        extra_headers: vec![],
+        message: b"m\n".to_vec(),
+    }
+}
+
+#[test]
+fn commit_rejects_other_algorithm_id() {
+    let (sha1, sha256) = mismatched_ids();
+    let bad_tree = commit_with(sha1, vec![]);
+    assert_eq!(
+        bad_tree.encode(Algorithm::Sha256),
+        Err(mismatch(Algorithm::Sha256, Algorithm::Sha1))
+    );
+    assert_eq!(
+        bad_tree.id(Algorithm::Sha256),
+        Err(mismatch(Algorithm::Sha256, Algorithm::Sha1))
+    );
+    let bad_parent = commit_with(sha256, vec![sha256, sha1]);
+    assert_eq!(
+        bad_parent.encode(Algorithm::Sha256),
+        Err(mismatch(Algorithm::Sha256, Algorithm::Sha1))
+    );
+    assert!(
+        commit_with(sha256, vec![sha256])
+            .encode(Algorithm::Sha256)
+            .is_ok()
+    );
+}
+
+#[test]
+fn tag_rejects_other_algorithm_id() {
+    let (sha1, sha256) = mismatched_ids();
+    let tag = |object| Tag {
+        object,
+        kind: Kind::Commit,
+        name: b"v1".to_vec(),
+        tagger: None,
+        message: b"m\n".to_vec(),
+    };
+    assert_eq!(
+        tag(sha1).encode(Algorithm::Sha256),
+        Err(mismatch(Algorithm::Sha256, Algorithm::Sha1))
+    );
+    assert_eq!(
+        tag(sha1).id(Algorithm::Sha256),
+        Err(mismatch(Algorithm::Sha256, Algorithm::Sha1))
+    );
+    assert!(tag(sha256).encode(Algorithm::Sha256).is_ok());
 }
 
 const TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";

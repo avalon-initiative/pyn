@@ -22,11 +22,14 @@ fn signature() -> Signature {
 fn write_history(repo: &Repository) -> (ObjectId, ObjectId, ObjectId) {
     let db = repo.objects().unwrap();
     let blob = db.write(Kind::Blob, b"hello\n").unwrap();
-    let tree_bytes = encode_tree(&[TreeEntry {
-        mode: FileMode::Regular,
-        name: b"hello.txt".to_vec(),
-        id: blob,
-    }])
+    let tree_bytes = encode_tree(
+        repo.algorithm(),
+        &[TreeEntry {
+            mode: FileMode::Regular,
+            name: b"hello.txt".to_vec(),
+            id: blob,
+        }],
+    )
     .unwrap();
     let tree = db.write(Kind::Tree, &tree_bytes).unwrap();
     let commit = Commit {
@@ -37,7 +40,9 @@ fn write_history(repo: &Repository) -> (ObjectId, ObjectId, ObjectId) {
         extra_headers: vec![],
         message: b"initial\n".to_vec(),
     };
-    let commit_id = db.write(Kind::Commit, &commit.encode()).unwrap();
+    let commit_id = db
+        .write(Kind::Commit, &commit.encode(repo.algorithm()).unwrap())
+        .unwrap();
     repo.refs().update("refs/heads/main", &commit_id).unwrap();
     (blob, tree, commit_id)
 }

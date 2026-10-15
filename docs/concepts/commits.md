@@ -65,6 +65,10 @@ enough to fetch every file. Every revision in the API carries the `commit` it be
 made since the commit record landed, the structured `author_identity` its hash covers. A checkin or changeset entry takes an
 optional `file_mode` (`100644` by default, `100755` or `120000`; a symbolic link's content is its target path). Reading is allowed to whoever may read the repository.
 
+A changeset can also carry `deletions` (`path` and `base_revision`, the revision being removed; see [deleting a path](README.md#deleting-a-path)). A deletion is a revision with `deleted: true`
+and `hash_version` 3 in the commit that removes the path from the commit's tree (a folder left empty goes with it, git having no empty folders), and its `content` and `file_mode` are those of the version removed. Snapshots,
+files and trees leave deleted paths out; history and the commit's `revisions` list them. The response lists the entries' revisions in request order, then the deletions'.
+
 ## Pushed commits (provisional)
 
 Decision #300 lets a client build commits itself and publish them. The core accepts them through `RepoService::push_commits` and

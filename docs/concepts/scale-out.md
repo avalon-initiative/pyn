@@ -18,6 +18,7 @@ page records the current state. Provisional: it reflects the code at the time of
 | Migrations | Startup | sqlx takes an advisory lock, so concurrent starts serialise. |
 | Repository policy cache | Per process | Revalidated against the head of `.pyn/pyn.toml` on each lookup (#181). |
 | Setup settings | Per process | Re-read from the database every minute (#182). |
+| Lease and rate-limit clock | Database `now()` | With Postgres, expiry is judged by the database clock, so skewed copies agree; the in-memory stores use the process clock. Other expiries (sessions, invites, tokens) still use the process clock, so keep the copies in sync (NTP). |
 | Password hashing limit | Per process | Holds no correctness state. |
 
 ## Not safe yet
@@ -26,4 +27,3 @@ page records the current state. Provisional: it reflects the code at the time of
 | --- | --- | --- |
 | Setup token | One generated token per process unless `PYN_SETUP_TOKEN` is shared; any one completes setup. Documented in [access](access.md). | #182 |
 | Object store and in-memory stores | Single-process or not durable. Setting `PYN_INSTANCES` above 1 makes the server refuse to start without `PYN_DATABASE_URL` and `PYN_DATA_DIR`, which must be shared storage. | #183 |
-| Clock use | Lease expiry and rate-limit windows use each process's clock, so keep the copies' clocks in sync (NTP). Using database time is not done yet. | #187 |
