@@ -344,8 +344,8 @@ fn clone_inside_a_git_repository_is_its_own_pyn_workspace() {
     let server = Server::with_game();
     server.seed("Source/a.cpp", "int a;");
     let repo = git_repo(&server, "outer");
-    let git_before = snapshot(&repo.join(".git"));
     let status = git(&repo, &["status", "--porcelain"]);
+    let git_before = snapshot(&repo.join(".git"));
 
     let ws = repo.join("vendor/game");
     server.ok(
