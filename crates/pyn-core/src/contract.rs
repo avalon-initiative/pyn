@@ -41,6 +41,8 @@ mod branch_policy;
 pub use branch_policy::*;
 mod push;
 pub use push::*;
+mod deletion;
+pub use deletion::*;
 
 struct Harness {
     store: Store,
@@ -3172,6 +3174,15 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_push_refuses_what_it_cannot_record);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_push_is_checked_against_its_hashes_trees_and_objects);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; an_unlisted_path_is_exclusive_in_a_push);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_deletion_is_a_revision_that_leaves_the_branch_without_the_path);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; deleting_an_exclusive_path_needs_the_callers_live_lock_and_consumes_it);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_deleted_exclusive_path_comes_back_by_restoring_an_earlier_revision);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_deleted_shared_path_can_be_added_again);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_path_that_is_not_there_cannot_be_deleted);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_deletion_is_judged_against_the_branchs_revision);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_changeset_mixes_writes_and_deletions_atomically);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_deletion_on_a_branch_leaves_the_other_branches_alone);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_changeset_refuses_a_path_written_and_deleted_or_a_policy_deletion);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_push_needs_the_checkin_permission_and_an_existing_branch);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_push_past_the_storage_cap_applies_nothing);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; racing_pushes_to_one_branch_have_exactly_one_winner);

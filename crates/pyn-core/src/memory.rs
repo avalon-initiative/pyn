@@ -659,6 +659,7 @@ impl MetadataStore for MemoryMetadataStore {
                 path: r.path.clone(),
                 mode: r.file_mode,
                 id: r.content,
+                removed: false,
             })
             .chain(merge.items.iter().map(|i| i.revision.tree_change()))
             .collect();
@@ -906,6 +907,7 @@ impl MetadataStore for MemoryMetadataStore {
             .pointers_at(repo, commit)
             .into_iter()
             .filter_map(|(path, id)| st.revision(repo, &path, id))
+            .filter(|r| !r.deleted)
             .collect())
     }
 

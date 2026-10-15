@@ -73,6 +73,13 @@ pub struct ChangeEntry {
     pub base: Option<RevisionId>,
 }
 
+/// One path a changeset removes: the revision of it the caller saw.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Deletion {
+    pub path: RepoPath,
+    pub base: Option<RevisionId>,
+}
+
 /// One path of a snapshot: the revision the commit points at, with the mode `.pyn/pyn.toml` gave it at that commit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SnapshotEntry {
@@ -459,10 +466,19 @@ impl RepoService {
             if diverged.is_empty() {
                 continue;
             }
-            let current = self.meta.revision_at(&self.repo, &tip, path).await?;
+            let current = self
+                .meta
+                .revision_at(&self.repo, &tip, path)
+                .await?
+                .filter(|r| !r.deleted);
             for branch in &branches {
                 let Some(head) = branch.head else { continue };
-                let Some(held) = self.meta.revision_at(&self.repo, &head, path).await? else {
+                let Some(held) = self
+                    .meta
+                    .revision_at(&self.repo, &head, path)
+                    .await?
+                    .filter(|r| !r.deleted)
+                else {
                     continue;
                 };
                 let same = current
@@ -514,6 +530,7 @@ impl RepoService {
                 created_at: self.clock.now(),
                 restored_from: None,
                 mode: new.mode_for(path),
+                deleted: false,
                 size,
                 changeset: None,
             };
@@ -596,7 +613,8 @@ impl RepoService {
         {
             return Err(PynError::NotExclusive(path.clone()));
         }
-        let head = self.revision_on(branch, path).await?.map(|r| r.id);
+        let head = self.pointer_on(branch, path).await?.map(|r| r.id);
+        let base = self.effective_base(branch, path, base).await?;
         if head != base {
             return Err(PynError::StaleBase {
                 path: path.clone(),
@@ -700,6 +718,7 @@ impl RepoService {
         let on_default = branch == DEFAULT_BRANCH;
         let bootstrap = policy && on_default && base.is_none();
         self.head(path).await?;
+        let base = self.effective_base(branch, path, base).await?;
         let mode = match &parsed {
             Some(new) if bootstrap => new.mode_for(path),
             _ => self.rules_on(branch).await?.mode_for(path),
@@ -722,6 +741,7 @@ impl RepoService {
             created_at: now,
             restored_from,
             mode,
+            deleted: false,
             size,
             changeset: None,
         };
@@ -855,22 +875,39 @@ impl RepoService {
         entries: Vec<ChangeEntry>,
         message: String,
     ) -> Result<Vec<Revision>> {
-        if entries.is_empty() {
+        self.checkin_changes_on(branch, who, entries, Vec::new(), message)
+            .await
+    }
+
+    /// Like `checkin_changeset_on`, with paths to remove. A removed path keeps its history as a deletion revision; an
+    /// exclusive one needs the caller's lock, consumed like a checkin's. Revisions come back entries first.
+    pub async fn checkin_changes_on(
+        &self,
+        branch: &str,
+        who: &Principal,
+        entries: Vec<ChangeEntry>,
+        deletions: Vec<Deletion>,
+        message: String,
+    ) -> Result<Vec<Revision>> {
+        if entries.is_empty() && deletions.is_empty() {
             return Err(PynError::InvalidRequest(
                 "a changeset needs at least one path".into(),
             ));
         }
         let mut seen = std::collections::BTreeSet::new();
-        for e in &entries {
-            if e.path.as_str() == POLICY_PATH {
+        let named = entries
+            .iter()
+            .map(|e| &e.path)
+            .chain(deletions.iter().map(|d| &d.path));
+        for p in named {
+            if p.as_str() == POLICY_PATH {
                 return Err(PynError::InvalidRequest(format!(
                     "{POLICY_PATH} cannot be part of a changeset"
                 )));
             }
-            if !seen.insert(&e.path) {
+            if !seen.insert(p) {
                 return Err(PynError::InvalidRequest(format!(
-                    "{} appears twice in the changeset",
-                    e.path
+                    "{p} appears twice in the changeset"
                 )));
             }
         }
@@ -882,7 +919,7 @@ impl RepoService {
         let changeset = changeset_id()?;
         let cap = self.storage_cap().await?;
         let rules = self.rules_on(branch).await?;
-        let mut items = Vec::with_capacity(entries.len());
+        let mut items = Vec::with_capacity(entries.len() + deletions.len());
         for e in entries {
             let size = self
                 .objects
@@ -890,6 +927,7 @@ impl RepoService {
                 .await?
                 .ok_or_else(|| PynError::ObjectMissing(e.content.to_string()))?;
             let mode = rules.mode_for(&e.path);
+            let base = self.effective_base(branch, &e.path, e.base).await?;
             items.push(ChangesetItem {
                 revision: NewRevision {
                     path: e.path,
@@ -901,10 +939,49 @@ impl RepoService {
                     created_at: now,
                     restored_from: None,
                     mode,
+                    deleted: false,
                     size,
                     changeset: Some(changeset.clone()),
                 },
-                expected_head: e.base,
+                expected_head: base,
+                lock_holder: (mode == Mode::Exclusive).then(|| who.user.clone()),
+            });
+        }
+        for d in deletions {
+            let current = self
+                .pointer_on(branch, &d.path)
+                .await?
+                .filter(|r| !r.deleted)
+                .ok_or_else(|| PynError::PathNotFound(d.path.to_string()))?;
+            if d.base != Some(current.id) {
+                return Err(PynError::StaleBase {
+                    path: d.path,
+                    expected: d.base,
+                    actual: Some(current.id),
+                });
+            }
+            let size = self
+                .objects
+                .size(&current.content)
+                .await?
+                .ok_or_else(|| PynError::ObjectMissing(current.content.to_string()))?;
+            let mode = rules.mode_for(&d.path);
+            items.push(ChangesetItem {
+                revision: NewRevision {
+                    path: d.path,
+                    content: current.content,
+                    file_mode: current.file_mode,
+                    author: who.user.clone(),
+                    person: who.person(),
+                    message: message.clone(),
+                    created_at: now,
+                    restored_from: None,
+                    mode,
+                    deleted: true,
+                    size,
+                    changeset: Some(changeset.clone()),
+                },
+                expected_head: Some(current.id),
                 lock_holder: (mode == Mode::Exclusive).then(|| who.user.clone()),
             });
         }
@@ -913,9 +990,14 @@ impl RepoService {
             .commit_changeset_on(&self.repo, branch, items, now, cap)
             .await?;
         for rev in &revs {
+            let action = if rev.deleted {
+                AuditAction::Delete
+            } else {
+                AuditAction::Checkin
+            };
             self.record(
                 &who.user,
-                AuditAction::Checkin,
+                action,
                 &rev.path,
                 format!("r{}: {} (changeset {changeset})", rev.id, rev.message),
             )
@@ -994,6 +1076,11 @@ impl RepoService {
                 path: path.clone(),
                 revision: source.to_string(),
             })?;
+        if old.deleted {
+            return Err(PynError::InvalidRequest(format!(
+                "r{source} deleted {path}; there is no content to restore"
+            )));
+        }
         if source == base {
             return Err(PynError::InvalidRequest(format!(
                 "r{source} is already the head"
@@ -1234,10 +1321,12 @@ impl RepoService {
             Some(id) => self.meta.get_revision(&self.repo, path, id).await?,
             None => self.revision_on(branch, path).await?,
         };
-        found.ok_or_else(|| PynError::RevisionNotFound {
-            path: path.clone(),
-            revision: revision.map_or("(head)".to_string(), |r| r.to_string()),
-        })
+        found
+            .filter(|r| !r.deleted)
+            .ok_or_else(|| PynError::RevisionNotFound {
+                path: path.clone(),
+                revision: revision.map_or("(head)".to_string(), |r| r.to_string()),
+            })
     }
 
     /// Like `read`, but streams the content, or the byte `range` of it.
@@ -1269,14 +1358,36 @@ impl RepoService {
         Ok((rev, read))
     }
 
-    /// The path's revision at the head of `branch`, checked against its hash.
+    /// The path's revision at the head of `branch`, checked against its hash; `None` once it is deleted there.
     pub async fn revision_on(&self, branch: &str, path: &RepoPath) -> Result<Option<Revision>> {
+        Ok(self.pointer_on(branch, path).await?.filter(|r| !r.deleted))
+    }
+
+    /// The branch's pointer for the path, a deletion revision included.
+    async fn pointer_on(&self, branch: &str, path: &RepoPath) -> Result<Option<Revision>> {
         let Some(tip) = self.head_of(branch).await? else {
             return Ok(None);
         };
         let rev = self.meta.revision_at(&self.repo, &tip, path).await?;
         rev.iter().try_for_each(Revision::verify)?;
         Ok(rev)
+    }
+
+    /// A caller that sees no file has no base, but the branch's pointer is the deletion that removed it: that is its base.
+    async fn effective_base(
+        &self,
+        branch: &str,
+        path: &RepoPath,
+        base: Option<RevisionId>,
+    ) -> Result<Option<RevisionId>> {
+        if base.is_some() {
+            return Ok(base);
+        }
+        Ok(self
+            .pointer_on(branch, path)
+            .await?
+            .filter(|r| r.deleted)
+            .map(|r| r.id))
     }
 
     /// Every path's revision at the head of `branch`, ordered by path.
@@ -1433,6 +1544,7 @@ impl RepoService {
                     path: r.path.clone(),
                     mode: r.file_mode,
                     id: r.content,
+                    removed: false,
                 })
                 .collect();
             if tree_of(files)?.root != head.tree {

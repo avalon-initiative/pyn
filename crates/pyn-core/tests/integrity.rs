@@ -335,9 +335,50 @@ async fn a_flipped_hash_version_is_a_version_problem_not_a_silent_reencode() {
     );
 
     w.meta
-        .tamper(&w.repo, &a, RevisionId(2), |r| r.hash_version = 3);
+        .tamper(&w.repo, &a, RevisionId(2), |r| r.hash_version = 4);
     let err = w.svc.read(&a, Some(RevisionId(2))).await.unwrap_err();
-    assert!(err.to_string().contains("unknown version 3"), "{err}");
+    assert!(err.to_string().contains("unknown version 4"), "{err}");
+}
+
+#[tokio::test]
+async fn a_deletion_revision_is_v3_and_its_flag_cannot_be_flipped() {
+    let w = world();
+    let a = three_revisions(&w).await;
+    let removed = w
+        .svc
+        .checkin_changes_on(
+            "main",
+            &alice(),
+            Vec::new(),
+            vec![pyn_core::Deletion {
+                path: a.clone(),
+                base: Some(RevisionId(3)),
+            }],
+            "remove".into(),
+        )
+        .await
+        .unwrap();
+    assert_eq!((removed[0].hash_version, removed[0].deleted), (3, true));
+    let report = w.svc.verify(Some(&a), false).await.unwrap();
+    assert!(report.problems.is_empty(), "{:?}", report.problems);
+
+    w.meta
+        .tamper(&w.repo, &a, RevisionId(4), |r| r.deleted = false);
+    let report = w.svc.verify(Some(&a), false).await.unwrap();
+    assert_eq!(report.problems[0].kind, BreakKind::Version);
+    w.meta.tamper(&w.repo, &a, RevisionId(4), |r| {
+        r.deleted = true;
+        r.hash_version = 2;
+    });
+    let report = w.svc.verify(Some(&a), false).await.unwrap();
+    assert_eq!(report.problems[0].kind, BreakKind::Version);
+    w.meta.tamper(&w.repo, &a, RevisionId(4), |r| {
+        r.hash_version = 3;
+        r.content = removed[0].content;
+        r.message = "other".into();
+    });
+    let report = w.svc.verify(Some(&a), false).await.unwrap();
+    assert_eq!(report.problems[0].kind, BreakKind::Hash);
 }
 
 #[test]
@@ -372,6 +413,7 @@ fn v1_revision() -> pyn_core::Revision {
         restored_from: None,
         mode: None,
         file_mode: pyn_core::FileMode::Regular,
+        deleted: false,
         changeset: None,
         commit: empty_blob,
         hash: RevisionHash::new("9c4caa53e94d5fa8fb261cb765f73725506641df99e225605e83f179ae0d9b52"),

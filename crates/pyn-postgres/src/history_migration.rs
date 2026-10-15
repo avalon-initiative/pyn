@@ -59,6 +59,7 @@ impl PgMetadataStore {
                         path: RepoPath::new(path.clone())?,
                         mode: FileMode::Regular,
                         id: object_id(content, "revision content id")?,
+                        removed: false,
                     });
                 }
                 let mut edit = TreeEdit::new(parent.as_ref().map(|p| p.1), changes);

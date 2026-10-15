@@ -61,10 +61,11 @@ pub enum AuditAction {
     BranchRenamed,
     BranchMerged,
     VersionStranded,
+    Delete,
 }
 
 impl AuditAction {
-    pub const ALL: [AuditAction; 49] = [
+    pub const ALL: [AuditAction; 50] = [
         AuditAction::Checkout,
         AuditAction::Release,
         AuditAction::Checkin,
@@ -114,6 +115,7 @@ impl AuditAction {
         AuditAction::BranchRenamed,
         AuditAction::BranchMerged,
         AuditAction::VersionStranded,
+        AuditAction::Delete,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -167,6 +169,7 @@ impl AuditAction {
             Self::BranchRenamed => "branch_renamed",
             Self::BranchMerged => "branch_merged",
             Self::VersionStranded => "version_stranded",
+            Self::Delete => "delete",
         }
     }
 }

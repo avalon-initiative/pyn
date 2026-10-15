@@ -79,6 +79,10 @@ pub struct Revision {
     pub changeset: Option<String>,
     /// The git file mode of the content.
     pub file_mode: FileMode,
+    /// The revision removes the path from its branch; `content` and `file_mode` are those of the version removed.
+    /// Its `hash_version` is 3.
+    #[serde(default)]
+    pub deleted: bool,
     /// The id of the commit this revision belongs to; see `Commit`.
     pub commit: String,
     /// SHA-256 hex over the revision's canonical encoding, by `hash_version` (docs/concepts/integrity.md).
@@ -414,10 +418,22 @@ pub struct ChangesetEntry {
     pub base_revision: Option<u64>,
 }
 
-/// Paths checked in together: every base and lock check passes or nothing is written.
+/// One path a changeset removes. The path stays in history as a deletion revision (`Revision.deleted`).
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ChangesetDeletion {
+    pub path: String,
+    /// The path's revision on the branch: the one being removed.
+    pub base_revision: Option<u64>,
+}
+
+/// Paths checked in and removed together: every base and lock check passes or nothing is written. An exclusive path,
+/// written or removed, needs the caller's live lock, which the commit consumes.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ChangesetRequest {
     pub entries: Vec<ChangesetEntry>,
+    /// Paths to remove; a changeset needs at least one entry or deletion.
+    #[serde(default)]
+    pub deletions: Vec<ChangesetDeletion>,
     pub message: String,
     /// The branch the commit is made on; the default branch if omitted.
     pub branch: Option<String>,
@@ -426,7 +442,7 @@ pub struct ChangesetRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ChangesetResponse {
     pub changeset: String,
-    /// One revision per requested path, in request order.
+    /// One revision per requested path: the entries in request order, then the deletions.
     pub revisions: Vec<Revision>,
 }
 

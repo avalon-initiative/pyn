@@ -10,9 +10,9 @@ use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router};
 use pyn_core::repositories::OpenRepo;
 use pyn_core::{
-    AccessService, AuditAction, AuditQuery, AuthProvider, ChangeEntry, HistoryCursor, Identity,
-    Keying, ObjectStore, PathFilter, Permission, Principal, PynError, RepoPath, Repositories,
-    RevisionId,
+    AccessService, AuditAction, AuditQuery, AuthProvider, ChangeEntry, Deletion, HistoryCursor,
+    Identity, Keying, ObjectStore, PathFilter, Permission, Principal, PynError, RepoPath,
+    Repositories, RevisionId,
 };
 use pyn_proto as api;
 use serde::Deserialize;
@@ -217,6 +217,7 @@ struct RepoAddress {
         api::AuditPage,
         api::CheckinRequest,
         api::ChangesetEntry,
+        api::ChangesetDeletion,
         api::ChangesetRequest,
         api::ChangesetResponse,
         api::PutObjectResponse,
@@ -749,6 +750,7 @@ fn revision_dto(r: pyn_core::Revision) -> api::Revision {
         restored_from: r.restored_from.map(|r| r.0),
         mode: r.mode.map(mode_dto),
         file_mode: file_mode_dto(r.file_mode),
+        deleted: r.deleted,
         changeset: r.changeset,
         commit: r.commit.to_hex(),
         hash: r.hash.to_string(),
@@ -931,10 +933,10 @@ async fn checkin(
 #[utoipa::path(post, path = "/v1/repos/{owner}/{name}/changesets", params(RepoAddress), request_body = api::ChangesetRequest, responses(
     (status = 200, body = api::ChangesetResponse),
     (status = 409, body = api::ErrorBody, description = "lock_required, lock_held or stale_base; nothing was checked in"),
-    (status = 400, body = api::ErrorBody, description = "object_missing, invalid_path, or invalid_request for an empty or repeated path or .pyn/pyn.toml"),
-    (status = 404, body = api::ErrorBody, description = "branch_not_found"),
+    (status = 400, body = api::ErrorBody, description = "object_missing, invalid_path, or invalid_request for an empty changeset, a repeated path or .pyn/pyn.toml"),
+    (status = 404, body = api::ErrorBody, description = "branch_not_found, or path_not_found for a deletion of a path the branch does not have"),
 ))]
-/// Check several paths in atomically as one commit with one message.
+/// Check several paths in and remove others atomically as one commit with one message.
 async fn changeset(
     State(s): State<AppState>,
     headers: HeaderMap,
@@ -955,9 +957,25 @@ async fn changeset(
             })
         })
         .collect::<Result<Vec<_>, PynError>>()?;
+    let deletions = req
+        .deletions
+        .into_iter()
+        .map(|d| {
+            Ok(Deletion {
+                path: RepoPath::new(d.path)?,
+                base: d.base_revision.map(RevisionId),
+            })
+        })
+        .collect::<Result<Vec<_>, PynError>>()?;
     let revs = repo
         .service
-        .checkin_changeset_on(branch_of(req.branch.as_deref()), &who, entries, req.message)
+        .checkin_changes_on(
+            branch_of(req.branch.as_deref()),
+            &who,
+            entries,
+            deletions,
+            req.message,
+        )
         .await?;
     let changeset = revs
         .first()
@@ -1715,7 +1733,7 @@ struct AuditQueryParams {
 #[utoipa::path(get, path = "/v1/repos/{owner}/{name}/audit", operation_id = "repo_audit",
     params(RepoAddress, ("path" = Option<String>, Query, description = "only events for this path"),
            ("actor" = Option<String>, Query, description = "only events by this user"),
-           ("action" = Option<String>, Query, description = "checkout, release, checkin, restore, force_unlock, member_added, role_changed, role_permissions_changed, team_access_set, team_access_removed, token_created, token_revoked, repo_created, repo_updated, repo_deleted, invite_created, invite_revoked, policy_changed, mode_converted or version_stranded"),
+           ("action" = Option<String>, Query, description = "checkout, release, checkin, delete, restore, force_unlock, member_added, role_changed, role_permissions_changed, team_access_set, team_access_removed, token_created, token_revoked, repo_created, repo_updated, repo_deleted, invite_created, invite_revoked, policy_changed, mode_converted or version_stranded"),
            ("before" = Option<i64>, Query, description = "events older than this id"),
            ("limit" = Option<usize>, Query, description = "page size, default 50, max 500")),
     responses((status = 200, body = api::AuditPage), (status = 403, body = api::ErrorBody, description = "needs view_audit")))]

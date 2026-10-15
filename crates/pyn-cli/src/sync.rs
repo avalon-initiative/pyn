@@ -66,6 +66,18 @@ pub fn entries_at(backend: &dyn Backend, commit: Option<&str>) -> Result<Vec<api
             None => entry.revision = None,
         }
     }
+    let listed: BTreeSet<String> = entries.iter().map(|e| e.path.clone()).collect();
+    entries.extend(
+        snap.values()
+            .filter(|s| !listed.contains(&s.path))
+            .map(|s| api::FileEntry {
+                path: s.path.clone(),
+                mode: s.mode,
+                revision: Some(s.revision),
+                file_mode: s.file_mode,
+                lock: None,
+            }),
+    );
     Ok(entries)
 }
 
@@ -153,8 +165,12 @@ pub fn status(backend: &dyn Backend, ws: &Workspace, commit: Option<&str>) -> Re
         let on_disk = localfile::exists(&ws.abs(path));
         let mut notes: Vec<String> = Vec::new();
         let staged_entry = index.entries.get(path);
-        let stage =
-            staged_entry.map_or("-", |_| if known.is_some() { "modified" } else { "added" });
+        let stage = match staged_entry {
+            None => "-",
+            Some(s) if s.deleted => "deleted",
+            Some(_) if known.is_some() => "modified",
+            Some(_) => "added",
+        };
         staged += usize::from(staged_entry.is_some());
         let dirty = |file_mode, bytes: &[u8]| match (staged_entry, known) {
             (Some(s), _) => s.differs(file_mode, bytes),
@@ -189,6 +205,7 @@ pub fn status(backend: &dyn Backend, ws: &Workspace, commit: Option<&str>) -> Re
                     _ => {}
                 }
             }
+            (Some(_), false) if staged_entry.is_some_and(|s| s.deleted) => {}
             (Some(_), false) => {
                 notes.push("deleted locally".into());
                 modified += 1;
@@ -294,7 +311,34 @@ pub fn update(
     let mut state = ws.load_state()?;
     let index = staging::Index::load(ws)?;
     let (mut updated, mut removed, mut skipped) = (0, 0, Vec::new());
-    for entry in entries_at(backend, commit)? {
+    let entries = entries_at(backend, commit)?;
+    if commit.is_none() {
+        let listed: BTreeSet<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+        let gone: Vec<String> = state
+            .keys()
+            .filter(|p| !listed.contains(p.as_str()))
+            .filter(|p| only.is_empty() || only.contains(p))
+            .cloned()
+            .collect();
+        for path in gone {
+            if index.entries.contains_key(&path) {
+                continue;
+            }
+            let target = ws.abs(&path);
+            let known = &state[&path];
+            if localfile::exists(&target) && local_changes(known, &target)? {
+                skipped.push(format!(
+                    "{path}: local changes; it was deleted on the server"
+                ));
+                continue;
+            }
+            set_read_only(&target, false)?;
+            let _ = std::fs::remove_file(&target);
+            state.remove(&path);
+            removed += 1;
+        }
+    }
+    for entry in entries {
         if !only.is_empty() && !only.contains(&entry.path) {
             continue;
         }
