@@ -630,7 +630,7 @@ fn write_dir(
             }
         }
     }
-    let body = encode_tree(&entries)?;
+    let body = encode_tree(git.algorithm(), &entries)?;
     Ok(git.repo.objects().write(ObjectKind::Tree, &body)?)
 }
 
@@ -892,7 +892,7 @@ pub fn commit(git: &GitHome, messages: &[String], all: bool) -> Result<()> {
     let id = git
         .repo
         .objects()
-        .write(ObjectKind::Commit, &record.encode())?;
+        .write(ObjectKind::Commit, &record.encode(git.algorithm())?)?;
     if staged_now {
         git.save_index(&opened, &index)?;
     }

@@ -145,7 +145,12 @@ pub struct Commit {
 }
 
 impl Commit {
-    pub fn encode(&self) -> Vec<u8> {
+    /// Encodes the body; the tree and every parent must use `algorithm`.
+    pub fn encode(&self, algorithm: Algorithm) -> Result<Vec<u8>, Error> {
+        self.tree.expect(algorithm)?;
+        for p in &self.parents {
+            p.expect(algorithm)?;
+        }
         let mut out = Vec::new();
         push_header(&mut out, b"tree", self.tree.to_hex().as_bytes());
         for p in &self.parents {
@@ -164,7 +169,7 @@ impl Commit {
         }
         out.push(b'\n');
         out.extend_from_slice(&self.message);
-        out
+        Ok(out)
     }
 
     pub fn parse(algorithm: Algorithm, body: &[u8]) -> Result<Self, Error> {
@@ -191,14 +196,14 @@ impl Commit {
             extra_headers: rest.collect(),
             message: message.to_vec(),
         };
-        if commit.encode() != body {
+        if commit.encode(algorithm)? != body {
             return Err(Error::Malformed(W, "not canonical"));
         }
         Ok(commit)
     }
 
     pub fn id(&self, algorithm: Algorithm) -> Result<ObjectId, Error> {
-        crate::hash_object(algorithm, Kind::Commit, &self.encode())
+        crate::hash_object(algorithm, Kind::Commit, &self.encode(algorithm)?)
     }
 
     /// The `gpgsig` (or `gpgsig-sha256`) header value, if present.
@@ -221,7 +226,9 @@ pub struct Tag {
 }
 
 impl Tag {
-    pub fn encode(&self) -> Vec<u8> {
+    /// Encodes the body; the target object must use `algorithm`.
+    pub fn encode(&self, algorithm: Algorithm) -> Result<Vec<u8>, Error> {
+        self.object.expect(algorithm)?;
         let mut out = Vec::new();
         push_header(&mut out, b"object", self.object.to_hex().as_bytes());
         push_header(&mut out, b"type", self.kind.name().as_bytes());
@@ -233,7 +240,7 @@ impl Tag {
         }
         out.push(b'\n');
         out.extend_from_slice(&self.message);
-        out
+        Ok(out)
     }
 
     pub fn parse(algorithm: Algorithm, body: &[u8]) -> Result<Self, Error> {
@@ -259,13 +266,13 @@ impl Tag {
             tagger,
             message: message.to_vec(),
         };
-        if tag.encode() != body {
+        if tag.encode(algorithm)? != body {
             return Err(Error::Malformed(W, "not canonical"));
         }
         Ok(tag)
     }
 
     pub fn id(&self, algorithm: Algorithm) -> Result<ObjectId, Error> {
-        crate::hash_object(algorithm, Kind::Tag, &self.encode())
+        crate::hash_object(algorithm, Kind::Tag, &self.encode(algorithm)?)
     }
 }

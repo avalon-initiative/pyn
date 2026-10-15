@@ -60,7 +60,7 @@ fn lock_from(row: &PgRow) -> Result<Lock> {
     })
 }
 
-const REVISION_COLUMNS: &str = "id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no, hash, previous_hash, content_v1, commit_id, file_mode, author_name, author_email, author_offset, hash_version, base_id";
+const REVISION_COLUMNS: &str = "id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no, hash, previous_hash, content_v1, commit_id, file_mode, author_name, author_email, author_offset, hash_version, base_id, deleted";
 
 /// The first-parent chain from commit `$2` of repository `$1`, nearest first.
 const CHAIN: &str = "WITH RECURSIVE chain(id, parent, depth) AS (
@@ -125,6 +125,7 @@ fn revision_from(row: &PgRow) -> Result<Revision> {
             .map(|m| mode_from(&m))
             .transpose()?,
         file_mode: file_mode_from(&row.get::<String, _>("file_mode"))?,
+        deleted: row.get("deleted"),
         changeset: row.get("changeset"),
         commit: match row.get::<Option<String>, _>("commit_id") {
             Some(hex) => object_id(&hex, "revision commit id")?,
@@ -264,8 +265,8 @@ async fn append_revision(
     // The repository's writes are serialized by `next_commit`; the guard still refuses a line that moved.
     let inserted = sqlx::query(
         "INSERT INTO revisions (repo, path, id, content, author, message, created_at, restored_from, mode, size, changeset,
-                                commit_no, hash, previous_hash, commit_id, file_mode, author_name, author_email, author_offset, hash_version, base_id)
-         SELECT $1, $2, $3, $4, $5, $6, $7, $9::bigint, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22::bigint
+                                commit_no, hash, previous_hash, commit_id, file_mode, author_name, author_email, author_offset, hash_version, base_id, deleted)
+         SELECT $1, $2, $3, $4, $5, $6, $7, $9::bigint, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22::bigint, $23
          WHERE COALESCE((SELECT max(id) FROM revisions WHERE repo = $1 AND path = $2), 0) = $8
          RETURNING id",
     )
@@ -291,6 +292,7 @@ async fn append_revision(
     .bind(person.offset_minutes)
     .bind(created.hash_version as i32)
     .bind(created.base.map(|b| b.0 as i64))
+    .bind(created.deleted)
     .fetch_optional(&mut **tx)
     .await;
 
@@ -917,7 +919,7 @@ impl MetadataStore for PgMetadataStore {
 
     async fn head_revision(&self, repo: &RepoId, path: &RepoPath) -> Result<Option<Revision>> {
         let row = sqlx::query(
-            "SELECT id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no, hash, previous_hash, content_v1, commit_id, file_mode, author_name, author_email, author_offset, hash_version, base_id FROM revisions
+            "SELECT id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no, hash, previous_hash, content_v1, commit_id, file_mode, author_name, author_email, author_offset, hash_version, base_id, deleted FROM revisions
              WHERE repo = $1 AND path = $2 ORDER BY id DESC LIMIT 1",
         )
         .bind(repo.as_str())
@@ -1183,6 +1185,7 @@ impl MetadataStore for PgMetadataStore {
                 path: r.path.clone(),
                 mode: r.file_mode,
                 id: r.content,
+                removed: false,
             })
             .chain(merge.items.iter().map(|i| i.revision.tree_change()))
             .collect();
@@ -1452,7 +1455,7 @@ impl MetadataStore for PgMetadataStore {
         id: RevisionId,
     ) -> Result<Option<Revision>> {
         let row = sqlx::query(
-            "SELECT id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no, hash, previous_hash, content_v1, commit_id, file_mode, author_name, author_email, author_offset, hash_version, base_id FROM revisions
+            "SELECT id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no, hash, previous_hash, content_v1, commit_id, file_mode, author_name, author_email, author_offset, hash_version, base_id, deleted FROM revisions
              WHERE repo = $1 AND path = $2 AND id = $3",
         )
         .bind(repo.as_str())
@@ -1577,7 +1580,7 @@ impl MetadataStore for PgMetadataStore {
                  ORDER BY p.path COLLATE \"C\", chain.depth
              )
              SELECT {REVISION_COLUMNS} FROM revisions JOIN latest ON path = lpath AND id = lrev
-             WHERE repo = $1 ORDER BY path COLLATE \"C\""
+             WHERE repo = $1 AND NOT deleted ORDER BY path COLLATE \"C\""
         )))
         .bind(repo.as_str())
         .bind(commit.to_hex())
@@ -1589,7 +1592,7 @@ impl MetadataStore for PgMetadataStore {
 
     async fn list_head_revisions(&self, repo: &RepoId) -> Result<Vec<Revision>> {
         let rows = sqlx::query(
-            "SELECT DISTINCT ON (path) id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no, hash, previous_hash, content_v1, commit_id, file_mode, author_name, author_email, author_offset, hash_version, base_id
+            "SELECT DISTINCT ON (path) id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no, hash, previous_hash, content_v1, commit_id, file_mode, author_name, author_email, author_offset, hash_version, base_id, deleted
              FROM revisions WHERE repo = $1 ORDER BY path, id DESC",
         )
         .bind(repo.as_str())
@@ -2166,6 +2169,7 @@ mod tests {
                 created_at: "2026-01-01T00:00:00.123456789Z".parse().unwrap(),
                 restored_from: None,
                 mode: Mode::Shared,
+                deleted: false,
                 size: 1,
                 changeset: None,
             };
@@ -2279,6 +2283,7 @@ mod tests {
                 path: r.path.clone(),
                 mode: r.file_mode,
                 id: r.content,
+                removed: false,
             })
             .collect();
         assert_eq!(

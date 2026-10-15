@@ -434,7 +434,8 @@ fn land(
 }
 
 /// Sets the workspace's record of each touched path to the revision the commit gives it, fetching the content unless the
-/// file already holds it.
+/// file already holds it. A path whose content is unchanged but whose revision moved is not in the report, so it is
+/// adopted too.
 fn adopt(
     backend: &dyn Backend,
     api: &Api,
@@ -445,7 +446,16 @@ fn adopt(
     let locks: Vec<api::Lock> = api.send(api.get(&api.repo_route("/locks")?))?.json()?;
     let me = backend.whoami()?;
     let mut state = ws.load_state()?;
-    for entry in snap.iter().filter(|e| touched.contains(e.path.as_str())) {
+    let moved = |e: &api::SnapshotEntry| {
+        state
+            .get(&e.path)
+            .is_some_and(|k| k.revision != e.revision && k.hash == e.content)
+    };
+    let adopted: Vec<&api::SnapshotEntry> = snap
+        .iter()
+        .filter(|e| touched.contains(e.path.as_str()) || moved(e))
+        .collect();
+    for entry in adopted {
         let abs = ws.abs(&entry.path);
         let holds = localfile::exists(&abs) && {
             let (file_mode, bytes) = localfile::read(&abs)?;
@@ -873,6 +883,9 @@ pub fn finish(
     }
     let mut resolutions = Vec::new();
     for (path, staged) in &index.entries {
+        if staged.deleted {
+            bail!("{path} is staged as deleted; a merge cannot be concluded by deleting a file");
+        }
         let file = staging::content_path(ws, &staged.hash);
         let sent = if staged.file_mode == api::FileMode::Symlink {
             backend.upload_bytes(std::fs::read(&file)?)?

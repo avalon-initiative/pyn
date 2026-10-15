@@ -79,7 +79,10 @@ impl Fx {
                 id: self.tree(&inner),
             });
         }
-        self.write(ObjectKind::Tree, &encode_tree(&entries).unwrap())
+        self.write(
+            ObjectKind::Tree,
+            &encode_tree(self.git().algorithm(), &entries).unwrap(),
+        )
     }
 
     fn commit(&self, tree: ObjectId, parents: &[ObjectId], time: i64, message: &str) -> ObjectId {
@@ -97,7 +100,10 @@ impl Fx {
             extra_headers: vec![],
             message: message.as_bytes().to_vec(),
         };
-        self.write(ObjectKind::Commit, &commit.encode())
+        self.write(
+            ObjectKind::Commit,
+            &commit.encode(self.git().algorithm()).unwrap(),
+        )
     }
 
     fn point(&self, name: &str, id: &ObjectId) {
@@ -435,7 +441,7 @@ fn history(algorithm: Algorithm) -> History {
         tagger: None,
         message: b"release\n".to_vec(),
     };
-    let tag_id = fx.write(ObjectKind::Tag, &tag.encode());
+    let tag_id = fx.write(ObjectKind::Tag, &tag.encode(fx.git().algorithm()).unwrap());
     fx.point("refs/tags/v1", &tag_id);
     History {
         fx,

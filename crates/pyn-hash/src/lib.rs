@@ -5,9 +5,12 @@ use sha2::{Digest, Sha256};
 
 pub const REVISION_TAG: &str = "pyn-revision-v1";
 pub const REVISION_V2_TAG: &str = "pyn-revision-v2";
+pub const REVISION_V3_TAG: &str = "pyn-revision-v3";
 /// The `hash_version` a revision stores for each revision encoding.
 pub const REVISION_V1: u32 = 1;
 pub const REVISION_V2: u32 = 2;
+/// A revision that deletes its path: the v2 fields under its own tag.
+pub const REVISION_V3: u32 = 3;
 pub const AUDIT_TAG: &str = "pyn-audit-v1";
 
 /// The fields a revision hash covers. `previous` is the hash of the path's previous revision, `None` for the first.
@@ -115,7 +118,15 @@ pub fn revision_hash(f: &RevisionFields<'_>) -> String {
 }
 
 pub fn revision_hash_v2(f: &RevisionV2Fields<'_>) -> String {
-    let mut e = Encoder::new(REVISION_V2_TAG);
+    v2_fields(Encoder::new(REVISION_V2_TAG), f)
+}
+
+/// The hash of a revision that deletes its path; `file_mode` and `blob_id` are those of the removed content.
+pub fn revision_hash_v3(f: &RevisionV2Fields<'_>) -> String {
+    v2_fields(Encoder::new(REVISION_V3_TAG), f)
+}
+
+fn v2_fields(mut e: Encoder, f: &RevisionV2Fields<'_>) -> String {
     e.str(f.path);
     e.str(f.file_mode);
     e.str(f.blob_algorithm);
@@ -210,6 +221,13 @@ mod tests {
             ..first_v2()
         });
         assert_eq!(b, VECTOR_REVISION_V2_2);
+    }
+
+    #[test]
+    fn a_deletion_hash_is_v2_fields_under_its_own_tag() {
+        let v3 = revision_hash_v3(&first_v2());
+        assert_eq!(v3, VECTOR_REVISION_V3_1);
+        assert_ne!(v3, revision_hash_v2(&first_v2()));
     }
 
     #[test]
@@ -366,6 +384,8 @@ mod tests {
         "858c075aa1d8e6e9d624aaf0c3cdc032c3e4a165a809ff4a38d6f49ba84e0790";
     const VECTOR_REVISION_V2_1: &str =
         "5b9cb79dd9a6deb197f72c532eb669b72d1e0820c6a8cb56bbc5d0fc838d52ed";
+    const VECTOR_REVISION_V3_1: &str =
+        "081218b2d39da72996468114f21b3281bc73fdaddba7118b06d189d7e8c4ad8d";
     const VECTOR_REVISION_V2_2: &str =
         "3d2323ad77d4713b6667982fe3f18a4613bdd068a56c023af00a61caa7e5bbe8";
     const VECTOR_AUDIT_1: &str = "4faf45d2108cab101ce1e890a016c314cfde33485307de1eace154d4e0edef8a";

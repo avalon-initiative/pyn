@@ -33,6 +33,11 @@ fn commit(env: &Env, ws: &Path, path: &str, text: &str) {
     );
 }
 
+fn commit_msg(env: &Env, ws: &Path, path: &str, text: &str, message: &str) {
+    write(ws, path, text);
+    env.ok(ws, "alice", &["commit", path, "-m", message]);
+}
+
 /// Runs the command and returns what it printed on standard output and standard error, and its exit code.
 fn run(env: &Env, ws: &Path, args: &[&str]) -> (Option<i32>, String, String) {
     let out = env.run(ws, "alice", args);
@@ -577,5 +582,48 @@ fn exclusive_files_each_branch_changed_are_chosen_by_the_person_under_the_lock()
     let out = env.ok(&ws, "alice", &["commit"]);
     assert!(out.starts_with("Merge made;"), "{out}");
     assert_eq!(read(&ws, "Content/m.umap"), "main value");
+    assert!(env.ok(&ws, "alice", &["verify"]).is_empty());
+}
+
+#[test]
+fn a_merge_that_only_moves_an_exclusive_path_to_a_later_revision_leaves_a_current_base() {
+    let env = start();
+    env.seed("alice", "Content/m.umap", "one", None);
+    let ws = clone(&env, "ws");
+    env.ok(&ws, "alice", &["switch", "-c", "feature"]);
+    env.ok(&ws, "alice", &["switch", "main"]);
+    env.ok(&ws, "alice", &["lock", "Content/m.umap"]);
+    commit(&env, &ws, "Content/m.umap", "same");
+    env.ok(&ws, "alice", &["switch", "feature"]);
+    env.ok(&ws, "alice", &["lock", "Content/m.umap"]);
+    commit_msg(&env, &ws, "Content/m.umap", "same", "feature same");
+    env.ok(&ws, "alice", &["switch", "main"]);
+
+    env.ok(&ws, "alice", &["merge", "--no-ff", "feature"]);
+    assert!(
+        env.ok(&ws, "alice", &["status"])
+            .contains("everything is up to date")
+    );
+    env.ok(&ws, "alice", &["lock", "Content/m.umap"]);
+    commit(&env, &ws, "Content/m.umap", "after");
+    assert!(env.ok(&ws, "alice", &["verify"]).is_empty());
+}
+
+#[test]
+fn a_merge_that_only_moves_a_shared_path_to_a_later_revision_commits_on_a_current_base() {
+    let env = start();
+    env.seed("alice", "Source/a.cpp", "one\n", None);
+    env.seed("alice", "Source/b.cpp", "b\n", None);
+    let ws = clone(&env, "ws");
+    env.ok(&ws, "alice", &["switch", "-c", "feature"]);
+    env.ok(&ws, "alice", &["switch", "main"]);
+    commit(&env, &ws, "Source/a.cpp", "same\n");
+    env.ok(&ws, "alice", &["switch", "feature"]);
+    commit_msg(&env, &ws, "Source/a.cpp", "same\n", "feature same");
+    commit(&env, &ws, "Source/b.cpp", "feature\n");
+    env.ok(&ws, "alice", &["switch", "main"]);
+
+    env.ok(&ws, "alice", &["merge", "--no-ff", "feature"]);
+    commit(&env, &ws, "Source/a.cpp", "after\n");
     assert!(env.ok(&ws, "alice", &["verify"]).is_empty());
 }
