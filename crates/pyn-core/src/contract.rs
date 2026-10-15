@@ -39,6 +39,8 @@ mod merging;
 pub use merging::*;
 mod branch_policy;
 pub use branch_policy::*;
+mod push;
+pub use push::*;
 
 struct Harness {
     store: Store,
@@ -49,6 +51,10 @@ struct Harness {
 }
 
 fn harness(store: Store) -> Harness {
+    harness_with(store, RULES)
+}
+
+fn harness_with(store: Store, rules: &str) -> Harness {
     let objects = Arc::new(MemoryObjectStore::new());
     let audit = Arc::new(MemoryAuditStore::new());
     let clock = Arc::new(ManualClock::new(
@@ -56,7 +62,7 @@ fn harness(store: Store) -> Harness {
     ));
     let svc = Arc::new(RepoService::new(
         RepoId::new("game"),
-        Rules::from_toml(RULES).unwrap(),
+        Rules::from_toml(rules).unwrap(),
         store.clone(),
         objects.clone(),
         audit.clone(),
@@ -3157,6 +3163,18 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_policy_arriving_by_merge_reports_the_versions_it_strands);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; merges_racing_into_one_branch_each_land_or_are_told_to_retry);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_file_on_one_side_and_a_folder_on_the_other_cannot_merge);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_push_lands_its_commits_under_their_own_ids);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_push_must_fast_forward_the_branch);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; an_exclusive_path_needs_the_pushers_live_lock_at_push_time);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_lock_is_consumed_after_the_paths_last_revision_in_the_push);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_pushed_exclusive_revision_is_based_on_the_branchs_pointer);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_rejected_push_leaves_nothing_behind);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_push_refuses_what_it_cannot_record);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_push_is_checked_against_its_hashes_trees_and_objects);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; an_unlisted_path_is_exclusive_in_a_push);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_push_needs_the_checkin_permission_and_an_existing_branch);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_push_past_the_storage_cap_applies_nothing);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; racing_pushes_to_one_branch_have_exactly_one_winner);
     };
     (@one $factory:expr; [$(#[$attr:meta])*]; $name:ident) => {
         #[tokio::test(flavor = "multi_thread")]
@@ -3669,6 +3687,20 @@ impl MetadataStore for HookedMeta {
     ) -> crate::Result<Vec<crate::Revision>> {
         self.inner
             .commit_changeset_on(repo, branch, items, now, cap)
+            .await
+    }
+
+    async fn push_commits_on(
+        &self,
+        repo: &RepoId,
+        branch: &str,
+        commits: Vec<crate::PushedCommit>,
+        pusher: &UserId,
+        now: chrono::DateTime<Utc>,
+        cap: Option<crate::StorageCap>,
+    ) -> crate::Result<Vec<crate::Revision>> {
+        self.inner
+            .push_commits_on(repo, branch, commits, pusher, now, cap)
             .await
     }
 

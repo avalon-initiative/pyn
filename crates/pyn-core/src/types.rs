@@ -211,6 +211,17 @@ pub struct ChangesetItem {
     pub lock_holder: Option<UserId>,
 }
 
+/// A client-built commit the service has verified, for `MetadataStore::push_commits_on`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PushedCommit {
+    /// The commit as its raw bytes describe it, without revisions.
+    pub record: Commit,
+    /// The trees the commit adds, as `(id, body)`.
+    pub trees: Vec<(ObjectId, Vec<u8>)>,
+    /// One revision per changed path, ordered by path.
+    pub items: Vec<NewRevision>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Lock {
     pub path: RepoPath,

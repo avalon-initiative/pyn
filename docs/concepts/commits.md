@@ -61,6 +61,31 @@ enough to fetch every file. Every revision in the API carries the `commit` it be
 made since the commit record landed, the structured `author_identity` its hash covers. A checkin or changeset entry takes an
 optional `file_mode` (`100644` by default, `100755` or `120000`; a symbolic link's content is its target path). Reading is allowed to whoever may read the repository.
 
+## Pushed commits (provisional)
+
+Decision #300 lets a client build commits itself and publish them. The core accepts them through `RepoService::push_commits` and
+one atomic store step, `MetadataStore::push_commits_on`; no HTTP route, wire type or CLI command exists for it yet, and everything
+here is provisional until those slices land.
+
+- A push is a chain of commits, oldest first, plus the trees they need. Commits keep their ids: each is checked to hash to the id
+  it is sent under, to be a SHA-256 git commit, and to be a child of the one before it.
+- It must fast-forward: the first commit's parent is the branch's head (a first commit with no parent is for an empty branch), or
+  `not_fast_forward`. A commit already in the repository is `push_invalid`. The branch must exist.
+- Each commit's tree is compared with its parent's: every added or changed file becomes one revision, with the commit's author as its
+  person, the pusher as its account, the commit's time and message, and the path's mode under the branch's policy (an unlisted path
+  is exclusive by default). The blob of each must already be in the object store (`object_missing`), and a tree the commit needs must
+  be in the push or already stored (`push_invalid`).
+- An exclusive path needs the pusher's live lock at the moment of the push (`lock_required`, or `lock_held` when someone else has
+  it); a lapsed lease is refused. The lock is used up with the path's last revision in the push, so a push may carry several
+  commits that edit it. Each revision is based on the branch's pointer for the path as the commits before it leave it
+  ([branches](branches.md)), not on the newest revision of another branch.
+- The whole push is accepted or refused as one: a refusal at any commit leaves no commit, revision, tree, lock change or branch
+  move behind. Concurrent pushes to a branch are serialized, so one wins and the others get `not_fast_forward`.
+- Refused with `push_unsupported`, for now: a commit that changes `.pyn/pyn.toml`; a deletion, including a file turned into a
+  folder or back; a commit with two parents; a commit that changes no file; a submodule entry; a commit whose author and committer
+  times differ (a commit records one time); a name, path or message that is not UTF-8; and a message without its final newline.
+- The pusher needs the `checkin` permission. Whether the commit's author must match the pusher is undecided: it is not checked.
+
 ## Command line
 
 The CLI follows git where it has an equivalent; the differences are listed below.

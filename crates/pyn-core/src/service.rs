@@ -1,4 +1,7 @@
 mod merging;
+mod push;
+
+pub use push::PushObjects;
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, RwLock};

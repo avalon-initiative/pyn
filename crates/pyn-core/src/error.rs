@@ -81,6 +81,10 @@ pub enum PynError {
     MergeStale(String),
     #[error("{0} cannot be fast-forwarded to the source; its history has diverged")]
     NotFastForward(String),
+    #[error("the push is not valid: {0}")]
+    PushInvalid(String),
+    #[error("the push cannot be accepted: {0}")]
+    PushUnsupported(String),
     #[error("restoring replaces the head; to confirm, pass {expected}")]
     ConfirmationRequired { expected: String },
     #[error("this server has not been set up yet; complete the first-run setup")]
@@ -250,6 +254,8 @@ impl PynError {
             Self::MergeConflict(_) => "merge_conflict",
             Self::MergeStale(_) => "merge_stale",
             Self::NotFastForward(_) => "not_fast_forward",
+            Self::PushInvalid(_) => "push_invalid",
+            Self::PushUnsupported(_) => "push_unsupported",
             Self::ConfirmationRequired { .. } => "confirmation_required",
             Self::NotInitialised => "not_initialised",
             Self::AlreadyInitialised => "already_initialised",

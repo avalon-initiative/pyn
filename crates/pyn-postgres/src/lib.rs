@@ -1,6 +1,6 @@
 //! PostgreSQL `MetadataStore`. Every lock and revision operation is one atomic statement or transaction.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
@@ -12,9 +12,9 @@ use pyn_core::commit_record::{CommitDraft, TreeChange, TreeEdit, draft_commit};
 use pyn_core::merge::{MergeWrite, MergeWritten};
 use pyn_core::{
     Branch, ChangesetItem, Commit, FileMode, HistoryCursor, Lock, MetadataStore, Mode, ObjectId,
-    PathFilter, Person, PynError, REPO_ALGORITHM, RepoId, RepoPath, RepoRecord, RepoSettings,
-    RepoUpdate, RepoUsage, Result, Revision, RevisionHash, RevisionId, StorageCap, Usage, UserId,
-    Visibility,
+    PathFilter, Person, PushedCommit, PynError, REPO_ALGORITHM, RepoId, RepoPath, RepoRecord,
+    RepoSettings, RepoUpdate, RepoUsage, Result, Revision, RevisionHash, RevisionId, StorageCap,
+    Usage, UserId, Visibility,
 };
 use sqlx::migrate::MigrateDatabase;
 use sqlx::postgres::{PgPoolOptions, PgRow};
@@ -933,6 +933,139 @@ impl MetadataStore for PgMetadataStore {
             );
         }
         store_commit(&mut tx, repo, seq, branch, &draft, &out).await?;
+        tx.commit().await.map_err(db)?;
+        Ok(out)
+    }
+
+    async fn push_commits_on(
+        &self,
+        repo: &RepoId,
+        branch: &str,
+        commits: Vec<PushedCommit>,
+        pusher: &UserId,
+        now: DateTime<Utc>,
+        cap: Option<StorageCap>,
+    ) -> Result<Vec<Revision>> {
+        if commits.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        let mut seq = next_commit(&mut tx, repo).await?;
+        if branch == DEFAULT_BRANCH {
+            ensure_default_branch(&mut tx, repo, pusher, now).await?;
+        }
+        let head: Option<Option<String>> =
+            sqlx::query_scalar("SELECT head FROM branches WHERE repo = $1 AND name = $2")
+                .bind(repo.as_str())
+                .bind(branch)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(db)?;
+        let head = head
+            .ok_or_else(|| PynError::BranchNotFound(branch.to_string()))?
+            .map(|h| object_id(&h, "branch head"))
+            .transpose()?;
+        let mut tip = head;
+        for c in &commits {
+            if c.record.parents != tip.into_iter().collect::<Vec<_>>() {
+                return Err(PynError::NotFastForward(branch.to_string()));
+            }
+            let known: bool = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM commits WHERE repo = $1 AND id = $2)",
+            )
+            .bind(repo.as_str())
+            .bind(c.record.id.to_hex())
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(db)?;
+            if known {
+                return Err(PynError::PushInvalid(format!(
+                    "commit {} is already in the repository",
+                    c.record.id
+                )));
+            }
+            tip = Some(c.record.id);
+        }
+
+        let mut last_use = BTreeMap::new();
+        for (i, c) in commits.iter().enumerate() {
+            for item in c.items.iter().filter(|i| i.mode == Mode::Exclusive) {
+                last_use.insert(item.path.as_str().to_string(), i);
+            }
+        }
+        for path in last_use.keys() {
+            let row = sqlx::query(
+                "SELECT owner, expires_at FROM locks WHERE repo = $1 AND path = $2 FOR UPDATE",
+            )
+            .bind(repo.as_str())
+            .bind(path)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(db)?;
+            match row {
+                Some(r) if r.get::<DateTime<Utc>, _>("expires_at") > now => {
+                    let owner: String = r.get("owner");
+                    if owner != pusher.as_str() {
+                        return Err(PynError::LockHeld {
+                            path: RepoPath::new(path.clone())?,
+                            owner: UserId::new(owner),
+                            expires_at: r.get("expires_at"),
+                        });
+                    }
+                }
+                _ => return Err(PynError::LockRequired(RepoPath::new(path.clone())?)),
+            }
+        }
+
+        let paths: Vec<String> = commits
+            .iter()
+            .flat_map(|c| c.items.iter().map(|i| i.path.as_str().to_string()))
+            .collect();
+        let mut at_branch: HashMap<String, i64> = match &head {
+            Some(h) => pointers(&mut *tx, repo, h, Some(&paths))
+                .await?
+                .into_iter()
+                .collect(),
+            None => HashMap::new(),
+        };
+        let mut out = Vec::new();
+        for (i, c) in commits.into_iter().enumerate() {
+            if i > 0 {
+                seq = next_commit(&mut tx, repo).await?;
+            }
+            let mut revs = Vec::with_capacity(c.items.len());
+            for revision in c.items {
+                let item = ChangesetItem {
+                    expected_head: at_branch
+                        .get(revision.path.as_str())
+                        .map(|r| RevisionId(*r as u64)),
+                    revision,
+                    lock_holder: None,
+                };
+                let commit = (seq, c.record.id);
+                revs.push(
+                    append_revision(&mut tx, repo, item, now, cap.as_ref(), commit, &at_branch)
+                        .await?,
+                );
+            }
+            for r in &revs {
+                at_branch.insert(r.path.as_str().to_string(), r.id.0 as i64);
+                if last_use.get(r.path.as_str()) == Some(&i) {
+                    sqlx::query("DELETE FROM locks WHERE repo = $1 AND path = $2")
+                        .bind(repo.as_str())
+                        .bind(r.path.as_str())
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(db)?;
+                }
+            }
+            let draft = CommitDraft {
+                record: c.record,
+                trees: c.trees,
+            };
+            store_commit(&mut tx, repo, seq, branch, &draft, &revs).await?;
+            out.extend(revs);
+        }
         tx.commit().await.map_err(db)?;
         Ok(out)
     }

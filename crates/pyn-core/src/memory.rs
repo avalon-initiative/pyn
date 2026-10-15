@@ -29,15 +29,16 @@ use crate::repo::{RepoRecord, RepoUpdate, Visibility};
 use crate::repo_policy::{
     CreationEffect, CreationRule, CreationScope, CreationSubject, MemberCreation, RepoPolicy,
 };
-use crate::rules::PathFilter;
+use crate::rules::{Mode, PathFilter};
 use crate::store::MetadataStore;
 use crate::types::{
-    ChangesetItem, Commit, Lock, Person, RepoId, RepoPath, Revision, RevisionId, UserId,
+    ChangesetItem, Commit, Lock, Person, PushedCommit, RepoId, RepoPath, Revision, RevisionId,
+    UserId,
 };
 
 type Key = (RepoId, RepoPath);
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct State {
     locks: HashMap<Key, Lock>,
     revisions: HashMap<Key, Vec<Revision>>,
@@ -253,6 +254,81 @@ impl State {
                     return Err(e);
                 }
             }
+        }
+        Ok(out)
+    }
+
+    /// The whole push on `self`; the caller discards `self` when this fails.
+    fn push(
+        &mut self,
+        repo: &RepoId,
+        branch: &str,
+        commits: Vec<PushedCommit>,
+        pusher: &UserId,
+        now: DateTime<Utc>,
+        cap: Option<&StorageCap>,
+    ) -> Result<Vec<Revision>> {
+        self.ensure_default_branch(repo, pusher, now);
+        let head = self.branch(repo, branch)?.head;
+        let mut tip = head;
+        for c in &commits {
+            if c.record.parents != tip.into_iter().collect::<Vec<_>>() {
+                return Err(PynError::NotFastForward(branch.to_string()));
+            }
+            if self.commit_record(repo, &c.record.id).is_some() {
+                return Err(PynError::PushInvalid(format!(
+                    "commit {} is already in the repository",
+                    c.record.id
+                )));
+            }
+            tip = Some(c.record.id);
+        }
+
+        let mut last_use = BTreeMap::new();
+        for (i, c) in commits.iter().enumerate() {
+            for item in c.items.iter().filter(|i| i.mode == Mode::Exclusive) {
+                last_use.insert(item.path.clone(), i);
+            }
+        }
+        for path in last_use.keys() {
+            match self.locks.get(&(repo.clone(), path.clone())) {
+                Some(l) if live(l, now) && &l.owner == pusher => {}
+                Some(l) if live(l, now) => {
+                    return Err(PynError::LockHeld {
+                        path: path.clone(),
+                        owner: l.owner.clone(),
+                        expires_at: l.expires_at,
+                    });
+                }
+                _ => return Err(PynError::LockRequired(path.clone())),
+            }
+        }
+
+        let mut pointers = head.map_or_else(BTreeMap::new, |h| self.pointers_at(repo, &h));
+        let mut out = Vec::new();
+        for (i, c) in commits.into_iter().enumerate() {
+            let items = c
+                .items
+                .into_iter()
+                .map(|revision| ChangesetItem {
+                    expected_head: pointers.get(&revision.path).copied(),
+                    revision,
+                    lock_holder: None,
+                })
+                .collect();
+            let revs = self.apply_items(repo, items, now, cap, &c.record.id, &pointers)?;
+            for r in &revs {
+                pointers.insert(r.path.clone(), r.id);
+                if last_use.get(&r.path) == Some(&i) {
+                    self.locks.remove(&(repo.clone(), r.path.clone()));
+                }
+            }
+            let draft = CommitDraft {
+                record: c.record,
+                trees: c.trees,
+            };
+            self.append_commit(repo, branch, draft, &revs);
+            out.extend(revs);
         }
         Ok(out)
     }
@@ -533,6 +609,25 @@ impl MetadataStore for MemoryMetadataStore {
         let draft = st.draft(repo, parent.as_ref(), &items)?;
         let out = st.apply_items(repo, items, now, cap.as_ref(), &draft.record.id, &at_branch)?;
         st.append_commit(repo, branch, draft, &out);
+        Ok(out)
+    }
+
+    async fn push_commits_on(
+        &self,
+        repo: &RepoId,
+        branch: &str,
+        commits: Vec<PushedCommit>,
+        pusher: &UserId,
+        now: DateTime<Utc>,
+        cap: Option<StorageCap>,
+    ) -> Result<Vec<Revision>> {
+        if commits.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut st = self.state.lock().unwrap();
+        let mut work = st.clone();
+        let out = work.push(repo, branch, commits, pusher, now, cap.as_ref())?;
+        *st = work;
         Ok(out)
     }
 

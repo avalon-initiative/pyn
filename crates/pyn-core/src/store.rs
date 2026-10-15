@@ -11,7 +11,8 @@ use crate::rules::PathFilter;
 use pyn_object::ObjectId;
 
 use crate::types::{
-    ChangesetItem, Commit, Lock, NewRevision, RepoId, RepoPath, Revision, RevisionId, UserId,
+    ChangesetItem, Commit, Lock, NewRevision, PushedCommit, RepoId, RepoPath, Revision, RevisionId,
+    UserId,
 };
 
 /// Persistence for the repository registry, locks and revisions. Each method is one atomic check-and-write; policy lives in
@@ -123,6 +124,21 @@ pub trait MetadataStore: Send + Sync {
         repo: &RepoId,
         branch: &str,
         items: Vec<ChangesetItem>,
+        now: DateTime<Utc>,
+        cap: Option<StorageCap>,
+    ) -> Result<Vec<Revision>>;
+
+    /// Appends the commits, oldest first, to `branch` and moves it to the last, or writes nothing. The first commit's
+    /// parent must be the branch head and each next one's the one before (`NotFastForward`), and none may exist
+    /// already (`PushInvalid`). `pusher` must hold a live lock on each exclusive path (`LockRequired`, `LockHeld`);
+    /// it is consumed with the path's last revision in the push. Each revision's base is the branch's pointer for
+    /// the path, as the commits before it leave it (decision #299).
+    async fn push_commits_on(
+        &self,
+        repo: &RepoId,
+        branch: &str,
+        commits: Vec<PushedCommit>,
+        pusher: &UserId,
         now: DateTime<Utc>,
         cap: Option<StorageCap>,
     ) -> Result<Vec<Revision>>;

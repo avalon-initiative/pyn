@@ -570,6 +570,7 @@ impl IntoResponse for ApiError {
             | PynError::ExternalNotLinked
             | PynError::PasswordSignInDisabled
             | PynError::CsrfFailed => StatusCode::FORBIDDEN,
+            PynError::PushUnsupported(_) => StatusCode::UNPROCESSABLE_ENTITY,
             PynError::TooManyAttempts { .. } => StatusCode::TOO_MANY_REQUESTS,
             PynError::ObjectTooLarge { .. } => StatusCode::PAYLOAD_TOO_LARGE,
             PynError::NotInitialised => StatusCode::SERVICE_UNAVAILABLE,
@@ -596,6 +597,7 @@ impl IntoResponse for ApiError {
             PynError::InvalidPath(_)
             | PynError::InvalidRules(_)
             | PynError::InvalidRequest(_)
+            | PynError::PushInvalid(_)
             | PynError::AmbiguousCommit(_)
             | PynError::InvalidBranchName(_)
             | PynError::InvalidInvite(_)
