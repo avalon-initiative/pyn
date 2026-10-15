@@ -64,8 +64,8 @@ you are inside the workspace and take paths relative to your current directory.
   command works on that branch. `pyn status` starts with `On branch <name>`.
 - **`pyn status`** prints a table of what differs, one row per file, with the columns `MODE`, `REV`, `STAGED`, `STATE`,
   `LOCK` and `PATH`, then a one-line summary of counts (staged, modified, behind, new, untracked, locked by you, locked by
-  others). `STAGED` is `added` or `modified` for a path in the staging index and `-` otherwise. `STATE`
-  is `modified` (an edit after what was staged, or since the last update when nothing is staged, or a local deletion), `behind (head rN)`, `new` (on the server, not downloaded yet),
+  others). `STAGED` is `added`, `modified` or `deleted` for a path in the staging index and `-` otherwise. `STATE`
+  is `modified` (an edit after what was staged, or since the last update when nothing is staged), `deleted locally` (a deletion not staged yet), `behind (head rN)`, `new` (on the server, not downloaded yet),
   `untracked`, or `clean` for a file that is only listed because it is locked. `LOCK` shows the holder (`you` for your
   own locks) and the time left, for example `alice · 7h 59m`. A path that is locked but has no revision yet shows
   `locked, not checked in yet`; `pyn update` has nothing to fetch for it. Clean, unlocked files are left out, and a
@@ -91,7 +91,11 @@ no path, from the whole workspace), `-n` and `--dry-run` list what would be stag
 files `.pyn/ignore` hides, which are otherwise refused with exit status `1`. `pyn commit -a` (and `-am "message"`) stages every
 changed tracked file first; new files are not included. `pyn restore --staged <path>...` takes paths out of the staged set and
 leaves the files alone. `pyn diff --cached` shows what is staged against the last update, and `pyn diff` shows the edits made
-since. A tracked file that was deleted cannot be staged: a pyn server records no deletions yet, so `add` warns and skips it.
+since. A tracked file that was deleted is staged as a removal (`add <path>`, `add -u`, `commit -a`; `-n` prints `remove '<path>'`),
+and `pyn commit` sends it with the rest as a deletion in the changeset; the commit then prints `<path> was deleted at revision N` and the
+workspace stops tracking the path. `pyn diff --cached` shows it as a deleted file. Deleting an exclusive file is staged like
+changing one, only with the lock held, and the commit consumes the lock. `pyn update` removes a file the server deleted when the
+workspace has no changes to it, and reports it as skipped when it has. See [deleting a path](README.md#deleting-a-path).
 
 Exclusive files are different. `pyn add` on an exclusive path fails early, staging nothing, unless you hold its lock, and
 the message names `pyn lock <path>`. Lock, edit, commit stays the exclusive flow, and the commit releases the lock. The check

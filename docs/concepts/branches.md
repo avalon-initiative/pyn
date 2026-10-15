@@ -54,7 +54,8 @@ from its first parent. For an ordinary commit that is exactly the revisions it m
 paths where the other parent's revision is higher, so a merge that takes the descendant pointer records it. A snapshot is read by walking the
 first-parent chain and taking, per path, the pointer nearest the commit. Writing a commit costs one row per revision it
 made, not one per file in the repository, and the cache is never rewritten: it is part of what `pyn verify` can recompute
-from the revisions and their commits.
+from the revisions and their commits. Verify recomputes each exclusive revision's pointer at its commit's first parent, on every
+branch, and reports `base_mismatch` where the stored base differs.
 
 A snapshot, a folder listing, a file's content at the branch head and the base check of a shared commit all read through it.
 

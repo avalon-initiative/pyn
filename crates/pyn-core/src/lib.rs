@@ -80,7 +80,7 @@ pub use repo_policy::{
 pub use repositories::Repositories;
 pub use rules::{Mode, PathFilter, Rules};
 pub use service::{
-    ChangeEntry, CommitPage, FileEntry, LockLimit, PolicyPreview, PushObjects, Recorded,
+    ChangeEntry, CommitPage, Deletion, FileEntry, LockLimit, PolicyPreview, PushObjects, Recorded,
     RepoService, ServiceConfig, Snapshot, SnapshotEntry,
 };
 pub use store::MetadataStore;
