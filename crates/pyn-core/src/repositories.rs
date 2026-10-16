@@ -17,7 +17,7 @@ use crate::repo::{
     self, DEFAULT_MAX_LOCKS_PER_USER, RepoRecord, RepoSettings, RepoUpdate, Visibility,
 };
 use crate::rules::Rules;
-use crate::service::{LockLimit, RepoService, ServiceConfig};
+use crate::service::{DEFAULT_UNREFERENCED_UPLOAD_BYTES, LockLimit, RepoService, ServiceConfig};
 use crate::store::MetadataStore;
 use crate::types::{Lock, UserId};
 
@@ -50,6 +50,7 @@ pub struct Repositories {
     clock: Arc<dyn Clock>,
     rules: Rules,
     default_max_locks: u32,
+    unreferenced_cap: u64,
     services: Mutex<HashMap<crate::RepoId, (RepoSettings, Arc<RepoService>)>>,
 }
 
@@ -71,6 +72,7 @@ impl Repositories {
             clock,
             rules,
             default_max_locks: DEFAULT_MAX_LOCKS_PER_USER,
+            unreferenced_cap: DEFAULT_UNREFERENCED_UPLOAD_BYTES,
             services: Mutex::new(HashMap::new()),
         }
     }
@@ -79,6 +81,16 @@ impl Repositories {
     pub fn with_default_max_locks(mut self, limit: u32) -> Result<Self> {
         self.default_max_locks = repo::validate_max_locks(limit)?;
         Ok(self)
+    }
+
+    /// The most bytes one repository may hold in uploads no revision names; 0 refuses every non-empty upload.
+    pub fn with_unreferenced_upload_cap(mut self, bytes: u64) -> Self {
+        self.unreferenced_cap = bytes;
+        self
+    }
+
+    pub fn unreferenced_upload_cap(&self) -> u64 {
+        self.unreferenced_cap
     }
 
     async fn record(
@@ -124,7 +136,10 @@ impl Repositories {
                 max_locks: record.settings.max_locks.unwrap_or(self.default_max_locks),
             },
         );
-        let svc = Arc::new(svc.with_storage_caps(record.owner.clone(), self.access.clone()));
+        let svc = Arc::new(
+            svc.with_storage_caps(record.owner.clone(), self.access.clone())
+                .with_unreferenced_cap(self.unreferenced_cap),
+        );
         svc.load_policy().await?;
         let mut services = self.services.lock().unwrap();
         if let Some((settings, existing)) = services.get(&record.id)
