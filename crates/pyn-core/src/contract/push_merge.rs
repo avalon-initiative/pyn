@@ -258,7 +258,7 @@ pub async fn a_diverged_exclusive_path_is_a_conflict_unless_the_pusher_holds_its
     let keep = build_merge(&main_files, vec![s1.id, feature], "keep main's", 4);
     let err = push(&h, "alice", &[&keep]).await.unwrap_err();
     assert!(
-        matches!(err, PynError::MergeConflict(ref p) if p == &[e.clone()]),
+        matches!(err, PynError::MergeConflict(ref p) if p == std::slice::from_ref(&e)),
         "{err}"
     );
     assert_eq!(err.code(), "merge_conflict");

@@ -113,8 +113,8 @@ impl LocalStore {
         })
     }
 
-    /// The first-parent chain of local commits the server's tip does not have; `None` when there are none. A merge
-    /// commit may only merge in commits the server already has.
+    /// The first-parent chain of local commits the server lacks, `None` if none; a merge may only merge in commits
+    /// the server has.
     pub fn outgoing(&self, branch: &str) -> Result<Option<Outgoing>> {
         let (Some(tip), published) = (self.tip(branch)?, self.published(branch)?) else {
             return Ok(None);
@@ -304,9 +304,8 @@ impl LocalStore {
         Ok(bases)
     }
 
-    /// The files of the merge of `theirs` into `local` over `base`: a side that alone changed a path wins, shared
-    /// text merges cleanly or not at all, and an exclusive path both sides changed stays the local one only under
-    /// the person's lock. Anything else refuses with nothing written.
+    /// The merged files, and the exclusive paths kept under the person's lock; any other clash refuses with
+    /// nothing written.
     fn three_way(
         &self,
         remote: &dyn Backend,
@@ -612,8 +611,7 @@ fn guard_changes(
     .into())
 }
 
-/// `pyn pull` with `local_store` on: fetch, then fast-forward, merge the fetched tip into the local branch, or with
-/// `rebase` replay the local commits onto it.
+/// `pyn pull` with `local_store` on: fetch, then fast-forward, merge, or with `rebase` replay the local commits.
 pub fn pull(backend: &dyn Backend, ws: &Workspace, rebase: bool) -> Result<()> {
     if !Index::load(ws)?.entries.is_empty() {
         bail!(
@@ -881,7 +879,11 @@ pub fn push(backend: &dyn Backend, ws: &Workspace) -> Result<()> {
     let mut head = parse_id(&response.head)?;
     // A policy commit can make the server add conversion commits on top; `fetch` brings them in.
     let policy_pushed = response.revisions.iter().any(|r| r.path == ".pyn/pyn.toml");
-    if head != tip && !policy_pushed {
+    let merged = outgoing
+        .commits
+        .iter()
+        .any(|c| store.repo().commit(c).is_ok_and(|c| c.parents.len() > 1));
+    if head != tip && !policy_pushed && !merged {
         bail!("the server's head {head} is not the pushed commit {tip}");
     }
     head = tip;

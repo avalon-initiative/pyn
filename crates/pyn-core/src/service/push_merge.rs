@@ -17,7 +17,7 @@ type Version = Option<(ObjectId, FileMode)>;
 /// The branch's pointer for a path as the pushed commits before the merge leave it.
 #[derive(Clone)]
 enum Pointer {
-    Existing(Revision),
+    Existing(Box<Revision>),
     /// A revision this push creates; `roots` are the existing revisions it follows.
     New {
         version: Version,
@@ -77,14 +77,14 @@ impl RepoService {
                 .meta
                 .revision_at(&self.repo, start, path)
                 .await?
-                .map(Pointer::Existing),
+                .map(|r| Pointer::Existing(Box::new(r))),
             None => None,
         })
     }
 
     async fn roots_of(&self, chain: &Chain, path: &RepoPath) -> Result<Vec<Revision>> {
         Ok(match self.pointer_at_start(chain, path).await? {
-            Some(Pointer::Existing(r)) => vec![r],
+            Some(Pointer::Existing(r)) => vec![*r],
             Some(Pointer::New { roots, .. }) => roots,
             None => Vec::new(),
         })
@@ -174,9 +174,8 @@ impl RepoService {
         Ok(Verdict::Conflict)
     }
 
-    /// Accounts for the merge commit `record` (second parent `second`): which paths its tree changes get a new
-    /// revision, which point at an existing one, and refuses it as a whole if a diverged exclusive path has no
-    /// resolution (`MergeConflict`).
+    /// Which paths of merge commit `record` get a new revision and which point at an existing one; a diverged
+    /// exclusive path without a resolution is `MergeConflict`.
     pub(super) async fn account_merge(
         &self,
         who: &Principal,
@@ -218,12 +217,12 @@ impl RepoService {
             let ours = match chain.ours.get(path) {
                 Some(p) => Some(p.clone()),
                 None => match snap_ours.get(path) {
-                    Some(r) => Some(Pointer::Existing(r.clone())),
+                    Some(r) => Some(Pointer::Existing(Box::new(r.clone()))),
                     None => self
                         .meta
                         .revision_at(&self.repo, &start, path)
                         .await?
-                        .map(Pointer::Existing),
+                        .map(|r| Pointer::Existing(Box::new(r))),
                 },
             };
             let theirs = match snap_theirs.get(path) {
@@ -301,7 +300,7 @@ impl RepoService {
             } else if matches!(verdict, Verdict::Adopt)
                 && let Some(t) = theirs
             {
-                update.push((path.clone(), Pointer::Existing(t.clone())));
+                update.push((path.clone(), Pointer::Existing(Box::new(t.clone()))));
                 adopted.push(t);
             }
         }

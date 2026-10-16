@@ -32,6 +32,14 @@ fn invalid(what: impl Into<String>) -> PynError {
     PynError::PushInvalid(what.into())
 }
 
+/// Where a pushed commit sits: on the default branch, after a policy file exists, and whether it is a merge.
+#[derive(Clone, Copy)]
+struct Stage {
+    on_default: bool,
+    has_policy: bool,
+    merge: bool,
+}
+
 /// The revisions a push made and the shared versions its policy commits stranded.
 #[derive(Debug, Clone)]
 pub struct Pushed {
@@ -155,9 +163,11 @@ impl RepoService {
                     &changes,
                     &rules,
                     who,
-                    on_default,
-                    has_policy,
-                    record.parents.len() > 1,
+                    Stage {
+                        on_default,
+                        has_policy,
+                        merge: record.parents.len() > 1,
+                    },
                 )
                 .await?;
             if record.parents.len() < 2
@@ -389,10 +399,13 @@ impl RepoService {
         changes: &[TreeChange],
         rules: &Rules,
         who: &Principal,
-        on_default: bool,
-        has_policy: bool,
-        merge: bool,
+        at: Stage,
     ) -> Result<(Vec<NewRevision>, Option<Rules>)> {
+        let Stage {
+            on_default,
+            has_policy,
+            merge,
+        } = at;
         if changes.is_empty() && !merge {
             return Err(unsupported(format!(
                 "commit {} changes no file; empty commits are not supported yet",

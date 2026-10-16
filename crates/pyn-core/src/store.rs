@@ -129,10 +129,11 @@ pub trait MetadataStore: Send + Sync {
     ) -> Result<Vec<Revision>>;
 
     /// Appends the commits, oldest first, to `branch` and moves it to the last, or writes nothing. The first commit's
-    /// parent must be the branch head and each next one's the one before (`NotFastForward`), and none may exist
-    /// already (`PushInvalid`). `pusher` must hold a live lock on each exclusive path (`LockRequired`, `LockHeld`);
-    /// it is consumed with the path's last revision in the push. A commit's `unlocked` paths need no lock. Each revision's base is the branch's pointer for
-    /// the path, as the commits before it leave it (decision #299).
+    /// parent must be the branch head or an ancestor of it, each next one's the one before, and the last commit must
+    /// contain the head (`NotFastForward`); a second parent must exist and no commit may (`PushInvalid`). `pusher`
+    /// must hold a live lock on each exclusive path (`LockRequired`, `LockHeld`), consumed with the path's last
+    /// revision. A commit's `unlocked` paths need no lock; its `adopted` revisions become the paths' pointers. Each
+    /// revision's base is the pointer at the commit's first parent, as the commits before it leave it (decision #299).
     async fn push_commits_on(
         &self,
         repo: &RepoId,
