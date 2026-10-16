@@ -7128,6 +7128,89 @@ pub async fn a_manager_cannot_change_a_member_who_ranks_above_them(store: Access
         .unwrap();
 }
 
+pub async fn a_manager_sees_and_revokes_only_tokens_within_the_repositories_they_manage(
+    store: Access,
+) {
+    let meta = Arc::new(MemoryMetadataStore::new());
+    let access = AccessService::new(store.clone(), Arc::new(ManualClock::new(at(0))))
+        .with_registry(meta.clone());
+    let (game, vault) = (RepoId::new("alice/game"), RepoId::new("alice/vault"));
+    for (id, name) in [(&game, "game"), (&vault, "vault")] {
+        meta.create_repo(repo_record(id.as_str(), "alice", name))
+            .await
+            .unwrap();
+    }
+    for name in ["alice", "bob", "carol", "root"] {
+        store.create_user(&user(name), at(0)).await.unwrap();
+    }
+    store.set_admin(&user("root"), true).await.unwrap();
+    for repo in [&game, &vault] {
+        access.add_creator(repo, &user("alice")).await.unwrap();
+    }
+    let owner = access.principal(&game, &user("alice")).await.unwrap();
+    let owner_vault = access.principal(&vault, &user("alice")).await.unwrap();
+    access
+        .set_user_role(&owner, &game, &user("bob"), Role::Admin)
+        .await
+        .unwrap();
+    access
+        .set_user_role(&owner, &game, &user("root"), Role::Admin)
+        .await
+        .unwrap();
+    for repo in [(&owner, &game), (&owner_vault, &vault)] {
+        access
+            .set_user_role(repo.0, repo.1, &user("carol"), Role::Writer)
+            .await
+            .unwrap();
+    }
+    let (carol, bob, root) = (session("carol"), session("bob"), session("root"));
+    let perms: std::collections::BTreeSet<Permission> = [Permission::Read].into();
+    let mut ids = Vec::new();
+    for repos in [
+        vec![game.clone()],
+        vec![vault.clone()],
+        vec![game.clone(), vault.clone()],
+    ] {
+        let (record, _) = access
+            .create_token(&carol, "t", perms.clone(), repos, None)
+            .await
+            .unwrap();
+        ids.push(record.id);
+    }
+
+    let seen: Vec<_> = access
+        .list_tokens(&bob, &user("carol"))
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|t| t.id)
+        .collect();
+    assert_eq!(seen, [ids[0].clone()]);
+    assert_eq!(
+        access
+            .list_tokens(&carol, &user("carol"))
+            .await
+            .unwrap()
+            .len(),
+        3
+    );
+    assert_eq!(
+        access
+            .list_tokens(&root, &user("carol"))
+            .await
+            .unwrap()
+            .len(),
+        3
+    );
+
+    for id in &ids[1..] {
+        let err = access.revoke_token(&bob, id).await.unwrap_err();
+        assert!(matches!(err, PynError::TokenNotFound(_)), "{err}");
+    }
+    access.revoke_token(&bob, &ids[0]).await.unwrap();
+    access.revoke_token(&root, &ids[2]).await.unwrap();
+}
+
 /// Generates one `#[tokio::test]` per access-store case for the store built by `$factory`.
 #[macro_export]
 macro_rules! access_contract_tests {
@@ -7171,6 +7254,7 @@ macro_rules! access_contract_tests {
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; teams_hold_members_and_repository_roles_until_removed);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; effective_roles_resolve_across_direct_team_and_owner_grants);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; a_manager_cannot_change_a_member_who_ranks_above_them);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; a_manager_sees_and_revokes_only_tokens_within_the_repositories_they_manage);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; organization_repository_creation_resolves_owner_base_and_rules);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; creation_rules_are_validated_audited_and_dropped_with_their_subject);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; organization_members_stop_at_the_cap);

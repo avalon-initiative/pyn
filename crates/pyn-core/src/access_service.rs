@@ -1044,13 +1044,46 @@ impl AccessService {
             || self.store.org_role(&record.owner, user).await? == Some(OrgRole::Owner))
     }
 
-    /// The actor's own tokens; another user's need `manage_users` in a repository that user belongs to.
-    pub async fn list_tokens(&self, actor: &Identity, user: &UserId) -> Result<Vec<TokenRecord>> {
-        self.require_manages(actor, user).await?;
-        self.store.list_tokens(user).await
+    /// Whether the actor holds `manage_users` in every repository the token is scoped to; a token for all
+    /// repositories qualifies only for a server admin.
+    async fn manages_token(&self, actor: &Identity, record: &TokenRecord) -> Result<bool> {
+        if self.is_server_admin(actor).await? {
+            return Ok(true);
+        }
+        if record.repos.is_empty() {
+            return Ok(false);
+        }
+        for repo in &record.repos {
+            if !self
+                .role_permissions(repo, &actor.user)
+                .await?
+                .contains(&Permission::ManageUsers)
+            {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
-    /// Revokes the actor's own token; another user's needs `manage_users` in a repository that user belongs to.
+    /// The actor's own tokens. Another user's need `manage_users` in a repository that user belongs to, and only
+    /// the tokens limited to repositories the actor manages are listed.
+    pub async fn list_tokens(&self, actor: &Identity, user: &UserId) -> Result<Vec<TokenRecord>> {
+        self.require_manages(actor, user).await?;
+        let all = self.store.list_tokens(user).await?;
+        if &actor.user == user {
+            return Ok(all);
+        }
+        let mut out = Vec::new();
+        for record in all {
+            if self.manages_token(actor, &record).await? {
+                out.push(record);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Revokes the actor's own token. Another user's needs `manage_users` in every repository the token is
+    /// limited to; any other token of theirs reads as not found.
     pub async fn revoke_token(&self, actor: &Identity, id: &TokenId) -> Result<()> {
         actor.require_full_scope()?;
         let record = self
@@ -1059,6 +1092,9 @@ impl AccessService {
             .await?
             .ok_or_else(|| PynError::TokenNotFound(id.to_string()))?;
         self.require_manages(actor, &record.user).await?;
+        if record.user != actor.user && !self.manages_token(actor, &record).await? {
+            return Err(PynError::TokenNotFound(id.to_string()));
+        }
         self.store.revoke_token(id, self.clock.now()).await?;
         let detail = format!("token {} {:?} of {}", record.id, record.name, record.user);
         for repo in &record.repos {
@@ -1684,7 +1720,8 @@ impl AccessService {
         Ok(record)
     }
 
-    /// Adds an account with an initial password, in any registration mode.
+    /// Adds an account with an initial password. Only a server admin may do so unless registration is open
+    /// without approval or email verification; otherwise it is rate limited like sign-up.
     pub async fn add_user(
         &self,
         actor: &Principal,
@@ -1695,6 +1732,28 @@ impl AccessService {
     ) -> Result<UserId> {
         actor.require(Permission::ManageUsers)?;
         self.require_can_grant(actor, repo, role).await?;
+        let by_admin = self
+            .store
+            .account(&actor.user)
+            .await?
+            .is_some_and(|a| a.is_admin);
+        if !by_admin {
+            let open = self.registration_mode() == RegistrationMode::Open
+                && !self.config.require_approval
+                && !self.config.require_email_verification;
+            if !open {
+                return Err(PynError::Forbidden(Permission::ManageUsers));
+            }
+            self.count_limited(
+                &format!(
+                    "register:client:add_user:{}",
+                    bounded_key(actor.user.as_str())
+                ),
+                self.config.limits.register_per_client,
+                REGISTER_WINDOW,
+            )
+            .await?;
+        }
         let user = account::validate_username(username)?;
         account::validate_password(password)?;
         self.require_grantable(repo, &user).await?;

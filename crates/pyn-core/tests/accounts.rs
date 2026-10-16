@@ -591,3 +591,80 @@ async fn a_first_password_is_set_only_from_a_web_session() {
         .await
         .unwrap();
 }
+
+async fn repo_admin_not_server_admin(w: &World) -> Principal {
+    let root = admin(w).await;
+    w.svc
+        .add_user(&root, &w.repo, "wendy", PASSWORD, Role::Admin)
+        .await
+        .unwrap();
+    w.svc
+        .principal(&w.repo, &UserId::new("wendy"))
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn adding_accounts_follows_the_registration_policy() {
+    for mode in [RegistrationMode::Closed, RegistrationMode::InviteOnly] {
+        let w = world(mode);
+        let wendy = repo_admin_not_server_admin(&w).await;
+        let err = w
+            .svc
+            .add_user(&wendy, &w.repo, "x1", PASSWORD, Role::Reader)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, PynError::Forbidden(_)), "{mode:?}: {err}");
+    }
+
+    let w = world(RegistrationMode::Open);
+    let wendy = repo_admin_not_server_admin(&w).await;
+    w.svc
+        .add_user(&wendy, &w.repo, "x1", PASSWORD, Role::Reader)
+        .await
+        .unwrap();
+
+    for (approval, verification) in [(true, false), (false, true)] {
+        let mut w = world(RegistrationMode::Open);
+        let wendy = repo_admin_not_server_admin(&w).await;
+        w.svc = AccessService::new(w.store.clone(), w.clock.clone()).with_config(AccessConfig {
+            registration: RegistrationMode::Open,
+            require_approval: approval,
+            require_email_verification: verification,
+            ..AccessConfig::default()
+        });
+        let err = w
+            .svc
+            .add_user(&wendy, &w.repo, "x2", PASSWORD, Role::Reader)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, PynError::Forbidden(_)), "{err}");
+        let root = w
+            .svc
+            .principal(&w.repo, &UserId::new("root"))
+            .await
+            .unwrap();
+        w.svc
+            .add_user(&root, &w.repo, "x3", PASSWORD, Role::Reader)
+            .await
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn adding_accounts_as_a_non_admin_is_rate_limited() {
+    let w = world(RegistrationMode::Open);
+    let wendy = repo_admin_not_server_admin(&w).await;
+    let max = AccessConfig::default().limits.register_per_client;
+    let mut refused = false;
+    for i in 0..=max {
+        let r = w
+            .svc
+            .add_user(&wendy, &w.repo, &format!("u{i}"), PASSWORD, Role::Reader)
+            .await;
+        if matches!(r, Err(PynError::TooManyAttempts { .. })) {
+            refused = true;
+        }
+    }
+    assert!(refused);
+}
