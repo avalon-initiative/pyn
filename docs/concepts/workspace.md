@@ -195,12 +195,53 @@ workspace can still reach another repository for a single command. Outside a wor
 or one layer with `--local` or `--global`. A `PYN_SERVER` or `--server` always wins, and `PYN_DIR` points at a `.pyn`
 folder kept somewhere else.
 
+## The local store (provisional)
+
+Part of the move to local commits on a pyn server (decision #300, epic #313). By default a pyn server workspace has no
+object database: `pyn commit` goes straight to the server and nothing about history is kept on disk. Setting
+`local_store = true` gives the workspace a partial local store; a workspace without the setting behaves exactly as before
+and never gets a `store/` folder.
+
+The setting is opt-in and lives in the workspace configuration:
+
+- `pyn clone --local-store <source>` turns it on for the new workspace;
+- `pyn clone` also turns it on when the user configuration has `local_store = true` (`pyn config set --global local_store true`);
+- `pyn config set local_store true` turns it on in an existing workspace, and the store is filled by the next `pyn update`
+  (`pyn fetch` and `pyn pull` run it);
+- `pyn config set local_store false` stops further updates of the store; the folder stays until you delete it.
+
+The store is `.pyn/local_only/store/`, a bare repository in git's on-disk format using the SHA-256 object format that a
+pyn server uses, so its ids are the server's own ids:
+
+```text
+store/
+  HEAD                         symbolic ref to refs/heads/<branch>
+  config                       repository format (SHA-256, bare)
+  objects/                     loose objects: commits, trees, and the blobs described below
+  refs/remotes/origin/<branch> the server's tip of the branch as of the last update
+  refs/heads/<branch>          the local branch; moved to the server's tip while it has no local commits
+```
+
+What it holds:
+
+- **Commits and trees for all history.** Every commit reachable from the branch, with its trees, under the id the server
+  gives it. A commit and its trees are rebuilt from what the API already returns and checked against the server's ids; a
+  mismatch fails the update instead of storing something different from the server.
+- **Blobs only for what is checked out and for local work.** After a clone or an update the store holds the blobs of the
+  files in the workspace. Every other blob is absent and is fetched on demand by id: pyn finds the path that has that blob
+  in the branch's tip tree, looks up the revision that carries it, downloads that revision's content, checks it against the
+  id and stores it. A blob the tip tree does not name cannot be fetched by id yet.
+
+The store changes nothing about commits, locks or policy: `pyn commit` still publishes straight to the server, and
+the server stays the only authority. Recording commits locally, `push` and `fetch` between the store and the server are
+separate steps (#336 to #338) and need server endpoints (#333, #334). Only the current branch is stored.
+
 ## The user configuration file
 
 The user file is `~/.config/pyn/config.toml` (`$XDG_CONFIG_HOME/pyn/config.toml`, or `$PYN_CONFIG_DIR/config.toml`) and
 is read on every run. `PYN_CLI_CONFIG=/path/to/file.toml` makes the CLI read and write that TOML file instead; it is
 separate from the server's `PYN_CONFIG`, which names a policy file. The keys are the settings above (`server`, `user`,
-`repo`). Sign-in tokens never go in it: `pyn login` keeps them in `credentials.toml`, and no prompt asks for a password
+`repo`, `local_store`). Sign-in tokens never go in it: `pyn login` keeps them in `credentials.toml`, and no prompt asks for a password
 or token.
 
 The first time a command needs the server and none is set by a flag, `PYN_SERVER`, the workspace or a user file, and

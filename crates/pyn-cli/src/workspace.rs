@@ -23,9 +23,11 @@ pub struct Settings {
     pub user: Option<String>,
     /// The repository as `owner/name`.
     pub repo: Option<String>,
+    /// `true` keeps a partial local store of the history (provisional).
+    pub local_store: Option<String>,
 }
 
-pub const SETTING_KEYS: [&str; 3] = ["server", "user", "repo"];
+pub const SETTING_KEYS: [&str; 4] = ["server", "user", "repo", "local_store"];
 
 impl Settings {
     pub fn load(path: &Path) -> Result<Self> {
@@ -46,11 +48,16 @@ impl Settings {
             .with_context(|| format!("writing {}", path.display()))
     }
 
+    pub fn local_store_on(&self) -> bool {
+        self.local_store.as_deref() == Some("true")
+    }
+
     pub fn get(&self, key: &str) -> Result<Option<&String>> {
         match key {
             "server" => Ok(self.server.as_ref()),
             "user" => Ok(self.user.as_ref()),
             "repo" => Ok(self.repo.as_ref()),
+            "local_store" => Ok(self.local_store.as_ref()),
             other => bail!(
                 "unknown setting {other:?}; the settings are {}",
                 SETTING_KEYS.join(", ")
@@ -65,6 +72,12 @@ impl Settings {
             "repo" => {
                 crate::address::split_repo(&value)?;
                 self.repo = Some(value);
+            }
+            "local_store" => {
+                if value != "true" && value != "false" {
+                    bail!("local_store is true or false, not {value:?}");
+                }
+                self.local_store = Some(value);
             }
             other => bail!(
                 "unknown setting {other:?}; the settings are {}",
@@ -161,6 +174,10 @@ impl Workspace {
 
     pub fn config_path(&self) -> PathBuf {
         self.dir.join(LOCAL_ONLY).join("config.toml")
+    }
+
+    pub fn store_path(&self) -> PathBuf {
+        self.dir.join(LOCAL_ONLY).join("store")
     }
 
     fn state_path(&self) -> PathBuf {
@@ -462,6 +479,18 @@ mod tests {
         );
         assert_eq!(resolve(None, None, None, Some("d")).as_deref(), Some("d"));
         assert_eq!(resolve(None, None, None, None), None);
+    }
+
+    #[test]
+    fn local_store_is_off_unless_set_to_true() {
+        let mut s = Settings::default();
+        assert!(!s.local_store_on());
+        assert!(s.set("local_store", "yes".into()).is_err());
+        s.set("local_store", "true".into()).unwrap();
+        assert!(s.local_store_on());
+        assert_eq!(s.get("local_store").unwrap().unwrap(), "true");
+        s.set("local_store", "false".into()).unwrap();
+        assert!(!s.local_store_on());
     }
 
     #[test]
