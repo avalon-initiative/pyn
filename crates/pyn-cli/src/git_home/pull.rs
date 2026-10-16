@@ -426,7 +426,7 @@ pub fn pull(git: &GitHome, args: PullArgs) -> Result<()> {
         Ok(false) => {}
         Ok(true) => std::process::exit(1),
         Err(e) => {
-            eprintln!("fatal: {e:#}");
+            eprintln!("fatal: {}", crate::sanitize::text(&format!("{e:#}")));
             std::process::exit(1);
         }
     }
