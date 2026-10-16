@@ -10,7 +10,7 @@ a [public repository](repositories.md#visibility); everything else needs credent
 | --- | --- |
 | `read` | list files, folders and locks, see the repository summary, fetch any revision, see history |
 | `lock` | lock and unlock exclusive files |
-| `checkin` | upload content and check in; create, rename and delete [branches](branches.md) |
+| `checkin` | upload content (recorded for the repository it goes to) and check in; create, rename and delete [branches](branches.md) |
 | `restore` | make an older revision the head again |
 | `force_unlock` | remove someone else's lock (`unlock --force`) |
 | `edit_policy` | change `.pyn/pyn.toml` |

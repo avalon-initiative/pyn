@@ -43,19 +43,36 @@ Over HTTP a client can send a large file as chunks (decision #76: plain HTTP, no
 
 1. Cut the file with the shared algorithm (`pyn-chunk`; the CLI and server use the same one) and take the raw SHA-256 of
    each chunk.
-2. `POST /v1/repos/{owner}/{name}/objects/missing` with the digests (at most 10000 per call) returns the ones the server
-   does not store.
+2. `POST /v1/repos/{owner}/{name}/objects/missing` with the digests (at most 10000 per call) returns the ones the
+   repository cannot reference yet (see [per-repository visibility](#per-repository-visibility)); a client uploads those.
 3. `PUT .../objects/chunk` each missing chunk (at most 4 MiB); the response is its raw SHA-256 key. Whole objects go to
    `PUT .../objects` instead and get their blob id.
-4. `POST .../objects/assemble` with the ordered chunk digests. The server sums the chunk lengths for the blob header,
+4. `POST .../objects/assemble` with the ordered chunk digests, each of which the repository must know (else
+   `400 object_missing`). The server sums the chunk lengths for the blob header,
    reads the chunks, computes the blob id of their concatenation (the client cannot claim one), stores the manifest, and
    returns that id to use in a commit. The CLI also hashes the file itself while cutting it and checks the two agree.
 
 Repeating the sequence after a failure uploads only what is still missing. `GET .../content` sends `X-Pyn-Content` (the
 content's blob id) and honours `Range`, so the CLI downloads through a `.pyn-part` file, continues a partial one with a `Range`
 request, verifies the blob id, and only then moves the file into place. Files at or under 1 MiB use the single `PUT`. Parallel
-chunk transfer is not done yet. An existence check answers for any repository on the server, so an id is only useful to
-someone who already has the content.
+chunk transfer is not done yet.
+
+## Per-repository visibility
+
+The object store is shared by every repository on the server and deduplicated by id. Each repository additionally keeps a
+record of the object ids it may reference. An id enters the record when it is uploaded through that repository
+(`PUT .../objects`, `PUT .../objects/chunk`, `POST .../objects/assemble`), and any content named by one of the
+repository's revisions counts as recorded. Check-in, changesets, pushed trees, restore and merge resolutions accept a
+content id only if the repository may reference it, and answer `400 object_missing` otherwise. `objects/missing` answers
+relative to the repository, so an id another repository uploaded is reported missing; the client uploads it and the bytes
+deduplicate in the shared store. The answer is the same whether or not the store holds the id. Reading a blob by id
+(`GET .../objects/{id}`) still requires a revision of the repository to name it. Existing repositories are seeded from
+their revisions by the migration; the chunks of content from before the record existed are uploaded again on first use.
+
+An upload that no revision names yet is counted against the repository's unreferenced-upload ceiling (32 GiB). Past it,
+an upload is refused with `409 storage_limit_reached`, naming the repository. The bytes stop counting when a revision
+names them, and chunks stop counting once an assembled object holds them. These unreferenced records are also the input
+a future garbage collection (#207) works from.
 
 ## Migration from SHA-256 content hashes
 

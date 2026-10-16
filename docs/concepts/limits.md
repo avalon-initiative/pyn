@@ -21,6 +21,9 @@ Storage counts each distinct content once per repository (the same bytes checked
 nothing) and each repository separately, so deleting a repository frees its bytes. Revisions made before limits existed
 carry no recorded size and count as 0 bytes.
 
+Uploads no revision names yet are not part of `storage_bytes`; a repository may hold at most 32 GiB of them, and a larger
+upload is refused with `storage_limit_reached` until some are checked in (see [content storage](storage.md#per-repository-visibility)).
+
 ## Where a limit comes from
 
 For each field the server uses the owner's own value if one is set, else the **server default**, else no limit. The
@@ -43,7 +46,7 @@ overshoot. Each limit has its own error code and answers `409`:
 | --- | --- |
 | `repo_limit_reached` | creating a repository when the owner already has the limit |
 | `member_limit_reached` | adding a member to an organization at its limit |
-| `storage_limit_reached` | a check-in or restore that would add content past the limit |
+| `storage_limit_reached` | a check-in or restore that would add content past the limit, or an upload past the repository's unreferenced-upload ceiling |
 
 Lowering a limit below current use never deletes anything: existing repositories, members and content stay, and only
 new growth is refused until use falls under the limit. The [lock limit](pyn-toml.md#lock-limit) is separate and
