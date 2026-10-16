@@ -1,14 +1,18 @@
 //! Enumerating the commits and trees a client lacks, through `RepoService::fetch`.
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use pyn_object::{Algorithm, parse_tree};
 
 use super::push::{Built, Files, build, objects, set};
-use super::{Harness, Store, blob, harness, path, put_on, user, who};
+use super::{
+    CountingStore, Harness, RULES, Store, blob, harness, harness_on, path, put_on, user, who,
+};
+use crate::memory::MemoryObjectStore;
 use crate::merge::{FastForward, MergeRequest};
 use crate::service::{FetchPage, FetchQuery};
-use crate::{FileMode, Mode, ObjectId, PynError, RevisionId};
+use crate::{FileMode, Mode, ObjectId, PynError, RepoId, RevisionId};
 
 async fn pushed(h: &Harness, parts: &[&Built]) {
     h.svc
@@ -400,4 +404,93 @@ pub async fn a_fetch_refuses_a_bad_cursor_and_too_many_haves(store: Store) {
         .await
         .unwrap_err();
     assert!(matches!(err, PynError::InvalidRequest(_)), "{err}");
+}
+
+/// A chain of `n` commits pushed to main, each editing one file.
+async fn chain(h: &Harness, n: i64) -> Vec<ObjectId> {
+    let mut files = Files::new();
+    let mut parent = None;
+    let mut built = Vec::new();
+    for i in 1..=n {
+        let b = blob(h, &format!("v{i}")).await;
+        set(&mut files, "Source/a.cpp", b);
+        let c = build(&files, parent, &format!("c{i}"), i);
+        parent = Some(c.id);
+        built.push(c);
+    }
+    let parts: Vec<&Built> = built.iter().collect();
+    pushed(h, &parts).await;
+    built.iter().map(|c| c.id).collect()
+}
+
+/// The store calls of the second page (two commits) of a fetch over a chain of `n` commits, with the first as a have.
+async fn second_page_calls(store: Store, n: i64) -> usize {
+    let counting = CountingStore::new(store);
+    let h = harness_on(
+        counting.clone(),
+        Arc::new(MemoryObjectStore::new()),
+        RepoId::new(&format!("chain{n}")),
+        RULES,
+    );
+    let all = chain(&h, n).await;
+    let first = fetch(
+        &h,
+        FetchQuery {
+            haves: vec![all[0]],
+            limit: Some(2),
+            ..FetchQuery::default()
+        },
+    )
+    .await;
+    let cursor = first.next.expect("a second page");
+    counting.take();
+    let second = fetch(
+        &h,
+        FetchQuery {
+            cursor: Some(cursor),
+            haves: vec![all[0]],
+            limit: Some(2),
+            ..FetchQuery::default()
+        },
+    )
+    .await;
+    assert_eq!(ids(&second), all[3..5].to_vec());
+    counting.take()
+}
+
+pub async fn the_work_of_a_fetch_page_does_not_grow_with_the_history(store: Store) {
+    let short = second_page_calls(store.clone(), 8).await;
+    let long = second_page_calls(store, 60).await;
+    assert_eq!(short, long, "a page costs the same on a longer history");
+}
+
+pub async fn a_walk_past_the_examination_cap_is_refused(store: Store) {
+    let h = harness(store);
+    let all = chain(&h, 5).await;
+    let head = *all.last().unwrap();
+    let repo = h.svc.repo();
+    let err = h
+        .store
+        .missing_commits(repo, &[head], &[], None, 10, 3)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::InvalidRequest(_)), "{err}");
+    let err = h
+        .store
+        .missing_commits(repo, &[all[0]], &[head], None, 10, 3)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::InvalidRequest(_)), "{err}");
+    let found = h
+        .store
+        .missing_commits(repo, &[head], &[], None, 10, 5)
+        .await
+        .unwrap();
+    assert_eq!(found.iter().map(|c| c.id).collect::<Vec<_>>(), all);
+    let tail = h
+        .store
+        .missing_commits(repo, &[head], &[all[1]], Some(&all[2]), 10, 3)
+        .await
+        .unwrap();
+    assert_eq!(tail.iter().map(|c| c.id).collect::<Vec<_>>(), all[3..]);
 }

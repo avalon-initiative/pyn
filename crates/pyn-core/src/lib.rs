@@ -80,9 +80,9 @@ pub use repo_policy::{
 pub use repositories::Repositories;
 pub use rules::{Mode, PathFilter, Rules};
 pub use service::{
-    ChangeEntry, CommitPage, Deletion, FETCH_DEFAULT_LIMIT, FETCH_MAX_HAVES, FETCH_MAX_LIMIT,
-    FetchPage, FetchQuery, FetchedCommit, FileEntry, LockLimit, PolicyPreview, PushObjects, Pushed,
-    Recorded, RepoService, ServiceConfig, Snapshot, SnapshotEntry,
+    ChangeEntry, CommitPage, Deletion, FETCH_DEFAULT_LIMIT, FETCH_MAX_EXAMINED, FETCH_MAX_HAVES,
+    FETCH_MAX_LIMIT, FetchPage, FetchQuery, FetchedCommit, FileEntry, LockLimit, PolicyPreview,
+    PushObjects, Pushed, Recorded, RepoService, ServiceConfig, Snapshot, SnapshotEntry,
 };
 pub use store::MetadataStore;
 pub use stranded::{ConversionNote, StrandedVersion};

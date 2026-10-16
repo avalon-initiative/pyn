@@ -6,7 +6,8 @@ mod uploads;
 pub use uploads::DEFAULT_UNREFERENCED_UPLOAD_BYTES;
 
 pub use fetch::{
-    FETCH_DEFAULT_LIMIT, FETCH_MAX_HAVES, FETCH_MAX_LIMIT, FetchPage, FetchQuery, FetchedCommit,
+    FETCH_DEFAULT_LIMIT, FETCH_MAX_EXAMINED, FETCH_MAX_HAVES, FETCH_MAX_LIMIT, FetchPage,
+    FetchQuery, FetchedCommit,
 };
 pub use push::{PushObjects, Pushed};
 

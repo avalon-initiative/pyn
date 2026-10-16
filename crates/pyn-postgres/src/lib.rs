@@ -1636,6 +1636,73 @@ impl MetadataStore for PgMetadataStore {
         Ok(commits)
     }
 
+    async fn missing_commits(
+        &self,
+        repo: &RepoId,
+        tips: &[ObjectId],
+        haves: &[ObjectId],
+        after: Option<&ObjectId>,
+        limit: usize,
+        max_examined: usize,
+    ) -> Result<Vec<Commit>> {
+        let floor: i64 = match after {
+            Some(a) => sqlx::query_scalar("SELECT seq FROM commits WHERE repo = $1 AND id = $2")
+                .bind(repo.as_str())
+                .bind(a.to_hex())
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(db)?
+                .ok_or_else(|| PynError::CommitNotFound(a.to_string()))?,
+            None => -1,
+        };
+        let hex = |ids: &[ObjectId]| ids.iter().map(ObjectId::to_hex).collect::<Vec<_>>();
+        let rows = sqlx::query(AssertSqlSafe(format!(
+            "WITH RECURSIVE
+             want(id) AS (
+                 SELECT id FROM commits WHERE repo = $1 AND id = ANY($2) AND seq > $4
+                 UNION
+                 SELECT p.id FROM want JOIN commits c ON c.repo = $1 AND c.id = want.id
+                     CROSS JOIN LATERAL unnest(c.parents) AS pid
+                     JOIN commits p ON p.repo = $1 AND p.id = pid AND p.seq > $4
+             ),
+             have(id) AS (
+                 SELECT id FROM commits WHERE repo = $1 AND id = ANY($3) AND seq > $4
+                 UNION
+                 SELECT p.id FROM have JOIN commits c ON c.repo = $1 AND c.id = have.id
+                     CROSS JOIN LATERAL unnest(c.parents) AS pid
+                     JOIN commits p ON p.repo = $1 AND p.id = pid AND p.seq > $4
+             ),
+             wanted AS MATERIALIZED (SELECT id FROM want LIMIT $5 + 1),
+             owned AS MATERIALIZED (SELECT id FROM have LIMIT $5 + 1),
+             page AS (
+                 SELECT seq, {COMMIT_COLUMNS} FROM commits
+                 WHERE repo = $1 AND id IN (SELECT id FROM wanted)
+                   AND id NOT IN (SELECT id FROM owned)
+                 ORDER BY seq LIMIT $6
+             )
+             SELECT (SELECT count(*) FROM wanted) > $5 OR (SELECT count(*) FROM owned) > $5 AS over, page.*
+             FROM (SELECT 1) one LEFT JOIN page ON true ORDER BY page.seq"
+        )))
+        .bind(repo.as_str())
+        .bind(hex(tips))
+        .bind(hex(haves))
+        .bind(floor)
+        .bind(max_examined as i64)
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        if rows.iter().any(|r| r.get::<bool, _>("over")) {
+            return Err(PynError::InvalidRequest(format!(
+                "the request would examine more than {max_examined} commits"
+            )));
+        }
+        rows.iter()
+            .filter(|r| r.get::<Option<String>, _>("id").is_some())
+            .map(commit_from)
+            .collect()
+    }
+
     async fn is_ancestor(
         &self,
         repo: &RepoId,

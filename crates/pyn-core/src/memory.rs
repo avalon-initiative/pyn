@@ -948,6 +948,55 @@ impl MetadataStore for MemoryMetadataStore {
             .collect())
     }
 
+    async fn missing_commits(
+        &self,
+        repo: &RepoId,
+        tips: &[ObjectId],
+        haves: &[ObjectId],
+        after: Option<&ObjectId>,
+        limit: usize,
+        max_examined: usize,
+    ) -> Result<Vec<Commit>> {
+        let st = self.state.lock().unwrap();
+        let all = st.commits.get(repo).map_or(&[][..], Vec::as_slice);
+        let index: HashMap<ObjectId, usize> =
+            all.iter().enumerate().map(|(i, c)| (c.id, i)).collect();
+        let floor = match after {
+            Some(a) => {
+                *index
+                    .get(a)
+                    .ok_or_else(|| PynError::CommitNotFound(a.to_string()))?
+                    + 1
+            }
+            None => 0,
+        };
+        let reach = |from: &[ObjectId]| -> Result<HashSet<usize>> {
+            let mut seen = HashSet::new();
+            let mut stack: Vec<usize> = from.iter().filter_map(|i| index.get(i).copied()).collect();
+            while let Some(at) = stack.pop() {
+                if at < floor || !seen.insert(at) {
+                    continue;
+                }
+                if seen.len() > max_examined {
+                    return Err(PynError::InvalidRequest(format!(
+                        "the request would examine more than {max_examined} commits"
+                    )));
+                }
+                stack.extend(all[at].parents.iter().filter_map(|p| index.get(p).copied()));
+            }
+            Ok(seen)
+        };
+        let wanted = reach(tips)?;
+        let owned = reach(haves)?;
+        let mut out: Vec<usize> = wanted.difference(&owned).copied().collect();
+        out.sort_unstable();
+        Ok(out
+            .into_iter()
+            .take(limit)
+            .map(|i| all[i].clone())
+            .collect())
+    }
+
     async fn is_ancestor(
         &self,
         repo: &RepoId,

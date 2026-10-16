@@ -1,11 +1,10 @@
 //! Enumerating what a client lacks (decision #300): the commits reachable from the wanted branches and not from the
-//! client's haves, oldest first, each with its pointers and the trees it adds.
+//! client's haves, parents first in stored order, each with its pointers and the trees it adds.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
-
-use chrono::{DateTime, Utc};
+use std::collections::{HashMap, HashSet};
 
 use pyn_object::{ObjectId, parse_tree};
+use sha2::{Digest, Sha256};
 
 use super::RepoService;
 use crate::error::{PynError, Result};
@@ -16,6 +15,8 @@ pub const FETCH_DEFAULT_LIMIT: usize = 100;
 pub const FETCH_MAX_LIMIT: usize = 500;
 /// Haves per request; a client sends its branch heads, not its history.
 pub const FETCH_MAX_HAVES: usize = 1000;
+/// Commits one fetch request may examine; a larger walk is refused.
+pub const FETCH_MAX_EXAMINED: usize = 1_000_000;
 
 /// What a client asks for. With a `cursor` the branches are those it pinned and `branches` and `haves` must be empty.
 #[derive(Debug, Default, Clone)]
@@ -45,8 +46,9 @@ pub struct FetchPage {
     pub next: Option<String>,
 }
 
-/// The state a cursor carries: the pinned heads and the last commit already sent.
+/// The state a cursor carries: the pinned heads, the haves it was made for and the last commit already sent.
 struct Cursor {
+    haves: String,
     refs: Vec<(String, Option<ObjectId>)>,
     last: Option<ObjectId>,
 }
@@ -54,7 +56,7 @@ struct Cursor {
 impl Cursor {
     fn encode(&self) -> String {
         let id = |i: &Option<ObjectId>| i.map_or("-".to_string(), |i| i.to_hex());
-        let mut text = format!("1\n{}", id(&self.last));
+        let mut text = format!("2\n{}\n{}", id(&self.last), self.haves);
         for (name, head) in &self.refs {
             text.push_str(&format!("\n{name}\t{}", id(head)));
         }
@@ -64,7 +66,7 @@ impl Cursor {
     fn decode(cursor: &str) -> Option<Self> {
         let text = String::from_utf8(hex::decode(cursor).ok()?).ok()?;
         let mut lines = text.split('\n');
-        if lines.next()? != "1" {
+        if lines.next()? != "2" {
             return None;
         }
         let id = |s: &str| match s {
@@ -72,14 +74,24 @@ impl Cursor {
             s => ObjectId::from_hex(REPO_ALGORITHM, s).ok().map(Some),
         };
         let last = id(lines.next()?)?;
+        let haves = lines.next()?.to_string();
         let refs = lines
             .map(|l| {
                 let (name, head) = l.split_once('\t')?;
                 Some((name.to_string(), id(head)?))
             })
             .collect::<Option<Vec<_>>>()?;
-        (!refs.is_empty()).then_some(Self { refs, last })
+        (!refs.is_empty()).then_some(Self { haves, refs, last })
     }
+}
+
+/// A short digest of the have set, so a cursor is only good for the haves it was made with.
+fn haves_digest(haves: &[ObjectId]) -> String {
+    let mut hex: Vec<String> = haves.iter().map(ObjectId::to_hex).collect();
+    hex.sort_unstable();
+    hex.dedup();
+    let digest = Sha256::digest(hex.join("\n"));
+    hex::encode(&digest[..8])
 }
 
 fn bad_cursor() -> PynError {
@@ -99,6 +111,7 @@ impl RepoService {
             .limit
             .unwrap_or(FETCH_DEFAULT_LIMIT)
             .clamp(1, FETCH_MAX_LIMIT);
+        let digest = haves_digest(&query.haves);
         let (refs, last) = match &query.cursor {
             Some(text) => {
                 if !query.branches.is_empty() {
@@ -106,7 +119,9 @@ impl RepoService {
                         "a cursor already names the branches".into(),
                     ));
                 }
-                let cursor = Cursor::decode(text).ok_or_else(bad_cursor)?;
+                let cursor = Cursor::decode(text)
+                    .filter(|c| c.haves == digest)
+                    .ok_or_else(bad_cursor)?;
                 for head in cursor.refs.iter().filter_map(|(_, h)| h.as_ref()) {
                     self.meta
                         .get_commit(&self.repo, head)
@@ -118,22 +133,26 @@ impl RepoService {
             None => (self.wanted_heads(&query.branches).await?, None),
         };
 
-        let mut haves = Vec::new();
-        for have in &query.haves {
-            if !haves.contains(have) && self.meta.get_commit(&self.repo, have).await?.is_some() {
-                haves.push(*have);
-            }
-        }
-        let missing = self
-            .missing_commits(refs.iter().filter_map(|(_, h)| *h), &haves)
-            .await?;
-        let order = parents_first(&missing);
-        let start = match last {
-            Some(id) => order.iter().position(|c| *c == id).ok_or_else(bad_cursor)? + 1,
-            None => 0,
-        };
-        let page: Vec<ObjectId> = order[start..].iter().take(limit).copied().collect();
-        let more = start + page.len() < order.len();
+        let tips: Vec<ObjectId> = refs.iter().filter_map(|(_, h)| *h).collect();
+        let mut batch = self
+            .meta
+            .missing_commits(
+                &self.repo,
+                &tips,
+                &query.haves,
+                last.as_ref(),
+                limit + 1,
+                FETCH_MAX_EXAMINED,
+            )
+            .await
+            .map_err(|e| match e {
+                PynError::CommitNotFound(_) if last.is_some() => bad_cursor(),
+                e => e,
+            })?;
+        let more = batch.len() > limit;
+        batch.truncate(limit);
+        let page: Vec<ObjectId> = batch.iter().map(|c| c.id).collect();
+        let missing: HashMap<ObjectId, Commit> = batch.into_iter().map(|c| (c.id, c)).collect();
 
         let mut commits = Vec::with_capacity(page.len());
         for id in &page {
@@ -152,6 +171,7 @@ impl RepoService {
         let next = match (more, page.last()) {
             (true, Some(last)) => Some(
                 Cursor {
+                    haves: digest,
                     refs: refs.clone(),
                     last: Some(*last),
                 }
@@ -184,42 +204,6 @@ impl RepoService {
             }
         }
         Ok(out)
-    }
-
-    /// Commits reachable from `tips` that no have descends from. A commit a have descends from has all its ancestors
-    /// excluded too, so the walk stops there.
-    async fn missing_commits(
-        &self,
-        tips: impl Iterator<Item = ObjectId>,
-        haves: &[ObjectId],
-    ) -> Result<HashMap<ObjectId, Commit>> {
-        let mut found = HashMap::new();
-        let mut skipped = HashSet::new();
-        let mut stack: Vec<ObjectId> = tips.collect();
-        while let Some(id) = stack.pop() {
-            if found.contains_key(&id) || skipped.contains(&id) {
-                continue;
-            }
-            let mut owned = false;
-            for have in haves {
-                if self.meta.is_ancestor(&self.repo, &id, have).await? {
-                    owned = true;
-                    break;
-                }
-            }
-            if owned {
-                skipped.insert(id);
-                continue;
-            }
-            let commit = self
-                .meta
-                .get_commit(&self.repo, &id)
-                .await?
-                .ok_or_else(|| PynError::CommitNotFound(id.to_string()))?;
-            stack.extend(commit.parents.iter().copied());
-            found.insert(id, commit);
-        }
-        Ok(found)
     }
 
     /// The trees under the commit's root that its first parent's tree does not have at the same place.
@@ -266,38 +250,4 @@ impl RepoService {
             .await?
             .ok_or_else(|| PynError::Storage(format!("tree {id} is missing")))
     }
-}
-
-/// Parents before children; among the commits ready, the earlier committer time first, then the id.
-fn parents_first(commits: &HashMap<ObjectId, Commit>) -> Vec<ObjectId> {
-    let mut waiting: HashMap<ObjectId, usize> = HashMap::new();
-    let mut children: HashMap<ObjectId, Vec<ObjectId>> = HashMap::new();
-    let mut ready: BTreeSet<(DateTime<Utc>, String)> = BTreeSet::new();
-    for (id, c) in commits {
-        let parents: HashSet<_> = c
-            .parents
-            .iter()
-            .filter(|p| commits.contains_key(p))
-            .collect();
-        if parents.is_empty() {
-            ready.insert((c.created_at, id.to_hex()));
-        }
-        waiting.insert(*id, parents.len());
-        for p in parents {
-            children.entry(*p).or_default().push(*id);
-        }
-    }
-    let mut out = Vec::with_capacity(commits.len());
-    while let Some((_, hex)) = ready.pop_first() {
-        let id = ObjectId::from_hex(REPO_ALGORITHM, &hex).expect("written by to_hex");
-        out.push(id);
-        for child in children.get(&id).into_iter().flatten() {
-            let n = waiting.get_mut(child).expect("every child is counted");
-            *n -= 1;
-            if *n == 0 {
-                ready.insert((commits[child].created_at, child.to_hex()));
-            }
-        }
-    }
-    out
 }

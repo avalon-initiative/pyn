@@ -45,6 +45,8 @@ mod push_changes;
 pub use push_changes::*;
 mod fetch;
 pub use fetch::*;
+mod counting;
+pub use counting::CountingStore;
 mod deletion;
 pub use deletion::*;
 mod push_merge;
@@ -3247,6 +3249,8 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_merge_commit_arrives_after_both_parents_with_the_pointers_it_adopted);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_fetch_names_branches_or_takes_all_and_refuses_an_unknown_one);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_fetch_refuses_a_bad_cursor_and_too_many_haves);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; the_work_of_a_fetch_page_does_not_grow_with_the_history);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_walk_past_the_examination_cap_is_refused);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_push_deletes_shared_paths_and_whole_folders);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_file_turned_into_a_folder_or_back_deletes_and_adds);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; deleting_an_exclusive_path_in_a_push_needs_the_pushers_live_lock);
@@ -3881,6 +3885,20 @@ impl MetadataStore for HookedMeta {
         limit: usize,
     ) -> crate::Result<Vec<crate::Commit>> {
         self.inner.commits(repo, tip, before, limit).await
+    }
+
+    async fn missing_commits(
+        &self,
+        repo: &RepoId,
+        tips: &[ObjectId],
+        haves: &[ObjectId],
+        after: Option<&ObjectId>,
+        limit: usize,
+        max_examined: usize,
+    ) -> crate::Result<Vec<crate::Commit>> {
+        self.inner
+            .missing_commits(repo, tips, haves, after, limit, max_examined)
+            .await
     }
 
     async fn is_ancestor(

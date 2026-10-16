@@ -113,7 +113,7 @@ It follows the repository's read access like `objects/{id}`: a public repository
 - `cursor` is the opaque `next` of the previous page.
 
 The answer is `{refs, commits, next?}`. `refs` lists each wanted branch with its head (null for a branch with no commit).
-`commits` holds the page, parents before children (ties by committer time, then id): each is
+`commits` holds the page, parents before children, in the order the server stored them: each is
 `{id, data, pointers, trees}`. `data` is the base64 of the commit's body and `trees` are `{id, data}` objects, both encoded as in
 a push, so a client stores them under the ids it is given. `pointers` are the revisions the commit's pointer cache records
 ([branches](branches.md#the-revision-of-a-path-at-a-commit)): the revisions the commit wrote and, for a merge commit, the ones it adopted from the other parent. Each carries its `mode`, so a client
@@ -123,10 +123,11 @@ therefore has every tree it needs, and a tree may be sent again by a later commi
 read on demand with `objects/{id}`.
 
 A cursor pins the branch heads the first page saw, so a branch that moves between pages changes neither the walk nor the `refs`
-of later pages; the client sends the same `haves` again, and a cursor with other haves or branches is `invalid_request`. Each page recomputes the walk, so
-a fetch costs time in proportion to the commits it covers.
+of later pages; the client sends the same `haves` again, and a cursor with other haves or branches is `invalid_request`. A page continues after the last
+commit the previous one sent, so its work follows the commits still to send rather than the pages already served. One request examines
+at most 1,000,000 commits; a larger walk is `invalid_request`.
 
-The route is additive and nothing existing changed. Provisional: the page limits and the cost of recomputing each page may move.
+The route is additive and nothing existing changed. Provisional: the page limits and the examination cap may move.
 
 ### Reading a blob by id
 

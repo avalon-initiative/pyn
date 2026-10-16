@@ -224,6 +224,19 @@ pub trait MetadataStore: Send + Sync {
         limit: usize,
     ) -> Result<Vec<Commit>>;
 
+    /// Commits reachable from `tips` and not from `haves` (unknown ids are ignored), parents before children in the
+    /// order stored, only those stored after commit `after`, at most `limit`. `InvalidRequest` when either walk would
+    /// pass `max_examined` commits.
+    async fn missing_commits(
+        &self,
+        repo: &RepoId,
+        tips: &[ObjectId],
+        haves: &[ObjectId],
+        after: Option<&ObjectId>,
+        limit: usize,
+        max_examined: usize,
+    ) -> Result<Vec<Commit>>;
+
     /// Whether `ancestor` is `descendant` or one of its ancestors.
     async fn is_ancestor(
         &self,
