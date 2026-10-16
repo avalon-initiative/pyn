@@ -94,9 +94,9 @@ The commands named in decision #218.
 | `git restore -p`, `--ours`, `--theirs`, `--merge` | none | unsupported | Usage error (`129`). On a git home `pyn checkout --ours -- <path>` and `--theirs` take a side of an unmerged path. |
 | `git branch`, `git switch`, `git checkout` | `pyn branch`, `pyn switch`, `pyn checkout` | supported | See [branching and merging](#branching-and-merging). On a git home they work on `.git` as git does, see [Branches, switching and the work tree](#branches-switching-and-the-work-tree). |
 | `git merge` | `pyn merge` | supported | See [branching and merging](#branching-and-merging). On a git home it merges as git does, see [Merging](#merging). |
-| `git fetch` | `pyn fetch` on a git home | git home only | See [Fetch on a git home](#fetch-on-a-git-home). On a pyn server it runs `pyn update`, see [Remotes on a pyn server](#remotes-on-a-pyn-server). |
-| `git pull` | `pyn pull` on a git home | git home only | Fetch, then merge through `pyn merge`; see [Pull on a git home](#pull-on-a-git-home). On a pyn server it runs `pyn update`, see [Remotes on a pyn server](#remotes-on-a-pyn-server). |
-| `git push` | `pyn push` on a git home | git home only | See [Push on a git home](#push-on-a-git-home). On a pyn server it prints that there is nothing to push, because a commit goes straight to the server; see [Remotes on a pyn server](#remotes-on-a-pyn-server). |
+| `git fetch` | `pyn fetch` on a git home | git home only | See [Fetch on a git home](#fetch-on-a-git-home). On a pyn server it runs `pyn update` (or, with `local_store` on, fetches into the local store), see [Remotes on a pyn server](#remotes-on-a-pyn-server). |
+| `git pull` | `pyn pull` on a git home | git home only | Fetch, then merge through `pyn merge`; see [Pull on a git home](#pull-on-a-git-home). On a pyn server it runs `pyn update` (or, with `local_store` on, fetches into the local store), see [Remotes on a pyn server](#remotes-on-a-pyn-server). |
+| `git push` | `pyn push` on a git home | git home only | See [Push on a git home](#push-on-a-git-home). On a pyn server it prints that there is nothing to push, because a commit goes straight to the server (with `local_store` on it publishes the local commits); see [Remotes on a pyn server](#remotes-on-a-pyn-server). |
 | `git remote` | `pyn remote` | git home; pyn server partly | On a git home it lists and edits the remotes in `.git/config`, see [Remotes](#remotes). On a pyn server `pyn remote` and `pyn remote -v` show the one remote, `origin`: the server and repository set by `--server` and `--repo` or `pyn config set server` and `repo`; the editing subcommands say so and exit `1`. |
 | `git tag [-a] [-m <msg>] [-f] [<name> [<commit>]]`, `-d`, `-l` | `pyn tag ...` on a git home | git home only | See [Tags](#tags). On a pyn server it prints the git-command message (a server's commits are named by hash and have no tags yet, #223). |
 | `git stash [push] [-u] [-m <msg>]`, `list`, `pop`, `apply`, `drop`, `clear` | `pyn stash ...` on a git home | git home only | See [Stashing](#stashing). On a pyn server it prints the git-command message. |
@@ -156,8 +156,8 @@ until local commits exist (decision #300, built in #313).
 | Command | Behaviour |
 | --- | --- |
 | `pyn remote -v` | `origin`, a tab and `<server>/<owner>/<name> (fetch)`, then the same with `(push)`. |
-| `pyn fetch`, `pyn pull` | Run `pyn update`. With any argument or option they are usage errors (`129`). |
-| `pyn push` | Prints that there is nothing to push, because commits go straight to the server; exits `0`. Arguments are usage errors. |
+| `pyn fetch`, `pyn pull` | Run `pyn update`; with `local_store` on they fetch into the local store and `pull` then fast-forwards or replays local commits ([commits](commits.md#fetch-pull-and-push-with-a-local-store)). With any argument or option they are usage errors (`129`). |
+| `pyn push` | Prints that there is nothing to push, because commits go straight to the server; exits `0`. With `local_store` on it publishes the local commits and exits `1` on a refusal. Arguments are usage errors. |
 | `pyn branch -r`, `-a` | `-r` lists the server's branches as `origin/<branch>`; `-a` lists the local ones, then `remotes/origin/<branch>`. `-v` works with both. Only listing is allowed with them. |
 
 ### Remotes on a git home

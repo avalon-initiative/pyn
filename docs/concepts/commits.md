@@ -74,8 +74,9 @@ files and trees leave deleted paths out; history and the commit's `revisions` li
 
 Decision #300 lets a client build commits itself and publish them. The core accepts them through `RepoService::push_commits` and
 one atomic store step, `MetadataStore::push_commits_on`, and the server offers them as `POST /v1/repos/{owner}/{name}/push`
-(below). The matching read side is `POST .../fetch` ([fetching](#the-fetch-route)). No CLI command sends a push or a fetch
-yet (#337), and everything here is provisional until it does.
+(below). The matching read side is `POST .../fetch` ([fetching](#the-fetch-route)). `pyn push`, `pyn fetch` and `pyn pull` use
+them in a workspace with `local_store` on ([from the command line](#fetch-pull-and-push-with-a-local-store)); everything here
+is provisional.
 
 ### The push route
 
@@ -154,6 +155,36 @@ repository is readable without credentials). A client that keeps commits and tre
   email and message fields in the API are those bytes decoded lossily (invalid bytes and NUL become U+FFFD).
 - The pusher needs the `checkin` permission. A commit's author need not match the pusher, as in git; the authenticated pusher is
   the account on the revisions and the actor in the audit log. A strict-match policy may be added later.
+
+### Fetch, pull and push with a local store
+
+With `local_store` on ([workspace](workspace.md#the-local-store-provisional)) the three commands use these routes (decision
+#300, slice #337); without it they are unchanged (`fetch` and `pull` run `pyn update`, `push` says there is nothing to push).
+
+- `pyn fetch` sends the remote-tracking tip as the only have and stores the commits and trees of each page. Every commit and
+  tree body is hashed and must equal the id it came with, and a commit's tree and parents must already be stored: on any
+  mismatch the whole answer is refused (`... does not match its content`) and the remote-tracking ref does not move. It then
+  moves `refs/remotes/origin/<branch>`; the local branch and the files are left alone. Output is git's:
+  `From <server>/<repo>` and `   <old>..<new>  main -> origin/main`, nothing when there is nothing new. Pointers are not kept
+  yet. A blob the store lacks is read on demand by id (`GET .../objects/{id}`), checked against the id and stored.
+- `pyn pull` is `fetch` and then: nothing when the local branch already holds the fetched tip (`Already up to date.`); a
+  fast-forward when the fetched tip descends from the local one, followed by the usual `update` of the files; otherwise the
+  local commits are replayed one by one onto the fetched tip (a rebase, not a merge commit) with a three-way text merge per
+  file. A file both sides changed that cannot be merged line by line, a mode change on both sides, or a deletion against an
+  edit is a conflict: the pull stops, names the files and changes nothing (resolving conflicts is not built yet). A pull
+  also refuses to run over uncommitted changes to a file the incoming commits change, and with staged changes. A local merge
+  commit cannot be replayed and is refused.
+- `pyn push` first uploads every blob the unpublished commits added or changed through the chunked object routes, then sends
+  the commits and the trees they need in one `POST .../push`. It is accepted or refused whole. On success the
+  remote-tracking ref moves to the new head, so the commits are no longer unpublished; the files take the revisions the server
+  made, and exclusive files go read-only again. Output: `To <server>/<repo>` and `   <old>..<new>  main -> main`, or
+  `Everything up-to-date`.
+- A refused push prints a git-style `! [rejected]` line, the server's message, a hint and exits `1`:
+  `not_fast_forward` and `stale_base` (also detected locally when the local branch does not build on the fetched tip) tell the
+  person to run `pyn pull` and push again; `lock_required` (including a lapsed lease) says to lock the path; `lock_held`
+  names that someone else holds it; `object_missing`, `push_invalid`, `push_unsupported`, `storage_limit_reached` and
+  `forbidden` are named too. Commits that delete a file or change `.pyn/pyn.toml` are refused by the CLI before anything is
+  sent (the server does not take them yet), and a merge commit is refused too.
 
 ## Command line
 
