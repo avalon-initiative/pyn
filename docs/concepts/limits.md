@@ -21,8 +21,16 @@ Storage counts each distinct content once per repository (the same bytes checked
 nothing) and each repository separately, so deleting a repository frees its bytes. Revisions made before limits existed
 carry no recorded size and count as 0 bytes.
 
-Uploads no revision names yet are not part of `storage_bytes`; a repository may hold at most 32 GiB of them, and a larger
-upload is refused with `storage_limit_reached` until some are checked in (see [content storage](storage.md#per-repository-visibility)).
+Uploads no revision names yet are not part of `storage_bytes`; see [unreferenced uploads](#unreferenced-uploads).
+
+## Unreferenced uploads
+
+A repository may hold a fixed number of bytes in uploads that no revision names yet. The server setting
+`PYN_MAX_UNREFERENCED_UPLOAD_BYTES` (a whole number of bytes, applied to every repository) sets it; unset, it is
+32 GiB (34359738368). An upload that would pass it is refused with `storage_limit_reached` until some are checked in
+(see [content storage](storage.md#per-repository-visibility)). Like the other limits, `0` blocks growth entirely: every
+non-empty upload is refused. A value that is not a whole number stops the server at start, and the effective value is
+written to the startup log. It is read at start; there is no way to change it while the server runs.
 
 ## Where a limit comes from
 

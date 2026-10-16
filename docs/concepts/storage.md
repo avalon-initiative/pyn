@@ -69,7 +69,7 @@ deduplicate in the shared store. The answer is the same whether or not the store
 (`GET .../objects/{id}`) still requires a revision of the repository to name it. Existing repositories are seeded from
 their revisions by the migration; the chunks of content from before the record existed are uploaded again on first use.
 
-An upload that no revision names yet is counted against the repository's unreferenced-upload ceiling (32 GiB). Past it,
+An upload that no revision names yet is counted against the repository's unreferenced-upload ceiling (32 GiB by default; [`PYN_MAX_UNREFERENCED_UPLOAD_BYTES`](../configuration.md)). Past it,
 an upload is refused with `409 storage_limit_reached`, naming the repository. The bytes stop counting when a revision
 names them, and chunks stop counting once an assembled object holds them. These unreferenced records are also the input
 a future garbage collection (#207) works from.
