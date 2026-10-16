@@ -429,7 +429,7 @@ async fn second_page_calls(store: Store, n: i64) -> usize {
     let h = harness_on(
         counting.clone(),
         Arc::new(MemoryObjectStore::new()),
-        RepoId::new(&format!("chain{n}")),
+        RepoId::new(format!("chain{n}")),
         RULES,
     );
     let all = chain(&h, n).await;
