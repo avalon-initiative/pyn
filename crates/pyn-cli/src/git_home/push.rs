@@ -225,7 +225,7 @@ impl Relay {
             let segment: Vec<u8> = self.pending.drain(..=end).collect();
             let mut err = std::io::stderr().lock();
             let _ = err.write_all(b"remote: ");
-            let _ = err.write_all(&segment);
+            let _ = err.write_all(&crate::sanitize::bytes(&segment));
         }
     }
 
@@ -901,9 +901,9 @@ fn push_one(
             e.status = match report.refs.iter().find(|r| r.name == e.name) {
                 Some(r) => match &r.status {
                     RefStatus::Ok => Status::Ok,
-                    RefStatus::Rejected(why) => {
-                        Status::RemoteReject((!why.is_empty()).then(|| why.clone()))
-                    }
+                    RefStatus::Rejected(why) => Status::RemoteReject(
+                        (!why.is_empty()).then(|| crate::sanitize::text(why).into_owned()),
+                    ),
                 },
                 None => Status::NoReport,
             };

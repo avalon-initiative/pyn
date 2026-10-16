@@ -468,6 +468,13 @@ server sends; ids are not lengthened to stay unique; `push.autoSetupRemote`, `pu
 instead of setting anything; local-path and `file://` remotes are refused (see [Transports and credentials](#transports-and-credentials)).
 A push to a pyn server is not this command: see the push row above.
 
+### Text from a remote
+
+Text a server sends to be shown (`remote:` lines, error packets, the reason a ref update was refused, a pyn server's error
+message) is printed without control characters other than newline, carriage return and tab. Paths a commit or switch would write
+are checked first, as in [the work tree rules](workspace.md#paths-written-to-the-work-tree), and a refused path stops the command
+with nothing changed.
+
 ## Transports and credentials
 
 Decisions #245 and #255. pyn reaches a git remote without git: the protocol, the pack handling and the credential flow are
@@ -515,6 +522,9 @@ as it always does to serve git over ssh). The path is quoted for the remote shel
   pyn carries on; pushes use version 0.
 - Exit status `255` is reported as a connection or sign-in failure, `127` as a missing `git-upload-pack` on the remote, and
   any other status as the remote command failing; ssh's own messages come first on standard error.
+- With the default `ssh` client (or `GIT_SSH` with an OpenSSH-style client) pyn adds `-o ConnectTimeout=30`,
+  `-o ServerAliveInterval=30` and `-o ServerAliveCountMax=4`, so a connect or a silent peer ends after about two minutes. These
+  options win over `~/.ssh/config`; set `GIT_SSH_COMMAND` or `core.sshCommand` to manage them yourself.
 
 ### Smart HTTP
 
@@ -530,7 +540,10 @@ types. The `# service=` line is checked. Dumb HTTP (an `info/refs` that is not a
   normally settles that).
 - Settings read: `http.extraHeader`, `http.proxy` (and the usual proxy environment variables; an empty value turns proxies off),
   `http.sslVerify` and `GIT_SSL_NO_VERIFY`, `http.sslCAInfo` and `GIT_SSL_CAINFO`, `http.followRedirects`, each also scoped as
-  `http.<url>.<key>`. Not read: client certificates, `http.cookieFile`, `http.lowSpeedLimit`, `http.version`.
+  `http.<url>.<key>`, and `http.lowSpeedTime` (see below). Not read: client certificates, `http.cookieFile`, `http.lowSpeedLimit`,
+  `http.version`.
+- Timeouts: connecting waits 30 seconds. There is no total time limit, so large transfers keep working, but a request or a body
+  read that receives nothing for 300 seconds fails. `http.lowSpeedTime` sets that wait in seconds (`0` disables it).
 - Only HTTP Basic authentication is supported; a server that asks for Digest, Negotiate or NTLM gets a message naming it.
 - `User-Agent` is `git/2.0 (pyn/<version>)`. The `git/` prefix is what hosts that gate smart HTTP on a git client look for; GitHub
   accepts any agent, others differ.
@@ -567,6 +580,26 @@ sent to a helper or used.
 
 Differences from git: no `credential.<url>.*` keys other than `helper`, `username` and `useHttpPath`; no `credential.interactive`,
 `credentialCache`, partial `capability` negotiation or `authtype`; no `include` directives in config files.
+
+### Limits
+
+Input from a remote is bounded so that a fetch cannot use unbounded memory, disk or time. Hitting a bound is a clear error
+and nothing is stored.
+
+| What | Default | Config key (`pyn.` section, sizes accept `k`, `m`, `g`) |
+| --- | --- | --- |
+| Objects in a pack | 20,000,000 | `ingestMaxObjects` |
+| Size of one object or delta result | 256 MiB | `ingestMaxObjectSize` |
+| Delta chain depth (ingest and reading stored packs) | 4096 | `ingestMaxDeltaDepth` |
+| Size of a received pack | 64 GiB | `ingestMaxPackSize` |
+| Inflated bytes in one fetch, including resolved deltas | 128 GiB | `ingestMaxTotalInflated` |
+| A delta result against its base | 256 times the base, unless under the floor | `ingestMaxDeltaRatio` |
+| Floor for the ratio check | 4 MiB | `ingestDeltaSizeFloor` |
+| Lines in one ref advertisement, listing or push report | 1,000,000 | not configurable |
+| Bytes buffered for one of those | 256 MiB | not configurable |
+| Directory nesting walked in a tree | 4096 levels | not configurable |
+
+A `*` pattern in an ignore file or pathspec nests at most 1024 groups; a deeper pattern matches nothing.
 
 ## pyn only
 

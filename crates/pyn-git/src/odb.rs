@@ -173,8 +173,9 @@ impl ObjectDb {
             .filter(|s| !s.starts_with('0') || *s == "0")
             .and_then(|s| s.parse().ok())
             .ok_or_else(bad)?;
+        let take = len.checked_add(1).ok_or_else(bad)?;
         let mut data = Vec::with_capacity(len.min(64 << 20) as usize);
-        z.take(len + 1)
+        z.take(take)
             .read_to_end(&mut data)
             .map_err(|e| corrupt("loose object", format!("{id}: {e}")))?;
         if data.len() as u64 != len {

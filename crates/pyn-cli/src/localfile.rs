@@ -81,12 +81,17 @@ pub fn upload(backend: &dyn Backend, path: &Path) -> Result<(api::FileMode, Stri
 
 /// Gives a downloaded file its mode: sets or clears the executable bit, or turns it into the symlink it stands for.
 #[cfg(unix)]
-pub fn apply(path: &Path, mode: api::FileMode) -> Result<()> {
+pub fn apply(path: &Path, link: &str, mode: api::FileMode) -> Result<()> {
     use std::os::unix::ffi::OsStringExt;
     use std::os::unix::fs::PermissionsExt;
     match mode {
         api::FileMode::Symlink => {
-            let target = std::ffi::OsString::from_vec(std::fs::read(path)?);
+            let target = std::fs::read(path)?;
+            if let Err(e) = pyn_gitwork::check_link_target(link.as_bytes(), &target) {
+                let _ = std::fs::remove_file(path);
+                return Err(e.into());
+            }
+            let target = std::ffi::OsString::from_vec(target);
             std::fs::remove_file(path)?;
             std::os::unix::fs::symlink(target, path)
                 .with_context(|| format!("linking {}", path.display()))?;
@@ -107,7 +112,7 @@ pub fn apply(path: &Path, mode: api::FileMode) -> Result<()> {
 }
 
 #[cfg(not(unix))]
-pub fn apply(_: &Path, _: api::FileMode) -> Result<()> {
+pub fn apply(_: &Path, _: &str, _: api::FileMode) -> Result<()> {
     Ok(())
 }
 
@@ -138,14 +143,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let f = dir.path().join("run.sh");
         std::fs::write(&f, "#!/bin/sh\n").unwrap();
-        apply(&f, api::FileMode::Executable).unwrap();
+        apply(&f, "run.sh", api::FileMode::Executable).unwrap();
         assert_eq!(mode_of(&f).unwrap(), api::FileMode::Executable);
-        apply(&f, api::FileMode::Regular).unwrap();
+        apply(&f, "run.sh", api::FileMode::Regular).unwrap();
         assert_eq!(mode_of(&f).unwrap(), api::FileMode::Regular);
 
         let l = dir.path().join("l");
         std::fs::write(&l, "run.sh").unwrap();
-        apply(&l, api::FileMode::Symlink).unwrap();
+        apply(&l, "l", api::FileMode::Symlink).unwrap();
         assert_eq!(mode_of(&l).unwrap(), api::FileMode::Symlink);
         assert_eq!(std::fs::read_link(&l).unwrap(), Path::new("run.sh"));
     }

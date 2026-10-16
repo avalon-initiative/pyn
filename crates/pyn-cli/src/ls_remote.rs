@@ -105,7 +105,7 @@ pub fn run(args: &LsRemoteArgs, git: Option<&GitHome>) -> Result<()> {
     }
     let mut stdout = std::io::stdout().lock();
     if let Err(e) = stdout
-        .write_all(out.as_bytes())
+        .write_all(crate::sanitize::text(&out).as_bytes())
         .and_then(|()| stdout.flush())
         && e.kind() != std::io::ErrorKind::BrokenPipe
     {

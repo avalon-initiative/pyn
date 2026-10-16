@@ -386,3 +386,48 @@ fn proxies_and_tls_settings_are_read_from_config() {
     );
     assert!(server.log().is_empty(), "the proxy setting was honoured");
 }
+
+/// Accepts connections, optionally answers with `reply` (headers and part of a body), then goes quiet.
+fn stalling_server(reply: Option<&'static str>) -> String {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        let mut held = Vec::new();
+        for stream in listener.incoming() {
+            let Ok(mut s) = stream else { break };
+            let mut buf = [0u8; 4096];
+            let _ = s.read(&mut buf);
+            if let Some(r) = reply {
+                let _ = s.write_all(r.as_bytes());
+            }
+            held.push(s);
+        }
+    });
+    format!("http://{addr}/r.git")
+}
+
+#[test]
+fn a_silent_server_fails_after_the_stall_timeout() {
+    let r = rig("sha1");
+    let config = "[http]\n\tlowSpeedTime = 1\n";
+    for reply in [
+        None,
+        Some(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/x-git-upload-pack-advertisement\r\nContent-Length: 100000\r\n\r\n001e# service=git-upload-pack\n",
+        ),
+    ] {
+        let url = stalling_server(reply);
+        let started = std::time::Instant::now();
+        let err = list(&url, config, r.env(), None).unwrap_err();
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(30),
+            "{err}"
+        );
+        let text = err.to_string();
+        assert!(
+            text.contains("no response within") || text.contains("no data received"),
+            "{text}"
+        );
+    }
+}

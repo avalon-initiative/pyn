@@ -23,6 +23,7 @@ mod ls_remote;
 mod merging;
 mod probe;
 mod pyn_server;
+mod sanitize;
 mod snapshot;
 mod staging;
 mod stranded;
@@ -772,14 +773,14 @@ fn main() {
     }
     if let Err(e) = run(cli) {
         if let Some(refused) = e.downcast_ref::<git_home::Refused>() {
-            eprintln!("error: {refused}");
+            eprintln!("error: {}", sanitize::text(&refused.to_string()));
             std::process::exit(1);
         }
         if let Some(rejected) = e.downcast_ref::<local_sync::Rejected>() {
-            eprintln!("{rejected}");
+            eprintln!("{}", sanitize::text(&rejected.to_string()));
             std::process::exit(1);
         }
-        eprintln!("fatal: {e:#}");
+        eprintln!("fatal: {}", sanitize::text(&format!("{e:#}")));
         std::process::exit(128);
     }
 }

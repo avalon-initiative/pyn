@@ -41,6 +41,13 @@ impl Variant {
     }
 }
 
+/// Bound the connect and detect a dead peer (about two minutes without a reply) on the default client.
+const LIVENESS_OPTIONS: [&str; 3] = [
+    "ConnectTimeout=30",
+    "ServerAliveInterval=30",
+    "ServerAliveCountMax=4",
+];
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Program {
     /// `ssh` from `PATH`.
@@ -99,6 +106,11 @@ impl SshTransport {
         let u = &self.url;
         match self.variant {
             Variant::Ssh => {
+                if !matches!(self.program, Program::Shell(_)) {
+                    for o in LIVENESS_OPTIONS {
+                        args.extend(["-o".into(), o.into()]);
+                    }
+                }
                 if version != ProtocolVersion::V0 {
                     args.extend(["-o".into(), "SendEnv=GIT_PROTOCOL".into()]);
                 }
@@ -341,6 +353,12 @@ mod tests {
             t.args(Service::UploadPack, ProtocolVersion::V2).unwrap(),
             [
                 "-o",
+                "ConnectTimeout=30",
+                "-o",
+                "ServerAliveInterval=30",
+                "-o",
+                "ServerAliveCountMax=4",
+                "-o",
                 "SendEnv=GIT_PROTOCOL",
                 "-p",
                 "2222",
@@ -352,6 +370,12 @@ mod tests {
         assert_eq!(
             t.args(Service::ReceivePack, ProtocolVersion::V0).unwrap(),
             [
+                "-o",
+                "ConnectTimeout=30",
+                "-o",
+                "ServerAliveInterval=30",
+                "-o",
+                "ServerAliveCountMax=4",
                 "-p",
                 "2222",
                 "--",
@@ -362,7 +386,17 @@ mod tests {
         let t = transport("host:r.git", &Env::default(), "");
         assert_eq!(
             t.args(Service::UploadPack, ProtocolVersion::V0).unwrap(),
-            ["--", "host", "git-upload-pack 'r.git'"]
+            [
+                "-o",
+                "ConnectTimeout=30",
+                "-o",
+                "ServerAliveInterval=30",
+                "-o",
+                "ServerAliveCountMax=4",
+                "--",
+                "host",
+                "git-upload-pack 'r.git'"
+            ]
         );
     }
 

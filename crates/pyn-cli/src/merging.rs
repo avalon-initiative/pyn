@@ -293,6 +293,9 @@ fn clean_or_bail(ws: &Workspace, report: &api::MergeReport) -> Result<()> {
         .iter()
         .map(|c| &c.path)
         .chain(report.conflicts.iter().map(|c| &c.path));
+    for path in touched.clone() {
+        ws.dest(path)?;
+    }
     for path in touched {
         let abs = ws.abs(path);
         match state.get(path) {
@@ -658,16 +661,8 @@ fn base_bytes(backend: &dyn Backend, path: &str, inputs: &api::MergeInputs) -> R
 
 /// Writes `bytes` as the file at `path` with `file_mode`.
 fn put_file(ws: &Workspace, path: &str, bytes: &[u8], file_mode: api::FileMode) -> Result<()> {
-    let abs = ws.abs(path);
-    if let Some(dir) = abs.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    set_read_only(&abs, false)?;
-    if localfile::is_symlink(&abs) {
-        std::fs::remove_file(&abs)?;
-    }
-    std::fs::write(&abs, bytes).with_context(|| format!("writing {}", abs.display()))?;
-    localfile::apply(&abs, file_mode)
+    let abs = ws.write_file(path, bytes)?;
+    localfile::apply(&abs, path, file_mode)
 }
 
 /// A cleanly merged path in the working tree: the revision that holds the result, or the text merged here.
@@ -710,7 +705,7 @@ fn write_change(
     }
     put_file(ws, &change.path, &merged, change.file_mode)?;
     set_read_only(
-        &ws.abs(&change.path),
+        &ws.dest(&change.path)?,
         change.mode == api::Mode::Exclusive && lock.is_none_or(|l| l.owner != me),
     )
 }
@@ -751,7 +746,7 @@ fn write_conflict(
     if let Some(revision) = ours.revision {
         let lock = locks.iter().find(|l| &l.path == path);
         set_read_only(
-            &ws.abs(path),
+            &ws.dest(path)?,
             conflict.mode == api::Mode::Exclusive && lock.is_none_or(|l| l.owner != me),
         )?;
         state.insert(
@@ -820,6 +815,7 @@ fn abort(backend: &dyn Backend, api: &Api, ws: &Workspace) -> Result<()> {
     let locks: Vec<api::Lock> = api.send(api.get(&api.repo_route("/locks")?))?.json()?;
     let me = backend.whoami()?;
     let mut files = ws.load_state()?;
+    ws.check_paths(state.paths.keys())?;
     for path in state.paths.keys() {
         match wanted.get(path.as_str()) {
             Some(entry) => {
@@ -836,7 +832,7 @@ fn abort(backend: &dyn Backend, api: &Api, ws: &Workspace) -> Result<()> {
                 );
             }
             None => {
-                let abs = ws.abs(path);
+                let abs = ws.dest(path)?;
                 set_read_only(&abs, false)?;
                 let _ = std::fs::remove_file(&abs);
                 files.remove(path);

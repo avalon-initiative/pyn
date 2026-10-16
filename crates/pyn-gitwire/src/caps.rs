@@ -5,7 +5,7 @@ use std::io::Read;
 use pyn_object::{Algorithm, ObjectId};
 
 use crate::error::{Error, Result};
-use crate::pkt::{Packet, PktReader, text};
+use crate::pkt::{MAX_BUFFERED, MAX_LINES, Packet, PktReader, check_bounds, text};
 
 pub const AGENT: &str = concat!("agent=pyn/", env!("CARGO_PKG_VERSION"));
 
@@ -107,6 +107,15 @@ impl Advertisement {
 /// Reads one advertisement, consuming through its terminating flush. Smart HTTP's
 /// `# service=` preamble is skipped.
 pub fn read_advertisement<R: Read>(r: R) -> Result<Advertisement> {
+    read_advertisement_within(r, MAX_LINES, MAX_BUFFERED)
+}
+
+/// Like [`read_advertisement`] with explicit bounds on lines and buffered bytes.
+pub fn read_advertisement_within<R: Read>(
+    r: R,
+    max_lines: usize,
+    max_bytes: usize,
+) -> Result<Advertisement> {
     let mut pkts = PktReader::new(r);
     let mut first = pkts.read()?;
     if matches!(&first, Packet::Data(d) if d.starts_with(b"# service=")) {
@@ -127,7 +136,7 @@ pub fn read_advertisement<R: Read>(r: R) -> Result<Advertisement> {
     match text(&first)? {
         "version 2" => {
             let mut capabilities = Capabilities::default();
-            for line in pkts.read_until_flush()? {
+            for line in pkts.read_until_flush_within(max_lines, max_bytes)? {
                 capabilities.push(text(&line)?);
             }
             Ok(Advertisement {
@@ -137,19 +146,25 @@ pub fn read_advertisement<R: Read>(r: R) -> Result<Advertisement> {
             })
         }
         "version 1" => {
-            let mut adv = read_refs(&mut pkts, None)?;
+            let mut adv = read_refs(&mut pkts, None, max_lines, max_bytes)?;
             adv.version = ProtocolVersion::V1;
             Ok(adv)
         }
-        _ => read_refs(&mut pkts, Some(first)),
+        _ => read_refs(&mut pkts, Some(first), max_lines, max_bytes),
     }
 }
 
-fn read_refs<R: Read>(pkts: &mut PktReader<R>, first: Option<Vec<u8>>) -> Result<Advertisement> {
+fn read_refs<R: Read>(
+    pkts: &mut PktReader<R>,
+    first: Option<Vec<u8>>,
+    max_lines: usize,
+    max_bytes: usize,
+) -> Result<Advertisement> {
     let mut capabilities = Capabilities::default();
     let mut refs: Vec<AdvertisedRef> = Vec::new();
     let mut pending = first;
     let mut seen_caps = false;
+    let (mut lines, mut bytes) = (0usize, 0usize);
     loop {
         let line = match pending.take() {
             Some(l) => l,
@@ -163,6 +178,9 @@ fn read_refs<R: Read>(pkts: &mut PktReader<R>, first: Option<Vec<u8>>) -> Result
                 }
             },
         };
+        lines += 1;
+        bytes += line.len();
+        check_bounds(lines, bytes, max_lines, max_bytes)?;
         let (head, caps) = match line.iter().position(|&b| b == 0) {
             Some(i) => (&line[..i], Some(&line[i + 1..])),
             None => (&line[..], None),
@@ -215,6 +233,50 @@ mod tests {
         let mut v = Vec::new();
         f(&mut PktWriter::new(&mut v));
         v
+    }
+
+    #[test]
+    fn ref_advertisements_are_bounded() {
+        let buf = build(|w| {
+            w.write_line(&format!("{A} refs/heads/a\0multi_ack"))
+                .unwrap();
+            for i in 0..10 {
+                w.write_line(&format!("{B} refs/heads/b{i}")).unwrap();
+            }
+            w.write_flush().unwrap();
+        });
+        assert_eq!(
+            read_advertisement_within(&buf[..], 11, 10_000)
+                .unwrap()
+                .refs
+                .len(),
+            11
+        );
+        assert!(matches!(
+            read_advertisement_within(&buf[..], 10, 10_000),
+            Err(Error::LimitExceeded {
+                what: "number of lines",
+                limit: 10
+            })
+        ));
+        assert!(matches!(
+            read_advertisement_within(&buf[..], 100, 200),
+            Err(Error::LimitExceeded {
+                what: "buffered bytes",
+                ..
+            })
+        ));
+        let v2 = build(|w| {
+            w.write_line("version 2").unwrap();
+            for i in 0..10 {
+                w.write_line(&format!("cap{i}")).unwrap();
+            }
+            w.write_flush().unwrap();
+        });
+        assert!(matches!(
+            read_advertisement_within(&v2[..], 5, 10_000),
+            Err(Error::LimitExceeded { .. })
+        ));
     }
 
     #[test]

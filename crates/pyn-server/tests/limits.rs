@@ -22,6 +22,10 @@ use tower::ServiceExt;
 const PASSWORD: &str = "correct horse battery";
 
 async fn server(default_limits: Limits) -> Router {
+    server_with_cap(default_limits, None).await
+}
+
+async fn server_with_cap(default_limits: Limits, upload_cap: Option<u64>) -> Router {
     let clock = Arc::new(SystemClock);
     let objects = Arc::new(MemoryObjectStore::new());
     let audit = Arc::new(MemoryAuditStore::new());
@@ -38,14 +42,18 @@ async fn server(default_limits: Limits) -> Router {
             .with_audit(audit.clone()),
     );
     access.admin_for_tests(&UserId::new("root")).await.unwrap();
-    let repos = Arc::new(Repositories::new(
+    let mut repos = Repositories::new(
         meta,
         objects.clone(),
         audit,
         access.clone(),
         clock,
         Rules::from_toml("[meta]\ndefault = \"shared\"\n").unwrap(),
-    ));
+    );
+    if let Some(bytes) = upload_cap {
+        repos = repos.with_unreferenced_upload_cap(bytes);
+    }
+    let repos = Arc::new(repos);
     router(AppState {
         repos,
         objects,
@@ -364,6 +372,24 @@ async fn storage_and_member_limits_have_their_own_codes() {
     assert!(r.is(StatusCode::CONFLICT, "member_limit_reached"));
     let r = send(&app, &alice, "GET", "/v1/owners/acme/usage", None).await;
     assert_eq!(r.json::<api::OwnerUsage>().usage.members, Some(2));
+}
+
+#[tokio::test]
+async fn a_configured_unreferenced_upload_cap_refuses_uploads_past_it() {
+    let app = server_with_cap(Limits::default(), Some(8)).await;
+    let alice = token_for(&app, "alice").await;
+    make_repo(&app, &alice, "game").await;
+    put_object(&app, &alice, "alice/game", "12345").await;
+    let req = Request::builder()
+        .method("PUT")
+        .uri("/v1/repos/alice/game/objects")
+        .header("authorization", format!("Bearer {alice}"))
+        .body(Body::from("67890"))
+        .unwrap();
+    let r = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(r.status(), StatusCode::CONFLICT);
+    let body = r.into_body().collect().await.unwrap().to_bytes();
+    assert!(String::from_utf8_lossy(&body).contains("storage_limit_reached"));
 }
 
 #[tokio::test]

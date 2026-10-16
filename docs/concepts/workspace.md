@@ -187,6 +187,20 @@ so neither file can un-ignore what the other lists. It is never versioned or pus
 The split elsewhere in `.pyn/` follows the same rule: the policy (`pyn.toml`) and the shared ignore are repository
 content, while `config.toml`, `state/` and `cache/` are per-machine and live only in `local_only/`.
 
+## Paths written to the work tree
+
+Every command that writes, removes or renames a file in a workspace checks the whole set of paths first and, if any is
+refused, stops with an error that names it and changes nothing. A path is refused when it is empty or has an empty, `.` or `..` component,
+is absolute or starts with a drive or share prefix, contains a backslash or a control character, has more than 1024 components or 4096
+bytes, or has a first component of `.pyn` (other than the shared `.pyn/pyn.toml` and `.pyn/ignore`) or any component of `.git`.
+Names are compared case-insensitively and after the folding that macOS and Windows apply (ignorable Unicode characters, short
+names such as `git~1`, trailing dots and spaces). On Windows, device names such as `con` and the characters `: < > " | ? *` are refused
+too. The same check applies in a git repository.
+
+A workspace never writes through a symbolic link. A command stops when a folder above a path is a link or a file, and a file
+that is a link where a new version arrives is replaced rather than followed. A downloaded symbolic link whose target is
+absolute, or climbs above the workspace root, is refused. In a git repository links are made as git makes them, but nothing is written through a link that is already there.
+
 ## Settings
 
 `pyn config get|set|list` reads and writes settings (`pyn config init` runs the first-run prompt). For now there are three: `server`, `user` (the development
@@ -265,6 +279,13 @@ them is unpublished. Details, output and the refusals are in
 commit. A merge commit is pushed too (issue #338): a descendant exclusive pointer is adopted without a lock, a shared
 file is merged by content, and an exclusive path both sides changed needs the person's lock (provisional, see
 [merge commits in a push](commits.md#merge-commits-in-a-push-provisional)).
+
+### Limits on what a server may send
+
+The CLI reads at most 256 MiB of JSON from one API response, waits at most 15 seconds to connect and 120 seconds for a response
+or for the next chunk of a body (a long download is not cut off while data keeps arriving), and follows a redirect only on
+the same host, so credentials never go elsewhere. One fetch stores at most 1,000,000 commits or 10,000 pages of history, and
+nesting deeper than 1024 folders is refused.
 
 ## The user configuration file
 

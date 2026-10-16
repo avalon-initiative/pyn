@@ -14,7 +14,7 @@ use super::stage::{
     Entries, entries_of, index_of, put_entry, raw_mode, refuse_in_progress, remove_entry,
     resolve_specs, under, warn_about_hooks_for,
 };
-use super::worktree::{Mode, move_tree, remove_entry_file, write_entry};
+use super::worktree::{Mode, check_writes, move_tree, remove_entry_file, write_entry};
 use super::{GitHome, Refused, convert, path_string};
 use crate::branch::{CheckoutArgs, SwitchArgs};
 
@@ -310,6 +310,7 @@ fn restore_paths(git: &GitHome, cwd: &Path, paths: &[String], r: Restore) -> Res
         Vec::new()
     };
     if r.to_worktree {
+        check_writes(sources.keys().chain(doomed.iter()))?;
         convert::refuse_conversions(git, sources.iter().map(|(p, e)| (p.as_slice(), e.mode)))?;
     }
     for (path, entry) in &sources {

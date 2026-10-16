@@ -616,3 +616,44 @@ async fn changing_visibility_is_recorded_with_before_and_after() {
     let log = events(&w, &rec.id).await;
     assert!(!log[0].detail.contains("visibility"), "{}", log[0].detail);
 }
+
+#[tokio::test]
+async fn the_unreferenced_upload_cap_defaults_to_32_gib_and_a_configured_one_is_enforced() {
+    assert_eq!(world().repos.unreferenced_upload_cap(), 32 << 30);
+
+    let mut w = world();
+    w.repos = w.repos.with_unreferenced_upload_cap(10);
+    let alice = session("alice");
+    w.repos
+        .create(&alice, &user("alice"), "game", None, None)
+        .await
+        .unwrap();
+    let open = w.repos.open("alice", "game").await.unwrap();
+    open.service.upload_blob(b"abcdef".to_vec()).await.unwrap();
+    let err = open
+        .service
+        .upload_blob(b"ghijk".to_vec())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, PynError::StorageLimitReached { limit: 10, .. }),
+        "{err}"
+    );
+}
+
+#[tokio::test]
+async fn a_zero_unreferenced_upload_cap_refuses_every_upload() {
+    let mut w = world();
+    w.repos = w.repos.with_unreferenced_upload_cap(0);
+    let alice = session("alice");
+    w.repos
+        .create(&alice, &user("alice"), "game", None, None)
+        .await
+        .unwrap();
+    let open = w.repos.open("alice", "game").await.unwrap();
+    let err = open.service.upload_blob(b"a".to_vec()).await.unwrap_err();
+    assert!(
+        matches!(err, PynError::StorageLimitReached { limit: 0, .. }),
+        "{err}"
+    );
+}

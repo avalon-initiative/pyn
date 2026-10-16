@@ -512,6 +512,7 @@ fn plan(
         .map(String::as_str)
         .chain(wanted.keys().copied())
         .collect();
+    ws.check_paths(&paths)?;
     let (mut steps, mut conflicts) = (BTreeMap::new(), Vec::new());
     for path in paths {
         let (known, want) = (state.get(path), wanted.get(path).copied());
@@ -651,7 +652,7 @@ fn apply(
                 state.insert(path, state_of(&w));
             }
             Step::Remove => {
-                let target = ws.abs(&path);
+                let target = ws.dest(&path)?;
                 set_read_only(&target, false)?;
                 let _ = std::fs::remove_file(&target);
                 remove_empty_parents(ws, &path);
@@ -731,6 +732,7 @@ fn restore_paths(
             );
         }
     }
+    ws.check_paths(&chosen)?;
     let locks: Vec<api::Lock> = api.send(api.get(&api.repo_route("/locks")?))?.json()?;
     let me = backend.whoami()?;
     for path in &chosen {

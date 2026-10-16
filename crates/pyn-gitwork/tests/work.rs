@@ -617,3 +617,85 @@ fn tree_diffs_prune_equal_folders_and_handle_type_changes() {
         assert!(repo.entry_at(&new, b"mode/under-a-file").unwrap().is_none());
     }
 }
+
+/// Stores a tree as a loose object without syncing, so very long chains stay fast.
+fn write_tree_fast(fx: &Fx, entries: &[TreeEntry]) -> ObjectId {
+    use std::io::Write;
+    let alg = fx.git().algorithm();
+    let body = encode_tree(alg, entries).unwrap();
+    let id = pyn_object::hash_object(alg, ObjectKind::Tree, &body).unwrap();
+    let hex = id.to_hex();
+    let dir = fx.root.join(".git/objects").join(&hex[..2]);
+    fs::create_dir_all(&dir).unwrap();
+    let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::none());
+    z.write_all(format!("tree {}\0", body.len()).as_bytes())
+        .unwrap();
+    z.write_all(&body).unwrap();
+    fs::write(dir.join(&hex[2..]), z.finish().unwrap()).unwrap();
+    id
+}
+
+/// A chain of `levels` trees, each holding the next under the name `d`, ending in a tree with one file.
+fn nested_chain(fx: &Fx, levels: usize) -> ObjectId {
+    let blob = fx.blob("leaf");
+    let mut id = write_tree_fast(
+        fx,
+        &[TreeEntry {
+            mode: FileMode::Regular,
+            name: b"f".to_vec(),
+            id: blob,
+        }],
+    );
+    for _ in 1..levels {
+        id = write_tree_fast(
+            fx,
+            &[TreeEntry {
+                mode: FileMode::Tree,
+                name: b"d".to_vec(),
+                id,
+            }],
+        );
+    }
+    id
+}
+
+#[test]
+fn tree_walks_stop_at_the_nesting_limit() {
+    use pyn_gitwork::{Error, MAX_TREE_DEPTH};
+    let fx = Fx::new(Algorithm::Sha1);
+    let repo = fx.repo();
+    let spec = Pathspec::default();
+    let run = |tree: ObjectId| {
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                let r = repo.flatten(Some(&tree), &spec).map(|m| m.len());
+                let d = repo.diff_trees(None, Some(&tree), &spec).map(|c| c.len());
+                (r, d)
+            })
+            .join()
+            .unwrap()
+        })
+    };
+
+    let (flat, diff) = run(nested_chain(&fx, MAX_TREE_DEPTH + 1));
+    assert_eq!(flat.unwrap(), 1);
+    assert_eq!(diff.unwrap(), 1);
+
+    let (flat, diff) = run(nested_chain(&fx, MAX_TREE_DEPTH + 2));
+    assert!(matches!(flat, Err(Error::TooDeep { .. })));
+    assert!(matches!(diff, Err(Error::TooDeep { .. })));
+}
+
+#[test]
+fn very_deep_tree_chain_fails_with_a_typed_error() {
+    use pyn_gitwork::Error;
+    let fx = Fx::new(Algorithm::Sha1);
+    let tree = nested_chain(&fx, 100_000);
+    let repo = fx.repo();
+    let err = repo.flatten(Some(&tree), &Pathspec::default()).unwrap_err();
+    assert!(matches!(err, Error::TooDeep { .. }));
+    let err = repo
+        .diff_trees(None, Some(&tree), &Pathspec::default())
+        .unwrap_err();
+    assert!(matches!(err, Error::TooDeep { .. }));
+}

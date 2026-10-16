@@ -2,83 +2,145 @@
 
 /// Matches `text` against `pattern`. With `pathname`, `*` and `?` stop at `/` and `**` spans folders.
 pub fn matches(pattern: &[u8], text: &[u8], pathname: bool) -> bool {
-    walk(pattern, 0, text, pathname)
+    Matcher::new(pattern, pathname).walk(0, text) == Outcome::Match
 }
 
-fn walk(p: &[u8], mut pi: usize, mut t: &[u8], pathname: bool) -> bool {
-    while pi < p.len() {
-        match p[pi] {
-            b'*' => return star(p, pi, t, pathname),
-            b'?' => {
-                match t.first() {
-                    Some(&c) if !(pathname && c == b'/') => t = &t[1..],
-                    _ => return false,
-                }
-                pi += 1;
+/// Most `*` groups one pattern may nest; deeper patterns never match.
+const MAX_STAR_DEPTH: usize = 1024;
+
+/// Like git's `WM_*` results: the abort variants say no later backtracking point can succeed.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Outcome {
+    Match,
+    NoMatch,
+    AbortAll,
+    AbortToStarStar,
+}
+
+struct Matcher<'a> {
+    p: &'a [u8],
+    pathname: bool,
+    depth: usize,
+    steps: u64,
+}
+
+impl<'a> Matcher<'a> {
+    fn new(p: &'a [u8], pathname: bool) -> Self {
+        Self {
+            p,
+            pathname,
+            depth: 0,
+            steps: 0,
+        }
+    }
+
+    fn walk(&mut self, mut pi: usize, mut t: &[u8]) -> Outcome {
+        let p = self.p;
+        while pi < p.len() {
+            self.steps += 1;
+            if t.is_empty() && p[pi] != b'*' {
+                return Outcome::AbortAll;
             }
-            b'[' => {
-                let Some((end, class)) = parse_class(p, pi) else {
-                    return false;
-                };
-                match t.first() {
-                    Some(&c) if !(pathname && c == b'/') && class.matches(c) => t = &t[1..],
-                    _ => return false,
-                }
-                pi = end;
-            }
-            b'\\' => {
-                pi += 1;
-                match (p.get(pi), t.first()) {
-                    (Some(a), Some(b)) if a == b => {
-                        pi += 1;
-                        t = &t[1..];
+            match p[pi] {
+                b'*' => return self.star(pi, t),
+                b'?' => {
+                    if self.pathname && t[0] == b'/' {
+                        return Outcome::NoMatch;
                     }
-                    _ => return false,
+                    t = &t[1..];
+                    pi += 1;
                 }
-            }
-            c => match t.first() {
-                Some(&d) if d == c => {
+                b'[' => {
+                    let Some((end, class)) = parse_class(p, pi) else {
+                        return Outcome::AbortAll;
+                    };
+                    if (self.pathname && t[0] == b'/') || !class.matches(t[0]) {
+                        return Outcome::NoMatch;
+                    }
+                    t = &t[1..];
+                    pi = end;
+                }
+                b'\\' => {
+                    pi += 1;
+                    match p.get(pi) {
+                        Some(a) if *a == t[0] => {
+                            pi += 1;
+                            t = &t[1..];
+                        }
+                        _ => return Outcome::NoMatch,
+                    }
+                }
+                c => {
+                    if c != t[0] {
+                        return Outcome::NoMatch;
+                    }
                     pi += 1;
                     t = &t[1..];
                 }
-                _ => return false,
-            },
+            }
+        }
+        if t.is_empty() {
+            Outcome::Match
+        } else {
+            Outcome::NoMatch
         }
     }
-    t.is_empty()
-}
 
-fn star(p: &[u8], at: usize, t: &[u8], pathname: bool) -> bool {
-    let mut end = at;
-    while p.get(end) == Some(&b'*') {
-        end += 1;
+    fn star(&mut self, at: usize, t: &[u8]) -> Outcome {
+        let p = self.p;
+        let mut end = at;
+        while p.get(end) == Some(&b'*') {
+            end += 1;
+        }
+        let double = end - at >= 2;
+        let after_slash = at == 0 || p[at - 1] == b'/';
+        let mut match_slash = !self.pathname;
+        if double && self.pathname && after_slash && (end == p.len() || p[end] == b'/') {
+            if end == p.len() {
+                return Outcome::Match;
+            }
+            if self.nested(end + 1, t) == Outcome::Match {
+                return Outcome::Match;
+            }
+            match_slash = true;
+        }
+        if end == p.len() {
+            return if !match_slash && t.contains(&b'/') {
+                Outcome::NoMatch
+            } else {
+                Outcome::Match
+            };
+        }
+        let mut t = t;
+        if !match_slash && p[end] == b'/' {
+            match t.iter().position(|c| *c == b'/') {
+                Some(i) => t = &t[i..],
+                None => return Outcome::NoMatch,
+            }
+        }
+        while !t.is_empty() {
+            let r = self.nested(end, t);
+            if r != Outcome::NoMatch {
+                if !match_slash || r != Outcome::AbortToStarStar {
+                    return r;
+                }
+            } else if !match_slash && t[0] == b'/' {
+                return Outcome::AbortToStarStar;
+            }
+            t = &t[1..];
+        }
+        Outcome::AbortAll
     }
-    let rest = end;
-    let double = end - at >= 2;
-    let after_slash = at == 0 || p[at - 1] == b'/';
-    if double && pathname && after_slash && (rest == p.len() || p[rest] == b'/') {
-        if rest == p.len() {
-            return true;
+
+    fn nested(&mut self, pi: usize, t: &[u8]) -> Outcome {
+        if self.depth >= MAX_STAR_DEPTH {
+            return Outcome::AbortAll;
         }
-        if walk(p, rest + 1, t, pathname) {
-            return true;
-        }
-        return t
-            .iter()
-            .enumerate()
-            .filter(|(_, c)| **c == b'/')
-            .any(|(i, _)| walk(p, rest + 1, &t[i + 1..], pathname));
+        self.depth += 1;
+        let r = self.walk(pi, t);
+        self.depth -= 1;
+        r
     }
-    let spans_slash = !pathname;
-    for i in 0..=t.len() {
-        if walk(p, rest, &t[i..], pathname) {
-            return true;
-        }
-        if i < t.len() && t[i] == b'/' && !spans_slash {
-            return false;
-        }
-    }
-    false
 }
 
 struct Class {
@@ -182,6 +244,37 @@ mod tests {
 
     fn base(p: &str, t: &str) -> bool {
         matches(p.as_bytes(), t.as_bytes(), false)
+    }
+
+    fn steps(p: &str, t: &str, pathname: bool) -> (bool, u64) {
+        let mut m = Matcher::new(p.as_bytes(), pathname);
+        let r = m.walk(0, t.as_bytes()) == Outcome::Match;
+        (r, m.steps)
+    }
+
+    #[test]
+    fn many_stars_against_a_non_matching_name_stay_cheap() {
+        let pattern = format!("{}b", "a*".repeat(40));
+        let name = "a".repeat(2000);
+        for pathname in [false, true] {
+            let (hit, n) = steps(&pattern, &name, pathname);
+            assert!(!hit);
+            assert!(n < 500_000, "{n} steps");
+        }
+        let pattern = format!("{}/z", "*/".repeat(30));
+        let name = format!("{}q", "a/".repeat(500));
+        let (hit, n) = steps(&pattern, &name, true);
+        assert!(!hit);
+        assert!(n < 500_000, "{n} steps");
+        let (hit, n) = steps(&"**/a".repeat(30), &"a/".repeat(500), true);
+        assert!(!hit);
+        assert!(n < 5_000_000, "{n} steps");
+    }
+
+    #[test]
+    fn patterns_nesting_stars_beyond_the_limit_do_not_match() {
+        let pattern = "a*".repeat(100_000);
+        assert!(!base(&pattern, &"a".repeat(10)));
     }
 
     #[test]

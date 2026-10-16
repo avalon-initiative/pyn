@@ -26,7 +26,7 @@ pub use config::{Config, Entry as ConfigEntry, Identity};
 pub use config_file::{ConfigFile, quote_value};
 pub use error::{Error, Result};
 pub use index::{Index, IndexEntry, Timestamp};
-pub use ingest::{IngestLimits, IngestedPack, index_pack};
+pub use ingest::{IngestLimits, IngestedPack, MAX_DELTA_DEPTH, index_pack};
 pub use init::init;
 pub use odb::{Object, ObjectDb};
 pub use pack::{EntryKind, Pack};

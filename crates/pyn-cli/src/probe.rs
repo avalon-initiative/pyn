@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 const TIMEOUT: Duration = Duration::from_secs(3);
+const MAX_DOCUMENT: u64 = 16 << 20;
 /// A route every pyn server documents in its public OpenAPI document.
 const MARKER_PATH: &str = "/v1/registration";
 
@@ -63,11 +64,19 @@ pub fn run(server: &str) -> Probe {
         Ok(r) if r.status().is_server_error() => {
             Probe::Failed(format!("server returned {}", r.status()))
         }
-        Ok(r) if r.status().is_success() => match r.text() {
-            Ok(body) if is_pyn_document(&body) => Probe::PynServer,
-            Ok(_) => Probe::NotPyn,
-            Err(e) => Probe::Failed(e.to_string()),
-        },
+        Ok(r) if r.status().is_success() => {
+            use std::io::Read;
+            let mut bytes = Vec::new();
+            let body = match r.take(MAX_DOCUMENT).read_to_end(&mut bytes) {
+                Ok(_) => String::from_utf8_lossy(&bytes).into_owned(),
+                Err(e) => return Probe::Failed(e.to_string()),
+            };
+            if is_pyn_document(&body) {
+                Probe::PynServer
+            } else {
+                Probe::NotPyn
+            }
+        }
         Ok(_) => Probe::NotPyn,
         Err(e) => Probe::Failed(e.without_url().to_string()),
     }

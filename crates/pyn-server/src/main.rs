@@ -71,12 +71,16 @@ async fn stores() -> anyhow::Result<Stores> {
 
 /// A limit that stays unset, meaning unlimited, unless the variable is present.
 fn optional_number(name: &str) -> anyhow::Result<Option<u64>> {
-    match std::env::var(name) {
-        Ok(v) => Ok(Some(v.parse().map_err(|_| {
-            anyhow::anyhow!("{name} must be a non-negative whole number")
-        })?)),
-        Err(_) => Ok(None),
-    }
+    std::env::var(name)
+        .ok()
+        .map(|v| whole_number(name, &v))
+        .transpose()
+}
+
+fn whole_number(name: &str, value: &str) -> anyhow::Result<u64> {
+    value
+        .parse()
+        .map_err(|_| anyhow::anyhow!("{name} must be a non-negative whole number"))
 }
 
 /// OpenID Connect sign-in, only when the issuer, client id and client secret are all set.
@@ -270,6 +274,13 @@ async fn main() -> anyhow::Result<()> {
     if let Ok(limit) = std::env::var("PYN_MAX_LOCKS_ALLOWED_PER_USER") {
         repos = repos.with_default_max_locks(limit.parse()?)?;
     }
+    if let Some(bytes) = optional_number("PYN_MAX_UNREFERENCED_UPLOAD_BYTES")? {
+        repos = repos.with_unreferenced_upload_cap(bytes);
+    }
+    tracing::info!(
+        bytes = repos.unreferenced_upload_cap(),
+        "cap on unreferenced uploads per repository"
+    );
     let repos = Arc::new(repos);
 
     let dev_auth: Option<Arc<dyn AuthProvider>> = if flag("PYN_DEV_AUTH") {
@@ -295,4 +306,27 @@ async fn main() -> anyhow::Result<()> {
     )
     .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::whole_number;
+
+    #[test]
+    fn a_whole_number_parses_including_zero() {
+        assert_eq!(whole_number("X", "0").unwrap(), 0);
+        assert_eq!(whole_number("X", "1073741824").unwrap(), 1 << 30);
+    }
+
+    #[test]
+    fn anything_else_is_refused_naming_the_variable() {
+        for bad in ["", "-1", "1.5", "32G", "ten", " 5"] {
+            let err = whole_number("PYN_MAX_UNREFERENCED_UPLOAD_BYTES", bad).unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                "PYN_MAX_UNREFERENCED_UPLOAD_BYTES must be a non-negative whole number",
+                "{bad:?}"
+            );
+        }
+    }
 }

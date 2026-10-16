@@ -11,6 +11,7 @@ pyn-object = { version = "0.0.1", path = "../pyn-object" }
 thiserror = "2.0.21"
 
 [dev-dependencies]
+flate2 = "1.1.10"
 tempfile = "3.27.0"
 
 [lints]
