@@ -1138,10 +1138,28 @@ pub async fn a_text_merge_over_the_cost_bound_is_left_to_a_person(store: Store) 
         text.push('\n');
         text
     };
-    put_on(&h, "main", "alice", &a, &body("one", "end"), None).await;
+    let put = |branch: &'static str, text: String, base: Option<u64>| {
+        let (h, a) = (&h, &a);
+        async move {
+            let content = blob(h, &text).await;
+            h.svc
+                .checkin_on(
+                    branch,
+                    &who("alice"),
+                    a,
+                    content,
+                    FileMode::Regular,
+                    base.map(RevisionId),
+                    "edit".into(),
+                )
+                .await
+                .unwrap();
+        }
+    };
+    put("main", body("one", "end"), None).await;
     branch_at(&h, "feature", "main").await;
-    put_on(&h, "feature", "bob", &a, &body("one", "theirs"), Some(1)).await;
-    put_on(&h, "main", "alice", &a, &body("ours", "end"), Some(1)).await;
+    put("feature", body("one", "theirs"), Some(1)).await;
+    put("main", body("ours", "end"), Some(1)).await;
 
     let preview = h
         .svc
