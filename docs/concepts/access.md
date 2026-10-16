@@ -230,7 +230,7 @@ permission (the sign-in tokens from `pyn login`). It covers SSH keys (add, list,
 password, and linking or unlinking an external identity. A narrower token (read-only, limited to repositories, or with fewer
 permissions) is refused with `403 forbidden`; it keeps working for its own scope. A token credential cannot create a token that
 outlives it: the new token's expiry is capped at its own, and it never holds more permissions or repositories than the creator.
-A session or a full-scope token creating a token as the account owner is otherwise unrestricted.
+A web session may create any token its owner could.
 
 ## Service credentials
 
