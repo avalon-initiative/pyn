@@ -86,7 +86,7 @@ Failed sign-ins are throttled twice: five wrong passwords for a user name (which
 15 minutes, and 30 failures from one client address lock that address out for the same time, whatever names it tries. A
 success clears the name's count but not the address's. The error never says whether the name or the password was wrong, and
 a user name that does not exist costs the same work as one that does. Only a right password learns that the account cannot
-sign in yet (`email_not_verified`, `approval_pending`, `account_disabled`, all 403). `pyn password` changes your own password and ends your other web sessions (the one making the change stays signed in; tokens and keys keep working).
+sign in yet (`email_not_verified`, `approval_pending`, `account_disabled`, all 403). `pyn password` changes your own password and ends your other web sessions (the one making the change stays signed in) and the sign-in tokens that `pyn login` issued; tokens you created and SSH keys keep working. An operator's password reset ends all sessions and sign-in tokens too. The current password is always required when the account has one; an account with no password yet (created through an external provider) can set its first only from a signed-in web session.
 
 A server can also sign people in through an external OpenID Connect provider, and turn password sign-in off (server
 administrators keep it); see [signing in with an external provider](external-sign-in.md).
@@ -100,7 +100,8 @@ as with git. Link a public key to your account with `pyn key add` (it uses `~/.s
 As on GitHub, a key belongs to exactly one account: its fingerprint, the same `SHA256:...` that `ssh-keygen -l` prints,
 is unique across the server, and linking a key that another account has is refused. Ed25519, ECDSA, security keys and RSA
 of at least 2048 bits are accepted; DSA and small RSA keys are not. Someone with `manage_users` in a repository can list and
-remove the keys and tokens of its members. [Server administrators](#protecting-open-registration) approve and disable
+remove the keys and tokens of its members, except those of a server administrator or of the repository's owner (the owning
+account, or an owner of the owning organization), which only a server administrator can. [Server administrators](#protecting-open-registration) approve and disable
 accounts but do not gain that.
 
 ## Joining a server
@@ -155,7 +156,7 @@ hashing work is the same); the address's owner gets a notice instead of a link, 
 `POST /v1/register/resend` always answers `202`. A taken user name is `409 user_exists`, as on GitHub, since names are public.
 
 **Server administrators** approve, disable and enable accounts. The account created by [first-run setup](#first-run-setup) is the first; a token
-acts as one only if it carries `manage_users`. An administrator grants the flag to another active account and revokes it from
+acts as one only if it is a [full-scope credential](#full-scope-credentials) of an administrator account. An administrator grants the flag to another active account and revokes it from
 any account, their own included; the last active administrator cannot be revoked (`409 last_server_admin`), so the server is
 never left without one; disabling the last active administrator is refused the same way. A service credential cannot grant or revoke (`403 server_admin_required`). Grants and revokes are
 recorded with who and whom in the audit log. A disabled account cannot sign in, its sessions end at once, and its tokens
@@ -221,6 +222,15 @@ pyn token create ci --permissions read,checkin --repos alice/game --expires-days
 pyn token list
 pyn token revoke <id>
 ```
+
+## Full-scope credentials
+
+Account management is limited to a full-scope credential: a web session, or a token that names no repository and holds every
+permission (the sign-in tokens from `pyn login`). It covers SSH keys (add, list, remove), tokens (create, list, revoke), the
+password, and linking or unlinking an external identity. A narrower token (read-only, limited to repositories, or with fewer
+permissions) is refused with `403 forbidden`; it keeps working for its own scope. A token credential cannot create a token that
+outlives it: the new token's expiry is capped at its own, and it never holds more permissions or repositories than the creator.
+A session or a full-scope token creating a token as the account owner is otherwise unrestricted.
 
 ## Service credentials
 
