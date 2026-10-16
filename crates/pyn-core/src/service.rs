@@ -17,7 +17,9 @@ use std::sync::{Arc, Mutex, RwLock};
 use chrono::Duration;
 
 use crate::access::{Permission, Principal};
-use crate::audit::{AuditAction, AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent};
+use crate::audit::{
+    AuditAction, AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent, brief,
+};
 use crate::branch::{Branch, DEFAULT_BRANCH, conflicts, validate_branch_name};
 use crate::clock::Clock;
 use crate::commit_record::{TreeChange, tree_of};
@@ -31,7 +33,7 @@ use crate::integrity::{
 use crate::limits::{StorageCap, StorageCaps};
 use crate::object::ObjectStore;
 use crate::repo::DEFAULT_MAX_LOCKS_PER_USER;
-use crate::rules::{Mode, POLICY_PATH, PathFilter, Rules};
+use crate::rules::{MAX_POLICY_BYTES, Mode, POLICY_PATH, PathFilter, Rules, policy_too_large};
 use crate::store::MetadataStore;
 use crate::stranded::StrandedVersion;
 use crate::tree::{ACTIVITY_ACTIONS, EntryKind, RepoSummary, TreeEntry};
@@ -179,6 +181,7 @@ pub struct RepoService {
     config: ServiceConfig,
     storage: Option<(UserId, Arc<dyn StorageCaps>)>,
     unreferenced_cap: u64,
+    merge_slots: Arc<tokio::sync::Semaphore>,
 }
 
 impl RepoService {
@@ -207,7 +210,16 @@ impl RepoService {
             config,
             storage: None,
             unreferenced_cap: DEFAULT_UNREFERENCED_UPLOAD_BYTES,
+            merge_slots: Arc::new(tokio::sync::Semaphore::new(
+                crate::merge::default_concurrent_merges(),
+            )),
         }
+    }
+
+    /// Shares `slots` as the bound on text merges running at once.
+    pub fn with_merge_slots(mut self, slots: Arc<tokio::sync::Semaphore>) -> Self {
+        self.merge_slots = slots;
+        self
     }
 
     /// Enforces the storage ceiling `caps` reports for the repository's `owner`, if one is set.
@@ -350,11 +362,11 @@ impl RepoService {
     }
 
     async fn parse_policy(&self, content: &ObjectId) -> Result<Rules> {
-        let bytes = self
-            .objects
-            .get(content)
-            .await?
-            .ok_or_else(|| PynError::ObjectMissing(content.to_string()))?;
+        let bytes = match self.objects.get_limited(content, MAX_POLICY_BYTES).await {
+            Ok(found) => found.ok_or_else(|| PynError::ObjectMissing(content.to_string()))?,
+            Err(PynError::ObjectTooLarge { .. }) => return Err(policy_too_large()),
+            Err(e) => return Err(e),
+        };
         let text = std::str::from_utf8(&bytes)
             .map_err(|_| PynError::InvalidRules(format!("{POLICY_PATH} is not UTF-8 text")))?;
         Rules::from_toml(text)
@@ -861,7 +873,7 @@ impl RepoService {
             &who.user,
             AuditAction::Checkin,
             path,
-            format!("r{}: {}", rev.id, rev.message),
+            format!("r{}: {}", rev.id, brief(&rev.message)),
         )
         .await?;
         Ok(recorded)
@@ -1013,7 +1025,11 @@ impl RepoService {
                 &who.user,
                 action,
                 &rev.path,
-                format!("r{}: {} (changeset {changeset})", rev.id, rev.message),
+                format!(
+                    "r{}: {} (changeset {changeset})",
+                    rev.id,
+                    brief(&rev.message)
+                ),
             )
             .await?;
         }

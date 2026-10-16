@@ -12,6 +12,7 @@ pub mod commit_record;
 pub mod contract;
 pub mod email;
 pub mod error;
+pub mod gate;
 pub mod history;
 pub mod integrity;
 pub mod limits;
@@ -64,7 +65,9 @@ pub use merge::{
     Change, Conflict, ConflictKind, FastForward, MergeOutcome, MergeReport, MergeRequest,
     Resolution,
 };
-pub use object::{KeyHasher, Keying, ObjectRead, ObjectReader, ObjectStore, REPO_ALGORITHM};
+pub use object::{
+    KeyHasher, Keying, ObjectRead, ObjectReader, ObjectStore, REPO_ALGORITHM, Stored,
+};
 pub use oidc::{
     AuthorizationRequest, CodeExchange, ExternalClaims, ExternalCreate, ExternalIdentity,
     IdentityUnlink, NewExternalAccount, OidcFlow, OidcProvider, pkce_challenge,
@@ -87,7 +90,7 @@ pub use service::{
     FETCH_MAX_LIMIT, FetchPage, FetchQuery, FetchedCommit, FileEntry, LockLimit, PolicyPreview,
     PushObjects, Pushed, Recorded, RepoService, ServiceConfig, Snapshot, SnapshotEntry,
 };
-pub use store::MetadataStore;
+pub use store::{MetadataStore, UploadReservation};
 pub use stranded::{ConversionNote, StrandedVersion};
 pub use tree::{EntryKind, EntryMode, RepoSummary, TreeEntry};
 pub use types::{

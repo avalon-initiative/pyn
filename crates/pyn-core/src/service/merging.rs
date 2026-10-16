@@ -11,13 +11,13 @@ use pyn_object::{FileMode, ObjectId};
 
 use super::RepoService;
 use crate::access::{Permission, Principal};
-use crate::audit::AuditAction;
+use crate::audit::{AuditAction, brief};
 use crate::branch::Branch;
 use crate::error::{PynError, Result};
 use crate::merge::{
     Change, Conflict, ConflictKind, Content, Decision, Entry, FastForward, Inputs, MAX_BASE_DEPTH,
-    MAX_TEXT_MERGE, MergeOutcome, MergeReport, MergeRequest, MergeWrite, Pick, Resolution, Side,
-    Version, decide,
+    MAX_MERGE_COST, MAX_TEXT_MERGE, MergeOutcome, MergeReport, MergeRequest, MergeWrite, Pick,
+    Resolution, Side, Version, decide,
 };
 use crate::rules::{Mode, POLICY_PATH, Rules};
 use crate::stranded::{ConversionNote, StrandedVersion};
@@ -52,6 +52,31 @@ struct Plan {
     /// The policy the merge is decided under: the later of the two sides' effective policies.
     rules: Arc<Rules>,
     paths: Vec<PathPlan>,
+}
+
+/// Three-way merges the bytes; over the cost bound the result is a whole-file conflict.
+fn merge_bytes(base: &[u8], ours: &[u8], theirs: &[u8], has_base: bool) -> Merged {
+    if pyn_merge::merge_cost(base, ours, theirs) > MAX_MERGE_COST {
+        return Merged::Conflict {
+            kind: ConflictKind::Binary,
+            markers: None,
+        };
+    }
+    match merge_text(base, ours, theirs) {
+        Outcome::Clean(bytes) => Merged::Clean(bytes),
+        Outcome::Conflicted(chunks) => Merged::Conflict {
+            kind: if has_base {
+                ConflictKind::Content
+            } else {
+                ConflictKind::BothAdded
+            },
+            markers: Some(render_markers(&chunks, "ours", "base", "theirs")),
+        },
+        Outcome::BinaryConflict => Merged::Conflict {
+            kind: ConflictKind::Binary,
+            markers: None,
+        },
+    }
 }
 
 /// The merged text of a path, or why it could not be merged.
@@ -419,7 +444,7 @@ impl RepoService {
             Content::Bytes(b) => Ok(b.clone()),
             Content::Blob(id) => self
                 .objects
-                .get(id)
+                .get_limited(id, MAX_TEXT_MERGE)
                 .await?
                 .ok_or_else(|| PynError::ObjectMissing(id.to_string())),
         }
@@ -454,21 +479,19 @@ impl RepoService {
             self.load(&ours.content).await?,
             self.load(&theirs.content).await?,
         );
-        Ok(match merge_text(&base_bytes, &our_bytes, &their_bytes) {
-            Outcome::Clean(bytes) => Merged::Clean(bytes),
-            Outcome::Conflicted(chunks) => Merged::Conflict {
-                kind: if base.is_some() {
-                    ConflictKind::Content
-                } else {
-                    ConflictKind::BothAdded
-                },
-                markers: Some(render_markers(&chunks, "ours", "base", "theirs")),
-            },
-            Outcome::BinaryConflict => Merged::Conflict {
-                kind: ConflictKind::Binary,
-                markers: None,
-            },
+        let permit = self
+            .merge_slots
+            .acquire()
+            .await
+            .map_err(|e| PynError::Storage(e.to_string()))?;
+        let has_base = base.is_some();
+        let merged = tokio::task::spawn_blocking(move || {
+            merge_bytes(&base_bytes, &our_bytes, &their_bytes, has_base)
         })
+        .await
+        .map_err(|e| PynError::Storage(e.to_string()));
+        drop(permit);
+        merged
     }
 
     async fn shared_verdict(
@@ -944,7 +967,12 @@ impl RepoService {
                 &who.user,
                 AuditAction::Checkin,
                 &rev.path,
-                format!("r{}: {} (merge {})", rev.id, rev.message, written.commit),
+                format!(
+                    "r{}: {} (merge {})",
+                    rev.id,
+                    brief(&rev.message),
+                    written.commit
+                ),
             )
             .await?;
         }

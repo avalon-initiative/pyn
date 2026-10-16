@@ -18,6 +18,15 @@ pub enum Mode {
 /// Where a repository keeps its policy file.
 pub const POLICY_PATH: &str = ".pyn/pyn.toml";
 
+/// The largest policy file the server reads or parses.
+pub const MAX_POLICY_BYTES: u64 = 1 << 20;
+
+pub fn policy_too_large() -> PynError {
+    PynError::InvalidRules(format!(
+        "{POLICY_PATH} is larger than {MAX_POLICY_BYTES} bytes"
+    ))
+}
+
 /// Parsed `pyn.toml`; see docs/concepts/pyn-toml.md.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -119,6 +128,9 @@ impl Rules {
     }
 
     pub fn from_toml(text: &str) -> Result<Self> {
+        if text.len() as u64 > MAX_POLICY_BYTES {
+            return Err(policy_too_large());
+        }
         let file: ConfigFile =
             toml::from_str(text).map_err(|e| PynError::InvalidRules(e.to_string()))?;
         let mut rules = Self::with_default(file.meta.default);

@@ -326,6 +326,29 @@ impl MetadataStore for CountingStore {
         self.inner.unknown_objects(repo, ids).await
     }
 
+    async fn reserve_upload(
+        &self,
+        repo: &RepoId,
+        bytes: u64,
+        cap: u64,
+        now: chrono::DateTime<chrono::Utc>,
+        ttl_secs: i64,
+    ) -> crate::Result<crate::UploadReservation> {
+        self.count();
+        self.inner
+            .reserve_upload(repo, bytes, cap, now, ttl_secs)
+            .await
+    }
+
+    async fn release_upload(
+        &self,
+        repo: &RepoId,
+        reservation: crate::UploadReservation,
+    ) -> crate::Result<()> {
+        self.count();
+        self.inner.release_upload(repo, reservation).await
+    }
+
     async fn unreferenced_bytes(&self, repo: &RepoId) -> crate::Result<u64> {
         self.count();
         self.inner.unreferenced_bytes(repo).await

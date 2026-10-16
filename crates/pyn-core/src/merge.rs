@@ -12,6 +12,14 @@ use crate::types::{Person, RepoPath, Revision, RevisionId};
 /// Files larger than this are never merged as text: changed on both sides, they are a whole-file conflict.
 pub const MAX_TEXT_MERGE: u64 = 8 * 1024 * 1024;
 
+/// A text merge whose `pyn_merge::merge_cost` is above this is a whole-file conflict instead of being computed.
+pub const MAX_MERGE_COST: u64 = 1_000_000_000;
+
+/// How many text merges run at once unless the server setting says otherwise.
+pub fn default_concurrent_merges() -> usize {
+    std::thread::available_parallelism().map_or(2, |n| n.get()) * 2
+}
+
 /// How far a virtual merge base may recurse into the bases of its own bases.
 pub const MAX_BASE_DEPTH: u8 = 4;
 

@@ -60,8 +60,10 @@ Three-way by content, on the base, ours and theirs versions of the path:
 - changed on both sides, as text: a line-based three-way merge ([`pyn-merge`](../../crates/pyn-merge/src/lib.rs), diff3
   over Myers diffs). Changes whose ranges overlap or touch are merged only when identical, otherwise the region is a
   conflict, as in git;
-- changed on both sides and binary (a NUL in the first part of either, a symbolic link, or larger than 8 MiB): a
-  **whole-file conflict**; a binary file is never merged;
+- changed on both sides and binary (a NUL in the first part of either, a symbolic link, or larger than 8 MiB), or text
+  whose merge would cost too much (the lines of the three versions times 2000 above a billion, about 500000 lines in
+  all): a **whole-file conflict**; a binary file is never merged. Text merges run off the request threads, at most
+  `PYN_MAX_CONCURRENT_MERGES` at a time (see [configuration](../configuration.md));
 - one side removed the path and the other edited it: a whole-file conflict. A pyn server does not record deletions yet, so
   this cannot arise today; the rule is in place for when it can;
 - a path that is a file on one side and a folder on the other cannot merge (`invalid_request`): resolving it means removing

@@ -1127,3 +1127,46 @@ pub async fn a_file_on_one_side_and_a_folder_on_the_other_cannot_merge(store: St
         .unwrap_err();
     assert!(matches!(err, PynError::InvalidRequest(_)), "{err}");
 }
+
+pub async fn a_text_merge_over_the_cost_bound_is_left_to_a_person(store: Store) {
+    let h = harness(store);
+    let a = path("Source/a.cpp");
+    let body = |first: &str, last: &str| {
+        let mut text = format!("{first}\n");
+        text.push_str(&"line\n".repeat(200_000));
+        text.push_str(last);
+        text.push('\n');
+        text
+    };
+    let put = |branch: &'static str, text: String, base: Option<u64>| {
+        let (h, a) = (&h, &a);
+        async move {
+            let content = blob(h, &text).await;
+            h.svc
+                .checkin_on(
+                    branch,
+                    &who("alice"),
+                    a,
+                    content,
+                    FileMode::Regular,
+                    base.map(RevisionId),
+                    "edit".into(),
+                )
+                .await
+                .unwrap();
+        }
+    };
+    put("main", body("one", "end"), None).await;
+    branch_at(&h, "feature", "main").await;
+    put("feature", body("one", "theirs"), Some(1)).await;
+    put("main", body("ours", "end"), Some(1)).await;
+
+    let preview = h
+        .svc
+        .merge_preview(&request("feature", "main"))
+        .await
+        .unwrap();
+    assert_eq!(preview.outcome, MergeOutcome::Conflicted);
+    assert_eq!(preview.conflicts.len(), 1);
+    assert_eq!(preview.conflicts[0].kind, ConflictKind::Binary);
+}

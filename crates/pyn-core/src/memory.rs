@@ -30,7 +30,7 @@ use crate::repo_policy::{
     CreationEffect, CreationRule, CreationScope, CreationSubject, MemberCreation, RepoPolicy,
 };
 use crate::rules::{Mode, PathFilter};
-use crate::store::MetadataStore;
+use crate::store::{MetadataStore, UploadReservation};
 use crate::types::{
     ChangesetItem, Commit, Lock, Person, PushedCommit, RepoId, RepoPath, Revision, RevisionId,
     UserId,
@@ -53,6 +53,9 @@ struct State {
     pointers: HashMap<(RepoId, ObjectId), Vec<(RepoPath, RevisionId)>>,
     /// Uploads each repository may reference: size, and whether an assembled object already holds the chunk.
     uploads: HashMap<(RepoId, ObjectId), (u64, bool)>,
+    /// Holds on the unreferenced-upload budget of in-flight uploads: repository, bytes, expiry.
+    reservations: HashMap<i64, (RepoId, u64, DateTime<Utc>)>,
+    next_reservation: i64,
 }
 
 impl State {
@@ -1068,6 +1071,46 @@ impl MetadataStore for MemoryMetadataStore {
         recorded
     }
 
+    async fn reserve_upload(
+        &self,
+        repo: &RepoId,
+        bytes: u64,
+        cap: u64,
+        now: DateTime<Utc>,
+        ttl_secs: i64,
+    ) -> Result<UploadReservation> {
+        let mut st = self.state.lock().unwrap();
+        st.reservations.retain(|_, (_, _, until)| *until > now);
+        let held: u64 = st
+            .reservations
+            .values()
+            .filter(|(r, _, _)| r == repo)
+            .map(|(_, b, _)| b)
+            .sum();
+        let used = st.unreferenced(repo).saturating_add(held);
+        if used.saturating_add(bytes) > cap {
+            return Err(PynError::StorageLimitReached {
+                owner: repo.to_string(),
+                limit: cap,
+                used,
+            });
+        }
+        st.next_reservation += 1;
+        let id = st.next_reservation;
+        let until = now + Duration::seconds(ttl_secs);
+        st.reservations.insert(id, (repo.clone(), bytes, until));
+        Ok(UploadReservation(id))
+    }
+
+    async fn release_upload(&self, _repo: &RepoId, reservation: UploadReservation) -> Result<()> {
+        self.state
+            .lock()
+            .unwrap()
+            .reservations
+            .remove(&reservation.0);
+        Ok(())
+    }
+
     async fn unknown_objects(&self, repo: &RepoId, ids: &[ObjectId]) -> Result<Vec<ObjectId>> {
         let st = self.state.lock().unwrap();
         Ok(ids
@@ -1314,6 +1357,7 @@ impl MetadataStore for MemoryMetadataStore {
         st.branches.remove(id);
         st.pointers.retain(|(r, _), _| r != id);
         st.uploads.retain(|(r, _), _| r != id);
+        st.reservations.retain(|_, (r, _, _)| r != id);
         Ok(st.repos.remove(id).is_some())
     }
 
@@ -1362,12 +1406,24 @@ impl ObjectStore for MemoryObjectStore {
         keying: Keying,
         max: Option<u64>,
     ) -> Result<ObjectId> {
+        Ok(self.put_stream_tracked(reader, keying, max).await?.id)
+    }
+
+    async fn put_stream_tracked(
+        &self,
+        reader: ObjectReader,
+        keying: Keying,
+        max: Option<u64>,
+    ) -> Result<crate::Stored> {
         let bytes = crate::object::read_limited(reader, max).await?;
         let mut hasher = KeyHasher::new(keying);
         hasher.update(&bytes)?;
-        let hash = hasher.finish()?;
-        self.objects.lock().unwrap().insert(hash, bytes);
-        Ok(hash)
+        let id = hasher.finish()?;
+        let fresh = self.objects.lock().unwrap().insert(id, bytes).is_none();
+        Ok(crate::Stored {
+            id,
+            created: if fresh { vec![id] } else { Vec::new() },
+        })
     }
 
     async fn read(

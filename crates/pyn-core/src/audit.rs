@@ -9,6 +9,21 @@ use crate::access_service::SERVER_AUDIT_ID;
 use crate::error::{PynError, Result};
 use crate::types::{RepoId, RepoPath, UserId};
 
+/// The most message bytes an audit detail carries.
+pub const AUDIT_MESSAGE_BYTES: usize = 256;
+
+/// `text` cut to `AUDIT_MESSAGE_BYTES` on a character boundary, marked when cut.
+pub fn brief(text: &str) -> String {
+    if text.len() <= AUDIT_MESSAGE_BYTES {
+        return text.to_string();
+    }
+    let mut end = AUDIT_MESSAGE_BYTES;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}...", &text[..end])
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AuditAction {

@@ -1,6 +1,6 @@
 //! PostgreSQL `MetadataStore`. Every lock and revision operation is one atomic statement or transaction.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
@@ -15,7 +15,7 @@ use pyn_core::{
     Branch, ChangesetItem, Commit, FileMode, HistoryCursor, HistoryScan, Lock, MetadataStore, Mode,
     ObjectId, PathFilter, Person, PushedCommit, PynError, REPO_ALGORITHM, RepoId, RepoPath,
     RepoRecord, RepoSettings, RepoUpdate, RepoUsage, Result, Revision, RevisionHash, RevisionId,
-    StorageCap, Usage, UserId, Visibility,
+    StorageCap, UploadReservation, Usage, UserId, Visibility,
 };
 use sqlx::migrate::MigrateDatabase;
 use sqlx::postgres::{PgPoolOptions, PgRow};
@@ -1786,6 +1786,7 @@ impl MetadataStore for PgMetadataStore {
         .fetch_all(&mut *tx)
         .await
         .map_err(db)?;
+        let known: HashSet<&String> = known.iter().collect();
         if let Some(c) = hex.iter().find(|c| !known.contains(c)) {
             return Err(PynError::ObjectMissing(c.clone()));
         }
@@ -1797,6 +1798,64 @@ impl MetadataStore for PgMetadataStore {
             .map_err(db)?;
         insert_upload(&mut tx, repo, id, size, cap).await?;
         tx.commit().await.map_err(db)
+    }
+
+    async fn reserve_upload(
+        &self,
+        repo: &RepoId,
+        bytes: u64,
+        cap: u64,
+        now: DateTime<Utc>,
+        ttl_secs: i64,
+    ) -> Result<UploadReservation> {
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+            .bind(format!("upload-budget:{repo}"))
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
+        sqlx::query("DELETE FROM upload_reservations WHERE repo = $1 AND expires_at <= $2")
+            .bind(repo.as_str())
+            .bind(now)
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
+        let held: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(bytes), 0)::bigint FROM upload_reservations WHERE repo = $1",
+        )
+        .bind(repo.as_str())
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(db)?;
+        let used = (unreferenced(&mut *tx, repo).await? as u64).saturating_add(held as u64);
+        if used.saturating_add(bytes) > cap {
+            return Err(PynError::StorageLimitReached {
+                owner: repo.to_string(),
+                limit: cap,
+                used,
+            });
+        }
+        let id: i64 = sqlx::query_scalar(
+            "INSERT INTO upload_reservations (repo, bytes, expires_at) VALUES ($1, $2, $3) RETURNING id",
+        )
+        .bind(repo.as_str())
+        .bind(bytes.min(i64::MAX as u64) as i64)
+        .bind(now + chrono::Duration::seconds(ttl_secs))
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(db)?;
+        tx.commit().await.map_err(db)?;
+        Ok(UploadReservation(id))
+    }
+
+    async fn release_upload(&self, repo: &RepoId, reservation: UploadReservation) -> Result<()> {
+        sqlx::query("DELETE FROM upload_reservations WHERE id = $1 AND repo = $2")
+            .bind(reservation.0)
+            .bind(repo.as_str())
+            .execute(&self.pool)
+            .await
+            .map_err(db)?;
+        Ok(())
     }
 
     async fn unknown_objects(&self, repo: &RepoId, ids: &[ObjectId]) -> Result<Vec<ObjectId>> {
@@ -1811,6 +1870,7 @@ impl MetadataStore for PgMetadataStore {
         .fetch_all(&self.pool)
         .await
         .map_err(db)?;
+        let known: HashSet<&String> = known.iter().collect();
         Ok(ids
             .iter()
             .zip(&hex)
@@ -2163,6 +2223,7 @@ impl MetadataStore for PgMetadataStore {
             "DELETE FROM branches WHERE repo = $1",
             "DELETE FROM trees WHERE repo = $1",
             "DELETE FROM repo_objects WHERE repo = $1",
+            "DELETE FROM upload_reservations WHERE repo = $1",
         ] {
             sqlx::query(stmt)
                 .bind(id.as_str())

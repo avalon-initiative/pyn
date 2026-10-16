@@ -1,9 +1,11 @@
 use std::sync::Arc;
 
+use pyn_core::gate::{DEFAULT_UPLOADS_PER_SERVER, DEFAULT_UPLOADS_PER_USER};
 use pyn_core::memory::{
     MemoryAccessStore, MemoryAuditStore, MemoryMetadataStore, MemoryObjectStore,
     MemoryRateLimitStore,
 };
+use pyn_core::merge::default_concurrent_merges;
 use pyn_core::{
     AccessConfig, AccessService, AccessStore, AuditStore, AuthProvider, ChunkedStore,
     ExternalPolicy, Limits, MetadataStore, ObjectStore, RateLimitStore, RateLimits, Repositories,
@@ -146,7 +148,15 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
     let addr = std::env::var("PYN_ADDR").unwrap_or_else(|_| "127.0.0.1:7878".into());
     let rules = match std::env::var("PYN_CONFIG") {
-        Ok(path) => Rules::from_toml(&std::fs::read_to_string(path)?)?,
+        Ok(path) => {
+            let size = std::fs::metadata(&path)?.len();
+            anyhow::ensure!(
+                size <= pyn_core::rules::MAX_POLICY_BYTES,
+                "PYN_CONFIG is larger than {} bytes",
+                pyn_core::rules::MAX_POLICY_BYTES
+            );
+            Rules::from_toml(&std::fs::read_to_string(path)?)?
+        }
         Err(_) => Rules::empty(),
     };
 
@@ -167,7 +177,11 @@ async fn main() -> anyhow::Result<()> {
         "PYN_INSTANCES above 1 needs PYN_DATABASE_URL and PYN_DATA_DIR on storage all copies share"
     );
     let objects: Arc<dyn ObjectStore> = match std::env::var("PYN_DATA_DIR") {
-        Ok(dir) => Arc::new(ChunkedStore::new(Arc::new(FsObjectStore::open(dir).await?))),
+        Ok(dir) => {
+            let fs = FsObjectStore::open(dir).await?;
+            fs.spawn_sweeper(std::time::Duration::from_secs(900));
+            Arc::new(ChunkedStore::new(Arc::new(fs)))
+        }
         Err(_) => Arc::new(ChunkedStore::new(Arc::new(MemoryObjectStore::new()))),
     };
     if let Some(pg) = postgres {
@@ -311,6 +325,16 @@ async fn main() -> anyhow::Result<()> {
     if let Some(bytes) = optional_number("PYN_MAX_UNREFERENCED_UPLOAD_BYTES")? {
         repos = repos.with_unreferenced_upload_cap(bytes);
     }
+    let uploads_per_user: u32 = number("PYN_MAX_UPLOADS_PER_USER", DEFAULT_UPLOADS_PER_USER)?;
+    let uploads_per_server: u32 = number("PYN_MAX_UPLOADS", DEFAULT_UPLOADS_PER_SERVER)?;
+    anyhow::ensure!(
+        uploads_per_user >= 1 && uploads_per_server >= 1,
+        "PYN_MAX_UPLOADS_PER_USER and PYN_MAX_UPLOADS must be at least 1"
+    );
+    repos = repos.with_upload_limits(uploads_per_user, uploads_per_server);
+    let merges: usize = number("PYN_MAX_CONCURRENT_MERGES", default_concurrent_merges())?;
+    anyhow::ensure!(merges >= 1, "PYN_MAX_CONCURRENT_MERGES must be at least 1");
+    repos = repos.with_max_concurrent_merges(merges);
     tracing::info!(
         bytes = repos.unreferenced_upload_cap(),
         "cap on unreferenced uploads per repository"

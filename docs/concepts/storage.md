@@ -74,6 +74,11 @@ an upload is refused with `409 storage_limit_reached`, naming the repository. Th
 names them, and chunks stop counting once an assembled object holds them. These unreferenced records are also the input
 a future garbage collection (#207) works from.
 
+While an upload streams in, the server writes it to a temp file named `.tmp-` and a random 128-bit suffix in the data
+directory, created exclusively, and links it into place without replacing an object that exists. The temp file is
+removed on every outcome, including a dropped connection. Temp files older than an hour, left by a process that died,
+are removed at start and every 15 minutes.
+
 ## Migration from SHA-256 content hashes
 
 Before decision #245 content was keyed by the plain SHA-256 of its bytes. At startup against PostgreSQL the server

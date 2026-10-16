@@ -37,6 +37,8 @@ pub enum PynError {
         limit: u64,
         used: u64,
     },
+    #[error("too many uploads are in progress for {scope}; retry shortly")]
+    UploadsBusy { scope: &'static str },
     #[error("the object is larger than the {limit} byte limit")]
     ObjectTooLarge { limit: u64 },
     #[error("declared length {declared} but {actual} bytes were sent")]
@@ -239,6 +241,7 @@ impl PynError {
             Self::RepoLimitReached { .. } => "repo_limit_reached",
             Self::MemberLimitReached { .. } => "member_limit_reached",
             Self::StorageLimitReached { .. } => "storage_limit_reached",
+            Self::UploadsBusy { .. } => "uploads_busy",
             Self::ObjectTooLarge { .. } => "object_too_large",
             Self::LengthMismatch { .. } => "length_mismatch",
             Self::NotLockHolder(_) => "not_lock_holder",

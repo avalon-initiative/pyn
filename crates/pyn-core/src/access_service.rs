@@ -644,6 +644,17 @@ fn stronger(
     }
 }
 
+/// The first few items, then how many more; keeps an audit detail small for a token on many repositories.
+fn join_bounded<T: ToString>(items: impl ExactSizeIterator<Item = T>) -> String {
+    const SHOWN: usize = 8;
+    let total = items.len();
+    let shown = join(items.take(SHOWN));
+    match total.saturating_sub(SHOWN) {
+        0 => shown,
+        more => format!("{shown} and {more} more"),
+    }
+}
+
 fn join<T: ToString>(items: impl Iterator<Item = T>) -> String {
     items.map(|i| i.to_string()).collect::<Vec<_>>().join(", ")
 }
@@ -927,7 +938,7 @@ impl AccessService {
             record.name,
             record.user,
             join(record.permissions.iter()),
-            join(record.repos.iter()),
+            join_bounded(record.repos.iter()),
             record
                 .expires_at
                 .map_or("never".to_string(), |t| t.to_rfc3339()),
