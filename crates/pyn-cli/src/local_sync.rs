@@ -629,6 +629,10 @@ pub fn pull(backend: &dyn Backend, ws: &Workspace, rebase: bool) -> Result<()> {
         println!("Already up to date.");
         return Ok(());
     }
+    let incoming = store
+        .repo()
+        .flatten(store.tree_of(Some(theirs))?.as_ref(), &Pathspec::default())?;
+    pyn_gitwork::check_paths(incoming.keys().map(Vec::as_slice))?;
     let refs = store.repo().refs();
     if store.ancestors(Some(theirs))?.contains(&local) {
         guard_changes(&store, ws, Some(local), theirs)?;
@@ -755,11 +759,11 @@ fn write_merged(
     let mut state = ws.load_state()?;
     for (path, _, new) in merged {
         let bytes = store.repo().blob(&new.id)?;
-        let target = ws.abs(path);
+        let target = ws.dest(path)?;
         set_read_only(&target, false)?;
-        std::fs::write(&target, &bytes).with_context(|| format!("writing {}", target.display()))?;
+        ws.write_file(path, &bytes)?;
         let mode = api_mode(new.mode)?;
-        localfile::apply(&target, mode)?;
+        localfile::apply(&target, path, mode)?;
         if let Some(known) = state.get_mut(path) {
             known.hash = hash_of(&bytes);
             known.file_mode = mode;
