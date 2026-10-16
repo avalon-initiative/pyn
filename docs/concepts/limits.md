@@ -48,6 +48,20 @@ overshoot. Each limit has its own error code and answers `409`:
 | `member_limit_reached` | adding a member to an organization at its limit |
 | `storage_limit_reached` | a check-in or restore that would add content past the limit, or an upload past the repository's unreferenced-upload ceiling |
 
+## Request size bounds
+
+Fixed bounds apply to what a request may carry, and a request over one is `400 invalid_request` (`invalid_path` for a path):
+
+| Field | Bound |
+| --- | --- |
+| token name, SSH key title | 1 to 256 bytes, no control characters |
+| team name, team description | 100 and 500 characters; control characters refused (a description may hold newline and tab) |
+| commit and revision message | 64 KiB; control characters refused except newline, tab and carriage return |
+| paths in one changeset | 10000 |
+| commits in one push | 10000 |
+| invitation lifetime | 1 to 8760 hours |
+| path | 4096 bytes, 255 per segment, see [the path rules](pyn-toml.md#path-rules-for-new-writes) |
+
 Lowering a limit below current use never deletes anything: existing repositories, members and content stay, and only
 new growth is refused until use falls under the limit. The [lock limit](pyn-toml.md#lock-limit) is separate and
 unchanged.

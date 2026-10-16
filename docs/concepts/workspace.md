@@ -19,7 +19,7 @@ The ignore file is `.pyn/ignore`, not a `.pynignore` in the project root.
 
 ## Shared and local files
 
-Everything in `.pyn/` is shared and tracked as part of the repository, except the `local_only/` folder, which is never
+Everything in `.pyn/` is shared and tracked as part of the repository, except the `local_only/` folder (a reserved name: the server refuses new writes under it, see [path rules](pyn-toml.md#path-rules-for-new-writes)), which is never
 tracked. A file's place in the tree says which it is.
 
 ## Overriding settings

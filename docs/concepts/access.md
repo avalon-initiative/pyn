@@ -31,6 +31,11 @@ A repository owner can change what any role grants. An owner of the [organizatio
 owns a repository is an implicit `admin` of it. The `admin` role always keeps `manage_users` and `manage_roles`, and
 nobody can grant a role containing a permission they do not hold themselves.
 
+Changing a member's role also needs every permission the member's current role holds, so a manager cannot change the
+role of a member who ranks above them. The account that owns a user-owned repository keeps its `admin` role there: only
+that account or a server administrator changes it. A server administrator and an owner of the owning organization are
+exempt from the rank check. The same rule applies to changing or removing a team's role in a repository.
+
 ## Effective role
 
 What someone may do in a repository is decided by one function in the server: the highest role among the sources below.
@@ -110,6 +115,11 @@ remove the keys and tokens of its members, except those of a server administrato
 account, or an owner of the owning organization), which only a server administrator can. [Server administrators](#protecting-open-registration) approve and disable
 accounts but do not gain that.
 
+Token management for another person is bounded by the same reach. A manager lists and revokes only the tokens limited to
+repositories where the manager holds `manage_users`, and the repositories shown are those. A token limited to any other
+repository, or one covering every repository (such as a sign-in token), is left out of the listing and revoking it reads
+as `404 token_not_found`; only a server administrator reaches those.
+
 ## Joining a server
 
 The person running the server chooses how people join with `PYN_REGISTRATION`:
@@ -120,8 +130,12 @@ The person running the server chooses how people join with `PYN_REGISTRATION`:
 | `open` | anyone; the account has no role in any repository (it can read public ones) until someone adds it. Meant for a public server; see [protecting open registration](#protecting-open-registration) before exposing it to the internet |
 | `closed` | nobody on their own; someone with `manage_users` adds people with `pyn user add` |
 
-In every mode, someone with `manage_users` in a repository can add people to it by hand. An invitation is a one-time code
-(`pyn invite create --role writer`) for one repository that carries the role the new person will get there and an expiry; it
+Someone with `manage_users` in a repository can add people to it by hand with `POST /v1/repos/{owner}/{name}/users`, but
+that creates an account, so it follows the registration policy: on a `closed` or `invite` server, or an `open` one that
+requires approval or email verification, only a server administrator may (everyone else gets `403 forbidden`). On a plain
+`open` server it is allowed and rate limited like sign-up. Adding an existing person to a repository is not account
+creation and needs only `manage_users`. An invitation is a one-time code
+(`pyn invite create --role writer`) for one repository that carries the role the new person will get there and an expiry of 1 to 8760 hours; it
 is shown once, can be revoked only in the repository it belongs to, and cannot grant a role above the level of the person
 creating it. The new person runs `pyn register <name> --invite <code>` and gets that role in that repository.
 
@@ -230,6 +244,11 @@ pyn token create ci --permissions read,checkin --repos alice/game --expires-days
 pyn token list
 pyn token revoke <id>
 ```
+
+## Error responses
+
+`storage` and `history_corrupt` errors answer `500` with a generic message and their stable `code`; the detail is written to
+the server log with the method and path of the request. Every other error keeps its message.
 
 ## Full-scope credentials
 

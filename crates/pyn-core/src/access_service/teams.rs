@@ -331,10 +331,9 @@ impl AccessService {
             .await?
             .into_iter()
             .find_map(|(t, role)| (t == slug).then_some(role))
+            && !self.exempt_from_rank(actor, repo).await?
         {
-            if !self.exempt_from_rank(actor, repo).await? {
-                self.require_can_grant(actor, repo, old).await?;
-            }
+            self.require_can_grant(actor, repo, old).await?;
         }
         let Some(old) = self.store.remove_team_role(repo, &org, slug).await? else {
             return Ok(());

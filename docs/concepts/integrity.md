@@ -116,8 +116,8 @@ events leaves a valid chain. A client that remembers a head hash can detect that
 ## Where hashes are checked
 
 - Every revision the server returns is checked against its own hash first. The full history of a path is also checked for
-  its links. A mismatch, or a `hash_version` that disagrees with the stored fields, is a `500 history_corrupt` naming the
-  path and revision, never silently served.
+  its links. A mismatch, or a `hash_version` that disagrees with the stored fields, is a `500 history_corrupt`, never silently served. The
+  response carries a generic message; the path and revision are in the server log.
 - A commit chains from the stored head hash only after the head has been checked, so a tampered head cannot be extended.
 - Every commit the server returns is checked against its own id: its stored raw bytes must hash to the id and say what
   its tree, parents, author, committer, time and message fields say; a mismatch is a `500 history_corrupt`. Verification also checks each commit's parent links and that each
