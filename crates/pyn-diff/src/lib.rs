@@ -3,7 +3,7 @@
 use std::fmt::Write;
 
 /// Past this many edits per file the middle is reported as one replace instead of a minimal diff, which bounds memory.
-const MAX_EDITS: usize = 2000;
+pub const MAX_EDITS: usize = 2000;
 
 /// Bytes checked for a NUL when deciding that content is binary, as git does.
 const BINARY_PROBE: usize = 8000;

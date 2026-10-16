@@ -1103,14 +1103,17 @@ fn upload(
 #[utoipa::path(put, path = "/v1/repos/{owner}/{name}/objects", params(RepoAddress), request_body(content = Vec<u8>, content_type = "application/octet-stream", description = "the content; its `Content-Length` is the declared length that the blob id's header covers"),
     responses((status = 200, body = api::PutObjectResponse, description = "the content's git blob id"),
               (status = 400, body = api::ErrorBody, description = "invalid_request without a `Content-Length`; length_mismatch when the body is not that long"),
-              (status = 413, body = api::ErrorBody, description = "object_too_large: the upload exceeds the server's per-object limit")))]
+              (status = 413, body = api::ErrorBody, description = "object_too_large: the upload exceeds the server's per-object limit"),
+              (status = 429, body = api::ErrorBody, description = "uploads_busy: too many uploads by this user or on the server; Retry-After says how many seconds to wait")))]
 async fn put_object(
     State(s): State<AppState>,
     headers: HeaderMap,
     Path((owner, name)): Path<(String, String)>,
     body: axum::body::Body,
 ) -> ApiResult<Json<api::PutObjectResponse>> {
-    let (open, _) = authorize_repo(&s, &headers, &owner, &name, Some(Permission::Checkin)).await?;
+    let (open, who) =
+        authorize_repo(&s, &headers, &owner, &name, Some(Permission::Checkin)).await?;
+    let _permit = s.repos.upload_permit(&who.user)?;
     let (reader, len) = upload(&headers, body)?;
     let id = open
         .service
@@ -1124,14 +1127,17 @@ async fn put_object(
 #[utoipa::path(put, path = "/v1/repos/{owner}/{name}/objects/chunk", params(RepoAddress), request_body(content = Vec<u8>, content_type = "application/octet-stream", description = "one chunk, at most 4 MiB"),
     responses((status = 200, body = api::PutObjectResponse, description = "the chunk's key: the SHA-256 hex of its bytes"),
               (status = 400, body = api::ErrorBody, description = "invalid_request for a chunk over 4 MiB"),
-              (status = 413, body = api::ErrorBody, description = "object_too_large")))]
+              (status = 413, body = api::ErrorBody, description = "object_too_large"),
+              (status = 429, body = api::ErrorBody, description = "uploads_busy: too many uploads by this user or on the server; Retry-After says how many seconds to wait")))]
 async fn put_chunk(
     State(s): State<AppState>,
     headers: HeaderMap,
     Path((owner, name)): Path<(String, String)>,
     body: axum::body::Body,
 ) -> ApiResult<Json<api::PutObjectResponse>> {
-    let (open, _) = authorize_repo(&s, &headers, &owner, &name, Some(Permission::Checkin)).await?;
+    let (open, who) =
+        authorize_repo(&s, &headers, &owner, &name, Some(Permission::Checkin)).await?;
+    let _permit = s.repos.upload_permit(&who.user)?;
     use futures_util::TryStreamExt;
     let reader =
         tokio_util::io::StreamReader::new(body.into_data_stream().map_err(std::io::Error::other));

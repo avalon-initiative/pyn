@@ -3,10 +3,10 @@
 
 use super::RepoService;
 use crate::error::{PynError, Result};
+use crate::object::ObjectStore;
 use crate::object::{Keying, ObjectReader};
 use crate::store::{MetadataStore, UploadReservation};
 use crate::types::RepoId;
-use crate::object::ObjectStore;
 use pyn_object::ObjectId;
 use std::sync::Arc;
 
@@ -43,10 +43,7 @@ impl RepoService {
             )
             .await?;
         let guard = ReservationGuard::new(self.meta.clone(), self.repo.clone(), hold);
-        let stored = self
-            .objects
-            .put_stream_tracked(reader, keying, max)
-            .await;
+        let stored = self.objects.put_stream_tracked(reader, keying, max).await;
         let stored = match stored {
             Ok(stored) => stored,
             Err(e) => {

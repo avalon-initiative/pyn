@@ -139,6 +139,16 @@ pub fn merge<T: PartialEq + Clone>(base: &[T], ours: &[T], theirs: &[T]) -> Vec<
     out
 }
 
+/// Worst-case work to merge text: the lines of all three inputs times the diff edit budget. Zero when the merge needs
+/// no diff (an input equals another).
+pub fn merge_cost(base: &[u8], ours: &[u8], theirs: &[u8]) -> u64 {
+    if ours == theirs || theirs == base || ours == base {
+        return 0;
+    }
+    let lines = |b: &[u8]| b.iter().filter(|c| **c == b'\n').count() as u64 + 1;
+    (lines(base) + lines(ours) + lines(theirs)).saturating_mul(pyn_diff::MAX_EDITS as u64)
+}
+
 /// Merges text line by line; any NUL in an input makes the whole file the unit of conflict.
 pub fn merge_text<'a>(base: &'a [u8], ours: &'a [u8], theirs: &'a [u8]) -> Outcome<'a> {
     if ours == theirs || theirs == base {

@@ -51,6 +51,8 @@ pub struct Repositories {
     rules: Rules,
     default_max_locks: u32,
     unreferenced_cap: u64,
+    uploads: crate::gate::UploadGate,
+    merge_slots: Arc<tokio::sync::Semaphore>,
     services: Mutex<HashMap<crate::RepoId, (RepoSettings, Arc<RepoService>)>>,
 }
 
@@ -73,6 +75,10 @@ impl Repositories {
             rules,
             default_max_locks: DEFAULT_MAX_LOCKS_PER_USER,
             unreferenced_cap: DEFAULT_UNREFERENCED_UPLOAD_BYTES,
+            uploads: crate::gate::UploadGate::default(),
+            merge_slots: Arc::new(tokio::sync::Semaphore::new(
+                crate::merge::default_concurrent_merges(),
+            )),
             services: Mutex::new(HashMap::new()),
         }
     }
@@ -87,6 +93,23 @@ impl Repositories {
     pub fn with_unreferenced_upload_cap(mut self, bytes: u64) -> Self {
         self.unreferenced_cap = bytes;
         self
+    }
+
+    /// The most uploads one user, and the whole process, may run at once.
+    pub fn with_upload_limits(mut self, per_user: u32, per_server: u32) -> Self {
+        self.uploads = crate::gate::UploadGate::new(per_user, per_server);
+        self
+    }
+
+    /// The most text merges that run at once across all repositories; `slots` must be at least 1.
+    pub fn with_max_concurrent_merges(mut self, slots: usize) -> Self {
+        self.merge_slots = Arc::new(tokio::sync::Semaphore::new(slots));
+        self
+    }
+
+    /// Admits one more upload by `user`, or `UploadsBusy`; hold the permit until the upload ends.
+    pub fn upload_permit(&self, user: &UserId) -> Result<crate::gate::UploadPermit> {
+        self.uploads.admit(user)
     }
 
     pub fn unreferenced_upload_cap(&self) -> u64 {
@@ -138,7 +161,8 @@ impl Repositories {
         );
         let svc = Arc::new(
             svc.with_storage_caps(record.owner.clone(), self.access.clone())
-                .with_unreferenced_cap(self.unreferenced_cap),
+                .with_unreferenced_cap(self.unreferenced_cap)
+                .with_merge_slots(self.merge_slots.clone()),
         );
         svc.load_policy().await?;
         let mut services = self.services.lock().unwrap();

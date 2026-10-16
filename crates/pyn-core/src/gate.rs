@@ -40,7 +40,9 @@ impl UploadGate {
     pub fn admit(&self, user: &UserId) -> Result<UploadPermit> {
         let mut counts = self.counts.lock().unwrap();
         if counts.total >= self.per_server {
-            return Err(PynError::UploadsBusy { scope: "the server" });
+            return Err(PynError::UploadsBusy {
+                scope: "the server",
+            });
         }
         let mine = counts.users.get(user).copied().unwrap_or(0);
         if mine >= self.per_user {
@@ -91,7 +93,9 @@ mod tests {
         let _p3 = gate.admit(&b).unwrap();
         assert!(matches!(
             gate.admit(&b),
-            Err(PynError::UploadsBusy { scope: "the server" })
+            Err(PynError::UploadsBusy {
+                scope: "the server"
+            })
         ));
         drop(p1);
         gate.admit(&b).unwrap();

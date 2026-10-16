@@ -9,7 +9,7 @@ use pyn_object::{FileMode, Kind, ObjectId, TreeEntry, hash_object, parse_tree};
 use super::push_merge::Chain;
 use super::{DEFAULT_BRANCH, RepoService, changeset_id};
 use crate::access::{Permission, Principal};
-use crate::audit::AuditAction;
+use crate::audit::{AuditAction, brief};
 use crate::commit_record::TreeChange;
 use crate::error::{PynError, Result};
 use crate::object::REPO_ALGORITHM;
@@ -233,7 +233,7 @@ impl RepoService {
                 &who.user,
                 action,
                 &rev.path,
-                format!("r{}: {} (push)", rev.id, rev.message),
+                format!("r{}: {} (push)", rev.id, brief(&rev.message)),
             )
             .await?;
             if on_default
