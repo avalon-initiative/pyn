@@ -16,7 +16,7 @@ use crate::backend::Backend;
 use crate::branch;
 use crate::client::ApiError;
 use crate::local_commit::signature;
-use crate::local_store::{ALGORITHM, LocalStore, build_trees, parse_id};
+use crate::local_store::{ALGORITHM, Files, LocalStore, build_trees, parse_id};
 use crate::snapshot::short;
 use crate::staging::Index;
 use crate::stranded;
@@ -91,9 +91,13 @@ fn encode(id: &ObjectId, body: &[u8]) -> api::PushObject {
 
 impl LocalStore {
     /// Every commit reachable from `from`, itself included.
-    fn ancestors(&self, from: Option<ObjectId>) -> Result<HashSet<ObjectId>> {
+    pub(crate) fn ancestors(&self, from: Option<ObjectId>) -> Result<HashSet<ObjectId>> {
+        self.reach(from.into_iter().collect())
+    }
+
+    fn reach(&self, from: Vec<ObjectId>) -> Result<HashSet<ObjectId>> {
         let mut known = HashSet::new();
-        let mut queue: Vec<ObjectId> = from.into_iter().collect();
+        let mut queue = from;
         while let Some(id) = queue.pop() {
             if known.insert(id) {
                 queue.extend(self.repo().commit(&id)?.parents);
@@ -109,7 +113,8 @@ impl LocalStore {
         })
     }
 
-    /// The first-parent chain of local commits the server's tip does not have; `None` when there are none.
+    /// The first-parent chain of local commits the server's tip does not have; `None` when there are none. A merge
+    /// commit may only merge in commits the server already has.
     pub fn outgoing(&self, branch: &str) -> Result<Option<Outgoing>> {
         let (Some(tip), published) = (self.tip(branch)?, self.published(branch)?) else {
             return Ok(None);
@@ -122,10 +127,11 @@ impl LocalStore {
                 break;
             }
             let parents = self.repo().commit(&id)?.parents;
-            if parents.len() > 1 {
+            if let Some(local) = parents.iter().skip(1).find(|p| !known.contains(p)) {
                 bail!(
-                    "commit {} is a merge commit, which the local store cannot publish or rebuild yet",
-                    short(&id.to_hex())
+                    "merge commit {} merges {}, which the server does not have; push that history first",
+                    short(&id.to_hex()),
+                    short(&local.to_hex())
                 );
             }
             commits.push(id);
@@ -252,6 +258,13 @@ impl LocalStore {
         for id in &outgoing.commits {
             let commit = self.repo().commit(id)?;
             let before = self.tree_of(parent)?;
+            let merged_in = match commit.parents.get(1) {
+                Some(other) => {
+                    let tree = self.tree_of(Some(*other))?;
+                    self.repo().flatten(tree.as_ref(), &Pathspec::default())?
+                }
+                None => Default::default(),
+            };
             for change in
                 self.repo()
                     .diff_trees(before.as_ref(), Some(&commit.tree), &Pathspec::default())?
@@ -263,6 +276,9 @@ impl LocalStore {
                 if entry.mode == FileMode::Gitlink {
                     bail!("{path} is a submodule entry, which pyn does not support");
                 }
+                if merged_in.get(&change.path) == Some(&entry) {
+                    continue;
+                }
                 if seen_blobs.insert(entry.id) {
                     blobs.push(entry.id);
                 }
@@ -272,6 +288,125 @@ impl LocalStore {
             parent = Some(*id);
         }
         Ok((blobs, commits, trees))
+    }
+
+    /// The lowest common ancestors of `a` and `b`: common commits that no other common commit descends from.
+    fn merge_bases(&self, a: ObjectId, b: ObjectId) -> Result<Vec<ObjectId>> {
+        let (from_a, from_b) = (self.ancestors(Some(a))?, self.ancestors(Some(b))?);
+        let common: Vec<ObjectId> = from_a.intersection(&from_b).copied().collect();
+        let mut parents = Vec::new();
+        for id in &common {
+            parents.extend(self.repo().commit(id)?.parents);
+        }
+        let above = self.reach(parents)?;
+        let mut bases: Vec<ObjectId> = common.into_iter().filter(|c| !above.contains(c)).collect();
+        bases.sort_by_key(ObjectId::to_hex);
+        Ok(bases)
+    }
+
+    /// The files of the merge of `theirs` into `local` over `base`: a side that alone changed a path wins, shared
+    /// text merges cleanly or not at all, and an exclusive path both sides changed stays the local one only under
+    /// the person's lock. Anything else refuses with nothing written.
+    fn three_way(
+        &self,
+        remote: &dyn Backend,
+        base: Option<ObjectId>,
+        local: ObjectId,
+        theirs: ObjectId,
+    ) -> Result<(Files, Vec<String>)> {
+        let flat = |c: Option<ObjectId>| -> Result<Files> {
+            let tree = self.tree_of(c)?;
+            Ok(self
+                .repo()
+                .flatten(tree.as_ref(), &Pathspec::default())?
+                .into_iter()
+                .collect())
+        };
+        let (b, o, t) = (flat(base)?, flat(Some(local))?, flat(Some(theirs))?);
+        let mut files = o.clone();
+        let (mut modes, mut locks) = (None, None);
+        let (mut clashes, mut diverged, mut kept) = (Vec::new(), Vec::new(), Vec::new());
+        let paths: std::collections::BTreeSet<&Vec<u8>> =
+            b.keys().chain(o.keys()).chain(t.keys()).collect();
+        for path in paths {
+            let (bv, ov, tv) = (
+                b.get(path).copied(),
+                o.get(path).copied(),
+                t.get(path).copied(),
+            );
+            if ov == tv || tv == bv {
+                continue;
+            }
+            if ov == bv {
+                match tv {
+                    Some(entry) => files.insert(path.clone(), entry),
+                    None => files.remove(path),
+                };
+                continue;
+            }
+            let name = String::from_utf8_lossy(path).into_owned();
+            let (Some(_), Some(_)) = (ov, tv) else {
+                clashes.push(format!(
+                    "{name} (changed on one side, removed on the other)"
+                ));
+                continue;
+            };
+            let modes = match &mut modes {
+                Some(m) => m,
+                None => modes.insert(shared_paths(remote, &theirs)?),
+            };
+            if modes.get(&name) != Some(&true) {
+                let locks = match &mut locks {
+                    Some(l) => l,
+                    None => locks.insert(my_locks(remote)?),
+                };
+                if locks.contains(&name) {
+                    kept.push(name);
+                } else {
+                    diverged.push(name);
+                }
+                continue;
+            }
+            match self.merge_entry(remote, bv, ov, tv)? {
+                Some(entry) => {
+                    files.insert(path.clone(), entry);
+                }
+                None => clashes.push(name),
+            }
+        }
+        let names: Vec<&Vec<u8>> = files.keys().collect();
+        for pair in names.windows(2) {
+            if pair[1].starts_with(pair[0]) && pair[1].get(pair[0].len()) == Some(&b'/') {
+                clashes.push(format!(
+                    "{} (a file on one side and a folder on the other)",
+                    String::from_utf8_lossy(pair[0])
+                ));
+            }
+        }
+        if clashes.is_empty() && diverged.is_empty() {
+            return Ok((files, kept));
+        }
+        let mut message = String::from(
+            "error: the pull would merge changes that conflict; nothing was changed\n",
+        );
+        if !clashes.is_empty() {
+            message.push_str(&format!(
+                "both sides changed the same lines of, or removed:\n\t{}\n",
+                clashes.join("\n\t")
+            ));
+        }
+        if !diverged.is_empty() {
+            message.push_str(&format!(
+                "exclusive files, which cannot be merged, changed on both sides:\n\t{}\n\
+                 hint: To keep your version, take the lock with `pyn lock <path>` and pull again. To take the server's, \
+                 commit the server's version of the file over yours, then pull again.\n",
+                diverged.join("\n\t")
+            ));
+        }
+        message.push_str(
+            "hint: `pyn pull --rebase` replays your commits instead and stops on the same files.",
+        );
+        Err(Rejected(message).into())
     }
 
     /// Replays the local commits onto the fetched tip with a three-way merge per file; returns the new tip.
@@ -289,6 +424,13 @@ impl LocalStore {
         let (mut parent, mut parent_tree, mut dropped) = (onto, onto_tree, 0);
         for id in &outgoing.commits {
             let commit = repo.commit(id)?;
+            if commit.parents.len() > 1 {
+                return Err(Rejected(format!(
+                    "local commit {} is a merge commit, which cannot be rebased; use `pyn pull` to merge\nnothing was changed",
+                    short(&id.to_hex())
+                ))
+                .into());
+            }
             let before = self.tree_of(commit.parents.first().copied())?;
             let mut conflicts = Vec::new();
             for change in
@@ -374,6 +516,28 @@ impl LocalStore {
     }
 }
 
+/// Per path of the server's commit, whether it is shared.
+fn shared_paths(remote: &dyn Backend, commit: &ObjectId) -> Result<HashMap<String, bool>> {
+    Ok(remote
+        .snapshot(Some(&commit.to_hex()))?
+        .1
+        .into_iter()
+        .map(|e| (e.path, e.mode == api::Mode::Shared))
+        .collect())
+}
+
+/// The paths the signed-in person holds a lock on.
+fn my_locks(remote: &dyn Backend) -> Result<HashSet<String>> {
+    let api = remote.pyn_server("pull")?;
+    let locks: Vec<api::Lock> = api.send(api.get(&api.repo_route("/locks")?))?.json()?;
+    let me = remote.whoami()?;
+    Ok(locks
+        .into_iter()
+        .filter(|l| l.owner == me)
+        .map(|l| l.path)
+        .collect())
+}
+
 fn arrow(previous: Option<ObjectId>, head: ObjectId, branch: &str) -> String {
     let (old, new) = (previous.map(|p| p.to_hex()), head.to_hex());
     match old {
@@ -448,8 +612,9 @@ fn guard_changes(
     .into())
 }
 
-/// `pyn pull` with `local_store` on: fetch, then fast-forward or replay the local commits onto the fetched tip.
-pub fn pull(backend: &dyn Backend, ws: &Workspace) -> Result<()> {
+/// `pyn pull` with `local_store` on: fetch, then fast-forward, merge the fetched tip into the local branch, or with
+/// `rebase` replay the local commits onto it.
+pub fn pull(backend: &dyn Backend, ws: &Workspace, rebase: bool) -> Result<()> {
     if !Index::load(ws)?.entries.is_empty() {
         bail!(
             "you have staged changes; commit them or take them out with `pyn restore --staged` before you pull"
@@ -478,25 +643,71 @@ pub fn pull(backend: &dyn Backend, ws: &Workspace) -> Result<()> {
         );
         return sync::update(backend, ws, &[], None);
     }
-    let Some(outgoing) = store.outgoing(&branch)? else {
-        bail!("the local branch cannot be related to the fetched commits");
-    };
-    guard_changes(&store, ws, outgoing.base, theirs)?;
     let who = signature(&backend.whoami()?);
-    let (tip, dropped) = store.replay(backend, &outgoing, theirs, &who)?;
+    if rebase {
+        let Some(outgoing) = store.outgoing(&branch)? else {
+            bail!("the local branch cannot be related to the fetched commits");
+        };
+        guard_changes(&store, ws, outgoing.base, theirs)?;
+        let (tip, dropped) = store.replay(backend, &outgoing, theirs, &who)?;
+        let merged = merged_files(&store, ws, local, theirs, tip)?;
+        refs.update_checked(&local_ref(&branch), Expect::Id(local), &tip)
+            .context("the local branch moved while pulling; run the command again")?;
+        println!(
+            "Rebased {} local commit(s) onto {}{}",
+            outgoing.commits.len() - dropped,
+            short(&theirs.to_hex()),
+            if dropped > 0 {
+                format!(" ({dropped} became empty and was dropped)")
+            } else {
+                String::new()
+            }
+        );
+        write_merged(&store, ws, &merged)?;
+        return sync::update(backend, ws, &[], None);
+    }
+    let bases = store.merge_bases(local, theirs)?;
+    if bases.len() > 1 {
+        return Err(Rejected(
+            "the local branch and the fetched commits have several merge bases, which a pull does not merge yet\n\
+             hint: `pyn pull --rebase` replays your commits instead; nothing was changed"
+                .into(),
+        )
+        .into());
+    }
+    let base = bases.first().copied();
+    guard_changes(&store, ws, base, theirs)?;
+    let (files, kept) = store.three_way(backend, base, local, theirs)?;
+    let (tree, trees) = build_trees(&files)?;
+    let repo = store.repo();
+    for (_, body) in trees {
+        repo.objects().write(Kind::Tree, &body)?;
+    }
+    let api = backend.pyn_server("pull")?;
+    let url = format!("{}/{}", api.base, api.repo.as_deref().unwrap_or_default());
+    let into = if matches!(branch.as_str(), "main" | "master") {
+        String::new()
+    } else {
+        format!(" into {branch}")
+    };
+    let record = Commit {
+        tree,
+        parents: vec![local, theirs],
+        author: who.clone(),
+        committer: who,
+        extra_headers: Vec::new(),
+        message: format!("Merge branch '{branch}' of {url}{into}\n").into_bytes(),
+    };
+    let tip = repo
+        .objects()
+        .write(Kind::Commit, &record.encode(ALGORITHM)?)?;
     let merged = merged_files(&store, ws, local, theirs, tip)?;
     refs.update_checked(&local_ref(&branch), Expect::Id(local), &tip)
         .context("the local branch moved while pulling; run the command again")?;
-    println!(
-        "Rebased {} local commit(s) onto {}{}",
-        outgoing.commits.len() - dropped,
-        short(&theirs.to_hex()),
-        if dropped > 0 {
-            format!(" ({dropped} became empty and was dropped)")
-        } else {
-            String::new()
-        }
-    );
+    for path in kept {
+        println!("Kept your version of {path}: you hold its lock");
+    }
+    println!("Merge made by the 'ort' strategy.");
     write_merged(&store, ws, &merged)?;
     sync::update(backend, ws, &[], None)
 }
@@ -590,7 +801,12 @@ pub fn explain_push(err: anyhow::Error, branch: &str) -> anyhow::Error {
         ),
         "push_unsupported" => (
             format!(" ! [rejected]        {branch} -> {branch} (not supported yet)"),
-            "The server does not accept this kind of commit yet, for example a merge commit.",
+            "The server does not accept this kind of commit yet, for example one that changes nothing or a submodule.",
+        ),
+        "merge_conflict" => (
+            format!(" ! [rejected]        {branch} -> {branch} (merge conflict)"),
+            "A merge commit leaves an exclusive file that changed on both sides without a new version of it.\n\
+             hint: Take the lock with `pyn lock <path>` for the path named above, run `pyn pull` again to make the merge, and push.",
         ),
         "storage_limit_reached" => (
             format!(" ! [rejected]        {branch} -> {branch} (storage limit)"),

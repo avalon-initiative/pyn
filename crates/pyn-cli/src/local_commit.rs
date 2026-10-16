@@ -188,6 +188,12 @@ impl LocalStore {
         if ahead == 0 {
             return Ok(Unpublished::default());
         }
+        // A merge that took the server's commits leaves the server's tip as the reference, not the old base.
+        if let Some(p) = published
+            && self.ancestors(Some(tip))?.contains(&p)
+        {
+            base = Some(p);
+        }
         let tree_of = |id: Option<ObjectId>| -> Result<Option<ObjectId>> {
             Ok(match id {
                 Some(id) => Some(repo.commit(&id)?.tree),

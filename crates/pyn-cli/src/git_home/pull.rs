@@ -101,6 +101,21 @@ struct AsFetch {
 }
 
 impl PullArgs {
+    /// Whether `--rebase` was given (`--no-rebase` and `--rebase=false` mean merge); clears both, so that only the
+    /// remaining options decide whether the command is bare.
+    pub fn take_rebase(&mut self) -> bool {
+        let no_rebase = std::mem::take(&mut self.no_rebase);
+        match self.rebase.take() {
+            Some(None) => !no_rebase,
+            Some(Some(v)) if v == "true" => !no_rebase,
+            Some(Some(v)) if v == "false" => false,
+            other => {
+                self.rebase = other;
+                false
+            }
+        }
+    }
+
     fn refuse_unsupported(&self) {
         let given = [
             ("--squash", self.squash, "a squash merge is not built"),

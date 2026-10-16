@@ -1334,11 +1334,13 @@ fn run(cli: Cli) -> Result<()> {
                 update_as_remote(&backend, w, ws.as_ref())?;
             }
         }
-        Command::Pull(args) => {
+        Command::Pull(mut args) => {
+            let local = ws.as_ref().is_some_and(|w| w.settings().local_store_on());
+            let rebase = local && args.take_rebase();
             require_bare(&args, "pull");
             let w = in_workspace("pull")?;
-            if w.settings().local_store_on() {
-                local_sync::pull(&backend, w)?;
+            if local {
+                local_sync::pull(&backend, w, rebase)?;
             } else {
                 update_as_remote(&backend, w, ws.as_ref())?;
             }
