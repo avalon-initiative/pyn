@@ -74,7 +74,8 @@ files and trees leave deleted paths out; history and the commit's `revisions` li
 
 Decision #300 lets a client build commits itself and publish them. The core accepts them through `RepoService::push_commits` and
 one atomic store step, `MetadataStore::push_commits_on`, and the server offers them as `POST /v1/repos/{owner}/{name}/push`
-(below). No CLI command sends a push yet (#337), and everything here is provisional until it does.
+(below). The matching read side is `POST .../fetch` ([fetching](#the-fetch-route)). No CLI command sends a push or a fetch
+yet (#337), and everything here is provisional until it does.
 
 ### The push route
 
@@ -95,6 +96,36 @@ push arrives.
 
 A push is audited like the checkins it makes: one `checkin` entry per revision, with the authenticated pusher as the actor and
 `(push)` in the detail. The commit's author is recorded on the revision as its person, not as the actor.
+
+### The fetch route
+
+`POST /v1/repos/{owner}/{name}/fetch` lists what a client lacks, so it can keep commits and trees locally (decision #300).
+It follows the repository's read access like `objects/{id}`: a public repository needs no credentials, and a private one is
+`404` to anyone without a role. The body is JSON, every field optional:
+`{branches?, haves?, cursor?, limit?}`.
+
+- `branches` are the branches wanted; all of them when empty. An unknown one is `branch_not_found` (404).
+- `haves` are commits the client already has, normally its branch heads. A commit is missing when it is reachable from a wanted
+  branch and from no have. A have the repository does not know is ignored, as in git; a malformed id is `invalid_request`.
+  At most 1000 haves.
+- `limit` is the number of commits per page: 100 by default, at most 500.
+- `cursor` is the opaque `next` of the previous page.
+
+The answer is `{refs, commits, next?}`. `refs` lists each wanted branch with its head (null for a branch with no commit).
+`commits` holds the page, parents before children (ties by committer time, then id): each is
+`{id, data, pointers, trees}`. `data` is the base64 of the commit's body and `trees` are `{id, data}` objects, both encoded as in
+a push, so a client stores them under the ids it is given. `pointers` are the revisions the commit's pointer cache records
+([branches](branches.md#the-revision-of-a-path-at-a-commit)): the revisions the commit wrote and, for a merge commit, the ones it adopted from the other parent. Each carries its `mode`, so a client
+keeps the exclusive pointers it needs for a later push. The trees of a commit are those under its root that its first parent's
+tree does not hold at the same place; a commit without a parent sends its whole tree. A client that has the first parent's trees
+therefore has every tree it needs, and a tree may be sent again by a later commit that restores it. Blobs are not sent: they are
+read on demand with `objects/{id}`.
+
+A cursor pins the branch heads the first page saw, so a branch that moves between pages changes neither the walk nor the `refs`
+of later pages; the client sends the same `haves` again, and a cursor with other haves or branches is `invalid_request`. Each page recomputes the walk, so
+a fetch costs time in proportion to the commits it covers.
+
+The route is additive and nothing existing changed. Provisional: the page limits and the cost of recomputing each page may move.
 
 ### Reading a blob by id
 

@@ -240,6 +240,10 @@ pub trait MetadataStore: Send + Sync {
         path: &RepoPath,
     ) -> Result<Option<Revision>>;
 
+    /// The revisions the commit's pointer cache records, ordered by path: the paths whose revision differs from its
+    /// first parent's, including those a merge adopted from the other parent.
+    async fn commit_pointers(&self, repo: &RepoId, commit: &ObjectId) -> Result<Vec<Revision>>;
+
     /// Whether a revision of the repository, on any branch, has `content`.
     async fn has_content(&self, repo: &RepoId, content: &ObjectId) -> Result<bool>;
 

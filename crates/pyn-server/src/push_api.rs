@@ -1,4 +1,4 @@
-//! Receiving client-built commits, and reading a blob by id.
+//! Receiving client-built commits, listing what a client lacks, and reading a blob by id.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -6,7 +6,7 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::Response;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use pyn_core::{ObjectId, Permission, PushObjects, PynError};
+use pyn_core::{FetchQuery, ObjectId, Permission, PushObjects, PynError};
 use pyn_proto as api;
 
 use crate::{
@@ -61,6 +61,61 @@ pub(crate) async fn push(
         branch: branch.to_string(),
         head: head.to_hex(),
         revisions: revisions.into_iter().map(revision_dto).collect(),
+    }))
+}
+
+/// The commits and trees a client lacks, oldest first, a page at a time.
+#[utoipa::path(post, path = "/v1/repos/{owner}/{name}/fetch", params(RepoAddress), request_body = api::FetchRequest, responses(
+    (status = 200, body = api::FetchResponse),
+    (status = 400, body = api::ErrorBody, description = "invalid_request for a malformed id, a cursor this fetch did not give or too many haves"),
+    (status = 404, body = api::ErrorBody, description = "branch_not_found for a branch the repository does not have"),
+))]
+pub(crate) async fn fetch(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path((owner, name)): Path<(String, String)>,
+    Json(req): Json<api::FetchRequest>,
+) -> ApiResult<Json<api::FetchResponse>> {
+    let repo = authorize_read(&s, &headers, &owner, &name).await?;
+    let query = FetchQuery {
+        branches: req.branches,
+        haves: req
+            .haves
+            .iter()
+            .map(|h| parse_object_id(h))
+            .collect::<Result<_, _>>()?,
+        cursor: req.cursor,
+        limit: req.limit.map(|l| l as usize),
+    };
+    let page = repo.service.fetch(&query).await?;
+    let encode = |bytes: &[u8]| STANDARD.encode(bytes);
+    Ok(Json(api::FetchResponse {
+        refs: page
+            .refs
+            .into_iter()
+            .map(|(branch, head)| api::FetchRef {
+                branch,
+                head: head.map(|h| h.to_hex()),
+            })
+            .collect(),
+        commits: page
+            .commits
+            .into_iter()
+            .map(|c| api::FetchCommit {
+                id: c.id.to_hex(),
+                data: encode(&c.raw),
+                pointers: c.pointers.into_iter().map(revision_dto).collect(),
+                trees: c
+                    .trees
+                    .iter()
+                    .map(|(id, body)| api::PushObject {
+                        id: id.to_hex(),
+                        data: encode(body),
+                    })
+                    .collect(),
+            })
+            .collect(),
+        next: page.next,
     }))
 }
 

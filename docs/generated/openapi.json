@@ -4198,6 +4198,76 @@
         }
       }
     },
+    "/v1/repos/{owner}/{name}/fetch": {
+      "post": {
+        "tags": [
+          "push_api"
+        ],
+        "summary": "The commits and trees a client lacks, oldest first, a page at a time.",
+        "operationId": "fetch",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "The namespace that owns the repository.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository's name within its owner.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FetchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FetchResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request for a malformed id, a cursor this fetch did not give or too many haves",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "branch_not_found for a branch the repository does not have",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/repos/{owner}/{name}/files": {
       "get": {
         "tags": [],
@@ -7619,6 +7689,120 @@
           "sign_in_url": {
             "type": "string",
             "description": "Send the browser here (a full page navigation, with an optional `return_to` path) to start signing in."
+          }
+        }
+      },
+      "FetchCommit": {
+        "type": "object",
+        "required": [
+          "id",
+          "data",
+          "pointers",
+          "trees"
+        ],
+        "properties": {
+          "data": {
+            "type": "string",
+            "description": "Base64 of the commit's body, as in a push."
+          },
+          "id": {
+            "type": "string"
+          },
+          "pointers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Revision"
+            },
+            "description": "The revisions the commit's pointer cache records: what it wrote and what a merge adopted, ordered by path."
+          },
+          "trees": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PushObject"
+            },
+            "description": "The trees the commit adds against its first parent, as in a push."
+          }
+        }
+      },
+      "FetchRef": {
+        "type": "object",
+        "required": [
+          "branch"
+        ],
+        "properties": {
+          "branch": {
+            "type": "string"
+          },
+          "head": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The branch's head when the fetch started; null for a branch with no commit."
+          }
+        }
+      },
+      "FetchRequest": {
+        "type": "object",
+        "properties": {
+          "branches": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The branches to fetch; every branch if empty. Ignored when `cursor` is given."
+          },
+          "cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The `next` of the previous page."
+          },
+          "haves": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Commits the client already has, normally its branch heads; ids the repository does not know are ignored."
+          },
+          "limit": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Commits per page; the server's default and cap apply when omitted or larger.",
+            "minimum": 0
+          }
+        }
+      },
+      "FetchResponse": {
+        "type": "object",
+        "required": [
+          "refs",
+          "commits"
+        ],
+        "properties": {
+          "commits": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FetchCommit"
+            },
+            "description": "Parents before children."
+          },
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Opaque; send it as `cursor` for the next page. Absent on the last page."
+          },
+          "refs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FetchRef"
+            }
           }
         }
       },

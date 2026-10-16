@@ -896,6 +896,19 @@ impl MetadataStore for MemoryMetadataStore {
         Ok(at.get(path).and_then(|id| st.revision(repo, path, *id)))
     }
 
+    async fn commit_pointers(&self, repo: &RepoId, commit: &ObjectId) -> Result<Vec<Revision>> {
+        let st = self.state.lock().unwrap();
+        let mut out: Vec<Revision> = st
+            .pointers
+            .get(&(repo.clone(), *commit))
+            .into_iter()
+            .flatten()
+            .filter_map(|(path, id)| st.revision(repo, path, *id))
+            .collect();
+        out.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok(out)
+    }
+
     async fn has_content(&self, repo: &RepoId, content: &ObjectId) -> Result<bool> {
         let st = self.state.lock().unwrap();
         Ok(st

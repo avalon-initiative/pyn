@@ -13,13 +13,13 @@ use super::{
 use crate::commit_record::{TreeChange, tree_of};
 use crate::{FileMode, Mode, ObjectId, Permission, Principal, PushObjects, PynError, RevisionId};
 
-type Files = BTreeMap<String, (FileMode, ObjectId)>;
+pub(super) type Files = BTreeMap<String, (FileMode, ObjectId)>;
 
 /// A commit and the trees of its whole snapshot, as a client would build them.
-struct Built {
-    id: ObjectId,
-    raw: Vec<u8>,
-    trees: Vec<(ObjectId, Vec<u8>)>,
+pub(super) struct Built {
+    pub(super) id: ObjectId,
+    pub(super) raw: Vec<u8>,
+    pub(super) trees: Vec<(ObjectId, Vec<u8>)>,
 }
 
 const T0: i64 = 1_790_000_000;
@@ -72,7 +72,7 @@ fn snapshot_tree(files: &Files) -> crate::commit_record::TreeBuild {
     .unwrap()
 }
 
-fn build(files: &Files, parent: Option<ObjectId>, message: &str, n: i64) -> Built {
+pub(super) fn build(files: &Files, parent: Option<ObjectId>, message: &str, n: i64) -> Built {
     let tree = snapshot_tree(files);
     let raw = commit_raw(
         tree.root,
@@ -84,14 +84,14 @@ fn build(files: &Files, parent: Option<ObjectId>, message: &str, n: i64) -> Buil
     built_from(raw, tree.trees)
 }
 
-fn objects(parts: &[&Built]) -> PushObjects {
+pub(super) fn objects(parts: &[&Built]) -> PushObjects {
     PushObjects {
         commits: parts.iter().map(|b| (b.id, b.raw.clone())).collect(),
         trees: parts.iter().flat_map(|b| b.trees.clone()).collect(),
     }
 }
 
-fn set(files: &mut Files, p: &str, id: ObjectId) {
+pub(super) fn set(files: &mut Files, p: &str, id: ObjectId) {
     files.insert(p.to_string(), (FileMode::Regular, id));
 }
 

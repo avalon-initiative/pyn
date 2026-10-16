@@ -580,3 +580,271 @@ async fn a_blob_is_served_by_id_with_ranges_to_readers_of_its_repository_only() 
         "a private repository does not exist to eve"
     );
 }
+
+async fn fetch(w: &World, token: &str, body: serde_json::Value) -> Reply {
+    send(
+        &w.app,
+        "POST",
+        "/v1/repos/alice/game/fetch",
+        token,
+        None,
+        Some(body),
+    )
+    .await
+}
+
+fn fetched(r: &Reply) -> api::FetchResponse {
+    assert_eq!(
+        r.status,
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&r.body)
+    );
+    r.json()
+}
+
+fn fetched_ids(page: &api::FetchResponse) -> Vec<String> {
+    page.commits.iter().map(|c| c.id.clone()).collect()
+}
+
+/// Two commits over nested folders, pushed by bob.
+async fn two_commits(w: &World) -> (Built, Built) {
+    let (a, b, c) = (
+        upload(w, "alpha").await,
+        upload(w, "beta").await,
+        upload(w, "gamma").await,
+    );
+    let first = build(
+        &BTreeMap::from([("Source/a.txt", a), ("Docs/b.txt", b)]),
+        None,
+        "first",
+        1,
+    );
+    let second = build(
+        &BTreeMap::from([("Source/a.txt", c), ("Docs/b.txt", b)]),
+        Some(first.id),
+        "second",
+        2,
+    );
+    assert_eq!(
+        push(w, &w.bob, push_body(&[&first, &second])).await.status,
+        StatusCode::OK
+    );
+    (first, second)
+}
+
+#[tokio::test]
+async fn a_fetch_lists_commits_with_their_pointers_and_trees_and_honours_haves() {
+    let w = world().await;
+    let (first, second) = two_commits(&w).await;
+
+    let page = fetched(&fetch(&w, &w.rita, json!({})).await);
+    assert_eq!(fetched_ids(&page), [first.id.to_hex(), second.id.to_hex()]);
+    assert_eq!(page.next, None);
+    assert_eq!(
+        (page.refs[0].branch.as_str(), page.refs[0].head.clone()),
+        ("main", Some(second.id.to_hex()))
+    );
+    let bytes = STANDARD.decode(&page.commits[1].data).unwrap();
+    assert_eq!(bytes, second.raw);
+    let tree_ids: Vec<_> = page.commits.iter().map(|c| c.trees.len()).collect();
+    assert_eq!(tree_ids, [3, 2]);
+    for t in page.commits.iter().flat_map(|c| &c.trees) {
+        let body = STANDARD.decode(&t.data).unwrap();
+        let id = hash_object(Algorithm::Sha256, Kind::Tree, &body).unwrap();
+        assert_eq!(id.to_hex(), t.id);
+    }
+    let pointer = &page.commits[1].pointers;
+    assert_eq!(
+        pointer
+            .iter()
+            .map(|r| (r.path.as_str(), r.id))
+            .collect::<Vec<_>>(),
+        [("Source/a.txt", 2)]
+    );
+
+    let stray = "0".repeat(64);
+    let page = fetched(
+        &fetch(
+            &w,
+            &w.rita,
+            json!({"branches": ["main"], "haves": [first.id.to_hex(), stray]}),
+        )
+        .await,
+    );
+    assert_eq!(fetched_ids(&page), [second.id.to_hex()]);
+    let page = fetched(&fetch(&w, &w.rita, json!({"haves": [second.id.to_hex()]})).await);
+    assert!(page.commits.is_empty());
+}
+
+#[tokio::test]
+async fn a_fetch_pages_with_an_opaque_cursor_and_a_server_cap() {
+    let w = world().await;
+    let (first, second) = two_commits(&w).await;
+    let one = fetched(&fetch(&w, &w.rita, json!({"limit": 1})).await);
+    assert_eq!(fetched_ids(&one), [first.id.to_hex()]);
+    let cursor = one.next.expect("more to come");
+    let rest = fetched(&fetch(&w, &w.rita, json!({"cursor": cursor, "limit": 1})).await);
+    assert_eq!(fetched_ids(&rest), [second.id.to_hex()]);
+    assert_eq!(rest.next, None);
+
+    let r = fetch(&w, &w.rita, json!({"cursor": "garbage"})).await;
+    assert_eq!(
+        (r.status, r.code().as_str()),
+        (StatusCode::BAD_REQUEST, "invalid_request")
+    );
+    let page = fetched(&fetch(&w, &w.rita, json!({"limit": 1_000_000})).await);
+    assert_eq!(page.commits.len(), 2);
+    let r = fetch(&w, &w.rita, json!({"limit": 0})).await;
+    assert_eq!(fetched(&r).commits.len(), 1, "a zero limit still pages");
+}
+
+#[tokio::test]
+async fn a_fetch_carries_the_pointers_a_merge_commit_adopted() {
+    let w = world().await;
+    let c1 = upload(&w, "v1").await;
+    let lock = |token: String, base: serde_json::Value| {
+        let app = w.app.clone();
+        async move {
+            send(
+                &app,
+                "POST",
+                "/v1/repos/alice/game/checkout",
+                &token,
+                None,
+                Some(json!({"path": "Content/x.umap", "base_revision": base})),
+            )
+            .await
+        }
+    };
+    assert_eq!(
+        lock(w.bob.clone(), json!(null)).await.status,
+        StatusCode::OK
+    );
+    let base = build(&BTreeMap::from([("Content/x.umap", c1)]), None, "v1", 1);
+    assert_eq!(
+        push(&w, &w.bob, push_body(&[&base])).await.status,
+        StatusCode::OK
+    );
+    let r = send(
+        &w.app,
+        "POST",
+        "/v1/repos/alice/game/branches",
+        &w.alice,
+        None,
+        Some(json!({"name": "feature"})),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(lock(w.bob.clone(), json!(1)).await.status, StatusCode::OK);
+    let c2 = upload(&w, "v2").await;
+    let side = build(
+        &BTreeMap::from([("Content/x.umap", c2)]),
+        Some(base.id),
+        "v2",
+        2,
+    );
+    let mut body = push_body(&[&side]);
+    body["branch"] = json!("feature");
+    assert_eq!(push(&w, &w.bob, body).await.status, StatusCode::OK);
+    let other = upload(&w, "other").await;
+    let main2 = build(
+        &BTreeMap::from([("Content/x.umap", c1), ("Source/o.txt", other)]),
+        Some(base.id),
+        "other",
+        3,
+    );
+    assert_eq!(
+        push(&w, &w.bob, push_body(&[&main2])).await.status,
+        StatusCode::OK
+    );
+    let r = send(
+        &w.app,
+        "POST",
+        "/v1/repos/alice/game/merge",
+        &w.alice,
+        None,
+        Some(json!({"source": "feature", "target": "main"})),
+    )
+    .await;
+    let merged: api::MergeReport = r.json();
+    let merge_id = merged.commit.unwrap();
+
+    let page = fetched(&fetch(&w, &w.rita, json!({"branches": ["main"]})).await);
+    assert_eq!(page.commits.len(), 4);
+    let last = page.commits.last().unwrap();
+    assert_eq!(last.id, merge_id);
+    let at = |id: &str| page.commits.iter().position(|c| c.id == id).unwrap();
+    assert!(at(&side.id.to_hex()) < at(&merge_id) && at(&main2.id.to_hex()) < at(&merge_id));
+    assert_eq!(
+        last.pointers
+            .iter()
+            .map(|r| (r.path.as_str(), r.id))
+            .collect::<Vec<_>>(),
+        [("Content/x.umap", 2)]
+    );
+
+    let page = fetched(
+        &fetch(
+            &w,
+            &w.rita,
+            json!({"branches": ["main"], "haves": [side.id.to_hex()]}),
+        )
+        .await,
+    );
+    assert_eq!(page.commits.len(), 2, "main's own commit and the merge");
+}
+
+#[tokio::test]
+async fn a_fetch_of_an_unknown_branch_is_branch_not_found() {
+    let w = world().await;
+    let r = fetch(&w, &w.rita, json!({"branches": ["nope"]})).await;
+    assert_eq!(
+        (r.status, r.code().as_str()),
+        (StatusCode::NOT_FOUND, "branch_not_found")
+    );
+    let r = fetch(&w, &w.rita, json!({"haves": ["not-an-id"]})).await;
+    assert_eq!(
+        (r.status, r.code().as_str()),
+        (StatusCode::BAD_REQUEST, "invalid_request")
+    );
+}
+
+#[tokio::test]
+async fn a_fetch_follows_the_repositorys_read_access() {
+    let w = world().await;
+    let (first, _) = two_commits(&w).await;
+    let anonymous = || {
+        Request::post("/v1/repos/alice/game/fetch")
+            .header("content-type", "application/json")
+            .body(Body::from("{}"))
+            .unwrap()
+    };
+    let r = w.app.clone().oneshot(anonymous()).await.unwrap();
+    assert_eq!(
+        r.status(),
+        StatusCode::NOT_FOUND,
+        "a private repository does not exist to a stranger"
+    );
+
+    let eve = sign_up(&w.app, "eve").await;
+    let r = fetch(&w, &eve, json!({})).await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND);
+
+    let r = send(
+        &w.app,
+        "PATCH",
+        "/v1/repos/alice/game",
+        &w.alice,
+        None,
+        Some(json!({"visibility": "public"})),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK);
+    let r = w.app.clone().oneshot(anonymous()).await.unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    let bytes = r.into_body().collect().await.unwrap().to_bytes();
+    let page: api::FetchResponse = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(page.commits[0].id, first.id.to_hex());
+    assert_eq!(fetched(&fetch(&w, &eve, json!({})).await).commits.len(), 2);
+}

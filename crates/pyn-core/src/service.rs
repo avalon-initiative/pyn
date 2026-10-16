@@ -1,6 +1,10 @@
+mod fetch;
 mod merging;
 mod push;
 
+pub use fetch::{
+    FETCH_DEFAULT_LIMIT, FETCH_MAX_HAVES, FETCH_MAX_LIMIT, FetchPage, FetchQuery, FetchedCommit,
+};
 pub use push::PushObjects;
 
 use std::collections::{BTreeMap, HashMap};

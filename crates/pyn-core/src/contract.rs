@@ -41,6 +41,8 @@ mod branch_policy;
 pub use branch_policy::*;
 mod push;
 pub use push::*;
+mod fetch;
+pub use fetch::*;
 mod deletion;
 pub use deletion::*;
 
@@ -3193,6 +3195,12 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_push_past_the_storage_cap_applies_nothing);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; racing_pushes_to_one_branch_have_exactly_one_winner);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_blob_is_read_by_id_only_when_a_revision_of_the_repository_names_it);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_full_fetch_lists_every_commit_oldest_first_with_the_trees_each_adds);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; haves_leave_out_what_the_client_has_and_unknown_haves_are_ignored);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_fetch_pages_by_cursor_over_the_heads_it_started_with);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_merge_commit_arrives_after_both_parents_with_the_pointers_it_adopted);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_fetch_names_branches_or_takes_all_and_refuses_an_unknown_one);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_fetch_refuses_a_bad_cursor_and_too_many_haves);
     };
     (@one $factory:expr; [$(#[$attr:meta])*]; $name:ident) => {
         #[tokio::test(flavor = "multi_thread")]
@@ -3834,6 +3842,14 @@ impl MetadataStore for HookedMeta {
         path: &RepoPath,
     ) -> crate::Result<Option<crate::Revision>> {
         self.inner.revision_at(repo, commit, path).await
+    }
+
+    async fn commit_pointers(
+        &self,
+        repo: &RepoId,
+        commit: &ObjectId,
+    ) -> crate::Result<Vec<crate::Revision>> {
+        self.inner.commit_pointers(repo, commit).await
     }
 
     async fn has_content(&self, repo: &RepoId, content: &ObjectId) -> crate::Result<bool> {

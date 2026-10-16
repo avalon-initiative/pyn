@@ -1565,6 +1565,21 @@ impl MetadataStore for PgMetadataStore {
         self.get_revision(repo, path, RevisionId(id as u64)).await
     }
 
+    async fn commit_pointers(&self, repo: &RepoId, commit: &ObjectId) -> Result<Vec<Revision>> {
+        let rows = sqlx::query(AssertSqlSafe(format!(
+            "SELECT {REVISION_COLUMNS} FROM revisions
+             WHERE repo = $1 AND (path, id) IN
+                 (SELECT path, revision FROM commit_pointers WHERE repo = $1 AND commit_id = $2)
+             ORDER BY path COLLATE \"C\""
+        )))
+        .bind(repo.as_str())
+        .bind(commit.to_hex())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        rows.iter().map(revision_from).collect()
+    }
+
     async fn has_content(&self, repo: &RepoId, content: &ObjectId) -> Result<bool> {
         sqlx::query_scalar(
             "SELECT EXISTS (SELECT 1 FROM revisions WHERE repo = $1 AND content = $2)",

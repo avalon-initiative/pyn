@@ -180,6 +180,7 @@ struct RepoAddress {
         merge_api::preview_merge,
         merge_api::merge,
         push_api::push,
+        push_api::fetch,
         push_api::get_object
     ),
     components(schemas(
@@ -197,6 +198,10 @@ struct RepoAddress {
         api::PushObject,
         api::PushRequest,
         api::PushResponse,
+        api::FetchRequest,
+        api::FetchRef,
+        api::FetchCommit,
+        api::FetchResponse,
         api::MergeRequest,
         api::MergeResolution,
         api::MergeOutcome,
@@ -506,6 +511,7 @@ pub fn router(state: AppState) -> Router {
                 push_api::MAX_PUSH_BYTES,
             )),
         )
+        .route("/v1/repos/{owner}/{name}/fetch", post(push_api::fetch))
         .route(
             "/v1/repos/{owner}/{name}/objects/{id}",
             get(push_api::get_object),

@@ -477,6 +477,49 @@ pub struct PushResponse {
     pub revisions: Vec<Revision>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+pub struct FetchRequest {
+    /// The branches to fetch; every branch if empty. Ignored when `cursor` is given.
+    #[serde(default)]
+    pub branches: Vec<String>,
+    /// Commits the client already has, normally its branch heads; ids the repository does not know are ignored.
+    #[serde(default)]
+    pub haves: Vec<String>,
+    /// The `next` of the previous page.
+    #[serde(default)]
+    pub cursor: Option<String>,
+    /// Commits per page; the server's default and cap apply when omitted or larger.
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct FetchRef {
+    pub branch: String,
+    /// The branch's head when the fetch started; null for a branch with no commit.
+    pub head: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct FetchCommit {
+    pub id: String,
+    /// Base64 of the commit's body, as in a push.
+    pub data: String,
+    /// The revisions the commit's pointer cache records: what it wrote and what a merge adopted, ordered by path.
+    pub pointers: Vec<Revision>,
+    /// The trees the commit adds against its first parent, as in a push.
+    pub trees: Vec<PushObject>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct FetchResponse {
+    pub refs: Vec<FetchRef>,
+    /// Parents before children.
+    pub commits: Vec<FetchCommit>,
+    /// Opaque; send it as `cursor` for the next page. Absent on the last page.
+    pub next: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct PutObjectResponse {
     /// The object's git blob id; for a chunk upload, the SHA-256 hex of its bytes.
