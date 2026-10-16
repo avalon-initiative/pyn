@@ -7,14 +7,15 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use std::str::FromStr;
 
+use futures_util::TryStreamExt;
 use pyn_core::branch::{DEFAULT_BRANCH, conflicts};
 use pyn_core::commit_record::{CommitDraft, TreeChange, TreeEdit, draft_commit};
 use pyn_core::merge::{MergeWrite, MergeWritten};
 use pyn_core::{
-    Branch, ChangesetItem, Commit, FileMode, HistoryCursor, Lock, MetadataStore, Mode, ObjectId,
-    PathFilter, Person, PushedCommit, PynError, REPO_ALGORITHM, RepoId, RepoPath, RepoRecord,
-    RepoSettings, RepoUpdate, RepoUsage, Result, Revision, RevisionHash, RevisionId, StorageCap,
-    Usage, UserId, Visibility,
+    Branch, ChangesetItem, Commit, FileMode, HistoryCursor, HistoryScan, Lock, MetadataStore, Mode,
+    ObjectId, PathFilter, Person, PushedCommit, PynError, REPO_ALGORITHM, RepoId, RepoPath,
+    RepoRecord, RepoSettings, RepoUpdate, RepoUsage, Result, Revision, RevisionHash, RevisionId,
+    StorageCap, Usage, UserId, Visibility,
 };
 use sqlx::migrate::MigrateDatabase;
 use sqlx::postgres::{PgPoolOptions, PgRow};
@@ -1889,46 +1890,56 @@ impl MetadataStore for PgMetadataStore {
         filter: Option<&PathFilter>,
         before: Option<&HistoryCursor>,
         limit: usize,
-    ) -> Result<Vec<Revision>> {
-        // The glob cannot run in SQL, so scan keyset batches and filter until `limit` rows match.
-        let batch = (limit.max(1) * 4).clamp(50, 1000) as i64;
-        let mut cursor = before.cloned();
-        let mut out = Vec::new();
-        loop {
-            let rows = sqlx::query(AssertSqlSafe(format!(
-                "{ANCESTORS}
-                 SELECT {REVISION_COLUMNS} FROM revisions
-                 WHERE repo = $2
-                   AND ($1::text IS NULL OR commit_id IN (SELECT id FROM anc))
-                   AND ($3::timestamptz IS NULL
-                        OR (created_at, path COLLATE \"C\", id) < ($3, $4::text COLLATE \"C\", $5::bigint))
-                 ORDER BY created_at DESC, path COLLATE \"C\" DESC, id DESC
-                 LIMIT $6"
-            )))
-            .bind(within.map(ObjectId::to_hex))
-            .bind(repo.as_str())
-            .bind(cursor.as_ref().map(|c| c.created_at))
-            .bind(cursor.as_ref().map(|c| c.path.as_str().to_string()))
-            .bind(cursor.as_ref().map(|c| c.id.0 as i64))
-            .bind(batch)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(db)?;
-            let scanned = rows.len() as i64;
-            for row in &rows {
-                let rev = revision_from(row)?;
-                cursor = Some(HistoryCursor::of(&rev));
-                if filter.is_none_or(|f| f.is_match(&rev.path)) {
-                    out.push(rev);
-                    if out.len() == limit {
-                        return Ok(out);
-                    }
+        budget: usize,
+    ) -> Result<HistoryScan> {
+        // The glob runs here, so one ordered query is read row by row until `limit` rows match or the budget is spent.
+        let budget = budget.max(1);
+        let rows_wanted = if filter.is_some_and(|f| f.prefix().is_none()) {
+            budget
+        } else {
+            limit.min(budget)
+        };
+        let mut rows = sqlx::query(AssertSqlSafe(format!(
+            "{ANCESTORS}
+             SELECT {REVISION_COLUMNS} FROM revisions
+             WHERE repo = $2
+               AND ($1::text IS NULL OR commit_id IN (SELECT id FROM anc))
+               AND ($3::timestamptz IS NULL
+                    OR (created_at, path COLLATE \"C\", id) < ($3, $4::text COLLATE \"C\", $5::bigint))
+               AND ($7::text IS NULL OR starts_with(path, $7))
+             ORDER BY created_at DESC, path COLLATE \"C\" DESC, id DESC
+             LIMIT $6"
+        )))
+        .bind(within.map(ObjectId::to_hex))
+        .bind(repo.as_str())
+        .bind(before.map(|c| c.created_at))
+        .bind(before.map(|c| c.path.as_str().to_string()))
+        .bind(before.map(|c| c.id.0 as i64))
+        .bind(rows_wanted as i64)
+        .bind(filter.and_then(PathFilter::prefix))
+        .fetch(&self.pool);
+        let mut revisions = Vec::new();
+        let mut examined = 0;
+        let mut last = None;
+        while let Some(row) = rows.try_next().await.map_err(db)? {
+            let rev = revision_from(&row)?;
+            examined += 1;
+            last = Some(HistoryCursor::of(&rev));
+            if filter.is_none_or(|f| f.is_match(&rev.path)) {
+                revisions.push(rev);
+                if revisions.len() == limit {
+                    return Ok(HistoryScan {
+                        revisions,
+                        resume: None,
+                    });
                 }
             }
-            if scanned < batch {
-                return Ok(out);
-            }
         }
+        let spent = examined == budget && examined == rows_wanted;
+        Ok(HistoryScan {
+            revisions,
+            resume: if spent { last } else { None },
+        })
     }
 
     async fn create_repo_capped(

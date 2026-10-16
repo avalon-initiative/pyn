@@ -377,10 +377,11 @@ impl MetadataStore for CountingStore {
         filter: Option<&crate::PathFilter>,
         before: Option<&crate::HistoryCursor>,
         limit: usize,
-    ) -> crate::Result<Vec<crate::Revision>> {
+        budget: usize,
+    ) -> crate::Result<crate::HistoryScan> {
         self.count();
         self.inner
-            .repo_history(repo, within, filter, before, limit)
+            .repo_history(repo, within, filter, before, limit, budget)
             .await
     }
 

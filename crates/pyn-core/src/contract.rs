@@ -46,7 +46,9 @@ pub use push_changes::*;
 mod fetch;
 pub use fetch::*;
 mod counting;
+mod history;
 pub use counting::CountingStore;
+pub use history::*;
 mod deletion;
 pub use deletion::*;
 mod push_merge;
@@ -3251,6 +3253,7 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_fetch_refuses_a_bad_cursor_and_too_many_haves);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; the_work_of_a_fetch_page_does_not_grow_with_the_history);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_walk_past_the_examination_cap_is_refused);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_scan_that_spends_its_budget_resumes_from_a_cursor);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_push_deletes_shared_paths_and_whole_folders);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_file_turned_into_a_folder_or_back_deletes_and_adds);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; deleting_an_exclusive_path_in_a_push_needs_the_pushers_live_lock);
@@ -4007,9 +4010,10 @@ impl MetadataStore for HookedMeta {
         filter: Option<&crate::PathFilter>,
         before: Option<&crate::HistoryCursor>,
         limit: usize,
-    ) -> crate::Result<Vec<crate::Revision>> {
+        budget: usize,
+    ) -> crate::Result<crate::HistoryScan> {
         self.inner
-            .repo_history(repo, within, filter, before, limit)
+            .repo_history(repo, within, filter, before, limit, budget)
             .await
     }
 

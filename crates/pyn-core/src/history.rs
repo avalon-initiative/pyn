@@ -5,6 +5,15 @@ use crate::types::{RepoPath, Revision, RevisionId};
 
 pub const HISTORY_DEFAULT_LIMIT: usize = 50;
 pub const HISTORY_MAX_LIMIT: usize = 200;
+/// Rows one history request examines; a filter that matches little ends the page early with a cursor to resume.
+pub const HISTORY_SCAN_BUDGET: usize = 20_000;
+
+/// The matches a bounded scan found and, when the budget ran out before `limit` matches, where to resume.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryScan {
+    pub revisions: Vec<Revision>,
+    pub resume: Option<HistoryCursor>,
+}
 
 /// Position in repository history, newest first, ordered by (created_at, path, id) because revision ids are per path.
 /// The string form is opaque to clients.

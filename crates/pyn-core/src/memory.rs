@@ -19,7 +19,7 @@ use crate::audit::{AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent
 use crate::branch::{Branch, DEFAULT_BRANCH, conflicts};
 use crate::commit_record::{CommitDraft, TreeChange, TreeEdit, draft_commit};
 use crate::error::{PynError, Result};
-use crate::history::HistoryCursor;
+use crate::history::{HistoryCursor, HistoryScan};
 use crate::limits::{Limits, LimitsChange, RepoUsage, StorageCap, Usage};
 use crate::merge::{MergeWrite, MergeWritten};
 use crate::object::{KeyHasher, Keying, ObjectRead, ObjectReader, ObjectStore};
@@ -1144,7 +1144,9 @@ impl MetadataStore for MemoryMetadataStore {
         filter: Option<&PathFilter>,
         before: Option<&HistoryCursor>,
         limit: usize,
-    ) -> Result<Vec<Revision>> {
+        budget: usize,
+    ) -> Result<HistoryScan> {
+        let budget = budget.max(1);
         let st = self.state.lock().unwrap();
         let reachable = within.map(|t| st.ancestors(repo, t));
         let mut revs: Vec<&Revision> = st
@@ -1153,11 +1155,28 @@ impl MetadataStore for MemoryMetadataStore {
             .filter(|((r, _), _)| r == repo)
             .flat_map(|(_, revs)| revs)
             .filter(|r| reachable.as_ref().is_none_or(|a| a.contains(&r.commit)))
-            .filter(|r| filter.is_none_or(|f| f.is_match(&r.path)))
             .filter(|r| before.is_none_or(|b| history_key(r) < b.sort_key()))
             .collect();
         revs.sort_by_key(|r| std::cmp::Reverse(history_key(r)));
-        Ok(revs.into_iter().take(limit).cloned().collect())
+        let mut revisions = Vec::new();
+        for (i, r) in revs.iter().enumerate() {
+            if i == budget {
+                return Ok(HistoryScan {
+                    revisions,
+                    resume: Some(HistoryCursor::of(revs[i - 1])),
+                });
+            }
+            if filter.is_none_or(|f| f.is_match(&r.path)) {
+                revisions.push((*r).clone());
+                if revisions.len() == limit {
+                    break;
+                }
+            }
+        }
+        Ok(HistoryScan {
+            revisions,
+            resume: None,
+        })
     }
 
     async fn create_repo_capped(

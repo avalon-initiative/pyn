@@ -22,7 +22,9 @@ use crate::branch::{Branch, DEFAULT_BRANCH, conflicts, validate_branch_name};
 use crate::clock::Clock;
 use crate::commit_record::{TreeChange, tree_of};
 use crate::error::{PynError, Result};
-use crate::history::{HISTORY_DEFAULT_LIMIT, HISTORY_MAX_LIMIT, HistoryCursor, HistoryPage};
+use crate::history::{
+    HISTORY_DEFAULT_LIMIT, HISTORY_MAX_LIMIT, HISTORY_SCAN_BUDGET, HistoryCursor, HistoryPage,
+};
 use crate::integrity::{
     BreakKind, Problem, VerifyReport, check_events, verify_audit, verify_revisions,
 };
@@ -1638,15 +1640,25 @@ impl RepoService {
                 next: None,
             });
         };
-        let mut revisions = self
+        let scan = self
             .meta
-            .repo_history(&self.repo, Some(&tip), filter, before, limit + 1)
+            .repo_history(
+                &self.repo,
+                Some(&tip),
+                filter,
+                before,
+                limit + 1,
+                HISTORY_SCAN_BUDGET,
+            )
             .await?;
+        let mut revisions = scan.revisions;
         revisions.iter().try_for_each(Revision::verify)?;
-        let next = (revisions.len() > limit).then(|| {
+        let next = if revisions.len() > limit {
             revisions.truncate(limit);
-            HistoryCursor::of(&revisions[limit - 1])
-        });
+            Some(HistoryCursor::of(&revisions[limit - 1]))
+        } else {
+            scan.resume
+        };
         Ok(HistoryPage { revisions, next })
     }
 

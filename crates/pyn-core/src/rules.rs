@@ -216,7 +216,7 @@ impl Rules {
 /// A glob over repo paths with the `pyn.toml` glob semantics (`*` stays within a segment, `**` crosses them).
 /// A pattern without `/` matches at any depth; a trailing `/` means everything under that folder.
 #[derive(Debug, Clone)]
-pub struct PathFilter(GlobMatcher);
+pub struct PathFilter(GlobMatcher, Option<String>);
 
 impl PathFilter {
     pub fn new(pattern: &str) -> Result<Self> {
@@ -242,7 +242,16 @@ impl PathFilter {
             .literal_separator(true)
             .build()
             .map_err(|e| bad(&e.to_string()))?;
-        Ok(Self(glob.compile_matcher()))
+        let folder = pattern.ends_with('/') && !pattern.contains(['*', '?', '[', ']', '{', '}']);
+        Ok(Self(
+            glob.compile_matcher(),
+            folder.then(|| pattern.to_string()),
+        ))
+    }
+
+    /// The literal folder prefix every match starts with, when the pattern is a plain folder.
+    pub fn prefix(&self) -> Option<&str> {
+        self.1.as_deref()
     }
 
     pub fn is_match(&self, path: &RepoPath) -> bool {

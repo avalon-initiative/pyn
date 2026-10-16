@@ -3,7 +3,7 @@ use chrono::{DateTime, Utc};
 
 use crate::branch::{Branch, DEFAULT_BRANCH};
 use crate::error::Result;
-use crate::history::HistoryCursor;
+use crate::history::{HistoryCursor, HistoryScan};
 use crate::limits::{RepoUsage, StorageCap, Usage};
 use crate::merge::{MergeWrite, MergeWritten};
 use crate::repo::{RepoRecord, RepoUpdate};
@@ -303,7 +303,8 @@ pub trait MetadataStore: Send + Sync {
 
     /// At most `limit` revisions of the repository matching `filter`, newest first by (created_at, path, id) with paths
     /// compared bytewise, strictly before `before` when given; with `within`, only those made in that commit or an
-    /// ancestor.
+    /// ancestor. The scan examines at most `budget` revisions; if that ends it before `limit` matches, `resume`
+    /// is the position after the last one examined.
     async fn repo_history(
         &self,
         repo: &RepoId,
@@ -311,7 +312,8 @@ pub trait MetadataStore: Send + Sync {
         filter: Option<&PathFilter>,
         before: Option<&HistoryCursor>,
         limit: usize,
-    ) -> Result<Vec<Revision>>;
+        budget: usize,
+    ) -> Result<HistoryScan>;
 
     /// Registers the repository; `RepoExists` if the owner already has one with that name.
     async fn create_repo(&self, repo: RepoRecord) -> Result<RepoRecord> {

@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 async-trait = "0.1.92"
 chrono = "0.4.45"
+futures-util = { version = "0.3.32", default-features = false }
 pyn-core = { version = "0.0.1", path = "../pyn-core" }
 sqlx = { version = "0.9.0", default-features = false, features = ["postgres", "runtime-tokio", "chrono", "migrate", "macros", "tls-rustls-aws-lc-rs"] }
 tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros"] }
