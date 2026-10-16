@@ -1077,6 +1077,54 @@ impl AccessService {
         Ok(())
     }
 
+    /// Whether `actor` is a server admin or an owner of the organization that owns `repo`.
+    pub(super) async fn exempt_from_rank(&self, actor: &Principal, repo: &RepoId) -> Result<bool> {
+        if self
+            .store
+            .account(&actor.user)
+            .await?
+            .is_some_and(|a| a.is_admin)
+        {
+            return Ok(true);
+        }
+        Ok(matches!(
+            self.resolve_role(repo, &actor.user).await?,
+            Some((_, RoleSource::OrgOwner))
+        ))
+    }
+
+    /// A direct role changes only at the hands of someone who holds everything it grants. The account that owns
+    /// a user-owned repository changes only for itself or a server admin.
+    pub(super) async fn require_can_change(
+        &self,
+        actor: &Principal,
+        repo: &RepoId,
+        user: &UserId,
+    ) -> Result<()> {
+        if actor.user == *user || self.exempt_from_rank(actor, repo).await? {
+            return Ok(());
+        }
+        if let Some(registry) = &self.registry
+            && let Some(record) = registry.get_repo(repo).await?
+            && record.owner == *user
+            && !self.is_org(&record.owner).await?
+        {
+            return Err(PynError::Forbidden(Permission::ManageUsers));
+        }
+        if let Some(current) = self.store.role_of(repo, user).await? {
+            let held = self
+                .store
+                .role_definitions(repo)
+                .await?
+                .get(current)
+                .clone();
+            for p in held {
+                actor.require(p)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Adds the user if new and gives them `role`.
     pub async fn set_user_role(
         &self,
@@ -1087,6 +1135,7 @@ impl AccessService {
     ) -> Result<()> {
         actor.require(Permission::ManageUsers)?;
         self.require_can_grant(actor, repo, role).await?;
+        self.require_can_change(actor, repo, user).await?;
         self.require_grantable(repo, user).await?;
         let before = self.store.role_of(repo, user).await?;
         self.store.ensure_user(user, self.clock.now()).await?;

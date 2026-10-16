@@ -7051,6 +7051,83 @@ pub async fn managers_cannot_act_on_admins_or_repository_owners(store: Access) {
     );
 }
 
+pub async fn a_manager_cannot_change_a_member_who_ranks_above_them(store: Access) {
+    let meta = Arc::new(MemoryMetadataStore::new());
+    let access = AccessService::new(store.clone(), Arc::new(ManualClock::new(at(0))))
+        .with_registry(meta.clone());
+    let game = RepoId::new("alice/game");
+    meta.create_repo(repo_record("alice/game", "alice", "game"))
+        .await
+        .unwrap();
+    for name in ["alice", "bob", "carol", "dave", "root"] {
+        store.create_user(&user(name), at(0)).await.unwrap();
+    }
+    store.set_admin(&user("root"), true).await.unwrap();
+    access.add_creator(&game, &user("alice")).await.unwrap();
+    let owner = access.principal(&game, &user("alice")).await.unwrap();
+    let mut manage = RoleDefinitions::defaults().get(Role::Maintainer).clone();
+    manage.insert(Permission::ManageUsers);
+    access
+        .set_role_permissions(&owner, &game, Role::Maintainer, manage)
+        .await
+        .unwrap();
+    for (name, role) in [
+        ("bob", Role::Maintainer),
+        ("carol", Role::Admin),
+        ("dave", Role::Writer),
+        ("root", Role::Maintainer),
+    ] {
+        access
+            .set_user_role(&owner, &game, &user(name), role)
+            .await
+            .unwrap();
+    }
+    let principal = |name: &'static str| {
+        let (access, game) = (&access, game.clone());
+        async move { access.principal(&game, &user(name)).await.unwrap() }
+    };
+    let (bob, carol, root) = (
+        principal("bob").await,
+        principal("carol").await,
+        principal("root").await,
+    );
+
+    for (target, role) in [("carol", Role::Reader), ("alice", Role::Reader)] {
+        let err = access
+            .set_user_role(&bob, &game, &user(target), role)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, PynError::Forbidden(_)), "{target}: {err}");
+    }
+    access
+        .set_user_role(&bob, &game, &user("dave"), Role::Reader)
+        .await
+        .unwrap();
+    assert_eq!(
+        access.role_in(&game, &user("carol")).await.unwrap(),
+        Some(Role::Admin)
+    );
+
+    let err = access
+        .set_user_role(&carol, &game, &user("alice"), Role::Writer)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::Forbidden(_)), "{err}");
+    assert_eq!(
+        access.role_in(&game, &user("alice")).await.unwrap(),
+        Some(Role::Admin)
+    );
+
+    access
+        .set_user_role(&root, &game, &user("carol"), Role::Writer)
+        .await
+        .unwrap();
+    access
+        .set_user_role(&owner, &game, &user("bob"), Role::Writer)
+        .await
+        .unwrap();
+}
+
 /// Generates one `#[tokio::test]` per access-store case for the store built by `$factory`.
 #[macro_export]
 macro_rules! access_contract_tests {
@@ -7093,6 +7170,7 @@ macro_rules! access_contract_tests {
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; removing_an_organization_member_drops_their_roles_in_the_given_repositories);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; teams_hold_members_and_repository_roles_until_removed);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; effective_roles_resolve_across_direct_team_and_owner_grants);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; a_manager_cannot_change_a_member_who_ranks_above_them);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; organization_repository_creation_resolves_owner_base_and_rules);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; creation_rules_are_validated_audited_and_dropped_with_their_subject);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; organization_members_stop_at_the_cap);

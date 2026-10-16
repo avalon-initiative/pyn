@@ -280,6 +280,16 @@ impl AccessService {
         let (org, address) = self.repo_org(repo).await?;
         self.require_team(&org, slug).await?;
         self.require_can_grant(actor, repo, role).await?;
+        if let Some(current) = self
+            .store
+            .team_grants(repo)
+            .await?
+            .into_iter()
+            .find_map(|(t, r)| (t == slug).then_some(r))
+            && !self.exempt_from_rank(actor, repo).await?
+        {
+            self.require_can_grant(actor, repo, current).await?;
+        }
         let before = self.store.set_team_role(repo, &org, slug, role).await?;
         if before == Some(role) {
             return Ok(());
@@ -322,7 +332,9 @@ impl AccessService {
             .into_iter()
             .find_map(|(t, role)| (t == slug).then_some(role))
         {
-            self.require_can_grant(actor, repo, old).await?;
+            if !self.exempt_from_rank(actor, repo).await? {
+                self.require_can_grant(actor, repo, old).await?;
+            }
         }
         let Some(old) = self.store.remove_team_role(repo, &org, slug).await? else {
             return Ok(());

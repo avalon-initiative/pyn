@@ -1229,7 +1229,10 @@ async fn history(
         }
         let revs = repo
             .service
-            .history_on(branch_of(q.branch.as_deref()), &RepoPath::from_stored(path)?)
+            .history_on(
+                branch_of(q.branch.as_deref()),
+                &RepoPath::from_stored(path)?,
+            )
             .await?;
         return Ok(Json(api::HistoryPage {
             revisions: revs.into_iter().map(revision_dto).collect(),
