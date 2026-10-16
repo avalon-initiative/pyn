@@ -207,7 +207,7 @@ The setting is opt-in and lives in the workspace configuration:
 - `pyn clone --local-store <source>` turns it on for the new workspace;
 - `pyn clone` also turns it on when the user configuration has `local_store = true` (`pyn config set --global local_store true`);
 - `pyn config set local_store true` turns it on in an existing workspace, and the store is filled by the next `pyn update`
-  (`pyn fetch` and `pyn pull` run it);
+  (`pyn fetch` and `pyn pull` then fill it from the server's commits instead, see below);
 - `pyn config set local_store false` stops further updates of the store; the folder stays until you delete it.
 
 The store is `.pyn/local_only/store/`, a bare repository in git's on-disk format using the SHA-256 object format that a
@@ -228,9 +228,8 @@ What it holds:
   gives it. A commit and its trees are rebuilt from what the API already returns and checked against the server's ids; a
   mismatch fails the update instead of storing something different from the server.
 - **Blobs only for what is checked out and for local work.** After a clone or an update the store holds the blobs of the
-  files in the workspace. Every other blob is absent and is fetched on demand by id: pyn finds the path that has that blob
-  in the branch's tip tree, looks up the revision that carries it, downloads that revision's content, checks it against the
-  id and stores it. A blob the tip tree does not name cannot be fetched by id yet.
+  files in the workspace. Every other blob is absent and is fetched on demand by id (`GET .../objects/{id}`), checked
+  against the id and stored.
 
 ### Local commits (provisional)
 
@@ -253,8 +252,16 @@ With the setting on, `add`, `commit`, `status` and `branch` work against the sto
 - `pyn switch` and `pyn checkout <branch>` refuse to leave a branch that has unpublished local commits.
 
 Unchanged by the setting: `pyn commit <path> --file ... [--base ...]` and a merge commit still publish straight to the
-server, and the server stays the only authority over commits, locks and policy. Publishing local commits and fetching
-into the store are separate steps (#337, #338). Only the current branch is stored.
+server, and the server stays the only authority over commits, locks and policy. Only the current branch is stored.
+
+### Fetch, pull and push (provisional)
+
+Slice #337 of the same move. With the setting on, `pyn fetch` stores the server's new commits and trees (every object checked
+against its id) and moves `refs/remotes/origin/<branch>`; `pyn pull` is a fetch and then a fast-forward or a replay of the
+local commits onto the fetched tip; `pyn push` uploads the blobs and publishes the local commits in one request, after
+which none of them is unpublished. Details, output and the refusals are in
+[commits](commits.md#fetch-pull-and-push-with-a-local-store). Pushing deletions and policy changes (#339) and merge commits
+(#338) is not built yet and is refused cleanly.
 
 ## The user configuration file
 

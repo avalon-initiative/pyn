@@ -59,6 +59,21 @@ pub trait Backend {
         anyhow::bail!("this home does not serve objects by id")
     }
 
+    /// One page of commits and trees a client lacks (`POST .../fetch`).
+    fn fetch_page(&self, _request: &api::FetchRequest) -> Result<api::FetchResponse> {
+        anyhow::bail!("this home does not serve fetches")
+    }
+
+    /// A blob's bytes by its full id (`GET .../objects/{id}`).
+    fn object(&self, _id: &str) -> Result<Vec<u8>> {
+        anyhow::bail!("this home does not serve objects by id")
+    }
+
+    /// Appends client-built commits to a branch (`POST .../push`), all or nothing.
+    fn push_commits(&self, _request: &api::PushRequest) -> Result<api::PushResponse> {
+        anyhow::bail!("this home does not accept pushed commits")
+    }
+
     /// A file's content at a revision; `probe` asks for only the first bytes when the home can.
     fn content(&self, path: &str, revision: u64, probe: Option<usize>) -> Result<Vec<u8>>;
 

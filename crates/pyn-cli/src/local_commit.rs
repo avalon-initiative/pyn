@@ -88,7 +88,7 @@ impl LocalStore {
         Ok(self.repo().refs().resolve(&local_ref(branch))?)
     }
 
-    fn published(&self, branch: &str) -> Result<Option<ObjectId>> {
+    pub(crate) fn published(&self, branch: &str) -> Result<Option<ObjectId>> {
         Ok(self.repo().refs().resolve(&tracking_ref(branch))?)
     }
 

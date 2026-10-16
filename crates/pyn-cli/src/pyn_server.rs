@@ -110,6 +110,30 @@ impl Backend for PynServer {
         Ok(bytes)
     }
 
+    fn fetch_page(&self, request: &api::FetchRequest) -> Result<api::FetchResponse> {
+        let api = &self.api;
+        api.send(
+            api.request(Method::POST, &api.repo_route("/fetch")?)
+                .json(request),
+        )?
+        .json()
+    }
+
+    fn object(&self, id: &str) -> Result<Vec<u8>> {
+        let api = &self.api;
+        api.send(api.get(&api.repo_route(&format!("/objects/{id}"))?))?
+            .bytes()
+    }
+
+    fn push_commits(&self, request: &api::PushRequest) -> Result<api::PushResponse> {
+        let api = &self.api;
+        api.send(
+            api.request(Method::POST, &api.repo_route("/push")?)
+                .json(request),
+        )?
+        .json()
+    }
+
     fn content(&self, path: &str, revision: u64, probe: Option<usize>) -> Result<Vec<u8>> {
         let api = &self.api;
         let route = api.repo_route("/content")?;

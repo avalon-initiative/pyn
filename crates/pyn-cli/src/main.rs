@@ -17,6 +17,7 @@ mod http_transport;
 mod limits;
 mod local_commit;
 mod local_store;
+mod local_sync;
 mod localfile;
 mod ls_remote;
 mod merging;
@@ -774,6 +775,10 @@ fn main() {
             eprintln!("error: {refused}");
             std::process::exit(1);
         }
+        if let Some(rejected) = e.downcast_ref::<local_sync::Rejected>() {
+            eprintln!("{rejected}");
+            std::process::exit(1);
+        }
         eprintln!("fatal: {e:#}");
         std::process::exit(128);
     }
@@ -1322,17 +1327,30 @@ fn run(cli: Cli) -> Result<()> {
         }
         Command::Fetch(args) => {
             require_bare(&args, "fetch");
-            update_as_remote(&backend, in_workspace("fetch")?, ws.as_ref())?;
+            let w = in_workspace("fetch")?;
+            if w.settings().local_store_on() {
+                local_sync::fetch(&backend, w)?;
+            } else {
+                update_as_remote(&backend, w, ws.as_ref())?;
+            }
         }
         Command::Pull(args) => {
             require_bare(&args, "pull");
-            update_as_remote(&backend, in_workspace("pull")?, ws.as_ref())?;
+            let w = in_workspace("pull")?;
+            if w.settings().local_store_on() {
+                local_sync::pull(&backend, w)?;
+            } else {
+                update_as_remote(&backend, w, ws.as_ref())?;
+            }
         }
         Command::Push(args) => {
             require_bare(&args, "push");
-            println!(
-                "Nothing to push: commits go straight to the server, so `pyn commit` has already published them."
-            );
+            match ws.as_ref().filter(|w| w.settings().local_store_on()) {
+                Some(w) => local_sync::push(&backend, w)?,
+                None => println!(
+                    "Nothing to push: commits go straight to the server, so `pyn commit` has already published them."
+                ),
+            }
         }
         Command::Tag(_) => {
             eprintln!("{}", unsupported::message("tag"));

@@ -26,8 +26,7 @@ pub trait Remote {
     fn fetch_commits(&self, before: Option<&str>, limit: usize) -> Result<api::CommitPage>;
     fn fetch_commit(&self, id: &str) -> Result<api::Commit>;
     fn fetch_snapshot(&self, commit: &str) -> Result<Vec<api::SnapshotEntry>>;
-    fn fetch_history(&self, path: &str) -> Result<Vec<api::Revision>>;
-    fn fetch_content(&self, path: &str, revision: u64) -> Result<Vec<u8>>;
+    fn fetch_object(&self, id: &str) -> Result<Vec<u8>>;
 }
 
 impl<T: Backend + ?Sized> Remote for T {
@@ -43,12 +42,8 @@ impl<T: Backend + ?Sized> Remote for T {
         Ok(self.snapshot(Some(commit))?.1)
     }
 
-    fn fetch_history(&self, path: &str) -> Result<Vec<api::Revision>> {
-        self.path_history(path)
-    }
-
-    fn fetch_content(&self, path: &str, revision: u64) -> Result<Vec<u8>> {
-        self.content(path, revision, None)
+    fn fetch_object(&self, id: &str) -> Result<Vec<u8>> {
+        self.object(id)
     }
 }
 
@@ -164,6 +159,14 @@ impl LocalStore {
             .map(|repo| Self { repo })
     }
 
+    /// The store, created empty on the branch if the workspace has none yet.
+    pub fn open_or_create(ws: &Workspace, branch: &str) -> Result<Self> {
+        match Self::open(ws) {
+            Some(s) => Ok(s),
+            None => Self::create(ws, branch),
+        }
+    }
+
     fn create(ws: &Workspace, branch: &str) -> Result<Self> {
         let path = Self::path(ws);
         pyn_git::init(&path, true, ALGORITHM, branch)
@@ -177,7 +180,7 @@ impl LocalStore {
         &self.repo
     }
 
-    fn has(&self, id: &ObjectId) -> Result<bool> {
+    pub(crate) fn has(&self, id: &ObjectId) -> Result<bool> {
         Ok(self.repo.objects().contains(id)?)
     }
 
@@ -333,7 +336,7 @@ impl LocalStore {
         Ok(())
     }
 
-    /// A blob by its full id: from the store, else downloaded through the path the branch's tip tree gives it.
+    /// A blob by its full id: from the store, else read from the server by id, checked against it and stored.
     pub fn blob<R: Remote + ?Sized>(&self, remote: &R, id: &str) -> Result<Vec<u8>> {
         let id = parse_id(id)?;
         if let Some(found) = self.repo.objects().read_opt(&id)?
@@ -341,33 +344,12 @@ impl LocalStore {
         {
             return Ok(found.data);
         }
-        let path = self
-            .path_of(&id)?
-            .with_context(|| format!("{id} is not in the tree of the current branch"))?;
-        let revisions = remote.fetch_history(&path)?;
-        let revision = revisions
-            .iter()
-            .rev()
-            .find(|r| r.content == id.to_hex())
-            .with_context(|| format!("{path} has no revision with content {id}"))?;
-        let bytes = remote.fetch_content(&path, revision.id)?;
+        let bytes = remote.fetch_object(&id.to_hex())?;
         if hash_object(ALGORITHM, Kind::Blob, &bytes)? != id {
             bail!("the content downloaded for {id} does not match it");
         }
         self.repo.objects().write(Kind::Blob, &bytes)?;
         Ok(bytes)
-    }
-
-    fn path_of(&self, id: &ObjectId) -> Result<Option<String>> {
-        let Some(head) = self.repo.head_commit()? else {
-            return Ok(None);
-        };
-        let tree = self.repo.commit(&head)?.tree;
-        let files = self.repo.flatten(Some(&tree), &Pathspec::default())?;
-        Ok(files
-            .into_iter()
-            .find(|(_, e)| e.id == *id)
-            .and_then(|(p, _)| String::from_utf8(p).ok()))
     }
 }
 
@@ -404,10 +386,7 @@ pub fn refresh<R: Remote + ?Sized>(remote: &R, ws: &Workspace) -> Result<()> {
         return Ok(());
     }
     let branch = branch::name(Some(ws));
-    let store = match LocalStore::open(ws) {
-        Some(s) => s,
-        None => LocalStore::create(ws, &branch)?,
-    };
+    let store = LocalStore::open_or_create(ws, &branch)?;
     store.sync_history(remote, &branch)?;
     store.store_checked_out(ws, &ws.load_state()?)
 }
@@ -420,8 +399,7 @@ mod tests {
     #[derive(Default)]
     struct Fake {
         commits: Vec<api::Commit>,
-        content: HashMap<(String, u64), Vec<u8>>,
-        history: HashMap<String, Vec<api::Revision>>,
+        objects: HashMap<String, Vec<u8>>,
         calls: std::cell::RefCell<Vec<String>>,
     }
 
@@ -530,14 +508,12 @@ mod tests {
             Ok(Vec::new())
         }
 
-        fn fetch_history(&self, path: &str) -> Result<Vec<api::Revision>> {
-            self.calls.borrow_mut().push(format!("history {path}"));
-            Ok(self.history[path].clone())
-        }
-
-        fn fetch_content(&self, path: &str, revision: u64) -> Result<Vec<u8>> {
-            self.calls.borrow_mut().push(format!("content {path}"));
-            Ok(self.content[&(path.to_string(), revision)].clone())
+        fn fetch_object(&self, id: &str) -> Result<Vec<u8>> {
+            self.calls.borrow_mut().push(format!("object {id}"));
+            self.objects
+                .get(id)
+                .cloned()
+                .with_context(|| format!("object_not_found: {id}"))
         }
     }
 
@@ -565,12 +541,7 @@ mod tests {
             commits: vec![two, one],
             ..Fake::default()
         };
-        fake.history.insert(
-            "dir/c.txt".into(),
-            vec![revision(7, "dir/c.txt", b"sea", false, "x")],
-        );
-        fake.content
-            .insert(("dir/c.txt".into(), 7), b"sea".to_vec());
+        fake.objects.insert(blob_id(b"sea"), b"sea".to_vec());
         fake
     }
 
@@ -683,7 +654,7 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_blob_is_fetched_by_id_through_its_path_and_checked() {
+    fn a_missing_blob_is_fetched_by_id_and_checked() {
         let dir = tempfile::tempdir().unwrap();
         let ws = workspace(dir.path());
         let fake = chain();
@@ -698,7 +669,7 @@ mod tests {
         assert!(fake.calls.borrow().is_empty(), "the second read is local");
 
         let err = store.blob(&fake, &blob_id(b"nowhere")).unwrap_err();
-        assert!(err.to_string().contains("not in the tree"), "{err}");
+        assert!(err.to_string().contains("object_not_found"), "{err}");
     }
 
     #[test]
@@ -707,8 +678,7 @@ mod tests {
         let ws = workspace(dir.path());
         let mut fake = chain();
         refresh(&fake, &ws).unwrap();
-        fake.content
-            .insert(("dir/c.txt".into(), 7), b"forged".to_vec());
+        fake.objects.insert(blob_id(b"sea"), b"forged".to_vec());
         let store = LocalStore::open(&ws).unwrap();
         let err = store.blob(&fake, &blob_id(b"sea")).unwrap_err();
         assert!(err.to_string().contains("does not match"), "{err}");
