@@ -33,6 +33,6 @@ keep needs at least `PYN_DATABASE_URL` and `PYN_DATA_DIR`.
 
 `make test-live` runs the tests that need a database (`PYN_DATABASE_URL`); each uses its own temporary schema.
 
-`make e2e` runs the end-to-end suite (`crates/pyn-cli/tests/e2e.rs`): it spawns the real `pyn-server` (in-memory store) and drives the real `pyn` binary through init, clone, locks, policy changes, add and commit, and a plain git repository, on temporary folders. It is part of `make test` too, and needs `git` on the path only as an oracle.
+`make e2e` runs the end-to-end suites (`crates/pyn-cli/tests/e2e.rs` and `e2e_second.rs`): it spawns the real `pyn-server` (in-memory store) and drives the real `pyn` binary through init, clone, locks, policy changes, add and commit, a plain git repository, branches and merge, `verify`, policy preview and `local_store` commits pushed and pulled between clones, on temporary folders. It is part of `make test` too, and needs `git` on the path only as an oracle.
 
 > **Not for production.** Never run with `PYN_DEV_AUTH=true` on a network you do not control.
