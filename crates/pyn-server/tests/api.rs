@@ -2979,7 +2979,23 @@ async fn an_account_with_no_role_can_still_use_its_own_settings() {
     .await;
     assert_eq!(r.status(), StatusCode::NO_CONTENT);
     let r = send(&v.app, "GET", "/v1/repos", &v.bob, None).await;
+    assert_eq!(r.status(), StatusCode::UNAUTHORIZED, "sign-in tokens end");
+    let bob = sign_in_token(&v.app, "bob", "another long passphrase").await;
+    let r = send(&v.app, "GET", "/v1/repos", &bob, None).await;
     assert!(body_json::<Vec<api::RepoInfo>>(r).await.is_empty());
+}
+
+async fn sign_in_token(app: &axum::Router, name: &str, password: &str) -> String {
+    let r = app
+        .clone()
+        .oneshot(anon(
+            "POST",
+            "/v1/login",
+            serde_json::json!({"username": name, "password": password}),
+        ))
+        .await
+        .unwrap();
+    body_json::<api::CreatedToken>(r).await.token
 }
 
 #[tokio::test]
@@ -4149,4 +4165,188 @@ async fn a_policy_change_returns_the_stranded_versions_and_a_merge_conflict_carr
     )
     .await;
     assert_eq!(r.status(), StatusCode::NOT_FOUND);
+}
+
+async fn alice_with_a_ci_token() -> (AppState, axum::Router, String) {
+    let st = state_with(false, RegistrationMode::Open).await;
+    let app = router(st.clone());
+    let sign_in = register_and_sign_in(&app, "alice").await;
+    st.access
+        .add_creator(&RepoId::new(REPO_ID), &UserId::new("alice"))
+        .await
+        .unwrap();
+    let (_, ci) = st
+        .access
+        .create_token(
+            &session("alice"),
+            "ci",
+            [
+                pyn_core::Permission::Read,
+                pyn_core::Permission::ManageUsers,
+            ]
+            .into(),
+            vec![RepoId::new(REPO_ID)],
+            None,
+        )
+        .await
+        .unwrap();
+    let _ = sign_in;
+    (st, app, ci)
+}
+
+#[tokio::test]
+async fn account_routes_refuse_a_token_narrower_than_the_owner() {
+    let (_, app, ci) = alice_with_a_ci_token().await;
+    let key =
+        serde_json::json!({"key": include_str!("../../pyn-core/tests/fixtures/keys/ed1.pub")});
+    let new_token = serde_json::json!({"name": "more", "repos": [REPO], "permissions": ["read"]});
+    let password = serde_json::json!({"current": PASSWORD, "new": "another long password"});
+    let calls = [
+        ("POST", "/v1/keys", Some(key)),
+        ("GET", "/v1/keys", None),
+        ("DELETE", "/v1/keys/x", None),
+        ("POST", "/v1/tokens", Some(new_token)),
+        ("GET", "/v1/tokens", None),
+        ("DELETE", "/v1/tokens/x", None),
+        ("PUT", "/v1/me/password", Some(password)),
+        ("GET", "/v1/me/identities", None),
+        ("DELETE", "/v1/me/identities/x", None),
+    ];
+    for (method, uri, body) in calls {
+        let r = app
+            .clone()
+            .oneshot(with_token(method, uri, &ci, body))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::FORBIDDEN, "{method} {uri}");
+        let err: api::ErrorBody = body_json(r).await;
+        assert_eq!(err.code, "forbidden", "{method} {uri}");
+    }
+    let r = app
+        .clone()
+        .oneshot(with_token("GET", "/v1/me", &ci, None))
+        .await
+        .unwrap();
+    assert!(!body_json::<api::Account>(r).await.admin);
+}
+
+#[tokio::test]
+async fn a_session_and_a_sign_in_token_still_manage_the_account() {
+    let st = state_with(false, RegistrationMode::Open).await;
+    let app = router(st.clone());
+    let sign_in = register_and_sign_in(&app, "alice").await;
+    st.access
+        .add_creator(&RepoId::new(REPO_ID), &UserId::new("alice"))
+        .await
+        .unwrap();
+    let (set, csrf, _) = web_sign_in(&app, None).await;
+    let cookie = set
+        .split(';')
+        .next()
+        .unwrap()
+        .strip_prefix("pyn_session=")
+        .unwrap()
+        .to_string();
+    let body = serde_json::json!({"name": "ci", "repos": [REPO], "permissions": ["read"]});
+    let r = app
+        .clone()
+        .oneshot(with_cookie(
+            "POST",
+            "/v1/tokens",
+            &cookie,
+            Some(&csrf),
+            Some(body.clone()),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    let made: api::CreatedToken = body_json(r).await;
+    assert_eq!(
+        status(
+            &app,
+            with_token(
+                "POST",
+                "/v1/keys",
+                &sign_in,
+                Some(serde_json::json!({
+                    "key": include_str!("../../pyn-core/tests/fixtures/keys/ed1.pub")
+                }))
+            )
+        )
+        .await,
+        StatusCode::OK
+    );
+    let r = app
+        .clone()
+        .oneshot(with_token("POST", "/v1/tokens", &made.token, Some(body)))
+        .await
+        .unwrap();
+    assert_eq!(
+        r.status(),
+        StatusCode::FORBIDDEN,
+        "a narrow token mints nothing"
+    );
+}
+
+#[tokio::test]
+async fn a_password_change_ends_sign_in_tokens_and_keeps_created_ones() {
+    let (_, app, ci) = alice_with_a_ci_token().await;
+    let r = app
+        .clone()
+        .oneshot(anon(
+            "POST",
+            "/v1/login",
+            serde_json::json!({"username": "alice", "password": PASSWORD}),
+        ))
+        .await
+        .unwrap();
+    let sign_in = body_json::<api::CreatedToken>(r).await.token;
+    let change = serde_json::json!({"current": PASSWORD, "new": "another long password"});
+    assert_eq!(
+        status(
+            &app,
+            with_token("PUT", "/v1/me/password", &sign_in, Some(change))
+        )
+        .await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        status(&app, with_token("GET", "/v1/me", &sign_in, None)).await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        status(&app, with_token("GET", "/v1/me", &ci, None)).await,
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn only_a_full_scope_credential_acts_as_a_server_admin() {
+    let st = state(false).await;
+    let admin = admin_token(&st).await;
+    let root = session("root");
+    let (_, limited) = st
+        .access
+        .create_token(
+            &root,
+            "users",
+            [pyn_core::Permission::ManageUsers].into(),
+            vec![RepoId::new(REPO_ID)],
+            None,
+        )
+        .await
+        .unwrap();
+    let app = router(st);
+    let is_admin = |token: String| {
+        let app = app.clone();
+        async move {
+            let r = app
+                .oneshot(with_token("GET", "/v1/me", &token, None))
+                .await
+                .unwrap();
+            body_json::<api::Account>(r).await.admin
+        }
+    };
+    assert!(is_admin(admin).await);
+    assert!(!is_admin(limited).await);
 }
