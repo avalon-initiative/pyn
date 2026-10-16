@@ -5099,6 +5099,16 @@
                 }
               }
             }
+          },
+          "429": {
+            "description": "uploads_busy: too many uploads by this user or on the server; Retry-After says how many seconds to wait",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         }
       }
@@ -5234,6 +5244,16 @@
           },
           "413": {
             "description": "object_too_large",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "uploads_busy: too many uploads by this user or on the server; Retry-After says how many seconds to wait",
             "content": {
               "application/json": {
                 "schema": {

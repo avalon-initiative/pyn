@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use super::push::{Files, build, objects, set};
 use super::{RULES, Store, blob, harness, harness_on, other_repo, path, who};
+use crate::AuditStore as _;
 use crate::memory::MemoryObjectStore;
 use crate::merge::{FastForward, MergeRequest, Resolution};
 use crate::{
@@ -231,4 +232,182 @@ pub async fn unreferenced_uploads_are_capped_per_repository(store: Store) {
         .unwrap();
     assert_eq!(store.unreferenced_bytes(&id).await.unwrap(), 5);
     svc.upload_blob(b"jklmn".to_vec()).await.unwrap();
+}
+
+fn capped_service(h: &super::Harness, store: &Store, repo: &str, cap: u64) -> Arc<RepoService> {
+    Arc::new(
+        RepoService::new(
+            RepoId::new(repo),
+            Rules::from_toml(RULES).unwrap(),
+            store.clone(),
+            h.objects.clone(),
+            h.audit.clone(),
+            h.clock.clone(),
+            ServiceConfig::default(),
+        )
+        .with_unreferenced_cap(cap),
+    )
+}
+
+pub async fn upload_reservations_hold_the_budget_until_released_or_expired(store: Store) {
+    let repo = RepoId::new("budget");
+    let now = chrono::Utc::now();
+    let a = store.reserve_upload(&repo, 6, 10, now, 60).await.unwrap();
+    let err = store
+        .reserve_upload(&repo, 6, 10, now, 60)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            PynError::StorageLimitReached {
+                limit: 10,
+                used: 6,
+                ..
+            }
+        ),
+        "{err}"
+    );
+    store.release_upload(&repo, a).await.unwrap();
+    store.release_upload(&repo, a).await.unwrap();
+    let b = store.reserve_upload(&repo, 6, 10, now, 60).await.unwrap();
+    assert!(store.reserve_upload(&repo, 5, 10, now, 60).await.is_err());
+    store.reserve_upload(&repo, 4, 10, now, 60).await.unwrap();
+
+    let later = now + chrono::Duration::seconds(61);
+    store
+        .reserve_upload(&repo, 10, 10, later, 60)
+        .await
+        .unwrap();
+    store.release_upload(&repo, b).await.unwrap();
+    let other = RepoId::new("budget-other");
+    store.reserve_upload(&other, 10, 10, now, 60).await.unwrap();
+    assert_eq!(store.unreferenced_bytes(&repo).await.unwrap(), 0);
+}
+
+pub async fn parallel_uploads_never_pass_the_unreferenced_budget(store: Store) {
+    let h = harness(store.clone());
+    let svc = capped_service(&h, &store, "parallel", 10);
+    let tasks: Vec<_> = (0..8u8)
+        .map(|n| {
+            let svc = svc.clone();
+            tokio::spawn(async move { svc.upload_blob(vec![b'a' + n; 4]).await })
+        })
+        .collect();
+    let mut stored = 0;
+    for task in tasks {
+        match task.await.unwrap() {
+            Ok(_) => stored += 1,
+            Err(e) => assert!(matches!(e, PynError::StorageLimitReached { .. }), "{e}"),
+        }
+    }
+    assert_eq!(stored, 2);
+    let id = RepoId::new("parallel");
+    assert_eq!(store.unreferenced_bytes(&id).await.unwrap(), 8);
+    svc.upload_blob(b"zz".to_vec()).await.unwrap();
+}
+
+pub async fn a_rejected_upload_removes_only_the_bytes_it_wrote(store: Store) {
+    let h = harness(store.clone());
+    let svc = capped_service(&h, &store, "rejected", 1000);
+    let reader = |b: &'static [u8]| -> crate::ObjectReader { Box::pin(std::io::Cursor::new(b)) };
+
+    let fresh = svc
+        .upload(reader(b"fresh"), Keying::Raw, None, 3)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            fresh,
+            PynError::LengthMismatch {
+                declared: 3,
+                actual: 5
+            }
+        ),
+        "{fresh}"
+    );
+    let key = {
+        let mut hasher = crate::KeyHasher::new(Keying::Raw);
+        hasher.update(b"fresh").unwrap();
+        hasher.finish().unwrap()
+    };
+    assert!(!h.objects.exists(&key).await.unwrap());
+
+    let kept = svc
+        .upload(reader(b"fresh"), Keying::Raw, None, 5)
+        .await
+        .unwrap();
+    assert_eq!(kept, key);
+    svc.upload(reader(b"fresh"), Keying::Raw, None, 3)
+        .await
+        .unwrap_err();
+    assert!(h.objects.exists(&key).await.unwrap());
+    assert!(svc.missing_objects(&[key]).await.unwrap().is_empty());
+}
+
+pub async fn a_policy_file_over_the_size_bound_is_refused(store: Store) {
+    let h = harness(store);
+    let policy = path(".pyn/pyn.toml");
+    let mut text = String::from("[meta]\ndefault = \"shared\"\n#");
+    text.push_str(&"x".repeat(crate::rules::MAX_POLICY_BYTES as usize));
+    let big = h.svc.upload_blob(text.into_bytes()).await.unwrap();
+    let err = h
+        .svc
+        .checkin(&who("alice"), &policy, big, None, "big".into())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, PynError::InvalidRules(ref m) if m.contains("larger than")),
+        "{err}"
+    );
+    assert!(
+        h.svc
+            .preview_policy(
+                &who("alice"),
+                &"#".repeat(crate::rules::MAX_POLICY_BYTES as usize + 1)
+            )
+            .await
+            .is_err()
+    );
+}
+
+pub async fn audit_details_carry_a_bounded_message(store: Store) {
+    let h = harness(store);
+    let message = "m".repeat(60_000);
+    let entries: Vec<_> = {
+        let mut out = Vec::new();
+        for n in 0..5 {
+            out.push(crate::ChangeEntry {
+                path: path(&format!("Source/f{n}.cpp")),
+                content: blob(&h, &format!("body {n}")).await,
+                file_mode: FileMode::Regular,
+                base: None,
+            });
+        }
+        out
+    };
+    h.svc
+        .checkin_changeset(&who("alice"), entries, message)
+        .await
+        .unwrap();
+    let events = h
+        .audit
+        .list(
+            &crate::AuditScope::Repo(RepoId::new("game")),
+            &crate::AuditQuery {
+                limit: 100,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let checkins: Vec<_> = events
+        .iter()
+        .filter(|e| e.action == crate::AuditAction::Checkin)
+        .collect();
+    assert_eq!(checkins.len(), 5);
+    assert!(
+        checkins.iter().all(|e| e.detail.len() < 400),
+        "{checkins:?}"
+    );
 }

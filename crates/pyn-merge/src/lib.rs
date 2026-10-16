@@ -199,3 +199,22 @@ pub fn render_markers(chunks: &[Chunk<&[u8]>], ours: &str, base: &str, theirs: &
     }
     out
 }
+
+#[cfg(test)]
+mod cost_tests {
+    use super::merge_cost;
+
+    #[test]
+    fn a_merge_that_needs_no_diff_costs_nothing() {
+        assert_eq!(merge_cost(b"a\n", b"b\n", b"b\n"), 0);
+        assert_eq!(merge_cost(b"a\n", b"a\n", b"b\n"), 0);
+        assert_eq!(merge_cost(b"a\n", b"b\n", b"a\n"), 0);
+    }
+
+    #[test]
+    fn cost_grows_with_the_lines_of_all_three_inputs() {
+        let small = merge_cost(b"a\n", b"b\n", b"c\n");
+        let big = merge_cost(b"a\na\na\n", b"b\nb\nb\n", b"c\nc\nc\n");
+        assert!(small > 0 && big > small);
+    }
+}

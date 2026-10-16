@@ -1998,6 +1998,7 @@ dependencies = [
  "pyn-proto",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tokio-util",
  "tower",

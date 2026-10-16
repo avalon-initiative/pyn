@@ -32,6 +32,19 @@ A repository may hold a fixed number of bytes in uploads that no revision names 
 non-empty upload is refused. A value that is not a whole number stops the server at start, and the effective value is
 written to the startup log. It is read at start; there is no way to change it while the server runs.
 
+The budget is reserved before an upload's body is read: the declared length is held against the repository's
+unreferenced total, together with the uploads still in flight, in one atomic step shared by every server copy using the
+database. Parallel uploads cannot pass the ceiling together. The hold is released when the upload ends; one left by a
+server that stopped expires after six hours. An upload whose body does not match its declared length, or that cannot
+be recorded, leaves no stored bytes behind, apart from bytes that were already stored.
+
+## Concurrent uploads
+
+`PYN_MAX_UPLOADS_PER_USER` (default 8) and `PYN_MAX_UPLOADS` (default 64) bound how many uploads run at once for one
+user and for the server process. An upload past either is refused with `429 uploads_busy` and a `Retry-After` of 5
+seconds before its body is read. Both must be at least 1, and an invalid value stops the server at start. The counts
+are per process.
+
 ## Where a limit comes from
 
 For each field the server uses the owner's own value if one is set, else the **server default**, else no limit. The
@@ -56,6 +69,8 @@ overshoot. Each limit has its own error code and answers `409`:
 | `member_limit_reached` | adding a member to an organization at its limit |
 | `storage_limit_reached` | a check-in or restore that would add content past the limit, or an upload past the repository's unreferenced-upload ceiling |
 
+`uploads_busy` is `429`, not `409`: it is not a limit on what is stored but on uploads at the same time.
+
 ## Request size bounds
 
 Fixed bounds apply to what a request may carry, and a request over one is `400 invalid_request` (`invalid_path` for a path):
@@ -65,6 +80,9 @@ Fixed bounds apply to what a request may carry, and a request over one is `400 i
 | token name, SSH key title | 1 to 256 bytes, no control characters |
 | team name, team description | 100 and 500 characters; control characters refused (a description may hold newline and tab) |
 | commit and revision message | 64 KiB; control characters refused except newline, tab and carriage return |
+| `.pyn/pyn.toml` | 1 MiB; a larger policy file is refused with `invalid_rules` without being read |
+| message in an audit entry | 256 bytes; longer messages are cut with `...` |
+| repositories listed in a token's audit entry | 8, then a count of the rest |
 | paths in one changeset | 10000 |
 | commits in one push | 10000 |
 | invitation lifetime | 1 to 8760 hours |

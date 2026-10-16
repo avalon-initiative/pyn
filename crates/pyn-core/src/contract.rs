@@ -3241,6 +3241,12 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_merge_resolution_needs_content_the_repository_knows);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; assembling_needs_chunks_the_repository_uploaded);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; unreferenced_uploads_are_capped_per_repository);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_text_merge_over_the_cost_bound_is_left_to_a_person);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; upload_reservations_hold_the_budget_until_released_or_expired);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; parallel_uploads_never_pass_the_unreferenced_budget);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_rejected_upload_removes_only_the_bytes_it_wrote);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_policy_file_over_the_size_bound_is_refused);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; audit_details_carry_a_bounded_message);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_full_fetch_lists_every_commit_oldest_first_with_the_trees_each_adds);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; haves_leave_out_what_the_client_has_and_unknown_haves_are_ignored);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_fetch_pages_by_cursor_over_the_heads_it_started_with);
