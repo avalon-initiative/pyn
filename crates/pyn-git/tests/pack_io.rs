@@ -630,7 +630,7 @@ fn declared_entry_size_is_checked_before_inflating() {
     let tmp = tempfile::tempdir().unwrap();
     let dst = Git::init(&tmp.path().join("dst"), alg, true);
     let mut body = pack_header(1);
-    body.extend(entry_header(3, 1 << 60));
+    body.extend(entry_header(3, 1 << 50));
     let err = index_pack(&dst.db(), &seal(alg, body)[..], &IngestLimits::default()).unwrap_err();
     assert_eq!(limit_what(err), "object size");
     let mut body = pack_header(1);
