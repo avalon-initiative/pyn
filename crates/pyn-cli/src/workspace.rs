@@ -245,6 +245,87 @@ impl Workspace {
         self.root.join(repo_path)
     }
 
+    /// Refuses the whole set when any path is not safe to change; call before the first change.
+    pub fn check_paths(&self, paths: impl IntoIterator<Item = impl AsRef<str>>) -> Result<()> {
+        paths
+            .into_iter()
+            .try_for_each(|p| self.dest(p.as_ref()).map(drop))
+    }
+
+    /// Writes `bytes` as the file at `repo_path` through a temporary file renamed into place, so a link already
+    /// there is replaced and never followed.
+    pub fn write_file(&self, repo_path: &str, bytes: &[u8]) -> Result<PathBuf> {
+        let file = self.dest_with_parents(repo_path)?;
+        let mut name = file.file_name().unwrap_or_default().to_owned();
+        name.push(".pyn-new");
+        let tmp = file.with_file_name(name);
+        match std::fs::remove_file(&tmp) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+            _ => {}
+        }
+        let written = (|| -> std::io::Result<()> {
+            use std::io::Write;
+            let mut out = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&tmp)?;
+            out.write_all(bytes)?;
+            out.flush()?;
+            std::fs::rename(&tmp, &file)
+        })();
+        if written.is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
+        written.with_context(|| format!("writing {}", file.display()))?;
+        Ok(file)
+    }
+
+    /// The absolute path to change for `repo_path`, once it passes the path check and no existing ancestor below the
+    /// root is a symbolic link or a file.
+    pub fn dest(&self, repo_path: &str) -> Result<PathBuf> {
+        pyn_gitwork::check_path(repo_path.as_bytes())?;
+        let mut dir = self.root.clone();
+        let mut parts = repo_path.split('/').peekable();
+        while let Some(part) = parts.next() {
+            if parts.peek().is_none() {
+                break;
+            }
+            dir.push(part);
+            match std::fs::symlink_metadata(&dir) {
+                Ok(m) if m.is_dir() => {}
+                Ok(m) if m.file_type().is_symlink() => {
+                    bail!(
+                        "refusing to write through {}: it is a symbolic link",
+                        dir.display()
+                    )
+                }
+                Ok(_) => bail!("{} is not a folder", dir.display()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => break,
+                Err(e) => return Err(e).with_context(|| format!("reading {}", dir.display())),
+            }
+        }
+        Ok(self.root.join(repo_path))
+    }
+
+    /// Like [`Self::dest`], and creates the missing folders above it one level at a time.
+    pub fn dest_with_parents(&self, repo_path: &str) -> Result<PathBuf> {
+        self.dest(repo_path)?;
+        let mut dir = self.root.clone();
+        let mut parts = repo_path.split('/').peekable();
+        while let Some(part) = parts.next() {
+            if parts.peek().is_none() {
+                break;
+            }
+            dir.push(part);
+            match std::fs::create_dir(&dir) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(e) => return Err(e).with_context(|| format!("creating {}", dir.display())),
+            }
+        }
+        self.dest(repo_path)
+    }
+
     /// Turns a path typed relative to `cwd` into the repository path (`/`-separated, from the workspace root).
     pub fn repo_path(&self, cwd: &Path, arg: &str) -> Result<String> {
         let repo = self.repo_prefix(cwd, arg)?;
@@ -577,5 +658,29 @@ mod tests {
 
         ws.save_state(&state).unwrap();
         assert_eq!(ws.load_state().unwrap(), state);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn writes_go_through_real_folders_and_replace_a_link_at_the_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = Workspace::create(dir.path()).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("f"), "keep").unwrap();
+
+        ws.write_file("a/b/c.txt", b"one").unwrap();
+        assert_eq!(std::fs::read(dir.path().join("a/b/c.txt")).unwrap(), b"one");
+
+        std::os::unix::fs::symlink(outside.path().join("f"), dir.path().join("a/b/l")).unwrap();
+        ws.write_file("a/b/l", b"new").unwrap();
+        assert_eq!(std::fs::read(outside.path().join("f")).unwrap(), b"keep");
+        assert!(!crate::localfile::is_symlink(&dir.path().join("a/b/l")));
+
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("linked")).unwrap();
+        let err = ws.write_file("linked/x", b"no").unwrap_err().to_string();
+        assert!(err.contains("symbolic link"), "{err}");
+        assert!(!outside.path().join("x").exists());
+        assert!(ws.dest("a/b/c.txt/d").is_err());
+        assert!(ws.dest("../x").is_err() && ws.dest(".git/x").is_err());
     }
 }

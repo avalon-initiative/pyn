@@ -593,7 +593,11 @@ pub fn clone(
             None => e,
         }
     })?;
-    finish(opts, origin, source, &prefer, fetched, &target)
+    finish(opts, origin, source, &prefer, fetched, &target).inspect_err(|e| {
+        if e.downcast_ref::<super::worktree::Unsafe>().is_some() {
+            clean_up(&target, existed, &git_dir, opts.bare);
+        }
+    })
 }
 
 #[cfg(test)]

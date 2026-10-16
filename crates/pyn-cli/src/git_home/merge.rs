@@ -15,7 +15,7 @@ use super::stage::{
 };
 use super::treemerge::{Conflicting, Labels, Resolved, Worktree, merge_trees};
 use super::worktree::{
-    Blocked, Mode, in_the_way, move_tree, remove_entry_file, write_bytes, write_entry,
+    Blocked, Mode, check_writes, in_the_way, move_tree, remove_entry_file, write_bytes, write_entry,
 };
 use super::{GitHome, Refused, convert, path_string};
 use crate::merging::MergeArgs;
@@ -237,6 +237,7 @@ fn true_merge(
             base: &base_label,
         },
     )?;
+    check_writes(merged.paths.keys())?;
     let head_leaves = git.repo.flatten(Some(&ours_tree), &Pathspec::default())?;
 
     let mut blocked = Blocked::default();
@@ -450,6 +451,7 @@ fn abort(git: &GitHome) -> Result<()> {
             names.join("', '")
         );
     }
+    check_writes(&redo)?;
     convert::refuse_conversions(
         git,
         redo.iter()

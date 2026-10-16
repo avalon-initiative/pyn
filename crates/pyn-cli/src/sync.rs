@@ -34,10 +34,10 @@ pub fn fetch(
     revision: u64,
     me: &str,
 ) -> Result<FileState> {
-    let target = ws.abs(&entry.path);
+    let target = ws.dest_with_parents(&entry.path)?;
     set_read_only(&target, false)?;
     let (_, hash) = backend.download(&entry.path, Some(revision), &target)?;
-    localfile::apply(&target, entry.file_mode)?;
+    localfile::apply(&target, &entry.path, entry.file_mode)?;
     set_read_only(&target, wants_read_only(entry, me))?;
     Ok(FileState {
         revision,
@@ -95,6 +95,10 @@ pub fn clone_into(
     if root.exists() && std::fs::read_dir(root)?.next().is_some() {
         bail!("{} already exists and is not empty", root.display());
     }
+    let entries = entries_at(backend, commit)?;
+    for entry in &entries {
+        pyn_gitwork::check_path(entry.path.as_bytes())?;
+    }
     std::fs::create_dir_all(root).with_context(|| format!("creating {}", root.display()))?;
     let root = root.canonicalize()?;
     let ws = Workspace::create(&root)?;
@@ -108,7 +112,7 @@ pub fn clone_into(
 
     let me = backend.whoami()?;
     let mut state = BTreeMap::new();
-    for entry in entries_at(backend, commit)? {
+    for entry in entries {
         let Some(revision) = entry.revision else {
             continue;
         };
@@ -337,6 +341,12 @@ pub fn update(
     let index = staging::Index::load(ws)?;
     let (mut updated, mut removed, mut skipped) = (0, 0, Vec::new());
     let entries = entries_at(backend, commit)?;
+    ws.check_paths(
+        entries
+            .iter()
+            .map(|e| &e.path)
+            .filter(|p| only.is_empty() || only.contains(p)),
+    )?;
     let held = match LocalStore::open(ws) {
         Some(store) => store.unpublished(&crate::branch::name(Some(ws)))?.paths,
         None => BTreeMap::new(),
@@ -349,11 +359,12 @@ pub fn update(
             .filter(|p| only.is_empty() || only.contains(p))
             .cloned()
             .collect();
+        ws.check_paths(&gone)?;
         for path in gone {
             if index.entries.contains_key(&path) || held.contains_key(&path) {
                 continue;
             }
-            let target = ws.abs(&path);
+            let target = ws.dest(&path)?;
             let known = &state[&path];
             if localfile::exists(&target) && local_changes(known, &target)? {
                 skipped.push(format!(
@@ -387,7 +398,7 @@ pub fn update(
         }
         let Some(head) = entry.revision else {
             if let (Some(c), Some(known)) = (commit, state.get(&entry.path)) {
-                let target = ws.abs(&entry.path);
+                let target = ws.dest(&entry.path)?;
                 if localfile::exists(&target) && local_changes(known, &target)? {
                     skipped.push(format!(
                         "{}: local changes; not in {}",
@@ -403,7 +414,7 @@ pub fn update(
             }
             continue;
         };
-        let target = ws.abs(&entry.path);
+        let target = ws.dest(&entry.path)?;
         let on_disk = localfile::exists(&target);
         match state.get(&entry.path) {
             Some(k) if k.revision == head => {
@@ -450,7 +461,7 @@ fn local_changes(known: &FileState, path: &Path) -> Result<bool> {
 }
 
 pub fn after_lock(ws: &Workspace, path: &str) -> Result<()> {
-    set_read_only(&ws.abs(path), false)
+    set_read_only(&ws.dest(path)?, false)
 }
 
 pub fn after_unlock(ws: &Workspace, path: &str) -> Result<()> {
@@ -459,7 +470,7 @@ pub fn after_unlock(ws: &Workspace, path: &str) -> Result<()> {
         .get(path)
         .is_some_and(|k| k.mode == "exclusive")
     {
-        set_read_only(&ws.abs(path), true)?;
+        set_read_only(&ws.dest(path)?, true)?;
     }
     Ok(())
 }
@@ -483,7 +494,7 @@ pub fn after_commit(
             .map_or_else(|| "shared".to_string(), |e| mode_name(e.mode).to_string()),
     };
     if mode == "exclusive" {
-        set_read_only(&ws.abs(path), true)?;
+        set_read_only(&ws.dest(path)?, true)?;
     }
     state.insert(
         path.to_string(),

@@ -106,9 +106,9 @@ pub fn ok(resp: Reply) -> Result<Reply> {
     let status = resp.status;
     match resp.json::<api::ErrorBody>() {
         Ok(e) => Err(ApiError {
-            code: e.code,
+            code: crate::sanitize::text(&e.code).into_owned(),
             status,
-            message: crate::time::localize(&e.message),
+            message: crate::sanitize::text(&crate::time::localize(&e.message)).into_owned(),
         }
         .into()),
         Err(_) => bail!("server returned {}", status_line(status)),
@@ -119,5 +119,24 @@ fn status_line(status: u16) -> String {
     match reqwest::StatusCode::from_u16(status) {
         Ok(s) => s.to_string(),
         Err(_) => status.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_servers_error_text_is_shown_without_control_characters() {
+        let body = serde_json::json!({"code": "bad\u{1b}", "message": "no\u{1b}[2J \u{9b}way"})
+            .to_string();
+        let reply = Reply::new(
+            400,
+            Vec::new(),
+            Box::new(std::io::Cursor::new(body.into_bytes())),
+        );
+        let err = ok(reply).err().unwrap();
+        let e = err.downcast_ref::<ApiError>().unwrap();
+        assert_eq!((e.code.as_str(), e.message.as_str()), ("bad", "no[2J way"));
     }
 }

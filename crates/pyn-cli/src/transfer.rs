@@ -151,6 +151,20 @@ fn part_path(dest: &Path) -> PathBuf {
     dest.with_file_name(name)
 }
 
+/// Opens the partial file without following a link: appends to a regular file, otherwise starts a new one.
+fn open_part(part: &Path, append: bool) -> std::io::Result<File> {
+    let mut options = std::fs::OpenOptions::new();
+    let regular = std::fs::symlink_metadata(part).is_ok_and(|m| m.is_file());
+    if append && regular {
+        return options.append(true).open(part);
+    }
+    match std::fs::remove_file(part) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
+        _ => {}
+    }
+    options.write(true).create_new(true).open(part)
+}
+
 fn hash_file(path: &Path) -> Result<String> {
     let mut file = File::open(path)?;
     let mut hasher = ObjectHasher::blob(Algorithm::Sha256, file.metadata()?.len());
@@ -178,7 +192,8 @@ pub fn download(
     }
     let part = part_path(dest);
     for attempt in 0..2 {
-        let have = std::fs::metadata(&part).map_or(0, |m| m.len());
+        let have =
+            std::fs::symlink_metadata(&part).map_or(0, |m| if m.is_file() { m.len() } else { 0 });
         let mut req = api
             .get(&api.repo_route("/content")?)
             .query(&[("path", path)]);
@@ -203,13 +218,8 @@ pub fn download(
             .unwrap_or(0);
         let expected = resp.header(api::CONTENT_HASH_HEADER).map(str::to_string);
         let appending = resp.status == 206;
-        let mut out = std::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .append(appending)
-            .truncate(!appending)
-            .open(&part)
-            .with_context(|| format!("writing {}", part.display()))?;
+        let mut out =
+            open_part(&part, appending).with_context(|| format!("writing {}", part.display()))?;
         resp.copy_to(&mut out)?;
         out.flush()?;
         drop(out);

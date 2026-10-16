@@ -375,7 +375,7 @@ impl Relay {
             let segment: Vec<u8> = self.pending.drain(..=end).collect();
             let mut err = std::io::stderr().lock();
             let _ = err.write_all(b"remote: ");
-            let _ = err.write_all(&segment);
+            let _ = err.write_all(&crate::sanitize::bytes(&segment));
         }
     }
 
@@ -767,7 +767,7 @@ pub(super) fn fetch_many(git: &GitHome, names: &[String], o: &Options) -> Result
                 failed = true;
             }
             Err(e) => {
-                eprintln!("fatal: {e:#}");
+                eprintln!("fatal: {}", crate::sanitize::text(&format!("{e:#}")));
                 eprintln!("error: Could not fetch {name}");
                 failed = true;
             }
@@ -836,7 +836,7 @@ pub(super) fn fetch_single(git: &GitHome, name: &str, o: &Options) -> bool {
     match fetch_one(git, Some(name), &[], &plan) {
         Ok(failed) => failed,
         Err(e) => {
-            eprintln!("fatal: {e:#}");
+            eprintln!("fatal: {}", crate::sanitize::text(&format!("{e:#}")));
             true
         }
     }
