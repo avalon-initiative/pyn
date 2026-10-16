@@ -2390,6 +2390,7 @@ async fn the_policy_file_in_the_repository_governs_that_repository() {
         "exclusive by the repository's policy"
     );
     assert_eq!(body_json::<api::ErrorBody>(r).await.code, "lock_required");
+    let src = put_blob(&app, "other", &alice, "int main();").await;
     let r = checkin(alice.clone(), "Source/a.cpp", src, "other").await;
     assert_eq!(
         r.status(),

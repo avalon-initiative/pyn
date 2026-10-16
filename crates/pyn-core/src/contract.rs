@@ -3234,7 +3234,7 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_push_needs_the_checkin_permission_and_an_existing_branch);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_push_past_the_storage_cap_applies_nothing);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; racing_pushes_to_one_branch_have_exactly_one_winner);
-        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_blob_is_read_by_id_only_when_the_repository_may_reference_it);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_blob_is_read_by_id_only_when_a_revision_of_the_repository_names_it);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; an_object_is_usable_only_by_the_repository_that_uploaded_it);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; uploads_are_reported_missing_per_repository_and_dedup_in_the_store);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_push_needs_its_blobs_uploaded_to_the_repository);

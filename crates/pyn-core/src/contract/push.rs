@@ -8,8 +8,7 @@ use chrono::Duration;
 use pyn_object::{Algorithm, Kind, Signature, hash_object};
 
 use super::{
-    Harness, Store, blob, capped_service, harness, harness_with, other_repo, path, repo_record,
-    user, who,
+    Harness, Store, blob, capped_service, harness, harness_with, path, repo_record, user, who,
 };
 use crate::commit_record::{TreeChange, tree_of};
 use crate::{FileMode, Mode, ObjectId, Permission, Principal, PushObjects, PynError, RevisionId};
@@ -742,13 +741,11 @@ pub async fn racing_pushes_to_one_branch_have_exactly_one_winner(store: Store) {
     assert_eq!(h.svc.commits(None, None).await.unwrap().commits.len(), 1);
 }
 
-pub async fn a_blob_is_read_by_id_only_when_the_repository_may_reference_it(store: Store) {
+pub async fn a_blob_is_read_by_id_only_when_a_revision_of_the_repository_names_it(store: Store) {
     use tokio::io::AsyncReadExt;
     let h = harness(store);
     let c = blob(&h, "hello world").await;
-    let other = other_repo(&h);
-    let elsewhere = other.svc.upload_blob(b"elsewhere".to_vec()).await.unwrap();
-    let err = h.svc.read_blob(&elsewhere, None).await.err().unwrap();
+    let err = h.svc.read_blob(&c, None).await.err().unwrap();
     assert!(matches!(err, PynError::ObjectNotFound(_)), "{err}");
 
     let mut files = Files::new();
@@ -767,11 +764,7 @@ pub async fn a_blob_is_read_by_id_only_when_the_repository_may_reference_it(stor
     read.reader.read_to_end(&mut bytes).await.unwrap();
     assert_eq!(bytes, b"world");
 
-    let stray = other
-        .svc
-        .upload_blob(b"never referenced".to_vec())
-        .await
-        .unwrap();
+    let stray = blob(&h, "never referenced").await;
     let err = h.svc.read_blob(&stray, None).await.err().unwrap();
     assert!(matches!(err, PynError::ObjectNotFound(_)), "{err}");
 }

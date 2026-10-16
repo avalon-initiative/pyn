@@ -1341,18 +1341,13 @@ impl RepoService {
             .await
     }
 
-    /// A blob by id, or the byte `range` of it, if this repository uploaded it or a revision of it names it.
+    /// A blob by id, or the byte `range` of it, if a revision of this repository has it.
     pub async fn read_blob(
         &self,
         id: &ObjectId,
         range: Option<std::ops::Range<u64>>,
     ) -> Result<crate::ObjectRead> {
-        if !self
-            .meta
-            .unknown_objects(&self.repo, &[*id])
-            .await?
-            .is_empty()
-        {
+        if !self.meta.has_content(&self.repo, id).await? {
             return Err(PynError::ObjectNotFound(id.to_string()));
         }
         self.objects

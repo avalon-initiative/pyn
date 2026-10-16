@@ -5281,7 +5281,7 @@
         },
         "responses": {
           "200": {
-            "description": "the requested hashes the server does not store",
+            "description": "the requested hashes this repository cannot reference yet: not uploaded through it and not named by one of its revisions",
             "content": {
               "application/json": {
                 "schema": {
