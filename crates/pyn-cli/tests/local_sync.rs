@@ -329,19 +329,206 @@ fn a_pull_will_not_overwrite_an_uncommitted_change() {
     );
 }
 
+fn delete_local(env: &Env, ws: &Path, user: &str, path: &str, message: &str) {
+    let target = ws.join(path);
+    #[allow(clippy::permissions_set_readonly_false)]
+    {
+        let mut perms = std::fs::metadata(&target).unwrap().permissions();
+        perms.set_readonly(false);
+        std::fs::set_permissions(&target, perms).unwrap();
+    }
+    std::fs::remove_file(&target).unwrap();
+    env.ok(ws, user, &["add", path]);
+    env.ok(ws, user, &["commit", "-m", message]);
+}
+
 #[test]
-fn a_deletion_is_refused_before_anything_is_sent() {
+fn a_local_deletion_of_a_shared_path_is_pushed() {
     let (env, ws) = seeded();
     let before = server_commits(&env, &ws);
-    std::fs::remove_file(ws.join("Source/b.cpp")).unwrap();
-    env.ok(&ws, "alice", &["add", "Source/b.cpp"]);
-    env.ok(&ws, "alice", &["commit", "-m", "drop"]);
+    delete_local(&env, &ws, "alice", "Source/b.cpp", "drop");
+    let local = git(&ws, &["rev-parse", "main"]);
+    env.ok(&ws, "alice", &["push"]);
+
+    assert_eq!(server_commits(&env, &ws), before + 1);
+    assert_eq!(server_head(&env, &ws), &local[..10]);
+    let status = env.ok(&ws, "alice", &["status"]);
+    assert!(!status.contains("local commit"), "{status}");
+    assert!(!ws.join("Source/b.cpp").exists());
+    let other = clone_with(&env, "other", &[]);
+    assert!(!other.join("Source/b.cpp").exists());
+    assert!(other.join("Source/a.cpp").exists());
+    assert_eq!(env.ok(&ws, "alice", &["push"]), "Everything up-to-date\n");
+}
+
+#[test]
+fn a_local_deletion_of_an_exclusive_path_needs_a_live_lock() {
+    let (env, ws) = seeded();
+    env.ok(&ws, "alice", &["lock", "Content/m.umap"]);
+    delete_local(&env, &ws, "alice", "Content/m.umap", "drop the map");
+    env.ok(&ws, "alice", &["unlock", "Content/m.umap"]);
+    let before = server_commits(&env, &ws);
+
+    let err = env.fails(&ws, "alice", &["push"]);
+    assert!(err.contains("lock required"), "{err}");
+    assert!(err.contains("nothing was pushed"), "{err}");
+    assert_eq!(server_commits(&env, &ws), before);
+
+    let other = clone_with(&env, "other", &[]);
+    env.ok(&other, "bob", &["lock", "Content/m.umap"]);
+    let err = env.fails(&ws, "alice", &["push"]);
+    assert!(err.contains("locked by someone else"), "{err}");
+    env.ok(&other, "bob", &["unlock", "Content/m.umap"]);
+
+    env.ok(&ws, "alice", &["lock", "Content/m.umap", "--base", "1"]);
+    env.ok(&ws, "alice", &["push"]);
+    assert_eq!(server_commits(&env, &ws), before + 1);
+    assert!(
+        !clone_with(&env, "third", &[])
+            .join("Content/m.umap")
+            .exists()
+    );
+}
+
+const POLICY: &str =
+    "[meta]\ndefault = \"shared\"\n[exclusive]\npaths = [\"Content/\", \"Source/b.cpp\"]\n";
+
+#[test]
+fn a_valid_policy_commit_is_pushed_and_then_enforced() {
+    let (env, ws) = seeded();
+    commit_local(&env, &ws, "alice", ".pyn/pyn.toml", POLICY, "policy");
+    let out = env.ok(&ws, "alice", &["push"]);
+    assert!(out.contains("main -> main"), "{out}");
+    assert!(!env.ok(&ws, "alice", &["status"]).contains("local commit"));
+
+    // Source/b.cpp is exclusive now: an edit pushed without the lock is refused.
+    env.ok(&ws, "alice", &["update"]);
+    env.ok(&ws, "alice", &["lock", "Source/b.cpp"]);
+    commit_local(&env, &ws, "alice", "Source/b.cpp", "bee2", "edit b");
+    env.ok(&ws, "alice", &["unlock", "Source/b.cpp"]);
+    let err = env.fails(&ws, "alice", &["push"]);
+    assert!(err.contains("lock required"), "{err}");
+}
+
+#[test]
+fn a_push_with_a_policy_commit_prints_the_versions_it_strands() {
+    let (env, ws) = seeded();
+    let other = clone_with(&env, "other", &["--local-store"]);
+    env.ok(&other, "bob", &["branch", "feature"]);
+    env.ok(&other, "bob", &["switch", "feature"]);
+    env.ok(&other, "bob", &["update"]);
+    commit_local(
+        &env,
+        &other,
+        "bob",
+        "Source/b.cpp",
+        "feature bee",
+        "feature",
+    );
+    env.ok(&other, "bob", &["push"]);
+
+    commit_local(&env, &ws, "alice", ".pyn/pyn.toml", POLICY, "policy");
+    let out = env.ok(&ws, "alice", &["push"]);
+    assert!(
+        out.contains("feature") && out.contains("Source/b.cpp"),
+        "{out}"
+    );
+    assert!(out.contains("can no longer merge"), "{out}");
+}
+
+#[test]
+fn an_invalid_policy_is_refused_whole_with_nothing_pushed() {
+    let (env, ws) = seeded();
+    let before = server_commits(&env, &ws);
+    commit_local(&env, &ws, "alice", "Source/new.cpp", "fresh", "add");
+    commit_local(
+        &env,
+        &ws,
+        "alice",
+        ".pyn/pyn.toml",
+        "this is not [valid toml",
+        "bad policy",
+    );
     let err = env.fails(&ws, "alice", &["push"]);
     assert!(
-        err.contains("deletes Source/b.cpp") && err.contains("not supported yet"),
+        err.contains("[rejected]") && err.contains("invalid policy"),
         "{err}"
     );
+    assert!(err.contains("nothing was pushed"), "{err}");
     assert_eq!(server_commits(&env, &ws), before);
+    assert_eq!(
+        git(&ws, &["rev-parse", "origin/main"]),
+        git(&ws, &["rev-parse", "main~2"]),
+    );
+}
+
+#[test]
+fn a_policy_commit_from_someone_without_the_policy_permission_is_refused() {
+    let env = common::start_with_accounts(&["alice", "bob"]);
+    let home = env.dir("home");
+    env.ok(&home, "alice", &["repo", "create", "game"]);
+    env.ok(
+        &home,
+        "alice",
+        &["member", "set", "bob", "writer", "--repo", "alice/game"],
+    );
+    let token = env.ok(
+        &home,
+        "bob",
+        &[
+            "token",
+            "create",
+            "narrow",
+            "--permissions",
+            "read,lock,checkin",
+            "--repos",
+            "alice/game",
+        ],
+    );
+    let token = token.trim();
+    let run = |ws: &Path, args: &[&str]| env.run_with_token(ws, token, args);
+    let source = env.source("alice/game");
+    let ws = env.dir("bobws");
+    let cloned = run(
+        &home,
+        &[
+            "clone",
+            "--local-store",
+            source.as_str(),
+            ws.to_str().unwrap(),
+        ],
+    );
+    assert!(cloned.status.success(), "{cloned:?}");
+    let ws = ws.canonicalize().unwrap();
+    let out = run(&ws, &["lock", ".pyn/pyn.toml"]);
+    assert!(out.status.success(), "{out:?}");
+    let target = ws.join(".pyn/pyn.toml");
+    #[allow(clippy::permissions_set_readonly_false)]
+    {
+        let mut perms = std::fs::metadata(&target).unwrap().permissions();
+        perms.set_readonly(false);
+        std::fs::set_permissions(&target, perms).unwrap();
+    }
+    std::fs::write(&target, POLICY).unwrap();
+    for args in [vec!["add", ".pyn/pyn.toml"], vec!["commit", "-m", "policy"]] {
+        let out = run(&ws, &args);
+        assert!(out.status.success(), "{args:?}: {out:?}");
+    }
+    let count = |ws: &Path| {
+        String::from_utf8_lossy(&run(ws, &["log", "--commits"]).stdout)
+            .lines()
+            .count()
+    };
+    let before = count(&ws);
+    let pushed = run(&ws, &["push"]);
+    assert!(!pushed.status.success());
+    let err = String::from_utf8_lossy(&pushed.stderr);
+    assert!(
+        err.contains("[rejected]") && err.contains("forbidden"),
+        "{err}"
+    );
+    assert!(err.contains("nothing was pushed"), "{err}");
+    assert_eq!(count(&ws), before, "nothing reached the server");
 }
 
 #[test]

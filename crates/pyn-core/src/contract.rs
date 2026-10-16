@@ -41,6 +41,8 @@ mod branch_policy;
 pub use branch_policy::*;
 mod push;
 pub use push::*;
+mod push_changes;
+pub use push_changes::*;
 mod fetch;
 pub use fetch::*;
 mod deletion;
@@ -3201,6 +3203,16 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_merge_commit_arrives_after_both_parents_with_the_pointers_it_adopted);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_fetch_names_branches_or_takes_all_and_refuses_an_unknown_one);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_fetch_refuses_a_bad_cursor_and_too_many_haves);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_push_deletes_shared_paths_and_whole_folders);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_file_turned_into_a_folder_or_back_deletes_and_adds);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; deleting_an_exclusive_path_in_a_push_needs_the_pushers_live_lock);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_policy_commit_on_the_default_branch_is_validated_and_applied);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_policy_commit_changes_the_rules_for_the_commits_after_it);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; an_invalid_policy_refuses_the_whole_push);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; changing_the_policy_in_a_push_needs_the_policy_permission);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; the_policy_file_cannot_be_deleted_by_a_push_to_the_default_branch);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_push_reports_the_versions_its_policy_strands);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_policy_file_pushed_to_another_branch_is_just_a_file);
     };
     (@one $factory:expr; [$(#[$attr:meta])*]; $name:ident) => {
         #[tokio::test(flavor = "multi_thread")]

@@ -11,7 +11,7 @@ use pyn_proto as api;
 
 use crate::{
     ApiResult, AppState, FileContent, RepoAddress, authorize_read, authorize_repo, branch_of,
-    parse_object_id, parse_range, range_not_satisfiable, revision_dto,
+    parse_object_id, parse_range, range_not_satisfiable, revision_dto, stranded_dto,
 };
 
 /// The largest push body: the encoded commits and trees, never file content.
@@ -33,10 +33,10 @@ fn decode(objects: Vec<api::PushObject>) -> Result<Vec<(ObjectId, Vec<u8>)>, Pyn
 #[utoipa::path(post, path = "/v1/repos/{owner}/{name}/push", params(RepoAddress), request_body = api::PushRequest, responses(
     (status = 200, body = api::PushResponse),
     (status = 409, body = api::ErrorBody, description = "not_fast_forward when the first commit is not a child of the branch's head (or a racing push won); lock_required or lock_held for an exclusive path the pusher does not hold a live lock on; stale_base; storage_limit_reached"),
-    (status = 400, body = api::ErrorBody, description = "push_invalid for an id that does not match its bytes, bytes that are not a git object, a missing tree or a commit already stored; object_missing for a blob that was not uploaded; invalid_request for an empty push or bad base64"),
-    (status = 422, body = api::ErrorBody, description = "push_unsupported: a merge commit, a deletion, a submodule, an empty commit, or a change to the policy file"),
+    (status = 400, body = api::ErrorBody, description = "push_invalid for an id that does not match its bytes, bytes that are not a git object, a missing tree or a commit already stored; object_missing for a blob that was not uploaded; invalid_request for an empty push or bad base64; invalid_rules for a policy file on the default branch that does not validate"),
+    (status = 422, body = api::ErrorBody, description = "push_unsupported: a merge commit, a submodule, an empty commit, or the removal of the policy file from the default branch"),
     (status = 404, body = api::ErrorBody, description = "branch_not_found or commit_not_found for an unknown parent"),
-    (status = 403, body = api::ErrorBody, description = "forbidden without the checkin permission"),
+    (status = 403, body = api::ErrorBody, description = "forbidden without the checkin permission, or without the policy permission for a commit that changes the policy file on the default branch"),
 ))]
 pub(crate) async fn push(
     State(s): State<AppState>,
@@ -51,7 +51,10 @@ pub(crate) async fn push(
         commits: decode(req.commits)?,
         trees: decode(req.trees)?,
     };
-    let revisions = repo.service.push_commits(&who, branch, objects).await?;
+    let pushed = repo
+        .service
+        .push_commits_recorded(&who, branch, objects)
+        .await?;
     let head = repo
         .service
         .head_of(branch)
@@ -60,7 +63,8 @@ pub(crate) async fn push(
     Ok(Json(api::PushResponse {
         branch: branch.to_string(),
         head: head.to_hex(),
-        revisions: revisions.into_iter().map(revision_dto).collect(),
+        revisions: pushed.revisions.into_iter().map(revision_dto).collect(),
+        stranded: pushed.stranded.into_iter().map(stranded_dto).collect(),
     }))
 }
 

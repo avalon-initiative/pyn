@@ -19,10 +19,9 @@ use crate::local_commit::signature;
 use crate::local_store::{ALGORITHM, LocalStore, build_trees, parse_id};
 use crate::snapshot::short;
 use crate::staging::Index;
+use crate::stranded;
 use crate::workspace::{Workspace, hash_of, set_read_only};
 use crate::{localfile, merging, sync};
-
-const POLICY_FILE: &str = ".pyn/pyn.toml";
 
 /// A refusal reported the way git reports one: the message, then exit status 1.
 #[derive(Debug)]
@@ -259,19 +258,8 @@ impl LocalStore {
             {
                 let path = String::from_utf8_lossy(&change.path).into_owned();
                 let Some(entry) = change.new else {
-                    return Err(Rejected(format!(
-                        "commit {} deletes {path}; pushing a deletion is not supported yet, so nothing was pushed",
-                        short(&id.to_hex())
-                    ))
-                    .into());
+                    continue;
                 };
-                if path == POLICY_FILE {
-                    return Err(Rejected(format!(
-                        "commit {} changes {POLICY_FILE}; pushing a policy change is not supported yet, so nothing was pushed",
-                        short(&id.to_hex())
-                    ))
-                    .into());
-                }
                 if entry.mode == FileMode::Gitlink {
                     bail!("{path} is a submodule entry, which pyn does not support");
                 }
@@ -602,7 +590,7 @@ pub fn explain_push(err: anyhow::Error, branch: &str) -> anyhow::Error {
         ),
         "push_unsupported" => (
             format!(" ! [rejected]        {branch} -> {branch} (not supported yet)"),
-            "The server does not accept this kind of commit yet.",
+            "The server does not accept this kind of commit yet, for example a merge commit.",
         ),
         "storage_limit_reached" => (
             format!(" ! [rejected]        {branch} -> {branch} (storage limit)"),
@@ -610,7 +598,12 @@ pub fn explain_push(err: anyhow::Error, branch: &str) -> anyhow::Error {
         ),
         "forbidden" => (
             format!(" ! [rejected]        {branch} -> {branch} (forbidden)"),
-            "You need the checkin permission on this repository.",
+            "You need the checkin permission on this repository, and the policy permission to change `.pyn/pyn.toml` on the default branch.",
+        ),
+        "invalid_rules" => (
+            format!(" ! [rejected]        {branch} -> {branch} (invalid policy)"),
+            "The policy file in your commits does not validate.\n\
+             hint: Fix `.pyn/pyn.toml`, amend or add a commit, and push again.",
         ),
         _ => return err,
     };
@@ -667,18 +660,33 @@ pub fn push(backend: &dyn Backend, ws: &Workspace) -> Result<()> {
             trees: trees.iter().map(|(id, body)| encode(id, body)).collect(),
         })
         .map_err(|e| explain_push(e, &branch))?;
-    let head = parse_id(&response.head)?;
-    if head != tip {
+    let mut head = parse_id(&response.head)?;
+    // A policy commit can make the server add conversion commits on top; `fetch` brings them in.
+    let policy_pushed = response.revisions.iter().any(|r| r.path == ".pyn/pyn.toml");
+    if head != tip && !policy_pushed {
         bail!("the server's head {head} is not the pushed commit {tip}");
     }
+    head = tip;
     store.repo().refs().update(&tracking_ref(&branch), &head)?;
     let mut last: Vec<&api::Revision> = Vec::new();
     for rev in &response.revisions {
         last.retain(|r| r.path != rev.path);
         last.push(rev);
     }
+    let mut gone = Vec::new();
     for rev in last {
-        sync::after_commit(backend, ws, &rev.path, rev.id, &rev.content, rev.file_mode)?;
+        if rev.deleted {
+            gone.push(rev.path.as_str());
+        } else {
+            sync::after_commit(backend, ws, &rev.path, rev.id, &rev.content, rev.file_mode)?;
+        }
+    }
+    if !gone.is_empty() {
+        let mut state = ws.load_state()?;
+        for path in gone {
+            state.remove(path);
+        }
+        ws.save_state(&state)?;
     }
     let api = backend.pyn_server("push")?;
     println!(
@@ -690,6 +698,10 @@ pub fn push(backend: &dyn Backend, ws: &Workspace) -> Result<()> {
         "   {}..{}  {branch} -> {branch}",
         published.map_or_else(|| "0000000".to_string(), |p| short(&p.to_hex()).to_string()),
         short(&head.to_hex())
+    );
+    stranded::print(
+        "The policy change left shared versions on other branches that can no longer merge:",
+        &response.stranded,
     );
     Ok(())
 }

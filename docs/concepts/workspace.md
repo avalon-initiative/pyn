@@ -260,8 +260,8 @@ Slice #337 of the same move. With the setting on, `pyn fetch` stores the server'
 against its id) and moves `refs/remotes/origin/<branch>`; `pyn pull` is a fetch and then a fast-forward or a replay of the
 local commits onto the fetched tip; `pyn push` uploads the blobs and publishes the local commits in one request, after
 which none of them is unpublished. Details, output and the refusals are in
-[commits](commits.md#fetch-pull-and-push-with-a-local-store). Pushing deletions and policy changes (#339) and merge commits
-(#338) is not built yet and is refused cleanly.
+[commits](commits.md#fetch-pull-and-push-with-a-local-store). Deletions and policy-file commits are pushed like any other
+commit; pushing merge commits (#338) is not built yet and is refused cleanly.
 
 ## The user configuration file
 

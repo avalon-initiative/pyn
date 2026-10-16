@@ -440,35 +440,6 @@ pub async fn a_push_refuses_what_it_cannot_record(store: Store) {
         .await
         .unwrap();
 
-    let mut with_policy = files.clone();
-    set(&mut with_policy, ".pyn/pyn.toml", y);
-    refused(
-        &h,
-        "policy file",
-        &[&build(&with_policy, Some(base.id), "policy", 2)],
-    )
-    .await;
-
-    let mut deleted = files.clone();
-    deleted.remove("Source/b.cpp");
-    set(&mut deleted, "Source/c.cpp", y);
-    refused(
-        &h,
-        "deletion",
-        &[&build(&deleted, Some(base.id), "delete", 2)],
-    )
-    .await;
-
-    let mut folder = files.clone();
-    folder.remove("Source/b.cpp");
-    set(&mut folder, "Source/b.cpp/inner", y);
-    refused(
-        &h,
-        "a file turned folder",
-        &[&build(&folder, Some(base.id), "folder", 2)],
-    )
-    .await;
-
     refused(
         &h,
         "empty commit",
