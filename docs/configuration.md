@@ -12,7 +12,7 @@ keep needs at least `PYN_DATABASE_URL` and `PYN_DATA_DIR`.
 | `PYN_CONFIG` | Fallback policy for repositories that have no `.pyn/pyn.toml` yet; unset means everything is exclusive (`make dev` uses `scripts/demo.pyn.toml`) |
 | `PYN_ADDR` | Listen address, default `127.0.0.1:7878` |
 | `PYN_DEV_AUTH` | `true` accepts the `X-Pyn-User` header with every permission; for server tests only, not used by `make dev` |
-| `PYN_SETUP_TOKEN` | The one-time token that authorises first-run setup, at least 16 characters; unset, the server generates one and prints it to its log. Ignored once the server is set up |
+| `PYN_SETUP_TOKEN` | The one-time token that authorises first-run setup, at least 16 characters; unset, the server generates one and prints it on standard error at start. Ignored once the server is set up |
 | `PYN_TOKEN` | Token the CLI signs in with, instead of the sign-in saved by `pyn login` (`PYN_USER` with `PYN_DEV_AUTH`). Preferred over `--token`, whose value shows in the process list. The CLI warns on standard error when it sends a token or password over `http://` to a host that is not loopback |
 | `PYN_REGISTRATION` | `invite` (default), `open` or `closed`: how people create accounts; the choice made in first-run setup replaces it |
 | `PYN_ORG_CREATION` | `anyone` (default) or `admins`: who may create organizations; `admins` limits it to server administrators |
@@ -21,8 +21,9 @@ keep needs at least `PYN_DATABASE_URL` and `PYN_DATA_DIR`.
 | `PYN_OIDC_ISSUER`, `PYN_OIDC_CLIENT_ID`, `PYN_OIDC_CLIENT_SECRET` | Optional sign-in with an OpenID Connect provider; unset (the norm) means password only. See [external sign-in](concepts/external-sign-in.md), which also covers `PYN_OIDC_NAME`, `PYN_OIDC_USERNAME_CLAIM`, `PYN_OIDC_CREATE_ACCOUNTS`, `PYN_OIDC_REDIRECT_URL` and `PYN_PASSWORD_SIGN_IN` |
 | `PYN_EMAIL_VERIFICATION` | On unless `false`: open sign-up needs an email address and the account stays inactive until its link is followed |
 | `PYN_REQUIRE_APPROVAL` | `true` holds new open sign-ups until a server administrator approves them |
-| `PYN_PUBLIC_URL` | Where the web app lives, for links in emails; default `http://<PYN_ADDR>`; the address given in first-run setup replaces it |
-| `PYN_EMAIL` | How email is sent; only `log` (writes messages to the server log) exists |
+| `PYN_PUBLIC_URL` | Where the web app lives, for links in emails and the `Secure` flag of cookies (an `https://` address sets it); default `http://<PYN_ADDR>`; the address given in first-run setup replaces it |
+| `PYN_EMAIL` | How email is sent; only `log` (notes that a message was queued, without its body) exists |
+| `PYN_EMAIL_LOG_BODIES` | `true` also logs each message body, links included; for local development only, the server warns at startup |
 | `PYN_RATE_SIGN_IN_ACCOUNT`, `PYN_RATE_SIGN_IN_CLIENT`, `PYN_RATE_REGISTER_CLIENT`, `PYN_RATE_MAIL_PER_EMAIL` | Rate limits, defaults 5, 30, 10 and 3; see [access](concepts/access.md#protecting-open-registration) |
 | `PYN_TRUST_FORWARDED_FOR` | `true` takes the client address from the last `X-Forwarded-For` entry; only behind a proxy that sets it |
 | `PYN_PASSWORD_HASHES` | Most password hashes at once, default the number of CPUs |
