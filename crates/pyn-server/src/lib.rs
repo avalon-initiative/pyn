@@ -928,7 +928,7 @@ async fn release(
 ) -> ApiResult<StatusCode> {
     let (repo, who) = authorize_repo(&s, &headers, &owner, &name, Some(Permission::Lock)).await?;
     repo.service
-        .release(&RepoPath::new(req.path)?, &who.user)
+        .release(&RepoPath::from_stored(req.path)?, &who.user)
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1229,7 +1229,7 @@ async fn history(
         }
         let revs = repo
             .service
-            .history_on(branch_of(q.branch.as_deref()), &RepoPath::new(path)?)
+            .history_on(branch_of(q.branch.as_deref()), &RepoPath::from_stored(path)?)
             .await?;
         return Ok(Json(api::HistoryPage {
             revisions: revs.into_iter().map(revision_dto).collect(),
@@ -1273,7 +1273,7 @@ async fn verify(
     let who = identify_optional(&s, &headers).await?;
     let (repo, principal) = open_visible(&s, who.as_ref(), &owner, &name).await?;
     principal.require(Permission::Read)?;
-    let path = q.path.map(RepoPath::new).transpose()?;
+    let path = q.path.map(RepoPath::from_stored).transpose()?;
     let report = repo
         .service
         .verify(path.as_ref(), principal.has(Permission::ViewAudit))
@@ -1375,7 +1375,7 @@ async fn snapshot(
 ) -> ApiResult<Json<api::SnapshotPage>> {
     let repo = authorize_read(&s, &headers, &owner, &name).await?;
     let limit = q.limit.unwrap_or(200).clamp(1, 1000);
-    let after = q.after.map(RepoPath::new).transpose()?;
+    let after = q.after.map(RepoPath::from_stored).transpose()?;
     let snap = match (q.commit, q.branch) {
         (Some(_), Some(_)) => {
             return Err(
@@ -1445,7 +1445,7 @@ async fn list_files(
 ) -> ApiResult<Json<api::FilePage>> {
     let repo = authorize_read(&s, &headers, &owner, &name).await?;
     let limit = q.limit.unwrap_or(200).clamp(1, 1000);
-    let after = q.after.map(RepoPath::new).transpose()?;
+    let after = q.after.map(RepoPath::from_stored).transpose()?;
     let mut files = repo
         .service
         .files_on(branch_of(q.branch.as_deref()), after.as_ref(), limit + 1)
@@ -1493,7 +1493,7 @@ async fn tree(
     let raw = q.path.unwrap_or_default();
     let trimmed = raw.trim_end_matches('/');
     let dir = (!trimmed.is_empty())
-        .then(|| RepoPath::new(trimmed))
+        .then(|| RepoPath::from_stored(trimmed))
         .transpose()?;
     let entries = repo
         .service
@@ -1602,7 +1602,7 @@ async fn get_content(
     Query(q): Query<ContentQuery>,
 ) -> ApiResult<Response> {
     let repo = authorize_read(&s, &headers, &owner, &name).await?;
-    let path = RepoPath::new(q.path)?;
+    let path = RepoPath::from_stored(q.path)?;
     let branch = branch_of(q.branch.as_deref());
     let revision = q.revision.map(RevisionId);
     let wanted = headers
@@ -1733,7 +1733,7 @@ async fn force_unlock(
     let actor = who.user;
     let lock = repo
         .service
-        .force_unlock(&RepoPath::new(req.path)?, &actor, &req.reason)
+        .force_unlock(&RepoPath::from_stored(req.path)?, &actor, &req.reason)
         .await?;
     Ok(Json(lock_dto(lock)))
 }
@@ -1786,7 +1786,7 @@ async fn audit(
         authorize_repo(&s, &headers, &owner, &name, Some(Permission::ViewAudit)).await?;
     let limit = q.limit.unwrap_or(50).clamp(1, 500);
     let query = AuditQuery {
-        path: q.path.map(RepoPath::new).transpose()?,
+        path: q.path.map(RepoPath::from_stored).transpose()?,
         actor: q.actor.map(pyn_core::UserId::new),
         action: q.action.map(|a| a.parse::<AuditAction>()).transpose()?,
         before: q.before,

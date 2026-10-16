@@ -56,7 +56,7 @@ impl PgMetadataStore {
                 let mut changes = Vec::new();
                 for (path, content) in &g.changes {
                     changes.push(TreeChange {
-                        path: RepoPath::new(path.clone())?,
+                        path: RepoPath::from_stored(path.clone())?,
                         mode: FileMode::Regular,
                         id: object_id(content, "revision content id")?,
                         removed: false,

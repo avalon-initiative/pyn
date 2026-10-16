@@ -85,7 +85,7 @@ pub(crate) async fn backfill(pool: &PgPool) -> Result<()> {
                         action: AuditAction::from_str(r.get("action"))?,
                         path: r
                             .get::<Option<String>, _>("path")
-                            .map(RepoPath::new)
+                            .map(RepoPath::from_stored)
                             .transpose()?,
                         detail: r.get("detail"),
                         previous: previous.clone(),

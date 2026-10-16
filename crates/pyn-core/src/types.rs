@@ -36,25 +36,57 @@ string_id!(
     RevisionHash
 );
 
+/// Longest accepted path, in bytes.
+pub const MAX_PATH_BYTES: usize = 4096;
+/// Longest accepted path component, in bytes.
+pub const MAX_PATH_COMPONENT_BYTES: usize = 255;
+/// Reserved workspace prefix for machine-local state; never a repository path.
+pub const LOCAL_ONLY_PREFIX: &str = ".pyn/local_only";
+
 /// Repo-relative `/`-separated path; rejects absolute, `.`/`..` and backslash forms.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct RepoPath(String);
 
+fn structurally_valid(s: &str) -> bool {
+    !(s.is_empty()
+        || s.starts_with('/')
+        || s.ends_with('/')
+        || s.contains('\\')
+        || s.contains('\0')
+        || s.split('/')
+            .any(|seg| seg.is_empty() || seg == "." || seg == ".."))
+}
+
 impl RepoPath {
+    /// A path for a new write: structural rules plus length, control character and reserved-name limits.
     pub fn new(s: impl Into<String>) -> Result<Self> {
         let s = s.into();
-        let bad = s.is_empty()
-            || s.starts_with('/')
-            || s.ends_with('/')
-            || s.contains('\\')
-            || s.contains('\0')
-            || s.split('/')
-                .any(|seg| seg.is_empty() || seg == "." || seg == "..");
+        let local_only = s.len() >= LOCAL_ONLY_PREFIX.len()
+            && s.is_char_boundary(LOCAL_ONLY_PREFIX.len())
+            && s[..LOCAL_ONLY_PREFIX.len()].eq_ignore_ascii_case(LOCAL_ONLY_PREFIX)
+            && matches!(s.as_bytes().get(LOCAL_ONLY_PREFIX.len()), None | Some(b'/'));
+        let bad = !structurally_valid(&s)
+            || s.len() > MAX_PATH_BYTES
+            || s.chars().any(char::is_control)
+            || s.split('/').any(|seg| {
+                seg.len() > MAX_PATH_COMPONENT_BYTES || seg.eq_ignore_ascii_case(".git")
+            })
+            || local_only;
         if bad {
             Err(PynError::InvalidPath(s))
         } else {
             Ok(Self(s))
+        }
+    }
+
+    /// A path read back from existing data or used to look one up: only the structural rules apply.
+    pub fn from_stored(s: impl Into<String>) -> Result<Self> {
+        let s = s.into();
+        if structurally_valid(&s) {
+            Ok(Self(s))
+        } else {
+            Err(PynError::InvalidPath(s))
         }
     }
     pub fn as_str(&self) -> &str {
@@ -65,7 +97,7 @@ impl RepoPath {
 impl TryFrom<String> for RepoPath {
     type Error = PynError;
     fn try_from(s: String) -> Result<Self> {
-        Self::new(s)
+        Self::from_stored(s)
     }
 }
 
@@ -252,5 +284,48 @@ mod tests {
             assert!(RepoPath::new(bad).is_err(), "{bad:?} should be rejected");
         }
         assert!(RepoPath::new("Content/World/Main.umap").is_ok());
+    }
+
+    #[test]
+    fn new_writes_reject_reserved_and_oversized_paths() {
+        let long_component = "a".repeat(256);
+        let long_path = vec!["a".repeat(200); 21].join("/");
+        for bad in [
+            ".git",
+            ".GIT/config",
+            "a/.Git/b",
+            "a/.git",
+            ".pyn/local_only",
+            ".pyn/LOCAL_ONLY/state",
+            "a\u{1}b",
+            "a\u{7f}b",
+            "a\u{85}b",
+            "a\nb",
+            long_component.as_str(),
+            long_path.as_str(),
+        ] {
+            assert!(RepoPath::new(bad).is_err(), "{bad:?} should be rejected");
+        }
+        for ok in [
+            ".pyn/pyn.toml",
+            ".pyn/ignore",
+            ".pyn/local_only_notes",
+            ".gitignore",
+            ".github/ci.yml",
+            "a.git/b",
+        ] {
+            assert!(RepoPath::new(ok).is_ok(), "{ok:?} should be accepted");
+        }
+        assert!(RepoPath::new("a".repeat(255)).is_ok());
+    }
+
+    #[test]
+    fn stored_paths_keep_reading() {
+        assert!(RepoPath::from_stored(".git/config").is_ok());
+        assert!(RepoPath::from_stored("a/../b").is_err());
+        assert_eq!(
+            RepoPath::try_from(".git/x".to_string()).unwrap().as_str(),
+            ".git/x"
+        );
     }
 }

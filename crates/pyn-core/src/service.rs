@@ -1207,7 +1207,7 @@ impl RepoService {
             let mode = rules.mode_for(path);
             match children.entry((kind, name.to_string())) {
                 std::collections::btree_map::Entry::Vacant(v) => {
-                    let child = RepoPath::new(format!("{prefix}{name}"))?;
+                    let child = RepoPath::from_stored(format!("{prefix}{name}"))?;
                     v.insert(TreeEntry {
                         name: name.to_string(),
                         path: child,

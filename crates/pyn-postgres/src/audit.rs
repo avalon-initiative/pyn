@@ -74,7 +74,7 @@ impl AuditStore for PgMetadataStore {
                     action: AuditAction::from_str(r.get("action"))?,
                     path: r
                         .get::<Option<String>, _>("path")
-                        .map(RepoPath::new)
+                        .map(RepoPath::from_stored)
                         .transpose()?,
                     detail: r.get("detail"),
                     hash: r.get::<Option<String>, _>("hash").unwrap_or_default(),

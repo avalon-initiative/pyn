@@ -53,7 +53,7 @@ fn db(e: sqlx::Error) -> PynError {
 
 fn lock_from(row: &PgRow) -> Result<Lock> {
     Ok(Lock {
-        path: RepoPath::new(row.get::<String, _>("path"))?,
+        path: RepoPath::from_stored(row.get::<String, _>("path"))?,
         owner: UserId::new(row.get::<String, _>("owner")),
         acquired_at: row.get("acquired_at"),
         expires_at: row.get("expires_at"),
@@ -108,7 +108,7 @@ fn revision_from(row: &PgRow) -> Result<Revision> {
         });
     Ok(Revision {
         id: RevisionId(row.get::<i64, _>("id") as u64),
-        path: RepoPath::new(row.get::<String, _>("path"))?,
+        path: RepoPath::from_stored(row.get::<String, _>("path"))?,
         content: ObjectId::from_hex(REPO_ALGORITHM, &row.get::<String, _>("content"))
             .map_err(|e| PynError::Storage(format!("revision content id: {e}")))?,
         legacy_content: row.get("content_v1"),
@@ -1155,13 +1155,13 @@ impl MetadataStore for PgMetadataStore {
                     let owner: String = r.get("owner");
                     if owner != pusher.as_str() {
                         return Err(PynError::LockHeld {
-                            path: RepoPath::new(path.clone())?,
+                            path: RepoPath::from_stored(path.clone())?,
                             owner: UserId::new(owner),
                             expires_at: r.get("expires_at"),
                         });
                     }
                 }
-                _ => return Err(PynError::LockRequired(RepoPath::new(path.clone())?)),
+                _ => return Err(PynError::LockRequired(RepoPath::from_stored(path.clone())?)),
             }
         }
 

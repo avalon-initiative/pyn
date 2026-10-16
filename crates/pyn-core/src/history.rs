@@ -45,7 +45,7 @@ impl HistoryCursor {
                 .map_err(|_| bad())?
                 .with_timezone(&Utc),
             id: RevisionId(id.parse().map_err(|_| bad())?),
-            path: RepoPath::new(path).map_err(|_| bad())?,
+            path: RepoPath::from_stored(path).map_err(|_| bad())?,
         })
     }
 }
