@@ -47,6 +47,8 @@ mod fetch;
 pub use fetch::*;
 mod deletion;
 pub use deletion::*;
+mod push_merge;
+pub use push_merge::*;
 
 struct Harness {
     store: Store,
@@ -3188,6 +3190,15 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; deleting_an_exclusive_path_needs_the_callers_live_lock_and_consumes_it);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_deleted_exclusive_path_comes_back_by_restoring_an_earlier_revision);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_deleted_shared_path_can_be_added_again);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_pushed_merge_adopts_the_other_sides_pointers_without_a_lock);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_pushed_merge_of_text_changed_in_different_places_is_a_new_revision);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_pushed_merge_with_diverged_exclusive_pointers_needs_a_resolution_under_the_lock);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_diverged_exclusive_path_is_a_conflict_unless_the_pusher_holds_its_lock);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; the_other_branch_adopts_a_resolution_by_a_pushed_merge_without_a_lock);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_push_with_a_merge_must_still_contain_the_branch_head);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_pushed_merge_names_commits_the_server_has);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_pushed_merge_can_delete_a_path_and_is_one_commit_with_two_parents);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_policy_file_a_pushed_merge_adopts_applies_on_the_default_branch);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_path_that_is_not_there_cannot_be_deleted);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_deletion_is_judged_against_the_branchs_revision);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_changeset_mixes_writes_and_deletions_atomically);

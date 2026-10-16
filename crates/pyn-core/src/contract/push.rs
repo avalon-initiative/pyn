@@ -84,6 +84,18 @@ pub(super) fn build(files: &Files, parent: Option<ObjectId>, message: &str, n: i
     built_from(raw, tree.trees)
 }
 
+pub(super) fn build_merge(files: &Files, parents: Vec<ObjectId>, message: &str, n: i64) -> Built {
+    let tree = snapshot_tree(files);
+    let raw = commit_raw(
+        tree.root,
+        parents,
+        format!("{message}\n").as_bytes(),
+        T0 + n,
+        T0 + n,
+    );
+    built_from(raw, tree.trees)
+}
+
 pub(super) fn objects(parts: &[&Built]) -> PushObjects {
     PushObjects {
         commits: parts.iter().map(|b| (b.id, b.raw.clone())).collect(),
@@ -466,7 +478,7 @@ pub async fn a_push_refuses_what_it_cannot_record(store: Store) {
     );
     refused(
         &h,
-        "merge commit",
+        "merge commit with the same parent twice",
         &[&built_from(merge, tree.trees.clone())],
     )
     .await;

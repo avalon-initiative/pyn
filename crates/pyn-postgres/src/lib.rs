@@ -1073,6 +1073,9 @@ impl MetadataStore for PgMetadataStore {
                 }
             }
             if commit_known(&mut tx, repo, &c.record.id).await? {
+                if i == 0 {
+                    return Err(PynError::NotFastForward(branch.to_string()));
+                }
                 return Err(PynError::PushInvalid(format!(
                     "commit {} is already in the repository",
                     c.record.id

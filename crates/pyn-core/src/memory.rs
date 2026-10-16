@@ -292,6 +292,9 @@ impl State {
                 }
             }
             if self.commit_record(repo, &c.record.id).is_some() {
+                if i == 0 {
+                    return Err(PynError::NotFastForward(branch.to_string()));
+                }
                 return Err(PynError::PushInvalid(format!(
                     "commit {} is already in the repository",
                     c.record.id
