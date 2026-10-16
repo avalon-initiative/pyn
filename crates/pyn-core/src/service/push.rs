@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use pyn_object::{FileMode, Kind, ObjectId, TreeEntry, hash_object, parse_tree};
 
+use super::push_merge::Chain;
 use super::{DEFAULT_BRANCH, RepoService, changeset_id};
 use crate::access::{Permission, Principal};
 use crate::audit::AuditAction;
@@ -87,11 +88,24 @@ impl RepoService {
         let on_default = branch == DEFAULT_BRANCH;
         let policy_path = RepoPath::new(POLICY_PATH)?;
         let mut has_policy = on_default && self.pointer_on(branch, &policy_path).await?.is_some();
-        let mut policies = Vec::new();
-        let mut commits = Vec::with_capacity(objects.commits.len());
-        let mut previous: Option<Commit> = None;
+        let mut rules_id = match (on_default, self.head_of(branch).await?) {
+            (false, Some(head)) => self.policy_revision_at(&head).await?.map(|r| r.id),
+            _ => None,
+        };
+        let mut records = Vec::with_capacity(objects.commits.len());
         for (id, raw) in objects.commits {
-            let record = self.read_pushed_commit(id, raw)?;
+            records.push(self.read_pushed_commit(id, raw)?);
+        }
+        let mut chain = records
+            .iter()
+            .any(|r| r.parents.len() > 1)
+            .then(|| Chain::new(records[0].parents.first().copied()));
+        let mut policies = Vec::new();
+        let mut merges = Vec::new();
+        let mut arrivals = Vec::new();
+        let mut commits = Vec::with_capacity(records.len());
+        let mut previous: Option<Commit> = None;
+        for record in records {
             let parent_tree = match (&previous, record.parents.first()) {
                 (Some(prev), Some(parent)) if parent == &prev.id => Some(prev.tree),
                 (Some(_), _) => {
@@ -112,9 +126,49 @@ impl RepoService {
             let diff = self
                 .diff_pushed(parent_tree, record.tree, &pushed_trees)
                 .await?;
+            let mut adopted = Vec::new();
+            let mut arriving = None;
+            let mut changes = diff.changes;
+            if let (true, Some(chain)) = (record.parents.len() > 1, chain.as_mut()) {
+                if !on_default
+                    && let Some(theirs) = self.policy_revision_at(&record.parents[1]).await?
+                    && Some(theirs.id) > rules_id
+                {
+                    rules_id = Some(theirs.id);
+                    rules = self.rules_of(&theirs).await?;
+                }
+                let out = self
+                    .account_merge(who, chain, &record, &changes, &rules)
+                    .await?;
+                changes = out.news;
+                adopted = out.adopted;
+                merges.push((record.id, record.parents[1]));
+                if on_default && let Some(rev) = adopted.iter().find(|r| r.path == policy_path) {
+                    let parsed = self.check_policy_edit(who, &rev.content).await?;
+                    arrivals.push((record.id, rev.clone(), parsed.clone()));
+                    arriving = Some(parsed);
+                }
+            }
             let (items, policy) = self
-                .revisions_of(&record, &diff.changes, &rules, who, on_default, has_policy)
+                .revisions_of(
+                    &record,
+                    &changes,
+                    &rules,
+                    who,
+                    on_default,
+                    has_policy,
+                    record.parents.len() > 1,
+                )
                 .await?;
+            if record.parents.len() < 2
+                && let Some(chain) = chain.as_mut()
+            {
+                self.note_pushed(chain, &items).await?;
+            }
+            if let Some(rules_in) = arriving {
+                has_policy = true;
+                rules = Arc::new(rules_in);
+            }
             let mut unlocked = Vec::new();
             if let Some(new) = policy {
                 if !has_policy {
@@ -141,6 +195,7 @@ impl RepoService {
                 trees: diff.trees,
                 items,
                 unlocked,
+                adopted,
             });
         }
         let now = self.clock.now();
@@ -172,6 +227,19 @@ impl RepoService {
                 stranded.extend(self.policy_applied(who, rev, &old, &new).await?);
             }
         }
+        for (commit, other) in &merges {
+            self.record_repo(
+                &who.user,
+                AuditAction::BranchMerged,
+                format!("{other} into {branch} at {commit} (push)"),
+            )
+            .await?;
+        }
+        for (_, rev, new) in arrivals {
+            if let Some(old) = self.apply(rev.id, new.clone()) {
+                stranded.extend(self.policy_applied(who, &rev, &old, &new).await?);
+            }
+        }
         Ok(Pushed {
             revisions: revs,
             stranded,
@@ -187,9 +255,12 @@ impl RepoService {
         }
         let parsed = pyn_object::Commit::parse(REPO_ALGORITHM, &raw)
             .map_err(|e| invalid(format!("commit {id} is not a git commit: {e}")))?;
-        if parsed.parents.len() > 1 {
+        if parsed.parents.len() > 2
+            || parsed.parents.len() == 2 && parsed.parents[0] == parsed.parents[1]
+        {
             return Err(unsupported(format!(
-                "commit {id} is a merge commit; push merges are not supported yet"
+                "commit {id} has {} parents; a merge commit has two different ones",
+                parsed.parents.len()
             )));
         }
         let record = Commit::from_raw(REPO_ALGORITHM, raw, None)
@@ -320,8 +391,9 @@ impl RepoService {
         who: &Principal,
         on_default: bool,
         has_policy: bool,
+        merge: bool,
     ) -> Result<(Vec<NewRevision>, Option<Rules>)> {
-        if changes.is_empty() {
+        if changes.is_empty() && !merge {
             return Err(unsupported(format!(
                 "commit {} changes no file; empty commits are not supported yet",
                 record.id

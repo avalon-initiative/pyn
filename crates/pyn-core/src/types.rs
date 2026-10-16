@@ -230,6 +230,8 @@ pub struct PushedCommit {
     pub items: Vec<NewRevision>,
     /// Paths of `items` that need no lock although they are exclusive: the policy file's bootstrap.
     pub unlocked: Vec<RepoPath>,
+    /// For a merge commit: existing revisions the merge points paths at, taken from the second parent.
+    pub adopted: Vec<Revision>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

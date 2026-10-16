@@ -271,9 +271,25 @@ impl State {
         self.ensure_default_branch(repo, pusher, now);
         let head = self.branch(repo, branch)?.head;
         let mut tip = head;
-        for c in &commits {
-            if c.record.parents != tip.into_iter().collect::<Vec<_>>() {
+        for (i, c) in commits.iter().enumerate() {
+            let first = c.record.parents.first().copied();
+            let linked = match (i, head) {
+                (0, Some(h)) => {
+                    first.is_some_and(|p| p == h || self.ancestors(repo, &h).contains(&p))
+                }
+                (0, None) => first.is_none(),
+                _ => first == tip,
+            };
+            if !linked {
                 return Err(PynError::NotFastForward(branch.to_string()));
+            }
+            for other in c.record.parents.iter().skip(1) {
+                if self.commit_record(repo, other).is_none() {
+                    return Err(PynError::PushInvalid(format!(
+                        "commit {} merges {other}, which is not in the repository",
+                        c.record.id
+                    )));
+                }
             }
             if self.commit_record(repo, &c.record.id).is_some() {
                 return Err(PynError::PushInvalid(format!(
@@ -308,7 +324,8 @@ impl State {
             }
         }
 
-        let mut pointers = head.map_or_else(BTreeMap::new, |h| self.pointers_at(repo, &h));
+        let start = commits[0].record.parents.first().copied();
+        let mut pointers = start.map_or_else(BTreeMap::new, |p| self.pointers_at(repo, &p));
         let mut out = Vec::new();
         for (i, c) in commits.into_iter().enumerate() {
             let items = c
@@ -327,12 +344,21 @@ impl State {
                     self.locks.remove(&(repo.clone(), r.path.clone()));
                 }
             }
+            for r in &c.adopted {
+                pointers.insert(r.path.clone(), r.id);
+            }
+            let pointed: Vec<Revision> = c.adopted.iter().chain(&revs).cloned().collect();
             let draft = CommitDraft {
                 record: c.record,
                 trees: c.trees,
             };
-            self.append_commit(repo, branch, draft, &revs);
+            self.append_commit(repo, branch, draft, &pointed);
             out.extend(revs);
+        }
+        if let Some(h) = head
+            && !tip.is_some_and(|t| self.ancestors(repo, &t).contains(&h))
+        {
+            return Err(PynError::NotFastForward(branch.to_string()));
         }
         Ok(out)
     }

@@ -547,7 +547,7 @@ impl RepoService {
 
     /// Whether `rev` is `ancestor` or follows it: through the recorded bases, or because the commit that made `rev`
     /// has the one that made `ancestor` in its history (a merge's revision follows both sides).
-    async fn descends(&self, rev: &Revision, ancestor: &Revision) -> Result<bool> {
+    pub(super) async fn descends(&self, rev: &Revision, ancestor: &Revision) -> Result<bool> {
         let mut at = rev.clone();
         while let Some(base) = at.base {
             if base == ancestor.id {
@@ -569,7 +569,7 @@ impl RepoService {
     }
 
     /// Whether `rev` is a shared version the history ending at `other` does not contain.
-    async fn is_diverged(&self, rev: &Revision, other: &ObjectId) -> Result<bool> {
+    pub(super) async fn is_diverged(&self, rev: &Revision, other: &ObjectId) -> Result<bool> {
         Ok(rev.mode == Some(Mode::Shared)
             && !self
                 .meta

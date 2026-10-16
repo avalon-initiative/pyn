@@ -609,6 +609,36 @@ async fn pointers<'e, E: sqlx::Executor<'e, Database = Postgres>>(
     .map_err(db)
 }
 
+async fn commit_known(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    repo: &RepoId,
+    id: &ObjectId,
+) -> Result<bool> {
+    sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM commits WHERE repo = $1 AND id = $2)")
+        .bind(repo.as_str())
+        .bind(id.to_hex())
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(db)
+}
+
+async fn is_ancestor_in(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    repo: &RepoId,
+    ancestor: &ObjectId,
+    descendant: &ObjectId,
+) -> Result<bool> {
+    sqlx::query_scalar(AssertSqlSafe(format!(
+        "{ANCESTORS} SELECT EXISTS (SELECT 1 FROM anc WHERE id = $3)"
+    )))
+    .bind(descendant.to_hex())
+    .bind(repo.as_str())
+    .bind(ancestor.to_hex())
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(db)
+}
+
 fn is_unique_violation(e: &sqlx::Error) -> bool {
     matches!(e, sqlx::Error::Database(d) if d.code().as_deref() == Some(UNIQUE_VIOLATION))
 }
@@ -1021,19 +1051,28 @@ impl MetadataStore for PgMetadataStore {
             .map(|h| object_id(&h, "branch head"))
             .transpose()?;
         let mut tip = head;
-        for c in &commits {
-            if c.record.parents != tip.into_iter().collect::<Vec<_>>() {
+        for (i, c) in commits.iter().enumerate() {
+            let first = c.record.parents.first().copied();
+            let linked = match (i, head) {
+                (0, Some(h)) => match first {
+                    Some(p) => p == h || is_ancestor_in(&mut tx, repo, &p, &h).await?,
+                    None => false,
+                },
+                (0, None) => first.is_none(),
+                _ => first == tip,
+            };
+            if !linked {
                 return Err(PynError::NotFastForward(branch.to_string()));
             }
-            let known: bool = sqlx::query_scalar(
-                "SELECT EXISTS (SELECT 1 FROM commits WHERE repo = $1 AND id = $2)",
-            )
-            .bind(repo.as_str())
-            .bind(c.record.id.to_hex())
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(db)?;
-            if known {
+            for other in c.record.parents.iter().skip(1) {
+                if !commit_known(&mut tx, repo, other).await? {
+                    return Err(PynError::PushInvalid(format!(
+                        "commit {} merges {other}, which is not in the repository",
+                        c.record.id
+                    )));
+                }
+            }
+            if commit_known(&mut tx, repo, &c.record.id).await? {
                 return Err(PynError::PushInvalid(format!(
                     "commit {} is already in the repository",
                     c.record.id
@@ -1082,8 +1121,9 @@ impl MetadataStore for PgMetadataStore {
             .iter()
             .flat_map(|c| c.items.iter().map(|i| i.path.as_str().to_string()))
             .collect();
-        let mut at_branch: HashMap<String, i64> = match &head {
-            Some(h) => pointers(&mut *tx, repo, h, Some(&paths))
+        let start = commits[0].record.parents.first().copied();
+        let mut at_branch: HashMap<String, i64> = match &start {
+            Some(p) => pointers(&mut *tx, repo, p, Some(&paths))
                 .await?
                 .into_iter()
                 .collect(),
@@ -1128,12 +1168,21 @@ impl MetadataStore for PgMetadataStore {
                         .map_err(db)?;
                 }
             }
+            for r in &c.adopted {
+                at_branch.insert(r.path.as_str().to_string(), r.id.0 as i64);
+            }
+            let pointed: Vec<Revision> = c.adopted.iter().chain(&revs).cloned().collect();
             let draft = CommitDraft {
                 record: c.record,
                 trees: c.trees,
             };
-            store_commit(&mut tx, repo, seq, branch, &draft, &revs).await?;
+            store_commit(&mut tx, repo, seq, branch, &draft, &pointed).await?;
             out.extend(revs);
+        }
+        if let (Some(h), Some(t)) = (head, tip)
+            && !is_ancestor_in(&mut tx, repo, &h, &t).await?
+        {
+            return Err(PynError::NotFastForward(branch.to_string()));
         }
         tx.commit().await.map_err(db)?;
         Ok(out)
