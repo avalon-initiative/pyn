@@ -75,6 +75,26 @@ enum Act {
 
 pub(super) type Moved = std::result::Result<Index, Blocked>;
 
+/// Refuses the whole set when any path is not safe to write, remove or rename in the work tree.
+pub(super) fn check_writes<P: AsRef<[u8]>>(paths: impl IntoIterator<Item = P>) -> Result<()> {
+    paths
+        .into_iter()
+        .try_for_each(|p| pyn_gitwork::check_path(p.as_ref()))
+        .map_err(|e| Unsafe(e).into())
+}
+
+/// A path the work tree must not receive; nothing has been written.
+#[derive(Debug)]
+pub(super) struct Unsafe(pub pyn_gitwork::UnsafePath);
+
+impl std::fmt::Display for Unsafe {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}; nothing was changed", self.0)
+    }
+}
+
+impl std::error::Error for Unsafe {}
+
 fn lexists(path: &Path) -> Option<std::fs::Metadata> {
     std::fs::symlink_metadata(path).ok()
 }
@@ -312,6 +332,7 @@ pub(super) fn write_bytes(
     mode: FileMode,
     bytes: &[u8],
 ) -> Result<std::fs::Metadata> {
+    check_writes([path])?;
     let root = git.repo.root()?;
     let file = fs_path(root, path);
     for a in ancestors(path) {
@@ -356,8 +377,15 @@ pub(super) fn write_entry(git: &GitHome, path: &[u8], entry: &Entry) -> Result<I
 
 /// Removes a tracked path from the work tree and any folder it leaves empty.
 pub(super) fn remove_entry_file(git: &GitHome, path: &[u8]) -> Result<()> {
+    check_writes([path])?;
     let root = git.repo.root()?;
     let file = fs_path(root, path);
+    if ancestors(path)
+        .into_iter()
+        .any(|a| lexists(&fs_path(root, a)).is_some_and(|m| !m.is_dir()))
+    {
+        return Ok(());
+    }
     match lexists(&file) {
         Some(m) if m.is_dir() => {
             let _ = std::fs::remove_dir(&file);
@@ -386,10 +414,12 @@ pub(super) fn move_tree(
     let spec = Pathspec::default();
     let old = git.repo.flatten(old, &spec)?;
     let new = git.repo.flatten(new, &spec)?;
+    check_writes(new.keys())?;
     let acts = match plan(git, opened, &old, &new, mode)? {
         Ok(acts) => acts,
         Err(blocked) => return Ok(Err(blocked)),
     };
+    check_writes(acts.keys())?;
     convert::refuse_conversions(
         git,
         acts.iter().filter_map(|(p, a)| match a {

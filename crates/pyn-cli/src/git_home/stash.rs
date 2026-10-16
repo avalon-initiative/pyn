@@ -16,7 +16,7 @@ use super::stage::{
 use super::switch::subject;
 use super::treemerge::{Labels, Resolved, Worktree, merge_trees};
 use super::worktree::{
-    Blocked, Mode, in_the_way, move_tree, remove_entry_file, write_bytes, write_entry,
+    Blocked, Mode, check_writes, in_the_way, move_tree, remove_entry_file, write_bytes, write_entry,
 };
 use super::{GitHome, Refused, convert, path_string};
 
@@ -188,6 +188,7 @@ fn push(git: &GitHome, args: PushArgs) -> Result<()> {
     } else {
         Vec::new()
     };
+    check_writes(&untracked)?;
     if index_tree == head_tree && work_tree == head_tree && untracked.is_empty() {
         println!("No local changes to save");
         return Ok(());
@@ -294,6 +295,7 @@ fn apply(git: &GitHome, name: Option<&str>, pop: bool) -> Result<()> {
             base: "Stash base",
         },
     )?;
+    check_writes(merged.paths.keys().chain(restore_untracked.keys()))?;
     let ours = git.repo.index_leaves(&opened.index);
     let dirty = git.repo.unstaged_changes(&opened.index)?;
     let ignores = super::stage::Ignores {
