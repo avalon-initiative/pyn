@@ -535,10 +535,25 @@ pub fn router(state: AppState) -> Router {
             state.clone(),
             setup_api::guard,
         ))
+        .layer(axum::middleware::from_fn(log_internal))
         .with_state(state)
 }
 
 pub(crate) struct ApiError(PynError);
+
+/// The detail kept out of an internal error's response body, carried to the logging layer.
+#[derive(Clone)]
+struct InternalDetail(String);
+
+async fn log_internal(request: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    let method = request.method().clone();
+    let path = request.uri().path().to_string();
+    let response = next.run(request).await;
+    if let Some(InternalDetail(detail)) = response.extensions().get::<InternalDetail>() {
+        tracing::error!(%method, %path, status = response.status().as_u16(), %detail, "request failed");
+    }
+    response
+}
 
 impl From<PynError> for ApiError {
     fn from(e: PynError) -> Self {
@@ -634,11 +649,20 @@ impl IntoResponse for ApiError {
             | PynError::ObjectMissing(_) => StatusCode::BAD_REQUEST,
             PynError::Storage(_) | PynError::HistoryCorrupt(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
+        let internal = matches!(self.0, PynError::Storage(_) | PynError::HistoryCorrupt(_));
         let body = api::ErrorBody {
             code: self.0.code().to_string(),
-            message: self.0.to_string(),
+            message: if internal {
+                "an internal error occurred; the server log has the details".to_string()
+            } else {
+                self.0.to_string()
+            },
         };
         let mut res = (status, Json(body)).into_response();
+        if internal {
+            res.extensions_mut()
+                .insert(InternalDetail(self.0.to_string()));
+        }
         if let PynError::TooManyAttempts { retry_after_secs } = self.0 {
             res.headers_mut()
                 .insert(RETRY_AFTER, HeaderValue::from(retry_after_secs));

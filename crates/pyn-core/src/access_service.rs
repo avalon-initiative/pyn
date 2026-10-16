@@ -26,6 +26,7 @@ use crate::repo_policy::{
     CreationEffect, CreationRule, CreationScope, CreationSubject, MemberCreation, RepoPolicy,
 };
 use crate::store::MetadataStore;
+use crate::types::{MAX_LABEL_BYTES, validate_label};
 use crate::types::{RepoId, UserId};
 
 /// Server-wide events (account approvals and disables) are recorded in the audit store under this id, which
@@ -474,6 +475,8 @@ pub(crate) fn bounded_key(part: &str) -> String {
     }
 }
 
+/// Longest an invitation can be valid, in hours (one year).
+pub const MAX_INVITE_HOURS: i64 = 8760;
 const SIGN_IN_WINDOW: Duration = Duration::minutes(15);
 const REGISTER_WINDOW: Duration = Duration::hours(1);
 const MAIL_WINDOW: Duration = Duration::hours(1);
@@ -971,9 +974,7 @@ impl AccessService {
         expires_at: Option<DateTime<Utc>>,
         sign_in: bool,
     ) -> Result<(TokenRecord, String)> {
-        if name.trim().is_empty() {
-            return Err(PynError::InvalidRequest("a token needs a name".into()));
-        }
+        let name = validate_label("token name", name)?;
         if permissions.is_empty() {
             return Err(PynError::InvalidRequest(
                 "a token needs at least one permission".into(),
@@ -989,7 +990,7 @@ impl AccessService {
         let record = TokenRecord {
             id,
             user: user.clone(),
-            name: name.trim().to_string(),
+            name,
             secret_hash,
             permissions,
             repos,
@@ -1826,13 +1827,16 @@ impl AccessService {
                     .into(),
             ));
         }
-        if valid_for <= Duration::zero() {
-            return Err(PynError::InvalidRequest(
-                "an invitation must be valid for some time".into(),
-            ));
+        if valid_for < Duration::hours(1) || valid_for > Duration::hours(MAX_INVITE_HOURS) {
+            return Err(PynError::InvalidRequest(format!(
+                "an invitation is valid for 1 to {MAX_INVITE_HOURS} hours"
+            )));
         }
         let (id, code, secret_hash) = invite::generate()?;
         let now = self.clock.now();
+        let expires_at = now
+            .checked_add_signed(valid_for)
+            .ok_or_else(|| PynError::InvalidRequest("the expiry is out of range".into()))?;
         let record = InviteRecord {
             id,
             secret_hash,
@@ -1840,7 +1844,7 @@ impl AccessService {
             role,
             created_by: actor.user.clone(),
             created_at: now,
-            expires_at: now + valid_for,
+            expires_at,
             used_at: None,
             used_by: None,
             revoked_at: None,
@@ -1900,12 +1904,22 @@ impl AccessService {
     ) -> Result<SshKeyRecord> {
         actor.require_full_scope()?;
         let parsed = ssh::parse(key)?;
-        let title = title
-            .map(str::trim)
-            .filter(|t| !t.is_empty())
-            .map(str::to_string)
-            .or_else(|| (!parsed.comment.is_empty()).then(|| parsed.comment.clone()))
-            .unwrap_or_else(|| parsed.algorithm.clone());
+        let derived = |text: &str| {
+            let mut out = String::new();
+            for c in text.chars().filter(|c| !c.is_control()) {
+                if out.len() + c.len_utf8() > MAX_LABEL_BYTES {
+                    break;
+                }
+                out.push(c);
+            }
+            out.trim().to_string()
+        };
+        let title = match title.map(str::trim).filter(|t| !t.is_empty()) {
+            Some(t) => validate_label("key title", t)?,
+            None => Some(derived(&parsed.comment))
+                .filter(|t| !t.is_empty())
+                .unwrap_or_else(|| parsed.algorithm.clone()),
+        };
         self.store
             .ensure_user(&actor.user, self.clock.now())
             .await?;

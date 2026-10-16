@@ -113,6 +113,40 @@ impl std::fmt::Display for RepoPath {
     }
 }
 
+/// Longest name or title (token, SSH key), in bytes.
+pub const MAX_LABEL_BYTES: usize = 256;
+/// Longest commit or revision message, in bytes.
+pub const MAX_MESSAGE_BYTES: usize = 64 * 1024;
+/// Most paths in one changeset.
+pub const MAX_CHANGESET_ITEMS: usize = 10_000;
+/// Most commits in one push.
+pub const MAX_PUSH_COMMITS: usize = 10_000;
+
+/// A name or title: 1 to `MAX_LABEL_BYTES` bytes, no control characters. Returns it trimmed.
+pub fn validate_label(what: &str, text: &str) -> Result<String> {
+    let text = text.trim();
+    if text.is_empty() || text.len() > MAX_LABEL_BYTES || text.chars().any(char::is_control) {
+        return Err(PynError::InvalidRequest(format!(
+            "a {what} is 1 to {MAX_LABEL_BYTES} bytes without control characters"
+        )));
+    }
+    Ok(text.to_string())
+}
+
+/// A message: at most `MAX_MESSAGE_BYTES` bytes, control characters only newline, tab and carriage return.
+pub fn validate_message(text: &str) -> Result<()> {
+    if text.len() > MAX_MESSAGE_BYTES
+        || text
+            .chars()
+            .any(|c| c.is_control() && !matches!(c, '\n' | '\t' | '\r'))
+    {
+        return Err(PynError::InvalidRequest(format!(
+            "a message is at most {MAX_MESSAGE_BYTES} bytes without control characters other than newline and tab"
+        )));
+    }
+    Ok(())
+}
+
 /// Per-path revision number, starting at 1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -317,6 +351,17 @@ mod tests {
             assert!(RepoPath::new(ok).is_ok(), "{ok:?} should be accepted");
         }
         assert!(RepoPath::new("a".repeat(255)).is_ok());
+    }
+
+    #[test]
+    fn labels_and_messages_are_bounded() {
+        assert_eq!(validate_label("name", "  ci  ").unwrap(), "ci");
+        for bad in ["", "a\u{1}b", "a\nb", &"x".repeat(257)] {
+            assert!(validate_label("name", bad).is_err(), "{bad:?}");
+        }
+        assert!(validate_message("line\n\tindented").is_ok());
+        assert!(validate_message("a\u{0}b").is_err());
+        assert!(validate_message(&"x".repeat(MAX_MESSAGE_BYTES + 1)).is_err());
     }
 
     #[test]

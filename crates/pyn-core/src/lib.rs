@@ -41,9 +41,9 @@ pub use access::{
 };
 pub use access_service::{
     AccessConfig, AccessService, AccessStore, AccountDisable, AdminRevoke, ExternalPolicy,
-    ExternalSignIn, OidcBegin, OidcFinish, OidcStart, OrgDeleteMark, OrgMemberChange, OwnerLimits,
-    RateLimits, Registration, RepoMember, SERVER_AUDIT_ID, SetupRequest, SetupStatus, SignUp,
-    TeamDetail, generate_setup_token,
+    ExternalSignIn, MAX_INVITE_HOURS, OidcBegin, OidcFinish, OidcStart, OrgDeleteMark,
+    OrgMemberChange, OwnerLimits, RateLimits, Registration, RepoMember, SERVER_AUDIT_ID,
+    SetupRequest, SetupStatus, SignUp, TeamDetail, generate_setup_token,
 };
 pub use audit::{AuditAction, AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent};
 pub use auth::AuthProvider;
@@ -88,6 +88,7 @@ pub use store::MetadataStore;
 pub use stranded::{ConversionNote, StrandedVersion};
 pub use tree::{EntryKind, EntryMode, RepoSummary, TreeEntry};
 pub use types::{
-    ChangesetItem, Commit, Lock, NewRevision, Person, PushedCommit, RepoId, RepoPath, Revision,
-    RevisionHash, RevisionId, UserId,
+    ChangesetItem, Commit, Lock, MAX_CHANGESET_ITEMS, MAX_LABEL_BYTES, MAX_MESSAGE_BYTES,
+    MAX_PATH_BYTES, MAX_PATH_COMPONENT_BYTES, MAX_PUSH_COMMITS, NewRevision, Person, PushedCommit,
+    RepoId, RepoPath, Revision, RevisionHash, RevisionId, UserId,
 };

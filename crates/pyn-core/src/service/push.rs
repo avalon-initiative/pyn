@@ -15,7 +15,9 @@ use crate::error::{PynError, Result};
 use crate::object::REPO_ALGORITHM;
 use crate::rules::{Mode, POLICY_PATH, Rules};
 use crate::stranded::StrandedVersion;
-use crate::types::{Commit, NewRevision, PushedCommit, RepoPath, Revision};
+use crate::types::{
+    Commit, MAX_MESSAGE_BYTES, MAX_PUSH_COMMITS, NewRevision, PushedCommit, RepoPath, Revision,
+};
 
 /// Raw git objects a push carries: commits oldest first, and the trees they need that the server may not have.
 #[derive(Debug, Default, Clone)]
@@ -82,6 +84,11 @@ impl RepoService {
             return Err(PynError::InvalidRequest(
                 "a push needs at least one commit".into(),
             ));
+        }
+        if objects.commits.len() > MAX_PUSH_COMMITS {
+            return Err(PynError::InvalidRequest(format!(
+                "a push holds at most {MAX_PUSH_COMMITS} commits"
+            )));
         }
         let mut pushed_trees = HashMap::new();
         for (id, body) in objects.trees {
@@ -275,6 +282,11 @@ impl RepoService {
         }
         let record = Commit::from_raw(REPO_ALGORITHM, raw, None)
             .map_err(|e| invalid(format!("commit {id}: {e}")))?;
+        if record.message.len() > MAX_MESSAGE_BYTES {
+            return Err(invalid(format!(
+                "commit {id} has a message over {MAX_MESSAGE_BYTES} bytes"
+            )));
+        }
         record.verify().map_err(|_| {
             unsupported(format!(
                 "commit {id} cannot be recorded as sent; its message must end with a newline"

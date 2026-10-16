@@ -33,7 +33,8 @@ use crate::store::MetadataStore;
 use crate::stranded::StrandedVersion;
 use crate::tree::{ACTIVITY_ACTIONS, EntryKind, RepoSummary, TreeEntry};
 use crate::types::{
-    ChangesetItem, Commit, Lock, NewRevision, RepoId, RepoPath, Revision, RevisionId, UserId,
+    ChangesetItem, Commit, Lock, MAX_CHANGESET_ITEMS, NewRevision, RepoId, RepoPath, Revision,
+    RevisionId, UserId, validate_message,
 };
 use pyn_object::{FileMode, ObjectId};
 
@@ -713,6 +714,7 @@ impl RepoService {
         base: Option<RevisionId>,
         message: String,
     ) -> Result<Recorded> {
+        validate_message(&message)?;
         let Write {
             content,
             file_mode,
@@ -901,6 +903,12 @@ impl RepoService {
                 "a changeset needs at least one path".into(),
             ));
         }
+        if entries.len() + deletions.len() > MAX_CHANGESET_ITEMS {
+            return Err(PynError::InvalidRequest(format!(
+                "a changeset holds at most {MAX_CHANGESET_ITEMS} paths"
+            )));
+        }
+        validate_message(&message)?;
         let mut seen = std::collections::BTreeSet::new();
         let named = entries
             .iter()
@@ -1064,6 +1072,9 @@ impl RepoService {
         confirm: &str,
         message: Option<String>,
     ) -> Result<Recorded> {
+        if let Some(message) = &message {
+            validate_message(message)?;
+        }
         if self.rules_on(branch).await?.mode_for(path) != Mode::Exclusive {
             return Err(PynError::NotExclusive(path.clone()));
         }

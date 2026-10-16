@@ -7,8 +7,8 @@ use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use chrono::Duration;
 use pyn_core::{
-    AccountStatus, InviteId, InviteRecord, LockLimit, Permission, RepoRecord, RepoSettings,
-    RepoUpdate, Role, UserId,
+    AccountStatus, InviteId, InviteRecord, LockLimit, MAX_INVITE_HOURS, Permission, PynError,
+    RepoRecord, RepoSettings, RepoUpdate, Role, UserId,
 };
 use pyn_proto as api;
 use serde::Deserialize;
@@ -391,9 +391,14 @@ pub(crate) async fn create_invite(
 ) -> ApiResult<Json<api::CreatedInvite>> {
     let (repo, who) = authorize_repo(&s, &headers, &owner, &name, None).await?;
     let role = Role::from_str(&req.role)?;
+    let valid_for = Duration::try_hours(req.hours).ok_or_else(|| {
+        PynError::InvalidRequest(format!(
+            "an invitation is valid for 1 to {MAX_INVITE_HOURS} hours"
+        ))
+    })?;
     let (record, code) = s
         .access
-        .create_invite(&who, &repo.record.id, role, Duration::hours(req.hours))
+        .create_invite(&who, &repo.record.id, role, valid_for)
         .await?;
     Ok(Json(api::CreatedInvite {
         code,

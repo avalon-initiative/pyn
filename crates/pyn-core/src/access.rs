@@ -871,9 +871,10 @@ pub mod team {
 
     pub fn validate_name(name: &str) -> Result<String> {
         let name = name.trim();
-        if name.is_empty() || name.chars().count() > MAX_NAME {
+        if name.is_empty() || name.chars().count() > MAX_NAME || name.chars().any(char::is_control)
+        {
             return Err(PynError::InvalidRequest(format!(
-                "a team name is 1 to {MAX_NAME} characters"
+                "a team name is 1 to {MAX_NAME} characters without control characters"
             )));
         }
         Ok(name.to_string())
@@ -881,7 +882,11 @@ pub mod team {
 
     pub fn validate_description(description: &str) -> Result<String> {
         let description = description.trim();
-        if description.chars().count() > MAX_DESCRIPTION {
+        if description.chars().count() > MAX_DESCRIPTION
+            || description
+                .chars()
+                .any(|c| c.is_control() && !matches!(c, '\n' | '\t'))
+        {
             return Err(PynError::InvalidRequest(format!(
                 "a team description is at most {MAX_DESCRIPTION} characters"
             )));
