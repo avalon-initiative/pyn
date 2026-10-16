@@ -450,6 +450,33 @@ pub struct ChangesetResponse {
     pub revisions: Vec<Revision>,
 }
 
+/// One git object of a push: its id and its body (the bytes after git's `<kind> <length>` header), base64.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct PushObject {
+    /// The object id the body hashes to under the repository's algorithm (SHA-256).
+    pub id: String,
+    pub data: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct PushRequest {
+    /// The branch to append to; the default branch if omitted.
+    pub branch: Option<String>,
+    /// The commits, oldest first; the first is a child of the branch's head, each next one of the one before.
+    pub commits: Vec<PushObject>,
+    /// The trees the commits need that the server may not have. Blobs are uploaded beforehand through the object routes.
+    pub trees: Vec<PushObject>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct PushResponse {
+    pub branch: String,
+    /// The branch's head commit after the push.
+    pub head: String,
+    /// The revisions the commits made, in commit order, each commit's by path.
+    pub revisions: Vec<Revision>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct PutObjectResponse {
     /// The object's git blob id; for a chunk upload, the SHA-256 hex of its bytes.

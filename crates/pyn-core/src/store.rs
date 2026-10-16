@@ -240,6 +240,9 @@ pub trait MetadataStore: Send + Sync {
         path: &RepoPath,
     ) -> Result<Option<Revision>>;
 
+    /// Whether a revision of the repository, on any branch, has `content`.
+    async fn has_content(&self, repo: &RepoId, content: &ObjectId) -> Result<bool>;
+
     /// The body of a stored git tree, as `commit.tree` and the entries inside it name them.
     async fn get_tree(&self, repo: &RepoId, id: &ObjectId) -> Result<Option<Vec<u8>>>;
 

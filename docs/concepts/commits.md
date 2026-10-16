@@ -73,8 +73,35 @@ files and trees leave deleted paths out; history and the commit's `revisions` li
 ## Pushed commits (provisional)
 
 Decision #300 lets a client build commits itself and publish them. The core accepts them through `RepoService::push_commits` and
-one atomic store step, `MetadataStore::push_commits_on`; no HTTP route, wire type or CLI command exists for it yet, and everything
-here is provisional until those slices land.
+one atomic store step, `MetadataStore::push_commits_on`, and the server offers them as `POST /v1/repos/{owner}/{name}/push`
+(below). No CLI command sends a push yet (#337), and everything here is provisional until it does.
+
+### The push route
+
+`POST /v1/repos/{owner}/{name}/push` needs the `checkin` permission. The body is JSON:
+`{branch?, commits: [{id, data}], trees: [{id, data}]}`. `data` is the base64 of an object's body, the bytes after git's
+`<kind> <length>` header, and `id` is the SHA-256 git id it must hash to. Commits go oldest first; `trees` holds the trees the
+commits need that the server may not have. Blobs are not in the body: they are uploaded first through the chunked
+[object routes](storage.md), which is why a missing blob is `object_missing`. The body is at most 64 MiB. The answer is
+`{branch, head, revisions}`: the branch's head after the push and the revisions the commits made, in commit order.
+
+The route is additive: `changesets` and `checkin` remain the direct route (decision #300), and no existing field changed.
+
+Errors, as `{code, message}`: `not_fast_forward` (409), `lock_required` and `lock_held` (409), `stale_base` (409),
+`storage_limit_reached` (409), `push_invalid` (400, an id that does not hash, bytes that are not a git object, a missing tree or a
+commit already stored), `object_missing` (400), `invalid_request` (400, an empty push or bad base64), `push_unsupported` (422),
+`branch_not_found` and `commit_not_found` (404), `forbidden` (403). No offline lock guarantee exists: a lock is judged when the
+push arrives.
+
+A push is audited like the checkins it makes: one `checkin` entry per revision, with the authenticated pusher as the actor and
+`(push)` in the detail. The commit's author is recorded on the revision as its person, not as the actor.
+
+### Reading a blob by id
+
+`GET /v1/repos/{owner}/{name}/objects/{id}` returns a blob's bytes when a revision of that repository has it (`object_not_found`,
+404, otherwise, including for a blob only another repository holds). It honours a single `Range: bytes=` header (`206`, or `416`
+with `Content-Range: bytes */<length>`), sends the id in `x-pyn-content`, and follows the repository's read access (a public
+repository is readable without credentials). A client that keeps commits and trees locally uses it to fetch blobs on demand.
 
 - A push is a chain of commits, oldest first, plus the trees they need. Commits keep their ids: each is checked to hash to the id
   it is sent under, to be a SHA-256 git commit, and to be a child of the one before it.
@@ -90,11 +117,12 @@ here is provisional until those slices land.
   ([branches](branches.md)), not on the newest revision of another branch.
 - The whole push is accepted or refused as one: a refusal at any commit leaves no commit, revision, tree, lock change or branch
   move behind. Concurrent pushes to a branch are serialized, so one wins and the others get `not_fast_forward`.
-- Refused with `push_unsupported`, for now: a commit that changes `.pyn/pyn.toml`; a deletion, including a file turned into a
+- Refused with `push_unsupported`, for now (policy-file commits and deletions are #339, merges #338): a commit that changes `.pyn/pyn.toml`; a deletion, including a file turned into a
   folder or back; a commit with two parents; a commit that changes no file; a submodule entry; and a message without its final newline.
   A name or message that is not UTF-8 is accepted: the exact bytes are stored and the commit keeps its id, and the name,
   email and message fields in the API are those bytes decoded lossily (invalid bytes and NUL become U+FFFD).
-- The pusher needs the `checkin` permission. Whether the commit's author must match the pusher is undecided: it is not checked.
+- The pusher needs the `checkin` permission. A commit's author need not match the pusher, as in git; the authenticated pusher is
+  the account on the revisions and the actor in the audit log. A strict-match policy may be added later.
 
 ## Command line
 

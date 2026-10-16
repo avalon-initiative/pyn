@@ -757,3 +757,31 @@ pub async fn racing_pushes_to_one_branch_have_exactly_one_winner(store: Store) {
     assert_eq!(wins, 1);
     assert_eq!(h.svc.commits(None, None).await.unwrap().commits.len(), 1);
 }
+
+pub async fn a_blob_is_read_by_id_only_when_a_revision_of_the_repository_names_it(store: Store) {
+    use tokio::io::AsyncReadExt;
+    let h = harness(store);
+    let c = blob(&h, "hello world").await;
+    let err = h.svc.read_blob(&c, None).await.err().unwrap();
+    assert!(matches!(err, PynError::ObjectNotFound(_)), "{err}");
+
+    let mut files = Files::new();
+    set(&mut files, "Source/a.txt", c);
+    h.svc
+        .push_commits(
+            &who("alice"),
+            "main",
+            objects(&[&build(&files, None, "a", 1)]),
+        )
+        .await
+        .unwrap();
+    let mut read = h.svc.read_blob(&c, Some(6..11)).await.unwrap();
+    assert_eq!((read.total, read.range.clone()), (11, 6..11));
+    let mut bytes = Vec::new();
+    read.reader.read_to_end(&mut bytes).await.unwrap();
+    assert_eq!(bytes, b"world");
+
+    let stray = blob(&h, "never referenced").await;
+    let err = h.svc.read_blob(&stray, None).await.err().unwrap();
+    assert!(matches!(err, PynError::ObjectNotFound(_)), "{err}");
+}

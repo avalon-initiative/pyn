@@ -31,6 +31,7 @@ mod merge_api;
 mod oidc_api;
 mod org_api;
 pub mod passwords;
+mod push_api;
 mod repo_api;
 mod repo_policy_api;
 mod session_api;
@@ -177,7 +178,9 @@ struct RepoAddress {
         branch_api::delete_branch,
         branch_api::rename_branch,
         merge_api::preview_merge,
-        merge_api::merge
+        merge_api::merge,
+        push_api::push,
+        push_api::get_object
     ),
     components(schemas(
         api::Lock,
@@ -191,6 +194,9 @@ struct RepoAddress {
         api::CreateBranchRequest,
         api::RenameBranchRequest,
         api::MergeFastForward,
+        api::PushObject,
+        api::PushRequest,
+        api::PushResponse,
         api::MergeRequest,
         api::MergeResolution,
         api::MergeOutcome,
@@ -494,6 +500,16 @@ pub fn router(state: AppState) -> Router {
             "/v1/repos/{owner}/{name}/branches",
             get(branch_api::list_branches).post(branch_api::create_branch),
         )
+        .route(
+            "/v1/repos/{owner}/{name}/push",
+            post(push_api::push).layer(axum::extract::DefaultBodyLimit::max(
+                push_api::MAX_PUSH_BYTES,
+            )),
+        )
+        .route(
+            "/v1/repos/{owner}/{name}/objects/{id}",
+            get(push_api::get_object),
+        )
         .route("/v1/repos/{owner}/{name}/merge", post(merge_api::merge))
         .route(
             "/v1/repos/{owner}/{name}/merge/preview",
@@ -591,6 +607,7 @@ impl IntoResponse for ApiError {
             | PynError::TeamNotFound { .. }
             | PynError::TeamMemberNotFound { .. }
             | PynError::CreationRuleNotFound { .. }
+            | PynError::ObjectNotFound(_)
             | PynError::PathNotFound(_) => StatusCode::NOT_FOUND,
             PynError::RevisionNotFound { .. }
             | PynError::CommitNotFound(_)

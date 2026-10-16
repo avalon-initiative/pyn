@@ -1340,6 +1340,21 @@ impl RepoService {
             .await
     }
 
+    /// A blob by id, or the byte `range` of it, if a revision of this repository has it.
+    pub async fn read_blob(
+        &self,
+        id: &ObjectId,
+        range: Option<std::ops::Range<u64>>,
+    ) -> Result<crate::ObjectRead> {
+        if !self.meta.has_content(&self.repo, id).await? {
+            return Err(PynError::ObjectNotFound(id.to_string()));
+        }
+        self.objects
+            .read(id, range)
+            .await?
+            .ok_or_else(|| PynError::ObjectMissing(id.to_string()))
+    }
+
     /// Like `read_stream`, taking the path's revision at the head of `branch` when `revision` is `None`.
     pub async fn read_stream_on(
         &self,

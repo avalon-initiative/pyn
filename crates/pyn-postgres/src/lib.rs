@@ -1565,6 +1565,17 @@ impl MetadataStore for PgMetadataStore {
         self.get_revision(repo, path, RevisionId(id as u64)).await
     }
 
+    async fn has_content(&self, repo: &RepoId, content: &ObjectId) -> Result<bool> {
+        sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM revisions WHERE repo = $1 AND content = $2)",
+        )
+        .bind(repo.as_str())
+        .bind(content.to_hex())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(db)
+    }
+
     async fn get_tree(&self, repo: &RepoId, id: &ObjectId) -> Result<Option<Vec<u8>>> {
         sqlx::query_scalar("SELECT body FROM trees WHERE repo = $1 AND id = $2")
             .bind(repo.as_str())

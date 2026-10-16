@@ -55,6 +55,8 @@ pub enum PynError {
     },
     #[error("content {0} is not in the object store")]
     ObjectMissing(String),
+    #[error("the repository has no object {0}")]
+    ObjectNotFound(String),
     #[error("{0} is not locked")]
     NotLocked(RepoPath),
     #[error("{path} has no revision {revision}")]
@@ -244,6 +246,7 @@ impl PynError {
             Self::NotExclusive(_) => "not_exclusive",
             Self::StaleBase { .. } => "stale_base",
             Self::ObjectMissing(_) => "object_missing",
+            Self::ObjectNotFound(_) => "object_not_found",
             Self::RevisionNotFound { .. } => "revision_not_found",
             Self::CommitNotFound(_) => "commit_not_found",
             Self::AmbiguousCommit(_) => "ambiguous_commit",

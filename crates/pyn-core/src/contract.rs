@@ -3192,6 +3192,7 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_push_needs_the_checkin_permission_and_an_existing_branch);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_push_past_the_storage_cap_applies_nothing);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; racing_pushes_to_one_branch_have_exactly_one_winner);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_blob_is_read_by_id_only_when_a_revision_of_the_repository_names_it);
     };
     (@one $factory:expr; [$(#[$attr:meta])*]; $name:ident) => {
         #[tokio::test(flavor = "multi_thread")]
@@ -3833,6 +3834,10 @@ impl MetadataStore for HookedMeta {
         path: &RepoPath,
     ) -> crate::Result<Option<crate::Revision>> {
         self.inner.revision_at(repo, commit, path).await
+    }
+
+    async fn has_content(&self, repo: &RepoId, content: &ObjectId) -> crate::Result<bool> {
+        self.inner.has_content(repo, content).await
     }
 
     async fn get_tree(&self, repo: &RepoId, id: &ObjectId) -> crate::Result<Option<Vec<u8>>> {

@@ -896,6 +896,14 @@ impl MetadataStore for MemoryMetadataStore {
         Ok(at.get(path).and_then(|id| st.revision(repo, path, *id)))
     }
 
+    async fn has_content(&self, repo: &RepoId, content: &ObjectId) -> Result<bool> {
+        let st = self.state.lock().unwrap();
+        Ok(st
+            .revisions
+            .iter()
+            .any(|((r, _), revs)| r == repo && revs.iter().any(|v| &v.content == content)))
+    }
+
     async fn get_tree(&self, repo: &RepoId, id: &ObjectId) -> Result<Option<Vec<u8>>> {
         let st = self.state.lock().unwrap();
         Ok(st.trees.get(&(repo.clone(), *id)).cloned())
