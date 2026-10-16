@@ -17,7 +17,7 @@ use crate::localfile;
 use crate::workspace::{FileState, Workspace};
 
 /// A pyn server's object ids are SHA-256.
-const ALGORITHM: Algorithm = Algorithm::Sha256;
+pub(crate) const ALGORITHM: Algorithm = Algorithm::Sha256;
 const PAGE: usize = 200;
 const REMOTE: &str = "origin";
 
@@ -56,16 +56,16 @@ pub struct LocalStore {
     repo: Repo,
 }
 
-type Files = BTreeMap<Vec<u8>, Entry>;
-type Trees = Vec<(ObjectId, Vec<u8>)>;
+pub(crate) type Files = BTreeMap<Vec<u8>, Entry>;
+pub(crate) type Trees = Vec<(ObjectId, Vec<u8>)>;
 
-fn parse_id(hex: &str) -> Result<ObjectId> {
+pub(crate) fn parse_id(hex: &str) -> Result<ObjectId> {
     let id = ObjectId::parse(hex).with_context(|| format!("{hex} is not an object id"))?;
     id.expect(ALGORITHM)?;
     Ok(id)
 }
 
-fn file_mode(mode: api::FileMode) -> FileMode {
+pub(crate) fn file_mode(mode: api::FileMode) -> FileMode {
     match mode {
         api::FileMode::Regular => FileMode::Regular,
         api::FileMode::Executable => FileMode::Executable,
@@ -74,7 +74,7 @@ fn file_mode(mode: api::FileMode) -> FileMode {
 }
 
 /// The tree objects of `files`, children first, and the root's id.
-fn build_trees(files: &Files) -> Result<(ObjectId, Trees)> {
+pub(crate) fn build_trees(files: &Files) -> Result<(ObjectId, Trees)> {
     let flat: Vec<(&[u8], Entry)> = files.iter().map(|(p, e)| (p.as_slice(), *e)).collect();
     let mut out = Vec::new();
     let root = build_level(&flat, &mut out)?;
@@ -171,6 +171,10 @@ impl LocalStore {
         Ok(Self {
             repo: Repo::open(&path, None, None)?,
         })
+    }
+
+    pub(crate) fn repo(&self) -> &Repo {
+        &self.repo
     }
 
     fn has(&self, id: &ObjectId) -> Result<bool> {

@@ -40,6 +40,7 @@ pub use fetch::FetchArgs;
 pub use pull::PullArgs;
 pub use push::PushArgs;
 pub use remote::{RemoteArgs, on_server as remote_on_server};
+pub(crate) use stage::clean_message;
 pub use stash::StashArgs;
 pub use tags::TagArgs;
 

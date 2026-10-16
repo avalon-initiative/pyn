@@ -232,9 +232,29 @@ What it holds:
   in the branch's tip tree, looks up the revision that carries it, downloads that revision's content, checks it against the
   id and stores it. A blob the tip tree does not name cannot be fetched by id yet.
 
-The store changes nothing about commits, locks or policy: `pyn commit` still publishes straight to the server, and
-the server stays the only authority. Recording commits locally, `push` and `fetch` between the store and the server are
-separate steps (#336 to #338) and need server endpoints (#333, #334). Only the current branch is stored.
+### Local commits (provisional)
+
+With the setting on, `add`, `commit`, `status` and `branch` work against the store (decision #300, slice #336):
+
+- `pyn add` stages as before; an exclusive path still needs your lock to be staged.
+- `pyn commit` records one commit on the local branch in `store/` and publishes nothing: the commit is git-encoded with
+  SHA-256 ids, so the id is the one the server will accept on push, and the blobs of the staged files go into the store.
+  The output says the commit is local and not yet published. The author and committer are your account name with the
+  placeholder email `<name>@pyn.invalid` the server uses for an account without one.
+- Before it commits, `pyn commit` checks that every exclusive path it changes is locked by you and refuses otherwise.
+  This is a convenience for the client: the server enforces the lock when the commits are pushed (decision #300 item 5),
+  and a lock is a lease that can lapse while you work offline. Shared paths need no lock.
+- `pyn status` adds `added|modified|deleted in a local commit` to the paths the unpublished commits changed, and a
+  closing line with the number of local commits the server lacks.
+- `pyn update` brings the server's tip and its history into the store but leaves the local branch and the files that
+  local commits changed alone (it reports them as skipped).
+- `pyn branch -v` shows the local tip, and how many commits are unpublished, for the branch the workspace is on.
+  Creating, renaming and deleting branches still act on the server.
+- `pyn switch` and `pyn checkout <branch>` refuse to leave a branch that has unpublished local commits.
+
+Unchanged by the setting: `pyn commit <path> --file ... [--base ...]` and a merge commit still publish straight to the
+server, and the server stays the only authority over commits, locks and policy. Publishing local commits and fetching
+into the store are separate steps (#337, #338). Only the current branch is stored.
 
 ## The user configuration file
 

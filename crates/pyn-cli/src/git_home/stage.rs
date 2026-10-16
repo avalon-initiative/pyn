@@ -731,7 +731,7 @@ pub(super) fn identity(git: &GitHome, role: &str) -> Result<Signature> {
 
 /// Git's `whitespace` cleanup for a message given with `-m`: trailing blanks off every line, no leading or
 /// trailing empty lines, runs of empty lines collapsed, and a final newline.
-pub(super) fn clean_message(messages: &[String]) -> Vec<u8> {
+pub(crate) fn clean_message(messages: &[String]) -> Vec<u8> {
     let text = messages.join("\n\n");
     let mut lines: Vec<&str> = Vec::new();
     for line in text.lines().map(str::trim_end) {
