@@ -1800,3 +1800,19 @@ async fn audit(
         next_before,
     }))
 }
+
+/// A warning when session cookies would not be Secure on a server reachable beyond this machine.
+pub fn insecure_cookie_warning(addr: &str, public_url: &str) -> Option<&'static str> {
+    if public_url.to_ascii_lowercase().starts_with("https://") {
+        return None;
+    }
+    let loopback = match addr.parse::<std::net::SocketAddr>() {
+        Ok(a) => a.ip().is_loopback(),
+        Err(_) => addr
+            .rsplit_once(':')
+            .is_some_and(|(host, _)| host.eq_ignore_ascii_case("localhost")),
+    };
+    (!loopback).then_some(
+        "PYN_PUBLIC_URL is not https and the server is bound beyond loopback: session cookies are not marked Secure unless a proxy sends X-Forwarded-Proto: https",
+    )
+}

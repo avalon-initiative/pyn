@@ -4435,3 +4435,14 @@ async fn the_dev_header_skips_the_csrf_check_only_when_dev_auth_is_on() {
         .insert(api::DEV_USER_HEADER, "alice".parse().unwrap());
     assert_ne!(status(&on, req).await, StatusCode::FORBIDDEN);
 }
+
+#[test]
+fn a_non_https_public_url_on_a_reachable_address_warns_about_cookies() {
+    let warns = |addr, url| pyn_server::insecure_cookie_warning(addr, url).is_some();
+    assert!(warns("0.0.0.0:7878", "http://pyn.example"));
+    assert!(warns("192.0.2.5:7878", "http://192.0.2.5:7878"));
+    assert!(!warns("127.0.0.1:7878", "http://127.0.0.1:7878"));
+    assert!(!warns("[::1]:7878", "http://[::1]:7878"));
+    assert!(!warns("localhost:7878", "http://localhost:7878"));
+    assert!(!warns("0.0.0.0:7878", "https://pyn.example"));
+}

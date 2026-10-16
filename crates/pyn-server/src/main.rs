@@ -218,6 +218,12 @@ async fn main() -> anyhow::Result<()> {
         Ok("log") | Err(_) => {}
         Ok(other) => anyhow::bail!("unknown PYN_EMAIL {other:?}; only \"log\" is available"),
     }
+    let log_email_bodies = flag("PYN_EMAIL_LOG_BODIES");
+    if log_email_bodies {
+        tracing::warn!(
+            "PYN_EMAIL_LOG_BODIES is on: verification links are written to the log; for local development only"
+        );
+    }
     let supplied_token = std::env::var("PYN_SETUP_TOKEN").ok();
     let setup_token = match &supplied_token {
         Some(token) => token.clone(),
@@ -234,7 +240,7 @@ async fn main() -> anyhow::Result<()> {
             .with_registry(meta.clone())
             .with_audit(audit.clone())
             .with_rate_limits(limits)
-            .with_email(Arc::new(LogEmailSender))
+            .with_email(Arc::new(LogEmailSender::new(log_email_bodies)))
             .with_passwords(Arc::new(PooledPasswords::new(hashes)))
             .with_setup_token(&setup_token)?,
     );
@@ -248,8 +254,14 @@ async fn main() -> anyhow::Result<()> {
         );
     } else {
         tracing::warn!(
-            "this server is not set up yet; finish setup with this one-time token: {setup_token}"
+            "this server is not set up yet; the one-time setup token is printed on stderr"
         );
+        eprintln!(
+            "----- pyn one-time setup token -----\n{setup_token}\n------------------------------------"
+        );
+    }
+    if let Some(warning) = pyn_server::insecure_cookie_warning(&addr, &access.public_url()) {
+        tracing::warn!("{warning}");
     }
     for warning in access.startup_warnings() {
         tracing::warn!("{warning}");
