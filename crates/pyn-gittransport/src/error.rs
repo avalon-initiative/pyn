@@ -14,7 +14,9 @@ pub enum Error {
     Git(#[from] pyn_git::Error),
     #[error("{0}")]
     Credential(String),
-    #[error("credential field '{0}' contains a control character (newline, carriage return or NUL)")]
+    #[error(
+        "credential field '{0}' contains a control character (newline, carriage return or NUL)"
+    )]
     InvalidCredential(String),
     #[error("i/o error: {0}")]
     Io(#[from] io::Error),

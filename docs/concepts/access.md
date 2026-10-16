@@ -63,7 +63,7 @@ teams. Teams are managed with `pyn team ...` (see [teams](repositories.md#teams)
 People have accounts: a unique user name (2 to 39 lowercase letters, digits, `-` or `_`; not one of the
 [reserved names](repositories.md#addresses-and-namespaces)) and a password of at least ten
 characters (at most 256), stored only as a salted argon2id hash. `pyn login <name>` checks the password and saves an expiring session
-for that server in your user configuration directory (`~/.config/pyn/credentials.toml`, readable only by you), the way a git
+for that server in your user configuration directory (`~/.config/pyn/credentials.toml`, readable only by you: the directory is `0700`, the file `0600`, written atomically), the way a git
 credential helper would; the CLI uses it when no token is given, and `pyn logout` ends the session and removes it. A
 session is a token that reaches every repository you belong to, with your role there as its limit, and it lasts 30 days by
 default (`PYN_SESSION_DAYS`). Signing in needs no role anywhere: a new account with no repository can sign in and create its own.
@@ -200,7 +200,8 @@ On the command line (server administrators; each listing is an aligned table wit
 | `pyn admin limits list`, `show <owner>`, `set <owner> [--repos N] [--members N] [--storage SIZE]` | optional [limits](limits.md); `default` drops an owner's own value |
 | `pyn admin org create <name> --owner <user>`, `pyn admin org delete <name> [--yes]` | on behalf of an owner; delete asks to type the name |
 
-Automation signs in with `--token` or `PYN_TOKEN` set to a service credential's secret; it is limited to its scopes.
+Automation signs in with `--token` or `PYN_TOKEN` set to a service credential's secret; it is limited to its scopes. A `--token`
+value is visible in the process list, so prefer `PYN_TOKEN` (the same goes for `pyn setup --setup-token` and `PYN_SETUP_TOKEN`).
 
 The admin routes answer `403 server_admin_required` to anyone else and `404 user_not_found` for an unknown account.
 `pyn register --email <address>` signs up on a server that verifies.

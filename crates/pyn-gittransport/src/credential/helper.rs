@@ -4,9 +4,9 @@ use std::io::{Read, Write};
 use std::process::Stdio;
 
 use super::Credential;
-use crate::error::Result;
 use super::store::StoreFiles;
 use crate::env::Env;
+use crate::error::Result;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Op {
