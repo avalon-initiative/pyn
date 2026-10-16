@@ -896,3 +896,22 @@ async fn only_an_active_account_can_become_an_administrator() {
             .any(|a| a.user.as_str() == "alice" && !a.is_admin)
     );
 }
+
+#[tokio::test]
+async fn attempts_past_the_limit_do_not_move_the_window() {
+    let w = world_with(|c| c.require_email_verification = false);
+    w.svc
+        .register(Registration::new("alice", PASSWORD))
+        .await
+        .unwrap();
+    for _ in 0..5 {
+        w.svc.login("alice", "wrong", None).await.unwrap_err();
+    }
+    w.clock.advance(Duration::minutes(10));
+    for _ in 0..5 {
+        let err = w.svc.login("alice", PASSWORD, None).await.unwrap_err();
+        assert!(matches!(err, PynError::TooManyAttempts { .. }), "{err}");
+    }
+    w.clock.advance(Duration::minutes(5));
+    w.svc.login("alice", PASSWORD, None).await.unwrap();
+}

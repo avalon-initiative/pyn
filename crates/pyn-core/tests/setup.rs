@@ -264,3 +264,36 @@ fn a_supplied_token_must_be_long_enough() {
     );
     assert!(svc.with_setup_token("short").is_err());
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn parallel_wrong_tokens_stop_at_the_client_limit() {
+    let w = Arc::new(world());
+    let tasks: Vec<_> = (0..30)
+        .map(|_| {
+            let w = w.clone();
+            tokio::spawn(async move { w.svc.complete_setup(request("nope", "root")).await })
+        })
+        .collect();
+    let mut wrong = 0;
+    for t in tasks {
+        if matches!(t.await.unwrap(), Err(PynError::InvalidSetupToken)) {
+            wrong += 1;
+        }
+    }
+    assert_eq!(wrong, 10);
+}
+
+#[tokio::test]
+async fn a_right_token_gives_its_attempt_back() {
+    let w = world();
+    for _ in 0..9 {
+        w.svc
+            .complete_setup(request("nope", "root"))
+            .await
+            .unwrap_err();
+    }
+    let mut bad = request(TOKEN, "Not Valid");
+    bad.client = Some("10.0.0.1");
+    w.svc.complete_setup(bad).await.unwrap_err();
+    w.svc.complete_setup(request(TOKEN, "root")).await.unwrap();
+}

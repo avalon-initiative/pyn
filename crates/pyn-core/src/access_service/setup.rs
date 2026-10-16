@@ -158,25 +158,29 @@ impl AccessService {
     }
 
     /// Creates the first administrator and records the server's essentials. Runs once: later calls get
-    /// `AlreadyInitialised`. Wrong tokens count against a per-client and a server-wide limit.
+    /// `AlreadyInitialised`. Attempts count against a per-client and a server-wide limit and a right token gives its count back.
     pub async fn complete_setup(&self, request: SetupRequest<'_>) -> Result<UserId> {
         if self.is_initialised().await? {
             return Err(PynError::AlreadyInitialised);
         }
-        let client_key = request.client.map(|c| format!("setup:client:{c}"));
-        self.gate(SERVER_KEY, FAILURES_PER_SERVER).await?;
+        let client_key = request
+            .client
+            .map(|c| format!("setup:client:{}", bounded_key(c)));
+        self.count_limited(SERVER_KEY, FAILURES_PER_SERVER, SETUP_WINDOW)
+            .await?;
         if let Some(key) = &client_key {
-            self.gate(key, FAILURES_PER_CLIENT).await?;
+            self.count_limited(key, FAILURES_PER_CLIENT, SETUP_WINDOW)
+                .await?;
         }
         let expected = self.setup.token_hash.lock().unwrap().clone();
         let presented = token::hash_secret(request.token);
         if !expected.is_some_and(|hash| token::hashes_match(&hash, &presented)) {
-            let now = self.clock.now();
-            self.limits.hit(SERVER_KEY, SETUP_WINDOW, now).await?;
-            if let Some(key) = &client_key {
-                self.limits.hit(key, SETUP_WINDOW, now).await?;
-            }
             return Err(PynError::InvalidSetupToken);
+        }
+        let now = self.clock.now();
+        self.limits.refund(SERVER_KEY, now).await?;
+        if let Some(key) = &client_key {
+            self.limits.refund(key, now).await?;
         }
 
         let user = account::validate_username(request.username)?;

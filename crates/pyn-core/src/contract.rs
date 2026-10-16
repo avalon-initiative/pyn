@@ -5695,6 +5695,106 @@ pub async fn racing_hits_are_all_counted(store: RateLimits) {
     assert_eq!(counts, (1..=20).collect::<Vec<_>>());
 }
 
+pub async fn refund_takes_one_event_back(store: RateLimits) {
+    let window = Duration::minutes(10);
+    store.refund("r", at(0)).await.unwrap();
+    store.hit("r", window, at(0)).await.unwrap();
+    store.hit("r", window, at(1)).await.unwrap();
+    store.refund("r", at(2)).await.unwrap();
+    let state = store.state("r", at(2)).await.unwrap().unwrap();
+    assert_eq!((state.count, state.resets_at), (1, at(10)));
+    store.refund("r", at(3)).await.unwrap();
+    assert!(store.state("r", at(3)).await.unwrap().is_none());
+    store.hit("r", window, at(4)).await.unwrap();
+    store.refund("r", at(20)).await.unwrap();
+    assert_eq!(store.hit("r", window, at(21)).await.unwrap().count, 1);
+}
+
+struct SlowVerifier {
+    verifies: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl crate::PasswordWorker for SlowVerifier {
+    async fn hash(&self, password: &str) -> crate::Result<String> {
+        crate::InlinePasswords.hash(password).await
+    }
+
+    async fn verify(&self, password: &str, hash: &str) -> bool {
+        self.verifies
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        for _ in 0..20 {
+            tokio::task::yield_now().await;
+        }
+        crate::InlinePasswords.verify(password, hash).await
+    }
+}
+
+async fn limited_world(store: RateLimits) -> (AccessService, Arc<SlowVerifier>) {
+    let passwords = Arc::new(SlowVerifier {
+        verifies: Default::default(),
+    });
+    let svc = AccessService::new(
+        Arc::new(crate::memory::MemoryAccessStore::new()),
+        Arc::new(ManualClock::new(at(0))),
+    )
+    .with_config(crate::AccessConfig {
+        registration: RegistrationMode::Open,
+        require_email_verification: false,
+        ..crate::AccessConfig::default()
+    })
+    .with_passwords(passwords.clone())
+    .with_rate_limits(store);
+    svc.register(crate::Registration::new("alice", "correct horse battery"))
+        .await
+        .unwrap();
+    (svc, passwords)
+}
+
+pub async fn parallel_sign_ins_verify_at_most_the_limit(store: RateLimits) {
+    use std::sync::atomic::Ordering;
+    let (svc, passwords) = limited_world(store).await;
+    let svc = Arc::new(svc);
+    let before = passwords.verifies.load(Ordering::SeqCst);
+    let limit = crate::RateLimits::default().sign_in_per_account as usize;
+    let tasks: Vec<_> = (0..40)
+        .map(|_| {
+            let svc = svc.clone();
+            tokio::spawn(async move { svc.login("alice", "wrong password", None).await })
+        })
+        .collect();
+    let mut refused = 0;
+    for t in tasks {
+        if matches!(t.await.unwrap(), Err(PynError::TooManyAttempts { .. })) {
+            refused += 1;
+        }
+    }
+    assert_eq!(passwords.verifies.load(Ordering::SeqCst) - before, limit);
+    assert_eq!(refused, 40 - limit);
+    let err = svc
+        .login("alice", "correct horse battery", None)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::TooManyAttempts { .. }), "{err}");
+}
+
+pub async fn oversized_user_names_get_fixed_size_limit_keys(store: RateLimits) {
+    let (svc, _) = limited_world(store).await;
+    let long = "A".repeat(10_000);
+    for _ in 0..5 {
+        let err = svc
+            .login(&long, "wrong password", Some(&"c".repeat(10_000)))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, PynError::Unauthenticated(_)), "{err}");
+    }
+    let err = svc
+        .login(&long.to_lowercase(), "wrong password", None)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::TooManyAttempts { .. }), "{err}");
+}
+
 /// Organization `acme`: owner alice; members bob, carol (team art), dave (team eng), plus alice in art; erin outside.
 struct CreationWorld {
     store: Access,
@@ -7256,6 +7356,9 @@ macro_rules! rate_limit_contract_tests {
     ($factory:expr $(, #[$attr:meta])*) => {
         $crate::rate_limit_contract_tests!(@one $factory; [$(#[$attr])*]; rate_windows_count_expire_and_reset);
         $crate::rate_limit_contract_tests!(@one $factory; [$(#[$attr])*]; racing_hits_are_all_counted);
+        $crate::rate_limit_contract_tests!(@one $factory; [$(#[$attr])*]; refund_takes_one_event_back);
+        $crate::rate_limit_contract_tests!(@one $factory; [$(#[$attr])*]; parallel_sign_ins_verify_at_most_the_limit);
+        $crate::rate_limit_contract_tests!(@one $factory; [$(#[$attr])*]; oversized_user_names_get_fixed_size_limit_keys);
     };
     (@one $factory:expr; [$(#[$attr:meta])*]; $name:ident) => {
         #[tokio::test(flavor = "multi_thread")]
