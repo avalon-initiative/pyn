@@ -2,7 +2,7 @@
 
 use axum::Json;
 use axum::extract::{Request, State};
-use axum::http::header::{AUTHORIZATION, COOKIE, SET_COOKIE};
+use axum::http::header::{COOKIE, SET_COOKIE};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
@@ -28,7 +28,16 @@ pub(crate) fn cookie_value<'a>(headers: &'a HeaderMap, wanted: &str) -> Option<&
         })
 }
 
-pub(crate) fn is_https(headers: &HeaderMap) -> bool {
+/// Whether cookies are marked Secure: the request came over HTTPS or the configured public URL is HTTPS.
+pub(crate) fn is_https(s: &AppState, headers: &HeaderMap) -> bool {
+    forwarded_https(headers)
+        || s.access
+            .public_url()
+            .to_ascii_lowercase()
+            .starts_with("https://")
+}
+
+fn forwarded_https(headers: &HeaderMap) -> bool {
     headers
         .get("x-forwarded-proto")
         .and_then(|v| v.to_str().ok())
@@ -64,8 +73,7 @@ fn same(a: &str, b: &str) -> bool {
 pub(crate) async fn csrf_guard(State(s): State<AppState>, req: Request, next: Next) -> Response {
     let headers = req.headers();
     let safe = matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS);
-    let other_credential =
-        headers.contains_key(AUTHORIZATION) || headers.contains_key(api::DEV_USER_HEADER);
+    let other_credential = crate::uses_non_cookie_credential(&s, headers);
     let sign_in = req.method() == Method::POST && req.uri().path() == "/v1/session";
     if safe || other_credential || sign_in {
         return next.run(req).await;
@@ -101,8 +109,10 @@ pub(crate) async fn sign_in(
         .await?;
     let max_age = s.access.session_lifetime().num_seconds();
     let mut res = Json(info(&record)).into_response();
-    res.headers_mut()
-        .insert(SET_COOKIE, set_cookie(&cookie, max_age, is_https(&headers)));
+    res.headers_mut().insert(
+        SET_COOKIE,
+        set_cookie(&cookie, max_age, is_https(&s, &headers)),
+    );
     Ok(res)
 }
 
@@ -130,6 +140,6 @@ pub(crate) async fn sign_out(State(s): State<AppState>, headers: HeaderMap) -> A
     }
     let mut res = StatusCode::NO_CONTENT.into_response();
     res.headers_mut()
-        .insert(SET_COOKIE, set_cookie("", 0, is_https(&headers)));
+        .insert(SET_COOKIE, set_cookie("", 0, is_https(&s, &headers)));
     Ok(res)
 }

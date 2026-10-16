@@ -2632,6 +2632,18 @@ impl RateLimitStore for MemoryRateLimitStore {
         Ok(windows.get(key).filter(|s| s.resets_at > now).copied())
     }
 
+    async fn refund(&self, key: &str, now: DateTime<Utc>) -> Result<()> {
+        let mut windows = self.windows.lock().unwrap();
+        match windows.get_mut(key) {
+            Some(s) if s.resets_at > now && s.count > 1 => s.count -= 1,
+            Some(s) if s.resets_at > now => {
+                windows.remove(key);
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     async fn reset(&self, key: &str) -> Result<()> {
         self.windows.lock().unwrap().remove(key);
         Ok(())

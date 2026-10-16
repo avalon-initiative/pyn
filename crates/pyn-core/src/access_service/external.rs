@@ -99,7 +99,7 @@ impl AccessService {
         }
         if let Some(client) = start.client {
             self.count_limited(
-                &format!("oidc:client:{client}"),
+                &format!("oidc:client:{}", bounded_key(client)),
                 self.config.limits.sign_in_per_client,
                 SIGN_IN_WINDOW,
             )

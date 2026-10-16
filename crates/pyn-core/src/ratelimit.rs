@@ -19,6 +19,9 @@ pub trait RateLimitStore: Send + Sync {
     /// The live window for the key, if any, without counting.
     async fn state(&self, key: &str, now: DateTime<Utc>) -> Result<Option<RateState>>;
 
+    /// Takes one event back from the live window, dropping the window when it empties.
+    async fn refund(&self, key: &str, now: DateTime<Utc>) -> Result<()>;
+
     async fn reset(&self, key: &str) -> Result<()>;
 
     /// Removes every window that ended at or before `now`.

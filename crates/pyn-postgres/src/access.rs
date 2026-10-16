@@ -1844,6 +1844,29 @@ impl RateLimitStore for PgMetadataStore {
         }))
     }
 
+    async fn refund(&self, key: &str, now: DateTime<Utc>) -> Result<()> {
+        let now = self.bound_now(now);
+        sqlx::query(
+            "DELETE FROM rate_limits
+             WHERE key = $1 AND count <= 1 AND resets_at > COALESCE($2::timestamptz, now())",
+        )
+        .bind(key)
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .map_err(db)?;
+        sqlx::query(
+            "UPDATE rate_limits SET count = count - 1
+             WHERE key = $1 AND count > 1 AND resets_at > COALESCE($2::timestamptz, now())",
+        )
+        .bind(key)
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
     async fn reset(&self, key: &str) -> Result<()> {
         sqlx::query("DELETE FROM rate_limits WHERE key = $1")
             .bind(key)

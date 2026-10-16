@@ -73,18 +73,24 @@ default (`PYN_SESSION_DAYS`). Signing in needs no role anywhere: a new account w
 The web signs in with `POST /v1/session` (user name and password, throttled like `pyn login`). The server keeps the session
 (only a hash of its cookie value is stored) and sets an `HttpOnly`, `SameSite=Lax` cookie, `pyn_session`, that page scripts
 cannot read; it is also `Secure` when the request arrived over HTTPS (`X-Forwarded-Proto: https` from a TLS-terminating
-proxy). A session lasts `PYN_SESSION_DAYS` (30 by default) and resolves to the user's current role in the repository being
+proxy) or when `PYN_PUBLIC_URL` (or the address recorded by setup) is `https://`. The server warns at startup when that address
+is not https and it is bound beyond loopback. A session lasts `PYN_SESSION_DAYS` (30 by default) and resolves to the user's current role in the repository being
 used on every request, so a role change applies at once. `GET /v1/session` returns the signed-in user and a CSRF token
 (what the user may do in one repository is `GET /v1/repos/{owner}/{name}/me`); `DELETE /v1/session` signs out and removes
 the session on the server.
 
 A request authenticated by the cookie alone must carry the CSRF token in an `X-Pyn-CSRF` header on every POST, PUT and
-DELETE, or the server answers 403 `csrf_failed`. Requests with a bearer token never use the cookie and need no CSRF token.
+DELETE, or the server answers 403 `csrf_failed`. The check is skipped only when the request is authenticated by a bearer
+token, or by the `X-Pyn-User` header on a server with development auth on; other `Authorization` schemes or a header the
+server does not honour do not skip it.
 The account pages (SSH keys, personal access tokens, password) are the same endpoints used with a session.
 
 Failed sign-ins are throttled twice: five wrong passwords for a user name (which need not exist) lock that name out for
-15 minutes, and 30 failures from one client address lock that address out for the same time, whatever names it tries. A
-success clears the name's count but not the address's. The error never says whether the name or the password was wrong, and
+15 minutes, and 30 failures from one client address lock that address out for the same time, whatever names it tries.
+Every attempt is counted before the password is checked, so attempts past a limit are refused without any password work,
+even when they arrive together. A success clears the name's count and gives the address's count back. The window is fixed:
+attempts made while locked out do not extend it. User names and addresses longer than 64 characters are keyed by their
+SHA-256 digest. The error never says whether the name or the password was wrong, and
 a user name that does not exist costs the same work as one that does. Only a right password learns that the account cannot
 sign in yet (`email_not_verified`, `approval_pending`, `account_disabled`, all 403). `pyn password` changes your own password and ends your other web sessions (the one making the change stays signed in) and the sign-in tokens that `pyn login` issued; tokens you created and SSH keys keep working. An operator's password reset ends all sessions and sign-in tokens too. The current password is always required when the account has one; an account with no password yet (created through an external provider) can set its first only from a signed-in web session.
 
@@ -167,8 +173,9 @@ log, read at `GET /v1/admin/audit`.
 **Password hashing** runs on a blocking thread pool, at most `PYN_PASSWORD_HASHES` at a time (default: the number of CPUs;
 each argon2id hash uses about 19 MiB), so heavy sign-in or sign-up traffic cannot stall other requests.
 
-**Email delivery.** The only sender today writes each message to the server log (`PYN_EMAIL=log`), which suffices for
-development and tests, not for real users. The server logs a warning at startup when registration is open and verification
+**Email delivery.** The only sender today (`PYN_EMAIL=log`) records that a message was queued, with the recipient's domain and
+the subject, and writes nothing else, which suffices for development and tests, not for real users. A developer who needs the
+verification link sets `PYN_EMAIL_LOG_BODIES=true`: bodies are then logged in full and the server warns at startup. The server logs a warning at startup when registration is open and verification
 is off, or on but nothing is delivered.
 
 ### Contract for clients
@@ -271,10 +278,10 @@ A new server is uninitialised. Until setup completes it serves only `GET /v1/set
 every other route answers `503 not_initialised`. Setup creates the first administrator and records the essentials, and it
 can never run again (`409 already_initialised`).
 
-To stop whoever reaches a fresh server first from claiming it, setup needs a one-time **setup token**. The server prints
-one to its log at first start (shown only there), or an operator sets `PYN_SETUP_TOKEN` (at least 16 characters, no
+To stop whoever reaches a fresh server first from claiming it, setup needs a one-time **setup token**. On first start the server prints
+one to standard error in a delimited block (never through the log), or an operator sets `PYN_SETUP_TOKEN` (at least 16 characters, no
 whitespace) ahead of time for unattended installs. The token is compared in constant time, wrong tries are rate limited
-per client and for the whole server (`429 too_many_attempts`), and it is discarded when setup completes. A server that is
+per client and for the whole server (`429 too_many_attempts`), and it is discarded when setup completes, after which it is never printed again. Attempts are counted before the comparison and a right token gives its count back. A server that is
 already set up ignores `PYN_SETUP_TOKEN` and warns about it. With several server copies on one database, set the same
 `PYN_SETUP_TOKEN` on all of them; otherwise each prints its own token and any one of them completes setup. Server name and
 public address are re-read from the database every minute, so a copy picks up changes made through another.

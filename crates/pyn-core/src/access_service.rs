@@ -463,6 +463,17 @@ impl Default for RateLimits {
     }
 }
 
+const MAX_KEY_PART: usize = 64;
+
+/// A rate-limit key part kept to a fixed size: over-long values are replaced by their digest.
+pub(crate) fn bounded_key(part: &str) -> String {
+    if part.len() <= MAX_KEY_PART {
+        part.to_string()
+    } else {
+        format!("~{}", token::hash_secret(part))
+    }
+}
+
 const SIGN_IN_WINDOW: Duration = Duration::minutes(15);
 const REGISTER_WINDOW: Duration = Duration::hours(1);
 const MAIL_WINDOW: Duration = Duration::hours(1);
@@ -1194,17 +1205,6 @@ impl AccessService {
         .await
     }
 
-    /// Refuses when `key` has already reached `max` events in its live window.
-    async fn gate(&self, key: &str, max: u32) -> Result<()> {
-        let now = self.clock.now();
-        match self.limits.state(key, now).await? {
-            Some(state) if state.count >= max => Err(PynError::TooManyAttempts {
-                retry_after_secs: (state.resets_at - now).num_seconds().max(1),
-            }),
-            _ => Ok(()),
-        }
-    }
-
     /// Counts an event against `key` and refuses it once the window already holds `max`.
     async fn count_limited(&self, key: &str, max: u32, window: Duration) -> Result<()> {
         let now = self.clock.now();
@@ -1250,7 +1250,8 @@ impl AccessService {
         DUMMY.get_or_init(|| hash).clone()
     }
 
-    /// Checks a password. Repeated failures lock the user name, and the client address, out for a while.
+    /// Checks a password. Attempts are counted before the check and a success gives its count back, so
+    /// attempts past the limit are refused unverified. The window is fixed: refused attempts do not extend it.
     async fn verify_sign_in(
         &self,
         username: &str,
@@ -1258,11 +1259,13 @@ impl AccessService {
         client: Option<&str>,
     ) -> Result<UserId> {
         let limits = &self.config.limits;
-        let account_key = format!("sign-in:account:{}", username.to_lowercase());
-        let client_key = client.map(|c| format!("sign-in:client:{c}"));
-        self.gate(&account_key, limits.sign_in_per_account).await?;
+        let account_key = format!("sign-in:account:{}", bounded_key(&username.to_lowercase()));
+        let client_key = client.map(|c| format!("sign-in:client:{}", bounded_key(c)));
+        self.count_limited(&account_key, limits.sign_in_per_account, SIGN_IN_WINDOW)
+            .await?;
         if let Some(key) = &client_key {
-            self.gate(key, limits.sign_in_per_client).await?;
+            self.count_limited(key, limits.sign_in_per_client, SIGN_IN_WINDOW)
+                .await?;
         }
 
         let user = UserId::new(username);
@@ -1275,17 +1278,15 @@ impl AccessService {
                 false
             }
         };
-        let now = self.clock.now();
         if !verified {
-            self.limits.hit(&account_key, SIGN_IN_WINDOW, now).await?;
-            if let Some(key) = &client_key {
-                self.limits.hit(key, SIGN_IN_WINDOW, now).await?;
-            }
             return Err(PynError::Unauthenticated(
                 "wrong user name or password".into(),
             ));
         }
         self.limits.reset(&account_key).await?;
+        if let Some(key) = &client_key {
+            self.limits.refund(key, self.clock.now()).await?;
+        }
         self.require_active(&user).await?;
         self.require_password_sign_in(&user).await?;
         Ok(user)
@@ -1382,7 +1383,7 @@ impl AccessService {
         };
         if let Some(client) = request.client {
             self.count_limited(
-                &format!("register:client:{client}"),
+                &format!("register:client:{}", bounded_key(client)),
                 self.config.limits.register_per_client,
                 REGISTER_WINDOW,
             )
@@ -1465,7 +1466,7 @@ impl AccessService {
         };
         let mail_allowed = self
             .count_limited(
-                &format!("mail:{email}"),
+                &format!("mail:{}", bounded_key(&email)),
                 self.config.limits.mail_per_email,
                 MAIL_WINDOW,
             )
@@ -1574,7 +1575,7 @@ impl AccessService {
     pub async fn resend_verification(&self, email: &str, client: Option<&str>) -> Result<()> {
         if let Some(client) = client {
             self.count_limited(
-                &format!("register:client:{client}"),
+                &format!("register:client:{}", bounded_key(client)),
                 self.config.limits.register_per_client,
                 REGISTER_WINDOW,
             )
@@ -1594,7 +1595,7 @@ impl AccessService {
         }
         let allowed = self
             .count_limited(
-                &format!("mail:{email}"),
+                &format!("mail:{}", bounded_key(&email)),
                 self.config.limits.mail_per_email,
                 MAIL_WINDOW,
             )

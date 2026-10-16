@@ -1111,7 +1111,7 @@ pub struct SetupStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct SetupRequest {
-    /// The one-time setup token from the server's log or its `PYN_SETUP_TOKEN` setting.
+    /// The one-time setup token printed by the server on first run (stderr) or from its `PYN_SETUP_TOKEN` setting.
     pub token: String,
     /// The first administrator's user name.
     pub username: String,
