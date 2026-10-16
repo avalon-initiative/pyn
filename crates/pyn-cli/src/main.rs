@@ -15,6 +15,7 @@ mod diff;
 mod git_home;
 mod http_transport;
 mod limits;
+mod local_store;
 mod localfile;
 mod ls_remote;
 mod merging;
@@ -97,6 +98,9 @@ enum Command {
         /// Check out the repository as of this commit (`HEAD~N`, a commit hash) instead of the newest (a pyn server only).
         #[arg(long)]
         revision: Option<String>,
+        /// Keep a partial local store of the history under `.pyn/local_only/store/` (a pyn server only; provisional).
+        #[arg(long)]
+        local_store: bool,
         #[command(flatten)]
         git: Box<git_home::CloneOptions>,
     },
@@ -839,6 +843,7 @@ fn clone_from_git(cli: &Cli, cwd: &std::path::Path) -> Result<Option<()>> {
         source,
         dir,
         revision,
+        local_store,
         git,
     } = &cli.command
     else {
@@ -862,6 +867,9 @@ fn clone_from_git(cli: &Cli, cwd: &std::path::Path) -> Result<Option<()>> {
     };
     if revision.is_some() {
         usage_error("`--revision` applies to a pyn server, not a git remote");
+    }
+    if *local_store {
+        usage_error("`--local-store` applies to a pyn server, not a git remote");
     }
     git_home::clone(source, dir.as_deref(), cwd, git, hint.as_deref())?;
     Ok(Some(()))
@@ -955,6 +963,7 @@ fn run(cli: Cli) -> Result<()> {
         .or_else(|| credentials::load(&base).map(|saved| saved.token));
     let repo_name = repo.clone();
     let server_url = base.clone();
+    let store = ws.as_ref().and_then(local_store::LocalStore::open);
     let backend = PynServer::new(Api {
         transport: Box::new(http_transport::HttpTransport::new(base.clone())),
         base,
@@ -963,7 +972,8 @@ fn run(cli: Cli) -> Result<()> {
         repo,
         branch: branch::current(ws.as_ref()),
         on_git,
-    });
+    })
+    .with_store(store);
     let rp = |p: &str| -> Result<String> {
         match &ws {
             Some(w) => w.repo_path(&cwd, p),
@@ -1279,7 +1289,12 @@ fn run(cli: Cli) -> Result<()> {
                 );
             }
         }
-        Command::Clone { dir, revision, .. } => {
+        Command::Clone {
+            dir,
+            revision,
+            local_store,
+            ..
+        } => {
             let repo = repo_name.expect("clone names a repository");
             let dir = dir.unwrap_or_else(|| {
                 address::split_repo(&repo)
@@ -1294,7 +1309,15 @@ fn run(cli: Cli) -> Result<()> {
             let commit = revision
                 .map(|r| snapshot::resolve(&backend, &r))
                 .transpose()?;
-            sync::clone_into(&backend, &target, &server, &repo, commit.as_deref())?;
+            let local_store = local_store || yours.local_store_on();
+            sync::clone_into(
+                &backend,
+                &target,
+                &server,
+                &repo,
+                commit.as_deref(),
+                local_store,
+            )?;
         }
         Command::Fetch(args) => {
             require_bare(&args, "fetch");
