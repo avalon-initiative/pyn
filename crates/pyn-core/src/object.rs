@@ -75,6 +75,13 @@ fn object_error(e: pyn_object::Error) -> PynError {
     }
 }
 
+/// What a store call wrote: the id, and the ids of the objects this call newly created (not already stored).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Stored {
+    pub id: ObjectId,
+    pub created: Vec<ObjectId>,
+}
+
 /// Content-addressed storage, so `put` is idempotent. A whole object is keyed by its blob id, a chunk by the raw
 /// SHA-256 of its bytes (`Keying`).
 #[async_trait]
@@ -86,6 +93,19 @@ pub trait ObjectStore: Send + Sync {
         keying: Keying,
         max: Option<u64>,
     ) -> Result<ObjectId>;
+    /// Like `put_stream`, also reporting what it newly created. A store that cannot tell reports nothing created.
+    async fn put_stream_tracked(
+        &self,
+        reader: ObjectReader,
+        keying: Keying,
+        max: Option<u64>,
+    ) -> Result<Stored> {
+        let id = self.put_stream(reader, keying, max).await?;
+        Ok(Stored {
+            id,
+            created: Vec::new(),
+        })
+    }
     /// The object, or the part inside `range` (clamped to its length); `None` if it is not stored.
     async fn read(&self, hash: &ObjectId, range: Option<Range<u64>>) -> Result<Option<ObjectRead>>;
     async fn exists(&self, hash: &ObjectId) -> Result<bool>;
@@ -135,19 +155,35 @@ pub trait ObjectStore: Send + Sync {
         let Some(found) = self.read(hash, None).await? else {
             return Ok(None);
         };
-        let mut bytes = Vec::with_capacity(usize::try_from(found.total).unwrap_or(0));
+        let mut bytes = Vec::with_capacity(usize::try_from(found.total).unwrap_or(0).min(1 << 26));
         let mut reader = found.reader;
         reader
             .read_to_end(&mut bytes)
             .await
             .map_err(|e| PynError::Storage(e.to_string()))?;
-        let actual =
-            pyn_object::hash_object(hash.algorithm(), Kind::Blob, &bytes).map_err(object_error)?;
-        if actual != *hash {
-            return Err(PynError::Storage(format!("object {hash} is corrupt")));
-        }
-        Ok(Some(bytes))
+        verify_blob(hash, bytes).map(Some)
     }
+
+    /// Like `get`, but `ObjectTooLarge` without reading when the object is longer than `max` bytes.
+    async fn get_limited(&self, hash: &ObjectId, max: u64) -> Result<Option<Vec<u8>>> {
+        let Some(found) = self.read(hash, None).await? else {
+            return Ok(None);
+        };
+        if found.total > max {
+            return Err(PynError::ObjectTooLarge { limit: max });
+        }
+        let bytes = read_limited(found.reader, Some(max)).await?;
+        verify_blob(hash, bytes).map(Some)
+    }
+}
+
+fn verify_blob(hash: &ObjectId, bytes: Vec<u8>) -> Result<Vec<u8>> {
+    let actual =
+        pyn_object::hash_object(hash.algorithm(), Kind::Blob, &bytes).map_err(object_error)?;
+    if actual != *hash {
+        return Err(PynError::Storage(format!("object {hash} is corrupt")));
+    }
+    Ok(bytes)
 }
 
 /// Clamps a requested range to an object of `total` bytes.

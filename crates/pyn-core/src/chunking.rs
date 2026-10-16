@@ -13,7 +13,9 @@ use pyn_object::{Algorithm, ObjectId};
 use tokio::io::{AsyncRead, AsyncReadExt, ReadBuf};
 
 use crate::error::{PynError, Result};
-use crate::object::{KeyHasher, Keying, ObjectRead, ObjectReader, ObjectStore, clamp_range};
+use crate::object::{
+    KeyHasher, Keying, ObjectRead, ObjectReader, ObjectStore, Stored, clamp_range,
+};
 
 pub use pyn_chunk::{MAX_CHUNK, MIN_CHUNK, SMALL_OBJECT, cut_point};
 
@@ -135,6 +137,30 @@ impl ChunkedStore {
         Self { inner }
     }
 
+    async fn put_piece(
+        &self,
+        whole: &mut KeyHasher,
+        chunk: Vec<u8>,
+        total: u64,
+        max: Option<u64>,
+    ) -> Result<Stored> {
+        if let Some(limit) = max
+            && total > limit
+        {
+            return Err(PynError::ObjectTooLarge { limit });
+        }
+        whole.update(&chunk)?;
+        self.inner
+            .put_stream_tracked(Box::pin(std::io::Cursor::new(chunk)), Keying::Raw, None)
+            .await
+    }
+
+    async fn discard(&self, created: &[ObjectId]) {
+        for id in created {
+            let _ = self.inner.delete(id).await;
+        }
+    }
+
     async fn manifest(&self, hash: &ObjectId) -> Result<Option<Manifest>> {
         self.inner
             .get_manifest(hash)
@@ -165,12 +191,21 @@ async fn fill(reader: &mut ObjectReader, buf: &mut Vec<u8>, want: usize) -> Resu
 impl ObjectStore for ChunkedStore {
     async fn put_stream(
         &self,
-        mut reader: ObjectReader,
+        reader: ObjectReader,
         keying: Keying,
         max: Option<u64>,
     ) -> Result<ObjectId> {
+        Ok(self.put_stream_tracked(reader, keying, max).await?.id)
+    }
+
+    async fn put_stream_tracked(
+        &self,
+        mut reader: ObjectReader,
+        keying: Keying,
+        max: Option<u64>,
+    ) -> Result<Stored> {
         if keying == Keying::Raw {
-            return self.inner.put_stream(reader, keying, max).await;
+            return self.inner.put_stream_tracked(reader, keying, max).await;
         }
         if let Keying::Blob { len } = keying
             && let Some(limit) = max
@@ -188,14 +223,18 @@ impl ObjectStore for ChunkedStore {
             }
             return self
                 .inner
-                .put_stream(Box::pin(std::io::Cursor::new(buf)), keying, max)
+                .put_stream_tracked(Box::pin(std::io::Cursor::new(buf)), keying, max)
                 .await;
         }
         let mut whole = KeyHasher::new(keying);
         let mut total = 0u64;
         let mut chunks = Vec::new();
+        let mut created = Vec::new();
         loop {
-            fill(&mut reader, &mut buf, MAX_CHUNK).await?;
+            if let Err(e) = fill(&mut reader, &mut buf, MAX_CHUNK).await {
+                self.discard(&created).await;
+                return Err(e);
+            }
             if buf.is_empty() {
                 break;
             }
@@ -203,19 +242,40 @@ impl ObjectStore for ChunkedStore {
             let rest = buf.split_off(cut);
             let chunk = std::mem::replace(&mut buf, rest);
             total += chunk.len() as u64;
-            if let Some(limit) = max
-                && total > limit
-            {
-                return Err(PynError::ObjectTooLarge { limit });
-            }
-            whole.update(&chunk)?;
             let len = chunk.len() as u64;
-            chunks.push((self.inner.put_chunk(chunk).await?, len));
+            let stored = match self.put_piece(&mut whole, chunk, total, max).await {
+                Ok(stored) => stored,
+                Err(e) => {
+                    self.discard(&created).await;
+                    return Err(e);
+                }
+            };
+            chunks.push((stored.id, len));
+            created.extend(stored.created);
         }
-        let hash = whole.finish()?;
+        let hash = match whole.finish() {
+            Ok(hash) => hash,
+            Err(e) => {
+                self.discard(&created).await;
+                return Err(e);
+            }
+        };
+        let fresh = match self.inner.exists(&hash).await {
+            Ok(present) => !present,
+            Err(e) => {
+                self.discard(&created).await;
+                return Err(e);
+            }
+        };
         let manifest = Manifest { total, chunks };
-        self.inner.put_manifest(&hash, manifest.encode()).await?;
-        Ok(hash)
+        if let Err(e) = self.inner.put_manifest(&hash, manifest.encode()).await {
+            self.discard(&created).await;
+            return Err(e);
+        }
+        if fresh {
+            created.push(hash);
+        }
+        Ok(Stored { id: hash, created })
     }
 
     async fn read(&self, hash: &ObjectId, range: Option<Range<u64>>) -> Result<Option<ObjectRead>> {

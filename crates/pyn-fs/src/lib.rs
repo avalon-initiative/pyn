@@ -4,17 +4,20 @@ mod zstd_blob;
 
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
 use pyn_core::object::clamp_range;
 use pyn_core::{
     KeyHasher, Keying, ObjectId, ObjectRead, ObjectReader, ObjectStore, PynError, REPO_ALGORITHM,
-    Result,
+    Result, Stored,
 };
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
-static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+const TEMP_PREFIX: &str = ".tmp-";
+
+/// Temp files older than this are left by a process that died mid-write.
+pub const STALE_TEMP_AGE: Duration = Duration::from_secs(3600);
 
 /// Objects live at `<root>/<first two hex chars>/<rest>`; writes go through a temp file and rename.
 #[derive(Debug, Clone)]
@@ -58,15 +61,97 @@ fn packed_path(raw: &Path) -> PathBuf {
     raw.with_file_name(name)
 }
 
+/// A uniquely named temp file path in the store root, with its staged sibling; both are removed on drop.
+struct TempPath {
+    path: PathBuf,
+}
+
+impl TempPath {
+    fn new(root: &Path) -> Result<Self> {
+        let mut id = [0u8; 16];
+        getrandom::fill(&mut id).map_err(|e| storage(format!("no randomness: {e}")))?;
+        Ok(Self {
+            path: root.join(format!("{TEMP_PREFIX}{}", hex::encode(id))),
+        })
+    }
+
+    fn staged(&self) -> PathBuf {
+        self.path.with_extension("zst")
+    }
+}
+
+impl Drop for TempPath {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+        let _ = std::fs::remove_file(self.staged());
+    }
+}
+
+async fn create_temp(path: &Path) -> Result<tokio::fs::File> {
+    tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .await
+        .map_err(storage)
+}
+
 fn storage(e: impl std::fmt::Display) -> PynError {
     PynError::Storage(e.to_string())
+}
+
+/// Hard-links `from` at `to` without replacing it; `false` if `to` already exists.
+async fn link_new(from: &Path, to: &Path) -> Result<bool> {
+    match tokio::fs::hard_link(from, to).await {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        Err(e) => Err(storage(e)),
+    }
 }
 
 impl FsObjectStore {
     pub async fn open(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
         tokio::fs::create_dir_all(&root).await.map_err(storage)?;
-        Ok(Self { root })
+        let store = Self { root };
+        store.sweep_stale_temp(STALE_TEMP_AGE).await?;
+        Ok(store)
+    }
+
+    /// Removes temp files in the root last modified more than `age` ago; returns how many.
+    pub async fn sweep_stale_temp(&self, age: Duration) -> Result<usize> {
+        let mut entries = tokio::fs::read_dir(&self.root).await.map_err(storage)?;
+        let mut removed = 0;
+        while let Some(entry) = entries.next_entry().await.map_err(storage)? {
+            if !entry.file_name().to_string_lossy().starts_with(TEMP_PREFIX) {
+                continue;
+            }
+            let Ok(meta) = entry.metadata().await else {
+                continue;
+            };
+            let old = meta
+                .modified()
+                .ok()
+                .and_then(|t| SystemTime::now().duration_since(t).ok())
+                .is_some_and(|d| d > age);
+            if meta.is_file() && old && tokio::fs::remove_file(entry.path()).await.is_ok() {
+                removed += 1;
+            }
+        }
+        Ok(removed)
+    }
+
+    /// Sweeps stale temp files every `every` until the returned task is aborted.
+    pub fn spawn_sweeper(&self, every: Duration) -> tokio::task::JoinHandle<()> {
+        let store = self.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(every);
+            tick.tick().await;
+            loop {
+                tick.tick().await;
+                let _ = store.sweep_stale_temp(STALE_TEMP_AGE).await;
+            }
+        })
     }
 
     pub fn root(&self) -> &Path {
@@ -80,7 +165,7 @@ impl FsObjectStore {
         max: Option<u64>,
         tmp: &Path,
     ) -> Result<ObjectId> {
-        let mut file = tokio::fs::File::create(tmp).await.map_err(storage)?;
+        let mut file = create_temp(tmp).await?;
         let mut hasher = KeyHasher::new(keying);
         let mut total = 0u64;
         let mut buf = vec![0u8; 64 * 1024];
@@ -102,14 +187,15 @@ impl FsObjectStore {
         hasher.finish()
     }
 
-    /// Moves the finished temp file into the store, compressed when that pays; leaves `tmp` for the caller to remove.
-    async fn place(&self, hash: &ObjectId, tmp: &Path) -> Result<()> {
+    /// Links the finished temp file into the store, compressed when that pays; an existing object is never replaced.
+    /// Returns whether this call wrote it. The caller removes `tmp`.
+    async fn place(&self, hash: &ObjectId, tmp: &Path) -> Result<bool> {
         let raw = self.path_for(hash)?;
         let packed = packed_path(&raw);
         if tokio::fs::try_exists(&raw).await.map_err(storage)?
             || tokio::fs::try_exists(&packed).await.map_err(storage)?
         {
-            return Ok(());
+            return Ok(false);
         }
         tokio::fs::create_dir_all(raw.parent().expect("object path has a parent"))
             .await
@@ -122,7 +208,7 @@ impl FsObjectStore {
         .await
         .map_err(storage)??;
         if !compress {
-            return tokio::fs::rename(tmp, &raw).await.map_err(storage);
+            return link_new(tmp, &raw).await;
         }
         let staged = tmp.with_extension("zst");
         let (src, dst) = (tmp.to_path_buf(), staged.clone());
@@ -133,7 +219,7 @@ impl FsObjectStore {
             let _ = tokio::fs::remove_file(&staged).await;
             return Err(storage(e));
         }
-        tokio::fs::rename(&staged, &packed).await.map_err(storage)
+        link_new(&staged, &packed).await
     }
 
     /// Only SHA-256 ids are stored; the hex form cannot escape the root.
@@ -150,23 +236,26 @@ impl FsObjectStore {
 impl ObjectStore for FsObjectStore {
     async fn put_stream(
         &self,
-        mut reader: ObjectReader,
+        reader: ObjectReader,
         keying: Keying,
         max: Option<u64>,
     ) -> Result<ObjectId> {
-        let n = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let tmp = self.root.join(format!(".tmp-{}-{n}", std::process::id()));
-        let written = self.write_temp(&mut reader, keying, max, &tmp).await;
-        let hash = match written {
-            Ok(hash) => hash,
-            Err(e) => {
-                let _ = tokio::fs::remove_file(&tmp).await;
-                return Err(e);
-            }
-        };
-        let placed = self.place(&hash, &tmp).await;
-        let _ = tokio::fs::remove_file(&tmp).await;
-        placed.map(|()| hash)
+        Ok(self.put_stream_tracked(reader, keying, max).await?.id)
+    }
+
+    async fn put_stream_tracked(
+        &self,
+        mut reader: ObjectReader,
+        keying: Keying,
+        max: Option<u64>,
+    ) -> Result<Stored> {
+        let tmp = TempPath::new(&self.root)?;
+        let id = self.write_temp(&mut reader, keying, max, &tmp.path).await?;
+        let fresh = self.place(&id, &tmp.path).await?;
+        Ok(Stored {
+            id,
+            created: if fresh { vec![id] } else { Vec::new() },
+        })
     }
 
     async fn read(&self, hash: &ObjectId, range: Option<Range<u64>>) -> Result<Option<ObjectRead>> {
@@ -219,20 +308,12 @@ impl ObjectStore for FsObjectStore {
         tokio::fs::create_dir_all(dest.parent().expect("object path has a parent"))
             .await
             .map_err(storage)?;
-        let n = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let tmp = self.root.join(format!(".tmp-{}-{n}", std::process::id()));
-        let written = async {
-            let mut file = tokio::fs::File::create(&tmp).await?;
-            file.write_all(&bytes).await?;
-            file.sync_all().await?;
-            drop(file);
-            tokio::fs::rename(&tmp, &dest).await
-        }
-        .await;
-        if written.is_err() {
-            let _ = tokio::fs::remove_file(&tmp).await;
-        }
-        written.map_err(storage)
+        let tmp = TempPath::new(&self.root)?;
+        let mut file = create_temp(&tmp.path).await?;
+        file.write_all(&bytes).await.map_err(storage)?;
+        file.sync_all().await.map_err(storage)?;
+        drop(file);
+        tokio::fs::rename(&tmp.path, &dest).await.map_err(storage)
     }
 
     async fn get_manifest(&self, key: &ObjectId) -> Result<Option<Vec<u8>>> {

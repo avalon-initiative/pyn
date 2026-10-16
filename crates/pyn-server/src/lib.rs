@@ -609,7 +609,9 @@ impl IntoResponse for ApiError {
             | PynError::PasswordSignInDisabled
             | PynError::CsrfFailed => StatusCode::FORBIDDEN,
             PynError::PushUnsupported(_) => StatusCode::UNPROCESSABLE_ENTITY,
-            PynError::TooManyAttempts { .. } => StatusCode::TOO_MANY_REQUESTS,
+            PynError::TooManyAttempts { .. } | PynError::UploadsBusy { .. } => {
+                StatusCode::TOO_MANY_REQUESTS
+            }
             PynError::ObjectTooLarge { .. } => StatusCode::PAYLOAD_TOO_LARGE,
             PynError::NotInitialised => StatusCode::SERVICE_UNAVAILABLE,
             PynError::Unauthenticated(_) | PynError::ExternalSignInFailed(_) => {
@@ -666,6 +668,9 @@ impl IntoResponse for ApiError {
         if let PynError::TooManyAttempts { retry_after_secs } = self.0 {
             res.headers_mut()
                 .insert(RETRY_AFTER, HeaderValue::from(retry_after_secs));
+        }
+        if matches!(self.0, PynError::UploadsBusy { .. }) {
+            res.headers_mut().insert(RETRY_AFTER, HeaderValue::from(5));
         }
         res
     }

@@ -3948,6 +3948,27 @@ impl MetadataStore for HookedMeta {
         self.inner.unreferenced_bytes(repo).await
     }
 
+    async fn reserve_upload(
+        &self,
+        repo: &RepoId,
+        bytes: u64,
+        cap: u64,
+        now: chrono::DateTime<chrono::Utc>,
+        ttl_secs: i64,
+    ) -> crate::Result<crate::UploadReservation> {
+        self.inner
+            .reserve_upload(repo, bytes, cap, now, ttl_secs)
+            .await
+    }
+
+    async fn release_upload(
+        &self,
+        repo: &RepoId,
+        reservation: crate::UploadReservation,
+    ) -> crate::Result<()> {
+        self.inner.release_upload(repo, reservation).await
+    }
+
     async fn get_tree(&self, repo: &RepoId, id: &ObjectId) -> crate::Result<Option<Vec<u8>>> {
         self.inner.get_tree(repo, id).await
     }

@@ -15,6 +15,10 @@ use crate::types::{
     UserId,
 };
 
+/// A hold on part of a repository's unreferenced-upload budget while an upload streams in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UploadReservation(pub i64);
+
 /// Persistence for the repository registry, locks and revisions. Each method is one atomic check-and-write; policy lives in
 /// `RepoService`. A lock with `expires_at <= now` counts as absent.
 #[async_trait]
@@ -262,6 +266,20 @@ pub trait MetadataStore: Send + Sync {
         chunks: &[ObjectId],
         cap: u64,
     ) -> Result<()>;
+
+    /// Holds `bytes` against `repo`'s unreferenced-upload budget, counting the uploads still in flight, until released
+    /// or `ttl_secs` after `now`. Over `cap` is `StorageLimitReached`; the check and the hold are one atomic step.
+    async fn reserve_upload(
+        &self,
+        repo: &RepoId,
+        bytes: u64,
+        cap: u64,
+        now: DateTime<Utc>,
+        ttl_secs: i64,
+    ) -> Result<UploadReservation>;
+
+    /// Drops a hold; releasing one that is gone is not an error.
+    async fn release_upload(&self, repo: &RepoId, reservation: UploadReservation) -> Result<()>;
 
     /// The ids among `ids` that `repo` may not reference: neither uploaded through it nor named by one of its
     /// revisions. Says nothing about what the object store holds.

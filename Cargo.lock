@@ -1850,6 +1850,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-util",
+ "getrandom 0.4.3",
  "hex",
  "pyn-core",
  "pyn-object",

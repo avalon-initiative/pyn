@@ -7,10 +7,11 @@ license.workspace = true
 
 [dependencies]
 async-trait = "0.1.92"
+getrandom = "0.4.3"
 hex = "0.4.3"
 pyn-core = { version = "0.0.1", path = "../pyn-core" }
 sha2 = "0.11.0"
-tokio = { version = "1.53.2", features = ["fs", "io-util", "rt", "sync"] }
+tokio = { version = "1.53.2", features = ["fs", "io-util", "rt", "sync", "time"] }
 tokio-util = { version = "0.7.19", features = ["io"] }
 zstd = "0.13.3"
 bytes = "1"
