@@ -19,6 +19,15 @@ use crate::workspace::{FileState, Workspace};
 /// A pyn server's object ids are SHA-256.
 pub(crate) const ALGORITHM: Algorithm = Algorithm::Sha256;
 const PAGE: usize = 200;
+/// Most pages and most unstored commits one fetch accepts from a server.
+const MAX_PAGES: usize = 10_000;
+const MAX_COMMITS: usize = 1_000_000;
+
+fn too_much_history(pages: usize, commits: usize) -> anyhow::Error {
+    anyhow::anyhow!(
+        "the server sent more than {commits} commits or {pages} pages in one fetch; refusing to store them"
+    )
+}
 const REMOTE: &str = "origin";
 
 /// What the store needs from a pyn server, all of it already in the API.
@@ -192,10 +201,22 @@ impl LocalStore {
 
     /// Stores every commit of the branch the store lacks, with its trees, and moves the branch's refs to the tip.
     pub fn sync_history<R: Remote + ?Sized>(&self, remote: &R, branch: &str) -> Result<()> {
+        self.sync_bounded(remote, branch, (MAX_PAGES, MAX_COMMITS))
+    }
+
+    fn sync_bounded<R: Remote + ?Sized>(
+        &self,
+        remote: &R,
+        branch: &str,
+        (max_pages, max_commits): (usize, usize),
+    ) -> Result<()> {
         let mut pending: HashMap<ObjectId, api::Commit> = HashMap::new();
         let mut tip = None;
         let mut before: Option<String> = None;
-        loop {
+        for pages in 1usize.. {
+            if pages > max_pages {
+                return Err(too_much_history(max_pages, max_commits));
+            }
             let page = remote.fetch_commits(before.as_deref(), PAGE)?;
             let mut fresh = 0;
             for c in page.commits {
@@ -206,8 +227,11 @@ impl LocalStore {
                     pending.insert(id, c);
                 }
             }
+            if pending.len() > max_commits {
+                return Err(too_much_history(max_pages, max_commits));
+            }
             match page.next_before {
-                Some(next) if fresh > 0 => before = Some(next),
+                Some(next) if fresh > 0 && before.as_ref() != Some(&next) => before = Some(next),
                 _ => break,
             }
         }
@@ -220,6 +244,9 @@ impl LocalStore {
         while let Some(id) = wanted.pop() {
             if pending.contains_key(&id) || self.has(&id)? {
                 continue;
+            }
+            if pending.len() > max_commits {
+                return Err(too_much_history(max_pages, max_commits));
             }
             let c = remote.fetch_commit(&id.to_hex())?;
             for p in &c.parents {
@@ -537,6 +564,54 @@ mod tests {
                 .cloned()
                 .with_context(|| format!("object_not_found: {id}"))
         }
+    }
+
+    struct Endless(std::cell::Cell<u64>);
+
+    impl Remote for Endless {
+        fn fetch_commits(&self, _: Option<&str>, limit: usize) -> Result<api::CommitPage> {
+            let commits = (0..limit)
+                .map(|_| {
+                    let n = self.0.get() + 1;
+                    self.0.set(n);
+                    let mut c = commit(None, &[("a", "x")], &[("a", "x", false)], n as i64);
+                    c.id = format!("{n:064x}");
+                    c
+                })
+                .collect();
+            Ok(api::CommitPage {
+                commits,
+                next_before: Some(format!("{:064x}", self.0.get())),
+            })
+        }
+        fn fetch_commit(&self, _: &str) -> Result<api::Commit> {
+            unreachable!("every commit arrives in a page")
+        }
+        fn fetch_snapshot(&self, _: &str) -> Result<Vec<api::SnapshotEntry>> {
+            unreachable!()
+        }
+        fn fetch_object(&self, _: &str) -> Result<Vec<u8>> {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn a_server_that_pages_without_end_is_stopped() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = workspace(dir.path());
+        let store = LocalStore::open_or_create(&ws, "main").unwrap();
+        let remote = Endless(std::cell::Cell::new(0));
+        let err = store
+            .sync_bounded(&remote, "main", (3, 1000))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("refusing to store"), "{err}");
+        assert_eq!(remote.0.get(), 3 * PAGE as u64);
+        let err = store
+            .sync_bounded(&Endless(Default::default()), "main", (1000, 250))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("more than 250 commits"), "{err}");
     }
 
     fn workspace(dir: &std::path::Path) -> Workspace {
