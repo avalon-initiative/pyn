@@ -1,4 +1,4 @@
-use crate::error::{Result, corrupt};
+use crate::error::{Error, Result, corrupt};
 
 fn varint(data: &[u8], pos: &mut usize) -> Result<u64> {
     let mut value = 0u64;
@@ -28,9 +28,20 @@ pub(crate) fn sizes(delta: &[u8]) -> Result<(u64, u64)> {
 
 /// Applies a git delta (copy and insert instructions) to `base`.
 pub(crate) fn apply(base: &[u8], delta: &[u8]) -> Result<Vec<u8>> {
+    apply_capped(base, delta, u64::MAX)
+}
+
+/// Like [`apply`], but rejects a declared result size above `max_out` before allocating.
+pub(crate) fn apply_capped(base: &[u8], delta: &[u8], max_out: u64) -> Result<Vec<u8>> {
     let mut pos = 0;
     let src = varint(delta, &mut pos)?;
     let dst = varint(delta, &mut pos)?;
+    if dst > max_out {
+        return Err(Error::Limit {
+            what: "delta result size",
+            limit: max_out,
+        });
+    }
     if src != base.len() as u64 {
         return Err(corrupt("delta", "base size does not match"));
     }
@@ -70,7 +81,7 @@ pub(crate) fn apply(base: &[u8], delta: &[u8]) -> Result<Vec<u8>> {
         } else if op != 0 {
             let n = usize::from(op);
             let chunk = delta
-                .get(pos..pos + n)
+                .get(pos..pos.saturating_add(n))
                 .ok_or_else(|| corrupt("delta", "truncated insert"))?;
             out.extend_from_slice(chunk);
             pos += n;
@@ -107,5 +118,18 @@ mod tests {
         assert!(apply(base, &[3, 2, 1, b'x']).is_err());
         assert!(apply(base, &[3, 1, 0]).is_err());
         assert!(apply(base, &[3, 3, 3, b'x']).is_err());
+    }
+
+    #[test]
+    fn declared_size_above_cap_is_rejected_before_allocation() {
+        // dst = u64::MAX as a varint
+        let mut d = vec![3];
+        d.extend([0xff; 9]);
+        d.push(0x01);
+        assert!(matches!(
+            apply_capped(b"abc", &d, 1 << 20),
+            Err(Error::Limit { .. })
+        ));
+        assert!(apply(b"abc", &d).is_err());
     }
 }

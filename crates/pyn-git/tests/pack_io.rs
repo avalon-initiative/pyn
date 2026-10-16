@@ -551,3 +551,171 @@ fn rejects_duplicate_objects_and_orphan_deltas() {
     let _ = a;
     assert!(pack_dir_entries(&dst).is_empty());
 }
+
+fn varint_bytes(mut n: u64) -> Vec<u8> {
+    let mut v = Vec::new();
+    loop {
+        let b = (n & 0x7f) as u8;
+        n >>= 7;
+        if n == 0 {
+            v.push(b);
+            return v;
+        }
+        v.push(b | 0x80);
+    }
+}
+
+/// A 100-byte blob and a ref-delta over it that copies the base `copies` times.
+fn expanding_pack(alg: Algorithm, copies: u64, declared: Option<u64>) -> Vec<u8> {
+    let base = vec![b'x'; 100];
+    let base_id = hash_object(alg, Kind::Blob, &base).unwrap();
+    let mut d = varint_bytes(100);
+    d.extend(varint_bytes(declared.unwrap_or(100 * copies)));
+    for _ in 0..copies {
+        d.extend([0x90, 100]);
+    }
+    let mut body = pack_header(2);
+    body.extend(entry_header(3, base.len()));
+    body.extend(zlib(&base));
+    body.extend(entry_header(7, d.len()));
+    body.extend(base_id.as_bytes());
+    body.extend(zlib(&d));
+    seal(alg, body)
+}
+
+fn limit_what(err: Error) -> &'static str {
+    match err {
+        Error::Limit { what, .. } => what,
+        other => panic!("expected a limit error, got {other:?}"),
+    }
+}
+
+#[test]
+fn delta_growth_is_capped_by_ratio_and_floor() {
+    for alg in ALGORITHMS {
+        let tmp = tempfile::tempdir().unwrap();
+        let pack = expanding_pack(alg, 10, None);
+
+        let tight = IngestLimits::default().with_delta_ratio(4, 0);
+        let dst = Git::init(&tmp.path().join("a"), alg, true);
+        let err = index_pack(&dst.db(), &pack[..], &tight).unwrap_err();
+        assert_eq!(limit_what(err), "delta result size");
+        assert!(pack_dir_entries(&dst).is_empty());
+
+        let roomy = IngestLimits::default().with_delta_ratio(16, 0);
+        let dst = Git::init(&tmp.path().join("b"), alg, true);
+        assert!(index_pack(&dst.db(), &pack[..], &roomy).is_ok());
+
+        let floor = IngestLimits::default().with_delta_ratio(1, 2000);
+        let dst = Git::init(&tmp.path().join("c"), alg, true);
+        assert!(index_pack(&dst.db(), &pack[..], &floor).is_ok());
+    }
+}
+
+#[test]
+fn declared_delta_size_is_checked_before_allocating() {
+    let alg = Algorithm::Sha1;
+    let tmp = tempfile::tempdir().unwrap();
+    for declared in [u64::MAX, 1 << 62, 1 << 40] {
+        let pack = expanding_pack(alg, 1, Some(declared));
+        let dst = Git::init(&tmp.path().join(format!("d{declared}")), alg, true);
+        let err = index_pack(&dst.db(), &pack[..], &IngestLimits::default()).unwrap_err();
+        assert_eq!(limit_what(err), "delta result size");
+    }
+}
+
+#[test]
+fn declared_entry_size_is_checked_before_inflating() {
+    let alg = Algorithm::Sha1;
+    let tmp = tempfile::tempdir().unwrap();
+    let dst = Git::init(&tmp.path().join("dst"), alg, true);
+    let mut body = pack_header(1);
+    body.extend(entry_header(3, 1 << 60));
+    let err = index_pack(&dst.db(), &seal(alg, body)[..], &IngestLimits::default()).unwrap_err();
+    assert_eq!(limit_what(err), "object size");
+    let mut body = pack_header(1);
+    body.extend(entry_header(3, usize::MAX));
+    let err = index_pack(&dst.db(), &seal(alg, body)[..], &IngestLimits::default()).unwrap_err();
+    assert!(matches!(err, Error::Corrupt { .. }), "{err:?}");
+}
+
+#[test]
+fn delta_chain_at_the_depth_limit_resolves() {
+    let alg = Algorithm::Sha1;
+    let tmp = tempfile::tempdir().unwrap();
+    let pack = chain_pack(alg, 64);
+    let at = IngestLimits::default().with_max_delta_depth(64);
+    let dst = Git::init(&tmp.path().join("a"), alg, true);
+    assert_eq!(
+        index_pack(&dst.db(), &pack[..], &at).unwrap().pack.len(),
+        65
+    );
+    let below = IngestLimits::default().with_max_delta_depth(63);
+    let dst = Git::init(&tmp.path().join("b"), alg, true);
+    let err = index_pack(&dst.db(), &pack[..], &below).unwrap_err();
+    assert_eq!(limit_what(err), "delta chain depth");
+}
+
+#[test]
+fn total_inflated_bytes_are_budgeted() {
+    let alg = Algorithm::Sha1;
+    let tmp = tempfile::tempdir().unwrap();
+    let pack = chain_pack(alg, 20);
+    let dst = Git::init(&tmp.path().join("a"), alg, true);
+    let err = index_pack(
+        &dst.db(),
+        &pack[..],
+        &IngestLimits::default().with_max_total_inflated(50),
+    )
+    .unwrap_err();
+    assert_eq!(limit_what(err), "total inflated bytes");
+
+    // Enough for the entries as streamed, not for the resolved results.
+    let dst = Git::init(&tmp.path().join("b"), alg, true);
+    let err = index_pack(
+        &dst.db(),
+        &pack[..],
+        &IngestLimits::default().with_max_total_inflated(200),
+    )
+    .unwrap_err();
+    assert_eq!(limit_what(err), "total inflated bytes");
+    assert!(pack_dir_entries(&dst).is_empty());
+
+    let dst = Git::init(&tmp.path().join("c"), alg, true);
+    let ok = IngestLimits::default().with_max_total_inflated(10_000);
+    assert!(index_pack(&dst.db(), &pack[..], &ok).is_ok());
+}
+
+#[test]
+fn limits_read_from_config() {
+    let cfg = pyn_git::Config::parse(
+        b"[pyn]\n\tingestMaxObjectSize = 2m\n\tingestMaxTotalInflated = 1g\n\tingestMaxDeltaDepth = 7\n",
+    )
+    .unwrap();
+    let l = IngestLimits::from_config(&cfg).unwrap();
+    assert_eq!(l.max_object_size, 2 << 20);
+    assert_eq!(l.max_total_inflated, 1 << 30);
+    assert_eq!(l.max_delta_depth, 7);
+    assert_eq!(l.max_objects, IngestLimits::default().max_objects);
+    let bad = pyn_git::Config::parse(b"[pyn]\n\tingestMaxObjects = lots\n").unwrap();
+    assert!(IngestLimits::from_config(&bad).is_err());
+}
+
+#[test]
+fn loose_object_with_extreme_declared_length_is_rejected() {
+    use std::io::Write;
+    let alg = Algorithm::Sha1;
+    let tmp = tempfile::tempdir().unwrap();
+    let dst = Git::init(&tmp.path().join("dst"), alg, true);
+    let db = dst.db();
+    for (n, len) in [u64::MAX, u64::MAX - 1, 1 << 40].into_iter().enumerate() {
+        let hex = format!("{:02x}{:038x}", n + 1, n + 1);
+        let id = ObjectId::from_hex(alg, &hex).unwrap();
+        let dir = dst.objects_dir().join(&hex[..2]);
+        fs::create_dir_all(&dir).unwrap();
+        let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        z.write_all(format!("blob {len}\0abc").as_bytes()).unwrap();
+        fs::write(dir.join(&hex[2..]), z.finish().unwrap()).unwrap();
+        assert!(matches!(db.read(&id), Err(Error::Corrupt { .. })), "{len}");
+    }
+}

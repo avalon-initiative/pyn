@@ -11,7 +11,6 @@ use crate::error::{Error, Result, corrupt, io_at};
 use crate::util::{Checksummer, checksum};
 
 const IDX_MAGIC: [u8; 4] = [0xff, 0x74, 0x4f, 0x63];
-const MAX_DELTA_DEPTH: usize = 10_000;
 
 /// How an object is stored inside a pack.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -264,7 +263,7 @@ impl Pack {
                     at = self.offset_at(i)?;
                 }
             }
-            if chain.len() > MAX_DELTA_DEPTH {
+            if chain.len() > crate::ingest::MAX_DELTA_DEPTH {
                 return Err(corrupt("pack", "delta chain too deep or cyclic"));
             }
         };
@@ -294,7 +293,7 @@ impl Pack {
             })?;
         let mut data = Vec::with_capacity(size.min(64 << 20) as usize);
         ZlibDecoder::new(&mut r)
-            .take(size + 1)
+            .take(size.saturating_add(1))
             .read_to_end(&mut data)
             .map_err(|e| corrupt("pack", format!("inflate failed: {e}")))?;
         if data.len() as u64 != size {

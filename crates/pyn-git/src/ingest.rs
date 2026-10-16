@@ -11,14 +11,21 @@ use flate2::bufread::ZlibDecoder;
 use flate2::write::ZlibEncoder;
 use pyn_object::{Algorithm, Kind, ObjectHasher, ObjectId, hash_object};
 
+use crate::config::Config;
 use crate::delta;
-use crate::error::{Error, Result, corrupt, io_at};
+use crate::error::{Error, Result, corrupt, invalid, io_at};
 use crate::odb::ObjectDb;
 use crate::pack::{Pack, PosReader, Raw, read_entry_header};
 use crate::pack_write::{PackIndexEntry, build_idx};
 use crate::util::Checksummer;
 
+/// Deepest delta chain accepted when ingesting and when reading a stored pack.
+pub const MAX_DELTA_DEPTH: usize = 4096;
+
 /// Bounds on what an incoming pack may ask for.
+///
+/// Start from [`IngestLimits::default`] and adjust with the `with_*` methods, or read the
+/// `pyn.ingest*` keys of a git config with [`IngestLimits::from_config`].
 #[derive(Debug, Clone, Copy)]
 pub struct IngestLimits {
     pub max_objects: u32,
@@ -26,17 +33,114 @@ pub struct IngestLimits {
     pub max_object_size: u64,
     pub max_delta_depth: usize,
     pub max_pack_size: u64,
+    /// Sum of every inflated entry and every resolved delta result in one ingest.
+    pub max_total_inflated: u64,
+    /// A delta result may be at most this many times its base, unless under `delta_size_floor`.
+    pub max_delta_ratio: u64,
+    pub delta_size_floor: u64,
 }
 
 impl Default for IngestLimits {
     fn default() -> Self {
         Self {
-            max_objects: 100_000_000,
-            max_object_size: 1 << 30,
-            max_delta_depth: 4096,
-            max_pack_size: 1 << 40,
+            max_objects: 20_000_000,
+            max_object_size: 256 << 20,
+            max_delta_depth: MAX_DELTA_DEPTH,
+            max_pack_size: 64 << 30,
+            max_total_inflated: 128 << 30,
+            max_delta_ratio: 256,
+            delta_size_floor: 4 << 20,
         }
     }
+}
+
+impl IngestLimits {
+    pub fn with_max_objects(mut self, n: u32) -> Self {
+        self.max_objects = n;
+        self
+    }
+
+    pub fn with_max_object_size(mut self, n: u64) -> Self {
+        self.max_object_size = n;
+        self
+    }
+
+    pub fn with_max_delta_depth(mut self, n: usize) -> Self {
+        self.max_delta_depth = n;
+        self
+    }
+
+    pub fn with_max_pack_size(mut self, n: u64) -> Self {
+        self.max_pack_size = n;
+        self
+    }
+
+    pub fn with_max_total_inflated(mut self, n: u64) -> Self {
+        self.max_total_inflated = n;
+        self
+    }
+
+    pub fn with_delta_ratio(mut self, ratio: u64, floor: u64) -> Self {
+        self.max_delta_ratio = ratio;
+        self.delta_size_floor = floor;
+        self
+    }
+
+    /// Defaults overridden by `pyn.ingestMaxObjects`, `ingestMaxObjectSize`, `ingestMaxDeltaDepth`,
+    /// `ingestMaxPackSize`, `ingestMaxTotalInflated`, `ingestMaxDeltaRatio` and `ingestDeltaSizeFloor`.
+    /// Sizes accept a `k`, `m` or `g` suffix.
+    pub fn from_config(config: &Config) -> Result<Self> {
+        let mut l = Self::default();
+        let num = |key: &str| -> Result<Option<u64>> {
+            match config.get(key) {
+                None => Ok(None),
+                Some(v) => parse_count(v)
+                    .map(Some)
+                    .ok_or_else(|| invalid("config", format!("{key} is not a number: {v:?}"))),
+            }
+        };
+        if let Some(n) = num("pyn.ingestmaxobjects")? {
+            l.max_objects = u32::try_from(n).unwrap_or(u32::MAX);
+        }
+        if let Some(n) = num("pyn.ingestmaxobjectsize")? {
+            l.max_object_size = n;
+        }
+        if let Some(n) = num("pyn.ingestmaxdeltadepth")? {
+            l.max_delta_depth = usize::try_from(n).unwrap_or(usize::MAX);
+        }
+        if let Some(n) = num("pyn.ingestmaxpacksize")? {
+            l.max_pack_size = n;
+        }
+        if let Some(n) = num("pyn.ingestmaxtotalinflated")? {
+            l.max_total_inflated = n;
+        }
+        if let Some(n) = num("pyn.ingestmaxdeltaratio")? {
+            l.max_delta_ratio = n;
+        }
+        if let Some(n) = num("pyn.ingestdeltasizefloor")? {
+            l.delta_size_floor = n;
+        }
+        Ok(l)
+    }
+
+    /// Largest result a delta over a base of `base_len` bytes may produce.
+    fn delta_cap(&self, base_len: u64) -> u64 {
+        base_len
+            .saturating_mul(self.max_delta_ratio)
+            .max(self.delta_size_floor)
+            .min(self.max_object_size)
+    }
+}
+
+fn parse_count(v: &str) -> Option<u64> {
+    let v = v.trim();
+    let (digits, mult) = match v.chars().last()?.to_ascii_lowercase() {
+        'k' => (&v[..v.len() - 1], 1u64 << 10),
+        'm' => (&v[..v.len() - 1], 1 << 20),
+        'g' => (&v[..v.len() - 1], 1 << 30),
+        _ => (v, 1),
+    };
+    digits.trim().parse::<u64>().ok()?.checked_mul(mult)
 }
 
 /// A pack stored by [`index_pack`] and now visible to the object database.
@@ -176,9 +280,21 @@ struct Work {
     depth: usize,
 }
 
+fn charge(spent: &mut u64, n: u64, limits: &IngestLimits) -> Result<()> {
+    *spent = spent.saturating_add(n);
+    if *spent > limits.max_total_inflated {
+        return Err(Error::Limit {
+            what: "total inflated bytes",
+            limit: limits.max_total_inflated,
+        });
+    }
+    Ok(())
+}
+
 struct Resolver<'a> {
     db: &'a ObjectDb,
     limits: IngestLimits,
+    spent: u64,
     file: File,
     entries: Vec<Entry>,
     ids: HashMap<ObjectId, usize>,
@@ -258,13 +374,15 @@ impl Resolver<'_> {
             }
             let d = self.load(w.idx)?;
             let (_, dst) = delta::sizes(&d)?;
-            if dst > self.limits.max_object_size {
+            let cap = self.limits.delta_cap(w.parent.len() as u64);
+            if dst > cap {
                 return Err(Error::Limit {
-                    what: "object size",
-                    limit: self.limits.max_object_size,
+                    what: "delta result size",
+                    limit: cap,
                 });
             }
-            let data = delta::apply(&w.parent, &d)?;
+            charge(&mut self.spent, dst, &self.limits)?;
+            let data = delta::apply_capped(&w.parent, &d, cap)?;
             let id = hash_object(self.algorithm(), w.kind, &data)?;
             self.record(w.idx, id, w.kind)?;
             self.expand(w.idx, id, w.kind, Some(Rc::new(data)), w.depth + 1)?;
@@ -349,7 +467,8 @@ fn ingest<R: Read>(
         sink: BufWriter::new(file.try_clone().map_err(io_at(tmp))?),
         failure: None,
     };
-    let streamed = stream(&mut tee, algorithm, limits);
+    let mut spent = 0u64;
+    let streamed = stream(&mut tee, algorithm, limits, &mut spent);
     let parsed = match streamed {
         Ok(p) => match tee.failure.take() {
             Some(e) => return Err(e),
@@ -373,6 +492,7 @@ fn ingest<R: Read>(
     let mut r = Resolver {
         db,
         limits: *limits,
+        spent,
         file,
         entries: Vec::new(),
         ids,
@@ -410,6 +530,7 @@ fn ingest<R: Read>(
                     limit: limits.max_object_size,
                 });
             }
+            charge(&mut r.spent, object.data.len() as u64, limits)?;
             r.file.seek(SeekFrom::Start(end)).map_err(io_at(tmp))?;
             let (offset, crc) = write_entry(&mut r.file, object.kind, &object.data)?;
             end = r.file.stream_position().map_err(io_at(tmp))?;
@@ -536,6 +657,7 @@ fn stream<R: Read>(
     tee: &mut Tee<R>,
     algorithm: Algorithm,
     limits: &IngestLimits,
+    spent: &mut u64,
 ) -> Result<Parsed> {
     let io = |e: std::io::Error| {
         if e.kind() == std::io::ErrorKind::UnexpectedEof {
@@ -579,6 +701,7 @@ fn stream<R: Read>(
                 limit: limits.max_object_size,
             });
         }
+        charge(spent, size, limits)?;
         let mut id = None;
         let mut kind = None;
         match raw {
