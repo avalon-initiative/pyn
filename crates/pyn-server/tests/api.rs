@@ -4351,3 +4351,103 @@ async fn only_a_full_scope_credential_acts_as_a_server_admin() {
     assert!(is_admin(admin).await);
     assert!(!is_admin(limited).await);
 }
+
+async fn put_chunk_in(app: &axum::Router, repo: &str, token: &str, bytes: &[u8]) -> String {
+    let req = Request::put(format!("/v1/repos/alice/{repo}/objects/chunk"))
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::from(bytes.to_vec()))
+        .unwrap();
+    let r = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    body_json::<api::PutObjectResponse>(r).await.content
+}
+
+async fn missing_in(app: &axum::Router, repo: &str, token: &str, ids: &[&str]) -> Vec<String> {
+    let r = send(
+        app,
+        "POST",
+        &format!("/v1/repos/alice/{repo}/objects/missing"),
+        token,
+        Some(serde_json::json!({"hashes": ids})),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+    body_json::<api::MissingObjectsResponse>(r).await.missing
+}
+
+#[tokio::test]
+async fn uploads_are_scoped_to_the_repository_that_received_them() {
+    let app = router(state_with(false, RegistrationMode::Open).await);
+    let alice = register_and_sign_in(&app, "alice").await;
+    create_repo(&app, &alice, "game").await;
+    create_repo(&app, &alice, "other").await;
+    let checkin = |repo: &'static str, content: String| {
+        let app = app.clone();
+        let alice = alice.clone();
+        async move {
+            send(
+                &app,
+                "POST",
+                &format!("/v1/repos/alice/{repo}/checkin"),
+                &alice,
+                Some(serde_json::json!({
+                    "path": "Source/a.txt", "content": content, "base_revision": null, "message": "m"
+                })),
+            )
+            .await
+        }
+    };
+    let id = put_blob(&app, "game", &alice, "same bytes").await;
+    let ghost = "0".repeat(64);
+
+    assert!(missing_in(&app, "game", &alice, &[&id]).await.is_empty());
+    assert_eq!(
+        missing_in(&app, "other", &alice, &[&id, &ghost]).await,
+        [id.clone(), ghost],
+        "an id the store holds is reported like one it does not"
+    );
+    let r = checkin("other", id.clone()).await;
+    assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(body_json::<api::ErrorBody>(r).await.code, "object_missing");
+
+    assert_eq!(put_blob(&app, "other", &alice, "same bytes").await, id);
+    assert!(missing_in(&app, "other", &alice, &[&id]).await.is_empty());
+    assert_eq!(checkin("other", id.clone()).await.status(), StatusCode::OK);
+    assert_eq!(checkin("game", id).await.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn assembling_needs_chunks_uploaded_to_the_same_repository() {
+    let app = router(state_with(false, RegistrationMode::Open).await);
+    let alice = register_and_sign_in(&app, "alice").await;
+    create_repo(&app, &alice, "game").await;
+    create_repo(&app, &alice, "other").await;
+    let parts = [
+        put_chunk_in(&app, "game", &alice, b"first ").await,
+        put_chunk_in(&app, "game", &alice, b"second").await,
+    ];
+    let assemble = |repo: &'static str| {
+        let (app, alice, parts) = (app.clone(), alice.clone(), parts.clone());
+        async move {
+            send(
+                &app,
+                "POST",
+                &format!("/v1/repos/alice/{repo}/objects/assemble"),
+                &alice,
+                Some(serde_json::json!({"chunks": parts})),
+            )
+            .await
+        }
+    };
+    let r = assemble("other").await;
+    assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(body_json::<api::ErrorBody>(r).await.code, "object_missing");
+
+    let again = [
+        put_chunk_in(&app, "other", &alice, b"first ").await,
+        put_chunk_in(&app, "other", &alice, b"second").await,
+    ];
+    assert_eq!(again, parts);
+    assert_eq!(assemble("other").await.status(), StatusCode::OK);
+    assert_eq!(assemble("game").await.status(), StatusCode::OK);
+}
