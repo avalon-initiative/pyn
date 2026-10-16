@@ -842,7 +842,14 @@ pub fn push(backend: &dyn Backend, ws: &Workspace) -> Result<()> {
         println!("Everything up-to-date");
         return Ok(());
     };
-    if outgoing.base != published {
+    let tip = outgoing
+        .commits
+        .last()
+        .copied()
+        .expect("outgoing has commits");
+    if let Some(p) = published
+        && !store.ancestors(Some(tip))?.contains(&p)
+    {
         return Err(explain_push(
             ApiError {
                 code: "not_fast_forward".into(),
@@ -864,11 +871,6 @@ pub fn push(backend: &dyn Backend, ws: &Workspace) -> Result<()> {
             bail!("the server stored a file as {sent}, not {id}");
         }
     }
-    let tip = outgoing
-        .commits
-        .last()
-        .copied()
-        .expect("outgoing has commits");
     let response = backend
         .push_commits(&api::PushRequest {
             branch: Some(branch.clone()),

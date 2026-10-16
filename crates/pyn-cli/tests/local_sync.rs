@@ -181,7 +181,7 @@ fn a_lapsed_lease_is_refused_like_no_lock() {
 }
 
 #[test]
-fn a_non_fast_forward_is_pulled_replayed_and_pushed() {
+fn a_non_fast_forward_is_replayed_by_pull_rebase_and_pushed() {
     let (env, ws) = seeded();
     let other = clone_with(&env, "other", &["--local-store"]);
     commit_local(
@@ -209,7 +209,7 @@ fn a_non_fast_forward_is_pulled_replayed_and_pushed() {
         "{err}"
     );
 
-    let out = env.ok(&ws, "alice", &["pull"]);
+    let out = env.ok(&ws, "alice", &["pull", "--rebase"]);
     assert!(out.contains("Rebased 2 local commit(s)"), "{out}");
     assert_eq!(
         std::fs::read_to_string(ws.join("Source/a.cpp")).unwrap(),
@@ -540,6 +540,8 @@ fn without_the_setting_fetch_pull_and_push_are_as_before() {
     assert_eq!(env.ok(&ws, "alice", &["fetch"]), "updated 1 file(s)\n");
     env.seed("alice", "Source/c.cpp", "sea", None);
     assert_eq!(env.ok(&ws, "alice", &["pull"]), "updated 1 file(s)\n");
+    let err = env.fails(&ws, "alice", &["pull", "--rebase"]);
+    assert!(err.contains("takes no arguments"), "{err}");
     assert_eq!(
         env.ok(&ws, "alice", &["push"]),
         "Nothing to push: commits go straight to the server, so `pyn commit` has already published them.\n"
@@ -670,4 +672,199 @@ fn a_tampered_object_is_refused_and_nothing_is_stored() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert_ne!(git(&ws, &["rev-parse", "origin/main"]), tracking);
+}
+
+fn parents(ws: &Path, rev: &str) -> Vec<String> {
+    git(ws, &["rev-list", "--parents", "-n", "1", rev])
+        .split_whitespace()
+        .skip(1)
+        .map(str::to_string)
+        .collect()
+}
+
+fn diverge(env: &Env, ws: &Path) -> PathBuf {
+    let other = clone_with(env, "other", &["--local-store"]);
+    commit_local(
+        env,
+        &other,
+        "alice",
+        "Source/a.cpp",
+        "ONE\ntwo\nthree\n",
+        "first line",
+    );
+    env.ok(&other, "alice", &["push"]);
+    commit_local(
+        env,
+        ws,
+        "alice",
+        "Source/a.cpp",
+        "one\ntwo\nTHREE\n",
+        "last line",
+    );
+    commit_local(env, ws, "alice", "Source/b.cpp", "bee2", "b");
+    other
+}
+
+#[test]
+fn a_non_fast_forward_pull_makes_a_merge_commit_and_push_sends_it() {
+    let (env, ws) = seeded();
+    diverge(&env, &ws);
+    let local = git(&ws, &["rev-parse", "main"]);
+    let err = env.fails(&ws, "alice", &["push"]);
+    assert!(err.contains("non-fast-forward"), "{err}");
+
+    let out = env.ok(&ws, "alice", &["pull"]);
+    assert!(out.contains("Merge made by the 'ort' strategy."), "{out}");
+    let merge = git(&ws, &["rev-parse", "main"]);
+    let theirs = git(&ws, &["rev-parse", "origin/main"]);
+    assert_eq!(parents(&ws, "main"), [local.trim(), theirs.trim()]);
+    assert!(git(&ws, &["log", "-1", "--format=%s", "main"]).starts_with("Merge branch 'main' of "),);
+    assert_eq!(
+        std::fs::read_to_string(ws.join("Source/a.cpp")).unwrap(),
+        "ONE\ntwo\nTHREE\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(ws.join("Source/b.cpp")).unwrap(),
+        "bee2"
+    );
+    git(&ws, &["fsck", "--strict"]);
+    // Git as the oracle for the result only.
+    let oracle = git(
+        &ws,
+        &["merge-tree", "--write-tree", local.trim(), theirs.trim()],
+    );
+    assert_eq!(
+        git(&ws, &["rev-parse", "main^{tree}"]),
+        oracle.lines().next().unwrap().to_string() + "\n"
+    );
+    let status = env.ok(&ws, "alice", &["status"]);
+    assert!(status.contains("local commit"), "{status}");
+
+    let before = server_commits(&env, &ws);
+    env.ok(&ws, "alice", &["push"]);
+    assert_eq!(
+        server_commits(&env, &ws),
+        before + 3,
+        "both local commits and the merge"
+    );
+    assert_eq!(server_head(&env, &ws), &merge.trim()[..10]);
+    assert_eq!(git(&ws, &["rev-parse", "origin/main"]), merge);
+    assert_eq!(env.ok(&ws, "alice", &["push"]), "Everything up-to-date\n");
+    let third = clone_with(&env, "third", &[]);
+    assert_eq!(
+        std::fs::read_to_string(third.join("Source/a.cpp")).unwrap(),
+        "ONE\ntwo\nTHREE\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(third.join("Source/b.cpp")).unwrap(),
+        "bee2"
+    );
+    let status = env.ok(&ws, "alice", &["status"]);
+    assert!(!status.contains("local commit"), "{status}");
+}
+
+#[test]
+fn a_pulled_merge_adopts_an_exclusive_path_only_the_server_changed() {
+    let (env, ws) = seeded();
+    let other = clone_with(&env, "other", &["--local-store"]);
+    env.ok(&other, "bob", &["lock", "Content/m.umap"]);
+    commit_local(&env, &other, "bob", "Content/m.umap", "map by bob", "map");
+    env.ok(&other, "bob", &["push"]);
+    commit_local(&env, &ws, "alice", "Source/b.cpp", "bee2", "b");
+
+    let out = env.ok(&ws, "alice", &["pull"]);
+    assert!(out.contains("Merge made"), "{out}");
+    assert_eq!(parents(&ws, "main").len(), 2);
+    assert_eq!(
+        std::fs::read_to_string(ws.join("Content/m.umap")).unwrap(),
+        "map by bob"
+    );
+    env.ok(&ws, "alice", &["push"]);
+    let third = clone_with(&env, "third", &[]);
+    assert_eq!(
+        std::fs::read_to_string(third.join("Content/m.umap")).unwrap(),
+        "map by bob"
+    );
+    assert_eq!(
+        std::fs::read_to_string(third.join("Source/b.cpp")).unwrap(),
+        "bee2"
+    );
+    assert!(
+        env.ok(&ws, "alice", &["locks"]).trim().is_empty()
+            || !env.ok(&ws, "alice", &["locks"]).contains("m.umap")
+    );
+}
+
+#[test]
+fn a_diverged_exclusive_path_is_refused_until_the_person_holds_its_lock() {
+    let (env, ws) = seeded();
+    env.ok(&ws, "alice", &["lock", "Content/m.umap"]);
+    commit_local(
+        &env,
+        &ws,
+        "alice",
+        "Content/m.umap",
+        "map by alice",
+        "alice's map",
+    );
+    env.ok(&ws, "alice", &["unlock", "Content/m.umap"]);
+    let other = clone_with(&env, "other", &["--local-store"]);
+    env.ok(&other, "bob", &["lock", "Content/m.umap"]);
+    commit_local(
+        &env,
+        &other,
+        "bob",
+        "Content/m.umap",
+        "map by bob",
+        "bob's map",
+    );
+    env.ok(&other, "bob", &["push"]);
+
+    let local = git(&ws, &["rev-parse", "main"]);
+    let err = env.fails(&ws, "alice", &["pull"]);
+    assert!(
+        err.contains("Content/m.umap") && err.contains("exclusive") && err.contains("pyn lock"),
+        "{err}"
+    );
+    assert!(err.contains("nothing was changed"), "{err}");
+    assert_eq!(git(&ws, &["rev-parse", "main"]), local);
+    assert_eq!(
+        std::fs::read_to_string(ws.join("Content/m.umap")).unwrap(),
+        "map by alice"
+    );
+    let err = env.fails(&ws, "alice", &["pull", "--rebase"]);
+    assert!(err.contains("Content/m.umap"), "{err}");
+
+    env.ok(&ws, "alice", &["lock", "Content/m.umap", "--base", "2"]);
+    let out = env.ok(&ws, "alice", &["pull"]);
+    assert!(out.contains("Kept your version of Content/m.umap"), "{out}");
+    assert_eq!(parents(&ws, "main").len(), 2);
+    env.ok(&ws, "alice", &["push"]);
+    assert_eq!(
+        std::fs::read_to_string(clone_with(&env, "third", &[]).join("Content/m.umap")).unwrap(),
+        "map by alice"
+    );
+}
+
+#[test]
+fn a_merged_push_still_needs_the_lock_for_the_local_exclusive_change() {
+    let (env, ws) = seeded();
+    env.ok(&ws, "alice", &["lock", "Content/m.umap"]);
+    commit_local(
+        &env,
+        &ws,
+        "alice",
+        "Content/m.umap",
+        "map by alice",
+        "alice's map",
+    );
+    let other = clone_with(&env, "other", &["--local-store"]);
+    commit_local(&env, &other, "bob", "Source/b.cpp", "bee by bob", "b");
+    env.ok(&other, "bob", &["push"]);
+    env.ok(&ws, "alice", &["pull"]);
+    env.ok(&ws, "alice", &["unlock", "Content/m.umap"]);
+    let err = env.fails(&ws, "alice", &["push"]);
+    assert!(err.contains("lock required"), "{err}");
+    env.ok(&ws, "alice", &["lock", "Content/m.umap"]);
+    env.ok(&ws, "alice", &["push"]);
 }
