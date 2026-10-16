@@ -27,6 +27,10 @@ async fn state(dev: bool) -> AppState {
 }
 
 async fn state_with(dev: bool, mode: RegistrationMode) -> AppState {
+    state_at(dev, mode, None).await
+}
+
+async fn state_at(dev: bool, mode: RegistrationMode, public_url: Option<&str>) -> AppState {
     let clock = Arc::new(SystemClock);
     let objects = Arc::new(pyn_core::ChunkedStore::new(Arc::new(
         MemoryObjectStore::new(),
@@ -48,6 +52,8 @@ async fn state_with(dev: bool, mode: RegistrationMode) -> AppState {
             .with_config(AccessConfig {
                 registration: mode,
                 require_email_verification: false,
+                public_url: public_url
+                    .map_or_else(|| AccessConfig::default().public_url, Into::into),
                 ..AccessConfig::default()
             })
             .with_registry(meta.clone())
@@ -4349,4 +4355,83 @@ async fn only_a_full_scope_credential_acts_as_a_server_admin() {
     };
     assert!(is_admin(admin).await);
     assert!(!is_admin(limited).await);
+}
+
+async fn registered_alice(app: &axum::Router) {
+    app.clone()
+        .oneshot(anon(
+            "POST",
+            "/v1/register",
+            serde_json::json!({"username": "alice", "password": PASSWORD}),
+        ))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn the_session_cookie_is_secure_when_the_public_url_is_https() {
+    let app = router(state_at(false, RegistrationMode::Open, Some("https://pyn.example")).await);
+    registered_alice(&app).await;
+    let (set, _, _) = web_sign_in(&app, None).await;
+    assert!(set.contains("; Secure"), "{set}");
+}
+
+#[tokio::test]
+async fn the_session_cookie_is_not_secure_for_an_http_public_url_without_a_forwarded_scheme() {
+    let app = router(state_at(false, RegistrationMode::Open, Some("http://127.0.0.1:7878")).await);
+    registered_alice(&app).await;
+    let (set, _, _) = web_sign_in(&app, None).await;
+    assert!(!set.contains("Secure"), "{set}");
+    let (set, _, _) = web_sign_in(&app, Some("https")).await;
+    assert!(set.contains("; Secure"), "{set}");
+}
+
+#[tokio::test]
+async fn a_non_bearer_authorization_header_does_not_skip_the_csrf_check() {
+    let app = router(state_with(false, RegistrationMode::Open).await);
+    registered_alice(&app).await;
+    let (set, csrf, _) = web_sign_in(&app, None).await;
+    let cookie = set
+        .split(';')
+        .next()
+        .unwrap()
+        .strip_prefix("pyn_session=")
+        .unwrap()
+        .to_string();
+    let body = || Some(serde_json::json!({"title": "laptop", "key": "ssh-ed25519 bad"}));
+    for value in ["Basic YTpi", "Digest x"] {
+        let mut req = with_cookie("POST", "/v1/keys", &cookie, None, body());
+        req.headers_mut()
+            .insert("authorization", value.parse().unwrap());
+        assert_eq!(status(&app, req).await, StatusCode::FORBIDDEN, "{value}");
+    }
+    let mut req = with_cookie("POST", "/v1/keys", &cookie, Some(&csrf), body());
+    req.headers_mut()
+        .insert("authorization", "Basic YTpi".parse().unwrap());
+    assert_ne!(status(&app, req).await, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn the_dev_header_skips_the_csrf_check_only_when_dev_auth_is_on() {
+    let off = router(state_with(false, RegistrationMode::Open).await);
+    registered_alice(&off).await;
+    let (set, _, _) = web_sign_in(&off, None).await;
+    let cookie = set
+        .split(';')
+        .next()
+        .unwrap()
+        .strip_prefix("pyn_session=")
+        .unwrap()
+        .to_string();
+    let body = || Some(serde_json::json!({"title": "laptop", "key": "ssh-ed25519 bad"}));
+    let mut req = with_cookie("POST", "/v1/keys", &cookie, None, body());
+    req.headers_mut()
+        .insert(api::DEV_USER_HEADER, "alice".parse().unwrap());
+    assert_eq!(status(&off, req).await, StatusCode::FORBIDDEN);
+
+    let on = router(state_with(true, RegistrationMode::Open).await);
+    let mut req = with_cookie("POST", "/v1/keys", &cookie, None, body());
+    req.headers_mut()
+        .insert(api::DEV_USER_HEADER, "alice".parse().unwrap());
+    assert_ne!(status(&on, req).await, StatusCode::FORBIDDEN);
 }

@@ -660,6 +660,15 @@ fn bearer_token(headers: &HeaderMap) -> Option<&str> {
         .then_some(token.trim())
 }
 
+/// Whether `identify` would authenticate the request by a bearer token or the dev header rather than a cookie.
+pub(crate) fn uses_non_cookie_credential(state: &AppState, headers: &HeaderMap) -> bool {
+    bearer_token(headers).is_some()
+        || (state.dev_auth.is_some()
+            && headers
+                .get(api::DEV_USER_HEADER)
+                .is_some_and(|v| v.to_str().is_ok()))
+}
+
 /// Names the account behind the request's credential: a bearer token, the dev header or a session cookie.
 /// A service credential is refused; only the admin routes take one.
 pub(crate) async fn identify(state: &AppState, headers: &HeaderMap) -> ApiResult<Identity> {

@@ -284,7 +284,7 @@ async fn first_sign_in_creates_an_account_and_opens_the_usual_session() {
     for attr in ["pyn_oidc=", "HttpOnly", "SameSite=Lax", "Path=/v1/oidc"] {
         assert!(binding.contains(attr), "{binding}");
     }
-    assert!(!binding.contains("Secure"));
+    assert!(binding.contains("Secure"), "the public URL is https");
 
     let person = Person::new("sub-maya")
         .username("maya")

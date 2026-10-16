@@ -62,11 +62,11 @@ pub(crate) struct AuthorizeQuery {
     return_to: Option<String>,
 }
 
-fn started(begin: OidcBegin, headers: &HeaderMap, body: Response) -> Response {
+fn started(s: &AppState, begin: OidcBegin, headers: &HeaderMap, body: Response) -> Response {
     let mut res = body;
     res.headers_mut().insert(
         SET_COOKIE,
-        binding_cookie(&begin.binding, BINDING_MAX_AGE, is_https(headers)),
+        binding_cookie(&begin.binding, BINDING_MAX_AGE, is_https(s, headers)),
     );
     res
 }
@@ -95,7 +95,7 @@ pub(crate) async fn authorize(
         })
         .await?;
     let to = begin.url.clone();
-    Ok(started(begin, &headers, redirect(&to)))
+    Ok(started(&s, begin, &headers, redirect(&to)))
 }
 
 #[utoipa::path(post, path = "/v1/oidc/link",
@@ -125,7 +125,7 @@ pub(crate) async fn link(
         url: begin.url.clone(),
     })
     .into_response();
-    Ok(started(begin, &headers, body))
+    Ok(started(&s, begin, &headers, body))
 }
 
 #[derive(Deserialize)]
@@ -152,7 +152,7 @@ pub(crate) async fn callback(
 ) -> Response {
     let web = s.access.public_url();
     let web = web.trim_end_matches('/');
-    let secure = is_https(&headers);
+    let secure = is_https(&s, &headers);
     let outcome = match (&q.code, &q.state, &q.error) {
         (Some(code), Some(state), None) => {
             s.access
