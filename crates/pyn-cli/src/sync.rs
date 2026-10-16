@@ -7,6 +7,8 @@ use anyhow::{Context, Result, bail};
 use pyn_proto as api;
 
 use crate::backend::Backend;
+use crate::local_commit::{Change, Unpublished};
+use crate::local_store::LocalStore;
 use crate::localfile;
 use crate::snapshot::short;
 use crate::staging;
@@ -150,8 +152,13 @@ pub fn status(backend: &dyn Backend, ws: &Workspace, commit: Option<&str>) -> Re
     let unmerged = crate::merging::unmerged(ws)?;
     let merged = crate::merging::merged_cleanly(ws);
     let me = backend.whoami()?;
+    let unpublished = match LocalStore::open(ws) {
+        Some(store) => store.unpublished(&crate::branch::name(Some(ws)))?,
+        None => Unpublished::default(),
+    };
     let paths: BTreeSet<&String> = entries
         .keys()
+        .chain(unpublished.paths.keys())
         .chain(state.keys())
         .chain(local.iter())
         .chain(index.entries.keys())
@@ -229,6 +236,7 @@ pub fn status(backend: &dyn Backend, ws: &Workspace, commit: Option<&str>) -> Re
                 });
                 untracked += 1;
             }
+            (None, false) if unpublished.paths.get(path) == Some(&Change::Deleted) => {}
             (None, false) if entry.is_some() => {
                 if entry.is_some_and(|e| e.revision.is_some()) {
                     notes.push("new".into());
@@ -238,6 +246,9 @@ pub fn status(backend: &dyn Backend, ws: &Workspace, commit: Option<&str>) -> Re
                 }
             }
             _ => {}
+        }
+        if let Some(change) = unpublished.paths.get(path) {
+            notes.push(format!("{} in a local commit", change.word()));
         }
         if let Some(why) = unmerged.get(path) {
             notes.push(format!("unmerged ({why})"));
@@ -279,6 +290,7 @@ pub fn status(backend: &dyn Backend, ws: &Workspace, commit: Option<&str>) -> Re
     }
     if rows.is_empty() {
         println!("everything is up to date");
+        print_unpublished(&unpublished);
         return Ok(());
     }
     println!(
@@ -299,7 +311,17 @@ pub fn status(backend: &dyn Backend, ws: &Workspace, commit: Option<&str>) -> Re
         "{staged} staged, {modified} modified, {behind} behind, {ahead}{unmerged}{new} new, \
          {untracked} untracked, {mine} locked by you, {theirs} locked by others"
     );
+    print_unpublished(&unpublished);
     Ok(())
+}
+
+fn print_unpublished(unpublished: &Unpublished) {
+    if unpublished.ahead > 0 {
+        println!(
+            "{} local commit(s) not yet published to the server",
+            unpublished.ahead
+        );
+    }
 }
 
 /// Fetches files that are new or behind, or with `commit` brings every file to that commit's revision, removing files
@@ -315,6 +337,10 @@ pub fn update(
     let index = staging::Index::load(ws)?;
     let (mut updated, mut removed, mut skipped) = (0, 0, Vec::new());
     let entries = entries_at(backend, commit)?;
+    let held = match LocalStore::open(ws) {
+        Some(store) => store.unpublished(&crate::branch::name(Some(ws)))?.paths,
+        None => BTreeMap::new(),
+    };
     if commit.is_none() {
         let listed: BTreeSet<&str> = entries.iter().map(|e| e.path.as_str()).collect();
         let gone: Vec<String> = state
@@ -324,7 +350,7 @@ pub fn update(
             .cloned()
             .collect();
         for path in gone {
-            if index.entries.contains_key(&path) {
+            if index.entries.contains_key(&path) || held.contains_key(&path) {
                 continue;
             }
             let target = ws.abs(&path);
@@ -343,6 +369,13 @@ pub fn update(
     }
     for entry in entries {
         if !only.is_empty() && !only.contains(&entry.path) {
+            continue;
+        }
+        if held.contains_key(&entry.path) {
+            skipped.push(format!(
+                "{}: committed locally and not yet published",
+                entry.path
+            ));
             continue;
         }
         if index.entries.contains_key(&entry.path) {

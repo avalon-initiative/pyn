@@ -15,6 +15,7 @@ mod diff;
 mod git_home;
 mod http_transport;
 mod limits;
+mod local_commit;
 mod local_store;
 mod localfile;
 mod ls_remote;

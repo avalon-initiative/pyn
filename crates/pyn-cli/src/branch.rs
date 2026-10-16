@@ -10,6 +10,7 @@ use pyn_proto as api;
 
 use crate::backend::Backend;
 use crate::client::Api;
+use crate::local_store::LocalStore;
 use crate::localfile;
 use crate::snapshot::{self, short};
 use crate::staging::Index;
@@ -296,19 +297,41 @@ fn list_branches(
             println!("{mark} {shown}");
             continue;
         }
-        let (id, subject) = match &b.commit {
-            Some(c) => {
+        let local = match ws {
+            Some(w) if mark == '*' => local_tip(w, &here)?,
+            _ => None,
+        };
+        let (id, subject) = match (&local, &b.commit) {
+            (Some(l), _) => l.clone(),
+            (None, Some(c)) => {
                 let message = backend.commit(c)?.message;
                 (
                     short(c).to_string(),
                     message.lines().next().unwrap_or_default().to_string(),
                 )
             }
-            None => ("-".to_string(), "(no commits yet)".to_string()),
+            (None, None) => ("-".to_string(), "(no commits yet)".to_string()),
         };
         println!("{mark} {shown:<width$}  {id}  {subject}");
     }
     Ok(())
+}
+
+/// The workspace branch's tip and subject when it has local commits the server lacks.
+fn local_tip(ws: &Workspace, branch: &str) -> Result<Option<(String, String)>> {
+    let Some(store) = LocalStore::open(ws) else {
+        return Ok(None);
+    };
+    let ahead = store.unpublished(branch)?.ahead;
+    let Some(tip) = store.tip(branch)?.filter(|_| ahead > 0) else {
+        return Ok(None);
+    };
+    let message = String::from_utf8_lossy(&store.repo().commit(&tip)?.message).into_owned();
+    let subject = message.lines().next().unwrap_or_default();
+    Ok(Some((
+        short(&tip.to_hex()).to_string(),
+        format!("{subject} (local, {ahead} not yet published)"),
+    )))
 }
 
 fn delete_branches(api: &Api, ws: Option<&Workspace>, names: &[String], force: bool) -> Result<()> {
@@ -557,6 +580,16 @@ fn remove_empty_parents(ws: &Workspace, path: &str) {
 fn go(backend: &dyn Backend, api: &Api, ws: &Workspace, target: &str, force: bool) -> Result<()> {
     crate::merging::refuse_during_merge(ws, "switch")?;
     let already = name(Some(ws)) == target;
+    if !already
+        && let Some(store) = LocalStore::open(ws)
+        && store.unpublished(&name(Some(ws)))?.ahead > 0
+    {
+        bail!(
+            "branch '{}' has local commits that are not yet published to the server; \
+             switching away would leave the workspace without them, so nothing was changed",
+            name(Some(ws))
+        );
+    }
     let found = find(api, target)?.with_context(|| format!("branch '{target}' not found"))?;
     let (_, snap) = match &found.commit {
         Some(head) => backend.snapshot(Some(head))?,

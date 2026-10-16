@@ -12,8 +12,10 @@ use pyn_proto as api;
 use serde::{Deserialize, Serialize};
 
 use crate::backend::Backend;
+use crate::local_commit::{self, Staged};
+use crate::local_store::LocalStore;
 use crate::workspace::{Workspace, hash_of};
-use crate::{localfile, sync};
+use crate::{branch, localfile, sync};
 
 const INDEX_VERSION: u32 = 1;
 
@@ -429,6 +431,9 @@ pub fn commit(backend: &dyn Backend, ws: &Workspace, message: &str, all: bool) -
         eprintln!("nothing to commit; stage changes with `pyn add`, or use `pyn commit -a`");
         std::process::exit(1);
     }
+    if let Some(store) = LocalStore::open(ws) {
+        return commit_local(backend, ws, &store, &index, message);
+    }
     let mut entries = Vec::new();
     let mut deletions = Vec::new();
     let mut written = Vec::new();
@@ -485,6 +490,62 @@ pub fn commit(backend: &dyn Backend, ws: &Workspace, message: &str, all: bool) -
         ws.save_state(&state)?;
     }
     Index::default().save(ws)
+}
+
+/// `pyn commit` with `local_store` on: records the staged changes in the local store and publishes nothing.
+fn commit_local(
+    backend: &dyn Backend,
+    ws: &Workspace,
+    store: &LocalStore,
+    index: &Index,
+    message: &str,
+) -> Result<()> {
+    let paths: Vec<&String> = index.entries.keys().collect();
+    require_locks(backend, &paths)?;
+    let state = ws.load_state()?;
+    let mut changes = Vec::new();
+    for (path, staged) in &index.entries {
+        let content = if staged.deleted {
+            None
+        } else {
+            let bytes = std::fs::read(content_path(ws, &staged.hash))
+                .with_context(|| format!("reading the staged content of {path}"))?;
+            Some((staged.file_mode, bytes))
+        };
+        changes.push(Staged {
+            path: path.clone(),
+            content,
+        });
+    }
+    let branch = branch::name(Some(ws));
+    if store.tip(&branch)?.is_none() && backend.head_commit()?.is_some() {
+        bail!(
+            "the local store has no history of branch '{branch}' yet; run `pyn update` to bring it up to date"
+        );
+    }
+    let who = local_commit::signature(&backend.whoami()?);
+    let Some(made) = store.commit_staged(&branch, &changes, message, &who)? else {
+        eprintln!("nothing to commit; the staged changes match the local branch");
+        std::process::exit(1);
+    };
+    let mut state = state;
+    for (path, staged) in &index.entries {
+        if staged.deleted {
+            state.remove(path.as_str());
+        }
+    }
+    ws.save_state(&state)?;
+    for (path, staged) in index.entries.iter().filter(|(_, s)| !s.deleted) {
+        let revision = state.get(path).map_or(0, |k| k.revision);
+        sync::after_commit(backend, ws, path, revision, &staged.hash, staged.file_mode)?;
+    }
+    Index::default().save(ws)?;
+    let first = message.lines().next().unwrap_or_default();
+    let root = if made.root { " (root-commit)" } else { "" };
+    println!("[{branch}{root} {}] {first}", &made.id.to_hex()[..7]);
+    println!("{} file(s) changed", made.changed);
+    println!("this commit is local and not yet published to the server");
+    Ok(())
 }
 
 #[cfg(test)]
