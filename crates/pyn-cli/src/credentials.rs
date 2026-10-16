@@ -33,10 +33,6 @@ pub fn dir() -> Result<PathBuf> {
     Ok(PathBuf::from(home).join(".config").join("pyn"))
 }
 
-fn read() -> Result<File> {
-    read_in(&dir()?)
-}
-
 /// A missing file is empty; an unreadable or corrupt one is an error so a save cannot overwrite it.
 fn read_in(dir: &Path) -> Result<File> {
     let path = dir.join(FILE_NAME);
@@ -109,8 +105,12 @@ fn write_private(dir: &Path, path: &Path, text: &str) -> Result<()> {
     Ok(())
 }
 
+/// No saved sign-in when there is no configuration directory; a damaged file is an error.
 pub fn load(server: &str) -> Result<Option<Entry>> {
-    Ok(read()?.servers.remove(server))
+    let Ok(dir) = dir() else {
+        return Ok(None);
+    };
+    Ok(read_in(&dir)?.servers.remove(server))
 }
 
 pub fn save(server: &str, entry: Entry) -> Result<()> {
