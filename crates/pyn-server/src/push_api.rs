@@ -32,9 +32,9 @@ fn decode(objects: Vec<api::PushObject>) -> Result<Vec<(ObjectId, Vec<u8>)>, Pyn
 /// Append client-built commits to a branch, all or none.
 #[utoipa::path(post, path = "/v1/repos/{owner}/{name}/push", params(RepoAddress), request_body = api::PushRequest, responses(
     (status = 200, body = api::PushResponse),
-    (status = 409, body = api::ErrorBody, description = "not_fast_forward when the first commit is not a child of the branch's head (or a racing push won); lock_required or lock_held for an exclusive path the pusher does not hold a live lock on; stale_base; storage_limit_reached"),
-    (status = 400, body = api::ErrorBody, description = "push_invalid for an id that does not match its bytes, bytes that are not a git object, a missing tree or a commit already stored; object_missing for a blob that was not uploaded; invalid_request for an empty push or bad base64; invalid_rules for a policy file on the default branch that does not validate"),
-    (status = 422, body = api::ErrorBody, description = "push_unsupported: a merge commit, a submodule, an empty commit, or the removal of the policy file from the default branch"),
+    (status = 409, body = api::ErrorBody, description = "not_fast_forward when the pushed history does not contain the branch's head, or its first commit is not on the branch (or a racing push won); merge_conflict when a merge commit leaves a diverged exclusive path unresolved; lock_required or lock_held for an exclusive path the pusher does not hold a live lock on; stale_base; storage_limit_reached"),
+    (status = 400, body = api::ErrorBody, description = "push_invalid for an id that does not match its bytes, bytes that are not a git object, a missing tree, a merge of a commit the repository does not have, or a commit already stored; object_missing for a blob that was not uploaded; invalid_request for an empty push or bad base64; invalid_rules for a policy file on the default branch that does not validate"),
+    (status = 422, body = api::ErrorBody, description = "push_unsupported: a commit with more than two parents or the same parent twice, a submodule, an empty commit, or the removal of the policy file from the default branch"),
     (status = 404, body = api::ErrorBody, description = "branch_not_found or commit_not_found for an unknown parent"),
     (status = 403, body = api::ErrorBody, description = "forbidden without the checkin permission, or without the policy permission for a commit that changes the policy file on the default branch"),
 ))]

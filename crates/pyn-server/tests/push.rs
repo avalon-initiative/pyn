@@ -206,6 +206,15 @@ fn build(
     message: &str,
     n: i64,
 ) -> Built {
+    build_with(files, parent.into_iter().collect(), message, n)
+}
+
+fn build_with(
+    files: &BTreeMap<&str, ObjectId>,
+    parents: Vec<ObjectId>,
+    message: &str,
+    n: i64,
+) -> Built {
     let tree = tree_of(
         files
             .iter()
@@ -220,7 +229,7 @@ fn build(
     .unwrap();
     let raw = pyn_object::Commit {
         tree: tree.root,
-        parents: parent.into_iter().collect(),
+        parents,
         author: signed("carol", T0 + n),
         committer: signed("carol", T0 + n),
         extra_headers: vec![],
@@ -1177,4 +1186,217 @@ async fn a_fetch_follows_the_repositorys_read_access() {
     let page: api::FetchResponse = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(page.commits[0].id, first.id.to_hex());
     assert_eq!(fetched(&fetch(&w, &eve, json!({})).await).commits.len(), 2);
+}
+
+async fn lock(w: &World, token: &str, path: &str, base: serde_json::Value) -> StatusCode {
+    checkout(w, token, path, base).await
+}
+
+#[tokio::test]
+async fn a_rejected_push_is_resolved_by_pushing_a_merge_commit() {
+    let w = world().await;
+    let (a0, b0, x0) = (
+        upload(&w, "a0").await,
+        upload(&w, "b0").await,
+        upload(&w, "x0").await,
+    );
+    let all = BTreeMap::from([
+        ("Source/a.txt", a0),
+        ("Source/b.txt", b0),
+        ("Content/x.umap", x0),
+    ]);
+    let base = build(&all, None, "base", 1);
+    assert_eq!(
+        lock(&w, &w.alice, "Content/x.umap", json!(null)).await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        push(&w, &w.alice, push_body(&[&base])).await.status,
+        StatusCode::OK
+    );
+
+    let (b1, x1) = (upload(&w, "b1").await, upload(&w, "x1").await);
+    let theirs = BTreeMap::from([
+        ("Source/a.txt", a0),
+        ("Source/b.txt", b1),
+        ("Content/x.umap", x1),
+    ]);
+    let server = build(&theirs, Some(base.id), "server", 2);
+    assert_eq!(
+        lock(&w, &w.bob, "Content/x.umap", json!(1)).await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        push(&w, &w.bob, push_body(&[&server])).await.status,
+        StatusCode::OK
+    );
+
+    let a1 = upload(&w, "a1").await;
+    let ours = BTreeMap::from([
+        ("Source/a.txt", a1),
+        ("Source/b.txt", b0),
+        ("Content/x.umap", x0),
+    ]);
+    let local = build(&ours, Some(base.id), "local", 3);
+    let r = push(&w, &w.alice, push_body(&[&local])).await;
+    assert_eq!(
+        (r.status, r.code().as_str()),
+        (StatusCode::CONFLICT, "not_fast_forward")
+    );
+
+    let merged = BTreeMap::from([
+        ("Source/a.txt", a1),
+        ("Source/b.txt", b1),
+        ("Content/x.umap", x1),
+    ]);
+    let merge = build_with(&merged, vec![local.id, server.id], "Merge", 4);
+    let r = push(&w, &w.alice, push_body(&[&local, &merge])).await;
+    assert_eq!(
+        r.status,
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&r.body)
+    );
+    let done: api::PushResponse = r.json();
+    assert_eq!(done.head, merge.id.to_hex());
+    assert_eq!(commit_count(&w).await, 4);
+
+    let page = fetched(&fetch(&w, &w.rita, json!({"branches": ["main"]})).await);
+    let last = page.commits.last().unwrap();
+    assert_eq!(last.id, merge.id.to_hex());
+    assert_eq!(
+        last.pointers
+            .iter()
+            .map(|r| (r.path.as_str(), r.id))
+            .collect::<Vec<_>>(),
+        [("Content/x.umap", 2), ("Source/b.txt", 2)]
+    );
+}
+
+#[tokio::test]
+async fn a_pushed_merge_of_diverged_exclusive_pointers_needs_a_resolution_under_the_lock() {
+    let w = world().await;
+    let (a0, x0) = (upload(&w, "a0").await, upload(&w, "x0").await);
+    let all = BTreeMap::from([("Source/a.txt", a0), ("Content/x.umap", x0)]);
+    let base = build(&all, None, "base", 1);
+    assert_eq!(
+        lock(&w, &w.alice, "Content/x.umap", json!(null)).await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        push(&w, &w.alice, push_body(&[&base])).await.status,
+        StatusCode::OK
+    );
+    let r = send(
+        &w.app,
+        "POST",
+        "/v1/repos/alice/game/branches",
+        &w.alice,
+        None,
+        Some(json!({"name": "feature"})),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK);
+
+    let x_feature = upload(&w, "x feature").await;
+    let side = build(
+        &BTreeMap::from([("Source/a.txt", a0), ("Content/x.umap", x_feature)]),
+        Some(base.id),
+        "feature x",
+        2,
+    );
+    assert_eq!(
+        lock(&w, &w.bob, "Content/x.umap", json!(1)).await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        push(&w, &w.bob, branch_body("feature", push_body(&[&side])))
+            .await
+            .status,
+        StatusCode::OK
+    );
+    let x_main = upload(&w, "x main").await;
+    let main = build(
+        &BTreeMap::from([("Source/a.txt", a0), ("Content/x.umap", x_main)]),
+        Some(base.id),
+        "main x",
+        3,
+    );
+    assert_eq!(
+        lock(&w, &w.alice, "Content/x.umap", json!(1)).await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        push(&w, &w.alice, push_body(&[&main])).await.status,
+        StatusCode::OK
+    );
+
+    let keep = build_with(
+        &BTreeMap::from([("Source/a.txt", a0), ("Content/x.umap", x_main)]),
+        vec![main.id, side.id],
+        "keep main's",
+        4,
+    );
+    let r = push(&w, &w.alice, push_body(&[&keep])).await;
+    assert_eq!(
+        (r.status, r.code().as_str()),
+        (StatusCode::CONFLICT, "merge_conflict")
+    );
+    assert_eq!(commit_count(&w).await, 2);
+
+    let chosen = upload(&w, "x chosen").await;
+    let resolved = build_with(
+        &BTreeMap::from([("Source/a.txt", a0), ("Content/x.umap", chosen)]),
+        vec![main.id, side.id],
+        "resolve",
+        5,
+    );
+    let r = push(&w, &w.alice, push_body(&[&resolved])).await;
+    assert_eq!(
+        (r.status, r.code().as_str()),
+        (StatusCode::CONFLICT, "lock_required")
+    );
+
+    assert_eq!(
+        lock(&w, &w.alice, "Content/x.umap", json!(3)).await,
+        StatusCode::OK
+    );
+    let r = push(&w, &w.alice, push_body(&[&resolved])).await;
+    assert_eq!(
+        r.status,
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&r.body)
+    );
+    let done: api::PushResponse = r.json();
+    assert_eq!(done.revisions.len(), 1);
+    assert_eq!((done.revisions[0].id, done.revisions[0].base), (4, Some(3)));
+}
+
+#[tokio::test]
+async fn a_merge_commit_naming_an_unknown_parent_or_three_parents_is_refused() {
+    let w = world().await;
+    let a0 = upload(&w, "a0").await;
+    let files = BTreeMap::from([("Source/a.txt", a0)]);
+    let base = build(&files, None, "base", 1);
+    assert_eq!(
+        push(&w, &w.bob, push_body(&[&base])).await.status,
+        StatusCode::OK
+    );
+    let a1 = upload(&w, "a1").await;
+    let next = BTreeMap::from([("Source/a.txt", a1)]);
+    let stranger = build(&files, None, "elsewhere", 9);
+    let lost = build_with(&next, vec![base.id, stranger.id], "lost", 2);
+    let r = push(&w, &w.bob, push_body(&[&lost])).await;
+    assert_eq!(
+        (r.status, r.code().as_str()),
+        (StatusCode::BAD_REQUEST, "push_invalid")
+    );
+    let octopus = build_with(&next, vec![base.id, stranger.id, lost.id], "octopus", 3);
+    let r = push(&w, &w.bob, push_body(&[&octopus])).await;
+    assert_eq!(
+        (r.status, r.code().as_str()),
+        (StatusCode::UNPROCESSABLE_ENTITY, "push_unsupported")
+    );
+    assert_eq!(commit_count(&w).await, 1);
 }

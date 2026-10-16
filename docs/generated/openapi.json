@@ -5502,7 +5502,7 @@
             }
           },
           "400": {
-            "description": "push_invalid for an id that does not match its bytes, bytes that are not a git object, a missing tree or a commit already stored; object_missing for a blob that was not uploaded; invalid_request for an empty push or bad base64; invalid_rules for a policy file on the default branch that does not validate",
+            "description": "push_invalid for an id that does not match its bytes, bytes that are not a git object, a missing tree, a merge of a commit the repository does not have, or a commit already stored; object_missing for a blob that was not uploaded; invalid_request for an empty push or bad base64; invalid_rules for a policy file on the default branch that does not validate",
             "content": {
               "application/json": {
                 "schema": {
@@ -5532,7 +5532,7 @@
             }
           },
           "409": {
-            "description": "not_fast_forward when the first commit is not a child of the branch's head (or a racing push won); lock_required or lock_held for an exclusive path the pusher does not hold a live lock on; stale_base; storage_limit_reached",
+            "description": "not_fast_forward when the pushed history does not contain the branch's head, or its first commit is not on the branch (or a racing push won); merge_conflict when a merge commit leaves a diverged exclusive path unresolved; lock_required or lock_held for an exclusive path the pusher does not hold a live lock on; stale_base; storage_limit_reached",
             "content": {
               "application/json": {
                 "schema": {
@@ -5542,7 +5542,7 @@
             }
           },
           "422": {
-            "description": "push_unsupported: a merge commit, a submodule, an empty commit, or the removal of the policy file from the default branch",
+            "description": "push_unsupported: a commit with more than two parents or the same parent twice, a submodule, an empty commit, or the removal of the policy file from the default branch",
             "content": {
               "application/json": {
                 "schema": {
