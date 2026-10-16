@@ -1519,7 +1519,7 @@ pub async fn deleting_a_repository_removes_only_its_own_data(store: Store) {
     let map = path("Content/Dungeon.umap");
     for svc in [&h.svc, &other] {
         svc.checkout(&map, &user("alice"), None).await.unwrap();
-        let c = blob(&h, "one").await;
+        let c = svc.upload_blob(b"one".to_vec()).await.unwrap();
         svc.checkin(&who("alice"), &map, c, None, "first".into())
             .await
             .unwrap();
@@ -1662,11 +1662,13 @@ pub async fn usage_counts_distinct_content_once_per_repository(store: Store) {
         "old revisions keep their content"
     );
 
+    let five = other.upload_blob(b"12345".to_vec()).await.unwrap();
     other
         .checkin(&who("alice"), &a, five, None, "a".into())
         .await
         .unwrap();
     let theirs = service_in(&store, &h, "theirs");
+    let three = theirs.upload_blob(b"123".to_vec()).await.unwrap();
     theirs
         .checkin(&who("bob"), &a, three, None, "a".into())
         .await
@@ -2256,7 +2258,7 @@ pub async fn checkin_past_the_storage_cap_is_refused_unless_it_adds_nothing(stor
         .checkin(
             &who("alice"),
             &b,
-            blob(&h, "abcdef").await,
+            game.upload_blob(b"abcdef".to_vec()).await.unwrap(),
             None,
             "b".into(),
         )
@@ -2282,7 +2284,13 @@ pub async fn checkin_past_the_storage_cap_is_refused_unless_it_adds_nothing(stor
         .await
         .unwrap();
     let err = other
-        .checkin(&who("alice"), &a, blob(&h, "abcde").await, None, "c".into())
+        .checkin(
+            &who("alice"),
+            &a,
+            other.upload_blob(b"abcde".to_vec()).await.unwrap(),
+            None,
+            "c".into(),
+        )
         .await
         .unwrap_err();
     assert!(
@@ -2293,7 +2301,7 @@ pub async fn checkin_past_the_storage_cap_is_refused_unless_it_adds_nothing(stor
         .checkin(
             &who("alice"),
             &a,
-            blob(&h, "abcd").await,
+            other.upload_blob(b"abcd".to_vec()).await.unwrap(),
             None,
             "fits".into(),
         )

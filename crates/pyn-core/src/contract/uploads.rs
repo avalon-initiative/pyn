@@ -213,32 +213,22 @@ pub async fn unreferenced_uploads_are_capped_per_repository(store: Store) {
         ServiceConfig::default(),
     )
     .with_unreferenced_cap(10);
-    let a = svc.upload_blob(b"abcdef".to_vec()).await.unwrap();
-    assert_eq!(
-        store
-            .unreferenced_bytes(&RepoId::new("capped"))
-            .await
-            .unwrap(),
-        6
-    );
+    let id = RepoId::new("capped");
+    let a = svc.upload_blob(b"abcd".to_vec()).await.unwrap();
+    assert_eq!(svc.upload_blob(b"abcd".to_vec()).await.unwrap(), a);
+    assert_eq!(store.unreferenced_bytes(&id).await.unwrap(), 4);
 
-    let err = svc.upload_blob(b"ghijkl".to_vec()).await.unwrap_err();
+    let err = svc.upload_blob(b"efghijkl".to_vec()).await.unwrap_err();
     assert!(
         matches!(err, PynError::StorageLimitReached { limit: 10, .. }),
         "{err}"
     );
-    assert_eq!(svc.upload_blob(b"abcdef".to_vec()).await.unwrap(), a);
-    assert!(svc.upload_blob(b"gh".to_vec()).await.is_ok());
+    svc.upload_blob(b"efghi".to_vec()).await.unwrap();
+    assert_eq!(store.unreferenced_bytes(&id).await.unwrap(), 9);
 
     svc.checkin(&who("alice"), &path("Source/a.cpp"), a, None, "x".into())
         .await
         .unwrap();
-    assert_eq!(
-        store
-            .unreferenced_bytes(&RepoId::new("capped"))
-            .await
-            .unwrap(),
-        2
-    );
-    svc.upload_blob(b"ghijkl".to_vec()).await.unwrap();
+    assert_eq!(store.unreferenced_bytes(&id).await.unwrap(), 5);
+    svc.upload_blob(b"jklmn".to_vec()).await.unwrap();
 }

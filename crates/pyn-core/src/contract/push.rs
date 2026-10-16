@@ -767,7 +767,11 @@ pub async fn a_blob_is_read_by_id_only_when_the_repository_may_reference_it(stor
     read.reader.read_to_end(&mut bytes).await.unwrap();
     assert_eq!(bytes, b"world");
 
-    let stray = blob(&h, "never referenced").await;
+    let stray = other
+        .svc
+        .upload_blob(b"never referenced".to_vec())
+        .await
+        .unwrap();
     let err = h.svc.read_blob(&stray, None).await.err().unwrap();
     assert!(matches!(err, PynError::ObjectNotFound(_)), "{err}");
 }
