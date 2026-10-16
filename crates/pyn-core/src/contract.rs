@@ -3251,6 +3251,7 @@ fn token(id: &str, owner: &str, created: i64) -> TokenRecord {
         expires_at: Some(at(created + 60)),
         revoked_at: None,
         last_used_at: None,
+        sign_in: false,
     }
 }
 

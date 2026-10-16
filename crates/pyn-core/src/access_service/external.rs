@@ -107,6 +107,7 @@ impl AccessService {
         }
         let link_user = match start.link {
             Some(actor) => {
+                actor.require_full_scope()?;
                 self.store
                     .account(&actor.user)
                     .await?
@@ -318,11 +319,13 @@ impl AccessService {
 
     /// The actor's linked provider identities.
     pub async fn external_identities(&self, actor: &Identity) -> Result<Vec<ExternalIdentity>> {
+        actor.require_full_scope()?;
         self.store.list_external_identities(&actor.user).await
     }
 
     /// Removes one of the actor's links, unless it is their only way to sign in.
     pub async fn unlink_external_identity(&self, actor: &Identity, id: &str) -> Result<()> {
+        actor.require_full_scope()?;
         let found = self
             .store
             .list_external_identities(&actor.user)

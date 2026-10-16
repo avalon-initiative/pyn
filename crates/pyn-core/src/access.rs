@@ -163,6 +163,34 @@ pub struct Identity {
 }
 
 impl Identity {
+    /// A session, an unrestricted credential, or an unscoped token holding every permission.
+    pub fn is_full_scope(&self) -> bool {
+        match &self.credential {
+            Credential::Session | Credential::Unrestricted => true,
+            Credential::Service(_) => false,
+            Credential::Token(t) => {
+                t.repos.is_empty() && Permission::ALL.iter().all(|p| t.permissions.contains(p))
+            }
+        }
+    }
+
+    /// Account-management operations need a full-scope credential.
+    pub fn require_full_scope(&self) -> Result<()> {
+        if self.is_full_scope() {
+            return Ok(());
+        }
+        match &self.credential {
+            Credential::Service(_) => Err(PynError::ServiceCredentialNotAllowed),
+            Credential::Token(t) => Err(PynError::Forbidden(
+                Permission::ALL
+                    .into_iter()
+                    .find(|p| !t.permissions.contains(p))
+                    .unwrap_or(Permission::ManageRoles),
+            )),
+            _ => Ok(()),
+        }
+    }
+
     /// A token must be unscoped and carry `manage_roles` to create or delete repositories and organizations.
     pub fn require_namespace_management(&self) -> Result<()> {
         match &self.credential {
@@ -238,6 +266,8 @@ pub struct TokenRecord {
     pub expires_at: Option<DateTime<Utc>>,
     pub revoked_at: Option<DateTime<Utc>>,
     pub last_used_at: Option<DateTime<Utc>>,
+    /// Issued by a password sign-in rather than created on request.
+    pub sign_in: bool,
 }
 
 /// Token strings look like `pyn_<12 hex id>_<64 hex secret>`.

@@ -84,6 +84,7 @@ fn token_for(name: &str, permissions: &[Permission]) -> Identity {
             expires_at: None,
             revoked_at: None,
             last_used_at: None,
+            sign_in: false,
         }),
     }
 }

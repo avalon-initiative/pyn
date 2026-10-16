@@ -309,6 +309,8 @@ pub trait AccessStore: Send + Sync {
     async fn revoke_token(&self, id: &TokenId, now: DateTime<Utc>) -> Result<bool>;
 
     async fn touch_token(&self, id: &TokenId, now: DateTime<Utc>) -> Result<()>;
+    /// Revokes every token the user's password sign-ins issued; created tokens stay valid.
+    async fn revoke_sign_in_tokens(&self, user: &UserId, now: DateTime<Utc>) -> Result<()>;
 
     /// Stores the credential; false if its name is already taken, revoked or not.
     async fn create_service_credential(&self, record: ServiceCredentialRecord) -> Result<bool>;
@@ -889,11 +891,13 @@ impl AccessService {
         repos: Vec<RepoId>,
         expires_at: Option<DateTime<Utc>>,
     ) -> Result<(TokenRecord, String)> {
+        actor.require_full_scope()?;
         if repos.is_empty() {
             return Err(PynError::InvalidRequest(
                 "a token needs at least one repository".into(),
             ));
         }
+        let expires_at = Self::within_creator(actor, &permissions, &repos, expires_at)?;
         for repo in &repos {
             let held = self.principal_in(repo, actor).await?;
             for p in &permissions {
@@ -901,7 +905,7 @@ impl AccessService {
             }
         }
         let (record, full) = self
-            .issue_token(&actor.user, name, permissions, repos, expires_at)
+            .issue_token(&actor.user, name, permissions, repos, expires_at, false)
             .await?;
         let detail = format!(
             "token {} {:?} for {}: permissions [{}], repos [{}], expires {}",
@@ -921,6 +925,30 @@ impl AccessService {
         Ok((record, full))
     }
 
+    /// A token credential mints nothing broader than itself: its permissions and repositories bound the new
+    /// token's, and the expiry is capped at its own.
+    fn within_creator(
+        actor: &Identity,
+        permissions: &BTreeSet<Permission>,
+        repos: &[RepoId],
+        expires_at: Option<DateTime<Utc>>,
+    ) -> Result<Option<DateTime<Utc>>> {
+        let Credential::Token(own) = &actor.credential else {
+            return Ok(expires_at);
+        };
+        if let Some(p) = permissions.iter().find(|p| !own.permissions.contains(p)) {
+            return Err(PynError::Forbidden(*p));
+        }
+        if !own.repos.is_empty() && repos.iter().any(|r| !own.repos.contains(r)) {
+            return Err(PynError::Forbidden(Permission::ManageRoles));
+        }
+        Ok(match (expires_at, own.expires_at) {
+            (Some(asked), Some(own)) => Some(asked.min(own)),
+            (None, own) => own,
+            (asked, None) => asked,
+        })
+    }
+
     /// Mints a token without an audit event, for sign-in sessions. An empty `repos`
     /// means every repository; the owner's role still caps what it can do in each.
     async fn issue_token(
@@ -930,6 +958,7 @@ impl AccessService {
         permissions: BTreeSet<Permission>,
         repos: Vec<RepoId>,
         expires_at: Option<DateTime<Utc>>,
+        sign_in: bool,
     ) -> Result<(TokenRecord, String)> {
         if name.trim().is_empty() {
             return Err(PynError::InvalidRequest("a token needs a name".into()));
@@ -957,25 +986,51 @@ impl AccessService {
             expires_at,
             revoked_at: None,
             last_used_at: None,
+            sign_in,
         };
         self.store.create_token(record.clone()).await?;
         Ok((record, full))
     }
 
     /// Allows the actor to act on `target`'s account: always for themselves, otherwise only with `manage_users`
-    /// in a repository the target belongs to.
+    /// in a repository the target belongs to. A server admin's account, and a repository's owner there, are
+    /// reachable only by a server admin.
     async fn require_manages(&self, actor: &Identity, target: &UserId) -> Result<()> {
+        actor.require_full_scope()?;
         if &actor.user == target {
             return Ok(());
+        }
+        let by_admin = self.is_server_admin(actor).await?;
+        if !by_admin
+            && self
+                .store
+                .account(target)
+                .await?
+                .is_some_and(|a| a.is_admin)
+        {
+            return Err(PynError::Forbidden(Permission::ManageUsers));
         }
         for repo in self.repos_of(target).await? {
             if let Ok(held) = self.principal_in(&repo, actor).await
                 && held.has(Permission::ManageUsers)
+                && (by_admin || !self.owns_repo(&repo, target).await?)
             {
                 return Ok(());
             }
         }
         Err(PynError::Forbidden(Permission::ManageUsers))
+    }
+
+    /// Whether `user` is the repository's owning account or an owner of the organization that owns it.
+    async fn owns_repo(&self, repo: &RepoId, user: &UserId) -> Result<bool> {
+        let Some(registry) = &self.registry else {
+            return Ok(false);
+        };
+        let Some(record) = registry.get_repo(repo).await? else {
+            return Ok(false);
+        };
+        Ok(&record.owner == user
+            || self.store.org_role(&record.owner, user).await? == Some(OrgRole::Owner))
     }
 
     /// The actor's own tokens; another user's need `manage_users` in a repository that user belongs to.
@@ -1251,6 +1306,7 @@ impl AccessService {
             Permission::ALL.into(),
             Vec::new(),
             Some(expires),
+            true,
         )
         .await
     }
@@ -1603,8 +1659,8 @@ impl AccessService {
         Ok(user)
     }
 
-    /// Changes the actor's own password and ends their other sessions, keeping `keep_session` (a cookie).
-    /// If they already have a password, the current one must be given.
+    /// Changes the actor's own password, ends their other sessions (keeping `keep_session`, a cookie) and
+    /// their sign-in tokens. An existing password must be given; with none yet, only a web session may set one.
     pub async fn change_password(
         &self,
         actor: &Identity,
@@ -1612,6 +1668,7 @@ impl AccessService {
         new: &str,
         keep_session: Option<&str>,
     ) -> Result<()> {
+        actor.require_full_scope()?;
         account::validate_password(new)?;
         if let Some(hash) = self.store.password_hash(&actor.user).await? {
             let ok = match current {
@@ -1623,9 +1680,16 @@ impl AccessService {
                     "the current password is wrong".into(),
                 ));
             }
+        } else if !matches!(actor.credential, Credential::Session) {
+            return Err(PynError::Unauthenticated(
+                "a first password can be set only from a signed-in web session".into(),
+            ));
         }
         let hash = self.passwords.hash(new).await?;
         self.store.set_password_hash(&actor.user, &hash).await?;
+        self.store
+            .revoke_sign_in_tokens(&actor.user, self.clock.now())
+            .await?;
         match keep_session {
             Some(cookie) => {
                 self.store
@@ -1724,6 +1788,7 @@ impl AccessService {
         title: Option<&str>,
         key: &str,
     ) -> Result<SshKeyRecord> {
+        actor.require_full_scope()?;
         let parsed = ssh::parse(key)?;
         let title = title
             .map(str::trim)
@@ -1787,10 +1852,15 @@ impl AccessService {
     }
 
     /// Gives an existing user a password without needing the old one, for the person running the server.
+    /// Their sessions and sign-in tokens end.
     pub async fn set_password_for_operator(&self, user: &UserId, password: &str) -> Result<()> {
         account::validate_password(password)?;
         let hash = self.passwords.hash(password).await?;
-        self.store.set_password_hash(user, &hash).await
+        self.store.set_password_hash(user, &hash).await?;
+        self.store
+            .revoke_sign_in_tokens(user, self.clock.now())
+            .await?;
+        self.store.delete_sessions_of(user).await
     }
 
     /// Creates a server administrator and a token reaching every repository it belongs to, skipping setup.
@@ -1799,7 +1869,7 @@ impl AccessService {
         self.store.ensure_user(user, self.clock.now()).await?;
         self.store.set_admin(user, true).await?;
         let (_, full) = self
-            .issue_token(user, "test", Permission::ALL.into(), Vec::new(), None)
+            .issue_token(user, "test", Permission::ALL.into(), Vec::new(), None, false)
             .await?;
         Ok(full)
     }
@@ -1841,15 +1911,14 @@ impl AccessService {
         self.store.delete_repo_access(repo).await
     }
 
-    /// Whether the identity runs the server. The development identity does; a token needs `manage_users`.
+    /// Whether the identity runs the server: the development identity, or an admin account behind a
+    /// full-scope credential.
     pub async fn is_server_admin(&self, who: &Identity) -> Result<bool> {
-        match &who.credential {
-            Credential::Unrestricted => return Ok(true),
-            Credential::Service(_) => return Ok(false),
-            Credential::Token(t) if !t.permissions.contains(&Permission::ManageUsers) => {
-                return Ok(false);
-            }
-            _ => {}
+        if matches!(who.credential, Credential::Unrestricted) {
+            return Ok(true);
+        }
+        if !who.is_full_scope() {
+            return Ok(false);
         }
         Ok(self
             .store

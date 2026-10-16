@@ -181,6 +181,7 @@ fn token_from(row: &PgRow) -> Result<TokenRecord> {
         expires_at: row.get("expires_at"),
         revoked_at: row.get("revoked_at"),
         last_used_at: row.get("last_used_at"),
+        sign_in: row.get("sign_in"),
     })
 }
 
@@ -755,8 +756,8 @@ impl AccessStore for PgMetadataStore {
 
     async fn create_token(&self, token: TokenRecord) -> Result<()> {
         sqlx::query(
-            "INSERT INTO tokens (id, user_id, name, secret_hash, permissions, repos, created_at, expires_at, revoked_at, last_used_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+            "INSERT INTO tokens (id, user_id, name, secret_hash, permissions, repos, created_at, expires_at, revoked_at, last_used_at, sign_in)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
         )
         .bind(&token.id.0)
         .bind(token.user.as_str())
@@ -768,6 +769,7 @@ impl AccessStore for PgMetadataStore {
         .bind(token.expires_at)
         .bind(token.revoked_at)
         .bind(token.last_used_at)
+        .bind(token.sign_in)
         .execute(&self.pool)
         .await
         .map_err(db)?;
@@ -776,7 +778,7 @@ impl AccessStore for PgMetadataStore {
 
     async fn get_token(&self, id: &TokenId) -> Result<Option<TokenRecord>> {
         let row = sqlx::query(
-            "SELECT id, user_id, name, secret_hash, permissions, repos, created_at, expires_at, revoked_at, last_used_at
+            "SELECT id, user_id, name, secret_hash, permissions, repos, created_at, expires_at, revoked_at, last_used_at, sign_in
              FROM tokens WHERE id = $1",
         )
             .bind(&id.0)
@@ -788,7 +790,7 @@ impl AccessStore for PgMetadataStore {
 
     async fn list_tokens(&self, user: &UserId) -> Result<Vec<TokenRecord>> {
         let rows = sqlx::query(
-            "SELECT id, user_id, name, secret_hash, permissions, repos, created_at, expires_at, revoked_at, last_used_at
+            "SELECT id, user_id, name, secret_hash, permissions, repos, created_at, expires_at, revoked_at, last_used_at, sign_in
              FROM tokens WHERE user_id = $1 ORDER BY created_at DESC, id",
         )
         .bind(user.as_str())
@@ -807,6 +809,18 @@ impl AccessStore for PgMetadataStore {
                 .await
                 .map_err(db)?;
         Ok(done.rows_affected() > 0)
+    }
+
+    async fn revoke_sign_in_tokens(&self, user: &UserId, now: DateTime<Utc>) -> Result<()> {
+        sqlx::query(
+            "UPDATE tokens SET revoked_at = COALESCE(revoked_at, $2) WHERE user_id = $1 AND sign_in",
+        )
+        .bind(user.as_str())
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(())
     }
 
     async fn touch_token(&self, id: &TokenId, now: DateTime<Utc>) -> Result<()> {

@@ -2366,6 +2366,15 @@ impl AccessStore for MemoryAccessStore {
         Ok(true)
     }
 
+    async fn revoke_sign_in_tokens(&self, user: &UserId, now: DateTime<Utc>) -> Result<()> {
+        for token in self.state.lock().unwrap().tokens.values_mut() {
+            if token.sign_in && &token.user == user {
+                token.revoked_at.get_or_insert(now);
+            }
+        }
+        Ok(())
+    }
+
     async fn touch_token(&self, id: &TokenId, now: DateTime<Utc>) -> Result<()> {
         if let Some(token) = self.state.lock().unwrap().tokens.get_mut(id) {
             token.last_used_at = Some(now);
