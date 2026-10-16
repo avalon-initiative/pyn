@@ -7001,6 +7001,14 @@
           "author": {
             "$ref": "#/components/schemas/Person"
           },
+          "authored_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "The author time, in whole seconds; its timezone is `author.offset_minutes`. Absent from servers that predate it."
+          },
           "changeset": {
             "type": [
               "string",
@@ -7014,13 +7022,14 @@
           "created_at": {
             "type": "string",
             "format": "date-time",
-            "description": "The author and committer time, in whole seconds."
+            "description": "The committer time, in whole seconds."
           },
           "id": {
             "type": "string"
           },
           "message": {
-            "type": "string"
+            "type": "string",
+            "description": "The message decoded lossily; a commit's exact bytes are never altered."
           },
           "parents": {
             "type": "array",

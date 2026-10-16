@@ -479,20 +479,6 @@ pub async fn a_push_refuses_what_it_cannot_record(store: Store) {
     let mut changed = files.clone();
     set(&mut changed, "Source/a.cpp", y);
     let tree = snapshot_tree(&changed);
-    let other_second = commit_raw(tree.root, vec![base.id], b"two times\n", T0 + 2, T0 + 3);
-    refused(
-        &h,
-        "author and committer times differ",
-        &[&built_from(other_second, tree.trees.clone())],
-    )
-    .await;
-    let not_utf8 = commit_raw(tree.root, vec![base.id], b"caf\xe9\n", T0 + 2, T0 + 2);
-    refused(
-        &h,
-        "message that is not UTF-8",
-        &[&built_from(not_utf8, tree.trees.clone())],
-    )
-    .await;
     let no_newline = commit_raw(tree.root, vec![base.id], b"no newline", T0 + 2, T0 + 2);
     refused(
         &h,
@@ -530,6 +516,52 @@ pub async fn a_push_refuses_what_it_cannot_record(store: Store) {
         .push_commits(&who("alice"), "main", objects(&[&ok]))
         .await
         .unwrap();
+}
+
+pub async fn a_pushed_commit_keeps_its_author_time_and_non_utf8_bytes(store: Store) {
+    let h = harness(store);
+    let (x, y) = (blob(&h, "x").await, blob(&h, "y").await);
+    let mut files = Files::new();
+    set(&mut files, "Source/a.cpp", x);
+    let base = build(&files, None, "base", 1);
+    h.svc
+        .push_commits(&who("alice"), "main", objects(&[&base]))
+        .await
+        .unwrap();
+    set(&mut files, "Source/a.cpp", y);
+    let tree = snapshot_tree(&files);
+    let raw = pyn_object::Commit {
+        tree: tree.root,
+        parents: vec![base.id],
+        author: Signature {
+            name: b"Ren\xe9 \0Z".to_vec(),
+            email: b"rene@example.test".to_vec(),
+            time: T0 + 2,
+            offset_minutes: -330,
+        },
+        committer: who_signed(T0 + 5),
+        extra_headers: vec![],
+        message: b"caf\xe9\n".to_vec(),
+    }
+    .encode(Algorithm::Sha256)
+    .unwrap();
+    let pushed = built_from(raw, tree.trees);
+    h.svc
+        .push_commits(&who("alice"), "main", objects(&[&pushed]))
+        .await
+        .unwrap();
+
+    let stored = h.svc.get_commit(&pushed.id).await.unwrap();
+    assert_eq!(stored.raw, pushed.raw, "the exact bytes are kept");
+    assert_eq!(stored.authored_at.timestamp(), T0 + 2);
+    assert_eq!(stored.created_at.timestamp(), T0 + 5);
+    assert_eq!(stored.author.offset_minutes, -330);
+    assert_eq!(stored.committer.offset_minutes, 120);
+    assert_eq!(stored.author.name, "Ren\u{fffd} \u{fffd}Z");
+    assert_eq!(stored.message, "caf\u{fffd}\n");
+    stored.verify().unwrap();
+    let report = h.svc.verify(None, false).await.unwrap();
+    assert!(report.problems.is_empty(), "{report:?}");
 }
 
 pub async fn a_push_is_checked_against_its_hashes_trees_and_objects(store: Store) {

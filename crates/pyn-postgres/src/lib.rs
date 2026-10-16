@@ -463,8 +463,8 @@ async fn insert_commit(
 ) -> Result<()> {
     sqlx::query(
         "INSERT INTO commits (repo, seq, id, parent, tree, author_name, author_email, author_offset,
-                              committer_name, committer_email, committer_offset, created_at, message, signature, changeset, parents, raw)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)",
+                              committer_name, committer_email, committer_offset, created_at, message, signature, changeset, parents, raw, authored_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)",
     )
     .bind(repo.as_str())
     .bind(seq as i64)
@@ -483,13 +483,14 @@ async fn insert_commit(
     .bind(&c.changeset)
     .bind(c.parents.iter().map(ObjectId::to_hex).collect::<Vec<_>>())
     .bind(&c.raw)
+    .bind(c.authored_at)
     .execute(&mut **tx)
     .await
     .map_err(db)?;
     Ok(())
 }
 
-const COMMIT_COLUMNS: &str = "id, parents, tree, author_name, author_email, author_offset, committer_name, committer_email, committer_offset, created_at, message, signature, changeset, raw";
+const COMMIT_COLUMNS: &str = "id, parents, tree, author_name, author_email, author_offset, committer_name, committer_email, committer_offset, created_at, message, signature, changeset, raw, authored_at";
 
 /// A commit record without its revisions.
 fn commit_from(row: &PgRow) -> Result<Commit> {
@@ -511,6 +512,7 @@ fn commit_from(row: &PgRow) -> Result<Commit> {
             email: row.get("committer_email"),
             offset_minutes: row.get("committer_offset"),
         },
+        authored_at: row.get("authored_at"),
         created_at: row.get("created_at"),
         message: row.get("message"),
         signature: row.get("signature"),
@@ -1990,8 +1992,8 @@ mod tests {
             ids.push(id);
             sqlx::query(
                 "INSERT INTO commits (repo, seq, id, parent, tree, author_name, author_email, author_offset,
-                                      committer_name, committer_email, committer_offset, created_at, message, signature, parents)
-                 VALUES ('r', $1, $2, $3, $4, 'alice', 'alice@pyn.invalid', $5, 'alice', 'alice@pyn.invalid', $5, to_timestamp(1700000000), $6, $7, $8)",
+                                      committer_name, committer_email, committer_offset, created_at, authored_at, message, signature, parents)
+                 VALUES ('r', $1, $2, $3, $4, 'alice', 'alice@pyn.invalid', $5, 'alice', 'alice@pyn.invalid', $5, to_timestamp(1700000000), to_timestamp(1700000000), $6, $7, $8)",
             )
             .bind(seq as i64 + 1)
             .bind(id.to_hex())

@@ -178,8 +178,11 @@ pub struct Commit {
     pub tree: ObjectId,
     pub author: Person,
     pub committer: Person,
-    /// Whole seconds; the author and committer time.
+    /// Whole seconds; the author time. Its timezone is `author.offset_minutes`.
+    pub authored_at: DateTime<Utc>,
+    /// Whole seconds; the committer time.
     pub created_at: DateTime<Utc>,
+    /// Display text: the message bytes decoded lossily; `raw` holds them exactly.
     pub message: String,
     /// The commit's `gpgsig` header, if it is signed.
     pub signature: Option<String>,

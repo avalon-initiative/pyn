@@ -824,6 +824,7 @@ fn commit_dto(c: pyn_core::Commit) -> api::Commit {
         author: person_dto(c.author),
         committer: person_dto(c.committer),
         created_at: c.created_at,
+        authored_at: Some(c.authored_at),
         message: c.message,
         signature: c.signature,
         changeset: c.changeset,
