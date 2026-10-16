@@ -129,7 +129,8 @@ fn git_commit(c: &api::Commit) -> Result<Commit> {
     } else {
         format!("{}\n", c.message)
     };
-    let at = c.created_at.timestamp();
+    let committed = c.created_at.timestamp();
+    let authored = c.authored_at.map_or(committed, |t| t.timestamp());
     Ok(Commit {
         tree: parse_id(&c.tree)?,
         parents: c
@@ -137,8 +138,8 @@ fn git_commit(c: &api::Commit) -> Result<Commit> {
             .iter()
             .map(|p| parse_id(p))
             .collect::<Result<_>>()?,
-        author: signature(&c.author, at),
-        committer: signature(&c.committer, at),
+        author: signature(&c.author, authored),
+        committer: signature(&c.committer, committed),
         extra_headers: c
             .signature
             .iter()
@@ -483,6 +484,7 @@ mod tests {
             author: person(),
             committer: person(),
             created_at: Utc.timestamp_opt(at, 0).unwrap(),
+            authored_at: None,
             message: format!("commit {at}"),
             signature: None,
             changeset: None,
@@ -566,6 +568,17 @@ mod tests {
         fake.content
             .insert(("dir/c.txt".into(), 7), b"sea".to_vec());
         fake
+    }
+
+    #[test]
+    fn the_author_time_comes_from_authored_at_and_the_committer_time_from_created_at() {
+        let mut c = commit(None, &[("a.txt", "x")], &[], 2_000);
+        c.authored_at = Some(Utc.timestamp_opt(1_000, 0).unwrap());
+        let g = git_commit(&c).unwrap();
+        assert_eq!((g.author.time, g.committer.time), (1_000, 2_000));
+        c.authored_at = None;
+        let g = git_commit(&c).unwrap();
+        assert_eq!((g.author.time, g.committer.time), (2_000, 2_000));
     }
 
     #[test]
