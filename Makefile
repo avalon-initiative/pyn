@@ -74,7 +74,7 @@ test-live:
 	cargo test --workspace -- --ignored
 
 e2e:
-	cargo test -p pyn-cli --test e2e
+	cargo test -p pyn-cli --test e2e --test e2e_second
 
 fmt:
 	cargo fmt --all

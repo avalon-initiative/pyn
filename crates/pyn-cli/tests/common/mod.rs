@@ -3,6 +3,7 @@
 #![allow(dead_code)]
 
 pub mod gitfix;
+pub mod real;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
