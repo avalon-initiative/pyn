@@ -468,6 +468,13 @@ server sends; ids are not lengthened to stay unique; `push.autoSetupRemote`, `pu
 instead of setting anything; local-path and `file://` remotes are refused (see [Transports and credentials](#transports-and-credentials)).
 A push to a pyn server is not this command: see the push row above.
 
+### Text from a remote
+
+Text a server sends to be shown (`remote:` lines, error packets, the reason a ref update was refused, a pyn server's error
+message) is printed without control characters other than newline, carriage return and tab. Paths a commit or switch would write
+are checked first, as in [the work tree rules](workspace.md#paths-written-to-the-work-tree), and a refused path stops the command
+with nothing changed.
+
 ## Transports and credentials
 
 Decisions #245 and #255. pyn reaches a git remote without git: the protocol, the pack handling and the credential flow are
