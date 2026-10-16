@@ -1041,6 +1041,7 @@ impl AccessService {
 
     /// Revokes the actor's own token; another user's needs `manage_users` in a repository that user belongs to.
     pub async fn revoke_token(&self, actor: &Identity, id: &TokenId) -> Result<()> {
+        actor.require_full_scope()?;
         let record = self
             .store
             .get_token(id)
@@ -1869,7 +1870,14 @@ impl AccessService {
         self.store.ensure_user(user, self.clock.now()).await?;
         self.store.set_admin(user, true).await?;
         let (_, full) = self
-            .issue_token(user, "test", Permission::ALL.into(), Vec::new(), None, false)
+            .issue_token(
+                user,
+                "test",
+                Permission::ALL.into(),
+                Vec::new(),
+                None,
+                false,
+            )
             .await?;
         Ok(full)
     }

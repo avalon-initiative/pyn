@@ -9,6 +9,7 @@ use pyn_core::{
 
 struct World {
     svc: AccessService,
+    store: Arc<MemoryAccessStore>,
     clock: Arc<ManualClock>,
     repo: RepoId,
 }
@@ -22,10 +23,11 @@ fn world(mode: RegistrationMode) -> World {
         require_email_verification: false,
         ..AccessConfig::default()
     };
-    let svc =
-        AccessService::new(Arc::new(MemoryAccessStore::new()), clock.clone()).with_config(config);
+    let store = Arc::new(MemoryAccessStore::new());
+    let svc = AccessService::new(store.clone(), clock.clone()).with_config(config);
     World {
         svc,
+        store,
         clock,
         repo: RepoId::new("game"),
     }
@@ -498,4 +500,94 @@ async fn changing_a_password_ends_the_other_sessions_and_keeps_the_current_one()
         .unwrap();
     assert!(w.svc.find_session(&here).await.unwrap().is_some());
     assert!(w.svc.find_session(&elsewhere).await.unwrap().is_none());
+}
+
+async fn alice_with_a_created_token(w: &World) -> (String, String) {
+    w.svc
+        .register(Registration::new("alice", PASSWORD))
+        .await
+        .unwrap();
+    w.svc
+        .add_creator(&w.repo, &UserId::new("alice"))
+        .await
+        .unwrap();
+    let (_, created) = w
+        .svc
+        .create_token(
+            &identity("alice"),
+            "ci",
+            [Permission::Read].into(),
+            vec![w.repo.clone()],
+            None,
+        )
+        .await
+        .unwrap();
+    let (_, sign_in) = w.svc.login("alice", PASSWORD, None).await.unwrap();
+    (sign_in, created)
+}
+
+#[tokio::test]
+async fn a_password_change_ends_sign_in_tokens_but_not_created_ones() {
+    let w = world(RegistrationMode::Open);
+    let (sign_in, created) = alice_with_a_created_token(&w).await;
+    w.svc
+        .change_password(
+            &identity("alice"),
+            Some(PASSWORD),
+            "another long password",
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(w.svc.identify(&sign_in).await.is_err());
+    assert!(w.svc.authenticate(&w.repo, &created).await.is_ok());
+}
+
+#[tokio::test]
+async fn an_operator_reset_ends_sessions_and_sign_in_tokens() {
+    let w = world(RegistrationMode::Open);
+    let (sign_in, created) = alice_with_a_created_token(&w).await;
+    let (_, cookie) = w.svc.start_session("alice", PASSWORD, None).await.unwrap();
+    w.svc
+        .set_password_for_operator(&UserId::new("alice"), "another long password")
+        .await
+        .unwrap();
+    assert!(w.svc.identify(&sign_in).await.is_err());
+    assert!(w.svc.find_session(&cookie).await.unwrap().is_none());
+    assert!(w.svc.authenticate(&w.repo, &created).await.is_ok());
+}
+
+#[tokio::test]
+async fn a_first_password_is_set_only_from_a_web_session() {
+    let w = world(RegistrationMode::Open);
+    let user = UserId::new("ghost");
+    AccessStore::create_user(&*w.store, &user, w.clock.now())
+        .await
+        .unwrap();
+    let full_token = Identity {
+        user: user.clone(),
+        credential: Credential::Token(pyn_core::TokenRecord {
+            id: pyn_core::TokenId("tk".into()),
+            user: user.clone(),
+            name: "t".into(),
+            secret_hash: String::new(),
+            permissions: Permission::ALL.into(),
+            repos: Vec::new(),
+            created_at: w.clock.now(),
+            expires_at: None,
+            revoked_at: None,
+            last_used_at: None,
+            sign_in: true,
+        }),
+    };
+    let err = w
+        .svc
+        .change_password(&full_token, None, "a long enough password", None)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::Unauthenticated(_)), "{err}");
+    w.svc
+        .change_password(&identity("ghost"), None, "a long enough password", None)
+        .await
+        .unwrap();
 }

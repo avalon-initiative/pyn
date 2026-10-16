@@ -6662,12 +6662,237 @@ pub async fn sign_in_flows_are_taken_once_and_swept_when_expired(store: Access) 
     assert_eq!(store.take_oidc_flow("link").await.unwrap(), Some(linking));
 }
 
+pub async fn sign_in_tokens_are_revoked_apart_from_created_ones(store: Access) {
+    for name in ["alice", "bob"] {
+        store.ensure_user(&user(name), at(0)).await.unwrap();
+    }
+    for (id, owner, sign_in) in [
+        ("aaaaaaaaaaaa", "alice", true),
+        ("bbbbbbbbbbbb", "alice", false),
+        ("cccccccccccc", "bob", true),
+    ] {
+        let record = TokenRecord {
+            sign_in,
+            ..token(id, owner, 1)
+        };
+        store.create_token(record).await.unwrap();
+    }
+    store
+        .revoke_sign_in_tokens(&user("alice"), at(10))
+        .await
+        .unwrap();
+    let revoked = |id: &'static str| {
+        let store = store.clone();
+        async move {
+            store
+                .get_token(&TokenId(id.into()))
+                .await
+                .unwrap()
+                .unwrap()
+                .revoked_at
+        }
+    };
+    assert_eq!(revoked("aaaaaaaaaaaa").await, Some(at(10)));
+    assert_eq!(revoked("bbbbbbbbbbbb").await, None);
+    assert_eq!(revoked("cccccccccccc").await, None);
+}
+
+const KEY: &str = include_str!("../tests/fixtures/keys/ed1.pub");
+
+pub async fn account_routes_need_a_full_scope_credential(store: Access) {
+    let meta = Arc::new(MemoryMetadataStore::new());
+    let clock = Arc::new(ManualClock::new(at(0)));
+    let access = AccessService::new(store.clone(), clock).with_registry(meta.clone());
+    let game = RepoId::new("alice/game");
+    store.create_user(&user("alice"), at(0)).await.unwrap();
+    meta.create_repo(repo_record("alice/game", "alice", "game"))
+        .await
+        .unwrap();
+    access.add_creator(&game, &user("alice")).await.unwrap();
+    let scoped = |permissions: &[Permission], repos: Vec<RepoId>| Identity {
+        user: user("alice"),
+        credential: Credential::Token(TokenRecord {
+            permissions: permissions.iter().copied().collect(),
+            repos,
+            ..token("tk", "alice", 0)
+        }),
+    };
+    let narrow = [
+        scoped(&[Permission::Read], Vec::new()),
+        scoped(&Permission::ALL, vec![game.clone()]),
+        scoped(
+            &[Permission::Read, Permission::ManageUsers],
+            vec![game.clone()],
+        ),
+    ];
+    let alice = user("alice");
+    for who in &narrow {
+        let read = [Permission::Read].into();
+        let refused = [
+            access.add_ssh_key(who, None, KEY).await.err(),
+            access.list_ssh_keys(who, &alice).await.err(),
+            access.delete_ssh_key(who, &alice, "x").await.err(),
+            access.list_tokens(who, &alice).await.err(),
+            access.revoke_token(who, &TokenId("x".into())).await.err(),
+            access
+                .create_token(who, "ci", read, vec![game.clone()], None)
+                .await
+                .err(),
+            access
+                .change_password(who, None, "a long enough password", None)
+                .await
+                .err(),
+            access.external_identities(who).await.err(),
+            access.unlink_external_identity(who, "x").await.err(),
+        ];
+        for err in refused {
+            assert!(
+                matches!(err, Some(PynError::Forbidden(_))),
+                "{who:?}: {err:?}"
+            );
+        }
+        assert!(!access.is_server_admin(who).await.unwrap());
+    }
+
+    let full = scoped(&Permission::ALL, Vec::new());
+    assert!(full.is_full_scope() && session("alice").is_full_scope());
+    access.add_ssh_key(&full, None, KEY).await.unwrap();
+    assert_eq!(access.list_ssh_keys(&full, &alice).await.unwrap().len(), 1);
+    let (made, _) = access
+        .create_token(
+            &session("alice"),
+            "ci",
+            [Permission::Read].into(),
+            vec![game],
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(made.repos.len(), 1);
+    assert_eq!(access.list_tokens(&full, &alice).await.unwrap().len(), 1);
+    access.revoke_token(&full, &made.id).await.unwrap();
+}
+
+pub async fn a_token_mints_nothing_that_outlives_it(store: Access) {
+    let meta = Arc::new(MemoryMetadataStore::new());
+    let access = AccessService::new(store.clone(), Arc::new(ManualClock::new(at(0))))
+        .with_registry(meta.clone());
+    let game = RepoId::new("alice/game");
+    store.create_user(&user("alice"), at(0)).await.unwrap();
+    meta.create_repo(repo_record("alice/game", "alice", "game"))
+        .await
+        .unwrap();
+    access.add_creator(&game, &user("alice")).await.unwrap();
+    let full = Identity {
+        user: user("alice"),
+        credential: Credential::Token(TokenRecord {
+            permissions: Permission::ALL.into(),
+            repos: Vec::new(),
+            ..token("tk", "alice", 0)
+        }),
+    };
+    let expiry = |asked| {
+        let (access, full, game) = (&access, &full, game.clone());
+        async move {
+            access
+                .create_token(full, "ci", [Permission::Read].into(), vec![game], asked)
+                .await
+                .unwrap()
+                .0
+                .expires_at
+        }
+    };
+    assert_eq!(expiry(None).await, Some(at(60)));
+    assert_eq!(expiry(Some(at(500))).await, Some(at(60)));
+    assert_eq!(expiry(Some(at(30))).await, Some(at(30)));
+    let made = access
+        .create_token(
+            &session("alice"),
+            "ci",
+            [Permission::Read].into(),
+            vec![game],
+            None,
+        )
+        .await
+        .unwrap()
+        .0;
+    assert_eq!(made.expires_at, None);
+}
+
+pub async fn managers_cannot_act_on_admins_or_repository_owners(store: Access) {
+    let meta = Arc::new(MemoryMetadataStore::new());
+    let access = AccessService::new(store.clone(), Arc::new(ManualClock::new(at(0))))
+        .with_registry(meta.clone());
+    let alice = session("alice");
+    access.create_org(&alice, "acme").await.unwrap();
+    let game = RepoId::new("acme/game");
+    meta.create_repo(repo_record("acme/game", "acme", "game"))
+        .await
+        .unwrap();
+    for name in ["bob", "carol", "root"] {
+        store.create_user(&user(name), at(0)).await.unwrap();
+    }
+    store.set_admin(&user("root"), true).await.unwrap();
+    for name in ["bob", "carol", "root"] {
+        access
+            .add_org_member(&alice, &user("acme"), &user(name), OrgRole::Member)
+            .await
+            .unwrap();
+    }
+    let owner = access.principal(&game, &user("alice")).await.unwrap();
+    for (name, role) in [
+        ("bob", Role::Admin),
+        ("carol", Role::Writer),
+        ("root", Role::Admin),
+    ] {
+        access
+            .set_user_role(&owner, &game, &user(name), role)
+            .await
+            .unwrap();
+    }
+    let (bob, root) = (session("bob"), session("root"));
+    assert!(access.list_tokens(&bob, &user("carol")).await.is_ok());
+    for target in ["alice", "root"] {
+        let err = access.list_tokens(&bob, &user(target)).await.unwrap_err();
+        assert!(matches!(err, PynError::Forbidden(_)), "{target}: {err}");
+        let err = access.list_ssh_keys(&bob, &user(target)).await.unwrap_err();
+        assert!(matches!(err, PynError::Forbidden(_)), "{target}: {err}");
+    }
+    assert!(access.list_tokens(&root, &user("alice")).await.is_ok());
+    assert!(access.is_server_admin(&root).await.unwrap());
+
+    let only_users = |permissions: &[Permission]| Identity {
+        user: user("root"),
+        credential: Credential::Token(TokenRecord {
+            permissions: permissions.iter().copied().collect(),
+            repos: Vec::new(),
+            ..token("tk", "root", 0)
+        }),
+    };
+    assert!(
+        !access
+            .is_server_admin(&only_users(&[Permission::ManageUsers]))
+            .await
+            .unwrap()
+    );
+    assert!(
+        access
+            .is_server_admin(&only_users(&Permission::ALL))
+            .await
+            .unwrap()
+    );
+}
+
 /// Generates one `#[tokio::test]` per access-store case for the store built by `$factory`.
 #[macro_export]
 macro_rules! access_contract_tests {
     ($factory:expr $(, #[$attr:meta])*) => {
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; tokens_round_trip_and_list_newest_first);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; revoking_is_recorded_and_harmless_twice);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; sign_in_tokens_are_revoked_apart_from_created_ones);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; account_routes_need_a_full_scope_credential);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; a_token_mints_nothing_that_outlives_it);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; managers_cannot_act_on_admins_or_repository_owners);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; touching_a_token_records_last_use);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; service_credentials_round_trip_list_oldest_first_and_keep_names_unique);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; revoking_and_touching_a_service_credential_are_recorded);
