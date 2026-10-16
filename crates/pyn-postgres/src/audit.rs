@@ -54,6 +54,7 @@ impl AuditStore for PgMetadataStore {
                AND ($3::text IS NULL OR actor = $3)
                AND ($4::text IS NULL OR action = $4)
                AND ($5::bigint IS NULL OR id < $5)
+               AND (cardinality($7::text[]) = 0 OR action = ANY($7))
              ORDER BY id DESC LIMIT $6",
         )
         .bind(scope.key())
@@ -62,6 +63,7 @@ impl AuditStore for PgMetadataStore {
         .bind(query.action.map(AuditAction::as_str))
         .bind(query.before)
         .bind(query.limit as i64)
+        .bind(query.actions.iter().map(|a| a.as_str()).collect::<Vec<_>>())
         .fetch_all(&self.pool)
         .await
         .map_err(db)?;

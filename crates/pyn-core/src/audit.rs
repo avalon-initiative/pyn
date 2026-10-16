@@ -218,6 +218,8 @@ pub struct AuditQuery {
     pub path: Option<RepoPath>,
     pub actor: Option<UserId>,
     pub action: Option<AuditAction>,
+    /// Any of these actions; no restriction when empty.
+    pub actions: Vec<AuditAction>,
     pub before: Option<i64>,
     pub limit: usize,
 }

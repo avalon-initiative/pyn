@@ -290,6 +290,16 @@ pub trait MetadataStore: Send + Sync {
     /// or an ancestor, ordered by path. A path whose revision deletes it is left out. `commit` must exist.
     async fn snapshot(&self, repo: &RepoId, commit: &ObjectId) -> Result<Vec<Revision>>;
 
+    /// `snapshot` limited to paths that start with `prefix` and sort after `after`, at most `limit` of them.
+    async fn snapshot_page(
+        &self,
+        repo: &RepoId,
+        commit: &ObjectId,
+        prefix: Option<&str>,
+        after: Option<&RepoPath>,
+        limit: usize,
+    ) -> Result<Vec<Revision>>;
+
     /// The newest revision of every path that has one, on any branch, ordered by path.
     async fn list_head_revisions(&self, repo: &RepoId) -> Result<Vec<Revision>>;
 

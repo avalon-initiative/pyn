@@ -1850,6 +1850,36 @@ impl MetadataStore for PgMetadataStore {
         rows.iter().map(revision_from).collect()
     }
 
+    async fn snapshot_page(
+        &self,
+        repo: &RepoId,
+        commit: &ObjectId,
+        prefix: Option<&str>,
+        after: Option<&RepoPath>,
+        limit: usize,
+    ) -> Result<Vec<Revision>> {
+        let rows = sqlx::query(AssertSqlSafe(format!(
+            "{CHAIN}, latest AS (
+                 SELECT DISTINCT ON (p.path COLLATE \"C\") p.path AS lpath, p.revision AS lrev
+                 FROM chain JOIN commit_pointers p ON p.repo = $1 AND p.commit_id = chain.id
+                 WHERE ($3::text IS NULL OR starts_with(p.path, $3))
+                   AND ($4::text IS NULL OR p.path COLLATE \"C\" > $4::text COLLATE \"C\")
+                 ORDER BY p.path COLLATE \"C\", chain.depth
+             )
+             SELECT {REVISION_COLUMNS} FROM revisions JOIN latest ON path = lpath AND id = lrev
+             WHERE repo = $1 AND NOT deleted ORDER BY path COLLATE \"C\" LIMIT $5"
+        )))
+        .bind(repo.as_str())
+        .bind(commit.to_hex())
+        .bind(prefix)
+        .bind(after.map(RepoPath::as_str))
+        .bind(limit.min(i64::MAX as usize) as i64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        rows.iter().map(revision_from).collect()
+    }
+
     async fn list_head_revisions(&self, repo: &RepoId) -> Result<Vec<Revision>> {
         let rows = sqlx::query(
             "SELECT DISTINCT ON (path) id, path, content, author, message, created_at, restored_from, mode, changeset, commit_no, hash, previous_hash, content_v1, commit_id, file_mode, author_name, author_email, author_offset, hash_version, base_id, deleted

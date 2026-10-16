@@ -1096,6 +1096,28 @@ impl MetadataStore for MemoryMetadataStore {
             .collect())
     }
 
+    async fn snapshot_page(
+        &self,
+        repo: &RepoId,
+        commit: &ObjectId,
+        prefix: Option<&str>,
+        after: Option<&RepoPath>,
+        limit: usize,
+    ) -> Result<Vec<Revision>> {
+        let st = self.state.lock().unwrap();
+        Ok(st
+            .pointers_at(repo, commit)
+            .into_iter()
+            .filter(|(path, _)| {
+                prefix.is_none_or(|p| path.as_str().starts_with(p))
+                    && after.is_none_or(|a| path > a)
+            })
+            .filter_map(|(path, id)| st.revision(repo, &path, id))
+            .filter(|r| !r.deleted)
+            .take(limit)
+            .collect())
+    }
+
     async fn get_revision(
         &self,
         repo: &RepoId,
@@ -2669,6 +2691,7 @@ impl AuditStore for MemoryAuditStore {
                         .is_none_or(|p| e.path.as_ref() == Some(p))
                     && query.actor.as_ref().is_none_or(|a| &e.actor == a)
                     && query.action.is_none_or(|a| e.action == a)
+                    && (query.actions.is_empty() || query.actions.contains(&e.action))
             })
             .map(|(_, e)| e.clone())
             .take(query.limit)

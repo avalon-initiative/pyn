@@ -355,6 +355,20 @@ impl MetadataStore for CountingStore {
         self.inner.get_revision(repo, path, id).await
     }
 
+    async fn snapshot_page(
+        &self,
+        repo: &RepoId,
+        commit: &ObjectId,
+        prefix: Option<&str>,
+        after: Option<&RepoPath>,
+        limit: usize,
+    ) -> crate::Result<Vec<crate::Revision>> {
+        self.count();
+        self.inner
+            .snapshot_page(repo, commit, prefix, after, limit)
+            .await
+    }
+
     async fn list_head_revisions(&self, repo: &RepoId) -> crate::Result<Vec<crate::Revision>> {
         self.count();
         self.inner.list_head_revisions(repo).await

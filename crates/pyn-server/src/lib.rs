@@ -1285,11 +1285,12 @@ struct VerifyQuery {
     path: Option<String>,
 }
 
-/// Needs `read`; the audit log is also checked for callers with `view_audit`.
+/// Needs `read`; the audit log is also checked for callers with `view_audit`. Without `path` the caller must be signed in.
 #[utoipa::path(get, path = "/v1/repos/{owner}/{name}/verify",
     params(RepoAddress,
            ("path" = Option<String>, Query, description = "check only this path; the audit log is then not checked")),
     responses((status = 200, body = api::VerifyReport),
+              (status = 401, body = api::ErrorBody, description = "unauthenticated for a whole-repository check without credentials"),
               (status = 404, body = api::ErrorBody, description = "path_not_found for a path without revisions")))]
 async fn verify(
     State(s): State<AppState>,
@@ -1300,6 +1301,12 @@ async fn verify(
     let who = identify_optional(&s, &headers).await?;
     let (repo, principal) = open_visible(&s, who.as_ref(), &owner, &name).await?;
     principal.require(Permission::Read)?;
+    if q.path.is_none() && who.is_none() {
+        return Err(PynError::Unauthenticated(
+            "checking the whole repository needs a signed-in caller".into(),
+        )
+        .into());
+    }
     let path = q.path.map(RepoPath::from_stored).transpose()?;
     let report = repo
         .service
@@ -1403,22 +1410,19 @@ async fn snapshot(
     let repo = authorize_read(&s, &headers, &owner, &name).await?;
     let limit = q.limit.unwrap_or(200).clamp(1, 1000);
     let after = q.after.map(RepoPath::from_stored).transpose()?;
-    let snap = match (q.commit, q.branch) {
+    let at = match (q.commit, q.branch) {
         (Some(_), Some(_)) => {
             return Err(
                 PynError::InvalidRequest("commit and branch exclude each other".into()).into(),
             );
         }
-        (Some(spec), None) => {
-            let commit = repo.service.resolve_commit(&spec).await?;
-            repo.service.snapshot(Some(&commit)).await?
-        }
-        (None, branch) => {
-            repo.service
-                .snapshot_on(branch_of(branch.as_deref()))
-                .await?
-        }
+        (Some(spec), None) => Some(repo.service.resolve_commit(&spec).await?),
+        (None, branch) => repo.service.head_of(branch_of(branch.as_deref())).await?,
     };
+    let snap = repo
+        .service
+        .snapshot_page(at, after.as_ref(), limit + 1)
+        .await?;
     let mut entries: Vec<_> = snap
         .entries
         .into_iter()
@@ -1818,6 +1822,7 @@ async fn audit(
         action: q.action.map(|a| a.parse::<AuditAction>()).transpose()?,
         before: q.before,
         limit: limit + 1,
+        ..AuditQuery::default()
     };
     let mut events = repo.service.audit(&query).await?;
     let next_before = (events.len() > limit).then(|| {

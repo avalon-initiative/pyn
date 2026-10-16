@@ -3254,6 +3254,7 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; the_work_of_a_fetch_page_does_not_grow_with_the_history);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_walk_past_the_examination_cap_is_refused);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_scan_that_spends_its_budget_resumes_from_a_cursor);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; listings_page_in_the_store_and_agree_with_the_whole_listing);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_push_deletes_shared_paths_and_whole_folders);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_file_turned_into_a_folder_or_back_deletes_and_adds);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; deleting_an_exclusive_path_in_a_push_needs_the_pushers_live_lock);
@@ -3988,6 +3989,19 @@ impl MetadataStore for HookedMeta {
         id: RevisionId,
     ) -> crate::Result<Option<crate::Revision>> {
         self.inner.get_revision(repo, path, id).await
+    }
+
+    async fn snapshot_page(
+        &self,
+        repo: &RepoId,
+        commit: &ObjectId,
+        prefix: Option<&str>,
+        after: Option<&RepoPath>,
+        limit: usize,
+    ) -> crate::Result<Vec<crate::Revision>> {
+        self.inner
+            .snapshot_page(repo, commit, prefix, after, limit)
+            .await
     }
 
     async fn list_head_revisions(&self, repo: &RepoId) -> crate::Result<Vec<crate::Revision>> {

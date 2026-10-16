@@ -1148,7 +1148,7 @@ impl RepoService {
         let now = self.clock.now();
         let rules = self.rules_on(branch).await?;
         let mut entries: BTreeMap<RepoPath, FileEntry> = BTreeMap::new();
-        for rev in self.heads_on(branch).await? {
+        for rev in self.heads_page(branch, None, after, limit).await? {
             let mode = rules.mode_for(&rev.path);
             entries.insert(
                 rev.path.clone(),
@@ -1186,12 +1186,16 @@ impl RepoService {
     async fn live_paths(
         &self,
         branch: &str,
+        prefix: Option<&str>,
     ) -> Result<BTreeMap<RepoPath, (Option<Revision>, Option<Lock>)>> {
         let mut paths: BTreeMap<RepoPath, (Option<Revision>, Option<Lock>)> = BTreeMap::new();
-        for rev in self.heads_on(branch).await? {
+        for rev in self.heads_page(branch, prefix, None, usize::MAX).await? {
             paths.insert(rev.path.clone(), (Some(rev), None));
         }
         for lock in self.meta.list_locks(&self.repo, self.clock.now()).await? {
+            if prefix.is_some_and(|p| !lock.path.as_str().starts_with(p)) {
+                continue;
+            }
             let key = lock.path.clone();
             paths.entry(key).or_default().1 = Some(lock);
         }
@@ -1207,8 +1211,10 @@ impl RepoService {
     /// Like `tree`, as of the head of `branch`.
     pub async fn tree_on(&self, branch: &str, dir: Option<&RepoPath>) -> Result<Vec<TreeEntry>> {
         let rules = self.rules_on(branch).await?;
-        let paths = self.live_paths(branch).await?;
         let prefix = dir.map_or(String::new(), |d| format!("{d}/"));
+        let paths = self
+            .live_paths(branch, dir.is_some().then_some(prefix.as_str()))
+            .await?;
         let mut children: BTreeMap<(EntryKind, String), TreeEntry> = BTreeMap::new();
         for (path, (rev, lock)) in &paths {
             let Some(rest) = path.as_str().strip_prefix(&prefix) else {
@@ -1252,7 +1258,14 @@ impl RepoService {
         if children.is_empty()
             && let Some(dir) = dir
         {
-            return Err(if paths.contains_key(dir) {
+            let is_file = self.revision_on(branch, dir).await?.is_some()
+                || self
+                    .meta
+                    .list_locks(&self.repo, self.clock.now())
+                    .await?
+                    .iter()
+                    .any(|l| &l.path == dir);
+            return Err(if is_file {
                 PynError::InvalidRequest(format!("{dir} is a file, not a folder"))
             } else {
                 PynError::PathNotFound(dir.to_string())
@@ -1263,7 +1276,7 @@ impl RepoService {
 
     /// Counts, live locks and the newest `activity_limit` file and lock events.
     pub async fn summary(&self, activity_limit: usize) -> Result<RepoSummary> {
-        let paths = self.live_paths(DEFAULT_BRANCH).await?;
+        let paths = self.live_paths(DEFAULT_BRANCH, None).await?;
         let (mut files, mut exclusive_files, mut updated_at) = (0, 0, None);
         for (path, (rev, _)) in &paths {
             let Some(rev) = rev else { continue };
@@ -1273,21 +1286,13 @@ impl RepoService {
             }
             updated_at = updated_at.max(Some(rev.created_at));
         }
-        let mut activity = Vec::new();
-        for action in ACTIVITY_ACTIONS {
-            let query = AuditQuery {
-                action: Some(action),
-                limit: activity_limit,
-                ..AuditQuery::default()
-            };
-            let scope = AuditScope::Repo(self.repo.clone());
-            activity.extend(check_events(
-                &scope,
-                self.audit.list(&scope, &query).await?,
-            )?);
-        }
-        activity.sort_by_key(|e| std::cmp::Reverse(e.id));
-        activity.truncate(activity_limit);
+        let scope = AuditScope::Repo(self.repo.clone());
+        let query = AuditQuery {
+            actions: ACTIVITY_ACTIONS.to_vec(),
+            limit: activity_limit,
+            ..AuditQuery::default()
+        };
+        let activity = check_events(&scope, self.audit.list(&scope, &query).await?)?;
         Ok(RepoSummary {
             default_branch: DEFAULT_BRANCH.to_string(),
             branch_count: self.branches().await?.len() as u32,
@@ -1421,9 +1426,19 @@ impl RepoService {
     }
 
     /// Every path's revision at the head of `branch`, ordered by path.
-    async fn heads_on(&self, branch: &str) -> Result<Vec<Revision>> {
+    async fn heads_page(
+        &self,
+        branch: &str,
+        prefix: Option<&str>,
+        after: Option<&RepoPath>,
+        limit: usize,
+    ) -> Result<Vec<Revision>> {
         match self.head_of(branch).await? {
-            Some(tip) => self.meta.snapshot(&self.repo, &tip).await,
+            Some(tip) => {
+                self.meta
+                    .snapshot_page(&self.repo, &tip, prefix, after, limit)
+                    .await
+            }
             None => Ok(Vec::new()),
         }
     }
@@ -1873,13 +1888,26 @@ impl RepoService {
     }
 
     async fn snapshot_at(&self, id: Option<ObjectId>) -> Result<Snapshot> {
+        self.snapshot_page(id, None, usize::MAX).await
+    }
+
+    /// Like `snapshot`, for the commit `id` (none for an empty repository): only the first `limit` paths after `after`.
+    pub async fn snapshot_page(
+        &self,
+        id: Option<ObjectId>,
+        after: Option<&RepoPath>,
+        limit: usize,
+    ) -> Result<Snapshot> {
         let Some(id) = id else {
             return Ok(Snapshot {
                 commit: None,
                 entries: Vec::new(),
             });
         };
-        let revisions = self.meta.snapshot(&self.repo, &id).await?;
+        let revisions = self
+            .meta
+            .snapshot_page(&self.repo, &id, None, after, limit)
+            .await?;
         revisions.iter().try_for_each(Revision::verify)?;
         let rules = self.rules_at(Some(&id)).await?;
         let entries = revisions
