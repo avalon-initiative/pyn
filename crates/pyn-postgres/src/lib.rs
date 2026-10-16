@@ -2208,6 +2208,34 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     #[ignore = "needs PYN_DATABASE_URL"]
+    async fn existing_revisions_seed_the_per_repository_object_record() {
+        let url = std::env::var("PYN_DATABASE_URL").expect("PYN_DATABASE_URL must be set");
+        let store = PgMetadataStore::connect_in_scratch_schema(&url)
+            .await
+            .unwrap();
+        for stmt in [
+            "DROP TABLE repo_objects",
+            "DELETE FROM _sqlx_migrations WHERE version = 34",
+            "INSERT INTO revisions (repo, path, id, content, author, message, created_at, size, hash_version, commit_no) VALUES
+               ('r', 'a', 1, repeat('1', 64), 'u', 'm', now(), 5, 1, 1),
+               ('r', 'b', 1, repeat('1', 64), 'u', 'm', now(), 5, 1, 2),
+               ('r', 'c', 1, repeat('2', 64), 'u', 'm', now(), 7, 1, 3)",
+        ] {
+            sqlx::query(stmt).execute(&store.pool).await.unwrap();
+        }
+        migrate(&store).await;
+        let rows: Vec<(String, i64)> =
+            sqlx::query_as("SELECT id, size FROM repo_objects WHERE repo = 'r' ORDER BY id")
+                .fetch_all(&store.pool)
+                .await
+                .unwrap();
+        assert_eq!(rows, [("1".repeat(64), 5), ("2".repeat(64), 7)]);
+        let repo = RepoId::new("r");
+        assert_eq!(store.unreferenced_bytes(&repo).await.unwrap(), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "needs PYN_DATABASE_URL"]
     async fn existing_revisions_get_commit_numbers_in_time_order_with_changesets_grouped() {
         let url = std::env::var("PYN_DATABASE_URL").expect("PYN_DATABASE_URL must be set");
         let store = PgMetadataStore::connect_in_scratch_schema(&url)
