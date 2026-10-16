@@ -3177,6 +3177,7 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_pushed_exclusive_revision_is_based_on_the_branchs_pointer);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_rejected_push_leaves_nothing_behind);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_push_refuses_what_it_cannot_record);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_pushed_commit_keeps_its_author_time_and_non_utf8_bytes);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_push_is_checked_against_its_hashes_trees_and_objects);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; an_unlisted_path_is_exclusive_in_a_push);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_deletion_is_a_revision_that_leaves_the_branch_without_the_path);

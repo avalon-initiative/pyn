@@ -168,6 +168,7 @@ impl GitHome {
             author: person(&c.author),
             committer: person(&c.committer),
             created_at: DateTime::<Utc>::from_timestamp(c.author.time, 0).unwrap_or_default(),
+            authored_at: DateTime::<Utc>::from_timestamp(c.author.time, 0),
             message: String::from_utf8_lossy(&c.message).into_owned(),
             signature,
             changeset: None,

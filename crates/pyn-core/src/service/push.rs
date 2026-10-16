@@ -137,16 +137,8 @@ impl RepoService {
                 "commit {id} is a merge commit; push merges are not supported yet"
             )));
         }
-        if parsed.author.time != parsed.committer.time {
-            return Err(unsupported(format!(
-                "commit {id} has different author and committer times; a commit keeps one time"
-            )));
-        }
-        let record = Commit::from_raw(REPO_ALGORITHM, raw, None).map_err(|_| {
-            unsupported(format!(
-                "commit {id} has a name or message that is not UTF-8"
-            ))
-        })?;
+        let record = Commit::from_raw(REPO_ALGORITHM, raw, None)
+            .map_err(|e| invalid(format!("commit {id}: {e}")))?;
         record.verify().map_err(|_| {
             unsupported(format!(
                 "commit {id} cannot be recorded as sent; its message must end with a newline"

@@ -197,6 +197,11 @@ pub fn commit_time(at: DateTime<Utc>) -> DateTime<Utc> {
     Utc.timestamp_opt(at.timestamp(), 0).single().unwrap_or(at)
 }
 
+/// Display text of stored bytes: lossy UTF-8, with NUL replaced because stores cannot hold it.
+fn display(b: &[u8]) -> String {
+    String::from_utf8_lossy(b).replace('\0', "\u{fffd}")
+}
+
 fn signature(who: &Person, at: DateTime<Utc>) -> Signature {
     Signature {
         name: who.name.clone().into_bytes(),
@@ -217,7 +222,7 @@ impl Commit {
         pyn_object::Commit {
             tree: self.tree,
             parents: self.parents.clone(),
-            author: signature(&self.author, self.created_at),
+            author: signature(&self.author, self.authored_at),
             committer: signature(&self.committer, self.created_at),
             extra_headers: self
                 .signature
@@ -239,33 +244,26 @@ impl Commit {
     pub fn from_raw(algorithm: Algorithm, raw: Vec<u8>, changeset: Option<String>) -> Result<Self> {
         let parsed = pyn_object::Commit::parse(algorithm, &raw).map_err(object_error)?;
         let id = hash_object(algorithm, Kind::Commit, &raw).map_err(object_error)?;
-        let person = |s: &Signature| -> Result<Person> {
-            let text = |b: &[u8]| {
-                String::from_utf8(b.to_vec())
-                    .map_err(|_| PynError::Storage("commit identity is not UTF-8".into()))
-            };
-            Ok(Person {
-                name: text(&s.name)?,
-                email: text(&s.email)?,
-                offset_minutes: s.offset_minutes,
-            })
+        let person = |s: &Signature| Person {
+            name: display(&s.name),
+            email: display(&s.email),
+            offset_minutes: s.offset_minutes,
         };
-        let text = |b: &[u8]| {
-            String::from_utf8(b.to_vec())
-                .map_err(|_| PynError::Storage("commit text is not UTF-8".into()))
+        let time = |t: i64| {
+            Utc.timestamp_opt(t, 0)
+                .single()
+                .ok_or_else(|| PynError::Storage("commit time out of range".into()))
         };
         Ok(Self {
             id,
             parents: parsed.parents.clone(),
             tree: parsed.tree,
-            author: person(&parsed.author)?,
-            committer: person(&parsed.committer)?,
-            created_at: Utc
-                .timestamp_opt(parsed.committer.time, 0)
-                .single()
-                .ok_or_else(|| PynError::Storage("commit time out of range".into()))?,
-            message: text(&parsed.message)?,
-            signature: parsed.gpgsig().map(text).transpose()?,
+            author: person(&parsed.author),
+            committer: person(&parsed.committer),
+            authored_at: time(parsed.author.time)?,
+            created_at: time(parsed.committer.time)?,
+            message: display(&parsed.message),
+            signature: parsed.gpgsig().map(display),
             changeset,
             raw,
             revisions: Vec::new(),
@@ -287,6 +285,7 @@ impl Commit {
             && derived.parents == self.parents
             && derived.author == self.author
             && derived.committer == self.committer
+            && derived.authored_at == self.authored_at
             && derived.created_at == self.created_at
             && derived.message == message
             && derived.signature == self.signature;
@@ -315,6 +314,7 @@ pub fn draft_commit(
         tree: build.root,
         author: author.clone(),
         committer: author.clone(),
+        authored_at: commit_time(at),
         created_at: commit_time(at),
         message: message.to_string(),
         signature: None,

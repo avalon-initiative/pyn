@@ -11,8 +11,9 @@ A commit carries what a git commit carries:
 
 - the **author** and **committer**: name, email, time and timezone offset. The server records the signed-in account's
   name and email (an account without an email gets `<name>@pyn.invalid`), the time of the write, and offset `+0000`;
-  the author and committer are the same person. The offset is part of the record so that imported commits (#95) keep
-  theirs;
+  the author and committer are the same person. The author's time and offset and the committer's are separate in the
+  record (`authored_at` with `author.offset_minutes`, and `created_at`, the committer time), so a pushed or imported commit
+  whose author and committer times differ keeps both;
 - the **parents**: none for the first commit of a repository, else the head of the branch it was made on;
 - the **message**;
 - room for a **signature** (a `gpgsig` header), which signed commits (#60) will fill;
@@ -90,8 +91,9 @@ here is provisional until those slices land.
 - The whole push is accepted or refused as one: a refusal at any commit leaves no commit, revision, tree, lock change or branch
   move behind. Concurrent pushes to a branch are serialized, so one wins and the others get `not_fast_forward`.
 - Refused with `push_unsupported`, for now: a commit that changes `.pyn/pyn.toml`; a deletion, including a file turned into a
-  folder or back; a commit with two parents; a commit that changes no file; a submodule entry; a commit whose author and committer
-  times differ (a commit records one time); a name, path or message that is not UTF-8; and a message without its final newline.
+  folder or back; a commit with two parents; a commit that changes no file; a submodule entry; and a message without its final newline.
+  A name or message that is not UTF-8 is accepted: the exact bytes are stored and the commit keeps its id, and the name,
+  email and message fields in the API are those bytes decoded lossily (invalid bytes and NUL become U+FFFD).
 - The pusher needs the `checkin` permission. Whether the commit's author must match the pusher is undecided: it is not checked.
 
 ## Command line
