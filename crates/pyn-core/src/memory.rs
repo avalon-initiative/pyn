@@ -1156,6 +1156,11 @@ impl MetadataStore for MemoryMetadataStore {
             .flat_map(|(_, revs)| revs)
             .filter(|r| reachable.as_ref().is_none_or(|a| a.contains(&r.commit)))
             .filter(|r| before.is_none_or(|b| history_key(r) < b.sort_key()))
+            .filter(|r| {
+                filter
+                    .and_then(PathFilter::prefix)
+                    .is_none_or(|p| r.path.as_str().starts_with(p))
+            })
             .collect();
         revs.sort_by_key(|r| std::cmp::Reverse(history_key(r)));
         let mut revisions = Vec::new();

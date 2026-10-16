@@ -30,7 +30,7 @@ pub async fn a_scan_that_spends_its_budget_resumes_from_a_cursor(store: Store) {
         .await
         .unwrap();
     let tip = built.last().unwrap().id;
-    let nothing = PathFilter::new("Missing/").unwrap();
+    let nothing = PathFilter::new("nothing.txt").unwrap();
 
     let scan = store
         .repo_history(h.svc.repo(), Some(&tip), Some(&nothing), None, 5, 4)
