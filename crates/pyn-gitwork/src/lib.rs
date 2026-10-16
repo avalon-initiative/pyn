@@ -17,4 +17,4 @@ pub use ignore::{Ignore, Level, parse_rules};
 pub use pathspec::Pathspec;
 pub use repo::{Head, Repo};
 pub use status::{Kind, Status, StatusEntry, fs_path, hash_worktree_file, worktree_mode};
-pub use tree::{Change, Entry};
+pub use tree::{Change, Entry, MAX_TREE_DEPTH};

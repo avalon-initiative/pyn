@@ -9,6 +9,8 @@ pub enum Error {
         path: String,
         source: std::io::Error,
     },
+    #[error("trees are nested deeper than the limit of {limit} levels")]
+    TooDeep { limit: usize },
     #[error("{0}")]
     Revision(String),
     #[error("{0}")]

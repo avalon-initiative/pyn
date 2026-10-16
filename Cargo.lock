@@ -1902,6 +1902,7 @@ dependencies = [
 name = "pyn-gitwork"
 version = "0.0.1"
 dependencies = [
+ "flate2",
  "pyn-git",
  "pyn-object",
  "tempfile",

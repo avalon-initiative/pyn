@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use pyn_object::{FileMode, ObjectId, TreeEntry};
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::pathspec::Pathspec;
 use crate::repo::Repo;
 
@@ -21,10 +21,25 @@ pub struct Change {
     pub new: Option<Entry>,
 }
 
-fn join(prefix: &[u8], name: &[u8]) -> Vec<u8> {
-    let mut p = prefix.to_vec();
-    p.extend_from_slice(name);
-    p
+/// Deepest directory nesting a tree walk follows.
+pub const MAX_TREE_DEPTH: usize = 4096;
+
+fn check_depth(depth: usize) -> Result<()> {
+    if depth > MAX_TREE_DEPTH {
+        return Err(Error::TooDeep {
+            limit: MAX_TREE_DEPTH,
+        });
+    }
+    Ok(())
+}
+
+type Level = BTreeMap<Vec<u8>, TreeEntry>;
+
+struct DiffFrame {
+    old: Level,
+    new: Level,
+    names: std::vec::IntoIter<Vec<u8>>,
+    base: usize,
 }
 
 impl Repo {
@@ -36,27 +51,37 @@ impl Repo {
     ) -> Result<BTreeMap<Vec<u8>, Entry>> {
         let mut out = BTreeMap::new();
         if let Some(id) = tree {
-            self.flatten_into(id, b"", spec, &mut out)?;
+            self.flatten_into(id, spec, &mut out)?;
         }
         Ok(out)
     }
 
+    /// Walks with an explicit stack and one growing path buffer.
     fn flatten_into(
         &self,
         id: &ObjectId,
-        prefix: &[u8],
         spec: &Pathspec,
         out: &mut BTreeMap<Vec<u8>, Entry>,
     ) -> Result<()> {
-        for e in self.tree(id)? {
-            let path = join(prefix, &e.name);
+        let mut path: Vec<u8> = Vec::new();
+        let mut stack = vec![(self.tree(id)?.into_iter(), 0usize)];
+        while let Some((entries, base)) = stack.last_mut() {
+            let base = *base;
+            let Some(e) = entries.next() else {
+                stack.pop();
+                continue;
+            };
+            path.truncate(base);
+            path.extend_from_slice(&e.name);
             if e.mode.is_tree() {
                 if spec.may_contain(&path) {
-                    self.flatten_into(&e.id, &join(&path, b"/"), spec, out)?;
+                    check_depth(stack.len())?;
+                    path.push(b'/');
+                    stack.push((self.tree(&e.id)?.into_iter(), path.len()));
                 }
             } else if spec.matches(&path) {
                 out.insert(
-                    path,
+                    path.clone(),
                     Entry {
                         mode: e.mode,
                         id: e.id,
@@ -94,14 +119,42 @@ impl Repo {
         spec: &Pathspec,
     ) -> Result<Vec<Change>> {
         let mut out = Vec::new();
-        self.diff_into(b"", old.copied(), new.copied(), spec, &mut out)?;
+        self.diff_into(old.copied(), new.copied(), spec, &mut out)?;
         out.sort_by(|a, b| a.path.cmp(&b.path));
         Ok(out)
     }
 
+    fn load_level(&self, id: Option<ObjectId>) -> Result<Level> {
+        Ok(match id {
+            Some(id) => self
+                .tree(&id)?
+                .into_iter()
+                .map(|e| (e.name.clone(), e))
+                .collect(),
+            None => BTreeMap::new(),
+        })
+    }
+
+    fn diff_frame(
+        &self,
+        old: Option<ObjectId>,
+        new: Option<ObjectId>,
+        base: usize,
+    ) -> Result<DiffFrame> {
+        let (old, new) = (self.load_level(old)?, self.load_level(new)?);
+        let names: std::collections::BTreeSet<&Vec<u8>> = old.keys().chain(new.keys()).collect();
+        let names: Vec<Vec<u8>> = names.into_iter().cloned().collect();
+        Ok(DiffFrame {
+            old,
+            new,
+            names: names.into_iter(),
+            base,
+        })
+    }
+
+    /// Walks with an explicit stack and one growing path buffer.
     fn diff_into(
         &self,
-        prefix: &[u8],
         old: Option<ObjectId>,
         new: Option<ObjectId>,
         spec: &Pathspec,
@@ -110,22 +163,16 @@ impl Repo {
         if old == new {
             return Ok(());
         }
-        let load = |id: Option<ObjectId>| -> Result<BTreeMap<Vec<u8>, TreeEntry>> {
-            Ok(match id {
-                Some(id) => self
-                    .tree(&id)?
-                    .into_iter()
-                    .map(|e| (e.name.clone(), e))
-                    .collect(),
-                None => BTreeMap::new(),
-            })
-        };
-        let (a, b) = (load(old)?, load(new)?);
-        let names: std::collections::BTreeSet<&Vec<u8>> = a.keys().chain(b.keys()).collect();
-        for name in names {
-            let (x, y) = (a.get(name), b.get(name));
-            let path = join(prefix, name);
-            let dir = join(&path, b"/");
+        let mut path: Vec<u8> = Vec::new();
+        let mut stack = vec![self.diff_frame(old, new, 0)?];
+        while let Some(frame) = stack.last_mut() {
+            let Some(name) = frame.names.next() else {
+                stack.pop();
+                continue;
+            };
+            let (x, y) = (frame.old.get(&name), frame.new.get(&name));
+            path.truncate(frame.base);
+            path.extend_from_slice(&name);
             let leaf = |e: Option<&TreeEntry>| {
                 e.filter(|e| !e.mode.is_tree()).map(|e| Entry {
                     mode: e.mode,
@@ -134,6 +181,7 @@ impl Repo {
             };
             let tree = |e: Option<&TreeEntry>| e.filter(|e| e.mode.is_tree()).map(|e| e.id);
             let (old_leaf, new_leaf) = (leaf(x), leaf(y));
+            let (old_tree, new_tree) = (tree(x), tree(y));
             if (old_leaf.is_some() || new_leaf.is_some())
                 && spec.matches(&path)
                 && old_leaf != new_leaf
@@ -144,9 +192,14 @@ impl Repo {
                     new: new_leaf,
                 });
             }
-            let (old_tree, new_tree) = (tree(x), tree(y));
-            if (old_tree.is_some() || new_tree.is_some()) && spec.may_contain(&path) {
-                self.diff_into(&dir, old_tree, new_tree, spec, out)?;
+            if old_tree != new_tree
+                && (old_tree.is_some() || new_tree.is_some())
+                && spec.may_contain(&path)
+            {
+                check_depth(stack.len())?;
+                path.push(b'/');
+                let next = self.diff_frame(old_tree, new_tree, path.len())?;
+                stack.push(next);
             }
         }
         Ok(())
