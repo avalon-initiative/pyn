@@ -8,7 +8,7 @@ use pyn_git::Config;
 use reqwest::Url;
 
 use crate::env::Env;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::url::{scoped_value, scoped_values};
 pub use helper::{Helper, Op};
 pub use prompt::{Prompt, SystemPrompt, askpass_program};
@@ -40,6 +40,13 @@ impl std::fmt::Debug for Credential {
     }
 }
 
+fn check(field: &str, value: &str) -> Result<()> {
+    if value.contains(['\n', '\r', '\0']) {
+        return Err(Error::InvalidCredential(field.to_owned()));
+    }
+    Ok(())
+}
+
 impl Credential {
     pub fn for_url(url: &Url, with_path: bool) -> Self {
         let host = match (url.host_str(), url.port()) {
@@ -56,7 +63,28 @@ impl Credential {
         }
     }
 
-    pub fn to_lines(&self) -> String {
+    /// Rejects control characters in any field, since each is a line of the helper protocol.
+    pub fn validate(&self) -> Result<()> {
+        check("protocol", &self.protocol)?;
+        check("host", &self.host)?;
+        for (k, v) in [
+            ("path", &self.path),
+            ("username", &self.username),
+            ("password", &self.password),
+        ] {
+            if let Some(v) = v {
+                check(k, v)?;
+            }
+        }
+        for (k, v) in &self.extra {
+            check(k, k)?;
+            check(k, v)?;
+        }
+        Ok(())
+    }
+
+    pub fn to_lines(&self) -> Result<String> {
+        self.validate()?;
         let mut out = format!("protocol={}\nhost={}\n", self.protocol, self.host);
         for (k, v) in [
             ("path", &self.path),
@@ -71,28 +99,33 @@ impl Credential {
             out.push_str(&format!("{k}={v}\n"));
         }
         out.push('\n');
-        out
+        Ok(out)
     }
 
     /// Merges a helper's `key=value` lines in; returns whether it asked to stop (`quit`).
-    pub fn read_lines(&mut self, text: &str) -> bool {
+    /// Nothing is merged when any value holds a control character.
+    pub fn read_lines(&mut self, text: &str) -> Result<bool> {
+        let mut next = self.clone();
         let mut quit = false;
         for line in text.lines() {
             let Some((k, v)) = line.split_once('=') else {
                 continue;
             };
+            check(k, k)?;
+            check(k, v)?;
             match k {
-                "username" => self.username = Some(v.to_owned()),
-                "password" => self.password = Some(v.to_owned()),
+                "username" => next.username = Some(v.to_owned()),
+                "password" => next.password = Some(v.to_owned()),
                 "quit" => quit = matches!(v, "1" | "true"),
                 "protocol" | "host" | "path" | "url" => {}
                 _ => {
-                    self.extra.retain(|(ek, _)| ek != k);
-                    self.extra.push((k.to_owned(), v.to_owned()));
+                    next.extra.retain(|(ek, _)| ek != k);
+                    next.extra.push((k.to_owned(), v.to_owned()));
                 }
             }
         }
-        quit
+        *self = next;
+        Ok(quit)
     }
 
     fn complete(&self) -> bool {
@@ -185,6 +218,13 @@ impl Flow {
     /// The next credential to try for `url`, or `None` when every source is spent.
     pub fn next(&mut self, url: &Url) -> Result<Option<Offer>> {
         let query = self.query(url);
+        query.validate()?;
+        if let Some((user, pw)) = self.embedded_for(url) {
+            check("username", user)?;
+            if let Some(pw) = pw {
+                check("password", pw)?;
+            }
+        }
         if let Some((user, Some(pw))) = self.embedded_for(url).cloned()
             && self.fresh(&user, &pw)
         {
@@ -195,7 +235,7 @@ impl Flow {
         }
         let mut got = query.clone();
         for h in self.helpers(url) {
-            let quit = helper::run(&h, Op::Get, &mut got, &self.env);
+            let quit = helper::run(&h, Op::Get, &mut got, &self.env)?;
             if got.complete() || quit {
                 break;
             }
@@ -236,6 +276,8 @@ impl Flow {
             })
             .unwrap_or(shown);
         let pw = self.prompt.ask(&format!("Password for '{at}': "), true)?;
+        check("username", &user)?;
+        check("password", &pw)?;
         c.username = Some(user);
         c.password = Some(pw);
         Ok(self.offer(c, Source::Prompt))
@@ -247,7 +289,7 @@ impl Flow {
             return;
         }
         for h in self.helpers(url) {
-            helper::run(&h, Op::Store, &mut offer.cred.clone(), &self.env);
+            let _ = helper::run(&h, Op::Store, &mut offer.cred.clone(), &self.env);
         }
     }
 
@@ -257,7 +299,7 @@ impl Flow {
             return;
         }
         for h in self.helpers(url) {
-            helper::run(&h, Op::Erase, &mut offer.cred.clone(), &self.env);
+            let _ = helper::run(&h, Op::Erase, &mut offer.cred.clone(), &self.env);
         }
     }
 }
@@ -378,6 +420,84 @@ mod tests {
             asked.lock().unwrap()[1],
             "Password for 'https://u@example.com/r.git': "
         );
+    }
+
+    #[test]
+    fn control_characters_are_rejected_in_every_field() {
+        for bad in ["a\nb", "a\rb", "a\0b"] {
+            for field in 0..5 {
+                let mut c = Credential {
+                    protocol: "https".into(),
+                    host: "h".into(),
+                    ..Credential::default()
+                };
+                match field {
+                    0 => c.protocol = bad.into(),
+                    1 => c.host = bad.into(),
+                    2 => c.path = Some(bad.into()),
+                    3 => c.username = Some(bad.into()),
+                    _ => c.password = Some(bad.into()),
+                }
+                let e = c.to_lines().unwrap_err();
+                assert!(matches!(e, Error::InvalidCredential(_)), "{e}");
+            }
+        }
+        let ok = Credential {
+            protocol: "https".into(),
+            host: "h:1".into(),
+            path: Some("a b/c.git".into()),
+            username: Some("us\u{e9}r".into()),
+            password: Some("p=w d\t".into()),
+            ..Credential::default()
+        };
+        assert!(ok.to_lines().is_ok());
+    }
+
+    #[test]
+    fn helper_output_with_control_characters_is_rejected_whole() {
+        let mut c = Credential::default();
+        assert!(c.read_lines("username=ok\npassword=a\rb\n").is_err());
+        assert!(c.username.is_none(), "nothing is merged");
+        assert!(c.read_lines("username=ok\npassword=a\0b\n").is_err());
+        assert!(c.read_lines("username=ok\npassword=fine\n").is_ok());
+        assert_eq!(c.password.as_deref(), Some("fine"));
+    }
+
+    #[test]
+    fn url_userinfo_with_encoded_control_characters_is_rejected() {
+        for userinfo in ["al%0Aice:pw", "alice:p%0Dw", "alice:p%00w"] {
+            let (mut f, _) = flow("", &format!("https://{userinfo}@example.com/r.git"), &[]);
+            let url = Url::parse("https://example.com/r.git").unwrap();
+            let e = f.next(&url).unwrap_err();
+            assert!(matches!(e, Error::InvalidCredential(_)), "{userinfo}: {e}");
+        }
+        let (mut f, _) = flow("", "https://al%20ice:p%40w@example.com/r.git", &[]);
+        let url = Url::parse("https://example.com/r.git").unwrap();
+        assert_eq!(pair(&f.next(&url).unwrap().unwrap()), ("al ice", "p@w"));
+    }
+
+    #[test]
+    fn prompt_answers_with_control_characters_are_rejected() {
+        let (mut f, _) = flow("", "https://example.com/r.git", &["u", "p\nq"]);
+        let url = Url::parse("https://example.com/r.git").unwrap();
+        assert!(matches!(
+            f.next(&url).unwrap_err(),
+            Error::InvalidCredential(_)
+        ));
+    }
+
+    #[test]
+    fn configured_username_with_control_characters_is_rejected() {
+        let (mut f, _) = flow(
+            "[credential]\n\tusername = \"a\\nb\"\n",
+            "https://example.com/r.git",
+            &[],
+        );
+        let url = Url::parse("https://example.com/r.git").unwrap();
+        assert!(matches!(
+            f.next(&url).unwrap_err(),
+            Error::InvalidCredential(_)
+        ));
     }
 
     #[test]

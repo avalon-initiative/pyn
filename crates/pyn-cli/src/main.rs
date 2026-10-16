@@ -51,7 +51,7 @@ struct Cli {
     /// The server to talk to; falls back to the workspace's setting, then your user setting, then localhost.
     #[arg(long, env = "PYN_SERVER")]
     server: Option<String>,
-    /// API token to sign in with; defaults to the sign-in saved by `pyn login`.
+    /// API token to sign in with; defaults to the sign-in saved by `pyn login`. A value on the command line is visible in the process list: prefer the PYN_TOKEN environment variable.
     #[arg(long, env = "PYN_TOKEN", hide_env_values = true)]
     token: Option<String>,
     /// Dev identity sent as X-Pyn-User; only works against a server running with PYN_DEV_AUTH.
@@ -338,7 +338,7 @@ enum Command {
     Setup {
         /// The first administrator's user name.
         username: String,
-        /// The one-time setup token from the server's log or its PYN_SETUP_TOKEN setting.
+        /// The one-time setup token from the server's log or its PYN_SETUP_TOKEN setting. A value on the command line is visible in the process list: prefer the environment variable.
         #[arg(long, env = "PYN_SETUP_TOKEN", hide_env_values = true)]
         setup_token: Option<String>,
         #[arg(long)]
@@ -964,9 +964,21 @@ fn run(cli: Cli) -> Result<()> {
         None => resolve(cli.repo, mine.repo.as_ref(), yours.repo.as_ref(), None),
     };
     let base = server.trim_end_matches('/').to_string();
-    let token = cli
-        .token
-        .or_else(|| credentials::load(&base).map(|saved| saved.token));
+    let token = match cli.token {
+        Some(t) => Some(t),
+        None => credentials::load(&base)?.map(|saved| saved.token),
+    };
+    if token.is_some()
+        || matches!(
+            cli.command,
+            Command::Login { .. }
+                | Command::Setup { .. }
+                | Command::Register { .. }
+                | Command::Password { .. }
+        )
+    {
+        credentials::warn_if_cleartext(&base);
+    }
     let repo_name = repo.clone();
     let server_url = base.clone();
     let store = ws.as_ref().and_then(local_store::LocalStore::open);
@@ -1037,7 +1049,7 @@ fn run(cli: Cli) -> Result<()> {
         }
         Command::Logout => {
             let api = backend.pyn_server("logout")?;
-            let Some(saved) = credentials::load(&api.base) else {
+            let Some(saved) = credentials::load(&api.base)? else {
                 println!("not signed in on {}", api.base);
                 return Ok(());
             };

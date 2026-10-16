@@ -6,6 +6,7 @@ use std::process::Stdio;
 use super::Credential;
 use super::store::StoreFiles;
 use crate::env::Env;
+use crate::error::Result;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Op {
@@ -67,13 +68,15 @@ fn store_file_arg(args: &str) -> Option<String> {
 }
 
 /// Runs one operation. A `get` fills `cred`; the return value is whether the helper asked to stop.
-/// A helper that fails is ignored, as git does.
-pub fn run(helper: &Helper, op: Op, cred: &mut Credential, env: &Env) -> bool {
+/// A helper that fails is ignored, as git does; a control character in either direction is an error.
+pub fn run(helper: &Helper, op: Op, cred: &mut Credential, env: &Env) -> Result<bool> {
+    cred.validate()?;
     match helper {
         Helper::Store(files) => {
             match op {
                 Op::Get => {
                     if let Some(found) = files.get(cred) {
+                        found.validate()?;
                         *cred = found;
                     }
                 }
@@ -84,13 +87,14 @@ pub fn run(helper: &Helper, op: Op, cred: &mut Credential, env: &Env) -> bool {
                     let _ = files.erase(cred);
                 }
             }
-            false
+            Ok(false)
         }
         Helper::Command(cmd) => run_command(cmd, op, cred, env),
     }
 }
 
-fn run_command(cmd: &str, op: Op, cred: &mut Credential, env: &Env) -> bool {
+fn run_command(cmd: &str, op: Op, cred: &mut Credential, env: &Env) -> Result<bool> {
+    let lines = cred.to_lines()?;
     let mut child = match env
         .command("sh")
         .arg("-c")
@@ -105,17 +109,20 @@ fn run_command(cmd: &str, op: Op, cred: &mut Credential, env: &Env) -> bool {
         .spawn()
     {
         Ok(c) => c,
-        Err(_) => return false,
+        Err(_) => return Ok(false),
     };
     if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(cred.to_lines().as_bytes());
+        let _ = stdin.write_all(lines.as_bytes());
     }
     let mut out = String::new();
     if let Some(mut stdout) = child.stdout.take() {
         let _ = stdout.read_to_string(&mut out);
     }
     let _ = child.wait();
-    op == Op::Get && cred.read_lines(&out)
+    if op == Op::Get {
+        return cred.read_lines(&out);
+    }
+    Ok(false)
 }
 
 #[cfg(test)]
@@ -165,7 +172,7 @@ mod tests {
             host: "h.example".into(),
             ..Credential::default()
         };
-        assert!(run(&h, Op::Get, &mut c, &env));
+        assert!(run(&h, Op::Get, &mut c, &env).unwrap());
         assert_eq!(
             (c.username.as_deref(), c.password.as_deref()),
             (Some("u1"), Some("p1"))
@@ -174,8 +181,8 @@ mod tests {
             std::fs::read_to_string(format!("{}.in", log.display())).unwrap(),
             "protocol=https\nhost=h.example\n\n"
         );
-        run(&h, Op::Store, &mut c, &env);
-        run(&h, Op::Erase, &mut c, &env);
+        run(&h, Op::Store, &mut c, &env).unwrap();
+        run(&h, Op::Erase, &mut c, &env).unwrap();
         assert_eq!(
             std::fs::read_to_string(&log).unwrap(),
             "get\nstore\nerase\n"
@@ -186,16 +193,37 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn values_with_control_characters_never_reach_or_come_from_a_helper() {
+        let env = Env::default().with("PATH", "/usr/bin:/bin");
+        let tmp = tempfile::tempdir().unwrap();
+        let seen = tmp.path().join("seen");
+        let h = resolve(&format!("!cat > '{}'", seen.display()), &env).unwrap();
+        let mut c = Credential {
+            protocol: "https".into(),
+            host: "h".into(),
+            username: Some("u\nhost=other".into()),
+            ..Credential::default()
+        };
+        assert!(run(&h, Op::Store, &mut c, &env).is_err());
+        assert!(!seen.exists(), "the helper was not started");
+        let h = resolve("!printf 'username=u\\npassword=a\\rb\\n'", &env).unwrap();
+        let mut c = Credential::default();
+        assert!(run(&h, Op::Get, &mut c, &env).is_err());
+        assert!(c.username.is_none() && c.password.is_none());
+    }
+
     #[test]
     fn a_shell_helper_and_a_failing_helper() {
         let env = Env::default().with("PATH", "/usr/bin:/bin");
         let h = resolve("!f() { echo username=bob; echo password=pw; }; f", &env).unwrap();
         let mut c = Credential::default();
-        run(&h, Op::Get, &mut c, &env);
+        run(&h, Op::Get, &mut c, &env).unwrap();
         assert_eq!(c.username.as_deref(), Some("bob"));
         let h = resolve("!exit 3; echo", &env).unwrap();
         let mut c = Credential::default();
-        run(&h, Op::Get, &mut c, &env);
+        run(&h, Op::Get, &mut c, &env).unwrap();
         assert!(c.username.is_none());
     }
 }

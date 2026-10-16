@@ -552,6 +552,11 @@ something new, and tries up to three prompts:
 A credential that the server accepts is passed to every helper with `store` (except one that came from the URL, which pyn never
 copies into a helper); one that it refuses is passed with `erase`. A password is never logged, printed or sent to another host.
 
+Every credential field (protocol, host, path, user name, password and any other attribute) must be free of newline, carriage
+return and NUL characters, whether it comes from the URL (after percent-decoding), configuration, an askpass program, a prompt
+or a helper's output. A value that has one is refused with `credential field '<name>' contains a control character` before it is
+sent to a helper or used.
+
 | Helper | Behaviour |
 | --- | --- |
 | `store [--file <path>]` | In process. Reads `~/.git-credentials` then `$XDG_CONFIG_HOME/git/credentials` (or only `<path>`), one URL per line with percent-encoded user and password, as git's `store` does; writes the first file that exists (else `~/.git-credentials`) with mode `0600`. |
