@@ -156,8 +156,8 @@ until local commits exist (decision #300, built in #313).
 | Command | Behaviour |
 | --- | --- |
 | `pyn remote -v` | `origin`, a tab and `<server>/<owner>/<name> (fetch)`, then the same with `(push)`. |
-| `pyn fetch`, `pyn pull` | Run `pyn update`; with `local_store` on they fetch into the local store and `pull` then fast-forwards or replays local commits ([commits](commits.md#fetch-pull-and-push-with-a-local-store)). With any argument or option they are usage errors (`129`). |
-| `pyn push` | Prints that there is nothing to push, because commits go straight to the server; exits `0`. With `local_store` on it publishes the local commits and exits `1` on a refusal. Arguments are usage errors. |
+| `pyn fetch`, `pyn pull` | Run `pyn update`; with `local_store` on they fetch into the local store and `pull` then fast-forwards, makes a merge commit when the histories diverged as git does, or with `--rebase` replays local commits ([commits](commits.md#fetch-pull-and-push-with-a-local-store)). With any argument or option they are usage errors (`129`), except `pull --rebase` and `--no-rebase` with `local_store` on. |
+| `pyn push` | Prints that there is nothing to push, because commits go straight to the server; exits `0`. With `local_store` on it publishes the local commits, merge commits included, and exits `1` on a refusal. Arguments are usage errors. |
 | `pyn branch -r`, `-a` | `-r` lists the server's branches as `origin/<branch>`; `-a` lists the local ones, then `remotes/origin/<branch>`. `-v` works with both. Only listing is allowed with them. |
 
 ### Remotes on a git home

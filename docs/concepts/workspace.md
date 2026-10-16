@@ -251,17 +251,20 @@ With the setting on, `add`, `commit`, `status` and `branch` work against the sto
   Creating, renaming and deleting branches still act on the server.
 - `pyn switch` and `pyn checkout <branch>` refuse to leave a branch that has unpublished local commits.
 
-Unchanged by the setting: `pyn commit <path> --file ... [--base ...]` and a merge commit still publish straight to the
+Unchanged by the setting: `pyn commit <path> --file ... [--base ...]` and `pyn merge` still publish straight to the
 server, and the server stays the only authority over commits, locks and policy. Only the current branch is stored.
 
 ### Fetch, pull and push (provisional)
 
 Slice #337 of the same move. With the setting on, `pyn fetch` stores the server's new commits and trees (every object checked
-against its id) and moves `refs/remotes/origin/<branch>`; `pyn pull` is a fetch and then a fast-forward or a replay of the
-local commits onto the fetched tip; `pyn push` uploads the blobs and publishes the local commits in one request, after
-which none of them is unpublished. Details, output and the refusals are in
+against its id) and moves `refs/remotes/origin/<branch>`; `pyn pull` is a fetch and then a fast-forward or, when the
+histories diverged, a merge commit as in git (`pyn pull --rebase` replays the local commits onto the fetched tip instead);
+`pyn push` uploads the blobs and publishes the local commits, merge commits included, in one request, after which none of
+them is unpublished. Details, output and the refusals are in
 [commits](commits.md#fetch-pull-and-push-with-a-local-store). Deletions and policy-file commits are pushed like any other
-commit; pushing merge commits (#338) is not built yet and is refused cleanly.
+commit. A merge commit is pushed too (issue #338): a descendant exclusive pointer is adopted without a lock, a shared
+file is merged by content, and an exclusive path both sides changed needs the person's lock (provisional, see
+[merge commits in a push](commits.md#merge-commits-in-a-push-provisional)).
 
 ## The user configuration file
 

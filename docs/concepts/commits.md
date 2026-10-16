@@ -90,8 +90,8 @@ commits need that the server may not have. Blobs are not in the body: they are u
 The route is additive: `changesets` and `checkin` remain the direct route (decision #300), and no existing field changed.
 
 Errors, as `{code, message}`: `not_fast_forward` (409), `lock_required` and `lock_held` (409), `stale_base` (409),
-`storage_limit_reached` (409), `push_invalid` (400, an id that does not hash, bytes that are not a git object, a missing tree or a
-commit already stored), `object_missing` (400), `invalid_request` (400, an empty push or bad base64), `invalid_rules` (400, a policy file on the default branch that does not validate), `push_unsupported` (422),
+`storage_limit_reached` (409), `push_invalid` (400, an id that does not hash, bytes that are not a git object, a missing tree, a merge of a commit the
+repository lacks, or a commit already stored), `merge_conflict` (409, a merge commit that leaves a diverged exclusive path unresolved), `object_missing` (400), `invalid_request` (400, an empty push or bad base64), `invalid_rules` (400, a policy file on the default branch that does not validate), `push_unsupported` (422),
 `branch_not_found` and `commit_not_found` (404), `forbidden` (403, also for a policy change without the policy permission). No offline lock guarantee exists: a lock is judged when the
 push arrives.
 
@@ -137,8 +137,10 @@ repository is readable without credentials). A client that keeps commits and tre
 
 - A push is a chain of commits, oldest first, plus the trees they need. Commits keep their ids: each is checked to hash to the id
   it is sent under, to be a SHA-256 git commit, and to be a child of the one before it.
-- It must fast-forward: the first commit's parent is the branch's head (a first commit with no parent is for an empty branch), or
-  `not_fast_forward`. A commit already in the repository is `push_invalid`. The branch must exist.
+- It must fast-forward: the first commit's parent is the branch's head or one of its ancestors (a first commit with no parent is
+  for an empty branch), and the pushed history must contain the head, which only a [merge commit](#merge-commits-in-a-push-provisional)
+  can arrange when the first parent is not the head; otherwise `not_fast_forward`. A commit already in the repository is
+  `push_invalid`. The branch must exist.
 - Each commit's tree is compared with its parent's: every added or changed file becomes one revision, with the commit's author as its
   person, the pusher as its account, the commit's time and message, and the path's mode under the branch's policy (an unlisted path
   is exclusive by default). The blob of each must already be in the object store (`object_missing`), and a tree the commit needs must
@@ -163,12 +165,44 @@ repository is readable without credentials). A client that keeps commits and tre
   is `push_unsupported`. On any other branch the policy file is an ordinary file, not parsed, until a merge brings it to the
   default branch (decision #38). Provisional: several policy commits in one push are applied one after the other against the
   final head.
-- Refused with `push_unsupported`, for now (merges are #338): a commit with two parents; a commit that changes no file; a
-  submodule entry; the policy file's removal from the default branch; and a message without its final newline.
+- Refused with `push_unsupported`, for now: a commit with more than two parents or the same parent twice; a commit with one
+  parent that changes no file; a submodule entry; the policy file's removal from the default branch; and a message without its
+  final newline.
   A name or message that is not UTF-8 is accepted: the exact bytes are stored and the commit keeps its id, and the name,
   email and message fields in the API are those bytes decoded lossily (invalid bytes and NUL become U+FFFD).
 - The pusher needs the `checkin` permission. A commit's author need not match the pusher, as in git; the authenticated pusher is
   the account on the revisions and the actor in the audit log. A strict-match policy may be added later.
+
+### Merge commits in a push (provisional)
+
+A commit with two parents is accepted (decision #300, issue #338) and judged as the server's own [merge](merging.md) judges it,
+so a rejected push is resolved by pulling, merging and pushing the merge. The first parent is the previous commit of the push
+(or, for the first one, an existing commit that is the branch's head or an ancestor of it); the second parent must already be
+in the repository, otherwise `push_invalid`. The push as a whole must contain the branch's head, or `not_fast_forward`.
+Merging commits that exist only in the same push is not supported: push that history first.
+
+The content of a merge is what its tree records. For each path the two parents' pointers differ on (or the merge tree changes),
+the pointer is worked out from the pointers at the first parent (as the commits before it in the push leave them) and at the
+second parent:
+
+- **Shared** paths: the later of the two pointers wins when the tree has its content, and is adopted without a new revision. Any
+  other content in the tree (a text merge, a resolution, a removal) is a new revision based on the first parent's pointer,
+  appended like a checkin; the server does not recompute the text merge, it takes the pushed tree, as it takes a resolution.
+- **Exclusive** paths: a pointer that descends from the other (through the recorded bases, or because its commit has the other
+  in its history) is adopted by a tree that holds its content, with no lock and no new revision. Pointers that **diverged**
+  need a new revision under the pusher's live lease: the tree's content for the path becomes a revision based on the first
+  parent's pointer, and the usual lock rules apply (`lock_required`, `lock_held`, a lapsed lease refused). A diverged path whose
+  tree keeps the first parent's content is accepted as an explicit choice only if the pusher holds the path's lock; otherwise the
+  push is refused whole with `merge_conflict`, naming the paths. A shared version that met a conversion is diverged in the same
+  way.
+- A content the tree gives a path that is neither pointer's is a new revision, so an exclusive path needs the lock then too.
+  A path the tree removes is a deletion revision.
+- A policy file the merge adopts on the default branch is checked and applied like an arriving policy (policy permission,
+  `invalid_rules`), after the push is recorded.
+
+The push is still all or nothing, and the commits keep their ids. A merge is audited as `branch_merged` (detail `(push)`), and
+each new revision as a checkin. The wire is unchanged: the route accepts what it refused before, and the request and answer
+have no new field.
 
 ### Fetch, pull and push with a local store
 
@@ -182,14 +216,23 @@ With `local_store` on ([workspace](workspace.md#the-local-store-provisional)) th
   `From <server>/<repo>` and `   <old>..<new>  main -> origin/main`, nothing when there is nothing new. Pointers are not kept
   yet. A blob the store lacks is read on demand by id (`GET .../objects/{id}`), checked against the id and stored.
 - `pyn pull` is `fetch` and then: nothing when the local branch already holds the fetched tip (`Already up to date.`); a
-  fast-forward when the fetched tip descends from the local one, followed by the usual `update` of the files; otherwise the
-  local commits are replayed one by one onto the fetched tip (a rebase, not a merge commit) with a three-way text merge per
-  file. A file both sides changed that cannot be merged line by line, a mode change on both sides, or a deletion against an
-  edit is a conflict: the pull stops, names the files and changes nothing (resolving conflicts is not built yet). A pull
-  also refuses to run over uncommitted changes to a file the incoming commits change, and with staged changes. A local merge
-  commit cannot be replayed and is refused.
-- `pyn push` first uploads every blob the unpublished commits added or changed through the chunked object routes, then sends
-  the commits and the trees they need in one `POST .../push`. It is accepted or refused whole. On success the
+  fast-forward when the fetched tip descends from the local one, followed by the usual `update` of the files; otherwise a
+  **merge commit** with the local tip and the fetched tip as parents (`Merge branch 'main' of <server>/<repo>`, ` into <branch>`
+  unless the branch is `main` or `master`; `Merge made by the 'ort' strategy.`), as git does. The merge base is the lowest common
+  ancestor (several of them are refused), and each path is merged like the server merges: a side that alone changed it wins, a
+  shared file both sides changed is merged line by line, and a file both sides changed that cannot be merged that way, a mode
+  change on both sides, or a deletion against an edit is a conflict. An exclusive path both sides changed has no automatic pick:
+  the pull stops unless the person holds its lock, in which case their version is kept (`Kept your version of <path>`) and the
+  server accepts it at push as the new revision. A conflict names the files, hints at the lock, and changes nothing: no
+  half-merged workspace (resolving conflicts in the working tree is not built). The files the merge changes are written, and
+  `update` brings the rest. `pyn pull --rebase` keeps the older behaviour: the local commits are replayed one by one onto the
+  fetched tip with the same per-file rules; a local merge commit cannot be replayed and is refused. A pull also refuses to
+  run over uncommitted changes to a file the incoming commits change, and with staged changes. `--rebase=false` and
+  `--no-rebase` mean merge; other options are usage errors.
+- `pyn push` first uploads every blob the unpublished commits added or changed through the chunked object routes (not the ones
+  a merge took from the fetched side), then sends the commits and the trees they need in one `POST .../push`, merge commits
+  included. The local history must contain the fetched tip, else `non-fast-forward`; a merge may only merge in commits the
+  server already has. It is accepted or refused whole. On success the
   remote-tracking ref moves to the new head, so the commits are no longer unpublished; the files take the revisions the server
   made, and exclusive files go read-only again (a deleted path leaves the workspace's state). A commit that deletes a path or
   changes `.pyn/pyn.toml` is sent like any other ([deletions and policy commits](#pushed-commits-provisional)); when the
@@ -200,8 +243,9 @@ With `local_store` on ([workspace](workspace.md#the-local-store-provisional)) th
   `not_fast_forward` and `stale_base` (also detected locally when the local branch does not build on the fetched tip) tell the
   person to run `pyn pull` and push again; `lock_required` (including a lapsed lease) says to lock the path; `lock_held`
   names that someone else holds it; `invalid_rules` (an invalid policy file, nothing pushed) and `forbidden` (also a policy
-  change without the policy permission) are named; so are `object_missing`, `push_invalid`, `push_unsupported` and
-  `storage_limit_reached`. A merge commit is refused (#338).
+  change without the policy permission) are named; so are `object_missing`, `push_invalid`, `push_unsupported`,
+  `storage_limit_reached` and `merge_conflict` (a merge commit leaves a diverged exclusive path unresolved: lock it and
+  pull again).
 
 ## Command line
 
