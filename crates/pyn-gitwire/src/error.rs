@@ -36,6 +36,9 @@ pub enum Error {
     Auth(String),
     #[error("{0}")]
     NotFound(String),
+    /// A ref advertisement, listing or report grew past a bound.
+    #[error("{what} exceeds the limit of {limit}")]
+    LimitExceeded { what: &'static str, limit: u64 },
     #[error("server does not support {0}")]
     Unsupported(String),
     #[error("invalid request: {0}")]

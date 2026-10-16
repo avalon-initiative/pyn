@@ -1,7 +1,7 @@
 //! Git's smart HTTP: `GET info/refs`, then one `POST git-<service>` per request. Dumb HTTP is not supported.
 
 use std::io::{self, Cursor, Read};
-use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -25,6 +25,9 @@ const POST_BUFFER: usize = 1 << 20;
 const GZIP_ABOVE: usize = 1024;
 const MAX_REDIRECTS: usize = 20;
 const CHUNK: usize = 64 * 1024;
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long a request or a body read may wait for data; `http.lowSpeedTime` (seconds, 0 for none) overrides it.
+pub const DEFAULT_STALL: Duration = Duration::from_secs(300);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Follow {
@@ -49,6 +52,7 @@ struct Shared {
     extra_headers: Vec<(String, String)>,
     follow: Follow,
     home: Origin,
+    stall: Option<Duration>,
     /// The credential the server last accepted, tried first by the next session.
     accepted: Mutex<Option<Auth>>,
 }
@@ -77,6 +81,18 @@ impl HttpTransport {
             Some(_) => Follow::Always,
             None => Follow::Initial,
         };
+        let stall = match scoped_value(config, "http", "lowspeedtime", &url) {
+            None => Some(DEFAULT_STALL),
+            Some(v) => match v.trim().parse::<u64>() {
+                Ok(0) => None,
+                Ok(n) => Some(Duration::from_secs(n)),
+                Err(_) => {
+                    return Err(Error::Url(
+                        "http.lowSpeedTime must be a number of seconds".into(),
+                    ));
+                }
+            },
+        };
         let flow = Flow::new(config.clone(), env.clone(), prompt, &url);
         let mut url = url;
         let _ = url.set_username("");
@@ -88,6 +104,7 @@ impl HttpTransport {
                 extra_headers,
                 follow,
                 home: origin(&url),
+                stall,
                 accepted: Mutex::new(None),
             }),
             url,
@@ -99,7 +116,7 @@ fn build_client(config: &Config, env: &Env, url: &Url) -> CrateResult<Client> {
     let mut b = Client::builder()
         .redirect(Policy::none())
         .user_agent(USER_AGENT)
-        .connect_timeout(Duration::from_secs(30))
+        .connect_timeout(CONNECT_TIMEOUT)
         .timeout(None);
     if let Some(p) = scoped_value(config, "http", "proxy", url) {
         b = if p.is_empty() {
@@ -244,11 +261,10 @@ impl Transport for HttpTransport {
         let mut redirects = 0;
         loop {
             let url = info_refs_url(&base, service);
-            let resp = sh
+            let req = sh
                 .request(reqwest::Method::GET, &url, auth.as_ref(), version)
-                .header(ACCEPT, "*/*")
-                .send()
-                .map_err(|e| net_error(e.without_url(), &url))?;
+                .header(ACCEPT, "*/*");
+            let resp = send_bounded(req, sh.stall, &url)?;
             let status = resp.status();
             if status.is_redirection() {
                 if sh.follow == Follow::Never {
@@ -274,7 +290,7 @@ impl Transport for HttpTransport {
             }
             check_advertisement_type(&resp, &url, service)?;
             sh.approve(&auth, &base);
-            let adv = strip_preamble(resp, service)?;
+            let adv = strip_preamble(StallReader::new(resp, sh.stall), service)?;
             return Ok(Box::new(HttpSession {
                 shared: sh.clone(),
                 base,
@@ -360,7 +376,7 @@ fn check_advertisement_type(resp: &Response, url: &Url, service: Service) -> Res
 }
 
 /// Drops the `# service=<name>` line and its flush, which v0/v1 servers put before the advertisement.
-fn strip_preamble(mut resp: Response, service: Service) -> Result<Box<dyn Read>> {
+fn strip_preamble<R: Read + 'static>(mut resp: R, service: Service) -> Result<Box<dyn Read>> {
     let mut head = [0u8; 4];
     resp.read_exact(&mut head)
         .map_err(|e| WireError::Protocol(format!("the server sent no advertisement: {e}")))?;
@@ -400,7 +416,7 @@ struct HttpSession {
     version: ProtocolVersion,
     auth: Option<Auth>,
     advert: Option<Box<dyn Read>>,
-    current: Option<Response>,
+    current: Option<StallReader>,
 }
 
 impl HttpSession {
@@ -445,7 +461,7 @@ impl HttpSession {
             if gzipped {
                 req = req.header(CONTENT_ENCODING, "gzip");
             }
-            let resp = req.send().map_err(|e| net_error(e.without_url(), &url))?;
+            let resp = send_bounded(req, self.shared.stall, &url)?;
             let status = resp.status();
             if status.as_u16() == 401 {
                 self.auth = Some(self.shared.after_401(&resp, &self.base, self.auth.take())?);
@@ -467,13 +483,10 @@ impl HttpSession {
             rx,
             cur: Cursor::new(Vec::new()),
         }));
-        let handle = std::thread::spawn(move || req.send());
+        let done = spawn_send(req);
         feed(&tx, head, rest);
         drop(tx);
-        let resp = handle
-            .join()
-            .map_err(|_| WireError::Connection("the upload thread panicked".into()))?
-            .map_err(|e| net_error(e.without_url(), &url))?;
+        let resp = await_send(&done, self.shared.stall, &url)?;
         let status = resp.status();
         if status.as_u16() == 401 {
             if let Some(a) = self.auth.take() {
@@ -504,6 +517,108 @@ impl HttpSession {
             ));
         }
         status_error(status, url)
+    }
+}
+
+type Sent = Receiver<reqwest::Result<Response>>;
+
+fn spawn_send(req: RequestBuilder) -> Sent {
+    let (tx, rx) = sync_channel(1);
+    std::thread::spawn(move || {
+        let _ = tx.send(req.send());
+    });
+    rx
+}
+
+fn await_send(done: &Sent, stall: Option<Duration>, url: &Url) -> Result<Response> {
+    let outcome = match stall {
+        Some(d) => done.recv_timeout(d).map_err(|e| match e {
+            RecvTimeoutError::Timeout => stall_error(d, url),
+            RecvTimeoutError::Disconnected => {
+                WireError::Connection("the request thread ended".into())
+            }
+        })?,
+        None => done
+            .recv()
+            .map_err(|_| WireError::Connection("the request thread ended".into()))?,
+    };
+    outcome.map_err(|e| net_error(e.without_url(), url))
+}
+
+fn send_bounded(req: RequestBuilder, stall: Option<Duration>, url: &Url) -> Result<Response> {
+    await_send(&spawn_send(req), stall, url)
+}
+
+fn stall_error(d: Duration, url: &Url) -> WireError {
+    WireError::Connection(format!(
+        "{}: no response within {} seconds",
+        RemoteUrl::Http(url.clone()).display(),
+        d.as_secs()
+    ))
+}
+
+/// Reads a body on a helper thread so a read that receives no data for `stall` fails instead of hanging.
+struct StallReader {
+    rx: Receiver<io::Result<Vec<u8>>>,
+    cur: Cursor<Vec<u8>>,
+    stall: Option<Duration>,
+}
+
+impl StallReader {
+    fn new<R: Read + Send + 'static>(mut body: R, stall: Option<Duration>) -> Self {
+        let (tx, rx) = sync_channel::<io::Result<Vec<u8>>>(2);
+        std::thread::spawn(move || {
+            loop {
+                let mut buf = vec![0u8; CHUNK];
+                match body.read(&mut buf) {
+                    Ok(0) => return,
+                    Ok(n) => {
+                        buf.truncate(n);
+                        if tx.send(Ok(buf)).is_err() {
+                            return;
+                        }
+                    }
+                    Err(e) => {
+                        let _ = tx.send(Err(e));
+                        return;
+                    }
+                }
+            }
+        });
+        Self {
+            rx,
+            cur: Cursor::new(Vec::new()),
+            stall,
+        }
+    }
+}
+
+impl Read for StallReader {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        loop {
+            let n = self.cur.read(buf)?;
+            if n > 0 || buf.is_empty() {
+                return Ok(n);
+            }
+            let next = match self.stall {
+                Some(d) => self.rx.recv_timeout(d).map_err(|e| match e {
+                    RecvTimeoutError::Timeout => io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        format!("no data received for {} seconds", d.as_secs()),
+                    ),
+                    RecvTimeoutError::Disconnected => io::ErrorKind::UnexpectedEof.into(),
+                }),
+                None => self
+                    .rx
+                    .recv()
+                    .map_err(|_| io::ErrorKind::UnexpectedEof.into()),
+            };
+            match next {
+                Ok(chunk) => self.cur = Cursor::new(chunk?),
+                Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(0),
+                Err(e) => return Err(e),
+            }
+        }
     }
 }
 
@@ -573,7 +688,7 @@ impl Session for HttpSession {
         } else {
             self.post_streamed(head, body)?
         };
-        self.current = Some(resp);
+        self.current = Some(StallReader::new(resp, self.shared.stall));
         Ok(())
     }
 

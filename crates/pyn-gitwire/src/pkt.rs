@@ -10,6 +10,11 @@ pub const MAX_PKT: usize = 65520;
 /// Largest payload of one data packet.
 pub const MAX_DATA: usize = MAX_PKT - 4;
 
+/// Most packets accepted in one advertisement, listing or report.
+pub const MAX_LINES: usize = 1_000_000;
+/// Most payload bytes buffered for one advertisement, listing or report.
+pub const MAX_BUFFERED: usize = 256 << 20;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Packet {
     Data(Vec<u8>),
@@ -98,12 +103,26 @@ impl<R: Read> PktReader<R> {
         }
     }
 
-    /// Reads data packets until the next flush, which is consumed.
+    /// Reads data packets until the next flush, which is consumed, within [`MAX_LINES`] and [`MAX_BUFFERED`].
     pub fn read_until_flush(&mut self) -> Result<Vec<Vec<u8>>> {
+        self.read_until_flush_within(MAX_LINES, MAX_BUFFERED)
+    }
+
+    /// Like [`PktReader::read_until_flush`] with explicit bounds.
+    pub fn read_until_flush_within(
+        &mut self,
+        max_lines: usize,
+        max_bytes: usize,
+    ) -> Result<Vec<Vec<u8>>> {
         let mut out = Vec::new();
+        let mut bytes = 0usize;
         loop {
             match self.read()? {
-                Packet::Data(d) => out.push(d),
+                Packet::Data(d) => {
+                    bytes += d.len();
+                    check_bounds(out.len() + 1, bytes, max_lines, max_bytes)?;
+                    out.push(d);
+                }
                 Packet::Flush => return Ok(out),
                 other => {
                     return Err(Error::Protocol(format!(
@@ -113,6 +132,28 @@ impl<R: Read> PktReader<R> {
             }
         }
     }
+}
+
+/// Fails with [`Error::LimitExceeded`] once `lines` or `bytes` pass the bounds.
+pub(crate) fn check_bounds(
+    lines: usize,
+    bytes: usize,
+    max_lines: usize,
+    max_bytes: usize,
+) -> Result<()> {
+    if lines > max_lines {
+        return Err(Error::LimitExceeded {
+            what: "number of lines",
+            limit: max_lines as u64,
+        });
+    }
+    if bytes > max_bytes {
+        return Err(Error::LimitExceeded {
+            what: "buffered bytes",
+            limit: max_bytes as u64,
+        });
+    }
+    Ok(())
 }
 
 pub struct PktWriter<W> {
@@ -257,6 +298,34 @@ mod tests {
         let mut rest = Vec::new();
         cur.read_to_end(&mut rest).unwrap();
         assert_eq!(rest, b"tail");
+    }
+
+    #[test]
+    fn read_until_flush_is_bounded_by_lines_and_bytes() {
+        let mut w = PktWriter::new(Vec::new());
+        for _ in 0..5 {
+            w.write_line("abcd").unwrap();
+        }
+        w.write_flush().unwrap();
+        let buf = w.into_inner();
+        let lines = PktReader::new(&buf[..])
+            .read_until_flush_within(5, 1000)
+            .unwrap();
+        assert_eq!(lines.len(), 5);
+        assert!(matches!(
+            PktReader::new(&buf[..]).read_until_flush_within(4, 1000),
+            Err(Error::LimitExceeded {
+                what: "number of lines",
+                ..
+            })
+        ));
+        assert!(matches!(
+            PktReader::new(&buf[..]).read_until_flush_within(10, 24),
+            Err(Error::LimitExceeded {
+                what: "buffered bytes",
+                ..
+            })
+        ));
     }
 
     #[test]

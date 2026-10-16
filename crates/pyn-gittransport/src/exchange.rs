@@ -107,7 +107,7 @@ pub fn fetch_with(
     req.ofs_delta = true;
     let mut haves = LocalHaves::new(repo, &db)?;
     let mut pack = up.fetch(&req, &mut haves, Box::new(|m| progress(m)))?;
-    let ingested = index_pack(&db, &mut pack, &IngestLimits::default())?;
+    let ingested = index_pack(&db, &mut pack, &IngestLimits::from_config(repo.config())?)?;
     std::io::copy(&mut pack, &mut std::io::sink())?;
     Ok(Some(ingested))
 }

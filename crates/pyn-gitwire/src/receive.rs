@@ -8,7 +8,7 @@ use crate::caps::{
     AGENT, AdvertisedRef, Advertisement, Capabilities, ProtocolVersion, read_advertisement,
 };
 use crate::error::{Error, Result};
-use crate::pkt::{PktReader, PktWriter, text};
+use crate::pkt::{MAX_BUFFERED, PktReader, PktWriter, text};
 use crate::sideband::SidebandReader;
 use crate::transport::{Service, Session, Transport};
 
@@ -190,6 +190,7 @@ impl ReceivePack {
         let status = if sideband {
             let mut out = Vec::new();
             SidebandReader::new(PktReader::new(resp), Some(Box::new(|m| progress(m))))
+                .take(MAX_BUFFERED as u64 + 1)
                 .read_to_end(&mut out)?;
             out
         } else {
@@ -197,9 +198,18 @@ impl ReceivePack {
             let mut r = PktReader::new(resp);
             while let crate::pkt::Packet::Data(d) = r.read()? {
                 crate::pkt::encode_data(&mut out, &d)?;
+                if out.len() > MAX_BUFFERED {
+                    break;
+                }
             }
             out
         };
+        if status.len() > MAX_BUFFERED {
+            return Err(Error::LimitExceeded {
+                what: "buffered bytes",
+                limit: MAX_BUFFERED as u64,
+            });
+        }
         parse_report(&status, updates)
     }
 }
