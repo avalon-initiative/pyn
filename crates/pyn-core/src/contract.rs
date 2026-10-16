@@ -3880,6 +3880,41 @@ impl MetadataStore for HookedMeta {
         self.inner.has_content(repo, content).await
     }
 
+    async fn record_upload(
+        &self,
+        repo: &RepoId,
+        id: &ObjectId,
+        size: u64,
+        cap: u64,
+    ) -> crate::Result<()> {
+        self.inner.record_upload(repo, id, size, cap).await
+    }
+
+    async fn record_assembled(
+        &self,
+        repo: &RepoId,
+        id: &ObjectId,
+        size: u64,
+        chunks: &[ObjectId],
+        cap: u64,
+    ) -> crate::Result<()> {
+        self.inner
+            .record_assembled(repo, id, size, chunks, cap)
+            .await
+    }
+
+    async fn unknown_objects(
+        &self,
+        repo: &RepoId,
+        ids: &[ObjectId],
+    ) -> crate::Result<Vec<ObjectId>> {
+        self.inner.unknown_objects(repo, ids).await
+    }
+
+    async fn unreferenced_bytes(&self, repo: &RepoId) -> crate::Result<u64> {
+        self.inner.unreferenced_bytes(repo).await
+    }
+
     async fn get_tree(&self, repo: &RepoId, id: &ObjectId) -> crate::Result<Option<Vec<u8>>> {
         self.inner.get_tree(repo, id).await
     }

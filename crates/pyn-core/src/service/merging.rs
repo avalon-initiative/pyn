@@ -637,9 +637,7 @@ impl RepoService {
             let Some(r) = by_path.get(&p.path) else {
                 continue;
             };
-            if !self.objects.exists(&r.content).await? {
-                return Err(PynError::ObjectMissing(r.content.to_string()));
-            }
+            self.referenced_size(&r.content).await?;
             p.verdict = if p.mode == Mode::Exclusive
                 && matches!(p.verdict, Verdict::Conflict(ConflictKind::Binary))
             {

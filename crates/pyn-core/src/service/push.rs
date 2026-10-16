@@ -438,11 +438,7 @@ impl RepoService {
             if !c.removed {
                 super::check_file_mode(c.mode)?;
             }
-            let size = self
-                .objects
-                .size(&c.id)
-                .await?
-                .ok_or_else(|| PynError::ObjectMissing(c.id.to_string()))?;
+            let size = self.referenced_size(&c.id).await?;
             items.push(NewRevision {
                 path: c.path.clone(),
                 content: c.id,

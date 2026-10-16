@@ -2,6 +2,8 @@ mod fetch;
 mod merging;
 mod push;
 mod push_merge;
+mod uploads;
+pub use uploads::DEFAULT_UNREFERENCED_UPLOAD_BYTES;
 
 pub use fetch::{
     FETCH_DEFAULT_LIMIT, FETCH_MAX_HAVES, FETCH_MAX_LIMIT, FetchPage, FetchQuery, FetchedCommit,
@@ -172,6 +174,7 @@ pub struct RepoService {
     clock: Arc<dyn Clock>,
     config: ServiceConfig,
     storage: Option<(UserId, Arc<dyn StorageCaps>)>,
+    unreferenced_cap: u64,
 }
 
 impl RepoService {
@@ -199,6 +202,7 @@ impl RepoService {
             clock,
             config,
             storage: None,
+            unreferenced_cap: DEFAULT_UNREFERENCED_UPLOAD_BYTES,
         }
     }
 
@@ -832,9 +836,7 @@ impl RepoService {
         message: String,
     ) -> Result<Recorded> {
         check_file_mode(file_mode)?;
-        if !self.objects.exists(&content).await? {
-            return Err(PynError::ObjectMissing(content.to_string()));
-        }
+        self.referenced_size(&content).await?;
         let recorded = self
             .commit(
                 branch,
@@ -926,11 +928,7 @@ impl RepoService {
         let rules = self.rules_on(branch).await?;
         let mut items = Vec::with_capacity(entries.len() + deletions.len());
         for e in entries {
-            let size = self
-                .objects
-                .size(&e.content)
-                .await?
-                .ok_or_else(|| PynError::ObjectMissing(e.content.to_string()))?;
+            let size = self.referenced_size(&e.content).await?;
             let mode = rules.mode_for(&e.path);
             let base = self.effective_base(branch, &e.path, e.base).await?;
             items.push(ChangesetItem {
@@ -1091,9 +1089,7 @@ impl RepoService {
                 "r{source} is already the head"
             )));
         }
-        if !self.objects.exists(&old.content).await? {
-            return Err(PynError::ObjectMissing(old.content.to_string()));
-        }
+        self.referenced_size(&old.content).await?;
         let message = message.unwrap_or_else(|| format!("Restore r{source}"));
         let recorded = self
             .commit(

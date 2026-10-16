@@ -1072,11 +1072,11 @@ async fn put_object(
     Path((owner, name)): Path<(String, String)>,
     body: axum::body::Body,
 ) -> ApiResult<Json<api::PutObjectResponse>> {
-    authorize_repo(&s, &headers, &owner, &name, Some(Permission::Checkin)).await?;
+    let (open, _) = authorize_repo(&s, &headers, &owner, &name, Some(Permission::Checkin)).await?;
     let (reader, len) = upload(&headers, body)?;
-    let id = s
-        .objects
-        .put_stream(reader, Keying::Blob { len }, Some(MAX_OBJECT_BYTES))
+    let id = open
+        .service
+        .upload(reader, Keying::Blob { len }, Some(MAX_OBJECT_BYTES), len)
         .await?;
     Ok(Json(api::PutObjectResponse {
         content: id.to_hex(),
@@ -1093,16 +1093,17 @@ async fn put_chunk(
     Path((owner, name)): Path<(String, String)>,
     body: axum::body::Body,
 ) -> ApiResult<Json<api::PutObjectResponse>> {
-    authorize_repo(&s, &headers, &owner, &name, Some(Permission::Checkin)).await?;
+    let (open, _) = authorize_repo(&s, &headers, &owner, &name, Some(Permission::Checkin)).await?;
     use futures_util::TryStreamExt;
     let reader =
         tokio_util::io::StreamReader::new(body.into_data_stream().map_err(std::io::Error::other));
-    let key = s
-        .objects
-        .put_stream(
+    let key = open
+        .service
+        .upload(
             Box::pin(reader),
             Keying::Raw,
             Some(pyn_chunk::MAX_CHUNK as u64),
+            pyn_chunk::MAX_CHUNK as u64,
         )
         .await
         .map_err(|e| match e {
@@ -1127,7 +1128,7 @@ fn parse_object_id(text: &str) -> Result<pyn_core::ObjectId, PynError> {
 }
 
 #[utoipa::path(post, path = "/v1/repos/{owner}/{name}/objects/missing", params(RepoAddress), request_body = api::MissingObjectsRequest, responses(
-    (status = 200, body = api::MissingObjectsResponse, description = "the requested hashes the server does not store"),
+    (status = 200, body = api::MissingObjectsResponse, description = "the requested hashes this repository cannot reference yet: not uploaded through it and not named by one of its revisions"),
     (status = 400, body = api::ErrorBody, description = "invalid_request for a malformed hash or more than 10000 hashes"),
 ))]
 async fn missing_objects(
@@ -1136,20 +1137,22 @@ async fn missing_objects(
     Path((owner, name)): Path<(String, String)>,
     Json(req): Json<api::MissingObjectsRequest>,
 ) -> ApiResult<Json<api::MissingObjectsResponse>> {
-    authorize_repo(&s, &headers, &owner, &name, Some(Permission::Checkin)).await?;
+    let (open, _) = authorize_repo(&s, &headers, &owner, &name, Some(Permission::Checkin)).await?;
     if req.hashes.len() > MAX_HASHES_PER_REQUEST {
         return Err(PynError::InvalidRequest(format!(
             "ask about at most {MAX_HASHES_PER_REQUEST} hashes at a time"
         ))
         .into());
     }
-    let mut missing = Vec::new();
-    for text in req.hashes {
-        if !s.objects.exists(&parse_object_id(&text)?).await? {
-            missing.push(text);
-        }
-    }
-    Ok(Json(api::MissingObjectsResponse { missing }))
+    let ids = req
+        .hashes
+        .iter()
+        .map(|t| parse_object_id(t))
+        .collect::<Result<Vec<_>, _>>()?;
+    let missing = open.service.missing_objects(&ids).await?;
+    Ok(Json(api::MissingObjectsResponse {
+        missing: missing.iter().map(|id| id.to_hex()).collect(),
+    }))
 }
 
 #[utoipa::path(post, path = "/v1/repos/{owner}/{name}/objects/assemble", params(RepoAddress), request_body = api::AssembleObjectRequest, responses(
@@ -1163,7 +1166,7 @@ async fn assemble_object(
     Path((owner, name)): Path<(String, String)>,
     Json(req): Json<api::AssembleObjectRequest>,
 ) -> ApiResult<Json<api::PutObjectResponse>> {
-    authorize_repo(&s, &headers, &owner, &name, Some(Permission::Checkin)).await?;
+    let (open, _) = authorize_repo(&s, &headers, &owner, &name, Some(Permission::Checkin)).await?;
     if req.chunks.len() > (MAX_OBJECT_BYTES / pyn_chunk::MIN_CHUNK as u64) as usize + 1 {
         return Err(PynError::InvalidRequest("too many chunks".into()).into());
     }
@@ -1172,7 +1175,7 @@ async fn assemble_object(
         .iter()
         .map(|c| parse_object_id(c))
         .collect::<Result<Vec<_>, _>>()?;
-    let hash = s.objects.assemble(&chunks, Some(MAX_OBJECT_BYTES)).await?;
+    let hash = open.service.assemble(&chunks, Some(MAX_OBJECT_BYTES)).await?;
     Ok(Json(api::PutObjectResponse {
         content: hash.to_hex(),
     }))

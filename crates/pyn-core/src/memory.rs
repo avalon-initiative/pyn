@@ -51,6 +51,8 @@ struct State {
     branches: HashMap<RepoId, Vec<Branch>>,
     /// Per commit, the paths whose revision differs from its first parent's: the revisions the commit made.
     pointers: HashMap<(RepoId, ObjectId), Vec<(RepoPath, RevisionId)>>,
+    /// Uploads each repository may reference: size, and whether an assembled object already holds the chunk.
+    uploads: HashMap<(RepoId, ObjectId), (u64, bool)>,
 }
 
 impl State {
@@ -60,6 +62,44 @@ impl State {
             .filter(|((r, _), _)| self.repos.get(r).is_some_and(|rec| &rec.owner == owner))
             .map(|(_, size)| size)
             .sum()
+    }
+
+    fn names_content(&self, repo: &RepoId, id: &ObjectId) -> bool {
+        self.revisions
+            .iter()
+            .any(|((r, _), revs)| r == repo && revs.iter().any(|v| &v.content == id))
+    }
+
+    fn knows(&self, repo: &RepoId, id: &ObjectId) -> bool {
+        self.uploads.contains_key(&(repo.clone(), *id)) || self.names_content(repo, id)
+    }
+
+    fn unreferenced(&self, repo: &RepoId) -> u64 {
+        self.uploads
+            .iter()
+            .filter(|((r, id), (_, assembled))| {
+                r == repo && !assembled && !self.names_content(repo, id)
+            })
+            .map(|(_, (size, _))| size)
+            .sum()
+    }
+
+    fn record(&mut self, repo: &RepoId, id: &ObjectId, size: u64, cap: u64) -> Result<()> {
+        let key = (repo.clone(), *id);
+        if self.uploads.contains_key(&key) {
+            return Ok(());
+        }
+        self.uploads.insert(key.clone(), (size, false));
+        let used = self.unreferenced(repo);
+        if used > cap {
+            self.uploads.remove(&key);
+            return Err(PynError::StorageLimitReached {
+                owner: repo.to_string(),
+                limit: cap,
+                used: used - size,
+            });
+        }
+        Ok(())
     }
 
     fn commit_record(&self, repo: &RepoId, id: &ObjectId) -> Option<&Commit> {
@@ -950,6 +990,50 @@ impl MetadataStore for MemoryMetadataStore {
             .any(|((r, _), revs)| r == repo && revs.iter().any(|v| &v.content == content)))
     }
 
+    async fn record_upload(
+        &self,
+        repo: &RepoId,
+        id: &ObjectId,
+        size: u64,
+        cap: u64,
+    ) -> Result<()> {
+        self.state.lock().unwrap().record(repo, id, size, cap)
+    }
+
+    async fn record_assembled(
+        &self,
+        repo: &RepoId,
+        id: &ObjectId,
+        size: u64,
+        chunks: &[ObjectId],
+        cap: u64,
+    ) -> Result<()> {
+        let mut st = self.state.lock().unwrap();
+        if let Some(c) = chunks.iter().find(|c| !st.knows(repo, c)) {
+            return Err(PynError::ObjectMissing(c.to_string()));
+        }
+        let before = st.uploads.clone();
+        for c in chunks {
+            if let Some(u) = st.uploads.get_mut(&(repo.clone(), *c)) {
+                u.1 = true;
+            }
+        }
+        let recorded = st.record(repo, id, size, cap);
+        if recorded.is_err() {
+            st.uploads = before;
+        }
+        recorded
+    }
+
+    async fn unknown_objects(&self, repo: &RepoId, ids: &[ObjectId]) -> Result<Vec<ObjectId>> {
+        let st = self.state.lock().unwrap();
+        Ok(ids.iter().filter(|id| !st.knows(repo, id)).copied().collect())
+    }
+
+    async fn unreferenced_bytes(&self, repo: &RepoId) -> Result<u64> {
+        Ok(self.state.lock().unwrap().unreferenced(repo))
+    }
+
     async fn get_tree(&self, repo: &RepoId, id: &ObjectId) -> Result<Option<Vec<u8>>> {
         let st = self.state.lock().unwrap();
         Ok(st.trees.get(&(repo.clone(), *id)).cloned())
@@ -1136,6 +1220,7 @@ impl MetadataStore for MemoryMetadataStore {
         st.trees.retain(|(r, _), _| r != id);
         st.branches.remove(id);
         st.pointers.retain(|(r, _), _| r != id);
+        st.uploads.retain(|(r, _), _| r != id);
         Ok(st.repos.remove(id).is_some())
     }
 

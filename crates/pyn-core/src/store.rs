@@ -248,6 +248,34 @@ pub trait MetadataStore: Send + Sync {
     /// Whether a revision of the repository, on any branch, has `content`.
     async fn has_content(&self, repo: &RepoId, content: &ObjectId) -> Result<bool>;
 
+    /// Records that `repo` may reference the uploaded object `id` of `size` bytes. A new record that takes the
+    /// repository's unreferenced uploads past `cap` bytes is `StorageLimitReached` and is not kept.
+    async fn record_upload(
+        &self,
+        repo: &RepoId,
+        id: &ObjectId,
+        size: u64,
+        cap: u64,
+    ) -> Result<()>;
+
+    /// Like `record_upload` for the object assembled from `chunks`, which must all be known to `repo` (else
+    /// `ObjectMissing`); the chunks stop counting as unreferenced uploads.
+    async fn record_assembled(
+        &self,
+        repo: &RepoId,
+        id: &ObjectId,
+        size: u64,
+        chunks: &[ObjectId],
+        cap: u64,
+    ) -> Result<()>;
+
+    /// The ids among `ids` that `repo` may not reference: neither uploaded through it nor named by one of its
+    /// revisions. Says nothing about what the object store holds.
+    async fn unknown_objects(&self, repo: &RepoId, ids: &[ObjectId]) -> Result<Vec<ObjectId>>;
+
+    /// Bytes `repo` holds in uploads that no revision of it names yet, assembled chunks excluded.
+    async fn unreferenced_bytes(&self, repo: &RepoId) -> Result<u64>;
+
     /// The body of a stored git tree, as `commit.tree` and the entries inside it name them.
     async fn get_tree(&self, repo: &RepoId, id: &ObjectId) -> Result<Option<Vec<u8>>>;
 

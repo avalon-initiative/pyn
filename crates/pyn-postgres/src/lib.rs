@@ -537,6 +537,51 @@ async fn next_commit(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, repo: &Repo
 }
 
 /// Bytes of distinct content across the owner's repositories.
+async fn unreferenced<'e>(
+    exec: impl sqlx::Executor<'e, Database = sqlx::Postgres>,
+    repo: &RepoId,
+) -> Result<i64> {
+    sqlx::query_scalar(
+        "SELECT COALESCE(SUM(o.size), 0)::bigint FROM repo_objects o
+         WHERE o.repo = $1 AND NOT o.assembled
+           AND NOT EXISTS (SELECT 1 FROM revisions r WHERE r.repo = o.repo AND r.content = o.id)",
+    )
+    .bind(repo.as_str())
+    .fetch_one(exec)
+    .await
+    .map_err(db)
+}
+
+async fn insert_upload(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    repo: &RepoId,
+    id: &ObjectId,
+    size: u64,
+    cap: u64,
+) -> Result<()> {
+    let inserted = sqlx::query(
+        "INSERT INTO repo_objects (repo, id, size) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+    )
+    .bind(repo.as_str())
+    .bind(id.to_hex())
+    .bind(size as i64)
+    .execute(&mut **tx)
+    .await
+    .map_err(db)?
+    .rows_affected();
+    if inserted == 1 {
+        let used = unreferenced(&mut **tx, repo).await? as u64;
+        if used > cap {
+            return Err(PynError::StorageLimitReached {
+                owner: repo.to_string(),
+                limit: cap,
+                used: used - size,
+            });
+        }
+    }
+    Ok(())
+}
+
 async fn owner_stored(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     owner: &UserId,
@@ -1647,6 +1692,75 @@ impl MetadataStore for PgMetadataStore {
         .map_err(db)
     }
 
+    async fn record_upload(
+        &self,
+        repo: &RepoId,
+        id: &ObjectId,
+        size: u64,
+        cap: u64,
+    ) -> Result<()> {
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        insert_upload(&mut tx, repo, id, size, cap).await?;
+        tx.commit().await.map_err(db)
+    }
+
+    async fn record_assembled(
+        &self,
+        repo: &RepoId,
+        id: &ObjectId,
+        size: u64,
+        chunks: &[ObjectId],
+        cap: u64,
+    ) -> Result<()> {
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        let hex: Vec<String> = chunks.iter().map(|c| c.to_hex()).collect();
+        let known: Vec<String> = sqlx::query_scalar(
+            "SELECT c FROM unnest($2::text[]) AS c WHERE EXISTS
+                 (SELECT 1 FROM repo_objects WHERE repo = $1 AND id = c)
+              OR EXISTS (SELECT 1 FROM revisions WHERE repo = $1 AND content = c)",
+        )
+        .bind(repo.as_str())
+        .bind(&hex)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(db)?;
+        if let Some(c) = hex.iter().find(|c| !known.contains(c)) {
+            return Err(PynError::ObjectMissing(c.clone()));
+        }
+        sqlx::query("UPDATE repo_objects SET assembled = true WHERE repo = $1 AND id = ANY($2)")
+            .bind(repo.as_str())
+            .bind(&hex)
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
+        insert_upload(&mut tx, repo, id, size, cap).await?;
+        tx.commit().await.map_err(db)
+    }
+
+    async fn unknown_objects(&self, repo: &RepoId, ids: &[ObjectId]) -> Result<Vec<ObjectId>> {
+        let hex: Vec<String> = ids.iter().map(|c| c.to_hex()).collect();
+        let known: Vec<String> = sqlx::query_scalar(
+            "SELECT c FROM unnest($2::text[]) AS c WHERE EXISTS
+                 (SELECT 1 FROM repo_objects WHERE repo = $1 AND id = c)
+              OR EXISTS (SELECT 1 FROM revisions WHERE repo = $1 AND content = c)",
+        )
+        .bind(repo.as_str())
+        .bind(&hex)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(ids
+            .iter()
+            .zip(&hex)
+            .filter(|(_, h)| !known.contains(h))
+            .map(|(id, _)| *id)
+            .collect())
+    }
+
+    async fn unreferenced_bytes(&self, repo: &RepoId) -> Result<u64> {
+        Ok(unreferenced(&self.pool, repo).await? as u64)
+    }
+
     async fn get_tree(&self, repo: &RepoId, id: &ObjectId) -> Result<Option<Vec<u8>>> {
         sqlx::query_scalar("SELECT body FROM trees WHERE repo = $1 AND id = $2")
             .bind(repo.as_str())
@@ -1946,6 +2060,7 @@ impl MetadataStore for PgMetadataStore {
             "DELETE FROM commit_pointers WHERE repo = $1",
             "DELETE FROM branches WHERE repo = $1",
             "DELETE FROM trees WHERE repo = $1",
+            "DELETE FROM repo_objects WHERE repo = $1",
         ] {
             sqlx::query(stmt)
                 .bind(id.as_str())
