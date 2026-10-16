@@ -8,15 +8,22 @@ use pyn_proto as api;
 
 use crate::backend::Backend;
 use crate::client::Api;
+use crate::local_store::LocalStore;
 use crate::transfer;
 
 pub struct PynServer {
     api: Api,
+    store: Option<LocalStore>,
 }
 
 impl PynServer {
     pub fn new(api: Api) -> Self {
-        Self { api }
+        Self { api, store: None }
+    }
+
+    pub fn with_store(mut self, store: Option<LocalStore>) -> Self {
+        self.store = store;
+        self
     }
 }
 
@@ -90,6 +97,17 @@ impl Backend for PynServer {
                 None => return Ok((page.commit, all)),
             }
         }
+    }
+
+    fn blob(&self, id: &str, probe: Option<usize>) -> Result<Vec<u8>> {
+        let Some(store) = &self.store else {
+            anyhow::bail!("this home does not serve objects by id");
+        };
+        let mut bytes = store.blob(self, id)?;
+        if let Some(len) = probe {
+            bytes.truncate(len);
+        }
+        Ok(bytes)
     }
 
     fn content(&self, path: &str, revision: u64, probe: Option<usize>) -> Result<Vec<u8>> {

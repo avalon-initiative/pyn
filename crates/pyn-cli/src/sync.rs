@@ -88,6 +88,7 @@ pub fn clone_into(
     server: &str,
     repo: &str,
     commit: Option<&str>,
+    local_store: bool,
 ) -> Result<()> {
     if root.exists() && std::fs::read_dir(root)?.next().is_some() {
         bail!("{} already exists and is not empty", root.display());
@@ -99,6 +100,7 @@ pub fn clone_into(
         server: Some(server.to_string()),
         user: None,
         repo: Some(repo.to_string()),
+        local_store: local_store.then(|| "true".to_string()),
     }
     .save(&ws.config_path())?;
 
@@ -114,6 +116,7 @@ pub fn clone_into(
         );
     }
     ws.save_state(&state)?;
+    crate::local_store::refresh(backend, &ws)?;
     let at = commit.map_or(String::new(), |c| format!(" at {}", short(c)));
     println!(
         "cloned {} files from {repo}{at} into {}",
@@ -396,6 +399,7 @@ pub fn update(
         updated += 1;
     }
     ws.save_state(&state)?;
+    crate::local_store::refresh(backend, ws)?;
     if removed > 0 {
         println!("updated {updated} file(s), removed {removed}");
     } else {
