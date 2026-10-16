@@ -7,9 +7,8 @@ use pyn_core::memory::{
     MemoryAccessStore, MemoryAuditStore, MemoryMetadataStore, MemoryObjectStore,
 };
 use pyn_core::{
-    AccessConfig, AccessService, AuthProvider, MetadataStore, ObjectStore, Principal, RepoId,
-    RepoPath, RepoRecord, RepoSettings, Repositories, RevisionId, Rules, SystemClock, UserId,
-    Visibility,
+    AccessConfig, AccessService, AuthProvider, MetadataStore, Principal, RepoId, RepoPath,
+    RepoRecord, RepoSettings, Repositories, RevisionId, Rules, SystemClock, UserId, Visibility,
 };
 use pyn_proto as api;
 use pyn_server::auth::{BearerAuth, DevHeaderAuth};
@@ -54,7 +53,7 @@ async fn world() -> World {
     let who = Principal::unrestricted(UserId::new("alice"));
     let path = RepoPath::new("a.txt").unwrap();
     for (i, text) in ["one", "two"].into_iter().enumerate() {
-        let content = objects.put(text.as_bytes().to_vec()).await.unwrap();
+        let content = service.upload_blob(text.as_bytes().to_vec()).await.unwrap();
         let base = (i > 0).then_some(RevisionId(i as u64));
         service
             .checkin(&who, &path, content, base, text.into())

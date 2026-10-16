@@ -24,8 +24,8 @@ use crate::{
 };
 use crate::{
     AuditAction, AuditQuery, AuditScope, AuditStore, ChangeEntry, FileMode, ManualClock,
-    MetadataStore, ObjectId, ObjectStore, PynError, RepoId, RepoPath, RepoRecord, RepoService,
-    RepoSettings, RepoUpdate, RevisionId, Rules, ServiceConfig, UserId, Visibility,
+    MetadataStore, ObjectId, PynError, RepoId, RepoPath, RepoRecord, RepoService, RepoSettings,
+    RepoUpdate, RevisionId, Rules, ServiceConfig, UserId, Visibility,
 };
 
 pub type Store = Arc<dyn MetadataStore>;
@@ -49,6 +49,8 @@ mod deletion;
 pub use deletion::*;
 mod push_merge;
 pub use push_merge::*;
+mod uploads;
+pub use uploads::*;
 
 struct Harness {
     store: Store,
@@ -63,13 +65,21 @@ fn harness(store: Store) -> Harness {
 }
 
 fn harness_with(store: Store, rules: &str) -> Harness {
-    let objects = Arc::new(MemoryObjectStore::new());
+    harness_on(
+        store,
+        Arc::new(MemoryObjectStore::new()),
+        RepoId::new("game"),
+        rules,
+    )
+}
+
+fn harness_on(store: Store, objects: Arc<MemoryObjectStore>, repo: RepoId, rules: &str) -> Harness {
     let audit = Arc::new(MemoryAuditStore::new());
     let clock = Arc::new(ManualClock::new(
         Utc.with_ymd_and_hms(2026, 10, 8, 9, 0, 0).unwrap(),
     ));
     let svc = Arc::new(RepoService::new(
-        RepoId::new("game"),
+        repo,
         Rules::from_toml(rules).unwrap(),
         store.clone(),
         objects.clone(),
@@ -86,6 +96,15 @@ fn harness_with(store: Store, rules: &str) -> Harness {
     }
 }
 
+fn other_repo(h: &Harness) -> Harness {
+    harness_on(
+        h.store.clone(),
+        h.objects.clone(),
+        RepoId::new("other"),
+        RULES,
+    )
+}
+
 fn path(s: &str) -> RepoPath {
     RepoPath::new(s).unwrap()
 }
@@ -99,7 +118,7 @@ fn who(s: &str) -> Principal {
 }
 
 async fn blob(h: &Harness, s: &str) -> ObjectId {
-    h.objects.put(s.as_bytes().to_vec()).await.unwrap()
+    h.svc.upload_blob(s.as_bytes().to_vec()).await.unwrap()
 }
 
 pub async fn second_user_cannot_take_a_held_lock(store: Store) {
@@ -3207,7 +3226,13 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_push_needs_the_checkin_permission_and_an_existing_branch);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_push_past_the_storage_cap_applies_nothing);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; racing_pushes_to_one_branch_have_exactly_one_winner);
-        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_blob_is_read_by_id_only_when_a_revision_of_the_repository_names_it);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_blob_is_read_by_id_only_when_the_repository_may_reference_it);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; an_object_is_usable_only_by_the_repository_that_uploaded_it);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; uploads_are_reported_missing_per_repository_and_dedup_in_the_store);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_push_needs_its_blobs_uploaded_to_the_repository);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_merge_resolution_needs_content_the_repository_knows);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; assembling_needs_chunks_the_repository_uploaded);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; unreferenced_uploads_are_capped_per_repository);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_full_fetch_lists_every_commit_oldest_first_with_the_trees_each_adds);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; haves_leave_out_what_the_client_has_and_unknown_haves_are_ignored);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_fetch_pages_by_cursor_over_the_heads_it_started_with);

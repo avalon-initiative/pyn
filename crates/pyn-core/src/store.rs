@@ -250,13 +250,7 @@ pub trait MetadataStore: Send + Sync {
 
     /// Records that `repo` may reference the uploaded object `id` of `size` bytes. A new record that takes the
     /// repository's unreferenced uploads past `cap` bytes is `StorageLimitReached` and is not kept.
-    async fn record_upload(
-        &self,
-        repo: &RepoId,
-        id: &ObjectId,
-        size: u64,
-        cap: u64,
-    ) -> Result<()>;
+    async fn record_upload(&self, repo: &RepoId, id: &ObjectId, size: u64, cap: u64) -> Result<()>;
 
     /// Like `record_upload` for the object assembled from `chunks`, which must all be known to `repo` (else
     /// `ObjectMissing`); the chunks stop counting as unreferenced uploads.

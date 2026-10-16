@@ -3,15 +3,14 @@ use std::sync::Arc;
 use chrono::{TimeZone, Utc};
 use pyn_core::memory::{MemoryAuditStore, MemoryMetadataStore, MemoryObjectStore};
 use pyn_core::{
-    AuditAction, AuditQuery, BreakKind, ManualClock, ObjectStore, Principal, PynError, RepoId,
-    RepoPath, RepoService, RevisionHash, RevisionId, Rules, ServiceConfig, UserId,
+    AuditAction, AuditQuery, BreakKind, ManualClock, Principal, PynError, RepoId, RepoPath,
+    RepoService, RevisionHash, RevisionId, Rules, ServiceConfig, UserId,
 };
 
 struct World {
     svc: RepoService,
     meta: Arc<MemoryMetadataStore>,
     audit: Arc<MemoryAuditStore>,
-    objects: Arc<MemoryObjectStore>,
     repo: RepoId,
 }
 
@@ -37,7 +36,6 @@ fn world() -> World {
         svc,
         meta,
         audit,
-        objects,
         repo,
     }
 }
@@ -52,7 +50,7 @@ fn alice() -> Principal {
 
 async fn commit(w: &World, p: &RepoPath, text: &str) {
     let base = w.svc.head(p).await.unwrap().map(|r| r.id);
-    let c = w.objects.put(text.as_bytes().to_vec()).await.unwrap();
+    let c = w.svc.upload_blob(text.as_bytes().to_vec()).await.unwrap();
     w.svc
         .checkin(&alice(), p, c, base, text.into())
         .await
@@ -127,13 +125,13 @@ async fn a_base_that_is_not_the_branchs_pointer_is_found_on_any_branch() {
     let w = world();
     let map = path("Content/a.umap");
     let put = |branch: &'static str, text: &'static str, base: Option<u64>| {
-        let (svc, objects, map) = (&w.svc, &w.objects, map.clone());
+        let (svc, map) = (&w.svc, map.clone());
         async move {
             let who = alice();
             svc.checkout_on(branch, &map, &who.user, base.map(RevisionId))
                 .await
                 .unwrap();
-            let c = objects.put(text.as_bytes().to_vec()).await.unwrap();
+            let c = svc.upload_blob(text.as_bytes().to_vec()).await.unwrap();
             svc.checkin_on(
                 branch,
                 &who,
@@ -219,7 +217,7 @@ async fn a_checkin_cannot_extend_a_tampered_head() {
     let a = three_revisions(&w).await;
     w.meta
         .tamper(&w.repo, &a, RevisionId(3), |r| r.message = "x".into());
-    let c = w.objects.put(b"four".to_vec()).await.unwrap();
+    let c = w.svc.upload_blob(b"four".to_vec()).await.unwrap();
     let err = w
         .svc
         .checkin(&alice(), &a, c, Some(RevisionId(3)), "four".into())

@@ -371,10 +371,10 @@ pub async fn a_binary_file_changed_on_both_sides_is_a_whole_file_conflict(store:
     let h = harness(store);
     let bin = path("Source/img.bin");
     let put = |branch: &'static str, bytes: Vec<u8>, base: Option<u64>| {
-        let (svc, objects) = (h.svc.clone(), h.objects.clone());
+        let svc = h.svc.clone();
         let bin = bin.clone();
         async move {
-            let c = crate::ObjectStore::put(&*objects, bytes).await.unwrap();
+            let c = svc.upload_blob(bytes).await.unwrap();
             svc.checkin_on(
                 branch,
                 &who("alice"),
@@ -410,9 +410,7 @@ pub async fn a_binary_file_changed_on_both_sides_is_a_whole_file_conflict(store:
     let mut resolved = request("feature", "main");
     resolved.resolutions = vec![Resolution {
         path: bin.clone(),
-        content: crate::ObjectStore::put(&*h.objects, vec![0, 1, 2, 9])
-            .await
-            .unwrap(),
+        content: h.svc.upload_blob(vec![0, 1, 2, 9]).await.unwrap(),
         file_mode: FileMode::Regular,
     }];
     let done = h.svc.merge(&who("alice"), resolved).await.unwrap();
@@ -426,12 +424,10 @@ pub async fn file_modes_merge_apart_from_content(store: Store) {
     let h = harness(store);
     let a = path("Source/run.sh");
     let put = |branch: &'static str, text: &'static str, mode: FileMode, base: Option<u64>| {
-        let (svc, objects) = (h.svc.clone(), h.objects.clone());
+        let svc = h.svc.clone();
         let a = a.clone();
         async move {
-            let c = crate::ObjectStore::put(&*objects, text.as_bytes().to_vec())
-                .await
-                .unwrap();
+            let c = svc.upload_blob(text.as_bytes().to_vec()).await.unwrap();
             svc.checkin_on(
                 branch,
                 &who("alice"),

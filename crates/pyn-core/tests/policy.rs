@@ -7,8 +7,8 @@ use pyn_core::memory::{
 };
 use pyn_core::{
     AccessService, AuditAction, AuditQuery, AuditStore, Credential, Identity, ManualClock,
-    MetadataStore, Mode, NewRevision, ObjectId, ObjectStore, Permission, Principal, PynError,
-    RepoPath, RepoService, Repositories, RevisionId, Rules, UserId,
+    MetadataStore, Mode, NewRevision, ObjectId, Permission, Principal, PynError, RepoPath,
+    RepoService, Repositories, RevisionId, Rules, UserId,
 };
 
 const POLICY: &str = ".pyn/pyn.toml";
@@ -98,18 +98,17 @@ async fn make_repo(w: &World, repo: &str) -> Arc<RepoService> {
     open(w, repo).await
 }
 
-async fn blob(w: &World, text: &str) -> ObjectId {
-    w.objects.put(text.as_bytes().to_vec()).await.unwrap()
+async fn blob(svc: &RepoService, text: &str) -> ObjectId {
+    svc.upload_blob(text.as_bytes().to_vec()).await.unwrap()
 }
 
 async fn put_policy(
-    w: &World,
     svc: &RepoService,
     who: &Principal,
     text: &str,
     base: Option<u64>,
 ) -> Result<pyn_core::Revision, PynError> {
-    let c = blob(w, text).await;
+    let c = blob(svc, text).await;
     svc.checkin(who, &path(POLICY), c, base.map(RevisionId), "policy".into())
         .await
 }
@@ -120,7 +119,7 @@ async fn the_first_policy_file_is_accepted_without_a_lock_and_applies_at_once() 
     let svc = make_repo(&w, "game").await;
     assert_eq!(svc.mode_for(&path("Source/a.cpp")), Mode::Exclusive);
 
-    let rev = put_policy(&w, &svc, &admin("alice"), SHARED_POLICY, None)
+    let rev = put_policy(&svc, &admin("alice"), SHARED_POLICY, None)
         .await
         .unwrap();
     assert_eq!(rev.id, RevisionId(1));
@@ -138,7 +137,7 @@ async fn the_first_policy_file_is_accepted_without_a_lock_and_applies_at_once() 
 async fn the_first_policy_file_that_leaves_itself_unlisted_is_recorded_exclusive() {
     let w = world();
     let svc = make_repo(&w, "game").await;
-    let rev = put_policy(&w, &svc, &admin("alice"), EXCLUSIVE_POLICY, None)
+    let rev = put_policy(&svc, &admin("alice"), EXCLUSIVE_POLICY, None)
         .await
         .unwrap();
     assert_eq!(rev.mode, Some(Mode::Exclusive));
@@ -149,7 +148,7 @@ async fn the_first_policy_file_that_leaves_itself_unlisted_is_recorded_exclusive
 async fn changing_policy_needs_the_policy_permission() {
     let w = world();
     let svc = make_repo(&w, "game").await;
-    let err = put_policy(&w, &svc, &writer("bob"), SHARED_POLICY, None)
+    let err = put_policy(&svc, &writer("bob"), SHARED_POLICY, None)
         .await
         .unwrap_err();
     assert!(
@@ -158,13 +157,13 @@ async fn changing_policy_needs_the_policy_permission() {
     );
     assert!(svc.head(&path(POLICY)).await.unwrap().is_none());
 
-    put_policy(&w, &svc, &admin("alice"), EXCLUSIVE_POLICY, None)
+    put_policy(&svc, &admin("alice"), EXCLUSIVE_POLICY, None)
         .await
         .unwrap();
     svc.checkout(&path(POLICY), &UserId::new("bob"), Some(RevisionId(1)))
         .await
         .unwrap();
-    let err = put_policy(&w, &svc, &writer("bob"), SHARED_POLICY, Some(1))
+    let err = put_policy(&svc, &writer("bob"), SHARED_POLICY, Some(1))
         .await
         .unwrap_err();
     assert!(
@@ -184,12 +183,12 @@ async fn a_policy_that_does_not_parse_is_rejected_and_leaves_nothing_behind() {
         "[exclusive]\npaths = [\"a\"]\n[shared]\npaths = [\"a\"]\n",
         "not = [valid",
     ] {
-        let err = put_policy(&w, &svc, &admin("alice"), bad, None)
+        let err = put_policy(&svc, &admin("alice"), bad, None)
             .await
             .unwrap_err();
         assert!(matches!(err, PynError::InvalidRules(_)), "{bad}: {err}");
     }
-    let c = w.objects.put(vec![0xff, 0xfe]).await.unwrap();
+    let c = svc.upload_blob(vec![0xff, 0xfe]).await.unwrap();
     let err = svc
         .checkin(&admin("alice"), &path(POLICY), c, None, "bytes".into())
         .await
@@ -198,13 +197,13 @@ async fn a_policy_that_does_not_parse_is_rejected_and_leaves_nothing_behind() {
     assert!(svc.head(&path(POLICY)).await.unwrap().is_none());
     assert_eq!(svc.mode_for(&path("Source/a.cpp")), Mode::Exclusive);
 
-    put_policy(&w, &svc, &admin("alice"), EXCLUSIVE_POLICY, None)
+    put_policy(&svc, &admin("alice"), EXCLUSIVE_POLICY, None)
         .await
         .unwrap();
     svc.checkout(&path(POLICY), &UserId::new("alice"), Some(RevisionId(1)))
         .await
         .unwrap();
-    let err = put_policy(&w, &svc, &admin("alice"), "[meta]\ndefault = 3\n", Some(1))
+    let err = put_policy(&svc, &admin("alice"), "[meta]\ndefault = 3\n", Some(1))
         .await
         .unwrap_err();
     assert!(matches!(err, PynError::InvalidRules(_)), "{err}");
@@ -225,11 +224,11 @@ async fn later_revisions_of_an_exclusive_policy_file_need_the_lock() {
     let w = world();
     let svc = make_repo(&w, "game").await;
     let alice = admin("alice");
-    put_policy(&w, &svc, &alice, EXCLUSIVE_POLICY, None)
+    put_policy(&svc, &alice, EXCLUSIVE_POLICY, None)
         .await
         .unwrap();
 
-    let err = put_policy(&w, &svc, &alice, SHARED_POLICY, Some(1))
+    let err = put_policy(&svc, &alice, SHARED_POLICY, Some(1))
         .await
         .unwrap_err();
     assert!(matches!(err, PynError::LockRequired(_)), "{err}");
@@ -239,7 +238,6 @@ async fn later_revisions_of_an_exclusive_policy_file_need_the_lock() {
         .await
         .unwrap();
     let rev = put_policy(
-        &w,
         &svc,
         &alice,
         "[exclusive]\npaths = [\"Source/\"]\n[shared]\npaths = [\".pyn/pyn.toml\"]\n",
@@ -261,10 +259,8 @@ async fn a_shared_policy_file_needs_no_lock_after_the_bootstrap() {
     let w = world();
     let svc = make_repo(&w, "game").await;
     let alice = admin("alice");
-    put_policy(&w, &svc, &alice, SHARED_POLICY, None)
-        .await
-        .unwrap();
-    let rev = put_policy(&w, &svc, &alice, &format!("{SHARED_POLICY}\n"), Some(1))
+    put_policy(&svc, &alice, SHARED_POLICY, None).await.unwrap();
+    let rev = put_policy(&svc, &alice, &format!("{SHARED_POLICY}\n"), Some(1))
         .await
         .unwrap();
     assert_eq!((rev.id, rev.mode), (RevisionId(2), Some(Mode::Shared)));
@@ -274,10 +270,10 @@ async fn a_shared_policy_file_needs_no_lock_after_the_bootstrap() {
 async fn the_bootstrap_only_applies_while_no_revision_exists() {
     let w = world();
     let svc = make_repo(&w, "game").await;
-    put_policy(&w, &svc, &admin("alice"), EXCLUSIVE_POLICY, None)
+    put_policy(&svc, &admin("alice"), EXCLUSIVE_POLICY, None)
         .await
         .unwrap();
-    let err = put_policy(&w, &svc, &admin("alice"), SHARED_POLICY, None)
+    let err = put_policy(&svc, &admin("alice"), SHARED_POLICY, None)
         .await
         .unwrap_err();
     assert!(matches!(err, PynError::StaleBase { .. }), "{err}");
@@ -288,7 +284,7 @@ async fn making_a_path_shared_releases_its_live_locks_and_audits_it() {
     let w = world();
     let svc = make_repo(&w, "game").await;
     let alice = admin("alice");
-    put_policy(&w, &svc, &alice, EXCLUSIVE_POLICY, None)
+    put_policy(&svc, &alice, EXCLUSIVE_POLICY, None)
         .await
         .unwrap();
     let (map, art) = (path("Content/a.umap"), path("Art/b.psd"));
@@ -298,7 +294,7 @@ async fn making_a_path_shared_releases_its_live_locks_and_audits_it() {
         .await
         .unwrap();
     let both = "[meta]\ndefault = \"shared\"\n[exclusive]\npaths = [\"Content/\", \"Art/\"]\n";
-    put_policy(&w, &svc, &alice, both, Some(1)).await.unwrap();
+    put_policy(&svc, &alice, both, Some(1)).await.unwrap();
     svc.checkout(&art, &bob, None).await.unwrap();
     assert_eq!(svc.locks().await.unwrap().len(), 2);
 
@@ -306,9 +302,7 @@ async fn making_a_path_shared_releases_its_live_locks_and_audits_it() {
         .await
         .unwrap();
     let only_art = "[meta]\ndefault = \"shared\"\n[exclusive]\npaths = [\"Art/\"]\n";
-    put_policy(&w, &svc, &alice, only_art, Some(2))
-        .await
-        .unwrap();
+    put_policy(&svc, &alice, only_art, Some(2)).await.unwrap();
 
     let locks = svc.locks().await.unwrap();
     assert_eq!(locks.len(), 1, "{locks:?}");
@@ -347,12 +341,12 @@ async fn making_a_path_shared_releases_its_live_locks_and_audits_it() {
 async fn every_revision_records_the_mode_it_was_made_under() {
     let w = world();
     let svc = make_repo(&w, "game").await;
-    put_policy(&w, &svc, &admin("alice"), EXCLUSIVE_POLICY, None)
+    put_policy(&svc, &admin("alice"), EXCLUSIVE_POLICY, None)
         .await
         .unwrap();
     let (src, map) = (path("Source/a.cpp"), path("Content/a.umap"));
     let alice = admin("alice");
-    let c = blob(&w, "x").await;
+    let c = blob(&svc, "x").await;
     let shared = svc
         .checkin(&alice, &src, c, None, "s".into())
         .await
@@ -375,21 +369,15 @@ async fn restoring_an_older_policy_applies_it() {
     let w = world();
     let svc = make_repo(&w, "game").await;
     let alice = admin("alice");
-    put_policy(&w, &svc, &alice, EXCLUSIVE_POLICY, None)
+    put_policy(&svc, &alice, EXCLUSIVE_POLICY, None)
         .await
         .unwrap();
     svc.checkout(&path(POLICY), &alice.user, Some(RevisionId(1)))
         .await
         .unwrap();
-    put_policy(
-        &w,
-        &svc,
-        &alice,
-        "[meta]\ndefault = \"exclusive\"\n",
-        Some(1),
-    )
-    .await
-    .unwrap();
+    put_policy(&svc, &alice, "[meta]\ndefault = \"exclusive\"\n", Some(1))
+        .await
+        .unwrap();
     assert_eq!(svc.mode_for(&path("Source/a.cpp")), Mode::Exclusive);
 
     svc.checkout(&path(POLICY), &alice.user, Some(RevisionId(2)))
@@ -429,7 +417,7 @@ async fn a_restarted_server_reads_the_policy_from_each_repositorys_head() {
     let w = world();
     let game = make_repo(&w, "game").await;
     let site = make_repo(&w, "site").await;
-    put_policy(&w, &game, &admin("alice"), EXCLUSIVE_POLICY, None)
+    put_policy(&game, &admin("alice"), EXCLUSIVE_POLICY, None)
         .await
         .unwrap();
 
@@ -455,7 +443,6 @@ async fn the_fallback_applies_only_until_a_policy_file_exists() {
     assert_eq!(svc.mode_for(&path(POLICY)), Mode::Exclusive);
 
     put_policy(
-        &w,
         &svc,
         &admin("alice"),
         "[meta]\ndefault = \"exclusive\"\n",
@@ -472,14 +459,14 @@ async fn the_fallback_applies_only_until_a_policy_file_exists() {
 #[tokio::test]
 async fn a_stored_policy_that_no_longer_parses_fails_the_repository_closed() {
     let w = world();
-    make_repo(&w, "game").await;
+    let svc = make_repo(&w, "game").await;
     let rec = w
         .meta
         .find_repo(&UserId::new("alice"), "game")
         .await
         .unwrap()
         .unwrap();
-    let bad = blob(&w, "[exlusive]\n").await;
+    let bad = blob(&svc, "[exlusive]\n").await;
     w.meta
         .commit_revision(
             &rec.id,
@@ -580,7 +567,7 @@ async fn the_policy_limit_wins_over_the_setting_and_cannot_be_changed_as_a_setti
         .update(&alice_session(), &record, set(Some(4)))
         .await
         .unwrap();
-    put_policy(&w, &svc, &admin("alice"), LIMIT_POLICY, None)
+    put_policy(&svc, &admin("alice"), LIMIT_POLICY, None)
         .await
         .unwrap();
 
@@ -619,7 +606,7 @@ async fn the_policy_limit_wins_over_the_setting_and_cannot_be_changed_as_a_setti
 async fn a_policy_change_moves_the_limit_at_once_and_keeps_existing_locks() {
     let w = world();
     let svc = make_repo(&w, "game").await;
-    put_policy(&w, &svc, &admin("alice"), LIMIT_POLICY, None)
+    put_policy(&svc, &admin("alice"), LIMIT_POLICY, None)
         .await
         .unwrap();
     take(&svc, "a").await.unwrap();
@@ -629,7 +616,7 @@ async fn a_policy_change_moves_the_limit_at_once_and_keeps_existing_locks() {
         .await
         .unwrap();
     let lower = LIMIT_POLICY.replace("= 2", "= 1");
-    put_policy(&w, &svc, &admin("alice"), &lower, Some(1))
+    put_policy(&svc, &admin("alice"), &lower, Some(1))
         .await
         .unwrap();
     assert_eq!(svc.lock_limit().max, 1);
@@ -645,7 +632,7 @@ async fn a_policy_change_moves_the_limit_at_once_and_keeps_existing_locks() {
         .await
         .unwrap();
     let dropped = "[meta]\ndefault = \"shared\"\n[exclusive]\npaths = [\"Content/\"]\n";
-    put_policy(&w, &svc, &admin("alice"), dropped, Some(2))
+    put_policy(&svc, &admin("alice"), dropped, Some(2))
         .await
         .unwrap();
     let limit = svc.lock_limit();
@@ -670,7 +657,7 @@ async fn an_invalid_policy_limit_is_rejected() {
         "[meta]\nmax_locks_per_user = \"five\"\n",
         "max_locks_per_user = 3\n",
     ] {
-        let err = put_policy(&w, &svc, &admin("alice"), bad, None)
+        let err = put_policy(&svc, &admin("alice"), bad, None)
             .await
             .unwrap_err();
         assert!(matches!(err, PynError::InvalidRules(_)), "{bad}: {err}");
@@ -726,7 +713,7 @@ async fn another_server_copy_sees_a_policy_change_on_its_next_request() {
     let svc_b = copy_b.open("alice", "game").await.unwrap().service;
     assert_eq!(svc_b.mode_for(&path("Source/a.cpp")), Mode::Exclusive);
 
-    put_policy(&w, &svc_a, &admin("alice"), SHARED_POLICY, None)
+    put_policy(&svc_a, &admin("alice"), SHARED_POLICY, None)
         .await
         .unwrap();
     let svc_b = copy_b.open("alice", "game").await.unwrap().service;
@@ -737,13 +724,13 @@ async fn another_server_copy_sees_a_policy_change_on_its_next_request() {
 async fn a_preview_lists_conversions_and_released_locks_without_applying_them() {
     let w = world();
     let svc = make_repo(&w, "game").await;
-    put_policy(&w, &svc, &admin("alice"), EXCLUSIVE_POLICY, None)
+    put_policy(&svc, &admin("alice"), EXCLUSIVE_POLICY, None)
         .await
         .unwrap();
     let map = path("Content/a.umap");
     svc.checkout(&map, &UserId::new("bob"), None).await.unwrap();
     let src = path("Source/a.cpp");
-    let c = blob(&w, "x").await;
+    let c = blob(&svc, "x").await;
     svc.checkin(&admin("alice"), &src, c, None, "add".into())
         .await
         .unwrap();
@@ -812,14 +799,14 @@ async fn exclusive_to_shared_keeps_history_releases_locks_and_audits_each_path()
     let w = world();
     let svc = make_repo(&w, "game").await;
     let alice = admin("alice");
-    put_policy(&w, &svc, &alice, EXCLUSIVE_POLICY, None)
+    put_policy(&svc, &alice, EXCLUSIVE_POLICY, None)
         .await
         .unwrap();
     let (a, b) = (path("Content/a.umap"), path("Content/b.umap"));
     let bob = admin("bob");
     for (p, text) in [(&a, "1"), (&b, "2")] {
         svc.checkout(p, &bob.user, None).await.unwrap();
-        let c = blob(&w, text).await;
+        let c = blob(&svc, text).await;
         svc.checkin(&bob, p, c, None, "add".into()).await.unwrap();
     }
     svc.checkout(&a, &bob.user, Some(RevisionId(1)))
@@ -828,7 +815,7 @@ async fn exclusive_to_shared_keeps_history_releases_locks_and_audits_each_path()
     svc.checkout(&path(POLICY), &alice.user, Some(RevisionId(1)))
         .await
         .unwrap();
-    put_policy(&w, &svc, &alice, SHARED_POLICY_ALL, Some(1))
+    put_policy(&svc, &alice, SHARED_POLICY_ALL, Some(1))
         .await
         .unwrap();
 
@@ -837,7 +824,7 @@ async fn exclusive_to_shared_keeps_history_releases_locks_and_audits_each_path()
     let history = svc.history(&a).await.unwrap();
     assert_eq!(history.len(), 1, "no conversion revision: history is kept");
     assert_eq!(history[0].mode, Some(Mode::Exclusive));
-    let c = blob(&w, "3").await;
+    let c = blob(&svc, "3").await;
     svc.checkin(&bob, &a, c, Some(RevisionId(1)), "shared now".into())
         .await
         .unwrap();
@@ -860,11 +847,11 @@ async fn shared_to_exclusive_records_a_conversion_revision_and_then_needs_a_lock
     let w = world();
     let svc = make_repo(&w, "game").await;
     let alice = admin("alice");
-    put_policy(&w, &svc, &alice, SHARED_POLICY_ALL, None)
+    put_policy(&svc, &alice, SHARED_POLICY_ALL, None)
         .await
         .unwrap();
     let (src, map) = (path("Source/a.cpp"), path("Content/a.umap"));
-    let c = blob(&w, "x").await;
+    let c = blob(&svc, "x").await;
     svc.checkin(&alice, &src, c, None, "add".into())
         .await
         .unwrap();
@@ -874,7 +861,7 @@ async fn shared_to_exclusive_records_a_conversion_revision_and_then_needs_a_lock
     svc.checkout(&path(POLICY), &alice.user, Some(RevisionId(1)))
         .await
         .unwrap();
-    put_policy(&w, &svc, &alice, EXCLUSIVE_POLICY, Some(1))
+    put_policy(&svc, &alice, EXCLUSIVE_POLICY, Some(1))
         .await
         .unwrap();
 
@@ -891,7 +878,7 @@ async fn shared_to_exclusive_records_a_conversion_revision_and_then_needs_a_lock
         "unchanged paths get none"
     );
 
-    let c2 = blob(&w, "y").await;
+    let c2 = blob(&svc, "y").await;
     let err = svc
         .checkin(&alice, &map, c2, Some(conv.id), "edit".into())
         .await
@@ -919,14 +906,14 @@ async fn a_folder_rule_converts_path_by_path() {
     let svc = make_repo(&w, "game").await;
     let alice = admin("alice");
     let both = "[meta]\ndefault = \"shared\"\n[exclusive]\npaths = [\"Content/\", \"Art/\"]\n";
-    put_policy(&w, &svc, &alice, both, None).await.unwrap();
+    put_policy(&svc, &alice, both, None).await.unwrap();
     let (keep, drop, new) = (path("Art/b.psd"), path("Content/a.umap"), path("Docs/n.md"));
     for p in [&keep, &drop] {
         svc.checkout(p, &alice.user, None).await.unwrap();
-        let c = blob(&w, "x").await;
+        let c = blob(&svc, "x").await;
         svc.checkin(&alice, p, c, None, "add".into()).await.unwrap();
     }
-    let c = blob(&w, "n").await;
+    let c = blob(&svc, "n").await;
     svc.checkin(&alice, &new, c, None, "add".into())
         .await
         .unwrap();
@@ -935,9 +922,7 @@ async fn a_folder_rule_converts_path_by_path() {
         .await
         .unwrap();
     let swapped = "[meta]\ndefault = \"shared\"\n[exclusive]\npaths = [\"Art/\", \"Docs/\"]\n";
-    put_policy(&w, &svc, &alice, swapped, Some(1))
-        .await
-        .unwrap();
+    put_policy(&svc, &alice, swapped, Some(1)).await.unwrap();
 
     let converted = audit_of(&w, &svc, AuditAction::ModeConverted).await;
     let by_path = |p: &RepoPath| {
@@ -959,14 +944,14 @@ async fn a_policy_change_that_converts_nothing_audits_no_conversions() {
     let w = world();
     let svc = make_repo(&w, "game").await;
     let alice = admin("alice");
-    put_policy(&w, &svc, &alice, EXCLUSIVE_POLICY, None)
+    put_policy(&svc, &alice, EXCLUSIVE_POLICY, None)
         .await
         .unwrap();
     svc.checkout(&path(POLICY), &alice.user, Some(RevisionId(1)))
         .await
         .unwrap();
     let same = format!("{EXCLUSIVE_POLICY}\n# tweak\n");
-    put_policy(&w, &svc, &alice, &same, Some(1)).await.unwrap();
+    put_policy(&svc, &alice, &same, Some(1)).await.unwrap();
     assert!(
         audit_of(&w, &svc, AuditAction::ModeConverted)
             .await

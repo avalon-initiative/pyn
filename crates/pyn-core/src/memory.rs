@@ -990,13 +990,7 @@ impl MetadataStore for MemoryMetadataStore {
             .any(|((r, _), revs)| r == repo && revs.iter().any(|v| &v.content == content)))
     }
 
-    async fn record_upload(
-        &self,
-        repo: &RepoId,
-        id: &ObjectId,
-        size: u64,
-        cap: u64,
-    ) -> Result<()> {
+    async fn record_upload(&self, repo: &RepoId, id: &ObjectId, size: u64, cap: u64) -> Result<()> {
         self.state.lock().unwrap().record(repo, id, size, cap)
     }
 
@@ -1027,7 +1021,11 @@ impl MetadataStore for MemoryMetadataStore {
 
     async fn unknown_objects(&self, repo: &RepoId, ids: &[ObjectId]) -> Result<Vec<ObjectId>> {
         let st = self.state.lock().unwrap();
-        Ok(ids.iter().filter(|id| !st.knows(repo, id)).copied().collect())
+        Ok(ids
+            .iter()
+            .filter(|id| !st.knows(repo, id))
+            .copied()
+            .collect())
     }
 
     async fn unreferenced_bytes(&self, repo: &RepoId) -> Result<u64> {

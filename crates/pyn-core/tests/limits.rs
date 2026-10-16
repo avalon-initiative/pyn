@@ -9,14 +9,13 @@ use pyn_core::memory::{
 };
 use pyn_core::{
     AccessConfig, AccessService, AuditAction, AuditQuery, AuditScope, AuditStore, Credential,
-    Identity, Limits, LimitsChange, ManualClock, ObjectStore, OrgRole, PynError, Registration,
-    RegistrationMode, RepoPath, Repositories, Rules, ServiceScope, UserId,
+    Identity, Limits, LimitsChange, ManualClock, OrgRole, PynError, Registration, RegistrationMode,
+    RepoPath, Repositories, Rules, ServiceScope, UserId,
 };
 
 struct World {
     repos: Repositories,
     access: Arc<AccessService>,
-    objects: Arc<MemoryObjectStore>,
     audit: Arc<MemoryAuditStore>,
 }
 
@@ -49,7 +48,6 @@ fn world_with(default_limits: Limits) -> World {
     World {
         repos,
         access,
-        objects,
         audit,
     }
 }
@@ -120,7 +118,11 @@ async fn checkin(w: &World, who: &str, repo: &str, path: &str, body: &str) -> Re
         .principal_in(&open.record.id, &session(who))
         .await
         .unwrap();
-    let content = w.objects.put(body.as_bytes().to_vec()).await.unwrap();
+    let content = open
+        .service
+        .upload_blob(body.as_bytes().to_vec())
+        .await
+        .unwrap();
     open.service
         .checkin(
             &principal,

@@ -68,7 +68,12 @@ impl RepoService {
 
     /// The stored length of `id`, if this repository may reference it and the store holds it.
     pub(super) async fn referenced_size(&self, id: &ObjectId) -> Result<u64> {
-        if !self.meta.unknown_objects(&self.repo, &[*id]).await?.is_empty() {
+        if !self
+            .meta
+            .unknown_objects(&self.repo, &[*id])
+            .await?
+            .is_empty()
+        {
             return Err(PynError::ObjectMissing(id.to_string()));
         }
         self.stored_size(id).await

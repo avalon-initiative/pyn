@@ -1692,13 +1692,7 @@ impl MetadataStore for PgMetadataStore {
         .map_err(db)
     }
 
-    async fn record_upload(
-        &self,
-        repo: &RepoId,
-        id: &ObjectId,
-        size: u64,
-        cap: u64,
-    ) -> Result<()> {
+    async fn record_upload(&self, repo: &RepoId, id: &ObjectId, size: u64, cap: u64) -> Result<()> {
         let mut tx = self.pool.begin().await.map_err(db)?;
         insert_upload(&mut tx, repo, id, size, cap).await?;
         tx.commit().await.map_err(db)
@@ -2504,8 +2498,7 @@ mod tests {
     async fn verify_finds_a_tampered_base_on_a_branch() {
         use pyn_core::memory::{MemoryAuditStore, MemoryObjectStore};
         use pyn_core::{
-            BreakKind, FileMode, ManualClock, ObjectStore, Principal, RepoService, Rules,
-            ServiceConfig, UserId,
+            BreakKind, FileMode, ManualClock, Principal, RepoService, Rules, ServiceConfig, UserId,
         };
         use std::sync::Arc;
 
@@ -2528,13 +2521,13 @@ mod tests {
         let who = Principal::unrestricted(UserId::new("alice"));
         let path = RepoPath::new("Content/a.umap").unwrap();
         let put = |branch: &'static str, text: &'static str, base: Option<u64>| {
-            let (svc, objects, who, path) = (&svc, &objects, &who, &path);
+            let (svc, who, path) = (&svc, &who, &path);
             async move {
                 let base = base.map(RevisionId);
                 svc.checkout_on(branch, path, &who.user, base)
                     .await
                     .unwrap();
-                let c = objects.put(text.as_bytes().to_vec()).await.unwrap();
+                let c = svc.upload_blob(text.as_bytes().to_vec()).await.unwrap();
                 svc.checkin_on(branch, who, path, c, FileMode::Regular, base, text.into())
                     .await
                     .unwrap();

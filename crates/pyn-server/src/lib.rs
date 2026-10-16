@@ -1175,7 +1175,10 @@ async fn assemble_object(
         .iter()
         .map(|c| parse_object_id(c))
         .collect::<Result<Vec<_>, _>>()?;
-    let hash = open.service.assemble(&chunks, Some(MAX_OBJECT_BYTES)).await?;
+    let hash = open
+        .service
+        .assemble(&chunks, Some(MAX_OBJECT_BYTES))
+        .await?;
     Ok(Json(api::PutObjectResponse {
         content: hash.to_hex(),
     }))
