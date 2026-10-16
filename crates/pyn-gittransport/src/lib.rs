@@ -11,6 +11,10 @@ mod http;
 mod ssh;
 mod url;
 
+#[cfg(all(test, unix))]
+#[path = "../tests/common/script.rs"]
+mod script;
+
 pub use connect::{Connection, Connector, user_config};
 pub use env::Env;
 pub use error::{Error, Result};

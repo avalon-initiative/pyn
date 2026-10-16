@@ -148,19 +148,16 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn external_programs_are_found_on_path_and_speak_the_protocol() {
-        use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().unwrap();
         let prog = tmp.path().join("git-credential-fake");
         let log = tmp.path().join("log");
-        std::fs::write(
+        crate::script::write_script(
             &prog,
-            format!(
-                "#!/bin/sh\nfor a in \"$@\"; do op=$a; done\ncat > '{log}.in'\necho \"$op\" >> '{log}'\nif [ \"$op\" = get ]; then printf 'username=u1\\npassword=p1\\nquit=1\\n'; fi\n",
+            &format!(
+                "for a in \"$@\"; do op=$a; done\ncat > '{log}.in'\necho \"$op\" >> '{log}'\nif [ \"$op\" = get ]; then printf 'username=u1\\npassword=p1\\nquit=1\\n'; fi\n",
                 log = log.display()
             ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&prog, std::fs::Permissions::from_mode(0o755)).unwrap();
+        );
         let env = Env::default().with("PATH", &format!("{}:/usr/bin:/bin", tmp.path().display()));
         let h = resolve("fake --opt", &env).unwrap();
         let mut c = Credential {

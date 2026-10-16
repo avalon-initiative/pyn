@@ -3,6 +3,8 @@
 
 #[path = "../../pyn-gittransport/tests/common/gitsrv.rs"]
 mod gitsrv;
+#[path = "../../pyn-gittransport/tests/common/script.rs"]
+mod script;
 
 use std::path::Path;
 use std::process::{Command, Output};
@@ -189,15 +191,10 @@ fn ls_remote_over_http_with_credentials_and_redaction() {
     assert!(bad.stderr().starts_with("fatal: "), "{}", bad.stderr());
 
     let ask = tmp.path().join("ask.sh");
-    std::fs::write(
+    script::write_script(
         &ask,
-        "#!/bin/sh\ncase \"$1\" in Username*) echo alice;; *) echo s3cret;; esac\n",
-    )
-    .unwrap();
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&ask, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+        "case \"$1\" in Username*) echo alice;; *) echo s3cret;; esac\n",
+    );
     let prompted = pyn(
         tmp.path(),
         &home,

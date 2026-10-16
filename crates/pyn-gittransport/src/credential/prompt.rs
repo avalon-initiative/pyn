@@ -117,15 +117,12 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn askpass_program_answers_and_is_trimmed() {
-        use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().unwrap();
         let script = tmp.path().join("ask");
-        std::fs::write(
+        crate::script::write_script(
             &script,
-            "#!/bin/sh\ncase \"$1\" in Username*) echo alice;; *) echo \"pw-for:$1\";; esac\n",
-        )
-        .unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+            "case \"$1\" in Username*) echo alice;; *) echo \"pw-for:$1\";; esac\n",
+        );
         let env = Env::default().with("GIT_ASKPASS", script.to_str().unwrap());
         let mut p = SystemPrompt::new(&env, &Config::default());
         assert_eq!(p.ask("Username for 'https://h': ", false).unwrap(), "alice");
