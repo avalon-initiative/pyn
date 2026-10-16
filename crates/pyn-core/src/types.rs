@@ -228,6 +228,8 @@ pub struct PushedCommit {
     pub trees: Vec<(ObjectId, Vec<u8>)>,
     /// One revision per changed path, ordered by path.
     pub items: Vec<NewRevision>,
+    /// Paths of `items` that need no lock although they are exclusive: the policy file's bootstrap.
+    pub unlocked: Vec<RepoPath>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

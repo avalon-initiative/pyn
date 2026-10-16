@@ -449,23 +449,353 @@ async fn a_push_must_extend_the_branch_and_a_refusal_leaves_nothing() {
     assert_eq!(commit_count(&w).await, 1);
 }
 
+const A_EXCLUSIVE: &str = "[meta]\ndefault = \"shared\"\n[exclusive]\npaths = [\"Source/a.txt\"]\n";
+
+async fn checkout(w: &World, token: &str, path: &str, base: serde_json::Value) -> StatusCode {
+    send(
+        &w.app,
+        "POST",
+        "/v1/repos/alice/game/checkout",
+        token,
+        None,
+        Some(json!({"path": path, "base_revision": base})),
+    )
+    .await
+    .status
+}
+
+fn branch_body(branch: &str, body: serde_json::Value) -> serde_json::Value {
+    let mut body = body;
+    body["branch"] = json!(branch);
+    body
+}
+
 #[tokio::test]
-async fn what_a_push_cannot_record_is_refused_whole_with_a_stable_code() {
+async fn the_policy_file_cannot_be_deleted_by_a_push_to_the_default_branch() {
     let w = world().await;
     let a = upload(&w, "alpha").await;
-    let policy = upload(&w, "[meta]\ndefault = \"shared\"\n").await;
-    let commit = build(
-        &BTreeMap::from([(".pyn/pyn.toml", policy), ("Source/a.txt", a)]),
-        None,
-        "policy",
-        1,
+    let policy = upload(&w, A_EXCLUSIVE).await;
+    let files = BTreeMap::from([(".pyn/pyn.toml", policy), ("Source/b.txt", a)]);
+    let with = build(&files, None, "policy", 1);
+    assert_eq!(
+        push(&w, &w.alice, push_body(&[&with])).await.status,
+        StatusCode::OK
     );
-    let r = push(&w, &w.bob, push_body(&[&commit])).await;
+    assert_eq!(
+        checkout(&w, &w.alice, ".pyn/pyn.toml", json!(1)).await,
+        StatusCode::OK
+    );
+    let without = build(
+        &BTreeMap::from([("Source/b.txt", a)]),
+        Some(with.id),
+        "drop",
+        2,
+    );
+    let r = push(&w, &w.alice, push_body(&[&without])).await;
     assert_eq!(
         (r.status, r.code().as_str()),
         (StatusCode::UNPROCESSABLE_ENTITY, "push_unsupported")
     );
-    assert_eq!(commit_count(&w).await, 0);
+    assert_eq!(commit_count(&w).await, 1);
+}
+
+#[tokio::test]
+async fn a_push_deletes_a_shared_path() {
+    let w = world().await;
+    let (a, b) = (upload(&w, "alpha").await, upload(&w, "beta").await);
+    let both = BTreeMap::from([("Source/a.txt", a), ("Source/dir/b.txt", b)]);
+    let first = build(&both, None, "first", 1);
+    assert_eq!(
+        push(&w, &w.bob, push_body(&[&first])).await.status,
+        StatusCode::OK
+    );
+
+    let only_a = BTreeMap::from([("Source/a.txt", a)]);
+    let gone = build(&only_a, Some(first.id), "remove dir", 2);
+    let r = push(&w, &w.bob, push_body(&[&gone])).await;
+    assert_eq!(
+        r.status,
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&r.body)
+    );
+    let done: api::PushResponse = r.json();
+    assert_eq!(done.revisions.len(), 1);
+    let rev = &done.revisions[0];
+    assert!(rev.deleted && rev.path == "Source/dir/b.txt");
+    assert_eq!((rev.id, rev.base), (2, Some(1)));
+    assert!(done.stranded.is_empty());
+
+    let r = send(
+        &w.app,
+        "GET",
+        "/v1/repos/alice/game/snapshot",
+        &w.alice,
+        None,
+        None,
+    )
+    .await;
+    let snap: api::SnapshotPage = r.json();
+    let paths: Vec<_> = snap.entries.iter().map(|e| e.path.as_str()).collect();
+    assert_eq!(paths, ["Source/a.txt"]);
+
+    let r = send(
+        &w.app,
+        "GET",
+        "/v1/repos/alice/game/audit",
+        &w.alice,
+        None,
+        None,
+    )
+    .await;
+    let page: api::AuditPage = r.json();
+    assert!(
+        page.entries
+            .iter()
+            .any(|e| e.action == "delete" && e.detail.contains("(push)"))
+    );
+}
+
+#[tokio::test]
+async fn deleting_an_exclusive_path_in_a_push_needs_the_pushers_live_lock() {
+    let w = world().await;
+    let (m, a) = (upload(&w, "map").await, upload(&w, "alpha").await);
+    let both = BTreeMap::from([("Content/x.umap", m), ("Source/a.txt", a)]);
+    assert_eq!(
+        checkout(&w, &w.bob, "Content/x.umap", json!(null)).await,
+        StatusCode::OK
+    );
+    let first = build(&both, None, "first", 1);
+    assert_eq!(
+        push(&w, &w.bob, push_body(&[&first])).await.status,
+        StatusCode::OK
+    );
+    let gone = build(
+        &BTreeMap::from([("Source/a.txt", a)]),
+        Some(first.id),
+        "delete the map",
+        2,
+    );
+
+    let r = push(&w, &w.bob, push_body(&[&gone])).await;
+    assert_eq!(
+        (r.status, r.code().as_str()),
+        (StatusCode::CONFLICT, "lock_required")
+    );
+    assert_eq!(
+        checkout(&w, &w.alice, "Content/x.umap", json!(1)).await,
+        StatusCode::OK
+    );
+    let r = push(&w, &w.bob, push_body(&[&gone])).await;
+    assert_eq!(
+        (r.status, r.code().as_str()),
+        (StatusCode::CONFLICT, "lock_held")
+    );
+    assert_eq!(commit_count(&w).await, 1);
+
+    send(
+        &w.app,
+        "POST",
+        "/v1/repos/alice/game/release",
+        &w.alice,
+        None,
+        Some(json!({"path": "Content/x.umap"})),
+    )
+    .await;
+    assert_eq!(
+        checkout(&w, &w.bob, "Content/x.umap", json!(1)).await,
+        StatusCode::OK
+    );
+    let r = push(&w, &w.bob, push_body(&[&gone])).await;
+    assert_eq!(r.status, StatusCode::OK);
+    let done: api::PushResponse = r.json();
+    assert!(done.revisions[0].deleted);
+    assert_eq!(commit_count(&w).await, 2);
+}
+
+#[tokio::test]
+async fn a_policy_commit_on_the_default_branch_is_applied_and_an_invalid_one_refused_whole() {
+    let w = world().await;
+    let a = upload(&w, "alpha").await;
+    let b = upload(&w, "beta").await;
+    let base = build(&BTreeMap::from([("Source/a.txt", a)]), None, "base", 1);
+    assert_eq!(
+        push(&w, &w.bob, push_body(&[&base])).await.status,
+        StatusCode::OK
+    );
+
+    let bad = upload(&w, "this is not [valid toml").await;
+    let files = BTreeMap::from([
+        ("Source/a.txt", a),
+        ("Source/b.txt", b),
+        (".pyn/pyn.toml", bad),
+    ]);
+    let invalid = build(&files, Some(base.id), "bad policy", 2);
+    let r = push(&w, &w.alice, push_body(&[&invalid])).await;
+    assert_eq!(
+        (r.status, r.code().as_str()),
+        (StatusCode::BAD_REQUEST, "invalid_rules")
+    );
+    assert_eq!(commit_count(&w).await, 1);
+
+    let policy = upload(&w, A_EXCLUSIVE).await;
+    let files = BTreeMap::from([
+        ("Source/a.txt", a),
+        ("Source/b.txt", b),
+        (".pyn/pyn.toml", policy),
+    ]);
+    let good = build(&files, Some(base.id), "policy", 3);
+    let r = push(&w, &w.bob, push_body(&[&good])).await;
+    assert_eq!(
+        (r.status, r.code().as_str()),
+        (StatusCode::FORBIDDEN, "forbidden"),
+        "a writer cannot change the policy"
+    );
+    let r = push(&w, &w.alice, push_body(&[&good])).await;
+    assert_eq!(
+        r.status,
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&r.body)
+    );
+    let done: api::PushResponse = r.json();
+    assert_eq!(done.revisions.len(), 2);
+
+    // The new policy is in force: a.txt now needs a lock.
+    let edit = upload(&w, "alpha 2").await;
+    let files = BTreeMap::from([
+        ("Source/a.txt", edit),
+        ("Source/b.txt", b),
+        (".pyn/pyn.toml", policy),
+    ]);
+    let r = send(
+        &w.app,
+        "GET",
+        "/v1/repos/alice/game/snapshot",
+        &w.alice,
+        None,
+        None,
+    )
+    .await;
+    let head = r.json::<api::SnapshotPage>().commit.unwrap();
+    let after = build(
+        &files,
+        Some(ObjectId::from_hex(REPO_ALGORITHM, &head).unwrap()),
+        "edit a",
+        4,
+    );
+    let r = push(&w, &w.bob, push_body(&[&after])).await;
+    assert_eq!(
+        (r.status, r.code().as_str()),
+        (StatusCode::CONFLICT, "lock_required")
+    );
+}
+
+#[tokio::test]
+async fn a_policy_push_reports_the_versions_it_strands() {
+    let w = world().await;
+    let a = upload(&w, "alpha").await;
+    let base = build(&BTreeMap::from([("Source/a.txt", a)]), None, "base", 1);
+    assert_eq!(
+        push(&w, &w.bob, push_body(&[&base])).await.status,
+        StatusCode::OK
+    );
+    let r = send(
+        &w.app,
+        "POST",
+        "/v1/repos/alice/game/branches",
+        &w.bob,
+        None,
+        Some(json!({"name": "feature"})),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK);
+    let edit = upload(&w, "alpha on feature").await;
+    let feature = build(
+        &BTreeMap::from([("Source/a.txt", edit)]),
+        Some(base.id),
+        "feature edit",
+        2,
+    );
+    let r = push(&w, &w.bob, branch_body("feature", push_body(&[&feature]))).await;
+    assert_eq!(
+        r.status,
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&r.body)
+    );
+
+    let policy = upload(&w, A_EXCLUSIVE).await;
+    let files = BTreeMap::from([("Source/a.txt", a), (".pyn/pyn.toml", policy)]);
+    let commit = build(&files, Some(base.id), "policy", 3);
+    let r = push(&w, &w.alice, push_body(&[&commit])).await;
+    assert_eq!(
+        r.status,
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&r.body)
+    );
+    let done: api::PushResponse = r.json();
+    assert_eq!(done.stranded.len(), 1);
+    let v = &done.stranded[0];
+    assert_eq!(
+        (v.path.as_str(), v.branch.as_str(), v.author.as_str()),
+        ("Source/a.txt", "feature", "bob")
+    );
+    assert!(v.conversion.is_some());
+    assert_eq!(v.commit, feature.id.to_hex());
+}
+
+#[tokio::test]
+async fn a_policy_file_pushed_to_another_branch_is_just_a_file() {
+    let w = world().await;
+    let a = upload(&w, "alpha").await;
+    let base = build(&BTreeMap::from([("Source/a.txt", a)]), None, "base", 1);
+    assert_eq!(
+        push(&w, &w.bob, push_body(&[&base])).await.status,
+        StatusCode::OK
+    );
+    let r = send(
+        &w.app,
+        "POST",
+        "/v1/repos/alice/game/branches",
+        &w.bob,
+        None,
+        Some(json!({"name": "feature"})),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK);
+
+    let junk = upload(&w, "this is not [valid toml").await;
+    let files = BTreeMap::from([("Source/a.txt", a), (".pyn/pyn.toml", junk)]);
+    let commit = build(&files, Some(base.id), "junk policy", 2);
+    assert_eq!(
+        checkout_on(&w, &w.bob, "feature", ".pyn/pyn.toml").await,
+        StatusCode::OK
+    );
+    let r = push(&w, &w.bob, branch_body("feature", push_body(&[&commit]))).await;
+    assert_eq!(
+        r.status,
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&r.body)
+    );
+    let done: api::PushResponse = r.json();
+    assert_eq!(done.head, commit.id.to_hex());
+    assert!(done.stranded.is_empty());
+}
+
+async fn checkout_on(w: &World, token: &str, branch: &str, path: &str) -> StatusCode {
+    send(
+        &w.app,
+        "POST",
+        "/v1/repos/alice/game/checkout",
+        token,
+        None,
+        Some(json!({"path": path, "base_revision": null, "branch": branch})),
+    )
+    .await
+    .status
 }
 
 #[tokio::test]

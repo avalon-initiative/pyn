@@ -2,16 +2,18 @@
 //! push or refuses it whole.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use pyn_object::{FileMode, Kind, ObjectId, TreeEntry, hash_object, parse_tree};
 
-use super::{RepoService, changeset_id};
+use super::{DEFAULT_BRANCH, RepoService, changeset_id};
 use crate::access::{Permission, Principal};
 use crate::audit::AuditAction;
 use crate::commit_record::TreeChange;
 use crate::error::{PynError, Result};
 use crate::object::REPO_ALGORITHM;
-use crate::rules::{Mode, POLICY_PATH};
+use crate::rules::{Mode, POLICY_PATH, Rules};
+use crate::stranded::StrandedVersion;
 use crate::types::{Commit, NewRevision, PushedCommit, RepoPath, Revision};
 
 /// Raw git objects a push carries: commits oldest first, and the trees they need that the server may not have.
@@ -29,6 +31,13 @@ fn invalid(what: impl Into<String>) -> PynError {
     PynError::PushInvalid(what.into())
 }
 
+/// The revisions a push made and the shared versions its policy commits stranded.
+#[derive(Debug, Clone)]
+pub struct Pushed {
+    pub revisions: Vec<Revision>,
+    pub stranded: Vec<StrandedVersion>,
+}
+
 /// What one commit changes against its parent tree, and the trees of it that were pushed.
 struct TreeDiff {
     changes: Vec<TreeChange>,
@@ -44,6 +53,21 @@ impl RepoService {
         branch: &str,
         objects: PushObjects,
     ) -> Result<Vec<Revision>> {
+        Ok(self
+            .push_commits_recorded(who, branch, objects)
+            .await?
+            .revisions)
+    }
+
+    /// Like `push_commits`, with the stranded versions of the policy commits the push carried. On the default branch a
+    /// commit that changes the policy file is validated like a direct policy commit, and refused whole if it is invalid;
+    /// its rules apply to the commits after it and to the repository once the push is recorded.
+    pub async fn push_commits_recorded(
+        &self,
+        who: &Principal,
+        branch: &str,
+        objects: PushObjects,
+    ) -> Result<Pushed> {
         who.require(Permission::Checkin)?;
         if objects.commits.is_empty() {
             return Err(PynError::InvalidRequest(
@@ -59,7 +83,11 @@ impl RepoService {
             }
             pushed_trees.insert(id, body);
         }
-        let rules = self.rules_on(branch).await?;
+        let mut rules = self.rules_on(branch).await?;
+        let on_default = branch == DEFAULT_BRANCH;
+        let policy_path = RepoPath::new(POLICY_PATH)?;
+        let mut has_policy = on_default && self.pointer_on(branch, &policy_path).await?.is_some();
+        let mut policies = Vec::new();
         let mut commits = Vec::with_capacity(objects.commits.len());
         let mut previous: Option<Commit> = None;
         for (id, raw) in objects.commits {
@@ -84,9 +112,18 @@ impl RepoService {
             let diff = self
                 .diff_pushed(parent_tree, record.tree, &pushed_trees)
                 .await?;
-            let items = self
-                .revisions_of(&record, &diff.changes, &rules, who)
+            let (items, policy) = self
+                .revisions_of(&record, &diff.changes, &rules, who, on_default, has_policy)
                 .await?;
+            let mut unlocked = Vec::new();
+            if let Some(new) = policy {
+                if !has_policy {
+                    unlocked.push(policy_path.clone());
+                }
+                has_policy = true;
+                policies.push(new.clone());
+                rules = Arc::new(new);
+            }
             let mut record = record;
             if items.len() > 1 {
                 record.changeset = Some(changeset_id()?);
@@ -103,6 +140,7 @@ impl RepoService {
                 record,
                 trees: diff.trees,
                 items,
+                unlocked,
             });
         }
         let now = self.clock.now();
@@ -111,16 +149,33 @@ impl RepoService {
             .meta
             .push_commits_on(&self.repo, branch, commits, &who.user, now, cap)
             .await?;
+        let mut applied = policies.into_iter();
+        let mut stranded = Vec::new();
         for rev in &revs {
+            let action = if rev.deleted {
+                AuditAction::Delete
+            } else {
+                AuditAction::Checkin
+            };
             self.record(
                 &who.user,
-                AuditAction::Checkin,
+                action,
                 &rev.path,
                 format!("r{}: {} (push)", rev.id, rev.message),
             )
             .await?;
+            if on_default
+                && rev.path.as_str() == POLICY_PATH
+                && let Some(new) = applied.next()
+                && let Some(old) = self.apply(rev.id, new.clone())
+            {
+                stranded.extend(self.policy_applied(who, rev, &old, &new).await?);
+            }
         }
-        Ok(revs)
+        Ok(Pushed {
+            revisions: revs,
+            stranded,
+        })
     }
 
     /// The record the raw bytes describe, or why the push cannot carry it.
@@ -169,8 +224,7 @@ impl RepoService {
         Ok((entries, from_push))
     }
 
-    /// The files `new` adds or changes against `parent`; a removal, a file turned folder or back, or a submodule is
-    /// refused.
+    /// The files `new` adds, changes or removes against `parent`; a submodule is refused.
     async fn diff_pushed(
         &self,
         parent: Option<ObjectId>,
@@ -193,25 +247,19 @@ impl RepoService {
             let old_by_name: HashMap<&[u8], &TreeEntry> =
                 old.iter().map(|e| (e.name.as_slice(), e)).collect();
             for e in &entries {
-                let name =
-                    std::str::from_utf8(&e.name).map_err(|_| unsupported("a path is not UTF-8"))?;
-                let path = if dir.is_empty() {
-                    name.to_string()
-                } else {
-                    format!("{dir}/{name}")
-                };
+                let path = join_path(&dir, &e.name)?;
                 let prior = old_by_name.get(e.name.as_slice());
-                match prior {
-                    Some(o) if o.id == e.id && o.mode == e.mode => continue,
-                    Some(o) if o.mode.is_tree() != e.mode.is_tree() => {
-                        return Err(unsupported(format!(
-                            "{path} replaces a file with a folder or back, which deletes paths; deletions are not supported yet"
-                        )));
+                if let Some(o) = prior {
+                    if o.id == e.id && o.mode == e.mode {
+                        continue;
                     }
-                    _ => {}
+                    if o.mode.is_tree() != e.mode.is_tree() {
+                        self.removed_under(&path, o, pushed, &mut changes).await?;
+                    }
                 }
+                let same_kind = prior.filter(|o| o.mode.is_tree() == e.mode.is_tree());
                 if e.mode.is_tree() {
-                    stack.push((path, prior.map(|o| o.id), e.id));
+                    stack.push((path, same_kind.map(|o| o.id), e.id));
                 } else if e.mode == FileMode::Gitlink {
                     return Err(unsupported(format!("{path} is a submodule")));
                 } else {
@@ -224,26 +272,55 @@ impl RepoService {
                 }
             }
             let kept: HashSet<&[u8]> = entries.iter().map(|e| e.name.as_slice()).collect();
-            if let Some(gone) = old.iter().find(|o| !kept.contains(o.name.as_slice())) {
-                return Err(unsupported(format!(
-                    "{} is removed; deletions are not supported yet",
-                    String::from_utf8_lossy(&gone.name)
-                )));
+            for gone in old.iter().filter(|o| !kept.contains(o.name.as_slice())) {
+                let path = join_path(&dir, &gone.name)?;
+                self.removed_under(&path, gone, pushed, &mut changes)
+                    .await?;
             }
         }
         changes.sort_by(|a, b| a.path.cmp(&b.path));
         Ok(TreeDiff { changes, trees })
     }
 
-    /// One revision per changed path, after checking the policy file is untouched, the blobs are stored and the
-    /// mode is one a file can have.
+    /// Every file under (or at) the removed entry `at`, as a removal change.
+    async fn removed_under(
+        &self,
+        at: &str,
+        entry: &TreeEntry,
+        pushed: &HashMap<ObjectId, Vec<u8>>,
+        changes: &mut Vec<TreeChange>,
+    ) -> Result<()> {
+        let mut stack = vec![(at.to_string(), entry.mode, entry.id)];
+        while let Some((path, mode, id)) = stack.pop() {
+            if mode.is_tree() {
+                for child in self.load_tree(&id, pushed).await?.0 {
+                    stack.push((join_path(&path, &child.name)?, child.mode, child.id));
+                }
+            } else if mode == FileMode::Gitlink {
+                return Err(unsupported(format!("{path} is a submodule")));
+            } else {
+                changes.push(TreeChange {
+                    path: RepoPath::new(path)?,
+                    mode,
+                    id,
+                    removed: true,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// One revision per changed path, after checking the blobs are stored and the mode is one a file can have. On the
+    /// default branch a changed policy file is validated and its parsed rules returned; removing it is refused.
     async fn revisions_of(
         &self,
         record: &Commit,
         changes: &[TreeChange],
-        rules: &crate::rules::Rules,
+        rules: &Rules,
         who: &Principal,
-    ) -> Result<Vec<NewRevision>> {
+        on_default: bool,
+        has_policy: bool,
+    ) -> Result<(Vec<NewRevision>, Option<Rules>)> {
         if changes.is_empty() {
             return Err(unsupported(format!(
                 "commit {} changes no file; empty commits are not supported yet",
@@ -255,21 +332,32 @@ impl RepoService {
             .strip_suffix('\n')
             .unwrap_or(&record.message)
             .to_string();
+        let mut policy = None;
         let mut items = Vec::with_capacity(changes.len());
         for c in changes {
-            if c.path.as_str() == POLICY_PATH {
-                return Err(unsupported(format!(
-                    "commit {} changes {POLICY_PATH}; policy changes are not supported in a push yet",
-                    record.id
-                )));
+            let mut mode: Mode = rules.mode_for(&c.path);
+            if on_default && c.path.as_str() == POLICY_PATH {
+                if c.removed {
+                    return Err(unsupported(format!(
+                        "commit {} removes {POLICY_PATH}; the policy file cannot be deleted",
+                        record.id
+                    )));
+                }
+                who.require(Permission::EditPolicy)?;
+                let new = self.parse_policy(&c.id).await?;
+                if !has_policy {
+                    mode = new.mode_for(&c.path);
+                }
+                policy = Some(new);
             }
-            super::check_file_mode(c.mode)?;
+            if !c.removed {
+                super::check_file_mode(c.mode)?;
+            }
             let size = self
                 .objects
                 .size(&c.id)
                 .await?
                 .ok_or_else(|| PynError::ObjectMissing(c.id.to_string()))?;
-            let mode: Mode = rules.mode_for(&c.path);
             items.push(NewRevision {
                 path: c.path.clone(),
                 content: c.id,
@@ -280,11 +368,20 @@ impl RepoService {
                 created_at: record.created_at,
                 restored_from: None,
                 mode,
-                deleted: false,
+                deleted: c.removed,
                 size,
                 changeset: None,
             });
         }
-        Ok(items)
+        Ok((items, policy))
     }
+}
+
+fn join_path(dir: &str, name: &[u8]) -> Result<String> {
+    let name = std::str::from_utf8(name).map_err(|_| unsupported("a path is not UTF-8"))?;
+    Ok(if dir.is_empty() {
+        name.to_string()
+    } else {
+        format!("{dir}/{name}")
+    })
 }

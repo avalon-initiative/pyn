@@ -138,7 +138,7 @@ schemas only.
 
 `checkin`, `changesets`, `restore` and `checkout` (the lock request) take an optional `branch` in the body.
 The lock request is refused with `not_exclusive` unless the path is exclusive under the branch's effective policy or the
-default branch's. The response to checking in or restoring `.pyn/pyn.toml` on the default branch carries `stranded`, and
+default branch's. The response to checking in or restoring `.pyn/pyn.toml` on the default branch carries `stranded` (so does a [push](commits.md#pushed-commits-provisional) with a policy commit), and
 `policy/preview` and the merge report carry it too ([stranded versions](pyn-toml.md#stranded-versions)). `commits`, `snapshot`, `tree`, `files`,
 `history` and `content` take an optional `branch` query parameter; `snapshot` takes either `commit` or `branch`. Every one
 of them uses the default branch when none is named. `summary` describes the default branch and counts all branches. An

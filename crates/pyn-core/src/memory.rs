@@ -286,7 +286,11 @@ impl State {
 
         let mut last_use = BTreeMap::new();
         for (i, c) in commits.iter().enumerate() {
-            for item in c.items.iter().filter(|i| i.mode == Mode::Exclusive) {
+            for item in c
+                .items
+                .iter()
+                .filter(|i| i.mode == Mode::Exclusive && !c.unlocked.contains(&i.path))
+            {
                 last_use.insert(item.path.clone(), i);
             }
         }

@@ -475,6 +475,9 @@ pub struct PushResponse {
     pub head: String,
     /// The revisions the commits made, in commit order, each commit's by path.
     pub revisions: Vec<Revision>,
+    /// Shared versions on other branches that a policy file in the push stranded; omitted when there are none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stranded: Vec<StrandedVersion>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]

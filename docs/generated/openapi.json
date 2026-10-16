@@ -5502,7 +5502,7 @@
             }
           },
           "400": {
-            "description": "push_invalid for an id that does not match its bytes, bytes that are not a git object, a missing tree or a commit already stored; object_missing for a blob that was not uploaded; invalid_request for an empty push or bad base64",
+            "description": "push_invalid for an id that does not match its bytes, bytes that are not a git object, a missing tree or a commit already stored; object_missing for a blob that was not uploaded; invalid_request for an empty push or bad base64; invalid_rules for a policy file on the default branch that does not validate",
             "content": {
               "application/json": {
                 "schema": {
@@ -5512,7 +5512,7 @@
             }
           },
           "403": {
-            "description": "forbidden without the checkin permission",
+            "description": "forbidden without the checkin permission, or without the policy permission for a commit that changes the policy file on the default branch",
             "content": {
               "application/json": {
                 "schema": {
@@ -5542,7 +5542,7 @@
             }
           },
           "422": {
-            "description": "push_unsupported: a merge commit, a deletion, a submodule, an empty commit, or a change to the policy file",
+            "description": "push_unsupported: a merge commit, a submodule, an empty commit, or the removal of the policy file from the default branch",
             "content": {
               "application/json": {
                 "schema": {
@@ -8851,6 +8851,13 @@
               "$ref": "#/components/schemas/Revision"
             },
             "description": "The revisions the commits made, in commit order, each commit's by path."
+          },
+          "stranded": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StrandedVersion"
+            },
+            "description": "Shared versions on other branches that a policy file in the push stranded; omitted when there are none."
           }
         }
       },

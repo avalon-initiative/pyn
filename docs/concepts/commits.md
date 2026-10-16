@@ -84,14 +84,14 @@ yet (#337), and everything here is provisional until it does.
 `<kind> <length>` header, and `id` is the SHA-256 git id it must hash to. Commits go oldest first; `trees` holds the trees the
 commits need that the server may not have. Blobs are not in the body: they are uploaded first through the chunked
 [object routes](storage.md), which is why a missing blob is `object_missing`. The body is at most 64 MiB. The answer is
-`{branch, head, revisions}`: the branch's head after the push and the revisions the commits made, in commit order.
+`{branch, head, revisions, stranded?}`: the branch's head after the push, the revisions the commits made, in commit order, and, when a policy commit in the push stranded shared versions, the same `stranded` list a direct policy commit reports.
 
 The route is additive: `changesets` and `checkin` remain the direct route (decision #300), and no existing field changed.
 
 Errors, as `{code, message}`: `not_fast_forward` (409), `lock_required` and `lock_held` (409), `stale_base` (409),
 `storage_limit_reached` (409), `push_invalid` (400, an id that does not hash, bytes that are not a git object, a missing tree or a
-commit already stored), `object_missing` (400), `invalid_request` (400, an empty push or bad base64), `push_unsupported` (422),
-`branch_not_found` and `commit_not_found` (404), `forbidden` (403). No offline lock guarantee exists: a lock is judged when the
+commit already stored), `object_missing` (400), `invalid_request` (400, an empty push or bad base64), `invalid_rules` (400, a policy file on the default branch that does not validate), `push_unsupported` (422),
+`branch_not_found` and `commit_not_found` (404), `forbidden` (403, also for a policy change without the policy permission). No offline lock guarantee exists: a lock is judged when the
 push arrives.
 
 A push is audited like the checkins it makes: one `checkin` entry per revision, with the authenticated pusher as the actor and
@@ -148,8 +148,22 @@ repository is readable without credentials). A client that keeps commits and tre
   ([branches](branches.md)), not on the newest revision of another branch.
 - The whole push is accepted or refused as one: a refusal at any commit leaves no commit, revision, tree, lock change or branch
   move behind. Concurrent pushes to a branch are serialized, so one wins and the others get `not_fast_forward`.
-- Refused with `push_unsupported`, for now (policy-file commits and deletions are #339, merges #338): a commit that changes `.pyn/pyn.toml`; a deletion, including a file turned into a
-  folder or back; a commit with two parents; a commit that changes no file; a submodule entry; and a message without its final newline.
+- A commit whose tree lacks a path its parent had **deletes** it, a whole folder included, and a file turned into a folder or back
+  deletes the old and adds the new. Each deletion is recorded as the changeset API records it ([deleting a path](README.md#deleting-a-path)):
+  a revision with `deleted: true`, based on the branch's pointer for the path, with the content and mode of the version removed.
+  An exclusive path needs the pusher's live lock, consumed like a write's (`lock_required`, `lock_held`); the audit log has a
+  `delete` entry per deletion.
+- A commit that changes `.pyn/pyn.toml` on the **default branch** is a policy commit, validated like a direct one
+  ([policy](pyn-toml.md)): the pusher needs the policy permission, and the file must parse and validate, or the whole push is
+  refused with `invalid_rules` and nothing is recorded. Once the push is recorded the rules apply and conversions, lock releases and
+  the stranded-version report run as for a direct policy commit, with the `stranded` list in the answer. The first policy file of a
+  repository is the owner's bootstrap and needs no lock; later ones follow the policy file's own mode. The rules a policy commit
+  brings apply to the commits after it in the same push, not to its own other files. Deleting the policy file from the default branch
+  is `push_unsupported`. On any other branch the policy file is an ordinary file, not parsed, until a merge brings it to the
+  default branch (decision #38). Provisional: several policy commits in one push are applied one after the other against the
+  final head.
+- Refused with `push_unsupported`, for now (merges are #338): a commit with two parents; a commit that changes no file; a
+  submodule entry; the policy file's removal from the default branch; and a message without its final newline.
   A name or message that is not UTF-8 is accepted: the exact bytes are stored and the commit keeps its id, and the name,
   email and message fields in the API are those bytes decoded lossily (invalid bytes and NUL become U+FFFD).
 - The pusher needs the `checkin` permission. A commit's author need not match the pusher, as in git; the authenticated pusher is
