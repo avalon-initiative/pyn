@@ -72,11 +72,17 @@ pub(crate) fn file_mode(mode: api::FileMode) -> FileMode {
 pub(crate) fn build_trees(files: &Files) -> Result<(ObjectId, Trees)> {
     let flat: Vec<(&[u8], Entry)> = files.iter().map(|(p, e)| (p.as_slice(), *e)).collect();
     let mut out = Vec::new();
-    let root = build_level(&flat, &mut out)?;
+    let root = build_level(&flat, &mut out, 1)?;
     Ok((root, out))
 }
 
-fn build_level(files: &[(&[u8], Entry)], out: &mut Trees) -> Result<ObjectId> {
+fn build_level(files: &[(&[u8], Entry)], out: &mut Trees, depth: usize) -> Result<ObjectId> {
+    if depth > pyn_gitwork::MAX_DEPTH {
+        bail!(
+            "a path is nested more than {} folders deep",
+            pyn_gitwork::MAX_DEPTH
+        );
+    }
     let mut entries = Vec::new();
     let mut i = 0;
     while i < files.len() {
@@ -99,7 +105,7 @@ fn build_level(files: &[(&[u8], Entry)], out: &mut Trees) -> Result<ObjectId> {
         entries.push(TreeEntry {
             mode: FileMode::Tree,
             name: dir.to_vec(),
-            id: build_level(&group, out)?,
+            id: build_level(&group, out, depth + 1)?,
         });
     }
     let body = encode_tree(ALGORITHM, &entries)?;
@@ -395,6 +401,22 @@ pub fn refresh<R: Remote + ?Sized>(remote: &R, ws: &Workspace) -> Result<()> {
 mod tests {
     use super::*;
     use chrono::{TimeZone, Utc};
+
+    #[test]
+    fn trees_are_built_to_a_fixed_depth_and_no_deeper() {
+        let leaf = Entry {
+            mode: FileMode::Regular,
+            id: hash_object(ALGORITHM, Kind::Blob, b"x").unwrap(),
+        };
+        let at = |folders: usize| -> Files {
+            let path = format!("{}f", "d/".repeat(folders));
+            BTreeMap::from([(path.into_bytes(), leaf)])
+        };
+        let ok = pyn_gitwork::MAX_DEPTH - 1;
+        assert_eq!(build_trees(&at(ok)).unwrap().1.len(), ok + 1);
+        let err = build_trees(&at(ok + 1)).unwrap_err().to_string();
+        assert!(err.contains("nested more than"), "{err}");
+    }
 
     #[derive(Default)]
     struct Fake {

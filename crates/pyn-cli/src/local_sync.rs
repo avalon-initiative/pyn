@@ -219,9 +219,16 @@ impl LocalStore {
         parent: Option<ObjectId>,
         out: &mut Vec<(ObjectId, Vec<u8>)>,
         seen: &mut HashSet<ObjectId>,
+        depth: usize,
     ) -> Result<()> {
         if Some(*id) == parent || !seen.insert(*id) {
             return Ok(());
+        }
+        if depth > pyn_gitwork::MAX_DEPTH {
+            bail!(
+                "a path is nested more than {} folders deep",
+                pyn_gitwork::MAX_DEPTH
+            );
         }
         let body = self.repo().objects().read(id)?.data;
         let before: HashMap<Vec<u8>, ObjectId> = match parent {
@@ -236,7 +243,13 @@ impl LocalStore {
             .into_iter()
             .filter(|e| e.mode.is_tree())
         {
-            self.new_trees(&entry.id, before.get(&entry.name).copied(), out, seen)?;
+            self.new_trees(
+                &entry.id,
+                before.get(&entry.name).copied(),
+                out,
+                seen,
+                depth + 1,
+            )?;
         }
         out.push((*id, body));
         Ok(())
@@ -283,7 +296,7 @@ impl LocalStore {
                     blobs.push(entry.id);
                 }
             }
-            self.new_trees(&commit.tree, before, &mut trees, &mut seen_trees)?;
+            self.new_trees(&commit.tree, before, &mut trees, &mut seen_trees, 1)?;
             commits.push((*id, self.repo().objects().read(id)?.data));
             parent = Some(*id);
         }
