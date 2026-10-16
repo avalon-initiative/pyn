@@ -154,3 +154,42 @@ async fn a_tampered_revision_is_a_500_with_a_stable_code_and_a_missing_path_a_40
     let (status, _) = get(&w.app, "/v1/repos/owner/game/verify?path=nope.txt").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
+
+#[tokio::test]
+async fn checking_the_whole_repository_needs_a_signed_in_caller_even_when_it_is_public() {
+    let w = world().await;
+    w.meta
+        .update_repo(
+            &RepoId::new("t"),
+            pyn_core::RepoUpdate {
+                visibility: Some(Visibility::Public),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let anonymous = |uri: &'static str| {
+        let app = w.app.clone();
+        async move {
+            let r = app
+                .oneshot(Request::get(uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            r.status()
+        }
+    };
+    assert_eq!(
+        anonymous("/v1/repos/owner/game/verify").await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        anonymous("/v1/repos/owner/game/verify?path=a.txt").await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        anonymous("/v1/repos/owner/game/history?path=a.txt").await,
+        StatusCode::OK
+    );
+    let (status, _) = get(&w.app, "/v1/repos/owner/game/verify").await;
+    assert_eq!(status, StatusCode::OK);
+}

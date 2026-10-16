@@ -127,7 +127,7 @@ events leaves a valid chain. A client that remembers a head hash can detect that
   branch, is not the path's pointer at the first parent of its commit ([branches](branches.md)), is `base_mismatch`. The base is
   stored beside the revision and is not covered by the hash, so existing hashes stay valid.
 - Audit events are checked when they are read, and the whole chain when verified.
-- `GET /v1/repos/{owner}/{name}/verify?path=` checks a path, or every path and the repository's audit log, and reports every
+- `GET /v1/repos/{owner}/{name}/verify?path=` (the form without `path` needs a signed-in caller) checks a path, or every path and the repository's audit log, and reports every
   break instead of stopping at the first. It needs `read`; the audit log is checked only for callers with `view_audit`.
 - `pyn verify [<path>]` prints the report and exits 1 when anything is broken. It also selects each revision's encoding from
   `hash_version`, recomputes the revision hashes (v1, v2 and v3) and the commit ids it fetches on the client, so a server that reports "ok" cannot hide a mismatch.

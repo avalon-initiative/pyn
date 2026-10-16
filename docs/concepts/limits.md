@@ -74,6 +74,27 @@ Lowering a limit below current use never deletes anything: existing repositories
 new growth is refused until use falls under the limit. The [lock limit](pyn-toml.md#lock-limit) is separate and
 unchanged.
 
+## Per-request bounds
+
+Each request is bounded in the work it may do, so one request cannot hold the server for long or crowd out the others.
+
+| Bound | Default | Setting |
+| --- | --- | --- |
+| time for a read route to answer (including fetch and the previews) | 60 s, `0` is no limit | `PYN_REQUEST_TIMEOUT_SECS` |
+| time an upload body may send nothing (object, chunk, assemble, push) | 30 s, `0` is no limit | `PYN_BODY_IDLE_TIMEOUT_SECS` |
+| fetch, history, verify, snapshot, summary and merge-preview requests at once | four per CPU | `PYN_MAX_CONCURRENT_EXPENSIVE` |
+| commits one fetch request examines | 1,000,000 | fixed |
+| revisions one history request examines | 20,000 | fixed |
+
+A late answer is `503 request_timeout` and a request that cannot get a slot in time is `503 server_busy`; both carry
+`Retry-After`. Writes and the streamed object routes have no overall time limit. A value that is not a whole number, or a
+concurrency of 0, stops the server at start. They are read at start.
+
+A fetch examines commits from the cursor onward and refuses a walk past its bound with `400 invalid_request`. A repository
+history request that examines its bound without filling a page returns what it found with a `next_cursor`, which may arrive
+with fewer revisions than `limit` (or none); the client continues with `before`. The whole-repository form of
+`GET .../verify` needs a signed-in caller.
+
 ## Setting limits
 
 Server administrators, and service credentials with the `manage_limits` scope, set an owner's own limits. A field left

@@ -15,7 +15,8 @@ use pyn_postgres::PgMetadataStore;
 use pyn_server::auth::{BearerAuth, DevHeaderAuth};
 use pyn_server::email::LogEmailSender;
 use pyn_server::passwords::PooledPasswords;
-use pyn_server::{AppState, router};
+use pyn_server::request_limits::RequestLimits;
+use pyn_server::{AppState, router_with};
 
 fn flag(name: &str) -> bool {
     flag_or(name, false)
@@ -83,6 +84,37 @@ fn whole_number(name: &str, value: &str) -> anyhow::Result<u64> {
         .map_err(|_| anyhow::anyhow!("{name} must be a non-negative whole number"))
 }
 
+/// A time limit in whole seconds; 0 turns it off.
+fn seconds(
+    name: &str,
+    default: Option<std::time::Duration>,
+) -> anyhow::Result<Option<std::time::Duration>> {
+    match std::env::var(name) {
+        Ok(v) => Ok(match whole_number(name, &v)? {
+            0 => None,
+            n => Some(std::time::Duration::from_secs(n)),
+        }),
+        Err(_) => Ok(default),
+    }
+}
+
+fn request_limits() -> anyhow::Result<RequestLimits> {
+    let defaults = RequestLimits::default();
+    let max_expensive = match std::env::var("PYN_MAX_CONCURRENT_EXPENSIVE") {
+        Ok(v) => whole_number("PYN_MAX_CONCURRENT_EXPENSIVE", &v)? as usize,
+        Err(_) => defaults.max_expensive,
+    };
+    anyhow::ensure!(
+        max_expensive >= 1,
+        "PYN_MAX_CONCURRENT_EXPENSIVE must be at least 1"
+    );
+    Ok(RequestLimits {
+        request_timeout: seconds("PYN_REQUEST_TIMEOUT_SECS", defaults.request_timeout)?,
+        body_idle_timeout: seconds("PYN_BODY_IDLE_TIMEOUT_SECS", defaults.body_idle_timeout)?,
+        max_expensive,
+    })
+}
+
 /// OpenID Connect sign-in, only when the issuer, client id and client secret are all set.
 fn oidc_provider() -> anyhow::Result<Option<Arc<HttpOidcProvider>>> {
     let var = |name: &str| std::env::var(name).ok().filter(|v| !v.is_empty());
@@ -117,6 +149,8 @@ async fn main() -> anyhow::Result<()> {
         Ok(path) => Rules::from_toml(&std::fs::read_to_string(path)?)?,
         Err(_) => Rules::empty(),
     };
+
+    let request_limits = request_limits()?;
 
     let Stores {
         meta,
@@ -289,14 +323,17 @@ async fn main() -> anyhow::Result<()> {
     } else {
         None
     };
-    let app = router(AppState {
-        repos,
-        objects,
-        access: access.clone(),
-        auth: Arc::new(BearerAuth { access }),
-        dev_auth,
-        trust_forwarded: flag("PYN_TRUST_FORWARDED_FOR"),
-    });
+    let app = router_with(
+        AppState {
+            repos,
+            objects,
+            access: access.clone(),
+            auth: Arc::new(BearerAuth { access }),
+            dev_auth,
+            trust_forwarded: flag("PYN_TRUST_FORWARDED_FOR"),
+        },
+        request_limits,
+    );
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     tracing::info!("pyn-server listening on {addr} with {meta_kind} storage");

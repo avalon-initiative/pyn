@@ -57,6 +57,9 @@ Watchers, forks and tags do not exist on the server and are not reported.
 | `limit` | page size, default 50, at most 200 |
 | `before` | the previous page's `next_cursor`; omit for the first page |
 
+A request examines a bounded number of revisions. When a selective `filter` uses that up before the page is full, the response holds
+what matched so far and a `next_cursor`: keep following it until `next_cursor` is absent.
+
 **Filter matching** uses the `pyn.toml` [glob rules](pyn-toml.md#entries): `*` stays within one segment, `**` crosses
 segments, `?` and `[abc]` work as there. A pattern **without a `/`** is matched against the path at any depth, as in
 the [ignore file](workspace.md#the-ignore-file), so `*.ts` finds `a.ts` and `src/deep/a.ts`. A pattern **with a `/`** is

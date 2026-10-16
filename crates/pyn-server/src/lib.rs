@@ -34,6 +34,7 @@ pub mod passwords;
 mod push_api;
 mod repo_api;
 mod repo_policy_api;
+pub mod request_limits;
 mod session_api;
 mod setup_api;
 mod team_api;
@@ -312,6 +313,14 @@ struct RepoAddress {
 pub struct ApiDoc;
 
 pub fn router(state: AppState) -> Router {
+    router_with(state, request_limits::RequestLimits::default())
+}
+
+pub fn router_with(state: AppState, limits: request_limits::RequestLimits) -> Router {
+    request_limits::apply(routes(state), limits)
+}
+
+fn routes(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(health))
         .route("/openapi.json", get(|| async { Json(ApiDoc::openapi()) }))

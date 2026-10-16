@@ -1988,6 +1988,7 @@ dependencies = [
  "chrono",
  "clap",
  "futures-util",
+ "http-body",
  "http-body-util",
  "pyn-chunk",
  "pyn-core",

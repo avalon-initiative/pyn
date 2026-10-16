@@ -6349,7 +6349,7 @@
     "/v1/repos/{owner}/{name}/verify": {
       "get": {
         "tags": [],
-        "summary": "Needs `read`; the audit log is also checked for callers with `view_audit`.",
+        "summary": "Needs `read`; the audit log is also checked for callers with `view_audit`. Without `path` the caller must be signed in.",
         "operationId": "verify",
         "parameters": [
           {
@@ -6386,6 +6386,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/VerifyReport"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthenticated for a whole-repository check without credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
