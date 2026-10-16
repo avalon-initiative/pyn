@@ -191,14 +191,17 @@ With `local_store` on ([workspace](workspace.md#the-local-store-provisional)) th
 - `pyn push` first uploads every blob the unpublished commits added or changed through the chunked object routes, then sends
   the commits and the trees they need in one `POST .../push`. It is accepted or refused whole. On success the
   remote-tracking ref moves to the new head, so the commits are no longer unpublished; the files take the revisions the server
-  made, and exclusive files go read-only again. Output: `To <server>/<repo>` and `   <old>..<new>  main -> main`, or
+  made, and exclusive files go read-only again (a deleted path leaves the workspace's state). A commit that deletes a path or
+  changes `.pyn/pyn.toml` is sent like any other ([deletions and policy commits](#pushed-commits-provisional)); when the
+  server adds conversion commits after a policy commit, the next `fetch` brings them in, and the stranded versions it reports
+  are printed after the push as for a direct policy commit. Output: `To <server>/<repo>` and `   <old>..<new>  main -> main`, or
   `Everything up-to-date`.
 - A refused push prints a git-style `! [rejected]` line, the server's message, a hint and exits `1`:
   `not_fast_forward` and `stale_base` (also detected locally when the local branch does not build on the fetched tip) tell the
   person to run `pyn pull` and push again; `lock_required` (including a lapsed lease) says to lock the path; `lock_held`
-  names that someone else holds it; `object_missing`, `push_invalid`, `push_unsupported`, `storage_limit_reached` and
-  `forbidden` are named too. Commits that delete a file or change `.pyn/pyn.toml` are refused by the CLI before anything is
-  sent (the server does not take them yet), and a merge commit is refused too.
+  names that someone else holds it; `invalid_rules` (an invalid policy file, nothing pushed) and `forbidden` (also a policy
+  change without the policy permission) are named; so are `object_missing`, `push_invalid`, `push_unsupported` and
+  `storage_limit_reached`. A merge commit is refused (#338).
 
 ## Command line
 
