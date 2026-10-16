@@ -659,4 +659,28 @@ mod tests {
         ws.save_state(&state).unwrap();
         assert_eq!(ws.load_state().unwrap(), state);
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn writes_go_through_real_folders_and_replace_a_link_at_the_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = Workspace::create(dir.path()).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("f"), "keep").unwrap();
+
+        ws.write_file("a/b/c.txt", b"one").unwrap();
+        assert_eq!(std::fs::read(dir.path().join("a/b/c.txt")).unwrap(), b"one");
+
+        std::os::unix::fs::symlink(outside.path().join("f"), dir.path().join("a/b/l")).unwrap();
+        ws.write_file("a/b/l", b"new").unwrap();
+        assert_eq!(std::fs::read(outside.path().join("f")).unwrap(), b"keep");
+        assert!(!crate::localfile::is_symlink(&dir.path().join("a/b/l")));
+
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("linked")).unwrap();
+        let err = ws.write_file("linked/x", b"no").unwrap_err().to_string();
+        assert!(err.contains("symbolic link"), "{err}");
+        assert!(!outside.path().join("x").exists());
+        assert!(ws.dest("a/b/c.txt/d").is_err());
+        assert!(ws.dest("../x").is_err() && ws.dest(".git/x").is_err());
+    }
 }
