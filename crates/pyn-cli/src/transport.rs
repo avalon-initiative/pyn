@@ -2,11 +2,14 @@
 
 use std::io::{Read, Write};
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 pub use reqwest::Method;
+
+/// The most a JSON response may hold; downloads are streamed and not bound by it.
+pub const MAX_JSON_BYTES: u64 = 256 << 20;
 
 /// Who a request speaks as.
 #[derive(Clone, Debug, Default)]
@@ -140,8 +143,20 @@ impl Reply {
         Ok(out)
     }
 
+    /// Decodes a JSON body of at most [`MAX_JSON_BYTES`].
     pub fn json<T: DeserializeOwned>(self) -> Result<T> {
-        let bytes = self.bytes()?;
+        self.json_capped(MAX_JSON_BYTES)
+    }
+
+    fn json_capped<T: DeserializeOwned>(mut self, max: u64) -> Result<T> {
+        let mut bytes = Vec::new();
+        (&mut self.body)
+            .take(max + 1)
+            .read_to_end(&mut bytes)
+            .context("reading the response body")?;
+        if bytes.len() as u64 > max {
+            bail!("the server's response is larger than {max} bytes; refusing to read it");
+        }
         serde_json::from_slice(&bytes).context("error decoding response body")
     }
 
@@ -153,4 +168,29 @@ impl Reply {
 /// Carries a [`Call`] to a pyn server and returns its [`Reply`], whatever the status.
 pub trait Transport: Send + Sync {
     fn send(&self, call: Call) -> Result<Reply>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn reply(body: &[u8]) -> Reply {
+        Reply::new(
+            200,
+            Vec::new(),
+            Box::new(std::io::Cursor::new(body.to_vec())),
+        )
+    }
+
+    #[test]
+    fn a_json_body_over_the_cap_is_refused_and_one_at_it_is_read() {
+        let body = br#"{"a":1}"#;
+        let ok: serde_json::Value = reply(body).json_capped(body.len() as u64).unwrap();
+        assert_eq!(ok["a"], 1);
+        let err = reply(body)
+            .json_capped::<serde_json::Value>(body.len() as u64 - 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("larger than"), "{err}");
+    }
 }
