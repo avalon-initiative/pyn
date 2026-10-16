@@ -149,6 +149,7 @@ async fn a_tampered_revision_is_a_500_with_a_stable_code_and_a_missing_path_a_40
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     let err: api::ErrorBody = serde_json::from_slice(&body).unwrap();
     assert_eq!(err.code, "history_corrupt");
+    assert!(!err.message.contains("a.txt"), "{}", err.message);
 
     let (status, _) = get(&w.app, "/v1/repos/owner/game/verify?path=nope.txt").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
