@@ -12,7 +12,7 @@ use pyn_core::repositories::OpenRepo;
 use pyn_core::{
     AccessService, AuditAction, AuditQuery, AuthProvider, ChangeEntry, Deletion, HistoryCursor,
     Identity, Keying, ObjectStore, PathFilter, Permission, Principal, PynError, RepoPath,
-    Repositories, RevisionId, decode_path_cursor, encode_path_cursor,
+    Repositories, RevisionId, VERIFY_BUDGET, decode_path_cursor, encode_path_cursor,
 };
 use pyn_proto as api;
 use serde::Deserialize;
@@ -1307,13 +1307,18 @@ async fn history(
 #[derive(Deserialize)]
 struct VerifyQuery {
     path: Option<String>,
+    cursor: Option<String>,
+    paged: Option<bool>,
 }
 
 /// Needs `read`; the audit log is also checked for callers with `view_audit`. Without `path` the caller must be signed in.
 #[utoipa::path(get, path = "/v1/repos/{owner}/{name}/verify",
     params(RepoAddress,
-           ("path" = Option<String>, Query, description = "check only this path; the audit log is then not checked")),
+           ("path" = Option<String>, Query, description = "check only this path; the audit log is then not checked"),
+           ("cursor" = Option<String>, Query, description = "the previous step's next_cursor; omit for the first step"),
+           ("paged" = Option<bool>, Query, description = "true to accept a partial report with next_cursor; otherwise a repository that needs more than one step is invalid_request")),
     responses((status = 200, body = api::VerifyReport),
+              (status = 400, body = api::ErrorBody, description = "invalid_request for a bad cursor, or when the check needs more than one step and paged is not set"),
               (status = 401, body = api::ErrorBody, description = "unauthenticated for a whole-repository check without credentials"),
               (status = 404, body = api::ErrorBody, description = "path_not_found for a path without revisions")))]
 async fn verify(
@@ -1334,9 +1339,21 @@ async fn verify(
     let path = q.path.map(RepoPath::from_stored).transpose()?;
     let report = repo
         .service
-        .verify(path.as_ref(), principal.has(Permission::ViewAudit))
+        .verify_step(
+            path.as_ref(),
+            principal.has(Permission::ViewAudit),
+            q.cursor.as_deref(),
+            VERIFY_BUDGET,
+        )
         .await?;
+    if report.next.is_some() && q.paged != Some(true) {
+        return Err(PynError::InvalidRequest(
+            "checking this repository takes more than one request; ask for it in steps with paged=true".into(),
+        )
+        .into());
+    }
     Ok(Json(api::VerifyReport {
+        next_cursor: report.next,
         paths: report.paths,
         revisions: report.revisions,
         commits: report.commits,

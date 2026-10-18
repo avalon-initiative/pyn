@@ -318,8 +318,13 @@ pub trait MetadataStore: Send + Sync {
         limit: usize,
     ) -> Result<Vec<Revision>>;
 
-    /// The newest revision of every path that has one, on any branch, ordered by path.
-    async fn list_head_revisions(&self, repo: &RepoId) -> Result<Vec<Revision>>;
+    /// The newest revision of each path that has one, on any branch, ordered by path, for paths after `after`; at most `limit`.
+    async fn list_head_revisions(
+        &self,
+        repo: &RepoId,
+        after: Option<&RepoPath>,
+        limit: usize,
+    ) -> Result<Vec<Revision>>;
 
     /// One path's revisions, oldest first; with `within`, only those made in that commit or an ancestor.
     async fn history(

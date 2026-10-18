@@ -392,9 +392,14 @@ impl MetadataStore for CountingStore {
             .await
     }
 
-    async fn list_head_revisions(&self, repo: &RepoId) -> crate::Result<Vec<crate::Revision>> {
+    async fn list_head_revisions(
+        &self,
+        repo: &RepoId,
+        after: Option<&RepoPath>,
+        limit: usize,
+    ) -> crate::Result<Vec<crate::Revision>> {
         self.count();
-        self.inner.list_head_revisions(repo).await
+        self.inner.list_head_revisions(repo, after, limit).await
     }
 
     async fn history(

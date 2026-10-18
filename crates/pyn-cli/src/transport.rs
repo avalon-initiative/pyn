@@ -194,3 +194,49 @@ mod tests {
         assert!(err.contains("larger than"), "{err}");
     }
 }
+
+/// A transport that answers each request with the next canned body and remembers the queries.
+#[cfg(test)]
+pub mod canned {
+    use std::sync::{Arc, Mutex};
+
+    use super::{Call, Reply, Transport};
+    use crate::client::Api;
+    use anyhow::Result;
+
+    pub struct Canned {
+        bodies: Mutex<Vec<String>>,
+        pub seen: Mutex<Vec<Vec<(String, String)>>>,
+    }
+
+    struct Shared(Arc<Canned>);
+
+    impl Transport for Shared {
+        fn send(&self, call: Call) -> Result<Reply> {
+            self.0.seen.lock().unwrap().push(call.query.clone());
+            let body = self.0.bodies.lock().unwrap().remove(0);
+            Ok(Reply::new(
+                200,
+                Vec::new(),
+                Box::new(std::io::Cursor::new(body.into_bytes())),
+            ))
+        }
+    }
+
+    pub fn api_with(bodies: Vec<String>) -> (Api, Arc<Canned>) {
+        let canned = Arc::new(Canned {
+            bodies: Mutex::new(bodies),
+            seen: Mutex::new(Vec::new()),
+        });
+        let api = Api {
+            transport: Box::new(Shared(canned.clone())),
+            base: String::new(),
+            token: None,
+            user: None,
+            repo: Some("o/r".into()),
+            branch: None,
+            on_git: false,
+        };
+        (api, canned)
+    }
+}

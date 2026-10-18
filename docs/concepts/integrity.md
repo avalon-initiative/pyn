@@ -129,7 +129,15 @@ events leaves a valid chain. A client that remembers a head hash can detect that
 - Audit events are checked when they are read, and the whole chain when verified.
 - `GET /v1/repos/{owner}/{name}/verify?path=` (the form without `path` needs a signed-in caller) checks a path, or every path and the repository's audit log, and reports every
   break instead of stopping at the first. It needs `read`; the audit log is checked only for callers with `view_audit`.
-- `pyn verify [<path>]` prints the report and exits 1 when anything is broken. It also selects each revision's encoding from
+- **Steps.** One request examines at most 20,000 records (revisions, commits, audit events, and the files of a branch head whose tree
+  it rebuilds). With `paged=true` a repository that needs more answers with the share it checked and a `next_cursor`: add the steps'
+  counts and problems together and send the cursor back as `cursor` until `next_cursor` is null. The steps run in order: revisions
+  path by path (a path with a long history is itself split), commits, each branch head's tree, then the audit log. Without `paged`, a
+  repository that needs more than one step is `400 invalid_request`, so a client that does not know about steps never takes a partial
+  report for a complete one. A cursor that does not parse, or names another path than `path`, is `400 invalid_request`. The tree check
+  of one branch head cannot be split, because a git tree id covers every file; it is charged against the budget by file count and
+  ends the step when the budget is spent.
+- `pyn verify [<path>]` follows the steps until the server is done, prints the report and exits 1 when anything is broken. It also selects each revision's encoding from
   `hash_version`, recomputes the revision hashes (v1, v2 and v3) and the commit ids it fetches on the client, so a server that reports "ok" cannot hide a mismatch.
 
 Revisions in the API carry `hash`, `hash_version`, `previous` and `base`; audit events carry `hash` and `previous`.

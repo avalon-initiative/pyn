@@ -193,3 +193,43 @@ async fn checking_the_whole_repository_needs_a_signed_in_caller_even_when_it_is_
     let (status, _) = get(&w.app, "/v1/repos/owner/game/verify").await;
     assert_eq!(status, StatusCode::OK);
 }
+
+#[tokio::test]
+async fn verify_takes_a_cursor_and_refuses_one_that_does_not_parse_or_fit() {
+    let w = world().await;
+    let (status, body) = get(&w.app, "/v1/repos/owner/game/verify?paged=true").await;
+    assert_eq!(status, StatusCode::OK);
+    let whole: api::VerifyReport = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        (whole.next_cursor, whole.paths, whole.revisions),
+        (None, 1, 2)
+    );
+
+    let (status, body) = get(&w.app, "/v1/repos/owner/game/verify?paged=true&cursor=c:").await;
+    assert_eq!(status, StatusCode::OK);
+    let rest: api::VerifyReport = serde_json::from_slice(&body).unwrap();
+    assert_eq!((rest.paths, rest.revisions, rest.commits), (0, 0, 2));
+    assert_eq!(rest.audit_events, Some(2));
+
+    for uri in [
+        "/v1/repos/owner/game/verify?cursor=",
+        "/v1/repos/owner/game/verify?cursor=garbage",
+        "/v1/repos/owner/game/verify?cursor=r:0:a.txt",
+        "/v1/repos/owner/game/verify?path=a.txt&cursor=h:",
+        "/v1/repos/owner/game/verify?path=a.txt&cursor=r:1:b.txt",
+    ] {
+        let (status, body) = get(&w.app, uri).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}");
+        let err: api::ErrorBody = serde_json::from_slice(&body).unwrap();
+        assert_eq!(err.code, "invalid_request", "{uri}");
+    }
+
+    let (status, body) = get(
+        &w.app,
+        "/v1/repos/owner/game/verify?path=a.txt&cursor=r:2:a.txt",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let tail: api::VerifyReport = serde_json::from_slice(&body).unwrap();
+    assert_eq!((tail.paths, tail.revisions, tail.next_cursor), (0, 1, None));
+}

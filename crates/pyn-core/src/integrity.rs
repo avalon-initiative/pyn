@@ -241,9 +241,19 @@ impl AuditEvent {
 
 /// Every break in one audit log, oldest first.
 pub fn verify_audit(scope: &AuditScope, events: &[AuditEvent]) -> Vec<(i64, BreakKind)> {
+    verify_audit_run(scope, events, None)
+}
+
+/// Every break in `run`, a stretch of one audit log oldest first, whose first event follows `before` (none when the
+/// run starts the log).
+pub fn verify_audit_run(
+    scope: &AuditScope,
+    run: &[AuditEvent],
+    before: Option<&AuditEvent>,
+) -> Vec<(i64, BreakKind)> {
     let mut breaks = Vec::new();
-    let mut prior: Option<&AuditEvent> = None;
-    for e in events {
+    let mut prior = before;
+    for e in run {
         if e.expected_hash(scope) != e.hash {
             breaks.push((e.id, BreakKind::Hash));
         }
@@ -275,6 +285,8 @@ pub struct Problem {
 /// The result of verifying a path, or a repository's revisions and audit log. `audit_events` is `None` when the log was not checked.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct VerifyReport {
+    /// Where to continue when the work of one step ran out; `None` once everything is checked.
+    pub next: Option<String>,
     pub paths: u64,
     pub revisions: u64,
     pub commits: u64,

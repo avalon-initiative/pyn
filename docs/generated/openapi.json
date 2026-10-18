@@ -6398,6 +6398,24 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "the previous step's next_cursor; omit for the first step",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "paged",
+            "in": "query",
+            "description": "true to accept a partial report with next_cursor; otherwise a repository that needs more than one step is invalid_request",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
           }
         ],
         "responses": {
@@ -6406,6 +6424,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/VerifyReport"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request for a bad cursor, or when the check needs more than one step and paged is not set",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -10187,6 +10215,7 @@
       },
       "VerifyReport": {
         "type": "object",
+        "description": "What one `verify` request checked. With `paged=true` a request does a bounded share of the work: add the counts and\nproblems of the steps together, and send `next_cursor` back as `cursor` until it is null.",
         "required": [
           "paths",
           "revisions",
@@ -10208,6 +10237,13 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Opaque; send it as `cursor` for the next step. Null when everything has been checked. Absent from servers that\ncheck in one request."
           },
           "paths": {
             "type": "integer",

@@ -1172,15 +1172,21 @@ impl MetadataStore for MemoryMetadataStore {
         Ok(revs.and_then(|v| v.iter().find(|r| r.id == id).cloned()))
     }
 
-    async fn list_head_revisions(&self, repo: &RepoId) -> Result<Vec<Revision>> {
+    async fn list_head_revisions(
+        &self,
+        repo: &RepoId,
+        after: Option<&RepoPath>,
+        limit: usize,
+    ) -> Result<Vec<Revision>> {
         let st = self.state.lock().unwrap();
         let mut heads: Vec<Revision> = st
             .revisions
             .iter()
-            .filter(|((r, _), _)| r == repo)
+            .filter(|((r, p), _)| r == repo && after.is_none_or(|a| p > a))
             .filter_map(|(_, revs)| revs.last().cloned())
             .collect();
         heads.sort_by(|a, b| a.path.cmp(&b.path));
+        heads.truncate(limit);
         Ok(heads)
     }
 

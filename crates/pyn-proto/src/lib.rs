@@ -1430,6 +1430,8 @@ pub struct VerifyProblem {
     pub commit: Option<String>,
 }
 
+/// What one `verify` request checked. With `paged=true` a request does a bounded share of the work: add the counts and
+/// problems of the steps together, and send `next_cursor` back as `cursor` until it is null.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct VerifyReport {
     pub paths: u64,
@@ -1439,4 +1441,8 @@ pub struct VerifyReport {
     #[schema(required = true)]
     pub audit_events: Option<u64>,
     pub problems: Vec<VerifyProblem>,
+    /// Opaque; send it as `cursor` for the next step. Null when everything has been checked. Absent from servers that
+    /// check in one request.
+    #[serde(default)]
+    pub next_cursor: Option<String>,
 }

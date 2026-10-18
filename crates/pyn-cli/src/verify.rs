@@ -18,11 +18,7 @@ type Finding = (String, String, String);
 
 /// Prints every break found and returns whether history is intact.
 pub fn run(api: &Api, path: Option<&str>, verbose: bool) -> Result<bool> {
-    let mut req = api.get(&api.repo_route("/verify")?);
-    if let Some(p) = path {
-        req = req.query(&[("path", p)]);
-    }
-    let report: api::VerifyReport = api.send(req)?.json()?;
+    let report = served_report(api, path)?;
     let mut found: Vec<Finding> = report.problems.iter().map(finding).collect();
 
     // A server that refuses to serve a corrupt revision has already reported it above.
@@ -61,6 +57,44 @@ pub fn run(api: &Api, path: Option<&str>, verbose: bool) -> Result<bool> {
         );
     }
     Ok(found.is_empty())
+}
+
+/// The server's steps added together, following its cursor until it is done.
+fn served_report(api: &Api, path: Option<&str>) -> Result<api::VerifyReport> {
+    let mut total = api::VerifyReport {
+        paths: 0,
+        revisions: 0,
+        commits: 0,
+        audit_events: None,
+        problems: Vec::new(),
+        next_cursor: None,
+    };
+    let mut cursor: Option<String> = None;
+    loop {
+        let mut req = api
+            .get(&api.repo_route("/verify")?)
+            .query(&[("paged", "true")]);
+        if let Some(p) = path {
+            req = req.query(&[("path", p)]);
+        }
+        if let Some(c) = &cursor {
+            req = req.query(&[("cursor", c)]);
+        }
+        let step: api::VerifyReport = api.send(req)?.json()?;
+        total.paths += step.paths;
+        total.revisions += step.revisions;
+        total.commits += step.commits;
+        total.audit_events = match (total.audit_events, step.audit_events) {
+            (None, None) => None,
+            (a, b) => Some(a.unwrap_or(0) + b.unwrap_or(0)),
+        };
+        total.problems.extend(step.problems);
+        match step.next_cursor {
+            Some(next) if cursor.as_deref() != Some(next.as_str()) => cursor = Some(next),
+            Some(_) => anyhow::bail!("the server repeated a verify cursor without progress"),
+            None => return Ok(total),
+        }
+    }
 }
 
 fn finding(p: &api::VerifyProblem) -> Finding {
@@ -262,4 +296,65 @@ fn check_chains(revs: &[api::Revision]) -> Vec<Finding> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::transport::canned::api_with;
+
+    fn step(revisions: u64, audit: Option<u64>, problem: bool, next: Option<&str>) -> String {
+        let problems = if problem {
+            r#"[{"kind":"hash_mismatch","path":"a","revision":2,"event":null}]"#
+        } else {
+            "[]"
+        };
+        serde_json::json!({
+            "paths": 1, "revisions": revisions, "commits": 2, "audit_events": audit,
+            "problems": serde_json::from_str::<serde_json::Value>(problems).unwrap(),
+            "next_cursor": next,
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn steps_are_followed_to_the_end_and_added_into_one_report() {
+        let (api, canned) = api_with(vec![
+            step(10, None, false, Some("c:")),
+            step(5, Some(3), true, Some("a:7")),
+            step(0, Some(4), false, None),
+        ]);
+        let report = served_report(&api, None).unwrap();
+        assert_eq!(
+            (
+                report.paths,
+                report.revisions,
+                report.commits,
+                report.audit_events
+            ),
+            (3, 15, 6, Some(7))
+        );
+        assert_eq!(report.problems.len(), 1);
+        let seen = canned.seen.lock().unwrap();
+        assert_eq!(seen.len(), 3);
+        let pair = |k: &str, v: &str| (k.to_string(), v.to_string());
+        assert!(seen.iter().all(|q| q.contains(&pair("paged", "true"))));
+        assert!(!seen[0].iter().any(|(k, _)| k == "cursor"));
+        assert!(seen[1].contains(&pair("cursor", "c:")));
+        assert!(seen[2].contains(&pair("cursor", "a:7")));
+    }
+
+    #[test]
+    fn a_single_step_and_a_cursor_that_does_not_advance() {
+        let (api, _) = api_with(vec![step(2, Some(1), false, None)]);
+        let report = served_report(&api, Some("a")).unwrap();
+        assert_eq!((report.revisions, report.audit_events), (2, Some(1)));
+
+        let (api, _) = api_with(vec![
+            step(1, None, false, Some("c:")),
+            step(1, None, false, Some("c:")),
+        ]);
+        let err = served_report(&api, None).unwrap_err().to_string();
+        assert!(err.contains("without progress"), "{err}");
+    }
 }

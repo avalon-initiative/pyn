@@ -89,6 +89,7 @@ pub use service::{
     ChangeEntry, CommitPage, Deletion, FETCH_DEFAULT_LIMIT, FETCH_MAX_EXAMINED, FETCH_MAX_HAVES,
     FETCH_MAX_LIMIT, FetchPage, FetchQuery, FetchedCommit, FileEntry, LockLimit, PolicyPreview,
     PushObjects, Pushed, Recorded, RepoService, ServiceConfig, Snapshot, SnapshotEntry,
+    VERIFY_BUDGET,
 };
 pub use store::{MetadataStore, UploadReservation};
 pub use stranded::{ConversionNote, StrandedVersion};

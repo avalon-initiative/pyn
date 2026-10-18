@@ -506,3 +506,162 @@ async fn a_path_history_page_checks_its_revisions_and_the_link_to_the_page_befor
     assert!(page(None).await.is_ok());
     assert!(is_corrupt(&page(Some(1)).await.unwrap_err()));
 }
+
+async fn stepped(
+    w: &World,
+    only: Option<&RepoPath>,
+    audit: bool,
+    budget: usize,
+) -> (pyn_core::VerifyReport, usize) {
+    let mut total = pyn_core::VerifyReport::default();
+    let (mut cursor, mut steps) = (None, 0);
+    loop {
+        let step = w
+            .svc
+            .verify_step(only, audit, cursor.as_deref(), budget)
+            .await
+            .unwrap();
+        steps += 1;
+        assert!(steps < 1000, "no progress at budget {budget}");
+        total.paths += step.paths;
+        total.revisions += step.revisions;
+        total.commits += step.commits;
+        total.audit_events = match (total.audit_events, step.audit_events) {
+            (None, None) => None,
+            (a, b) => Some(a.unwrap_or(0) + b.unwrap_or(0)),
+        };
+        total.problems.extend(step.problems);
+        match step.next {
+            Some(next) => cursor = Some(next),
+            None => return (total, steps),
+        }
+    }
+}
+
+fn summary(r: &pyn_core::VerifyReport) -> (Vec<u64>, Vec<String>) {
+    let mut problems: Vec<_> = r.problems.iter().map(|p| format!("{p:?}")).collect();
+    problems.sort();
+    (
+        vec![
+            r.paths,
+            r.revisions,
+            r.commits,
+            r.audit_events.unwrap_or(u64::MAX),
+        ],
+        problems,
+    )
+}
+
+#[tokio::test]
+async fn a_stepped_verify_finds_what_one_pass_finds_at_every_budget() {
+    let w = world();
+    let a = three_revisions(&w).await;
+    let (b, c) = (path("Source/b.cpp"), path("Docs/c.md"));
+    for t in ["x", "y"] {
+        commit(&w, &b, t).await;
+        commit(&w, &c, t).await;
+    }
+    let clean = w.svc.verify(None, true).await.unwrap();
+    assert!(clean.problems.is_empty(), "{clean:?}");
+    assert_eq!((clean.paths, clean.revisions), (3, 7));
+    for budget in 1..=40 {
+        let (got, _) = stepped(&w, None, true, budget).await;
+        assert_eq!(summary(&got), summary(&clean), "clean, budget {budget}");
+    }
+
+    let first = w.svc.commits(None, None).await.unwrap().commits[3].id;
+    w.meta
+        .tamper(&w.repo, &a, RevisionId(2), |r| r.message = "x".into());
+    w.meta.tamper(&w.repo, &b, RevisionId(2), |r| {
+        r.previous = Some(RevisionHash::new("0".repeat(64)));
+        r.hash = r.expected_hash();
+    });
+    w.audit.remove(4);
+    w.meta
+        .tamper_commit(&w.repo, &first, |c| c.message = "forged".into());
+    let whole = w.svc.verify(None, true).await.unwrap();
+    assert!(whole.problems.len() >= 4, "{whole:?}");
+    let (single, steps) = stepped(&w, None, true, 100_000).await;
+    assert_eq!((steps, summary(&single)), (1, summary(&whole)));
+    let mut most = 0;
+    for budget in 1..=40 {
+        let (got, steps) = stepped(&w, None, true, budget).await;
+        assert_eq!(summary(&got), summary(&whole), "budget {budget}");
+        most = most.max(steps);
+    }
+    assert!(most >= 10, "a tiny budget takes many steps, took {most}");
+
+    let (no_audit, _) = stepped(&w, None, false, 3).await;
+    assert_eq!(no_audit.audit_events, None);
+    assert!(no_audit.problems.iter().all(|p| p.event.is_none()));
+}
+
+#[tokio::test]
+async fn a_path_check_resumes_inside_the_path() {
+    let w = world();
+    let a = path("Source/a.cpp");
+    for t in ["1", "2", "3", "4", "5"] {
+        commit(&w, &a, t).await;
+    }
+    w.meta
+        .tamper(&w.repo, &a, RevisionId(4), |r| r.message = "x".into());
+    for budget in 1..=7 {
+        let (got, steps) = stepped(&w, Some(&a), false, budget).await;
+        assert_eq!((got.paths, got.revisions), (1, 5), "budget {budget}");
+        let found: Vec<_> = got.problems.iter().map(|p| (p.kind, p.revision)).collect();
+        assert_eq!(found, vec![(BreakKind::Hash, Some(RevisionId(4)))]);
+        assert_eq!(steps, 5usize.div_ceil(budget).max(1), "budget {budget}");
+    }
+}
+
+#[tokio::test]
+async fn verify_cursors_must_parse_and_belong_to_the_request() {
+    let w = world();
+    let a = three_revisions(&w).await;
+    for bad in [
+        "",
+        "x",
+        "h",
+        "z:1",
+        "r:0:Source/a.cpp",
+        "r:x:Source/a.cpp",
+        "r:1",
+        "r:1:/abs",
+        "c:zz",
+        "t:x",
+        "t:-1",
+        "a:0",
+        "a:-3",
+        "a:x",
+    ] {
+        let err = w
+            .svc
+            .verify_step(None, true, Some(bad), 10)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, PynError::InvalidRequest(_)), "{bad:?}: {err}");
+    }
+    for foreign in ["h:", "c:", "r:1:Source/other.cpp"] {
+        let err = w
+            .svc
+            .verify_step(Some(&a), false, Some(foreign), 10)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, PynError::InvalidRequest(_)),
+            "{foreign:?}: {err}"
+        );
+    }
+    let ok = w
+        .svc
+        .verify_step(Some(&a), false, Some("r:3:Source/a.cpp"), 10)
+        .await
+        .unwrap();
+    assert_eq!((ok.revisions, ok.next), (1, None));
+    let past = w
+        .svc
+        .verify_step(None, false, Some("h:Zzz"), 10)
+        .await
+        .unwrap();
+    assert_eq!((past.paths, past.next), (0, None), "after the last path");
+}

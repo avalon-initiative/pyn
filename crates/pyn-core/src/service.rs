@@ -3,6 +3,7 @@ mod merging;
 mod push;
 mod push_merge;
 mod uploads;
+mod verify;
 pub use uploads::DEFAULT_UNREFERENCED_UPLOAD_BYTES;
 
 pub use fetch::{
@@ -10,6 +11,7 @@ pub use fetch::{
     FetchQuery, FetchedCommit,
 };
 pub use push::{PushObjects, Pushed};
+pub use verify::VERIFY_BUDGET;
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, RwLock};
@@ -22,15 +24,12 @@ use crate::audit::{
 };
 use crate::branch::{Branch, DEFAULT_BRANCH, conflicts, validate_branch_name};
 use crate::clock::Clock;
-use crate::commit_record::{TreeChange, tree_of};
 use crate::error::{PynError, Result};
 use crate::history::{
     HISTORY_DEFAULT_LIMIT, HISTORY_MAX_LIMIT, HISTORY_SCAN_BUDGET, HistoryCursor, HistoryPage,
     PathHistoryPage,
 };
-use crate::integrity::{
-    BreakKind, Problem, VerifyReport, check_events, revision_breaks, verify_audit, verify_revisions,
-};
+use crate::integrity::{BreakKind, check_events, revision_breaks, verify_revisions};
 use crate::limits::{StorageCap, StorageCaps};
 use crate::object::ObjectStore;
 use crate::repo::DEFAULT_MAX_LOCKS_PER_USER;
@@ -1569,161 +1568,6 @@ impl RepoService {
             }
         }
         Ok(breaks)
-    }
-
-    /// Checks every path's revision chain, and the audit log when `audit` is set, reporting all breaks instead of
-    /// stopping at the first. With `path`, only that path.
-    pub async fn verify(&self, path: Option<&RepoPath>, audit: bool) -> Result<VerifyReport> {
-        let paths = match path {
-            Some(p) => vec![p.clone()],
-            None => self
-                .meta
-                .list_head_revisions(&self.repo)
-                .await?
-                .into_iter()
-                .map(|r| r.path)
-                .collect(),
-        };
-        let mut report = VerifyReport::default();
-        for p in paths {
-            let revisions = self.meta.history(&self.repo, &p, None).await?;
-            if revisions.is_empty() {
-                return Err(PynError::PathNotFound(p.to_string()));
-            }
-            report.paths += 1;
-            report.revisions += revisions.len() as u64;
-            let mut found = verify_revisions(&revisions);
-            for id in self.pointer_mismatches(&revisions).await? {
-                if !found.contains(&(id, BreakKind::Base)) {
-                    found.push((id, BreakKind::Base));
-                }
-            }
-            for (id, kind) in found {
-                report.problems.push(Problem {
-                    kind,
-                    path: Some(p.clone()),
-                    revision: Some(id),
-                    event: None,
-                    commit: None,
-                });
-            }
-        }
-        if path.is_none() {
-            self.verify_commits(&mut report).await?;
-        }
-        if audit && path.is_none() {
-            let scope = AuditScope::Repo(self.repo.clone());
-            let mut events = Vec::new();
-            let mut before = None;
-            loop {
-                let page = self
-                    .audit
-                    .list(
-                        &scope,
-                        &AuditQuery {
-                            before,
-                            limit: HISTORY_MAX_LIMIT,
-                            ..AuditQuery::default()
-                        },
-                    )
-                    .await?;
-                let Some(last) = page.last() else { break };
-                before = Some(last.id);
-                events.extend(page);
-            }
-            events.reverse();
-            report.audit_events = Some(events.len() as u64);
-            for (id, kind) in verify_audit(&scope, &events) {
-                report.problems.push(Problem {
-                    kind,
-                    path: None,
-                    revision: None,
-                    event: Some(id),
-                    commit: None,
-                });
-            }
-        }
-        Ok(report)
-    }
-
-    /// Exclusive revisions whose stored base is not the path's pointer at the first parent of their commit.
-    async fn pointer_mismatches(&self, revisions: &[Revision]) -> Result<Vec<RevisionId>> {
-        let mut bad = Vec::new();
-        for r in revisions.iter().filter(|r| r.mode == Some(Mode::Exclusive)) {
-            let Some(commit) = self.meta.get_commit(&self.repo, &r.commit).await? else {
-                continue;
-            };
-            let expected = match commit.parents.first() {
-                Some(parent) => self
-                    .meta
-                    .revision_at(&self.repo, parent, &r.path)
-                    .await?
-                    .map(|p| p.id),
-                None => None,
-            };
-            if expected != r.base {
-                bad.push(r.id);
-            }
-        }
-        Ok(bad)
-    }
-
-    /// Checks every commit's id against its fields and its parent links, and each branch head's tree against the
-    /// snapshot at that head.
-    async fn verify_commits(&self, report: &mut VerifyReport) -> Result<()> {
-        let mut all = Vec::new();
-        let mut before = None;
-        loop {
-            let page = self
-                .meta
-                .commits(&self.repo, None, before.as_ref(), HISTORY_MAX_LIMIT)
-                .await?;
-            let Some(last) = page.last() else { break };
-            before = Some(last.id);
-            all.extend(page);
-        }
-        all.reverse();
-        report.commits = all.len() as u64;
-        let problem = |kind, c: &Commit| Problem {
-            kind,
-            path: None,
-            revision: None,
-            event: None,
-            commit: Some(c.id),
-        };
-        let mut seen = std::collections::HashSet::new();
-        for c in &all {
-            if c.verify().is_err() {
-                report.problems.push(problem(BreakKind::Hash, c));
-            }
-            let linked = c.parents.iter().all(|p| seen.contains(p))
-                && (!c.parents.is_empty() || seen.is_empty());
-            if !linked {
-                report.problems.push(problem(BreakKind::Link, c));
-            }
-            seen.insert(c.id);
-        }
-        for branch in self.meta.list_branches(&self.repo).await? {
-            let Some(head) = branch.head.and_then(|h| all.iter().find(|c| c.id == h)) else {
-                continue;
-            };
-            let files = self
-                .meta
-                .snapshot(&self.repo, &head.id)
-                .await?
-                .iter()
-                .map(|r| TreeChange {
-                    path: r.path.clone(),
-                    mode: r.file_mode,
-                    id: r.content,
-                    removed: false,
-                })
-                .collect();
-            if tree_of(files)?.root != head.tree {
-                report.problems.push(problem(BreakKind::Tree, head));
-            }
-        }
-        Ok(())
     }
 
     /// Repository-wide history, newest first; `limit` defaults to 50 and is capped at 200.
