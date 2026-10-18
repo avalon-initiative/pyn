@@ -607,10 +607,10 @@ fn a_policy_commit_from_someone_without_the_policy_permission_is_refused() {
 }
 
 #[test]
-fn without_the_setting_fetch_pull_and_push_are_as_before() {
+fn when_opted_out_fetch_pull_and_push_are_as_before() {
     let env = start();
     env.seed("alice", "Source/a.cpp", "one", None);
-    let ws = clone_with(&env, "ws", &[]);
+    let ws = clone_with(&env, "ws", &["--no-local-store"]);
     env.seed("alice", "Source/b.cpp", "bee", None);
     assert_eq!(env.ok(&ws, "alice", &["fetch"]), "updated 1 file(s)\n");
     env.seed("alice", "Source/c.cpp", "sea", None);

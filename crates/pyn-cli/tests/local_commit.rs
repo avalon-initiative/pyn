@@ -216,10 +216,10 @@ fn an_unlocked_exclusive_path_is_refused_at_add() {
 }
 
 #[test]
-fn without_the_setting_commit_publishes_as_before() {
+fn when_opted_out_commit_publishes_as_before() {
     let env = start();
     env.seed("alice", "Source/a.cpp", "one", None);
-    let ws = clone_with(&env, "ws", &[]);
+    let ws = clone_with(&env, "ws", &["--no-local-store"]);
     std::fs::write(ws.join("Source/a.cpp"), "two").unwrap();
     env.ok(&ws, "alice", &["add", "Source/a.cpp"]);
     let out = env.ok(&ws, "alice", &["commit", "-m", "direct"]);

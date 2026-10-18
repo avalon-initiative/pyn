@@ -128,6 +128,9 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
             ..
         } => super::switch::restore(git, cwd, &args, source.as_deref(), staged, worktree),
         Command::Reset(_) => refuse("reset"),
+        Command::Migrate => {
+            bail!("`pyn migrate` converts a pyn server workspace; this is a git repository")
+        }
         Command::Update { .. } => refuse("update"),
         Command::Get { .. } => refuse("get"),
         Command::Locks { .. } => server_only("locks"),

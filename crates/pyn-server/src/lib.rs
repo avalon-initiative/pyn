@@ -71,6 +71,7 @@ struct RepoAddress {
 #[openapi(
     paths(
         health,
+        capabilities,
         setup_api::setup_status,
         setup_api::complete_setup,
         access_api::registration,
@@ -251,6 +252,7 @@ struct RepoAddress {
         api::SetupRequest,
         api::SetupCompleted,
         api::RegistrationInfo,
+        api::ServerCapabilities,
         api::RegisterRequest,
         api::Registered,
         api::VerifyEmailRequest,
@@ -324,6 +326,7 @@ pub fn router_with(state: AppState, limits: request_limits::RequestLimits) -> Ro
 fn routes(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(health))
+        .route("/v1/capabilities", get(capabilities))
         .route("/openapi.json", get(|| async { Json(ApiDoc::openapi()) }))
         .route(
             "/v1/setup",
@@ -904,6 +907,13 @@ fn commit_dto(c: pyn_core::Commit) -> api::Commit {
 #[utoipa::path(get, path = "/healthz", responses((status = 200, body = String)))]
 async fn health() -> &'static str {
     "ok"
+}
+
+#[utoipa::path(get, path = "/v1/capabilities", responses((status = 200, body = api::ServerCapabilities)))]
+async fn capabilities() -> Json<api::ServerCapabilities> {
+    Json(api::ServerCapabilities {
+        local_commits: true,
+    })
 }
 
 /// Readable without credentials when the repository is public; otherwise 404 unless the caller has a role.

@@ -104,7 +104,9 @@ pub fn reset(backend: &dyn Backend, ws: &Workspace, args: ResetArgs) -> Result<(
     };
     let branch = branch::name(Some(ws));
     let Some(store) = LocalStore::open(ws) else {
-        bail!("`pyn reset` works on the local commits of a workspace cloned with --local-store");
+        bail!(
+            "`pyn reset` works on the local commits of a workspace that keeps them; `pyn migrate` converts an older one"
+        );
     };
     let Some(tip) = store.tip(&branch)? else {
         bail!("branch '{branch}' has no local commits");

@@ -23,6 +23,7 @@ mod local_view;
 mod localfile;
 mod ls_remote;
 mod merging;
+mod migrate;
 mod probe;
 mod pyn_server;
 mod sanitize;
@@ -103,9 +104,12 @@ enum Command {
         /// Check out the repository as of this commit (`HEAD~N`, a commit hash) instead of the newest (a pyn server only).
         #[arg(long)]
         revision: Option<String>,
-        /// Keep a partial local store of the history under `.pyn/local_only/store/` (a pyn server only; provisional).
-        #[arg(long)]
+        /// Keep local commits in a store under `.pyn/local_only/store/` (the default on a pyn server; accepted for scripts).
+        #[arg(long, conflicts_with = "no_local_store")]
         local_store: bool,
+        /// Commit straight to the server, as before local commits (a pyn server only).
+        #[arg(long)]
+        no_local_store: bool,
         #[command(flatten)]
         git: Box<git_home::CloneOptions>,
     },
@@ -130,16 +134,18 @@ enum Command {
     Tag(git_home::TagArgs),
     /// Save, list and restore local changes (a git repository only).
     Stash(git_home::StashArgs),
-    /// Drop unpublished local commits (a `--local-store` workspace), keeping their changes staged (--soft) or in the files
+    /// Convert a workspace made before local commits to one that keeps them (a pyn server only).
+    Migrate,
+    /// Drop unpublished local commits, keeping their changes staged (--soft) or in the files
     /// (default), or discarding them (--hard, asks for confirmation).
     Reset(local_reset::ResetArgs),
     /// List and edit remotes; a pyn server has one, `origin`, set by `pyn config`.
     Remote(git_home::RemoteArgs),
-    /// Download objects and refs from a git remote (a git repository only).
+    /// Download objects and refs from a git remote, or the server's new commits into the local store.
     Fetch(git_home::FetchArgs),
-    /// Fetch from a git remote and merge the result into the current branch (a git repository only).
+    /// Fetch, then merge the result into the current branch.
     Pull(git_home::PullArgs),
-    /// Upload commits and refs to a git remote (a git repository only).
+    /// Upload commits and refs to a git remote, or publish local commits to the pyn server.
     Push(git_home::PushArgs),
     /// List the references in a remote git repository (ssh or smart HTTP; works anywhere).
     LsRemote(ls_remote::LsRemoteArgs),
@@ -248,7 +254,8 @@ enum Command {
         #[arg(short, long)]
         force: bool,
     },
-    /// Commit the staged changes as one unit of work (or the named paths as they are); releases their locks.
+    /// Commit the staged changes as one unit of work (or the named paths as they are). On a pyn server the commit is local
+    /// until `pyn push` (a `--no-local-store` workspace publishes at once); publishing releases their locks.
     Commit {
         /// Commit only these paths, as they are on disk, instead of the staged changes.
         paths: Vec<String>,
@@ -856,6 +863,7 @@ fn clone_from_git(cli: &Cli, cwd: &std::path::Path) -> Result<Option<()>> {
         dir,
         revision,
         local_store,
+        no_local_store,
         git,
     } = &cli.command
     else {
@@ -880,8 +888,10 @@ fn clone_from_git(cli: &Cli, cwd: &std::path::Path) -> Result<Option<()>> {
     if revision.is_some() {
         usage_error("`--revision` applies to a pyn server, not a git remote");
     }
-    if *local_store {
-        usage_error("`--local-store` applies to a pyn server, not a git remote");
+    if *local_store || *no_local_store {
+        usage_error(
+            "`--local-store` and `--no-local-store` apply to a pyn server, not a git remote",
+        );
     }
     git_home::clone(source, dir.as_deref(), cwd, git, hint.as_deref())?;
     Ok(Some(()))
@@ -1318,6 +1328,7 @@ fn run(cli: Cli) -> Result<()> {
             dir,
             revision,
             local_store,
+            no_local_store,
             ..
         } => {
             let repo = repo_name.expect("clone names a repository");
@@ -1334,7 +1345,8 @@ fn run(cli: Cli) -> Result<()> {
             let commit = revision
                 .map(|r| snapshot::resolve(&backend, &r))
                 .transpose()?;
-            let local_store = local_store || yours.local_store_on();
+            let local_store =
+                local_store || (!no_local_store && yours.local_store.as_deref() != Some("false"));
             sync::clone_into(
                 &backend,
                 &target,
@@ -1373,6 +1385,7 @@ fn run(cli: Cli) -> Result<()> {
                 ),
             }
         }
+        Command::Migrate => migrate::run(&backend, in_workspace("migrate")?)?,
         Command::Reset(args) => {
             local_reset::reset(&backend, in_workspace("reset")?, args)?;
         }

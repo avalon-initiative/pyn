@@ -63,6 +63,24 @@ impl Api {
         ok(self.transport.send(call)?)
     }
 
+    /// Fails with an upgrade hint unless the server advertises support for local commits.
+    pub fn require_local_commits(&self) -> Result<()> {
+        let reply = self
+            .transport
+            .send(self.anonymous(Method::GET, "/v1/capabilities"))?;
+        let supported = reply.is_success()
+            && reply
+                .json::<api::ServerCapabilities>()
+                .is_ok_and(|c| c.local_commits);
+        if !supported {
+            bail!(
+                "this server is too old for local commits (it does not advertise them); upgrade it, \
+                 or use `--no-local-store` / `local_store = false` to commit straight to the server"
+            );
+        }
+        Ok(())
+    }
+
     /// Every file the server lists, following pages.
     pub fn list_files(&self) -> Result<Vec<api::FileEntry>> {
         let mut all = Vec::new();

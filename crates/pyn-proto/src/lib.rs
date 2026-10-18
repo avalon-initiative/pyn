@@ -1086,6 +1086,13 @@ pub struct AuditPage {
     pub next_before: Option<i64>,
 }
 
+/// What this server supports beyond the base API; a client checks it before it relies on a newer route.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ServerCapabilities {
+    /// The server accepts pushed commits and serves fetches (`/push`, `/fetch`), so a client may keep commits locally.
+    pub local_commits: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct RegistrationInfo {
     #[schema(value_type = RegistrationMode)]

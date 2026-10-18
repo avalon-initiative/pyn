@@ -75,7 +75,7 @@ files and trees leave deleted paths out; history and the commit's `revisions` li
 Decision #300 lets a client build commits itself and publish them. The core accepts them through `RepoService::push_commits` and
 one atomic store step, `MetadataStore::push_commits_on`, and the server offers them as `POST /v1/repos/{owner}/{name}/push`
 (below). The matching read side is `POST .../fetch` ([fetching](#the-fetch-route)). `pyn push`, `pyn fetch` and `pyn pull` use
-them in a workspace with `local_store` on ([from the command line](#fetch-pull-and-push-with-a-local-store)); everything here
+them in a workspace with local commits, the default ([from the command line](#fetch-pull-and-push-with-a-local-store)); everything here
 is provisional.
 
 ### The push route
@@ -88,6 +88,8 @@ commits need that the server may not have. Blobs are not in the body: they are u
 `{branch, head, revisions, stranded?, released_locks?}`: the branch's head after the push, the revisions the commits made, in commit order, and, when a policy commit in the push stranded shared versions, the same `stranded` list a direct policy commit reports; `released_locks` lists the live locks (path, owner, expiry) such a policy commit released because their paths became shared.
 
 The route is additive: `changesets` and `checkin` remain the direct route (decision #300), and no existing field changed.
+
+`GET /v1/capabilities` needs no credentials and answers `{local_commits: true}` on a server with these routes. A client checks it before it keeps commits locally (`pyn clone`, `pyn migrate`); a server without the route (404) or with `local_commits` false is too old, and the client refuses with a message to upgrade or opt out. The direct routes stay for the web app and for use without a workspace.
 
 Errors, as `{code, message}`: `not_fast_forward` (409), `lock_required` and `lock_held` (409), `stale_base` (409),
 `storage_limit_reached` (409), `push_invalid` (400, an id that does not hash, bytes that are not a git object, a missing tree, a merge of a commit the
@@ -207,8 +209,9 @@ have no new field.
 
 ### Fetch, pull and push with a local store
 
-With `local_store` on ([workspace](workspace.md#the-local-store-provisional)) the three commands use these routes (decision
-#300, slice #337); without it they are unchanged (`fetch` and `pull` run `pyn update`, `push` says there is nothing to push).
+In a workspace with local commits, the default ([workspace](workspace.md#the-local-store)), the three commands use these routes
+(decision #300); in a workspace cloned with `--no-local-store` they are unchanged (`fetch` and `pull` run `pyn update`, `push`
+says there is nothing to push).
 
 - `pyn fetch` sends the remote-tracking tip as the only have and stores the commits and trees of each page. Every commit and
   tree body is hashed and must equal the id it came with, and a commit's tree and parents must already be stored: on any

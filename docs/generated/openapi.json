@@ -814,6 +814,23 @@
         }
       }
     },
+    "/v1/capabilities": {
+      "get": {
+        "tags": [],
+        "operationId": "capabilities",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServerCapabilities"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/explore/repos": {
       "get": {
         "tags": [
@@ -9449,6 +9466,19 @@
           },
           "role": {
             "type": "string"
+          }
+        }
+      },
+      "ServerCapabilities": {
+        "type": "object",
+        "description": "What this server supports beyond the base API; a client checks it before it relies on a newer route.",
+        "required": [
+          "local_commits"
+        ],
+        "properties": {
+          "local_commits": {
+            "type": "boolean",
+            "description": "The server accepts pushed commits and serves fetches (`/push`, `/fetch`), so a client may keep commits locally."
           }
         }
       },

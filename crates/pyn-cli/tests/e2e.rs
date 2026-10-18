@@ -312,7 +312,12 @@ fn shared_files_go_through_add_and_commit() {
     server.ok(
         &server.dir("home"),
         "alice",
-        &["clone", &server.source(), ws.to_str().unwrap()],
+        &[
+            "clone",
+            "--no-local-store",
+            &server.source(),
+            ws.to_str().unwrap(),
+        ],
     );
 
     std::fs::write(ws.join("Source/a.cpp"), "int a = 1;").unwrap();
@@ -339,7 +344,12 @@ fn shared_files_go_through_add_and_commit() {
     server.ok(
         &server.dir("home2"),
         "alice",
-        &["clone", &server.source(), other.to_str().unwrap()],
+        &[
+            "clone",
+            "--no-local-store",
+            &server.source(),
+            other.to_str().unwrap(),
+        ],
     );
     assert_eq!(
         std::fs::read_to_string(other.join("Source/a.cpp")).unwrap(),

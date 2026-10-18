@@ -156,7 +156,7 @@ A merge is audited as `branch_merged`, and each new revision as a checkin.
 
 ## Merges pushed from a local store (provisional)
 
-With `local_store` on ([workspace](workspace.md#the-local-store-provisional)) the merge is made by the client, in `pyn pull`,
+In a workspace with local commits, the default ([workspace](workspace.md#the-local-store)) the merge is made by the client, in `pyn pull`,
 and published by `pyn push` as a merge commit that the server judges with the rules above: the descendant pointer is adopted,
 a diverged exclusive path needs a new revision under the pusher's live lease, and shared content is the pushed tree's. See
 [merge commits in a push](commits.md#merge-commits-in-a-push-provisional) for the accounting and the errors

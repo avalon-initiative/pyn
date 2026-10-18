@@ -11,7 +11,12 @@ fn clone(env: &Env, name: &str) -> PathBuf {
     env.ok(
         &env.dir("home"),
         "alice",
-        &["clone", &env.source(REPO), ws.to_str().unwrap()],
+        &[
+            "clone",
+            "--no-local-store",
+            &env.source(REPO),
+            ws.to_str().unwrap(),
+        ],
     );
     ws.canonicalize().unwrap()
 }

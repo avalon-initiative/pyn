@@ -203,26 +203,37 @@ absolute, or climbs above the workspace root, is refused. In a git repository li
 
 ## Settings
 
-`pyn config get|set|list` reads and writes settings (`pyn config init` runs the first-run prompt). For now there are three: `server`, `user` (the development
-identity) and `repo` (`owner/name`, set by `pyn clone`). `--repo` or `PYN_REPO` beats the workspace's `repo`, so one
+`pyn config get|set|list` reads and writes settings (`pyn config init` runs the first-run prompt). For now there are four: `server`, `user` (the development
+identity), `repo` (`owner/name`, set by `pyn clone`) and `local_store` (`true` or `false`, see [the local store](#the-local-store)). `--repo` or `PYN_REPO` beats the workspace's `repo`, so one
 workspace can still reach another repository for a single command. Outside a workspace, repository commands need one of them. `set` writes the workspace's file by default and your user file with `--global`; `get` shows the effective value,
 or one layer with `--local` or `--global`. A `PYN_SERVER` or `--server` always wins, and `PYN_DIR` points at a `.pyn`
 folder kept somewhere else.
 
-## The local store (provisional)
+## The local store
 
-Part of the move to local commits on a pyn server (decision #300, epic #313). By default a pyn server workspace has no
-object database: `pyn commit` goes straight to the server and nothing about history is kept on disk. Setting
-`local_store = true` gives the workspace a partial local store; a workspace without the setting behaves exactly as before
-and never gets a `store/` folder.
+On a pyn server a workspace keeps its commits locally (decision #300, epic #313): `pyn commit` records a commit in a
+partial local store and `pyn push` publishes it. A new clone has the store from the start. The `local_store` setting
+controls it:
 
-The setting is opt-in and lives in the workspace configuration:
-
-- `pyn clone --local-store <source>` turns it on for the new workspace;
-- `pyn clone` also turns it on when the user configuration has `local_store = true` (`pyn config set --global local_store true`);
+- `pyn clone <source>` turns it on for the new workspace (`--local-store` says the same and is accepted for scripts);
+- `pyn clone --no-local-store <source>` opts out: the workspace has no store, `pyn commit` goes straight to the server and
+  `pyn push` says there is nothing to push, as before local commits existed;
+- `pyn config set --global local_store false` makes `pyn clone` opt out unless `--local-store` is given;
 - `pyn config set local_store true` turns it on in an existing workspace, and the store is filled by the next `pyn update`
-  (`pyn fetch` and `pyn pull` then fill it from the server's commits instead, see below);
+  (`pyn fetch` and `pyn pull` then fill it from the server's commits instead, see below); `pyn migrate` is the safe way;
 - `pyn config set local_store false` stops further updates of the store; the folder stays until you delete it.
+
+A server too old for local commits is detected from `GET /v1/capabilities` (`local_commits`); a clone that wants the store
+and `pyn migrate` refuse against it with a message to upgrade the server or opt out. The web app and workspaceless use keep
+the direct routes (`POST .../changeset` and `.../files/{path}`), which the server still serves.
+
+### Migrating a workspace
+
+A workspace made before local commits has no `local_store` setting. `pyn migrate` turns it on and builds the store
+(history, and the blobs of the checked-out files). It changes nothing and fails with the reasons listed when the workspace
+has staged changes, files changed in the working tree, a merge in progress, or is not up to date with the server (run
+`pyn update` first). A workspace that already keeps local commits prints that and does nothing, so the command can be
+repeated. If building the store fails the setting is put back.
 
 The store is `.pyn/local_only/store/`, a bare repository in git's on-disk format using the SHA-256 object format that a
 pyn server uses, so its ids are the server's own ids:
@@ -252,7 +263,7 @@ server's side.
 
 ### Local commits (provisional)
 
-With the setting on, `add`, `commit`, `status` and `branch` work against the store (decision #300, slice #336):
+With the store on, `add`, `commit`, `status` and `branch` work against the store (decision #300, slice #336):
 
 - `pyn add` stages as before; an exclusive path still needs your lock to be staged.
 - `pyn commit` records one commit on the local branch in `store/` and publishes nothing: the commit is git-encoded with
@@ -281,7 +292,7 @@ With the setting on, `add`, `commit`, `status` and `branch` work against the sto
 - `pyn lock <path>` for a path a local commit changed takes the server's head revision as the base, so the lock the pull hint
   asks for works after another person pushed a newer revision of it; `pyn pull` then keeps your version.
 
-Unchanged by the setting: `pyn commit <path> --file ... [--base ...]` and `pyn merge` still publish straight to the
+Unchanged by the store: `pyn commit <path> --file ... [--base ...]` and `pyn merge` still publish straight to the
 server, and the server stays the only authority over commits, locks and policy. Only the current branch is stored.
 
 ### Fetch, pull and push (provisional)

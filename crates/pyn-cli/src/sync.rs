@@ -95,6 +95,9 @@ pub fn clone_into(
     if root.exists() && std::fs::read_dir(root)?.next().is_some() {
         bail!("{} already exists and is not empty", root.display());
     }
+    if local_store {
+        backend.pyn_server("clone")?.require_local_commits()?;
+    }
     let entries = entries_at(backend, commit)?;
     for entry in &entries {
         pyn_gitwork::check_path(entry.path.as_bytes())?;

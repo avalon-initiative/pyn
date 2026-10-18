@@ -133,7 +133,7 @@ fn staging_flow_with_an_exclusive_path_refused_then_accepted_with_a_lock() {
     let server = Server::with_game();
     server.seed("Content/m.umap", "map one");
     server.seed("Source/a.cpp", "one");
-    let ws = clone_ws(&server, "ws", &[]);
+    let ws = clone_ws(&server, "ws", &["--no-local-store"]);
 
     write(&ws, "Content/m.umap", "map two");
     write(&ws, "Source/a.cpp", "two");
@@ -181,7 +181,7 @@ fn staging_flow_with_an_exclusive_path_refused_then_accepted_with_a_lock() {
             .contains("Content/m.umap"),
         "commit released the lock"
     );
-    let other = clone_ws(&server, "other", &[]);
+    let other = clone_ws(&server, "other", &["--no-local-store"]);
     assert_eq!(read(&other, "Content/m.umap"), "map two");
     assert_eq!(read(&other, "Source/a.cpp"), "two");
     assert_eq!(read(&other, "Source/new.cpp"), "new");

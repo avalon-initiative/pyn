@@ -63,7 +63,8 @@ The commands named in decision #218.
 | `git clone -b`, `--bare`, `-o`, `-n`, `--single-branch`, `--no-tags`, `-c`, `-q`, `--progress` | `pyn clone ...` | git URL: supported | Git's behaviour. On a pyn server clone they are a usage error (`129`): that clone takes everything the server has, on its default branch. |
 | `git clone --depth`, `--shallow-*`, `--filter`, `--mirror`, `--recurse-submodules`, `--sparse`, `--reference`, `--separate-git-dir`, `--template`, `--local`, `--no-hardlinks` | none | unsupported | Usage error (`129`) naming the flag: shallow, partial, mirror and submodule clones are not built, and a local-path source is refused by the transport. |
 | `pyn clone --revision <commit>` | | pyn only | Clone as of a commit (a hash, `HEAD~N`). Git does this with `clone` then `checkout`. |
-| `pyn clone --local-store` | | pyn only (provisional) | Also keeps a partial local store of the history under `.pyn/local_only/store/`; see [the local store](workspace.md#the-local-store-provisional). A usage error for a git URL. |
+| `pyn clone --no-local-store` | | pyn only | A pyn server clone keeps a partial local store of the history under `.pyn/local_only/store/` and commits locally by default (`--local-store` says the same); this opts out and commits straight to the server. See [the local store](workspace.md#the-local-store). A usage error for a git URL. |
+| `pyn migrate` | | pyn only | Converts a workspace made before local commits; see [migrating](workspace.md#migrating-a-workspace). |
 | `git status` | `pyn status` | different | Header `On branch <name>`, then a table with mode, revision, staged, state, lock and path plus a summary line, because mode and lock state have no place in git's layout. `STAGED` is `added` or `modified` for a staged path, and `STATE` then describes what changed after it was staged. On a git home the table is `STAGED`, `UNSTAGED`, `PATH` with git's states. |
 | `git status -s`, `--short`, `--porcelain`, `-b`, `<pathspec>...` | none | unsupported | Usage error (`129`). A stable machine format is not scheduled. `pyn status --revision` fails on a git home. |
 | `pyn status --revision <commit>` | | pyn only | Compare the workspace with a past commit (`behind` / `ahead`). |
@@ -94,9 +95,9 @@ The commands named in decision #218.
 | `git restore -p`, `--ours`, `--theirs`, `--merge` | none | unsupported | Usage error (`129`). On a git home `pyn checkout --ours -- <path>` and `--theirs` take a side of an unmerged path. |
 | `git branch`, `git switch`, `git checkout` | `pyn branch`, `pyn switch`, `pyn checkout` | supported | See [branching and merging](#branching-and-merging). On a git home they work on `.git` as git does, see [Branches, switching and the work tree](#branches-switching-and-the-work-tree). |
 | `git merge` | `pyn merge` | supported | See [branching and merging](#branching-and-merging). On a git home it merges as git does, see [Merging](#merging). |
-| `git fetch` | `pyn fetch` on a git home | git home only | See [Fetch on a git home](#fetch-on-a-git-home). On a pyn server it runs `pyn update` (or, with `local_store` on, fetches into the local store), see [Remotes on a pyn server](#remotes-on-a-pyn-server). |
-| `git pull` | `pyn pull` on a git home | git home only | Fetch, then merge through `pyn merge`; see [Pull on a git home](#pull-on-a-git-home). On a pyn server it runs `pyn update` (or, with `local_store` on, fetches into the local store), see [Remotes on a pyn server](#remotes-on-a-pyn-server). |
-| `git push` | `pyn push` on a git home | git home only | See [Push on a git home](#push-on-a-git-home). On a pyn server it prints that there is nothing to push, because a commit goes straight to the server (with `local_store` on it publishes the local commits); see [Remotes on a pyn server](#remotes-on-a-pyn-server). |
+| `git fetch` | `pyn fetch` on a git home | git home only | See [Fetch on a git home](#fetch-on-a-git-home). On a pyn server it fetches into the local store (a workspace cloned with `--no-local-store` runs `pyn update`), see [Remotes on a pyn server](#remotes-on-a-pyn-server). |
+| `git pull` | `pyn pull` on a git home | git home only | Fetch, then merge through `pyn merge`; see [Pull on a git home](#pull-on-a-git-home). On a pyn server it fetches into the local store and merges (a workspace cloned with `--no-local-store` runs `pyn update`), see [Remotes on a pyn server](#remotes-on-a-pyn-server). |
+| `git push` | `pyn push` on a git home | git home only | See [Push on a git home](#push-on-a-git-home). On a pyn server it publishes the local commits (a workspace cloned with `--no-local-store` prints that there is nothing to push, because a commit goes straight to the server); see [Remotes on a pyn server](#remotes-on-a-pyn-server). |
 | `git remote` | `pyn remote` | git home; pyn server partly | On a git home it lists and edits the remotes in `.git/config`, see [Remotes](#remotes). On a pyn server `pyn remote` and `pyn remote -v` show the one remote, `origin`: the server and repository set by `--server` and `--repo` or `pyn config set server` and `repo`; the editing subcommands say so and exit `1`. |
 | `git tag [-a] [-m <msg>] [-f] [<name> [<commit>]]`, `-d`, `-l` | `pyn tag ...` on a git home | git home only | See [Tags](#tags). On a pyn server it prints the git-command message (a server's commits are named by hash and have no tags yet, #223). |
 | `git stash [push] [-u] [-m <msg>]`, `list`, `pop`, `apply`, `drop`, `clear` | `pyn stash ...` on a git home | git home only | See [Stashing](#stashing). On a pyn server it prints the git-command message. |
@@ -150,14 +151,13 @@ revisions with a pointer per branch (decision #299).
 
 ### Remotes on a pyn server
 
-A pyn server home has exactly one remote, `origin`: the server and repository it is set to use. This is interim behaviour
-until local commits exist (decision #300, built in #313).
+A pyn server home has exactly one remote, `origin`: the server and repository it is set to use.
 
 | Command | Behaviour |
 | --- | --- |
 | `pyn remote -v` | `origin`, a tab and `<server>/<owner>/<name> (fetch)`, then the same with `(push)`. |
-| `pyn fetch`, `pyn pull` | Run `pyn update`; with `local_store` on they fetch into the local store and `pull` then fast-forwards, makes a merge commit when the histories diverged as git does, or with `--rebase` replays local commits ([commits](commits.md#fetch-pull-and-push-with-a-local-store)). With any argument or option they are usage errors (`129`), except `pull --rebase` and `--no-rebase` with `local_store` on. |
-| `pyn push` | Prints that there is nothing to push, because commits go straight to the server; exits `0`. With `local_store` on it publishes the local commits, merge commits included, and exits `1` on a refusal. Arguments are usage errors. |
+| `pyn fetch`, `pyn pull` | Fetch into the local store and `pull` then fast-forwards, makes a merge commit when the histories diverged as git does, or with `--rebase` replays local commits ([commits](commits.md#fetch-pull-and-push-with-a-local-store)). With any argument or option they are usage errors (`129`), except `pull --rebase` and `--no-rebase`. A workspace cloned with `--no-local-store` runs `pyn update` instead and takes no arguments. |
+| `pyn push` | Publishes the local commits, merge commits included, and exits `1` on a refusal. Arguments are usage errors. A workspace cloned with `--no-local-store` prints that there is nothing to push, because commits go straight to the server; exits `0`. |
 | `pyn branch -r`, `-a` | `-r` lists the server's branches as `origin/<branch>`; `-a` lists the local ones, then `remotes/origin/<branch>`. `-v` works with both. Only listing is allowed with them. |
 
 ### Remotes on a git home
@@ -626,7 +626,7 @@ schedules them.
 
 | Git | Reason |
 | --- | --- |
-| `git reset`, `git clean` | `pyn reset` exists for unpublished commits of a `local_store` workspace only ([workspace](workspace.md#the-local-store-provisional)); otherwise there is no local history to reset: `pyn restore --staged`, `pyn restore` and `pyn update` cover the daily cases. `git clean` is not planned. |
+| `git reset`, `git clean` | `pyn reset` exists for unpublished local commits only ([workspace](workspace.md#the-local-store)); otherwise there is no local history to reset: `pyn restore --staged`, `pyn restore` and `pyn update` cover the daily cases. `git clean` is not planned. |
 | `git rm`, `git mv` | Not a CLI verb yet; no issue schedules removing or renaming paths from the CLI. |
 | `git rebase`, `git cherry-pick`, `git revert` | History is append-only on the server. |
 | `git blame`, `git grep` | Not scheduled. |

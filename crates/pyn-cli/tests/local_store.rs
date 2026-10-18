@@ -46,10 +46,10 @@ fn seed_history(env: &Env) {
 }
 
 #[test]
-fn a_clone_without_the_option_has_no_store() {
+fn a_clone_that_opts_out_has_no_store() {
     let env = start();
     seed_history(&env);
-    let ws = clone_with(&env, "ws", &[]);
+    let ws = clone_with(&env, "ws", &["--no-local-store"]);
     assert!(!store(&ws).exists());
     let config = std::fs::read_to_string(ws.join(".pyn/local_only/config.toml")).unwrap();
     assert!(!config.contains("local_store"), "{config}");
@@ -136,7 +136,7 @@ fn update_brings_new_commits_into_the_store() {
 fn the_setting_turns_the_store_on_for_an_existing_workspace() {
     let env = start();
     seed_history(&env);
-    let ws = clone_with(&env, "ws", &[]);
+    let ws = clone_with(&env, "ws", &["--no-local-store"]);
     env.ok(&ws, "alice", &["config", "set", "local_store", "true"]);
     assert_eq!(
         env.ok(&ws, "alice", &["config", "get", "local_store"]),
@@ -150,16 +150,28 @@ fn the_setting_turns_the_store_on_for_an_existing_workspace() {
 }
 
 #[test]
-fn the_user_setting_applies_to_new_clones() {
+fn the_user_setting_false_opts_new_clones_out() {
     let env = start();
     seed_history(&env);
     env.ok(
         &env.dir("home"),
         "alice",
-        &["config", "set", "--global", "local_store", "true"],
+        &["config", "set", "--global", "local_store", "false"],
     );
     let ws = clone_with(&env, "ws", &[]);
+    assert!(!store(&ws).exists());
+    let forced = clone_with(&env, "forced", &["--local-store"]);
+    assert!(store(&forced).join("HEAD").is_file());
+}
+
+#[test]
+fn a_clone_is_local_by_default() {
+    let env = start();
+    seed_history(&env);
+    let ws = clone_with(&env, "ws", &[]);
     assert!(store(&ws).join("HEAD").is_file());
+    let config = std::fs::read_to_string(ws.join(".pyn/local_only/config.toml")).unwrap();
+    assert!(config.contains("local_store = \"true\""), "{config}");
 }
 
 #[test]
@@ -172,4 +184,10 @@ fn a_git_clone_refuses_the_option() {
     );
     assert!(!err.status.success());
     assert!(String::from_utf8_lossy(&err.stderr).contains("--local-store"));
+    let err = env.run(
+        &env.dir("home"),
+        "alice",
+        &["clone", "--no-local-store", "ssh://host/x.git"],
+    );
+    assert!(!err.status.success());
 }

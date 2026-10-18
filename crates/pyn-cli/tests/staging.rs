@@ -15,7 +15,12 @@ fn clone(env: &common::Env) -> PathBuf {
     env.ok(
         &env.dir("home"),
         "alice",
-        &["clone", &env.source(REPO), ws.to_str().unwrap()],
+        &[
+            "clone",
+            "--no-local-store",
+            &env.source(REPO),
+            ws.to_str().unwrap(),
+        ],
     );
     ws.canonicalize().unwrap()
 }
@@ -392,7 +397,12 @@ fn update_removes_a_file_the_server_deleted_unless_it_has_local_changes() {
     env.ok(
         &env.dir("home"),
         "bob",
-        &["clone", &env.source(REPO), other.to_str().unwrap()],
+        &[
+            "clone",
+            "--no-local-store",
+            &env.source(REPO),
+            other.to_str().unwrap(),
+        ],
     );
     let other = other.canonicalize().unwrap();
     for path in ["Source/a.cpp", "Source/b.cpp"] {
@@ -471,7 +481,12 @@ fn a_symlink_and_an_executable_bit_are_staged_with_their_mode() {
     env.ok(
         &env.dir("home"),
         "alice",
-        &["clone", &env.source(REPO), other.to_str().unwrap()],
+        &[
+            "clone",
+            "--no-local-store",
+            &env.source(REPO),
+            other.to_str().unwrap(),
+        ],
     );
     let other = other.canonicalize().unwrap();
     assert_eq!(

@@ -4787,3 +4787,18 @@ async fn assembling_needs_chunks_uploaded_to_the_same_repository() {
     assert_eq!(assemble("other").await.status(), StatusCode::OK);
     assert_eq!(assemble("game").await.status(), StatusCode::OK);
 }
+
+#[tokio::test]
+async fn capabilities_say_the_server_takes_pushed_commits() {
+    let app = router(state_with(false, RegistrationMode::Open).await);
+    let r = app
+        .oneshot(
+            Request::get("/v1/capabilities")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    assert!(body_json::<api::ServerCapabilities>(r).await.local_commits);
+}
