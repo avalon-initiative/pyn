@@ -221,7 +221,7 @@ fn commit_id(c: &api::Commit) -> Option<String> {
     let git = pyn_object::Commit {
         tree,
         parents,
-        author: signature(&c.author, c.created_at),
+        author: signature(&c.author, c.authored_at.unwrap_or(c.created_at)),
         committer: signature(&c.committer, c.created_at),
         extra_headers: c
             .signature

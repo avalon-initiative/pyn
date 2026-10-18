@@ -226,6 +226,7 @@ fn a_non_fast_forward_is_replayed_by_pull_rebase_and_pushed() {
     git(&ws, &["fsck", "--strict"]);
 
     env.ok(&ws, "alice", &["push"]);
+    assert_eq!(env.ok(&ws, "alice", &["verify"]), "");
     assert_eq!(
         git(&ws, &["rev-parse", "main"]),
         git(&ws, &["rev-parse", "origin/main"])
