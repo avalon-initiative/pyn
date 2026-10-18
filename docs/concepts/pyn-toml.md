@@ -63,9 +63,10 @@ Paths are repository-relative with `/` separators: no leading `/` or `./`, no `.
 ### Path rules for new writes
 
 A path written by a check-in, changeset, push or lock is at most 4096 bytes, each segment at most 255 bytes, and holds no
-control characters (C0, DEL or C1). Two names are reserved: a segment equal to `.git`, compared ASCII case-insensitively,
-at any depth, and the `.pyn/local_only` prefix (also case-insensitive), which belongs to a workspace's machine-local state.
-`.pyn/pyn.toml` and `.pyn/ignore` stay valid. A refused path is `400 invalid_path`. Paths already in a repository's history
+control characters (C0, DEL or C1). Two names are reserved: a segment that is `.git` or its Windows short name `git~N`, compared case-insensitively
+and after dropping the characters NTFS and HFS+ ignore (trailing dots and spaces, a `:stream` suffix), at any depth,
+and the `.pyn/local_only` prefix (also case-insensitive), which belongs to a workspace's machine-local state.
+`.pyn/pyn.toml` and `.pyn/ignore` stay valid. A refused path is `400 invalid_path`; a reserved segment is named in the message. Paths already in a repository's history
 are still readable, listable and unlockable whatever their name.
 
 ## Precedence (provisional)

@@ -219,7 +219,7 @@ fn build_with(
         files
             .iter()
             .map(|(p, id)| TreeChange {
-                path: RepoPath::new(*p).unwrap(),
+                path: RepoPath::from_stored(*p).unwrap(),
                 mode: FileMode::Regular,
                 id: *id,
                 removed: false,
@@ -459,6 +459,27 @@ async fn a_push_must_extend_the_branch_and_a_refusal_leaves_nothing() {
 }
 
 const A_EXCLUSIVE: &str = "[meta]\ndefault = \"shared\"\n[exclusive]\npaths = [\"Source/a.txt\"]\n";
+
+#[tokio::test]
+async fn a_push_with_a_git_short_name_component_is_refused_and_leaves_nothing() {
+    let w = world().await;
+    let a = upload(&w, "alpha").await;
+    for path in ["Source/GIT~1/a.txt", "git~12/a.txt", "Source/.GIT/a.txt"] {
+        let bad = build(&BTreeMap::from([(path, a)]), None, "bad", 1);
+        let r = push(&w, &w.bob, push_body(&[&bad])).await;
+        assert_eq!(
+            (r.status, r.code().as_str()),
+            (StatusCode::BAD_REQUEST, "invalid_path"),
+            "{path}"
+        );
+    }
+    assert_eq!(commit_count(&w).await, 0);
+    let ok = build(&BTreeMap::from([("Source/git~x/a.txt", a)]), None, "ok", 2);
+    assert_eq!(
+        push(&w, &w.bob, push_body(&[&ok])).await.status,
+        StatusCode::OK
+    );
+}
 
 async fn checkout(w: &World, token: &str, path: &str, base: serde_json::Value) -> StatusCode {
     send(

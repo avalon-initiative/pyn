@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{PynError, Result};
 use crate::rules::Mode;
-use pyn_object::{FileMode, ObjectId};
+use pyn_object::{FileMode, ObjectId, is_git_dir_name};
 
 macro_rules! string_id {
     ($(#[$m:meta])* $name:ident) => {
@@ -66,12 +66,18 @@ impl RepoPath {
             && s.is_char_boundary(LOCAL_ONLY_PREFIX.len())
             && s[..LOCAL_ONLY_PREFIX.len()].eq_ignore_ascii_case(LOCAL_ONLY_PREFIX)
             && matches!(s.as_bytes().get(LOCAL_ONLY_PREFIX.len()), None | Some(b'/'));
+        if structurally_valid(&s)
+            && let Some(seg) = s.split('/').find(|seg| is_git_dir_name(seg.as_bytes()))
+        {
+            return Err(PynError::ReservedPathComponent {
+                component: seg.to_string(),
+                path: s,
+            });
+        }
         let bad = !structurally_valid(&s)
             || s.len() > MAX_PATH_BYTES
             || s.chars().any(char::is_control)
-            || s.split('/').any(|seg| {
-                seg.len() > MAX_PATH_COMPONENT_BYTES || seg.eq_ignore_ascii_case(".git")
-            })
+            || s.split('/').any(|seg| seg.len() > MAX_PATH_COMPONENT_BYTES)
             || local_only;
         if bad {
             Err(PynError::InvalidPath(s))
@@ -329,6 +335,9 @@ mod tests {
             ".GIT/config",
             "a/.Git/b",
             "a/.git",
+            "GIT~1",
+            "a/git~12/b",
+            "dir/.git. ",
             ".pyn/local_only",
             ".pyn/LOCAL_ONLY/state",
             "a\u{1}b",
@@ -347,10 +356,20 @@ mod tests {
             ".gitignore",
             ".github/ci.yml",
             "a.git/b",
+            "git~x",
+            "git~",
+            "digit~1",
         ] {
             assert!(RepoPath::new(ok).is_ok(), "{ok:?} should be accepted");
         }
         assert!(RepoPath::new("a".repeat(255)).is_ok());
+    }
+
+    #[test]
+    fn a_short_name_error_names_the_component() {
+        let err = RepoPath::new("docs/GIT~1/x").unwrap_err();
+        assert_eq!(err.code(), "invalid_path");
+        assert!(err.to_string().contains("\"GIT~1\""), "{err}");
     }
 
     #[test]

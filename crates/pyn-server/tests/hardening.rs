@@ -66,6 +66,10 @@ impl Reply {
             .unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&self.body)))
     }
 
+    fn message(&self) -> String {
+        self.json::<api::ErrorBody>().message
+    }
+
     fn is(&self, status: StatusCode, code: &str) -> bool {
         self.status == status && self.json::<api::ErrorBody>().code == code
     }
@@ -337,6 +341,8 @@ async fn new_writes_refuse_reserved_and_oversized_paths_and_text() {
     for path in [
         ".git/config",
         "a/.GIT/x",
+        "GIT~1/config",
+        "a/git~12",
         ".pyn/local_only/state",
         "a\u{1}b",
         &long,
@@ -350,6 +356,32 @@ async fn new_writes_refuse_reserved_and_oversized_paths_and_text() {
         )
         .await;
         assert!(r.is(StatusCode::BAD_REQUEST, "invalid_path"), "{path:?}");
+    }
+    let r = send(
+        &app,
+        &alice,
+        "POST",
+        "/v1/repos/alice/game/checkin",
+        Some(json!({"path": "docs/GIT~1/x", "content": blob, "message": "m"})),
+    )
+    .await;
+    assert!(r.message().contains("\"GIT~1\""), "{}", r.message());
+    for (route, body) in [
+        ("checkout", json!({"path": "GIT~1/x"})),
+        (
+            "changesets",
+            json!({"message": "m", "entries": [{"path": "a/git~1", "content": blob}]}),
+        ),
+    ] {
+        let r = send(
+            &app,
+            &alice,
+            "POST",
+            &format!("/v1/repos/alice/game/{route}"),
+            Some(body),
+        )
+        .await;
+        assert!(r.is(StatusCode::BAD_REQUEST, "invalid_path"), "{route}");
     }
     let r = send(
         &app,

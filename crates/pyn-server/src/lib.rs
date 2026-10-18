@@ -647,6 +647,7 @@ impl IntoResponse for ApiError {
             | PynError::CommitNotFound(_)
             | PynError::BranchNotFound(_) => StatusCode::NOT_FOUND,
             PynError::InvalidPath(_)
+            | PynError::ReservedPathComponent { .. }
             | PynError::InvalidRules(_)
             | PynError::InvalidRequest(_)
             | PynError::PushInvalid(_)

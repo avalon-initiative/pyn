@@ -199,8 +199,7 @@ fn update_refuses_the_whole_plan_when_one_path_is_unsafe() {
 fn the_server_refuses_to_store_the_paths_the_client_refuses_to_write() {
     let env = start();
     for bad in UNSAFE {
-        let expected = bad != "docs/git~1/x";
-        assert_eq!(server_refuses(&env, bad), expected, "{bad}");
+        assert!(server_refuses(&env, bad), "{bad}");
     }
 }
 

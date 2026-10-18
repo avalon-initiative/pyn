@@ -3,6 +3,8 @@
 
 use std::fmt;
 
+use pyn_object::{fold_name, names_dir};
+
 /// Most `/`-separated components a path may have.
 pub const MAX_DEPTH: usize = 1024;
 /// Most bytes a path may have.
@@ -119,8 +121,9 @@ pub fn check_path_as(path: &[u8], windows: bool) -> Result<(), UnsafePath> {
         if i == 0 && has_drive(part) {
             return bad(Reason::DrivePrefix);
         }
-        let folded = fold(part);
-        if names(&folded, "git") || (i == 0 && names(&folded, "pyn") && !PYN_SHARED.contains(&path))
+        let folded = fold_name(part);
+        if names_dir(&folded, "git")
+            || (i == 0 && names_dir(&folded, "pyn") && !PYN_SHARED.contains(&path))
         {
             return bad(Reason::Reserved);
         }
@@ -168,31 +171,6 @@ fn has_control(bytes: &[u8]) -> bool {
 
 fn has_drive(part: &[u8]) -> bool {
     part.len() >= 2 && part[0].is_ascii_alphabetic() && part[1] == b':'
-}
-
-/// Code points that HFS+ ignores when comparing names.
-fn hfs_ignorable(c: char) -> bool {
-    matches!(c, '\u{200c}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{206a}'..='\u{206f}' | '\u{feff}')
-}
-
-/// A name as case-insensitive, HFS+ and NTFS file systems would equate it: ignorables, a stream suffix and trailing
-/// dots and spaces dropped.
-fn fold(part: &[u8]) -> String {
-    let text = String::from_utf8_lossy(part);
-    let mut name: String = text.chars().filter(|c| !hfs_ignorable(*c)).collect();
-    if let Some(at) = name.find(':') {
-        name.truncate(at);
-    }
-    name.trim_end_matches(['.', ' ']).to_ascii_lowercase()
-}
-
-/// Whether `folded` is `.base` or its NTFS short name `base~N`.
-fn names(folded: &str, base: &str) -> bool {
-    folded.strip_prefix('.') == Some(base)
-        || folded
-            .strip_prefix(base)
-            .and_then(|rest| rest.strip_prefix('~'))
-            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
 
 fn windows_unstorable(part: &[u8]) -> bool {

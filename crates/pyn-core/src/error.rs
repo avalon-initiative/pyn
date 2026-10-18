@@ -9,6 +9,10 @@ pub type Result<T, E = PynError> = std::result::Result<T, E>;
 pub enum PynError {
     #[error("invalid path: {0:?}")]
     InvalidPath(String),
+    #[error(
+        "invalid path {path:?}: the component {component:?} is reserved (git metadata or its Windows short name)"
+    )]
+    ReservedPathComponent { path: String, component: String },
     #[error("invalid rules: {0}")]
     InvalidRules(String),
     #[error(
@@ -236,7 +240,7 @@ impl PynError {
     /// Stable machine-readable code sent to API clients.
     pub fn code(&self) -> &'static str {
         match self {
-            Self::InvalidPath(_) => "invalid_path",
+            Self::InvalidPath(_) | Self::ReservedPathComponent { .. } => "invalid_path",
             Self::InvalidRules(_) => "invalid_rules",
             Self::LockHeld { .. } => "lock_held",
             Self::LockLimitReached { .. } => "lock_limit_reached",

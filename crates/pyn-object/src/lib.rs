@@ -5,11 +5,13 @@
 mod commit;
 mod hasher;
 mod id;
+mod name;
 mod tree;
 
 pub use commit::{Commit, Raw, Signature, Tag};
 pub use hasher::ObjectHasher;
 pub use id::{Algorithm, Kind, ObjectId, hash_object};
+pub use name::{fold_name, is_git_dir_name, names_dir};
 pub use tree::{FileMode, TreeEntry, encode_tree, parse_tree};
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
