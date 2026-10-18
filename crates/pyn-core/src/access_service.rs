@@ -493,6 +493,8 @@ pub struct AccessConfig {
     pub limits: RateLimits,
     /// Where the web app lives; verification links point at `{public_url}/verify-email`.
     pub public_url: String,
+    /// Origins besides `public_url` that may send sign-in and cookie-authenticated writes, such as a dev server.
+    pub allowed_origins: Vec<String>,
     /// How long a verification link works, and how long an unverified account keeps its name.
     pub verification_ttl: Duration,
     /// Who may create organizations.
@@ -535,6 +537,7 @@ impl Default for AccessConfig {
             require_approval: false,
             limits: RateLimits::default(),
             public_url: "http://localhost:5173".into(),
+            allowed_origins: Vec::new(),
             verification_ttl: Duration::hours(24),
             org_creation: OrgCreation::Anyone,
             default_limits: Limits::default(),
@@ -756,6 +759,11 @@ impl AccessService {
             .settings()
             .and_then(|s| s.public_url)
             .unwrap_or_else(|| self.config.public_url.clone())
+    }
+
+    /// The configured extra origins allowed to send browser writes.
+    pub fn allowed_origins(&self) -> &[String] {
+        &self.config.allowed_origins
     }
 
     pub fn requires_email_verification(&self) -> bool {

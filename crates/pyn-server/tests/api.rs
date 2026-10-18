@@ -31,6 +31,15 @@ async fn state_with(dev: bool, mode: RegistrationMode) -> AppState {
 }
 
 async fn state_at(dev: bool, mode: RegistrationMode, public_url: Option<&str>) -> AppState {
+    state_full(dev, mode, public_url, Vec::new()).await
+}
+
+async fn state_full(
+    dev: bool,
+    mode: RegistrationMode,
+    public_url: Option<&str>,
+    allowed_origins: Vec<String>,
+) -> AppState {
     let clock = Arc::new(SystemClock);
     let objects = Arc::new(pyn_core::ChunkedStore::new(Arc::new(
         MemoryObjectStore::new(),
@@ -54,6 +63,7 @@ async fn state_at(dev: bool, mode: RegistrationMode, public_url: Option<&str>) -
                 require_email_verification: false,
                 public_url: public_url
                     .map_or_else(|| AccessConfig::default().public_url, Into::into),
+                allowed_origins,
                 ..AccessConfig::default()
             })
             .with_registry(meta.clone())
@@ -1458,7 +1468,8 @@ fn with_cookie(
     let mut builder = Request::builder()
         .method(method)
         .uri(uri)
-        .header("cookie", format!("{}={cookie}", api::SESSION_COOKIE));
+        .header("cookie", format!("{}={cookie}", api::SESSION_COOKIE))
+        .header("origin", "http://localhost:5173");
     if let Some(csrf) = csrf {
         builder = builder.header(api::CSRF_HEADER, csrf);
     }
@@ -4435,6 +4446,179 @@ async fn the_dev_header_skips_the_csrf_check_only_when_dev_auth_is_on() {
     req.headers_mut()
         .insert(api::DEV_USER_HEADER, "alice".parse().unwrap());
     assert_ne!(status(&on, req).await, StatusCode::FORBIDDEN);
+}
+
+async fn cookie_of(app: &axum::Router) -> (String, String) {
+    registered_alice(app).await;
+    let (set, csrf, _) = web_sign_in(app, None).await;
+    let cookie = set
+        .split(';')
+        .next()
+        .unwrap()
+        .strip_prefix("pyn_session=")
+        .unwrap()
+        .to_string();
+    (cookie, csrf)
+}
+
+async fn status_and_code(app: &axum::Router, req: Request<Body>) -> (StatusCode, String) {
+    let res = app.clone().oneshot(req).await.unwrap();
+    let status = res.status();
+    let err: api::ErrorBody = body_json(res).await;
+    (status, err.code)
+}
+
+fn sign_in_with(origin: Option<(&str, &str)>) -> Request<Body> {
+    let mut req = anon(
+        "POST",
+        "/v1/session",
+        serde_json::json!({"username": "alice", "password": PASSWORD}),
+    );
+    if let Some((name, value)) = origin {
+        req.headers_mut().insert(
+            axum::http::HeaderName::from_bytes(name.as_bytes()).unwrap(),
+            value.parse().unwrap(),
+        );
+    }
+    req
+}
+
+#[tokio::test]
+async fn a_cookie_write_needs_an_allowed_origin() {
+    let app = router(state_with(false, RegistrationMode::Open).await);
+    let (cookie, csrf) = cookie_of(&app).await;
+    let pw = || {
+        Some(
+            serde_json::json!({"current_password": PASSWORD, "new_password": "another-password-1"}),
+        )
+    };
+    let write = |origin: Option<(&str, &str)>| {
+        let mut req = with_cookie("PUT", "/v1/me/password", &cookie, Some(&csrf), pw());
+        req.headers_mut().remove("origin");
+        if let Some((name, value)) = origin {
+            req.headers_mut().insert(
+                axum::http::HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                value.parse().unwrap(),
+            );
+        }
+        req
+    };
+    for foreign in [
+        Some(("origin", "https://evil.example")),
+        Some(("origin", "http://localhost:5174")),
+        Some(("origin", "null")),
+        Some(("referer", "https://evil.example/page")),
+        None,
+    ] {
+        let (status, code) = status_and_code(&app, write(foreign)).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{foreign:?}");
+        assert_eq!(code, "origin_not_allowed", "{foreign:?}");
+    }
+    let same_origin = [
+        ("origin", "http://localhost:5173"),
+        ("origin", "HTTP://LOCALHOST:5173"),
+        ("referer", "http://localhost:5173/settings?x=1"),
+    ];
+    for ok in same_origin {
+        assert_ne!(
+            status(&app, write(Some(ok))).await,
+            StatusCode::FORBIDDEN,
+            "{ok:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_origin_check_comes_before_the_csrf_check_and_spares_reads() {
+    let app = router(state_with(false, RegistrationMode::Open).await);
+    let (cookie, _) = cookie_of(&app).await;
+    let mut req = with_cookie("POST", "/v1/keys", &cookie, None, None);
+    req.headers_mut()
+        .insert("origin", "https://evil.example".parse().unwrap());
+    assert_eq!(status_and_code(&app, req).await.1, "origin_not_allowed");
+    let mut req = with_cookie("GET", "/v1/me", &cookie, None, None);
+    req.headers_mut()
+        .insert("origin", "https://evil.example".parse().unwrap());
+    assert_eq!(status(&app, req).await, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn bearer_and_headerless_non_cookie_writes_skip_the_origin_check() {
+    let app = router(state_with(false, RegistrationMode::Open).await);
+    let (cookie, _) = cookie_of(&app).await;
+    let body = Some(serde_json::json!({"title": "laptop", "key": "ssh-ed25519 bad"}));
+    let mut req = with_cookie("POST", "/v1/keys", &cookie, None, body);
+    req.headers_mut()
+        .insert("origin", "https://evil.example".parse().unwrap());
+    req.headers_mut()
+        .insert("authorization", "Bearer not-a-real-token".parse().unwrap());
+    assert_eq!(status(&app, req).await, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn sign_in_refuses_a_foreign_origin_and_accepts_the_allowed_or_a_headerless_one() {
+    let app = router(state_with(false, RegistrationMode::Open).await);
+    registered_alice(&app).await;
+    for foreign in [
+        ("origin", "https://evil.example"),
+        ("origin", "null"),
+        ("referer", "https://evil.example/login"),
+    ] {
+        let (status, code) = status_and_code(&app, sign_in_with(Some(foreign))).await;
+        assert_eq!(
+            (status, code.as_str()),
+            (StatusCode::FORBIDDEN, "origin_not_allowed"),
+            "{foreign:?}"
+        );
+    }
+    for ok in [
+        Some(("origin", "http://localhost:5173")),
+        Some(("referer", "http://localhost:5173/login")),
+        None,
+    ] {
+        assert_eq!(
+            status(&app, sign_in_with(ok)).await,
+            StatusCode::OK,
+            "{ok:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn configured_allowed_origins_and_the_recorded_public_url_are_accepted() {
+    let st = state_full(
+        false,
+        RegistrationMode::Open,
+        Some("https://pyn.example"),
+        vec!["http://127.0.0.1:5173".into()],
+    )
+    .await;
+    let app = router(st);
+    registered_alice(&app).await;
+    for ok in [
+        "https://pyn.example",
+        "https://PYN.example:443",
+        "http://127.0.0.1:5173",
+    ] {
+        let res = app
+            .clone()
+            .oneshot(sign_in_with(Some(("origin", ok))))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "{ok}");
+    }
+    for bad in [
+        "http://pyn.example",
+        "http://localhost:5173",
+        "https://pyn.example:8443",
+    ] {
+        let res = app
+            .clone()
+            .oneshot(sign_in_with(Some(("origin", bad))))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN, "{bad}");
+    }
 }
 
 #[test]

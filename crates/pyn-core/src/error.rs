@@ -151,6 +151,8 @@ pub enum PynError {
     Unauthenticated(String),
     #[error("the request is missing a valid CSRF token")]
     CsrfFailed,
+    #[error("the request's origin is not allowed")]
+    OriginNotAllowed,
     #[error("permission {0} is required")]
     Forbidden(Permission),
     #[error("no token {0}")]
@@ -296,6 +298,7 @@ impl PynError {
             Self::PasswordSignInDisabled => "password_sign_in_disabled",
             Self::Unauthenticated(_) => "unauthenticated",
             Self::CsrfFailed => "csrf_failed",
+            Self::OriginNotAllowed => "origin_not_allowed",
             Self::Forbidden(_) => "forbidden",
             Self::TokenNotFound(_) => "token_not_found",
             Self::InvalidRequest(_) => "invalid_request",

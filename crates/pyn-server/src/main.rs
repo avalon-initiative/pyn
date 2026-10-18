@@ -241,6 +241,11 @@ async fn main() -> anyhow::Result<()> {
             mail_per_email: number("PYN_RATE_MAIL_PER_EMAIL", limit_defaults.mail_per_email)?,
         },
         public_url: std::env::var("PYN_PUBLIC_URL").unwrap_or_else(|_| format!("http://{addr}")),
+        allowed_origins: match std::env::var("PYN_ALLOWED_ORIGINS") {
+            Ok(list) => pyn_server::origin::parse_list(&list)
+                .map_err(|e| anyhow::anyhow!("PYN_ALLOWED_ORIGINS: {e}"))?,
+            Err(_) => Vec::new(),
+        },
         verification_ttl: defaults.verification_ttl,
         org_creation: match std::env::var("PYN_ORG_CREATION") {
             Ok(mode) => mode.parse()?,

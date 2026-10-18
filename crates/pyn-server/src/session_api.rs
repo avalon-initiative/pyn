@@ -10,6 +10,7 @@ use pyn_core::{PynError, SessionRecord};
 use pyn_proto as api;
 
 use crate::client::Client;
+use crate::origin::{self, Source};
 use crate::{ApiResult, AppState};
 
 pub(crate) fn session_cookie(headers: &HeaderMap) -> Option<&str> {
@@ -69,16 +70,40 @@ fn same(a: &str, b: &str) -> bool {
             == 0
 }
 
-/// Rejects a state-changing request authenticated only by a session cookie unless it carries the session's CSRF token.
+/// Whether a browser request from `source` may sign in or write with a cookie: the public URL's origin or an allowed one.
+fn origin_permitted(s: &AppState, source: &Source) -> bool {
+    let Source::Origin(origin) = source else {
+        return false;
+    };
+    crate::origin::normalize(&s.access.public_url(), false).as_deref() == Some(origin)
+        || s.access
+            .allowed_origins()
+            .iter()
+            .any(|o| crate::origin::normalize(o, false).as_deref() == Some(origin))
+}
+
+/// Rejects a cookie-authenticated write, and any sign-in, from a foreign origin; then requires the session's CSRF token.
+/// A write by bearer token or the dev header is not browser-ambient and skips both checks.
 pub(crate) async fn csrf_guard(State(s): State<AppState>, req: Request, next: Next) -> Response {
     let headers = req.headers();
     let safe = matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS);
-    let other_credential = crate::uses_non_cookie_credential(&s, headers);
     let sign_in = req.method() == Method::POST && req.uri().path() == "/v1/session";
-    if safe || other_credential || sign_in {
+    if safe || crate::uses_non_cookie_credential(&s, headers) {
         return next.run(req).await;
     }
-    if let Some(cookie) = session_cookie(headers) {
+    let cookie = session_cookie(headers);
+    if sign_in || cookie.is_some() {
+        let source = origin::source(headers);
+        // A browser always sends Origin on a cross-site POST; a sign-in with none carries no cookie (the CLI).
+        let missing_ok = sign_in && source == Source::Absent;
+        if !missing_ok && !origin_permitted(&s, &source) {
+            return crate::ApiError::from(PynError::OriginNotAllowed).into_response();
+        }
+    }
+    if sign_in {
+        return next.run(req).await;
+    }
+    if let Some(cookie) = cookie {
         let given = headers.get(api::CSRF_HEADER).and_then(|v| v.to_str().ok());
         match s.access.find_session(cookie).await {
             Ok(Some(session)) if !given.is_some_and(|g| same(g, &session.csrf_token)) => {
@@ -94,7 +119,7 @@ pub(crate) async fn csrf_guard(State(s): State<AppState>, req: Request, next: Ne
 #[utoipa::path(post, path = "/v1/session", request_body = api::LoginRequest, responses(
     (status = 200, body = api::SessionInfo, description = "sets the HttpOnly session cookie"),
     (status = 401, body = api::ErrorBody, description = "unauthenticated"),
-    (status = 403, body = api::ErrorBody, description = "right password, but the account cannot sign in: email_not_verified, approval_pending or account_disabled"),
+    (status = 403, body = api::ErrorBody, description = "right password, but the account cannot sign in: email_not_verified, approval_pending or account_disabled; or origin_not_allowed when the Origin (or Referer) is neither the public URL nor an allowed origin"),
     (status = 429, body = api::ErrorBody, description = "too_many_attempts; Retry-After says how many seconds to wait"),
 ))]
 pub(crate) async fn sign_in(

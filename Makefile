@@ -91,10 +91,11 @@ DEMO_ADMIN ?= root
 DEMO_PASSWORD ?= demo-password
 DEMO_SETUP_TOKEN ?= demo-setup-token-not-a-secret
 PYN_ADDR ?= 127.0.0.1:7878
+DEV_WEB_ORIGINS ?= http://localhost:5173,http://127.0.0.1:5173
 
 dev: build
 	@$(MAKE) --no-print-directory start PYN_SETUP_TOKEN=$(DEMO_SETUP_TOKEN) \
-		PYN_REGISTRATION=open PYN_EMAIL_VERIFICATION=false PYN_ADDR=$(PYN_ADDR) PYN_CONFIG=scripts/demo.pyn.toml
+		PYN_REGISTRATION=open PYN_EMAIL_VERIFICATION=false PYN_ALLOWED_ORIGINS=$(DEV_WEB_ORIGINS) PYN_ADDR=$(PYN_ADDR) PYN_CONFIG=scripts/demo.pyn.toml
 	@PYN_SERVER=http://$(PYN_ADDR) PYN_SETUP_TOKEN=$(DEMO_SETUP_TOKEN) DEMO_ADMIN=$(DEMO_ADMIN) DEMO_PASSWORD=$(DEMO_PASSWORD) scripts/demo.sh
 	@echo
 	@echo "server   http://$(PYN_ADDR) ($(if $(PYN_DATABASE_URL),postgres,in-memory); stop with make stop)"

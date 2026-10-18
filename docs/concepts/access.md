@@ -88,6 +88,14 @@ A request authenticated by the cookie alone must carry the CSRF token in an `X-P
 DELETE, or the server answers 403 `csrf_failed`. The check is skipped only when the request is authenticated by a bearer
 token, or by the `X-Pyn-User` header on a server with development auth on; other `Authorization` schemes or a header the
 server does not honour do not skip it.
+
+Sign-in and every cookie-authenticated POST, PUT, PATCH and DELETE also have their origin checked. The browser's `Origin`
+header (the `Referer`'s origin when there is none) must be the origin of `PYN_PUBLIC_URL` (or the address recorded by
+setup) or an entry of `PYN_ALLOWED_ORIGINS`, such as the Vite dev server, or the server answers 403 `origin_not_allowed`.
+A cookie write with neither header, or with `Origin: null`, is refused too. A sign-in with neither header is accepted,
+because browsers always send one on a cross-site POST and a header-less sign-in is a script such as the CLI, which holds
+no cookie to abuse. Requests authenticated by a bearer token or the development header are not checked, and `GET`
+requests never are. Origins compare by scheme, host and port, ignoring case and a default port.
 The account pages (SSH keys, personal access tokens, password) are the same endpoints used with a session.
 
 Failed sign-ins are throttled twice: five wrong passwords for a user name (which need not exist) lock that name out for

@@ -30,6 +30,7 @@ mod limits_api;
 mod merge_api;
 mod oidc_api;
 mod org_api;
+pub mod origin;
 pub mod passwords;
 mod push_api;
 mod repo_api;
@@ -616,7 +617,8 @@ impl IntoResponse for ApiError {
             | PynError::NotRepoMember(_)
             | PynError::ExternalNotLinked
             | PynError::PasswordSignInDisabled
-            | PynError::CsrfFailed => StatusCode::FORBIDDEN,
+            | PynError::CsrfFailed
+            | PynError::OriginNotAllowed => StatusCode::FORBIDDEN,
             PynError::PushUnsupported(_) => StatusCode::UNPROCESSABLE_ENTITY,
             PynError::TooManyAttempts { .. } | PynError::UploadsBusy { .. } => {
                 StatusCode::TOO_MANY_REQUESTS

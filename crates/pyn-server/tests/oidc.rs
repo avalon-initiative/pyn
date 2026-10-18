@@ -107,6 +107,9 @@ struct Browser {
 
 impl Browser {
     async fn send(&mut self, app: &Router, mut req: Request<Body>) -> Reply {
+        req.headers_mut()
+            .entry("origin")
+            .or_insert_with(|| WEB.parse().unwrap());
         if !self.cookies.is_empty() {
             let header = self
                 .cookies

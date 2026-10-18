@@ -6498,7 +6498,7 @@
             }
           },
           "403": {
-            "description": "right password, but the account cannot sign in: email_not_verified, approval_pending or account_disabled",
+            "description": "right password, but the account cannot sign in: email_not_verified, approval_pending or account_disabled; or origin_not_allowed when the Origin (or Referer) is neither the public URL nor an allowed origin",
             "content": {
               "application/json": {
                 "schema": {
