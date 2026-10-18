@@ -19,6 +19,7 @@ mod local_commit;
 mod local_reset;
 mod local_store;
 mod local_sync;
+mod local_view;
 mod localfile;
 mod ls_remote;
 mod merging;
@@ -1433,7 +1434,7 @@ fn run(cli: Cli) -> Result<()> {
             }
         }
         Command::Show { commit, format } => {
-            show_command(&backend, commit.as_deref(), &format.format())?
+            show_command(&backend, ws.as_ref(), commit.as_deref(), &format.format())?
         }
         Command::Policy(PolicyCommand::Preview { file }) => {
             let api = backend.pyn_server("policy")?;
@@ -1595,15 +1596,30 @@ fn run(cli: Cli) -> Result<()> {
         } => {
             let message = message.join("\n\n");
             let path = rp(&paths[0])?;
+            let explicit_file = file.is_some();
             let file = match (file, &ws) {
                 (Some(file), _) => file,
                 (None, Some(w)) => w.abs(&path),
                 (None, None) => bail!("name the file to upload, or run this inside a workspace"),
             };
-            let known = ws
+            let state = ws.as_ref().and_then(|w| w.load_state().ok());
+            let known = state
                 .as_ref()
-                .and_then(|w| w.load_state().ok())
                 .and_then(|s| s.get(&path).map(|k| k.revision));
+            if let Some(k) = state.as_ref().and_then(|s| s.get(&path))
+                && !explicit_file
+                && base.is_none()
+                && localfile::exists(&file)
+            {
+                let (mode, bytes) = localfile::read(&file)?;
+                if !k.changed(mode, &bytes) {
+                    eprintln!(
+                        "nothing to commit; {path} has not changed since revision {}",
+                        k.revision
+                    );
+                    std::process::exit(1);
+                }
+            }
             let (file_mode, hash) = localfile::upload(&backend, &file)?;
             let body = api::CheckinRequest {
                 path: path.clone(),
@@ -1647,7 +1663,12 @@ fn run(cli: Cli) -> Result<()> {
         } => {
             branch::note_branch(ws.as_ref());
             let limit = limit.unwrap_or(50);
-            let mut rows: Vec<Vec<String>> = Vec::new();
+            let mut rows: Vec<Vec<String>> =
+                match ws.as_ref().and_then(local_store::LocalStore::open) {
+                    Some(store) => local_view::log_rows(&store, &branch::name(ws.as_ref()))?,
+                    None => Vec::new(),
+                };
+            rows.truncate(limit);
             let mut before: Option<String> = None;
             while rows.len() < limit {
                 let page = backend.commit_page(before.as_deref(), (limit - rows.len()).min(200))?;
@@ -2019,7 +2040,17 @@ fn diff_command(
     Ok(differs)
 }
 
-fn show_command(backend: &dyn Backend, commit: Option<&str>, format: &diff::Format) -> Result<()> {
+fn show_command(
+    backend: &dyn Backend,
+    ws: Option<&Workspace>,
+    commit: Option<&str>,
+    format: &diff::Format,
+) -> Result<()> {
+    if let Some(store) = ws.and_then(local_store::LocalStore::open)
+        && local_view::show(backend, &store, &branch::name(ws), commit, format)?
+    {
+        return Ok(());
+    }
     let id = match commit {
         Some(c) => snapshot::resolve(backend, c)?,
         None => snapshot::resolve(backend, "HEAD")?,

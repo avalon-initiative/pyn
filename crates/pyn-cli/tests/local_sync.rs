@@ -69,7 +69,9 @@ fn commit_local(env: &Env, ws: &Path, user: &str, path: &str, text: &str, messag
 }
 
 fn server_commits(env: &Env, ws: &Path) -> usize {
-    env.ok(ws, "alice", &["log", "--commits"]).lines().count()
+    let listed = env.ok(ws, "alice", &["log", "--commits"]).lines().count();
+    let local = git(ws, &["rev-list", "--count", "origin/main..main"]);
+    listed - local.trim().parse::<usize>().unwrap()
 }
 
 fn server_head(env: &Env, ws: &Path) -> String {
@@ -940,4 +942,84 @@ fn a_merged_push_still_needs_the_lock_for_the_local_exclusive_change() {
     assert!(err.contains("lock required"), "{err}");
     env.ok(&ws, "alice", &["lock", "Content/m.umap"]);
     env.ok(&ws, "alice", &["push"]);
+}
+
+#[test]
+fn a_held_lock_keeps_the_file_writable_through_a_local_commit_and_modes_stay_private() {
+    use std::os::unix::fs::PermissionsExt;
+    let (env, ws) = seeded();
+    let mode = |p: &str| std::fs::metadata(ws.join(p)).unwrap().permissions().mode() & 0o777;
+    assert_eq!(
+        mode("Content/m.umap") & 0o222,
+        0,
+        "read-only before the lock"
+    );
+    env.ok(&ws, "alice", &["lock", "Content/m.umap"]);
+    assert_eq!(
+        mode("Content/m.umap") & 0o022,
+        0,
+        "not writable by group or others"
+    );
+    assert_ne!(mode("Content/m.umap") & 0o200, 0);
+    commit_local(&env, &ws, "alice", "Content/m.umap", "map2", "map");
+    assert_ne!(
+        mode("Content/m.umap") & 0o200,
+        0,
+        "still writable under the lock"
+    );
+    env.ok(&ws, "alice", &["unlock", "Content/m.umap"]);
+    assert_eq!(mode("Content/m.umap") & 0o222, 0);
+}
+
+#[test]
+fn committing_an_unchanged_exclusive_path_says_there_is_nothing_to_commit() {
+    let (env, ws) = seeded();
+    let err = env.fails(&ws, "alice", &["commit", "Content/m.umap", "-m", "x"]);
+    assert!(err.contains("nothing to commit"), "{err}");
+    assert!(!err.contains("lock_required"), "{err}");
+}
+
+#[test]
+fn a_locally_added_file_is_not_shown_as_revision_zero() {
+    let (env, ws) = seeded();
+    commit_local(&env, &ws, "alice", "Source/new.cpp", "fresh", "add");
+    let status = env.ok(&ws, "alice", &["status"]);
+    assert!(
+        status.contains("Source/new.cpp") && !status.contains("r0"),
+        "{status}"
+    );
+}
+
+#[test]
+fn log_and_show_cover_unpublished_local_commits() {
+    let (env, ws) = seeded();
+    commit_local(
+        &env,
+        &ws,
+        "alice",
+        "Source/a.cpp",
+        "one\nTWO\nthree\n",
+        "local edit",
+    );
+    let local = git(&ws, &["rev-parse", "main"]);
+    let log = env.ok(&ws, "alice", &["log", "--commits"]);
+    let first = log.lines().nth(1).unwrap();
+    assert!(
+        first.starts_with(&local[..10]) && first.contains("local edit"),
+        "{log}"
+    );
+    assert!(log.contains("seed"), "server history follows: {log}");
+
+    let shown = env.ok(&ws, "alice", &["show"]);
+    assert!(
+        shown.contains(&local) && shown.contains("local edit"),
+        "{shown}"
+    );
+    assert!(shown.contains("-two") && shown.contains("+TWO"), "{shown}");
+    let by_hash = env.ok(&ws, "alice", &["show", &local[..10]]);
+    assert_eq!(by_hash, shown);
+
+    env.ok(&ws, "alice", &["push"]);
+    let log = env.ok(&ws, "alice", &["log", "--commits"]);
+    assert_eq!(log.matches("local edit").count(), 1, "{log}");
 }

@@ -457,9 +457,25 @@ pub fn set_read_only(path: &Path, read_only: bool) -> Result<()> {
         return Ok(());
     };
     let mut perms = meta.permissions();
-    perms.set_readonly(read_only);
+    set_write_bits(&mut perms, read_only);
     std::fs::set_permissions(path, perms)
         .with_context(|| format!("setting permissions on {}", path.display()))
+}
+
+/// Clears every write bit, or sets only the owner's: `set_readonly(false)` would make the file world-writable.
+fn set_write_bits(perms: &mut std::fs::Permissions, read_only: bool) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = perms.mode();
+        perms.set_mode(if read_only {
+            mode & !0o222
+        } else {
+            mode | 0o200
+        });
+    }
+    #[cfg(not(unix))]
+    perms.set_readonly(read_only);
 }
 
 /// The first of: the flag or environment, the workspace's own setting, the user's, then the default.
@@ -483,6 +499,21 @@ mod tests {
             root: PathBuf::from(root),
             dir: PathBuf::from(root).join(DIR),
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn making_a_file_writable_does_not_open_it_to_group_and_others() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("f");
+        std::fs::write(&file, "x").unwrap();
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        set_read_only(&file, true).unwrap();
+        assert_eq!(mode(&file), 0o444);
+        set_read_only(&file, false).unwrap();
+        assert_eq!(mode(&file), 0o644);
     }
 
     #[test]

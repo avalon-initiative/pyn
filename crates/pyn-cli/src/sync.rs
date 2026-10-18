@@ -281,7 +281,10 @@ pub fn status(backend: &dyn Backend, ws: &Workspace, commit: Option<&str>) -> Re
         );
         rows.push(vec![
             mode.to_string(),
-            known.map_or("-".to_string(), |k| format!("r{}", k.revision)),
+            known.map_or("-".to_string(), |k| match k.revision {
+                0 => "local".to_string(),
+                r => format!("r{r}"),
+            }),
             stage.to_string(),
             if notes.is_empty() {
                 "clean".to_string()

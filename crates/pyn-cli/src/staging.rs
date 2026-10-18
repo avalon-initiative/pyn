@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::backend::Backend;
 use crate::local_commit::{self, Staged};
 use crate::local_store::LocalStore;
-use crate::workspace::{Workspace, hash_of};
+use crate::workspace::{Workspace, hash_of, set_read_only};
 use crate::{branch, localfile, sync};
 
 const INDEX_VERSION: u32 = 1;
@@ -539,10 +539,20 @@ fn commit_local(
         let revision = state.get(path).map_or(0, |k| k.revision);
         sync::after_commit(backend, ws, path, revision, &staged.hash, staged.file_mode)?;
     }
+    let me = backend.whoami()?;
+    for entry in backend.list_files()? {
+        let staged = index.entries.get(&entry.path).is_some_and(|s| !s.deleted);
+        if staged && !sync::wants_read_only(&entry, &me) {
+            set_read_only(&ws.dest(&entry.path)?, false)?;
+        }
+    }
     Index::default().save(ws)?;
     let first = message.lines().next().unwrap_or_default();
     let root = if made.root { " (root-commit)" } else { "" };
-    println!("[{branch}{root} {}] {first}", &made.id.to_hex()[..7]);
+    println!(
+        "[{branch}{root} {}] {first}",
+        crate::snapshot::short(&made.id.to_hex())
+    );
     println!("{} file(s) changed", made.changed);
     println!("this commit is local and not yet published to the server");
     Ok(())

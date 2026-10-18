@@ -48,7 +48,16 @@ fn seeded() -> (Env, PathBuf) {
 }
 
 fn server_commits(env: &Env, ws: &Path) -> usize {
-    env.ok(ws, "alice", &["log", "--commits"]).lines().count()
+    let listed = env.ok(ws, "alice", &["log", "--commits"]).lines().count();
+    let local = git(
+        ws,
+        &[
+            "rev-list",
+            "--count",
+            "refs/remotes/origin/main..refs/heads/main",
+        ],
+    );
+    listed - local.trim().parse::<usize>().unwrap()
 }
 
 #[test]

@@ -17,7 +17,7 @@ use crate::branch;
 use crate::client::ApiError;
 use crate::local_commit::signature;
 use crate::local_store::{ALGORITHM, Files, LocalStore, build_trees, parse_id};
-use crate::snapshot::short;
+use crate::snapshot::{self, short};
 use crate::staging::Index;
 use crate::stranded;
 use crate::workspace::{Workspace, hash_of, set_read_only};
@@ -829,7 +829,7 @@ pub fn explain_push(err: anyhow::Error, branch: &str) -> anyhow::Error {
         ),
         "forbidden" => (
             format!(" ! [rejected]        {branch} -> {branch} (forbidden)"),
-            "You need the checkin permission on this repository, and the policy permission to change `.pyn/pyn.toml` on the default branch.",
+            "You need the checkin permission on this repository, and the `edit_policy` permission to change `.pyn/pyn.toml` on the default branch.",
         ),
         "invalid_rules" => (
             format!(" ! [rejected]        {branch} -> {branch} (invalid policy)"),
@@ -933,7 +933,10 @@ pub fn push(backend: &dyn Backend, ws: &Workspace) -> Result<()> {
     );
     println!(
         "   {}..{}  {branch} -> {branch}",
-        published.map_or_else(|| "0000000".to_string(), |p| short(&p.to_hex()).to_string()),
+        published.map_or_else(
+            || "0".repeat(snapshot::ABBREV),
+            |p| short(&p.to_hex()).to_string()
+        ),
         short(&head.to_hex())
     );
     stranded::print(
