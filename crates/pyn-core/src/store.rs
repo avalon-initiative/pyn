@@ -8,6 +8,7 @@ use crate::limits::{RepoUsage, StorageCap, Usage};
 use crate::merge::{MergeWrite, MergeWritten};
 use crate::repo::{RepoRecord, RepoUpdate};
 use crate::rules::PathFilter;
+use crate::tree::HeadCounts;
 use pyn_object::ObjectId;
 
 use crate::types::{
@@ -317,6 +318,9 @@ pub trait MetadataStore: Send + Sync {
         after: Option<&RepoPath>,
         limit: usize,
     ) -> Result<Vec<Revision>>;
+
+    /// The counts of `commit`'s snapshot; the cost does not grow with the repository. `CommitNotFound` for an unknown commit.
+    async fn head_counts(&self, repo: &RepoId, commit: &ObjectId) -> Result<HeadCounts>;
 
     /// The newest revision of each path that has one, on any branch, ordered by path, for paths after `after`; at most `limit`.
     async fn list_head_revisions(

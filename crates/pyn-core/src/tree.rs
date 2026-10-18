@@ -16,6 +16,9 @@ pub const ACTIVITY_ACTIONS: [AuditAction; 6] = [
     AuditAction::ForceUnlock,
 ];
 
+/// Heads one folder listing reads at most; a larger folder is `invalid_request` and its subfolders are listed instead.
+pub const TREE_MAX_PATHS: usize = 1_000_000;
+
 /// Folders sort before files.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum EntryKind {
@@ -60,6 +63,17 @@ pub struct TreeEntry {
     pub last_change: Option<Revision>,
     /// Live lock on the file; always `None` for folders.
     pub lock: Option<Lock>,
+}
+
+/// What a commit's snapshot holds, kept by the store as commits are written so reading it costs the same at any size.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HeadCounts {
+    /// Paths with a live revision.
+    pub files: u64,
+    /// Those whose revision records the exclusive mode.
+    pub exclusive_files: u64,
+    /// Time of the newest revision up to the commit; `None` when there is none.
+    pub updated_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

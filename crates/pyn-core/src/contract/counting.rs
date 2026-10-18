@@ -392,6 +392,15 @@ impl MetadataStore for CountingStore {
             .await
     }
 
+    async fn head_counts(
+        &self,
+        repo: &RepoId,
+        commit: &ObjectId,
+    ) -> crate::Result<crate::HeadCounts> {
+        self.count();
+        self.inner.head_counts(repo, commit).await
+    }
+
     async fn list_head_revisions(
         &self,
         repo: &RepoId,

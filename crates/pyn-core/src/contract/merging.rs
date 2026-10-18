@@ -46,6 +46,7 @@ async fn text_on(h: &Harness, branch: &str, p: &str) -> String {
 async fn verified(h: &Harness) {
     let report = h.svc.verify(None, true).await.unwrap();
     assert!(report.problems.is_empty(), "{:?}", report.problems);
+    super::counts::counts_agree_with_snapshots(h).await;
 }
 
 pub async fn merge_bases_are_the_lowest_common_ancestors(store: Store) {

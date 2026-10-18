@@ -1,3 +1,5 @@
+const TREE_PAGE: usize = 5_000;
+
 mod fetch;
 mod merging;
 mod push;
@@ -36,7 +38,9 @@ use crate::repo::DEFAULT_MAX_LOCKS_PER_USER;
 use crate::rules::{MAX_POLICY_BYTES, Mode, POLICY_PATH, PathFilter, Rules, policy_too_large};
 use crate::store::MetadataStore;
 use crate::stranded::StrandedVersion;
-use crate::tree::{ACTIVITY_ACTIONS, EntryKind, RepoSummary, TreeEntry};
+use crate::tree::{
+    ACTIVITY_ACTIONS, EntryKind, HeadCounts, RepoSummary, TREE_MAX_PATHS, TreeEntry,
+};
 use crate::types::{
     ChangesetItem, Commit, Lock, MAX_CHANGESET_ITEMS, NewRevision, RepoId, RepoPath, Revision,
     RevisionId, UserId, validate_message,
@@ -1198,43 +1202,41 @@ impl RepoService {
             .collect())
     }
 
-    /// Revision on `branch` and live lock of every path that has either, ordered by path.
-    async fn live_paths(
-        &self,
-        branch: &str,
-        prefix: Option<&str>,
-    ) -> Result<BTreeMap<RepoPath, (Option<Revision>, Option<Lock>)>> {
-        let mut paths: BTreeMap<RepoPath, (Option<Revision>, Option<Lock>)> = BTreeMap::new();
-        for rev in self.heads_page(branch, prefix, None, usize::MAX).await? {
-            paths.insert(rev.path.clone(), (Some(rev), None));
-        }
-        for lock in self.meta.list_locks(&self.repo, self.clock.now()).await? {
-            if prefix.is_some_and(|p| !lock.path.as_str().starts_with(p)) {
-                continue;
-            }
-            let key = lock.path.clone();
-            paths.entry(key).or_default().1 = Some(lock);
-        }
-        Ok(paths)
-    }
-
     /// The children of `dir` (the root when `None`): folders first, then files, each by name. A folder's mode is
-    /// `Mixed` unless every file under it has the same mode.
+    /// `Mixed` unless every file under it has the same mode. The heads are read a page at a time and folded into the
+    /// children, so memory follows the children; one listing reads at most `TREE_MAX_PATHS` heads.
     pub async fn tree(&self, dir: Option<&RepoPath>) -> Result<Vec<TreeEntry>> {
         self.tree_on(DEFAULT_BRANCH, dir).await
     }
 
     /// Like `tree`, as of the head of `branch`.
     pub async fn tree_on(&self, branch: &str, dir: Option<&RepoPath>) -> Result<Vec<TreeEntry>> {
+        self.tree_bounded(branch, dir, TREE_PAGE, TREE_MAX_PATHS)
+            .await
+    }
+
+    /// Like `tree_on`, reading heads `page` at a time and refusing a folder of more than `max` files.
+    pub async fn tree_bounded(
+        &self,
+        branch: &str,
+        dir: Option<&RepoPath>,
+        page_size: usize,
+        max: usize,
+    ) -> Result<Vec<TreeEntry>> {
+        let page_size = page_size.max(1);
         let rules = self.rules_on(branch).await?;
         let prefix = dir.map_or(String::new(), |d| format!("{d}/"));
-        let paths = self
-            .live_paths(branch, dir.is_some().then_some(prefix.as_str()))
-            .await?;
+        let heads_prefix = dir.is_some().then_some(prefix.as_str());
+        let mut locks: BTreeMap<RepoPath, Lock> = BTreeMap::new();
+        for lock in self.meta.list_locks(&self.repo, self.clock.now()).await? {
+            if heads_prefix.is_none_or(|p| lock.path.as_str().starts_with(p)) {
+                locks.insert(lock.path.clone(), lock);
+            }
+        }
         let mut children: BTreeMap<(EntryKind, String), TreeEntry> = BTreeMap::new();
-        for (path, (rev, lock)) in &paths {
+        let mut fold = |path: &RepoPath, rev: Option<Revision>, lock: Option<Lock>| -> Result<()> {
             let Some(rest) = path.as_str().strip_prefix(&prefix) else {
-                continue;
+                return Ok(());
             };
             let (kind, name) = match rest.split_once('/') {
                 Some((first, _)) => (EntryKind::Folder, first),
@@ -1249,12 +1251,8 @@ impl RepoService {
                         path: child,
                         kind,
                         mode: mode.into(),
-                        last_change: rev.clone(),
-                        lock: if kind == EntryKind::File {
-                            lock.clone()
-                        } else {
-                            None
-                        },
+                        last_change: rev,
+                        lock: if kind == EntryKind::File { lock } else { None },
                     });
                 }
                 std::collections::btree_map::Entry::Occupied(mut o) => {
@@ -1266,10 +1264,37 @@ impl RepoService {
                             .as_ref()
                             .is_none_or(|c| rev.created_at > c.created_at)
                     {
-                        entry.last_change = Some(rev.clone());
+                        entry.last_change = Some(rev);
                     }
                 }
             }
+            Ok(())
+        };
+        let mut after: Option<RepoPath> = None;
+        let mut read = 0;
+        loop {
+            let page = self
+                .heads_page(branch, heads_prefix, after.as_ref(), page_size)
+                .await?;
+            let Some(last) = page.last() else { break };
+            after = Some(last.path.clone());
+            read += page.len();
+            if read > max {
+                return Err(PynError::InvalidRequest(format!(
+                    "a listing reads at most {max} files; list a folder below this one"
+                )));
+            }
+            let full = page.len() == page_size;
+            for rev in page {
+                let lock = locks.remove(&rev.path);
+                fold(&rev.path.clone(), Some(rev), lock)?;
+            }
+            if !full {
+                break;
+            }
+        }
+        for (path, lock) in std::mem::take(&mut locks) {
+            fold(&path, None, Some(lock))?;
         }
         if children.is_empty()
             && let Some(dir) = dir
@@ -1290,18 +1315,14 @@ impl RepoService {
         Ok(children.into_values().collect())
     }
 
-    /// Counts, live locks and the newest `activity_limit` file and lock events.
+    /// Counts, live locks and the newest `activity_limit` file and lock events. The counts are stored per commit.
     pub async fn summary(&self, activity_limit: usize) -> Result<RepoSummary> {
-        let paths = self.live_paths(DEFAULT_BRANCH, None).await?;
-        let (mut files, mut exclusive_files, mut updated_at) = (0, 0, None);
-        for (path, (rev, _)) in &paths {
-            let Some(rev) = rev else { continue };
-            files += 1;
-            if self.mode_for(path) == Mode::Exclusive {
-                exclusive_files += 1;
-            }
-            updated_at = updated_at.max(Some(rev.created_at));
-        }
+        let counts = match self.default_head().await? {
+            Some(head) => self.meta.head_counts(&self.repo, &head).await?,
+            None => HeadCounts::default(),
+        };
+        let mut locks = self.meta.list_locks(&self.repo, self.clock.now()).await?;
+        locks.sort_by(|a, b| a.path.cmp(&b.path));
         let scope = AuditScope::Repo(self.repo.clone());
         let query = AuditQuery {
             actions: ACTIVITY_ACTIONS.to_vec(),
@@ -1312,11 +1333,11 @@ impl RepoService {
         Ok(RepoSummary {
             default_branch: DEFAULT_BRANCH.to_string(),
             branch_count: self.branches().await?.len() as u32,
-            files,
-            exclusive_files,
-            shared_files: files - exclusive_files,
-            updated_at,
-            locks: paths.into_values().filter_map(|(_, lock)| lock).collect(),
+            files: counts.files,
+            exclusive_files: counts.exclusive_files,
+            shared_files: counts.files - counts.exclusive_files,
+            updated_at: counts.updated_at,
+            locks,
             activity,
         })
     }

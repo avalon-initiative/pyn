@@ -31,6 +31,7 @@ use crate::repo_policy::{
 };
 use crate::rules::{Mode, PathFilter};
 use crate::store::{MetadataStore, UploadReservation};
+use crate::tree::HeadCounts;
 use crate::types::{
     ChangesetItem, Commit, Lock, Person, PushedCommit, RepoId, RepoPath, Revision, RevisionId,
     UserId,
@@ -1170,6 +1171,34 @@ impl MetadataStore for MemoryMetadataStore {
         let st = self.state.lock().unwrap();
         let revs = st.revisions.get(&(repo.clone(), path.clone()));
         Ok(revs.and_then(|v| v.iter().find(|r| r.id == id).cloned()))
+    }
+
+    async fn head_counts(&self, repo: &RepoId, commit: &ObjectId) -> Result<HeadCounts> {
+        let st = self.state.lock().unwrap();
+        if st.commit_record(repo, commit).is_none() {
+            return Err(PynError::CommitNotFound(commit.to_hex()));
+        }
+        let mut counts = HeadCounts::default();
+        let mut next = Some(*commit);
+        while let Some(id) = next {
+            for (path, rev) in st.pointers.get(&(repo.clone(), id)).into_iter().flatten() {
+                let at = st.revision(repo, path, *rev).map(|r| r.created_at);
+                counts.updated_at = counts.updated_at.max(at);
+            }
+            next = st
+                .commit_record(repo, &id)
+                .and_then(|c| c.parents.first().copied());
+        }
+        for rev in st
+            .pointers_at(repo, commit)
+            .into_iter()
+            .filter_map(|(path, id)| st.revision(repo, &path, id))
+            .filter(|r| !r.deleted)
+        {
+            counts.files += 1;
+            counts.exclusive_files += u64::from(rev.mode == Some(Mode::Exclusive));
+        }
+        Ok(counts)
     }
 
     async fn list_head_revisions(

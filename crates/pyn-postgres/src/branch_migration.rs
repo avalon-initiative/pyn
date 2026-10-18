@@ -57,7 +57,17 @@ impl PgMetadataStore {
         .await
         .map_err(db)?
         .rows_affected();
+        if pointers > 0 {
+            // Counts made before the pointers existed describe empty snapshots.
+            sqlx::query(
+                "UPDATE commits SET file_count = NULL, exclusive_count = NULL, newest_at = NULL",
+            )
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
+        }
         tx.commit().await.map_err(db)?;
+        crate::counts::backfill(&self.pool).await?;
         Ok(BranchMigration { branches, pointers })
     }
 }

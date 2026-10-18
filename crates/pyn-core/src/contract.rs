@@ -46,9 +46,14 @@ pub use push_changes::*;
 mod fetch;
 pub use fetch::*;
 mod counting;
+mod counts;
 mod history;
 mod verify;
 pub use counting::CountingStore;
+pub use counts::{
+    a_listing_reads_heads_a_page_at_a_time_and_stops_at_its_bound,
+    commit_counts_follow_adds_deletes_modes_branches_and_merges,
+};
 pub use history::*;
 pub use verify::*;
 mod deletion;
@@ -3266,6 +3271,8 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_path_history_pages_by_revision_number_and_ends_exactly);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; verification_in_steps_covers_the_same_ground_at_every_budget);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; head_revisions_page_by_path);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; commit_counts_follow_adds_deletes_modes_branches_and_merges);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_listing_reads_heads_a_page_at_a_time_and_stops_at_its_bound);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_push_deletes_shared_paths_and_whole_folders);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_file_turned_into_a_folder_or_back_deletes_and_adds);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; deleting_an_exclusive_path_in_a_push_needs_the_pushers_live_lock);
@@ -4034,6 +4041,14 @@ impl MetadataStore for HookedMeta {
         self.inner
             .snapshot_page(repo, commit, prefix, after, limit)
             .await
+    }
+
+    async fn head_counts(
+        &self,
+        repo: &RepoId,
+        commit: &ObjectId,
+    ) -> crate::Result<crate::HeadCounts> {
+        self.inner.head_counts(repo, commit).await
     }
 
     async fn list_head_revisions(

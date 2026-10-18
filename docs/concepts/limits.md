@@ -103,6 +103,9 @@ Each request is bounded in the work it may do, so one request cannot hold the se
 | fetch, history, verify, snapshot, summary and merge-preview requests at once | four per CPU | `PYN_MAX_CONCURRENT_EXPENSIVE` |
 | commits one fetch request examines | 1,000,000 | fixed |
 | revisions one history request examines | 20,000 | fixed |
+| revisions of one path in a path history page | 50, at most 200 | `limit` |
+| records one verify step examines (revisions, commits, audit events, tree entries) | 20,000 | fixed |
+| files one folder listing reads | 1,000,000 | fixed |
 
 A late answer is `503 request_timeout` and a request that cannot get a slot in time is `503 server_busy`; both carry
 `Retry-After`. Writes and the streamed object routes have no overall time limit. A value that is not a whole number, or a
@@ -111,7 +114,9 @@ concurrency of 0, stops the server at start. They are read at start.
 A fetch examines commits from the cursor onward and refuses a walk past its bound with `400 invalid_request`. A repository
 history request that examines its bound without filling a page returns what it found with a `next_cursor`, which may arrive
 with fewer revisions than `limit` (or none); the client continues with `before`. The whole-repository form of
-`GET .../verify` needs a signed-in caller.
+`GET .../verify` needs a signed-in caller. A path's history is paged the same way (`limit`, `before`), and a verify
+request does one bounded step and returns a `next_cursor` to continue with ([integrity](integrity.md)). The summary reads
+counts the store keeps per commit, not the files ([browsing](browsing.md#summary)).
 
 ## Setting limits
 

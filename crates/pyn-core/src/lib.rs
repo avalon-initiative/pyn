@@ -93,7 +93,7 @@ pub use service::{
 };
 pub use store::{MetadataStore, UploadReservation};
 pub use stranded::{ConversionNote, StrandedVersion};
-pub use tree::{EntryKind, EntryMode, RepoSummary, TreeEntry};
+pub use tree::{EntryKind, EntryMode, HeadCounts, RepoSummary, TREE_MAX_PATHS, TreeEntry};
 pub use types::{
     ChangesetItem, Commit, Lock, MAX_CHANGESET_ITEMS, MAX_LABEL_BYTES, MAX_MESSAGE_BYTES,
     MAX_PATH_BYTES, MAX_PATH_COMPONENT_BYTES, MAX_PUSH_COMMITS, NewRevision, Person, PushedCommit,

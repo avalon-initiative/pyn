@@ -12,10 +12,10 @@ use pyn_core::branch::{DEFAULT_BRANCH, conflicts};
 use pyn_core::commit_record::{CommitDraft, TreeChange, TreeEdit, draft_commit};
 use pyn_core::merge::{MergeWrite, MergeWritten};
 use pyn_core::{
-    Branch, ChangesetItem, Commit, FileMode, HistoryCursor, HistoryScan, Lock, MetadataStore, Mode,
-    ObjectId, PathFilter, Person, PushedCommit, PynError, REPO_ALGORITHM, RepoId, RepoPath,
-    RepoRecord, RepoSettings, RepoUpdate, RepoUsage, Result, Revision, RevisionHash, RevisionId,
-    StorageCap, UploadReservation, Usage, UserId, Visibility,
+    Branch, ChangesetItem, Commit, FileMode, HeadCounts, HistoryCursor, HistoryScan, Lock,
+    MetadataStore, Mode, ObjectId, PathFilter, Person, PushedCommit, PynError, REPO_ALGORITHM,
+    RepoId, RepoPath, RepoRecord, RepoSettings, RepoUpdate, RepoUsage, Result, Revision,
+    RevisionHash, RevisionId, StorageCap, UploadReservation, Usage, UserId, Visibility,
 };
 use sqlx::migrate::MigrateDatabase;
 use sqlx::postgres::{PgPoolOptions, PgRow};
@@ -30,6 +30,7 @@ mod access;
 mod audit;
 mod branch_migration;
 mod content_ids;
+mod counts;
 mod hashing;
 mod history_migration;
 
@@ -446,6 +447,7 @@ async fn store_commit(
         .await
         .map_err(db)?;
     }
+    counts::count_commit(tx, repo, &draft.record.id).await?;
     sqlx::query("UPDATE branches SET head = $3 WHERE repo = $1 AND name = $2")
         .bind(repo.as_str())
         .bind(branch)
@@ -732,6 +734,7 @@ impl PgMetadataStore {
             .await
             .map_err(|e| PynError::Storage(e.to_string()))?;
         hashing::backfill(&pool).await?;
+        counts::backfill(&pool).await?;
         Ok(Self {
             pool,
             scratch_schema: None,
@@ -1940,6 +1943,10 @@ impl MetadataStore for PgMetadataStore {
         rows.iter().map(revision_from).collect()
     }
 
+    async fn head_counts(&self, repo: &RepoId, commit: &ObjectId) -> Result<HeadCounts> {
+        counts::head_counts(&self.pool, repo, commit).await
+    }
+
     async fn list_head_revisions(
         &self,
         repo: &RepoId,
@@ -2783,5 +2790,126 @@ mod tests {
             .map(|p| (p.kind, p.revision))
             .collect();
         assert_eq!(found, vec![(BreakKind::Base, Some(RevisionId(3)))]);
+    }
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "needs PYN_DATABASE_URL"]
+    async fn commit_counts_survive_a_rewound_migration_a_backfill_and_a_missing_count() {
+        use pyn_core::memory::{MemoryAuditStore, MemoryObjectStore};
+        use pyn_core::{
+            Deletion, FileMode, ManualClock, Principal, RepoService, Rules, ServiceConfig, UserId,
+        };
+        use std::sync::Arc;
+
+        let url = std::env::var("PYN_DATABASE_URL").expect("PYN_DATABASE_URL must be set");
+        let store = Arc::new(
+            PgMetadataStore::connect_in_scratch_schema(&url)
+                .await
+                .unwrap(),
+        );
+        let svc = RepoService::new(
+            RepoId::new("r"),
+            Rules::from_toml("[meta]\ndefault = \"shared\"\n[exclusive]\npaths = [\"Content/\"]\n")
+                .unwrap(),
+            store.clone(),
+            Arc::new(MemoryObjectStore::new()),
+            Arc::new(MemoryAuditStore::new()),
+            Arc::new(ManualClock::new(Utc::now())),
+            ServiceConfig::default(),
+        );
+        let who = Principal::unrestricted(UserId::new("alice"));
+        let (a, b, map) = (
+            RepoPath::new("Source/a.cpp").unwrap(),
+            RepoPath::new("Source/b.cpp").unwrap(),
+            RepoPath::new("Content/m.umap").unwrap(),
+        );
+        for (p, text) in [(&a, "a1"), (&b, "b1"), (&a, "a2")] {
+            let base = svc.head(p).await.unwrap().map(|r| r.id);
+            let c = svc.upload_blob(text.as_bytes().to_vec()).await.unwrap();
+            svc.checkin(&who, p, c, base, text.into()).await.unwrap();
+        }
+        svc.checkout(&map, &who.user, None).await.unwrap();
+        let c = svc.upload_blob(b"m".to_vec()).await.unwrap();
+        svc.checkin(&who, &map, c, None, "m".into()).await.unwrap();
+        svc.create_branch(&who, "feature", None).await.unwrap();
+        let c = svc.upload_blob(b"f".to_vec()).await.unwrap();
+        svc.checkin_on(
+            "feature",
+            &who,
+            &a,
+            c,
+            FileMode::Regular,
+            Some(RevisionId(2)),
+            "f".into(),
+        )
+        .await
+        .unwrap();
+        svc.checkin_changes_on(
+            "main",
+            &who,
+            Vec::new(),
+            vec![Deletion {
+                path: b.clone(),
+                base: Some(RevisionId(1)),
+            }],
+            "rm".into(),
+        )
+        .await
+        .unwrap();
+
+        let repo = RepoId::new("r");
+        let commits = svc.commits(None, None).await.unwrap().commits;
+        assert!(commits.len() >= 5);
+        let read = || async {
+            let mut out = Vec::new();
+            for c in &commits {
+                out.push(store.head_counts(&repo, &c.id).await.unwrap());
+            }
+            out
+        };
+        let stored = read().await;
+        let main = svc.head_of("main").await.unwrap().unwrap();
+        let on_main = store.head_counts(&repo, &main).await.unwrap();
+        assert_eq!((on_main.files, on_main.exclusive_files), (2, 1));
+        let uncounted = || async {
+            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM commits WHERE file_count IS NULL")
+                .fetch_one(&store.pool)
+                .await
+                .unwrap()
+        };
+        assert_eq!(uncounted().await, 0);
+
+        sqlx::query(
+            "UPDATE commits SET file_count = NULL, exclusive_count = NULL, newest_at = NULL",
+        )
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        assert_eq!(read().await, stored, "counted on the fly");
+
+        let total: i64 = sqlx::query_scalar("SELECT count(*) FROM commits")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        assert_eq!(counts::backfill(&store.pool).await.unwrap(), total as u64);
+        assert_eq!((uncounted().await, read().await), (0, stored.clone()));
+        assert_eq!(
+            counts::backfill(&store.pool).await.unwrap(),
+            0,
+            "nothing left to count"
+        );
+
+        for stmt in [
+            "DROP INDEX commits_uncounted",
+            "ALTER TABLE commits DROP COLUMN file_count, DROP COLUMN exclusive_count, DROP COLUMN newest_at",
+            "DELETE FROM _sqlx_migrations WHERE version = 36",
+        ] {
+            sqlx::query(stmt).execute(&store.pool).await.unwrap();
+        }
+        migrate(&store).await;
+        assert_eq!(
+            (uncounted().await, read().await),
+            (0, stored),
+            "the migration counted every commit"
+        );
     }
 }

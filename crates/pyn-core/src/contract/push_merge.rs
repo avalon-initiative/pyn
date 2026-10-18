@@ -41,6 +41,7 @@ async fn revision_ids(h: &Harness) -> Vec<(String, u64)> {
 async fn verified(h: &Harness) {
     let report = h.svc.verify(None, true).await.unwrap();
     assert!(report.problems.is_empty(), "{:?}", report.problems);
+    super::counts::counts_agree_with_snapshots(h).await;
 }
 
 /// Source/a.cpp and Source/b.cpp (text) and the exclusive Content/e.umap, pushed as the first commit.

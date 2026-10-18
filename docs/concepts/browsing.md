@@ -11,7 +11,9 @@ empty (a trailing `/` is accepted). Folders come first, then files, each ordered
 `404 path_not_found`; a file path is `400 invalid_request`.
 
 Folders are derived: pyn stores files, so a folder exists while some path under it has a revision or a live lock. The
-listing is not paginated.
+listing is not paginated. The server reads the files under the folder a page at a time and folds them into the children, so its
+memory follows the number of children rather than of files; one listing reads at most 1,000,000 files, and a folder with more
+is `400 invalid_request` (list a folder below it, or page through the file list or the snapshot).
 
 | Field | Meaning |
 | --- | --- |
@@ -32,8 +34,11 @@ nothing yet does not make a folder `mixed`. *Provisional*
 
 - `default_branch` and `branch_count`: the default branch's name (`main`) and how many [branches](branches.md) the repository has.
   Tags are not counted yet. *Provisional*
-- `files`, `exclusive_files`, `shared_files`: paths with at least one revision, split by current mode.
-- `updated_at`: the time of the newest revision.
+- `files`, `exclusive_files`, `shared_files`: paths that exist on the default branch, split by the mode their newest revision
+  was recorded under. The store keeps these counts with each commit and updates them as the commit is written, so the summary
+  is a read of one row however large the repository is. The split differs from the policy's current answer only for a path
+  whose policy went from exclusive to shared and that has not been changed since: its newest revision still says exclusive.
+- `updated_at`: the time of the newest revision made on the default branch's line, a deletion included.
 - `locks`: every live lock with its holder, ordered by path.
 - `activity`: the newest `n` (default 10, at most 100) file and lock events from the [audit log](access.md): `checkout`,
   `release`, `checkin`, `restore`, `force_unlock`. Administrative events (members, roles, tokens, repository changes) and
