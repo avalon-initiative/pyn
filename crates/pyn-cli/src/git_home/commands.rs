@@ -127,6 +127,7 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
             worktree,
             ..
         } => super::switch::restore(git, cwd, &args, source.as_deref(), staged, worktree),
+        Command::Reset(_) => refuse("reset"),
         Command::Update { .. } => refuse("update"),
         Command::Get { .. } => refuse("get"),
         Command::Locks { .. } => server_only("locks"),

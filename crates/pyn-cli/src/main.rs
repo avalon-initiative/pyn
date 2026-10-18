@@ -16,6 +16,7 @@ mod git_home;
 mod http_transport;
 mod limits;
 mod local_commit;
+mod local_reset;
 mod local_store;
 mod local_sync;
 mod localfile;
@@ -128,6 +129,9 @@ enum Command {
     Tag(git_home::TagArgs),
     /// Save, list and restore local changes (a git repository only).
     Stash(git_home::StashArgs),
+    /// Drop unpublished local commits (a `--local-store` workspace), keeping their changes staged (--soft) or in the files
+    /// (default), or discarding them (--hard, asks for confirmation).
+    Reset(local_reset::ResetArgs),
     /// List and edit remotes; a pyn server has one, `origin`, set by `pyn config`.
     Remote(git_home::RemoteArgs),
     /// Download objects and refs from a git remote (a git repository only).
@@ -1367,6 +1371,9 @@ fn run(cli: Cli) -> Result<()> {
                     "Nothing to push: commits go straight to the server, so `pyn commit` has already published them."
                 ),
             }
+        }
+        Command::Reset(args) => {
+            local_reset::reset(&backend, in_workspace("reset")?, args)?;
         }
         Command::Tag(_) => {
             eprintln!("{}", unsupported::message("tag"));
@@ -2721,15 +2728,15 @@ fn token_command(api: &Api, cmd: TokenCommand) -> Result<()> {
 
 /// In a `local_store` workspace, the server's head revision of a path a local commit changed: the lock covers
 /// the merge that brings that revision in, so the stale revision the files were last updated at is not the base.
-fn local_base(
-    backend: &PynServer,
-    ws: Option<&Workspace>,
-    path: &str,
-) -> Result<Option<u64>> {
+fn local_base(backend: &PynServer, ws: Option<&Workspace>, path: &str) -> Result<Option<u64>> {
     let Some(store) = ws.and_then(local_store::LocalStore::open) else {
         return Ok(None);
     };
-    if !store.unpublished(&branch::name(ws))?.paths.contains_key(path) {
+    if !store
+        .unpublished(&branch::name(ws))?
+        .paths
+        .contains_key(path)
+    {
         return Ok(None);
     }
     Ok(backend

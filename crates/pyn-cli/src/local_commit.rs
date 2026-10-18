@@ -92,6 +92,14 @@ impl LocalStore {
         Ok(self.repo().refs().resolve(&tracking_ref(branch))?)
     }
 
+    /// Points the local branch at `to`, if it still is at `from`.
+    pub(crate) fn move_tip(&self, branch: &str, from: ObjectId, to: ObjectId) -> Result<()> {
+        self.repo()
+            .refs()
+            .update_checked(&local_ref(branch), Expect::Id(from), &to)
+            .context("the local branch moved while resetting; run the command again")
+    }
+
     /// Records the staged changes as one commit on the local branch; `None` when they change nothing.
     pub fn commit_staged(
         &self,

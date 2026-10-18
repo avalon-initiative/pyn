@@ -456,11 +456,62 @@ fn an_invalid_policy_is_refused_whole_with_nothing_pushed() {
         "{err}"
     );
     assert!(err.contains("nothing was pushed"), "{err}");
+    assert!(err.contains("pyn reset"), "{err}");
     assert_eq!(server_commits(&env, &ws), before);
     assert_eq!(
         git(&ws, &["rev-parse", "origin/main"]),
         git(&ws, &["rev-parse", "main~2"]),
     );
+
+    // The way out: drop the bad commit, keep the file to fix, commit and push.
+    let out = env.ok(&ws, "alice", &["reset", "HEAD~1"]);
+    assert!(out.contains("1 local commit(s)"), "{out}");
+    assert_eq!(
+        std::fs::read_to_string(ws.join(".pyn/pyn.toml")).unwrap(),
+        "this is not [valid toml"
+    );
+    assert!(
+        env.ok(&ws, "alice", &["status"]).contains("pyn.toml"),
+        "the change is back in the work tree"
+    );
+    commit_local(&env, &ws, "alice", ".pyn/pyn.toml", POLICY, "good policy");
+    env.ok(&ws, "alice", &["push"]);
+    // The add and the good policy, plus the server's own commit converting the policy's paths.
+    assert_eq!(server_commits(&env, &ws), before + 3);
+}
+
+#[test]
+fn reset_soft_keeps_the_changes_staged_and_hard_restores_the_files() {
+    let (env, ws) = seeded();
+    commit_local(&env, &ws, "alice", "Source/a.cpp", "edited\n", "edit");
+    commit_local(&env, &ws, "alice", "Source/new.cpp", "fresh", "add");
+    env.ok(&ws, "alice", &["reset", "--soft", "HEAD~2"]);
+    let status = env.ok(&ws, "alice", &["status"]);
+    assert!(
+        status.contains("Source/a.cpp") && status.contains("Source/new.cpp"),
+        "{status}"
+    );
+    assert!(!status.contains("local commit"), "{status}");
+    env.ok(&ws, "alice", &["commit", "-m", "again"]);
+    assert_eq!(
+        git(&ws, &["rev-list", "--count", "origin/main..main"]),
+        "1\n"
+    );
+
+    let err = env.fails(&ws, "alice", &["reset", "--hard", "HEAD~1"]);
+    assert!(err.contains("not confirmed"), "{err}");
+    env.ok(&ws, "alice", &["reset", "--hard", "--yes", "HEAD~1"]);
+    assert_eq!(
+        std::fs::read_to_string(ws.join("Source/a.cpp")).unwrap(),
+        "one\ntwo\nthree\n"
+    );
+    assert!(!ws.join("Source/new.cpp").exists());
+    assert_eq!(
+        git(&ws, &["rev-parse", "main"]),
+        git(&ws, &["rev-parse", "origin/main"])
+    );
+    let err = env.fails(&ws, "alice", &["reset", "HEAD~1"]);
+    assert!(err.contains("published") || err.contains("before"), "{err}");
 }
 
 #[test]

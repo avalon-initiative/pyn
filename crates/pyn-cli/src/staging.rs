@@ -133,7 +133,7 @@ impl Index {
     }
 }
 
-fn store(ws: &Workspace, hash: &str, bytes: &[u8]) -> Result<()> {
+pub(crate) fn store(ws: &Workspace, hash: &str, bytes: &[u8]) -> Result<()> {
     let dir = staged_dir(ws);
     std::fs::create_dir_all(&dir)?;
     let target = dir.join(hash);

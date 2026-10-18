@@ -264,6 +264,12 @@ With the setting on, `add`, `commit`, `status` and `branch` work against the sto
 - `pyn branch -v` shows the local tip, and how many commits are unpublished, for the branch the workspace is on.
   Creating, renaming and deleting branches still act on the server.
 - `pyn switch` and `pyn checkout <branch>` refuse to leave a branch that has unpublished local commits.
+- `pyn reset [--soft|--mixed|--hard] [<commit>]` moves the local branch back to `HEAD~N`, a hash on its unpublished chain, or
+  the last published commit (never further), which is the way out of a commit the server will not accept. `--soft` keeps the
+  dropped changes staged, `--mixed` (the default) keeps them in the files unstaged and clears the staging area, `--hard` puts
+  the files back to the commit and asks you to type the branch name (`--yes` skips that). Untracked files are left alone.
+- `pyn lock <path>` for a path a local commit changed takes the server's head revision as the base, so the lock the pull hint
+  asks for works after another person pushed a newer revision of it; `pyn pull` then keeps your version.
 
 Unchanged by the setting: `pyn commit <path> --file ... [--base ...]` and `pyn merge` still publish straight to the
 server, and the server stays the only authority over commits, locks and policy. Only the current branch is stored.

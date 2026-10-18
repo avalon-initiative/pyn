@@ -626,7 +626,7 @@ schedules them.
 
 | Git | Reason |
 | --- | --- |
-| `git reset`, `git clean` | No local history to reset; `pyn restore --staged`, `pyn restore` and `pyn update` cover the daily cases. |
+| `git reset`, `git clean` | `pyn reset` exists for unpublished commits of a `local_store` workspace only ([workspace](workspace.md#the-local-store-provisional)); otherwise there is no local history to reset: `pyn restore --staged`, `pyn restore` and `pyn update` cover the daily cases. `git clean` is not planned. |
 | `git rm`, `git mv` | Not a CLI verb yet; no issue schedules removing or renaming paths from the CLI. |
 | `git rebase`, `git cherry-pick`, `git revert` | History is append-only on the server. |
 | `git blame`, `git grep` | Not scheduled. |

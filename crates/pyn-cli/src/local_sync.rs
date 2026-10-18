@@ -73,7 +73,7 @@ fn verified(kind: Kind, id: &str, data: &str) -> Result<(ObjectId, Vec<u8>)> {
     Ok((wanted, body))
 }
 
-fn api_mode(mode: FileMode) -> Result<api::FileMode> {
+pub(crate) fn api_mode(mode: FileMode) -> Result<api::FileMode> {
     Ok(match mode {
         FileMode::Regular => api::FileMode::Regular,
         FileMode::Executable => api::FileMode::Executable,
@@ -106,7 +106,7 @@ impl LocalStore {
         Ok(known)
     }
 
-    fn tree_of(&self, commit: Option<ObjectId>) -> Result<Option<ObjectId>> {
+    pub(crate) fn tree_of(&self, commit: Option<ObjectId>) -> Result<Option<ObjectId>> {
         Ok(match commit {
             Some(id) => Some(self.repo().commit(&id)?.tree),
             None => None,
@@ -834,7 +834,7 @@ pub fn explain_push(err: anyhow::Error, branch: &str) -> anyhow::Error {
         "invalid_rules" => (
             format!(" ! [rejected]        {branch} -> {branch} (invalid policy)"),
             "The policy file in your commits does not validate.\n\
-             hint: Fix `.pyn/pyn.toml`, amend or add a commit, and push again.",
+             hint: Fix `.pyn/pyn.toml` and commit the fix, or drop the bad commit with `pyn reset HEAD~<n>` (see `pyn reset --help`), then push again.",
         ),
         _ => return err,
     };

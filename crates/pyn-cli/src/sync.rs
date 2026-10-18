@@ -23,7 +23,7 @@ pub fn mode_name(mode: api::Mode) -> &'static str {
 }
 
 /// Exclusive files stay read-only until their owner holds the lock.
-fn wants_read_only(entry: &api::FileEntry, me: &str) -> bool {
+pub(crate) fn wants_read_only(entry: &api::FileEntry, me: &str) -> bool {
     entry.mode == api::Mode::Exclusive && entry.lock.as_ref().is_none_or(|l| l.owner != me)
 }
 
