@@ -1102,6 +1102,7 @@ fn run(cli: Cli) -> Result<()> {
             };
             api.send(api.request(Method::PUT, "/v1/me/password").json(&body))?;
             println!("password changed");
+            report_ended_sign_in(api)?;
         }
         Command::Key(KeyCommand::Add { file, title }) => {
             let api = backend.pyn_server("key")?;
@@ -2796,6 +2797,35 @@ fn config_command(
                 settings.save(&w.config_path())?;
             }
         }
+    }
+    Ok(())
+}
+
+/// The server ends the sign-in tokens `pyn login` issued when a password changes. If this CLI's token was one,
+/// forget it and say so rather than leave a dead token stored.
+fn report_ended_sign_in(api: &Api) -> Result<()> {
+    let Some(token) = &api.token else {
+        return Ok(());
+    };
+    let ended = matches!(
+        api.send(api.get("/v1/me")),
+        Err(e) if e.downcast_ref::<client::ApiError>().is_some_and(|e| e.status == 401)
+    );
+    if !ended {
+        return Ok(());
+    }
+    let saved = credentials::load(&api.base)?.filter(|e| &e.token == token);
+    match saved {
+        Some(entry) => {
+            credentials::remove(&api.base)?;
+            println!(
+                "your sign-in on {} ended with the password change; run `pyn login {}` to sign in again",
+                api.base, entry.user
+            );
+        }
+        None => println!(
+            "the token this command used ended with the password change; sign in again with `pyn login`"
+        ),
     }
     Ok(())
 }

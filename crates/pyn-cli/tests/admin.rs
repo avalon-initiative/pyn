@@ -272,3 +272,45 @@ fn organizations_are_created_for_an_owner_and_deleted_with_confirmation() {
     let out = env.ok(&home, "root", &["admin", "org", "delete", "acme", "--yes"]);
     assert!(out.contains("deleted organization acme"), "{out}");
 }
+
+#[test]
+fn changing_the_password_says_the_saved_sign_in_ended_and_forgets_it() {
+    let (env, home) = set_up();
+    let new = "another long password";
+    let login = env.run_stdin(
+        &home,
+        "-",
+        &["login", "alice", "--password-stdin"],
+        &format!("{PASSWORD}\n"),
+    );
+    assert!(login.status.success(), "{}", text(&login));
+
+    let changed = env.run_stdin(
+        &home,
+        "-",
+        &["password", "--password-stdin"],
+        &format!("{PASSWORD}\n{new}\n"),
+    );
+    let out = text(&changed);
+    assert!(changed.status.success(), "{out}");
+    assert!(out.contains("password changed"), "{out}");
+    assert!(
+        out.contains("sign-in") && out.contains("ended") && out.contains("`pyn login alice`"),
+        "{out}"
+    );
+    let after = env.ok(&home, "-", &["logout"]);
+    assert!(
+        after.contains("not signed in"),
+        "no dead token kept: {after}"
+    );
+
+    let again = env.run_stdin(
+        &home,
+        "-",
+        &["login", "alice", "--password-stdin"],
+        &format!("{new}\n"),
+    );
+    assert!(again.status.success(), "{}", text(&again));
+    let whoami = env.ok(&home, "-", &["whoami"]);
+    assert!(whoami.contains("alice"), "{whoami}");
+}

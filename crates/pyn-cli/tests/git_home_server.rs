@@ -119,7 +119,8 @@ fn account_and_server_commands_run_inside_a_git_repository() {
         String::from_utf8_lossy(&out.stderr)
     );
 
-    assert!(env.ok(cwd, "-", &["logout"]).contains("signed out alice"));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("`pyn login alice`"));
+    assert!(env.ok(cwd, "-", &["logout"]).contains("not signed in"));
     assert_eq!(snapshot(cwd), before, "a command changed the repository");
 }
 
