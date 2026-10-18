@@ -236,13 +236,69 @@ async fn history_without_a_path_is_repository_wide_and_validates_its_parameters(
         "/v1/repos/owner/game/history?filter=%5B",
         "/v1/repos/owner/game/history?before=garbage",
         "/v1/repos/owner/game/history?path=a.txt&filter=*.ts",
-        "/v1/repos/owner/game/history?path=a.txt&limit=5",
+        "/v1/repos/owner/game/history?path=a.txt&before=garbage",
+        "/v1/repos/owner/game/history?path=a.txt&before=0",
     ] {
         let (status, body) = get_as(&app, uri, "alice").await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}");
         let err: api::ErrorBody = serde_json::from_slice(&body).unwrap();
         assert_eq!(err.code, "invalid_request", "{uri}");
     }
+}
+
+async fn put_text(app: &axum::Router, text: &str) -> String {
+    let put = Request::put("/v1/repos/owner/game/objects")
+        .header(api::DEV_USER_HEADER, "bob")
+        .body(Body::from(text.to_string()))
+        .unwrap();
+    let r = app.clone().oneshot(put).await.unwrap();
+    let obj: api::PutObjectResponse =
+        serde_json::from_slice(&r.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    obj.content
+}
+
+#[tokio::test]
+async fn a_path_history_is_paged_oldest_first_by_a_cursor() {
+    let app = app().await;
+    for i in 1..=3u64 {
+        let content = put_text(&app, &format!("v{i}")).await;
+        let base = (i > 1).then_some(i - 1);
+        let body = serde_json::json!({"path": "Source/a.cpp", "content": content, "base_revision": base, "message": format!("v{i}")});
+        let r = app
+            .clone()
+            .oneshot(json_post("/v1/repos/owner/game/checkin", "bob", body))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+    }
+    let page = |query: String| {
+        let app = app.clone();
+        async move {
+            let (status, body) = get_as(
+                &app,
+                &format!("/v1/repos/owner/game/history?path=Source/a.cpp{query}"),
+                "alice",
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{query}");
+            serde_json::from_slice::<api::HistoryPage>(&body).unwrap()
+        }
+    };
+    let ids = |p: &api::HistoryPage| p.revisions.iter().map(|r| r.id).collect::<Vec<_>>();
+
+    let all = page(String::new()).await;
+    assert_eq!((ids(&all), all.next_cursor), (vec![1, 2, 3], None));
+    let exact = page("&limit=3".into()).await;
+    assert_eq!((ids(&exact), exact.next_cursor), (vec![1, 2, 3], None));
+    let first = page("&limit=2".into()).await;
+    assert_eq!(ids(&first), [1, 2]);
+    let cursor = first.next_cursor.expect("a third revision remains");
+    let rest = page(format!("&limit=2&before={cursor}")).await;
+    assert_eq!((ids(&rest), rest.next_cursor), (vec![3], None));
+    let past = page("&before=3".into()).await;
+    assert!(past.revisions.is_empty() && past.next_cursor.is_none());
+    let capped = page("&limit=100000".into()).await;
+    assert_eq!(ids(&capped), [1, 2, 3]);
 }
 
 #[tokio::test]

@@ -134,3 +134,168 @@ pub async fn listings_page_in_the_store_and_agree_with_the_whole_listing(store: 
     let err = h.svc.tree(Some(&path("Nope"))).await.unwrap_err();
     assert!(matches!(err, PynError::PathNotFound(_)), "{err}");
 }
+
+pub async fn a_path_history_pages_by_revision_number_and_ends_exactly(store: Store) {
+    use super::{harness, path, put_on, user};
+    use crate::{PynError, RevisionId, decode_path_cursor, encode_path_cursor};
+
+    let h = harness(store);
+    let a = path("Source/a.cpp");
+    let empty = h.svc.history_page_on("main", &a, None, None).await.unwrap();
+    assert!(
+        empty.revisions.is_empty() && empty.next.is_none(),
+        "no revisions"
+    );
+
+    for i in 1..=5u64 {
+        put_on(
+            &h,
+            "main",
+            "alice",
+            &a,
+            &format!("v{i}"),
+            i.checked_sub(1).filter(|b| *b > 0),
+        )
+        .await;
+    }
+    let ids = |p: &crate::PathHistoryPage| p.revisions.iter().map(|r| r.id.0).collect::<Vec<_>>();
+
+    let exact = h
+        .svc
+        .history_page_on("main", &a, None, Some(5))
+        .await
+        .unwrap();
+    assert_eq!(
+        (ids(&exact), exact.next),
+        (vec![1, 2, 3, 4, 5], None),
+        "exactly at the limit"
+    );
+    let over = h
+        .svc
+        .history_page_on("main", &a, None, Some(6))
+        .await
+        .unwrap();
+    assert_eq!((ids(&over), over.next), (vec![1, 2, 3, 4, 5], None));
+    let one_short = h
+        .svc
+        .history_page_on("main", &a, None, Some(4))
+        .await
+        .unwrap();
+    assert_eq!(
+        (ids(&one_short), one_short.next),
+        (vec![1, 2, 3, 4], Some(RevisionId(4)))
+    );
+
+    let mut seen = Vec::new();
+    let mut after = None;
+    let mut pages = 0;
+    loop {
+        let page = h
+            .svc
+            .history_page_on("main", &a, after, Some(2))
+            .await
+            .unwrap();
+        seen.extend(ids(&page));
+        pages += 1;
+        after = page.next;
+        if after.is_none() {
+            break;
+        }
+    }
+    assert_eq!((seen, pages), (vec![1, 2, 3, 4, 5], 3));
+
+    let past = h
+        .svc
+        .history_page_on("main", &a, Some(RevisionId(5)), None)
+        .await
+        .unwrap();
+    assert!(
+        past.revisions.is_empty() && past.next.is_none(),
+        "after the last revision"
+    );
+    let zero = h
+        .svc
+        .history_page_on("main", &a, None, Some(0))
+        .await
+        .unwrap();
+    assert_eq!(ids(&zero), vec![1], "a zero limit is one");
+    let huge = h
+        .svc
+        .history_page_on("main", &a, None, Some(usize::MAX))
+        .await
+        .unwrap();
+    assert_eq!(
+        ids(&huge).len(),
+        5,
+        "an oversized limit is capped, not an error"
+    );
+    let default = h.svc.history_page_on("main", &a, None, None).await.unwrap();
+    assert_eq!(ids(&default).len(), 5);
+    assert_eq!(h.svc.history_on("main", &a).await.unwrap().len(), 5);
+
+    for bad in ["", "0", "-1", "x", "1.5"] {
+        assert!(
+            matches!(decode_path_cursor(bad), Err(PynError::InvalidRequest(_))),
+            "{bad:?}"
+        );
+    }
+    assert_eq!(
+        decode_path_cursor(&encode_path_cursor(RevisionId(4))).unwrap(),
+        RevisionId(4)
+    );
+
+    let map = path("Content/a.umap");
+    h.svc.checkout(&map, &user("alice"), None).await.unwrap();
+    put_on(&h, "main", "alice", &map, "v1", None).await;
+    h.svc
+        .create_branch(&crate::contract::who("alice"), "feature", None)
+        .await
+        .unwrap();
+    h.svc
+        .checkout_on("feature", &map, &user("bob"), Some(RevisionId(1)))
+        .await
+        .unwrap();
+    put_on(&h, "feature", "bob", &map, "v2", Some(1)).await;
+    h.svc
+        .checkout(&map, &user("alice"), Some(RevisionId(1)))
+        .await
+        .unwrap();
+    put_on(&h, "main", "alice", &map, "v3", Some(1)).await;
+    h.svc
+        .checkout_on("feature", &map, &user("bob"), Some(RevisionId(2)))
+        .await
+        .unwrap();
+    put_on(&h, "feature", "bob", &map, "v4", Some(2)).await;
+
+    let mut seen = Vec::new();
+    let mut after = None;
+    loop {
+        let page = h
+            .svc
+            .history_page_on("feature", &map, after, Some(1))
+            .await
+            .unwrap();
+        seen.extend(ids(&page));
+        after = page.next;
+        if after.is_none() {
+            break;
+        }
+    }
+    assert_eq!(
+        seen,
+        vec![1, 2, 4],
+        "a branch's page skips what it does not contain and still checks the links"
+    );
+    let main = h
+        .svc
+        .history_page_on("main", &map, None, Some(1))
+        .await
+        .unwrap();
+    assert_eq!((ids(&main), main.next), (vec![1], Some(RevisionId(1))));
+    let err = h
+        .svc
+        .history_page_on("nope", &map, None, None)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::BranchNotFound(_)), "{err}");
+}

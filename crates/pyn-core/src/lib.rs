@@ -55,7 +55,7 @@ pub use email::{EmailMessage, EmailSender, MemoryEmailSender, NullEmailSender};
 pub use error::{PynError, Result};
 pub use history::{
     HISTORY_DEFAULT_LIMIT, HISTORY_MAX_LIMIT, HISTORY_SCAN_BUDGET, HistoryCursor, HistoryPage,
-    HistoryScan,
+    HistoryScan, PathHistoryPage, decode_path_cursor, encode_path_cursor,
 };
 pub use integrity::{BreakKind, Problem, VerifyReport};
 pub use limits::{

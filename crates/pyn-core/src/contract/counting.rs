@@ -407,6 +407,20 @@ impl MetadataStore for CountingStore {
         self.inner.history(repo, path, within).await
     }
 
+    async fn history_page(
+        &self,
+        repo: &RepoId,
+        path: &RepoPath,
+        within: Option<&ObjectId>,
+        after: Option<RevisionId>,
+        limit: usize,
+    ) -> crate::Result<Vec<crate::Revision>> {
+        self.count();
+        self.inner
+            .history_page(repo, path, within, after, limit)
+            .await
+    }
+
     async fn repo_history(
         &self,
         repo: &RepoId,

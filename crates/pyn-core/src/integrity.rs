@@ -166,23 +166,30 @@ impl BreakKind {
     }
 }
 
+/// The hash, version and link breaks of `r`, given `pred`, the revision numbered one below it (none for r1).
+pub fn revision_breaks(r: &Revision, pred: Option<&Revision>) -> Vec<BreakKind> {
+    let mut breaks = Vec::new();
+    if r.version_problem().is_some() {
+        breaks.push(BreakKind::Version);
+    } else if r.expected_hash() != r.hash {
+        breaks.push(BreakKind::Hash);
+    }
+    let linked = match pred {
+        None => r.previous.is_none() && r.id.0 == 1,
+        Some(p) => r.previous.as_ref() == Some(&p.hash) && r.id.0 == p.id.0 + 1,
+    };
+    if !linked {
+        breaks.push(BreakKind::Link);
+    }
+    breaks
+}
+
 /// Every break in one path's revisions, oldest first; a missing revision shows as a broken link.
 pub fn verify_revisions(revisions: &[Revision]) -> Vec<(RevisionId, BreakKind)> {
     let mut breaks = Vec::new();
     let mut prior: Option<&Revision> = None;
     for r in revisions {
-        if r.version_problem().is_some() {
-            breaks.push((r.id, BreakKind::Version));
-        } else if r.expected_hash() != r.hash {
-            breaks.push((r.id, BreakKind::Hash));
-        }
-        let linked = match prior {
-            None => r.previous.is_none() && r.id.0 == 1,
-            Some(p) => r.previous.as_ref() == Some(&p.hash) && r.id.0 == p.id.0 + 1,
-        };
-        if !linked {
-            breaks.push((r.id, BreakKind::Link));
-        }
+        breaks.extend(revision_breaks(r, prior).into_iter().map(|k| (r.id, k)));
         if let Some(base) = r.base
             && (base >= r.id || !revisions.iter().any(|o| o.id == base))
         {

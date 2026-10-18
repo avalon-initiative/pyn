@@ -480,3 +480,29 @@ fn v1_revision() -> pyn_core::Revision {
         base: None,
     }
 }
+
+#[tokio::test]
+async fn a_path_history_page_checks_its_revisions_and_the_link_to_the_page_before() {
+    let w = world();
+    let a = three_revisions(&w).await;
+    w.meta.tamper(&w.repo, &a, RevisionId(3), |r| {
+        r.previous = Some(RevisionHash::new("00"));
+    });
+    let page = |after: Option<u64>| {
+        w.svc
+            .history_page_on("main", &a, after.map(RevisionId), Some(1))
+    };
+    assert_eq!(page(None).await.unwrap().next, Some(RevisionId(1)));
+    assert_eq!(page(Some(1)).await.unwrap().next, Some(RevisionId(2)));
+    let err = page(Some(2)).await.unwrap_err();
+    assert!(is_corrupt(&err) && err.to_string().contains("r3"), "{err}");
+
+    w.meta.tamper(&w.repo, &a, RevisionId(3), |r| {
+        r.previous = Some(RevisionHash::new("00"));
+    });
+    w.meta.tamper(&w.repo, &a, RevisionId(2), |r| {
+        r.message = "rewritten".into()
+    });
+    assert!(page(None).await.is_ok());
+    assert!(is_corrupt(&page(Some(1)).await.unwrap_err()));
+}

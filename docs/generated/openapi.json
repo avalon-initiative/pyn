@@ -4448,7 +4448,7 @@
           {
             "name": "path",
             "in": "query",
-            "description": "one path's revisions, oldest first; excludes the other parameters",
+            "description": "one path's revisions, oldest first, paged; excludes filter",
             "required": false,
             "schema": {
               "type": "string"
@@ -4466,7 +4466,7 @@
           {
             "name": "before",
             "in": "query",
-            "description": "the previous page's next_cursor",
+            "description": "the previous page's next_cursor, for repository history and for path",
             "required": false,
             "schema": {
               "type": "string"
@@ -4494,7 +4494,7 @@
             }
           },
           "400": {
-            "description": "invalid_request for a bad filter or cursor, or path combined with them",
+            "description": "invalid_request for a bad filter or cursor, or path combined with filter",
             "content": {
               "application/json": {
                 "schema": {
@@ -7934,14 +7934,14 @@
               "string",
               "null"
             ],
-            "description": "Pass as `before` to fetch the next, older page; null on the last page and with `path`."
+            "description": "Pass as `before` to fetch the next page (the next newer one with `path`, the next older one without); null on the last page."
           },
           "revisions": {
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/Revision"
             },
-            "description": "With `path`: all of that path's revisions, oldest first. Without: newest first."
+            "description": "With `path`: that path's revisions, oldest first. Without: newest first."
           }
         }
       },

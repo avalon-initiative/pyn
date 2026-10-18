@@ -26,9 +26,10 @@ use crate::commit_record::{TreeChange, tree_of};
 use crate::error::{PynError, Result};
 use crate::history::{
     HISTORY_DEFAULT_LIMIT, HISTORY_MAX_LIMIT, HISTORY_SCAN_BUDGET, HistoryCursor, HistoryPage,
+    PathHistoryPage,
 };
 use crate::integrity::{
-    BreakKind, Problem, VerifyReport, check_events, verify_audit, verify_revisions,
+    BreakKind, Problem, VerifyReport, check_events, revision_breaks, verify_audit, verify_revisions,
 };
 use crate::limits::{StorageCap, StorageCaps};
 use crate::object::ObjectStore;
@@ -1477,15 +1478,97 @@ impl RepoService {
         Ok(revisions)
     }
 
-    /// The part of a path's history that `branch` contains, oldest first; the whole line is checked first.
+    /// The part of a path's history that `branch` contains, oldest first, read page by page.
     pub async fn history_on(&self, branch: &str, path: &RepoPath) -> Result<Vec<Revision>> {
-        let all = self.history(path).await?;
+        let mut all = Vec::new();
+        let mut after = None;
+        loop {
+            let page = self
+                .history_page_on(branch, path, after, Some(HISTORY_MAX_LIMIT))
+                .await?;
+            all.extend(page.revisions);
+            after = page.next;
+            if after.is_none() {
+                return Ok(all);
+            }
+        }
+    }
+
+    /// One page of a path's revisions on `branch`, oldest first, numbered above `after`; each is checked against its
+    /// hash, its predecessor and its base. `limit` defaults to 50 and is capped at 200.
+    pub async fn history_page_on(
+        &self,
+        branch: &str,
+        path: &RepoPath,
+        after: Option<RevisionId>,
+        limit: Option<usize>,
+    ) -> Result<PathHistoryPage> {
+        let limit = limit
+            .unwrap_or(HISTORY_DEFAULT_LIMIT)
+            .clamp(1, HISTORY_MAX_LIMIT);
         let Some(tip) = self.head_of(branch).await? else {
-            return Ok(Vec::new());
+            return Ok(PathHistoryPage {
+                revisions: Vec::new(),
+                next: None,
+            });
         };
-        let kept = self.meta.history(&self.repo, path, Some(&tip)).await?;
-        let ids: std::collections::BTreeSet<_> = kept.iter().map(|r| r.id).collect();
-        Ok(all.into_iter().filter(|r| ids.contains(&r.id)).collect())
+        let mut revisions = self
+            .meta
+            .history_page(&self.repo, path, Some(&tip), after, limit + 1)
+            .await?;
+        let next = (revisions.len() > limit).then(|| {
+            revisions.truncate(limit);
+            revisions[limit - 1].id
+        });
+        if let Some((id, kind)) = self.run_breaks(path, &revisions).await?.first() {
+            return Err(PynError::HistoryCorrupt(format!(
+                "{path}@r{id}: {}",
+                kind.as_str()
+            )));
+        }
+        Ok(PathHistoryPage { revisions, next })
+    }
+
+    /// Breaks in `run`, revisions of one path oldest first that need not be consecutive: each is checked against the
+    /// revision one below it, read from the store when it is not in `run`, and against its base.
+    async fn run_breaks(
+        &self,
+        path: &RepoPath,
+        run: &[Revision],
+    ) -> Result<Vec<(RevisionId, BreakKind)>> {
+        let mut breaks = Vec::new();
+        for (i, r) in run.iter().enumerate() {
+            let pred = i
+                .checked_sub(1)
+                .map(|j| &run[j])
+                .filter(|p| p.id.0 + 1 == r.id.0);
+            let fetched;
+            let pred = match pred {
+                Some(p) => Some(p),
+                None if r.id.0 > 1 => {
+                    fetched = self
+                        .meta
+                        .get_revision(&self.repo, path, RevisionId(r.id.0 - 1))
+                        .await?;
+                    fetched.as_ref()
+                }
+                None => None,
+            };
+            breaks.extend(revision_breaks(r, pred).into_iter().map(|k| (r.id, k)));
+            if let Some(base) = r.base {
+                let known = base < r.id
+                    && (run.iter().any(|o| o.id == base)
+                        || self
+                            .meta
+                            .get_revision(&self.repo, path, base)
+                            .await?
+                            .is_some());
+                if !known {
+                    breaks.push((r.id, BreakKind::Base));
+                }
+            }
+        }
+        Ok(breaks)
     }
 
     /// Checks every path's revision chain, and the audit log when `audit` is set, reporting all breaks instead of

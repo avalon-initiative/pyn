@@ -1202,6 +1202,28 @@ impl MetadataStore for MemoryMetadataStore {
             .collect())
     }
 
+    async fn history_page(
+        &self,
+        repo: &RepoId,
+        path: &RepoPath,
+        within: Option<&ObjectId>,
+        after: Option<RevisionId>,
+        limit: usize,
+    ) -> Result<Vec<Revision>> {
+        let st = self.state.lock().unwrap();
+        let reachable = within.map(|t| st.ancestors(repo, t));
+        Ok(st
+            .revisions
+            .get(&(repo.clone(), path.clone()))
+            .into_iter()
+            .flatten()
+            .filter(|r| after.is_none_or(|a| r.id > a))
+            .filter(|r| reachable.as_ref().is_none_or(|a| a.contains(&r.commit)))
+            .take(limit)
+            .cloned()
+            .collect())
+    }
+
     async fn repo_history(
         &self,
         repo: &RepoId,

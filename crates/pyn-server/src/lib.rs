@@ -12,7 +12,7 @@ use pyn_core::repositories::OpenRepo;
 use pyn_core::{
     AccessService, AuditAction, AuditQuery, AuthProvider, ChangeEntry, Deletion, HistoryCursor,
     Identity, Keying, ObjectStore, PathFilter, Permission, Principal, PynError, RepoPath,
-    Repositories, RevisionId,
+    Repositories, RevisionId, decode_path_cursor, encode_path_cursor,
 };
 use pyn_proto as api;
 use serde::Deserialize;
@@ -1252,13 +1252,13 @@ struct HistoryQuery {
 #[utoipa::path(get, path = "/v1/repos/{owner}/{name}/history",
     params(RepoAddress,
            ("branch" = Option<String>, Query, description = "the branch to read; the default branch if omitted"),
-           ("path" = Option<String>, Query, description = "one path's revisions, oldest first; excludes the other parameters"),
+           ("path" = Option<String>, Query, description = "one path's revisions, oldest first, paged; excludes filter"),
            ("filter" = Option<String>, Query, description = "glob over paths for repository history; no slash matches at any depth"),
-           ("before" = Option<String>, Query, description = "the previous page's next_cursor"),
+           ("before" = Option<String>, Query, description = "the previous page's next_cursor, for repository history and for path"),
            ("limit" = Option<usize>, Query, description = "page size, default 50, max 200")),
     responses((status = 200, body = api::HistoryPage),
               (status = 404, body = api::ErrorBody, description = "branch_not_found"),
-              (status = 400, body = api::ErrorBody, description = "invalid_request for a bad filter or cursor, or path combined with them")))]
+              (status = 400, body = api::ErrorBody, description = "invalid_request for a bad filter or cursor, or path combined with filter")))]
 async fn history(
     State(s): State<AppState>,
     headers: HeaderMap,
@@ -1267,22 +1267,24 @@ async fn history(
 ) -> ApiResult<Json<api::HistoryPage>> {
     let repo = authorize_read(&s, &headers, &owner, &name).await?;
     if let Some(path) = q.path {
-        if q.filter.is_some() || q.before.is_some() || q.limit.is_some() {
-            return Err(PynError::InvalidRequest(
-                "path cannot be combined with filter, before or limit".into(),
-            )
-            .into());
+        if q.filter.is_some() {
+            return Err(
+                PynError::InvalidRequest("path cannot be combined with filter".into()).into(),
+            );
         }
-        let revs = repo
+        let after = q.before.as_deref().map(decode_path_cursor).transpose()?;
+        let page = repo
             .service
-            .history_on(
+            .history_page_on(
                 branch_of(q.branch.as_deref()),
                 &RepoPath::from_stored(path)?,
+                after,
+                q.limit,
             )
             .await?;
         return Ok(Json(api::HistoryPage {
-            revisions: revs.into_iter().map(revision_dto).collect(),
-            next_cursor: None,
+            revisions: page.revisions.into_iter().map(revision_dto).collect(),
+            next_cursor: page.next.map(encode_path_cursor),
         }));
     }
     let filter = q.filter.as_deref().map(PathFilter::new).transpose()?;

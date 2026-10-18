@@ -67,9 +67,54 @@ pub struct HistoryPage {
     pub next: Option<HistoryCursor>,
 }
 
+/// One page of a path's revisions on a branch, oldest first.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PathHistoryPage {
+    pub revisions: Vec<Revision>,
+    /// Pass back as `after` for the next, newer page; `None` on the last page.
+    pub next: Option<RevisionId>,
+}
+
+/// The opaque cursor after revision `id` of a path's history.
+pub fn encode_path_cursor(id: RevisionId) -> String {
+    id.0.to_string()
+}
+
+pub fn decode_path_cursor(s: &str) -> Result<RevisionId> {
+    match s.parse::<u64>() {
+        Ok(n) if n > 0 && n <= i64::MAX as u64 && !s.starts_with('+') => Ok(RevisionId(n)),
+        _ => Err(PynError::InvalidRequest(format!(
+            "invalid history cursor {s:?}"
+        ))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn path_cursors_are_revision_numbers() {
+        assert_eq!(
+            decode_path_cursor(&encode_path_cursor(RevisionId(7))).unwrap(),
+            RevisionId(7)
+        );
+        for bad in [
+            "",
+            "0",
+            "-1",
+            "+1",
+            "x",
+            "1.5",
+            "99999999999999999999",
+            "9223372036854775808",
+        ] {
+            assert!(
+                matches!(decode_path_cursor(bad), Err(PynError::InvalidRequest(_))),
+                "{bad:?}"
+            );
+        }
+    }
 
     #[test]
     fn cursors_round_trip_including_odd_paths() {

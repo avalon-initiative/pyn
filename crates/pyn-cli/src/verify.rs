@@ -82,10 +82,10 @@ fn served_revisions(api: &Api, path: Option<&str>) -> Result<Vec<api::Revision>>
     let mut before: Option<String> = None;
     loop {
         let mut req = api.get(&api.repo_route("/history")?);
-        req = match path {
-            Some(p) => req.query(&[("path", p)]),
-            None => req.query(&[("limit", "200")]),
-        };
+        req = req.query(&[("limit", "200")]);
+        if let Some(p) = path {
+            req = req.query(&[("path", p)]);
+        }
         if let Some(b) = &before {
             req = req.query(&[("before", b)]);
         }

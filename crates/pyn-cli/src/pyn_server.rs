@@ -203,15 +203,20 @@ impl Backend for PynServer {
 
     fn path_history(&self, path: &str) -> Result<Vec<api::Revision>> {
         let api = &self.api;
-        let page: api::HistoryPage = api
-            .send(
-                api.on_branch(
-                    api.get(&api.repo_route("/history")?)
-                        .query(&[("path", path)]),
-                ),
-            )?
-            .json()?;
-        Ok(page.revisions)
+        let mut revs: Vec<api::Revision> = Vec::new();
+        let mut before: Option<String> = None;
+        loop {
+            let mut query = vec![("path", path.to_string()), ("limit", "200".to_string())];
+            query.extend(before.take().map(|b| ("before", b)));
+            let page: api::HistoryPage = api
+                .send(api.on_branch(api.get(&api.repo_route("/history")?).query(&query)))?
+                .json()?;
+            revs.extend(page.revisions);
+            before = page.next_cursor;
+            if before.is_none() {
+                return Ok(revs);
+            }
+        }
     }
 
     fn repo_history(&self, filter: Option<&str>, limit: usize) -> Result<Vec<api::Revision>> {

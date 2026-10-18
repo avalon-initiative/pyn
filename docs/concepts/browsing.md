@@ -45,17 +45,19 @@ Watchers, forks and tags do not exist on the server and are not reported.
 
 `GET /v1/repos/{owner}/{name}/history` needs `read` and always answers `{ revisions, next_cursor }`. It has two modes.
 
-- **One path** (`path=<file>`): every revision of that path, **oldest first**, in one response with no `next_cursor`.
-  This is the order clients already rely on, so it is kept. `path` cannot be combined with the parameters below
-  (`400 invalid_request`).
+- **One path** (`path=<file>`): that path's revisions, **oldest first**, paged like the other mode with `limit` and `before`.
+  This is the order clients already rely on, so it is kept. `path` cannot be combined with `filter` (`400 invalid_request`).
+  Its `next_cursor` is the revision number to continue after (opaque to clients); keep following it until it is absent, because
+  a path with more than `limit` revisions no longer arrives in one response. Each revision on a page is checked against its hash,
+  the revision before it and its base, so a corrupt page is refused rather than served.
 - **Repository-wide** (no `path`): revisions of every path, **newest first**, as the same `Revision` objects (`id`, `path`,
   `author`, `message`, `created_at`, ...), paged.
 
 | Parameter | Meaning |
 | --- | --- |
 | `filter` | a glob over paths; only matching revisions are returned. A bad pattern is `400 invalid_request` |
-| `limit` | page size, default 50, at most 200 |
-| `before` | the previous page's `next_cursor`; omit for the first page |
+| `limit` | page size, default 50, at most 200 (a larger value is capped, 0 is 1) |
+| `before` | the previous page's `next_cursor`; omit for the first page. Not parsable is `400 invalid_request` |
 
 A request examines a bounded number of revisions. When a selective `filter` uses that up before the page is full, the response holds
 what matched so far and a `next_cursor`: keep following it until `next_cursor` is absent.
@@ -75,7 +77,7 @@ and never shift later pages. A cursor that does not parse is `400 invalid_reques
 
 ## Command line
 
-`pyn log <path>` (alias `pyn history`) lists one path's revisions, oldest first (`REV`, `AUTHOR`, `WHEN`, `MESSAGE`). `pyn log` without a
+`pyn log <path>` (alias `pyn history`) lists one path's revisions, oldest first (`REV`, `AUTHOR`, `WHEN`, `MESSAGE`), following the cursor in pages of 200. `pyn log` without a
 path lists the repository's, newest first, with a `PATH` column after `MESSAGE`; `--filter <glob>` narrows it and
 `--limit <n>` (default 50) sets how many to show, following the cursor as needed. `pyn log --commits` lists [commits](commits.md) instead.
 

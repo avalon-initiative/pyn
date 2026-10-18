@@ -1973,6 +1973,32 @@ impl MetadataStore for PgMetadataStore {
         rows.iter().map(revision_from).collect()
     }
 
+    async fn history_page(
+        &self,
+        repo: &RepoId,
+        path: &RepoPath,
+        within: Option<&ObjectId>,
+        after: Option<RevisionId>,
+        limit: usize,
+    ) -> Result<Vec<Revision>> {
+        let rows = sqlx::query(AssertSqlSafe(format!(
+            "{ANCESTORS}
+             SELECT {REVISION_COLUMNS} FROM revisions
+             WHERE repo = $2 AND path = $3 AND id > $4
+               AND ($1::text IS NULL OR commit_id IN (SELECT id FROM anc))
+             ORDER BY id LIMIT $5"
+        )))
+        .bind(within.map(ObjectId::to_hex))
+        .bind(repo.as_str())
+        .bind(path.as_str())
+        .bind(after.map_or(0, |a| a.0 as i64))
+        .bind(limit.min(i64::MAX as usize) as i64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        rows.iter().map(revision_from).collect()
+    }
+
     async fn repo_history(
         &self,
         repo: &RepoId,

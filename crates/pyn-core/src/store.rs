@@ -329,6 +329,17 @@ pub trait MetadataStore: Send + Sync {
         within: Option<&ObjectId>,
     ) -> Result<Vec<Revision>>;
 
+    /// One path's revisions numbered above `after`, oldest first, at most `limit`; with `within`, only those made in
+    /// that commit or an ancestor.
+    async fn history_page(
+        &self,
+        repo: &RepoId,
+        path: &RepoPath,
+        within: Option<&ObjectId>,
+        after: Option<RevisionId>,
+        limit: usize,
+    ) -> Result<Vec<Revision>>;
+
     /// At most `limit` revisions of the repository matching `filter`, newest first by (created_at, path, id) with paths
     /// compared bytewise, strictly before `before` when given; with `within`, only those made in that commit or an
     /// ancestor. The scan examines at most `budget` revisions; if that ends it before `limit` matches, `resume`
