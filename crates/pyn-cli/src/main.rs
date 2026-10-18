@@ -1468,9 +1468,13 @@ fn run(cli: Cli) -> Result<()> {
                 .as_ref()
                 .and_then(|w| w.load_state().ok())
                 .and_then(|s| s.get(&path).map(|k| k.revision));
+            let base = match base {
+                Some(b) => Some(b),
+                None => local_base(&backend, ws.as_ref(), &path)?.or(known),
+            };
             let body = api::CheckoutRequest {
                 path: path.clone(),
-                base_revision: base.or(known),
+                base_revision: base,
                 branch: api.branch.clone(),
             };
             let l: api::Lock = api
@@ -2713,6 +2717,26 @@ fn token_command(api: &Api, cmd: TokenCommand) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// In a `local_store` workspace, the server's head revision of a path a local commit changed: the lock covers
+/// the merge that brings that revision in, so the stale revision the files were last updated at is not the base.
+fn local_base(
+    backend: &PynServer,
+    ws: Option<&Workspace>,
+    path: &str,
+) -> Result<Option<u64>> {
+    let Some(store) = ws.and_then(local_store::LocalStore::open) else {
+        return Ok(None);
+    };
+    if !store.unpublished(&branch::name(ws))?.paths.contains_key(path) {
+        return Ok(None);
+    }
+    Ok(backend
+        .list_files()?
+        .into_iter()
+        .find(|e| e.path == path)
+        .and_then(|e| e.revision))
 }
 
 /// A stale-base refusal in a workspace means the file moved on: say how to catch up.

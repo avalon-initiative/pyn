@@ -5,6 +5,10 @@ use crate::types::{RepoPath, RevisionId, UserId};
 
 pub type Result<T, E = PynError> = std::result::Result<T, E>;
 
+fn revision_text(r: &Option<RevisionId>) -> String {
+    r.map_or("none".into(), |r| format!("r{r}"))
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum PynError {
     #[error("invalid path: {0:?}")]
@@ -53,7 +57,7 @@ pub enum PynError {
     LockRequired(RepoPath),
     #[error("{0} is not an exclusive path; there is nothing to lock")]
     NotExclusive(RepoPath),
-    #[error("stale base for {path}: you have {expected:?}, head is {actual:?}")]
+    #[error("stale base for {path}: you have {}, head is {}", revision_text(.expected), revision_text(.actual))]
     StaleBase {
         path: RepoPath,
         expected: Option<RevisionId>,
@@ -332,5 +336,23 @@ impl PynError {
             Self::Storage(_) => "storage",
             Self::HistoryCorrupt(_) => "history_corrupt",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_stale_base_names_revisions_in_plain_words() {
+        let err = PynError::StaleBase {
+            path: RepoPath::new("a.txt").unwrap(),
+            expected: Some(RevisionId(2)),
+            actual: None,
+        };
+        assert_eq!(
+            err.to_string(),
+            "stale base for a.txt: you have r2, head is none"
+        );
     }
 }

@@ -836,7 +836,7 @@ fn a_diverged_exclusive_path_is_refused_until_the_person_holds_its_lock() {
     let err = env.fails(&ws, "alice", &["pull", "--rebase"]);
     assert!(err.contains("Content/m.umap"), "{err}");
 
-    env.ok(&ws, "alice", &["lock", "Content/m.umap", "--base", "2"]);
+    env.ok(&ws, "alice", &["lock", "Content/m.umap"]);
     let out = env.ok(&ws, "alice", &["pull"]);
     assert!(out.contains("Kept your version of Content/m.umap"), "{out}");
     assert_eq!(parents(&ws, "main").len(), 2);
