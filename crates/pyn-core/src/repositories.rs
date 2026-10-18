@@ -56,6 +56,18 @@ pub struct Repositories {
     services: Mutex<HashMap<crate::RepoId, (RepoSettings, Arc<RepoService>)>>,
 }
 
+/// A private stand-in for a repository that does not exist, so a lookup does the work of a real one.
+fn absent_record(owner: &str, name: &str) -> RepoRecord {
+    RepoRecord {
+        id: crate::RepoId::new(String::new()),
+        owner: UserId::new(owner),
+        name: name.to_string(),
+        visibility: Visibility::Private,
+        settings: RepoSettings::default(),
+        created_at: chrono::DateTime::<chrono::Utc>::default(),
+    }
+}
+
 impl Repositories {
     /// `rules` apply to a repository until it has a `.pyn/pyn.toml`.
     pub fn new(
@@ -184,6 +196,31 @@ impl Repositories {
             .ok_or_else(|| PynError::RepoNotFound(format!("{owner}/{name}")))?;
         let service = self.service_for(&record).await?;
         Ok(OpenRepo { record, service })
+    }
+
+    /// Finds `owner/name` for a caller who may know about it, with what they may do there. A missing repository and one
+    /// the caller has no part in are the same `RepoNotFound`, reached through the same lookups.
+    pub async fn open_visible(
+        &self,
+        owner: &str,
+        name: &str,
+        who: Option<&Identity>,
+    ) -> Result<(OpenRepo, Principal)> {
+        let record = self.meta.find_repo(&UserId::new(owner), name).await?;
+        let principal = match &record {
+            Some(r) => self.principal_for(r, who).await?,
+            None => {
+                self.principal_for(&absent_record(owner, name), who).await?;
+                None
+            }
+        };
+        match (record, principal) {
+            (Some(record), Some(principal)) => {
+                let service = self.service_for(&record).await?;
+                Ok((OpenRepo { record, service }, principal))
+            }
+            _ => Err(PynError::RepoNotFound(format!("{owner}/{name}"))),
+        }
     }
 
     /// What the caller may do in the repository: their role, plus read on a public one for anyone, signed in or not.

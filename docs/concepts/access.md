@@ -126,7 +126,9 @@ accounts but do not gain that.
 Token management for another person is bounded by the same reach. A manager lists and revokes only the tokens limited to
 repositories where the manager holds `manage_users`, and the repositories shown are those. A token limited to any other
 repository, or one covering every repository (such as a sign-in token), is left out of the listing and revoking it reads
-as `404 token_not_found`; only a server administrator reaches those.
+as `404 token_not_found`; only a server administrator reaches those. A token id that does not exist, or that belongs to
+someone the caller cannot manage, gets the same answer. A bearer token with an unknown id and one with a wrong secret get
+the same `401`.
 
 ## Joining a server
 

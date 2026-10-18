@@ -172,7 +172,7 @@ follows the server) and `max_locks_set_by_policy` (true when `.pyn/pyn.toml` set
 
 - **See a repository.** Anyone, signed in or not, if it is public; otherwise only people who have a role in it. A private
   repository does not reveal that it exists to anyone else: every route answers `404 repo_not_found` for an outsider (or
-  an anonymous request) and for a repository that is not there.
+  an anonymous request) and for a repository that is not there; the two answers are identical apart from the address, and take the same lookups. A caller who can see the repository but lacks a permission still gets `403 forbidden`.
 - **Create.** Any signed-in account, in its own namespace, or a member of an organization its
   [creation policy](#repository-creation-policy) allows (owners always), in the organization's. A token
   can create a repository only if it is not limited to specific repositories and carries `manage_roles`.

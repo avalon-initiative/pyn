@@ -414,3 +414,139 @@ async fn new_writes_refuse_reserved_and_oversized_paths_and_text() {
         assert!(r.is(StatusCode::BAD_REQUEST, "invalid_request"));
     }
 }
+
+/// The body with the address (and ids) the caller asked about replaced, so two answers compare byte for byte.
+fn masked(r: &Reply, replace: &[(&str, &str)]) -> (StatusCode, String) {
+    let mut text = String::from_utf8(r.body.clone()).unwrap();
+    for (from, to) in replace {
+        text = text.replace(from, to);
+    }
+    (r.status, text)
+}
+
+#[tokio::test]
+async fn a_missing_repository_and_one_the_caller_cannot_see_answer_identically() {
+    let app = server(RegistrationMode::Open).await;
+    let (alice, bob) = (token_for(&app, "alice").await, token_for(&app, "bob").await);
+    let reader = token_for(&app, "reader").await;
+    send(
+        &app,
+        &alice,
+        "POST",
+        "/v1/repos",
+        Some(json!({"name": "vault", "visibility": "private"})),
+    )
+    .await;
+    grant(&app, &alice, "alice/vault", "reader", "reader").await;
+    send(
+        &app,
+        &bob,
+        "POST",
+        "/v1/repos",
+        Some(json!({"name": "own"})),
+    )
+    .await;
+    let scoped = send(
+        &app,
+        &bob,
+        "POST",
+        "/v1/tokens",
+        Some(json!({"name": "t", "permissions": ["read"], "repos": ["bob/own"]})),
+    )
+    .await
+    .json::<api::CreatedToken>()
+    .token;
+
+    let routes = [
+        ("GET", "", None),
+        ("GET", "/locks", None),
+        ("GET", "/members", None),
+        ("GET", "/history", None),
+        ("POST", "/checkout", Some(json!({"path": "a.txt"}))),
+        ("POST", "/push", Some(json!({"commits": [], "trees": []}))),
+    ];
+    for who in [&bob, &scoped] {
+        for (method, suffix, body) in &routes {
+            let hidden = send(
+                &app,
+                who,
+                method,
+                &format!("/v1/repos/alice/vault{suffix}"),
+                body.clone(),
+            )
+            .await;
+            let absent = send(
+                &app,
+                who,
+                method,
+                &format!("/v1/repos/alice/nothing{suffix}"),
+                body.clone(),
+            )
+            .await;
+            assert!(
+                hidden.is(StatusCode::NOT_FOUND, "repo_not_found"),
+                "{method} {suffix} {:?} {}",
+                hidden.status,
+                String::from_utf8_lossy(&hidden.body)
+            );
+            assert_eq!(
+                masked(&hidden, &[("alice/vault", "X")]),
+                masked(&absent, &[("alice/nothing", "X")]),
+                "{method} {suffix}"
+            );
+        }
+    }
+
+    let denied = send(
+        &app,
+        &reader,
+        "POST",
+        "/v1/repos/alice/vault/checkout",
+        Some(json!({"path": "a.txt"})),
+    )
+    .await;
+    assert!(denied.is(StatusCode::FORBIDDEN, "forbidden"));
+}
+
+#[tokio::test]
+async fn an_unknown_token_and_a_token_the_caller_cannot_manage_answer_identically() {
+    let app = server(RegistrationMode::Open).await;
+    let (alice, bob) = (token_for(&app, "alice").await, token_for(&app, "bob").await);
+    send(
+        &app,
+        &alice,
+        "POST",
+        "/v1/repos",
+        Some(json!({"name": "game"})),
+    )
+    .await;
+    let id = send(
+        &app,
+        &alice,
+        "POST",
+        "/v1/tokens",
+        Some(json!({"name": "ci", "permissions": ["read"], "repos": ["alice/game"]})),
+    )
+    .await
+    .json::<api::CreatedToken>()
+    .info
+    .id;
+    let missing = "0".repeat(id.len());
+    let foreign = send(&app, &bob, "DELETE", &format!("/v1/tokens/{id}"), None).await;
+    let absent = send(&app, &bob, "DELETE", &format!("/v1/tokens/{missing}"), None).await;
+    assert!(foreign.is(StatusCode::NOT_FOUND, "token_not_found"));
+    assert_eq!(
+        masked(&foreign, &[(&id, "X")]),
+        masked(&absent, &[(&missing, "X")])
+    );
+    let still = send(&app, &alice, "DELETE", &format!("/v1/tokens/{id}"), None).await;
+    assert_eq!(still.status, StatusCode::NO_CONTENT);
+
+    let (known, secret) = alice.rsplit_once('_').unwrap();
+    let wrong_secret = format!("{known}_{}", "f".repeat(secret.len()));
+    let unknown_id = format!("pyn_{}_{}", "e".repeat(12), "f".repeat(secret.len()));
+    let a = send(&app, &wrong_secret, "GET", "/v1/repos", None).await;
+    let b = send(&app, &unknown_id, "GET", "/v1/repos", None).await;
+    assert_eq!(a.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(masked(&a, &[]), masked(&b, &[]));
+}

@@ -759,11 +759,7 @@ pub(crate) async fn open_visible(
     owner: &str,
     name: &str,
 ) -> ApiResult<(OpenRepo, Principal)> {
-    let open = state.repos.open(owner, name).await?;
-    match state.repos.principal_for(&open.record, who).await? {
-        Some(principal) => Ok((open, principal)),
-        None => Err(PynError::RepoNotFound(format!("{owner}/{name}")).into()),
-    }
+    Ok(state.repos.open_visible(owner, name, who).await?)
 }
 
 /// Authenticates the request and resolves `owner/name`, checking the caller holds `need` there.

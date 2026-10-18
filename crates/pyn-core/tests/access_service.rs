@@ -266,7 +266,7 @@ async fn tokens_belong_to_their_owner_unless_an_admin_steps_in() {
     ));
     assert!(matches!(
         w.svc.revoke_token(&bob, &rec.id).await,
-        Err(PynError::Forbidden(ManageUsers))
+        Err(PynError::TokenNotFound(_))
     ));
     assert_eq!(
         w.svc

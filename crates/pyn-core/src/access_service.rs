@@ -838,14 +838,17 @@ impl AccessService {
             return self.identify_service(raw).await;
         }
         let (id, secret) = token::parse(raw).ok_or_else(|| unauthenticated("malformed token"))?;
-        let record = self
-            .store
-            .get_token(&id)
-            .await?
-            .ok_or_else(|| unauthenticated("unknown token"))?;
-        if !token::hashes_match(&record.secret_hash, &token::hash_secret(secret)) {
-            return Err(unauthenticated("unknown token"));
-        }
+        let presented = token::hash_secret(secret);
+        let record = self.store.get_token(&id).await?;
+        // Same hashing and comparison work whether or not the id exists.
+        let stored = record
+            .as_ref()
+            .map_or(presented.as_str(), |r| &r.secret_hash);
+        let matches = token::hashes_match(stored, &presented);
+        let record = match record {
+            Some(r) if matches => r,
+            _ => return Err(unauthenticated("unknown token")),
+        };
         let now = self.clock.now();
         if record.revoked_at.is_some() {
             return Err(unauthenticated("token revoked"));
@@ -864,14 +867,16 @@ impl AccessService {
     async fn identify_service(&self, raw: &str) -> Result<Identity> {
         let (id, secret) = service_credential::parse(raw)
             .ok_or_else(|| unauthenticated("malformed credential"))?;
-        let record = self
-            .store
-            .get_service_credential(&id)
-            .await?
-            .ok_or_else(|| unauthenticated("unknown credential"))?;
-        if !token::hashes_match(&record.secret_hash, &token::hash_secret(secret)) {
-            return Err(unauthenticated("unknown credential"));
-        }
+        let presented = token::hash_secret(secret);
+        let record = self.store.get_service_credential(&id).await?;
+        let stored = record
+            .as_ref()
+            .map_or(presented.as_str(), |r| &r.secret_hash);
+        let matches = token::hashes_match(stored, &presented);
+        let record = match record {
+            Some(r) if matches => r,
+            _ => return Err(unauthenticated("unknown credential")),
+        };
         if record.revoked_at.is_some() {
             return Err(unauthenticated("credential revoked"));
         }
@@ -1106,15 +1111,22 @@ impl AccessService {
     /// limited to; any other token of theirs reads as not found.
     pub async fn revoke_token(&self, actor: &Identity, id: &TokenId) -> Result<()> {
         actor.require_full_scope()?;
-        let record = self
-            .store
-            .get_token(id)
-            .await?
-            .ok_or_else(|| PynError::TokenNotFound(id.to_string()))?;
-        self.require_manages(actor, &record.user).await?;
-        if record.user != actor.user && !self.manages_token(actor, &record).await? {
-            return Err(PynError::TokenNotFound(id.to_string()));
-        }
+        let found = self.store.get_token(id).await?;
+        // A token the actor cannot manage reads the same as one that does not exist, with the same lookups.
+        let owner = found.as_ref().map_or(&actor.user, |r| &r.user);
+        let manages = match self.require_manages(actor, owner).await {
+            Ok(()) => true,
+            Err(PynError::Forbidden(_)) => false,
+            Err(e) => return Err(e),
+        };
+        let record = match found {
+            Some(r)
+                if manages && (r.user == actor.user || self.manages_token(actor, &r).await?) =>
+            {
+                r
+            }
+            _ => return Err(PynError::TokenNotFound(id.to_string())),
+        };
         self.store.revoke_token(id, self.clock.now()).await?;
         let detail = format!("token {} {:?} of {}", record.id, record.name, record.user);
         for repo in &record.repos {
