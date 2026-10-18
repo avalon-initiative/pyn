@@ -6,6 +6,22 @@ use pyn_proto as api;
 use crate::table;
 use crate::time;
 
+/// Prints the live locks a policy change released, who held each and until when.
+pub fn print_released(locks: &[api::Lock]) {
+    if locks.is_empty() {
+        return;
+    }
+    println!("The policy change made these paths shared, so their locks were released:");
+    for l in locks {
+        println!(
+            "  released {}'s lock on {} (held until {})",
+            l.owner,
+            l.path,
+            time::local(l.expires_at)
+        );
+    }
+}
+
 /// Prints `versions` under `heading`; nothing when there are none.
 pub fn print(heading: &str, versions: &[api::StrandedVersion]) {
     if versions.is_empty() {

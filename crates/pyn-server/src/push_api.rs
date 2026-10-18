@@ -11,7 +11,7 @@ use pyn_proto as api;
 
 use crate::{
     ApiResult, AppState, FileContent, RepoAddress, authorize_read, authorize_repo, branch_of,
-    parse_object_id, parse_range, range_not_satisfiable, revision_dto, stranded_dto,
+    lock_dto, parse_object_id, parse_range, range_not_satisfiable, revision_dto, stranded_dto,
 };
 
 /// The largest push body: the encoded commits and trees, never file content.
@@ -65,6 +65,7 @@ pub(crate) async fn push(
         head: head.to_hex(),
         revisions: pushed.revisions.into_iter().map(revision_dto).collect(),
         stranded: pushed.stranded.into_iter().map(stranded_dto).collect(),
+        released_locks: pushed.released_locks.into_iter().map(lock_dto).collect(),
     }))
 }
 

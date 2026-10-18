@@ -3282,6 +3282,7 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; changing_the_policy_in_a_push_needs_the_policy_permission);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; the_policy_file_cannot_be_deleted_by_a_push_to_the_default_branch);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_push_reports_the_versions_its_policy_strands);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_push_reports_the_locks_its_policy_releases);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_policy_file_pushed_to_another_branch_is_just_a_file);
     };
     (@one $factory:expr; [$(#[$attr:meta])*]; $name:ident) => {

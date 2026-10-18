@@ -8903,6 +8903,13 @@
             "type": "string",
             "description": "The branch's head commit after the push."
           },
+          "released_locks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Lock"
+            },
+            "description": "Live locks that a policy file in the push released because their paths became shared; omitted when there are none."
+          },
           "revisions": {
             "type": "array",
             "items": {

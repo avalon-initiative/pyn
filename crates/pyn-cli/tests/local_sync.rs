@@ -438,6 +438,27 @@ fn a_push_with_a_policy_commit_prints_the_versions_it_strands() {
 }
 
 #[test]
+fn a_push_that_makes_a_path_shared_reports_the_lock_it_released() {
+    let (env, ws) = seeded();
+    let other = clone_with(&env, "other", &[]);
+    env.ok(&other, "bob", &["lock", "Content/m.umap"]);
+    commit_local(
+        &env,
+        &ws,
+        "alice",
+        ".pyn/pyn.toml",
+        "[meta]\ndefault = \"shared\"\n",
+        "all shared",
+    );
+    let out = env.ok(&ws, "alice", &["push"]);
+    assert!(
+        out.contains("released bob's lock on Content/m.umap"),
+        "{out}"
+    );
+    assert!(env.ok(&ws, "alice", &["locks"]).contains("no locks"));
+}
+
+#[test]
 fn an_invalid_policy_is_refused_whole_with_nothing_pushed() {
     let (env, ws) = seeded();
     let before = server_commits(&env, &ws);

@@ -478,6 +478,9 @@ pub struct PushResponse {
     /// Shared versions on other branches that a policy file in the push stranded; omitted when there are none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stranded: Vec<StrandedVersion>,
+    /// Live locks that a policy file in the push released because their paths became shared; omitted when there are none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub released_locks: Vec<Lock>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]

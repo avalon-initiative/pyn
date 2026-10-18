@@ -85,7 +85,7 @@ is provisional.
 `<kind> <length>` header, and `id` is the SHA-256 git id it must hash to. Commits go oldest first; `trees` holds the trees the
 commits need that the server may not have. Blobs are not in the body: they are uploaded first through the chunked
 [object routes](storage.md), which is why a missing blob is `object_missing`. The body is at most 64 MiB. The answer is
-`{branch, head, revisions, stranded?}`: the branch's head after the push, the revisions the commits made, in commit order, and, when a policy commit in the push stranded shared versions, the same `stranded` list a direct policy commit reports.
+`{branch, head, revisions, stranded?, released_locks?}`: the branch's head after the push, the revisions the commits made, in commit order, and, when a policy commit in the push stranded shared versions, the same `stranded` list a direct policy commit reports; `released_locks` lists the live locks (path, owner, expiry) such a policy commit released because their paths became shared.
 
 The route is additive: `changesets` and `checkin` remain the direct route (decision #300), and no existing field changed.
 
@@ -238,7 +238,7 @@ With `local_store` on ([workspace](workspace.md#the-local-store-provisional)) th
   made, and exclusive files go read-only again (a deleted path leaves the workspace's state). A commit that deletes a path or
   changes `.pyn/pyn.toml` is sent like any other ([deletions and policy commits](#pushed-commits-provisional)); when the
   server adds conversion commits after a policy commit, the next `fetch` brings them in, and the stranded versions it reports
-  are printed after the push as for a direct policy commit. Output: `To <server>/<repo>` and `   <old>..<new>  main -> main`, or
+  are printed after the push as for a direct policy commit, followed by a line per lock the policy released (`released bob's lock on <path>`). Output: `To <server>/<repo>` and `   <old>..<new>  main -> main`, or
   `Everything up-to-date`.
 - A refused push prints a git-style `! [rejected]` line, the server's message, a hint and exits `1`:
   `not_fast_forward` and `stale_base` (also detected locally when the local branch does not build on the fetched tip) tell the

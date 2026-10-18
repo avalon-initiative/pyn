@@ -940,6 +940,7 @@ pub fn push(backend: &dyn Backend, ws: &Workspace) -> Result<()> {
         "The policy change left shared versions on other branches that can no longer merge:",
         &response.stranded,
     );
+    stranded::print_released(&response.released_locks);
     Ok(())
 }
 

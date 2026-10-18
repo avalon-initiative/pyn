@@ -16,7 +16,8 @@ use crate::object::REPO_ALGORITHM;
 use crate::rules::{Mode, POLICY_PATH, Rules};
 use crate::stranded::StrandedVersion;
 use crate::types::{
-    Commit, MAX_MESSAGE_BYTES, MAX_PUSH_COMMITS, NewRevision, PushedCommit, RepoPath, Revision,
+    Commit, Lock, MAX_MESSAGE_BYTES, MAX_PUSH_COMMITS, NewRevision, PushedCommit, RepoPath,
+    Revision,
 };
 
 /// Raw git objects a push carries: commits oldest first, and the trees they need that the server may not have.
@@ -47,6 +48,8 @@ struct Stage {
 pub struct Pushed {
     pub revisions: Vec<Revision>,
     pub stranded: Vec<StrandedVersion>,
+    /// Live locks the policy commits released because their paths became shared.
+    pub released_locks: Vec<Lock>,
 }
 
 /// What one commit changes against its parent tree, and the trees of it that were pushed.
@@ -223,6 +226,7 @@ impl RepoService {
             .await?;
         let mut applied = policies.into_iter();
         let mut stranded = Vec::new();
+        let mut released = Vec::new();
         for rev in &revs {
             let action = if rev.deleted {
                 AuditAction::Delete
@@ -241,6 +245,7 @@ impl RepoService {
                 && let Some(new) = applied.next()
                 && let Some(old) = self.apply(rev.id, new.clone())
             {
+                released.extend(self.conversions(&old, &new).await?.released_locks);
                 stranded.extend(self.policy_applied(who, rev, &old, &new).await?);
             }
         }
@@ -254,12 +259,14 @@ impl RepoService {
         }
         for (_, rev, new) in arrivals {
             if let Some(old) = self.apply(rev.id, new.clone()) {
+                released.extend(self.conversions(&old, &new).await?.released_locks);
                 stranded.extend(self.policy_applied(who, &rev, &old, &new).await?);
             }
         }
         Ok(Pushed {
             revisions: revs,
             stranded,
+            released_locks: released,
         })
     }
 

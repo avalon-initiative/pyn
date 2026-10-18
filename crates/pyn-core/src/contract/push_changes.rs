@@ -269,6 +269,41 @@ pub async fn a_policy_commit_on_the_default_branch_is_validated_and_applied(stor
     );
 }
 
+pub async fn a_push_reports_the_locks_its_policy_releases(store: Store) {
+    let h = harness(store);
+    let (mut files, base) = seeded(&h).await;
+    let a = path("Source/a.cpp");
+    let policy = path(POLICY);
+    set(&mut files, POLICY, blob(&h, A_EXCLUSIVE).await);
+    let first = build(&files, Some(base.id), "policy", 2);
+    let pushed = push(&h, &who("alice"), "main", &[&first]).await.unwrap();
+    assert!(pushed.released_locks.is_empty());
+
+    let head_a = h.svc.head(&a).await.unwrap().unwrap().id;
+    h.svc
+        .checkout(&a, &user("bob"), Some(head_a))
+        .await
+        .unwrap();
+    let head_policy = h.svc.head(&policy).await.unwrap().unwrap().id;
+    h.svc
+        .checkout(&policy, &user("alice"), Some(head_policy))
+        .await
+        .unwrap();
+    set(
+        &mut files,
+        POLICY,
+        blob(&h, "[meta]\ndefault = \"shared\"\n").await,
+    );
+    let tip = head(&h, "main").await;
+    let second = build(&files, tip, "all shared", 3);
+    let pushed = push(&h, &who("alice"), "main", &[&second]).await.unwrap();
+
+    assert_eq!(pushed.released_locks.len(), 1);
+    assert_eq!(pushed.released_locks[0].path, a);
+    assert_eq!(pushed.released_locks[0].owner, user("bob"));
+    assert!(h.svc.locks().await.unwrap().is_empty());
+}
+
 pub async fn a_policy_commit_changes_the_rules_for_the_commits_after_it(store: Store) {
     let h = harness(store);
     let (mut files, base) = seeded(&h).await;
