@@ -5578,6 +5578,16 @@
               }
             }
           },
+          "413": {
+            "description": "object_too_large for a body over 64 MiB",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "422": {
             "description": "push_unsupported: a commit with more than two parents or the same parent twice, a submodule, an empty commit, or the removal of the policy file from the default branch",
             "content": {
