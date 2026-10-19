@@ -615,6 +615,7 @@ fn init(git: &GitHome) -> Result<()> {
     let exclude = git.repo.git().common_dir().join("info/exclude");
     let added = add_exclude(&exclude)?;
     std::fs::create_dir_all(git.ws.dir.join("local_only"))?;
+    crate::repo_tool::set(&git.ws, crate::repo_tool::RepoTool::Git)?;
     let note = if added {
         format!("added {EXCLUDE_LINE} to {}", exclude.display())
     } else {

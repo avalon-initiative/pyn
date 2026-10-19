@@ -649,19 +649,25 @@ are compared with what git left on disk for the same commands.
 
 ### Which home
 
-pyn looks upward from the working directory for the nearest folder that holds either of these:
+pyn looks upward from the working directory, folder by folder, and the first (nearest) folder that makes a claim decides:
 
-- a `.git`: a folder, or a `gitdir:` file as in a linked worktree or a submodule;
-- a pyn server workspace: a `.pyn` folder that `pyn clone` filled in (it holds `local_only/state/files.toml`).
+1. a `repo_tool` marker in `.pyn/local_only/repo.toml` ([the marker](workspace.md#the-repotool-marker)) wins over everything
+   else in its folder: `pyn` makes it a pyn home even when a `.git` is there, and `git` makes it a git home even when it also
+   looks like a pyn server workspace. A `git` marker needs a `.git` in the same folder; without one it decides nothing and the
+   search goes on;
+2. without a marker, a `.git` (a folder, or a `gitdir:` file as in a linked worktree or a submodule) makes it a git home, and
+   a pyn server workspace (a `.pyn` folder that `pyn clone` filled in, holding `local_only/state/files.toml`) makes it a pyn
+   home. Where both sit in one folder, the pyn server workspace wins.
 
-The nearer one decides, so a clone made inside a git repository is a pyn workspace and a git repository inside a pyn
-workspace is a git home. In one folder, the pyn server workspace wins, which is also how a converted repository will say it
-has moved. Any other `.pyn` folder, such as one `pyn init` created or a committed `.pyn/pyn.toml`, leaves the home git.
+So a clone made inside a git repository is a pyn workspace, and a git repository inside a pyn workspace is a git home. A nearer
+`.git` beats a marker in a parent folder, and a nearer marker beats a `.git` above it. Any other `.pyn` folder, such as one
+`pyn init` created before the marker existed or a committed `.pyn/pyn.toml`, leaves the home git. A marker that is not `git`
+or `pyn` is an error naming the file.
 `GIT_DIR` and `GIT_WORK_TREE` are not read.
 
 `pyn init` in a git repository adds `.pyn/` to `.git/info/exclude` (the shared one, found through the `.git` file in a
-worktree or submodule) unless a line there already hides it, and creates `.pyn/local_only/`, where pyn keeps its own state
-for a git home. It is safe to run again.
+worktree or submodule) unless a line there already hides it, creates `.pyn/local_only/`, where pyn keeps its own state
+for a git home, and records `repo_tool = "git"` there. It is safe to run again.
 
 ### Ignored files
 

@@ -26,6 +26,7 @@ mod merging;
 mod migrate;
 mod probe;
 mod pyn_server;
+mod repo_tool;
 mod sanitize;
 mod snapshot;
 mod staging;

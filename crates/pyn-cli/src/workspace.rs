@@ -176,6 +176,10 @@ impl Workspace {
         self.dir.join(LOCAL_ONLY).join("config.toml")
     }
 
+    pub fn repo_tool_path(&self) -> PathBuf {
+        self.dir.join(LOCAL_ONLY).join("repo.toml")
+    }
+
     pub fn store_path(&self) -> PathBuf {
         self.dir.join(LOCAL_ONLY).join("store")
     }

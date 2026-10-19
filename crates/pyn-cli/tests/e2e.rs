@@ -91,7 +91,12 @@ fn init_in_a_git_repository_changes_only_the_exclude_file_and_pyn_folder() {
     let after = snapshot(&repo);
     assert_eq!(
         changed(&before, &after),
-        [".git/info/exclude", ".pyn", ".pyn/local_only"]
+        [
+            ".git/info/exclude",
+            ".pyn",
+            ".pyn/local_only",
+            ".pyn/local_only/repo.toml"
+        ]
     );
     assert_eq!(git(&repo, &["status", "--porcelain"]), status);
     assert!(

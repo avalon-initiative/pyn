@@ -32,6 +32,7 @@ use pyn_object::{FileMode, ObjectId, Signature};
 use pyn_proto as api;
 
 use crate::backend::Backend;
+use crate::repo_tool::{self, RepoTool};
 use crate::workspace::{self, Workspace};
 
 pub use clone::{CloneOptions, clone};
@@ -76,22 +77,41 @@ fn user_dirs() -> (Option<PathBuf>, Option<PathBuf>) {
     (dir("HOME"), dir("XDG_CONFIG_HOME"))
 }
 
-fn nearest_git(start: &Path) -> Option<&Path> {
-    start.ancestors().find(|p| p.join(".git").exists())
+/// The `.pyn` that belongs to folder `p`: `PYN_DIR` when it names one directly under `p`.
+fn pyn_dir_in(p: &Path) -> Workspace {
+    let dir = std::env::var_os("PYN_DIR")
+        .map(PathBuf::from)
+        .filter(|d| d.parent() == Some(p))
+        .unwrap_or_else(|| p.join(workspace::DIR));
+    Workspace {
+        root: p.to_path_buf(),
+        dir,
+    }
 }
 
-/// The git home `start` is in, if any: the nearest of `.git` and `.pyn` decides, and where both sit in one folder
-/// a `.pyn` that a clone filled in (a pyn server workspace) wins over the `.git`.
+/// The folder whose `.git` makes `start` a git home, or `None` when it is a pyn home.
+/// The nearest folder with a claim decides: a `repo_tool` marker wins over a `.git` or a server workspace beside it,
+/// a `git` marker needs a `.git` there, and without a marker a server workspace wins over the `.git` in its folder.
+fn git_root_of(start: &Path) -> Result<Option<&Path>> {
+    for p in start.ancestors() {
+        let ws = pyn_dir_in(p);
+        let marker = repo_tool::read(&ws)?;
+        let has_git = p.join(".git").exists();
+        match (marker, has_git, is_server_workspace(&ws)) {
+            (Some(RepoTool::Pyn), _, _) => return Ok(None),
+            (_, true, false) | (Some(RepoTool::Git), true, true) => return Ok(Some(p)),
+            (None, true, true) | (None, false, true) => return Ok(None),
+            _ => {}
+        }
+    }
+    Ok(None)
+}
+
+/// The git home `start` is in, if any: see [`git_root_of`] for which folder decides.
 pub fn detect(start: &Path) -> Result<Option<GitHome>> {
-    let Some(git_root) = nearest_git(start) else {
+    let Some(git_root) = git_root_of(start)? else {
         return Ok(None);
     };
-    if let Some(ws) = Workspace::discover(start)
-        && is_server_workspace(&ws)
-        && !(git_root.starts_with(&ws.root) && git_root != ws.root)
-    {
-        return Ok(None);
-    }
     let (home, xdg) = user_dirs();
     let repo = Repo::open(git_root, home.as_deref(), xdg.as_deref())
         .with_context(|| format!("opening the git repository at {}", git_root.display()))?;
@@ -449,5 +469,87 @@ mod tests {
             "a git repository inside a pyn workspace is a git home"
         );
         assert!(!is_git(&outer));
+    }
+
+    fn marker(at: &Path, value: &str) {
+        let dir = at.join(".pyn/local_only");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("repo.toml"), format!("repo_tool = \"{value}\"\n")).unwrap();
+    }
+
+    fn root() -> (tempfile::TempDir, PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        (tmp, root)
+    }
+
+    #[test]
+    fn a_pyn_marker_makes_a_pyn_home_even_with_a_git_directory() {
+        let (_keep, root) = root();
+        git_dir(&root);
+        marker(&root, "pyn");
+        std::fs::create_dir_all(root.join("a")).unwrap();
+        assert!(!is_git(&root) && !is_git(&root.join("a")));
+    }
+
+    #[test]
+    fn a_git_marker_beats_a_server_workspace_in_the_same_folder() {
+        let (_keep, root) = root();
+        git_dir(&root);
+        server_workspace(&root);
+        marker(&root, "git");
+        assert!(is_git(&root));
+    }
+
+    #[test]
+    fn a_git_marker_without_a_git_directory_decides_nothing() {
+        let (_keep, root) = root();
+        marker(&root, "git");
+        assert!(!is_git(&root));
+        server_workspace(&root);
+        assert!(!is_git(&root));
+    }
+
+    #[test]
+    fn a_pyn_marker_alone_is_a_pyn_home_and_stops_the_search() {
+        let (_keep, root) = root();
+        git_dir(&root);
+        let inner = root.join("inner");
+        std::fs::create_dir_all(&inner).unwrap();
+        marker(&inner, "pyn");
+        assert!(!is_git(&inner) && is_git(&root));
+    }
+
+    #[test]
+    fn the_nearest_folder_with_a_claim_wins_over_a_marker_above() {
+        let (_keep, root) = root();
+        git_dir(&root);
+        marker(&root, "pyn");
+        let inner = root.join("vendor/lib");
+        std::fs::create_dir_all(&inner).unwrap();
+        git_dir(&inner);
+        assert!(is_git(&inner), "a nearer .git beats a pyn marker above");
+        assert!(!is_git(&root.join("vendor")));
+
+        let (_keep2, outer) = self::root();
+        git_dir(&outer);
+        marker(&outer, "git");
+        let clone = outer.join("clone");
+        std::fs::create_dir_all(&clone).unwrap();
+        server_workspace(&clone);
+        assert!(
+            !is_git(&clone),
+            "a nearer server workspace beats a git marker above"
+        );
+        assert!(is_git(&outer));
+    }
+
+    #[test]
+    fn an_unknown_marker_value_is_an_error() {
+        let (_keep, root) = root();
+        git_dir(&root);
+        marker(&root, "svn");
+        let err = detect(&root).err().expect("an error").to_string();
+        assert!(err.contains("repo.toml"), "{err}");
     }
 }

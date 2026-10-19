@@ -355,7 +355,12 @@ fn init_hides_pyn_from_git_and_changes_nothing_else() {
             .collect();
         assert_eq!(
             changed,
-            [".git/info/exclude", ".pyn", ".pyn/local_only"],
+            [
+                ".git/info/exclude",
+                ".pyn",
+                ".pyn/local_only",
+                ".pyn/local_only/repo.toml"
+            ],
             "{format}: {changed:?}"
         );
         assert_eq!(
@@ -589,5 +594,29 @@ fn a_clone_made_inside_a_git_repository_is_still_a_pyn_workspace() {
     assert!(
         out.starts_with("On branch main\n") && out.contains("clones/"),
         "{out}"
+    );
+}
+
+#[test]
+fn init_records_the_git_marker_and_a_pyn_marker_turns_the_home_to_pyn() {
+    let repo = Repo::new("sha1");
+    repo.ok(&["init"]);
+    let file = repo.main.join(".pyn/local_only/repo.toml");
+    assert_eq!(fs::read_to_string(&file).unwrap(), "repo_tool = \"git\"\n");
+    repo.ok(&["status"]);
+
+    fs::write(&file, "repo_tool = \"pyn\"\n").unwrap();
+    let (_, err) = repo.fails(&["log"]);
+    assert!(!err.contains("not available on a git repository"), "{err}");
+    assert!(
+        repo.run_in(&repo.main, &["init"]).status.code() == Some(1),
+        "a pyn home refuses init"
+    );
+
+    fs::write(&file, "repo_tool = \"svn\"\n").unwrap();
+    let (code, err) = repo.fails(&["status"]);
+    assert!(
+        code != 0 && err.contains("unknown repo_tool \"svn\""),
+        "{err}"
     );
 }

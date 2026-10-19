@@ -11,6 +11,7 @@ anything related to pyn.
   local_only/       never tracked
     ignore          personal ignore patterns, added to the shared ignore
     config.toml     workspace settings: server, repository, identity
+    repo.toml       the repo_tool marker: whether this checkout acts as git or pyn (optional)
     state/          which revision each local file is at, and which branch the workspace is on
     cache/          downloaded content
 ```
@@ -48,6 +49,21 @@ it, whereas the local settings layer in the order above.
 In a git repository `.pyn/` holds only pyn's own state, in `local_only/`, and `pyn init` hides it from git by adding `.pyn/` to
 `.git/info/exclude`, so git never sees it. The policy file is not read there: a git repository has no exclusive paths. See
 [git compatibility](git-compatibility.md#on-a-git-home) for how pyn tells a git repository from a pyn server workspace.
+
+## The `repo_tool` marker
+
+`.pyn/local_only/repo.toml` holds one key, `repo_tool`, with the value `git` or `pyn`:
+
+```toml
+repo_tool = "git"
+```
+
+It says which tool the checkout acts as. It is local to the checkout and never versioned, so a teammate's checkout of the same
+git repository is unaffected. `pyn init` in a git repository records `git`, and `pyn convert` will set it to `pyn`, after
+which pyn's configs and server features apply even though a `.git` remains. A repository created or cloned from a pyn server
+needs no marker: absence means `pyn`. A present marker wins over inferring the home from `.git` and the clone's state files,
+and an unknown value is an error. The nearest folder that makes a claim decides; the full rule is in
+[which home](git-compatibility.md#which-home).
 
 ## Working in a workspace
 
