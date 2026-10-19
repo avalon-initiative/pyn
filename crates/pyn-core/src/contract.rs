@@ -5969,6 +5969,37 @@ pub async fn oversized_user_names_get_fixed_size_limit_keys(store: RateLimits) {
     assert!(matches!(err, PynError::TooManyAttempts { .. }), "{err}");
 }
 
+pub async fn wrong_current_passwords_are_limited_per_account(store: RateLimits) {
+    let (svc, _) = limited_world(store).await;
+    let alice = crate::Identity {
+        user: crate::UserId::new("alice"),
+        credential: crate::Credential::Session,
+    };
+    let limit = crate::RateLimits::default().sign_in_per_account;
+    for _ in 0..limit {
+        let err = svc
+            .change_password(
+                &alice,
+                Some("wrong password"),
+                "another long password",
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, PynError::Unauthenticated(_)), "{err}");
+    }
+    let err = svc
+        .change_password(
+            &alice,
+            Some("correct horse battery"),
+            "another long password",
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::TooManyAttempts { .. }), "{err}");
+}
+
 /// Organization `acme`: owner alice; members bob, carol (team art), dave (team eng), plus alice in art; erin outside.
 struct CreationWorld {
     store: Access,
@@ -7695,6 +7726,7 @@ macro_rules! rate_limit_contract_tests {
         $crate::rate_limit_contract_tests!(@one $factory; [$(#[$attr])*]; refund_takes_one_event_back);
         $crate::rate_limit_contract_tests!(@one $factory; [$(#[$attr])*]; parallel_sign_ins_verify_at_most_the_limit);
         $crate::rate_limit_contract_tests!(@one $factory; [$(#[$attr])*]; oversized_user_names_get_fixed_size_limit_keys);
+        $crate::rate_limit_contract_tests!(@one $factory; [$(#[$attr])*]; wrong_current_passwords_are_limited_per_account);
     };
     (@one $factory:expr; [$(#[$attr:meta])*]; $name:ident) => {
         #[tokio::test(flavor = "multi_thread")]

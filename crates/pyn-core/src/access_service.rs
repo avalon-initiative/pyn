@@ -1378,12 +1378,13 @@ impl AccessService {
         let limits = &self.config.limits;
         let account_key = format!("sign-in:account:{}", bounded_key(&username.to_lowercase()));
         let client_key = client.map(|c| format!("sign-in:client:{}", bounded_key(c)));
-        self.count_limited(&account_key, limits.sign_in_per_account, SIGN_IN_WINDOW)
-            .await?;
+        // Client first: a refused client creates no per-account row.
         if let Some(key) = &client_key {
             self.count_limited(key, limits.sign_in_per_client, SIGN_IN_WINDOW)
                 .await?;
         }
+        self.count_limited(&account_key, limits.sign_in_per_account, SIGN_IN_WINDOW)
+            .await?;
 
         let user = UserId::new(username);
         let verified = match self.store.password_hash(&user).await? {
@@ -1813,6 +1814,12 @@ impl AccessService {
         actor.require_full_scope()?;
         account::validate_password(new)?;
         if let Some(hash) = self.store.password_hash(&actor.user).await? {
+            let key = format!(
+                "password:account:{}",
+                bounded_key(&actor.user.as_str().to_lowercase())
+            );
+            self.count_limited(&key, self.config.limits.sign_in_per_account, SIGN_IN_WINDOW)
+                .await?;
             let ok = match current {
                 Some(current) => self.passwords.verify(current, &hash).await,
                 None => false,
@@ -1822,6 +1829,7 @@ impl AccessService {
                     "the current password is wrong".into(),
                 ));
             }
+            self.limits.reset(&key).await?;
         } else if !matches!(actor.credential, Credential::Session) {
             return Err(PynError::Unauthenticated(
                 "a first password can be set only from a signed-in web session".into(),

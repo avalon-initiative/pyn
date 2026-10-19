@@ -8,7 +8,7 @@ use super::*;
 const SETTINGS_TTL: Duration = Duration::seconds(60);
 const SETUP_WINDOW: Duration = Duration::minutes(15);
 const FAILURES_PER_CLIENT: u32 = 10;
-const FAILURES_PER_SERVER: u32 = 50;
+const FAILURES_PER_SERVER: u32 = 1000;
 const SERVER_KEY: &str = "setup:server";
 const MIN_TOKEN_LENGTH: usize = 16;
 const MAX_SERVER_NAME: usize = 100;
@@ -158,7 +158,7 @@ impl AccessService {
     }
 
     /// Creates the first administrator and records the server's essentials. Runs once: later calls get
-    /// `AlreadyInitialised`. Attempts count against a per-client and a server-wide limit and a right token gives its count back.
+    /// `AlreadyInitialised`. Attempts count against a per-client limit and a much higher server-wide ceiling and a right token gives its count back.
     pub async fn complete_setup(&self, request: SetupRequest<'_>) -> Result<UserId> {
         if self.is_initialised().await? {
             return Err(PynError::AlreadyInitialised);
@@ -166,12 +166,13 @@ impl AccessService {
         let client_key = request
             .client
             .map(|c| format!("setup:client:{}", bounded_key(c)));
-        self.count_limited(SERVER_KEY, FAILURES_PER_SERVER, SETUP_WINDOW)
-            .await?;
+        // Client first: a refused client must not spend the shared ceiling.
         if let Some(key) = &client_key {
             self.count_limited(key, FAILURES_PER_CLIENT, SETUP_WINDOW)
                 .await?;
         }
+        self.count_limited(SERVER_KEY, FAILURES_PER_SERVER, SETUP_WINDOW)
+            .await?;
         let expected = self.setup.token_hash.lock().unwrap().clone();
         let presented = token::hash_secret(request.token);
         if !expected.is_some_and(|hash| token::hashes_match(&hash, &presented)) {

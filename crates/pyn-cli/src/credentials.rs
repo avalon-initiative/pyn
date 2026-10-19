@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
@@ -105,6 +106,59 @@ fn write_private(dir: &Path, path: &Path, text: &str) -> Result<()> {
     Ok(())
 }
 
+const LOCK_NAME: &str = ".credentials.lock";
+const LOCK_WAIT: Duration = Duration::from_secs(10);
+const LOCK_STALE: Duration = Duration::from_secs(30);
+
+/// An advisory lock around the credentials read-modify-write: a lock file made with `create_new`,
+/// removed on drop. One older than `LOCK_STALE` is taken as left by a crashed process and broken.
+struct Lock {
+    path: PathBuf,
+}
+
+impl Lock {
+    fn acquire(dir: &Path) -> Result<Lock> {
+        let path = dir.join(LOCK_NAME);
+        let started = Instant::now();
+        loop {
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(_) => return Ok(Lock { path }),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let age = std::fs::metadata(&path)
+                        .and_then(|m| m.modified())
+                        .ok()
+                        .and_then(|t| t.elapsed().ok());
+                    if age.is_some_and(|a| a > LOCK_STALE) {
+                        let _ = std::fs::remove_file(&path);
+                        continue;
+                    }
+                    if started.elapsed() > LOCK_WAIT {
+                        bail!(
+                            "another pyn command is updating {}; remove {} if none is running",
+                            dir.join(FILE_NAME).display(),
+                            path.display()
+                        );
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Err(e) => {
+                    return Err(e).with_context(|| format!("locking {}", path.display()));
+                }
+            }
+        }
+    }
+}
+
+impl Drop for Lock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
 /// No saved sign-in when there is no configuration directory; a damaged file is an error.
 pub fn load(server: &str) -> Result<Option<Entry>> {
     let Ok(dir) = dir() else {
@@ -118,6 +172,8 @@ pub fn save(server: &str, entry: Entry) -> Result<()> {
 }
 
 fn save_in(dir: &Path, server: &str, entry: Entry) -> Result<()> {
+    create_private_dir(dir)?;
+    let _lock = Lock::acquire(dir)?;
     let mut file = read_in(dir)?;
     file.servers.insert(server.to_string(), entry);
     write_in(dir, &file)
@@ -129,6 +185,10 @@ pub fn remove(server: &str) -> Result<bool> {
 }
 
 fn remove_in(dir: &Path, server: &str) -> Result<bool> {
+    if !dir.exists() {
+        return Ok(false);
+    }
+    let _lock = Lock::acquire(dir)?;
     let mut file = read_in(dir)?;
     let had = file.servers.remove(server).is_some();
     if had {
@@ -187,6 +247,35 @@ pub fn read_password(prompt: &str, from_stdin: bool) -> Result<String> {
         return Ok(line);
     }
     Ok(rpassword::prompt_password(prompt)?)
+}
+
+/// The token for `--token`: the value itself, or one line of standard input for `-`. A value given on the
+/// command line (`on_command_line`) is visible in the process list, so it earns a warning.
+pub fn resolve_token(
+    value: Option<String>,
+    on_command_line: bool,
+    stdin: &mut impl std::io::BufRead,
+    warn: &mut impl std::io::Write,
+) -> Result<Option<String>> {
+    match value.as_deref() {
+        Some("-") => {
+            let mut line = String::new();
+            stdin.read_line(&mut line)?;
+            let line = line.trim_end_matches(['\r', '\n']).to_string();
+            if line.is_empty() {
+                bail!("no token on standard input");
+            }
+            Ok(Some(line))
+        }
+        Some(_) if on_command_line => {
+            writeln!(
+                warn,
+                "warning: a token on the command line is visible in the process list; use `--token -` to read it from standard input, or PYN_TOKEN"
+            )?;
+            Ok(value)
+        }
+        _ => Ok(value),
+    }
 }
 
 /// Asks for a new password twice.
@@ -287,6 +376,78 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(tmp.path().join(FILE_NAME)).unwrap(),
             before
+        );
+    }
+
+    #[test]
+    fn concurrent_saves_lose_no_entry_and_leave_no_lock() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
+        let threads: Vec<_> = (0..8)
+            .map(|i| {
+                let dir = dir.clone();
+                std::thread::spawn(move || {
+                    save_in(&dir, &format!("https://s{i}"), entry("t")).unwrap()
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        assert_eq!(read_in(&dir).unwrap().servers.len(), 8);
+        assert!(!dir.join(LOCK_NAME).exists());
+    }
+
+    #[test]
+    fn a_stale_lock_is_broken_and_a_fresh_one_is_waited_for() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lock = tmp.path().join(LOCK_NAME);
+        let stale = std::fs::File::create(&lock).unwrap();
+        stale
+            .set_modified(std::time::SystemTime::now() - Duration::from_secs(120))
+            .unwrap();
+        save_in(tmp.path(), "https://a", entry("t")).unwrap();
+        assert!(!lock.exists());
+
+        std::fs::File::create(&lock).unwrap();
+        let path = lock.clone();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            std::fs::remove_file(path).unwrap();
+        });
+        save_in(tmp.path(), "https://b", entry("t")).unwrap();
+        release.join().unwrap();
+        assert_eq!(read_in(tmp.path()).unwrap().servers.len(), 2);
+    }
+
+    #[test]
+    fn a_token_of_dash_is_read_from_stdin_and_a_command_line_value_warns() {
+        let mut warn = Vec::new();
+        let got = resolve_token(
+            Some("-".into()),
+            true,
+            &mut "pyn_1_x\nrest".as_bytes(),
+            &mut warn,
+        );
+        assert_eq!(got.unwrap().as_deref(), Some("pyn_1_x"));
+        assert!(warn.is_empty());
+        assert!(resolve_token(Some("-".into()), true, &mut "".as_bytes(), &mut warn).is_err());
+
+        let got = resolve_token(Some("pyn_2_y".into()), true, &mut "".as_bytes(), &mut warn);
+        assert_eq!(got.unwrap().as_deref(), Some("pyn_2_y"));
+        assert!(
+            String::from_utf8(warn.clone())
+                .unwrap()
+                .contains("--token -")
+        );
+
+        warn.clear();
+        let got = resolve_token(Some("pyn_3_z".into()), false, &mut "".as_bytes(), &mut warn);
+        assert_eq!(got.unwrap().as_deref(), Some("pyn_3_z"));
+        assert!(warn.is_empty());
+        assert_eq!(
+            resolve_token(None, true, &mut "".as_bytes(), &mut warn).unwrap(),
+            None
         );
     }
 
