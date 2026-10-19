@@ -5,12 +5,16 @@ use std::io::Write;
 use std::path::Path;
 
 use anyhow::{Result, bail};
-use pyn_gitwork::{Change, Entry, Head, Kind, Pathspec, fs_path, hash_worktree_file};
+use pyn_git::Refspec;
+use pyn_gitwork::{
+    Change, Conflict, Entry, Head, Kind, Pathspec, StatusEntry, fs_path, hash_worktree_file,
+};
 use pyn_object::{Commit as GitCommit, ObjectId};
 
 use super::{GitHome, file_mode, path_string, stage};
 use crate::backend::Backend;
 use crate::diff::{self, Blob, Source, Tree};
+use crate::short_status::{self, Format, Row, StatusArgs};
 use crate::{Command, table, time, unsupported};
 
 /// The commit abbreviation `Merge:` lines use.
@@ -26,13 +30,13 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
         }
     };
     match command {
-        Command::Status { revision } => {
-            if revision.is_some() {
+        Command::Status(args) => {
+            if args.revision.is_some() {
                 bail!(
                     "`pyn status --revision` compares with a pyn commit; a git repository has none"
                 );
             }
-            status(git)
+            status(git, cwd, &args)
         }
         Command::Diff {
             args,
@@ -194,8 +198,31 @@ fn short(id: &ObjectId) -> String {
     id.to_hex()[..ABBREV].to_string()
 }
 
-pub(super) fn status(git: &GitHome) -> Result<()> {
-    let status = git.repo.status()?;
+pub(super) fn status(git: &GitHome, cwd: &Path, args: &StatusArgs) -> Result<()> {
+    let mut status = git.repo.status()?;
+    let specs = stage::resolve_specs(git, cwd, &args.paths)?;
+    status.entries.retain(|e| specs.spec.matches(&e.path));
+    let format = args.format();
+    if format != Format::Table {
+        let branch = args
+            .branch
+            .then(|| branch_line(git, &status.head))
+            .transpose()?;
+        let prefix = git.ws.repo_prefix(cwd, ".")?;
+        let quote_high = git.repo.bool_setting("core.quotePath", true);
+        let rows = short_rows(&status.entries);
+        return short_status::print(
+            &rows,
+            branch.as_deref(),
+            format,
+            prefix.as_bytes(),
+            quote_high,
+        );
+    }
+    status_table(&status)
+}
+
+pub(super) fn status_table(status: &pyn_gitwork::Status) -> Result<()> {
     let line = match &status.head {
         Head::Branch { name, id: Some(_) } => format!("On branch {name}"),
         Head::Branch { name, id: None } => format!("On branch {name} (no commits yet)"),
@@ -230,6 +257,109 @@ pub(super) fn status(git: &GitHome) -> Result<()> {
     };
     println!("{staged} staged, {modified} modified, {untracked} untracked{conflicts}");
     Ok(())
+}
+
+fn letter(kind: Option<Kind>) -> char {
+    match kind {
+        Some(Kind::Added) => 'A',
+        Some(Kind::Modified) => 'M',
+        Some(Kind::Deleted) => 'D',
+        Some(Kind::TypeChange) => 'T',
+        _ => ' ',
+    }
+}
+
+/// git's two-letter code for an unmerged path, from the stages the index holds.
+fn conflict_code(c: Conflict) -> (char, char) {
+    match (c.base, c.ours, c.theirs) {
+        (true, true, true) => ('U', 'U'),
+        (false, true, true) => ('A', 'A'),
+        (true, false, true) => ('D', 'U'),
+        (true, true, false) => ('U', 'D'),
+        (false, false, true) => ('U', 'A'),
+        (false, true, false) => ('A', 'U'),
+        _ => ('D', 'D'),
+    }
+}
+
+fn short_rows(entries: &[StatusEntry]) -> Vec<Row> {
+    let mut rows = Vec::new();
+    for e in entries {
+        if let Some(c) = e.conflict {
+            let (x, y) = conflict_code(c);
+            rows.push(Row {
+                x,
+                y,
+                path: e.path.clone(),
+            });
+        } else if e.unstaged == Some(Kind::Untracked) {
+            if e.staged.is_some() {
+                rows.push(Row {
+                    x: letter(e.staged),
+                    y: ' ',
+                    path: e.path.clone(),
+                });
+            }
+            rows.push(Row::untracked(e.path.clone()));
+        } else {
+            rows.push(Row {
+                x: letter(e.staged),
+                y: letter(e.unstaged),
+                path: e.path.clone(),
+            });
+        }
+    }
+    rows
+}
+
+/// `<branch>...<upstream> [ahead N, behind M]`, as the branch line of the short formats.
+fn branch_line(git: &GitHome, head: &Head) -> Result<String> {
+    let (name, local) = match head {
+        Head::Detached(_) => return Ok("HEAD (no branch)".into()),
+        Head::Branch { name, id } => (name, *id),
+    };
+    let mut line = match local {
+        Some(_) => name.clone(),
+        None => format!("No commits yet on {name}"),
+    };
+    let config = git.config();
+    let tracking = pyn_git::tracking(config, name);
+    let (Some(remote), Some(merge)) = (tracking.remote, tracking.merge.first()) else {
+        return Ok(line);
+    };
+    let upstream = if remote == "." {
+        Some(merge.clone())
+    } else {
+        config
+            .get_all(&format!("remote.{remote}.fetch"))
+            .into_iter()
+            .filter_map(|s| Refspec::parse(s).ok())
+            .find_map(|s| s.map(merge))
+    };
+    let Some(upstream) = upstream else {
+        return Ok(line);
+    };
+    let shown = upstream
+        .strip_prefix("refs/remotes/")
+        .or_else(|| upstream.strip_prefix("refs/heads/"))
+        .unwrap_or(&upstream);
+    line.push_str(&format!("...{shown}"));
+    let Some(up_id) = git.repo.refs().resolve(&upstream)? else {
+        line.push_str(" [gone]");
+        return Ok(line);
+    };
+    if let Some(local) = local {
+        let (mine, theirs) = (git.reachable(&local)?, git.reachable(&up_id)?);
+        let ahead = mine.difference(&theirs).count();
+        let behind = theirs.difference(&mine).count();
+        match (ahead, behind) {
+            (0, 0) => {}
+            (a, 0) => line.push_str(&format!(" [ahead {a}]")),
+            (0, b) => line.push_str(&format!(" [behind {b}]")),
+            (a, b) => line.push_str(&format!(" [ahead {a}, behind {b}]")),
+        }
+    }
+    Ok(line)
 }
 
 fn entry_blob(e: &Entry) -> Option<Blob> {

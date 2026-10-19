@@ -25,7 +25,7 @@ impl GitHome {
     }
 
     /// Every commit reachable from `start`, `start` included.
-    fn reachable(&self, start: &ObjectId) -> Result<HashSet<ObjectId>> {
+    pub(super) fn reachable(&self, start: &ObjectId) -> Result<HashSet<ObjectId>> {
         let mut seen = HashSet::new();
         let mut queue = VecDeque::from([*start]);
         while let Some(id) = queue.pop_front() {

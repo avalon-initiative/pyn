@@ -66,7 +66,7 @@ The commands named in decision #218.
 | `pyn clone --no-local-store` | | pyn only | A pyn server clone keeps a partial local store of the history under `.pyn/local_only/store/` and commits locally by default (`--local-store` says the same); this opts out and commits straight to the server. See [the local store](workspace.md#the-local-store). A usage error for a git URL. |
 | `pyn migrate` | | pyn only | Converts a workspace made before local commits; see [migrating](workspace.md#migrating-a-workspace). |
 | `git status` | `pyn status` | different | Header `On branch <name>`, then a table with mode, revision, staged, state, lock and path plus a summary line, because mode and lock state have no place in git's layout. `STAGED` is `added` or `modified` for a staged path, and `STATE` then describes what changed after it was staged. On a git home the table is `STAGED`, `UNSTAGED`, `PATH` with git's states. |
-| `git status -s`, `--short`, `--porcelain`, `-b`, `<pathspec>...` | none | unsupported | Usage error (`129`). A stable machine format is not scheduled. `pyn status --revision` fails on a git home. |
+| `git status -s`, `--short`, `--porcelain[=v1]`, `-b`, `--branch`, `<pathspec>...` | same | same | Git's `XY <path>` lines; see [the short format](#the-short-status-format). Pathspecs are literal files and folders, taken relative to where you stand, and limit every format. `-z`, `--porcelain=v2`, `--ignored`, `-u<mode>`, `--ahead-behind` and glob or magic pathspecs are a usage error (`129`). `pyn status --revision` fails on a git home. |
 | `pyn status --revision <commit>` | | pyn only | Compare the workspace with a past commit (`behind` / `ahead`). |
 | `git add <path>...` | `pyn add <path>...` | same | Stages a path, a folder or `.`; a path is required unless `-u` or `-A` is given. On an exclusive path of a pyn server it fails unless you hold the lock (see below). |
 | `git add -u`, `-A`, `-n`, `-v`, `-f` and their long forms | same | same | `-u` and `--update` stage tracked files only; `-A` and `--all` take new files too and, with no path, cover the whole repository. `-n` and `--dry-run` print `add '<path>'` and `remove '<path>'` and stage nothing. Ignored files are refused (exit `1`, as git) without `-f`. |
@@ -681,7 +681,7 @@ whatever the rules say.
 
 | Command | On a git home |
 | --- | --- |
-| `status` | Header (`On branch main`, or `HEAD detached at <id>`), a `STAGED`, `UNSTAGED`, `PATH` table, and a count line; `nothing to commit, working tree clean` when clean. States are `added`, `modified`, `deleted`, `typechange`, `untracked` and `unmerged`. Staged is `HEAD` against the index, unstaged is the index against the work tree, so a path can be in both. A folder with nothing tracked in it is listed once, as `dir/`. Paths are from the repository root. Mode changes count as modified; symlinks are compared by their target. |
+| `status` | Also `-s`, `--porcelain` and `-b` in git's short format, and pathspecs (see [the short format](#the-short-status-format)). Header (`On branch main`, or `HEAD detached at <id>`), a `STAGED`, `UNSTAGED`, `PATH` table, and a count line; `nothing to commit, working tree clean` when clean. States are `added`, `modified`, `deleted`, `typechange`, `untracked` and `unmerged`. Staged is `HEAD` against the index, unstaged is the index against the work tree, so a path can be in both. A folder with nothing tracked in it is listed once, as `dir/`. Paths are from the repository root. Mode changes count as modified; symlinks are compared by their target. |
 | `diff` | Index against the work tree; one commit against the work tree (the paths in the commit or the index); two commits, or `a..b`. A name that is both a revision and a file needs `--`. Shows `old mode` and `new mode`, symlinks and binary files as git does. `--cached` and `--staged` compare the index with `HEAD` (or with one named commit). |
 | `show [<rev>]` | Commit header and message, then the diff against the first parent. A merge commit prints no diff (git prints a combined diff, which pyn does not compute). |
 | `log [-n <n>] [<path or rev>]` | Git's output: commit blocks, newest first across all parents, with git's history simplification for a path. The argument is a path if one exists (now or at `HEAD`), else a revision. `--commits` is the pyn table. `--filter` fails. |
@@ -713,6 +713,33 @@ Differences from git, all deliberate or not yet done:
   there is one merge base, and do not write `AUTO_MERGE`; `switch` and `checkout` do not warn about commits left behind by
   leaving a detached `HEAD`, and print their own wording where git's differs (`Fast-forward` without a diffstat, the status
   after `stash pop` in pyn's table).
+
+### The short status format
+
+`-s`/`--short` prints one `XY <path>` line per path, `--porcelain` (version 1) the same lines with paths always from the
+repository root, and `-b`/`--branch` leads with `## <branch>...<upstream> [ahead N, behind M]`. Without `-b` there is no branch
+line; with `-b` alone (no `-s` or `--porcelain`) the table is printed as before. A clean tree prints nothing.
+
+On a git home `X` is `HEAD` against the index and `Y` the index against the work tree: `A`, `M`, `D`, `T` (type change),
+space for no change, ` A` for an intent-to-add path, `??` for untracked, and for an unmerged path the pair git prints
+from the stages the index holds (`UU`, `AA`, `DU`, `UD`, `UA`, `AU`, `DD`). A path staged for deletion that is back in the
+work tree is two lines, `D ` and `??`. Changes come in path order, untracked paths last. `-s` shows paths relative to the
+folder you stand in (`../a`, `./` for it), quoted as git does for a space, a control character, a quote, a backslash or a
+non-ASCII byte (`core.quotePath`).
+
+The branch line is `No commits yet on <branch>` before the first commit and `HEAD (no branch)` when detached. The upstream
+comes from `branch.<name>.remote` and `branch.<name>.merge` mapped through the remote's fetch refspecs; `[gone]` marks a
+tracking ref that does not exist. Counts are commits reachable from one side and not the other.
+
+Differences from git: an untracked folder is listed as `dir/` even when a pathspec names a path inside it (git lists the
+files under the path), and pathspecs are never globs.
+
+On a pyn server `STAGED` becomes `X` (`added` is `A`, `modified` `M`, `deleted` `D`) and the work tree state becomes `Y`
+(`modified` is `M`, `deleted locally` `D`, `untracked` is `??`). A conflicted path is `UU`, or `AA` when both sides added it
+(the server does not say which side deleted a path, so `DU` and `UD` are not used). States that are about the server and
+not the work tree (`behind`, `new`, locks, local commits not yet published, modes) have no place in the short format and
+print nothing. `-b` prints `## <branch>...origin/<branch>` with `[ahead N]` for local commits not yet published, and just
+`## <branch>` for a workspace without a local store. Pathspecs follow the same rules as `add`.
 
 ### Staging and committing
 

@@ -398,7 +398,7 @@ fn apply(git: &GitHome, name: Option<&str>, pop: bool) -> Result<()> {
         println!("The stash entry is kept in case you need it again.");
         std::process::exit(1);
     }
-    super::commands::status(git)?;
+    super::commands::status_table(&git.repo.status()?)?;
     if pop {
         drop_at(git, n)?;
     }

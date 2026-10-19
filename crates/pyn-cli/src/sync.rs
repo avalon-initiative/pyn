@@ -10,6 +10,7 @@ use crate::backend::Backend;
 use crate::local_commit::{Change, Unpublished};
 use crate::local_store::LocalStore;
 use crate::localfile;
+use crate::short_status::{self, Format, Row};
 use crate::snapshot::short;
 use crate::staging;
 use crate::table;
@@ -147,8 +148,22 @@ fn time_left(expires_at: chrono::DateTime<chrono::Utc>) -> String {
     }
 }
 
+/// How `status` reports: the format, whether the short formats lead with the branch line, and what it is limited to.
+pub struct StatusView<'a> {
+    pub format: Format,
+    pub branch: bool,
+    /// Repository paths (files or folders); empty for everything, and `""` is the root.
+    pub only: &'a [String],
+    pub cwd: &'a Path,
+}
+
 /// Lists what differs between the workspace and the server as a table; clean, unlocked files are left out.
-pub fn status(backend: &dyn Backend, ws: &Workspace, commit: Option<&str>) -> Result<()> {
+pub fn status(
+    backend: &dyn Backend,
+    ws: &Workspace,
+    commit: Option<&str>,
+    view: StatusView<'_>,
+) -> Result<()> {
     let entries: BTreeMap<String, api::FileEntry> = entries_at(backend, commit)?
         .into_iter()
         .map(|e| (e.path.clone(), e))
@@ -171,7 +186,16 @@ pub fn status(backend: &dyn Backend, ws: &Workspace, commit: Option<&str>) -> Re
         .chain(index.entries.keys())
         .chain(unmerged.keys())
         .chain(merged.iter())
+        .filter(|p| {
+            view.only.is_empty()
+                || view.only.iter().any(|o| {
+                    o.is_empty()
+                        || p.strip_prefix(o.as_str())
+                            .is_some_and(|r| r.is_empty() || r.starts_with('/'))
+                })
+        })
         .collect();
+    let mut short_rows: Vec<Row> = Vec::new();
 
     let (mut staged, mut modified, mut behind, mut ahead, mut new, mut untracked) =
         (0, 0, 0, 0, 0, 0);
@@ -181,6 +205,7 @@ pub fn status(backend: &dyn Backend, ws: &Workspace, commit: Option<&str>) -> Re
         let (known, entry) = (state.get(path), entries.get(path));
         let on_disk = localfile::exists(&ws.abs(path));
         let mut notes: Vec<String> = Vec::new();
+        let mut work = ' ';
         let staged_entry = index.entries.get(path);
         let stage = match staged_entry {
             None => "-",
@@ -199,6 +224,7 @@ pub fn status(backend: &dyn Backend, ws: &Workspace, commit: Option<&str>) -> Re
                 let (file_mode, bytes) = localfile::read(&ws.abs(path))?;
                 if dirty(file_mode, &bytes) {
                     notes.push("modified".into());
+                    work = 'M';
                     modified += 1;
                 }
                 let theirs = entry.and_then(|e| e.revision);
@@ -225,12 +251,14 @@ pub fn status(backend: &dyn Backend, ws: &Workspace, commit: Option<&str>) -> Re
             (Some(_), false) if staged_entry.is_some_and(|s| s.deleted) => {}
             (Some(_), false) => {
                 notes.push("deleted locally".into());
+                work = 'D';
                 modified += 1;
             }
             (None, true) if staged_entry.is_some() => {
                 let (file_mode, bytes) = localfile::read(&ws.abs(path))?;
                 if dirty(file_mode, &bytes) {
                     notes.push("modified".into());
+                    work = 'M';
                     modified += 1;
                 }
             }
@@ -241,6 +269,7 @@ pub fn status(backend: &dyn Backend, ws: &Workspace, commit: Option<&str>) -> Re
                 } else {
                     "untracked".into()
                 });
+                work = '?';
                 untracked += 1;
             }
             (None, false) if unpublished.paths.get(path) == Some(&Change::Deleted) => {}
@@ -253,6 +282,9 @@ pub fn status(backend: &dyn Backend, ws: &Workspace, commit: Option<&str>) -> Re
                 }
             }
             _ => {}
+        }
+        if !on_disk && known.is_none() && staged_entry.is_some_and(|s| !s.deleted) {
+            work = 'D';
         }
         if let Some(change) = unpublished.paths.get(path) {
             notes.push(format!("{} in a local commit", change.word()));
@@ -275,6 +307,25 @@ pub fn status(backend: &dyn Backend, ws: &Workspace, commit: Option<&str>) -> Re
                 time_left(lock.expires_at)
             )
         });
+        let index_column = match stage {
+            "added" => 'A',
+            "modified" => 'M',
+            "deleted" => 'D',
+            _ => ' ',
+        };
+        let (x, y) = match unmerged.get(path) {
+            Some(why) if why == "both added" => ('A', 'A'),
+            Some(_) => ('U', 'U'),
+            None if work == '?' => ('?', '?'),
+            None => (index_column, work),
+        };
+        if (x, y) != (' ', ' ') {
+            short_rows.push(Row {
+                x,
+                y,
+                path: path.clone().into_bytes(),
+            });
+        }
         if notes.is_empty() && lock.is_none() && staged_entry.is_none() {
             continue;
         }
@@ -297,6 +348,24 @@ pub fn status(backend: &dyn Backend, ws: &Workspace, commit: Option<&str>) -> Re
             lock.unwrap_or_else(|| "-".into()),
             path.clone(),
         ]);
+    }
+    if view.format != Format::Table {
+        let line = view.branch.then(|| {
+            let name = crate::branch::name(Some(ws));
+            match (LocalStore::open(ws), unpublished.ahead) {
+                (None, _) => name,
+                (Some(_), 0) => format!("{name}...origin/{name}"),
+                (Some(_), n) => format!("{name}...origin/{name} [ahead {n}]"),
+            }
+        });
+        let prefix = ws.repo_prefix(view.cwd, ".")?;
+        return short_status::print(
+            &short_rows,
+            line.as_deref(),
+            view.format,
+            prefix.as_bytes(),
+            true,
+        );
     }
     if rows.is_empty() {
         println!("everything is up to date");

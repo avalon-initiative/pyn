@@ -28,6 +28,7 @@ mod probe;
 mod pyn_server;
 mod repo_tool;
 mod sanitize;
+mod short_status;
 mod snapshot;
 mod staging;
 mod stranded;
@@ -151,11 +152,7 @@ enum Command {
     /// List the references in a remote git repository (ssh or smart HTTP; works anywhere).
     LsRemote(ls_remote::LsRemoteArgs),
     /// Show what differs between this workspace and the server.
-    Status {
-        /// Compare with the repository as of this commit (`HEAD~N`, a commit hash) instead of the newest.
-        #[arg(long)]
-        revision: Option<String>,
-    },
+    Status(short_status::StatusArgs),
     /// Set up pyn in an existing git repository: hide `.pyn/` from git and create its local state folder.
     Init,
     /// Fetch new and newer files; files with local changes are left alone.
@@ -774,6 +771,12 @@ fn main() {
             std::process::exit(code);
         }
     };
+    if let Command::Status(args) = &cli.command
+        && let Err(e) =
+            short_status::require_literal(&args.paths, |p| std::path::Path::new(p).exists())
+    {
+        usage_error(&e.to_string());
+    }
     if let Command::External(args) = &cli.command {
         let name = args[0].to_string_lossy();
         let message = if in_git_home() {
@@ -1416,16 +1419,35 @@ fn run(cli: Cli) -> Result<()> {
         Command::Checkout(args) => {
             branch::checkout_command(&backend, ws.as_ref(), &cwd, args, &rp)?
         }
-        Command::Status { revision } => {
+        Command::Status(args) => {
             let w = in_workspace("status")?;
-            branch::print_header(Some(w));
-            if let Some(text) = merging::status_header(w)? {
-                print!("{text}");
-            }
-            let commit = revision
+            let format = args.format();
+            let only = args
+                .paths
+                .iter()
+                .map(|p| w.repo_prefix(&cwd, p))
+                .collect::<Result<Vec<_>>>()?;
+            let commit = args
+                .revision
                 .map(|r| snapshot::resolve(&backend, &r))
                 .transpose()?;
-            sync::status(&backend, w, commit.as_deref())?
+            if format == short_status::Format::Table {
+                branch::print_header(Some(w));
+                if let Some(text) = merging::status_header(w)? {
+                    print!("{text}");
+                }
+            }
+            sync::status(
+                &backend,
+                w,
+                commit.as_deref(),
+                sync::StatusView {
+                    format,
+                    branch: args.branch,
+                    only: &only,
+                    cwd: &cwd,
+                },
+            )?
         }
         Command::Update { paths, revision } => {
             let only = paths.iter().map(|p| rp(p)).collect::<Result<Vec<_>>>()?;

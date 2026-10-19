@@ -35,6 +35,16 @@ pub struct StatusEntry {
     pub staged: Option<Kind>,
     /// The index against the work tree, or `Untracked` or `Unmerged`.
     pub unstaged: Option<Kind>,
+    /// Which index stages an unmerged path has.
+    pub conflict: Option<Conflict>,
+}
+
+/// The index stages present for an unmerged path.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Conflict {
+    pub base: bool,
+    pub ours: bool,
+    pub theirs: bool,
 }
 
 #[derive(Debug)]
@@ -146,6 +156,7 @@ fn row(rows: &mut BTreeMap<Vec<u8>, StatusEntry>, path: Vec<u8>) -> &mut StatusE
         path,
         staged: None,
         unstaged: None,
+        conflict: None,
     })
 }
 
@@ -172,6 +183,16 @@ impl Repo {
         }
         for (path, kind) in self.unstaged_changes(&index)? {
             row(&mut rows, path).unstaged = Some(kind);
+        }
+        for e in index.entries.iter().filter(|e| e.stage > 0) {
+            let c = row(&mut rows, e.path.clone())
+                .conflict
+                .get_or_insert_with(Conflict::default);
+            match e.stage {
+                1 => c.base = true,
+                2 => c.ours = true,
+                _ => c.theirs = true,
+            }
         }
         for path in self.untracked(&index)? {
             row(&mut rows, path).unstaged = Some(Kind::Untracked);

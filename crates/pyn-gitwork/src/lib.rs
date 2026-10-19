@@ -21,5 +21,5 @@ pub use safepath::{
     MAX_DEPTH, MAX_PATH_BYTES, Reason, UnsafePath, check_link_target, check_path, check_path_as,
     check_paths,
 };
-pub use status::{Kind, Status, StatusEntry, fs_path, hash_worktree_file, worktree_mode};
+pub use status::{Conflict, Kind, Status, StatusEntry, fs_path, hash_worktree_file, worktree_mode};
 pub use tree::{Change, Entry, MAX_TREE_DEPTH};
