@@ -6,6 +6,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
+use futures_util::StreamExt;
 use http_body_util::BodyExt;
 use pyn_core::commit_record::{TreeChange, tree_of};
 use pyn_core::memory::{
@@ -841,6 +842,54 @@ async fn a_push_needs_the_checkin_permission() {
     let r = push(&w, "pyn_unknown", push_body(&[&commit])).await;
     assert!(r.status.is_client_error());
     assert_eq!(commit_count(&w).await, 0);
+}
+
+/// A body that records whether anyone polled it.
+fn watched_body(polled: Arc<std::sync::atomic::AtomicBool>) -> Body {
+    let chunks = futures_util::stream::iter(0..1024).map(move |_| {
+        polled.store(true, std::sync::atomic::Ordering::SeqCst);
+        Ok::<_, std::io::Error>(axum::body::Bytes::from(vec![b' '; 1 << 20]))
+    });
+    Body::from_stream(chunks)
+}
+
+#[tokio::test]
+async fn a_push_body_is_not_read_before_the_caller_is_authorized() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let w = world().await;
+    let cases = [
+        ("pyn_unknown", "alice/game", StatusCode::UNAUTHORIZED),
+        (w.rita.as_str(), "alice/game", StatusCode::FORBIDDEN),
+        (w.rita.as_str(), "alice/nothing", StatusCode::NOT_FOUND),
+    ];
+    for (token, repo, want) in cases {
+        let polled = Arc::new(AtomicBool::new(false));
+        let req = Request::post(format!("/v1/repos/{repo}/push"))
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .body(watched_body(polled.clone()))
+            .unwrap();
+        let r = w.app.clone().oneshot(req).await.unwrap();
+        assert_eq!(r.status(), want, "{token} {repo}");
+        assert!(!polled.load(Ordering::SeqCst), "{token} {repo}: body read");
+    }
+}
+
+#[tokio::test]
+async fn an_authorized_push_over_the_body_limit_is_refused_and_a_malformed_one_is_invalid() {
+    let w = world().await;
+    let polled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let req = Request::post("/v1/repos/alice/game/push")
+        .header("authorization", format!("Bearer {}", w.bob))
+        .body(watched_body(polled))
+        .unwrap();
+    let r = w.app.clone().oneshot(req).await.unwrap();
+    assert_eq!(r.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    let r = push(&w, &w.bob, json!({"commits": "no"})).await;
+    assert_eq!(
+        (r.status, r.code().as_str()),
+        (StatusCode::BAD_REQUEST, "invalid_request")
+    );
 }
 
 #[tokio::test]

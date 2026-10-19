@@ -518,12 +518,7 @@ fn routes(state: AppState) -> Router {
             "/v1/repos/{owner}/{name}/branches",
             get(branch_api::list_branches).post(branch_api::create_branch),
         )
-        .route(
-            "/v1/repos/{owner}/{name}/push",
-            post(push_api::push).layer(axum::extract::DefaultBodyLimit::max(
-                push_api::MAX_PUSH_BYTES,
-            )),
-        )
+        .route("/v1/repos/{owner}/{name}/push", post(push_api::push))
         .route("/v1/repos/{owner}/{name}/fetch", post(push_api::fetch))
         .route(
             "/v1/repos/{owner}/{name}/objects/{id}",

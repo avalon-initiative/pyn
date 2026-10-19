@@ -84,7 +84,7 @@ is provisional.
 `{branch?, commits: [{id, data}], trees: [{id, data}]}`. `data` is the base64 of an object's body, the bytes after git's
 `<kind> <length>` header, and `id` is the SHA-256 git id it must hash to. Commits go oldest first; `trees` holds the trees the
 commits need that the server may not have. Blobs are not in the body: they are uploaded first through the chunked
-[object routes](storage.md), which is why a missing blob is `object_missing`. The body is at most 64 MiB. The answer is
+[object routes](storage.md), which is why a missing blob is `object_missing`. The caller is authenticated and authorized before the body is read, so a request without the permission is refused without its body being consumed. The body is at most 64 MiB (`object_too_large`, 413, beyond it); malformed JSON is `invalid_request`. The answer is
 `{branch, head, revisions, stranded?, released_locks?}`: the branch's head after the push, the revisions the commits made, in commit order, and, when a policy commit in the push stranded shared versions, the same `stranded` list a direct policy commit reports; `released_locks` lists the live locks (path, owner, expiry) such a policy commit released because their paths became shared.
 
 The route is additive: `changesets` and `checkin` remain the direct route (decision #300), and no existing field changed.
