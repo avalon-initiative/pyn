@@ -177,6 +177,7 @@ fn out_of(o: std::process::Output) -> Out {
 
 /// The summary lines by meaning: code, summary text, names and reason, and the kind of every other line.
 /// `error:` lines are dropped: their count and position vary by git version, and the exit status is compared.
+/// So is git's "redirecting to" warning, which credentials in the URL trigger with no redirect on the wire.
 fn summary(stderr: &str) -> Vec<String> {
     let mut lines: Vec<&str> = stderr
         .lines()
@@ -184,6 +185,7 @@ fn summary(stderr: &str) -> Vec<String> {
         .filter(|l| *l != "fatal: the remote end hung up unexpectedly")
         .filter(|l| !l.starts_with(" '") && !l.starts_with("Fetching "))
         .filter(|l| !l.starts_with("error:"))
+        .filter(|l| !l.starts_with("warning: redirecting to "))
         .collect();
     let mut seen = std::collections::HashSet::new();
     lines.retain(|l| seen.insert(*l));

@@ -182,9 +182,11 @@ fn out_of(o: std::process::Output) -> Out {
 }
 
 /// The lines that say what is being cloned and any warning, without wording that differs between git versions.
+/// git's "redirecting to" warning is skipped: with credentials in the URL it fires with no redirect on the wire.
 fn announce(stderr: &str) -> Vec<String> {
     stderr
         .lines()
+        .filter(|l| !l.starts_with("warning: redirecting to "))
         .filter_map(|l| {
             if l.starts_with("Cloning into") || l.starts_with("fatal: destination path") {
                 Some(l.to_owned())
