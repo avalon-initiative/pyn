@@ -85,8 +85,13 @@ Fixed bounds apply to what a request may carry, and a request over one is `400 i
 | repositories listed in a token's audit entry | 8, then a count of the rest |
 | paths in one changeset | 10000 |
 | commits in one push | 10000 |
+| file changes (added, changed or removed paths) in one pushed commit | 10000 |
+| file changes across all the commits of one push | 50000 |
 | invitation lifetime | 1 to 8760 hours |
 | path | 4096 bytes, 255 per segment, see [the path rules](pyn-toml.md#path-rules-for-new-writes) |
+
+A push over either file-change bound is refused whole with `413 push_too_large`: the diff stops at the first change past
+the bound, and nothing is stored. The client pushes the commits in smaller batches.
 
 Lowering a limit below current use never deletes anything: existing repositories, members and content stay, and only
 new growth is refused until use falls under the limit. The [lock limit](pyn-toml.md#lock-limit) is separate and

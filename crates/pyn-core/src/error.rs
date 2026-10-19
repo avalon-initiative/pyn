@@ -97,6 +97,8 @@ pub enum PynError {
     PushInvalid(String),
     #[error("the push cannot be accepted: {0}")]
     PushUnsupported(String),
+    #[error("the push is too large: {0}")]
+    PushTooLarge(String),
     #[error("restoring replaces the head; to confirm, pass {expected}")]
     ConfirmationRequired { expected: String },
     #[error("this server has not been set up yet; complete the first-run setup")]
@@ -272,6 +274,7 @@ impl PynError {
             Self::NotFastForward(_) => "not_fast_forward",
             Self::PushInvalid(_) => "push_invalid",
             Self::PushUnsupported(_) => "push_unsupported",
+            Self::PushTooLarge(_) => "push_too_large",
             Self::ConfirmationRequired { .. } => "confirmation_required",
             Self::NotInitialised => "not_initialised",
             Self::AlreadyInitialised => "already_initialised",

@@ -6,7 +6,10 @@ use std::collections::BTreeSet;
 use super::push::{Files, build, objects, set};
 use super::{Harness, Store, blob, harness, path, put_on, user, who};
 use crate::audit::{AuditAction, AuditQuery};
-use crate::{Mode, ObjectId, Permission, Principal, PynError, RevisionId};
+use crate::{
+    MAX_COMMIT_CHANGES, MAX_PUSH_CHANGES, Mode, ObjectId, Permission, Principal, PynError,
+    RevisionId,
+};
 
 const POLICY: &str = ".pyn/pyn.toml";
 const A_EXCLUSIVE: &str = "[meta]\ndefault = \"shared\"\n[exclusive]\npaths = [\"Source/a.cpp\"]\n";
@@ -520,4 +523,68 @@ pub async fn a_policy_file_pushed_to_another_branch_is_just_a_file(store: Store)
         .await
         .unwrap();
     assert!(pushed.revisions[0].deleted);
+}
+
+fn bulk(files: &mut Files, n: usize, id: ObjectId) {
+    for i in 0..n {
+        set(files, &format!("Bulk/f{i:06}.txt"), id);
+    }
+}
+
+pub async fn a_commit_changing_more_files_than_the_cap_is_refused_and_leaves_nothing(store: Store) {
+    let h = harness(store);
+    let id = blob(&h, "x").await;
+    let mut files = Files::new();
+    bulk(&mut files, MAX_COMMIT_CHANGES + 1, id);
+    let big = build(&files, None, "too many", 1);
+    let err = push(&h, &who("alice"), "main", &[&big]).await.unwrap_err();
+    assert!(matches!(err, PynError::PushTooLarge(_)), "{err}");
+    assert_eq!(err.code(), "push_too_large");
+    assert_eq!(head(&h, "main").await, None);
+    assert!(live_paths(&h, "main").await.is_empty());
+    assert!(h.svc.get_commit(&big.id).await.is_err());
+
+    // Removals count too.
+    let mut ok = Files::new();
+    bulk(&mut ok, MAX_COMMIT_CHANGES, id);
+    let base = build(&ok, None, "at the cap", 2);
+    push(&h, &who("alice"), "main", &[&base]).await.unwrap();
+    assert_eq!(live_paths(&h, "main").await.len(), MAX_COMMIT_CHANGES);
+    let mut gone = Files::new();
+    set(&mut gone, "Other/extra.txt", id);
+    let swap = build(&gone, Some(base.id), "remove all, add one", 3);
+    let err = push(&h, &who("alice"), "main", &[&swap]).await.unwrap_err();
+    assert_eq!(err.code(), "push_too_large");
+    assert_eq!(head(&h, "main").await, Some(base.id));
+    assert_eq!(live_paths(&h, "main").await.len(), MAX_COMMIT_CHANGES);
+}
+
+pub async fn a_push_across_the_cap_is_refused_whole_and_one_at_it_is_accepted(store: Store) {
+    let h = harness(store);
+    let a = blob(&h, "a").await;
+    let versions = [a, blob(&h, "b").await];
+    let rounds = MAX_PUSH_CHANGES / MAX_COMMIT_CHANGES;
+    let mut files = Files::new();
+    let mut parent = None;
+    let mut built = Vec::new();
+    for n in 0..=rounds {
+        bulk(&mut files, MAX_COMMIT_CHANGES, versions[n % 2]);
+        let b = build(&files, parent, &format!("c{n}"), n as i64 + 1);
+        parent = Some(b.id);
+        built.push(b);
+    }
+    let refs: Vec<_> = built.iter().collect();
+    let err = push(&h, &who("alice"), "main", &refs).await.unwrap_err();
+    assert_eq!(err.code(), "push_too_large");
+    assert_eq!(head(&h, "main").await, None);
+    assert!(live_paths(&h, "main").await.is_empty());
+    for b in &built {
+        assert!(h.svc.get_commit(&b.id).await.is_err());
+    }
+
+    let pushed = push(&h, &who("alice"), "main", &refs[..rounds])
+        .await
+        .unwrap();
+    assert_eq!(pushed.revisions.len(), MAX_PUSH_CHANGES);
+    assert_eq!(head(&h, "main").await, Some(built[rounds - 1].id));
 }

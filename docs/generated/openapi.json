@@ -5579,7 +5579,7 @@
             }
           },
           "413": {
-            "description": "object_too_large for a body over 64 MiB",
+            "description": "push_too_large: a commit changes more than 10000 files, or the commits of the push change more than 50000 in all; object_too_large for a body over 64 MiB",
             "content": {
               "application/json": {
                 "schema": {

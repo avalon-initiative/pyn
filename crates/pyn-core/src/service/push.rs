@@ -16,8 +16,8 @@ use crate::object::REPO_ALGORITHM;
 use crate::rules::{Mode, POLICY_PATH, Rules};
 use crate::stranded::StrandedVersion;
 use crate::types::{
-    Commit, Lock, MAX_MESSAGE_BYTES, MAX_PUSH_COMMITS, NewRevision, PushedCommit, RepoPath,
-    Revision,
+    Commit, Lock, MAX_COMMIT_CHANGES, MAX_MESSAGE_BYTES, MAX_PUSH_CHANGES, MAX_PUSH_COMMITS,
+    NewRevision, PushedCommit, RepoPath, Revision,
 };
 
 /// Raw git objects a push carries: commits oldest first, and the trees they need that the server may not have.
@@ -29,6 +29,41 @@ pub struct PushObjects {
 
 fn unsupported(what: impl Into<String>) -> PynError {
     PynError::PushUnsupported(what.into())
+}
+
+/// How many changes one commit's diff may still produce, checked as each is found.
+#[derive(Clone, Copy)]
+struct ChangeCap {
+    limit: usize,
+    push_bound: bool,
+}
+
+impl ChangeCap {
+    fn new(push_left: usize) -> Self {
+        Self {
+            limit: push_left.min(MAX_COMMIT_CHANGES),
+            push_bound: push_left < MAX_COMMIT_CHANGES,
+        }
+    }
+
+    fn admit(self, have: usize) -> Result<()> {
+        if have < self.limit {
+            return Ok(());
+        }
+        Err(if self.push_bound {
+            too_large_push()
+        } else {
+            PynError::PushTooLarge(format!(
+                "a commit changes at most {MAX_COMMIT_CHANGES} files"
+            ))
+        })
+    }
+}
+
+fn too_large_push() -> PynError {
+    PynError::PushTooLarge(format!(
+        "a push changes at most {MAX_PUSH_CHANGES} files across its commits"
+    ))
 }
 
 fn invalid(what: impl Into<String>) -> PynError {
@@ -123,6 +158,7 @@ impl RepoService {
         let mut arrivals = Vec::new();
         let mut commits = Vec::with_capacity(records.len());
         let mut previous: Option<Commit> = None;
+        let mut total_changes = 0usize;
         for record in records {
             let parent_tree = match (&previous, record.parents.first()) {
                 (Some(prev), Some(parent)) if parent == &prev.id => Some(prev.tree),
@@ -142,7 +178,12 @@ impl RepoService {
                 (None, None) => None,
             };
             let diff = self
-                .diff_pushed(parent_tree, record.tree, &pushed_trees)
+                .diff_pushed(
+                    parent_tree,
+                    record.tree,
+                    &pushed_trees,
+                    ChangeCap::new(MAX_PUSH_CHANGES - total_changes),
+                )
                 .await?;
             let mut adopted = Vec::new();
             let mut arriving = None;
@@ -197,6 +238,10 @@ impl RepoService {
                 has_policy = true;
                 policies.push(new.clone());
                 rules = Arc::new(new);
+            }
+            total_changes += items.len() + adopted.len();
+            if total_changes > MAX_PUSH_CHANGES {
+                return Err(too_large_push());
             }
             let mut record = record;
             if items.len() > 1 {
@@ -330,6 +375,7 @@ impl RepoService {
         parent: Option<ObjectId>,
         new: ObjectId,
         pushed: &HashMap<ObjectId, Vec<u8>>,
+        cap: ChangeCap,
     ) -> Result<TreeDiff> {
         let mut changes = Vec::new();
         let mut trees = Vec::new();
@@ -354,7 +400,8 @@ impl RepoService {
                         continue;
                     }
                     if o.mode.is_tree() != e.mode.is_tree() {
-                        self.removed_under(&path, o, pushed, &mut changes).await?;
+                        self.removed_under(&path, o, pushed, &mut changes, cap)
+                            .await?;
                     }
                 }
                 let same_kind = prior.filter(|o| o.mode.is_tree() == e.mode.is_tree());
@@ -363,6 +410,7 @@ impl RepoService {
                 } else if e.mode == FileMode::Gitlink {
                     return Err(unsupported(format!("{path} is a submodule")));
                 } else {
+                    cap.admit(changes.len())?;
                     changes.push(TreeChange {
                         path: RepoPath::new(path)?,
                         mode: e.mode,
@@ -374,7 +422,7 @@ impl RepoService {
             let kept: HashSet<&[u8]> = entries.iter().map(|e| e.name.as_slice()).collect();
             for gone in old.iter().filter(|o| !kept.contains(o.name.as_slice())) {
                 let path = join_path(&dir, &gone.name)?;
-                self.removed_under(&path, gone, pushed, &mut changes)
+                self.removed_under(&path, gone, pushed, &mut changes, cap)
                     .await?;
             }
         }
@@ -389,6 +437,7 @@ impl RepoService {
         entry: &TreeEntry,
         pushed: &HashMap<ObjectId, Vec<u8>>,
         changes: &mut Vec<TreeChange>,
+        cap: ChangeCap,
     ) -> Result<()> {
         let mut stack = vec![(at.to_string(), entry.mode, entry.id)];
         while let Some((path, mode, id)) = stack.pop() {
@@ -399,6 +448,7 @@ impl RepoService {
             } else if mode == FileMode::Gitlink {
                 return Err(unsupported(format!("{path} is a submodule")));
             } else {
+                cap.admit(changes.len())?;
                 changes.push(TreeChange {
                     path: RepoPath::new(path)?,
                     mode,

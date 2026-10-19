@@ -621,7 +621,9 @@ impl IntoResponse for ApiError {
             PynError::TooManyAttempts { .. } | PynError::UploadsBusy { .. } => {
                 StatusCode::TOO_MANY_REQUESTS
             }
-            PynError::ObjectTooLarge { .. } => StatusCode::PAYLOAD_TOO_LARGE,
+            PynError::ObjectTooLarge { .. } | PynError::PushTooLarge(_) => {
+                StatusCode::PAYLOAD_TOO_LARGE
+            }
             PynError::NotInitialised => StatusCode::SERVICE_UNAVAILABLE,
             PynError::Unauthenticated(_) | PynError::ExternalSignInFailed(_) => {
                 StatusCode::UNAUTHORIZED
