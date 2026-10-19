@@ -818,6 +818,11 @@ pub fn explain_push(err: anyhow::Error, branch: &str) -> anyhow::Error {
             format!(" ! [rejected]        {branch} -> {branch} (not supported yet)"),
             "The server does not accept this kind of commit yet, for example one that changes nothing or a submodule.",
         ),
+        "push_too_large" => (
+            format!(" ! [rejected]        {branch} -> {branch} (too many file changes)"),
+            "The push changes more files than the server accepts at once.\n\
+             hint: Push the commits in smaller batches.",
+        ),
         "merge_conflict" => (
             format!(" ! [rejected]        {branch} -> {branch} (merge conflict)"),
             "A merge commit leaves an exclusive file that changed on both sides without a new version of it.\n\

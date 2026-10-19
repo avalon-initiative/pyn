@@ -3286,6 +3286,8 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_push_reports_the_versions_its_policy_strands);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_push_reports_the_locks_its_policy_releases);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_policy_file_pushed_to_another_branch_is_just_a_file);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_commit_changing_more_files_than_the_cap_is_refused_and_leaves_nothing);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_push_across_the_cap_is_refused_whole);
     };
     (@one $factory:expr; [$(#[$attr:meta])*]; $name:ident) => {
         #[tokio::test(flavor = "multi_thread")]
