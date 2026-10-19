@@ -53,6 +53,7 @@ pub use counting::CountingStore;
 pub use counts::{
     a_listing_reads_heads_a_page_at_a_time_and_stops_at_its_bound,
     commit_counts_follow_adds_deletes_modes_branches_and_merges,
+    the_summary_counts_exclusive_paths_against_the_live_policy,
 };
 pub use history::*;
 pub use verify::*;
@@ -3256,6 +3257,8 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; upload_reservations_hold_the_budget_until_released_or_expired);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; parallel_uploads_never_pass_the_unreferenced_budget);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_rejected_upload_removes_only_the_bytes_it_wrote);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_failed_upload_keeps_an_object_another_repository_recorded);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; an_object_is_reported_referenced_once_any_repository_recorded_it);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_policy_file_over_the_size_bound_is_refused);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; audit_details_carry_a_bounded_message);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_full_fetch_lists_every_commit_oldest_first_with_the_trees_each_adds);
@@ -3274,6 +3277,7 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; verification_in_steps_covers_the_same_ground_at_every_budget);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; head_revisions_page_by_path);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; commit_counts_follow_adds_deletes_modes_branches_and_merges);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; the_summary_counts_exclusive_paths_against_the_live_policy);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_listing_reads_heads_a_page_at_a_time_and_stops_at_its_bound);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_push_deletes_shared_paths_and_whole_folders);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_file_turned_into_a_folder_or_back_deletes_and_adds);
@@ -3979,6 +3983,10 @@ impl MetadataStore for HookedMeta {
         self.inner
             .record_assembled(repo, id, size, chunks, cap)
             .await
+    }
+
+    async fn object_is_recorded(&self, id: &ObjectId) -> crate::Result<bool> {
+        self.inner.object_is_recorded(id).await
     }
 
     async fn unknown_objects(

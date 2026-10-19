@@ -34,10 +34,13 @@ nothing yet does not make a folder `mixed`. *Provisional*
 
 - `default_branch` and `branch_count`: the default branch's name (`main`) and how many [branches](branches.md) the repository has.
   Tags are not counted yet. *Provisional*
-- `files`, `exclusive_files`, `shared_files`: paths that exist on the default branch, split by the mode their newest revision
-  was recorded under. The store keeps these counts with each commit and updates them as the commit is written, so the summary
-  is a read of one row however large the repository is. The split differs from the policy's current answer only for a path
-  whose policy went from exclusive to shared and that has not been changed since: its newest revision still says exclusive.
+- `files`, `exclusive_files`, `shared_files`: paths that exist on the default branch, split by the policy in force now. The
+  store keeps a count with each commit, taken from the mode each revision was recorded under, so the summary is a read of
+  one row however large the repository is. A policy change from exclusive to shared writes no revision, so a recorded
+  count can be higher than the policy's answer. When the recorded exclusive count is not zero, the summary therefore
+  counts the head's paths against the current rules (a paged read of the heads, kept until the head or the policy changes).
+  A repository with more than 100,000 files reports the recorded count instead, which is stale only for paths whose
+  policy went from exclusive to shared and that have not been changed since. *Provisional*
 - `updated_at`: the time of the newest revision made on the default branch's line, a deletion included.
 - `locks`: every live lock with its holder, ordered by path.
 - `activity`: the newest `n` (default 10, at most 100) file and lock events from the [audit log](access.md): `checkout`,

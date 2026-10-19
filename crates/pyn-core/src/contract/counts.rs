@@ -1,7 +1,7 @@
 //! The counts a store keeps per commit agree with the commit's snapshot.
 
 use super::{Harness, Store, harness, path, put_on, user, who};
-use crate::{Deletion, ObjectId, RevisionId};
+use crate::{Deletion, FileMode, ObjectId, RevisionId};
 
 /// Every commit's stored counts against a recount of its snapshot and of the revisions along its first-parent chain.
 pub(super) async fn counts_agree_with_snapshots(h: &Harness) {
@@ -250,4 +250,63 @@ pub async fn a_listing_reads_heads_a_page_at_a_time_and_stops_at_its_bound(store
         .await
         .unwrap_err();
     assert!(matches!(err, PynError::InvalidRequest(_)), "{err}");
+}
+
+/// Records `text` as the policy file on main, after `base`.
+async fn set_policy(h: &Harness, text: &str, base: Option<u64>) {
+    let content = h.svc.upload_blob(text.as_bytes().to_vec()).await.unwrap();
+    if let Some(base) = base {
+        let policy = path(".pyn/pyn.toml");
+        h.svc
+            .checkout(&policy, &user("alice"), Some(RevisionId(base)))
+            .await
+            .unwrap();
+    }
+    h.svc
+        .checkin_recorded(
+            "main",
+            &who("alice"),
+            &path(".pyn/pyn.toml"),
+            content,
+            FileMode::Regular,
+            base.map(RevisionId),
+            "policy".into(),
+        )
+        .await
+        .unwrap();
+}
+
+pub async fn the_summary_counts_exclusive_paths_against_the_live_policy(store: Store) {
+    let h = harness(store);
+    let (a, b) = (path("Source/a.cpp"), path("Source/b.cpp"));
+    let both = "[meta]\ndefault = \"shared\"\n[exclusive]\npaths = [\"Source/*.cpp\"]\n";
+    let one = "[meta]\ndefault = \"shared\"\n[exclusive]\npaths = [\"Source/a.cpp\"]\n";
+    let none = "[meta]\ndefault = \"shared\"\n";
+    // The policy file is always exclusive, so one is always counted once it exists.
+    let exclusive = |h: &Harness| {
+        let svc = h.svc.clone();
+        async move {
+            let s = svc.summary(1).await.unwrap();
+            assert_eq!(s.shared_files + s.exclusive_files, s.files);
+            s.exclusive_files
+        }
+    };
+
+    put_on(&h, "main", "alice", &a, "a\n", None).await;
+    put_on(&h, "main", "alice", &b, "b\n", None).await;
+    assert_eq!(exclusive(&h).await, 0);
+    set_policy(&h, both, None).await;
+    assert_eq!(exclusive(&h).await, 3);
+
+    set_policy(&h, one, Some(1)).await;
+    assert_eq!(exclusive(&h).await, 2, "b became shared without a revision");
+    set_policy(&h, none, Some(2)).await;
+    assert_eq!(exclusive(&h).await, 1);
+    put_on(&h, "main", "alice", &b, "b2\n", Some(2)).await;
+    assert_eq!(exclusive(&h).await, 1, "an edit does not count it twice");
+
+    set_policy(&h, both, Some(3)).await;
+    assert_eq!(exclusive(&h).await, 3);
+    set_policy(&h, none, Some(4)).await;
+    assert_eq!(exclusive(&h).await, 1);
 }

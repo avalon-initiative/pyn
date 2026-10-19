@@ -317,6 +317,11 @@ impl MetadataStore for CountingStore {
             .await
     }
 
+    async fn object_is_recorded(&self, id: &ObjectId) -> crate::Result<bool> {
+        self.count();
+        self.inner.object_is_recorded(id).await
+    }
+
     async fn unknown_objects(
         &self,
         repo: &RepoId,
