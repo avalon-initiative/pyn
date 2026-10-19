@@ -40,13 +40,14 @@ pub(crate) async fn create_org(
 
 #[utoipa::path(get, path = "/v1/orgs",
     responses((status = 200, body = Vec<api::OrgInfo>, description = "the organizations the caller belongs to, ordered by name"),
-              (status = 401, body = api::ErrorBody)))]
+              (status = 401, body = api::ErrorBody),
+              (status = 403, body = api::ErrorBody, description = "a token that is not full-scope")))]
 pub(crate) async fn list_orgs(
     State(s): State<AppState>,
     headers: HeaderMap,
 ) -> ApiResult<Json<Vec<api::OrgInfo>>> {
     let who = identify(&s, &headers).await?;
-    let orgs = s.access.orgs_of(&who.user).await?;
+    let orgs = s.access.orgs_for(&who).await?;
     Ok(Json(
         orgs.into_iter()
             .map(|(org, role)| org_info(org, Some(role)))
@@ -56,7 +57,8 @@ pub(crate) async fn list_orgs(
 
 #[utoipa::path(get, path = "/v1/me/orgs",
     responses((status = 200, body = Vec<api::OrgInfo>, description = "the organizations the caller belongs to, each with the caller's role, ordered by name"),
-              (status = 401, body = api::ErrorBody)))]
+              (status = 401, body = api::ErrorBody),
+              (status = 403, body = api::ErrorBody, description = "a token that is not full-scope")))]
 pub(crate) async fn my_orgs(
     state: State<AppState>,
     headers: HeaderMap,
@@ -107,7 +109,7 @@ pub(crate) struct OrgAuditParams {
            ("before" = Option<i64>, Query, description = "events older than this id"),
            ("limit" = Option<usize>, Query, description = "page size, default 50, max 500")),
     responses((status = 200, body = api::AuditPage, description = "organization events (created, deleted, member added, removed or changed), newest first"),
-              (status = 403, body = api::ErrorBody, description = "not_org_owner"),
+              (status = 403, body = api::ErrorBody, description = "not_org_owner, or a token that is not full-scope"),
               (status = 404, body = api::ErrorBody, description = "org_not_found")))]
 pub(crate) async fn org_audit(
     State(s): State<AppState>,
@@ -140,7 +142,7 @@ pub(crate) async fn org_audit(
 #[utoipa::path(get, path = "/v1/orgs/{org}/members", operation_id = "org_list_members",
     params(("org" = String, Path, description = "the organization's name")),
     responses((status = 200, body = Vec<api::OrgMember>, description = "ordered by user name; any member may list"),
-              (status = 403, body = api::ErrorBody, description = "not_org_member"),
+              (status = 403, body = api::ErrorBody, description = "not_org_member, or a token that is not full-scope"),
               (status = 404, body = api::ErrorBody, description = "org_not_found")))]
 pub(crate) async fn list_members(
     State(s): State<AppState>,

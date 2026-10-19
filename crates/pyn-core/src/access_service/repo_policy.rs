@@ -47,6 +47,7 @@ impl AccessService {
 
     /// The organization's repository-creation policy. Owners only.
     pub async fn repo_policy(&self, actor: &Identity, org: &UserId) -> Result<RepoPolicy> {
+        actor.require_full_scope()?;
         self.org(org).await?;
         self.require_org_owner(org, &actor.user).await?;
         self.store.repo_policy(org).await
