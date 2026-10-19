@@ -68,7 +68,7 @@ teams. Teams are managed with `pyn team ...` (see [teams](repositories.md#teams)
 People have accounts: a unique user name (2 to 39 lowercase letters, digits, `-` or `_`; not one of the
 [reserved names](repositories.md#addresses-and-namespaces)) and a password of at least ten
 characters (at most 256), stored only as a salted argon2id hash. `pyn login <name>` checks the password and saves an expiring session
-for that server in your user configuration directory (`~/.config/pyn/credentials.toml`, readable only by you: the directory is `0700`, the file `0600`, written atomically), the way a git
+for that server in your user configuration directory (`~/.config/pyn/credentials.toml`, readable only by you: the directory is `0700`, the file `0600`, written atomically under an advisory lock file, `.credentials.lock`, so concurrent commands lose no entry), the way a git
 credential helper would; the CLI uses it when no token is given, and `pyn logout` ends the session and removes it. A
 session is a token that reaches every repository you belong to, with your role there as its limit, and it lasts 30 days by
 default (`PYN_SESSION_DAYS`). Signing in needs no role anywhere: a new account with no repository can sign in and create its own.
@@ -100,12 +100,12 @@ The account pages (SSH keys, personal access tokens, password) are the same endp
 
 Failed sign-ins are throttled twice: five wrong passwords for a user name (which need not exist) lock that name out for
 15 minutes, and 30 failures from one client address lock that address out for the same time, whatever names it tries.
-Every attempt is counted before the password is checked, so attempts past a limit are refused without any password work,
+Every attempt is counted before the password is checked (the address first, so a refused address creates no per-name counter), so attempts past a limit are refused without any password work,
 even when they arrive together. A success clears the name's count and gives the address's count back. The window is fixed:
 attempts made while locked out do not extend it. User names and addresses longer than 64 characters are keyed by their
 SHA-256 digest. The error never says whether the name or the password was wrong, and
 a user name that does not exist costs the same work as one that does. Only a right password learns that the account cannot
-sign in yet (`email_not_verified`, `approval_pending`, `account_disabled`, all 403). `pyn password` changes your own password and ends your other web sessions (the one making the change stays signed in) and the sign-in tokens that `pyn login` issued, including the one the CLI itself was using: the CLI then says so, forgets the saved sign-in and tells you to run `pyn login` again; tokens you created and SSH keys keep working. An operator's password reset ends all sessions and sign-in tokens too. The current password is always required when the account has one; an account with no password yet (created through an external provider) can set its first only from a signed-in web session.
+sign in yet (`email_not_verified`, `approval_pending`, `account_disabled`, all 403). `pyn password` changes your own password and ends your other web sessions (the one making the change stays signed in) and the sign-in tokens that `pyn login` issued, including the one the CLI itself was using: the CLI then says so, forgets the saved sign-in and tells you to run `pyn login` again; tokens you created and SSH keys keep working. An operator's password reset ends all sessions and sign-in tokens too. The current password is always required when the account has one, and wrong guesses are limited like sign-in: five per account in 15 minutes (`PYN_RATE_SIGN_IN_ACCOUNT`), counted before the check, cleared by a right password, then `429 too_many_attempts`; an account with no password yet (created through an external provider) can set its first only from a signed-in web session.
 
 A server can also sign people in through an external OpenID Connect provider, and turn password sign-in off (server
 administrators keep it); see [signing in with an external provider](external-sign-in.md).
@@ -170,6 +170,7 @@ is off) the account waits as `pending_approval` until a server administrator app
 | --- | --- | --- |
 | failed sign-ins per user name | 5 per 15 minutes | `PYN_RATE_SIGN_IN_ACCOUNT` |
 | failed sign-ins per client address | 30 per 15 minutes | `PYN_RATE_SIGN_IN_CLIENT` |
+| wrong current passwords in `PUT /v1/me/password`, per account | 5 per 15 minutes | `PYN_RATE_SIGN_IN_ACCOUNT` |
 | sign-up and resend attempts per client address | 10 per hour | `PYN_RATE_REGISTER_CLIENT` |
 | verification emails per recipient address | 3 per hour | `PYN_RATE_MAIL_PER_EMAIL` |
 
@@ -233,7 +234,7 @@ On the command line (server administrators; each listing is an aligned table wit
 | `pyn admin org create <name> --owner <user>`, `pyn admin org delete <name> [--yes]` | on behalf of an owner; delete asks to type the name |
 
 Automation signs in with `--token` or `PYN_TOKEN` set to a service credential's secret; it is limited to its scopes. A `--token`
-value is visible in the process list, so prefer `PYN_TOKEN` (the same goes for `pyn setup --setup-token` and `PYN_SETUP_TOKEN`).
+value is visible in the process list (the CLI warns), so use `--token -` to read the token from one line of standard input, or `PYN_TOKEN` (the same goes for `pyn setup --setup-token` and `PYN_SETUP_TOKEN`).
 
 The admin routes answer `403 server_admin_required` to anyone else and `404 user_not_found` for an unknown account.
 `pyn register --email <address>` signs up on a server that verifies.
@@ -315,7 +316,7 @@ can never run again (`409 already_initialised`).
 To stop whoever reaches a fresh server first from claiming it, setup needs a one-time **setup token**. On first start the server prints
 one to standard error in a delimited block (never through the log), or an operator sets `PYN_SETUP_TOKEN` (at least 16 characters, no
 whitespace) ahead of time for unattended installs. The token is compared in constant time, wrong tries are rate limited
-per client and for the whole server (`429 too_many_attempts`), and it is discarded when setup completes, after which it is never printed again. Attempts are counted before the comparison and a right token gives its count back. A server that is
+per client (10 per 15 minutes) and, at a much higher ceiling (1000), for the whole server (`429 too_many_attempts`), so one client or a few addresses cannot use up everyone's budget before the operator runs setup, and it is discarded when setup completes, after which it is never printed again. Attempts are counted before the comparison and a right token gives its count back. A server that is
 already set up ignores `PYN_SETUP_TOKEN` and warns about it. With several server copies on one database, set the same
 `PYN_SETUP_TOKEN` on all of them; otherwise each prints its own token and any one of them completes setup. Server name and
 public address are re-read from the database every minute, so a copy picks up changes made through another.
