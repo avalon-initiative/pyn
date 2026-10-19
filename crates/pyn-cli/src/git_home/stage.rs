@@ -6,11 +6,9 @@ use std::fs::Metadata;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
-use pyn_git::{Index, IndexEntry, Ref, Timestamp};
-use pyn_gitwork::{Head, Kind, Level, Pathspec, fs_path, parse_rules, worktree_mode};
-use pyn_object::{
-    Commit, FileMode, Kind as ObjectKind, ObjectId, Signature, TreeEntry, encode_tree, hash_object,
-};
+use pyn_git::{Index, IndexEntry, Timestamp};
+use pyn_gitwork::{Kind, Level, Pathspec, fs_path, parse_rules, worktree_mode};
+use pyn_object::{FileMode, Kind as ObjectKind, ObjectId, Signature, TreeEntry, encode_tree};
 
 use super::{GitHome, path_string};
 
@@ -651,7 +649,7 @@ pub(super) fn local_offset_minutes() -> i32 {
 }
 
 /// A date as git reads it from `GIT_AUTHOR_DATE`: `<seconds> <+hhmm>`, with or without a leading `@`, or ISO 8601.
-fn parse_date(text: &str) -> Result<(i64, i32)> {
+pub(super) fn parse_date(text: &str) -> Result<(i64, i32)> {
     let t = text.trim();
     let raw = t.strip_prefix('@').unwrap_or(t);
     let (secs, zone) = raw.split_once(' ').unwrap_or((raw, ""));
@@ -675,15 +673,32 @@ fn parse_date(text: &str) -> Result<(i64, i32)> {
         }
     }
     let parsed = chrono::DateTime::parse_from_rfc3339(t)
+        .or_else(|_| chrono::DateTime::parse_from_rfc2822(t))
         .or_else(|_| chrono::DateTime::parse_from_str(t, "%Y-%m-%d %H:%M:%S %z"))
         .or_else(|_| chrono::DateTime::parse_from_str(t, "%Y-%m-%dT%H:%M:%S%z"));
-    match parsed {
-        Ok(d) => Ok((d.timestamp(), d.offset().local_minus_utc() / 60)),
-        Err(_) => bail!("invalid date format: {text}"),
+    if let Ok(d) = parsed {
+        return Ok((d.timestamp(), d.offset().local_minus_utc() / 60));
     }
+    local_date(t).ok_or_else(|| anyhow::anyhow!("invalid date format: {text}"))
 }
 
-fn clean_ident(text: &str) -> String {
+/// A date without a zone, in the local one; a bare day takes the current time of day, as git does.
+fn local_date(text: &str) -> Option<(i64, i32)> {
+    let offset = local_offset_minutes();
+    let naive = ["%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"]
+        .iter()
+        .find_map(|f| chrono::NaiveDateTime::parse_from_str(text, f).ok())
+        .or_else(|| {
+            let day = ["%Y-%m-%d", "%Y/%m/%d"]
+                .iter()
+                .find_map(|f| chrono::NaiveDate::parse_from_str(text, f).ok())?;
+            let now = chrono::Utc::now().naive_utc() + chrono::Duration::minutes(offset.into());
+            Some(day.and_time(now.time()))
+        })?;
+    Some((naive.and_utc().timestamp() - i64::from(offset) * 60, offset))
+}
+
+pub(super) fn clean_ident(text: &str) -> String {
     text.trim()
         .chars()
         .filter(|c| !matches!(c, '<' | '>' | '\n'))
@@ -732,9 +747,18 @@ pub(super) fn identity(git: &GitHome, role: &str) -> Result<Signature> {
 /// Git's `whitespace` cleanup for a message given with `-m`: trailing blanks off every line, no leading or
 /// trailing empty lines, runs of empty lines collapsed, and a final newline.
 pub(crate) fn clean_message(messages: &[String]) -> Vec<u8> {
-    let text = messages.join("\n\n");
-    let mut lines: Vec<&str> = Vec::new();
-    for line in text.lines().map(str::trim_end) {
+    clean_bytes(messages.join("\n\n").as_bytes())
+}
+
+/// The same cleanup for raw bytes (a message file or a commit's own message).
+pub(super) fn clean_bytes(text: &[u8]) -> Vec<u8> {
+    let mut lines: Vec<&[u8]> = Vec::new();
+    for line in text.split(|b| *b == b'\n') {
+        let end = line
+            .iter()
+            .rposition(|b| !b.is_ascii_whitespace() && *b != 0x0b)
+            .map_or(0, |i| i + 1);
+        let line = &line[..end];
         if line.is_empty() && lines.last().is_none_or(|l| l.is_empty()) {
             continue;
         }
@@ -743,9 +767,20 @@ pub(crate) fn clean_message(messages: &[String]) -> Vec<u8> {
     while lines.last().is_some_and(|l| l.is_empty()) {
         lines.pop();
     }
-    let mut out = lines.join("\n");
-    out.push('\n');
-    out.into_bytes()
+    let mut out = lines.join(&b'\n');
+    out.push(b'\n');
+    out
+}
+
+/// Stages every tracked file that changed in the work tree into `entries`; true if there was any.
+pub(super) fn stage_tracked(git: &GitHome, index: &Index, entries: &mut Entries) -> Result<bool> {
+    let specs = Specs {
+        spec: Pathspec::default(),
+        named: Vec::new(),
+    };
+    let plan = plan(git, index, &specs, true, false)?;
+    apply(git, entries, &plan.ops, false, false)?;
+    Ok(!plan.ops.is_empty())
 }
 
 /// Stops, naming the state, while a merge, cherry-pick, revert or rebase is in progress.
@@ -753,7 +788,7 @@ pub(super) fn refuse_in_progress(git: &GitHome) -> Result<()> {
     refuse_states(git, &IN_PROGRESS)
 }
 
-fn refuse_states(git: &GitHome, states: &[&str]) -> Result<()> {
+pub(super) fn refuse_states(git: &GitHome, states: &[&str]) -> Result<()> {
     let dir = git.repo.git().git_dir();
     if let Some(name) = states.iter().find(|n| dir.join(n).exists()) {
         if *name == "MERGE_HEAD" {
@@ -811,125 +846,13 @@ pub(super) fn clear_merge_state(git: &GitHome) {
 }
 
 /// `MERGE_MSG` with its comment lines dropped, as `git commit` uses it.
-fn merge_message(git: &GitHome) -> Result<Option<Vec<u8>>> {
+pub(super) fn merge_message(git: &GitHome) -> Result<Option<Vec<u8>>> {
     let Some(bytes) = read_raw(&git.repo.git().git_dir().join("MERGE_MSG"))? else {
         return Ok(None);
     };
     let text = String::from_utf8_lossy(&bytes);
     let kept: Vec<&str> = text.lines().filter(|l| !l.starts_with('#')).collect();
     Ok(Some(clean_message(&[kept.join("\n")])))
-}
-
-/// `pyn commit` on a branch: one commit with the index as its tree, then the branch moves to it. During a merge
-/// the commit has the merged-in commits as further parents and the merge's own message unless `-m` is given.
-pub fn commit(git: &GitHome, messages: &[String], all: bool) -> Result<()> {
-    refuse_states(
-        git,
-        &[
-            "CHERRY_PICK_HEAD",
-            "REVERT_HEAD",
-            "rebase-merge",
-            "rebase-apply",
-            "sequencer",
-        ],
-    )?;
-    if git.repo.bool_setting("commit.gpgsign", false) {
-        bail!("commit.gpgsign is set and pyn cannot sign commits yet; unset it to commit with pyn");
-    }
-    let head = git.repo.head()?;
-    let (branch_ref, parent) = match (&head, git.repo.git().refs().head()?) {
-        (Head::Branch { id, .. }, Ref::Symbolic(target)) => (target, *id),
-        _ => bail!(
-            "HEAD is detached; pyn commits only on a branch, so create or switch to one with git first"
-        ),
-    };
-    let merged = merge_heads(git)?;
-    let message = match (messages.is_empty(), merge_message(git)?) {
-        (false, _) => clean_message(messages),
-        (true, Some(m)) if !merged.is_empty() => m,
-        _ => crate::usage_error(
-            "the following required arguments were not provided:\n  --message <MESSAGE>",
-        ),
-    };
-    let author = identity(git, "author")?;
-    let committer = identity(git, "committer")?;
-    let opened = git.open_index()?;
-    let mut entries = entries_of(&opened.index);
-    let mut staged_now = false;
-    if all {
-        let specs = Specs {
-            spec: Pathspec::default(),
-            named: Vec::new(),
-        };
-        let plan = plan(git, &opened.index, &specs, true, false)?;
-        staged_now = !plan.ops.is_empty();
-        apply(git, &mut entries, &plan.ops, false, false)?;
-    }
-    if entries.keys().any(|(_, stage)| *stage > 0) {
-        bail!(
-            "Committing is not possible because you have unmerged files; resolve them and stage them with `pyn add`"
-        );
-    }
-    let index = index_of(opened.index.version, entries);
-    let tree = write_tree(git, &index)?;
-    let parent_tree = match parent {
-        Some(p) => git.repo.commit(&p)?.tree,
-        None => hash_object(git.repo.algorithm(), ObjectKind::Tree, b"")?,
-    };
-    if tree == parent_tree && merged.is_empty() {
-        eprintln!("nothing to commit; stage changes with `pyn add`, or use `pyn commit -a`");
-        std::process::exit(1);
-    }
-    warn_about_hooks(git);
-    let record = Commit {
-        tree,
-        parents: parent.into_iter().chain(merged.iter().copied()).collect(),
-        author,
-        committer,
-        extra_headers: Vec::new(),
-        message: message.clone(),
-    };
-    let id = git
-        .repo
-        .objects()
-        .write(ObjectKind::Commit, &record.encode(git.algorithm())?)?;
-    if staged_now {
-        git.save_index(&opened, &index)?;
-    }
-    let Head::Branch { name, .. } = &head else {
-        unreachable!("checked above");
-    };
-    let subject = String::from_utf8_lossy(&message);
-    let first = subject.lines().next().unwrap_or_default();
-    let kind = match (parent.is_none(), merged.is_empty()) {
-        (true, _) => " (initial)",
-        (_, false) => " (merge)",
-        _ => "",
-    };
-    git.move_ref(
-        &branch_ref,
-        parent.as_ref(),
-        &id,
-        &format!("commit{kind}: {first}"),
-    )
-    .context("HEAD moved while committing; run the command again")?;
-    clear_merge_state(git);
-    let root = if parent.is_none() {
-        " (root-commit)"
-    } else {
-        ""
-    };
-    let changed = git
-        .repo
-        .diff_trees(
-            parent.map(|_| &parent_tree),
-            Some(&tree),
-            &Pathspec::default(),
-        )?
-        .len();
-    println!("[{name}{root} {}] {first}", &id.to_hex()[..7]);
-    println!("{changed} file(s) changed");
-    Ok(())
 }
 
 #[cfg(test)]

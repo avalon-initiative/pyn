@@ -5,6 +5,7 @@ mod ancestry;
 mod branches;
 mod clone;
 mod commands;
+mod commit;
 mod convert;
 mod fetch;
 mod fetch_apply;
@@ -37,6 +38,7 @@ use crate::workspace::{self, Workspace};
 
 pub use clone::{CloneOptions, clone};
 pub use commands::run;
+pub use commit::GitCommitArgs;
 pub use fetch::FetchArgs;
 pub use pull::PullArgs;
 pub use push::PushArgs;

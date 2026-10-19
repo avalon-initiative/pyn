@@ -105,6 +105,7 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
             base,
             message,
             all,
+            git: flags,
         } => {
             if !paths.is_empty() {
                 bail!(
@@ -112,10 +113,18 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
                      stage the paths with `pyn add` and run `pyn commit`"
                 );
             }
-            if file.is_some() || base.is_some() {
-                bail!("`pyn commit --file` and `--base` need a pyn server");
+            if base.is_some() {
+                bail!("`pyn commit --base` needs a pyn server");
             }
-            stage::commit(git, &message, all)
+            super::commit::commit(
+                git,
+                &super::commit::CommitOptions {
+                    messages: message,
+                    all,
+                    file,
+                    flags,
+                },
+            )
         }
         Command::Restore {
             args,

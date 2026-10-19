@@ -257,7 +257,8 @@ enum Command {
     Commit {
         /// Commit only these paths, as they are on disk, instead of the staged changes.
         paths: Vec<String>,
-        /// Local file to upload for a single path; in a workspace, the file at the path by default.
+        /// Local file to upload for a single path; in a workspace, the file at the path by default. On a git
+        /// repository it is the commit message file, as `-F`.
         #[arg(long)]
         file: Option<std::path::PathBuf>,
         #[arg(long)]
@@ -268,6 +269,8 @@ enum Command {
         /// Stage every changed tracked file first, as in git; new files are not included.
         #[arg(short = 'a', long)]
         all: bool,
+        #[command(flatten)]
+        git: git_home::GitCommitArgs,
     },
     /// Fetch a file's content at a revision (the head if omitted).
     Get {
@@ -921,6 +924,15 @@ fn run(cli: Cli) -> Result<()> {
     if let Command::LsRemote(args) = &cli.command {
         return ls_remote::run(args, git.as_ref());
     }
+    if let Command::Commit { git: opts, .. } = &cli.command
+        && git.is_none()
+        && let Some(flag) = opts.first_given()
+    {
+        usage_error(&format!(
+            "`pyn commit {flag}` applies to a git repository, not a pyn server: commits there are immutable \
+             and `--file` is the content file"
+        ));
+    }
     if let Command::Commit { message, .. } = &cli.command
         && message.is_empty()
         && git.is_none()
@@ -1567,6 +1579,7 @@ fn run(cli: Cli) -> Result<()> {
             base,
             message,
             all,
+            ..
         } if paths.is_empty() => {
             if file.is_some() || base.is_some() {
                 bail!("--file and --base need a path");

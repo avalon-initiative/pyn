@@ -74,7 +74,8 @@ The commands named in decision #218.
 | `git commit -m <msg>` | `pyn commit -m <msg>` | different | Commits what is staged as one unit of work. On a pyn server it is one changeset uploaded to the server, so commit and publish are one step (no `push` needed), it releases the locks it held, and the output is `<path> is now at revision N` for each file. On a git home it is a git commit on the current branch and prints `[<branch> <id>] <subject>`. `-m` is required (no editor) and repeats for more paragraphs. Nothing staged exits `1` with a message. |
 | `git commit -a`, `-am <msg>` | `pyn commit -a`, `-am <msg>` | same | Stages every changed tracked file, then commits; new files are not included. |
 | `git commit <path>...` | `pyn commit -m <msg> <path>...` | different | On a pyn server: one atomic commit of the named paths as they are on disk, whatever is staged (git's `--only`). Not available on a git home, which says to `add` the paths first. |
-| `git commit -F`, `--amend`, `--allow-empty`, `-s`, `-S`, `--no-verify`, `--author`, `--date`, `-v` | none | unsupported | Usage error (`129`). Commits are immutable on the server, so `--amend` will not exist; `-F` is not accepted because `--file` already means the content file. |
+| `git commit -F <file>`, `--file=<file>`, `--allow-empty`, `--author=<name <email>>`, `--date=<date>`, `-s`, `--signoff`, `--amend`, `--no-edit` | same | git home: supported | Git's behaviour on a git home; on a pyn server a usage error (`129`) naming the flag, because commits there are immutable (no `--amend`) and `--file` is the content file. See [Commit flags on a git home](#commit-flags-on-a-git-home). |
+| `git commit -S`, `--no-verify`, `-v`, `-c`, `-C`, `--fixup`, `--squash`, `--reset-author`, `--allow-empty-message`, `-e` | none | unsupported | Usage error (`129`). |
 | `pyn commit --file <local>` | | pyn only | Content file for a single path. In a workspace the file at the path is the default. |
 | `pyn commit --base <rev>` | | pyn only | The revision the edit started from; the server rejects the commit if the branch has moved on from it on an exclusive path. |
 | `git log [-n <n>] [<path>]` | `pyn log [-n <n>] [<path>]` (alias `history`) | different | Without a path, newest first, 50 by default. With a path, oldest first and all revisions (git prints newest first). It lists the workspace's branch (`On branch <name>` goes to standard error). Output is a table of per-path revisions, not commit blocks. `-n` is also `--max-count`; `--limit` is an alias. On a git home it is git's output (see below). |
@@ -778,6 +779,31 @@ No hook runs (a warning names hooks that exist), and no `COMMIT_EDITMSG` is writ
 git would give the same tree, parent, identity, dates and message. `commit <path>` is refused; `add` the paths and run
 `commit`.
 
+#### Commit flags on a git home
+
+`-m` and `-F` are exclusive, as in git (exit `128`).
+
+- `-F <file>` and `--file=<file>` read the message from a file, `-` from standard input, with the same whitespace cleanup as `-m`.
+  A message that is empty after cleanup exits `1` with `Aborting commit due to empty commit message.`; an unreadable file exits `128`.
+- `--allow-empty` commits a tree equal to the parent's. Without it that is `nothing to commit` (exit `1`).
+- `--author=<Name <email>>` replaces the author name and email, `--date=<date>` the author date; the committer is unchanged.
+  Dates are `<seconds> [<+hhmm>]`, `@<seconds>`, ISO 8601, RFC 2822, `YYYY-MM-DD HH:MM:SS` (local zone) and a bare day
+  (`YYYY-MM-DD` or `YYYY/MM/DD`, taking the current time of day, as git). Relative words (`yesterday`) and month names are
+  `invalid date format` (exit `128`). A bare `--author` pattern is not looked up among existing authors: it fails with exit `128`.
+- `-s` and `--signoff` append `Signed-off-by: <committer name> <email>` after git's trailer rules: no blank line when the last
+  paragraph is a trailer block, and nothing when the last line already is that line.
+- `--amend` replaces the tip with a commit that has the tip's parents, author (name, email and date) and message, and the
+  index as its tree; `-m` or `-F` replace the message, `--author` and `--date` replace the author fields, and `--no-edit` is
+  accepted (pyn never opens an editor). `GIT_AUTHOR_*` is ignored, as in git. The committer and its date are new, a `gpgsig`
+  header is dropped and other headers are kept. It exits `128` with no commit to amend or during a merge; an amend that
+  would leave the commit equal to its parent's tree exits `1` unless `--allow-empty` is given; amending a merge commit is allowed.
+  The branch and `HEAD` logs get `commit (amend): <subject>`, and `ORIG_HEAD` is not written.
+- The output is `[<branch> <id>] <subject>`, an ` Author:` line when the author differs from the committer, and pyn's
+  changed-file count; it has no `Date:` line.
+
+A pyn server refuses all of these with a usage error (`129`), because its commits are immutable and `--file` there is the
+content file.
+
 **Finishing a merge.** While `MERGE_HEAD` exists `commit` makes a merge commit: the merged-in commits are further parents, and
 without `-m` the message is `MERGE_MSG` with its `#` comment lines removed (what git's editor flow leaves; `git commit
 --no-edit` keeps them). An empty merge is allowed, and unmerged entries are refused. `commit -a` stages a resolved file first.
@@ -893,7 +919,7 @@ git 2.43 cannot stash in a SHA-256 repository, so the SHA-256 stash is tested fo
 
 pyn appends the reflog lines git would, when `core.logAllRefUpdates` would: `HEAD`, `refs/heads/*`, `refs/remotes/*` and
 `refs/notes/*` get a log created (the default in a work tree, and `true`); `always` creates one for every ref; `false` creates
-none; an existing log is appended to either way. The lines are `commit: <subject>` (`commit (initial)`, `commit (merge)`),
+none; an existing log is appended to either way. The lines are `commit: <subject>` (`commit (initial)`, `commit (merge)`, `commit (amend)`),
 `checkout: moving from <old> to <new>`, `branch: Created from <start>`, `Branch: renamed <old> to <new>`, `merge <name>:
 Fast-forward` or `Merge made by the 'ort' strategy.`, `reset: moving to HEAD`, the stash message and, for a fetch, `fetch <arguments>: fast-forward` and its siblings (see [Fetch on a git home](#fetch-on-a-git-home)). A line names the committer
 identity (with the committer date from `GIT_COMMITTER_DATE`); with no identity configured a reflog line falls back to the login name

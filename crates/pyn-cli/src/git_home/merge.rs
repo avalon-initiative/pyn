@@ -118,7 +118,13 @@ pub fn merge(git: &GitHome, args: MergeArgs) -> Result<()> {
         if merge_heads(git)?.is_empty() {
             bail!("There is no merge in progress (MERGE_HEAD missing).");
         }
-        return super::stage::commit(git, &args.message, false);
+        return super::commit::commit(
+            git,
+            &super::commit::CommitOptions {
+                messages: args.message.clone(),
+                ..Default::default()
+            },
+        );
     }
     let Some(spec) = args.source.clone() else {
         bail!("no merge target given; name a branch or a commit");
