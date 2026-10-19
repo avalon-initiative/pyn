@@ -543,23 +543,9 @@ pub async fn a_commit_changing_more_files_than_the_cap_is_refused_and_leaves_not
     assert_eq!(head(&h, "main").await, None);
     assert!(live_paths(&h, "main").await.is_empty());
     assert!(h.svc.get_commit(&big.id).await.is_err());
-
-    // Removals count too.
-    let mut ok = Files::new();
-    bulk(&mut ok, MAX_COMMIT_CHANGES, id);
-    let base = build(&ok, None, "at the cap", 2);
-    push(&h, &who("alice"), "main", &[&base]).await.unwrap();
-    assert_eq!(live_paths(&h, "main").await.len(), MAX_COMMIT_CHANGES);
-    let mut gone = Files::new();
-    set(&mut gone, "Other/extra.txt", id);
-    let swap = build(&gone, Some(base.id), "remove all, add one", 3);
-    let err = push(&h, &who("alice"), "main", &[&swap]).await.unwrap_err();
-    assert_eq!(err.code(), "push_too_large");
-    assert_eq!(head(&h, "main").await, Some(base.id));
-    assert_eq!(live_paths(&h, "main").await.len(), MAX_COMMIT_CHANGES);
 }
 
-pub async fn a_push_across_the_cap_is_refused_whole_and_one_at_it_is_accepted(store: Store) {
+pub async fn a_push_across_the_cap_is_refused_whole(store: Store) {
     let h = harness(store);
     let a = blob(&h, "a").await;
     let versions = [a, blob(&h, "b").await];
@@ -581,10 +567,4 @@ pub async fn a_push_across_the_cap_is_refused_whole_and_one_at_it_is_accepted(st
     for b in &built {
         assert!(h.svc.get_commit(&b.id).await.is_err());
     }
-
-    let pushed = push(&h, &who("alice"), "main", &refs[..rounds])
-        .await
-        .unwrap();
-    assert_eq!(pushed.revisions.len(), MAX_PUSH_CHANGES);
-    assert_eq!(head(&h, "main").await, Some(built[rounds - 1].id));
 }

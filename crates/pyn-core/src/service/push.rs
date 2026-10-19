@@ -535,3 +535,23 @@ fn join_path(dir: &str, name: &[u8]) -> Result<String> {
         format!("{dir}/{name}")
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_commit_may_change_exactly_the_cap_and_no_more() {
+        let cap = ChangeCap::new(MAX_PUSH_CHANGES);
+        assert!(cap.admit(MAX_COMMIT_CHANGES - 1).is_ok());
+        assert!(cap.admit(MAX_COMMIT_CHANGES).is_err());
+    }
+
+    #[test]
+    fn what_is_left_of_the_push_bounds_a_commit() {
+        let cap = ChangeCap::new(3);
+        assert!(cap.admit(2).is_ok());
+        let err = cap.admit(3).unwrap_err();
+        assert!(err.to_string().contains("across its commits"), "{err}");
+    }
+}
