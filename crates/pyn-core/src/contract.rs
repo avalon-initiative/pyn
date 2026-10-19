@@ -3266,6 +3266,9 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_fetch_refuses_a_bad_cursor_and_too_many_haves);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; the_work_of_a_fetch_page_does_not_grow_with_the_history);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_walk_past_the_examination_cap_is_refused);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_fetch_over_a_wide_folder_sends_only_the_changed_subtrees);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_pushed_tree_at_the_entry_cap_is_taken);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_pushed_tree_over_the_entry_cap_is_refused);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_scan_that_spends_its_budget_resumes_from_a_cursor);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; listings_page_in_the_store_and_agree_with_the_whole_listing);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_path_history_pages_by_revision_number_and_ends_exactly);

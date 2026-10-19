@@ -232,11 +232,13 @@ impl RepoService {
             };
             let entries = parse_tree(REPO_ALGORITHM, &body)
                 .map_err(|e| PynError::Storage(format!("tree {tree}: {e}")))?;
+            let old_trees: HashMap<&[u8], ObjectId> = old
+                .iter()
+                .filter(|o| o.mode.is_tree())
+                .map(|o| (o.name.as_slice(), o.id))
+                .collect();
             for e in entries.iter().filter(|e| e.mode.is_tree()) {
-                let before = old
-                    .iter()
-                    .find(|o| o.name == e.name && o.mode.is_tree())
-                    .map(|o| o.id);
+                let before = old_trees.get(e.name.as_slice()).copied();
                 stack.push((e.id, before));
             }
             out.push((tree, body));

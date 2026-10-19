@@ -85,6 +85,7 @@ Fixed bounds apply to what a request may carry, and a request over one is `400 i
 | repositories listed in a token's audit entry | 8, then a count of the rest |
 | paths in one changeset | 10000 |
 | commits in one push | 10000 |
+| entries in one tree a push brings or a check-in builds (one folder) | 100000; a push over it is refused with `push_invalid`, a check-in with `invalid_request` |
 | invitation lifetime | 1 to 8760 hours |
 | path | 4096 bytes, 255 per segment, see [the path rules](pyn-toml.md#path-rules-for-new-writes) |
 

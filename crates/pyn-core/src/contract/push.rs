@@ -768,3 +768,34 @@ pub async fn a_blob_is_read_by_id_only_when_a_revision_of_the_repository_names_i
     let err = h.svc.read_blob(&stray, None).await.err().unwrap();
     assert!(matches!(err, PynError::ObjectNotFound(_)), "{err}");
 }
+
+async fn wide_push(h: &Harness, entries: usize) -> Result<Vec<crate::Revision>, PynError> {
+    let blob = blob(h, "x").await;
+    let wide: Vec<_> = (0..entries)
+        .map(|i| pyn_object::TreeEntry {
+            mode: FileMode::Regular,
+            name: format!("f{i}").into_bytes(),
+            id: blob,
+        })
+        .collect();
+    let body = pyn_object::encode_tree(Algorithm::Sha256, &wide).unwrap();
+    let tree = hash_object(Algorithm::Sha256, Kind::Tree, &body).unwrap();
+    let raw = commit_raw(tree, vec![], b"wide\n", T0 + 1, T0 + 1);
+    let part = built_from(raw, vec![(tree, body)]);
+    h.svc
+        .push_commits(&who("alice"), "main", objects(&[&part]))
+        .await
+}
+
+pub async fn a_pushed_tree_at_the_entry_cap_is_taken(store: Store) {
+    let h = harness(store);
+    wide_push(&h, crate::MAX_TREE_ENTRIES).await.unwrap();
+}
+
+pub async fn a_pushed_tree_over_the_entry_cap_is_refused(store: Store) {
+    let h = harness(store);
+    let err = wide_push(&h, crate::MAX_TREE_ENTRIES + 1)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::PushInvalid(_)), "{err}");
+}

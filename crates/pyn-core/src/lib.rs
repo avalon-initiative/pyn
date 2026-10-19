@@ -96,6 +96,6 @@ pub use stranded::{ConversionNote, StrandedVersion};
 pub use tree::{EntryKind, EntryMode, HeadCounts, RepoSummary, TREE_MAX_PATHS, TreeEntry};
 pub use types::{
     ChangesetItem, Commit, Lock, MAX_CHANGESET_ITEMS, MAX_LABEL_BYTES, MAX_MESSAGE_BYTES,
-    MAX_PATH_BYTES, MAX_PATH_COMPONENT_BYTES, MAX_PUSH_COMMITS, NewRevision, Person, PushedCommit,
-    RepoId, RepoPath, Revision, RevisionHash, RevisionId, UserId,
+    MAX_PATH_BYTES, MAX_PATH_COMPONENT_BYTES, MAX_PUSH_COMMITS, MAX_TREE_ENTRIES, NewRevision,
+    Person, PushedCommit, RepoId, RepoPath, Revision, RevisionHash, RevisionId, UserId,
 };

@@ -11,7 +11,7 @@ use pyn_object::{
 };
 
 use crate::error::{PynError, Result};
-use crate::types::{Commit, NewRevision, Person, RepoPath};
+use crate::types::{Commit, MAX_TREE_ENTRIES, NewRevision, Person, RepoPath};
 
 fn object_error(e: pyn_object::Error) -> PynError {
     PynError::Storage(format!("git object: {e}"))
@@ -179,6 +179,16 @@ impl TreeEdit {
         }
         if entries.is_empty() && !dir.is_empty() {
             return Ok(None);
+        }
+        if entries.len() > MAX_TREE_ENTRIES {
+            return Err(PynError::InvalidRequest(format!(
+                "{} would hold more than {MAX_TREE_ENTRIES} entries",
+                if dir.is_empty() {
+                    "the root folder"
+                } else {
+                    dir
+                }
+            )));
         }
         let body = encode_tree(algorithm, &entries).map_err(object_error)?;
         let id = hash_object(algorithm, Kind::Tree, &body).map_err(object_error)?;

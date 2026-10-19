@@ -494,3 +494,33 @@ pub async fn a_walk_past_the_examination_cap_is_refused(store: Store) {
         .unwrap();
     assert_eq!(tail.iter().map(|c| c.id).collect::<Vec<_>>(), all[3..]);
 }
+
+pub async fn a_fetch_over_a_wide_folder_sends_only_the_changed_subtrees(store: Store) {
+    let h = harness(store);
+    let id = blob(&h, "same").await;
+    let changed = blob(&h, "changed").await;
+    let mut files = Files::new();
+    for i in 0..3000 {
+        set(&mut files, &format!("d{i:04}/f"), id);
+    }
+    let first = build(&files, None, "first", 1);
+    set(&mut files, "d1500/f", changed);
+    let second = build(&files, Some(first.id), "second", 2);
+    pushed(&h, &[&first, &second]).await;
+
+    let page = fetch(&h, FetchQuery::default()).await;
+    assert_eq!(ids(&page), [first.id, second.id]);
+    assert_eq!(page.commits[0].trees.len(), 3001);
+    let added: Vec<_> = page.commits[1].trees.iter().map(|(id, _)| *id).collect();
+    let expected: Vec<_> = second
+        .trees
+        .iter()
+        .map(|(id, _)| *id)
+        .filter(|id| !first.trees.iter().any(|(old, _)| old == id))
+        .collect();
+    assert_eq!(added.len(), 2);
+    assert_eq!(
+        added.iter().copied().collect::<HashSet<_>>(),
+        expected.into_iter().collect::<HashSet<_>>()
+    );
+}
