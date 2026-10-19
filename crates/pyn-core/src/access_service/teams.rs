@@ -264,6 +264,20 @@ impl AccessService {
         Ok((record.owner.clone(), record.address()))
     }
 
+    /// Team slugs are for members and server administrators; anyone else gets the same answer for every slug.
+    async fn require_team_standing(&self, actor: &Principal, org: &UserId) -> Result<()> {
+        if self.store.org_role(org, &actor.user).await?.is_some()
+            || self
+                .store
+                .account(&actor.user)
+                .await?
+                .is_some_and(|a| a.is_admin)
+        {
+            return Ok(());
+        }
+        Err(PynError::NotOrgMember(org.to_string()))
+    }
+
     /// The teams holding a role in the repository with their roles, ordered by slug.
     pub async fn repo_teams(
         &self,
@@ -296,6 +310,7 @@ impl AccessService {
     ) -> Result<()> {
         actor.require(Permission::ManageUsers)?;
         let (org, address) = self.repo_org(repo).await?;
+        self.require_team_standing(actor, &org).await?;
         self.require_team(&org, slug).await?;
         self.require_can_grant(actor, repo, role).await?;
         if let Some(current) = self
@@ -342,6 +357,7 @@ impl AccessService {
     ) -> Result<()> {
         actor.require(Permission::ManageUsers)?;
         let (org, address) = self.repo_org(repo).await?;
+        self.require_team_standing(actor, &org).await?;
         self.require_team(&org, slug).await?;
         if let Some(old) = self
             .store

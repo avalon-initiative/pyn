@@ -149,6 +149,10 @@ pyn admin limits list
 The owner (for an organization, an owner of it), a server administrator and a service credential with `manage_limits`
 may look at an owner's limits and usage. Anyone who can read a repository may see its own usage.
 
+The caller is checked before the owner is looked up: anyone else gets `403 not_namespace_owner` whether the name is
+missing, a user or an organization, so the routes do not reveal which accounts exist. A member of the organization who is
+not an owner gets `403 not_org_owner`. Only an administrator or a `manage_limits` credential gets `404 user_not_found`.
+
 | Route | Returns |
 | --- | --- |
 | `GET /v1/owners/{owner}/limits` | `{kind, effective, own}`: the limits in force, and the owner's own; a null field is unlimited |

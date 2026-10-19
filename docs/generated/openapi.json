@@ -2785,7 +2785,7 @@
             }
           },
           "403": {
-            "description": "not_namespace_owner or not_org_owner: only the owner, an administrator or a service credential with manage_limits may look",
+            "description": "not_namespace_owner (also for a name that does not exist) or not_org_owner (a member who does not own it): only the owner, an administrator or a service credential with manage_limits may look",
             "content": {
               "application/json": {
                 "schema": {
@@ -2795,7 +2795,7 @@
             }
           },
           "404": {
-            "description": "user_not_found",
+            "description": "user_not_found, for an administrator or a service credential only",
             "content": {
               "application/json": {
                 "schema": {
@@ -2836,7 +2836,7 @@
             }
           },
           "403": {
-            "description": "not_namespace_owner or not_org_owner: only the owner, an administrator or a service credential with manage_limits may look",
+            "description": "not_namespace_owner (also for a name that does not exist) or not_org_owner (a member who does not own it): only the owner, an administrator or a service credential with manage_limits may look",
             "content": {
               "application/json": {
                 "schema": {
@@ -2846,7 +2846,7 @@
             }
           },
           "404": {
-            "description": "user_not_found",
+            "description": "user_not_found, for an administrator or a service credential only",
             "content": {
               "application/json": {
                 "schema": {
@@ -6147,7 +6147,7 @@
             }
           },
           "403": {
-            "description": "forbidden: needs manage_users and every permission the role grants",
+            "description": "forbidden: needs manage_users and every permission the role grants; not_org_member: the caller is neither a member of the organization nor a server administrator, whether or not the team exists",
             "content": {
               "application/json": {
                 "schema": {
@@ -6217,7 +6217,7 @@
             }
           },
           "403": {
-            "description": "forbidden: needs manage_users and every permission of the role being removed",
+            "description": "forbidden: needs manage_users and every permission of the role being removed; not_org_member: the caller is neither a member of the organization nor a server administrator, whether or not the team exists",
             "content": {
               "application/json": {
                 "schema": {

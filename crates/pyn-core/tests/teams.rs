@@ -401,3 +401,73 @@ async fn organization_reads_need_a_full_scope_credential() {
     w.access.repo_policy(&full, &acme).await.unwrap();
     assert_eq!(w.access.orgs_for(&alice).await.unwrap().len(), 1);
 }
+
+#[tokio::test]
+async fn team_access_answers_alike_for_a_missing_and_an_existing_team_to_a_non_member() {
+    let w = setup().await;
+    let alice = session("alice");
+    w.access
+        .create_team(&alice, &user("acme"), "art", None, None)
+        .await
+        .unwrap();
+    let game = game(&w).await;
+    let outsider = pyn_core::Principal {
+        user: user("mallory"),
+        permissions: [Permission::ManageUsers].into(),
+        email: None,
+    };
+    let mut seen = Vec::new();
+    for slug in ["art", "ghost"] {
+        let set = w
+            .access
+            .set_team_access(&outsider, &game, slug, Role::Reader)
+            .await
+            .unwrap_err();
+        let remove = w
+            .access
+            .remove_team_access(&outsider, &game, slug)
+            .await
+            .unwrap_err();
+        for err in [set, remove] {
+            seen.push((err.code(), err.to_string()));
+        }
+    }
+    assert!(seen.windows(2).all(|p| p[0] == p[1]), "{seen:?}");
+    assert_eq!(seen[0].0, "not_org_member");
+    assert!(
+        w.access
+            .repo_teams(&outsider, &game)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    let member = pyn_core::Principal {
+        user: user("bob"),
+        permissions: [Permission::ManageUsers, Permission::Read].into(),
+        email: None,
+    };
+    let err = w
+        .access
+        .set_team_access(&member, &game, "ghost", Role::Reader)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::TeamNotFound { .. }), "{err}");
+}
+
+#[tokio::test]
+async fn adding_a_member_is_for_owners_and_answers_alike_to_everyone_else() {
+    let w = setup().await;
+    let bob = session("bob");
+    let mut seen = Vec::new();
+    for target in ["carol", "ghost", "acme"] {
+        let err = w
+            .access
+            .add_org_member(&bob, &user("acme"), &user(target), OrgRole::Member)
+            .await
+            .unwrap_err();
+        seen.push((err.code(), err.to_string()));
+    }
+    assert!(seen.windows(2).all(|p| p[0] == p[1]), "{seen:?}");
+    assert_eq!(seen[0].0, "not_org_owner");
+}

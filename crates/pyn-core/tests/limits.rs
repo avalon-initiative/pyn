@@ -505,7 +505,10 @@ async fn limits_and_usage_are_visible_to_the_owner_and_to_administrators_only() 
             .await
             .unwrap_err();
         assert!(
-            matches!(err, PynError::NotOrgOwner(_) | PynError::Forbidden(_)),
+            matches!(
+                err,
+                PynError::NotOrgOwner(_) | PynError::NotNamespaceOwner(_)
+            ),
             "{outsider}: {err}"
         );
     }
@@ -581,4 +584,45 @@ async fn changes_are_recorded_in_the_server_and_organization_logs() {
         .await
         .unwrap();
     assert!(alice.is_empty(), "a user has no log of their own");
+}
+
+#[tokio::test]
+async fn limits_and_usage_answer_alike_for_a_missing_a_user_and_an_organization() {
+    let w = world();
+    let root = admin(&w).await;
+    signup(&w, "bob").await;
+    signup(&w, "carol").await;
+    w.access
+        .create_org(&session("alice"), "acme")
+        .await
+        .unwrap();
+    let mallory = session("mallory");
+    let describe =
+        |name: &str, err: PynError| (err.code(), err.to_string().replace(name, "<owner>"));
+    let mut seen = Vec::new();
+    for name in ["ghost", "carol", "acme"] {
+        let a = w.access.owner_limits(&mallory, &user(name)).await;
+        let b = w.access.require_limits_view(&mallory, &user(name)).await;
+        seen.push(describe(name, a.unwrap_err()));
+        seen.push(describe(name, b.unwrap_err()));
+    }
+    assert!(seen.windows(2).all(|p| p[0] == p[1]), "{seen:?}");
+    assert_eq!(seen[0].0, "not_namespace_owner");
+
+    let err = w
+        .access
+        .owner_limits(&root, &user("ghost"))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::UserNotFound(_)), "{err}");
+    let err = w
+        .access
+        .owner_limits(&session("bob"), &user("ghost"))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::NotNamespaceOwner(_)), "{err}");
+    w.access
+        .owner_limits(&session("carol"), &user("carol"))
+        .await
+        .unwrap();
 }

@@ -128,8 +128,8 @@ a user owns has no teams: `400 not_org_repo`).
 | `PUT /v1/orgs/{org}/teams/{team}/members/{user}` | owners; `204`, also when already in; `409 user_not_org_member` |
 | `DELETE /v1/orgs/{org}/teams/{team}/members/{user}` | owners; `404 team_member_not_found` |
 | `GET /v1/repos/{owner}/{name}/teams` | needs `manage_users`; `[{slug, name, description, role}]` |
-| `PUT /v1/repos/{owner}/{name}/teams/{team}` | needs `manage_users`; `{role}` sets or changes the team's role; `204` |
-| `DELETE /v1/repos/{owner}/{name}/teams/{team}` | needs `manage_users`; `204`, also when the team holds no role |
+| `PUT /v1/repos/{owner}/{name}/teams/{team}` | needs `manage_users`; `{role}` sets or changes the team's role; `204`; `403 not_org_member` for anyone outside the organization who is not a server administrator, before the slug is looked at |
+| `DELETE /v1/repos/{owner}/{name}/teams/{team}` | needs `manage_users`; `204`, also when the team holds no role; `403 not_org_member` as above |
 
 On the command line: `pyn team create <org>/<team> [--name N] [--description D]`, `pyn team list <org>` (members, repos,
 created, name, team), `pyn team show <org>/<team>` (details, members and the repositories it holds roles in),
@@ -244,7 +244,7 @@ tokens, password), create repositories in its own namespace and read public repo
 | `DELETE /v1/orgs/{org}` | delete, when it owns no repositories |
 | `GET /v1/me/orgs` | the organizations you belong to, each `{name, created_at, role}` (same answer as `GET /v1/orgs`) |
 | `GET /v1/orgs/{org}/members` | members `[{user, role}]` (any member) |
-| `POST /v1/orgs/{org}/members` | add an existing account `{user, role?}` (owners; `404 user_not_found`, `409 already_org_member`) |
+| `POST /v1/orgs/{org}/members` | add an existing account `{user, role?}` (owners; `404 user_not_found`, `400` for an organization name, `409 already_org_member`); anyone else gets `403 not_org_owner` whether or not the account exists. User names and organization names are already public (registration, `GET /v1/orgs/{org}`), so an owner learns nothing new; adding needs no consent from the user (provisional) |
 | `PATCH /v1/orgs/{org}/members/{user}` | change a role `{role}` (owners; `409 last_org_owner`) |
 | `DELETE /v1/orgs/{org}/members/{user}` | remove a member, or leave (owners, or the member; `409 last_org_owner`) |
 | `GET /v1/orgs/{org}/audit` | the organization's audit log (owners; `?before=`, `?limit=`) |

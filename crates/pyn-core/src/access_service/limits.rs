@@ -54,26 +54,24 @@ impl AccessService {
     }
 
     /// Server administrators and service credentials with `manage_limits` may see any owner; otherwise only the
-    /// user themself or an owner of the organization.
+    /// user themself or an owner of the organization. The caller is authorized before the owner is looked up, so a
+    /// missing, a user and an organization owner answer alike to someone who may not see them.
     pub async fn require_limits_view(
         &self,
         actor: &Identity,
         owner: &UserId,
     ) -> Result<AccountRecord> {
-        let account = self.limits_account(owner).await?;
         if matches!(actor.credential, Credential::Service(_)) {
             self.require_admin_scope(actor, ServiceScope::ManageLimits)
                 .await?;
-        } else if !self.is_server_admin(actor).await? {
-            match account.kind {
-                AccountKind::User if &actor.user != owner => {
-                    return Err(PynError::NotNamespaceOwner(owner.to_string()));
-                }
-                AccountKind::Org => self.require_org_owner(owner, &actor.user).await?,
-                AccountKind::User => {}
-            }
+        } else if !self.is_server_admin(actor).await? && &actor.user != owner {
+            return Err(match self.store.org_role(owner, &actor.user).await? {
+                Some(OrgRole::Owner) => return self.limits_account(owner).await,
+                Some(_) => PynError::NotOrgOwner(owner.to_string()),
+                None => PynError::NotNamespaceOwner(owner.to_string()),
+            });
         }
-        Ok(account)
+        self.limits_account(owner).await
     }
 
     /// The owner's limits, for the owner or an administrator.

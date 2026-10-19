@@ -55,8 +55,8 @@ pub(crate) async fn list_limits(
 #[utoipa::path(get, path = "/v1/owners/{owner}/limits", operation_id = "owner_limits",
     params(("owner" = String, Path, description = "a user or organization name")),
     responses((status = 200, body = api::OwnerLimits, description = "all limits null means unlimited"),
-              (status = 403, body = api::ErrorBody, description = "not_namespace_owner or not_org_owner: only the owner, an administrator or a service credential with manage_limits may look"),
-              (status = 404, body = api::ErrorBody, description = "user_not_found")))]
+              (status = 403, body = api::ErrorBody, description = "not_namespace_owner (also for a name that does not exist) or not_org_owner (a member who does not own it): only the owner, an administrator or a service credential with manage_limits may look"),
+              (status = 404, body = api::ErrorBody, description = "user_not_found, for an administrator or a service credential only")))]
 pub(crate) async fn owner_limits(
     State(s): State<AppState>,
     headers: HeaderMap,
@@ -97,8 +97,8 @@ pub(crate) async fn set_owner_limits(
 #[utoipa::path(get, path = "/v1/owners/{owner}/usage", operation_id = "owner_usage",
     params(("owner" = String, Path, description = "a user or organization name")),
     responses((status = 200, body = api::OwnerUsage, description = "usage next to the limits in force, with every repository the owner has"),
-              (status = 403, body = api::ErrorBody, description = "not_namespace_owner or not_org_owner: only the owner, an administrator or a service credential with manage_limits may look"),
-              (status = 404, body = api::ErrorBody, description = "user_not_found")))]
+              (status = 403, body = api::ErrorBody, description = "not_namespace_owner (also for a name that does not exist) or not_org_owner (a member who does not own it): only the owner, an administrator or a service credential with manage_limits may look"),
+              (status = 404, body = api::ErrorBody, description = "user_not_found, for an administrator or a service credential only")))]
 pub(crate) async fn owner_usage(
     State(s): State<AppState>,
     headers: HeaderMap,

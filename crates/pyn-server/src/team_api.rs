@@ -199,7 +199,7 @@ pub(crate) async fn list_repo_teams(
     request_body = api::SetTeamRoleRequest,
     responses((status = 204, description = "sets or changes the team's role"),
               (status = 400, body = api::ErrorBody, description = "invalid_request (bad role) or not_org_repo (a user owns the repository)"),
-              (status = 403, body = api::ErrorBody, description = "forbidden: needs manage_users and every permission the role grants"),
+              (status = 403, body = api::ErrorBody, description = "forbidden: needs manage_users and every permission the role grants; not_org_member: the caller is neither a member of the organization nor a server administrator, whether or not the team exists"),
               (status = 404, body = api::ErrorBody, description = "repo_not_found or team_not_found")))]
 pub(crate) async fn set_repo_team(
     State(s): State<AppState>,
@@ -218,7 +218,7 @@ pub(crate) async fn set_repo_team(
     ("team" = String, Path, description = "the slug of a team of the owning organization")),
     responses((status = 204, description = "removing a team that holds no role changes nothing"),
               (status = 400, body = api::ErrorBody, description = "not_org_repo (a user owns the repository)"),
-              (status = 403, body = api::ErrorBody, description = "forbidden: needs manage_users and every permission of the role being removed"),
+              (status = 403, body = api::ErrorBody, description = "forbidden: needs manage_users and every permission of the role being removed; not_org_member: the caller is neither a member of the organization nor a server administrator, whether or not the team exists"),
               (status = 404, body = api::ErrorBody, description = "repo_not_found or team_not_found")))]
 pub(crate) async fn remove_repo_team(
     State(s): State<AppState>,
