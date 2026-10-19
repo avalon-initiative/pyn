@@ -146,6 +146,18 @@ pub struct LockLimit {
     pub from_policy: bool,
 }
 
+/// The exclusive count of a head under the rules of one policy revision.
+#[derive(Clone, Copy)]
+struct LiveCount {
+    head: ObjectId,
+    policy: Option<RevisionId>,
+    exclusive: u64,
+}
+
+/// Largest repository whose summary re-counts exclusive paths against the live rules; larger ones report the recorded count.
+const SUMMARY_LIVE_MAX_FILES: u64 = 100_000;
+const SUMMARY_PAGE: usize = 5_000;
+
 /// The rules in force and the policy revision they came from (`None` for the fallback).
 struct Applied {
     revision: Option<RevisionId>,
@@ -178,6 +190,7 @@ pub struct RepoService {
     applied: RwLock<Applied>,
     /// Parsed policy files by revision, which never change.
     parsed: Mutex<HashMap<RevisionId, Arc<Rules>>>,
+    live_exclusive: Mutex<Option<LiveCount>>,
     meta: Arc<dyn MetadataStore>,
     objects: Arc<dyn ObjectStore>,
     audit: Arc<dyn AuditStore>,
@@ -207,6 +220,7 @@ impl RepoService {
                 rules,
             }),
             parsed: Mutex::new(HashMap::new()),
+            live_exclusive: Mutex::new(None),
             meta,
             objects,
             audit,
@@ -1317,10 +1331,11 @@ impl RepoService {
 
     /// Counts, live locks and the newest `activity_limit` file and lock events. The counts are stored per commit.
     pub async fn summary(&self, activity_limit: usize) -> Result<RepoSummary> {
-        let counts = match self.default_head().await? {
-            Some(head) => self.meta.head_counts(&self.repo, &head).await?,
-            None => HeadCounts::default(),
-        };
+        let mut counts = HeadCounts::default();
+        if let Some(head) = self.default_head().await? {
+            counts = self.meta.head_counts(&self.repo, &head).await?;
+            counts.exclusive_files = self.live_exclusive(&head, &counts).await?;
+        }
         let mut locks = self.meta.list_locks(&self.repo, self.clock.now()).await?;
         locks.sort_by(|a, b| a.path.cmp(&b.path));
         let scope = AuditScope::Repo(self.repo.clone());
@@ -1340,6 +1355,40 @@ impl RepoService {
             locks,
             activity,
         })
+    }
+
+    /// Live paths of `head` that the current rules make exclusive. The stored count follows recorded modes, which a policy
+    /// change to shared leaves behind, so it is re-counted (once per head and policy) when it is not already zero.
+    async fn live_exclusive(&self, head: &ObjectId, counts: &HeadCounts) -> Result<u64> {
+        if counts.exclusive_files == 0 || counts.files > SUMMARY_LIVE_MAX_FILES {
+            return Ok(counts.exclusive_files);
+        }
+        let policy = self.applied.read().unwrap().revision;
+        if let Some(c) = *self.live_exclusive.lock().unwrap()
+            && c.head == *head
+            && c.policy == policy
+        {
+            return Ok(c.exclusive);
+        }
+        let (mut exclusive, mut after) = (0, None);
+        loop {
+            let heads = self
+                .meta
+                .list_head_revisions(&self.repo, after.as_ref(), SUMMARY_PAGE)
+                .await?;
+            let Some(last) = heads.last() else { break };
+            after = Some(last.path.clone());
+            exclusive += heads
+                .iter()
+                .filter(|r| !r.deleted && self.mode_for(&r.path) == Mode::Exclusive)
+                .count() as u64;
+        }
+        *self.live_exclusive.lock().unwrap() = Some(LiveCount {
+            head: *head,
+            policy,
+            exclusive,
+        });
+        Ok(exclusive)
     }
 
     /// A revision and its content; the head of the default branch when `revision` is `None`.

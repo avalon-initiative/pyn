@@ -112,6 +112,7 @@ Each request is bounded in the work it may do, so one request cannot hold the se
 | revisions of one path in a path history page | 50, at most 200 | `limit` |
 | records one verify step examines (revisions, commits, audit events, tree entries) | 20,000 | fixed |
 | files one folder listing reads | 1,000,000 | fixed |
+| files a summary re-counts against the live rules (larger repositories report the stored count) | 100,000 | fixed |
 
 A late answer is `503 request_timeout` and a request that cannot get a slot in time is `503 server_busy`; both carry
 `Retry-After`. Writes and the streamed object routes have no overall time limit. A value that is not a whole number, or a

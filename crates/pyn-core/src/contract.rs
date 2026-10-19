@@ -53,6 +53,7 @@ pub use counting::CountingStore;
 pub use counts::{
     a_listing_reads_heads_a_page_at_a_time_and_stops_at_its_bound,
     commit_counts_follow_adds_deletes_modes_branches_and_merges,
+    the_summary_counts_exclusive_paths_against_the_live_policy,
 };
 pub use history::*;
 pub use verify::*;
@@ -3274,6 +3275,7 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; verification_in_steps_covers_the_same_ground_at_every_budget);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; head_revisions_page_by_path);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; commit_counts_follow_adds_deletes_modes_branches_and_merges);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; the_summary_counts_exclusive_paths_against_the_live_policy);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_listing_reads_heads_a_page_at_a_time_and_stops_at_its_bound);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_push_deletes_shared_paths_and_whole_folders);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_file_turned_into_a_folder_or_back_deletes_and_adds);
