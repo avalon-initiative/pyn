@@ -1769,6 +1769,14 @@ impl MetadataStore for PgMetadataStore {
         tx.commit().await.map_err(db)
     }
 
+    async fn object_is_recorded(&self, id: &ObjectId) -> Result<bool> {
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM repo_objects WHERE id = $1)")
+            .bind(id.to_hex())
+            .fetch_one(&self.pool)
+            .await
+            .map_err(db)
+    }
+
     async fn record_assembled(
         &self,
         repo: &RepoId,

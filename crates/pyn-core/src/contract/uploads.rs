@@ -345,6 +345,111 @@ pub async fn a_rejected_upload_removes_only_the_bytes_it_wrote(store: Store) {
     assert!(svc.missing_objects(&[key]).await.unwrap().is_empty());
 }
 
+/// Runs `then` once after the first `put_stream_tracked`, standing in for another repository winning the race.
+struct RacingStore {
+    inner: Arc<MemoryObjectStore>,
+    then: tokio::sync::Mutex<Option<Arc<RepoService>>>,
+}
+
+#[async_trait::async_trait]
+impl ObjectStore for RacingStore {
+    async fn put_stream(
+        &self,
+        reader: crate::ObjectReader,
+        keying: Keying,
+        max: Option<u64>,
+    ) -> crate::Result<ObjectId> {
+        self.inner.put_stream(reader, keying, max).await
+    }
+
+    async fn put_stream_tracked(
+        &self,
+        reader: crate::ObjectReader,
+        keying: Keying,
+        max: Option<u64>,
+    ) -> crate::Result<crate::Stored> {
+        let stored = self.inner.put_stream_tracked(reader, keying, max).await?;
+        if let Some(other) = self.then.lock().await.take() {
+            other.upload_blob(b"racing bytes".to_vec()).await?;
+        }
+        Ok(stored)
+    }
+
+    async fn read(
+        &self,
+        hash: &ObjectId,
+        range: Option<std::ops::Range<u64>>,
+    ) -> crate::Result<Option<crate::ObjectRead>> {
+        self.inner.read(hash, range).await
+    }
+
+    async fn exists(&self, hash: &ObjectId) -> crate::Result<bool> {
+        self.inner.exists(hash).await
+    }
+
+    async fn size(&self, hash: &ObjectId) -> crate::Result<Option<u64>> {
+        self.inner.size(hash).await
+    }
+
+    async fn delete(&self, hash: &ObjectId) -> crate::Result<bool> {
+        self.inner.delete(hash).await
+    }
+}
+
+pub async fn a_failed_upload_keeps_an_object_another_repository_recorded(store: Store) {
+    let h = harness(store.clone());
+    let other = other_repo(&h);
+    let racing = Arc::new(RacingStore {
+        inner: h.objects.clone(),
+        then: tokio::sync::Mutex::new(Some(other.svc.clone())),
+    });
+    let failing = RepoService::new(
+        RepoId::new("failing"),
+        Rules::from_toml(RULES).unwrap(),
+        store.clone(),
+        racing,
+        h.audit.clone(),
+        h.clock.clone(),
+        ServiceConfig::default(),
+    );
+
+    let err = failing
+        .upload(
+            Box::pin(std::io::Cursor::new(b"racing bytes".to_vec())),
+            Keying::Blob { len: 12 },
+            None,
+            3,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::LengthMismatch { .. }), "{err}");
+
+    let id = pyn_object::hash_object(
+        pyn_object::Algorithm::Sha256,
+        pyn_object::Kind::Blob,
+        b"racing bytes",
+    )
+    .unwrap();
+    assert!(h.objects.exists(&id).await.unwrap());
+    assert!(other.svc.missing_objects(&[id]).await.unwrap().is_empty());
+    other
+        .svc
+        .checkin(&who("alice"), &path("Source/a.cpp"), id, None, "x".into())
+        .await
+        .unwrap();
+    assert!(other.svc.read_blob(&id, None).await.is_ok());
+}
+
+pub async fn an_object_is_reported_referenced_once_any_repository_recorded_it(store: Store) {
+    let id = ObjectId::from_hex(pyn_object::Algorithm::Sha256, &"11".repeat(32)).unwrap();
+    assert!(!store.object_is_recorded(&id).await.unwrap());
+    store
+        .record_upload(&RepoId::new("elsewhere"), &id, 1, 100)
+        .await
+        .unwrap();
+    assert!(store.object_is_recorded(&id).await.unwrap());
+}
+
 pub async fn a_policy_file_over_the_size_bound_is_refused(store: Store) {
     let h = harness(store);
     let policy = path(".pyn/pyn.toml");
