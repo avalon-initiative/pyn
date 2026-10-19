@@ -43,6 +43,7 @@ impl DateStyle {
         match self {
             Self::Default => time::git_date(secs, off),
             Self::Iso => at(secs, off).format("%Y-%m-%d %H:%M:%S %z").to_string(),
+            Self::IsoStrict if off == 0 => at(secs, off).format("%Y-%m-%dT%H:%M:%SZ").to_string(),
             Self::IsoStrict => at(secs, off).format("%Y-%m-%dT%H:%M:%S%:z").to_string(),
             Self::Rfc => at(secs, off)
                 .format("%a, %-d %b %Y %H:%M:%S %z")
@@ -465,6 +466,11 @@ mod tests {
         let f = |s: DateStyle| s.format(&who, 0);
         assert_eq!(f(DateStyle::Iso), "2023-11-14 23:13:20 +0100");
         assert_eq!(f(DateStyle::IsoStrict), "2023-11-14T23:13:20+01:00");
+        let utc = Signature {
+            offset_minutes: 0,
+            ..who.clone()
+        };
+        assert_eq!(DateStyle::IsoStrict.format(&utc, 0), "2023-11-14T22:13:20Z");
         assert_eq!(f(DateStyle::Rfc), "Tue, 14 Nov 2023 23:13:20 +0100");
         assert_eq!(f(DateStyle::Short), "2023-11-14");
         assert_eq!(f(DateStyle::Unix), "1700000000");

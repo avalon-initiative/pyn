@@ -132,7 +132,8 @@ impl Fixture {
         let out = c.output().unwrap();
         (
             out.status.code().unwrap(),
-            String::from_utf8_lossy(&out.stdout).into_owned(),
+            // git before 2.45 writes a zero offset as +00:00 in strict ISO dates
+            String::from_utf8_lossy(&out.stdout).replace("+00:00", "Z"),
         )
     }
 
