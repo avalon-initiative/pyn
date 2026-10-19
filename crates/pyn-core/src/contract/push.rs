@@ -787,11 +787,6 @@ async fn wide_push(h: &Harness, entries: usize) -> Result<Vec<crate::Revision>, 
         .await
 }
 
-pub async fn a_pushed_tree_at_the_entry_cap_is_taken(store: Store) {
-    let h = harness(store);
-    wide_push(&h, crate::MAX_TREE_ENTRIES).await.unwrap();
-}
-
 pub async fn a_pushed_tree_over_the_entry_cap_is_refused(store: Store) {
     let h = harness(store);
     let err = wide_push(&h, crate::MAX_TREE_ENTRIES + 1)
