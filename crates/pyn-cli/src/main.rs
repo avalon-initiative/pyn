@@ -333,6 +333,8 @@ enum Command {
         /// List commits instead of revisions.
         #[arg(long, conflicts_with_all = ["path", "filter"])]
         commits: bool,
+        #[command(flatten)]
+        git: git_home::GitLogArgs,
     },
     /// Check that history is intact: every revision's hash and its link to the one before, and the audit log's chain.
     ///
@@ -931,6 +933,14 @@ fn run(cli: Cli) -> Result<()> {
         usage_error(&format!(
             "`pyn commit {flag}` applies to a git repository, not a pyn server: commits there are immutable \
              and `--file` is the content file"
+        ));
+    }
+    if let Command::Log { git: opts, .. } = &cli.command
+        && git.is_none()
+        && let Some(flag) = opts.first_given()
+    {
+        usage_error(&format!(
+            "`pyn log {flag}` applies to a git repository, not a pyn server"
         ));
     }
     if let Command::Commit { message, .. } = &cli.command
@@ -1754,9 +1764,11 @@ fn run(cli: Cli) -> Result<()> {
             path,
             filter,
             limit,
+            git: log_args,
             ..
         } => {
             branch::note_branch(ws.as_ref());
+            let path = path.or_else(|| log_args.sole_dashed().map(str::to_string));
             let (revs, repo_wide) = match path {
                 Some(path) => {
                     let revs = backend.path_history(&rp(&path)?)?.into_iter().rev();

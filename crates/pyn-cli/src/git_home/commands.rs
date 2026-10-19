@@ -58,13 +58,20 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
             filter,
             limit,
             commits,
+            git: args,
         } => {
             if filter.is_some() {
                 bail!(
                     "`pyn log --filter` is not available on a git repository; name a path instead"
                 );
             }
-            log(git, cwd, path.as_deref(), limit, commits)
+            if commits {
+                if path.is_some() || args.first_given().is_some() {
+                    bail!("`pyn log --commits` takes no revision, path or git log option");
+                }
+                return super::log::log_table(git, limit.unwrap_or(50));
+            }
+            super::log::log(git, cwd, path, limit, args)
         }
         Command::Init => init(git),
         Command::Files => crate::files_command(git),
@@ -183,7 +190,7 @@ fn refuse(name: &str) -> ! {
 }
 
 /// Writes to standard output, ending quietly when the reader has gone (`pyn log | head`).
-fn emit(text: &str) {
+pub(super) fn emit(text: &str) {
     let mut out = std::io::stdout().lock();
     if let Err(e) = out.write_all(text.as_bytes()).and_then(|()| out.flush())
         && e.kind() == std::io::ErrorKind::BrokenPipe
@@ -395,7 +402,7 @@ fn disk_blob(git: &GitHome, path: &[u8]) -> Result<Option<Blob>> {
     }))
 }
 
-fn add_changes(old: &mut Tree, new: &mut Tree, changes: &[Change]) {
+pub(super) fn add_changes(old: &mut Tree, new: &mut Tree, changes: &[Change]) {
     for c in changes {
         let path = path_string(&c.path);
         if let Some(b) = c.old.as_ref().and_then(entry_blob) {
@@ -445,7 +452,7 @@ fn split_revisions(
     Ok((revs, rest.to_vec()))
 }
 
-fn repo_paths(git: &GitHome, cwd: &Path, paths: &[String]) -> Result<Vec<String>> {
+pub(super) fn repo_paths(git: &GitHome, cwd: &Path, paths: &[String]) -> Result<Vec<String>> {
     paths
         .iter()
         .filter(|p| p.as_str() != ".")
@@ -549,14 +556,17 @@ fn diff(
     Ok(differs)
 }
 
-fn message_lines(message: &[u8]) -> Vec<String> {
+pub(super) fn message_lines(message: &[u8]) -> Vec<String> {
     let text = String::from_utf8_lossy(message);
     let mut lines: Vec<&str> = text.split('\n').collect();
     while lines.last().is_some_and(|l| l.trim().is_empty()) {
         lines.pop();
     }
     let skip = lines.iter().take_while(|l| l.trim().is_empty()).count();
-    lines[skip..].iter().map(|l| format!("    {l}")).collect()
+    lines[skip..]
+        .iter()
+        .map(|l| format!("    {}", l.trim_end()))
+        .collect()
 }
 
 /// The `commit`, `Merge:`, `Author:` and `Date:` lines and the indented message, as `git log` and `git show` print them.
@@ -579,7 +589,7 @@ fn commit_block(id: &ObjectId, c: &GitCommit) -> String {
     out
 }
 
-fn head_or_refuse(git: &GitHome) -> Result<ObjectId> {
+pub(super) fn head_or_refuse(git: &GitHome) -> Result<ObjectId> {
     match git.repo.head()? {
         Head::Branch { name, id: None } => {
             bail!("your current branch '{name}' does not have any commits yet")
@@ -615,107 +625,6 @@ fn show(git: &GitHome, commit: Option<&str>, format: &diff::Format) -> Result<()
         out.push_str(&body);
     }
     emit(&out);
-    Ok(())
-}
-
-/// What the one argument of `pyn log` names: a path that exists or existed, else a revision.
-enum LogTarget {
-    Head,
-    Path(String),
-    Revision(ObjectId),
-}
-
-fn log_target(git: &GitHome, cwd: &Path, arg: Option<&str>) -> Result<LogTarget> {
-    let Some(arg) = arg else {
-        return Ok(LogTarget::Head);
-    };
-    if arg == "." {
-        return Ok(LogTarget::Head);
-    }
-    let known = |rel: &str| -> Result<bool> {
-        if std::fs::symlink_metadata(fs_path(git.repo.root()?, rel.as_bytes())).is_ok() {
-            return Ok(true);
-        }
-        let Some(head) = git.repo.head_commit()? else {
-            return Ok(false);
-        };
-        let tree = git.repo.commit(&head)?.tree;
-        Ok(git.repo.entry_at(&tree, rel.as_bytes())?.is_some())
-    };
-    if let Ok(rel) = git.ws.repo_path(cwd, arg)
-        && known(&rel)?
-    {
-        return Ok(LogTarget::Path(rel));
-    }
-    match git.repo.resolve(arg) {
-        Ok(id) => Ok(LogTarget::Revision(id)),
-        Err(_) => Ok(LogTarget::Path(git.ws.repo_path(cwd, arg)?)),
-    }
-}
-
-fn log(
-    git: &GitHome,
-    cwd: &Path,
-    arg: Option<&str>,
-    limit: Option<usize>,
-    commits: bool,
-) -> Result<()> {
-    let (start, spec) = match log_target(git, cwd, arg)? {
-        LogTarget::Head => (head_or_refuse(git)?, Pathspec::default()),
-        LogTarget::Path(p) => (head_or_refuse(git)?, Pathspec::new([p.into_bytes()])),
-        LogTarget::Revision(id) => (id, Pathspec::default()),
-    };
-    let mut walk = git.repo.log(&[start], spec)?;
-    if commits {
-        return log_table(git, &mut walk, limit.unwrap_or(50));
-    }
-    let mut out = String::new();
-    let mut shown = 0usize;
-    while limit.is_none_or(|n| shown < n)
-        && let Some(entry) = walk.next_entry()?
-    {
-        if shown > 0 {
-            out.push('\n');
-        }
-        out.push_str(&commit_block(&entry.id, &entry.commit));
-        shown += 1;
-        if out.len() > 64 * 1024 {
-            emit(&std::mem::take(&mut out));
-        }
-    }
-    emit(&out);
-    Ok(())
-}
-
-fn log_table(git: &GitHome, walk: &mut pyn_gitwork::Log<'_>, limit: usize) -> Result<()> {
-    let mut rows: Vec<Vec<String>> = Vec::new();
-    while rows.len() < limit
-        && let Some(entry) = walk.next_entry()?
-    {
-        let c = &entry.commit;
-        let parent_tree = match c.parents.first() {
-            Some(p) => Some(git.repo.commit(p)?.tree),
-            None => None,
-        };
-        let files = git
-            .repo
-            .diff_trees(parent_tree.as_ref(), Some(&c.tree), &Pathspec::default())?
-            .len();
-        rows.push(vec![
-            crate::snapshot::short(&entry.id.to_hex()).to_string(),
-            String::from_utf8_lossy(&c.author.name).into_owned(),
-            time::local(chrono::DateTime::from_timestamp(c.author.time, 0).unwrap_or_default()),
-            files.to_string(),
-            message_lines(&c.message)
-                .first()
-                .map_or(String::new(), |l| l.trim_start().to_string()),
-        ]);
-    }
-    table::show(
-        &["COMMIT", "AUTHOR", "WHEN", "FILES", "MESSAGE"],
-        &rows,
-        "no commits",
-    );
     Ok(())
 }
 

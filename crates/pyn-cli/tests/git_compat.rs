@@ -28,6 +28,27 @@ fn log_of_a_path_is_newest_first_and_takes_max_count() {
 }
 
 #[test]
+fn git_log_options_are_usage_errors_on_a_pyn_server() {
+    let env = start();
+    env.seed("alice", "Source/a.ts", "one", None);
+    let home = env.dir("home");
+    for args in [
+        &["log", "--oneline"][..],
+        &["log", "--format=%h"],
+        &["log", "--stat"],
+        &["log", "--author=x"],
+        &["log", "-p"],
+        &["log", "Source/a.ts", "Source/b.ts"],
+        &["log", "--", "Source/a.ts", "Source/b.ts"],
+    ] {
+        let out = env.run(&home, "alice", args);
+        assert_eq!(out.status.code(), Some(129), "{args:?}");
+    }
+    let out = env.ok(&home, "alice", &["log", "--", "Source/a.ts"]);
+    assert!(out.contains("r1"), "{out}");
+}
+
+#[test]
 fn commit_checks_several_paths_in_as_one_commit() {
     let env = start();
     env.seed("alice", "Source/a.cpp", "one", None);

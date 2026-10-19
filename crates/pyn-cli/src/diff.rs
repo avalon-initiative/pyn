@@ -45,6 +45,7 @@ pub type Tree = BTreeMap<String, Blob>;
 pub enum Kind {
     Patch,
     Stat,
+    ShortStat,
     NameOnly,
     NameStatus,
 }
@@ -239,6 +240,26 @@ fn patch(
     out
 }
 
+#[derive(Clone, Copy)]
+enum StatCounts {
+    Lines(usize, usize),
+    /// Old and new size in bytes.
+    Binary(usize, usize),
+}
+
+impl StatCounts {
+    fn lines(self) -> Option<(usize, usize)> {
+        match self {
+            Self::Lines(a, d) => Some((a, d)),
+            Self::Binary(..) => None,
+        }
+    }
+}
+
+fn blob_size(backend: &dyn Backend, path: &str, blob: Option<&Blob>) -> Result<usize> {
+    blob.map_or(Ok(0), |b| Ok(bytes(backend, path, b, false)?.len()))
+}
+
 fn stat_graph(added: usize, deleted: usize, widest: usize) -> String {
     let scale = |n: usize| {
         if widest > STAT_GRAPH_WIDTH && n > 0 {
@@ -254,10 +275,10 @@ fn stat_summary(files: usize, added: usize, deleted: usize) -> String {
     let plural =
         |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
     let mut out = format!(" {} changed", plural(files, "file", "files"));
-    if added > 0 {
+    if added > 0 || deleted == 0 {
         let _ = write!(out, ", {}(+)", plural(added, "insertion", "insertions"));
     }
-    if deleted > 0 {
+    if deleted > 0 || added == 0 {
         let _ = write!(out, ", {}(-)", plural(deleted, "deletion", "deletions"));
     }
     out.push('\n');
@@ -284,7 +305,7 @@ pub fn compare(
     out: &mut String,
 ) -> Result<bool> {
     let paths: BTreeSet<&String> = old.keys().chain(new.keys()).collect();
-    let mut stat_rows: Vec<(String, Option<(usize, usize)>)> = Vec::new();
+    let mut stat_rows: Vec<(String, StatCounts)> = Vec::new();
     let mut differs = false;
     for path in paths {
         let (a, b) = (old.get(path), new.get(path));
@@ -311,12 +332,22 @@ pub fn compare(
                 let c = contents(backend, path, a, b)?;
                 out.push_str(&patch(path, a, b, &c, format.context));
             }
-            Kind::Stat => {
+            Kind::Stat | Kind::ShortStat => {
                 let c = contents(backend, path, a, b)?;
-                let counts = (!c.binary).then(|| pyn_diff::line_counts(&c.old, &c.new));
+                let counts = if c.binary {
+                    StatCounts::Binary(blob_size(backend, path, a)?, blob_size(backend, path, b)?)
+                } else {
+                    let (x, y) = pyn_diff::line_counts(&c.old, &c.new);
+                    StatCounts::Lines(x, y)
+                };
                 stat_rows.push((path.clone(), counts));
             }
         }
+    }
+    if format.kind == Kind::ShortStat && !stat_rows.is_empty() {
+        let counts = stat_rows.iter().filter_map(|(_, c)| c.lines());
+        let (added, deleted) = counts.fold((0, 0), |(a, d), (x, y)| (a + x, d + y));
+        out.push_str(&stat_summary(stat_rows.len(), added, deleted));
     }
     if format.kind == Kind::Stat && !stat_rows.is_empty() {
         let name_w = stat_rows
@@ -327,10 +358,10 @@ pub fn compare(
         let total = |(a, d): (usize, usize)| a + d;
         let widest = stat_rows
             .iter()
-            .filter_map(|(_, c)| c.map(total))
+            .filter_map(|(_, c)| c.lines().map(total))
             .max()
             .unwrap_or(0);
-        let binary = stat_rows.iter().any(|(_, c)| c.is_none());
+        let binary = stat_rows.iter().any(|(_, c)| c.lines().is_none());
         let num_w = widest
             .to_string()
             .len()
@@ -338,7 +369,7 @@ pub fn compare(
         let (mut added, mut deleted) = (0, 0);
         for (path, counts) in &stat_rows {
             match counts {
-                Some((a, d)) => {
+                StatCounts::Lines(a, d) => {
                     added += a;
                     deleted += d;
                     let graph = stat_graph(*a, *d, widest);
@@ -349,8 +380,13 @@ pub fn compare(
                         if graph.is_empty() { "" } else { " " },
                     );
                 }
-                None => {
-                    let _ = writeln!(out, " {path:<name_w$} | {:>num_w$}", "Bin");
+                StatCounts::Binary(old, new) => {
+                    let sizes = if old + new == 0 {
+                        String::new()
+                    } else {
+                        format!(" {old} -> {new} bytes")
+                    };
+                    let _ = writeln!(out, " {path:<name_w$} | {:>num_w$}{sizes}", "Bin");
                 }
             }
         }
@@ -394,6 +430,10 @@ mod tests {
         assert_eq!(
             stat_summary(2, 3, 1),
             " 2 files changed, 3 insertions(+), 1 deletion(-)\n"
+        );
+        assert_eq!(
+            stat_summary(1, 0, 0),
+            " 1 file changed, 0 insertions(+), 0 deletions(-)\n"
         );
     }
 }

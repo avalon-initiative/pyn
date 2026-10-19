@@ -1,5 +1,5 @@
 //! `git log` order: newest committer time first across all parents, with git's default history simplification
-//! when a path limit is given.
+//! when a path limit is given. Commits reachable from a hidden set are skipped, as in `git log ^x y`.
 
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashSet};
@@ -48,16 +48,28 @@ pub struct Log<'a> {
     spec: Pathspec,
     queue: BinaryHeap<Queued>,
     seen: HashSet<ObjectId>,
+    hidden: HashSet<ObjectId>,
     next_seq: u64,
 }
 
 impl Repo {
     pub fn log(&self, start: &[ObjectId], spec: Pathspec) -> Result<Log<'_>> {
+        self.log_hiding(start, HashSet::new(), spec)
+    }
+
+    /// Like [`Repo::log`], skipping `hidden`, which must be closed under ancestry.
+    pub fn log_hiding(
+        &self,
+        start: &[ObjectId],
+        hidden: HashSet<ObjectId>,
+        spec: Pathspec,
+    ) -> Result<Log<'_>> {
         let mut log = Log {
             repo: self,
             spec,
             queue: BinaryHeap::new(),
             seen: HashSet::new(),
+            hidden,
             next_seq: 0,
         };
         for id in start {
@@ -69,7 +81,7 @@ impl Repo {
 
 impl Log<'_> {
     fn push(&mut self, id: ObjectId) -> Result<()> {
-        if !self.seen.insert(id) {
+        if self.hidden.contains(&id) || !self.seen.insert(id) {
             return Ok(());
         }
         let commit = self.repo.commit(&id)?;
@@ -107,14 +119,20 @@ impl Log<'_> {
                 }));
             }
             let mut same_as = None;
+            let mut all_same = true;
             for p in &parents {
-                if !self.touches(&q.commit.tree, Some(p))? {
+                if self.touches(&q.commit.tree, Some(p))? {
+                    all_same = false;
+                } else if !self.hidden.contains(p) {
                     same_as = Some(*p);
                     break;
                 }
             }
             if let Some(p) = same_as {
                 self.push(p)?;
+                continue;
+            }
+            if all_same && !parents.is_empty() && parents.iter().all(|p| self.hidden.contains(p)) {
                 continue;
             }
             let show =

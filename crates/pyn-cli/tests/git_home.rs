@@ -169,12 +169,7 @@ fn diff_matches_git() {
         ] {
             let got = repo.ok(&args);
             let want = repo.expected(file);
-            // Git prints binary sizes as `Bin 8 -> 0 bytes`; pyn prints `Bin`.
-            assert_eq!(
-                got,
-                want.replace(" Bin 8 -> 0 bytes", " Bin"),
-                "{format} {args:?}"
-            );
+            assert_eq!(got, want, "{format} {args:?}");
         }
     }
 }

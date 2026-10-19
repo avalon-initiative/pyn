@@ -79,7 +79,8 @@ The commands named in decision #218.
 | `pyn commit --file <local>` | | pyn only | Content file for a single path. In a workspace the file at the path is the default. |
 | `pyn commit --base <rev>` | | pyn only | The revision the edit started from; the server rejects the commit if the branch has moved on from it on an exclusive path. |
 | `git log [-n <n>] [<path>]` | `pyn log [-n <n>] [<path>]` (alias `history`) | different | Without a path, newest first, 50 by default. With a path, oldest first and all revisions (git prints newest first). It lists the workspace's branch (`On branch <name>` goes to standard error). Output is a table of per-path revisions, not commit blocks. `-n` is also `--max-count`; `--limit` is an alias. On a git home it is git's output (see below). |
-| `git log --oneline`, `--graph`, `--stat`, `-p`, `--author`, `--since`, `--grep`, `--format`, `--follow`, `<rev>..<rev>`, `<rev> -- <path>` | none | unsupported | Usage error (`129`). A revision range is read as a path. `pyn log` is of the workspace's branch; another branch's log needs a switch (`pyn log <branch>` is not built). |
+| `git log --oneline`, `--format=`, `--pretty=`, `--date=`, `--author`, `--committer`, `--grep`, `-i`, `--invert-grep`, `--all-match`, `--since`, `--until`, `--no-merges`, `--merges`, `--skip`, `--reverse`, `--stat`, `--shortstat`, `--name-only`, `--name-status`, `-p`, `-U<n>`, `<rev>`, `<a>..<b>`, `<a>...<b>`, `^<rev>`, `[<rev>...] -- <path>...` | same | git home: supported | Git's output on a git home; see [Log on a git home](#log-on-a-git-home). On a pyn server a usage error (`129`) naming the option: that log is a per-path table of revisions. |
+| `git log --graph`, `--follow`, `--decorate`, `--all`, `-S`, `-G`, `--first-parent`, `--show-signature`, `--notes`, `-E`, `-F`, `-P`, `-<n>` | none | unsupported | Usage error (`129`). Rename-aware output is #274. `pyn log` is of the workspace's branch; another branch's log needs a switch (`pyn log <branch>` is not built). |
 | `pyn log --commits` | | pyn only | List commits (`COMMIT`, `AUTHOR`, `WHEN`, `FILES`, `MESSAGE`) instead of revisions. |
 | `pyn log --filter <glob>` | | pyn only | Only paths matching the glob. |
 | `git diff [<c1> [<c2>]] [-- <path>...]` | `pyn diff [<c1> [<c2>]] [-- <path>...]` | different | Unified output as git, computed in the CLI. Commits are hashes (or abbreviations of 4 or more digits), `HEAD`, `~N`, `^`, or `a..b`; two commits work outside a workspace. With no commit it compares the work tree with the index: the staged content, or the last update for what is not staged. File modes print as in git, including `old mode` and `new mode`. |
@@ -685,7 +686,7 @@ whatever the rules say.
 | `status` | Also `-s`, `--porcelain` and `-b` in git's short format, and pathspecs (see [the short format](#the-short-status-format)). Header (`On branch main`, or `HEAD detached at <id>`), a `STAGED`, `UNSTAGED`, `PATH` table, and a count line; `nothing to commit, working tree clean` when clean. States are `added`, `modified`, `deleted`, `typechange`, `untracked` and `unmerged`. Staged is `HEAD` against the index, unstaged is the index against the work tree, so a path can be in both. A folder with nothing tracked in it is listed once, as `dir/`. Paths are from the repository root. Mode changes count as modified; symlinks are compared by their target. |
 | `diff` | Index against the work tree; one commit against the work tree (the paths in the commit or the index); two commits, or `a..b`. A name that is both a revision and a file needs `--`. Shows `old mode` and `new mode`, symlinks and binary files as git does. `--cached` and `--staged` compare the index with `HEAD` (or with one named commit). |
 | `show [<rev>]` | Commit header and message, then the diff against the first parent. A merge commit prints no diff (git prints a combined diff, which pyn does not compute). |
-| `log [-n <n>] [<path or rev>]` | Git's output: commit blocks, newest first across all parents, with git's history simplification for a path. The argument is a path if one exists (now or at `HEAD`), else a revision. `--commits` is the pyn table. `--filter` fails. |
+| `log [<options>] [<rev>...] [--] [<path>...]` | Git's output: commit blocks, newest first across all parents, with git's history simplification for a path; revision ranges, formats, filters and diff output are in [Log on a git home](#log-on-a-git-home). `--commits` is the pyn table. `--filter` fails. |
 | `files`, `ls` | `files` lists the index and `ls` lists `HEAD`'s tree. Every entry is `shared`, with no revision, lock or last change. |
 | `add`, `restore --staged`, `commit` | See [staging](#staging-and-committing). |
 | `branch`, `switch`, `checkout`, `restore` | See [Branches, switching and the work tree](#branches-switching-and-the-work-tree). |
@@ -707,13 +708,65 @@ Differences from git, all deliberate or not yet done:
   repository that depends on them can show files as modified that git does not.
 - No rename or copy detection: a rename is a delete and an add.
 - Submodule entries are not compared, and a submodule folder is not descended into.
-- `log` and `show` print no ref decorations; commit abbreviations are 7 digits and are not lengthened to stay unique;
-  `diff --stat` prints `Bin` without sizes for a binary file.
+- `log` and `show` print no ref decorations (`%d` in a `log` template does); commit abbreviations are 7 digits and are not
+  lengthened to stay unique.
 - A nested repository that the index does not track is one untracked `dir/`.
 - `merge` and `stash apply` detect no renames, write diff3 conflict markers whatever `merge.conflictStyle` says, merge only when
   there is one merge base, and do not write `AUTO_MERGE`; `switch` and `checkout` do not warn about commits left behind by
   leaving a detached `HEAD`, and print their own wording where git's differs (`Fast-forward` without a diffstat, the status
   after `stash pop` in pyn's table).
+
+### Log on a git home
+
+`pyn log [<options>] [<rev>...] [--] [<path>...]` prints what `git log` prints. Arguments up to the first one that is not a
+revision are revisions, the rest are paths; `--` ends the revisions explicitly. A name that is both a revision and a file needs
+`--` (exit `128`, as git); a name that is neither fails with `ambiguous argument`. With no revision it starts at `HEAD`, and
+`^<rev>` alone prints nothing, as git. Paths are taken relative to where you stand and limit the history with git's default
+simplification.
+
+| Revision | Meaning |
+| --- | --- |
+| `<rev>` | Everything reachable from it (`HEAD`, `@`, a branch, a tag, an abbreviated id, with `~N`, `^`, `^N`). |
+| `^<rev>` | Leaves out what is reachable from it. |
+| `<a>..<b>`, `..<b>`, `<a>..` | Reachable from `<b>` and not from `<a>`; a missing side is `HEAD`. |
+| `<a>...<b>` | Reachable from either, but not from both. |
+
+Formats: `--oneline` (abbreviated id and subject), `--format=<f>` and `--pretty[=<f>]` with `oneline`, `short`, `medium`
+(the default), `full`, `fuller`, `raw`, `format:<template>` (a newline between commits) and `tformat:<template>` (a newline
+after each; also a bare template or `--format=<template>`). Templates take `%H %h %T %t %P %p %an %ae %ad %aD %ai %aI %as %at
+%ar %cn %ce %cd %cD %ci %cI %cs %ct %cr %s %b %B %d %D %n %%`; any other `%` sequence is printed as written. `%h`, `%t` and `%p`
+are 7 digits. `%d` and `%D` list `HEAD -> <branch>` (or `HEAD`), then the other branches, remote-tracking branches, `tag: <name>`
+and `refs/stash` that point at the commit, in git's order. `--date=` takes `default`, `iso`, `iso-strict`, `rfc`, `short`,
+`relative`, `unix` and `raw` and applies to `Date:` and `%ad`/`%cd`; commit dates print in the offset recorded in the commit.
+
+Filters apply in this order: `--author` and `--committer` (regular expressions on `Name <email>`, any of several of the same
+kind), `--grep` (on the whole message; any of several, or all with `--all-match`, or none with `--invert-grep`), `-i` for all
+three, `--since`/`--after` and `--until`/`--before` (on the committer date), `--merges` and `--no-merges`, then `--skip`, `-n`,
+and `--reverse` last (it reverses the commits that were selected). The different kinds must all match. Regular expressions are
+POSIX basic ones with GNU's `\|`, `\+` and `\?`, matched line by line; back-references are not supported. A date is a Unix
+time (`1700000000` or `@1700000000`), `YYYY-MM-DD` with an optional `HH:MM[:SS]` and zone, an RFC 2822 date, `now`,
+`yesterday`, or `<n> <unit> ago` (units from seconds to years, combinable). As in git a bare date takes the current time of day,
+and a date without a zone is in the local timezone.
+
+Output after each commit: `--stat`, `--shortstat`, `--name-only`, `--name-status` and `-p`/`--patch`/`-u`, with `-U<n>` (which
+implies `-p`) for the context. `--stat` and `--shortstat` combine with `-p` (git prints `---` between the message and the stat
+when `--stat` and `-p` are both given); the other combinations are a usage error. The diff is against the first parent, or
+against the empty tree for a root commit, limited to the paths. A merge commit prints none (git needs `-m`, `-c` or `--cc` for
+that). The engine is the one `pyn diff` uses, including its `--stat` layout.
+
+Differences from git:
+
+- With both a revision range that excludes history and a path, the choice of merge commits whose parents are on the excluded
+  side can differ from git's, which decides it while the walk is still marking commits as excluded. Ranges alone, and paths
+  alone, match.
+- `--since` and `--until` only filter; git also stops walking at the first commit older than `--since`, which differs only for
+  histories whose commit dates are not in order. A date git cannot read is a failure here (git takes `now`).
+- `%d` does not hide `refs/notes/*` or other namespaces: they print by full name. Unlisted placeholders (`%C`, `%w`, `%<`, `%aN`,
+  `%x`) are printed as written.
+- `--format` and `--pretty` win over `--oneline` whatever their order. `--date=local`, `human` and `format:` are not taken.
+- The `--stat` graph is at most 40 columns wide and names are never shortened; it has no `--stat=<width>` form.
+- Passing a revision that is not a commit, a reflog selector (`HEAD@{1}`) or `:/<text>` fails with exit `128` where git
+  accepts them.
 
 ### The short status format
 

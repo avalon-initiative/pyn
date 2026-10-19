@@ -285,8 +285,8 @@ current directory inside a workspace. Options: `-U<n>` / `--unified=<n>` lines o
 
 Output is the unified format git prints: `diff --git a/<path> b/<path>`, `new file mode <mode>`, `deleted file mode <mode>` or `old mode`/`new mode`, an `index
 <old>..<new>` line with seven characters of each blob id, `--- a/<path>` and `+++ b/<path>` (`/dev/null` for a created or
-deleted file), then `@@ -a,b +c,d @@` hunks, with `\ No newline at end of file` where it applies. A file with a NUL byte in its
-first 8000 bytes is binary and prints `Binary files a/<path> and b/<path> differ`; only that first block of it is fetched.
+deleted file), then `@@ -a,b +c,d @@` hunks (followed, as in git, by the nearest earlier line that starts with a letter, `_` or `$`), with `\ No newline at end of file` where it applies. A file with a NUL byte in its
+first 8000 bytes is binary and prints `Binary files a/<path> and b/<path> differ` (`Bin <old> -> <new> bytes` in `--stat`); only that first block of it is fetched for a patch.
 The diff is Myers' algorithm, built in with no dependency on git (decision #30), computed in the CLI. For inputs with more than
 2000 changed lines the changed region is shown as one replacement instead of a minimal diff, to bound memory.
 

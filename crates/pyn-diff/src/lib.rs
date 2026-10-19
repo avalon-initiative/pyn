@@ -145,6 +145,30 @@ fn push_line(out: &mut String, tag: char, line: &[u8]) {
     }
 }
 
+const HEADING_BYTES: usize = 80;
+
+/// git's default section heading: the nearest line above `start` (down to, not including, `floor`) that begins
+/// with a letter, `_` or `$`.
+fn heading(a: &[&[u8]], start: usize, floor: isize) -> String {
+    let mut at = start as isize - 1;
+    while at > floor {
+        let line = a[at as usize];
+        if line
+            .first()
+            .is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_' || *b == b'$')
+        {
+            let text = String::from_utf8_lossy(line.trim_ascii_end()).into_owned();
+            let mut end = text.len().min(HEADING_BYTES);
+            while !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            return format!(" {}", &text[..end]);
+        }
+        at -= 1;
+    }
+    String::new()
+}
+
 /// The `@@` hunks of a unified diff from `old` to `new` with `context` lines around each change;
 /// `None` when the contents are identical.
 pub fn unified_hunks(old: &[u8], new: &[u8], context: usize) -> Option<String> {
@@ -170,6 +194,7 @@ pub fn unified_hunks(old: &[u8], new: &[u8], context: usize) -> Option<String> {
     }
 
     let mut out = String::new();
+    let mut floor = -1isize;
     for (first, last) in groups {
         let start = first.saturating_sub(context);
         let end = (last + 1 + context).min(ops.len());
@@ -201,10 +226,12 @@ pub fn unified_hunks(old: &[u8], new: &[u8], context: usize) -> Option<String> {
         }
         let _ = writeln!(
             out,
-            "@@ -{} +{} @@",
+            "@@ -{} +{} @@{}",
             range(a0 + 1, ai - a0),
-            range(b0 + 1, bi - b0)
+            range(b0 + 1, bi - b0),
+            heading(&a, a0, floor)
         );
+        floor = a0 as isize - 1;
         out.push_str(&body);
     }
     Some(out)
@@ -291,8 +318,34 @@ mod tests {
         let got = unified_hunks(old, new, 3).unwrap();
         assert_eq!(
             got,
-            "@@ -2,7 +2,7 @@\n two\n three\n four\n-five\n+FIVE\n six\n seven\n eight\n"
+            "@@ -2,7 +2,7 @@ one\n two\n three\n four\n-five\n+FIVE\n six\n seven\n eight\n"
         );
+    }
+
+    #[test]
+    fn hunk_headings_are_the_nearest_letter_line_above_and_stop_at_the_previous_hunk() {
+        let text = |lines: &[&str]| -> Vec<u8> {
+            lines
+                .iter()
+                .flat_map(|l| format!("{l}\n").into_bytes())
+                .collect()
+        };
+        let numbered: Vec<String> = (1..=20).map(|i| format!(" l{i}")).collect();
+        let mut old = vec!["fn a"];
+        old.extend(numbered.iter().map(String::as_str));
+        let heads = |new: &[&str]| -> Vec<String> {
+            let got = unified_hunks(&text(&old), &text(new), 1).unwrap();
+            got.lines()
+                .filter(|l| l.starts_with("@@"))
+                .map(String::from)
+                .collect()
+        };
+        let mut one = old.clone();
+        one[19] = " y";
+        assert_eq!(heads(&one), ["@@ -19,3 +19,3 @@ fn a"]);
+        let mut two = one.clone();
+        two[2] = " y";
+        assert_eq!(heads(&two), ["@@ -2,3 +2,3 @@ fn a", "@@ -19,3 +19,3 @@"]);
     }
 
     #[test]

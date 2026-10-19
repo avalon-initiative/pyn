@@ -261,7 +261,7 @@ fn diff_between_commits_works_outside_a_workspace() {
     assert_eq!(lines[2], " 2 files changed, 2 insertions(+), 1 deletion(-)");
 
     let wide = env.ok(&home, "alice", &["diff", "-U0", "HEAD~3", "HEAD~1"]);
-    assert!(wide.contains("@@ -2 +2 @@\n-two\n+2\n"), "{wide}");
+    assert!(wide.contains("@@ -2 +2 @@ one\n-two\n+2\n"), "{wide}");
 
     let err = env.fails(&home, "alice", &["diff", "HEAD~3", "deadbeef"]);
     assert!(err.contains("commit_not_found"), "{err}");
