@@ -30,8 +30,8 @@ fn team_info(d: TeamDetail) -> api::TeamInfo {
 
 #[utoipa::path(get, path = "/v1/orgs/{org}/teams",
     params(("org" = String, Path, description = "the organization's name")),
-    responses((status = 200, body = Vec<api::TeamInfo>, description = "ordered by slug; any member of the organization may list"),
-              (status = 403, body = api::ErrorBody, description = "not_org_member"),
+    responses((status = 200, body = Vec<api::TeamInfo>, description = "ordered by slug; any member of the organization may list; repositories the caller cannot open are left out"),
+              (status = 403, body = api::ErrorBody, description = "not_org_member, or a token that is not full-scope"),
               (status = 404, body = api::ErrorBody, description = "org_not_found")))]
 pub(crate) async fn list_teams(
     State(s): State<AppState>,
@@ -74,8 +74,8 @@ pub(crate) async fn create_team(
 #[utoipa::path(get, path = "/v1/orgs/{org}/teams/{team}",
     params(("org" = String, Path, description = "the organization's name"),
            ("team" = String, Path, description = "the team's slug")),
-    responses((status = 200, body = api::TeamInfo),
-              (status = 403, body = api::ErrorBody, description = "not_org_member"),
+    responses((status = 200, body = api::TeamInfo, description = "repositories the caller cannot open are left out"),
+              (status = 403, body = api::ErrorBody, description = "not_org_member, or a token that is not full-scope"),
               (status = 404, body = api::ErrorBody, description = "org_not_found or team_not_found")))]
 pub(crate) async fn get_team(
     State(s): State<AppState>,

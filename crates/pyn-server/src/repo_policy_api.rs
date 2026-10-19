@@ -36,7 +36,7 @@ fn subject(kind: &str, name: &str) -> pyn_core::Result<CreationSubject> {
 #[utoipa::path(get, path = "/v1/orgs/{org}/repo-policy",
     params(("org" = String, Path, description = "the organization's name")),
     responses((status = 200, body = api::RepoPolicyInfo),
-              (status = 403, body = api::ErrorBody, description = "not_org_owner"),
+              (status = 403, body = api::ErrorBody, description = "not_org_owner, or a token that is not full-scope"),
               (status = 404, body = api::ErrorBody, description = "org_not_found")))]
 pub(crate) async fn get_repo_policy(
     State(s): State<AppState>,

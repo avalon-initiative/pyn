@@ -55,7 +55,7 @@ struct Cli {
     /// The server to talk to; falls back to the workspace's setting, then your user setting, then localhost.
     #[arg(long, env = "PYN_SERVER")]
     server: Option<String>,
-    /// API token to sign in with; defaults to the sign-in saved by `pyn login`. A value on the command line is visible in the process list: prefer the PYN_TOKEN environment variable.
+    /// API token to sign in with; defaults to the sign-in saved by `pyn login`. A value on the command line is visible in the process list: pass `-` to read the token from standard input, or use the PYN_TOKEN environment variable.
     #[arg(long, env = "PYN_TOKEN", hide_env_values = true)]
     token: Option<String>,
     /// Dev identity sent as X-Pyn-User; only works against a server running with PYN_DEV_AUTH.
@@ -980,7 +980,16 @@ fn run(cli: Cli) -> Result<()> {
         None => resolve(cli.repo, mine.repo.as_ref(), yours.repo.as_ref(), None),
     };
     let base = server.trim_end_matches('/').to_string();
-    let token = match cli.token {
+    let token_on_command_line = std::env::args()
+        .skip(1)
+        .any(|a| a == "--token" || a.starts_with("--token="));
+    let cli_token = credentials::resolve_token(
+        cli.token,
+        token_on_command_line,
+        &mut std::io::stdin().lock(),
+        &mut std::io::stderr(),
+    )?;
+    let token = match cli_token {
         Some(t) => Some(t),
         None => credentials::load(&base)?.map(|saved| saved.token),
     };

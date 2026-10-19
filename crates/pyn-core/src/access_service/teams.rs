@@ -1,6 +1,7 @@
 //! Teams: flat groups of an organization's members that hold one role per repository the organization owns.
 
 use super::*;
+use crate::Visibility;
 use crate::access::team;
 use crate::repo::RepoRecord;
 
@@ -13,12 +14,15 @@ pub struct TeamDetail {
 }
 
 impl AccessService {
-    async fn team_detail(&self, team: TeamRecord) -> Result<TeamDetail> {
+    /// The team's details; repositories the actor could not open are left out.
+    async fn team_detail(&self, actor: &Identity, team: TeamRecord) -> Result<TeamDetail> {
         let members = self.store.team_members(&team.org, &team.slug).await?;
         let mut repos = Vec::new();
         if let Some(registry) = &self.registry {
             for (id, role) in self.store.team_repos(&team.org, &team.slug).await? {
-                if let Some(record) = registry.get_repo(&id).await? {
+                if let Some(record) = registry.get_repo(&id).await?
+                    && self.can_open(actor, &record).await?
+                {
                     repos.push((record, role));
                 }
             }
@@ -28,6 +32,18 @@ impl AccessService {
             members,
             repos,
         })
+    }
+
+    /// A public repository, or one where the actor holds any permission.
+    async fn can_open(&self, actor: &Identity, record: &RepoRecord) -> Result<bool> {
+        if record.visibility == Visibility::Public {
+            return Ok(true);
+        }
+        match self.principal_in(&record.id, actor).await {
+            Ok(p) => Ok(!p.permissions.is_empty()),
+            Err(PynError::Unauthenticated(_)) => Ok(false),
+            Err(e) => Err(e),
+        }
     }
 
     pub(super) async fn require_team(&self, org: &UserId, slug: &str) -> Result<TeamRecord> {
@@ -42,24 +58,26 @@ impl AccessService {
 
     /// The organization's teams, ordered by slug. Any member of the organization may list them.
     pub async fn teams(&self, actor: &Identity, org: &UserId) -> Result<Vec<TeamDetail>> {
+        actor.require_full_scope()?;
         self.org(org).await?;
         if self.store.org_role(org, &actor.user).await?.is_none() {
             return Err(PynError::NotOrgMember(org.to_string()));
         }
         let mut out = Vec::new();
         for t in self.store.teams(org).await? {
-            out.push(self.team_detail(t).await?);
+            out.push(self.team_detail(actor, t).await?);
         }
         Ok(out)
     }
 
     pub async fn team(&self, actor: &Identity, org: &UserId, slug: &str) -> Result<TeamDetail> {
+        actor.require_full_scope()?;
         self.org(org).await?;
         if self.store.org_role(org, &actor.user).await?.is_none() {
             return Err(PynError::NotOrgMember(org.to_string()));
         }
         let t = self.require_team(org, slug).await?;
-        self.team_detail(t).await
+        self.team_detail(actor, t).await
     }
 
     async fn require_team_admin(&self, actor: &Identity, org: &UserId) -> Result<()> {
@@ -100,7 +118,7 @@ impl AccessService {
             detail,
         )
         .await?;
-        self.team_detail(record).await
+        self.team_detail(actor, record).await
     }
 
     /// Changes a team's name and description; fields left out stay. Organization owners only.
@@ -134,7 +152,7 @@ impl AccessService {
             detail,
         )
         .await?;
-        self.team_detail(record).await
+        self.team_detail(actor, record).await
     }
 
     /// Deletes a team, its memberships and its repository roles. Organization owners only.
