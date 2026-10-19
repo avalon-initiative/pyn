@@ -25,6 +25,12 @@ impl AccessService {
         self.store.org_role(org, user).await
     }
 
+    /// The organizations the actor belongs to with their role, ordered by name. Full-scope credentials only.
+    pub async fn orgs_for(&self, actor: &Identity) -> Result<Vec<(AccountRecord, OrgRole)>> {
+        actor.require_full_scope()?;
+        self.orgs_of(&actor.user).await
+    }
+
     /// The organizations the user belongs to with their role, ordered by name.
     pub async fn orgs_of(&self, user: &UserId) -> Result<Vec<(AccountRecord, OrgRole)>> {
         let mut out = Vec::new();
@@ -170,6 +176,7 @@ impl AccessService {
         name: &UserId,
         query: &AuditQuery,
     ) -> Result<Vec<AuditEvent>> {
+        actor.require_full_scope()?;
         self.org(name).await?;
         self.require_org_owner(name, &actor.user).await?;
         match &self.audit {
@@ -187,6 +194,7 @@ impl AccessService {
         actor: &Identity,
         org: &UserId,
     ) -> Result<Vec<(UserId, OrgRole)>> {
+        actor.require_full_scope()?;
         self.org(org).await?;
         if self.store.org_role(org, &actor.user).await?.is_none() {
             return Err(PynError::NotOrgMember(org.to_string()));

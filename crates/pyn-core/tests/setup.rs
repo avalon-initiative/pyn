@@ -297,3 +297,42 @@ async fn a_right_token_gives_its_attempt_back() {
     w.svc.complete_setup(bad).await.unwrap_err();
     w.svc.complete_setup(request(TOKEN, "root")).await.unwrap();
 }
+
+#[tokio::test]
+async fn several_clients_cannot_exhaust_setup_for_everyone() {
+    let w = world();
+    for client in 0..20 {
+        let address = format!("10.1.0.{client}");
+        for _ in 0..10 {
+            let mut bad = request("nope", "root");
+            bad.client = Some(&address);
+            let err = w.svc.complete_setup(bad).await.unwrap_err();
+            assert!(matches!(err, PynError::InvalidSetupToken));
+        }
+    }
+    let mut real = request(TOKEN, "root");
+    real.client = Some("192.0.2.7");
+    w.svc.complete_setup(real).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_locked_out_client_does_not_spend_the_server_budget() {
+    let w = world();
+    for _ in 0..10 {
+        w.svc
+            .complete_setup(request("nope", "root"))
+            .await
+            .unwrap_err();
+    }
+    for _ in 0..2000 {
+        let err = w
+            .svc
+            .complete_setup(request("nope", "root"))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, PynError::TooManyAttempts { .. }));
+    }
+    let mut real = request(TOKEN, "root");
+    real.client = Some("192.0.2.7");
+    w.svc.complete_setup(real).await.unwrap();
+}

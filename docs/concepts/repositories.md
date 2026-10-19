@@ -137,6 +137,7 @@ created, name, team), `pyn team show <org>/<team>` (details, members and the rep
 `pyn team grant <org>/<team> <owner>/<repo> --role R`, `pyn team revoke <org>/<team> <owner>/<repo>` and
 `pyn team access [<owner>/<repo>]` (the teams that hold a role in a repository, defaulting to the current one).
 
+Reading teams needs a [full-scope credential](access.md#full-scope-credentials), and a team's `repos` list only repositories the caller could open.
 Managing teams and their members needs, for a token, `manage_roles` and no repository limit, as for organization members.
 Granting a team a role follows the rule for people: the actor needs `manage_users` and every permission the role grants
 (`403 forbidden` otherwise), and removing a grant needs the permissions of the role being removed. The team events are

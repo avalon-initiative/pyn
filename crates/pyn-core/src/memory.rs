@@ -1047,6 +1047,11 @@ impl MetadataStore for MemoryMetadataStore {
         self.state.lock().unwrap().record(repo, id, size, cap)
     }
 
+    async fn object_is_recorded(&self, id: &ObjectId) -> Result<bool> {
+        let st = self.state.lock().unwrap();
+        Ok(st.uploads.keys().any(|(_, o)| o == id))
+    }
+
     async fn record_assembled(
         &self,
         repo: &RepoId,

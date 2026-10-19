@@ -208,6 +208,7 @@ pub(crate) async fn login(
 #[utoipa::path(put, path = "/v1/me/password", request_body = api::ChangePasswordRequest, responses(
     (status = 204),
     (status = 401, body = api::ErrorBody, description = "the current password is wrong"),
+    (status = 429, body = api::ErrorBody, description = "too_many_attempts; Retry-After says how many seconds to wait"),
 ))]
 pub(crate) async fn change_password(
     State(s): State<AppState>,

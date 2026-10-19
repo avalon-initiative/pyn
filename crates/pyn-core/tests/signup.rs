@@ -915,3 +915,95 @@ async fn attempts_past_the_limit_do_not_move_the_window() {
     w.clock.advance(Duration::minutes(5));
     w.svc.login("alice", PASSWORD, None).await.unwrap();
 }
+
+#[tokio::test]
+async fn a_refused_client_does_not_spend_the_account_budget() {
+    let w = world_with(|c| {
+        c.require_email_verification = false;
+        c.limits = RateLimits {
+            sign_in_per_account: 4,
+            sign_in_per_client: 2,
+            ..RateLimits::default()
+        };
+    });
+    w.svc
+        .register(Registration::new("alice", PASSWORD))
+        .await
+        .unwrap();
+    for _ in 0..2 {
+        w.svc
+            .login("alice", "wrong password", Some("203.0.113.9"))
+            .await
+            .unwrap_err();
+    }
+    for _ in 0..5 {
+        let err = w
+            .svc
+            .login("alice", "wrong password", Some("203.0.113.9"))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, PynError::TooManyAttempts { .. }), "{err}");
+    }
+    let err = w
+        .svc
+        .login("alice", "wrong password", Some("198.51.100.1"))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::Unauthenticated(_)), "{err}");
+    w.svc
+        .login("alice", PASSWORD, Some("198.51.100.2"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn wrong_current_passwords_are_counted_and_a_success_resets_the_count() {
+    let w = world_with(|c| {
+        c.require_email_verification = false;
+        c.limits = RateLimits {
+            sign_in_per_account: 3,
+            ..RateLimits::default()
+        };
+    });
+    w.svc
+        .register(Registration::new("alice", PASSWORD))
+        .await
+        .unwrap();
+    let alice = Identity {
+        user: UserId::new("alice"),
+        credential: Credential::Session,
+    };
+    let new = "another long password";
+    for _ in 0..2 {
+        let err = w
+            .svc
+            .change_password(&alice, Some("wrong password"), new, None)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, PynError::Unauthenticated(_)), "{err}");
+    }
+    w.svc
+        .change_password(&alice, Some(PASSWORD), new, None)
+        .await
+        .unwrap();
+    for _ in 0..3 {
+        w.svc
+            .change_password(&alice, Some("wrong password"), PASSWORD, None)
+            .await
+            .unwrap_err();
+    }
+    let verifies = w.passwords.verifies.load(Ordering::SeqCst);
+    let err = w
+        .svc
+        .change_password(&alice, Some(new), PASSWORD, None)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::TooManyAttempts { .. }), "{err}");
+    assert_eq!(w.passwords.verifies.load(Ordering::SeqCst), verifies);
+
+    w.clock.advance(Duration::minutes(15));
+    w.svc
+        .change_password(&alice, Some(new), PASSWORD, None)
+        .await
+        .unwrap();
+}

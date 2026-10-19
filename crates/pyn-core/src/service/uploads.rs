@@ -24,7 +24,7 @@ impl RepoService {
     }
 
     /// Reserves `expect` bytes of the unreferenced budget, stores what `reader` yields and records it. The bytes this
-    /// call newly wrote are removed again when recording fails.
+    /// call newly wrote are removed again when recording fails, unless some repository recorded them meanwhile.
     pub async fn upload(
         &self,
         reader: ObjectReader,
@@ -51,7 +51,11 @@ impl RepoService {
                 return Err(e);
             }
         };
-        let mut rollback = Rollback::new(self.objects.clone(), stored.created.clone());
+        let mut rollback = Rollback::new(
+            self.meta.clone(),
+            self.objects.clone(),
+            stored.created.clone(),
+        );
         let recorded = self.record_stored(&stored.id, expect).await;
         match recorded {
             Ok(()) => rollback.keep(),
@@ -162,15 +166,24 @@ impl Drop for ReservationGuard {
     }
 }
 
-/// Removes objects an upload newly created unless kept; also runs when the upload is cancelled.
+/// Removes objects an upload newly created unless kept or recorded by a repository; also runs when cancelled.
 struct Rollback {
+    meta: Arc<dyn MetadataStore>,
     objects: Arc<dyn ObjectStore>,
     created: Vec<ObjectId>,
 }
 
 impl Rollback {
-    fn new(objects: Arc<dyn ObjectStore>, created: Vec<ObjectId>) -> Self {
-        Self { objects, created }
+    fn new(
+        meta: Arc<dyn MetadataStore>,
+        objects: Arc<dyn ObjectStore>,
+        created: Vec<ObjectId>,
+    ) -> Self {
+        Self {
+            meta,
+            objects,
+            created,
+        }
     }
 
     fn keep(&mut self) {
@@ -178,24 +191,32 @@ impl Rollback {
     }
 
     async fn run(&mut self) {
-        for id in std::mem::take(&mut self.created) {
-            let _ = self.objects.delete(&id).await;
-        }
+        remove_unrecorded(&self.meta, &self.objects, std::mem::take(&mut self.created)).await;
     }
 }
 
 impl Drop for Rollback {
     fn drop(&mut self) {
-        let (objects, created) = (self.objects.clone(), std::mem::take(&mut self.created));
+        let (meta, objects) = (self.meta.clone(), self.objects.clone());
+        let created = std::mem::take(&mut self.created);
         if created.is_empty() {
             return;
         }
         if let Ok(rt) = tokio::runtime::Handle::try_current() {
-            rt.spawn(async move {
-                for id in created {
-                    let _ = objects.delete(&id).await;
-                }
-            });
+            rt.spawn(async move { remove_unrecorded(&meta, &objects, created).await });
+        }
+    }
+}
+
+/// Deletes each object no repository has recorded. A failed check leaves the object for garbage collection (#207).
+async fn remove_unrecorded(
+    meta: &Arc<dyn MetadataStore>,
+    objects: &Arc<dyn ObjectStore>,
+    ids: Vec<ObjectId>,
+) {
+    for id in ids {
+        if matches!(meta.object_is_recorded(&id).await, Ok(false)) {
+            let _ = objects.delete(&id).await;
         }
     }
 }

@@ -7,7 +7,7 @@ use pyn_core::memory::{
 use pyn_core::{
     AccessConfig, AccessService, AccessStore, AuditAction, AuditEvent, AuditQuery, AuditScope,
     AuditStore, Credential, Identity, ManualClock, OrgCreation, OrgRole, Permission, PynError,
-    RegistrationMode, Repositories, Role, Rules, TokenRecord, UserId,
+    RegistrationMode, Repositories, Role, Rules, TokenRecord, UserId, Visibility,
 };
 
 struct World {
@@ -272,4 +272,132 @@ async fn team_slugs_names_and_descriptions_are_validated() {
         .await
         .unwrap();
     assert_eq!(t.team.name, "Art");
+}
+
+async fn repo_id(w: &World, name: &str) -> pyn_core::RepoId {
+    let all = w
+        .repos
+        .list(&session("alice"), Some(&user("acme")))
+        .await
+        .unwrap();
+    all.into_iter().find(|(r, _)| r.name == name).unwrap().0.id
+}
+
+#[tokio::test]
+async fn team_detail_lists_only_repositories_the_caller_could_open() {
+    let w = setup().await;
+    let (alice, acme) = (session("alice"), user("acme"));
+    w.repos
+        .create(&alice, &acme, "secret", None, None)
+        .await
+        .unwrap();
+    w.repos
+        .create(&alice, &acme, "site", Some(Visibility::Public), None)
+        .await
+        .unwrap();
+    for slug in ["art", "ops"] {
+        w.access
+            .create_team(&alice, &acme, slug, None, None)
+            .await
+            .unwrap();
+    }
+    w.access
+        .add_team_member(&alice, &acme, "art", &user("bob"))
+        .await
+        .unwrap();
+    for (team, repo) in [("art", "game"), ("ops", "secret"), ("ops", "site")] {
+        let admin = w
+            .access
+            .principal(&repo_id(&w, repo).await, &user("alice"))
+            .await
+            .unwrap();
+        w.access
+            .set_team_access(&admin, &repo_id(&w, repo).await, team, Role::Reader)
+            .await
+            .unwrap();
+    }
+    w.access
+        .add_team_member(&alice, &acme, "ops", &user("carol"))
+        .await
+        .unwrap();
+
+    let names = |d: &pyn_core::TeamDetail| {
+        d.repos
+            .iter()
+            .map(|(r, _)| r.name.clone())
+            .collect::<Vec<_>>()
+    };
+    let bob = session("bob");
+    let ops = w.access.team(&bob, &acme, "ops").await.unwrap();
+    assert_eq!(names(&ops), ["site"], "the private repository stays hidden");
+    let art = w.access.team(&bob, &acme, "art").await.unwrap();
+    assert_eq!(names(&art), ["game"], "his own team's access is visible");
+    let all = w.access.teams(&bob, &acme).await.unwrap();
+    assert_eq!(
+        all.iter().map(names).collect::<Vec<_>>(),
+        [vec!["game"], vec!["site"]]
+    );
+
+    let owner = w.access.team(&alice, &acme, "ops").await.unwrap();
+    let mut seen = names(&owner);
+    seen.sort();
+    assert_eq!(seen, ["secret", "site"]);
+    let carol = w
+        .access
+        .team(&session("carol"), &acme, "ops")
+        .await
+        .unwrap();
+    assert_eq!(carol.repos.len(), 2);
+}
+
+#[tokio::test]
+async fn organization_reads_need_a_full_scope_credential() {
+    let w = setup().await;
+    let (alice, acme) = (session("alice"), user("acme"));
+    w.access
+        .create_team(&alice, &acme, "art", None, None)
+        .await
+        .unwrap();
+    let mut scoped = token_for("alice", &Permission::ALL);
+    if let Credential::Token(t) = &mut scoped.credential {
+        t.repos = vec![game(&w).await];
+    }
+    let narrow = token_for("alice", &[Permission::Read]);
+    let full = token_for("alice", &Permission::ALL);
+    let q = AuditQuery {
+        limit: 10,
+        ..Default::default()
+    };
+    for who in [&scoped, &narrow] {
+        assert!(matches!(
+            w.access.org_audit(who, &acme, &q).await,
+            Err(PynError::Forbidden(_))
+        ));
+        assert!(matches!(
+            w.access.org_members(who, &acme).await,
+            Err(PynError::Forbidden(_))
+        ));
+        assert!(matches!(
+            w.access.teams(who, &acme).await,
+            Err(PynError::Forbidden(_))
+        ));
+        assert!(matches!(
+            w.access.team(who, &acme, "art").await,
+            Err(PynError::Forbidden(_))
+        ));
+        assert!(matches!(
+            w.access.repo_policy(who, &acme).await,
+            Err(PynError::Forbidden(_))
+        ));
+        assert!(matches!(
+            w.access.orgs_for(who).await,
+            Err(PynError::Forbidden(_))
+        ));
+    }
+    w.access.org_audit(&full, &acme, &q).await.unwrap();
+    w.access.org_members(&full, &acme).await.unwrap();
+    w.access.teams(&full, &acme).await.unwrap();
+    w.access.team(&full, &acme, "art").await.unwrap();
+    w.access.repo_policy(&full, &acme).await.unwrap();
+    assert_eq!(w.access.orgs_for(&alice).await.unwrap().len(), 1);
 }

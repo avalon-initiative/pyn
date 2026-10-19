@@ -1235,6 +1235,16 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "a token that is not full-scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         }
       }
@@ -1259,6 +1269,16 @@
           "204": {},
           "401": {
             "description": "the current password is wrong",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "too_many_attempts; Retry-After says how many seconds to wait",
             "content": {
               "application/json": {
                 "schema": {
@@ -1457,6 +1477,16 @@
             }
           },
           "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "a token that is not full-scope",
             "content": {
               "application/json": {
                 "schema": {
@@ -1668,7 +1698,7 @@
             }
           },
           "403": {
-            "description": "not_org_owner",
+            "description": "not_org_owner, or a token that is not full-scope",
             "content": {
               "application/json": {
                 "schema": {
@@ -1722,7 +1752,7 @@
             }
           },
           "403": {
-            "description": "not_org_member",
+            "description": "not_org_member, or a token that is not full-scope",
             "content": {
               "application/json": {
                 "schema": {
@@ -2000,7 +2030,7 @@
             }
           },
           "403": {
-            "description": "not_org_owner",
+            "description": "not_org_owner, or a token that is not full-scope",
             "content": {
               "application/json": {
                 "schema": {
@@ -2293,7 +2323,7 @@
         ],
         "responses": {
           "200": {
-            "description": "ordered by slug; any member of the organization may list",
+            "description": "ordered by slug; any member of the organization may list; repositories the caller cannot open are left out",
             "content": {
               "application/json": {
                 "schema": {
@@ -2306,7 +2336,7 @@
             }
           },
           "403": {
-            "description": "not_org_member",
+            "description": "not_org_member, or a token that is not full-scope",
             "content": {
               "application/json": {
                 "schema": {
@@ -2434,6 +2464,7 @@
         ],
         "responses": {
           "200": {
+            "description": "repositories the caller cannot open are left out",
             "content": {
               "application/json": {
                 "schema": {
@@ -2443,7 +2474,7 @@
             }
           },
           "403": {
-            "description": "not_org_member",
+            "description": "not_org_member, or a token that is not full-scope",
             "content": {
               "application/json": {
                 "schema": {
