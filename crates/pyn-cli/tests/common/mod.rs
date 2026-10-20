@@ -13,8 +13,9 @@ use pyn_core::memory::{
     MemoryAccessStore, MemoryAuditStore, MemoryMetadataStore, MemoryObjectStore,
 };
 use pyn_core::{
-    AccessConfig, AccessService, AuthProvider, MetadataStore, Registration, RegistrationMode,
-    RepoId, RepoRecord, RepoSettings, Repositories, Rules, SystemClock, UserId, Visibility,
+    AccessConfig, AccessService, AuthProvider, Clock, ManualClock, MetadataStore, Registration,
+    RegistrationMode, RepoId, RepoRecord, RepoSettings, Repositories, Rules, SystemClock, UserId,
+    Visibility,
 };
 use pyn_server::auth::{BearerAuth, DevHeaderAuth};
 use pyn_server::{AppState, router};
@@ -52,13 +53,26 @@ pub fn start_uninitialised(token: &str) -> Env {
     build(false, &[], Some(token))
 }
 
+/// A server with `alice/game` registered whose lease clock only moves when `clock` is advanced.
+pub fn start_with_clock(clock: Arc<ManualClock>) -> Env {
+    build_with(true, &[], None, clock)
+}
+
 fn start_with(with_repo: bool) -> Env {
     build(with_repo, &[], None)
 }
 
 fn build(with_repo: bool, accounts: &[&str], setup_token: Option<&str>) -> Env {
+    build_with(with_repo, accounts, setup_token, Arc::new(SystemClock))
+}
+
+fn build_with(
+    with_repo: bool,
+    accounts: &[&str],
+    setup_token: Option<&str>,
+    clock: Arc<dyn Clock>,
+) -> Env {
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    let clock = Arc::new(SystemClock);
     let objects = Arc::new(pyn_core::ChunkedStore::new(Arc::new(
         MemoryObjectStore::new(),
     )));
