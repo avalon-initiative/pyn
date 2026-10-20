@@ -61,17 +61,34 @@ pub struct UpdateWebhookRequest {
     pub enabled: Option<bool>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Serialize, Deserialize, ToSchema)]
 pub struct CreatedWebhook {
     pub webhook: Webhook,
     /// The signing secret: `whsec_` and 64 hex characters. Shown once and never returned again.
     pub secret: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+impl std::fmt::Debug for CreatedWebhook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CreatedWebhook")
+            .field("webhook", &self.webhook)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize, ToSchema)]
 pub struct RotatedWebhookSecret {
     pub secret_id: i64,
     pub created_at: DateTime<Utc>,
     /// The new signing secret. Shown once and never returned again.
     pub secret: String,
+}
+
+impl std::fmt::Debug for RotatedWebhookSecret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RotatedWebhookSecret")
+            .field("secret_id", &self.secret_id)
+            .field("created_at", &self.created_at)
+            .finish_non_exhaustive()
+    }
 }
