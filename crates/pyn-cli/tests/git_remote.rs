@@ -409,7 +409,7 @@ fn a_pyn_server_home_has_one_remote_named_origin() {
         assert_eq!(out.status.code(), Some(1), "{args:?}");
         let err = String::from_utf8_lossy(&out.stderr);
         assert!(
-            err.contains("one remote, origin") && err.contains("pyn config set"),
+            err.contains("exactly one home") && err.contains("pyn config set"),
             "{err}"
         );
     }

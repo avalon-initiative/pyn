@@ -412,21 +412,34 @@ pub fn remote(git: &GitHome, args: RemoteArgs) -> Result<()> {
 
 /// A pyn server home has the one remote, `origin`: the server and repository it is set to use.
 pub fn on_server(args: &RemoteArgs, server: &str, repo: Option<&str>) -> Result<()> {
-    if args.command.is_some() {
-        return Err(Refused(
-            "a pyn server home has one remote, origin; set it with `pyn config set server <url>` and `pyn config set repo <owner/name>`"
-                .into(),
-        )
-        .into());
+    let url = |repo: &str| format!("{}/{repo}", server.trim_end_matches('/'));
+    match &args.command {
+        Some(RemoteCommand::GetUrl { name, .. }) => {
+            if name != "origin" {
+                no_such_url(name);
+            }
+            println!("{}", url(repo.ok_or_else(no_repo)?));
+            return Ok(());
+        }
+        Some(_) => {
+            return Err(Refused(
+                "a pyn server home has exactly one home, one server and one repository identity, so its remote cannot be added, removed, renamed or changed; set it with `pyn config set server <url>` and `pyn config set repo <owner/name>` (see the one-home rule in docs/concepts/git-compatibility.md)"
+                    .into(),
+            )
+            .into());
+        }
+        None => {}
     }
-    let repo = repo.ok_or_else(|| {
-        Refused("no repository is set; set one with `pyn config set repo <owner/name>`".into())
-    })?;
+    let repo = repo.ok_or_else(no_repo)?;
     if !args.verbose {
         println!("origin");
         return Ok(());
     }
-    let url = format!("{}/{repo}", server.trim_end_matches('/'));
+    let url = url(repo);
     println!("origin\t{url} (fetch)\norigin\t{url} (push)");
     Ok(())
+}
+
+fn no_repo() -> Refused {
+    Refused("no repository is set; set one with `pyn config set repo <owner/name>`".into())
 }
