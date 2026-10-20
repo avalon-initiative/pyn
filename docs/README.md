@@ -10,6 +10,7 @@ Markdown only; `make docs-check` verifies relative links and anchors.
 - [Access: roles, permissions and tokens](concepts/access.md)
 - [Signing in with an external provider: OpenID Connect](concepts/external-sign-in.md)
 - [Limits and usage: optional per-owner caps](concepts/limits.md)
+- [Events: the lifecycle event schema](concepts/events.md)
 - [Running several server copies: what is safe and what is not](concepts/scale-out.md)
 - [Content storage: streaming, ranges and the planned chunked format](concepts/storage.md)
 - [The `.pyn/` folder](concepts/workspace.md)

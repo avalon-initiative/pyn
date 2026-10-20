@@ -310,7 +310,20 @@ struct RepoAddress {
         api::SetLimitsRequest,
         api::Usage,
         api::RepoUsage,
-        api::OwnerUsage
+        api::OwnerUsage,
+        api::Event,
+        api::LimitKind,
+        api::AccountCreatedData,
+        api::AccountApprovedData,
+        api::AccountDisabledData,
+        api::AccountEnabledData,
+        api::OrganizationCreatedData,
+        api::OrganizationDeletedData,
+        api::RepositoryCreatedData,
+        api::RepositoryRenamedData,
+        api::RepositoryDeletedData,
+        api::OwnerLimitsChangedData,
+        api::OwnerLimitReachedData
     ))
 )]
 pub struct ApiDoc;
