@@ -32,6 +32,7 @@ pub type Store = Arc<dyn MetadataStore>;
 pub type Access = Arc<dyn AccessStore>;
 pub type Audit = Arc<dyn AuditStore>;
 pub type RateLimits = Arc<dyn RateLimitStore>;
+pub type Webhooks = Arc<dyn crate::WebhookStore>;
 
 const RULES: &str = "[meta]\ndefault = \"shared\"\n[exclusive]\npaths = [\"Content/\"]\n";
 
@@ -63,6 +64,8 @@ mod push_merge;
 pub use push_merge::*;
 mod uploads;
 pub use uploads::*;
+mod webhooks;
+pub use webhooks::*;
 
 struct Harness {
     store: Store,
