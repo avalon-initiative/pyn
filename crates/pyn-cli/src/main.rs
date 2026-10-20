@@ -25,9 +25,11 @@ mod localfile;
 mod ls_remote;
 mod merging;
 mod migrate;
+mod mv_plan;
 mod probe;
 mod pyn_server;
 mod repo_tool;
+mod rm_mv;
 mod sanitize;
 mod short_status;
 mod snapshot;
@@ -259,6 +261,10 @@ enum Command {
         #[arg(short, long)]
         force: bool,
     },
+    /// Remove files from the work tree and stage the removal (`--cached` keeps the files). Exclusive paths need your lock.
+    Rm(rm_mv::RmArgs),
+    /// Rename or move files and folders; on a pyn server the move is staged as a deletion and an addition.
+    Mv(mv_plan::MvArgs),
     /// Commit the staged changes as one unit of work (or the named paths as they are). On a pyn server the commit is local
     /// until `pyn push` (a `--no-local-store` workspace publishes at once); publishing releases their locks.
     Commit {
@@ -1633,6 +1639,8 @@ fn run(cli: Cli) -> Result<()> {
                 std::process::exit(1);
             }
         }
+        Command::Rm(args) => rm_mv::rm(&backend, in_workspace("rm")?, &cwd, &args)?,
+        Command::Mv(args) => rm_mv::mv(&backend, in_workspace("mv")?, &cwd, &args)?,
         Command::Commit {
             paths,
             file,

@@ -8,8 +8,6 @@ const GIT_ONLY: &[&str] = &[
     "tag",
     "stash",
     "reset",
-    "rm",
-    "mv",
     "rebase",
     "cherry-pick",
     "revert",

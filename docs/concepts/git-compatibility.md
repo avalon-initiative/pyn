@@ -70,6 +70,8 @@ The commands named in decision #218.
 | `pyn status --revision <commit>` | | pyn only | Compare the workspace with a past commit (`behind` / `ahead`). |
 | `git add <path>...` | `pyn add <path>...` | same | Stages a path, a folder or `.`; a path is required unless `-u` or `-A` is given. On an exclusive path of a pyn server it fails unless you hold the lock (see below). |
 | `git add -u`, `-A`, `-n`, `-v`, `-f` and their long forms | same | same | `-u` and `--update` stage tracked files only; `-A` and `--all` take new files too and, with no path, cover the whole repository. `-n` and `--dry-run` print `add '<path>'` and `remove '<path>'` and stage nothing. Ignored files are refused (exit `1`, as git) without `-f`. |
+| `git rm [-r] [-f] [-n] [-q] [--cached] [--ignore-unmatch] [--] <path>...` | `pyn rm ...` | supported | Removes tracked files from the work tree and stages the removal. On a git home it is git's `rm`, see [Removing and moving](#removing-and-moving). On a pyn server it stages a deletion for the next commit, and an exclusive path needs your lock first. |
+| `git mv [-f] [-n] [-k] [-v] <source>... <destination>` | `pyn mv ...` | supported | Renames a file or folder, or moves them into an existing folder. On a git home it is git's `mv`; on a pyn server it stages a deletion at the old path and an addition at the new one. See [Removing and moving](#removing-and-moving). |
 | `git add -p`, `-i`, `-e`, `--intent-to-add`, `--chmod`, `--renormalize`, `--pathspec-from-file`, glob and magic pathspecs | none | unsupported | Usage error (`129`), or `pathspec ... did not match any files` for a glob the shell did not expand. A path is a file or a folder, taken relative to where you stand. |
 | `git commit -m <msg>` | `pyn commit -m <msg>` | different | Commits what is staged as one unit of work. On a pyn server it is one changeset uploaded to the server, so commit and publish are one step (no `push` needed), it releases the locks it held, and the output is `<path> is now at revision N` for each file. On a git home it is a git commit on the current branch and prints `[<branch> <id>] <subject>`. `-m` is required (no editor) and repeats for more paragraphs. Nothing staged exits `1` with a message. |
 | `git commit -a`, `-am <msg>` | `pyn commit -a`, `-am <msg>` | same | Stages every changed tracked file, then commits; new files are not included. |
@@ -636,7 +638,6 @@ schedules them.
 | Git | Reason |
 | --- | --- |
 | `git reset`, `git clean` | `pyn reset` exists for unpublished local commits only ([workspace](workspace.md#the-local-store)); otherwise there is no local history to reset: `pyn restore --staged`, `pyn restore` and `pyn update` cover the daily cases. `git clean` is not planned. |
-| `git rm`, `git mv` | Not a CLI verb yet; no issue schedules removing or renaming paths from the CLI. |
 | `git rebase`, `git cherry-pick`, `git revert` | History is append-only on the server. |
 | `git blame`, `git grep` | Not scheduled. |
 | Commands that maintain git's own storage or run its hooks (`gc`, `fsck`, `bundle`, `submodule`, `worktree`, hooks in `.git/hooks`) | pyn reads a git repository's `.git/` on a git home (decision #245) but does not maintain it or run its hooks. pyn's own hooks are tracked in #216. |
@@ -696,6 +697,7 @@ whatever the rules say.
 | `log [<options>] [<rev>...] [--] [<path>...]` | Git's output: commit blocks, newest first across all parents, with git's history simplification for a path; revision ranges, formats, filters and diff output are in [Log on a git home](#log-on-a-git-home). `--commits` is the pyn table. `--filter` fails. |
 | `files`, `ls` | `files` lists the index and `ls` lists `HEAD`'s tree. Every entry is `shared`, with no revision, lock or last change. |
 | `add`, `restore --staged`, `commit` | See [staging](#staging-and-committing). |
+| `rm`, `mv` | See [Removing and moving](#removing-and-moving). |
 | `branch`, `switch`, `checkout`, `restore` | See [Branches, switching and the work tree](#branches-switching-and-the-work-tree). |
 | `merge` | See [Merging](#merging). |
 | `tag` | See [Tags](#tags). |
@@ -874,6 +876,40 @@ without `-m` the message is `MERGE_MSG` with its `#` comment lines removed (what
 lacks. The replaced entries carry no stat data, so git re-reads those files on its next status.
 
 **`diff --cached`.** `HEAD` (or the named commit) against the index, in the same output as `diff`.
+
+### Removing and moving
+
+`rm` and `mv` change the index and the work tree together, as git does, and check everything before writing anything: a
+refused run leaves both untouched. Paths are literal files and folders relative to where you stand (no globs).
+
+**`rm`.** Takes every index entry under the paths, unmerged ones included. A path that matches nothing is `pathspec '<path>' did
+not match any files` (`128`) unless `--ignore-unmatch` is given, which makes the command succeed when nothing matched at all; a
+folder without `-r` is `not removing '<path>' recursively without -r` (`128`). Unless `-f` is given, a path is refused with
+exit `1` when its entry differs from `HEAD` and from the file (`staged content different from both`), when only the entry
+differs from `HEAD`, or when only the file differs from the entry (`local modifications`; a changed mode counts); `--cached`
+only refuses the first case, an unmerged path is never refused, and a file already gone from the work tree is never refused.
+An entry added with `intent-to-add` counts as staged. Without `--cached` the file and the folders it leaves empty are
+removed, except the folder you stand in; a path that is now a folder is `Is a directory` (`128`) and a submodule is refused
+unless `--cached`. `-n` prints `rm '<path>'` for each path and changes nothing, `-q` prints nothing.
+
+**`mv`.** `mv <source> <destination>` renames; with several sources, or a destination that is an existing folder, each source
+goes into the folder under its own name. A folder is renamed whole, untracked files in it included, and its tracked files
+keep their index entries (ids, modes and stage 0) under the new names; the content in the index is not re-read, so staged and
+unstaged changes stay as they were. Refused with `<reason>, source=<source>, destination=<destination>` (`128`): `bad source`,
+`not under version control`, `conflicted` (an unmerged path), `destination exists` (also for a source moved onto itself, and
+for a tracked destination missing from the work tree, unless `-f`, which still cannot replace a folder), `cannot move directory
+over file`, `can not move directory into itself`, `source directory is empty` (no tracked file in it), `destination directory
+does not exist` and `multiple sources for the same target`. `-k` skips such a source and carries on; `-n` and `-v` print `Renaming
+<source> to <destination>` (`-n` renames nothing). A folder emptied by the move is left in place, as git leaves it.
+
+**On a pyn server.** There is no index of committed content to rewrite, so `rm` stages the deletion of the file (or forgets a
+file that was only staged) and `mv` renames the file and stages a deletion at the old path plus the file's current content at
+the new one; moving a file back to its old name leaves nothing staged. The checks above run against the staged content and the
+last synced revision. A path with a merge conflict is refused (`rm`) or `conflicted` (`mv`). An exclusive path, at the old path
+and at a destination it replaces, needs its lock first and is refused before anything changes, with the wording and exit status
+of `add` (`<path> is exclusive and you do not hold its lock`, `128`); a new exclusive destination is checked at `commit`, as for
+`add`. `commit -a` keeps a deletion staged with `rm --cached`. Covered against the real git by
+`crates/pyn-cli/tests/git_rm_mv.rs` and on a pyn server by `crates/pyn-cli/tests/rm_mv_server.rs`.
 
 ### Branches, switching and the work tree
 

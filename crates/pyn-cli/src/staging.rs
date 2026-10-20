@@ -145,7 +145,7 @@ pub(crate) fn store(ws: &Workspace, hash: &str, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn under(path: &str, prefix: &str) -> bool {
+pub(crate) fn under(path: &str, prefix: &str) -> bool {
     prefix.is_empty()
         || path == prefix
         || (path.starts_with(prefix) && path[prefix.len()..].starts_with('/'))
@@ -217,6 +217,12 @@ fn plan(ws: &Workspace, index: &Index, specs: &Specs, args: &AddArgs) -> Result<
             continue;
         }
         let file = ws.abs(path);
+        if args.update
+            && localfile::exists(&file)
+            && index.entries.get(path).is_some_and(|s| s.deleted)
+        {
+            continue;
+        }
         if !localfile::exists(&file) {
             if conflicted.contains(path) {
                 eprintln!(
@@ -276,7 +282,7 @@ fn plan(ws: &Workspace, index: &Index, specs: &Specs, args: &AddArgs) -> Result<
 }
 
 /// Fails, staging nothing, when a path to stage is exclusive and the signed-in user does not hold its lock.
-fn require_locks(backend: &dyn Backend, paths: &[&String]) -> Result<()> {
+pub(crate) fn require_locks(backend: &dyn Backend, paths: &[&String]) -> Result<()> {
     if paths.is_empty() {
         return Ok(());
     }

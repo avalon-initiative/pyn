@@ -317,9 +317,10 @@ fn clear(path: &Path) -> std::io::Result<()> {
     }
 }
 
-fn prune_empty_parents(root: &Path, path: &[u8]) {
+fn prune_empty_parents(root: &Path, path: &[u8], keep: Option<&Path>) {
     for a in ancestors(path).into_iter().rev() {
-        if std::fs::remove_dir(fs_path(root, a)).is_err() {
+        let dir = fs_path(root, a);
+        if keep == Some(dir.as_path()) || std::fs::remove_dir(dir).is_err() {
             break;
         }
     }
@@ -377,6 +378,15 @@ pub(super) fn write_entry(git: &GitHome, path: &[u8], entry: &Entry) -> Result<I
 
 /// Removes a tracked path from the work tree and any folder it leaves empty.
 pub(super) fn remove_entry_file(git: &GitHome, path: &[u8]) -> Result<()> {
+    remove_entry_file_keeping(git, path, None)
+}
+
+/// Like [`remove_entry_file`], but leaves the folder `keep` (the current one) in place even when it ends up empty.
+pub(super) fn remove_entry_file_keeping(
+    git: &GitHome,
+    path: &[u8],
+    keep: Option<&Path>,
+) -> Result<()> {
     check_writes([path])?;
     let root = git.repo.root()?;
     let file = fs_path(root, path);
@@ -395,7 +405,7 @@ pub(super) fn remove_entry_file(git: &GitHome, path: &[u8]) -> Result<()> {
         }
         None => {}
     }
-    prune_empty_parents(root, path);
+    prune_empty_parents(root, path, keep);
     Ok(())
 }
 

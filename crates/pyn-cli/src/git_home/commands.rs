@@ -116,6 +116,8 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
             }
             Ok(())
         }
+        Command::Rm(args) => super::remove::rm(git, cwd, &args),
+        Command::Mv(args) => super::remove::mv(git, cwd, &args),
         Command::Commit {
             paths,
             file,
