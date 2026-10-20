@@ -400,6 +400,7 @@ pub fn checkout(git: &GitHome, cwd: &Path, args: CheckoutArgs) -> Result<()> {
         detach,
         ours,
         theirs,
+        yes: _,
     } = args;
     let stage = match (ours, theirs) {
         (true, _) => Some(2),

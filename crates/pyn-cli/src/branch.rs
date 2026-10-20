@@ -129,6 +129,9 @@ pub struct CheckoutArgs {
     /// During a merge, take the merged-in version of the conflicted files.
     #[arg(long)]
     pub(crate) theirs: bool,
+    /// Skip the typed confirmation before discarding an edit to an exclusive file.
+    #[arg(long)]
+    pub(crate) yes: bool,
 }
 
 fn branches(api: &Api) -> Result<Vec<api::Branch>> {
@@ -422,6 +425,7 @@ pub fn checkout_command(
         detach: _,
         ours,
         theirs,
+        yes,
     } = args;
     if ours || theirs {
         if paths.is_empty() || new.is_some() {
@@ -439,7 +443,7 @@ pub fn checkout_command(
             [one] => Some(one.as_str()),
             _ => bail!("`pyn checkout <commit> -- <paths>` takes one commit"),
         };
-        return restore_paths(backend, api, ws, cwd, source, &paths, rp);
+        return restore_paths(backend, ws, cwd, source, &paths, yes, rp);
     }
     if let Some(new) = new {
         if before.len() > 1 {
@@ -458,7 +462,7 @@ pub fn checkout_command(
         [] => bail!("missing branch name; see `pyn branch`"),
         [target] if find(api, target)?.is_some() => go(backend, api, ws, target, force),
         [target] if Path::new(target).exists() || ws.root.join(target).exists() => {
-            restore_paths(backend, api, ws, cwd, None, &before, rp)
+            restore_paths(backend, ws, cwd, None, &before, yes, rp)
         }
         [target] if snapshot::parse_commit(target).is_some() => bail!(
             "'{target}' is a commit, not a branch; pyn has no detached HEAD. \
@@ -681,13 +685,14 @@ fn file_entry(w: &api::SnapshotEntry, locks: &[api::Lock]) -> api::FileEntry {
 /// Puts files back: to the revision the workspace has, or to the one `source` (a branch or commit) has.
 fn restore_paths(
     backend: &dyn Backend,
-    api: &Api,
     ws: &Workspace,
     cwd: &Path,
     source: Option<&str>,
     paths: &[String],
+    yes: bool,
     rp: &dyn Fn(&str) -> Result<String>,
 ) -> Result<()> {
+    let api = backend.pyn_server("checkout")?;
     let state = ws.load_state()?;
     let snap = match source {
         Some(spec) => {
@@ -735,6 +740,7 @@ fn restore_paths(
     ws.check_paths(&chosen)?;
     let locks: Vec<api::Lock> = api.send(api.get(&api.repo_route("/locks")?))?.json()?;
     let me = backend.whoami()?;
+    let mut targets = Vec::new();
     for path in &chosen {
         let (entry, revision) = match &snap {
             Some(s) => {
@@ -758,7 +764,61 @@ fn restore_paths(
                 (entry, k.revision)
             }
         };
-        sync::fetch(backend, ws, &entry, revision, &me)?;
+        targets.push((entry, revision));
+    }
+    let edited = edited_exclusive(ws, &state, &targets)?;
+    if !edited.is_empty() && !yes {
+        confirm_discard(&edited)?;
+    }
+    for (entry, revision) in &targets {
+        sync::fetch(backend, ws, entry, *revision, &me)?;
+    }
+    Ok(())
+}
+
+/// The exclusive paths among `targets` whose local edits a restore would overwrite, locked by the user or not.
+fn edited_exclusive(
+    ws: &Workspace,
+    state: &BTreeMap<String, FileState>,
+    targets: &[(api::FileEntry, u64)],
+) -> Result<Vec<String>> {
+    let mut edited = Vec::new();
+    for (entry, _) in targets {
+        let target = ws.abs(&entry.path);
+        let Some(known) = state.get(&entry.path) else {
+            continue;
+        };
+        if entry.mode != api::Mode::Exclusive || !localfile::exists(&target) {
+            continue;
+        }
+        let (file_mode, bytes) = localfile::read(&target)?;
+        if known.changed(file_mode, &bytes) {
+            edited.push(entry.path.clone());
+        }
+    }
+    Ok(edited)
+}
+
+/// Names the paths that would lose edits and asks for the path (or the count) typed back, as `restore` does.
+fn confirm_discard(edited: &[String]) -> Result<()> {
+    eprintln!("These exclusive files have local edits that cannot be merged or recovered:");
+    for path in edited {
+        eprintln!("  {path}");
+    }
+    let expected = match edited {
+        [one] => one.clone(),
+        many => many.len().to_string(),
+    };
+    let what = if edited.len() == 1 {
+        "path"
+    } else {
+        "number of files"
+    };
+    eprint!("Type the {what} to discard them, or pass --yes: ");
+    let mut answer = String::new();
+    std::io::stdin().read_line(&mut answer)?;
+    if answer.trim() != expected {
+        bail!("not confirmed; nothing was changed");
     }
     Ok(())
 }

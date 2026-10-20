@@ -288,7 +288,7 @@ fn switch_over_an_edited_unlocked_exclusive_file_is_refused_until_it_is_put_back
     );
     assert_eq!(read(&ws, MAP), "map edited");
 
-    env.ok(&ws, "alice", &["checkout", "--", MAP]);
+    env.ok(&ws, "alice", &["checkout", "--yes", "--", MAP]);
     assert_eq!(read(&ws, MAP), "map one");
     assert!(read_only(&ws, MAP));
     env.ok(&ws, "alice", &["switch", "topic"]);
@@ -318,9 +318,21 @@ fn switch_over_a_file_locked_by_another_user_still_writes_it_read_only() {
 }
 
 #[test]
-fn checkout_dash_dash_discards_an_unlocked_edit_without_a_lock() {
+fn checkout_dash_dash_of_an_edited_unlocked_exclusive_file_is_refused_without_confirmation() {
     let (env, ws) = edited_unlocked();
-    env.ok(&ws, "alice", &["checkout", "--", MAP]);
+    let (code, err) = refused(&env, &ws, "alice", &["checkout", "--", MAP]);
+    assert_eq!(code, 128);
+    assert!(
+        err.contains("Content/m.umap") && err.contains("not confirmed"),
+        "{err}"
+    );
+    assert_eq!(read(&ws, MAP), "map edited");
+}
+
+#[test]
+fn checkout_dash_dash_of_an_edited_unlocked_exclusive_file_succeeds_with_yes() {
+    let (env, ws) = edited_unlocked();
+    env.ok(&ws, "alice", &["checkout", "--yes", "--", MAP]);
     assert_eq!(read(&ws, MAP), "map two");
     assert!(read_only(&ws, MAP));
     let status = env.ok(&ws, "alice", &["status"]);
@@ -328,12 +340,61 @@ fn checkout_dash_dash_discards_an_unlocked_edit_without_a_lock() {
 }
 
 #[test]
-fn checkout_dash_dash_of_a_path_locked_by_another_user_restores_it_read_only() {
+fn checkout_dash_dash_of_an_edited_exclusive_file_succeeds_with_the_path_typed() {
+    let (env, ws) = edited_unlocked();
+    let out = env.run_stdin(&ws, "alice", &["checkout", "--", MAP], "Content/m.umap\n");
+    assert!(out.status.success());
+    assert_eq!(read(&ws, MAP), "map two");
+}
+
+#[test]
+fn checkout_dash_dash_of_an_edit_made_under_the_lock_asks_too_and_keeps_the_lock() {
+    let (env, ws) = edited_unlocked();
+    env.ok(&ws, "alice", &["lock", "--base", "2", MAP]);
+    write(&ws, MAP, "map edited");
+    let (_, err) = refused(&env, &ws, "alice", &["checkout", "--", MAP]);
+    assert!(err.contains("Content/m.umap"), "{err}");
+    assert_eq!(read(&ws, MAP), "map edited");
+    env.ok(&ws, "alice", &["checkout", "--yes", "--", MAP]);
+    assert_eq!(read(&ws, MAP), "map two");
+}
+
+#[test]
+fn checkout_dash_dash_of_an_edited_path_locked_by_another_user_needs_confirmation_then_restores_it_read_only()
+ {
     let (env, ws) = edited_unlocked();
     env.ok(&ws, "bob", &["lock", MAP]);
-    env.ok(&ws, "alice", &["checkout", "--", MAP]);
+    refused(&env, &ws, "alice", &["checkout", "--", MAP]);
+    assert_eq!(read(&ws, MAP), "map edited");
+    env.ok(&ws, "alice", &["checkout", "--yes", "--", MAP]);
     assert_eq!(read(&ws, MAP), "map two");
     assert!(read_only(&ws, MAP));
+}
+
+#[test]
+fn checkout_dash_dash_of_an_unchanged_exclusive_file_needs_no_confirmation() {
+    let (env, ws) = edited_unlocked();
+    env.ok(&ws, "alice", &["checkout", "--yes", "--", MAP]);
+    env.ok(&ws, "alice", &["checkout", "--", MAP]);
+    assert_eq!(read(&ws, MAP), "map two");
+}
+
+#[test]
+fn checkout_dash_dash_of_an_edited_shared_file_still_discards_silently() {
+    let (env, ws) = edited_unlocked();
+    write(&ws, "Source/a.cpp", "two");
+    env.ok(&ws, "alice", &["checkout", "--", "Source/a.cpp"]);
+    assert_eq!(read(&ws, "Source/a.cpp"), "one");
+}
+
+#[test]
+fn checkout_branch_dash_dash_of_an_edited_exclusive_file_is_refused_without_confirmation() {
+    let (env, ws) = edited_unlocked();
+    let (_, err) = refused(&env, &ws, "alice", &["checkout", "main", "--", MAP]);
+    assert!(err.contains("Content/m.umap"), "{err}");
+    assert_eq!(read(&ws, MAP), "map edited");
+    env.ok(&ws, "alice", &["checkout", "--yes", "main", "--", MAP]);
+    assert_eq!(read(&ws, MAP), "map two");
 }
 
 #[test]
@@ -350,7 +411,7 @@ fn merge_over_an_edited_unlocked_exclusive_file_is_refused_until_it_is_put_back(
     );
     assert_eq!(read(&ws, MAP), "map edited");
 
-    env.ok(&ws, "alice", &["checkout", "--", MAP]);
+    env.ok(&ws, "alice", &["checkout", "--yes", "--", MAP]);
     env.ok(&ws, "alice", &["merge", "topic"]);
     assert_eq!(read(&ws, MAP), "topic map");
 }
