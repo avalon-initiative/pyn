@@ -6,6 +6,7 @@ use crate::error::{Error, Result, io_at};
 use crate::repo::Repo;
 
 const MIN_ABBREV: usize = 4;
+const PSEUDO_REFS: [&str; 3] = ["ORIG_HEAD", "MERGE_HEAD", "CHERRY_PICK_HEAD"];
 
 impl Repo {
     /// The commit a revision names; annotated tags are followed to their commit.
@@ -81,11 +82,26 @@ impl Repo {
         None
     }
 
+    /// A one-line file in the git directory that names a commit (`ORIG_HEAD`), if present.
+    fn pseudo_ref(&self, name: &str) -> Result<Option<ObjectId>> {
+        let path = self.git().git_dir().join(name);
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(io_at(&path)(e)),
+        };
+        let hex = text.split_whitespace().next().unwrap_or_default();
+        Ok(ObjectId::from_hex(self.algorithm(), hex).ok())
+    }
+
     fn resolve_ref(&self, name: &str) -> Result<Option<ObjectId>> {
         if name.is_empty() {
             return Ok(None);
         }
         let name = if name == "@" { "HEAD" } else { name };
+        if PSEUDO_REFS.contains(&name) {
+            return self.pseudo_ref(name);
+        }
         let candidates = [
             name.to_string(),
             format!("refs/{name}"),

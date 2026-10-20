@@ -70,12 +70,14 @@ The commands named in decision #218.
 | `pyn status --revision <commit>` | | pyn only | Compare the workspace with a past commit (`behind` / `ahead`). |
 | `git add <path>...` | `pyn add <path>...` | same | Stages a path, a folder or `.`; a path is required unless `-u` or `-A` is given. On an exclusive path of a pyn server it fails unless you hold the lock (see below). |
 | `git add -u`, `-A`, `-n`, `-v`, `-f` and their long forms | same | same | `-u` and `--update` stage tracked files only; `-A` and `--all` take new files too and, with no path, cover the whole repository. `-n` and `--dry-run` print `add '<path>'` and `remove '<path>'` and stage nothing. Ignored files are refused (exit `1`, as git) without `-f`. |
+| `git rm [-r] [-f] [-n] [-q] [--cached] [--ignore-unmatch] [--] <path>...` | `pyn rm ...` | supported | Removes tracked files from the work tree and stages the removal. On a git home it is git's `rm`, see [Removing and moving](#removing-and-moving). On a pyn server it stages a deletion for the next commit, and an exclusive path needs your lock first. |
+| `git mv [-f] [-n] [-k] [-v] <source>... <destination>` | `pyn mv ...` | supported | Renames a file or folder, or moves them into an existing folder. On a git home it is git's `mv`; on a pyn server it stages a deletion at the old path and an addition at the new one. See [Removing and moving](#removing-and-moving). |
 | `git add -p`, `-i`, `-e`, `--intent-to-add`, `--chmod`, `--renormalize`, `--pathspec-from-file`, glob and magic pathspecs | none | unsupported | Usage error (`129`), or `pathspec ... did not match any files` for a glob the shell did not expand. A path is a file or a folder, taken relative to where you stand. |
 | `git commit -m <msg>` | `pyn commit -m <msg>` | different | Commits what is staged as one unit of work. On a pyn server it is one changeset uploaded to the server, so commit and publish are one step (no `push` needed), it releases the locks it held, and the output is `<path> is now at revision N` for each file. On a git home it is a git commit on the current branch and prints `[<branch> <id>] <subject>`. `-m` is required (no editor) and repeats for more paragraphs. Nothing staged exits `1` with a message. |
 | `git commit -a`, `-am <msg>` | `pyn commit -a`, `-am <msg>` | same | Stages every changed tracked file, then commits; new files are not included. |
 | `git commit <path>...` | `pyn commit -m <msg> <path>...` | different | On a pyn server: one atomic commit of the named paths as they are on disk, whatever is staged (git's `--only`). Not available on a git home, which says to `add` the paths first. |
 | `git commit -F <file>` (`-` is standard input) | same | git home: supported; pyn server: supported | The same message reading and cleanup on both homes, with and without the local store; `-m` and `-F` together are refused. On a pyn server `--file` stays the content file (it has no short form, so `-F` does not clash). See [Commit flags on a git home](#commit-flags-on-a-git-home). |
-| `git commit --file=<file>`, `--allow-empty`, `--author=<name <email>>`, `--date=<date>`, `-s`, `--signoff`, `--amend`, `--no-edit` | same | git home: supported | Git's behaviour on a git home; on a pyn server a usage error (`129`) naming the flag, because commits there are immutable (no `--amend`) and `--file` is the content file. `--allow-empty` is refused there because the server rejects a pushed commit that changes no file. See [Commit flags on a git home](#commit-flags-on-a-git-home). |
+| `git commit --file=<file>`, `--allow-empty`, `--author=<name <email>>`, `--date=<date>`, `-s`, `--signoff`, `--amend`, `--no-edit`, `-S[<keyid>]`, `--gpg-sign[=<keyid>]`, `--no-gpg-sign` | same | git home: supported | Git's behaviour on a git home; on a pyn server a usage error (`129`) naming the flag, because commits there are immutable (no `--amend`) and `--file` is the content file. `--allow-empty` is refused there because the server rejects a pushed commit that changes no file. See [Commit flags on a git home](#commit-flags-on-a-git-home). |
 | `git commit -S`, `--no-verify`, `-v`, `-c`, `-C`, `--fixup`, `--squash`, `--reset-author`, `--allow-empty-message`, `-e` | none | unsupported | Usage error (`129`). |
 | `pyn commit --file <local>` | | pyn only | Content file for a single path. In a workspace the file at the path is the default. |
 | `pyn commit --base <rev>` | | pyn only | The revision the edit started from; the server rejects the commit if the branch has moved on from it on an exclusive path. |
@@ -100,13 +102,14 @@ The commands named in decision #218.
 | `git restore --staged <path>...` | `pyn restore --staged <path>...` (`-S`) | same | Puts the staged entries under the paths back to the last commit and leaves the files alone. On a git home `--source <commit>` takes the entries from that commit, as git; on a pyn server there is no commit to take them from and it is a usage error. |
 | `git restore [-s <rev>] [-S] [-W] <path>...` (the work tree) | `pyn restore ...` on a git home | git home only | Takes the paths from the index (or `--source`) into the work tree, and with `--staged --worktree` into both. See [Branches, switching and the work tree](#branches-switching-and-the-work-tree). On a pyn server `--worktree` is a usage error (`129`): a restore there makes an older revision the new head. |
 | `git restore -p`, `--ours`, `--theirs`, `--merge` | none | unsupported | Usage error (`129`). On a git home `pyn checkout --ours -- <path>` and `--theirs` take a side of an unmerged path. |
+| `git reset [--soft\|--mixed\|--hard\|--keep\|--merge] [-q] [<rev>]`, `git reset [<rev>] [--] <path>...` | `pyn reset ...` | git home: supported; pyn server: different | On a git home it is git's reset, see [Reset](#reset). On a pyn server `pyn reset [--soft\|--mixed\|--hard] [<commit>]` only drops unpublished local commits ([workspace](workspace.md#the-local-store)); `--keep`, `--merge`, `-q`, paths and a second revision are a usage error there. |
 | `git branch`, `git switch`, `git checkout` | `pyn branch`, `pyn switch`, `pyn checkout` | supported | See [branching and merging](#branching-and-merging). On a git home they work on `.git` as git does, see [Branches, switching and the work tree](#branches-switching-and-the-work-tree). |
 | `git merge` | `pyn merge` | supported | See [branching and merging](#branching-and-merging). On a git home it merges as git does, see [Merging](#merging). |
 | `git fetch` | `pyn fetch` on a git home | git home only | See [Fetch on a git home](#fetch-on-a-git-home). On a pyn server it fetches into the local store (a workspace cloned with `--no-local-store` runs `pyn update`), see [Remotes on a pyn server](#remotes-on-a-pyn-server). |
 | `git pull` | `pyn pull` on a git home | git home only | Fetch, then merge through `pyn merge`; see [Pull on a git home](#pull-on-a-git-home). On a pyn server it fetches into the local store and merges (a workspace cloned with `--no-local-store` runs `pyn update`), see [Remotes on a pyn server](#remotes-on-a-pyn-server). |
 | `git push` | `pyn push` on a git home | git home only | See [Push on a git home](#push-on-a-git-home). On a pyn server it publishes the local commits (a workspace cloned with `--no-local-store` prints that there is nothing to push, because a commit goes straight to the server); see [Remotes on a pyn server](#remotes-on-a-pyn-server). |
 | `git remote` | `pyn remote` | git home; pyn server partly | On a git home it lists and edits the remotes in `.git/config`, see [Remotes](#remotes). On a pyn server `pyn remote`, `pyn remote -v` and `pyn remote get-url origin` show the one remote, `origin`: the server and repository set by `--server` and `--repo` or `pyn config set server` and `repo`; `add`, `remove`, `rename` and `set-url` say that a server home has exactly one home and exit `1`. |
-| `git tag [-a] [-m <msg>] [-f] [<name> [<commit>]]`, `-d`, `-l` | `pyn tag ...` on a git home | git home only | See [Tags](#tags). On a pyn server it prints the git-command message (a server's commits are named by hash and have no tags yet, #223). |
+| `git tag [-a] [-s] [-u <keyid>] [--no-sign] [-m <msg>] [-f] [<name> [<commit>]]`, `-d`, `-l` | `pyn tag ...` on a git home | git home only | See [Tags](#tags). On a pyn server it prints the git-command message (a server's commits are named by hash and have no tags yet, #223). |
 | `git stash [push] [-u] [-m <msg>]`, `list`, `pop`, `apply`, `drop`, `clear` | `pyn stash ...` on a git home | git home only | See [Stashing](#stashing). On a pyn server it prints the git-command message. |
 
 `pyn update [<path>...]` is the pre-branch stand-in for `fetch` plus `pull`: it fast-forwards files without local
@@ -635,8 +638,7 @@ schedules them.
 
 | Git | Reason |
 | --- | --- |
-| `git reset`, `git clean` | `pyn reset` exists for unpublished local commits only ([workspace](workspace.md#the-local-store)); otherwise there is no local history to reset: `pyn restore --staged`, `pyn restore` and `pyn update` cover the daily cases. `git clean` is not planned. |
-| `git rm`, `git mv` | Not a CLI verb yet; no issue schedules removing or renaming paths from the CLI. |
+| `git clean` | Not planned. |
 | `git rebase`, `git cherry-pick`, `git revert` | History is append-only on the server. |
 | `git blame`, `git grep` | Not scheduled. |
 | Commands that maintain git's own storage or run its hooks (`gc`, `fsck`, `bundle`, `submodule`, `worktree`, hooks in `.git/hooks`) | pyn reads a git repository's `.git/` on a git home (decision #245) but does not maintain it or run its hooks. pyn's own hooks are tracked in #216. |
@@ -696,7 +698,9 @@ whatever the rules say.
 | `log [<options>] [<rev>...] [--] [<path>...]` | Git's output: commit blocks, newest first across all parents, with git's history simplification for a path; revision ranges, formats, filters and diff output are in [Log on a git home](#log-on-a-git-home). `--commits` is the pyn table. `--filter` fails. |
 | `files`, `ls` | `files` lists the index and `ls` lists `HEAD`'s tree. Every entry is `shared`, with no revision, lock or last change. |
 | `add`, `restore --staged`, `commit` | See [staging](#staging-and-committing). |
+| `rm`, `mv` | See [Removing and moving](#removing-and-moving). |
 | `branch`, `switch`, `checkout`, `restore` | See [Branches, switching and the work tree](#branches-switching-and-the-work-tree). |
+| `reset` | See [Reset](#reset). |
 | `merge` | See [Merging](#merging). |
 | `tag` | See [Tags](#tags). |
 | `stash` | See [Stashing](#stashing). |
@@ -825,7 +829,7 @@ path is staged as the file is, which resolves it.
 **`commit`.** A linear commit on the current branch:
 
 1. It refuses, changing nothing, a detached `HEAD`, a merge, cherry-pick, revert, rebase or sequencer in progress,
-   unmerged index entries, and `commit.gpgsign=true` (pyn cannot sign yet).
+   unmerged index entries.
 2. The author and committer are `GIT_AUTHOR_*` and `GIT_COMMITTER_*` (name, email, date) when set, else `author.*` and
    `committer.*`, else `user.name` and `user.email`; without a name and email it stops. The time zone is the system's.
 3. With `-a`, every changed tracked file is staged first, in memory; the index is written only once the commit is built.
@@ -858,6 +862,8 @@ git would give the same tree, parent, identity, dates and message. `commit <path
   header is dropped and other headers are kept. It exits `128` with no commit to amend or during a merge; an amend that
   would leave the commit equal to its parent's tree exits `1` unless `--allow-empty` is given; amending a merge commit is allowed.
   The branch and `HEAD` logs get `commit (amend): <subject>`, and `ORIG_HEAD` is not written.
+- `-S`, `--gpg-sign[=<keyid>]` (the key id attached or after `=`) and `--no-gpg-sign` (the last of the two wins) sign the commit;
+  `commit.gpgsign=true` signs by default. See [Signing](#signing).
 - The output is `[<branch> <id>] <subject>`, an ` Author:` line when the author differs from the committer, and pyn's
   changed-file count; it has no `Date:` line.
 
@@ -874,6 +880,40 @@ without `-m` the message is `MERGE_MSG` with its `#` comment lines removed (what
 lacks. The replaced entries carry no stat data, so git re-reads those files on its next status.
 
 **`diff --cached`.** `HEAD` (or the named commit) against the index, in the same output as `diff`.
+
+### Removing and moving
+
+`rm` and `mv` change the index and the work tree together, as git does, and check everything before writing anything: a
+refused run leaves both untouched. Paths are literal files and folders relative to where you stand (no globs).
+
+**`rm`.** Takes every index entry under the paths, unmerged ones included. A path that matches nothing is `pathspec '<path>' did
+not match any files` (`128`) unless `--ignore-unmatch` is given, which makes the command succeed when nothing matched at all; a
+folder without `-r` is `not removing '<path>' recursively without -r` (`128`). Unless `-f` is given, a path is refused with
+exit `1` when its entry differs from `HEAD` and from the file (`staged content different from both`), when only the entry
+differs from `HEAD`, or when only the file differs from the entry (`local modifications`; a changed mode counts); `--cached`
+only refuses the first case, an unmerged path is never refused, and a file already gone from the work tree is never refused.
+An entry added with `intent-to-add` counts as staged. Without `--cached` the file and the folders it leaves empty are
+removed, except the folder you stand in; a path that is now a folder is `Is a directory` (`128`) and a submodule is refused
+unless `--cached`. `-n` prints `rm '<path>'` for each path and changes nothing, `-q` prints nothing.
+
+**`mv`.** `mv <source> <destination>` renames; with several sources, or a destination that is an existing folder, each source
+goes into the folder under its own name. A folder is renamed whole, untracked files in it included, and its tracked files
+keep their index entries (ids, modes and stage 0) under the new names; the content in the index is not re-read, so staged and
+unstaged changes stay as they were. Refused with `<reason>, source=<source>, destination=<destination>` (`128`): `bad source`,
+`not under version control`, `conflicted` (an unmerged path), `destination exists` (also for a source moved onto itself, and
+for a tracked destination missing from the work tree, unless `-f`, which still cannot replace a folder), `cannot move directory
+over file`, `can not move directory into itself`, `source directory is empty` (no tracked file in it), `destination directory
+does not exist` and `multiple sources for the same target`. `-k` skips such a source and carries on; `-n` and `-v` print `Renaming
+<source> to <destination>` (`-n` renames nothing). A folder emptied by the move is left in place, as git leaves it.
+
+**On a pyn server.** There is no index of committed content to rewrite, so `rm` stages the deletion of the file (or forgets a
+file that was only staged) and `mv` renames the file and stages a deletion at the old path plus the file's current content at
+the new one; moving a file back to its old name leaves nothing staged. The checks above run against the staged content and the
+last synced revision. A path with a merge conflict is refused (`rm`) or `conflicted` (`mv`). An exclusive path, at the old path
+and at a destination it replaces, needs its lock first and is refused before anything changes, with the wording and exit status
+of `add` (`<path> is exclusive and you do not hold its lock`, `128`); a new exclusive destination is checked at `commit`, as for
+`add`. `commit -a` keeps a deletion staged with `rm --cached`. Covered against the real git by
+`crates/pyn-cli/tests/git_rm_mv.rs` and on a pyn server by `crates/pyn-cli/tests/rm_mv_server.rs`.
 
 ### Branches, switching and the work tree
 
@@ -919,6 +959,38 @@ git` (`1`); an unmerged path is `error: path '<path>' is unmerged`.
 and, as in git, removes tracked files the commit lacks; `--staged --worktree` does both for index and work tree, from `HEAD` unless
 `--source` is given; `--staged` alone is described under [staging](#staging-and-committing). The paths are prefixes (no globs).
 
+### Reset
+
+`reset` moves the current branch (or a detached `HEAD`) and resets the index and work tree by mode, through the same lock files,
+`ORIG_HEAD` and reflog lines as git. The default is `--mixed HEAD`; the last mode flag given wins.
+
+| Mode | Branch | Index | Work tree |
+| --- | --- | --- | --- |
+| `--soft` | moves | kept | kept; refused while a merge is in progress (`Cannot do a soft reset in the middle of a merge.`, `128`) |
+| `--mixed` | moves | becomes the target's tree | kept |
+| `--hard` | moves | becomes the target's tree | becomes the target's tree, local changes and untracked files in the way included; other untracked files stay |
+| `--keep` | moves | becomes the target's tree | files that differ between `HEAD` and the target are rewritten; stops when one of them has staged or unstaged changes, or an untracked file is in the way, or the index has unmerged paths |
+| `--merge` | moves | becomes the target's tree | files that differ between the index and the target are rewritten; stops when one of them has unstaged changes or an untracked file is in the way; unmerged paths are put back to the target |
+
+A refused `--keep` or `--merge` (and any failure before the index is written) prints `error: Entry '<path>' ...` and `fatal: Could
+not reset index file to revision '<rev>'.`, exits `128` and changes nothing, `ORIG_HEAD` included. A successful reset without
+paths writes `ORIG_HEAD` (the old `HEAD`), appends `reset: moving to <rev>` (the revision as typed) to the branch's log, when the
+branch moved, and to `HEAD`'s, and removes the merge state (`MERGE_HEAD`, `MERGE_MSG`, `MERGE_MODE`, `AUTO_MERGE`, `MERGE_RR`,
+`SQUASH_MSG`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`), so a merge in progress ends with `--mixed`, `--hard` and `--merge`. A detached
+`HEAD` that does not move gets no line. `--mixed` lists what is left unstaged (`Unstaged changes after reset:` then `M\t<path>`), `--hard`
+prints `HEAD is now at <abbreviation> <subject>`, and `-q` silences both.
+
+`reset [<rev>] -- <path>...` replaces only the index entries under the paths with the revision's (default `HEAD`) and touches no
+ref, no work tree file and no merge state; it is the same as `restore --staged --source <rev>`, but a path that matches nothing is
+not an error. `reset <path>` works without `--` when the name is not a revision; a name that is both is `ambiguous argument`
+(`128`). Paths are literal files and folders relative to where you stand. Any mode but `--mixed` with paths is `Cannot do <mode>
+reset with paths.` (`128`). On an unborn branch `HEAD` is the empty tree: `reset`, `--mixed`, `--hard` and `--merge` empty the index
+(and `--hard` and `--merge` remove the files), `--soft` does nothing, no ref or `ORIG_HEAD` is written, and `--keep` fails.
+
+`ORIG_HEAD`, `MERGE_HEAD` and `CHERRY_PICK_HEAD` are accepted wherever a revision is. Unlike git, `HEAD@{N}` and other reflog
+revisions are not understood yet, and a sparse checkout refuses every mode but `--soft`. A running rebase or cherry-pick's own
+state folder (`rebase-merge/`, `sequencer/`) is not removed. Covered against the real git by `crates/pyn-cli/tests/git_reset.rs`.
+
 ### Merging
 
 `merge <branch|tag|commit>` follows git's `ort` results for what pyn handles, with these steps:
@@ -958,7 +1030,31 @@ keeps unrelated local changes, but stops (`not uptodate`) if a path you staged h
 (a tag name tags the tag object itself); `-a`, or just `-m`, writes an annotated tag: a tag object with the tagger from
 `GIT_COMMITTER_*` or `user.name` and `user.email` (an error without them), the object's type, and the cleaned message, byte for
 byte as git writes it. There is no editor, so `-a` needs `-m`. `-f` replaces a tag (`Updated tag '<name>' (was <id>)`), `-d` deletes
-(`Deleted tag '<name>' (was <id>)`). Signing (`tag.gpgsign`) is refused. Tags get no reflog unless `core.logAllRefUpdates=always`.
+(`Deleted tag '<name>' (was <id>)`). `-s`, `-u <keyid>`, `--no-sign` and `tag.gpgsign` sign an annotated tag (see [Signing](#signing)). Tags get no reflog unless `core.logAllRefUpdates=always`.
+
+### Signing
+
+pyn makes the signature by running the configured external program, as git does; pyn never links a crypto library and does not
+need git installed. It writes the signature as git encodes it, so the object ids agree with git's for the same signature bytes.
+
+- `gpg.format` is `openpgp` (default), `x509` or `ssh`; any other value stops with exit `128`. The program is `gpg.openpgp.program`
+  then `gpg.program` (default `gpg`) for openpgp, `gpg.x509.program` (default `gpgsm`), or `gpg.ssh.program` (default `ssh-keygen`).
+- The key is the `-S<keyid>` or `-u` value, else `user.signingkey`. For openpgp and x509 with neither, it is the committer
+  (tagger) `Name <email>`.
+- openpgp and x509 run `<program> --status-fd=2 -bsau <key>` with the object on standard input; the signature is standard output,
+  and the run counts only if it exits `0` and reports `[GNUPG:] SIG_CREATED` on standard error.
+- ssh runs `<program> -Y sign -n git -f <keyfile> <buffer>` and reads `<buffer>.sig`. `user.signingkey` is a private key file
+  (`~/` is expanded) or a literal public key (`ssh-...` or `key::...`), signed through ssh-agent with `-U`. Without
+  `user.signingkey`, `gpg.ssh.defaultKeyCommand` is not built and signing stops.
+- A commit carries the signature as a `gpgsig` header (`gpgsig-sha256` in a SHA-256 repository) after the other headers, folded
+  with a leading space on each continuation line; it signs the commit as it would be without that header. `--amend` signs anew
+  (or not) and drops the old signature. A tag carries its signature appended to the message.
+- `tag.gpgsign` makes every tag annotated and signed, so it needs `-m`. If the signer fails or is missing, nothing is written
+  and the exit status is `128`.
+
+`log --show-signature` and `verify-commit` / `verify-tag` equivalents are not built: pyn does not verify signatures, and `log
+--show-signature` stays a usage error. `pyn merge`, `pull` and the other commands that create commits do not sign (their `-S`
+is a usage error), even with `commit.gpgsign=true`.
 
 ### Stashing
 

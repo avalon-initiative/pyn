@@ -26,9 +26,11 @@ mod localfile;
 mod ls_remote;
 mod merging;
 mod migrate;
+mod mv_plan;
 mod probe;
 mod pyn_server;
 mod repo_tool;
+mod rm_mv;
 mod sanitize;
 mod short_status;
 mod snapshot;
@@ -260,6 +262,10 @@ enum Command {
         #[arg(short, long)]
         force: bool,
     },
+    /// Remove files from the work tree and stage the removal (`--cached` keeps the files). Exclusive paths need your lock.
+    Rm(rm_mv::RmArgs),
+    /// Rename or move files and folders; on a pyn server the move is staged as a deletion and an addition.
+    Mv(mv_plan::MvArgs),
     /// Commit the staged changes as one unit of work (or the named paths as they are). On a pyn server the commit is local
     /// until `pyn push` (a `--no-local-store` workspace publishes at once); publishing releases their locks.
     Commit {
@@ -790,7 +796,7 @@ fn main() {
         eprintln!("{}", unsupported::message(&name));
         std::process::exit(1);
     }
-    let cli = match Cli::try_parse() {
+    let cli = match Cli::try_parse_from(attached_gpg_keys(std::env::args_os().collect())) {
         Ok(cli) => cli,
         Err(e) => {
             let code = if e.use_stderr() { 129 } else { 0 };
@@ -843,6 +849,38 @@ fn in_git_home() -> bool {
         .ok()
         .and_then(|cwd| git_home::detect(&cwd).ok().flatten())
         .is_some()
+}
+
+/// Rewrites `commit -S<keyid>` to `--gpg-sign=<keyid>`; clap takes an optional value only after `=`.
+fn attached_gpg_keys(args: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsString> {
+    let Some(at) = args
+        .iter()
+        .skip(1)
+        .position(|a| a == "commit")
+        .map(|i| i + 1)
+    else {
+        return args;
+    };
+    let mut out = args[..=at].to_vec();
+    let mut rest = args[at + 1..].iter();
+    while let Some(arg) = rest.next() {
+        let text = arg.to_string_lossy();
+        match text.as_ref() {
+            "--" => {
+                out.push(arg.clone());
+                out.extend(rest.by_ref().cloned());
+            }
+            "-m" | "-F" | "--message" | "--file" | "--author" | "--date" => {
+                out.push(arg.clone());
+                out.extend(rest.next().cloned());
+            }
+            t if t.len() > 2 && t.starts_with("-S") => {
+                out.push(format!("--gpg-sign={}", &t[2..]).into());
+            }
+            _ => out.push(arg.clone()),
+        }
+    }
+    out
 }
 
 /// The subcommand named on the command line, before any argument parsing.
@@ -1637,6 +1675,8 @@ fn run(cli: Cli) -> Result<()> {
                 std::process::exit(1);
             }
         }
+        Command::Rm(args) => rm_mv::rm(&backend, in_workspace("rm")?, &cwd, &args)?,
+        Command::Mv(args) => rm_mv::mv(&backend, in_workspace("mv")?, &cwd, &args)?,
         Command::Commit {
             paths,
             file,

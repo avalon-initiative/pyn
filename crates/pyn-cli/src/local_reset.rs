@@ -17,20 +17,61 @@ use crate::{branch, localfile, merging, sync};
 
 #[derive(Args, Debug)]
 pub struct ResetArgs {
-    /// Keep the dropped commits' changes staged.
-    #[arg(long, conflicts_with_all = ["mixed", "hard"])]
+    /// Move only the branch; the index and files stay (a workspace: keep the dropped commits' changes staged).
+    #[arg(long, overrides_with_all = ["mixed", "hard", "keep", "merge"])]
     soft: bool,
-    /// Keep the changes in the files, unstaged (the default).
-    #[arg(long, conflicts_with = "hard")]
+    /// Reset the index too, keeping the files (the default).
+    #[arg(long, overrides_with_all = ["soft", "hard", "keep", "merge"])]
     mixed: bool,
-    /// Also put the files back to the commit: discards the dropped commits' changes and any uncommitted changes.
-    #[arg(long)]
+    /// Reset the index and the files, discarding local changes.
+    #[arg(long, overrides_with_all = ["soft", "mixed", "keep", "merge"])]
     hard: bool,
-    /// Skip the typed confirmation of --hard.
+    /// Git repository: reset, but stop if a file with local changes would be overwritten.
+    #[arg(long, overrides_with_all = ["soft", "mixed", "hard", "merge"])]
+    keep: bool,
+    /// Git repository: reset, keeping files whose changes are not staged; stop if one would be overwritten.
+    #[arg(long, overrides_with_all = ["soft", "mixed", "hard", "keep"])]
+    merge: bool,
+    /// Git repository: do not list the changes left unstaged.
+    #[arg(short, long)]
+    pub(crate) quiet: bool,
+    /// Workspace: skip the typed confirmation of --hard.
     #[arg(long)]
-    yes: bool,
-    /// HEAD, HEAD~N or a hash of an unpublished local commit, or of the last published one; default HEAD.
-    commit: Option<String>,
+    pub(crate) yes: bool,
+    /// A revision (a workspace: HEAD, HEAD~N or a hash of an unpublished local commit, or of the last published
+    /// one); default HEAD. On a git repository, paths may follow it.
+    pub(crate) revs: Vec<String>,
+    /// Git repository: reset only the index entries of these paths.
+    #[arg(last = true)]
+    pub(crate) paths: Vec<String>,
+}
+
+impl ResetArgs {
+    pub(crate) fn kind(&self) -> crate::git_home::ResetKind {
+        use crate::git_home::ResetKind;
+        match () {
+            _ if self.soft => ResetKind::Soft,
+            _ if self.hard => ResetKind::Hard,
+            _ if self.keep => ResetKind::Keep,
+            _ if self.merge => ResetKind::Merge,
+            _ => ResetKind::Mixed,
+        }
+    }
+
+    pub(crate) fn mixed(&self) -> bool {
+        self.mixed
+    }
+
+    /// The one revision a workspace takes; git's other forms need a git repository.
+    fn commit(&self) -> Result<Option<&str>> {
+        if self.keep || self.merge || self.quiet || !self.paths.is_empty() || self.revs.len() > 1 {
+            bail!(
+                "`--keep`, `--merge`, `-q`, paths and more than one revision need a git repository; \
+                 a workspace resets to one commit"
+            );
+        }
+        Ok(self.revs.first().map(String::as_str))
+    }
 }
 
 #[derive(PartialEq, Eq)]
@@ -97,6 +138,7 @@ fn pick(store: &LocalStore, text: &str, tip: ObjectId, chain: &[ObjectId]) -> Re
 
 pub fn reset(backend: &dyn Backend, ws: &Workspace, args: ResetArgs) -> Result<()> {
     merging::refuse_during_merge(ws, "reset")?;
+    let commit = args.commit()?;
     let kind = match (args.soft, args.hard) {
         (true, _) => Kind::Soft,
         (_, true) => Kind::Hard,
@@ -112,12 +154,7 @@ pub fn reset(backend: &dyn Backend, ws: &Workspace, args: ResetArgs) -> Result<(
         bail!("branch '{branch}' has no local commits");
     };
     let chain = candidates(&store, tip, store.published(&branch)?)?;
-    let target = pick(
-        &store,
-        args.commit.as_deref().unwrap_or("HEAD"),
-        tip,
-        &chain,
-    )?;
+    let target = pick(&store, commit.unwrap_or("HEAD"), tip, &chain)?;
     if kind == Kind::Hard && !args.yes {
         eprint!(
             "This discards local commits and uncommitted changes. Type the branch name to confirm: "

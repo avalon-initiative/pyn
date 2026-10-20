@@ -103,7 +103,7 @@ fn write_state(git: &GitHome, name: &str, text: &str) -> Result<()> {
 }
 
 /// `ORIG_HEAD` is where `HEAD` was before a merge, as git leaves it for `git reset --merge`.
-fn write_orig_head(git: &GitHome, id: &ObjectId) -> Result<()> {
+pub(super) fn write_orig_head(git: &GitHome, id: &ObjectId) -> Result<()> {
     write_state(git, "ORIG_HEAD", &format!("{id}\n"))
 }
 

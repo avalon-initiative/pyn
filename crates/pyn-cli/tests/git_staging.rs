@@ -413,13 +413,6 @@ fn commit_refuses_what_it_cannot_do_safely_and_changes_nothing() {
     assert!(err.contains("rebase-merge"), "{err}");
     fs::remove_dir(repo.main.join(".git/rebase-merge")).unwrap();
 
-    let config = repo.main.join(".git/config");
-    let text = fs::read_to_string(&config).unwrap();
-    fs::write(&config, format!("{text}[commit]\n\tgpgsign = true\n")).unwrap();
-    let (_, err) = repo.fails(&["commit", "-m", "x"]);
-    assert!(err.contains("cannot sign"), "{err}");
-    fs::write(&config, &text).unwrap();
-
     let head = fs::read_to_string(repo.main.join(".git/refs/heads/main")).unwrap();
     git_dir_file(&repo, "HEAD", &head);
     let (_, err) = repo.fails(&["commit", "-m", "x"]);

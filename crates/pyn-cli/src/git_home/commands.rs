@@ -116,6 +116,8 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
             }
             Ok(())
         }
+        Command::Rm(args) => super::remove::rm(git, cwd, &args),
+        Command::Mv(args) => super::remove::mv(git, cwd, &args),
         Command::Commit {
             paths,
             file,
@@ -157,7 +159,7 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
             worktree,
             ..
         } => super::switch::restore(git, cwd, &args, source.as_deref(), staged, worktree),
-        Command::Reset(_) => refuse("reset"),
+        Command::Reset(args) => super::reset::reset(git, cwd, &args),
         Command::Migrate => {
             bail!("`pyn migrate` converts a pyn server workspace; this is a git repository")
         }
