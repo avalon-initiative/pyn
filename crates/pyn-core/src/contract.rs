@@ -38,6 +38,8 @@ const RULES: &str = "[meta]\ndefault = \"shared\"\n[exclusive]\npaths = [\"Conte
 
 mod merging;
 pub use merging::*;
+mod commit_filters;
+pub use commit_filters::*;
 mod branch_policy;
 pub use branch_policy::*;
 mod push;
@@ -3189,6 +3191,9 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_conversion_on_the_default_branch_reaches_a_branch_when_it_picks_up_the_policy);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; verify_checks_every_branch_and_a_commit_names_its_parent);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; merge_bases_are_the_lowest_common_ancestors);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; commit_filters_match_author_time_message_and_path);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; filtered_commit_pages_are_full_while_more_matches_exist);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_revision_range_lists_what_one_commit_has_and_the_other_lacks);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_revision_after_a_merge_is_based_on_the_pointer_the_merge_left);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_merge_fast_forwards_or_is_up_to_date_without_a_new_commit);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_merge_can_insist_on_a_commit_or_refuse_to_make_one);
@@ -3919,6 +3924,19 @@ impl MetadataStore for HookedMeta {
         limit: usize,
     ) -> crate::Result<Vec<crate::Commit>> {
         self.inner.commits(repo, tip, before, limit).await
+    }
+
+    async fn commits_matching(
+        &self,
+        repo: &RepoId,
+        tip: Option<&ObjectId>,
+        before: Option<&ObjectId>,
+        filter: &crate::CommitFilter,
+        limit: usize,
+    ) -> crate::Result<Vec<crate::Commit>> {
+        self.inner
+            .commits_matching(repo, tip, before, filter, limit)
+            .await
     }
 
     async fn missing_commits(

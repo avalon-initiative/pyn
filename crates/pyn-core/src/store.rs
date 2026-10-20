@@ -12,8 +12,8 @@ use crate::tree::HeadCounts;
 use pyn_object::ObjectId;
 
 use crate::types::{
-    ChangesetItem, Commit, Lock, NewRevision, PushedCommit, RepoId, RepoPath, Revision, RevisionId,
-    UserId,
+    ChangesetItem, Commit, CommitFilter, Lock, NewRevision, PushedCommit, RepoId, RepoPath,
+    Revision, RevisionId, UserId,
 };
 
 /// A hold on part of a repository's unreferenced-upload budget while an upload streams in.
@@ -226,6 +226,16 @@ pub trait MetadataStore: Send + Sync {
         repo: &RepoId,
         tip: Option<&ObjectId>,
         before: Option<&ObjectId>,
+        limit: usize,
+    ) -> Result<Vec<Commit>>;
+
+    /// Like `commits`, keeping only those `filter` matches; `limit` counts matches, so a page is full while more exist.
+    async fn commits_matching(
+        &self,
+        repo: &RepoId,
+        tip: Option<&ObjectId>,
+        before: Option<&ObjectId>,
+        filter: &CommitFilter,
         limit: usize,
     ) -> Result<Vec<Commit>>;
 

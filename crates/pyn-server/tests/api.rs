@@ -3537,6 +3537,71 @@ async fn commits_and_snapshots_are_served_per_commit() {
 }
 
 #[tokio::test]
+async fn commits_filter_by_author_time_message_path_and_range() {
+    let app = router(state_with(false, RegistrationMode::Open).await);
+    let alice = register_and_sign_in(&app, "alice").await;
+    create_repo(&app, &alice, "game").await;
+    checkin_json(&app, &alice, "main", "a.txt", "one", None).await;
+    checkin_json(&app, &alice, "main", "dir/b.txt", "two", None).await;
+    checkin_json(&app, &alice, "main", "a.txt", "three", Some(1)).await;
+    let list = |query: &str| {
+        let uri = format!("/v1/repos/alice/game/commits{query}");
+        let app = app.clone();
+        let alice = alice.clone();
+        async move { send(&app, "GET", &uri, &alice, None).await }
+    };
+    let page = |r| async move { body_json::<api::CommitPage>(r).await };
+    let all = page(list("").await).await;
+    let ids: Vec<String> = all.commits.iter().map(|c| c.id.clone()).collect();
+    assert_eq!(ids.len(), 3);
+
+    let got = |p: api::CommitPage| p.commits.into_iter().map(|c| c.id).collect::<Vec<_>>();
+    assert_eq!(got(page(list("?author=ALI").await).await), ids);
+    assert!(got(page(list("?author=nobody").await).await).is_empty());
+    assert_eq!(
+        got(page(list("?path=a.txt").await).await),
+        vec![ids[0].clone(), ids[2].clone()]
+    );
+    assert_eq!(
+        got(page(list("?path=dir").await).await),
+        vec![ids[1].clone()]
+    );
+    assert_eq!(got(page(list("?grep=M").await).await), ids);
+    assert!(got(page(list("?grep=three").await).await).is_empty());
+    assert_eq!(
+        got(
+            page(list("?since=2000-01-01T00:00:00Z&until=2999-01-01T00:00:00%2B02:00").await).await
+        ),
+        ids
+    );
+    assert!(got(page(list("?until=2000-01-01T00:00:00Z").await).await).is_empty());
+
+    let range = format!("?from={}&to={}", &ids[0][..10], ids[2]);
+    assert_eq!(
+        got(page(list(&range).await).await),
+        vec![ids[0].clone(), ids[1].clone()]
+    );
+    let paged = page(list("?path=a.txt&limit=1").await).await;
+    assert_eq!(paged.next_before.as_deref(), Some(ids[0].as_str()));
+
+    for query in [
+        "?since=yesterday",
+        "?until=2026-01-01",
+        "?from=deadbeef",
+        "?to=deadbeef",
+        &format!("?from={}&branch=main", ids[0]),
+    ] {
+        let r = list(query).await;
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST, "{query}");
+        let err: api::ErrorBody = body_json(r).await;
+        assert_eq!(err.code, "invalid_request", "{query}");
+    }
+    let r = list("?path=../x").await;
+    assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(body_json::<api::ErrorBody>(r).await.code, "invalid_path");
+}
+
+#[tokio::test]
 async fn an_object_is_keyed_by_its_blob_id_and_must_match_its_declared_length() {
     let app = app().await;
     let put = |declared: &str| {

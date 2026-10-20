@@ -12,10 +12,10 @@ use pyn_core::branch::{DEFAULT_BRANCH, conflicts};
 use pyn_core::commit_record::{CommitDraft, TreeChange, TreeEdit, draft_commit};
 use pyn_core::merge::{MergeWrite, MergeWritten};
 use pyn_core::{
-    Branch, ChangesetItem, Commit, FileMode, HeadCounts, HistoryCursor, HistoryScan, Lock,
-    MetadataStore, Mode, ObjectId, PathFilter, Person, PushedCommit, PynError, REPO_ALGORITHM,
-    RepoId, RepoPath, RepoRecord, RepoSettings, RepoUpdate, RepoUsage, Result, Revision,
-    RevisionHash, RevisionId, StorageCap, UploadReservation, Usage, UserId, Visibility,
+    Branch, ChangesetItem, Commit, CommitFilter, FileMode, HeadCounts, HistoryCursor, HistoryScan,
+    Lock, MetadataStore, Mode, ObjectId, PathFilter, Person, PushedCommit, PynError,
+    REPO_ALGORITHM, RepoId, RepoPath, RepoRecord, RepoSettings, RepoUpdate, RepoUsage, Result,
+    Revision, RevisionHash, RevisionId, StorageCap, UploadReservation, Usage, UserId, Visibility,
 };
 use sqlx::migrate::MigrateDatabase;
 use sqlx::postgres::{PgPoolOptions, PgRow};
@@ -694,6 +694,20 @@ fn is_unique_violation(e: &sqlx::Error) -> bool {
 
 impl PgMetadataStore {
     /// The revisions of the given commits, ordered by path.
+    /// The commits of `rows`, each with the revisions it made.
+    async fn with_revisions(&self, repo: &RepoId, rows: &[PgRow]) -> Result<Vec<Commit>> {
+        let mut commits = rows.iter().map(commit_from).collect::<Result<Vec<_>>>()?;
+        let ids: Vec<String> = commits.iter().map(|c| c.id.to_hex()).collect();
+        let mut revisions = self.revisions_of(repo, &ids).await?;
+        for c in &mut commits {
+            let (mine, rest): (Vec<_>, Vec<_>) =
+                revisions.into_iter().partition(|r| r.commit == c.id);
+            c.revisions = mine;
+            revisions = rest;
+        }
+        Ok(commits)
+    }
+
     async fn revisions_of(&self, repo: &RepoId, commits: &[String]) -> Result<Vec<Revision>> {
         let rows = sqlx::query(AssertSqlSafe(format!(
             "SELECT {REVISION_COLUMNS} FROM revisions WHERE repo = $1 AND commit_id = ANY($2)
@@ -1629,16 +1643,56 @@ impl MetadataStore for PgMetadataStore {
         .fetch_all(&self.pool)
         .await
         .map_err(db)?;
-        let mut commits = rows.iter().map(commit_from).collect::<Result<Vec<_>>>()?;
-        let ids: Vec<String> = commits.iter().map(|c| c.id.to_hex()).collect();
-        let mut revisions = self.revisions_of(repo, &ids).await?;
-        for c in &mut commits {
-            let (mine, rest): (Vec<_>, Vec<_>) =
-                revisions.into_iter().partition(|r| r.commit == c.id);
-            c.revisions = mine;
-            revisions = rest;
-        }
-        Ok(commits)
+        self.with_revisions(repo, &rows).await
+    }
+
+    async fn commits_matching(
+        &self,
+        repo: &RepoId,
+        tip: Option<&ObjectId>,
+        before: Option<&ObjectId>,
+        filter: &CommitFilter,
+        limit: usize,
+    ) -> Result<Vec<Commit>> {
+        let rows = sqlx::query(AssertSqlSafe(format!(
+            "WITH RECURSIVE
+             anc(id) AS (
+                 SELECT $1::text WHERE $1::text IS NOT NULL
+                 UNION
+                 SELECT p FROM anc JOIN commits c ON c.repo = $2 AND c.id = anc.id CROSS JOIN LATERAL unnest(c.parents) AS p
+             ),
+             ex(id) AS (
+                 SELECT $5::text WHERE $5::text IS NOT NULL
+                 UNION
+                 SELECT p FROM ex JOIN commits c ON c.repo = $2 AND c.id = ex.id CROSS JOIN LATERAL unnest(c.parents) AS p
+             )
+             SELECT {COMMIT_COLUMNS} FROM commits
+             WHERE repo = $2 AND ($1::text IS NULL OR id IN (SELECT id FROM anc))
+               AND ($3::text IS NULL OR seq < (SELECT seq FROM commits WHERE repo = $2 AND id = $3))
+               AND ($5::text IS NULL OR id NOT IN (SELECT id FROM ex))
+               AND ($6::text IS NULL OR strpos(lower(author_name), $6) > 0 OR strpos(lower(author_email), $6) > 0)
+               AND ($7::timestamptz IS NULL OR authored_at >= $7)
+               AND ($8::timestamptz IS NULL OR authored_at <= $8)
+               AND ($9::text IS NULL OR strpos(lower(message), $9) > 0)
+               AND ($10::text IS NULL OR EXISTS (
+                   SELECT 1 FROM revisions r WHERE r.repo = $2 AND r.commit_id = commits.id
+                       AND (r.path = $10 OR starts_with(r.path, $10 || '/'))))
+             ORDER BY seq DESC LIMIT $4"
+        )))
+        .bind(tip.map(ObjectId::to_hex))
+        .bind(repo.as_str())
+        .bind(before.map(ObjectId::to_hex))
+        .bind(limit as i64)
+        .bind(filter.exclude.as_ref().map(ObjectId::to_hex))
+        .bind(filter.author.as_deref().map(str::to_lowercase))
+        .bind(filter.since)
+        .bind(filter.until)
+        .bind(filter.grep.as_deref().map(str::to_lowercase))
+        .bind(filter.path.as_ref().map(|p| p.as_str().to_string()))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        self.with_revisions(repo, &rows).await
     }
 
     async fn missing_commits(

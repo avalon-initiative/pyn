@@ -4433,6 +4433,69 @@
               "type": "integer",
               "minimum": 0
             }
+          },
+          {
+            "name": "author",
+            "in": "query",
+            "description": "keep commits whose author name or email contains this text, ignoring case",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "description": "keep commits authored at or after this RFC 3339 instant",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "description": "keep commits authored at or before this RFC 3339 instant",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "grep",
+            "in": "query",
+            "description": "keep commits whose message contains this text, ignoring case",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "description": "keep commits that made a revision of this path or of a path under it",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "list the commits reachable from this commit (an id or unique abbreviation) instead of a branch; not with `branch`",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "leave out this commit and its ancestors (an id or unique abbreviation), like git's `to..from`",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -4441,6 +4504,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/CommitPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: a bad timestamp, path or revision, or `from` with `branch`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }

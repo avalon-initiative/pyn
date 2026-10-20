@@ -54,12 +54,30 @@ for an old commit reads old revisions and never changes any file's history.
 
 | Request | Returns |
 | --- | --- |
-| `GET /v1/repos/{owner}/{name}/commits?branch=&before=&limit=` | the commits a branch contains (the default branch's if omitted), newest first (default 50, max 200), each with its revisions; `next_before` pages back |
+| `GET /v1/repos/{owner}/{name}/commits?branch=&before=&limit=&author=&since=&until=&grep=&path=&from=&to=` | the commits a branch contains (the default branch's if omitted), newest first (default 50, max 200), each with its revisions; `next_before` pages back; the filters below narrow it |
 | `GET /v1/repos/{owner}/{name}/commits/{commit}` | one commit; `404 commit_not_found` for an id the repository does not have |
 | `GET /v1/repos/{owner}/{name}/snapshot?commit=&branch=&after=&limit=` | the snapshot of a commit, or of a branch's head (the default branch's if neither is given), ordered by path, 200 per page (max 1000); `commit` is null for an empty repository |
 
 A commit is given as its full id or as an abbreviation of at least 4 lowercase hex digits; an abbreviation that matches
 more than one commit is `400 ambiguous_commit`. `HEAD~N` and `^` are resolved by clients, which walk `parents`.
+
+### Filtering commits
+
+The listing takes filters that the server evaluates before it pages, so a page is full whenever more matches exist and
+`next_before` is the last commit of the page. They combine with each other (all must hold) and with `before` and `limit`.
+`/history` is unchanged: it stays the per-path revision view.
+
+| Parameter | Keeps the commits |
+| --- | --- |
+| `author` | whose author name or author email contains the text, ignoring case (the committer is not consulted) |
+| `since`, `until` | authored at or after, or at or before, an RFC 3339 instant (`2026-10-08T09:00:00Z`, any offset); both bounds are inclusive and compare the author date |
+| `grep` | whose message contains the text, ignoring case |
+| `path` | that made a revision of this path, or of any path under it when it is a folder (`Source` matches `Source/a.cpp`, not `Sources/a.cpp`); a deletion counts, and a merge counts only for the revisions it wrote |
+| `from`, `to` | reachable from `from` and not from `to`, like git's `to..from`: both are commits (an id or an abbreviation of at least 4 hex digits), `to` itself is left out, and every parent of a merge counts as reachable. `from` replaces the branch's tip and is refused together with `branch`; `to` alone ranges from the branch's tip |
+
+A bad timestamp or path, an unknown or ambiguous `from` or `to`, or `from` with `branch` is `400` (`invalid_request`, or
+`invalid_path` for a malformed `path`). `before` keeps its `404 commit_not_found`. The memory and Postgres stores answer the
+same filters through `MetadataStore::commits_matching`.
 
 File content at any revision is fetched with `GET .../content?path=&revision=`, so a snapshot entry's `revision` and `content` are
 enough to fetch every file. Every revision in the API carries the `commit` it belongs to, its `file_mode` and, for revisions
