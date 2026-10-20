@@ -218,7 +218,7 @@ fn plan(ws: &Workspace, index: &Index, specs: &Specs, args: &AddArgs) -> Result<
         }
         let file = ws.abs(path);
         if !localfile::exists(&file) {
-            if conflicted.contains(path) {
+            if conflicted.contains(path) && !crate::merging::is_local(ws) {
                 eprintln!(
                     "warning: {path} was deleted; a merge conflict cannot be resolved by deleting the file, so it is not staged"
                 );

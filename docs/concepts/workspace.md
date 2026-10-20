@@ -151,6 +151,10 @@ cleanly is done when the command returns, and the workspace follows it. A merge 
 - `pyn commit` (with or without `-m`) concludes the merge once every conflicted path is staged. Anything else staged must be a
   path of the merge. A partial `pyn commit <path>`, `pyn merge`, `pyn switch` and `pyn update` are refused.
 
+A `pyn pull` that stops on conflicts in a workspace with local commits is in progress the same way, concluded with `pyn commit` or
+`pyn pull --continue` and given up with `pyn pull --abort` (or `pyn merge --abort`); see
+[conflicts in a pull](commits.md#conflicts-in-a-pull).
+
 The record is `.pyn/local_only/state/merge.toml`:
 
 ```toml
@@ -315,7 +319,7 @@ server, and the server stays the only authority over commits, locks and policy. 
 
 Slice #337 of the same move. With the setting on, `pyn fetch` stores the server's new commits and trees (every object checked
 against its id) and moves `refs/remotes/origin/<branch>`; `pyn pull` is a fetch and then a fast-forward or, when the
-histories diverged, a merge commit as in git (`pyn pull --rebase` replays the local commits onto the fetched tip instead);
+histories diverged, a merge commit as in git (`pyn pull --rebase` replays the local commits onto the fetched tip instead); a conflict stops either in progress for the person to resolve;
 `pyn push` uploads the blobs and publishes the local commits, merge commits included, in one request, after which none of
 them is unpublished. Details, output and the refusals are in
 [commits](commits.md#fetch-pull-and-push-with-a-local-store). Deletions and policy-file commits are pushed like any other

@@ -66,6 +66,15 @@ pub struct PullArgs {
     no_rebase: bool,
     #[arg(long)]
     all: bool,
+    /// Give up a pull that stopped on conflicts.
+    #[arg(long, conflicts_with_all = ["continue_pull", "skip"])]
+    abort: bool,
+    /// Conclude a pull that stopped on conflicts, as `pyn commit` does.
+    #[arg(long = "continue", conflicts_with_all = ["abort", "skip"])]
+    continue_pull: bool,
+    /// Drop the commit a rebase stopped on.
+    #[arg(long, conflicts_with_all = ["abort", "continue_pull"])]
+    skip: bool,
     #[arg(long, hide = true)]
     squash: bool,
     #[arg(short = 's', long, hide = true, value_name = "STRATEGY")]
@@ -116,8 +125,41 @@ impl PullArgs {
         }
     }
 
+    /// What was asked of a pull in progress; clears it, so that only the remaining options decide whether the command
+    /// is bare.
+    pub fn take_control(&mut self) -> Option<crate::local_merge::Control> {
+        use crate::local_merge::Control;
+        let (abort, cont, skip) = (
+            std::mem::take(&mut self.abort),
+            std::mem::take(&mut self.continue_pull),
+            std::mem::take(&mut self.skip),
+        );
+        [
+            (abort, Control::Abort),
+            (cont, Control::Continue),
+            (skip, Control::Skip),
+        ]
+        .into_iter()
+        .find_map(|(on, c)| on.then_some(c))
+    }
+
     fn refuse_unsupported(&self) {
         let given = [
+            (
+                "--abort",
+                self.abort,
+                "a git merge is given up with `pyn merge --abort`",
+            ),
+            (
+                "--continue",
+                self.continue_pull,
+                "a git merge is concluded with `pyn commit`",
+            ),
+            (
+                "--skip",
+                self.skip,
+                "a git rebase is skipped with `pyn rebase --skip`",
+            ),
             ("--squash", self.squash, "a squash merge is not built"),
             (
                 "--strategy",

@@ -245,12 +245,12 @@ says there is nothing to push).
   shared file both sides changed is merged line by line, and a file both sides changed that cannot be merged that way, a mode
   change on both sides, or a deletion against an edit is a conflict. An exclusive path both sides changed has no automatic pick:
   the pull stops unless the person holds its lock, in which case their version is kept (`Kept your version of <path>`) and the
-  server accepts it at push as the new revision. A conflict names the files, hints at the lock, and changes nothing: no
-  half-merged workspace (resolving conflicts in the working tree is not built). The files the merge changes are written, and
-  `update` brings the rest. `pyn pull --rebase` keeps the older behaviour: the local commits are replayed one by one onto the
-  fetched tip with the same per-file rules; a local merge commit cannot be replayed and is refused. A pull also refuses to
+  server accepts it at push as the new revision. Any other conflict stops the pull **in progress**, as `pyn merge` does on a
+  server ([conflicts in a pull](#conflicts-in-a-pull)). The files the merge changes are written, and `update` brings the rest.
+  `pyn pull --rebase` replays the local commits one by one onto the fetched tip with the same per-file rules, stopping at
+  the first commit that conflicts; a local merge commit cannot be replayed and is refused. A pull also refuses to
   run over uncommitted changes to a file the incoming commits change, and with staged changes. `--rebase=false` and
-  `--no-rebase` mean merge; other options are usage errors.
+  `--no-rebase` mean merge; `--abort`, `--continue` and `--skip` conclude a pull in progress; other options are usage errors.
 - `pyn push` first uploads every blob the unpublished commits added or changed through the chunked object routes (not the ones
   a merge took from the fetched side), then sends the commits and the trees they need in one `POST .../push`, merge commits
   included. The local history must contain the fetched tip, else `non-fast-forward`; a merge may only merge in commits the
@@ -268,6 +268,32 @@ says there is nothing to push).
   change without the `edit_policy` permission) are named; so are `object_missing`, `push_invalid`, `push_unsupported`,
   `storage_limit_reached` and `merge_conflict` (a merge commit leaves a diverged exclusive path unresolved: lock it and
   pull again).
+
+### Conflicts in a pull
+
+The server is not involved: the client makes the merge, so a conflicted pull is recorded in the workspace, in the same
+`.pyn/local_only/state/merge.toml` as a `pyn merge` ([the workspace](workspace.md#merging)), with the commits it joins and the
+tree the clean paths gave. Only unpublished local commits are ever replayed; published history is never rewritten.
+
+- **Merge.** A shared file both sides changed with overlapping lines gets diff3 markers (`<<<<<<< HEAD`, `||||||| base`,
+  `=======`, `>>>>>>> origin/<branch>`). A binary file or one whose mode both sides changed keeps the local version, and a path
+  removed on one side and changed on the other keeps the side that exists. An exclusive path both sides changed keeps the local
+  version. Every clean change is in the working tree and the branch has not moved. `pyn status` says `You have unmerged paths`
+  and `unmerged (...)` in its `STATE` column (`UU`, or `AA` for both added, in `--short`).
+- **Resolving.** Edit the file, or take a side with `pyn checkout --ours|--theirs -- <path>`, then `pyn add <path>`; a file
+  deleted in the working tree and staged with `pyn add` resolves a path by removing it. `pyn commit` (or `pyn pull --continue`)
+  makes the merge commit, with the local tip and the fetched tip as parents, once every conflicted path is staged; a path that is
+  not part of the merge cannot be staged meanwhile. A resolved exclusive path needs the person's live lock to be concluded
+  (`pyn lock <path>`; the message names it); nothing is committed without it. `pyn fetch`, `pull`, `push`, `reset`, `switch` and
+  `update` are refused while it is in progress.
+- **Rebase.** The same record holds the replay: the commits done, the one being applied and those still to come. A conflict
+  stops it at that commit, with its clean changes and the markers in the working tree, `--ours` being the fetched side and
+  `--theirs` the commit being applied. `pyn commit` or `pyn pull --continue` records the resolved commit (with its author and
+  message, unless `-m` is given) and replays the next ones, stopping again at the next conflict; a commit that becomes empty is
+  dropped. `pyn pull --skip` drops the commit being applied. The local branch moves only when the whole replay is done.
+- **Abort.** `pyn pull --abort` (or `pyn merge --abort`) puts the files the pull touched back to the local tip, forgets the
+  record and leaves the branch, the local commits and the store as they were; a change in the working tree to any other file is
+  never touched.
 
 ## Command line
 

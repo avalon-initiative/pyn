@@ -17,6 +17,7 @@ mod git_home;
 mod http_transport;
 mod limits;
 mod local_commit;
+mod local_merge;
 mod local_reset;
 mod local_store;
 mod local_sync;
@@ -1443,10 +1444,13 @@ fn run(cli: Cli) -> Result<()> {
         Command::Pull(mut args) => {
             let local = ws.as_ref().is_some_and(|w| w.settings().local_store_on());
             let rebase = local && args.take_rebase();
+            let control = args.take_control();
             require_bare(&args, "pull");
             let w = in_workspace("pull")?;
             if local {
-                local_sync::pull(&backend, w, rebase)?;
+                local_sync::pull(&backend, w, rebase, control)?;
+            } else if control.is_some() {
+                bail!("there is no pull to conclude: this workspace has no local commits to merge");
             } else {
                 update_as_remote(&backend, w, ws.as_ref())?;
             }

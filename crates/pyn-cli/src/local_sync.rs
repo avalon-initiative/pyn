@@ -1,14 +1,14 @@
 //! `fetch`, `pull` and `push` of a workspace with `local_store` on (docs/concepts/commits.md): commits and trees travel
 //! git-encoded, every id is verified by hashing, and a push is accepted or refused as a whole.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use anyhow::{Context, Result, bail};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use pyn_git::Expect;
 use pyn_gitwork::{Entry, Pathspec};
-use pyn_merge::{Outcome, merge_text};
+use pyn_merge::{Outcome, merge_text, render_markers};
 use pyn_object::{Commit, FileMode, Kind, ObjectId, hash_object, parse_tree};
 use pyn_proto as api;
 
@@ -16,6 +16,7 @@ use crate::backend::Backend;
 use crate::branch;
 use crate::client::ApiError;
 use crate::local_commit::signature;
+use crate::local_merge::{self, Control};
 use crate::local_store::{ALGORITHM, Files, LocalStore, build_trees, parse_id};
 use crate::snapshot::{self, short};
 use crate::staging::Index;
@@ -62,7 +63,7 @@ fn tracking_ref(branch: &str) -> String {
     format!("refs/remotes/origin/{branch}")
 }
 
-fn local_ref(branch: &str) -> String {
+pub(crate) fn local_ref(branch: &str) -> String {
     format!("refs/heads/{branch}")
 }
 
@@ -329,15 +330,16 @@ impl LocalStore {
         Ok(bases)
     }
 
-    /// The merged files, and the exclusive paths kept under the person's lock; any other clash refuses with
-    /// nothing written.
-    fn three_way(
+    /// Merges the files of `local` and `theirs` over `base`: clean results are taken, the exclusive paths kept under
+    /// the person's lock are `kept`, and a path that needs a decision is a conflict holding a placeholder.
+    pub(crate) fn join_trees(
         &self,
         remote: &dyn Backend,
         base: Option<ObjectId>,
         local: ObjectId,
         theirs: ObjectId,
-    ) -> Result<(Files, Vec<String>)> {
+        labels: (&str, &str),
+    ) -> Result<Joined> {
         let flat = |c: Option<ObjectId>| -> Result<Files> {
             let tree = self.tree_of(c)?;
             Ok(self
@@ -347,179 +349,99 @@ impl LocalStore {
                 .collect())
         };
         let (b, o, t) = (flat(base)?, flat(Some(local))?, flat(Some(theirs))?);
-        let mut files = o.clone();
-        let (mut modes, mut locks) = (None, None);
-        let (mut clashes, mut diverged, mut kept) = (Vec::new(), Vec::new(), Vec::new());
+        let mut joined = Joined {
+            files: o.clone(),
+            conflicts: BTreeMap::new(),
+            kept: Vec::new(),
+            tangled: Vec::new(),
+        };
+        let mut judge = Judge::new(remote, theirs);
         let paths: std::collections::BTreeSet<&Vec<u8>> =
             b.keys().chain(o.keys()).chain(t.keys()).collect();
         for path in paths {
-            let (bv, ov, tv) = (
+            let sides = (
                 b.get(path).copied(),
                 o.get(path).copied(),
                 t.get(path).copied(),
             );
-            if ov == tv || tv == bv {
-                continue;
-            }
-            if ov == bv {
-                match tv {
-                    Some(entry) => files.insert(path.clone(), entry),
-                    None => files.remove(path),
-                };
-                continue;
-            }
-            let name = String::from_utf8_lossy(path).into_owned();
-            let (Some(_), Some(_)) = (ov, tv) else {
-                clashes.push(format!(
-                    "{name} (changed on one side, removed on the other)"
-                ));
-                continue;
-            };
-            let modes = match &mut modes {
-                Some(m) => m,
-                None => modes.insert(shared_paths(remote, &theirs)?),
-            };
-            if modes.get(&name) != Some(&true) {
-                let locks = match &mut locks {
-                    Some(l) => l,
-                    None => locks.insert(my_locks(remote)?),
-                };
-                if locks.contains(&name) {
-                    kept.push(name);
-                } else {
-                    diverged.push(name);
+            match self.join_path(remote, &mut judge, path, sides, false, labels)? {
+                Step::Take(entry) => set_entry(&mut joined.files, path, entry),
+                Step::Kept(entry) => {
+                    set_entry(&mut joined.files, path, entry);
+                    joined.kept.push(String::from_utf8_lossy(path).into_owned());
                 }
-                continue;
-            }
-            match self.merge_entry(remote, bv, ov, tv)? {
-                Some(entry) => {
-                    files.insert(path.clone(), entry);
+                Step::Conflict(c) => {
+                    set_entry(&mut joined.files, path, c.placeholder);
+                    joined.conflicts.insert(path.clone(), c);
                 }
-                None => clashes.push(name),
             }
         }
-        let names: Vec<&Vec<u8>> = files.keys().collect();
-        for pair in names.windows(2) {
-            if pair[1].starts_with(pair[0]) && pair[1].get(pair[0].len()) == Some(&b'/') {
-                clashes.push(format!(
-                    "{} (a file on one side and a folder on the other)",
-                    String::from_utf8_lossy(pair[0])
-                ));
-            }
-        }
-        if clashes.is_empty() && diverged.is_empty() {
-            return Ok((files, kept));
-        }
-        let mut message = String::from(
-            "error: the pull would merge changes that conflict; nothing was changed\n",
-        );
-        if !clashes.is_empty() {
-            message.push_str(&format!(
-                "both sides changed the same lines of, or removed:\n\t{}\n",
-                clashes.join("\n\t")
-            ));
-        }
-        if !diverged.is_empty() {
-            message.push_str(&format!(
-                "exclusive files, which cannot be merged, changed on both sides:\n\t{}\n\
-                 hint: To keep your version, take the lock with `pyn lock <path>` and pull again. To take the server's, \
-                 commit the server's version of the file over yours, then pull again.\n",
-                diverged.join("\n\t")
-            ));
-        }
-        message.push_str(
-            "hint: `pyn pull --rebase` replays your commits instead and stops on the same files.",
-        );
-        Err(Rejected(message).into())
+        joined.tangled = tangled(&joined.files);
+        Ok(joined)
     }
 
-    /// Replays the local commits onto the fetched tip with a three-way merge per file; returns the new tip.
-    /// Nothing is written to the branch when a file conflicts.
-    fn replay(
+    /// Decides one path from its base, ours and theirs entries; `mine_is_theirs` says which side the person's lock
+    /// keeps.
+    pub(crate) fn join_path(
         &self,
         remote: &dyn Backend,
-        outgoing: &Outgoing,
-        onto: ObjectId,
-        who: &pyn_object::Signature,
-    ) -> Result<(ObjectId, usize)> {
-        let repo = self.repo();
-        let onto_tree = repo.commit(&onto)?.tree;
-        let mut files = repo.flatten(Some(&onto_tree), &Pathspec::default())?;
-        let (mut parent, mut parent_tree, mut dropped) = (onto, onto_tree, 0);
-        for id in &outgoing.commits {
-            let commit = repo.commit(id)?;
-            if commit.parents.len() > 1 {
-                return Err(Rejected(format!(
-                    "local commit {} is a merge commit, which cannot be rebased; use `pyn pull` to merge\nnothing was changed",
-                    short(&id.to_hex())
-                ))
-                .into());
-            }
-            let before = self.tree_of(commit.parents.first().copied())?;
-            let mut conflicts = Vec::new();
-            for change in
-                repo.diff_trees(before.as_ref(), Some(&commit.tree), &Pathspec::default())?
-            {
-                let ours = files.get(&change.path).copied();
-                if ours == change.old {
-                    match change.new {
-                        Some(entry) => files.insert(change.path, entry),
-                        None => files.remove(&change.path),
-                    };
-                } else if ours != change.new {
-                    match self.merge_entry(remote, change.old, ours, change.new)? {
-                        Some(entry) => {
-                            files.insert(change.path, entry);
-                        }
-                        None => conflicts.push(String::from_utf8_lossy(&change.path).into_owned()),
-                    }
-                }
-            }
-            if !conflicts.is_empty() {
-                return Err(Rejected(format!(
-                    "could not apply local commit {} onto the fetched commits: both sides changed {}\n\
-                     resolving conflicts is not supported yet; nothing was changed",
-                    short(&id.to_hex()),
-                    conflicts.join(", ")
-                ))
-                .into());
-            }
-            let (tree, trees) = build_trees(&files)?;
-            if tree == parent_tree {
-                dropped += 1;
-                continue;
-            }
-            for (_, body) in trees {
-                repo.objects().write(Kind::Tree, &body)?;
-            }
-            let record = Commit {
-                tree,
-                parents: vec![parent],
-                author: commit.author,
-                committer: who.clone(),
-                extra_headers: Vec::new(),
-                message: commit.message,
-            };
-            let body = record.encode(ALGORITHM)?;
-            parent = repo.objects().write(Kind::Commit, &body)?;
-            parent_tree = tree;
+        judge: &mut Judge<'_>,
+        path: &[u8],
+        (base, ours, theirs): (Option<Entry>, Option<Entry>, Option<Entry>),
+        mine_is_theirs: bool,
+        labels: (&str, &str),
+    ) -> Result<Step> {
+        if ours == theirs || theirs == base {
+            return Ok(Step::Take(ours));
         }
-        Ok((parent, dropped))
+        if ours == base {
+            return Ok(Step::Take(theirs));
+        }
+        let conflict = |label, exclusive, working| {
+            Step::Conflict(Conflict {
+                label,
+                exclusive,
+                ours,
+                theirs,
+                placeholder: ours.or(theirs),
+                working,
+            })
+        };
+        let (Some(o), Some(t)) = (ours, theirs) else {
+            return Ok(conflict("deleted on one side", false, None));
+        };
+        let name = String::from_utf8_lossy(path).into_owned();
+        if !judge.shared(&name)? {
+            return Ok(if judge.locked(&name)? {
+                Step::Kept(if mine_is_theirs { theirs } else { ours })
+            } else {
+                conflict("both modified", true, None)
+            });
+        }
+        let label = if base.is_none() {
+            "both added"
+        } else {
+            "both modified"
+        };
+        Ok(match self.merge_content(remote, base, o, t, labels)? {
+            Merged::Clean(entry) => Step::Take(Some(entry)),
+            Merged::Markers(bytes) => conflict(label, false, Some(bytes)),
+            Merged::Whole => conflict(label, false, None),
+        })
     }
 
-    /// The merge of a file both sides changed: text without overlapping edits and equal modes; `None` otherwise.
-    fn merge_entry(
+    /// The merge of a file both sides changed: text merged line by line, markers where lines overlap, and the whole
+    /// file as the conflict for binary content or differing modes.
+    fn merge_content(
         &self,
         remote: &dyn Backend,
         base: Option<Entry>,
-        ours: Option<Entry>,
-        theirs: Option<Entry>,
-    ) -> Result<Option<Entry>> {
-        let (Some(ours), Some(theirs)) = (ours, theirs) else {
-            return Ok(None);
-        };
+        ours: Entry,
+        theirs: Entry,
+        labels: (&str, &str),
+    ) -> Result<Merged> {
         if ours.mode != theirs.mode || base.is_some_and(|b| b.mode != ours.mode) {
-            return Ok(None);
+            return Ok(Merged::Whole);
         }
         let read = |entry: Option<Entry>| -> Result<Vec<u8>> {
             match entry {
@@ -529,14 +451,105 @@ impl LocalStore {
         };
         let (base, ours_bytes, theirs_bytes) =
             (read(base)?, read(Some(ours))?, read(Some(theirs))?);
-        let Outcome::Clean(merged) = merge_text(&base, &ours_bytes, &theirs_bytes) else {
-            return Ok(None);
-        };
-        let id = self.repo().objects().write(Kind::Blob, &merged)?;
-        Ok(Some(Entry {
-            mode: ours.mode,
-            id,
-        }))
+        Ok(match merge_text(&base, &ours_bytes, &theirs_bytes) {
+            Outcome::Clean(merged) => {
+                let id = self.repo().objects().write(Kind::Blob, &merged)?;
+                Merged::Clean(Entry {
+                    mode: ours.mode,
+                    id,
+                })
+            }
+            Outcome::Conflicted(chunks) => {
+                Merged::Markers(render_markers(&chunks, labels.0, "base", labels.1))
+            }
+            Outcome::BinaryConflict => Merged::Whole,
+        })
+    }
+}
+
+fn set_entry(files: &mut Files, path: &[u8], entry: Option<Entry>) {
+    match entry {
+        Some(entry) => files.insert(path.to_vec(), entry),
+        None => files.remove(path),
+    };
+}
+
+/// Files that are a file on one side and a folder on the other.
+fn tangled(files: &Files) -> Vec<String> {
+    let mut out = Vec::new();
+    for name in files.keys() {
+        for (at, byte) in name.iter().enumerate() {
+            if *byte == b'/' && files.contains_key(&name[..at]) {
+                out.push(String::from_utf8_lossy(&name[..at]).into_owned());
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// A path both sides changed that cannot be decided automatically.
+pub(crate) struct Conflict {
+    pub label: &'static str,
+    pub exclusive: bool,
+    pub ours: Option<Entry>,
+    pub theirs: Option<Entry>,
+    /// The entry the merged tree holds until the person resolves the path.
+    pub placeholder: Option<Entry>,
+    /// What the working tree gets instead of the placeholder's content: text with conflict markers.
+    pub working: Option<Vec<u8>>,
+}
+
+pub(crate) enum Step {
+    Take(Option<Entry>),
+    Kept(Option<Entry>),
+    Conflict(Conflict),
+}
+
+enum Merged {
+    Clean(Entry),
+    Markers(Vec<u8>),
+    Whole,
+}
+
+pub(crate) struct Joined {
+    pub files: Files,
+    pub conflicts: BTreeMap<Vec<u8>, Conflict>,
+    pub kept: Vec<String>,
+    pub tangled: Vec<String>,
+}
+
+/// What the server says about paths of one commit, asked only when a path needs it.
+pub(crate) struct Judge<'a> {
+    remote: &'a dyn Backend,
+    at: ObjectId,
+    modes: Option<HashMap<String, bool>>,
+    locks: Option<HashSet<String>>,
+}
+
+impl<'a> Judge<'a> {
+    pub(crate) fn new(remote: &'a dyn Backend, at: ObjectId) -> Self {
+        Self {
+            remote,
+            at,
+            modes: None,
+            locks: None,
+        }
+    }
+
+    fn shared(&mut self, name: &str) -> Result<bool> {
+        if self.modes.is_none() {
+            self.modes = Some(shared_paths(self.remote, &self.at)?);
+        }
+        Ok(self.modes.as_ref().and_then(|m| m.get(name)) == Some(&true))
+    }
+
+    fn locked(&mut self, name: &str) -> Result<bool> {
+        if self.locks.is_none() {
+            self.locks = Some(my_locks(self.remote)?);
+        }
+        Ok(self.locks.as_ref().is_some_and(|l| l.contains(name)))
     }
 }
 
@@ -551,7 +564,7 @@ fn shared_paths(remote: &dyn Backend, commit: &ObjectId) -> Result<HashMap<Strin
 }
 
 /// The paths the signed-in person holds a lock on.
-fn my_locks(remote: &dyn Backend) -> Result<HashSet<String>> {
+pub(crate) fn my_locks(remote: &dyn Backend) -> Result<HashSet<String>> {
     let api = remote.pyn_server("pull")?;
     let locks: Vec<api::Lock> = api.send(api.get(&api.repo_route("/locks")?))?.json()?;
     let me = remote.whoami()?;
@@ -595,7 +608,7 @@ pub fn fetch(backend: &dyn Backend, ws: &Workspace) -> Result<Fetched> {
 }
 
 /// Paths changed in the workspace and not yet committed.
-fn dirty_paths(ws: &Workspace) -> Result<HashSet<String>> {
+pub(crate) fn dirty_paths(ws: &Workspace) -> Result<HashSet<String>> {
     let mut dirty = HashSet::new();
     for (path, known) in ws.load_state()? {
         let abs = ws.abs(&path);
@@ -637,7 +650,19 @@ fn guard_changes(
 }
 
 /// `pyn pull` with `local_store` on: fetch, then fast-forward, merge, or with `rebase` replay the local commits.
-pub fn pull(backend: &dyn Backend, ws: &Workspace, rebase: bool) -> Result<()> {
+/// A conflict leaves the merge or rebase in progress, to be resolved and concluded or given up.
+pub fn pull(
+    backend: &dyn Backend,
+    ws: &Workspace,
+    rebase: bool,
+    control: Option<Control>,
+) -> Result<()> {
+    match control {
+        Some(Control::Abort) => return local_merge::abort(backend, ws),
+        Some(Control::Continue) => return local_merge::finish(backend, ws, None),
+        Some(Control::Skip) => return local_merge::skip(backend, ws),
+        None => merging::refuse_during_merge(ws, "pull")?,
+    }
     if !Index::load(ws)?.entries.is_empty() {
         bail!(
             "you have staged changes; commit them or take them out with `pyn restore --staged` before you pull"
@@ -676,22 +701,7 @@ pub fn pull(backend: &dyn Backend, ws: &Workspace, rebase: bool) -> Result<()> {
             bail!("the local branch cannot be related to the fetched commits");
         };
         guard_changes(&store, ws, outgoing.base, theirs)?;
-        let (tip, dropped) = store.replay(backend, &outgoing, theirs, &who)?;
-        let merged = merged_files(&store, ws, local, theirs, tip)?;
-        refs.update_checked(&local_ref(&branch), Expect::Id(local), &tip)
-            .context("the local branch moved while pulling; run the command again")?;
-        println!(
-            "Rebased {} local commit(s) onto {}{}",
-            outgoing.commits.len() - dropped,
-            short(&theirs.to_hex()),
-            if dropped > 0 {
-                format!(" ({dropped} became empty and was dropped)")
-            } else {
-                String::new()
-            }
-        );
-        write_merged(&store, ws, &merged)?;
-        return sync::update(backend, ws, &[], None);
+        return local_merge::begin_rebase(backend, ws, &store, &branch, outgoing, theirs, &who);
     }
     let bases = store.merge_bases(local, theirs)?;
     if bases.len() > 1 {
@@ -704,11 +714,14 @@ pub fn pull(backend: &dyn Backend, ws: &Workspace, rebase: bool) -> Result<()> {
     }
     let base = bases.first().copied();
     guard_changes(&store, ws, base, theirs)?;
-    let (files, kept) = store.three_way(backend, base, local, theirs)?;
-    let (tree, trees) = build_trees(&files)?;
-    let repo = store.repo();
-    for (_, body) in trees {
-        repo.objects().write(Kind::Tree, &body)?;
+    let source = format!("origin/{branch}");
+    let joined = store.join_trees(backend, base, local, theirs, ("HEAD", &source))?;
+    if !joined.tangled.is_empty() {
+        return Err(Rejected(format!(
+            "error: the pull would merge a file and a folder of the same name; nothing was changed\n\t{}",
+            joined.tangled.join("\n\t")
+        ))
+        .into());
     }
     let api = backend.pyn_server("pull")?;
     let url = format!("{}/{}", api.base, api.repo.as_deref().unwrap_or_default());
@@ -717,13 +730,27 @@ pub fn pull(backend: &dyn Backend, ws: &Workspace, rebase: bool) -> Result<()> {
     } else {
         format!(" into {branch}")
     };
+    let message = format!("Merge branch '{branch}' of {url}{into}\n");
+    if !joined.conflicts.is_empty() {
+        let stop = local_merge::Stop {
+            orig: local,
+            theirs,
+            message,
+        };
+        return local_merge::stop_merge(backend, ws, &store, &branch, stop, joined);
+    }
+    let (tree, trees) = build_trees(&joined.files)?;
+    let repo = store.repo();
+    for (_, body) in trees {
+        repo.objects().write(Kind::Tree, &body)?;
+    }
     let record = Commit {
         tree,
         parents: vec![local, theirs],
         author: who.clone(),
         committer: who,
         extra_headers: Vec::new(),
-        message: format!("Merge branch '{branch}' of {url}{into}\n").into_bytes(),
+        message: message.into_bytes(),
     };
     let tip = repo
         .objects()
@@ -731,7 +758,7 @@ pub fn pull(backend: &dyn Backend, ws: &Workspace, rebase: bool) -> Result<()> {
     let merged = merged_files(&store, ws, local, theirs, tip)?;
     refs.update_checked(&local_ref(&branch), Expect::Id(local), &tip)
         .context("the local branch moved while pulling; run the command again")?;
-    for path in kept {
+    for path in joined.kept {
         println!("Kept your version of {path}: you hold its lock");
     }
     println!("Merge made by the 'ort' strategy.");

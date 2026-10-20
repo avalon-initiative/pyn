@@ -26,7 +26,7 @@ use crate::sync::{self, mode_name};
 use crate::time;
 use crate::workspace::{FileState, Workspace, hash_of, set_read_only};
 
-const STATE_VERSION: u32 = 1;
+pub(crate) const STATE_VERSION: u32 = 1;
 
 /// Merge a branch (or commit) into the workspace's branch.
 #[derive(Debug, Args)]
@@ -58,48 +58,51 @@ pub struct MergeArgs {
 
 /// One side of a conflicted path, as the workspace needs it to take that side later.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct SideNote {
+pub(crate) struct SideNote {
     revision: u64,
     file_mode: api::FileMode,
 }
 
 /// A path the merge touches.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct Touched {
-    mode: String,
+pub(crate) struct Touched {
+    pub(crate) mode: String,
     /// Why the path is unmerged until it is staged; `None` for a path that merged cleanly.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    conflict: Option<String>,
+    pub(crate) conflict: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    ours: Option<SideNote>,
+    pub(crate) ours: Option<SideNote>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    theirs: Option<SideNote>,
+    pub(crate) theirs: Option<SideNote>,
     /// The branch's revision of an exclusive path, which a lock must be based on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    line_head: Option<u64>,
+    pub(crate) line_head: Option<u64>,
 }
 
 /// The merge in progress.
 #[derive(Debug, Serialize, Deserialize)]
-struct MergeState {
-    version: u32,
+pub(crate) struct MergeState {
+    pub(crate) version: u32,
     /// The branch being merged into: the workspace's.
-    branch: String,
+    pub(crate) branch: String,
     /// What the person named, for messages.
-    source: String,
-    source_commit: String,
-    target_commit: String,
-    message: String,
+    pub(crate) source: String,
+    pub(crate) source_commit: String,
+    pub(crate) target_commit: String,
+    pub(crate) message: String,
     #[serde(default)]
-    no_ff: bool,
-    paths: BTreeMap<String, Touched>,
+    pub(crate) no_ff: bool,
+    pub(crate) paths: BTreeMap<String, Touched>,
+    /// A pull that stopped on conflicts in a workspace with local commits, which is concluded without the server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) local: Option<crate::local_merge::LocalOp>,
 }
 
 fn state_path(ws: &Workspace) -> PathBuf {
     ws.dir.join("local_only").join("state").join("merge.toml")
 }
 
-fn load(ws: &Workspace) -> Result<Option<MergeState>> {
+pub(crate) fn load(ws: &Workspace) -> Result<Option<MergeState>> {
     match std::fs::read_to_string(state_path(ws)) {
         Ok(text) => {
             let state: MergeState = toml::from_str(&text).context("reading the merge state")?;
@@ -113,7 +116,7 @@ fn load(ws: &Workspace) -> Result<Option<MergeState>> {
     }
 }
 
-fn save(ws: &Workspace, state: &MergeState) -> Result<()> {
+pub(crate) fn save(ws: &Workspace, state: &MergeState) -> Result<()> {
     let path = state_path(ws);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
@@ -122,7 +125,7 @@ fn save(ws: &Workspace, state: &MergeState) -> Result<()> {
         .with_context(|| format!("writing {}", path.display()))
 }
 
-fn clear(ws: &Workspace) -> Result<()> {
+pub(crate) fn clear(ws: &Workspace) -> Result<()> {
     match std::fs::remove_file(state_path(ws)) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -138,6 +141,13 @@ pub fn in_progress(ws: &Workspace) -> bool {
 /// Refuses a command that cannot run while a merge is unfinished.
 pub fn refuse_during_merge(ws: &Workspace, what: &str) -> Result<()> {
     if in_progress(ws) {
+        if let Some(op) = load(ws)?.and_then(|s| s.local) {
+            bail!(
+                "you have not concluded your {}, so `pyn {what}` cannot run; {}",
+                op.name(),
+                op.how_to_end()
+            );
+        }
         bail!(
             "you have not concluded your merge, so `pyn {what}` cannot run; \
              conclude it with `pyn commit` or give it up with `pyn merge --abort`"
@@ -209,7 +219,11 @@ pub fn status_header(ws: &Workspace) -> Result<Option<String>> {
     } else {
         "All conflicts are fixed but you are still merging.\n  (use \"pyn commit\" to conclude the merge)\n".to_string()
     };
-    text.push_str("  (use \"pyn merge --abort\" to abort the merge)\n");
+    if let Some(op) = &state.local {
+        text.push_str(&op.header());
+    } else {
+        text.push_str("  (use \"pyn merge --abort\" to abort the merge)\n");
+    }
     Ok(Some(text))
 }
 
@@ -560,6 +574,7 @@ fn begin(
             message,
             no_ff,
             paths,
+            local: None,
         },
     )?;
     if report.conflicts.is_empty() {
@@ -774,6 +789,9 @@ pub fn take_side(
     let Some(state) = load(ws)? else {
         bail!("`--ours` and `--theirs` need a merge in progress");
     };
+    if state.local.is_some() {
+        return crate::local_merge::take_side(backend, ws, theirs, paths);
+    }
     let locks: Vec<api::Lock> = api.send(api.get(&api.repo_route("/locks")?))?.json()?;
     let me = backend.whoami()?;
     for path in paths {
@@ -809,6 +827,9 @@ fn abort(backend: &dyn Backend, api: &Api, ws: &Workspace) -> Result<()> {
     let Some(state) = load(ws)? else {
         bail!("there is no merge to abort");
     };
+    if state.local.is_some() {
+        return crate::local_merge::abort(backend, ws);
+    }
     let (_, snap) = backend.snapshot(Some(&state.target_commit))?;
     let wanted: BTreeMap<&str, &api::SnapshotEntry> =
         snap.iter().map(|e| (e.path.as_str(), e)).collect();
@@ -856,27 +877,11 @@ pub fn finish(
     let Some(state) = load(ws)? else {
         bail!("there is no merge in progress");
     };
+    if state.local.is_some() {
+        return crate::local_merge::finish(backend, ws, message);
+    }
     let index = Index::load(ws)?;
-    let unresolved: Vec<&String> = state
-        .paths
-        .iter()
-        .filter(|(p, t)| t.conflict.is_some() && !index.entries.contains_key(*p))
-        .map(|(p, _)| p)
-        .collect();
-    if !unresolved.is_empty() {
-        let list: Vec<String> = unresolved.iter().map(|p| format!("\t{p}")).collect();
-        bail!(
-            "committing is not possible because you have unmerged files:\n{}\n\
-             fix them, stage them with `pyn add <path>`, then commit",
-            list.join("\n")
-        );
-    }
-    if let Some(stray) = index.entries.keys().find(|p| !state.paths.contains_key(*p)) {
-        bail!(
-            "{stray} is staged but is not part of the merge; take it out with `pyn restore --staged {stray}` \
-             and commit it separately"
-        );
-    }
+    check_resolved(&state, &index)?;
     let mut resolutions = Vec::new();
     for (path, staged) in &index.entries {
         if staged.deleted {
@@ -921,6 +926,36 @@ pub fn finish(
         &done.stranded,
     );
     Ok(())
+}
+
+/// Refuses to conclude while a conflicted path is unstaged or a staged path is not part of the merge.
+pub(crate) fn check_resolved(state: &MergeState, index: &Index) -> Result<()> {
+    let unresolved: Vec<&String> = state
+        .paths
+        .iter()
+        .filter(|(p, t)| t.conflict.is_some() && !index.entries.contains_key(*p))
+        .map(|(p, _)| p)
+        .collect();
+    if !unresolved.is_empty() {
+        let list: Vec<String> = unresolved.iter().map(|p| format!("\t{p}")).collect();
+        bail!(
+            "committing is not possible because you have unmerged files:\n{}\n\
+             fix them, stage them with `pyn add <path>`, then commit",
+            list.join("\n")
+        );
+    }
+    if let Some(stray) = index.entries.keys().find(|p| !state.paths.contains_key(*p)) {
+        bail!(
+            "{stray} is staged but is not part of the merge; take it out with `pyn restore --staged {stray}` \
+             and commit it separately"
+        );
+    }
+    Ok(())
+}
+
+/// Whether the merge in progress is a pull of a workspace with local commits.
+pub fn is_local(ws: &Workspace) -> bool {
+    load(ws).ok().flatten().is_some_and(|s| s.local.is_some())
 }
 
 /// Explains what to do when the server wants the lock of a path resolved to a different version than the newest.
@@ -1001,6 +1036,7 @@ mod tests {
             message: "Merge".into(),
             no_ff: false,
             paths,
+            local: None,
         };
         let text = toml::to_string_pretty(&state).unwrap();
         let back: MergeState = toml::from_str(&text).unwrap();

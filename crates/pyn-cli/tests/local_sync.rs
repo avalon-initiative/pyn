@@ -247,40 +247,6 @@ fn a_non_fast_forward_is_replayed_by_pull_rebase_and_pushed() {
 }
 
 #[test]
-fn overlapping_edits_are_refused_by_pull_and_change_nothing() {
-    let (env, ws) = seeded();
-    let other = clone_with(&env, "other", &["--local-store"]);
-    commit_local(
-        &env,
-        &other,
-        "alice",
-        "Source/a.cpp",
-        "theirs\ntwo\nthree\n",
-        "t",
-    );
-    env.ok(&other, "alice", &["push"]);
-    commit_local(
-        &env,
-        &ws,
-        "alice",
-        "Source/a.cpp",
-        "mine\ntwo\nthree\n",
-        "m",
-    );
-    let local = git(&ws, &["rev-parse", "main"]);
-    let err = env.fails(&ws, "alice", &["pull"]);
-    assert!(
-        err.contains("Source/a.cpp") && err.contains("nothing was changed"),
-        "{err}"
-    );
-    assert_eq!(git(&ws, &["rev-parse", "main"]), local);
-    assert_eq!(
-        std::fs::read_to_string(ws.join("Source/a.cpp")).unwrap(),
-        "mine\ntwo\nthree\n"
-    );
-}
-
-#[test]
 fn fetch_stores_another_clients_commits_and_pull_fast_forwards() {
     let (env, ws) = seeded();
     let tip = git(&ws, &["rev-parse", "main"]);
@@ -901,14 +867,15 @@ fn a_diverged_exclusive_path_is_refused_until_the_person_holds_its_lock() {
         err.contains("Content/m.umap") && err.contains("exclusive") && err.contains("pyn lock"),
         "{err}"
     );
-    assert!(err.contains("nothing was changed"), "{err}");
     assert_eq!(git(&ws, &["rev-parse", "main"]), local);
     assert_eq!(
         std::fs::read_to_string(ws.join("Content/m.umap")).unwrap(),
         "map by alice"
     );
+    env.ok(&ws, "alice", &["pull", "--abort"]);
     let err = env.fails(&ws, "alice", &["pull", "--rebase"]);
     assert!(err.contains("Content/m.umap"), "{err}");
+    env.ok(&ws, "alice", &["pull", "--abort"]);
 
     env.ok(&ws, "alice", &["lock", "Content/m.umap"]);
     let out = env.ok(&ws, "alice", &["pull"]);
@@ -1022,4 +989,361 @@ fn log_and_show_cover_unpublished_local_commits() {
     env.ok(&ws, "alice", &["push"]);
     let log = env.ok(&ws, "alice", &["log", "--commits"]);
     assert_eq!(log.matches("local edit").count(), 1, "{log}");
+}
+
+fn read(ws: &Path, path: &str) -> String {
+    std::fs::read_to_string(ws.join(path)).unwrap()
+}
+
+fn write(ws: &Path, path: &str, text: &str) {
+    let target = ws.join(path);
+    if target.exists() {
+        let mut perms = std::fs::metadata(&target).unwrap().permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        perms.set_readonly(false);
+        std::fs::set_permissions(&target, perms).unwrap();
+    }
+    std::fs::write(target, text).unwrap();
+}
+
+/// A local commit and a pushed commit from another clone that change the first line of `Source/a.cpp` differently,
+/// and a clean change on each side.
+fn clash(env: &Env, ws: &Path) {
+    let other = clone_with(env, "other", &["--local-store"]);
+    commit_local(
+        env,
+        &other,
+        "bob",
+        "Source/a.cpp",
+        "theirs\ntwo\nthree\n",
+        "t",
+    );
+    commit_local(env, &other, "bob", "Source/new.cpp", "fresh", "new");
+    env.ok(&other, "bob", &["push"]);
+    commit_local(env, ws, "alice", "Source/a.cpp", "mine\ntwo\nthree\n", "m");
+    commit_local(env, ws, "alice", "Source/b.cpp", "bee2", "b");
+}
+
+#[test]
+fn a_conflicted_pull_leaves_markers_and_is_concluded_with_add_and_commit() {
+    let (env, ws) = seeded();
+    clash(&env, &ws);
+    let local = git(&ws, &["rev-parse", "main"]);
+    let err = env.fails(&ws, "alice", &["pull"]);
+    assert!(
+        err.contains("CONFLICT (content): Merge conflict in Source/a.cpp")
+            && err.contains("pyn add")
+            && err.contains("pyn commit")
+            && err.contains("pyn pull --abort"),
+        "{err}"
+    );
+    assert_eq!(
+        git(&ws, &["rev-parse", "main"]),
+        local,
+        "the branch has not moved"
+    );
+    assert_eq!(
+        read(&ws, "Source/a.cpp"),
+        "<<<<<<< HEAD\nmine\n||||||| base\none\n=======\ntheirs\n>>>>>>> origin/main\ntwo\nthree\n"
+    );
+    assert_eq!(
+        read(&ws, "Source/new.cpp"),
+        "fresh",
+        "clean changes are in the tree"
+    );
+    assert_eq!(read(&ws, "Source/b.cpp"), "bee2");
+
+    let status = env.ok(&ws, "alice", &["status"]);
+    assert!(
+        status.contains("unmerged (both modified)") && status.contains("You have unmerged paths"),
+        "{status}"
+    );
+    assert!(
+        env.ok(&ws, "alice", &["status", "--short"])
+            .contains("UU Source/a.cpp")
+    );
+    for command in [["pull"], ["fetch"], ["push"]] {
+        let err = env.fails(&ws, "alice", &command);
+        assert!(err.contains("not concluded"), "{err}");
+    }
+    let err = env.fails(&ws, "alice", &["commit"]);
+    assert!(
+        err.contains("unmerged") && err.contains("Source/a.cpp"),
+        "{err}"
+    );
+
+    write(&ws, "Source/a.cpp", "mine and theirs\ntwo\nthree\n");
+    env.ok(&ws, "alice", &["add", "Source/a.cpp"]);
+    let out = env.ok(&ws, "alice", &["commit"]);
+    assert!(out.contains("Merge made"), "{out}");
+    let (theirs, merge) = (
+        git(&ws, &["rev-parse", "origin/main"]),
+        git(&ws, &["rev-parse", "main"]),
+    );
+    assert_eq!(parents(&ws, "main"), [local.trim(), theirs.trim()]);
+    assert!(git(&ws, &["log", "-1", "--format=%s", "main"]).starts_with("Merge branch 'main' of "));
+    assert_eq!(read(&ws, "Source/a.cpp"), "mine and theirs\ntwo\nthree\n");
+    git(&ws, &["fsck", "--strict"]);
+    let status = env.ok(&ws, "alice", &["status"]);
+    assert!(
+        !status.contains("unmerged") && !status.contains("You have"),
+        "{status}"
+    );
+
+    env.ok(&ws, "alice", &["push"]);
+    assert_eq!(git(&ws, &["rev-parse", "origin/main"]), merge);
+    let third = clone_with(&env, "third", &[]);
+    assert_eq!(
+        read(&third, "Source/a.cpp"),
+        "mine and theirs\ntwo\nthree\n"
+    );
+    assert_eq!(read(&third, "Source/new.cpp"), "fresh");
+}
+
+#[test]
+fn aborting_a_conflicted_pull_puts_everything_back_and_loses_nothing() {
+    let (env, ws) = seeded();
+    clash(&env, &ws);
+    write(&ws, "Source/untouched.txt", "kept");
+    let local = git(&ws, &["rev-parse", "main"]);
+    env.fails(&ws, "alice", &["pull"]);
+    write(&ws, "Source/a.cpp", "half way\n");
+    env.ok(&ws, "alice", &["add", "Source/a.cpp"]);
+
+    let out = env.ok(&ws, "alice", &["pull", "--abort"]);
+    assert!(out.contains("given up"), "{out}");
+    assert_eq!(git(&ws, &["rev-parse", "main"]), local);
+    assert_eq!(read(&ws, "Source/a.cpp"), "mine\ntwo\nthree\n");
+    assert_eq!(read(&ws, "Source/b.cpp"), "bee2");
+    assert!(!ws.join("Source/new.cpp").exists());
+    assert_eq!(read(&ws, "Source/untouched.txt"), "kept");
+    let status = env.ok(&ws, "alice", &["status"]);
+    assert!(
+        !status.contains("unmerged") && !status.contains("You have"),
+        "{status}"
+    );
+    assert!(status.contains("2 local commit(s)"), "{status}");
+    assert!(
+        env.fails(&ws, "alice", &["pull", "--abort"])
+            .contains("no pull in progress")
+    );
+
+    let again = env.fails(&ws, "alice", &["pull"]);
+    assert!(again.contains("CONFLICT"), "{again}");
+    env.ok(&ws, "alice", &["merge", "--abort"]);
+    assert_eq!(read(&ws, "Source/a.cpp"), "mine\ntwo\nthree\n");
+}
+
+#[test]
+fn a_side_can_be_taken_and_a_deleted_file_is_a_resolution() {
+    let (env, ws) = seeded();
+    clash(&env, &ws);
+    env.fails(&ws, "alice", &["pull"]);
+    env.ok(
+        &ws,
+        "alice",
+        &["checkout", "--theirs", "--", "Source/a.cpp"],
+    );
+    assert_eq!(read(&ws, "Source/a.cpp"), "theirs\ntwo\nthree\n");
+    env.ok(&ws, "alice", &["add", "Source/a.cpp"]);
+    env.ok(&ws, "alice", &["commit", "-m", "take theirs"]);
+    assert_eq!(read(&ws, "Source/a.cpp"), "theirs\ntwo\nthree\n");
+    assert!(git(&ws, &["log", "-1", "--format=%s", "main"]).starts_with("take theirs"));
+    env.ok(&ws, "alice", &["push"]);
+
+    let env2 = start();
+    env2.seed("alice", "Source/a.cpp", "one\n", None);
+    env2.seed("alice", "Source/b.cpp", "bee", None);
+    let ws2 = clone_with(&env2, "ws", &["--local-store"]);
+    let other = clone_with(&env2, "other", &["--local-store"]);
+    delete_local(&env2, &other, "bob", "Source/b.cpp", "drop b");
+    env2.ok(&other, "bob", &["push"]);
+    commit_local(&env2, &ws2, "alice", "Source/b.cpp", "bee edited", "edit b");
+    let err = env2.fails(&ws2, "alice", &["pull"]);
+    assert!(
+        err.contains("CONFLICT (modify/delete): Source/b.cpp"),
+        "{err}"
+    );
+    assert_eq!(read(&ws2, "Source/b.cpp"), "bee edited");
+    std::fs::remove_file(ws2.join("Source/b.cpp")).unwrap();
+    env2.ok(&ws2, "alice", &["add", "Source/b.cpp"]);
+    env2.ok(&ws2, "alice", &["commit"]);
+    assert!(!ws2.join("Source/b.cpp").exists());
+    env2.ok(&ws2, "alice", &["push"]);
+    assert!(
+        !clone_with(&env2, "third", &[])
+            .join("Source/b.cpp")
+            .exists()
+    );
+}
+
+#[test]
+fn an_exclusive_conflict_is_resolved_by_choosing_a_side_under_the_lock() {
+    let (env, ws) = seeded();
+    env.ok(&ws, "alice", &["lock", "Content/m.umap"]);
+    commit_local(
+        &env,
+        &ws,
+        "alice",
+        "Content/m.umap",
+        "map by alice",
+        "alice's map",
+    );
+    env.ok(&ws, "alice", &["unlock", "Content/m.umap"]);
+    let other = clone_with(&env, "other", &["--local-store"]);
+    env.ok(&other, "bob", &["lock", "Content/m.umap"]);
+    commit_local(
+        &env,
+        &other,
+        "bob",
+        "Content/m.umap",
+        "map by bob",
+        "bob's map",
+    );
+    env.ok(&other, "bob", &["push"]);
+    commit_local(&env, &ws, "alice", "Source/b.cpp", "bee2", "b");
+
+    let err = env.fails(&ws, "alice", &["pull"]);
+    assert!(
+        err.contains("CONFLICT (exclusive): Content/m.umap") && err.contains("pyn lock"),
+        "{err}"
+    );
+    assert_eq!(read(&ws, "Content/m.umap"), "map by alice");
+    assert!(env.ok(&ws, "alice", &["status"]).contains("unmerged"));
+
+    env.ok(
+        &ws,
+        "alice",
+        &["checkout", "--theirs", "--", "Content/m.umap"],
+    );
+    assert_eq!(read(&ws, "Content/m.umap"), "map by bob");
+    env.ok(&ws, "alice", &["add", "Content/m.umap"]);
+    let err = env.fails(&ws, "alice", &["commit"]);
+    assert!(err.contains("pyn lock Content/m.umap"), "{err}");
+    assert_eq!(
+        parents(&ws, "main").len(),
+        1,
+        "nothing was committed without the lock"
+    );
+
+    env.ok(&ws, "alice", &["lock", "Content/m.umap"]);
+    env.ok(&ws, "alice", &["commit"]);
+    assert_eq!(parents(&ws, "main").len(), 2);
+    env.ok(&ws, "alice", &["push"]);
+    assert_eq!(
+        read(&clone_with(&env, "third", &[]), "Content/m.umap"),
+        "map by bob"
+    );
+}
+
+fn rebase_clash(env: &Env, ws: &Path) {
+    let other = clone_with(env, "other", &["--local-store"]);
+    commit_local(
+        env,
+        &other,
+        "bob",
+        "Source/a.cpp",
+        "theirs\ntwo\nthree\n",
+        "t",
+    );
+    env.ok(&other, "bob", &["push"]);
+    commit_local(env, ws, "alice", "Source/b.cpp", "bee2", "b first");
+    commit_local(
+        env,
+        ws,
+        "alice",
+        "Source/a.cpp",
+        "mine\ntwo\nthree\n",
+        "a second",
+    );
+    commit_local(env, ws, "alice", "Source/c.cpp", "cee", "c third");
+}
+
+#[test]
+fn a_conflicted_rebase_stops_and_is_continued_with_the_resolution() {
+    let (env, ws) = seeded();
+    rebase_clash(&env, &ws);
+    let err = env.fails(&ws, "alice", &["pull", "--rebase"]);
+    assert!(
+        err.contains("could not apply")
+            && err.contains("a second")
+            && err.contains("commit 2 of 3"),
+        "{err}"
+    );
+    assert!(
+        err.contains("pyn pull --continue") && err.contains("--skip") && err.contains("--abort"),
+        "{err}"
+    );
+    assert!(read(&ws, "Source/a.cpp").contains("<<<<<<< HEAD\ntheirs\n"));
+    assert!(read(&ws, "Source/a.cpp").contains(">>>>>>> "));
+    assert_eq!(read(&ws, "Source/b.cpp"), "bee2");
+    assert!(
+        !ws.join("Source/c.cpp").exists(),
+        "the commit after the stop is not applied yet"
+    );
+    let status = env.ok(&ws, "alice", &["status"]);
+    assert!(
+        status.contains("rebasing") && status.contains("unmerged"),
+        "{status}"
+    );
+
+    let err = env.fails(&ws, "alice", &["pull", "--continue"]);
+    assert!(err.contains("unmerged"), "{err}");
+    write(&ws, "Source/a.cpp", "both\ntwo\nthree\n");
+    env.ok(&ws, "alice", &["add", "Source/a.cpp"]);
+    let out = env.ok(&ws, "alice", &["pull", "--continue"]);
+    assert!(out.contains("Rebased 3 local commit(s)"), "{out}");
+    assert_eq!(read(&ws, "Source/c.cpp"), "cee");
+    assert_eq!(
+        git(&ws, &["rev-list", "--count", "origin/main..main"]),
+        "3\n"
+    );
+    assert_eq!(
+        git(&ws, &["log", "--format=%s", "origin/main..main"]),
+        "c third\na second\nb first\n"
+    );
+    assert_eq!(
+        git(&ws, &["cat-file", "blob", "main:Source/a.cpp"]),
+        "both\ntwo\nthree\n"
+    );
+    git(&ws, &["fsck", "--strict"]);
+    assert!(!env.ok(&ws, "alice", &["status"]).contains("rebasing"));
+    env.ok(&ws, "alice", &["push"]);
+    let third = clone_with(&env, "third", &[]);
+    assert_eq!(read(&third, "Source/a.cpp"), "both\ntwo\nthree\n");
+    assert_eq!(read(&third, "Source/c.cpp"), "cee");
+}
+
+#[test]
+fn a_rebase_can_skip_the_conflicting_commit_or_be_aborted() {
+    let (env, ws) = seeded();
+    rebase_clash(&env, &ws);
+    let local = git(&ws, &["rev-parse", "main"]);
+    env.fails(&ws, "alice", &["pull", "--rebase"]);
+    let out = env.ok(&ws, "alice", &["pull", "--skip"]);
+    assert!(
+        out.contains("Rebased 2 local commit(s)") && out.contains("dropped"),
+        "{out}"
+    );
+    assert_eq!(read(&ws, "Source/a.cpp"), "theirs\ntwo\nthree\n");
+    assert_eq!(read(&ws, "Source/b.cpp"), "bee2");
+    assert_eq!(read(&ws, "Source/c.cpp"), "cee");
+    assert_eq!(
+        git(&ws, &["log", "--format=%s", "origin/main..main"]),
+        "c third\nb first\n"
+    );
+
+    let (env, ws) = seeded();
+    rebase_clash(&env, &ws);
+    let local2 = git(&ws, &["rev-parse", "main"]);
+    env.fails(&ws, "alice", &["pull", "--rebase"]);
+    write(&ws, "Source/a.cpp", "scribble\n");
+    env.ok(&ws, "alice", &["add", "Source/a.cpp"]);
+    env.ok(&ws, "alice", &["pull", "--abort"]);
+    assert_eq!(git(&ws, &["rev-parse", "main"]), local2);
+    assert_eq!(read(&ws, "Source/a.cpp"), "mine\ntwo\nthree\n");
+    assert_eq!(read(&ws, "Source/b.cpp"), "bee2");
+    assert_eq!(read(&ws, "Source/c.cpp"), "cee");
+    assert!(!env.ok(&ws, "alice", &["status"]).contains("unmerged"));
+    let _ = local;
 }
