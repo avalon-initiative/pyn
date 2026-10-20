@@ -6863,6 +6863,80 @@
           }
         }
       },
+      "AccountApprovedData": {
+        "type": "object",
+        "description": "`account.approved`.",
+        "required": [
+          "user",
+          "actor"
+        ],
+        "properties": {
+          "actor": {
+            "type": "string",
+            "description": "The administrator or service credential that approved it."
+          },
+          "user": {
+            "type": "string"
+          }
+        }
+      },
+      "AccountCreatedData": {
+        "type": "object",
+        "description": "`account.created`: a new account exists (sign-up, external sign-in or an administrator).",
+        "required": [
+          "user",
+          "pending_approval"
+        ],
+        "properties": {
+          "pending_approval": {
+            "type": "boolean",
+            "description": "True when an administrator must approve the account before it can sign in."
+          },
+          "user": {
+            "type": "string"
+          }
+        }
+      },
+      "AccountDisabledData": {
+        "type": "object",
+        "description": "`account.disabled`.",
+        "required": [
+          "user",
+          "actor",
+          "reason"
+        ],
+        "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The reason given when it was disabled, if any."
+          },
+          "user": {
+            "type": "string"
+          }
+        }
+      },
+      "AccountEnabledData": {
+        "type": "object",
+        "description": "`account.enabled`.",
+        "required": [
+          "user",
+          "actor"
+        ],
+        "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "user": {
+            "type": "string"
+          }
+        }
+      },
       "AccountInfo": {
         "type": "object",
         "description": "An account as an administrator sees it.",
@@ -7752,6 +7826,49 @@
           }
         }
       },
+      "Event": {
+        "type": "object",
+        "description": "The body of one webhook delivery. `type` and `data` go together: see the payload schemas named\n`*Data` for each known type. A receiver ignores types it does not know.",
+        "required": [
+          "id",
+          "type",
+          "created_at",
+          "server",
+          "version",
+          "data"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "data": {
+            "type": "object",
+            "description": "The payload for `type`."
+          },
+          "id": {
+            "type": "string",
+            "description": "Unique per event; a redelivery keeps it."
+          },
+          "server": {
+            "type": "string",
+            "description": "The server's public base URL."
+          },
+          "type": {
+            "type": "string",
+            "description": "The event type, a dotted name such as `repository.created`. An open set: new types are added without a\nnew `version`.",
+            "examples": [
+              "repository.created"
+            ]
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The envelope version, `1` today.",
+            "minimum": 0
+          }
+        }
+      },
       "ExternalIdentityInfo": {
         "type": "object",
         "description": "A provider identity linked to an account.",
@@ -8079,6 +8196,15 @@
             ]
           }
         }
+      },
+      "LimitKind": {
+        "type": "string",
+        "description": "Which limit an owner ran into.",
+        "enum": [
+          "repositories",
+          "members",
+          "storage_bytes"
+        ]
       },
       "Limits": {
         "type": "object",
@@ -8753,6 +8879,43 @@
           "member"
         ]
       },
+      "OrganizationCreatedData": {
+        "type": "object",
+        "description": "`organization.created`.",
+        "required": [
+          "name",
+          "owner",
+          "actor"
+        ],
+        "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "owner": {
+            "type": "string",
+            "description": "The organization's first owner."
+          }
+        }
+      },
+      "OrganizationDeletedData": {
+        "type": "object",
+        "description": "`organization.deleted`.",
+        "required": [
+          "name",
+          "actor"
+        ],
+        "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
       "OwnerKind": {
         "type": "string",
         "description": "What an owner (a user or an organization) is.",
@@ -8760,6 +8923,29 @@
           "user",
           "org"
         ]
+      },
+      "OwnerLimitReachedData": {
+        "type": "object",
+        "description": "`owner.limit_reached`: an operation was refused because the owner is at a limit. It names no actor.",
+        "required": [
+          "owner",
+          "limit",
+          "value"
+        ],
+        "properties": {
+          "limit": {
+            "$ref": "#/components/schemas/LimitKind"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "value": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The limit in force when the operation was refused.",
+            "minimum": 0
+          }
+        }
       },
       "OwnerLimits": {
         "type": "object",
@@ -8780,6 +8966,30 @@
           "own": {
             "$ref": "#/components/schemas/Limits",
             "description": "Limits set for this owner alone; a null field follows the server default."
+          }
+        }
+      },
+      "OwnerLimitsChangedData": {
+        "type": "object",
+        "description": "`owner.limits_changed`: an owner's own limits were set; `limits` is the result, null meaning the server default.",
+        "required": [
+          "owner",
+          "kind",
+          "limits",
+          "actor"
+        ],
+        "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/OwnerKind"
+          },
+          "limits": {
+            "$ref": "#/components/schemas/Limits"
+          },
+          "owner": {
+            "type": "string"
           }
         }
       },
@@ -9306,6 +9516,74 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          }
+        }
+      },
+      "RepositoryCreatedData": {
+        "type": "object",
+        "description": "`repository.created`.",
+        "required": [
+          "owner",
+          "name",
+          "visibility",
+          "actor"
+        ],
+        "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "visibility": {
+            "$ref": "#/components/schemas/Visibility"
+          }
+        }
+      },
+      "RepositoryDeletedData": {
+        "type": "object",
+        "description": "`repository.deleted`.",
+        "required": [
+          "owner",
+          "name",
+          "actor"
+        ],
+        "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "owner": {
+            "type": "string"
+          }
+        }
+      },
+      "RepositoryRenamedData": {
+        "type": "object",
+        "description": "`repository.renamed`: the name changed; the owner never does.",
+        "required": [
+          "owner",
+          "name",
+          "previous_name",
+          "actor"
+        ],
+        "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "previous_name": {
+            "type": "string"
           }
         }
       },
