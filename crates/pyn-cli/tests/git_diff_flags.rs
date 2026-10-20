@@ -116,6 +116,8 @@ impl Fixture {
     }
 }
 
+// Git versions differ on whether -w drops a whitespace-only file from --name-only, --name-status and --check,
+// so those cases never include ws.txt here; see `whitespace_only_files_under_w`.
 fn each_format(check: impl Fn(&Fixture)) {
     for format in FORMATS {
         check(&Fixture::new(format));
@@ -151,8 +153,17 @@ fn ignoring_whitespace_matches_git() {
             &["diff", "-w", "--stat", "HEAD~2", "HEAD"],
             &["diff", "-w", "--shortstat", "HEAD~2", "HEAD"],
             &["diff", "-w", "--stat"],
-            &["diff", "-w", "--name-only", "HEAD~2", "HEAD"],
-            &["diff", "-w", "--name-status"],
+            &[
+                "diff",
+                "-w",
+                "--name-only",
+                "HEAD~2",
+                "HEAD",
+                "--",
+                "a.txt",
+                "mix.txt",
+            ],
+            &["diff", "-w", "--name-status", "--", "a.txt", "mix.txt"],
             &["diff", "-w", "--exit-code", "--", "ws.txt"],
             &["diff", "--exit-code", "--", "ws.txt"],
             &["diff", "-w", "--quiet", "--", "ws.txt"],
@@ -175,7 +186,9 @@ fn check_matches_git() {
             &["diff", "--check", "HEAD~2", "HEAD"],
             &["diff", "--check", "HEAD~1", "HEAD", "--", "a.txt"],
             &["diff", "--check", "HEAD~2", "HEAD~1"],
-            &["diff", "--check", "-w", "HEAD~2", "HEAD"],
+            &[
+                "diff", "--check", "-w", "HEAD~2", "HEAD", "--", "a.txt", "mix.txt",
+            ],
             &["diff", "--check", "HEAD", "HEAD"],
             &["diff", "--check", "--", "a.txt"],
             &["show", "--check"],
@@ -206,5 +219,33 @@ fn incompatible_formats_are_usage_errors() {
             .unwrap();
         assert_eq!(out.status.code(), Some(129), "{args:?}");
         assert!(out.stdout.is_empty(), "{args:?}");
+    }
+}
+
+#[test]
+fn whitespace_only_files_under_w() {
+    let f = Fixture::new("sha1");
+    let pyn = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_pyn"))
+            .current_dir(&f.repo)
+            .args(args)
+            .env_clear()
+            .env("PATH", path_env())
+            .env("HOME", f.repo.parent().unwrap())
+            .output()
+            .unwrap();
+        (out.status.code(), String::from_utf8(out.stdout).unwrap())
+    };
+    let range = ["HEAD~2", "HEAD", "--", "ws.txt"];
+    for (flag, want) in [
+        ("--name-only", "ws.txt\n"),
+        ("--name-status", "M\tws.txt\n"),
+        ("--check", "ws.txt:1: trailing whitespace.\n+q \n"),
+    ] {
+        let mut args = vec!["diff", "-w", flag];
+        args.extend(range);
+        let (code, out) = pyn(&args);
+        assert_eq!(out, want, "{flag}");
+        assert_eq!(code, Some(if flag == "--check" { 2 } else { 0 }), "{flag}");
     }
 }
