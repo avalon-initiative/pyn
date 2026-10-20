@@ -13,10 +13,10 @@ use super::GitHome;
 use super::commands::{add_changes, emit, head_or_refuse, message_lines};
 use super::log_match::{compile, parse_date};
 use crate::commit_format::{Context, Decorations, FormatArgs, Pretty, Rendering, render};
-use crate::diff::{self, Kind, Tree};
+use crate::diff::{self, DiffParts, Kind, Tree};
 use crate::{table, time};
 
-/// The git-only arguments of `pyn log`; a pyn server refuses them all.
+/// The git-only arguments of `pyn log`, and the diff flags a pyn server takes too.
 #[derive(clap::Args, Debug, Default)]
 pub struct GitLogArgs {
     /// More revisions (`<a>..<b>`, `<a>...<b>`, `^<rev>`), then paths.
@@ -101,14 +101,13 @@ impl GitLogArgs {
             ("--merges", self.merges),
             ("--skip", self.skip.is_some()),
             ("--reverse", self.reverse),
-            ("--stat", self.stat),
-            ("--shortstat", self.shortstat),
-            ("--name-only", self.name_only),
-            ("--name-status", self.name_status),
-            ("-p", self.patch),
-            ("-U", self.unified.is_some()),
         ];
         flags.into_iter().find(|(_, on)| *on).map(|(f, _)| f)
+    }
+
+    /// Whether any diff output flag (`--stat`, `-p`, `-U`, ...) was given.
+    pub fn diff_given(&self) -> bool {
+        self.diff_parts().any()
     }
 
     pub fn format(&self) -> &FormatArgs {
@@ -309,34 +308,21 @@ impl Filters {
     }
 }
 
-/// The diff sections to print after each commit.
-struct DiffParts {
-    names: Option<Kind>,
-    stat: bool,
-    shortstat: bool,
-    patch: bool,
-    context: usize,
-}
-
-impl DiffParts {
-    fn new(a: &GitLogArgs) -> Self {
-        Self {
-            names: if a.name_only {
+impl GitLogArgs {
+    pub fn diff_parts(&self) -> DiffParts {
+        DiffParts {
+            names: if self.name_only {
                 Some(Kind::NameOnly)
-            } else if a.name_status {
+            } else if self.name_status {
                 Some(Kind::NameStatus)
             } else {
                 None
             },
-            stat: a.stat,
-            shortstat: a.shortstat,
-            patch: a.patch || a.unified.is_some(),
-            context: a.unified.unwrap_or(3),
+            stat: self.stat,
+            shortstat: self.shortstat,
+            patch: self.patch || self.unified.is_some(),
+            context: self.unified.unwrap_or(3),
         }
-    }
-
-    fn any(&self) -> bool {
-        self.names.is_some() || self.stat || self.shortstat || self.patch
     }
 }
 
@@ -358,39 +344,8 @@ fn diff_body(
     let changes = git
         .repo
         .diff_trees(parent_tree.as_ref(), Some(&c.tree), spec)?;
-    if changes.is_empty() {
-        return Ok(None);
-    }
     add_changes(&mut old, &mut new, &changes);
-    let section = |kind: Kind| -> Result<String> {
-        let mut out = String::new();
-        let format = diff::Format {
-            context: parts.context,
-            kind,
-            ignore_ws: false,
-        };
-        diff::compare(git, &old, &new, &[], &format, &mut out)?;
-        Ok(out)
-    };
-    let mut summary = String::new();
-    if let Some(kind) = parts.names {
-        summary.push_str(&section(kind)?);
-    }
-    if parts.stat {
-        summary.push_str(&section(Kind::Stat)?);
-    }
-    if parts.shortstat {
-        summary.push_str(&section(Kind::ShortStat)?);
-    }
-    let both = parts.stat && parts.patch;
-    let mut body = summary;
-    if parts.patch {
-        if !body.is_empty() {
-            body.push('\n');
-        }
-        body.push_str(&section(Kind::Patch)?);
-    }
-    Ok(Some((body, both)))
+    diff::sections(git, &old, &new, &[], parts)
 }
 
 pub(super) fn decorations(git: &GitHome) -> Result<Decorations> {
@@ -440,7 +395,7 @@ pub(super) fn log(
 ) -> Result<()> {
     let Rendering { pretty, style } = args.fmt.rendering()?;
     let filters = Filters::new(&args)?;
-    let parts = DiffParts::new(&args);
+    let parts = args.diff_parts();
     let positional: Vec<String> = path.into_iter().chain(args.more.iter().cloned()).collect();
     let selection = select(git, cwd, positional, args.dashed.clone())?;
     let spec = Pathspec::new(selection.paths.iter().map(|p| p.as_bytes().to_vec()));

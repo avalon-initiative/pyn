@@ -429,6 +429,63 @@ pub fn compare(
     Ok(differs)
 }
 
+/// The diff sections `log` prints after each commit.
+pub struct DiffParts {
+    pub names: Option<Kind>,
+    pub stat: bool,
+    pub shortstat: bool,
+    pub patch: bool,
+    pub context: usize,
+}
+
+impl DiffParts {
+    pub fn any(&self) -> bool {
+        self.names.is_some() || self.stat || self.shortstat || self.patch
+    }
+}
+
+/// The sections of `parts` for `old` against `new`, and whether `---` follows the message; `None` when nothing differs.
+pub fn sections(
+    backend: &dyn Backend,
+    old: &Tree,
+    new: &Tree,
+    only: &[String],
+    parts: &DiffParts,
+) -> Result<Option<(String, bool)>> {
+    let mut differs = false;
+    let mut section = |kind: Kind| -> Result<String> {
+        let mut out = String::new();
+        let format = Format {
+            context: parts.context,
+            kind,
+            ignore_ws: false,
+        };
+        differs |= compare(backend, old, new, only, &format, &mut out)?;
+        Ok(out)
+    };
+    let mut body = String::new();
+    if let Some(kind) = parts.names {
+        body.push_str(&section(kind)?);
+    }
+    if parts.stat {
+        body.push_str(&section(Kind::Stat)?);
+    }
+    if parts.shortstat {
+        body.push_str(&section(Kind::ShortStat)?);
+    }
+    if parts.patch {
+        let patch = section(Kind::Patch)?;
+        if !body.is_empty() {
+            body.push('\n');
+        }
+        body.push_str(&patch);
+    }
+    if !differs {
+        return Ok(None);
+    }
+    Ok(Some((body, parts.stat && parts.patch)))
+}
+
 /// The `commit`, `Author:` and `Date:` lines and the indented message, as `git show` prints them.
 pub fn commit_header(c: &api::Commit) -> String {
     let mut out = format!(

@@ -33,9 +33,9 @@ fn git_log_options_are_usage_errors_on_a_pyn_server() {
     env.seed("alice", "Source/a.ts", "one", None);
     let home = env.dir("home");
     for args in [
-        &["log", "--stat"][..],
+        &["log", "--reverse"][..],
         &["log", "--author=x"],
-        &["log", "-p"],
+        &["log", "--skip=1"],
         &["log", "Source/a.ts", "Source/b.ts"],
         &["log", "--", "Source/a.ts", "Source/b.ts"],
     ] {

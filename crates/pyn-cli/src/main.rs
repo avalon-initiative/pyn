@@ -1779,16 +1779,22 @@ fn run(cli: Cli) -> Result<()> {
             commits,
             limit,
             git: log_args,
-        } if commits || log_args.format().first_given().is_some() => {
+        } if commits || log_args.format().first_given().is_some() || log_args.diff_given() => {
             branch::note_branch(ws.as_ref());
             let limit = limit.unwrap_or(50);
-            if let Some(rendering) = log_args.format().requested()? {
+            let parts = log_args.diff_parts();
+            let rendering = match log_args.format().requested()? {
+                Some(r) => Some(r),
+                None if parts.any() => Some(log_args.format().rendering()?),
+                None => None,
+            };
+            if let Some(rendering) = rendering {
                 if path.is_some() || filter.is_some() || log_args.sole_dashed().is_some() {
                     usage_error(
                         "`pyn log` with a format lists commits and takes no path or --filter on a pyn server",
                     );
                 }
-                return log_formatted(&backend, ws.as_ref(), limit, &rendering);
+                return log_formatted(&backend, ws.as_ref(), limit, &rendering, &parts);
             }
             let mut rows: Vec<Vec<String>> =
                 match ws.as_ref().and_then(local_store::LocalStore::open) {
@@ -2176,12 +2182,15 @@ fn log_formatted(
     ws: Option<&Workspace>,
     limit: usize,
     rendering: &commit_format::Rendering,
+    parts: &diff::DiffParts,
 ) -> Result<()> {
-    let mut commits = match ws.and_then(local_store::LocalStore::open) {
-        Some(store) => local_view::log_commits(&store, &branch::name(ws))?,
+    let store = ws.and_then(local_store::LocalStore::open);
+    let mut commits = match &store {
+        Some(store) => local_view::log_commits(store, &branch::name(ws))?,
         None => Vec::new(),
     };
     commits.truncate(limit);
+    let local = commits.len();
     let mut before: Option<String> = None;
     while commits.len() < limit {
         let page = backend.commit_page(before.as_deref(), (limit - commits.len()).min(200))?;
@@ -2197,9 +2206,51 @@ fn log_formatted(
             out.push('\n');
         }
         out.push_str(&commit_format::render_api(rendering, c)?);
+        if parts.any()
+            && c.parents.len() < 2
+            && let Some((body, dashes)) =
+                commit_sections(backend, store.as_ref(), i < local, c, parts)?
+        {
+            if rendering.pretty.blank_before_diff() {
+                out.push_str(if dashes { "---\n" } else { "\n" });
+            }
+            out.push_str(&body);
+        }
     }
     print!("{out}");
     Ok(())
+}
+
+/// The diff sections of one commit against its first parent, from the local store when unpublished.
+fn commit_sections(
+    backend: &dyn Backend,
+    store: Option<&local_store::LocalStore>,
+    unpublished: bool,
+    c: &api::Commit,
+    parts: &diff::DiffParts,
+) -> Result<Option<(String, bool)>> {
+    let (old, new, only) = match store.filter(|_| unpublished) {
+        Some(store) => local_view::commit_trees(store, c)?,
+        None => server_trees(backend, c)?,
+    };
+    diff::sections(backend, &old, &new, &only, parts)
+}
+
+/// The trees before and after a published commit (against its first parent) and the paths it changed.
+fn server_trees(
+    backend: &dyn Backend,
+    c: &api::Commit,
+) -> Result<(diff::Tree, diff::Tree, Vec<String>)> {
+    let new = diff::tree_of_snapshot(&backend.snapshot(Some(&c.id))?.1);
+    let old = match c.parents.first() {
+        Some(parent) => diff::tree_of_snapshot(&backend.snapshot(Some(parent))?.1),
+        None => diff::Tree::new(),
+    };
+    Ok((
+        old,
+        new,
+        c.revisions.iter().map(|r| r.path.clone()).collect(),
+    ))
 }
 
 /// What `show` prints besides the commit's diff format: a pretty format, and whether to leave the diff out.
@@ -2243,12 +2294,7 @@ fn show_command(
         return Ok(());
     }
     let format = &opts.diff;
-    let new = diff::tree_of_snapshot(&backend.snapshot(Some(&id))?.1);
-    let old = match found.parents.first() {
-        Some(parent) => diff::tree_of_snapshot(&backend.snapshot(Some(parent))?.1),
-        None => diff::Tree::new(),
-    };
-    let only: Vec<String> = found.revisions.iter().map(|r| r.path.clone()).collect();
+    let (old, new, only) = server_trees(backend, &found)?;
     let mut body = String::new();
     let differs = diff::compare(backend, &old, &new, &only, format, &mut body)?;
     let (head, blank) = opts.head(&found)?;
