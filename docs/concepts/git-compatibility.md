@@ -75,7 +75,7 @@ The commands named in decision #218.
 | `git commit -a`, `-am <msg>` | `pyn commit -a`, `-am <msg>` | same | Stages every changed tracked file, then commits; new files are not included. |
 | `git commit <path>...` | `pyn commit -m <msg> <path>...` | different | On a pyn server: one atomic commit of the named paths as they are on disk, whatever is staged (git's `--only`). Not available on a git home, which says to `add` the paths first. |
 | `git commit -F <file>` (`-` is standard input) | same | git home: supported; pyn server: supported | The same message reading and cleanup on both homes, with and without the local store; `-m` and `-F` together are refused. On a pyn server `--file` stays the content file (it has no short form, so `-F` does not clash). See [Commit flags on a git home](#commit-flags-on-a-git-home). |
-| `git commit --file=<file>`, `--allow-empty`, `--author=<name <email>>`, `--date=<date>`, `-s`, `--signoff`, `--amend`, `--no-edit` | same | git home: supported | Git's behaviour on a git home; on a pyn server a usage error (`129`) naming the flag, because commits there are immutable (no `--amend`) and `--file` is the content file. `--allow-empty` is refused there because the server rejects a pushed commit that changes no file. See [Commit flags on a git home](#commit-flags-on-a-git-home). |
+| `git commit --file=<file>`, `--allow-empty`, `--author=<name <email>>`, `--date=<date>`, `-s`, `--signoff`, `--amend`, `--no-edit`, `-S[<keyid>]`, `--gpg-sign[=<keyid>]`, `--no-gpg-sign` | same | git home: supported | Git's behaviour on a git home; on a pyn server a usage error (`129`) naming the flag, because commits there are immutable (no `--amend`) and `--file` is the content file. `--allow-empty` is refused there because the server rejects a pushed commit that changes no file. See [Commit flags on a git home](#commit-flags-on-a-git-home). |
 | `git commit -S`, `--no-verify`, `-v`, `-c`, `-C`, `--fixup`, `--squash`, `--reset-author`, `--allow-empty-message`, `-e` | none | unsupported | Usage error (`129`). |
 | `pyn commit --file <local>` | | pyn only | Content file for a single path. In a workspace the file at the path is the default. |
 | `pyn commit --base <rev>` | | pyn only | The revision the edit started from; the server rejects the commit if the branch has moved on from it on an exclusive path. |
@@ -107,7 +107,7 @@ The commands named in decision #218.
 | `git pull` | `pyn pull` on a git home | git home only | Fetch, then merge through `pyn merge`; see [Pull on a git home](#pull-on-a-git-home). On a pyn server it fetches into the local store and merges (a workspace cloned with `--no-local-store` runs `pyn update`), see [Remotes on a pyn server](#remotes-on-a-pyn-server). |
 | `git push` | `pyn push` on a git home | git home only | See [Push on a git home](#push-on-a-git-home). On a pyn server it publishes the local commits (a workspace cloned with `--no-local-store` prints that there is nothing to push, because a commit goes straight to the server); see [Remotes on a pyn server](#remotes-on-a-pyn-server). |
 | `git remote` | `pyn remote` | git home; pyn server partly | On a git home it lists and edits the remotes in `.git/config`, see [Remotes](#remotes). On a pyn server `pyn remote`, `pyn remote -v` and `pyn remote get-url origin` show the one remote, `origin`: the server and repository set by `--server` and `--repo` or `pyn config set server` and `repo`; `add`, `remove`, `rename` and `set-url` say that a server home has exactly one home and exit `1`. |
-| `git tag [-a] [-m <msg>] [-f] [<name> [<commit>]]`, `-d`, `-l` | `pyn tag ...` on a git home | git home only | See [Tags](#tags). On a pyn server it prints the git-command message (a server's commits are named by hash and have no tags yet, #223). |
+| `git tag [-a] [-s] [-u <keyid>] [--no-sign] [-m <msg>] [-f] [<name> [<commit>]]`, `-d`, `-l` | `pyn tag ...` on a git home | git home only | See [Tags](#tags). On a pyn server it prints the git-command message (a server's commits are named by hash and have no tags yet, #223). |
 | `git stash [push] [-u] [-m <msg>]`, `list`, `pop`, `apply`, `drop`, `clear` | `pyn stash ...` on a git home | git home only | See [Stashing](#stashing). On a pyn server it prints the git-command message. |
 
 `pyn update [<path>...]` is the pre-branch stand-in for `fetch` plus `pull`: it fast-forwards files without local
@@ -827,7 +827,7 @@ path is staged as the file is, which resolves it.
 **`commit`.** A linear commit on the current branch:
 
 1. It refuses, changing nothing, a detached `HEAD`, a merge, cherry-pick, revert, rebase or sequencer in progress,
-   unmerged index entries, and `commit.gpgsign=true` (pyn cannot sign yet).
+   unmerged index entries.
 2. The author and committer are `GIT_AUTHOR_*` and `GIT_COMMITTER_*` (name, email, date) when set, else `author.*` and
    `committer.*`, else `user.name` and `user.email`; without a name and email it stops. The time zone is the system's.
 3. With `-a`, every changed tracked file is staged first, in memory; the index is written only once the commit is built.
@@ -860,6 +860,8 @@ git would give the same tree, parent, identity, dates and message. `commit <path
   header is dropped and other headers are kept. It exits `128` with no commit to amend or during a merge; an amend that
   would leave the commit equal to its parent's tree exits `1` unless `--allow-empty` is given; amending a merge commit is allowed.
   The branch and `HEAD` logs get `commit (amend): <subject>`, and `ORIG_HEAD` is not written.
+- `-S`, `--gpg-sign[=<keyid>]` (the key id attached or after `=`) and `--no-gpg-sign` (the last of the two wins) sign the commit;
+  `commit.gpgsign=true` signs by default. See [Signing](#signing).
 - The output is `[<branch> <id>] <subject>`, an ` Author:` line when the author differs from the committer, and pyn's
   changed-file count; it has no `Date:` line.
 
@@ -992,7 +994,31 @@ keeps unrelated local changes, but stops (`not uptodate`) if a path you staged h
 (a tag name tags the tag object itself); `-a`, or just `-m`, writes an annotated tag: a tag object with the tagger from
 `GIT_COMMITTER_*` or `user.name` and `user.email` (an error without them), the object's type, and the cleaned message, byte for
 byte as git writes it. There is no editor, so `-a` needs `-m`. `-f` replaces a tag (`Updated tag '<name>' (was <id>)`), `-d` deletes
-(`Deleted tag '<name>' (was <id>)`). Signing (`tag.gpgsign`) is refused. Tags get no reflog unless `core.logAllRefUpdates=always`.
+(`Deleted tag '<name>' (was <id>)`). `-s`, `-u <keyid>`, `--no-sign` and `tag.gpgsign` sign an annotated tag (see [Signing](#signing)). Tags get no reflog unless `core.logAllRefUpdates=always`.
+
+### Signing
+
+pyn makes the signature by running the configured external program, as git does; pyn never links a crypto library and does not
+need git installed. It writes the signature as git encodes it, so the object ids agree with git's for the same signature bytes.
+
+- `gpg.format` is `openpgp` (default), `x509` or `ssh`; any other value stops with exit `128`. The program is `gpg.openpgp.program`
+  then `gpg.program` (default `gpg`) for openpgp, `gpg.x509.program` (default `gpgsm`), or `gpg.ssh.program` (default `ssh-keygen`).
+- The key is the `-S<keyid>` or `-u` value, else `user.signingkey`. For openpgp and x509 with neither, it is the committer
+  (tagger) `Name <email>`.
+- openpgp and x509 run `<program> --status-fd=2 -bsau <key>` with the object on standard input; the signature is standard output,
+  and the run counts only if it exits `0` and reports `[GNUPG:] SIG_CREATED` on standard error.
+- ssh runs `<program> -Y sign -n git -f <keyfile> <buffer>` and reads `<buffer>.sig`. `user.signingkey` is a private key file
+  (`~/` is expanded) or a literal public key (`ssh-...` or `key::...`), signed through ssh-agent with `-U`. Without
+  `user.signingkey`, `gpg.ssh.defaultKeyCommand` is not built and signing stops.
+- A commit carries the signature as a `gpgsig` header (`gpgsig-sha256` in a SHA-256 repository) after the other headers, folded
+  with a leading space on each continuation line; it signs the commit as it would be without that header. `--amend` signs anew
+  (or not) and drops the old signature. A tag carries its signature appended to the message.
+- `tag.gpgsign` makes every tag annotated and signed, so it needs `-m`. If the signer fails or is missing, nothing is written
+  and the exit status is `128`.
+
+`log --show-signature` and `verify-commit` / `verify-tag` equivalents are not built: pyn does not verify signatures, and `log
+--show-signature` stays a usage error. `pyn merge`, `pull` and the other commands that create commits do not sign (their `-S`
+is a usage error), even with `commit.gpgsign=true`.
 
 ### Stashing
 

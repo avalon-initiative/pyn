@@ -20,6 +20,7 @@ mod refwrite;
 mod remote;
 mod remote_query;
 mod reset;
+mod signing;
 mod stage;
 mod stash;
 mod switch;
