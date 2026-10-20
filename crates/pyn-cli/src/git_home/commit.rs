@@ -15,7 +15,7 @@ use super::stage::{
     warn_about_hooks, write_tree,
 };
 
-/// The git-only flags of `pyn commit`; a pyn server refuses them all.
+/// The git flags of `pyn commit`; a pyn server takes only `-F` and refuses the rest.
 #[derive(clap::Args, Debug, Default)]
 pub struct GitCommitArgs {
     /// Read the commit message from a file (`-` is standard input); `--file` does the same on a git repository.
@@ -45,7 +45,6 @@ impl GitCommitArgs {
     /// The first flag that was given, for the refusal on a pyn server.
     pub fn first_given(&self) -> Option<&'static str> {
         let flags = [
-            ("-F", self.message_file.is_some()),
             ("--allow-empty", self.allow_empty),
             ("--author", self.author.is_some()),
             ("--date", self.date.is_some()),
@@ -54,6 +53,23 @@ impl GitCommitArgs {
             ("--no-edit", self.no_edit),
         ];
         flags.into_iter().find(|(_, on)| *on).map(|(f, _)| f)
+    }
+
+    /// The `-F` message for a commit on a pyn server, cleaned as on a git home; `None` without `-F`.
+    pub fn server_message(&self, messages: &[String]) -> Result<Option<String>> {
+        let Some(file) = &self.message_file else {
+            return Ok(None);
+        };
+        if !messages.is_empty() {
+            bail!("options '-m' and '-F' cannot be used together");
+        }
+        let text = clean_bytes(&read_message(file)?);
+        if text == b"\n" {
+            eprintln!("Aborting commit due to empty commit message.");
+            std::process::exit(1);
+        }
+        let text = String::from_utf8_lossy(&text);
+        Ok(Some(text.trim_end_matches('\n').to_string()))
     }
 }
 

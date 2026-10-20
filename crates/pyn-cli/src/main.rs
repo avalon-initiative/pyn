@@ -948,10 +948,25 @@ fn run(cli: Cli) -> Result<()> {
         && git.is_none()
         && let Some(flag) = opts.first_given()
     {
+        if flag == "--allow-empty" {
+            usage_error(
+                "`pyn commit --allow-empty` is not supported on a pyn server: it refuses a pushed commit \
+                 that changes no file",
+            );
+        }
         usage_error(&format!(
             "`pyn commit {flag}` applies to a git repository, not a pyn server: commits there are immutable \
              and `--file` is the content file"
         ));
+    }
+    let mut cli = cli;
+    if git.is_none()
+        && let Command::Commit {
+            git: opts, message, ..
+        } = &mut cli.command
+        && let Some(text) = opts.server_message(message)?
+    {
+        *message = vec![text];
     }
     if let Command::Log { git: opts, .. } = &cli.command
         && git.is_none()

@@ -509,9 +509,7 @@ fn combinations_match_git() {
 fn a_pyn_server_home_still_refuses_the_git_only_flags() {
     let tmp = tempdir().unwrap();
     for flags in [
-        &["-F", "m.txt"][..],
-        &["--allow-empty"],
-        &["--author", "A <a@x>"],
+        &["--author", "A <a@x>"][..],
         &["--date", "1700000000"],
         &["-s"],
         &["--signoff"],
