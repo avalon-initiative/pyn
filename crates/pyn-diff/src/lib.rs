@@ -121,9 +121,27 @@ fn myers<T: PartialEq>(a: &[T], b: &[T]) -> Option<Vec<Op>> {
     Some(rev)
 }
 
+fn is_space(b: u8) -> bool {
+    matches!(b, b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r')
+}
+
+/// The edit script between two files' lines; with `ignore_ws`, lines equal once all whitespace is removed match.
+fn line_ops(a: &[&[u8]], b: &[&[u8]], ignore_ws: bool) -> Vec<Op> {
+    if !ignore_ws {
+        return diff(a, b);
+    }
+    let key = |lines: &[&[u8]]| -> Vec<Vec<u8>> {
+        lines
+            .iter()
+            .map(|l| l.iter().copied().filter(|c| !is_space(*c)).collect())
+            .collect()
+    };
+    diff(&key(a), &key(b))
+}
+
 /// Lines added and deleted going from `old` to `new`.
-pub fn line_counts(old: &[u8], new: &[u8]) -> (usize, usize) {
-    let ops = diff(&split_lines(old), &split_lines(new));
+pub fn line_counts(old: &[u8], new: &[u8], ignore_ws: bool) -> (usize, usize) {
+    let ops = line_ops(&split_lines(old), &split_lines(new), ignore_ws);
     let added = ops.iter().filter(|o| **o == Op::Insert).count();
     let deleted = ops.iter().filter(|o| **o == Op::Delete).count();
     (added, deleted)
@@ -170,10 +188,11 @@ fn heading(a: &[&[u8]], start: usize, floor: isize) -> String {
 }
 
 /// The `@@` hunks of a unified diff from `old` to `new` with `context` lines around each change;
-/// `None` when the contents are identical.
-pub fn unified_hunks(old: &[u8], new: &[u8], context: usize) -> Option<String> {
+/// `None` when the contents are identical (or, with `ignore_ws`, differ only in whitespace).
+/// Context lines print as they are in `new`.
+pub fn unified_hunks(old: &[u8], new: &[u8], context: usize, ignore_ws: bool) -> Option<String> {
     let (a, b) = (split_lines(old), split_lines(new));
-    let ops = diff(&a, &b);
+    let ops = line_ops(&a, &b, ignore_ws);
     let changed: Vec<usize> = ops
         .iter()
         .enumerate()
@@ -211,7 +230,7 @@ pub fn unified_hunks(old: &[u8], new: &[u8], context: usize) -> Option<String> {
         for op in &ops[start..end] {
             match op {
                 Op::Equal => {
-                    push_line(&mut body, ' ', a[ai]);
+                    push_line(&mut body, ' ', b[bi]);
                     (ai, bi) = (ai + 1, bi + 1);
                 }
                 Op::Delete => {
@@ -235,6 +254,80 @@ pub fn unified_hunks(old: &[u8], new: &[u8], context: usize) -> Option<String> {
         out.push_str(&body);
     }
     Some(out)
+}
+
+/// Trailing whitespace and the first space-before-tab in a line's indent, as git's default whitespace rules find them.
+fn line_errors(line: &[u8]) -> (bool, bool) {
+    let text = line.strip_suffix(b"\n").unwrap_or(line);
+    let end = text
+        .iter()
+        .rposition(|c| !is_space(*c))
+        .map_or(0, |i| i + 1);
+    let mut written = 0;
+    let mut space_before_tab = false;
+    for (i, c) in text[..end].iter().enumerate() {
+        match c {
+            b' ' => {}
+            b'\t' => {
+                space_before_tab |= written < i;
+                written = i + 1;
+            }
+            _ => break,
+        }
+    }
+    (end < text.len(), space_before_tab)
+}
+
+fn trailing_blank_lines(lines: &[&[u8]]) -> usize {
+    lines
+        .iter()
+        .rev()
+        .take_while(|l| l.iter().all(|c| is_space(*c)))
+        .count()
+}
+
+/// `git diff --check` for one file: a `path:line: <problem>.` line, then the offending added line, for trailing
+/// whitespace and space before tab; blank lines added at the end of the file are reported last. Empty when clean.
+pub fn whitespace_report(path: &str, old: &[u8], new: &[u8]) -> String {
+    let (a, b) = (split_lines(old), split_lines(new));
+    let mut out = String::new();
+    let mut bi = 0;
+    for op in diff(&a, &b) {
+        match op {
+            Op::Equal => bi += 1,
+            Op::Delete => {}
+            Op::Insert => {
+                let (line_no, line) = (bi + 1, b[bi]);
+                bi += 1;
+                let (trailing, before_tab) = line_errors(line);
+                let problems: Vec<&str> = [
+                    (trailing, "trailing whitespace"),
+                    (before_tab, "space before tab in indent"),
+                ]
+                .iter()
+                .filter(|(bad, _)| *bad)
+                .map(|(_, text)| *text)
+                .collect();
+                if !problems.is_empty() {
+                    let _ = writeln!(out, "{path}:{line_no}: {}.", problems.join(", "));
+                    push_line_plain(&mut out, line);
+                }
+            }
+        }
+    }
+    let (was, now) = (trailing_blank_lines(&a), trailing_blank_lines(&b));
+    if now > was {
+        let _ = writeln!(out, "{path}:{}: new blank line at EOF.", b.len() - now + 1);
+    }
+    out
+}
+
+fn push_line_plain(out: &mut String, line: &[u8]) {
+    out.push('+');
+    out.push_str(&String::from_utf8_lossy(line));
+    if !line.ends_with(b"\n") {
+        out.push('\n');
+    }
 }
 
 #[cfg(test)]
@@ -315,7 +408,7 @@ mod tests {
     fn unified_output_matches_git_shape() {
         let old = b"one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\n";
         let new = b"one\ntwo\nthree\nfour\nFIVE\nsix\nseven\neight\nnine\nten\n";
-        let got = unified_hunks(old, new, 3).unwrap();
+        let got = unified_hunks(old, new, 3, false).unwrap();
         assert_eq!(
             got,
             "@@ -2,7 +2,7 @@ one\n two\n three\n four\n-five\n+FIVE\n six\n seven\n eight\n"
@@ -334,7 +427,7 @@ mod tests {
         let mut old = vec!["fn a"];
         old.extend(numbered.iter().map(String::as_str));
         let heads = |new: &[&str]| -> Vec<String> {
-            let got = unified_hunks(&text(&old), &text(new), 1).unwrap();
+            let got = unified_hunks(&text(&old), &text(new), 1, false).unwrap();
             got.lines()
                 .filter(|l| l.starts_with("@@"))
                 .map(String::from)
@@ -354,36 +447,36 @@ mod tests {
         let new = old
             .replace("\n2\n", "\ntwo\n")
             .replace("\n29\n", "\ntwenty-nine\n");
-        let got = unified_hunks(old.as_bytes(), new.as_bytes(), 3).unwrap();
+        let got = unified_hunks(old.as_bytes(), new.as_bytes(), 3, false).unwrap();
         assert_eq!(got.matches("@@ -").count(), 2);
         let near = old
             .replace("\n2\n", "\ntwo\n")
             .replace("\n8\n", "\neight\n");
-        let got = unified_hunks(old.as_bytes(), near.as_bytes(), 3).unwrap();
+        let got = unified_hunks(old.as_bytes(), near.as_bytes(), 3, false).unwrap();
         assert_eq!(got.matches("@@ -").count(), 1);
     }
 
     #[test]
     fn identical_content_has_no_hunks() {
-        assert!(unified_hunks(b"a\nb\n", b"a\nb\n", 3).is_none());
-        assert!(unified_hunks(b"", b"", 3).is_none());
+        assert!(unified_hunks(b"a\nb\n", b"a\nb\n", 3, false).is_none());
+        assert!(unified_hunks(b"", b"", 3, false).is_none());
     }
 
     #[test]
     fn creation_and_deletion_use_zero_ranges() {
         assert_eq!(
-            unified_hunks(b"", b"x\ny\n", 3).unwrap(),
+            unified_hunks(b"", b"x\ny\n", 3, false).unwrap(),
             "@@ -0,0 +1,2 @@\n+x\n+y\n"
         );
         assert_eq!(
-            unified_hunks(b"x\n", b"", 3).unwrap(),
+            unified_hunks(b"x\n", b"", 3, false).unwrap(),
             "@@ -1 +0,0 @@\n-x\n"
         );
     }
 
     #[test]
     fn missing_final_newline_is_marked() {
-        let got = unified_hunks(b"a\nb", b"a\nb\n", 3).unwrap();
+        let got = unified_hunks(b"a\nb", b"a\nb\n", 3, false).unwrap();
         assert_eq!(
             got,
             "@@ -1,2 +1,2 @@\n a\n-b\n\\ No newline at end of file\n+b\n"
@@ -398,6 +491,42 @@ mod tests {
 
     #[test]
     fn line_counts_count_changed_lines() {
-        assert_eq!(line_counts(b"a\nb\nc\n", b"a\nX\nY\nc\n"), (2, 1));
+        assert_eq!(line_counts(b"a\nb\nc\n", b"a\nX\nY\nc\n", false), (2, 1));
+    }
+
+    #[test]
+    fn ignoring_whitespace_drops_whitespace_only_changes_and_prints_new_context() {
+        assert!(unified_hunks(b"a b\n", b"ab \n", 3, true).is_none());
+        assert!(unified_hunks(b"a\n", b"a", 3, true).is_none());
+        assert_eq!(
+            unified_hunks(b"a b\nx\n", b"ab\ny\n", 3, true).unwrap(),
+            "@@ -1,2 +1,2 @@\n ab\n-x\n+y\n"
+        );
+        assert_eq!(line_counts(b"a b\nx\n", b"ab\ny\n", true), (1, 1));
+        assert_eq!(line_counts(b"a b\nx\n", b"ab\ny\n", false), (2, 2));
+    }
+
+    #[test]
+    fn whitespace_report_names_each_problem_in_git_order() {
+        let new = b"a\n \tx  \n\t \ty\n \t\n  \tz\n\r\nc\n\n\n";
+        assert_eq!(
+            whitespace_report("f", b"a\n", new),
+            "f:2: trailing whitespace, space before tab in indent.\n+ \tx  \n\
+             f:3: space before tab in indent.\n+\t \ty\n\
+             f:4: trailing whitespace.\n+ \t\n\
+             f:5: space before tab in indent.\n+  \tz\n\
+             f:6: trailing whitespace.\n+\r\n\
+             f:8: new blank line at EOF.\n"
+        );
+    }
+
+    #[test]
+    fn whitespace_report_ignores_context_and_clean_additions() {
+        assert_eq!(whitespace_report("f", b"a  \n", b"a  \nb\n"), "");
+        assert_eq!(
+            whitespace_report("f", b"a\n\n", b"a\n\n\n"),
+            "f:2: new blank line at EOF.\n"
+        );
+        assert_eq!(whitespace_report("f", b"", b"x"), "");
     }
 }

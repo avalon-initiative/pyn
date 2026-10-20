@@ -552,6 +552,7 @@ fn diff(
     let differs = diff::compare(git, &old, &new, &only, format, &mut out)?;
     if !quiet {
         emit(&out);
+        diff::exit_if_check_failed(format, &out);
     }
     Ok(differs)
 }
@@ -607,6 +608,7 @@ fn show(git: &GitHome, commit: Option<&str>, format: &diff::Format) -> Result<()
     };
     let c = git.repo.commit(&id)?;
     let mut body = String::new();
+    let mut differs = false;
     if c.parents.len() <= 1 {
         let old_tree = match c.parents.first() {
             Some(p) => Some(git.repo.commit(p)?.tree),
@@ -617,14 +619,15 @@ fn show(git: &GitHome, commit: Option<&str>, format: &diff::Format) -> Result<()
             git.repo
                 .diff_trees(old_tree.as_ref(), Some(&c.tree), &Pathspec::default())?;
         add_changes(&mut old, &mut new, &changes);
-        diff::compare(git, &old, &new, &[], format, &mut body)?;
+        differs = diff::compare(git, &old, &new, &[], format, &mut body)?;
     }
     let mut out = commit_block(&id, &c);
-    if !body.is_empty() || c.parents.len() > 1 {
+    if diff::has_body(format, differs, &body) || c.parents.len() > 1 {
         out.push('\n');
         out.push_str(&body);
     }
     emit(&out);
+    diff::exit_if_check_failed(format, &body);
     Ok(())
 }
 

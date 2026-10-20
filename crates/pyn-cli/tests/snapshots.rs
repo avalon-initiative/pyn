@@ -366,3 +366,69 @@ fn show_prints_the_commit_and_what_it_changed() {
     let first = env.ok(&home, "alice", &["show", "HEAD~3", "--stat"]);
     assert!(first.contains("Source/a.txt | 3 +++"), "{first}");
 }
+
+#[test]
+fn diff_and_show_take_shortstat_ignore_whitespace_and_check() {
+    let env = start();
+    env.seed("alice", "Source/w.txt", "a b\nkeep\nz\n", None);
+    env.seed("alice", "Source/w.txt", "ab\nkeep  \nZ \n", Some(1));
+    env.seed("alice", "Source/s.txt", "x\n", None);
+    env.seed("alice", "Source/s.txt", " x\n", Some(1));
+    let home = env.dir("home");
+    let diff = |args: &[&str]| {
+        let mut all = vec!["diff"];
+        all.extend(args);
+        all.extend(["HEAD~3", "HEAD"]);
+        env.run(&home, "alice", &all)
+    };
+    let text = |o: &std::process::Output| String::from_utf8_lossy(&o.stdout).into_owned();
+
+    assert_eq!(
+        text(&diff(&["--shortstat"])),
+        " 2 files changed, 4 insertions(+), 3 deletions(-)\n"
+    );
+    assert_eq!(
+        text(&diff(&["-w", "--shortstat"])),
+        " 2 files changed, 2 insertions(+), 1 deletion(-)\n"
+    );
+    assert_eq!(
+        text(&diff(&["-w", "--stat"])),
+        " Source/s.txt | 1 +\n Source/w.txt | 2 +-\n 2 files changed, 2 insertions(+), 1 deletion(-)\n"
+    );
+    let patch = text(&diff(&["-w"]));
+    assert!(
+        patch.ends_with("@@ -1,3 +1,3 @@\n ab\n keep  \n-z\n+Z \n"),
+        "{patch}"
+    );
+    let ws_only = env.run(
+        &home,
+        "alice",
+        &["diff", "-w", "--exit-code", "HEAD~1", "HEAD"],
+    );
+    assert_eq!(ws_only.status.code(), Some(0));
+    assert!(ws_only.stdout.is_empty());
+
+    let checked = diff(&["--check"]);
+    assert_eq!(checked.status.code(), Some(2));
+    assert_eq!(
+        text(&checked),
+        "Source/w.txt:2: trailing whitespace.\n+keep  \nSource/w.txt:3: trailing whitespace.\n+Z \n"
+    );
+    let clean = env.run(&home, "alice", &["diff", "--check", "HEAD~1", "HEAD"]);
+    assert_eq!(clean.status.code(), Some(0));
+    assert!(clean.stdout.is_empty());
+
+    let shown = env.run(&home, "alice", &["show", "--check", "HEAD~2"]);
+    assert_eq!(shown.status.code(), Some(2));
+    assert!(text(&shown).ends_with("\n\nSource/w.txt:2: trailing whitespace.\n+keep  \nSource/w.txt:3: trailing whitespace.\n+Z \n"));
+    let short = env.ok(&home, "alice", &["show", "--shortstat", "HEAD~2"]);
+    assert!(
+        short.ends_with("\n\n 1 file changed, 3 insertions(+), 3 deletions(-)\n"),
+        "{short}"
+    );
+    let ignore = env.ok(&home, "alice", &["show", "-w", "HEAD~2"]);
+    assert!(ignore.contains("-z\n+Z \n"), "{ignore}");
+
+    let err = env.fails(&home, "alice", &["diff", "--check", "--stat"]);
+    assert!(err.contains("cannot be used with"), "{err}");
+}

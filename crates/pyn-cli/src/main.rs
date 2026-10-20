@@ -393,8 +393,17 @@ struct DiffFormat {
     #[arg(short = 'U', long = "unified", value_name = "N", default_value_t = 3)]
     context: usize,
     /// Show a diffstat instead of the patch.
-    #[arg(long, conflicts_with_all = ["name_only", "name_status"])]
+    #[arg(long, conflicts_with_all = ["name_only", "name_status", "check"])]
     stat: bool,
+    /// Show only the totals line of the diffstat.
+    #[arg(long, conflicts_with_all = ["stat", "name_only", "name_status", "check"])]
+    shortstat: bool,
+    /// Ignore whitespace when comparing lines.
+    #[arg(short = 'w', long = "ignore-all-space")]
+    ignore_all_space: bool,
+    /// Report trailing whitespace and space before tab in added lines; exit with 2 if any.
+    #[arg(long, conflicts_with_all = ["name_only", "name_status"])]
+    check: bool,
     /// Show only the names of changed files.
     #[arg(long, conflicts_with = "name_status")]
     name_only: bool,
@@ -405,8 +414,12 @@ struct DiffFormat {
 
 impl DiffFormat {
     fn format(&self) -> diff::Format {
-        let kind = if self.stat {
+        let kind = if self.check {
+            diff::Kind::Check
+        } else if self.stat {
             diff::Kind::Stat
+        } else if self.shortstat {
+            diff::Kind::ShortStat
         } else if self.name_only {
             diff::Kind::NameOnly
         } else if self.name_status {
@@ -417,6 +430,7 @@ impl DiffFormat {
         diff::Format {
             context: self.context,
             kind,
+            ignore_ws: self.ignore_all_space,
         }
     }
 }
@@ -2110,6 +2124,7 @@ fn diff_command(
     let differs = diff::compare(backend, &old, &new, &only, format, &mut out)?;
     if !quiet {
         print!("{out}");
+        diff::exit_if_check_failed(format, &out);
     }
     Ok(differs)
 }
@@ -2137,12 +2152,13 @@ fn show_command(
     };
     let only: Vec<String> = found.revisions.iter().map(|r| r.path.clone()).collect();
     let mut body = String::new();
-    diff::compare(backend, &old, &new, &only, format, &mut body)?;
+    let differs = diff::compare(backend, &old, &new, &only, format, &mut body)?;
     print!("{}", diff::commit_header(&found));
-    if !body.is_empty() {
+    if diff::has_body(format, differs, &body) {
         println!();
         print!("{body}");
     }
+    diff::exit_if_check_failed(format, &body);
     Ok(())
 }
 

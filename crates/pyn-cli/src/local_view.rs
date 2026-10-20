@@ -142,7 +142,7 @@ pub fn show(
     };
     let new = tree_of(store, Some(crate::local_store::parse_id(&commit.tree)?))?;
     let mut body = String::new();
-    diff::compare(
+    let differs = diff::compare(
         backend,
         &old,
         &new,
@@ -151,9 +151,10 @@ pub fn show(
         &mut body,
     )?;
     print!("{}", diff::commit_header(&commit));
-    if !body.is_empty() {
+    if diff::has_body(format, differs, &body) {
         println!();
         print!("{body}");
     }
+    diff::exit_if_check_failed(format, &body);
     Ok(true)
 }
