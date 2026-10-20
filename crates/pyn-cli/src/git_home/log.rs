@@ -12,7 +12,7 @@ use regex::Regex;
 use super::GitHome;
 use super::commands::{add_changes, emit, head_or_refuse, message_lines};
 use super::log_match::{compile, parse_date};
-use super::log_text::{Context, DateStyle, Decorations, Pretty, render};
+use crate::commit_format::{Context, Decorations, FormatArgs, Pretty, Rendering, render};
 use crate::diff::{self, Kind, Tree};
 use crate::{table, time};
 
@@ -25,24 +25,8 @@ pub struct GitLogArgs {
     /// Paths, after `--`.
     #[arg(last = true, value_name = "PATH")]
     dashed: Vec<String>,
-    /// One line per commit: the abbreviated id and the subject.
-    #[arg(long)]
-    oneline: bool,
-    /// `oneline`, `short`, `medium`, `full`, `fuller`, `raw`, or a template such as `%h %s`.
-    #[arg(long, value_name = "FORMAT", require_equals = true)]
-    format: Option<String>,
-    /// Like `--format`; without a value it is `medium`.
-    #[arg(
-        long,
-        value_name = "FORMAT",
-        num_args = 0..=1,
-        require_equals = true,
-        default_missing_value = "medium"
-    )]
-    pretty: Option<String>,
-    /// `default`, `iso`, `iso-strict`, `rfc`, `short`, `relative`, `unix` or `raw`.
-    #[arg(long, value_name = "STYLE")]
-    date: Option<String>,
+    #[command(flatten)]
+    fmt: FormatArgs,
     /// Only commits whose author matches the regular expression; repeat for any of several.
     #[arg(long, value_name = "PATTERN")]
     author: Vec<String>,
@@ -105,10 +89,6 @@ impl GitLogArgs {
         let flags = [
             ("<revision>", !self.more.is_empty()),
             ("--", self.dashed.len() > 1),
-            ("--oneline", self.oneline),
-            ("--format", self.format.is_some()),
-            ("--pretty", self.pretty.is_some()),
-            ("--date", self.date.is_some()),
             ("--author", !self.author.is_empty()),
             ("--committer", !self.committer.is_empty()),
             ("--grep", !self.grep.is_empty()),
@@ -129,6 +109,10 @@ impl GitLogArgs {
             ("-U", self.unified.is_some()),
         ];
         flags.into_iter().find(|(_, on)| *on).map(|(f, _)| f)
+    }
+
+    pub fn format(&self) -> &FormatArgs {
+        &self.fmt
     }
 
     /// The single path given after `--`, which a pyn server reads as its path argument.
@@ -409,7 +393,7 @@ fn diff_body(
     Ok(Some((body, both)))
 }
 
-fn decorations(git: &GitHome) -> Result<Decorations> {
+pub(super) fn decorations(git: &GitHome) -> Result<Decorations> {
     let head = git.repo.head()?;
     let current = match &head {
         Head::Branch { name, .. } => Some(format!("refs/heads/{name}")),
@@ -454,20 +438,7 @@ pub(super) fn log(
     limit: Option<usize>,
     args: GitLogArgs,
 ) -> Result<()> {
-    let mut pretty = match (args.format.as_ref().or(args.pretty.as_ref()), args.oneline) {
-        (Some(f), _) => Pretty::parse(f)?,
-        (None, true) => Pretty::Oneline { abbrev: true },
-        (None, false) => Pretty::Medium,
-    };
-    if args.oneline
-        && let Pretty::Oneline { abbrev } = &mut pretty
-    {
-        *abbrev = true;
-    }
-    let style = match &args.date {
-        Some(d) => DateStyle::parse(d)?,
-        None => DateStyle::Default,
-    };
+    let Rendering { pretty, style } = args.fmt.rendering()?;
     let filters = Filters::new(&args)?;
     let parts = DiffParts::new(&args);
     let positional: Vec<String> = path.into_iter().chain(args.more.iter().cloned()).collect();

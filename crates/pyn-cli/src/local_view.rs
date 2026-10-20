@@ -71,6 +71,14 @@ fn changed_paths(store: &LocalStore, c: &api::Commit) -> Result<Vec<String>> {
         .collect())
 }
 
+/// The unpublished commits of `branch`, newest first.
+pub fn log_commits(store: &LocalStore, branch: &str) -> Result<Vec<api::Commit>> {
+    unpublished_chain(store, branch)?
+        .iter()
+        .map(|id| api_commit(store, id))
+        .collect()
+}
+
 /// The rows of `log --commits` for the unpublished commits, newest first.
 pub fn log_rows(store: &LocalStore, branch: &str) -> Result<Vec<Vec<String>>> {
     unpublished_chain(store, branch)?
@@ -109,7 +117,7 @@ pub fn show(
     store: &LocalStore,
     branch: &str,
     text: Option<&str>,
-    format: &diff::Format,
+    opts: &crate::ShowOpts,
 ) -> Result<bool> {
     let chain = unpublished_chain(store, branch)?;
     let text = text.unwrap_or("HEAD");
@@ -133,6 +141,11 @@ pub fn show(
         }
     }
     let commit = api_commit(store, &cur)?;
+    if opts.no_patch {
+        print!("{}", opts.head(&commit)?.0);
+        return Ok(true);
+    }
+    let format = &opts.diff;
     let old = match commit.parents.first() {
         Some(p) => tree_of(
             store,
@@ -150,9 +163,12 @@ pub fn show(
         format,
         &mut body,
     )?;
-    print!("{}", diff::commit_header(&commit));
+    let (head, blank) = opts.head(&commit)?;
+    print!("{head}");
     if diff::has_body(format, differs, &body) {
-        println!();
+        if blank {
+            println!();
+        }
         print!("{body}");
     }
     diff::exit_if_check_failed(format, &body);

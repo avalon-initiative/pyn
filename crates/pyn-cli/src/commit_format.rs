@@ -1,15 +1,140 @@
-//! The text `pyn log` prints for a commit on a git home: pretty formats, `%` placeholders and date styles.
+//! The text `log` and `show` print for a commit on either home: pretty formats, `%` placeholders and date styles.
+//! A commit is a `pyn_object::Commit` with its id; a server home's `api::Commit` converts into one.
 
 use std::collections::HashMap;
 
 use anyhow::{Result, bail};
 use chrono::{DateTime, FixedOffset};
 use pyn_object::{Commit, ObjectId, Signature};
+use pyn_proto as api;
 
 use crate::time;
 
 /// The commit abbreviation `%h`, `%p` and `Merge:` lines use.
 const ABBREV: usize = 7;
+
+/// The format options `log` and `show` share.
+#[derive(clap::Args, Debug, Default)]
+pub struct FormatArgs {
+    /// One line per commit: the abbreviated id and the subject.
+    #[arg(long)]
+    oneline: bool,
+    /// `oneline`, `short`, `medium`, `full`, `fuller`, `raw`, or a template such as `%h %s`.
+    #[arg(long, value_name = "FORMAT", require_equals = true)]
+    format: Option<String>,
+    /// Like `--format`; without a value it is `medium`.
+    #[arg(
+        long,
+        value_name = "FORMAT",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "medium"
+    )]
+    pretty: Option<String>,
+    /// `default`, `iso`, `iso-strict`, `rfc`, `short`, `relative`, `unix` or `raw`.
+    #[arg(long, value_name = "STYLE")]
+    date: Option<String>,
+}
+
+impl FormatArgs {
+    /// The first option given, for a message naming it.
+    pub fn first_given(&self) -> Option<&'static str> {
+        [
+            ("--oneline", self.oneline),
+            ("--format", self.format.is_some()),
+            ("--pretty", self.pretty.is_some()),
+            ("--date", self.date.is_some()),
+        ]
+        .into_iter()
+        .find(|(_, on)| *on)
+        .map(|(f, _)| f)
+    }
+
+    /// The pretty format; `medium` when none is named. `--format` and `--pretty` win over `--oneline`.
+    pub fn pretty(&self) -> Result<Pretty> {
+        Ok(
+            match (self.format.as_ref().or(self.pretty.as_ref()), self.oneline) {
+                (Some(f), _) => Pretty::parse(f)?,
+                (None, true) => Pretty::Oneline { abbrev: true },
+                (None, false) => Pretty::Medium,
+            },
+        )
+    }
+
+    pub fn style(&self) -> Result<DateStyle> {
+        match &self.date {
+            Some(d) => DateStyle::parse(d),
+            None => Ok(DateStyle::Default),
+        }
+    }
+
+    /// The format and date style, or `None` when no option asks for one.
+    pub fn requested(&self) -> Result<Option<Rendering>> {
+        match self.first_given() {
+            Some(_) => self.rendering().map(Some),
+            None => Ok(None),
+        }
+    }
+
+    /// The format and date style, `medium` and `default` when no option names them.
+    pub fn rendering(&self) -> Result<Rendering> {
+        let mut pretty = self.pretty()?;
+        if self.oneline
+            && let Pretty::Oneline { abbrev } = &mut pretty
+        {
+            *abbrev = true;
+        }
+        Ok(Rendering {
+            pretty,
+            style: self.style()?,
+        })
+    }
+}
+
+/// A chosen format and date style.
+pub struct Rendering {
+    pub pretty: Pretty,
+    pub style: DateStyle,
+}
+
+fn person(p: &api::Person, time: i64) -> Signature {
+    Signature {
+        name: p.name.clone().into_bytes(),
+        email: p.email.clone().into_bytes(),
+        time,
+        offset_minutes: p.offset_minutes,
+    }
+}
+
+/// A server home's commit as the renderer's view of it, with its id.
+pub fn from_api(c: &api::Commit) -> Result<(ObjectId, Commit)> {
+    let ids = |hex: &str| ObjectId::parse(hex).map_err(anyhow::Error::from);
+    let view = Commit {
+        tree: ids(&c.tree)?,
+        parents: c.parents.iter().map(|p| ids(p)).collect::<Result<_>>()?,
+        author: person(&c.author, c.authored_at.unwrap_or(c.created_at).timestamp()),
+        committer: person(&c.committer, c.created_at.timestamp()),
+        extra_headers: Vec::new(),
+        message: c.message.clone().into_bytes(),
+    };
+    Ok((ids(&c.id)?, view))
+}
+
+/// A server home's commit as `r` prints it, with its terminator; no ref names are known there.
+pub fn render_api(r: &Rendering, c: &api::Commit) -> Result<String> {
+    let (id, view) = from_api(c)?;
+    let none = Decorations::new();
+    let ctx = Context {
+        style: r.style,
+        now: chrono::Utc::now().timestamp(),
+        decorations: &none,
+    };
+    Ok(format!(
+        "{}{}",
+        render(&r.pretty, &ctx, &id, &view),
+        r.pretty.terminator()
+    ))
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum DateStyle {

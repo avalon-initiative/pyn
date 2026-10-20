@@ -9,13 +9,14 @@ use pyn_git::Refspec;
 use pyn_gitwork::{
     Change, Conflict, Entry, Head, Kind, Pathspec, StatusEntry, fs_path, hash_worktree_file,
 };
-use pyn_object::{Commit as GitCommit, ObjectId};
+use pyn_object::ObjectId;
 
 use super::{GitHome, file_mode, path_string, stage};
 use crate::backend::Backend;
+use crate::commit_format::{Context, Decorations, FormatArgs, Rendering, render};
 use crate::diff::{self, Blob, Source, Tree};
 use crate::short_status::{self, Format, Row, StatusArgs};
-use crate::{Command, table, time, unsupported};
+use crate::{Command, table, unsupported};
 
 /// The commit abbreviation `Merge:` lines use.
 const ABBREV: usize = 7;
@@ -52,7 +53,12 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
             }
             Ok(())
         }
-        Command::Show { commit, format } => show(git, commit.as_deref(), &format.format()),
+        Command::Show {
+            commit,
+            no_patch,
+            fmt,
+            format,
+        } => show(git, commit.as_deref(), no_patch, &fmt, &format.format()),
         Command::Log {
             path,
             filter,
@@ -66,7 +72,10 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
                 );
             }
             if commits {
-                if path.is_some() || args.first_given().is_some() {
+                if path.is_some()
+                    || args.first_given().is_some()
+                    || args.format().first_given().is_some()
+                {
                     bail!("`pyn log --commits` takes no revision, path or git log option");
                 }
                 return super::log::log_table(git, limit.unwrap_or(50));
@@ -570,26 +579,6 @@ pub(super) fn message_lines(message: &[u8]) -> Vec<String> {
         .collect()
 }
 
-/// The `commit`, `Merge:`, `Author:` and `Date:` lines and the indented message, as `git log` and `git show` print them.
-fn commit_block(id: &ObjectId, c: &GitCommit) -> String {
-    let mut out = format!("commit {id}\n");
-    if c.parents.len() > 1 {
-        let merged: Vec<String> = c.parents.iter().map(short).collect();
-        out.push_str(&format!("Merge: {}\n", merged.join(" ")));
-    }
-    out.push_str(&format!(
-        "Author: {} <{}>\nDate:   {}\n\n",
-        String::from_utf8_lossy(&c.author.name),
-        String::from_utf8_lossy(&c.author.email),
-        time::git_date(c.author.time, c.author.offset_minutes)
-    ));
-    for line in message_lines(&c.message) {
-        out.push_str(&line);
-        out.push('\n');
-    }
-    out
-}
-
 pub(super) fn head_or_refuse(git: &GitHome) -> Result<ObjectId> {
     match git.repo.head()? {
         Head::Branch { name, id: None } => {
@@ -601,12 +590,35 @@ pub(super) fn head_or_refuse(git: &GitHome) -> Result<ObjectId> {
     }
 }
 
-fn show(git: &GitHome, commit: Option<&str>, format: &diff::Format) -> Result<()> {
+fn show(
+    git: &GitHome,
+    commit: Option<&str>,
+    no_patch: bool,
+    fmt: &FormatArgs,
+    format: &diff::Format,
+) -> Result<()> {
+    let Rendering { pretty, style } = fmt.rendering()?;
     let id = match commit {
         Some(c) => git.repo.resolve(c)?,
         None => head_or_refuse(git)?,
     };
     let c = git.repo.commit(&id)?;
+    let names = if pretty.uses_decorations() {
+        super::log::decorations(git)?
+    } else {
+        Decorations::new()
+    };
+    let ctx = Context {
+        style,
+        now: chrono::Utc::now().timestamp(),
+        decorations: &names,
+    };
+    let mut out = render(&pretty, &ctx, &id, &c);
+    out.push_str(pretty.terminator());
+    if no_patch {
+        emit(&out);
+        return Ok(());
+    }
     let mut body = String::new();
     let mut differs = false;
     if c.parents.len() <= 1 {
@@ -621,9 +633,10 @@ fn show(git: &GitHome, commit: Option<&str>, format: &diff::Format) -> Result<()
         add_changes(&mut old, &mut new, &changes);
         differs = diff::compare(git, &old, &new, &[], format, &mut body)?;
     }
-    let mut out = commit_block(&id, &c);
     if diff::has_body(format, differs, &body) || c.parents.len() > 1 {
-        out.push('\n');
+        if pretty.blank_before_diff() {
+            out.push('\n');
+        }
         out.push_str(&body);
     }
     emit(&out);

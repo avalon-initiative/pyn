@@ -127,8 +127,12 @@ impl Fixture {
     }
 
     fn oracle(&self, cwd: &Path, args: &[&str]) -> (i32, String) {
+        self.oracle_cmd("log", cwd, args)
+    }
+
+    fn oracle_cmd(&self, cmd: &str, cwd: &Path, args: &[&str]) -> (i32, String) {
         let mut c = git(cwd);
-        c.env("TZ", "UTC").arg("log").args(args);
+        c.env("TZ", "UTC").arg(cmd).args(args);
         let out = c.output().unwrap();
         (
             out.status.code().unwrap(),
@@ -138,9 +142,13 @@ impl Fixture {
     }
 
     fn pyn(&self, cwd: &Path, args: &[&str]) -> (i32, String, String) {
+        self.pyn_cmd("log", cwd, args)
+    }
+
+    fn pyn_cmd(&self, cmd: &str, cwd: &Path, args: &[&str]) -> (i32, String, String) {
         let out = Command::new(env!("CARGO_BIN_EXE_pyn"))
             .current_dir(cwd)
-            .arg("log")
+            .arg(cmd)
             .args(args)
             .env_clear()
             .env("PATH", path_env())
@@ -165,6 +173,15 @@ impl Fixture {
         let (code, got, err) = self.pyn(cwd, args);
         assert_eq!(code, want_code, "{} log {args:?}: {err}", self.format);
         assert_eq!(got, want, "{} log {args:?}", self.format);
+    }
+}
+
+impl Fixture {
+    fn same_show(&self, args: &[&str]) {
+        let (want_code, want) = self.oracle_cmd("show", &self.repo, args);
+        let (code, got, err) = self.pyn_cmd("show", &self.repo, args);
+        assert_eq!(code, want_code, "{} show {args:?}: {err}", self.format);
+        assert_eq!(got, want, "{} show {args:?}", self.format);
     }
 }
 
@@ -507,4 +524,44 @@ fn the_commits_table_takes_no_git_log_options() {
     assert!(out.contains("COMMIT") && out.contains("remove a"), "{out}");
     let (code, _, err) = f.pyn(&f.repo, &["--commits", "--oneline"]);
     assert_ne!(code, 0, "{err}");
+}
+
+#[test]
+fn show_formats_match_git() {
+    each_format(|f| {
+        for args in [
+            &["-s"][..],
+            &["--no-patch"],
+            &["-s", "HEAD~1"],
+            &["-s", "--oneline"],
+            &["--oneline", "HEAD~3"],
+            &["--oneline", "--stat", "HEAD~3"],
+            &["-s", "--pretty=short", "HEAD~4"],
+            &["-s", "--pretty=full", "HEAD~4"],
+            &["-s", "--pretty=fuller", "HEAD~4"],
+            &["-s", "--pretty=raw", "HEAD~4"],
+            &["-s", "--format=%H|%h|%T|%P|%p|%an|%ae|%cn|%s"],
+            &["-s", "--format=%b|%B|%%"],
+            &["-s", "--format=%ad|%cd", "--date=iso"],
+            &["-s", "--format=%ad", "--date=unix", "HEAD~4"],
+            &["--format=%h %s", "HEAD~3"],
+            &["--format=format:%h", "HEAD~3"],
+            &["--format=tformat:%an", "HEAD~3"],
+            &["-s", "--date=rfc", "--pretty=fuller", "HEAD~6"],
+            &["-s", "--format="],
+        ] {
+            f.same_show(args);
+        }
+    });
+}
+
+#[test]
+fn show_format_errors_match_git() {
+    let f = Fixture::new("sha1");
+    for args in [&["--format=%h", "nope"][..], &["-s", "--date=bogus"]] {
+        let (code, _) = f.oracle_cmd("show", &f.repo, args);
+        let (got, out, _) = f.pyn_cmd("show", &f.repo, args);
+        assert_eq!(got != 0, code != 0, "{args:?}");
+        assert!(out.is_empty(), "{args:?}");
+    }
 }

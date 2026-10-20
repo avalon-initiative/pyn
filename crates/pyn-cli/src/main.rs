@@ -10,6 +10,7 @@ mod admin;
 mod backend;
 mod branch;
 mod client;
+mod commit_format;
 mod credentials;
 mod diff;
 mod git_home;
@@ -186,6 +187,11 @@ enum Command {
     Show {
         /// `HEAD`, `HEAD~N`, `HEAD^` or a commit hash (an abbreviation of at least 4 digits is enough).
         commit: Option<String>,
+        /// Print only the commit, not its diff.
+        #[arg(short = 's', long = "no-patch")]
+        no_patch: bool,
+        #[command(flatten)]
+        fmt: commit_format::FormatArgs,
         #[command(flatten)]
         format: DiffFormat,
     },
@@ -1518,8 +1524,18 @@ fn run(cli: Cli) -> Result<()> {
                 std::process::exit(1);
             }
         }
-        Command::Show { commit, format } => {
-            show_command(&backend, ws.as_ref(), commit.as_deref(), &format.format())?
+        Command::Show {
+            commit,
+            no_patch,
+            fmt,
+            format,
+        } => {
+            let shown = ShowOpts {
+                diff: format.format(),
+                rendering: fmt.requested()?,
+                no_patch,
+            };
+            show_command(&backend, ws.as_ref(), commit.as_deref(), &shown)?
         }
         Command::Policy(PolicyCommand::Preview { file }) => {
             let api = backend.pyn_server("policy")?;
@@ -1743,12 +1759,22 @@ fn run(cli: Cli) -> Result<()> {
             }
         }
         Command::Log {
-            commits: true,
+            path,
+            filter,
+            commits,
             limit,
-            ..
-        } => {
+            git: log_args,
+        } if commits || log_args.format().first_given().is_some() => {
             branch::note_branch(ws.as_ref());
             let limit = limit.unwrap_or(50);
+            if let Some(rendering) = log_args.format().requested()? {
+                if path.is_some() || filter.is_some() || log_args.sole_dashed().is_some() {
+                    usage_error(
+                        "`pyn log` with a format lists commits and takes no path or --filter on a pyn server",
+                    );
+                }
+                return log_formatted(&backend, ws.as_ref(), limit, &rendering);
+            }
             let mut rows: Vec<Vec<String>> =
                 match ws.as_ref().and_then(local_store::LocalStore::open) {
                     Some(store) => local_view::log_rows(&store, &branch::name(ws.as_ref()))?,
@@ -2129,14 +2155,66 @@ fn diff_command(
     Ok(differs)
 }
 
+/// `log` with a format on a pyn server: the unpublished local commits, then the server's, newest first.
+fn log_formatted(
+    backend: &dyn Backend,
+    ws: Option<&Workspace>,
+    limit: usize,
+    rendering: &commit_format::Rendering,
+) -> Result<()> {
+    let mut commits = match ws.and_then(local_store::LocalStore::open) {
+        Some(store) => local_view::log_commits(&store, &branch::name(ws))?,
+        None => Vec::new(),
+    };
+    commits.truncate(limit);
+    let mut before: Option<String> = None;
+    while commits.len() < limit {
+        let page = backend.commit_page(before.as_deref(), (limit - commits.len()).min(200))?;
+        commits.extend(page.commits);
+        before = page.next_before;
+        if before.is_none() {
+            break;
+        }
+    }
+    let mut out = String::new();
+    for (i, c) in commits.iter().enumerate() {
+        if i > 0 && !rendering.pretty.terminated() {
+            out.push('\n');
+        }
+        out.push_str(&commit_format::render_api(rendering, c)?);
+    }
+    print!("{out}");
+    Ok(())
+}
+
+/// What `show` prints besides the commit's diff format: a pretty format, and whether to leave the diff out.
+struct ShowOpts {
+    diff: diff::Format,
+    rendering: Option<commit_format::Rendering>,
+    no_patch: bool,
+}
+
+impl ShowOpts {
+    /// The commit's text and whether a blank line sets the diff off from it.
+    fn head(&self, c: &api::Commit) -> Result<(String, bool)> {
+        match &self.rendering {
+            Some(r) => Ok((
+                commit_format::render_api(r, c)?,
+                r.pretty.blank_before_diff(),
+            )),
+            None => Ok((diff::commit_header(c), true)),
+        }
+    }
+}
+
 fn show_command(
     backend: &dyn Backend,
     ws: Option<&Workspace>,
     commit: Option<&str>,
-    format: &diff::Format,
+    opts: &ShowOpts,
 ) -> Result<()> {
     if let Some(store) = ws.and_then(local_store::LocalStore::open)
-        && local_view::show(backend, &store, &branch::name(ws), commit, format)?
+        && local_view::show(backend, &store, &branch::name(ws), commit, opts)?
     {
         return Ok(());
     }
@@ -2145,6 +2223,11 @@ fn show_command(
         None => snapshot::resolve(backend, "HEAD")?,
     };
     let found = backend.commit(&id)?;
+    if opts.no_patch {
+        print!("{}", opts.head(&found)?.0);
+        return Ok(());
+    }
+    let format = &opts.diff;
     let new = diff::tree_of_snapshot(&backend.snapshot(Some(&id))?.1);
     let old = match found.parents.first() {
         Some(parent) => diff::tree_of_snapshot(&backend.snapshot(Some(parent))?.1),
@@ -2153,9 +2236,12 @@ fn show_command(
     let only: Vec<String> = found.revisions.iter().map(|r| r.path.clone()).collect();
     let mut body = String::new();
     let differs = diff::compare(backend, &old, &new, &only, format, &mut body)?;
-    print!("{}", diff::commit_header(&found));
+    let (head, blank) = opts.head(&found)?;
+    print!("{head}");
     if diff::has_body(format, differs, &body) {
-        println!();
+        if blank {
+            println!();
+        }
         print!("{body}");
     }
     diff::exit_if_check_failed(format, &body);

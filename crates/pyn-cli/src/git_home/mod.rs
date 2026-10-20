@@ -12,7 +12,6 @@ mod fetch_apply;
 mod fetch_map;
 mod log;
 mod log_match;
-mod log_text;
 mod merge;
 mod pull;
 mod push;
