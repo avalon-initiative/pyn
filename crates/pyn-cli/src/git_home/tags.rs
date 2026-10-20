@@ -8,6 +8,7 @@ use pyn_object::{Kind, ObjectId, Tag};
 
 use super::GitHome;
 use super::refwrite::TAGS;
+use super::signing::{SignFlag, signer_for};
 use super::stage::{clean_message, identity};
 
 const ABBREV: usize = 7;
@@ -32,6 +33,15 @@ pub struct TagArgs {
     /// Replace a tag that exists.
     #[arg(short = 'f', long)]
     force: bool,
+    /// Make a signed annotated tag with `user.signingkey`.
+    #[arg(short = 's', long, overrides_with_all = ["local_user", "no_sign"])]
+    sign: bool,
+    /// Make a signed annotated tag with this key id.
+    #[arg(short = 'u', long, value_name = "KEYID", overrides_with_all = ["sign", "no_sign"])]
+    local_user: Option<String>,
+    /// Do not sign, whatever `tag.gpgsign` says.
+    #[arg(long, overrides_with_all = ["sign", "local_user"])]
+    no_sign: bool,
 }
 
 fn short(id: &ObjectId) -> String {
@@ -91,9 +101,16 @@ fn create(git: &GitHome, args: &TagArgs, name: &str, target: Option<&str>) -> Re
     if old.is_some() && !args.force {
         bail!("tag '{name}' already exists");
     }
-    if git.repo.bool_setting("tag.gpgsign", false) {
-        bail!("tag.gpgsign is set and pyn cannot sign tags yet; unset it to tag with pyn");
-    }
+    let tagger = identity(git, "committer").ok();
+    let flag = SignFlag {
+        gpg_sign: match (&args.local_user, args.sign) {
+            (Some(key), _) => Some(Some(key.clone())),
+            (None, true) => Some(None),
+            _ => None,
+        },
+        no_gpg_sign: args.no_sign,
+    };
+    let signer = signer_for(git, &flag, "tag.gpgsign", tagger.as_ref())?;
     let object = match target {
         Some(spec) => match git.repo.refs().resolve(&tag_ref(spec)) {
             Ok(Some(id)) if pyn_git::check_ref_name(&tag_ref(spec)).is_ok() => id,
@@ -104,19 +121,23 @@ fn create(git: &GitHome, args: &TagArgs, name: &str, target: Option<&str>) -> Re
             None => bail!("Failed to resolve 'HEAD' as a valid ref."),
         },
     };
-    let annotated = args.annotate || !args.message.is_empty();
+    let annotated = args.annotate || !args.message.is_empty() || signer.is_some();
     let id = if annotated {
         if args.message.is_empty() {
             bail!("no tag message; give one with -m (pyn has no editor)");
         }
         let kind = git.repo.objects().read(&object)?.kind;
-        let tag = Tag {
+        let mut tag = Tag {
             object,
             kind,
             name: name.as_bytes().to_vec(),
             tagger: Some(identity(git, "committer")?),
             message: clean_message(&args.message),
         };
+        if let Some(signer) = &signer {
+            let sig = signer.sign(&tag.encode(git.algorithm())?)?;
+            tag.message.extend_from_slice(&sig);
+        }
         git.repo
             .objects()
             .write(Kind::Tag, &tag.encode(git.algorithm())?)?

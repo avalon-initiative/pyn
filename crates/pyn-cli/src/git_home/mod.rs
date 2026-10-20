@@ -19,6 +19,7 @@ mod push_plan;
 mod refwrite;
 mod remote;
 mod remote_query;
+mod signing;
 mod stage;
 mod stash;
 mod switch;
