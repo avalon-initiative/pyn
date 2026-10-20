@@ -1,4 +1,4 @@
-//! Server administration: first-run setup, accounts, administrators, organizations and service credentials.
+//! Server administration: first-run setup, accounts, administrators, organizations, service credentials and webhooks.
 
 use crate::transport::Method;
 use anyhow::{Result, bail};
@@ -26,6 +26,9 @@ pub enum AdminCommand {
     /// Optional per-owner limits on repositories, members and stored content.
     #[command(subcommand)]
     Limits(crate::limits::LimitsCommand),
+    /// Webhook subscriptions for lifecycle events, and their signing secrets.
+    #[command(subcommand)]
+    Webhook(crate::webhook::WebhookCommand),
 }
 
 #[derive(Subcommand)]
@@ -56,7 +59,7 @@ pub enum ServiceCredentialCommand {
     /// Create a credential. Its secret is shown once.
     Create {
         name: String,
-        /// Comma-separated scopes: manage_accounts, manage_organizations, manage_limits.
+        /// Comma-separated scopes: manage_accounts, manage_organizations, manage_limits, manage_webhooks.
         #[arg(long, value_delimiter = ',', required = true)]
         scopes: Vec<String>,
     },
@@ -146,6 +149,7 @@ pub fn run(api: &Api, cmd: AdminCommand) -> Result<()> {
         AdminCommand::ServiceCredential(cmd) => service_credential(api, cmd),
         AdminCommand::Org(cmd) => org(api, cmd),
         AdminCommand::Limits(cmd) => crate::limits::run(api, cmd),
+        AdminCommand::Webhook(cmd) => crate::webhook::run(api, cmd),
     }
 }
 

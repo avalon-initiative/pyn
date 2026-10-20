@@ -133,6 +133,14 @@ pub enum PynError {
     ServiceCredentialNotFound(String),
     #[error("there is already a service credential named {0}")]
     ServiceCredentialExists(String),
+    #[error("no webhook {0}")]
+    WebhookNotFound(i64),
+    #[error("webhook {webhook} has no active secret {secret}")]
+    WebhookSecretNotFound { webhook: i64, secret: i64 },
+    #[error("a webhook has at most {0} active secrets; retire one first")]
+    WebhookSecretLimit(usize),
+    #[error("that is the webhook's only active secret; rotate in a new one before retiring it")]
+    WebhookLastSecret,
     #[error("that key is already linked to an account")]
     KeyInUse,
     #[error("no key {0}")]
@@ -297,6 +305,10 @@ impl PynError {
             Self::ServiceCredentialNotAllowed => "service_credential_not_allowed",
             Self::ServiceCredentialNotFound(_) => "service_credential_not_found",
             Self::ServiceCredentialExists(_) => "service_credential_exists",
+            Self::WebhookNotFound(_) => "webhook_not_found",
+            Self::WebhookSecretNotFound { .. } => "webhook_secret_not_found",
+            Self::WebhookSecretLimit(_) => "webhook_secret_limit",
+            Self::WebhookLastSecret => "webhook_last_secret",
             Self::KeyInUse => "key_in_use",
             Self::KeyNotFound(_) => "key_not_found",
             Self::OidcNotConfigured => "oidc_not_configured",

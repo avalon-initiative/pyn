@@ -331,13 +331,16 @@ pub enum ServiceScope {
     ManageOrganizations,
     /// Set per-owner limits and read any owner's usage.
     ManageLimits,
+    /// Create, change and delete webhook subscriptions and rotate their secrets.
+    ManageWebhooks,
 }
 
 impl ServiceScope {
-    pub const ALL: [ServiceScope; 3] = [
+    pub const ALL: [ServiceScope; 4] = [
         ServiceScope::ManageAccounts,
         ServiceScope::ManageOrganizations,
         ServiceScope::ManageLimits,
+        ServiceScope::ManageWebhooks,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -345,6 +348,7 @@ impl ServiceScope {
             Self::ManageAccounts => "manage_accounts",
             Self::ManageOrganizations => "manage_organizations",
             Self::ManageLimits => "manage_limits",
+            Self::ManageWebhooks => "manage_webhooks",
         }
     }
 }

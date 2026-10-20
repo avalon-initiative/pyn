@@ -3,13 +3,13 @@ use std::sync::Arc;
 use pyn_core::gate::{DEFAULT_UPLOADS_PER_SERVER, DEFAULT_UPLOADS_PER_USER};
 use pyn_core::memory::{
     MemoryAccessStore, MemoryAuditStore, MemoryMetadataStore, MemoryObjectStore,
-    MemoryRateLimitStore,
+    MemoryRateLimitStore, MemoryWebhookStore,
 };
 use pyn_core::merge::default_concurrent_merges;
 use pyn_core::{
     AccessConfig, AccessService, AccessStore, AuditStore, AuthProvider, ChunkedStore,
     ExternalPolicy, Limits, MetadataStore, ObjectStore, RateLimitStore, RateLimits, Repositories,
-    Rules, SystemClock, generate_setup_token,
+    Rules, SecretKey, SystemClock, WebhookSettings, WebhookStore, generate_setup_token,
 };
 use pyn_fs::FsObjectStore;
 use pyn_oidc::{HttpOidcProvider, OidcConfig};
@@ -43,6 +43,7 @@ struct Stores {
     access: Arc<dyn AccessStore>,
     audit: Arc<dyn AuditStore>,
     limits: Arc<dyn RateLimitStore>,
+    webhooks: Arc<dyn WebhookStore>,
     postgres: Option<Arc<PgMetadataStore>>,
     kind: &'static str,
 }
@@ -57,6 +58,7 @@ async fn stores() -> anyhow::Result<Stores> {
                 access: pg.clone(),
                 audit: pg.clone(),
                 limits: pg.clone(),
+                webhooks: pg.clone(),
                 postgres: Some(pg),
                 kind: "postgres",
             }
@@ -66,6 +68,7 @@ async fn stores() -> anyhow::Result<Stores> {
             access: Arc::new(MemoryAccessStore::new()),
             audit: Arc::new(MemoryAuditStore::new()),
             limits: Arc::new(MemoryRateLimitStore::new()),
+            webhooks: Arc::new(MemoryWebhookStore::new()),
             postgres: None,
             kind: "in-memory",
         },
@@ -114,6 +117,39 @@ fn request_limits() -> anyhow::Result<RequestLimits> {
         request_timeout: seconds("PYN_REQUEST_TIMEOUT_SECS", defaults.request_timeout)?,
         body_idle_timeout: seconds("PYN_BODY_IDLE_TIMEOUT_SECS", defaults.body_idle_timeout)?,
         max_expensive,
+    })
+}
+
+/// `true` or `false`; anything else is an error rather than a silent default.
+fn strict_flag(name: &str, default: bool) -> anyhow::Result<bool> {
+    match std::env::var(name).as_deref() {
+        Err(_) => Ok(default),
+        Ok("true") => Ok(true),
+        Ok("false") => Ok(false),
+        Ok(_) => anyhow::bail!("{name} must be true or false"),
+    }
+}
+
+fn webhook_settings() -> anyhow::Result<WebhookSettings> {
+    let secret_key = match std::env::var("PYN_SECRET_KEY") {
+        Ok(text) => {
+            Some(SecretKey::from_hex(&text).map_err(|e| anyhow::anyhow!("PYN_SECRET_KEY: {e}"))?)
+        }
+        Err(std::env::VarError::NotPresent) => None,
+        Err(_) => anyhow::bail!("PYN_SECRET_KEY is not valid text"),
+    };
+    match &secret_key {
+        Some(key) => tracing::info!(
+            key_id = key.key_id(),
+            "webhook secrets are encrypted at rest"
+        ),
+        None => tracing::warn!(
+            "PYN_SECRET_KEY is not set: webhook signing secrets are stored unencrypted"
+        ),
+    }
+    Ok(WebhookSettings {
+        secret_key,
+        allow_http: strict_flag("PYN_WEBHOOKS_ALLOW_HTTP", false)?,
     })
 }
 
@@ -167,6 +203,7 @@ async fn main() -> anyhow::Result<()> {
         access: access_store,
         audit,
         limits,
+        webhooks,
         postgres,
         kind: meta_kind,
     } = stores().await?;
@@ -286,7 +323,8 @@ async fn main() -> anyhow::Result<()> {
         Some(token) => token.clone(),
         None => generate_setup_token()?,
     };
-    let mut service = AccessService::new(access_store, clock.clone());
+    let mut service = AccessService::new(access_store, clock.clone())
+        .with_webhooks(webhooks, webhook_settings()?);
     if let Some(provider) = oidc {
         tracing::info!("sign-in with the OpenID Connect provider is on");
         service = service.with_oidc(provider);

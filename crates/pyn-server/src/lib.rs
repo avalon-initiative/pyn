@@ -39,6 +39,7 @@ pub mod request_limits;
 mod session_api;
 mod setup_api;
 mod team_api;
+mod webhook_api;
 
 /// The largest object one upload may carry.
 const MAX_OBJECT_BYTES: u64 = 16 << 30;
@@ -111,6 +112,13 @@ struct RepoAddress {
         limits_api::set_owner_limits,
         limits_api::owner_usage,
         limits_api::repo_usage,
+        webhook_api::create_webhook,
+        webhook_api::list_webhooks,
+        webhook_api::get_webhook,
+        webhook_api::update_webhook,
+        webhook_api::delete_webhook,
+        webhook_api::rotate_webhook_secret,
+        webhook_api::retire_webhook_secret,
         access_api::create_token,
         access_api::list_tokens,
         access_api::revoke_token,
@@ -323,7 +331,13 @@ struct RepoAddress {
         api::RepositoryRenamedData,
         api::RepositoryDeletedData,
         api::OwnerLimitsChangedData,
-        api::OwnerLimitReachedData
+        api::OwnerLimitReachedData,
+        api::Webhook,
+        api::WebhookSecretInfo,
+        api::CreateWebhookRequest,
+        api::UpdateWebhookRequest,
+        api::CreatedWebhook,
+        api::RotatedWebhookSecret
     ))
 )]
 pub struct ApiDoc;
@@ -372,6 +386,24 @@ fn routes(state: AppState) -> Router {
         .route(
             "/v1/admin/owners/{owner}/limits",
             patch(limits_api::set_owner_limits),
+        )
+        .route(
+            "/v1/admin/webhooks",
+            get(webhook_api::list_webhooks).post(webhook_api::create_webhook),
+        )
+        .route(
+            "/v1/admin/webhooks/{id}",
+            get(webhook_api::get_webhook)
+                .patch(webhook_api::update_webhook)
+                .delete(webhook_api::delete_webhook),
+        )
+        .route(
+            "/v1/admin/webhooks/{id}/secrets",
+            post(webhook_api::rotate_webhook_secret),
+        )
+        .route(
+            "/v1/admin/webhooks/{id}/secrets/{secret_id}",
+            delete(webhook_api::retire_webhook_secret),
         )
         .route("/v1/owners/{owner}/limits", get(limits_api::owner_limits))
         .route("/v1/owners/{owner}/usage", get(limits_api::owner_usage))
@@ -607,6 +639,8 @@ impl IntoResponse for ApiError {
             | PynError::LastSignInMethod
             | PynError::AlreadyInitialised
             | PynError::ServiceCredentialExists(_)
+            | PynError::WebhookSecretLimit(_)
+            | PynError::WebhookLastSecret
             | PynError::BranchExists(_)
             | PynError::BranchNotMerged(_)
             | PynError::MergeConflict(_)
@@ -644,6 +678,8 @@ impl IntoResponse for ApiError {
             PynError::ExternalProviderUnavailable(_) => StatusCode::BAD_GATEWAY,
             PynError::TokenNotFound(_)
             | PynError::ServiceCredentialNotFound(_)
+            | PynError::WebhookNotFound(_)
+            | PynError::WebhookSecretNotFound { .. }
             | PynError::UserNotFound(_)
             | PynError::KeyNotFound(_)
             | PynError::OidcNotConfigured

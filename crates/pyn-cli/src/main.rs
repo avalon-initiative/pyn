@@ -41,6 +41,7 @@ mod transport;
 mod unsupported;
 mod userconfig;
 mod verify;
+mod webhook;
 mod workspace;
 
 use backend::Backend;

@@ -16,7 +16,7 @@ use crate::clock::Clock;
 use crate::email::{EmailMessage, EmailSender, NullEmailSender};
 use crate::error::{PynError, Result};
 use crate::limits::{Limits, LimitsChange, StorageCaps};
-use crate::memory::MemoryRateLimitStore;
+use crate::memory::{MemoryRateLimitStore, MemoryWebhookStore};
 use crate::oidc::{
     ExternalCreate, ExternalIdentity, IdentityUnlink, NewExternalAccount, OidcFlow, OidcProvider,
 };
@@ -28,6 +28,7 @@ use crate::repo_policy::{
 use crate::store::MetadataStore;
 use crate::types::{MAX_LABEL_BYTES, validate_label};
 use crate::types::{RepoId, UserId};
+use crate::webhook::WebhookStore;
 
 /// Server-wide events (account approvals and disables) are recorded in the audit store under this id, which
 /// no repository can have.
@@ -39,11 +40,15 @@ mod organizations;
 mod repo_policy;
 mod setup;
 mod teams;
+mod webhooks;
 
 pub use external::{ExternalSignIn, OidcBegin, OidcFinish, OidcStart};
 pub use limits::OwnerLimits;
 pub use setup::{SetupRequest, SetupStatus, generate_setup_token};
 pub use teams::TeamDetail;
+pub use webhooks::{
+    CreateWebhook, IssuedSecret, WebhookDetail, WebhookSecretInfo, WebhookSettings,
+};
 
 /// The outcome of changing or removing an organization member.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -630,6 +635,8 @@ pub struct AccessService {
     registry: Option<Arc<dyn MetadataStore>>,
     oidc: Option<Arc<dyn OidcProvider>>,
     setup: setup::SetupState,
+    webhooks: Arc<dyn WebhookStore>,
+    webhook_settings: WebhookSettings,
 }
 
 fn stronger(
@@ -683,6 +690,8 @@ impl AccessService {
             registry: None,
             oidc: None,
             setup: setup::SetupState::default(),
+            webhooks: Arc::new(MemoryWebhookStore::new()),
+            webhook_settings: WebhookSettings::default(),
         }
     }
 

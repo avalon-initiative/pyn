@@ -6,6 +6,8 @@ use utoipa::ToSchema;
 
 mod events;
 pub use events::*;
+mod webhooks;
+pub use webhooks::*;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct Lock {
@@ -664,7 +666,7 @@ pub struct AdminCreateOrgRequest {
 pub struct CreateServiceCredentialRequest {
     /// 1 to 64 lowercase letters, digits, `-` or `_`; unique, and never reused after revocation.
     pub name: String,
-    /// At least one of `manage_accounts`, `manage_organizations`, `manage_limits`.
+    /// At least one of `manage_accounts`, `manage_organizations`, `manage_limits`, `manage_webhooks`.
     pub scopes: Vec<String>,
 }
 

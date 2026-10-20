@@ -814,6 +814,377 @@
         }
       }
     },
+    "/v1/admin/webhooks": {
+      "get": {
+        "tags": [
+          "webhook_api"
+        ],
+        "operationId": "list_webhooks",
+        "responses": {
+          "200": {
+            "description": "oldest first; secret values are never returned",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Webhook"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "server_admin_required, or service_scope_required for a service credential without manage_webhooks",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "webhook_api"
+        ],
+        "operationId": "create_webhook",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateWebhookRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "the signing secret is shown once",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatedWebhook"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: bad name, url (https only, no user info or fragment) or event type",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "server_admin_required, or service_scope_required for a service credential without manage_webhooks",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/webhooks/{id}": {
+      "get": {
+        "tags": [
+          "webhook_api"
+        ],
+        "operationId": "get_webhook",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "the subscription's id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Webhook"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "server_admin_required, or service_scope_required for a service credential without manage_webhooks",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "webhook_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "webhook_api"
+        ],
+        "operationId": "delete_webhook",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "the subscription's id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "its secrets and deliveries are deleted with it"
+          },
+          "403": {
+            "description": "server_admin_required, or service_scope_required for a service credential without manage_webhooks",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "webhook_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "webhook_api"
+        ],
+        "operationId": "update_webhook",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "the subscription's id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateWebhookRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Webhook"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: nothing to change, or a bad name, url or event type",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "server_admin_required, or service_scope_required for a service credential without manage_webhooks",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "webhook_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/webhooks/{id}/secrets": {
+      "post": {
+        "tags": [
+          "webhook_api"
+        ],
+        "operationId": "rotate_webhook_secret",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "the subscription's id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "adds a second active secret, shown once; deliveries carry a signature for each active secret until the old one is retired",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RotatedWebhookSecret"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "server_admin_required, or service_scope_required for a service credential without manage_webhooks",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "webhook_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "webhook_secret_limit: two secrets are already active; retire one first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/webhooks/{id}/secrets/{secret_id}": {
+      "delete": {
+        "tags": [
+          "webhook_api"
+        ],
+        "operationId": "retire_webhook_secret",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "the subscription's id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "secret_id",
+            "in": "path",
+            "description": "an active secret of that subscription",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "the secret stops signing deliveries"
+          },
+          "403": {
+            "description": "server_admin_required, or service_scope_required for a service credential without manage_webhooks",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "webhook_not_found, or webhook_secret_not_found when it is not an active secret of that subscription",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "webhook_last_secret: rotate in a new secret first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/capabilities": {
       "get": {
         "tags": [],
@@ -7636,7 +8007,7 @@
             "items": {
               "type": "string"
             },
-            "description": "At least one of `manage_accounts`, `manage_organizations`, `manage_limits`."
+            "description": "At least one of `manage_accounts`, `manage_organizations`, `manage_limits`, `manage_webhooks`."
           }
         }
       },
@@ -7699,6 +8070,34 @@
           }
         }
       },
+      "CreateWebhookRequest": {
+        "type": "object",
+        "required": [
+          "name",
+          "url"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Defaults to true."
+          },
+          "event_types": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Event types to deliver, such as `repository.created`; empty or left out means every type."
+          },
+          "name": {
+            "type": "string",
+            "description": "1 to 256 bytes, no control characters."
+          },
+          "url": {
+            "type": "string",
+            "description": "`https` only (`http` when the operator allows it), no user name or password, no fragment, at most 2048 bytes."
+          }
+        }
+      },
       "CreatedInvite": {
         "type": "object",
         "required": [
@@ -7744,6 +8143,22 @@
           "token": {
             "type": "string",
             "description": "The token to present as a bearer credential. Shown once and never stored."
+          }
+        }
+      },
+      "CreatedWebhook": {
+        "type": "object",
+        "required": [
+          "webhook",
+          "secret"
+        ],
+        "properties": {
+          "secret": {
+            "type": "string",
+            "description": "The signing secret: `whsec_` and 64 hex characters. Shown once and never returned again."
+          },
+          "webhook": {
+            "$ref": "#/components/schemas/Webhook"
           }
         }
       },
@@ -9788,6 +10203,28 @@
           }
         }
       },
+      "RotatedWebhookSecret": {
+        "type": "object",
+        "required": [
+          "secret_id",
+          "created_at",
+          "secret"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "secret": {
+            "type": "string",
+            "description": "The new signing secret. Shown once and never returned again."
+          },
+          "secret_id": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
       "ServerCapabilities": {
         "type": "object",
         "description": "What this server supports beyond the base API; a client checks it before it relies on a newer route.",
@@ -10487,6 +10924,40 @@
           }
         }
       },
+      "UpdateWebhookRequest": {
+        "type": "object",
+        "description": "Fields left out stay as they are.",
+        "properties": {
+          "enabled": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "event_types": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Replaces the list; an empty list means every type."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
       "Usage": {
         "type": "object",
         "required": [
@@ -10626,6 +11097,84 @@
           "public",
           "private"
         ]
+      },
+      "Webhook": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "url",
+          "event_types",
+          "enabled",
+          "created_at",
+          "updated_at",
+          "created_by",
+          "secrets"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "created_by": {
+            "type": "string",
+            "description": "The account that created it."
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "event_types": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Event types delivered; empty means every type."
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "name": {
+            "type": "string"
+          },
+          "secrets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WebhookSecretInfo"
+            },
+            "description": "Active secrets, oldest first: one, or two while a rotation is in progress."
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "url": {
+            "type": "string"
+          }
+        }
+      },
+      "WebhookSecretInfo": {
+        "type": "object",
+        "description": "An active signing secret. Its value is shown once, when it is created, and never again.",
+        "required": [
+          "id",
+          "created_at",
+          "encrypted"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "encrypted": {
+            "type": "boolean",
+            "description": "Whether the server stores it encrypted (`PYN_SECRET_KEY` is set)."
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
       }
     }
   }

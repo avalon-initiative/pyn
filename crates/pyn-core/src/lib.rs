@@ -32,6 +32,8 @@ pub mod stranded;
 pub mod tree;
 pub mod types;
 pub mod webhook;
+pub mod webhook_secret;
+pub mod webhook_url;
 
 pub use access::{
     AccountKind, AccountRecord, AccountStatus, Credential, Identity, InviteId, InviteRecord,
@@ -46,6 +48,9 @@ pub use access_service::{
     ExternalSignIn, MAX_INVITE_HOURS, OidcBegin, OidcFinish, OidcStart, OrgDeleteMark,
     OrgMemberChange, OwnerLimits, RateLimits, Registration, RepoMember, SERVER_AUDIT_ID,
     SetupRequest, SetupStatus, SignUp, TeamDetail, generate_setup_token,
+};
+pub use access_service::{
+    CreateWebhook, IssuedSecret, WebhookDetail, WebhookSecretInfo, WebhookSettings,
 };
 pub use audit::{AuditAction, AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent};
 pub use auth::AuthProvider;
@@ -106,3 +111,4 @@ pub use webhook::{
     MAX_ATTEMPTS, NewSecret, NewSubscription, OutboxEvent, RETENTION_DAYS, RandomJitter,
     Subscription, SubscriptionUpdate, WebhookSecret, WebhookStore, retry_delay,
 };
+pub use webhook_secret::{SECRET_PREFIX, SecretKey, generate_secret, reveal_secret};

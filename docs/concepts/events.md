@@ -1,8 +1,8 @@
 # Events
 
 pyn can tell other systems when something happens on the server: an account is approved, a repository is created, an
-owner reaches a limit. This page is the schema of those events, the JSON body of a webhook delivery. Signing, delivery,
-subscriptions and storage are separate (decision #452); nothing raises these events yet, so this page describes the
+owner reaches a limit. This page is the schema of those events, the JSON body of a webhook delivery. Signing and delivery are separate (decision #452), and
+[subscriptions and their secrets](webhooks.md) are administered through the API; nothing raises these events yet, so this page describes the
 contract the server will follow. The schema lives in `pyn-proto` and is part of the OpenAPI document
 (`docs/generated/openapi.json`, schemas `Event` and `*Data`).
 
