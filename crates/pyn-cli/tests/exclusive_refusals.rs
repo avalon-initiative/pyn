@@ -176,7 +176,7 @@ fn push_after_the_lease_lapses_is_rejected_with_lock_required_and_sends_nothing(
 
     clock.advance(Duration::hours(9));
     let (code, err) = refused(&env, &ws, "alice", &["push"]);
-    assert_eq!(code, 1);
+    assert_eq!(code, 128);
     assert!(err.contains("(lock required)"), "{err}");
     assert!(err.contains("Content/m.umap"), "{err}");
     assert!(err.contains("hint: Run `pyn lock <path>`"), "{err}");
@@ -202,11 +202,28 @@ fn push_while_another_user_holds_the_lock_is_rejected_with_lock_held() {
     clock.advance(Duration::hours(9));
     env.ok(&ws, "bob", &["lock", MAP]);
     let (code, err) = refused(&env, &ws, "alice", &["push"]);
-    assert_eq!(code, 1);
+    assert_eq!(code, 128);
     assert!(err.contains("(locked by someone else)"), "{err}");
     assert!(err.contains("Content/m.umap is locked by bob"), "{err}");
     assert!(err.contains("nothing was pushed"), "{err}");
     assert_eq!(env.ok(&ws, "bob", &["get", MAP]), "map one");
+}
+
+#[test]
+fn push_rejected_as_non_fast_forward_still_exits_1() {
+    let env = start();
+    env.seed("alice", "Source/a.cpp", "one", None);
+    let ws = clone_with(&env, "ws", &["--local-store"]);
+    let other = clone_with(&env, "other", &["--local-store"]);
+    for (dir, text) in [(&other, "theirs"), (&ws, "mine")] {
+        write(dir, "Source/b.cpp", text);
+        env.ok(dir, "alice", &["add", "Source/b.cpp"]);
+        env.ok(dir, "alice", &["commit", "-m", text]);
+    }
+    env.ok(&other, "alice", &["push"]);
+    let (code, err) = refused(&env, &ws, "alice", &["push"]);
+    assert_eq!(code, 1);
+    assert!(err.contains("(non-fast-forward)"), "{err}");
 }
 
 #[test]

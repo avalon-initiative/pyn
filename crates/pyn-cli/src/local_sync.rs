@@ -35,6 +35,18 @@ impl std::fmt::Display for Rejected {
 
 impl std::error::Error for Rejected {}
 
+/// A push the server refused over a lock: reported like `Rejected`, with the exit status of the other lock refusals.
+#[derive(Debug)]
+pub struct LockRejected(pub String);
+
+impl std::fmt::Display for LockRejected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for LockRejected {}
+
 pub struct Fetched {
     pub previous: Option<ObjectId>,
     pub head: Option<ObjectId>,
@@ -843,11 +855,15 @@ pub fn explain_push(err: anyhow::Error, branch: &str) -> anyhow::Error {
         ),
         _ => return err,
     };
-    Rejected(format!(
+    let text = format!(
         "{headline}\nerror: failed to push some refs: {}\nhint: {hint}\nnothing was pushed; the server is unchanged",
         e.message
-    ))
-    .into()
+    );
+    if matches!(e.code.as_str(), "lock_required" | "lock_held") {
+        LockRejected(text).into()
+    } else {
+        Rejected(text).into()
+    }
 }
 
 /// `pyn push` with `local_store` on: uploads the blobs, then sends the local commits and trees in one request.

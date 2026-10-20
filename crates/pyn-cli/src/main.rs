@@ -801,6 +801,10 @@ fn main() {
             eprintln!("{}", sanitize::text(&rejected.to_string()));
             std::process::exit(1);
         }
+        if let Some(rejected) = e.downcast_ref::<local_sync::LockRejected>() {
+            eprintln!("{}", sanitize::text(&rejected.to_string()));
+            std::process::exit(128);
+        }
         eprintln!("fatal: {}", sanitize::text(&format!("{e:#}")));
         std::process::exit(128);
     }
