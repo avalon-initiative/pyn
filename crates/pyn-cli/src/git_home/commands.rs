@@ -74,6 +74,7 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
             if commits {
                 if path.is_some()
                     || args.first_given().is_some()
+                    || args.diff_given()
                     || args.format().first_given().is_some()
                 {
                     bail!("`pyn log --commits` takes no revision, path or git log option");
