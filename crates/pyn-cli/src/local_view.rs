@@ -111,6 +111,19 @@ fn tree_of(store: &LocalStore, tree: Option<ObjectId>) -> Result<Tree> {
     Ok(out)
 }
 
+/// The trees before and after an unpublished commit (against its first parent) and the paths it changed.
+pub fn commit_trees(store: &LocalStore, commit: &api::Commit) -> Result<(Tree, Tree, Vec<String>)> {
+    let old = match commit.parents.first() {
+        Some(p) => tree_of(
+            store,
+            store.tree_of(Some(crate::local_store::parse_id(p)?))?,
+        )?,
+        None => Tree::new(),
+    };
+    let new = tree_of(store, Some(crate::local_store::parse_id(&commit.tree)?))?;
+    Ok((old, new, changed_paths(store, commit)?))
+}
+
 /// Prints the unpublished commit `text` names (HEAD by default) and returns true; false if it names none.
 pub fn show(
     backend: &dyn Backend,
@@ -146,23 +159,9 @@ pub fn show(
         return Ok(true);
     }
     let format = &opts.diff;
-    let old = match commit.parents.first() {
-        Some(p) => tree_of(
-            store,
-            store.tree_of(Some(crate::local_store::parse_id(p)?))?,
-        )?,
-        None => Tree::new(),
-    };
-    let new = tree_of(store, Some(crate::local_store::parse_id(&commit.tree)?))?;
+    let (old, new, only) = commit_trees(store, &commit)?;
     let mut body = String::new();
-    let differs = diff::compare(
-        backend,
-        &old,
-        &new,
-        &changed_paths(store, &commit)?,
-        format,
-        &mut body,
-    )?;
+    let differs = diff::compare(backend, &old, &new, &only, format, &mut body)?;
     let (head, blank) = opts.head(&commit)?;
     print!("{head}");
     if diff::has_body(format, differs, &body) {
