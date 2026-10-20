@@ -9,6 +9,7 @@ use pyn_gitwork::{Head, Pathspec};
 use pyn_object::{Commit, Kind as ObjectKind, ObjectId, Signature, hash_object};
 
 use super::GitHome;
+use super::signing::{SignFlag, header_name, header_value, signer_for};
 use super::stage::{
     clean_bytes, clean_ident, clean_message, clear_merge_state, entries_of, env, identity,
     index_of, merge_heads, merge_message, parse_date, refuse_states, stage_tracked,
@@ -39,6 +40,12 @@ pub struct GitCommitArgs {
     /// Keep the message (accepted for scripts; pyn never opens an editor).
     #[arg(long)]
     no_edit: bool,
+    /// Sign the commit with `user.signingkey` or the given key id.
+    #[arg(short = 'S', long, value_name = "KEYID", num_args = 0..=1, require_equals = true, overrides_with = "no_gpg_sign")]
+    gpg_sign: Option<Option<String>>,
+    /// Do not sign, whatever `commit.gpgsign` says.
+    #[arg(long, overrides_with = "gpg_sign")]
+    no_gpg_sign: bool,
 }
 
 impl GitCommitArgs {
@@ -51,6 +58,8 @@ impl GitCommitArgs {
             ("--signoff", self.signoff),
             ("--amend", self.amend),
             ("--no-edit", self.no_edit),
+            ("--gpg-sign", self.gpg_sign.is_some()),
+            ("--no-gpg-sign", self.no_gpg_sign),
         ];
         flags.into_iter().find(|(_, on)| *on).map(|(f, _)| f)
     }
@@ -174,9 +183,6 @@ pub fn commit(git: &GitHome, opts: &CommitOptions) -> Result<()> {
             "sequencer",
         ],
     )?;
-    if git.repo.bool_setting("commit.gpgsign", false) {
-        bail!("commit.gpgsign is set and pyn cannot sign commits yet; unset it to commit with pyn");
-    }
     let amend = opts.flags.amend;
     let file = opts.flags.message_file.as_ref().or(opts.file.as_ref());
     if file.is_some() && !opts.messages.is_empty() {
@@ -292,7 +298,7 @@ pub fn commit(git: &GitHome, opts: &CommitOptions) -> Result<()> {
         ),
     };
     let rooted = parents.is_empty();
-    let record = Commit {
+    let mut record = Commit {
         tree,
         parents,
         author: author.clone(),
@@ -300,6 +306,16 @@ pub fn commit(git: &GitHome, opts: &CommitOptions) -> Result<()> {
         extra_headers,
         message: message.clone(),
     };
+    let flag = SignFlag {
+        gpg_sign: opts.flags.gpg_sign.clone(),
+        no_gpg_sign: opts.flags.no_gpg_sign,
+    };
+    if let Some(signer) = signer_for(git, &flag, "commit.gpgsign", Some(&committer))? {
+        let sig = signer.sign(&record.encode(git.algorithm())?)?;
+        record
+            .extra_headers
+            .push((header_name(git.algorithm()).to_vec(), header_value(sig)));
+    }
     let id: ObjectId = git
         .repo
         .objects()
