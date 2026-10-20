@@ -48,11 +48,14 @@ pub enum Kind {
     ShortStat,
     NameOnly,
     NameStatus,
+    /// `--check`: only the whitespace problems in added lines.
+    Check,
 }
 
 pub struct Format {
     pub context: usize,
     pub kind: Kind,
+    pub ignore_ws: bool,
 }
 
 /// Revision 0 marks an entry with no per-path revision, as in a git home; it is read by its content id.
@@ -200,7 +203,7 @@ fn patch(
     old: Option<&Blob>,
     new: Option<&Blob>,
     c: &Contents,
-    context: usize,
+    format: &Format,
 ) -> String {
     let mut out = format!("diff --git a/{path} b/{path}\n");
     let mut tail = String::new();
@@ -233,7 +236,7 @@ fn patch(
         let _ = writeln!(out, "Binary files {from} and {to} differ");
         return out;
     }
-    if let Some(hunks) = pyn_diff::unified_hunks(&c.old, &c.new, context) {
+    if let Some(hunks) = pyn_diff::unified_hunks(&c.old, &c.new, format.context, format.ignore_ws) {
         let _ = writeln!(out, "--- {from}\n+++ {to}");
         out.push_str(&hunks);
     }
@@ -285,6 +288,26 @@ fn stat_summary(files: usize, added: usize, deleted: usize) -> String {
     out
 }
 
+/// A text file whose content differs from the other side only in whitespace.
+fn whitespace_only(old: Option<&Blob>, new: Option<&Blob>, c: &Contents) -> bool {
+    old.zip(new)
+        .is_some_and(|(a, b)| a.mode == b.mode && !c.binary)
+        && pyn_diff::line_counts(&c.old, &c.new, true) == (0, 0)
+}
+
+/// Whether `show` separates the diff from the message: git does for `--check` on any change, even a clean one.
+pub fn has_body(format: &Format, differs: bool, body: &str) -> bool {
+    !body.is_empty() || (format.kind == Kind::Check && differs)
+}
+
+/// Exits 2 after `--check` printed problems, as git does.
+pub fn exit_if_check_failed(format: &Format, out: &str) {
+    if format.kind == Kind::Check && !out.is_empty() {
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+        std::process::exit(2);
+    }
+}
+
 fn selected(path: &str, only: &[String]) -> bool {
     only.is_empty()
         || only.iter().any(|p| {
@@ -315,12 +338,13 @@ pub fn compare(
         {
             continue;
         }
-        differs = true;
         match format.kind {
             Kind::NameOnly => {
+                differs = true;
                 let _ = writeln!(out, "{path}");
             }
             Kind::NameStatus => {
+                differs = true;
                 let letter = match (a, b) {
                     (None, _) => 'A',
                     (_, None) => 'D',
@@ -328,16 +352,26 @@ pub fn compare(
                 };
                 let _ = writeln!(out, "{letter}\t{path}");
             }
-            Kind::Patch => {
+            Kind::Patch | Kind::Check | Kind::Stat | Kind::ShortStat => {
                 let c = contents(backend, path, a, b)?;
-                out.push_str(&patch(path, a, b, &c, format.context));
-            }
-            Kind::Stat | Kind::ShortStat => {
-                let c = contents(backend, path, a, b)?;
+                if format.ignore_ws && format.kind != Kind::Check && whitespace_only(a, b, &c) {
+                    continue;
+                }
+                differs = true;
+                if format.kind == Kind::Patch {
+                    out.push_str(&patch(path, a, b, &c, format));
+                    continue;
+                }
+                if format.kind == Kind::Check {
+                    if !c.binary {
+                        out.push_str(&pyn_diff::whitespace_report(path, &c.old, &c.new));
+                    }
+                    continue;
+                }
                 let counts = if c.binary {
                     StatCounts::Binary(blob_size(backend, path, a)?, blob_size(backend, path, b)?)
                 } else {
-                    let (x, y) = pyn_diff::line_counts(&c.old, &c.new);
+                    let (x, y) = pyn_diff::line_counts(&c.old, &c.new, format.ignore_ws);
                     StatCounts::Lines(x, y)
                 };
                 stat_rows.push((path.clone(), counts));

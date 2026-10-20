@@ -383,6 +383,7 @@ fn diff_body(
         let format = diff::Format {
             context: parts.context,
             kind,
+            ignore_ws: false,
         };
         diff::compare(git, &old, &new, &[], &format, &mut out)?;
         Ok(out)
