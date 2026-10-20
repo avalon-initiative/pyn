@@ -1,5 +1,7 @@
 use chrono::{Duration, Utc};
-use pyn_core::{MetadataStore, RateLimitStore, RepoId, RepoPath, UserId};
+use pyn_core::{
+    MetadataStore, NewSubscription, RateLimitStore, RepoId, RepoPath, UserId, WebhookStore,
+};
 use pyn_postgres::{PgMetadataStore, TimeSource};
 
 async fn store() -> PgMetadataStore {
@@ -47,4 +49,29 @@ async fn rate_windows_ignore_a_skewed_caller_clock() {
     assert_eq!(store.hit("k", window, ahead).await.unwrap().count, 2);
     let state = store.state("k", ahead).await.unwrap().unwrap();
     assert!(state.resets_at < ahead);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs PYN_DATABASE_URL"]
+async fn webhook_claims_and_leases_ignore_a_skewed_caller_clock() {
+    let store = store().await;
+    let real = Utc::now();
+    let ahead = real + Duration::days(1);
+    let new = NewSubscription {
+        name: "s".into(),
+        url: "https://example.test/s".into(),
+        event_types: vec![],
+        enabled: true,
+        created_by: UserId::new("amy"),
+    };
+    store.create_subscription(new, ahead).await.unwrap();
+    let event = store.append_event("e", "{}", ahead).await.unwrap();
+    assert!(event.created_at < ahead);
+
+    let lease = Duration::minutes(5);
+    let got = store.claim_due(1, lease, ahead).await.unwrap();
+    assert_eq!(got.len(), 1);
+    let until = got[0].delivery.claimed_until.unwrap();
+    assert!(until < real + Duration::hours(1));
+    assert!(store.claim_due(1, lease, ahead).await.unwrap().is_empty());
 }

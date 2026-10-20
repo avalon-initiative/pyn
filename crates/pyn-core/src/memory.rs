@@ -15,7 +15,7 @@ use crate::access::{
 use crate::access_service::{
     AccessStore, AccountDisable, AdminRevoke, OrgDeleteMark, OrgMemberChange,
 };
-use crate::audit::{AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent};
+use crate::audit::{AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent, brief};
 use crate::branch::{Branch, DEFAULT_BRANCH, conflicts};
 use crate::commit_record::{CommitDraft, TreeChange, TreeEdit, draft_commit};
 use crate::error::{PynError, Result};
@@ -35,6 +35,11 @@ use crate::tree::HeadCounts;
 use crate::types::{
     ChangesetItem, Commit, CommitFilter, Lock, Person, PushedCommit, RepoId, RepoPath, Revision,
     RevisionId, UserId,
+};
+use crate::webhook::{
+    Delivery, DeliveryQuery, DeliveryStatus, DueDelivery, Jitter, MAX_ACTIVE_SECRETS, NewSecret,
+    NewSubscription, OutboxEvent, Subscription, SubscriptionUpdate, WebhookSecret, WebhookStore,
+    retry_delay,
 };
 
 type Key = (RepoId, RepoPath);
@@ -2897,5 +2902,354 @@ impl RateLimitStore for MemoryRateLimitStore {
             .unwrap()
             .retain(|_, s| s.resets_at > now);
         Ok(())
+    }
+}
+
+#[derive(Default)]
+struct WebhookState {
+    next_subscription: i64,
+    next_secret: i64,
+    next_event: i64,
+    subscriptions: BTreeMap<i64, Subscription>,
+    secrets: Vec<WebhookSecret>,
+    events: BTreeMap<i64, OutboxEvent>,
+    deliveries: Vec<Delivery>,
+}
+
+/// In-memory webhook store; the passed `now` is its clock.
+#[derive(Default)]
+pub struct MemoryWebhookStore {
+    state: Mutex<WebhookState>,
+}
+
+impl MemoryWebhookStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+fn delivery_id() -> Result<String> {
+    let mut b = [0u8; 16];
+    getrandom::fill(&mut b).map_err(|e| PynError::Storage(format!("no randomness: {e}")))?;
+    b[6] = (b[6] & 0x0f) | 0x40;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    let h = hex::encode(b);
+    Ok(format!(
+        "{}-{}-{}-{}-{}",
+        &h[..8],
+        &h[8..12],
+        &h[12..16],
+        &h[16..20],
+        &h[20..]
+    ))
+}
+
+#[async_trait]
+impl WebhookStore for MemoryWebhookStore {
+    async fn create_subscription(
+        &self,
+        new: NewSubscription,
+        now: DateTime<Utc>,
+    ) -> Result<Subscription> {
+        let mut s = self.state.lock().unwrap();
+        s.next_subscription += 1;
+        let sub = Subscription {
+            id: s.next_subscription,
+            name: new.name,
+            url: new.url,
+            event_types: new.event_types,
+            enabled: new.enabled,
+            created_at: now,
+            updated_at: now,
+            created_by: new.created_by,
+        };
+        s.subscriptions.insert(sub.id, sub.clone());
+        Ok(sub)
+    }
+
+    async fn get_subscription(&self, id: i64) -> Result<Option<Subscription>> {
+        Ok(self.state.lock().unwrap().subscriptions.get(&id).cloned())
+    }
+
+    async fn list_subscriptions(&self) -> Result<Vec<Subscription>> {
+        Ok(self
+            .state
+            .lock()
+            .unwrap()
+            .subscriptions
+            .values()
+            .cloned()
+            .collect())
+    }
+
+    async fn update_subscription(
+        &self,
+        id: i64,
+        update: SubscriptionUpdate,
+        now: DateTime<Utc>,
+    ) -> Result<Option<Subscription>> {
+        let mut s = self.state.lock().unwrap();
+        let Some(sub) = s.subscriptions.get_mut(&id) else {
+            return Ok(None);
+        };
+        if let Some(v) = update.name {
+            sub.name = v;
+        }
+        if let Some(v) = update.url {
+            sub.url = v;
+        }
+        if let Some(v) = update.event_types {
+            sub.event_types = v;
+        }
+        if let Some(v) = update.enabled {
+            sub.enabled = v;
+        }
+        sub.updated_at = now;
+        Ok(Some(sub.clone()))
+    }
+
+    async fn delete_subscription(&self, id: i64) -> Result<bool> {
+        let mut s = self.state.lock().unwrap();
+        s.secrets.retain(|x| x.subscription_id != id);
+        s.deliveries.retain(|d| d.subscription_id != id);
+        Ok(s.subscriptions.remove(&id).is_some())
+    }
+
+    async fn add_secret(
+        &self,
+        subscription_id: i64,
+        secret: NewSecret,
+        now: DateTime<Utc>,
+    ) -> Result<Option<WebhookSecret>> {
+        let mut s = self.state.lock().unwrap();
+        if !s.subscriptions.contains_key(&subscription_id) {
+            return Ok(None);
+        }
+        let active = s
+            .secrets
+            .iter()
+            .filter(|x| x.subscription_id == subscription_id && x.retired_at.is_none())
+            .count();
+        if active >= MAX_ACTIVE_SECRETS {
+            return Err(PynError::InvalidRequest(format!(
+                "a webhook has at most {MAX_ACTIVE_SECRETS} active secrets; retire one first"
+            )));
+        }
+        s.next_secret += 1;
+        let row = WebhookSecret {
+            id: s.next_secret,
+            subscription_id,
+            secret: secret.secret,
+            encrypted: secret.encrypted,
+            key_id: secret.key_id,
+            created_at: now,
+            retired_at: None,
+        };
+        s.secrets.push(row.clone());
+        Ok(Some(row))
+    }
+
+    async fn retire_secret(
+        &self,
+        subscription_id: i64,
+        secret_id: i64,
+        now: DateTime<Utc>,
+    ) -> Result<bool> {
+        let mut s = self.state.lock().unwrap();
+        let found = s.secrets.iter_mut().find(|x| {
+            x.id == secret_id && x.subscription_id == subscription_id && x.retired_at.is_none()
+        });
+        Ok(match found {
+            Some(x) => {
+                x.retired_at = Some(now);
+                true
+            }
+            None => false,
+        })
+    }
+
+    async fn list_active_secrets(&self, subscription_id: i64) -> Result<Vec<WebhookSecret>> {
+        let s = self.state.lock().unwrap();
+        Ok(s.secrets
+            .iter()
+            .filter(|x| x.subscription_id == subscription_id && x.retired_at.is_none())
+            .cloned()
+            .collect())
+    }
+
+    async fn append_event(
+        &self,
+        event_type: &str,
+        payload: &str,
+        now: DateTime<Utc>,
+    ) -> Result<OutboxEvent> {
+        let mut s = self.state.lock().unwrap();
+        s.next_event += 1;
+        let event = OutboxEvent {
+            id: s.next_event,
+            event_type: event_type.to_string(),
+            payload: payload.to_string(),
+            created_at: now,
+        };
+        let targets: Vec<i64> = s
+            .subscriptions
+            .values()
+            .filter(|sub| sub.wants(event_type))
+            .map(|sub| sub.id)
+            .collect();
+        for subscription_id in targets {
+            s.deliveries.push(Delivery {
+                id: delivery_id()?,
+                subscription_id,
+                event_id: event.id,
+                attempt_count: 0,
+                next_attempt_at: now,
+                claimed_until: None,
+                status: DeliveryStatus::Pending,
+                last_status_code: None,
+                last_error: None,
+                created_at: now,
+                delivered_at: None,
+                failed_at: None,
+            });
+        }
+        s.events.insert(event.id, event.clone());
+        Ok(event)
+    }
+
+    async fn claim_due(
+        &self,
+        limit: u32,
+        lease: Duration,
+        now: DateTime<Utc>,
+    ) -> Result<Vec<DueDelivery>> {
+        let mut s = self.state.lock().unwrap();
+        let s = &mut *s;
+        let mut due: Vec<usize> = (0..s.deliveries.len())
+            .filter(|&i| {
+                let d = &s.deliveries[i];
+                d.status == DeliveryStatus::Pending
+                    && d.next_attempt_at <= now
+                    && d.claimed_until.is_none_or(|c| c <= now)
+                    && s.subscriptions
+                        .get(&d.subscription_id)
+                        .is_some_and(|sub| sub.enabled)
+            })
+            .collect();
+        due.sort_by_key(|&i| (s.deliveries[i].next_attempt_at, s.deliveries[i].event_id));
+        due.truncate(limit as usize);
+        let mut out = Vec::new();
+        for i in due {
+            let d = &mut s.deliveries[i];
+            d.claimed_until = Some(now + lease);
+            out.push(DueDelivery {
+                delivery: d.clone(),
+                event: s.events[&d.event_id].clone(),
+                subscription: s.subscriptions[&d.subscription_id].clone(),
+            });
+        }
+        Ok(out)
+    }
+
+    async fn mark_delivered(
+        &self,
+        delivery_id: &str,
+        status_code: Option<i32>,
+        now: DateTime<Utc>,
+    ) -> Result<Option<Delivery>> {
+        let mut s = self.state.lock().unwrap();
+        let Some(d) = s.deliveries.iter_mut().find(|d| d.id == delivery_id) else {
+            return Ok(None);
+        };
+        if d.status == DeliveryStatus::Pending {
+            d.attempt_count += 1;
+            d.status = DeliveryStatus::Delivered;
+            d.last_status_code = status_code;
+            d.last_error = None;
+            d.claimed_until = None;
+            d.delivered_at = Some(now);
+        }
+        Ok(Some(d.clone()))
+    }
+
+    async fn record_failure(
+        &self,
+        delivery_id: &str,
+        status_code: Option<i32>,
+        error: &str,
+        now: DateTime<Utc>,
+        jitter: &dyn Jitter,
+    ) -> Result<Option<Delivery>> {
+        let mut s = self.state.lock().unwrap();
+        let Some(d) = s.deliveries.iter_mut().find(|d| d.id == delivery_id) else {
+            return Ok(None);
+        };
+        if d.status == DeliveryStatus::Pending {
+            d.attempt_count += 1;
+            d.last_status_code = status_code;
+            d.last_error = Some(brief(error));
+            d.claimed_until = None;
+            match retry_delay(d.attempt_count, jitter.unit()) {
+                Some(wait) => d.next_attempt_at = now + wait,
+                None => {
+                    d.status = DeliveryStatus::Failed;
+                    d.failed_at = Some(now);
+                }
+            }
+        }
+        Ok(Some(d.clone()))
+    }
+
+    async fn list_deliveries(
+        &self,
+        subscription_id: i64,
+        query: &DeliveryQuery,
+    ) -> Result<Vec<Delivery>> {
+        let s = self.state.lock().unwrap();
+        let mut rows: Vec<Delivery> = s
+            .deliveries
+            .iter()
+            .filter(|d| {
+                d.subscription_id == subscription_id
+                    && query.status.is_none_or(|st| d.status == st)
+                    && query.before_event.is_none_or(|b| d.event_id < b)
+            })
+            .cloned()
+            .collect();
+        rows.sort_by_key(|d| std::cmp::Reverse(d.event_id));
+        rows.truncate(query.limit as usize);
+        Ok(rows)
+    }
+
+    async fn redeliver(&self, delivery_id: &str, now: DateTime<Utc>) -> Result<Option<Delivery>> {
+        let mut s = self.state.lock().unwrap();
+        let Some(d) = s.deliveries.iter_mut().find(|d| d.id == delivery_id) else {
+            return Ok(None);
+        };
+        d.status = DeliveryStatus::Pending;
+        d.attempt_count = 0;
+        d.next_attempt_at = now;
+        d.claimed_until = None;
+        d.last_status_code = None;
+        d.last_error = None;
+        d.delivered_at = None;
+        d.failed_at = None;
+        Ok(Some(d.clone()))
+    }
+
+    async fn purge(&self, retention: Duration, now: DateTime<Utc>) -> Result<u64> {
+        let mut s = self.state.lock().unwrap();
+        let cutoff = now - retention;
+        let old: Vec<i64> = s
+            .events
+            .values()
+            .filter(|e| e.created_at < cutoff)
+            .map(|e| e.id)
+            .collect();
+        for id in &old {
+            s.events.remove(id);
+        }
+        s.deliveries.retain(|d| !old.contains(&d.event_id));
+        Ok(old.len() as u64)
     }
 }

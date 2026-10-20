@@ -33,6 +33,7 @@ mod content_ids;
 mod counts;
 mod hashing;
 mod history_migration;
+mod webhook;
 
 /// Which clock judges lease expiry and rate-limit windows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

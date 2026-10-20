@@ -31,6 +31,7 @@ pub mod store;
 pub mod stranded;
 pub mod tree;
 pub mod types;
+pub mod webhook;
 
 pub use access::{
     AccountKind, AccountRecord, AccountStatus, Credential, Identity, InviteId, InviteRecord,
@@ -99,4 +100,9 @@ pub use types::{
     MAX_LABEL_BYTES, MAX_MESSAGE_BYTES, MAX_PATH_BYTES, MAX_PATH_COMPONENT_BYTES, MAX_PUSH_CHANGES,
     MAX_PUSH_COMMITS, MAX_TREE_ENTRIES, NewRevision, Person, PushedCommit, RepoId, RepoPath,
     Revision, RevisionHash, RevisionId, UserId,
+};
+pub use webhook::{
+    Delivery, DeliveryQuery, DeliveryStatus, DueDelivery, FixedJitter, Jitter, MAX_ACTIVE_SECRETS,
+    MAX_ATTEMPTS, NewSecret, NewSubscription, OutboxEvent, RETENTION_DAYS, RandomJitter,
+    Subscription, SubscriptionUpdate, WebhookSecret, WebhookStore, retry_delay,
 };
