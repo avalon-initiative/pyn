@@ -1394,6 +1394,34 @@ struct CommitsQuery {
     branch: Option<String>,
     before: Option<String>,
     limit: Option<usize>,
+    author: Option<String>,
+    since: Option<String>,
+    until: Option<String>,
+    grep: Option<String>,
+    path: Option<String>,
+    from: Option<String>,
+    to: Option<String>,
+}
+
+fn rfc3339(name: &str, text: &str) -> Result<chrono::DateTime<chrono::Utc>, PynError> {
+    chrono::DateTime::parse_from_rfc3339(text)
+        .map(|t| t.with_timezone(&chrono::Utc))
+        .map_err(|_| {
+            PynError::InvalidRequest(format!("{name} is not an RFC 3339 timestamp: {text:?}"))
+        })
+}
+
+async fn revision_param(
+    service: &pyn_core::RepoService,
+    name: &str,
+    spec: &str,
+) -> Result<pyn_core::ObjectId, PynError> {
+    service.resolve_commit(spec).await.map_err(|e| match e {
+        PynError::CommitNotFound(_) | PynError::AmbiguousCommit(_) => PynError::InvalidRequest(
+            format!("{name} is not a known commit or a unique abbreviation: {spec:?}"),
+        ),
+        e => e,
+    })
 }
 
 /// Readable without credentials when the repository is public; otherwise 404 unless the caller has a role.
@@ -1401,8 +1429,16 @@ struct CommitsQuery {
     params(RepoAddress,
            ("branch" = Option<String>, Query, description = "list the commits this branch contains; the default branch if omitted"),
            ("before" = Option<String>, Query, description = "return commits older than this commit (an id or unique abbreviation)"),
-           ("limit" = Option<usize>, Query, description = "page size, default 50, max 200")),
+           ("limit" = Option<usize>, Query, description = "page size, default 50, max 200"),
+           ("author" = Option<String>, Query, description = "keep commits whose author name or email contains this text, ignoring case"),
+           ("since" = Option<String>, Query, description = "keep commits authored at or after this RFC 3339 instant"),
+           ("until" = Option<String>, Query, description = "keep commits authored at or before this RFC 3339 instant"),
+           ("grep" = Option<String>, Query, description = "keep commits whose message contains this text, ignoring case"),
+           ("path" = Option<String>, Query, description = "keep commits that made a revision of this path or of a path under it"),
+           ("from" = Option<String>, Query, description = "list the commits reachable from this commit (an id or unique abbreviation) instead of a branch; not with `branch`"),
+           ("to" = Option<String>, Query, description = "leave out this commit and its ancestors (an id or unique abbreviation), like git's `to..from`")),
     responses((status = 200, body = api::CommitPage),
+              (status = 400, body = api::ErrorBody, description = "invalid_request: a bad timestamp, path or revision, or `from` with `branch`"),
               (status = 404, body = api::ErrorBody, description = "branch_not_found")))]
 async fn list_commits(
     State(s): State<AppState>,
@@ -1415,9 +1451,42 @@ async fn list_commits(
         Some(spec) => Some(repo.service.resolve_commit(&spec).await?),
         None => None,
     };
+    if q.from.is_some() && q.branch.is_some() {
+        return Err(PynError::InvalidRequest("from and branch are exclusive".into()).into());
+    }
+    let from = match &q.from {
+        Some(spec) => Some(revision_param(&repo.service, "from", spec).await?),
+        None => None,
+    };
+    let exclude = match &q.to {
+        Some(spec) => Some(revision_param(&repo.service, "to", spec).await?),
+        None => None,
+    };
+    let filter = pyn_core::CommitFilter {
+        author: q.author,
+        since: q
+            .since
+            .as_deref()
+            .map(|t| rfc3339("since", t))
+            .transpose()?,
+        until: q
+            .until
+            .as_deref()
+            .map(|t| rfc3339("until", t))
+            .transpose()?,
+        grep: q.grep,
+        path: q.path.as_deref().map(RepoPath::new).transpose()?,
+        exclude,
+    };
     let page = repo
         .service
-        .commits_on(branch_of(q.branch.as_deref()), before.as_ref(), q.limit)
+        .commits_filtered(
+            branch_of(q.branch.as_deref()),
+            from.as_ref(),
+            &filter,
+            before.as_ref(),
+            q.limit,
+        )
         .await?;
     Ok(Json(api::CommitPage {
         commits: page.commits.into_iter().map(commit_dto).collect(),

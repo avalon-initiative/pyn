@@ -33,8 +33,8 @@ use crate::rules::{Mode, PathFilter};
 use crate::store::{MetadataStore, UploadReservation};
 use crate::tree::HeadCounts;
 use crate::types::{
-    ChangesetItem, Commit, Lock, Person, PushedCommit, RepoId, RepoPath, Revision, RevisionId,
-    UserId,
+    ChangesetItem, Commit, CommitFilter, Lock, Person, PushedCommit, RepoId, RepoPath, Revision,
+    RevisionId, UserId,
 };
 
 type Key = (RepoId, RepoPath);
@@ -949,6 +949,34 @@ impl MetadataStore for MemoryMetadataStore {
             .filter(|c| reachable.as_ref().is_none_or(|r| r.contains(&c.id)))
             .take(limit)
             .filter_map(|c| st.full_commit(repo, &c.id))
+            .collect())
+    }
+
+    async fn commits_matching(
+        &self,
+        repo: &RepoId,
+        tip: Option<&ObjectId>,
+        before: Option<&ObjectId>,
+        filter: &CommitFilter,
+        limit: usize,
+    ) -> Result<Vec<Commit>> {
+        let st = self.state.lock().unwrap();
+        let all = st.commits.get(repo).map_or(&[][..], Vec::as_slice);
+        let reachable = tip.map(|t| st.ancestors(repo, t));
+        let excluded = filter.exclude.as_ref().map(|e| st.ancestors(repo, e));
+        let end = match before {
+            Some(b) => all.iter().position(|c| &c.id == b).unwrap_or(0),
+            None => all.len(),
+        };
+        Ok(all[..end]
+            .iter()
+            .rev()
+            .filter(|c| reachable.as_ref().is_none_or(|r| r.contains(&c.id)))
+            .filter(|c| excluded.as_ref().is_none_or(|x| !x.contains(&c.id)))
+            .filter(|c| filter.matches_record(c))
+            .filter_map(|c| st.full_commit(repo, &c.id))
+            .filter(|c| filter.matches_path(c))
+            .take(limit)
             .collect())
     }
 

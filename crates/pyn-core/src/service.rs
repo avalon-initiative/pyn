@@ -42,8 +42,8 @@ use crate::tree::{
     ACTIVITY_ACTIONS, EntryKind, HeadCounts, RepoSummary, TREE_MAX_PATHS, TreeEntry,
 };
 use crate::types::{
-    ChangesetItem, Commit, Lock, MAX_CHANGESET_ITEMS, NewRevision, RepoId, RepoPath, Revision,
-    RevisionId, UserId, validate_message,
+    ChangesetItem, Commit, CommitFilter, Lock, MAX_CHANGESET_ITEMS, NewRevision, RepoId, RepoPath,
+    Revision, RevisionId, UserId, validate_message,
 };
 use pyn_object::{FileMode, ObjectId};
 
@@ -1868,6 +1868,62 @@ impl RepoService {
         let mut commits = self
             .meta
             .commits(&self.repo, Some(&tip), before, limit + 1)
+            .await?;
+        for c in &commits {
+            c.verify()?;
+            c.revisions.iter().try_for_each(Revision::verify)?;
+        }
+        let next = (commits.len() > limit).then(|| {
+            commits.truncate(limit);
+            commits[limit - 1].id
+        });
+        Ok(CommitPage { commits, next })
+    }
+
+    async fn known_commit(&self, id: &ObjectId) -> Result<()> {
+        match self.get_commit(id).await {
+            Err(PynError::CommitNotFound(c)) => {
+                Err(PynError::InvalidRequest(format!("unknown revision {c}")))
+            }
+            r => r.map(drop),
+        }
+    }
+
+    /// Newest first, paged like `commits`, keeping the commits `filter` matches among those reachable from `from` (the
+    /// tip of `branch` when `None`). Unknown `from`/`exclude` commits are `InvalidRequest`.
+    pub async fn commits_filtered(
+        &self,
+        branch: &str,
+        from: Option<&ObjectId>,
+        filter: &CommitFilter,
+        before: Option<&ObjectId>,
+        limit: Option<usize>,
+    ) -> Result<CommitPage> {
+        let tip = match from {
+            Some(f) => {
+                self.known_commit(f).await?;
+                Some(*f)
+            }
+            None => self.head_of(branch).await?,
+        };
+        if let Some(x) = &filter.exclude {
+            self.known_commit(x).await?;
+        }
+        let Some(tip) = tip else {
+            return Ok(CommitPage {
+                commits: Vec::new(),
+                next: None,
+            });
+        };
+        let limit = limit
+            .unwrap_or(HISTORY_DEFAULT_LIMIT)
+            .clamp(1, HISTORY_MAX_LIMIT);
+        if let Some(b) = before {
+            self.get_commit(b).await?;
+        }
+        let mut commits = self
+            .meta
+            .commits_matching(&self.repo, Some(&tip), before, filter, limit + 1)
             .await?;
         for c in &commits {
             c.verify()?;

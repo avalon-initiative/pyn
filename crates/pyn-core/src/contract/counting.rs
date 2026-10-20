@@ -243,6 +243,20 @@ impl MetadataStore for CountingStore {
         self.inner.commits(repo, tip, before, limit).await
     }
 
+    async fn commits_matching(
+        &self,
+        repo: &RepoId,
+        tip: Option<&ObjectId>,
+        before: Option<&ObjectId>,
+        filter: &crate::CommitFilter,
+        limit: usize,
+    ) -> crate::Result<Vec<crate::Commit>> {
+        self.count();
+        self.inner
+            .commits_matching(repo, tip, before, filter, limit)
+            .await
+    }
+
     async fn missing_commits(
         &self,
         repo: &RepoId,

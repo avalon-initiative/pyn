@@ -297,6 +297,49 @@ pub struct ChangesetItem {
     pub lock_holder: Option<UserId>,
 }
 
+/// Which commits a listing keeps. Every field narrows the result; `Default` keeps everything.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CommitFilter {
+    /// Case-insensitive substring of the author's name or email.
+    pub author: Option<String>,
+    /// Author date at or after this instant.
+    pub since: Option<DateTime<Utc>>,
+    /// Author date at or before this instant.
+    pub until: Option<DateTime<Utc>>,
+    /// Case-insensitive substring of the message.
+    pub grep: Option<String>,
+    /// Commits that made a revision of this path, or of a path under it.
+    pub path: Option<RepoPath>,
+    /// Drops this commit and its ancestors.
+    pub exclude: Option<ObjectId>,
+}
+
+impl CommitFilter {
+    /// Every criterion except `path` and `exclude`, which need the store.
+    pub fn matches_record(&self, c: &Commit) -> bool {
+        let has = |hay: &str, needle: &str| hay.to_lowercase().contains(&needle.to_lowercase());
+        self.author
+            .as_deref()
+            .is_none_or(|a| has(&c.author.name, a) || has(&c.author.email, a))
+            && self.since.is_none_or(|t| c.authored_at >= t)
+            && self.until.is_none_or(|t| c.authored_at <= t)
+            && self.grep.as_deref().is_none_or(|g| has(&c.message, g))
+    }
+
+    /// Whether the commit made a revision of `path` or of a path under it.
+    pub fn matches_path(&self, c: &Commit) -> bool {
+        self.path.as_ref().is_none_or(|p| {
+            c.revisions.iter().any(|r| {
+                r.path == *p
+                    || r.path
+                        .as_str()
+                        .strip_prefix(p.as_str())
+                        .is_some_and(|rest| rest.starts_with('/'))
+            })
+        })
+    }
+}
+
 /// A client-built commit the service has verified, for `MetadataStore::push_commits_on`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PushedCommit {
