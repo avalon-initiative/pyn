@@ -100,6 +100,7 @@ The commands named in decision #218.
 | `git restore --staged <path>...` | `pyn restore --staged <path>...` (`-S`) | same | Puts the staged entries under the paths back to the last commit and leaves the files alone. On a git home `--source <commit>` takes the entries from that commit, as git; on a pyn server there is no commit to take them from and it is a usage error. |
 | `git restore [-s <rev>] [-S] [-W] <path>...` (the work tree) | `pyn restore ...` on a git home | git home only | Takes the paths from the index (or `--source`) into the work tree, and with `--staged --worktree` into both. See [Branches, switching and the work tree](#branches-switching-and-the-work-tree). On a pyn server `--worktree` is a usage error (`129`): a restore there makes an older revision the new head. |
 | `git restore -p`, `--ours`, `--theirs`, `--merge` | none | unsupported | Usage error (`129`). On a git home `pyn checkout --ours -- <path>` and `--theirs` take a side of an unmerged path. |
+| `git reset [--soft\|--mixed\|--hard\|--keep\|--merge] [-q] [<rev>]`, `git reset [<rev>] [--] <path>...` | `pyn reset ...` | git home: supported; pyn server: different | On a git home it is git's reset, see [Reset](#reset). On a pyn server `pyn reset [--soft\|--mixed\|--hard] [<commit>]` only drops unpublished local commits ([workspace](workspace.md#the-local-store)); `--keep`, `--merge`, `-q`, paths and a second revision are a usage error there. |
 | `git branch`, `git switch`, `git checkout` | `pyn branch`, `pyn switch`, `pyn checkout` | supported | See [branching and merging](#branching-and-merging). On a git home they work on `.git` as git does, see [Branches, switching and the work tree](#branches-switching-and-the-work-tree). |
 | `git merge` | `pyn merge` | supported | See [branching and merging](#branching-and-merging). On a git home it merges as git does, see [Merging](#merging). |
 | `git fetch` | `pyn fetch` on a git home | git home only | See [Fetch on a git home](#fetch-on-a-git-home). On a pyn server it fetches into the local store (a workspace cloned with `--no-local-store` runs `pyn update`), see [Remotes on a pyn server](#remotes-on-a-pyn-server). |
@@ -635,7 +636,7 @@ schedules them.
 
 | Git | Reason |
 | --- | --- |
-| `git reset`, `git clean` | `pyn reset` exists for unpublished local commits only ([workspace](workspace.md#the-local-store)); otherwise there is no local history to reset: `pyn restore --staged`, `pyn restore` and `pyn update` cover the daily cases. `git clean` is not planned. |
+| `git clean` | Not planned. |
 | `git rm`, `git mv` | Not a CLI verb yet; no issue schedules removing or renaming paths from the CLI. |
 | `git rebase`, `git cherry-pick`, `git revert` | History is append-only on the server. |
 | `git blame`, `git grep` | Not scheduled. |
@@ -697,6 +698,7 @@ whatever the rules say.
 | `files`, `ls` | `files` lists the index and `ls` lists `HEAD`'s tree. Every entry is `shared`, with no revision, lock or last change. |
 | `add`, `restore --staged`, `commit` | See [staging](#staging-and-committing). |
 | `branch`, `switch`, `checkout`, `restore` | See [Branches, switching and the work tree](#branches-switching-and-the-work-tree). |
+| `reset` | See [Reset](#reset). |
 | `merge` | See [Merging](#merging). |
 | `tag` | See [Tags](#tags). |
 | `stash` | See [Stashing](#stashing). |
@@ -918,6 +920,38 @@ git` (`1`); an unmerged path is `error: path '<path>' is unmerged`.
 **`restore`.** `restore <path>...` writes the index entries into the work tree; `--source <rev>` writes that commit's files instead
 and, as in git, removes tracked files the commit lacks; `--staged --worktree` does both for index and work tree, from `HEAD` unless
 `--source` is given; `--staged` alone is described under [staging](#staging-and-committing). The paths are prefixes (no globs).
+
+### Reset
+
+`reset` moves the current branch (or a detached `HEAD`) and resets the index and work tree by mode, through the same lock files,
+`ORIG_HEAD` and reflog lines as git. The default is `--mixed HEAD`; the last mode flag given wins.
+
+| Mode | Branch | Index | Work tree |
+| --- | --- | --- | --- |
+| `--soft` | moves | kept | kept; refused while a merge is in progress (`Cannot do a soft reset in the middle of a merge.`, `128`) |
+| `--mixed` | moves | becomes the target's tree | kept |
+| `--hard` | moves | becomes the target's tree | becomes the target's tree, local changes and untracked files in the way included; other untracked files stay |
+| `--keep` | moves | becomes the target's tree | files that differ between `HEAD` and the target are rewritten; stops when one of them has staged or unstaged changes, or an untracked file is in the way, or the index has unmerged paths |
+| `--merge` | moves | becomes the target's tree | files that differ between the index and the target are rewritten; stops when one of them has unstaged changes or an untracked file is in the way; unmerged paths are put back to the target |
+
+A refused `--keep` or `--merge` (and any failure before the index is written) prints `error: Entry '<path>' ...` and `fatal: Could
+not reset index file to revision '<rev>'.`, exits `128` and changes nothing, `ORIG_HEAD` included. A successful reset without
+paths writes `ORIG_HEAD` (the old `HEAD`), appends `reset: moving to <rev>` (the revision as typed) to the branch's log, when the
+branch moved, and to `HEAD`'s, and removes the merge state (`MERGE_HEAD`, `MERGE_MSG`, `MERGE_MODE`, `AUTO_MERGE`, `MERGE_RR`,
+`SQUASH_MSG`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`), so a merge in progress ends with `--mixed`, `--hard` and `--merge`. A detached
+`HEAD` that does not move gets no line. `--mixed` lists what is left unstaged (`Unstaged changes after reset:` then `M\t<path>`), `--hard`
+prints `HEAD is now at <abbreviation> <subject>`, and `-q` silences both.
+
+`reset [<rev>] -- <path>...` replaces only the index entries under the paths with the revision's (default `HEAD`) and touches no
+ref, no work tree file and no merge state; it is the same as `restore --staged --source <rev>`, but a path that matches nothing is
+not an error. `reset <path>` works without `--` when the name is not a revision; a name that is both is `ambiguous argument`
+(`128`). Paths are literal files and folders relative to where you stand. Any mode but `--mixed` with paths is `Cannot do <mode>
+reset with paths.` (`128`). On an unborn branch `HEAD` is the empty tree: `reset`, `--mixed`, `--hard` and `--merge` empty the index
+(and `--hard` and `--merge` remove the files), `--soft` does nothing, no ref or `ORIG_HEAD` is written, and `--keep` fails.
+
+`ORIG_HEAD`, `MERGE_HEAD` and `CHERRY_PICK_HEAD` are accepted wherever a revision is. Unlike git, `HEAD@{N}` and other reflog
+revisions are not understood yet, and a sparse checkout refuses every mode but `--soft`. A running rebase or cherry-pick's own
+state folder (`rebase-merge/`, `sequencer/`) is not removed. Covered against the real git by `crates/pyn-cli/tests/git_reset.rs`.
 
 ### Merging
 
