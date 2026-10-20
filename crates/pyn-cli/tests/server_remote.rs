@@ -35,6 +35,49 @@ fn remote_verbose_names_the_server_and_repository() {
 }
 
 #[test]
+fn get_url_prints_the_verbose_url() {
+    let env = start();
+    env.seed("alice", "Source/a.cpp", "one", None);
+    let ws = clone(&env, "ws");
+    let url = env.source(REPO);
+    for args in [
+        vec!["remote", "get-url", "origin"],
+        vec!["remote", "get-url", "--push", "origin"],
+        vec!["remote", "get-url", "--all", "origin"],
+    ] {
+        assert_eq!(env.ok(&ws, "alice", &args), format!("{url}\n"), "{args:?}");
+    }
+    let out = env.run(&ws, "alice", &["remote", "get-url", "nope"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("error: No such remote 'nope'"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn editing_subcommands_say_there_is_one_home() {
+    let env = start();
+    env.seed("alice", "Source/a.cpp", "one", None);
+    let ws = clone(&env, "ws");
+    for args in [
+        vec!["remote", "add", "x", "http://h/o/n"],
+        vec!["remote", "remove", "origin"],
+        vec!["remote", "rename", "origin", "x"],
+        vec!["remote", "set-url", "origin", "http://h/o/n"],
+    ] {
+        let out = env.run(&ws, "alice", &args);
+        assert_eq!(out.status.code(), Some(1), "{args:?}");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("exactly one home"),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+#[test]
 fn fetch_and_pull_run_update() {
     let env = start();
     env.seed("alice", "Source/a.cpp", "one", None);
