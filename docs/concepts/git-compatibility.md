@@ -1138,8 +1138,9 @@ no rename detection. The replay runs on a detached `HEAD`; the branch moves when
    equal to `HEAD` (the commit was made by hand, or the resolution is empty) commits nothing and goes on. `--skip` is `reset
    --hard` to `HEAD`, then the rest. `--abort` is `reset --hard` to `orig-head`, putting the branch and `HEAD` back
    and applying the autostash. `--quit` removes `rebase-merge/` and leaves `HEAD`, the files, `REBASE_HEAD` and `MERGE_MSG`; an
-   autostash is put on `refs/stash`. With nothing in progress they are `fatal: No rebase in progress?` (`128`). `commit`,
-   `merge` and the other writing commands refuse while `rebase-merge/` exists.
+   autostash is put on `refs/stash`. With nothing in progress they are `fatal: No rebase in progress?` (`128`). `merge` and
+   the other writing commands refuse while `rebase-merge/` exists; `commit` works during a rebase (on the detached `HEAD` too) so an
+   `edit` stop can be amended.
 6. A step that cannot run for local reasons (an untracked file in the way) leaves that commit first in `git-rebase-todo`, so
    `--continue` tries it again.
 
@@ -1147,13 +1148,52 @@ Reflog lines are `rebase (start): checkout <newbase>`, `rebase (pick): <subject>
 (finish): returning to refs/heads/<b>` and `rebase (finish): refs/heads/<b> onto <id>` (`pull --rebase` instead of `rebase`
 for a pull).
 
-Differences from git: `-i`, `--rebase-merges`, `--root`, `--exec`, `-s`, `-X`, `--autosquash`, `--fork-point`, `--signoff`,
-`--keep-base`, `--update-refs`, `--reapply-cherry-picks`, `--apply`, `--empty` other than `drop` and `-S` are usage errors
-(`129`); interactive rebase is #476. `-m`, `-v`, `-n`, `--no-fork-point`, `--keep-empty` and the `--no-` forms of the refused flags
-are accepted and ignored. With no upstream argument git also looks for the fork point in the upstream's reflog; pyn replays
-`<upstream>..<branch>`, so a rewritten upstream replays commits git would skip. Commits whose timestamps tie are ordered by the
-walk of the graph, as git's, not by date. Covered against the real git by `crates/pyn-cli/tests/git_rebase.rs` and, for pull,
-`crates/pyn-cli/tests/git_pull.rs`.
+7. `-i` (`--interactive`) writes the commits as an instruction sheet and opens it in the editor: `GIT_SEQUENCE_EDITOR`, then
+   `sequence.editor`, then the message editor (`GIT_EDITOR`, `core.editor`, `VISUAL`, `EDITOR`, `vi`; `Terminal is dumb, but EDITOR
+   unset` without one on a dumb terminal; an editor of `:` keeps the file). The sheet is git's: `pick`, `reword`, `edit`,
+   `squash`, `fixup`, `drop`, `exec`, `break` and `noop` (or `p`, `r`, `e`, `s`, `f`, `d`, `x`, `b`), ids abbreviated to seven
+   digits, comment lines and blank lines ignored, lines in any order. A bad line prints `error: invalid command '<word>'` and
+   `error: invalid line <n>: <line>` (also `missing arguments`, `could not parse '<rev>'` and `cannot 'squash' without a previous
+   commit`) and stops with `HEAD` on the new base, the sheet as written, and `--edit-todo` (the editor on the remaining sheet) or
+   `--abort` to go on; `--continue` repeats the errors. A sheet with no command left prints `error: nothing to do` and changes
+   nothing. Unlike `rebase` without `-i`, a commit that becomes empty when replayed stops the rebase (`The previous cherry-pick is
+   now empty`; `commit --allow-empty` keeps it, `--skip` or `--continue` drops it), and the up-to-date shortcut is not taken.
+   - `reword` makes the commit, then opens its message (the commit's own, then a `#` comment that says where the rebase is) and
+     replaces the commit with the edited message (comments dropped, whitespace cleaned); an empty message stops with the commit
+     made. After a conflict, `--continue` opens the message of the resolved commit.
+   - `edit` makes the commit and stops with exit `0` (`Stopped at <id>...  <subject>`, `amend`, `stopped-sha`, `author-script`,
+     `message`, `REBASE_HEAD`): `commit --amend`, `commit` and other changes are allowed here (`commit` works on the detached `HEAD`
+     during a rebase), and `--continue` goes on. Changes staged but not committed are committed into the commit, opening its message
+     in the editor. `--skip` keeps the commit as it is and goes on.
+   - `squash` and `fixup` merge the commit's change into the commit `HEAD` is on, collecting the messages in
+     `rebase-merge/message-squash` as git does (`# This is a combination of <n> commits.`, `# This is the commit message #<n>:`,
+     `# The commit message #<n> will be skipped:` and the skipped message commented out; a `squash!` or `fixup!` subject line is
+     left out of a squashed message). Until the last of the chain the commit is replaced with the collected text as its message;
+     the last one opens the collected text in the editor, or, when only `fixup` followed the first commit, keeps its message
+     as it was (`message-fixup`). A conflict stops with `amend`, `current-fixups`, `message-squash`, `SQUASH_MSG` (not for a chain of
+     `fixup`) and `MERGE_MSG`; `--continue` commits the resolution into the chain, `--skip` takes the commit out of it.
+   - `exec <command>` runs the line with `sh -c` in the work tree root after printing `Executing: <command>`; a failure prints
+     `warning: execution failed: <command>` and stops (`1`), as does a command that leaves the index or tracked files changed
+     (`execution succeeded: ... but left changes`); `--continue` goes on without running it again. `break` stops with exit `0`.
+     `-x <cmd>` / `--exec <cmd>` (repeatable) adds an `exec` line after every commit and its `squash`/`fixup` lines; alone it
+     opens no editor.
+   - `--autosquash` moves each `fixup! <subject>` or `squash! <subject>` commit under the earlier commit whose subject it names
+     (the subject, the start of it, or an abbreviated id; `fixup! fixup! ...` is stripped to the target), making it `fixup` or
+     `squash`, in git's order. `rebase.autoSquash` turns it on for `-i`, and `--no-autosquash` turns it off. Like current git, a
+     bare `--autosquash` reorders without opening an editor (git 2.43 ignores it without `-i`).
+   - `rebase-merge/` is git's: `git-rebase-todo`, `git-rebase-todo.backup`, `done`, `msgnum`, `end`, `stopped-sha`, `amend`,
+     `message`, `author-script`, `interactive`; git continues what pyn stopped and the reverse (the tests do both).
+
+Differences from git: `--rebase-merges`, `--root`, `-s`, `-X`, `--fork-point`, `--signoff`, `--keep-base`, `--update-refs`,
+`--reapply-cherry-picks`, `--apply`, `--empty` other than `drop` and `-S` are usage errors (`129`). In the sheet,
+`fixup -C`/`-c` (and so `amend!` commits, which `--autosquash` leaves where they are), `label`, `reset`, `merge` and `update-ref`
+are not built (an invalid line); there is no `patch` file, `rewritten-list` or notes copying, no `Rebasing (n/m)` progress, no
+`rebase.missingCommitsCheck`, no `rebase.instructionFormat`, and the editor's comment block is shorter than git's. `-m`, `-v`,
+`-n`, `--no-fork-point`, `--keep-empty` and the `--no-` forms of the refused flags are accepted and ignored. With no upstream
+argument git also looks for the fork point in the upstream's reflog; pyn replays `<upstream>..<branch>`, so a rewritten
+upstream replays commits git would skip. Commits whose timestamps tie are ordered by the walk of the graph, as git's, not by
+date. After an interactive rebase git leaves `REBASE_HEAD` behind in some cases; pyn removes it. Covered against the real git
+(2.43 and 2.55) by `crates/pyn-cli/tests/git_rebase.rs` and, for pull, `crates/pyn-cli/tests/git_pull.rs`.
 
 ### Tags
 
