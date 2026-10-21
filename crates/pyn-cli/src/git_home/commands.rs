@@ -92,6 +92,12 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
         Command::Checkout(args) => super::switch::checkout(git, cwd, args),
         Command::Tag(args) => super::tags::tag(git, args),
         Command::Stash(args) => super::stash::stash(git, args),
+        Command::Clean(args) => {
+            if super::clean::clean(git, cwd, &args)? {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
         Command::Rebase(args) => super::rebase::rebase(git, &args),
         Command::Remote(args) => super::remote::remote(git, args),
         Command::Fetch(args) => super::fetch::fetch(git, args),

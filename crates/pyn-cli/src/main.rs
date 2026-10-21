@@ -142,6 +142,8 @@ enum Command {
     Tag(git_home::TagArgs),
     /// Save, list and restore local changes (a git repository only).
     Stash(git_home::StashArgs),
+    /// Remove untracked files from the work tree (a git repository only).
+    Clean(git_home::CleanArgs),
     /// Reapply the current branch's commits on top of another base (a git repository only).
     Rebase(git_home::RebaseArgs),
     /// Convert a workspace made before local commits to one that keeps them (a pyn server only).
@@ -1525,6 +1527,10 @@ fn run(cli: Cli) -> Result<()> {
         }
         Command::Stash(_) => {
             eprintln!("{}", unsupported::message("stash"));
+            std::process::exit(1);
+        }
+        Command::Clean(_) => {
+            eprintln!("{}", unsupported::message("clean"));
             std::process::exit(1);
         }
         Command::Rebase(_) => {

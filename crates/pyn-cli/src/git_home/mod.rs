@@ -3,6 +3,7 @@
 
 mod ancestry;
 mod branches;
+mod clean;
 mod clone;
 mod commands;
 mod commit;
@@ -46,6 +47,7 @@ use crate::backend::Backend;
 use crate::repo_tool::{self, RepoTool};
 use crate::workspace::{self, Workspace};
 
+pub use clean::CleanArgs;
 pub use clone::{CloneOptions, clone};
 pub use commands::run;
 pub use commit::GitCommitArgs;

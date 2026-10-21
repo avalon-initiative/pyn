@@ -111,6 +111,7 @@ The commands named in decision #218.
 | `git remote` | `pyn remote` | git home; pyn server partly | On a git home it lists and edits the remotes in `.git/config`, see [Remotes](#remotes). On a pyn server `pyn remote`, `pyn remote -v` and `pyn remote get-url origin` show the one remote, `origin`: the server and repository set by `--server` and `--repo` or `pyn config set server` and `repo`; `add`, `remove`, `rename` and `set-url` say that a server home has exactly one home and exit `1`. |
 | `git tag [-a] [-s] [-u <keyid>] [--no-sign] [-m <msg>] [-f] [<name> [<commit>]]`, `-d`, `-l` | `pyn tag ...` on a git home | git home only | See [Tags](#tags). On a pyn server it prints the git-command message (a server's commits are named by hash and have no tags yet, #223). |
 | `git stash [push] [-u] [-m <msg>]`, `list`, `pop`, `apply`, `drop`, `clear` | `pyn stash ...` on a git home | git home only | See [Stashing](#stashing). On a pyn server it prints the git-command message. |
+| `git clean [-n] [-f] [-d] [-x\|-X] [-q] [-e <pattern>] [--] [<path>...]` | `pyn clean ...` on a git home | git home only | See [Clean](#clean). Without `-f` or `-n` it refuses, as `clean.requireForce` does; `-i` is not built; pathspecs are literal files and folders. |
 
 `pyn update [<path>...]` is the pre-branch stand-in for `fetch` plus `pull`: it fast-forwards files without local
 changes and never overwrites an edit, reporting skipped files. `--revision <commit>` moves the workspace to an older or
@@ -644,7 +645,6 @@ schedules them.
 
 | Git | Reason |
 | --- | --- |
-| `git clean` | Not planned. |
 | `git blame`, `git grep` | Not scheduled. |
 | Commands that maintain git's own storage or run its hooks (`gc`, `fsck`, `bundle`, `submodule`, `worktree`, hooks in `.git/hooks`) | pyn reads a git repository's `.git/` on a git home (decision #245) but does not maintain it or run its hooks. pyn's own hooks are tracked in #216. |
 
@@ -710,6 +710,7 @@ whatever the rules say.
 | `rebase` | See [Rebase](#rebase). |
 | `tag` | See [Tags](#tags). |
 | `stash` | See [Stashing](#stashing). |
+| `clean` | See [Clean](#clean). |
 | `init` | See above. |
 | `login`, `logout`, `register`, `password`, `key`, `token`, `user`, `org`, `team`, `repo`, `usage`, `setup`, `admin`, `whoami`, `member`, `role`, `invite` | Run as anywhere else; see [Refused commands](#refused-commands). |
 | `lock`, `unlock`, `locks`, `policy`, `audit`, `verify`, `summary` | Refuse; see [Refused commands](#refused-commands). |
@@ -1241,6 +1242,34 @@ leave other changes unstaged, restore untracked files that do not already exist,
 remove entries. `stash push -- <path>`, `show`, `branch`, `create`, `store`, `--index`, `-k` and `-p` are not built.
 
 git 2.43 cannot stash in a SHA-256 repository, so the SHA-256 stash is tested for consistency, not against git.
+
+### Clean
+
+`clean` removes the files git does not track from the work tree, and prints git's lines: `Would remove <path>` with `-n`,
+otherwise `Removing <path>` (`-q` prints neither), paths relative to where you stand and a folder with a trailing `/`. It
+refuses with `fatal: clean.requireForce defaults to true and neither -i, -n, nor -f given; refusing to clean` (`128`) unless
+`-n` or `-f` is given (or `clean.requireForce` is `false`), and `-x` with `-X` is `128`. Tracked files, submodule folders,
+`.git` and pyn's own `.pyn` folder are never removed, and a link is removed as a link, never followed.
+
+- Default: untracked files that no ignore rule hides (every `.gitignore`, `.git/info/exclude`, the global excludes file).
+  Untracked folders stay unless `-d` or a path is named; with either, a folder whose contents are all to be removed is one
+  `dir/` entry, and one that also holds ignored files is listed file by file so those stay.
+- `-x` also removes ignored files (the standard rules are not read); `-X` removes only ignored files, and lists them inside
+  untracked folders without `-d`.
+- `-e <pattern>` adds an ignore rule for this run that wins over every file, including with `-x`; with `-X` it also selects.
+- A nested repository the index does not track is left alone, silently when it is the folder itself and as
+  `Would skip repository <path>` / `Skipping repository <path>` when it is inside an untracked folder (the rest of that folder
+  is still removed). `-ff` removes nested repositories whole.
+- Paths limit the clean to themselves and what is under them; standing in a folder limits it to that folder. They are literal
+  files and folders, so a glob matches nothing and a `:` pathspec is refused. A path outside the repository is `128`.
+- A folder you stand in is not removed: `Would refuse to remove current working directory` / `Refusing to ...`, then the
+  folder's entries are listed with paths built from it, as git does.
+- A path that cannot be removed prints `warning: failed to remove <path>` and the exit status is `1`.
+
+Differences from git: `-i` is a usage error (`129`), pathspecs take no globs or magic, and the order of the
+lines inside a folder that holds a nested repository is by name, where git uses the file system's order (and prints the
+folders in it without a trailing `/`, which pyn copies). Covered against the real git, on SHA-1 and SHA-256 repositories, by
+`crates/pyn-cli/tests/git_clean.rs`.
 
 ### Reflogs
 

@@ -175,7 +175,7 @@ impl Ignores {
     }
 }
 
-fn child(dir: &[u8], name: &[u8]) -> Vec<u8> {
+pub(super) fn child(dir: &[u8], name: &[u8]) -> Vec<u8> {
     let mut p = dir.to_vec();
     if !p.is_empty() {
         p.push(b'/');
@@ -184,7 +184,7 @@ fn child(dir: &[u8], name: &[u8]) -> Vec<u8> {
     p
 }
 
-fn dir_entries(path: &Path) -> Result<Vec<(Vec<u8>, std::fs::FileType)>> {
+pub(super) fn dir_entries(path: &Path) -> Result<Vec<(Vec<u8>, std::fs::FileType)>> {
     let mut out = Vec::new();
     for entry in std::fs::read_dir(path).with_context(|| format!("reading {}", path.display()))? {
         let entry = entry?;
