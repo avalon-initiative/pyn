@@ -156,6 +156,31 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
         Command::Restore {
             args,
             source,
+            staged,
+            ours,
+            theirs,
+            merge,
+            ..
+        } if ours || theirs || merge => super::switch::restore_sides(
+            git,
+            cwd,
+            &args,
+            super::switch::SideFlags {
+                source: source.as_deref(),
+                staged,
+                stage: if ours {
+                    Some(2)
+                } else if theirs {
+                    Some(3)
+                } else {
+                    None
+                },
+                merge,
+            },
+        ),
+        Command::Restore {
+            args,
+            source,
             staged: true,
             worktree: false,
             ..

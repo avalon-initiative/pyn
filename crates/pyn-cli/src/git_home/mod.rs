@@ -23,6 +23,7 @@ mod push_plan;
 mod rebase;
 mod reflog;
 mod refwrite;
+mod remerge;
 mod remote;
 mod remote_query;
 mod remove;

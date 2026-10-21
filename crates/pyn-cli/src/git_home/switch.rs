@@ -1,7 +1,7 @@
 //! `switch`, `checkout` and the work tree forms of `restore` on a git repository: they move `HEAD`, the index and
 //! the work tree as git does, and never overwrite local changes unless `-f` (or the command's purpose) says to.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
 
 use anyhow::{Result, bail};
@@ -14,7 +14,7 @@ use super::stage::{
     Entries, entries_of, index_of, put_entry, raw_mode, refuse_in_progress, remove_entry,
     resolve_specs, under, warn_about_hooks_for,
 };
-use super::worktree::{Mode, check_writes, move_tree, remove_entry_file, write_entry};
+use super::worktree::{Mode, check_writes, move_tree, remove_entry_file, write_bytes, write_entry};
 use super::{GitHome, Refused, convert, path_string};
 use crate::branch::{CheckoutArgs, SwitchArgs};
 
@@ -354,6 +354,8 @@ struct Restore {
     prune: bool,
     /// Take this stage of an unmerged path: 2 for ours, 3 for theirs.
     stage: Option<u8>,
+    /// Recreate the conflicted merge of unmerged paths from stages 1 to 3.
+    merge: bool,
 }
 
 fn restore_paths(git: &GitHome, cwd: &Path, paths: &[String], r: Restore) -> Result<usize> {
@@ -364,31 +366,55 @@ fn restore_paths(git: &GitHome, cwd: &Path, paths: &[String], r: Restore) -> Res
     let specs = resolve_specs(git, cwd, paths)?;
     let mut entries: Entries = entries_of(&opened.index);
     let in_spec = |p: &[u8]| specs.spec.matches(p);
+    let mut remerged: BTreeMap<Vec<u8>, (Option<Entry>, Entry, Entry)> = BTreeMap::new();
+    let mut all_versions: Vec<String> = Vec::new();
+    let mut lacking: Vec<Vec<u8>> = Vec::new();
     let sources: BTreeMap<Vec<u8>, Entry> = match &r.source {
         Source::Tree(commit) => {
             let tree = git.repo.commit(commit)?.tree;
             git.repo.flatten(Some(&tree), &specs.spec)?
         }
         Source::Index => {
-            let wanted = r.stage.unwrap_or(0);
             let mut found = BTreeMap::new();
-            for ((path, stage), e) in &entries {
-                if !in_spec(path) {
-                    continue;
-                }
-                if *stage == wanted {
-                    found.insert(
-                        path.clone(),
-                        Entry {
+            let paths: BTreeSet<&Vec<u8>> = entries
+                .keys()
+                .map(|(p, _)| p)
+                .filter(|p| in_spec(p))
+                .collect();
+            for path in paths {
+                let at = |stage: u8| entries.get(&(path.clone(), stage));
+                let chosen = match (at(0), r.stage) {
+                    (Some(e), _) => Some(e),
+                    (None, Some(wanted)) => at(wanted),
+                    (None, None) if r.merge => {
+                        let (Some(ours), Some(theirs)) = (at(2), at(3)) else {
+                            all_versions.push(path_string(path));
+                            continue;
+                        };
+                        let leaf = |e: &IndexEntry| Entry {
                             mode: super::stage::leaf_mode(e.mode),
                             id: e.id,
-                        },
-                    );
-                } else if r.stage.is_none()
-                    && *stage > 0
-                    && !entries.contains_key(&(path.clone(), 0))
-                {
-                    return Err(Refused(format!("path '{}' is unmerged", path_string(path))).into());
+                        };
+                        remerged.insert(path.clone(), (at(1).map(leaf), leaf(ours), leaf(theirs)));
+                        continue;
+                    }
+                    (None, None) => {
+                        return Err(
+                            Refused(format!("path '{}' is unmerged", path_string(path))).into()
+                        );
+                    }
+                };
+                match chosen {
+                    Some(e) => {
+                        found.insert(
+                            path.clone(),
+                            Entry {
+                                mode: super::stage::leaf_mode(e.mode),
+                                id: e.id,
+                            },
+                        );
+                    }
+                    None => lacking.push(path.clone()),
                 }
             }
             found
@@ -407,18 +433,44 @@ fn restore_paths(git: &GitHome, cwd: &Path, paths: &[String], r: Restore) -> Res
             .into());
         }
     }
+    let mut errors: Vec<String> = all_versions
+        .iter()
+        .map(|p| format!("path '{p}' does not have all necessary versions"))
+        .collect();
+    if !r.prune {
+        let side = if r.stage == Some(2) { "our" } else { "their" };
+        errors.extend(
+            lacking
+                .iter()
+                .map(|p| format!("path '{}' does not have {side} version", path_string(p))),
+        );
+    }
+    if let Some((last, rest)) = errors.split_last() {
+        rest.iter().for_each(|e| eprintln!("error: {e}"));
+        return Err(Refused(last.clone()).into());
+    }
     let doomed: Vec<Vec<u8>> = if r.prune {
         indexed
             .iter()
-            .filter(|p| in_spec(p) && !sources.contains_key(*p))
+            .filter(|p| in_spec(p) && !sources.contains_key(*p) && !remerged.contains_key(*p))
             .cloned()
             .collect()
     } else {
         Vec::new()
     };
     if r.to_worktree {
-        check_writes(sources.keys().chain(doomed.iter()))?;
-        convert::refuse_conversions(git, sources.iter().map(|(p, e)| (p.as_slice(), e.mode)))?;
+        check_writes(sources.keys().chain(remerged.keys()).chain(doomed.iter()))?;
+        convert::refuse_conversions(
+            git,
+            sources
+                .iter()
+                .map(|(p, e)| (p.as_slice(), e.mode))
+                .chain(remerged.iter().map(|(p, (_, o, _))| (p.as_slice(), o.mode))),
+        )?;
+        for (path, (base, ours, theirs)) in &remerged {
+            let (mode, bytes) = super::remerge::recreate(git, path, base.as_ref(), ours, theirs)?;
+            write_bytes(git, path, mode, &bytes)?;
+        }
     }
     for (path, entry) in &sources {
         let written = if r.to_worktree {
@@ -446,7 +498,7 @@ fn restore_paths(git: &GitHome, cwd: &Path, paths: &[String], r: Restore) -> Res
     if r.to_index && r.to_worktree {
         warn_about_hooks_for(git, &CHECKOUT_HOOKS);
     }
-    Ok(sources.len() + doomed.len())
+    Ok(sources.len() + remerged.len() + doomed.len())
 }
 
 fn commit_of(git: &GitHome, spec: &str) -> Result<ObjectId> {
@@ -482,6 +534,53 @@ pub fn restore(
             to_worktree,
             prune,
             stage: None,
+            merge: false,
+        },
+    )?;
+    Ok(())
+}
+
+pub(super) struct SideFlags<'a> {
+    pub source: Option<&'a str>,
+    pub staged: bool,
+    /// 2 for `--ours`, 3 for `--theirs`.
+    pub stage: Option<u8>,
+    pub merge: bool,
+}
+
+/// `pyn restore --ours|--theirs|--merge`: takes a side of unmerged paths, or recreates their conflicted merge.
+pub(super) fn restore_sides(
+    git: &GitHome,
+    cwd: &Path,
+    paths: &[String],
+    f: SideFlags,
+) -> Result<()> {
+    if f.merge && f.stage.is_some() {
+        bail!(
+            "git checkout: --ours/--theirs, --force and --merge are incompatible when\nchecking out of the index."
+        );
+    }
+    if f.staged {
+        if f.stage.is_some() {
+            bail!("'--ours' or '--theirs' cannot be used with --staged");
+        }
+        bail!("'--merge' or '--conflict' cannot be used with --staged");
+    }
+    if let Some(source) = f.source {
+        commit_of(git, source)?;
+        bail!("'--merge', '--ours', or '--theirs' cannot be used when checking out of a tree");
+    }
+    restore_paths(
+        git,
+        cwd,
+        paths,
+        Restore {
+            source: Source::Index,
+            to_index: false,
+            to_worktree: true,
+            prune: true,
+            stage: f.stage,
+            merge: f.merge,
         },
     )?;
     Ok(())
@@ -531,6 +630,7 @@ pub fn checkout(git: &GitHome, cwd: &Path, args: CheckoutArgs) -> Result<()> {
                 to_worktree: true,
                 prune: false,
                 stage,
+                merge: false,
             },
             None => Restore {
                 source: Source::Index,
@@ -538,6 +638,7 @@ pub fn checkout(git: &GitHome, cwd: &Path, args: CheckoutArgs) -> Result<()> {
                 to_worktree: true,
                 prune: false,
                 stage,
+                merge: false,
             },
         };
         let label = match &r.source {
@@ -596,6 +697,7 @@ pub fn checkout(git: &GitHome, cwd: &Path, args: CheckoutArgs) -> Result<()> {
                 to_worktree: true,
                 prune: false,
                 stage: None,
+                merge: false,
             },
         )?;
         eprintln!(
@@ -637,6 +739,7 @@ pub fn checkout(git: &GitHome, cwd: &Path, args: CheckoutArgs) -> Result<()> {
                 to_worktree: true,
                 prune: false,
                 stage: None,
+                merge: false,
             },
         )?;
         eprintln!(

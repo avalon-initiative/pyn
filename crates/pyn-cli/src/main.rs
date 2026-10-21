@@ -325,6 +325,15 @@ enum Command {
         /// Restore the work tree files (with --staged, both); a git repository only.
         #[arg(short = 'W', long)]
         worktree: bool,
+        /// Take the current branch's version of unmerged paths (a git repository only).
+        #[arg(long, overrides_with = "theirs")]
+        ours: bool,
+        /// Take the merged-in version of unmerged paths (a git repository only).
+        #[arg(long, overrides_with = "ours")]
+        theirs: bool,
+        /// Recreate the conflicted merge of unmerged paths (a git repository only).
+        #[arg(long)]
+        merge: bool,
         #[arg(short, long)]
         message: Option<String>,
         /// Skip the typed confirmation.
@@ -1957,6 +1966,11 @@ fn run(cli: Cli) -> Result<()> {
                 std::process::exit(1);
             }
         }
+        Command::Restore { ours: true, .. }
+        | Command::Restore { theirs: true, .. }
+        | Command::Restore { merge: true, .. } => usage_error(
+            "`restore --ours`, `--theirs` and `--merge` need a git repository; a pyn server has no merge to take a side of",
+        ),
         Command::Restore { worktree: true, .. } => usage_error(
             "`restore --worktree` needs a git repository; on a pyn server a restore makes an older revision the new head",
         ),

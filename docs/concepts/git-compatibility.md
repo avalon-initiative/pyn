@@ -101,7 +101,9 @@ The commands named in decision #218.
 | `git restore --source=<rev> <path>` | `pyn restore --source <rev> <path>` (or `pyn restore <path> <rev>`) | different | pyn's restore appends a new revision on the server: it needs the lock, the `restore` permission and a typed confirmation (`--yes` skips it); `-m` sets the message. The revision is required (git defaults to the index or HEAD) and `-s` is the short form of `--source`. Git's restore only edits the working tree. |
 | `git restore --staged <path>...` | `pyn restore --staged <path>...` (`-S`) | same | Puts the staged entries under the paths back to the last commit and leaves the files alone. On a git home `--source <commit>` takes the entries from that commit, as git; on a pyn server there is no commit to take them from and it is a usage error. |
 | `git restore [-s <rev>] [-S] [-W] <path>...` (the work tree) | `pyn restore ...` on a git home | git home only | Takes the paths from the index (or `--source`) into the work tree, and with `--staged --worktree` into both. See [Branches, switching and the work tree](#branches-switching-and-the-work-tree). On a pyn server `--worktree` is a usage error (`129`): a restore there makes an older revision the new head. |
-| `git restore -p`, `--ours`, `--theirs`, `--merge` | none | unsupported | Usage error (`129`). On a git home `pyn checkout --ours -- <path>` and `--theirs` take a side of an unmerged path. |
+| `git restore --ours\|--theirs [-W] <path>...` | `pyn restore --ours\|--theirs <path>...` | git home only | Writes one side of an unmerged path into the work tree and leaves the path unmerged. On a pyn server it is a usage error (`129`). See [`restore`](#branches-switching-and-the-work-tree). |
+| `git restore --merge <path>...` | `pyn restore --merge <path>...` | git home only | Recreates the conflicted merge of an unmerged path in the work tree, with diff3 markers. `--merge` has no `-m` short form (that is `--message`), and `--conflict=<style>` is not accepted. |
+| `git restore -p` | none | unsupported | Usage error (`129`). |
 | `git reset [--soft\|--mixed\|--hard\|--keep\|--merge] [-q] [<rev>]`, `git reset [<rev>] [--] <path>...` | `pyn reset ...` | git home: supported; pyn server: different | On a git home it is git's reset, see [Reset](#reset). On a pyn server `pyn reset [--soft\|--mixed\|--hard] [<commit>]` only drops unpublished local commits ([workspace](workspace.md#the-local-store)); `--keep`, `--merge`, `-q`, paths and a second revision are a usage error there. |
 | `git branch`, `git switch`, `git checkout` | `pyn branch`, `pyn switch`, `pyn checkout` | supported | See [branching and merging](#branching-and-merging). On a git home they work on `.git` as git does, see [Branches, switching and the work tree](#branches-switching-and-the-work-tree). |
 | `git merge` | `pyn merge` | supported | See [branching and merging](#branching-and-merging). On a git home it merges as git does, see [Merging](#merging). |
@@ -972,6 +974,23 @@ git` (`1`); an unmerged path is `error: path '<path>' is unmerged`.
 **`restore`.** `restore <path>...` writes the index entries into the work tree; `--source <rev>` writes that commit's files instead
 and, as in git, removes tracked files the commit lacks; `--staged --worktree` does both for index and work tree, from `HEAD` unless
 `--source` is given; `--staged` alone is described under [staging](#staging-and-committing). The paths are prefixes (no globs).
+
+`restore --ours` and `--theirs` write that stage of each unmerged path under the paths into the work tree (the later of the two
+wins), and `restore --merge` merges stages 2 and 3 over stage 1 again and writes the result with `ours`, `base` and `theirs` as the
+marker labels, always in diff3 style. Neither touches the index, so the paths stay unmerged. A side the path lacks removes the work
+tree file, as `restore` does for any path the source lacks (`checkout --ours|--theirs` reports `error: path '<path>' does not have
+our version` or `their version` and exits `1` instead). A path that is not unmerged is restored from the index, local edits
+included. `--merge` on an unmerged path without both sides prints `error: path '<path>' does not have all necessary versions`
+(`1`, nothing written); a binary conflict writes our version with `warning: Cannot merge binary files: <path> (ours vs. theirs)`.
+The result takes our file mode, and a link is written as git does (a link whose target is the merged text). The usual pathspec
+errors apply (`error: pathspec '<path>' did not match any file(s) known to git`, `1`, nothing written). The flag checks are git's,
+in this order, each `128`: `--merge` with `--ours` or `--theirs` (`git checkout: --ours/--theirs, --force and --merge are
+incompatible when checking out of the index.`), then any of them with `--staged` (also with `--worktree`), then with `--source`
+(`'--merge', '--ours', or '--theirs' cannot be used when checking out of a tree`).
+
+Limits: git recreates the conflict of a path already resolved with `add` from its resolve-undo record; pyn does not keep that
+extension, so `restore --merge` of a resolved path restores the staged content instead. `restore` with no path is a usage error
+(`129`), not git's `128`.
 
 ### Reset
 
