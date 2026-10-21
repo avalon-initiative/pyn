@@ -7,6 +7,7 @@ mod ignore;
 mod pathspec;
 mod repo;
 mod rev;
+mod revmark;
 mod safepath;
 mod status;
 mod tree;

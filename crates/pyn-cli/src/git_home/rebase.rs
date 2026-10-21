@@ -16,7 +16,7 @@ use pyn_object::{Commit, ObjectId, Signature};
 use super::GitHome;
 use super::editor::{self, Which};
 use super::meld;
-use super::merge::{write_orig_head, write_state};
+use super::merge::{write_orig_head_as, write_state};
 use super::pick::{
     Failed, Merged, Pending, Verb, git_dir, make_commit, make_commit_on, merge_pick, read_id,
     read_text, short, subject_of,
@@ -653,7 +653,7 @@ fn begin(git: &GitHome, plan: &Plan) -> Result<()> {
         bad_sheet = edit_sheet(git, &mut state, &plan.upstream)?;
     }
     detach_at_onto(git, &state, plan)?;
-    write_orig_head(git, &state.orig_head)?;
+    write_orig_head_as(git, &state.orig_head, Some("rebase"))?;
     state.create(git)?;
     if state.quiet {
         state.put(git, "quiet", "")?;
@@ -1420,7 +1420,7 @@ fn finish(git: &GitHome, state: &State) -> Result<()> {
             &format!("{action} (finish): returning to {}", state.head_name),
         )?;
     }
-    write_orig_head(git, &state.orig_head)?;
+    write_orig_head_as(git, &state.orig_head, Some("rebase"))?;
     clear_state(git);
     if !state.quiet {
         let what = if state.head_name.starts_with("refs/") {
@@ -1549,7 +1549,7 @@ fn skip(git: &GitHome) -> Result<()> {
     let state = load(git)?;
     require_valid(&state);
     hard_reset(git, None)?;
-    write_orig_head(git, &state.orig_head)?;
+    write_orig_head_as(git, &state.orig_head, Some("rebase"))?;
     let dir = dir_of(git);
     let skipped_meld =
         dir.join("amend").exists() && state.done.last().is_some_and(|i| i.cmd.melds());
@@ -1578,10 +1578,16 @@ fn hard_reset(git: &GitHome, rev: Option<&ObjectId>) -> Result<()> {
     reset::reset(git, &git.ws.root, &ResetArgs::quiet_hard(rev.as_deref()))
 }
 
+fn silent_hard_reset(git: &GitHome, rev: &ObjectId) -> Result<()> {
+    let rev = rev.to_hex();
+    reset::reset_silently(git, &git.ws.root, &ResetArgs::quiet_hard(Some(&rev)))
+}
+
 fn abort(git: &GitHome) -> Result<()> {
     let state = load(git)?;
-    hard_reset(git, Some(&state.orig_head))?;
-    write_orig_head(git, &state.orig_head)?;
+    let before = git.repo.head_commit()?;
+    silent_hard_reset(git, &state.orig_head)?;
+    write_orig_head_as(git, &state.orig_head, Some("rebase"))?;
     if state.head_name.starts_with("refs/heads/") {
         let old = git.repo.refs().resolve(&state.head_name)?;
         if old != Some(state.orig_head) {
@@ -1592,7 +1598,8 @@ fn abort(git: &GitHome) -> Result<()> {
                 &format!("{} (abort): {}", state.action, state.head_name),
             )?;
         }
-        git.set_head(
+        git.set_head_from(
+            before.as_ref(),
             Some(&state.head_name),
             &state.orig_head,
             &format!("{} (abort): returning to {}", state.action, state.head_name),

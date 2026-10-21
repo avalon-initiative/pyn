@@ -129,7 +129,7 @@ Commands people reach for that are not in the daily set.
 | `git config --list`, `--get <key>`, `<key> <value>` | `pyn config list`, `get`, `set` | different | Subcommands instead of flags. `--global` and `--local` are accepted where they apply (`set` takes `--global` only; the default is the workspace). Keys are pyn's own. `pyn config init` is pyn only: it prompts for the user settings. |
 | `git config --unset`, `-e`, `--system`, `--file` | none | unsupported | Usage error (`129`). |
 | `git fsck` | `pyn verify [<path>]` | different | Checks every revision's hash and its link to the one before, and the audit log's chain. Silent and exit 0 when intact, as git; otherwise a `PROBLEM`, `WHAT`, `PATH` table and exit 1. `-v` / `--verbose` also prints what was checked. See [integrity](integrity.md). |
-| `git reflog` | `pyn audit` | different | Append-only audit log of lock, revision and access events, filtered with `--path`, `--actor`, `--action`, `--before`, `--limit`. It is the closest analogue and is permission-gated (`view_audit`). |
+| `git reflog [show\|list\|exists\|expire\|delete]` | `pyn reflog ...` on a git home | git home only | See [Reflogs](#reflogs). On a pyn server it prints the git-command message; the closest analogue there is `pyn audit`, an append-only log of lock, revision and access events, filtered with `--path`, `--actor`, `--action`, `--before`, `--limit` and permission-gated (`view_audit`). |
 | `git blame`, `git annotate` | none | unsupported | Git-command message. Line history needs merge-capable text history; not scheduled. |
 | `git shortlog`, `git describe`, `git rev-parse`, `git archive`, `git bundle`, `git format-patch`, `git am`, `git apply`, `git notes`, `git bisect`, `git worktree`, `git submodule`, `git gc`, `git fsck` | none | unsupported | `pyn: '<cmd>' is not a pyn command` (`1`). Only the commands in the git-only list print the "git command pyn does not support yet" message, so these read as unknown until that list is widened (#223). |
 
@@ -711,13 +711,15 @@ whatever the rules say.
 | `tag` | See [Tags](#tags). |
 | `stash` | See [Stashing](#stashing). |
 | `clean` | See [Clean](#clean). |
+| `reflog` | See [Reflogs](#reflogs). |
 | `init` | See above. |
 | `login`, `logout`, `register`, `password`, `key`, `token`, `user`, `org`, `team`, `repo`, `usage`, `setup`, `admin`, `whoami`, `member`, `role`, `invite` | Run as anywhere else; see [Refused commands](#refused-commands). |
 | `lock`, `unlock`, `locks`, `policy`, `audit`, `verify`, `summary` | Refuse; see [Refused commands](#refused-commands). |
 | `config`, `clone` | Unchanged: they do not depend on the repository's home. A clone from a pyn server made inside a git repository is its own pyn workspace; a clone from a git URL is its own git repository. |
 
 Revisions are `HEAD`, `@`, a branch, a tag (annotated tags are followed to their commit), a full or abbreviated id of 4 or
-more digits, and any of `~N`, `^` and `^N` after one. SHA-1 and SHA-256 repositories are both read. Dates print in the
+more digits, and any of `~N`, `^` and `^N` after one. Reflog forms (`HEAD@{2}`, `@{-1}`, `@{upstream}`, `@{push}`) are
+described in [Reflogs](#reflogs). SHA-1 and SHA-256 repositories are both read. Dates print in the
 offset recorded in the commit, as git does.
 
 Differences from git, all deliberate or not yet done:
@@ -783,8 +785,8 @@ Differences from git:
   `%x`) are printed as written.
 - `--format` and `--pretty` win over `--oneline` whatever their order. `--date=local`, `human` and `format:` are not taken.
 - The `--stat` graph is at most 40 columns wide and names are never shortened; it has no `--stat=<width>` form.
-- Passing a revision that is not a commit, a reflog selector (`HEAD@{1}`) or `:/<text>` fails with exit `128` where git
-  accepts them.
+- Passing a revision that is not a commit, a dated reflog selector (`HEAD@{yesterday}`) or `:/<text>` fails with exit `128`
+  where git accepts them.
 
 ### The short status format
 
@@ -950,7 +952,7 @@ moves the configuration section and, for the current branch, points `HEAD` at th
   removed.
 - Unmerged index entries, a merge, cherry-pick, revert or rebase in progress, and a sparse checkout refuse the command.
 - `switch -c <new> [<start>]` and `checkout -b` create the branch first (an unborn branch just points `HEAD` at the name),
-  `switch -` and `checkout -` return to the previous branch (read from the `HEAD` reflog), `--detach` and `checkout <commit>` (or a
+  `switch -` and `checkout -` (also `@{-N}`) return to the previous branch (read from the `HEAD` reflog), `--detach` and `checkout <commit>` (or a
   tag) detach `HEAD` and print git's advice about it (`advice.detachedHead=false` turns it off). `switch <commit>` is refused
   without `--detach`. A branch checked out in another work tree is refused.
 - After a switch that carried local changes the paths are listed as `M\t<path>`, `A\t<path>` and so on, as git does, and
@@ -994,8 +996,8 @@ not an error. `reset <path>` works without `--` when the name is not a revision;
 reset with paths.` (`128`). On an unborn branch `HEAD` is the empty tree: `reset`, `--mixed`, `--hard` and `--merge` empty the index
 (and `--hard` and `--merge` remove the files), `--soft` does nothing, no ref or `ORIG_HEAD` is written, and `--keep` fails.
 
-`ORIG_HEAD`, `MERGE_HEAD` and `CHERRY_PICK_HEAD` are accepted wherever a revision is. Unlike git, `HEAD@{N}` and other reflog
-revisions are not understood yet, and a sparse checkout refuses every mode but `--soft`. A running rebase or cherry-pick's own
+`ORIG_HEAD`, `MERGE_HEAD` and `CHERRY_PICK_HEAD` are accepted wherever a revision is, and so are the reflog revisions
+(`HEAD@{1}`, `@{-1}`; see [Reflogs](#reflogs)). Unlike git, a sparse checkout refuses every mode but `--soft`. A running rebase or cherry-pick's own
 state folder (`rebase-merge/`, `sequencer/`) is not removed. Covered against the real git by `crates/pyn-cli/tests/git_reset.rs`.
 
 ### Merging
@@ -1280,6 +1282,43 @@ none; an existing log is appended to either way. The lines are `commit: <subject
 Fast-forward` or `Merge made by the 'ort' strategy.`, `reset: moving to HEAD`, the stash message and, for a fetch, `fetch <arguments>: fast-forward` and its siblings (see [Fetch on a git home](#fetch-on-a-git-home)). A line names the committer
 identity (with the committer date from `GIT_COMMITTER_DATE`); with no identity configured a reflog line falls back to the login name
 so branching and switching still work. A moved branch is also logged in `HEAD`'s log, as git does.
+
+Every command that moves a ref writes git's line: `commit: <subject>`, `commit (initial)`, `commit (merge)`, `commit (amend)`,
+`merge <name>: ...` (`pull <arguments>: ...` when a pull ran the merge), `reset: moving to <rev>`, `cherry-pick: ...`, `revert: ...`,
+`rebase (start|pick|continue|finish|abort): ...`, `checkout: moving from <old> to <new>`, `branch: Created from <start>`,
+`tag: tagging <abbreviation> (<subject>, <date>)` (tags only get a log with `core.logAllRefUpdates=always`), `update by push`
+and the stash and fetch lines above. `ORIG_HEAD` gets `reset: updating ORIG_HEAD` (`rebase: ...`, or no prefix after a merge) when
+it already has a log or `core.logAllRefUpdates=always`. Covered against the real git, one step at a time, by
+`crates/pyn-cli/tests/git_reflog.rs`.
+
+#### Reflog revisions
+
+`<ref>@{N}` is where `<ref>` was `N` moves ago, from its reflog (`@{0}` is the current value, and `N` equal to the length reads
+the value before the oldest line when there is one); `@{N}` alone is the current branch's. `@{-N}` is the branch (or commit,
+when `HEAD` was detached) checked out `N` checkouts ago, read from the `checkout: moving from <old> to <new>` lines of `HEAD`'s
+reflog; `switch`, `checkout` and every command that takes a revision accept it, and `switch @{-1}` is `switch -`.
+`[<branch>]@{upstream}` (also `@{u}`, any case) is the remote-tracking ref `branch.<name>.remote`/`merge` names through the
+remote's fetch refspec (or the local branch for remote `.`), and `[<branch>]@{push}` the one a `push` would update
+(`branch.<name>.pushRemote`, `remote.pushDefault`, `remote.<name>.push` and `push.default` as git reads them, including
+`cannot resolve 'simple' push to a single destination`). `~N` and `^N` may follow any of them. A name with no reflog, or `N`
+past its end, fails (`log for '<ref>' only has <n> entries`, `128`). Not built: dated selectors (`@{yesterday}`,
+`@{2.days.ago}`) and `:/<text>`. In code, `Repo::resolve` (`pyn-gitwork`) understands all of the above and
+`Repo::previous_checkout(n)` returns the `@{-n}` name for commands that need the branch rather than its commit.
+
+#### The `reflog` command
+
+`reflog [show] [-n <N>] [<ref>]` (`reflog` alone is `show HEAD`) prints `<abbreviation> <ref>@{N}: <message>` per line, newest
+first, with `<ref>` as typed (`HEAD`, a branch's short name, otherwise the full name). `reflog list` prints `HEAD` and every ref
+with a log. `reflog exists <full-ref>` is silent and exits `1` when the ref has no log. `reflog expire [--expire=<time>]
+[--expire-unreachable=<time>] [--all] [--rewrite] [--updateref] [-n|--dry-run] [--verbose] [<ref>...]` removes lines older than
+`--expire` (default `gc.reflogExpire`, 90 days) and older lines whose commits the ref no longer reaches (default
+`gc.reflogExpireUnreachable`, 30 days; for `HEAD`, reachability is from any ref), leaving an empty file as git does. `<time>` is
+`never`, `all`, `now`, a count of seconds, an ISO date or `N.days.ago`. `reflog delete [--rewrite] [--updateref] [-n]
+[--verbose] <ref>@{N}...` removes single lines, one selector after the other as git does (so a later `@{N}` counts in the log
+as the earlier one left it). `--rewrite` makes each kept line start where the one before it ended and `--updateref` points a
+non-symbolic ref at the newest kept line when the newest was removed. `--verbose` prints `keep`, `prune` or `would prune` and
+the message per line to standard error. Not built: `show --all`, other `log` options (`--format`, `--date`), and the per-ref
+`gc.<pattern>.reflogExpire` settings.
 
 ### What pyn will not write
 

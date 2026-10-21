@@ -84,12 +84,31 @@ fn delete(git: &GitHome, names: &[String]) -> Result<()> {
             continue;
         };
         git.repo.refs().delete(&full, Expect::Id(id))?;
+        git.repo.refs().write_reflog(&full, &[])?;
         println!("Deleted tag '{name}' (was {})", short(&id));
     }
     if failed {
         std::process::exit(1);
     }
     Ok(())
+}
+
+/// The reflog line git writes for a tag: `tag: tagging <abbreviation> (<subject>, <date>)`.
+fn tag_log(git: &GitHome, object: &ObjectId) -> Result<String> {
+    let what = match git.repo.objects().read(object)?.kind {
+        Kind::Commit => {
+            let commit = git.repo.commit(object)?;
+            let subject = super::switch::subject(git, object)?;
+            let date = chrono::DateTime::from_timestamp(commit.committer.time, 0)
+                .map(|t| t.format("%Y-%m-%d").to_string())
+                .unwrap_or_default();
+            format!("{subject}, {date}")
+        }
+        Kind::Tag => "tag".to_string(),
+        Kind::Tree => "tree".to_string(),
+        Kind::Blob => "blob".to_string(),
+    };
+    Ok(format!("tag: tagging {} ({what})", short(object)))
 }
 
 fn create(git: &GitHome, args: &TagArgs, name: &str, target: Option<&str>) -> Result<()> {
@@ -146,6 +165,7 @@ fn create(git: &GitHome, args: &TagArgs, name: &str, target: Option<&str>) -> Re
     };
     let expect = old.map_or(Expect::Absent, Expect::Id);
     git.repo.refs().update_checked(&full, expect, &id)?;
+    git.log_ref(&full, old.as_ref(), &id, &tag_log(git, &object)?, false)?;
     if let Some(old) = old {
         println!("Updated tag '{name}' (was {})", short(&old));
     }

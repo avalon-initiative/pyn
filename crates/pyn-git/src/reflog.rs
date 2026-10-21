@@ -144,6 +144,13 @@ impl RefStore {
                 Err(e) => Err(io_at(&path)(e)),
             };
         }
+        self.replace_reflog(name, entries)
+    }
+
+    /// Replaces the reflog of `name` with `entries`, leaving an empty file when there are none (as `reflog expire`).
+    pub fn replace_reflog(&self, name: &str, entries: &[ReflogEntry]) -> Result<()> {
+        check_name(name)?;
+        let path = self.reflog_path(name);
         let lock = PathBuf::from(format!("{}.lock", path.display()));
         let mut file = OpenOptions::new()
             .write(true)

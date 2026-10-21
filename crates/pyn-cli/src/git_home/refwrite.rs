@@ -76,24 +76,6 @@ impl GitHome {
         Ok(())
     }
 
-    /// Appends a reflog line to `name` only if it already has a reflog.
-    pub(super) fn log_if_present(
-        &self,
-        name: &str,
-        old: &ObjectId,
-        new: &ObjectId,
-        message: &str,
-    ) -> Result<()> {
-        let entry = ReflogEntry {
-            old: *old,
-            new: *new,
-            who: self.log_identity(),
-            message: message.to_string(),
-        };
-        self.repo.refs().append_reflog(name, &entry, false)?;
-        Ok(())
-    }
-
     /// The ref `HEAD` names when it is on a branch, even an unborn one.
     pub(super) fn head_target(&self) -> Result<Option<String>> {
         Ok(match self.repo.git().refs().head()? {
@@ -152,6 +134,17 @@ impl GitHome {
         message: &str,
     ) -> Result<()> {
         let old = self.repo.head_commit()?;
+        self.set_head_from(old.as_ref(), branch_ref, commit, message)
+    }
+
+    /// `set_head`, logging the move from `old` rather than from where `HEAD` is now.
+    pub(super) fn set_head_from(
+        &self,
+        old: Option<&ObjectId>,
+        branch_ref: Option<&str>,
+        commit: &ObjectId,
+        message: &str,
+    ) -> Result<()> {
         match branch_ref {
             Some(target) => self.repo.refs().set_symbolic("HEAD", target)?,
             None => self
@@ -159,7 +152,7 @@ impl GitHome {
                 .refs()
                 .update_checked("HEAD", Expect::Any, commit)?,
         }
-        self.log_ref("HEAD", old.as_ref(), commit, message, false)
+        self.log_ref("HEAD", old, commit, message, false)
     }
 
     pub(super) fn branch_ref(name: &str) -> String {

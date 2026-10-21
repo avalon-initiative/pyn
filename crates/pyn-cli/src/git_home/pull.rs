@@ -535,6 +535,7 @@ pub fn pull(git: &GitHome, args: PullArgs) -> Result<()> {
         QUIET.store(true, Ordering::Relaxed);
     }
     let message = default_message(git, &candidate.describe())?;
+    let _ = merge::ACTION.set(action);
     merge::merge(
         git,
         MergeArgs {

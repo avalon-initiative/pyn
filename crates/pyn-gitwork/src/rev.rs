@@ -1,9 +1,11 @@
-//! Revision names: `HEAD`, `@`, branches, tags, full or abbreviated ids, then `~N`, `^` and `^N` steps.
+//! Revision names: `HEAD`, `@`, branches, tags, full or abbreviated ids, then `~N`, `^` and `^N` steps. A name may
+//! carry an `@{...}` suffix first (see `revmark`).
 
 use pyn_object::{Algorithm, Kind, ObjectId};
 
 use crate::error::{Error, Result, io_at};
 use crate::repo::Repo;
+use crate::revmark::{Mark, split_mark};
 
 const MIN_ABBREV: usize = 4;
 const PSEUDO_REFS: [&str; 3] = ["ORIG_HEAD", "MERGE_HEAD", "CHERRY_PICK_HEAD"];
@@ -12,13 +14,22 @@ impl Repo {
     /// The commit a revision names; annotated tags are followed to their commit.
     pub fn resolve(&self, spec: &str) -> Result<ObjectId> {
         let bad = || Error::Revision(format!("bad revision '{spec}'"));
+        if let Some(mark) = split_mark(spec) {
+            let Mark { rest, .. } = mark;
+            let id = self.resolve_mark(&mark, spec)?;
+            return self.steps(self.peel(&id)?, rest, spec);
+        }
         let split = spec.find(['~', '^']).unwrap_or(spec.len());
-        let (base, mut rest) = spec.split_at(split);
+        let (base, rest) = spec.split_at(split);
         if base.is_empty() && !rest.is_empty() {
             return Err(bad());
         }
-        let mut id = self.resolve_base(base).ok_or_else(bad)??;
-        id = self.peel(&id)?;
+        let id = self.resolve_base(base).ok_or_else(bad)??;
+        self.steps(self.peel(&id)?, rest, spec)
+    }
+
+    fn steps(&self, mut id: ObjectId, mut rest: &str, spec: &str) -> Result<ObjectId> {
+        let bad = || Error::Revision(format!("bad revision '{spec}'"));
         while let Some(op) = rest.chars().next() {
             rest = &rest[1..];
             let digits = rest
@@ -102,26 +113,10 @@ impl Repo {
         if PSEUDO_REFS.contains(&name) {
             return self.pseudo_ref(name);
         }
-        let candidates = [
-            name.to_string(),
-            format!("refs/{name}"),
-            format!("refs/tags/{name}"),
-            format!("refs/heads/{name}"),
-            format!("refs/remotes/{name}"),
-            format!("refs/remotes/{name}/HEAD"),
-        ];
-        for candidate in candidates {
-            if candidate != "HEAD" && !candidate.starts_with("refs/") {
-                continue;
-            }
-            if pyn_git::check_ref_name(&candidate).is_err() && candidate != "HEAD" {
-                continue;
-            }
-            if let Some(id) = self.refs().resolve(&candidate)? {
-                return Ok(Some(id));
-            }
+        match self.expand_ref_name(name)? {
+            Some(full) => Ok(self.refs().resolve(&full)?),
+            None => Ok(None),
         }
-        Ok(None)
     }
 
     /// The one commit whose id starts with `prefix`.

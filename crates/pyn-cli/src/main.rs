@@ -144,6 +144,8 @@ enum Command {
     Stash(git_home::StashArgs),
     /// Remove untracked files from the work tree (a git repository only).
     Clean(git_home::CleanArgs),
+    /// Show, check and prune the reflog (a git repository only).
+    Reflog(git_home::ReflogArgs),
     /// Reapply the current branch's commits on top of another base (a git repository only).
     Rebase(git_home::RebaseArgs),
     /// Convert a workspace made before local commits to one that keeps them (a pyn server only).
@@ -1531,6 +1533,10 @@ fn run(cli: Cli) -> Result<()> {
         }
         Command::Clean(_) => {
             eprintln!("{}", unsupported::message("clean"));
+            std::process::exit(1);
+        }
+        Command::Reflog(_) => {
+            eprintln!("{}", unsupported::message("reflog"));
             std::process::exit(1);
         }
         Command::Rebase(_) => {

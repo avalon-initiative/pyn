@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
 
 use anyhow::{Result, bail};
-use pyn_git::IndexEntry;
+use pyn_git::{Expect, IndexEntry};
 use pyn_gitwork::{Entry, Kind, Pathspec, fs_path};
 use pyn_object::ObjectId;
 
@@ -269,6 +269,15 @@ fn reset_paths(
 }
 
 pub fn reset(git: &GitHome, cwd: &Path, args: &ResetArgs) -> Result<()> {
+    reset_logging(git, cwd, args, true)
+}
+
+/// A reset that moves `HEAD` without a reflog line, for a caller that logs the move in its own words.
+pub(super) fn reset_silently(git: &GitHome, cwd: &Path, args: &ResetArgs) -> Result<()> {
+    reset_logging(git, cwd, args, false)
+}
+
+fn reset_logging(git: &GitHome, cwd: &Path, args: &ResetArgs, log: bool) -> Result<()> {
     if args.yes {
         bail!("`--yes` confirms `--hard` on a pyn server workspace; a git repository does not ask");
     }
@@ -364,13 +373,16 @@ pub fn reset(git: &GitHome, cwd: &Path, args: &ResetArgs) -> Result<()> {
         }
     }
     if let Some(old) = &head {
-        super::merge::write_orig_head(git, old)?;
+        super::merge::write_orig_head_as(git, old, Some("reset"))?;
     }
     if let Some(new) = &target
         && !unborn
     {
         let message = format!("reset: moving to {rev}");
-        if head.as_ref() == Some(new) {
+        if !log {
+            let name = git.head_target()?.unwrap_or_else(|| "HEAD".into());
+            git.repo.refs().update_checked(&name, Expect::Any, new)?;
+        } else if head.as_ref() == Some(new) {
             if git.head_target()?.is_some() {
                 git.log_ref("HEAD", head.as_ref(), new, &message, false)?;
             }

@@ -23,6 +23,16 @@ use crate::merging::MergeArgs;
 const ABBREV: usize = 7;
 
 /// Set by `pyn pull -q`: the informational lines below are not printed.
+/// The reflog action when a command other than `merge` runs the merge (`pull ...`).
+pub(super) static ACTION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+fn action(spec: &str) -> String {
+    ACTION
+        .get()
+        .cloned()
+        .unwrap_or_else(|| format!("merge {spec}"))
+}
+
 pub(super) static QUIET: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// The exit status when local changes block a fast-forward: 2 for `merge`, 1 for `pull`.
@@ -104,7 +114,18 @@ pub(super) fn write_state(git: &GitHome, name: &str, text: &str) -> Result<()> {
 
 /// `ORIG_HEAD` is where `HEAD` was before a merge, as git leaves it for `git reset --merge`.
 pub(super) fn write_orig_head(git: &GitHome, id: &ObjectId) -> Result<()> {
-    write_state(git, "ORIG_HEAD", &format!("{id}\n"))
+    write_orig_head_as(git, id, None)
+}
+
+/// Writes `ORIG_HEAD`, logging it as git does when it already has a reflog or `core.logAllRefUpdates` is `always`.
+pub(super) fn write_orig_head_as(git: &GitHome, id: &ObjectId, action: Option<&str>) -> Result<()> {
+    let old = git.repo.refs().resolve("ORIG_HEAD")?;
+    write_state(git, "ORIG_HEAD", &format!("{id}\n"))?;
+    let message = match action {
+        Some(a) => format!("{a}: updating ORIG_HEAD"),
+        None => "updating ORIG_HEAD".to_string(),
+    };
+    git.log_ref("ORIG_HEAD", old.as_ref(), id, &message, false)
 }
 
 pub fn merge(git: &GitHome, args: MergeArgs) -> Result<()> {
@@ -191,7 +212,7 @@ fn fast_forward(
         write_orig_head(git, ours)?;
         say(&format!("Updating {}..{}", short(ours), short(theirs)));
     }
-    git.move_head(theirs, &format!("merge {spec}: Fast-forward"))?;
+    git.move_head(theirs, &format!("{}: Fast-forward", action(spec)))?;
     say("Fast-forward");
     let changed = git
         .repo
@@ -257,7 +278,7 @@ fn true_merge(
                     "HEAD",
                     Some(&ours),
                     &ours,
-                    &format!("merge {spec}: updating HEAD"),
+                    &format!("{}: updating HEAD", action(spec)),
                     false,
                 )?;
             }
@@ -309,7 +330,7 @@ fn true_merge(
         .write(ObjectKind::Commit, &record.encode(git.algorithm())?)?;
     git.move_head(
         &id,
-        &format!("merge {spec}: Merge made by the 'ort' strategy."),
+        &format!("{}: Merge made by the 'ort' strategy.", action(spec)),
     )?;
     say("Merge made by the 'ort' strategy.");
     let changed = git
@@ -535,8 +556,5 @@ fn abort(git: &GitHome) -> Result<()> {
     git.save_index(&opened, &index_of(opened.index.version, entries))?;
     clear_merge_state(git);
     git.log_ref("HEAD", Some(&head), &head, "reset: moving to HEAD", false)?;
-    if let Some(branch) = git.head_target()? {
-        git.log_if_present(&branch, &head, &head, "reset: moving to HEAD")?;
-    }
     Ok(())
 }

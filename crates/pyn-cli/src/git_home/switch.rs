@@ -43,16 +43,34 @@ struct Go {
     force: bool,
 }
 
-/// The branch before the current one, from the `HEAD` reflog (`@{-1}`).
-fn previous_branch(git: &GitHome) -> Result<String> {
-    for entry in git.repo.refs().read_reflog("HEAD")?.iter().rev() {
-        if let Some(rest) = entry.message.strip_prefix("checkout: moving from ")
-            && let Some((from, _)) = rest.split_once(" to ")
-        {
-            return Ok(from.to_string());
-        }
+/// What `-` and `@{-N}` stand for: the branch (or commit) checked out N moves ago, read from the `HEAD` reflog.
+pub(super) fn previous_branch(git: &GitHome, spec: &str) -> Result<String> {
+    let n = match spec {
+        "-" => Some(1),
+        _ => spec
+            .strip_prefix("@{-")
+            .and_then(|r| r.strip_suffix('}'))
+            .and_then(|n| n.parse::<usize>().ok())
+            .filter(|n| *n > 0),
+    };
+    let Some(n) = n else {
+        bail!("invalid reference: {spec}");
+    };
+    match git.repo.previous_checkout(n)? {
+        Some(name) => Ok(name),
+        None => bail!(
+            "invalid reference: {}",
+            if spec == "-" { "@{-1}" } else { spec }
+        ),
     }
-    bail!("invalid reference: @{{-1}}")
+}
+
+/// `name` with `-` and `@{-N}` replaced by the branch they stand for.
+pub(super) fn expand_branch_name(git: &GitHome, name: String) -> Result<String> {
+    if name == "-" || name.starts_with("@{-") {
+        return previous_branch(git, &name);
+    }
+    Ok(name)
 }
 
 /// `M`, `A`, `D` or `T` for each tracked path that differs from `HEAD` in the index or the work tree.
@@ -208,11 +226,7 @@ pub fn switch(git: &GitHome, args: SwitchArgs) -> Result<()> {
         (None, Some(spec), true) => Landing::Detach(spec),
         (None, None, true) => Landing::Detach("HEAD".into()),
         (None, Some(name), false) => {
-            let name = if name == "-" {
-                previous_branch(git)?
-            } else {
-                name
-            };
+            let name = expand_branch_name(git, name)?;
             if git.branch_commit(&name)?.is_none() {
                 if git.repo.resolve(&name).is_ok() {
                     bail!(
@@ -485,10 +499,7 @@ pub fn checkout(git: &GitHome, cwd: &Path, args: CheckoutArgs) -> Result<()> {
         );
         return Ok(());
     }
-    let name = match (first.as_str(), previous_branch(git)) {
-        ("-", Ok(previous)) => previous,
-        _ => first.clone(),
-    };
+    let name = expand_branch_name(git, first.clone()).unwrap_or_else(|_| first.clone());
     if !detach && git.branch_commit(&name)?.is_some() {
         return go(
             git,

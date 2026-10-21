@@ -244,10 +244,7 @@ pub(super) fn save(
     )? {
         blocked.report("stash", "stash", 1);
     }
-    std::fs::write(
-        git.repo.git().git_dir().join("ORIG_HEAD"),
-        format!("{head}\n"),
-    )?;
+    super::merge::write_orig_head_as(git, &head, Some("reset"))?;
     git.log_ref("HEAD", Some(&head), &head, "reset: moving to HEAD", false)?;
     for path in &untracked {
         remove_entry_file(git, path)?;

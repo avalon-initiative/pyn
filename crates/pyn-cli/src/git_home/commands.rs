@@ -98,6 +98,7 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
             }
             Ok(())
         }
+        Command::Reflog(args) => super::reflog::reflog(git, args),
         Command::Rebase(args) => super::rebase::rebase(git, &args),
         Command::Remote(args) => super::remote::remote(git, args),
         Command::Fetch(args) => super::fetch::fetch(git, args),
