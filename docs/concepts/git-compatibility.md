@@ -1131,7 +1131,7 @@ no rename detection. The replay runs on a detached `HEAD`; the branch moves when
    naming `pyn rebase --continue`, `--skip` and `--abort`, exits `1`, and leaves the unmerged entries and markers, `REBASE_HEAD`,
    `MERGE_MSG` with git's `# Conflicts:` list, and `.git/rebase-merge/` as git's merge backend writes it: `head-name`, `onto`,
    `orig-head`, `git-rebase-todo` (the commits still to do as `pick <id> <subject>`), `done`, `msgnum`, `end`, `stopped-sha`,
-   `message`, `author-script`, `interactive`, `autostash` when there is one. `ORIG_HEAD` is where the branch was. git reads and
+   `message`, `author-script`, `interactive`, `autostash` when there is one. (git 2.55 also lists the subjects as `# <subject>` and ends `message` with the `# Conflicts:` lines; pyn reads either and drops comment lines from the message). `ORIG_HEAD` is where the branch was. git reads and
    continues what pyn stopped and the reverse; the tests do both.
 5. `--continue` needs every unmerged entry staged (otherwise it prints that the conflicts must be resolved and exits `1`),
    commits the index with the `message` file and the `author-script` author (reflog `rebase (continue)`), and goes on; an index

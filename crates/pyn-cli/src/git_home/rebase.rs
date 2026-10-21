@@ -1030,7 +1030,10 @@ fn cont(git: &GitHome) -> Result<()> {
         if tree != head_tree {
             let picked = git.repo.commit(&stopped)?;
             let message = match read_text(&dir.join("message")) {
-                Some(m) => clean_message(&[m]),
+                Some(m) => {
+                    let kept: Vec<&str> = m.lines().filter(|l| !l.starts_with('#')).collect();
+                    clean_message(&[kept.join("\n")])
+                }
                 None => picked.message.clone(),
             };
             let author = read_text(&dir.join("author-script"))

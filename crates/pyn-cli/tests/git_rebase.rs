@@ -123,6 +123,8 @@ fn sheet(dir: &Path, name: &str) -> String {
         .map(|l| {
             let mut w = l.splitn(3, ' ');
             let (cmd, id, rest) = (w.next(), w.next().unwrap_or(""), w.next().unwrap_or(""));
+            // git 2.55 writes `pick <id> # <subject>`.
+            let rest = rest.strip_prefix("# ").unwrap_or(rest);
             format!("{} {} {rest}", cmd.unwrap_or(""), &id[..id.len().min(7)])
         })
         .collect::<Vec<_>>()
@@ -154,9 +156,15 @@ fn state(env: &Env, dir: &Path) -> Vec<String> {
         "autostash",
     ] {
         let text = read(dir, &format!("rebase-merge/{name}"));
-        // git 2.43 ends `message` with an extra newline, later versions do not.
+        // git 2.43 ends `message` with an extra newline; 2.55 appends the `# Conflicts:` comment lines. Neither is
+        // part of the commit message.
         out.push(if name == "message" {
-            text.trim_end().to_string()
+            text.lines()
+                .filter(|l| !l.starts_with('#'))
+                .collect::<Vec<_>>()
+                .join("\n")
+                .trim_end()
+                .to_string()
         } else {
             text
         });
@@ -170,6 +178,38 @@ fn state(env: &Env, dir: &Path) -> Vec<String> {
     );
     out.push(format!("{files:?}"));
     out
+}
+
+fn part_name(i: usize) -> String {
+    const FIXED: [&str; 7] = [
+        "HEAD",
+        "refs",
+        "ORIG_HEAD",
+        "REBASE_HEAD",
+        "MERGE_HEAD",
+        "MERGE_MSG",
+        "rebase-merge exists",
+    ];
+    const FILES: [&str; 9] = [
+        "head-name",
+        "onto",
+        "orig-head",
+        "msgnum",
+        "end",
+        "stopped-sha",
+        "message",
+        "author-script",
+        "autostash",
+    ];
+    match i {
+        0..=6 => FIXED[i].into(),
+        7..=15 => format!("rebase-merge/{}", FILES[i - 7]),
+        16 => "git-rebase-todo".into(),
+        17 => "done".into(),
+        18 => "ls-files".into(),
+        19 => "stash list".into(),
+        _ => "work tree".into(),
+    }
 }
 
 struct Pair {
@@ -220,9 +260,9 @@ impl Pair {
         let (gs, ps) = (state(&self.env, &self.git), state(&self.env, &self.pyn));
         for (i, (a, b)) in ps.iter().zip(&gs).enumerate() {
             if a != b {
-                let line = a.lines().zip(b.lines()).find(|(x, y)| x != y);
                 panic!(
-                    "{what}: state part {i} differs (pyn, then git): first differing lines {line:?}; pyn said {}",
+                    "{what}: state part {i} ({}) differs\npyn: {a:?}\ngit: {b:?}\npyn said {}",
+                    part_name(i),
                     String::from_utf8_lossy(&p.stderr)
                 );
             }
