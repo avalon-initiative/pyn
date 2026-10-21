@@ -295,6 +295,30 @@ tree the clean paths gave. Only unpublished local commits are ever replayed; pub
   record and leaves the branch, the local commits and the store as they were; a change in the working tree to any other file is
   never touched.
 
+### Cherry-pick
+
+`pyn cherry-pick <commit>...` applies the change each named commit made as a new local commit on the workspace's branch, with
+the commit's author and message and the person as committer. A commit is a hash or abbreviation, `HEAD~N`, or a branch name of
+the local store, and `<a>..<b>` and `<a>...<b>` name ranges, applied oldest first; the commits may be on another branch or
+already published. Nothing is sent: the result is an unpublished commit like any other, concluded by `pyn push`.
+
+- **The merge.** Each path is decided like a rebase step ([conflicts in a pull](#conflicts-in-a-pull)) with the commit's parent as
+  the base, the branch as `HEAD` and the picked commit as the other side: a side that alone changed a path wins, a shared file
+  both changed is merged line by line, and a binary file, a mode change on both sides or a deletion against an edit is a
+  conflict. An exclusive path only the picked commit changed is taken (the server asks for the lock at push, as for any local
+  commit). An exclusive path both sides changed is always a conflict, even when the person holds its lock: they choose a side
+  with `pyn checkout --ours|--theirs`, take the lock with `pyn lock <path>`, stage it and conclude. A commit that changes nothing
+  here is dropped and said so.
+- **Stopping.** A conflict stops the run with the clean changes and the markers in the working tree, recorded in the same
+  `.pyn/local_only/state/merge.toml` as a conflicted pull; the branch moves only when the whole run is done. `pyn cherry-pick
+  --continue` (or `pyn commit`) records the resolved commit and goes on, `--skip` drops it and goes on, and `--abort` (or
+  `pyn merge --abort`) puts the files back and leaves the branch as it was. `pyn status` says `You are cherry-picking`, and
+  `pull`, `reset`, `switch`, `update` and a second `cherry-pick` are refused while it is in progress.
+- **-x.** Adds the line `(cherry picked from commit <id>)` to each message, as git does.
+- **Refused.** `-n`, `-s`, `-m` and `--quit` need a git repository (`--abort` is the way out); a merge commit cannot be picked,
+  only the commits it merged; staged changes, uncommitted edits to a file the commits change, and a workspace without a
+  fetched branch stop the command before anything changes.
+
 ## Command line
 
 The CLI follows git where it has an equivalent; the differences are listed below.

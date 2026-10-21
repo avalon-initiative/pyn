@@ -15,7 +15,7 @@ use crate::staging::{self, Index};
 use crate::workspace::{FileState, Workspace, hash_of, set_read_only};
 use crate::{branch, localfile, merging, sync};
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Default)]
 pub struct ResetArgs {
     /// Move only the branch; the index and files stay (a workspace: keep the dropped commits' changes staged).
     #[arg(long, overrides_with_all = ["mixed", "hard", "keep", "merge"])]
@@ -47,6 +47,16 @@ pub struct ResetArgs {
 }
 
 impl ResetArgs {
+    /// `reset --merge -q [<rev>]`, which cherry-pick uses to put the index and work tree back.
+    pub(crate) fn quiet_merge(rev: Option<&str>) -> Self {
+        Self {
+            merge: true,
+            quiet: true,
+            revs: rev.map(str::to_string).into_iter().collect(),
+            ..Self::default()
+        }
+    }
+
     pub(crate) fn kind(&self) -> crate::git_home::ResetKind {
         use crate::git_home::ResetKind;
         match () {

@@ -37,6 +37,16 @@ pub enum Control {
 pub enum Op {
     Merge,
     Rebase,
+    Pick,
+}
+
+impl Op {
+    fn command(self) -> &'static str {
+        match self {
+            Op::Pick => "pyn cherry-pick",
+            _ => "pyn pull",
+        }
+    }
 }
 
 /// One side of a conflicted path: a blob of the local store.
@@ -79,6 +89,9 @@ pub struct LocalOp {
     total: usize,
     #[serde(default)]
     dropped: usize,
+    /// Cherry-pick: add the `(cherry picked from commit ...)` line to each message.
+    #[serde(default)]
+    origin: bool,
 }
 
 impl LocalOp {
@@ -86,6 +99,7 @@ impl LocalOp {
         match self.op {
             Op::Merge => "pull",
             Op::Rebase => "rebase",
+            Op::Pick => "cherry-pick",
         }
     }
 
@@ -95,6 +109,11 @@ impl LocalOp {
             Op::Rebase => {
                 "conclude this step with `pyn commit` (or `pyn pull --continue`), drop the commit with `pyn pull --skip`, \
                  or give the rebase up with `pyn pull --abort`"
+                    .into()
+            }
+            Op::Pick => {
+                "conclude this step with `pyn commit` (or `pyn cherry-pick --continue`), drop the commit with `pyn cherry-pick --skip`, \
+                 or give the cherry-pick up with `pyn cherry-pick --abort`"
                     .into()
             }
         }
@@ -108,6 +127,15 @@ impl LocalOp {
                 format!(
                     "You are rebasing your local commits (commit {at} of {}, {} left).\n  \
                      (use \"pyn pull --skip\" to drop this commit, \"pyn pull --abort\" to give up the rebase)\n",
+                    self.total,
+                    self.todo.len()
+                )
+            }
+            Op::Pick => {
+                let at = self.total - self.todo.len();
+                format!(
+                    "You are cherry-picking (commit {at} of {}, {} left).\n  \
+                     (use \"pyn cherry-pick --skip\" to drop this commit, \"pyn cherry-pick --abort\" to give up)\n",
                     self.total,
                     self.todo.len()
                 )
@@ -361,7 +389,10 @@ fn record(
         &MergeState {
             version: STATE_VERSION,
             branch: branch.to_string(),
-            source: format!("origin/{branch}"),
+            source: match op.op {
+                Op::Pick => "cherry-pick".to_string(),
+                _ => format!("origin/{branch}"),
+            },
             source_commit: op.theirs.clone(),
             target_commit: op.orig.clone(),
             message,
@@ -393,6 +424,7 @@ pub fn stop_merge(
         todo: Vec::new(),
         total: 0,
         dropped: 0,
+        origin: false,
     };
     let disk = flat(store, Some(stop.orig))?;
     record(
@@ -417,6 +449,8 @@ pub fn stop_merge(
 
 /// The local commits being replayed onto the fetched tip.
 struct Run {
+    op: Op,
+    origin: bool,
     orig: ObjectId,
     onto: ObjectId,
     tip: ObjectId,
@@ -448,11 +482,14 @@ fn subject(message: &[u8]) -> String {
 fn replay(
     store: &LocalStore,
     backend: &dyn Backend,
-    who: &Signature,
+    (who, branch): (&Signature, &str),
     mut run: Run,
 ) -> Result<Replayed> {
     let repo = store.repo();
     let mut judge = Judge::new(backend, run.onto);
+    if run.op == Op::Pick {
+        judge.never_keep();
+    }
     let mut files = flat(store, Some(run.tip))?;
     let mut parent_tree = repo.commit(&run.tip)?.tree;
     while let Some(id) = run.todo.pop_front() {
@@ -497,6 +534,12 @@ fn replay(
         let tree = write_trees(store, &files)?;
         if tree == parent_tree {
             run.dropped += 1;
+            if run.op == Op::Pick {
+                println!(
+                    "{} changes nothing here and is dropped",
+                    short(&id.to_hex())
+                );
+            }
             continue;
         }
         let record = Commit {
@@ -505,12 +548,15 @@ fn replay(
             author: commit.author,
             committer: who.clone(),
             extra_headers: Vec::new(),
-            message: commit.message,
+            message: picked_message(run.origin, &id, commit.message),
         };
         run.tip = repo
             .objects()
             .write(Kind::Commit, &record.encode(ALGORITHM)?)?;
         parent_tree = tree;
+        if run.op == Op::Pick {
+            print_pick(branch, &run.tip, &record.message);
+        }
     }
     Ok(Replayed::Done(run))
 }
@@ -520,6 +566,57 @@ fn set_entry(files: &mut Files, path: &[u8], entry: Option<Entry>) {
         Some(entry) => files.insert(path.to_vec(), entry),
         None => files.remove(path),
     };
+}
+
+fn picked_message(origin: bool, id: &ObjectId, message: Vec<u8>) -> Vec<u8> {
+    if origin {
+        crate::local_pick::with_origin(message, id)
+    } else {
+        message
+    }
+}
+
+fn print_pick(branch: &str, id: &ObjectId, message: &[u8]) {
+    println!("[{branch} {}] {}", short(&id.to_hex()), subject(message));
+}
+
+/// The commits a cherry-pick applies on top of `tip`; `onto` is the commit whose modes the server is asked about.
+pub struct Pick {
+    pub commits: Vec<ObjectId>,
+    pub tip: ObjectId,
+    pub onto: ObjectId,
+    pub origin: bool,
+}
+
+/// Applies the commits one after the other; a conflict leaves the cherry-pick in progress.
+pub fn begin_pick(
+    backend: &dyn Backend,
+    ws: &Workspace,
+    store: &LocalStore,
+    branch: &str,
+    pick: Pick,
+    who: &Signature,
+) -> Result<()> {
+    let run = Run {
+        op: Op::Pick,
+        origin: pick.origin,
+        orig: pick.tip,
+        onto: pick.onto,
+        tip: pick.tip,
+        total: pick.commits.len(),
+        todo: pick.commits.into(),
+        dropped: 0,
+    };
+    let disk = flat(store, Some(pick.tip))?;
+    proceed(
+        backend,
+        ws,
+        store,
+        (branch, who),
+        run,
+        &disk,
+        &BTreeSet::new(),
+    )
 }
 
 /// Replays the local commits onto the fetched tip; a conflict leaves the rebase in progress.
@@ -543,6 +640,8 @@ pub fn begin_rebase(
     }
     let orig = *outgoing.commits.last().expect("outgoing has commits");
     let run = Run {
+        op: Op::Rebase,
+        origin: false,
         orig,
         onto,
         tip: onto,
@@ -555,27 +654,24 @@ pub fn begin_rebase(
         backend,
         ws,
         store,
-        branch,
-        who,
+        (branch, who),
         run,
         &disk,
         &BTreeSet::new(),
     )
 }
 
-/// Carries a rebase on from `run` with `disk` in the working tree: to its end, or to the next conflict.
-#[allow(clippy::too_many_arguments)]
+/// Carries a rebase or cherry-pick on from `run` with `disk` in the working tree: to its end, or to the next conflict.
 fn proceed(
     backend: &dyn Backend,
     ws: &Workspace,
     store: &LocalStore,
-    branch: &str,
-    who: &Signature,
+    (branch, who): (&str, &Signature),
     run: Run,
     disk: &Files,
     force: &BTreeSet<String>,
 ) -> Result<()> {
-    match replay(store, backend, who, run)? {
+    match replay(store, backend, (who, branch), run)? {
         Replayed::Done(run) => {
             let end = flat(store, Some(run.tip))?;
             materialize(
@@ -593,6 +689,9 @@ fn proceed(
                 .context("the local branch moved while pulling; run the command again")?;
             merging::clear(ws)?;
             Index::default().save(ws)?;
+            if run.op == Op::Pick {
+                return Ok(());
+            }
             println!(
                 "Rebased {} local commit(s) onto {}{}",
                 run.total - run.dropped,
@@ -615,7 +714,8 @@ fn proceed(
             let commit = store.repo().commit(&current)?;
             let result_tree = write_trees(store, &files)?;
             let op = LocalOp {
-                op: Op::Rebase,
+                op: run.op,
+                origin: run.origin,
                 orig: run.orig.to_hex(),
                 theirs: run.onto.to_hex(),
                 result_tree: result_tree.to_hex(),
@@ -626,11 +726,17 @@ fn proceed(
                 total: run.total,
                 dropped: run.dropped,
             };
-            let message = String::from_utf8_lossy(&commit.message).into_owned();
+            let message = String::from_utf8_lossy(&picked_message(
+                run.origin,
+                &current,
+                commit.message.clone(),
+            ))
+            .into_owned();
             let at = run.total - run.todo.len();
+            let cmd = run.op.command();
             let (mut text, exclusive) = conflict_lines(&conflicts, &kept);
             text.push_str(&format!(
-                "error: could not apply {} ({}), commit {at} of {}\n{RESOLVE} (or `pyn pull --continue`).\n{SIDES}\n",
+                "error: could not apply {} ({}), commit {at} of {}\n{RESOLVE} (or `{cmd} --continue`).\n{SIDES}\n",
                 short(&current.to_hex()),
                 subject(&commit.message),
                 run.total
@@ -638,9 +744,9 @@ fn proceed(
             if exclusive {
                 text.push_str(&format!("{LOCKS}\n"));
             }
-            text.push_str(
-                "hint: To drop this commit, run `pyn pull --skip`; to put everything back as it was, `pyn pull --abort`.",
-            );
+            text.push_str(&format!(
+                "hint: To drop this commit, run `{cmd} --skip`; to put everything back as it was, `{cmd} --abort`."
+            ));
             record(
                 store, backend, ws, branch, disk, &files, &conflicts, op, message,
             )?;
@@ -660,6 +766,28 @@ fn open(ws: &Workspace) -> Result<(LocalStore, MergeState, LocalOp)> {
     };
     let store = LocalStore::open(ws).context("the local store is missing")?;
     Ok((store, state, op))
+}
+
+fn in_progress(ws: &Workspace) -> Result<Option<Op>> {
+    Ok(merging::load(ws)?.and_then(|s| s.local).map(|l| l.op))
+}
+
+/// Stops a cherry-pick command when no cherry-pick is in progress.
+pub fn require_pick(ws: &Workspace) -> Result<()> {
+    match in_progress(ws)? {
+        Some(Op::Pick) => Ok(()),
+        _ => bail!("there is no cherry-pick in progress"),
+    }
+}
+
+/// Stops a pull command while a cherry-pick is in progress.
+pub fn require_pull(ws: &Workspace) -> Result<()> {
+    if in_progress(ws)? == Some(Op::Pick) {
+        bail!(
+            "a cherry-pick is in progress, not a pull; use `pyn cherry-pick --continue`, `--skip` or `--abort`"
+        );
+    }
+    Ok(())
 }
 
 /// Records the staged resolutions as what the working tree holds.
@@ -745,7 +873,7 @@ pub fn finish(backend: &dyn Backend, ws: &Workspace, message: Option<String>) ->
             println!("Merge made by the 'ort' strategy.");
             sync::update(backend, ws, &[], None)
         }
-        Op::Rebase => {
+        Op::Rebase | Op::Pick => {
             let current = id_of(
                 op.current
                     .as_deref()
@@ -754,6 +882,8 @@ pub fn finish(backend: &dyn Backend, ws: &Workspace, message: Option<String>) ->
             let picked = repo.commit(&current)?;
             let tip = id_of(op.tip.as_deref().context("the rebase has no tip")?)?;
             let mut run = Run {
+                op: op.op,
+                origin: op.origin,
                 orig,
                 onto: theirs,
                 tip,
@@ -770,19 +900,24 @@ pub fn finish(backend: &dyn Backend, ws: &Workspace, message: Option<String>) ->
                     author: picked.author,
                     committer: who.clone(),
                     extra_headers: Vec::new(),
-                    message: message.map_or(picked.message, |m| clean_message(&[m])),
+                    message: message
+                        .map_or(picked_message(op.origin, &current, picked.message), |m| {
+                            clean_message(&[m])
+                        }),
                 };
                 run.tip = repo
                     .objects()
                     .write(Kind::Commit, &record.encode(ALGORITHM)?)?;
+                if op.op == Op::Pick {
+                    print_pick(&state.branch, &run.tip, &record.message);
+                }
             }
             adopt(ws, &index)?;
             proceed(
                 backend,
                 ws,
                 &store,
-                &state.branch,
-                &who,
+                (&state.branch, &who),
                 run,
                 &files,
                 &BTreeSet::new(),
@@ -794,8 +929,8 @@ pub fn finish(backend: &dyn Backend, ws: &Workspace, message: Option<String>) ->
 /// Drops the commit a rebase stopped on and goes on with the next.
 pub fn skip(backend: &dyn Backend, ws: &Workspace) -> Result<()> {
     let (store, state, op) = open(ws)?;
-    if op.op != Op::Rebase {
-        bail!("`pyn pull --skip` drops a commit of a rebase; there is none in progress");
+    if op.op == Op::Merge {
+        bail!("`--skip` drops a commit of a rebase or cherry-pick; there is none in progress");
     }
     let (orig, onto) = (id_of(&op.orig)?, id_of(&op.theirs)?);
     let tip = id_of(op.tip.as_deref().context("the rebase has no tip")?)?;
@@ -814,6 +949,8 @@ pub fn skip(backend: &dyn Backend, ws: &Workspace) -> Result<()> {
     index.entries.retain(|p, _| !touched.contains(p));
     index.save(ws)?;
     let run = Run {
+        op: op.op,
+        origin: op.origin,
         orig,
         onto,
         tip,
@@ -826,8 +963,7 @@ pub fn skip(backend: &dyn Backend, ws: &Workspace) -> Result<()> {
         backend,
         ws,
         &store,
-        &state.branch,
-        &who,
+        (&state.branch, &who),
         run,
         &back,
         &BTreeSet::new(),
@@ -918,6 +1054,7 @@ mod tests {
             todo: vec!["67".repeat(32)],
             total: 3,
             dropped: 1,
+            origin: false,
         };
         let state = MergeState {
             version: STATE_VERSION,
@@ -947,6 +1084,7 @@ mod tests {
             todo: vec!["a".into()],
             total: 3,
             dropped: 0,
+            origin: false,
         };
         assert!(op.header().contains("commit 2 of 3, 1 left"));
     }

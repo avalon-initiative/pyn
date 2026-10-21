@@ -38,6 +38,12 @@ impl Blocked {
 
     /// Prints git's messages for `verb` (`checkout`, `merge`...) and ends the command with `status`.
     pub(super) fn report(&self, verb: &str, advice: &str, status: i32) -> ! {
+        self.print(verb, advice);
+        eprintln!("Aborting");
+        std::process::exit(status);
+    }
+
+    pub(super) fn print(&self, verb: &str, advice: &str) {
         let list = |paths: &[Vec<u8>]| {
             for p in paths {
                 eprintln!("\t{}", path_string(p));
@@ -63,8 +69,6 @@ impl Blocked {
             list(&self.untracked);
             eprintln!("Please move or remove them before you {advice}.");
         }
-        eprintln!("Aborting");
-        std::process::exit(status);
     }
 }
 

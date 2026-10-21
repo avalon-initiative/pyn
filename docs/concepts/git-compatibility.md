@@ -144,7 +144,8 @@ revisions with a pointer per branch (decision #299).
 | `git switch <branch>`, `-c <new> [<start>]`, `-f` | `pyn switch ...` | supported | Local changes carry over where the target branch has the same file, and stop the switch (nothing changed, the paths listed) where it does not; `-f` discards them. `-`, `--detach` and `-C` are not built. Prints `Switched to branch '<name>'` on standard error, as git. |
 | `git checkout <branch>`, `-b <new> [<start>]`, `-f`, `[<tree-ish>] -- <path>...` | `pyn checkout ...` | supported | Reserved for git's meaning. `-- <path>` restores from the revision the workspace has (git: the index; a staged path must be unstaged first), `<branch\|commit> -- <path>` from that branch or commit. On a pyn server a path that is `exclusive` and has a local edit (locked by you or not) is not discarded silently: the files are named and the discard needs the path typed back or `--yes`, and a run without a terminal refuses (`128`, nothing changed); `shared` paths discard silently as in git. There is no detached HEAD: `checkout <commit>` is refused with what to use instead. Taking a lock is `pyn lock`. |
 | `git merge <branch\|commit>`, `-m`, `--no-ff`, `--ff-only`, `--no-commit`, `--abort`, `--continue` | `pyn merge ...` | supported | Shared files merge three-way with diff3 conflict markers; a binary conflicts as a whole file. Exclusive files take the pointer that descends from the other, and conflict where both branches changed one or a path became exclusive while a branch edited it (a person chooses a side, taking the lock). A conflicted merge leaves the workspace as git does and is concluded with `pyn add` and `pyn commit` (no `-m` needed), or given up with `--abort`. Differences: `--preview` (pyn's own) reports what would merge and conflict and changes nothing; a merge needs a clean index and no local edits to the files it touches; `--squash`, `-s`, `-X`, `--no-verify`, `--edit`, `--signoff`, `-S` and `--ff` are usage errors. `git checkout --ours` and `--theirs` are `pyn checkout --ours\|--theirs -- <path>`. `pyn status` marks unmerged paths in its `STATE` column. Recursive merge of criss-cross histories as git does, with the base of a conflict shown as `merged common ancestors`. |
-| `git rebase`, `git cherry-pick`, `git revert` | none | unsupported | See [Not planned](#not-planned). |
+| `git cherry-pick <commit>...`, ranges, `-n`, `-x`, `-s`, `-m <n>`, `--continue`, `--skip`, `--abort`, `--quit` | `pyn cherry-pick ...` | supported | Each commit's change becomes a new commit, with its author and message. On a git home see [Cherry-pick](#cherry-pick). On a pyn server workspace with local commits the commits, ranges and `-x` work, and `-n`, `-s`, `-m` and `--quit` are refused; see [cherry-pick in commits](commits.md#cherry-pick). A pyn server workspace without local commits refuses the command. |
+| `git rebase`, `git revert` | none | unsupported | See [Not planned](#not-planned). |
 
 ## Remotes
 
@@ -639,7 +640,7 @@ schedules them.
 | Git | Reason |
 | --- | --- |
 | `git clean` | Not planned. |
-| `git rebase`, `git cherry-pick`, `git revert` | History is append-only on the server. |
+| `git rebase`, `git revert` | History is append-only on the server. |
 | `git blame`, `git grep` | Not scheduled. |
 | Commands that maintain git's own storage or run its hooks (`gc`, `fsck`, `bundle`, `submodule`, `worktree`, hooks in `.git/hooks`) | pyn reads a git repository's `.git/` on a git home (decision #245) but does not maintain it or run its hooks. pyn's own hooks are tracked in #216. |
 
@@ -1024,6 +1025,54 @@ state folder (`rebase-merge/`, `sequencer/`) is not removed. Covered against the
 keeps unrelated local changes, but stops (`not uptodate`) if a path you staged has been edited again. `merge --continue` is
 `commit`. `merge --preview` needs a pyn server. `--squash` and strategies are not built. `AUTO_MERGE` is not written.
 
+### Cherry-pick
+
+`cherry-pick <commit>...` merges each commit's change onto the index and makes a commit with that commit's author and message,
+the committer from the identity rules of `commit`, and a tree and id that match git's (the tests compare ids). The result is
+the same as `merge` of the commit onto `HEAD` with the commit's parent as the merge base (`(empty tree)` for a root commit), so
+the merge rules above apply: no renames, `ort`-style results for everything else, diff3 markers labelled `HEAD` and
+`<abbreviation> (<subject>)` with the base `parent of <abbreviation> (<subject>)`. A commit is anything `resolve` takes, `A..B`
+and `A...B` name ranges (applied oldest first, parents before children), and several arguments are applied in the order given.
+
+1. Before anything changes it refuses, with git's wording and exit `128` (`fatal: cherry-pick failed` after `error:` lines): a
+   cherry-pick or revert already in progress, unmerged entries, an unknown revision, an empty range (`empty commit set passed`),
+   a merge commit without `-m <n>` (or `-m` past its parents), and a staged change (`your local changes would be overwritten by
+   cherry-pick`; `-n` allows it). A merge in progress, a rebase, a sparse checkout and several commits onto an unborn branch are
+   refused by pyn. `-m 1` on a commit that is not a merge is accepted, and `-m 0` is a usage error (`129`).
+2. A path the commit changes whose file has unstaged changes, or has an untracked file in the way, stops the command with git's
+   `Your local changes to the following files would be overwritten by merge` and nothing written; edits to other files stay.
+3. A clean result is committed with the reflog line `cherry-pick: <subject>` on the branch (or a detached `HEAD`) and `HEAD`,
+   and printed as `[<branch> <abbreviation>] <subject>` with `Author:` when it differs from the committer and the number of
+   files changed (git's `Date:` line and insertion counts are not printed). On an unborn branch the commit is a root commit.
+   `commit.gpgsign` signs it; `-S` is not built. Hooks are not run (one warning names them).
+4. `-x` adds `(cherry picked from commit <id>)` (inside the trailer block the message ends with, else after a blank line) and
+   `-s` a `Signed-off-by:` for the committer, in that order. `-n` leaves the merged result staged and in the files, writes the
+   message to `MERGE_MSG` and commits nothing; with several commits each one merges onto the index the previous left.
+5. A conflict prints `Auto-merging <path>` and `CONFLICT (...)` lines, `error: could not apply <abbreviation> (<subject>)` and the
+   `--continue`, `--skip` and `--abort` hints, exits `1`, and leaves the unmerged index entries, the markers, `CHERRY_PICK_HEAD`,
+   and `MERGE_MSG` with git's `# Conflicts:` list. With `-n` there is no `CHERRY_PICK_HEAD` and the hint names `add` and `rm`.
+   For several commits, or a range, `.git/sequencer/` holds `head` (where `HEAD` was), `abort-safety` (where the sequence has
+   got to), `todo` (one `pick <id> <subject>` line per commit still to do, the stopped one first) and `opts` (`record-origin`,
+   `signoff`, `mainline`, `no-commit`, only when set). A single commit leaves no `sequencer/`. git reads and continues what pyn
+   stopped and the reverse; the tests do both.
+6. A commit whose change is already in `HEAD` (or is empty) stops as git does, with `CHERRY_PICK_HEAD` set, and prints `The
+   previous cherry-pick is now empty`; pyn does not build `--allow-empty`, `--keep-redundant-commits` or `--empty`, so the way
+   on is `--skip`.
+
+`--continue` needs every unmerged entry staged, commits the index with `MERGE_MSG` (comment lines dropped) and the stopped
+commit's author, logs `commit (cherry-pick): <subject>`, then goes on with the rest of the todo; with no `CHERRY_PICK_HEAD` (the
+stopped commit was committed by hand) it checks the index equals `HEAD` and goes on. `--skip` is `reset --merge` to `HEAD`
+(`ORIG_HEAD` and the reflog line of `reset`), then the rest. `--abort` is `reset --merge` to the commit `HEAD` was at when a
+sequence started (to `HEAD` for a single commit) and removes `sequencer/`; when `HEAD` is no longer where the sequence left
+it, it prints `You seem to have moved HEAD. Not rewinding, check your HEAD!` and only removes the state. `--quit` removes the
+state and leaves the index and files. With nothing in progress `--continue`, `--skip` and `--abort` fail (`128`) and `--quit` succeeds.
+`commit` and `merge` still refuse while a cherry-pick is in progress.
+
+Differences from git: a range or list with a merge commit and no `-m` is refused before any commit is made (git applies the
+ones before it); `-e`, `--edit`, `--ff`, `--cleanup`, `-X`, `--strategy`, `--rerere-autoupdate`, `-S`, `--allow-empty` and
+`--keep-redundant-commits` are usage errors; `--no-edit` is accepted. Covered against the real git by
+`crates/pyn-cli/tests/git_cherry_pick.rs`.
+
 ### Tags
 
 `tag` lists `refs/tags` sorted (`-l <pattern>` filters). `tag <name> [<object>]` writes a lightweight tag at `HEAD` or the object
@@ -1089,7 +1138,7 @@ set to true, `core.eol=crlf` with a `text` attribute, `eol=crlf`, a `filter` oth
 symlinks and submodules are never converted). A Git LFS filter writes the pointer file as it is, with a warning (decision #245; see [Git LFS](#git-lfs)).
 The same limit applies to `status`, which compares raw bytes (#273). Hooks are never run; one warning names the hooks that exist
 for the command (`post-checkout`, `pre-merge-commit`, `commit-msg` and the like). Sparse checkouts, submodule updates, the split
-index and `GIT_DIR` are not supported, and `rebase`, `cherry-pick`, `revert`, `--squash` and anything that talks to a remote other than `ls-remote`, `fetch`, `pull`, `push` and `clone` are not built yet (epic #301; see [Transports and credentials](#transports-and-credentials)).
+index and `GIT_DIR` are not supported, and `rebase`, `revert`, `--squash` and anything that talks to a remote other than `ls-remote`, `fetch`, `pull`, `push` and `clone` are not built yet (epic #301; see [Transports and credentials](#transports-and-credentials)).
 
 ### Git LFS
 

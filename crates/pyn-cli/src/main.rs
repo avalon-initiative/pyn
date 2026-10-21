@@ -18,6 +18,7 @@ mod http_transport;
 mod limits;
 mod local_commit;
 mod local_merge;
+mod local_pick;
 mod local_reset;
 mod local_store;
 mod local_sync;
@@ -143,6 +144,8 @@ enum Command {
     Stash(git_home::StashArgs),
     /// Convert a workspace made before local commits to one that keeps them (a pyn server only).
     Migrate,
+    /// Apply the changes of existing commits as new commits on the current branch.
+    CherryPick(local_pick::PickArgs),
     /// Drop unpublished local commits, keeping their changes staged (--soft) or in the files
     /// (default), or discarding them (--hard, asks for confirmation).
     Reset(local_reset::ResetArgs),
@@ -1505,6 +1508,9 @@ fn run(cli: Cli) -> Result<()> {
         Command::Migrate => migrate::run(&backend, in_workspace("migrate")?)?,
         Command::Reset(args) => {
             local_reset::reset(&backend, in_workspace("reset")?, args)?;
+        }
+        Command::CherryPick(args) => {
+            local_pick::pick(&backend, in_workspace("cherry-pick")?, args)?;
         }
         Command::Tag(_) => {
             eprintln!("{}", unsupported::message("tag"));

@@ -160,6 +160,7 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
             ..
         } => super::switch::restore(git, cwd, &args, source.as_deref(), staged, worktree),
         Command::Reset(args) => super::reset::reset(git, cwd, &args),
+        Command::CherryPick(args) => super::pick::cherry_pick(git, &args),
         Command::Migrate => {
             bail!("`pyn migrate` converts a pyn server workspace; this is a git repository")
         }

@@ -526,6 +526,7 @@ pub(crate) struct Judge<'a> {
     at: ObjectId,
     modes: Option<HashMap<String, bool>>,
     locks: Option<HashSet<String>>,
+    keep_locked: bool,
 }
 
 impl<'a> Judge<'a> {
@@ -535,7 +536,13 @@ impl<'a> Judge<'a> {
             at,
             modes: None,
             locks: None,
+            keep_locked: true,
         }
+    }
+
+    /// An exclusive path both sides changed is a conflict even under the person's lock.
+    pub(crate) fn never_keep(&mut self) {
+        self.keep_locked = false;
     }
 
     fn shared(&mut self, name: &str) -> Result<bool> {
@@ -546,6 +553,9 @@ impl<'a> Judge<'a> {
     }
 
     fn locked(&mut self, name: &str) -> Result<bool> {
+        if !self.keep_locked {
+            return Ok(false);
+        }
         if self.locks.is_none() {
             self.locks = Some(my_locks(self.remote)?);
         }
@@ -657,6 +667,9 @@ pub fn pull(
     rebase: bool,
     control: Option<Control>,
 ) -> Result<()> {
+    if control.is_some() {
+        local_merge::require_pull(ws)?;
+    }
     match control {
         Some(Control::Abort) => return local_merge::abort(backend, ws),
         Some(Control::Continue) => return local_merge::finish(backend, ws, None),

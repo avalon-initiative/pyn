@@ -13,7 +13,7 @@ use super::stage::{
     Entries, clean_message, clear_merge_state, entries_of, identity, index_of, merge_heads,
     put_entry, raw_mode, refuse_in_progress, remove_entry, warn_about_hooks_for, write_tree,
 };
-use super::treemerge::{Conflicting, Labels, Resolved, Worktree, merge_trees};
+use super::treemerge::{Conflicting, Labels, Merge, Resolved, Worktree, merge_trees};
 use super::worktree::{
     Blocked, Mode, check_writes, in_the_way, move_tree, remove_entry_file, write_bytes, write_entry,
 };
@@ -97,7 +97,7 @@ pub(super) fn default_message(git: &GitHome, what: &str) -> Result<String> {
     Ok(format!("Merge {what}{into}"))
 }
 
-fn write_state(git: &GitHome, name: &str, text: &str) -> Result<()> {
+pub(super) fn write_state(git: &GitHome, name: &str, text: &str) -> Result<()> {
     let path = git.repo.git().git_dir().join(name);
     std::fs::write(&path, text).map_err(|e| anyhow!("writing {}: {e}", path.display()))
 }
@@ -243,92 +243,28 @@ fn true_merge(
             base: &base_label,
         },
     )?;
-    check_writes(merged.paths.keys())?;
-    let head_leaves = git.repo.flatten(Some(&ours_tree), &Pathspec::default())?;
-
-    let mut blocked = Blocked::default();
-    let index_leaves = git.repo.index_leaves(&opened.index);
-    for path in head_leaves.keys().chain(index_leaves.keys()) {
-        if head_leaves.get(path) != index_leaves.get(path) && !blocked.local.contains(path) {
-            blocked.local.push(path.clone());
-        }
-    }
-    let index_differs = !blocked.local.is_empty();
-    let dirty = git.repo.unstaged_changes(&opened.index)?;
-    let ignores = super::stage::Ignores {
-        ignore: git.repo.ignore()?,
+    let landing = Landing {
+        theirs: spec,
+        orig_head: Some(ours),
+        strict_index: true,
     };
-    let none = std::collections::HashSet::new();
-    for (path, resolved) in &merged.paths {
-        let here = head_leaves.get(path);
-        let touches_tree = match resolved {
-            Resolved::Take(e) => e.as_ref() != here,
-            Resolved::Conflict(c) => !matches!(c.worktree, Worktree::Keep),
-        };
-        if !touches_tree {
-            continue;
-        }
-        match here {
-            Some(_) if matches!(dirty.get(path), Some(Kind::Modified | Kind::TypeChange)) => {
-                blocked.local.push(path.clone());
+    let applied = match apply_merge(git, opened, Some(&ours_tree), &merged, &landing)? {
+        Ok(applied) => applied,
+        Err(refusal) => {
+            write_orig_head(git, &ours)?;
+            if refusal.index_differs {
+                git.log_ref(
+                    "HEAD",
+                    Some(&ours),
+                    &ours,
+                    &format!("merge {spec}: updating HEAD"),
+                    false,
+                )?;
             }
-            None if in_the_way(git, &ignores, path, &none)? => blocked.untracked.push(path.clone()),
-            _ => {}
+            refusal.blocked.report("merge", "merge", 2);
         }
-    }
-    if !blocked.local.is_empty() || !blocked.untracked.is_empty() {
-        blocked.local.sort();
-        blocked.local.dedup();
-        write_orig_head(git, &ours)?;
-        if index_differs {
-            git.log_ref(
-                "HEAD",
-                Some(&ours),
-                &ours,
-                &format!("merge {spec}: updating HEAD"),
-                false,
-            )?;
-        }
-        blocked.report("merge", "merge", 2);
-    }
-    write_orig_head(git, &ours)?;
-    let mut entries: Entries = entries_of(&opened.index);
-    let mut conflicted: Vec<Vec<u8>> = Vec::new();
-    for (path, resolved) in &merged.paths {
-        if merged.line_merged.contains(path) {
-            say(&format!("Auto-merging {}", path_string(path)));
-        }
-        match resolved {
-            Resolved::Take(Some(entry)) => {
-                if head_leaves.get(path) != Some(entry) {
-                    put_entry(&mut entries, write_entry(git, path, entry)?);
-                }
-            }
-            Resolved::Take(None) => {
-                if head_leaves.contains_key(path) {
-                    remove_entry_file(git, path)?;
-                    remove_entry(&mut entries, path);
-                }
-            }
-            Resolved::Conflict(c) => {
-                conflicted.push(path.clone());
-                report_conflict(path, c.kind, spec, c.ours.is_some() && c.theirs.is_some())?;
-                if let Worktree::Write { mode, bytes } = &c.worktree {
-                    write_bytes(git, path, *mode, bytes)?;
-                }
-                remove_entry(&mut entries, path);
-                for (stage, side) in [(1u8, &c.base), (2, &c.ours), (3, &c.theirs)] {
-                    if let Some(e) = side {
-                        let mut entry = IndexEntry::new(path.clone(), raw_mode(e.mode), e.id);
-                        entry.stage = stage;
-                        entries.insert((path.clone(), stage), entry);
-                    }
-                }
-            }
-        }
-    }
-    let index = index_of(opened.index.version, entries);
-    git.save_index(opened, &index)?;
+    };
+    let (index, conflicted) = (applied.index, applied.conflicted);
 
     let message = match args.message.is_empty() {
         true => match tag_message(git, spec) {
@@ -383,6 +319,132 @@ fn true_merge(
     say(&format!("{changed} file(s) changed"));
     warn_about_hooks_for(git, &MERGE_HOOKS);
     Ok(())
+}
+
+/// How a tree merge reaches the index and work tree.
+pub(super) struct Landing<'a> {
+    /// The label of the incoming side in conflict reports.
+    pub theirs: &'a str,
+    /// Saved as `ORIG_HEAD` once the merge is allowed to go on.
+    pub orig_head: Option<ObjectId>,
+    /// A merge needs the whole index to equal `HEAD`; a pick only the paths it touches.
+    pub strict_index: bool,
+}
+
+pub(super) struct Applied {
+    pub index: pyn_git::Index,
+    pub conflicted: Vec<Vec<u8>>,
+}
+
+/// A merge that could not touch the work tree and index; nothing was changed.
+pub(super) struct Refusal {
+    pub blocked: Blocked,
+    /// The index differed from `HEAD` before the merge.
+    pub index_differs: bool,
+}
+
+/// Writes the merged paths to the work tree and index, leaving conflicts as unmerged entries, or refuses.
+pub(super) fn apply_merge(
+    git: &GitHome,
+    opened: &super::stage::OpenIndex,
+    ours_tree: Option<&ObjectId>,
+    merged: &Merge,
+    landing: &Landing,
+) -> Result<std::result::Result<Applied, Refusal>> {
+    check_writes(merged.paths.keys())?;
+    let head_leaves = git.repo.flatten(ours_tree, &Pathspec::default())?;
+
+    let mut blocked = Blocked::default();
+    let index_leaves = git.repo.index_leaves(&opened.index);
+    let mut index_differs = false;
+    for path in head_leaves.keys().chain(index_leaves.keys()) {
+        if head_leaves.get(path) != index_leaves.get(path) {
+            index_differs = true;
+            if landing.strict_index && !blocked.local.contains(path) {
+                blocked.local.push(path.clone());
+            }
+        }
+    }
+    let dirty = git.repo.unstaged_changes(&opened.index)?;
+    let ignores = super::stage::Ignores {
+        ignore: git.repo.ignore()?,
+    };
+    let none = std::collections::HashSet::new();
+    for (path, resolved) in &merged.paths {
+        let here = head_leaves.get(path);
+        let touches_tree = match resolved {
+            Resolved::Take(e) => e.as_ref() != here,
+            Resolved::Conflict(c) => !matches!(c.worktree, Worktree::Keep),
+        };
+        if !touches_tree {
+            continue;
+        }
+        if !landing.strict_index && index_leaves.get(path) != here {
+            blocked.local.push(path.clone());
+            continue;
+        }
+        match here {
+            Some(_) if matches!(dirty.get(path), Some(Kind::Modified | Kind::TypeChange)) => {
+                blocked.local.push(path.clone());
+            }
+            None if in_the_way(git, &ignores, path, &none)? => blocked.untracked.push(path.clone()),
+            _ => {}
+        }
+    }
+    if !blocked.local.is_empty() || !blocked.untracked.is_empty() {
+        blocked.local.sort();
+        blocked.local.dedup();
+        return Ok(Err(Refusal {
+            blocked,
+            index_differs,
+        }));
+    }
+    if let Some(orig) = &landing.orig_head {
+        write_orig_head(git, orig)?;
+    }
+    let mut entries: Entries = entries_of(&opened.index);
+    let mut conflicted: Vec<Vec<u8>> = Vec::new();
+    for (path, resolved) in &merged.paths {
+        if merged.line_merged.contains(path) {
+            say(&format!("Auto-merging {}", path_string(path)));
+        }
+        match resolved {
+            Resolved::Take(Some(entry)) => {
+                if head_leaves.get(path) != Some(entry) {
+                    put_entry(&mut entries, write_entry(git, path, entry)?);
+                }
+            }
+            Resolved::Take(None) => {
+                if head_leaves.contains_key(path) {
+                    remove_entry_file(git, path)?;
+                    remove_entry(&mut entries, path);
+                }
+            }
+            Resolved::Conflict(c) => {
+                conflicted.push(path.clone());
+                report_conflict(
+                    path,
+                    c.kind,
+                    landing.theirs,
+                    c.ours.is_some() && c.theirs.is_some(),
+                )?;
+                if let Worktree::Write { mode, bytes } = &c.worktree {
+                    write_bytes(git, path, *mode, bytes)?;
+                }
+                remove_entry(&mut entries, path);
+                for (stage, side) in [(1u8, &c.base), (2, &c.ours), (3, &c.theirs)] {
+                    if let Some(e) = side {
+                        let mut entry = IndexEntry::new(path.clone(), raw_mode(e.mode), e.id);
+                        entry.stage = stage;
+                        entries.insert((path.clone(), stage), entry);
+                    }
+                }
+            }
+        }
+    }
+    let index = index_of(opened.index.version, entries);
+    git.save_index(opened, &index)?;
+    Ok(Ok(Applied { index, conflicted }))
 }
 
 fn report_conflict(path: &[u8], kind: Conflicting, theirs: &str, both: bool) -> Result<()> {

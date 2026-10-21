@@ -144,16 +144,12 @@ fn is_trailer_block(lines: &[&str]) -> bool {
     trailers > 0 && (others == 0 || (known && trailers * 3 >= others))
 }
 
-/// Adds `Signed-off-by:` to a cleaned message unless the last line already is it.
-fn append_signoff(message: Vec<u8>, name: &[u8], email: &[u8]) -> Vec<u8> {
-    let sob = format!(
-        "Signed-off-by: {} <{}>",
-        String::from_utf8_lossy(name),
-        String::from_utf8_lossy(email)
-    );
+/// Appends `line` to a cleaned message: inside the trailer block it ends with, or after a blank line. A message
+/// whose last line already is `line` stays as it is.
+pub(crate) fn append_trailer(message: Vec<u8>, line: &str) -> Vec<u8> {
     let text = String::from_utf8_lossy(&message).into_owned();
     let lines: Vec<&str> = text.trim_end_matches('\n').split('\n').collect();
-    if lines.last() == Some(&sob.as_str()) {
+    if lines.last() == Some(&line) {
         return message;
     }
     let start = lines
@@ -164,8 +160,18 @@ fn append_signoff(message: Vec<u8>, name: &[u8], email: &[u8]) -> Vec<u8> {
     if start == 0 || !is_trailer_block(&lines[start..]) {
         out.push(b'\n');
     }
-    out.extend_from_slice(format!("\n{sob}\n").as_bytes());
+    out.extend_from_slice(format!("\n{line}\n").as_bytes());
     out
+}
+
+/// Adds `Signed-off-by:` to a cleaned message unless the last line already is it.
+pub(super) fn append_signoff(message: Vec<u8>, name: &[u8], email: &[u8]) -> Vec<u8> {
+    let sob = format!(
+        "Signed-off-by: {} <{}>",
+        String::from_utf8_lossy(name),
+        String::from_utf8_lossy(email)
+    );
+    append_trailer(message, &sob)
 }
 
 fn forced_author(opts: &CommitOptions) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
