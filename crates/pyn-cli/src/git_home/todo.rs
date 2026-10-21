@@ -9,8 +9,27 @@ use pyn_object::ObjectId;
 use super::GitHome;
 use super::pick::subject_of;
 
+/// What a sheet needs from the repository it is about: the commit a name means and a commit's subject.
+pub(crate) trait Commits {
+    fn find(&self, spec: &str) -> Option<ObjectId>;
+    fn subject(&self, id: &ObjectId) -> Result<String>;
+}
+
+impl Commits for GitHome {
+    fn find(&self, spec: &str) -> Option<ObjectId> {
+        self.repo
+            .resolve(spec)
+            .ok()
+            .filter(|id| self.repo.commit(id).is_ok())
+    }
+
+    fn subject(&self, id: &ObjectId) -> Result<String> {
+        Ok(subject_of(&self.repo.commit(id)?.message))
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(super) enum Cmd {
+pub(crate) enum Cmd {
     Pick,
     Reword,
     Edit,
@@ -23,7 +42,7 @@ pub(super) enum Cmd {
 }
 
 impl Cmd {
-    pub(super) fn word(self) -> &'static str {
+    pub(crate) fn word(self) -> &'static str {
         match self {
             Cmd::Pick => "pick",
             Cmd::Reword => "reword",
@@ -37,7 +56,7 @@ impl Cmd {
         }
     }
 
-    fn from_word(word: &str) -> Option<Cmd> {
+    pub(crate) fn from_word(word: &str) -> Option<Cmd> {
         Some(match word {
             "pick" | "p" => Cmd::Pick,
             "reword" | "r" => Cmd::Reword,
@@ -52,7 +71,7 @@ impl Cmd {
         })
     }
 
-    pub(super) fn melds(self) -> bool {
+    pub(crate) fn melds(self) -> bool {
         matches!(self, Cmd::Squash | Cmd::Fixup)
     }
 
@@ -67,14 +86,14 @@ impl Cmd {
 
 /// One line of the sheet: the commit it names, or the command line of an `exec`.
 #[derive(Clone, Debug)]
-pub(super) struct Item {
+pub(crate) struct Item {
     pub cmd: Cmd,
     pub id: Option<ObjectId>,
     pub arg: String,
 }
 
 impl Item {
-    pub(super) fn pick(id: ObjectId) -> Self {
+    pub(crate) fn pick(id: ObjectId) -> Self {
         Self {
             cmd: Cmd::Pick,
             id: Some(id),
@@ -82,7 +101,7 @@ impl Item {
         }
     }
 
-    pub(super) fn noop() -> Self {
+    pub(crate) fn noop() -> Self {
         Self::plain(Cmd::Noop)
     }
 
@@ -94,7 +113,7 @@ impl Item {
         }
     }
 
-    pub(super) fn exec(line: &str) -> Self {
+    pub(crate) fn exec(line: &str) -> Self {
         Self {
             cmd: Cmd::Exec,
             id: None,
@@ -103,7 +122,7 @@ impl Item {
     }
 
     /// The sheet line; `abbrev` cuts the id to seven digits for the editor.
-    pub(super) fn line(&self, git: &GitHome, abbrev: bool) -> Result<String> {
+    pub(crate) fn line(&self, git: &dyn Commits, abbrev: bool) -> Result<String> {
         let word = self.cmd.word();
         Ok(match (self.cmd, &self.id) {
             (Cmd::Exec, _) => format!("exec {}\n", self.arg),
@@ -113,23 +132,20 @@ impl Item {
                 } else {
                     id.to_hex()
                 };
-                format!(
-                    "{word} {shown} {}\n",
-                    subject_of(&git.repo.commit(id)?.message)
-                )
+                format!("{word} {shown} {}\n", git.subject(id)?)
             }
             _ => format!("{word}\n"),
         })
     }
 }
 
-pub(super) fn sheet(git: &GitHome, items: &[Item], abbrev: bool) -> Result<String> {
+pub(crate) fn sheet(git: &dyn Commits, items: &[Item], abbrev: bool) -> Result<String> {
     items.iter().map(|i| i.line(git, abbrev)).collect()
 }
 
 /// The items of a sheet; a bad line collects git's error lines instead. `prior` says commits were already done,
 /// so a sheet may start with `squash`.
-pub(super) fn parse(git: &GitHome, text: &str, prior: bool) -> Result<Vec<Item>, Vec<String>> {
+pub(crate) fn parse(git: &dyn Commits, text: &str, prior: bool) -> Result<Vec<Item>, Vec<String>> {
     let mut items: Vec<Item> = Vec::new();
     let mut errors = Vec::new();
     for (n, line) in text.lines().enumerate() {
@@ -170,12 +186,7 @@ pub(super) fn parse(git: &GitHome, text: &str, prior: bool) -> Result<Vec<Item>,
                     );
                     continue;
                 }
-                let Some(id) = git
-                    .repo
-                    .resolve(rev)
-                    .ok()
-                    .filter(|id| git.repo.commit(id).is_ok())
-                else {
+                let Some(id) = git.find(rev) else {
                     bad(&mut errors, format!("could not parse '{rev}'"));
                     continue;
                 };
@@ -205,8 +216,8 @@ pub(super) fn parse(git: &GitHome, text: &str, prior: bool) -> Result<Vec<Item>,
 }
 
 /// The text of the sheet as the editor opens it: the commands, then the summary and the help.
-pub(super) fn editor_text(
-    git: &GitHome,
+pub(crate) fn editor_text(
+    git: &dyn Commits,
     items: &[Item],
     range: &str,
     onto: &ObjectId,
@@ -222,7 +233,7 @@ pub(super) fn editor_text(
     Ok(text)
 }
 
-pub(super) const HELP: &str = "\
+pub(crate) const HELP: &str = "\
 # Commands:
 # p, pick <commit> = use commit
 # r, reword <commit> = use commit, but edit the commit message
@@ -260,11 +271,11 @@ fn fixup_target(subject: &str) -> Option<(Cmd, &str)> {
 }
 
 /// Moves each `fixup! <subject>` and `squash! <subject>` commit under the commit it names, as `--autosquash` does.
-pub(super) fn autosquash(git: &GitHome, items: Vec<Item>) -> Result<Vec<Item>> {
+pub(crate) fn autosquash(git: &dyn Commits, items: Vec<Item>) -> Result<Vec<Item>> {
     let subjects: Vec<String> = items
         .iter()
         .map(|i| match &i.id {
-            Some(id) => Ok(subject_of(&git.repo.commit(id)?.message)),
+            Some(id) => git.subject(id),
             None => Ok(String::new()),
         })
         .collect::<Result<_>>()?;
@@ -282,7 +293,7 @@ pub(super) fn autosquash(git: &GitHome, items: Vec<Item>) -> Result<Vec<Item>> {
         let target = fixup_target(&subjects[i]).and_then(|(cmd, name)| {
             let found = by_subject.get(name).copied().or_else(|| {
                 let by_id = (!name.contains(' '))
-                    .then(|| git.repo.resolve(name).ok())
+                    .then(|| git.find(name))
                     .flatten()
                     .and_then(|id| position.get(&id).copied())
                     .filter(|p| *p < i);
@@ -318,7 +329,7 @@ pub(super) fn autosquash(git: &GitHome, items: Vec<Item>) -> Result<Vec<Item>> {
 }
 
 /// `exec` lines after every commit (and the `squash`/`fixup` lines that join it), as `--exec` adds them.
-pub(super) fn with_exec(items: Vec<Item>, commands: &[String]) -> Vec<Item> {
+pub(crate) fn with_exec(items: Vec<Item>, commands: &[String]) -> Vec<Item> {
     let mut out = Vec::new();
     let mut open = false;
     let flush = |out: &mut Vec<Item>| {

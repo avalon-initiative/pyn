@@ -153,7 +153,7 @@ fn ordered(mut commits: Vec<ObjectId>, newest_first: bool) -> Vec<ObjectId> {
     commits
 }
 
-fn ancestors(repo: &Repo, from: &ObjectId) -> Result<HashSet<ObjectId>> {
+pub(crate) fn ancestors(repo: &Repo, from: &ObjectId) -> Result<HashSet<ObjectId>> {
     let mut seen = HashSet::new();
     let mut queue = vec![*from];
     while let Some(id) = queue.pop() {
@@ -165,7 +165,11 @@ fn ancestors(repo: &Repo, from: &ObjectId) -> Result<HashSet<ObjectId>> {
 }
 
 /// The commits reachable from `start` and not from `hidden`, parents before children.
-fn walk(repo: &Repo, start: &[ObjectId], hidden: HashSet<ObjectId>) -> Result<Vec<ObjectId>> {
+pub(crate) fn walk(
+    repo: &Repo,
+    start: &[ObjectId],
+    hidden: HashSet<ObjectId>,
+) -> Result<Vec<ObjectId>> {
     let mut log = repo.log_hiding(start, hidden, Pathspec::default())?;
     let mut parents: HashMap<ObjectId, Vec<ObjectId>> = HashMap::new();
     let mut newest_first = Vec::new();
@@ -219,6 +223,15 @@ pub(crate) fn revert_message(
     format!("{title}\n\n{reverts}\n").into_bytes()
 }
 
+pub(crate) fn require_nothing_staged(ws: &Workspace, command: &str) -> Result<()> {
+    if !Index::load(ws)?.entries.is_empty() {
+        bail!(
+            "you have staged changes; commit them or take them out with `pyn restore --staged` before you {command}"
+        );
+    }
+    Ok(())
+}
+
 fn refuse_git_only(args: &PickArgs, command: &str) -> Result<()> {
     let given = [
         ("-n", args.no_commit),
@@ -261,11 +274,7 @@ fn apply(backend: &dyn Backend, ws: &Workspace, args: PickArgs, op: Op) -> Resul
         };
     }
     merging::refuse_during_merge(ws, command)?;
-    if !Index::load(ws)?.entries.is_empty() {
-        bail!(
-            "you have staged changes; commit them or take them out with `pyn restore --staged` before you {command}"
-        );
-    }
+    require_nothing_staged(ws, command)?;
     let branch = branch::name(Some(ws));
     let Some(tip) = store.tip(&branch)? else {
         bail!("branch '{branch}' has no local commits");

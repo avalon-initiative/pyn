@@ -9,7 +9,7 @@ use super::GitHome;
 use super::stage::clean_bytes;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum Which {
+pub(crate) enum Which {
     Message,
     Sequence,
 }
@@ -25,8 +25,16 @@ fn dumb_terminal() -> bool {
 /// The editor command: `GIT_EDITOR`, `core.editor`, `VISUAL`, `EDITOR`, then `vi`; a todo list first asks
 /// `GIT_SEQUENCE_EDITOR` and `sequence.editor`.
 fn command_for(git: &GitHome, which: Which) -> Result<String> {
+    command_from(which, &|key| git.repo.config().get(key).map(str::to_string))
+}
+
+/// The editor command with `config` answering the configuration keys; a pyn server workspace has none.
+pub(crate) fn command_from(
+    which: Which,
+    config: &dyn Fn(&str) -> Option<String>,
+) -> Result<String> {
     let env = |name: &str| non_empty(std::env::var(name).ok());
-    let config = |key: &str| non_empty(git.repo.config().get(key).map(str::to_string));
+    let config = |key: &str| non_empty(config(key));
     if which == Which::Sequence
         && let Some(editor) = env("GIT_SEQUENCE_EDITOR").or_else(|| config("sequence.editor"))
     {
@@ -44,17 +52,21 @@ fn command_for(git: &GitHome, which: Which) -> Result<String> {
 }
 
 /// Runs the editor on `path` through the shell and waits; `:` means "keep the file as it is".
-pub(super) fn run(git: &GitHome, which: Which, path: &Path) -> Result<()> {
+pub(crate) fn run(git: &GitHome, which: Which, path: &Path) -> Result<()> {
     let editor = command_for(git, which)?;
+    run_command(&editor, &git.ws.root, path)
+}
+
+pub(crate) fn run_command(editor: &str, dir: &Path, path: &Path) -> Result<()> {
     if editor == ":" {
         return Ok(());
     }
     let status = Command::new("sh")
         .arg("-c")
         .arg(format!("{editor} \"$@\""))
-        .arg(&editor)
+        .arg(editor)
         .arg(path)
-        .current_dir(&git.ws.root)
+        .current_dir(dir)
         .status();
     match status {
         Ok(s) if s.success() => Ok(()),
@@ -63,7 +75,7 @@ pub(super) fn run(git: &GitHome, which: Which, path: &Path) -> Result<()> {
 }
 
 /// What the editor left in a message file: comment lines removed, whitespace cleaned. `None` when nothing is left.
-pub(super) fn edited_message(text: &[u8]) -> Option<Vec<u8>> {
+pub(crate) fn edited_message(text: &[u8]) -> Option<Vec<u8>> {
     let kept: Vec<&[u8]> = text
         .split(|b| *b == b'\n')
         .filter(|l| !l.starts_with(b"#"))
@@ -73,7 +85,7 @@ pub(super) fn edited_message(text: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// Lets the user edit `message` in `COMMIT_EDITMSG` under `comment` (lines starting with `#`); `None` for an empty result.
-pub(super) fn edit_message(
+pub(crate) fn edit_message(
     git: &GitHome,
     message: &[u8],
     comment: &str,

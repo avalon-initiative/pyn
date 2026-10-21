@@ -7,8 +7,8 @@ use pyn_object::ObjectId;
 
 use super::todo::Cmd;
 
-pub(super) const SQUASH: &str = "message-squash";
-pub(super) const FIXUP: &str = "message-fixup";
+pub(crate) const SQUASH: &str = "message-squash";
+pub(crate) const FIXUP: &str = "message-fixup";
 const FIXUPS: &str = "current-fixups";
 const HEADER: &str = "# This is a combination of ";
 
@@ -50,7 +50,7 @@ fn ordinal(n: usize) -> String {
 }
 
 /// Adds a chain member to the message files and returns the combined message.
-pub(super) fn add(
+pub(crate) fn add(
     dir: &Path,
     head_message: &str,
     message: &str,
@@ -114,7 +114,7 @@ fn count_of(text: &str) -> usize {
 }
 
 /// Takes the newest member out of the chain; the chain is gone when only the first commit is left.
-pub(super) fn drop_last(dir: &Path) {
+pub(crate) fn drop_last(dir: &Path) {
     let Ok(text) = std::fs::read_to_string(dir.join(SQUASH)) else {
         return;
     };
@@ -142,7 +142,7 @@ pub(super) fn drop_last(dir: &Path) {
     }
 }
 
-pub(super) fn clear(dir: &Path) {
+pub(crate) fn clear(dir: &Path) {
     for name in [SQUASH, FIXUP, FIXUPS] {
         let _ = std::fs::remove_file(dir.join(name));
     }

@@ -38,33 +38,33 @@ pub struct RebaseArgs {
     /// The commit the current branch is compared with: the commits after it are replayed. Default: the branch's
     /// upstream.
     #[arg(conflicts_with = "control")]
-    upstream: Option<String>,
+    pub(crate) upstream: Option<String>,
     /// Switch to this branch first, then rebase it.
     #[arg(conflicts_with = "control")]
-    branch: Option<String>,
+    pub(crate) branch: Option<String>,
     /// Replay onto this commit instead of the upstream.
     #[arg(long, value_name = "NEWBASE", conflicts_with = "control")]
-    onto: Option<String>,
+    pub(crate) onto: Option<String>,
     /// Commit what was resolved and go on with the remaining commits.
     #[arg(long = "continue")]
-    continue_rebase: bool,
+    pub(crate) continue_rebase: bool,
     /// Edit the instruction sheet of the rebase in progress.
     #[arg(long)]
-    edit_todo: bool,
+    pub(crate) edit_todo: bool,
     /// Give up and put the branch and the files back as they were before the rebase.
     #[arg(long)]
-    abort: bool,
+    pub(crate) abort: bool,
     /// Drop the commit that stopped on conflicts and go on with the rest.
     #[arg(long)]
-    skip: bool,
+    pub(crate) skip: bool,
     /// Forget the rebase in progress, leaving `HEAD` and the files as they are.
     #[arg(long)]
-    quit: bool,
+    pub(crate) quit: bool,
     /// Stash local changes before the rebase and apply them after it.
     #[arg(long, overrides_with = "no_autostash", conflicts_with = "control")]
-    autostash: bool,
+    pub(crate) autostash: bool,
     #[arg(long, overrides_with = "autostash", conflicts_with = "control")]
-    no_autostash: bool,
+    pub(crate) no_autostash: bool,
     /// Replay every commit, even those that would fast-forward.
     #[arg(
         long = "no-ff",
@@ -73,72 +73,72 @@ pub struct RebaseArgs {
         overrides_with = "ff",
         conflicts_with = "control"
     )]
-    no_ff: bool,
+    pub(crate) no_ff: bool,
     #[arg(
         long,
         visible_alias = "no-force-rebase",
         overrides_with = "no_ff",
         conflicts_with = "control"
     )]
-    ff: bool,
+    pub(crate) ff: bool,
     #[arg(short, long)]
-    quiet: bool,
+    pub(crate) quiet: bool,
     /// Accepted: no editor is ever started and the merge backend is the only one.
     #[arg(short = 'm', long, hide = true)]
-    merge: bool,
+    pub(crate) merge: bool,
     #[arg(short = 'v', long, hide = true)]
-    verbose: bool,
+    pub(crate) verbose: bool,
     #[arg(short = 'n', long, hide = true)]
-    no_stat: bool,
+    pub(crate) no_stat: bool,
     #[arg(long, hide = true)]
-    stat: bool,
+    pub(crate) stat: bool,
     #[arg(long, hide = true)]
-    no_fork_point: bool,
+    pub(crate) no_fork_point: bool,
     #[arg(long, hide = true)]
-    keep_empty: bool,
+    pub(crate) keep_empty: bool,
     #[arg(long, overrides_with = "autosquash")]
-    no_autosquash: bool,
+    pub(crate) no_autosquash: bool,
     #[arg(long, hide = true)]
-    no_rebase_merges: bool,
+    pub(crate) no_rebase_merges: bool,
     #[arg(long, hide = true)]
-    no_update_refs: bool,
+    pub(crate) no_update_refs: bool,
     /// Edit the list of commits (`pick`, `reword`, `edit`, `squash`, `fixup`, `drop`, `exec`) before replaying them.
     #[arg(short = 'i', long, conflicts_with = "control")]
-    interactive: bool,
+    pub(crate) interactive: bool,
     #[arg(short = 'r', long, hide = true, num_args = 0..=1, require_equals = true)]
-    rebase_merges: Option<Option<String>>,
+    pub(crate) rebase_merges: Option<Option<String>>,
     #[arg(long, hide = true)]
-    root: bool,
+    pub(crate) root: bool,
     /// Run this command after every commit that is made (repeatable).
     #[arg(short = 'x', long, value_name = "CMD", action = clap::ArgAction::Append, conflicts_with = "control")]
-    exec: Vec<String>,
+    pub(crate) exec: Vec<String>,
     #[arg(short = 's', long, hide = true)]
-    strategy: Option<String>,
+    pub(crate) strategy: Option<String>,
     #[arg(short = 'X', long, hide = true)]
-    strategy_option: Option<String>,
+    pub(crate) strategy_option: Option<String>,
     /// With `-i`, move `fixup!` and `squash!` commits under the commit they name.
     #[arg(long, overrides_with = "no_autosquash")]
-    autosquash: bool,
+    pub(crate) autosquash: bool,
     #[arg(long, hide = true)]
-    fork_point: bool,
+    pub(crate) fork_point: bool,
     #[arg(long, hide = true)]
-    signoff: bool,
+    pub(crate) signoff: bool,
     #[arg(long, hide = true)]
-    keep_base: bool,
+    pub(crate) keep_base: bool,
     #[arg(long, hide = true)]
-    update_refs: bool,
+    pub(crate) update_refs: bool,
     #[arg(long, hide = true)]
-    reapply_cherry_picks: bool,
+    pub(crate) reapply_cherry_picks: bool,
     #[arg(long, hide = true)]
-    apply: bool,
+    pub(crate) apply: bool,
     #[arg(long, hide = true)]
-    empty: Option<String>,
+    pub(crate) empty: Option<String>,
     #[arg(short = 'S', long, hide = true, num_args = 0..=1, require_equals = true)]
-    gpg_sign: Option<Option<String>>,
+    pub(crate) gpg_sign: Option<Option<String>>,
 }
 
 impl RebaseArgs {
-    fn refuse_unsupported(&self) {
+    pub(crate) fn refuse_unsupported(&self) {
         let given = [
             (
                 "--rebase-merges",
