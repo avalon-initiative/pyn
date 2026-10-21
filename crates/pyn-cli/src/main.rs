@@ -422,7 +422,7 @@ enum Command {
     Role(RoleCommand),
 }
 
-#[derive(clap::Args)]
+#[derive(clap::Args, Debug)]
 struct DiffFormat {
     /// Lines of context around each change.
     #[arg(short = 'U', long = "unified", value_name = "N", default_value_t = 3)]

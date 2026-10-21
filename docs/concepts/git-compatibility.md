@@ -112,7 +112,7 @@ The commands named in decision #218.
 | `git push` | `pyn push` on a git home | git home only | See [Push on a git home](#push-on-a-git-home). On a pyn server it publishes the local commits (a workspace cloned with `--no-local-store` prints that there is nothing to push, because a commit goes straight to the server); see [Remotes on a pyn server](#remotes-on-a-pyn-server). |
 | `git remote` | `pyn remote` | git home; pyn server partly | On a git home it lists and edits the remotes in `.git/config`, see [Remotes](#remotes). On a pyn server `pyn remote`, `pyn remote -v` and `pyn remote get-url origin` show the one remote, `origin`: the server and repository set by `--server` and `--repo` or `pyn config set server` and `repo`; `add`, `remove`, `rename` and `set-url` say that a server home has exactly one home and exit `1`. |
 | `git tag [-a] [-s] [-u <keyid>] [--no-sign] [-m <msg>] [-f] [<name> [<commit>]]`, `-d`, `-l` | `pyn tag ...` on a git home | git home only | See [Tags](#tags). On a pyn server it prints the git-command message (a server's commits are named by hash and have no tags yet, #223). |
-| `git stash [push] [-u] [-m <msg>]`, `list`, `pop`, `apply`, `drop`, `clear` | `pyn stash ...` on a git home | git home only | See [Stashing](#stashing). On a pyn server it prints the git-command message. |
+| `git stash [push] [-u] [-k] [-m <msg>] [-- <paths>]`, `list`, `pop`, `apply` (`--index`), `drop`, `clear`, `show`, `branch`, `create`, `store` | `pyn stash ...` on a git home | git home only | See [Stashing](#stashing). On a pyn server it prints the git-command message. |
 | `git clean [-n] [-f] [-d] [-x\|-X] [-q] [-e <pattern>] [--] [<path>...]` | `pyn clean ...` on a git home | git home only | See [Clean](#clean). Without `-f` or `-n` it refuses, as `clean.requireForce` does; `-i` is not built; pathspecs are literal files and folders. |
 
 `pyn update [<path>...]` is the pre-branch stand-in for `fetch` plus `pull`: it fast-forwards files without local
@@ -1286,8 +1286,28 @@ git does) and keeps its chain consistent when an entry is dropped. After saving,
 stay. `list` prints `stash@{N}: <message>`. `apply` and `pop` merge the stash's changes onto the current index and work tree
 with the same tree merge as `merge` (labels `Updated upstream`, `Stash base` and `Stashed changes`), stage files the stash adds,
 leave other changes unstaged, restore untracked files that do not already exist, and print the status; `pop` then drops the entry
-(`Dropped refs/stash@{N} (<id>)`). A conflict, or local changes to a file the stash touches, keeps the stash. `drop` and `clear`
-remove entries. `stash push -- <path>`, `show`, `branch`, `create`, `store`, `--index`, `-k` and `-p` are not built.
+(`Dropped <name> (<id>)`, the name as typed or `refs/stash@{N}`). A conflict, or local changes to a file the stash touches, keeps the stash. `drop` and `clear`
+remove entries. `stash push -p` is not built (it waits on the shared hunk picker).
+
+`stash push -- <paths>` stashes only the named paths (literal names, not patterns, relative to where you stand): the stash's work tree
+is the index with those paths taken from the work tree, and only they are put back to `HEAD`, with no `ORIG_HEAD` or `HEAD`
+reflog line (a whole-tree stash writes both). A name that matches nothing in the index fails with `error: pathspec '...' did not
+match any file(s) known to git` (`1`), before anything is saved; with `-u` a name must match a tracked or untracked file, and git's
+own order of failures is kept (an unmatched name stops after the stash is saved and before anything is changed). `-k` keeps the
+staged changes in the index and work tree and stashes everything as usual. `apply` and `pop` take `--index` to restore the
+staged state: the recorded index is merged onto the current one first (a clash is `error: conflicts in index. Try without
+--index.`, `1`, and nothing changes), the work tree is merged as usual, and a conflict there prints `Index was not unstashed.`; a
+real index restore writes `ORIG_HEAD` and a `reset: moving to HEAD` line, as git does. Where git applies the staged part as a
+patch, pyn merges it, so a clash is judged by the tree merge. A stash is named `stash@{N}`, `N`, nothing (the newest) or, for
+`apply`, `show` and `branch`, any stash-like commit.
+
+`stash show` prints the diffstat by default (`stash.showStat`), or the patch with `-p`/`--patch` (`stash.showPatch`), both with
+`-p --stat`, and takes `--stat`, `--shortstat`, `--name-only`, `--name-status`, `-U<n>` and `-w`; `-u`/`--include-untracked` and
+`--only-untracked` (or `stash.showIncludeUntracked`) add the untracked files the stash saved. `--numstat` and other diff options
+are not built. `stash branch <name> [<stash>]` creates the branch at the commit the stash was made on, switches to it, applies
+the stash with `--index` and drops it (a conflict keeps it). `stash create [<message>]` prints a stash commit without storing it
+or changing the work tree (nothing is printed when there is nothing to stash), and `stash store [-m <message>] <commit>` puts
+such a commit on the list (`Created via "git stash store".` without `-m`; storing the newest entry again does nothing).
 
 git 2.43 cannot stash in a SHA-256 repository, so the SHA-256 stash is tested for consistency, not against git.
 
