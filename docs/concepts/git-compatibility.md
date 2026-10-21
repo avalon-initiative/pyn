@@ -94,7 +94,7 @@ The commands named in decision #218.
 | `git diff --shortstat`, `-w` (`--ignore-all-space`), `--check` | same | same | Both homes. `--shortstat` prints only the totals line. `-w` compares lines with all whitespace removed, prints context lines as they are in the new file, and leaves out a file that differs only in whitespace (so `--exit-code` is `0` when nothing else changed); `--name-only` and `--name-status` still list it, as git 2.43 does (newer git versions differ on this edge; pyn lists the file). `--check` prints `path:line: trailing whitespace.` (or `space before tab in indent.`, or both) and the added line, then `path:line: new blank line at EOF.`, for git's default whitespace rules, and exits `2` if it printed anything; `-w` does not affect it (newer git versions differ here too). `--check` and `--shortstat` combine with no other format (`--stat`, `--name-only`, `--name-status`): a usage error (`129`), where git prints both stats or refuses with `128`. |
 | `git diff --word-diff`, `--color`, `--no-index`, `-M`, `-C` | none | unsupported | Usage error (`129`). |
 | `git show [<commit>]` | `pyn show [<commit>]` | different | Commit header (`commit`, `Author:`, `Date:`), message, then the commit's diff. The newest commit if none is named. The author line carries the email. On a git home the output is git's, except for merge commits (see below). |
-| `git show -U<n>`, `--stat`, `--shortstat`, `-w`, `--check`, `--name-only`, `--name-status` | same | same | The diff flags behave as on `diff`; `--check` exits `2` when it reports a problem. |
+| `git show -U<n>`, `--stat`, `--shortstat`, `-w`, `--check`, `--name-only`, `--name-status` | same | same | The diff flags behave as on `diff`, and `--stat` is laid out as git lays it out at 80 columns (long names cut with `...`, graph scaled); `--check` exits `2` when it reports a problem. |
 | `git show <rev>:<path>` | `pyn get <path> [--rev N] [-o <file>]` | different | `show` takes commits only (`HEAD:foo` fails with `fatal: ... is not a commit`, `128`). File content at a revision is `pyn get`, to stdout or a file. `--rev` is a per-path revision, not a commit. |
 | `git show --oneline`, `-s` (`--no-patch`), `--format=`, `--pretty=`, `--date=` | same | supported | Both homes, with the formats of `log`. `-s` prints the commit only; `--oneline` and the formats print their line, then the diff (blank line between for a template or a named format, none for `--oneline`). Without them a pyn server prints its own header (see above). |
 | `git show <tag>`, `<object>` | none | unsupported | `fatal: ... is not a commit`. |
@@ -146,7 +146,7 @@ revisions with a pointer per branch (decision #299).
 | `git branch [<name> [<start>]]`, `-d`, `-D`, `-m`, `-l`, `-v`, `--show-current` | `pyn branch ...` | supported | `-d` refuses a branch that is not on the default branch (git: not merged into `HEAD`). `-a` and `-r` list the server as the remote `origin` (see [Remotes on a pyn server](#remotes-on-a-pyn-server)); `-M`, `-c`, `-C`, `-f`, `-u`, `--unset-upstream` and patterns are not built on a pyn server (usage errors); a git home has them (see below). The workspace's branch cannot be deleted. |
 | `git switch <branch>`, `-c <new> [<start>]`, `-f` | `pyn switch ...` | supported | Local changes carry over where the target branch has the same file, and stop the switch (nothing changed, the paths listed) where it does not; `-f` discards them. On a pyn server `-`, `--detach` and `-C` are not built; a git home has `-`, `--detach`, `-C` and `--orphan` (see below). Prints `Switched to branch '<name>'` on standard error, as git. |
 | `git checkout <branch>`, `-b <new> [<start>]`, `-f`, `[<tree-ish>] -- <path>...` | `pyn checkout ...` | supported | Reserved for git's meaning. `-- <path>` restores from the revision the workspace has (git: the index; a staged path must be unstaged first), `<branch\|commit> -- <path>` from that branch or commit. On a pyn server a path that is `exclusive` and has a local edit (locked by you or not) is not discarded silently: the files are named and the discard needs the path typed back or `--yes`, and a run without a terminal refuses (`128`, nothing changed); `shared` paths discard silently as in git. On a pyn server there is no detached HEAD: `checkout <commit>` is refused with what to use instead. Taking a lock is `pyn lock`. |
-| `git merge <branch\|commit>`, `-m`, `--no-ff`, `--ff-only`, `--no-commit`, `--abort`, `--continue` | `pyn merge ...` | supported | Shared files merge three-way with diff3 conflict markers; a binary conflicts as a whole file. Exclusive files take the pointer that descends from the other, and conflict where both branches changed one or a path became exclusive while a branch edited it (a person chooses a side, taking the lock). A conflicted merge leaves the workspace as git does and is concluded with `pyn add` and `pyn commit` (no `-m` needed), or given up with `--abort`. Differences: `--preview` (pyn's own) reports what would merge and conflict and changes nothing; a merge needs a clean index and no local edits to the files it touches; `--squash`, `-s`, `-X`, `--no-verify`, `--edit`, `--signoff`, `-S` and `--ff` are usage errors. `git checkout --ours` and `--theirs` are `pyn checkout --ours\|--theirs -- <path>`. `pyn status` marks unmerged paths in its `STATE` column. Recursive merge of criss-cross histories as git does, with the base of a conflict shown as `merged common ancestors`. |
+| `git merge <branch\|commit>`, `-m`, `--no-ff`, `--ff-only`, `--no-commit`, `--abort`, `--continue`, `--stat`, `-n`/`--no-stat` | `pyn merge ...` | supported | Shared files merge three-way with diff3 conflict markers; a binary conflicts as a whole file. Exclusive files take the pointer that descends from the other, and conflict where both branches changed one or a path became exclusive while a branch edited it (a person chooses a side, taking the lock). A conflicted merge leaves the workspace as git does and is concluded with `pyn add` and `pyn commit` (no `-m` needed), or given up with `--abort`. Differences: `--preview` (pyn's own) reports what would merge and conflict and changes nothing; a merge needs a clean index and no local edits to the files it touches; `--squash`, `-s`, `-X`, `--no-verify`, `--edit`, `--signoff`, `-S` and `--ff` are usage errors. `git checkout --ours` and `--theirs` are `pyn checkout --ours\|--theirs -- <path>`. `pyn status` marks unmerged paths in its `STATE` column. Recursive merge of criss-cross histories as git does, with the base of a conflict shown as `merged common ancestors`. |
 | `git cherry-pick <commit>...`, ranges, `-n`, `-x`, `-s`, `-m <n>`, `--continue`, `--skip`, `--abort`, `--quit` | `pyn cherry-pick ...` | supported | Each commit's change becomes a new commit, with its author and message. On a git home see [Cherry-pick](#cherry-pick). On a pyn server workspace with local commits the commits, ranges and `-x` work, and `-n`, `-s`, `-m` and `--quit` are refused; see [cherry-pick in commits](commits.md#cherry-pick). A pyn server workspace without local commits refuses the command. |
 | `git revert <commit>...`, ranges, `-n`, `-s`, `-m <n>`, `--no-edit`, `--continue`, `--skip`, `--abort`, `--quit` | `pyn revert ...` | supported | Each commit's change is undone by a new commit (`Revert "<subject>"`). On a git home see [Revert](#revert). On a pyn server workspace with local commits the commits and ranges work, and `-n`, `-s`, `-m` and `--quit` are refused; see [revert in commits](commits.md#revert). A pyn server workspace without local commits refuses the command. |
 | `git rebase [--onto <newbase>] [<upstream> [<branch>]]`, `--continue`, `--skip`, `--abort`, `--quit`, `--autostash`, `--no-ff` | `pyn rebase ...` | supported (git home) | Replays the commits after the upstream one by one onto the new base, with the same ids as git. See [Rebase](#rebase). `--rebase-merges` and `--root` are not built. A pyn server workspace with a local store rebases only its unpublished local commits, interactively too, and refuses a range with a published one ([commits](commits.md#rebase)); without a local store it refuses the command. |
@@ -344,13 +344,13 @@ that cannot fast-forward is `fatal: Not possible to fast-forward, aborting.` (`1
 | --- | --- |
 | `-q`, `-v`, `--progress`, `--no-progress` | Forwarded to the fetch; `-q` also silences the merge's `Updating`, `Fast-forward`, `Auto-merging` and summary lines. |
 | `-p`, `--prune`, `--no-prune`, `-t`, `--tags`, `--no-tags`, `-f`, `--force`, `-a`, `--append`, `--dry-run` | As for `pyn fetch`. |
-| `--ff`, `--no-ff`, `--ff-only`, `--commit`, `--no-commit` | As for `pyn merge`; `--no-commit` stops before the commit with `MERGE_HEAD` set. |
+| `--ff`, `--no-ff`, `--ff-only`, `--commit`, `--no-commit`, `--stat`, `-n`, `--no-stat` | As for `pyn merge`; `--no-commit` stops before the commit with `MERGE_HEAD` set, and the diffstat follows `--stat`, `-n` and `merge.stat`. |
 | `--no-edit` | Accepted: no editor is ever started. |
 | `--no-rebase`, `--rebase`, `-r`, `--autostash` | `--no-rebase` merges; `--rebase` fast-forwards or replays as above; `--autostash` stashes before a rebase and applies after (a usage error unless the pull rebases). |
-| `--edit`, `-e`, `--squash`, `-s`/`--strategy`, `-X`/`--strategy-option`, `-S`/`--gpg-sign`, `--signoff`, `--cleanup`, `--stat`, `-n`/`--no-stat`, `--recurse-submodules`, `--allow-unrelated-histories`, `--all` | Usage error (`129`): not built (`--all`: use `pyn fetch --all`). |
+| `--edit`, `-e`, `--squash`, `-s`/`--strategy`, `-X`/`--strategy-option`, `-S`/`--gpg-sign`, `--signoff`, `--cleanup`, `--recurse-submodules`, `--allow-unrelated-histories`, `--all` | Usage error (`129`): not built (`--all`: use `pyn fetch --all`). |
 
 Config read: `pull.ff`, `pull.rebase`, `branch.<name>.rebase`, `branch.<name>.merge`, `branch.<name>.remote`, `merge.ff`, plus what
-`pyn fetch` reads. The summary after a merge is `pyn merge`'s file count, not git's diffstat, and the message of an annotated tag
+`pyn fetch` reads, plus `merge.stat`. The message of an annotated tag
 is not appended to a tag merge's message. Pulling on a pyn server is #310 and still prints the git-command message.
 
 ### Clone from a git URL
@@ -1050,7 +1050,7 @@ state folder (`rebase-merge/`, `sequencer/`) is not removed. Covered against the
 
 `merge <branch|tag|commit>` follows git's `ort` results for what pyn handles, with these steps:
 
-1. It refuses a merge, rebase, cherry-pick or revert already in progress, unmerged entries, and an unknown name (`1`). `ORIG_HEAD`
+1. It refuses unmerged entries (`error: Merging is not possible because you have unmerged files.`, git's hints and `fatal: Exiting because of an unresolved conflict.`, `128`), a merge or cherry-pick not yet concluded (`fatal: You have not concluded your merge (MERGE_HEAD exists).`, `128`), a rebase or revert already in progress, and an unknown name (`1`). `ORIG_HEAD`
    is written, as git does, once the target is known.
 2. If the target is an ancestor of `HEAD` it prints `Already up to date.`. If `HEAD` is an ancestor it fast-forwards, moving the
    index and work tree with the rules above and logging `merge <name>: Fast-forward`; `--no-ff` makes a merge commit instead and
@@ -1061,13 +1061,28 @@ state folder (`rebase-merge/`, `sequencer/`) is not removed. Covered against the
    three-way merge of `pyn-merge`, a file mode changed on one side is taken, and a binary or symlink changed on both is a
    conflict. Renames are not detected, so a rename on one side and an edit on the other is a modify/delete conflict where git
    would merge cleanly; a path that is a file on one side and a folder on the other is refused before anything changes.
-5. As in git's `ort` the index must equal `HEAD` and the files the merge changes must be clean (`error: Your local changes to the
-   following files would be overwritten by merge:`, exit `2`).
-6. A clean result becomes a commit with the two parents, `Merge branch '<name>'` (`tag`, `commit` and `remote-tracking branch` as
+5. As in git's `ort` the index must equal `HEAD`: a difference stops the merge with `error: Your local changes to the following
+   files would be overwritten by merge:` and the differing paths on one line, two spaces in, then `Merge with strategy ort failed.`
+   (exit `2`). Then the files the merge changes must be clean in the work tree: a modified one, an untracked file in the way, or
+   a folder holding untracked files where a file arrives each get git's own message (`Your local changes ... would be overwritten
+   by merge:`, `The following untracked working tree files would be overwritten by merge:`, `Updating the following directories
+   would lose untracked files in them:`), then `Aborting` and `Merge with strategy ort failed.` (exit `2`). A fast-forward that is
+   blocked prints `Updating <old>..<new>` first, the same messages and `Aborting`, and exits `1`. An untracked file that blocks
+   a path below it is reported by its own name, and a tracked path that is also blocked hides the untracked report below it, as
+   in git.
+6. After a fast-forward or a merge commit it prints git's diffstat: one ` <path> | <n> +++---` line per changed file scaled
+   to the terminal width (`COLUMNS`, else 80; `diff.statGraphWidth` caps the graph), ` N files changed, M insertions(+), K
+   deletions(-)`, then `create mode`, `delete mode`, `mode change` and `rename <old> => <new> (NN%)` lines, with a binary file as
+   `Bin <old> -> <new> bytes`. Renames are found as git finds them, by identical content and then by content at least half the
+   same, whatever `diff.renames` says (git's merge forces it). `--stat` turns the diffstat on and `-n`/`--no-stat` off (the last
+   one wins); `merge.stat=false` turns it off unless `--stat` is given. `--no-commit` and a conflict print none. The width is
+   not read from the terminal, only from `COLUMNS` (else 80); `merge.stat=compact` and `--compact-summary` are not built, and
+   `pull --rebase` prints no diffstat.
+7. A clean result becomes a commit with the two parents, `Merge branch '<name>'` (`tag`, `commit` and `remote-tracking branch` as
    git words them; ` into <branch>` unless the branch is `main` or `master`; an annotated tag's message follows) or `-m`, and the
    reflog line `merge <name>: Merge made by the 'ort' strategy.`. `--no-commit` stops before the commit with `MERGE_HEAD`,
    `MERGE_MSG` and `MERGE_MODE` written.
-7. A conflict leaves the file with **diff3** markers (`<<<<<<< HEAD`, `||||||| <base abbreviation>`, `=======`,
+8. A conflict leaves the file with **diff3** markers (`<<<<<<< HEAD`, `||||||| <base abbreviation>`, `=======`,
    `>>>>>>> <name>`; git's default is the two-sided style unless `merge.conflictStyle` says diff3, and pyn always writes diff3),
    the unmerged index entries at stages 1, 2 and 3 (only the sides that exist), and `MERGE_HEAD`, `MERGE_MSG` (with git's
    `# Conflicts:` list) and `MERGE_MODE` (`no-ff` or empty). It prints `Auto-merging <path>`, `CONFLICT (content|add/add|modify/delete):

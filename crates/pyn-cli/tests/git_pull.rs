@@ -325,6 +325,43 @@ fn up_to_date_and_fast_forward_match_git() {
 }
 
 #[test]
+fn pull_prints_git_s_diffstat_and_honours_the_stat_flags() {
+    let diffstat = |out: &Out| -> String {
+        out.stdout
+            .lines()
+            .filter(|l| !l.starts_with("Updating "))
+            .map(|l| format!("{l}\n"))
+            .collect()
+    };
+    for format in ["sha1", "sha256"] {
+        let t = Twin::new(format, Via::Ssh);
+        t.remote("n.txt", "new\n", "remote");
+        t.configure("pull.ff", "only");
+        let (g, p) = t.both(&[]);
+        assert!(
+            p.stdout.contains(" 1 file changed, 1 insertion(+)"),
+            "{}",
+            p.stdout
+        );
+        assert_eq!(diffstat(&g), diffstat(&p));
+        t.each(&["reset", "-q", "--hard", "HEAD~1"]);
+        for flags in [vec!["-n"], vec!["--no-stat"], vec!["--stat"]] {
+            let (g, p) = t.both(&flags);
+            assert_eq!(diffstat(&g), diffstat(&p), "{flags:?}");
+            t.each(&["reset", "-q", "--hard", "HEAD~1"]);
+        }
+        t.configure("merge.stat", "false");
+        let (g, p) = t.both(&[]);
+        assert_eq!(diffstat(&g), diffstat(&p));
+        assert!(!p.stdout.contains("insertion"), "{}", p.stdout);
+        t.each(&["reset", "-q", "--hard", "HEAD~1"]);
+        let (g, p) = t.both(&["--stat"]);
+        assert_eq!(diffstat(&g), diffstat(&p));
+        assert!(p.stdout.contains("insertion"), "{}", p.stdout);
+    }
+}
+
+#[test]
 fn a_clean_merge_makes_a_merge_commit_with_git_s_parents_and_tree() {
     for (format, via) in ALL_WAYS {
         let t = Twin::new(format, via);
@@ -562,7 +599,6 @@ fn unsupported_flags_are_usage_errors() {
         "--all",
         "--edit",
         "--signoff",
-        "--stat",
         "--allow-unrelated-histories",
         "--recurse-submodules",
     ] {

@@ -9,15 +9,19 @@ use pyn_git::IndexEntry;
 use pyn_gitwork::{Entry, Head, Kind, Pathspec};
 use pyn_object::{Commit, Kind as ObjectKind, ObjectId};
 
+use super::commands::add_changes;
 use super::stage::{
     Entries, clean_message, clear_merge_state, entries_of, identity, index_of, merge_heads,
     put_entry, raw_mode, refuse_in_progress, remove_entry, warn_about_hooks_for, write_tree,
 };
 use super::treemerge::{Conflicting, Labels, Merge, Resolved, Worktree, merge_trees};
 use super::worktree::{
-    Blocked, Mode, check_writes, in_the_way, move_tree, remove_entry_file, write_bytes, write_entry,
+    Blocked, Mode, blocking_path, check_writes, move_tree, remove_entry_file, within, write_bytes,
+    write_entry,
 };
 use super::{GitHome, Refused, convert, path_string};
+use crate::diff::{self, Tree};
+use crate::diffstat;
 use crate::merging::MergeArgs;
 
 const ABBREV: usize = 7;
@@ -150,19 +154,17 @@ pub fn merge(git: &GitHome, args: MergeArgs) -> Result<()> {
     let Some(spec) = args.source.clone() else {
         bail!("no merge target given; name a branch or a commit");
     };
+    let opened = git.open_index()?;
+    refuse_unfinished(git, &opened);
     refuse_in_progress(git)?;
     let head = git.repo.head()?;
-    let opened = git.open_index()?;
-    if opened.index.entries.iter().any(|e| e.stage > 0) {
-        bail!("Merging is not possible because you have unmerged files.");
-    }
     let theirs = git
         .repo
         .resolve(&spec)
         .map_err(|_| Refused(format!("{spec} - not something we can merge")))?;
     let what = describe(git, &spec);
     let Some(ours) = head.id() else {
-        return fast_forward(git, &opened, None, &theirs, &spec);
+        return fast_forward(git, &opened, None, &theirs, &spec, &args);
     };
     if git.is_ancestor(&theirs, &ours)? {
         write_orig_head(git, &ours)?;
@@ -171,13 +173,40 @@ pub fn merge(git: &GitHome, args: MergeArgs) -> Result<()> {
     }
     let can_ff = git.is_ancestor(&ours, &theirs)?;
     if can_ff && !args.no_ff {
-        return fast_forward(git, &opened, Some(ours), &theirs, &spec);
+        return fast_forward(git, &opened, Some(ours), &theirs, &spec, &args);
     }
     if args.ff_only {
         write_orig_head(git, &ours)?;
         bail!("Not possible to fast-forward, aborting.");
     }
     true_merge(git, &args, &opened, ours, theirs, &spec, &what)
+}
+
+/// Git's refusals to start a merge on unmerged paths or over a merge or cherry-pick not yet concluded.
+fn refuse_unfinished(git: &GitHome, opened: &super::stage::OpenIndex) {
+    let unmerged: Vec<&[u8]> = opened
+        .index
+        .entries
+        .iter()
+        .filter(|e| e.stage > 0)
+        .map(|e| e.path.as_slice())
+        .collect();
+    if !unmerged.is_empty() {
+        eprintln!("error: Merging is not possible because you have unmerged files.");
+        eprintln!("hint: Fix them up in the work tree, and then use 'git add/rm <file>'");
+        eprintln!("hint: as appropriate to mark resolution and make a commit.");
+        eprintln!("fatal: Exiting because of an unresolved conflict.");
+        std::process::exit(128);
+    }
+    let dir = git.repo.git().git_dir();
+    for (file, what) in [("MERGE_HEAD", "merge"), ("CHERRY_PICK_HEAD", "cherry-pick")] {
+        if dir.join(file).exists() {
+            eprintln!(
+                "fatal: You have not concluded your {what} ({file} exists).\nPlease, commit your changes before you merge."
+            );
+            std::process::exit(128);
+        }
+    }
 }
 
 /// Checks `theirs` out onto an unborn branch and points the branch at it, without a word, as `git pull` does.
@@ -190,35 +219,73 @@ pub(super) fn initial_checkout(git: &GitHome, theirs: &ObjectId, action: &str) -
     git.move_head(theirs, action)
 }
 
+/// Prints git's diffstat for a merge or fast-forward unless `-n`, `merge.stat=false` or `-q` says not to.
+fn show_stat(
+    git: &GitHome,
+    args: &MergeArgs,
+    old: Option<&ObjectId>,
+    new: &ObjectId,
+) -> Result<()> {
+    let config = git.config();
+    let enabled = match (args.stat, args.no_stat) {
+        (true, _) => true,
+        (_, true) => false,
+        _ => ["merge.stat", "merge.diffstat"]
+            .iter()
+            .find_map(|k| {
+                let v = config.get(k)?;
+                config
+                    .get_bool(k)
+                    .ok()
+                    .flatten()
+                    .or_else(|| v.eq_ignore_ascii_case("compact").then_some(true))
+            })
+            .unwrap_or(true),
+    };
+    if !enabled || QUIET.load(std::sync::atomic::Ordering::Relaxed) {
+        return Ok(());
+    }
+    let (mut before, mut after) = (Tree::new(), Tree::new());
+    let changes = git.repo.diff_trees(old, Some(new), &Pathspec::default())?;
+    add_changes(&mut before, &mut after, &changes);
+    let graph = config
+        .get("diff.statgraphwidth")
+        .and_then(|w| w.parse::<usize>().ok());
+    let text = diff::merge_stat(git, &before, &after, (diffstat::terminal_width(), graph))?;
+    print!("{text}");
+    Ok(())
+}
+
 fn fast_forward(
     git: &GitHome,
     opened: &super::stage::OpenIndex,
     ours: Option<ObjectId>,
     theirs: &ObjectId,
     spec: &str,
+    args: &MergeArgs,
 ) -> Result<()> {
     let old_tree = match &ours {
         Some(c) => Some(git.repo.commit(c)?.tree),
         None => None,
     };
     let new_tree = git.repo.commit(theirs)?.tree;
+    if let Some(ours) = &ours {
+        say(&format!("Updating {}..{}", short(ours), short(theirs)));
+    }
     if let Err(blocked) = move_tree(git, opened, old_tree.as_ref(), Some(&new_tree), Mode::Safe)? {
         if let Some(ours) = &ours {
             write_orig_head(git, ours)?;
         }
-        blocked.report("merge", "merge", blocked_status());
+        blocked.report("merge", "merge", 1);
     }
     if let Some(ours) = &ours {
         write_orig_head(git, ours)?;
-        say(&format!("Updating {}..{}", short(ours), short(theirs)));
     }
     git.move_head(theirs, &format!("{}: Fast-forward", action(spec)))?;
     say("Fast-forward");
-    let changed = git
-        .repo
-        .diff_trees(old_tree.as_ref(), Some(&new_tree), &Pathspec::default())?
-        .len();
-    say(&format!("{changed} file(s) changed"));
+    if ours.is_some() {
+        show_stat(git, args, old_tree.as_ref(), &new_tree)?;
+    }
     warn_about_hooks_for(git, &MERGE_HOOKS);
     Ok(())
 }
@@ -282,7 +349,23 @@ fn true_merge(
                     false,
                 )?;
             }
-            refusal.blocked.report("merge", "merge", 2);
+            if refusal.index_check {
+                let names: Vec<String> = refusal
+                    .blocked
+                    .local
+                    .iter()
+                    .map(|p| path_string(p))
+                    .collect();
+                eprintln!(
+                    "error: Your local changes to the following files would be overwritten by merge:\n  {}",
+                    names.join(" ")
+                );
+            } else {
+                refusal.blocked.print("merge", "merge");
+                eprintln!("Aborting");
+            }
+            eprintln!("Merge with strategy ort failed.");
+            std::process::exit(2);
         }
     };
     let (index, conflicted) = (applied.index, applied.conflicted);
@@ -333,11 +416,7 @@ fn true_merge(
         &format!("{}: Merge made by the 'ort' strategy.", action(spec)),
     )?;
     say("Merge made by the 'ort' strategy.");
-    let changed = git
-        .repo
-        .diff_trees(Some(&ours_tree), Some(&tree), &Pathspec::default())?
-        .len();
-    say(&format!("{changed} file(s) changed"));
+    show_stat(git, args, Some(&ours_tree), &tree)?;
     warn_about_hooks_for(git, &MERGE_HOOKS);
     Ok(())
 }
@@ -362,6 +441,8 @@ pub(super) struct Refusal {
     pub blocked: Blocked,
     /// The index differed from `HEAD` before the merge.
     pub index_differs: bool,
+    /// The refusal is the merge strategy's own check that the index equals `HEAD`, not the work tree check.
+    pub index_check: bool,
 }
 
 /// Writes the merged paths to the work tree and index, leaving conflicts as unmerged entries, or refuses.
@@ -386,6 +467,14 @@ pub(super) fn apply_merge(
             }
         }
     }
+    if landing.strict_index && !blocked.local.is_empty() {
+        blocked.local.sort();
+        return Ok(Err(Refusal {
+            blocked,
+            index_differs,
+            index_check: true,
+        }));
+    }
     let dirty = git.repo.unstaged_changes(&opened.index)?;
     let ignores = super::stage::Ignores {
         ignore: git.repo.ignore()?,
@@ -408,16 +497,27 @@ pub(super) fn apply_merge(
             Some(_) if matches!(dirty.get(path), Some(Kind::Modified | Kind::TypeChange)) => {
                 blocked.local.push(path.clone());
             }
-            None if in_the_way(git, &ignores, path, &none)? => blocked.untracked.push(path.clone()),
+            None => {
+                if let Some(way) = blocking_path(git, &ignores, path, &none)? {
+                    blocked.add_way(git.repo.root()?, way);
+                }
+            }
             _ => {}
         }
     }
-    if !blocked.local.is_empty() || !blocked.untracked.is_empty() {
+    let local = blocked.local.clone();
+    for list in [&mut blocked.untracked, &mut blocked.directories] {
+        list.sort();
+        list.retain(|u| !local.iter().any(|l| within(l, u)));
+    }
+    if !blocked.local.is_empty() || !blocked.untracked.is_empty() || !blocked.directories.is_empty()
+    {
         blocked.local.sort();
         blocked.local.dedup();
         return Ok(Err(Refusal {
             blocked,
             index_differs,
+            index_check: false,
         }));
     }
     if let Some(orig) = &landing.orig_head {

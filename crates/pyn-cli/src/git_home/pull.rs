@@ -89,9 +89,9 @@ pub struct PullArgs {
     signoff: bool,
     #[arg(long, hide = true, value_name = "MODE")]
     cleanup: Option<String>,
-    #[arg(long, hide = true)]
+    #[arg(long, overrides_with = "no_stat")]
     stat: bool,
-    #[arg(short = 'n', long, hide = true)]
+    #[arg(short = 'n', long, overrides_with = "stat")]
     no_stat: bool,
     #[arg(long, hide = true, num_args = 0..=1, value_name = "MODE")]
     recurse_submodules: Option<Option<String>>,
@@ -181,12 +181,6 @@ impl PullArgs {
                 "--cleanup",
                 self.cleanup.is_some(),
                 "the message is always cleaned up",
-            ),
-            ("--stat", self.stat, "the merge prints a file count only"),
-            (
-                "--no-stat",
-                self.no_stat,
-                "the merge prints a file count only",
             ),
             (
                 "--recurse-submodules",
@@ -547,6 +541,8 @@ pub fn pull(git: &GitHome, args: PullArgs) -> Result<()> {
             abort: false,
             continue_merge: false,
             preview: false,
+            stat: args.stat,
+            no_stat: args.no_stat,
         },
     )
 }

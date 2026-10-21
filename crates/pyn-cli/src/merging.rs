@@ -54,6 +54,12 @@ pub struct MergeArgs {
     /// Show what would merge and what would conflict, and change nothing.
     #[arg(long)]
     pub(crate) preview: bool,
+    /// Print the diffstat after the merge (git's default; `merge.stat` turns it off).
+    #[arg(long, alias = "summary", overrides_with = "no_stat")]
+    pub(crate) stat: bool,
+    /// Print no diffstat after the merge.
+    #[arg(short = 'n', long, alias = "no-summary", overrides_with = "stat")]
+    pub(crate) no_stat: bool,
 }
 
 /// One side of a conflicted path, as the workspace needs it to take that side later.
@@ -337,6 +343,9 @@ fn clean_or_bail(ws: &Workspace, report: &api::MergeReport) -> Result<()> {
 pub fn merge_command(backend: &dyn Backend, ws: Option<&Workspace>, args: MergeArgs) -> Result<()> {
     let api = backend.pyn_server("merge")?;
     let ws = ws.context("`pyn merge` works inside a workspace; run `pyn clone` first")?;
+    if args.stat || args.no_stat {
+        bail!("`pyn merge --stat` and `-n` need a git repository; a pyn server prints no diffstat");
+    }
     if args.abort {
         return abort(backend, api, ws);
     }

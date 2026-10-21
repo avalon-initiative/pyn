@@ -13,6 +13,7 @@ mod client;
 mod commit_format;
 mod credentials;
 mod diff;
+mod diffstat;
 mod git_home;
 mod http_transport;
 mod limits;

@@ -29,11 +29,16 @@ pub(super) struct Blocked {
     pub unmerged: Vec<Vec<u8>>,
     pub local: Vec<Vec<u8>>,
     pub untracked: Vec<Vec<u8>>,
+    /// Folders that hold untracked files a write would lose.
+    pub directories: Vec<Vec<u8>>,
 }
 
 impl Blocked {
     fn is_empty(&self) -> bool {
-        self.unmerged.is_empty() && self.local.is_empty() && self.untracked.is_empty()
+        self.unmerged.is_empty()
+            && self.local.is_empty()
+            && self.untracked.is_empty()
+            && self.directories.is_empty()
     }
 
     /// Prints git's messages for `verb` (`checkout`, `merge`...) and ends the command with `status`.
@@ -41,6 +46,19 @@ impl Blocked {
         self.print(verb, advice);
         eprintln!("Aborting");
         std::process::exit(status);
+    }
+
+    /// Records an untracked file in the way, or a folder holding untracked files, once.
+    pub(super) fn add_way(&mut self, root: &Path, way: Vec<u8>) {
+        let dir = lexists(&fs_path(root, &way)).is_some_and(|m| m.is_dir());
+        let list = if dir {
+            &mut self.directories
+        } else {
+            &mut self.untracked
+        };
+        if !list.contains(&way) {
+            list.push(way);
+        }
     }
 
     pub(super) fn print(&self, verb: &str, advice: &str) {
@@ -61,6 +79,13 @@ impl Blocked {
             );
             list(&self.local);
             eprintln!("Please commit your changes or stash them before you {advice}.");
+        }
+        if !self.directories.is_empty() {
+            eprintln!(
+                "error: Updating the following directories would lose untracked files in them:"
+            );
+            list(&self.directories);
+            eprintln!();
         }
         if !self.untracked.is_empty() {
             eprintln!(
@@ -138,29 +163,45 @@ fn ancestors(path: &[u8]) -> Vec<&[u8]> {
         .collect()
 }
 
-/// Why writing `path` would lose something that is not tracked, if it would.
+/// The untracked file or folder that writing `path` would lose, as git names it: a file in the way is reported, not the
+/// path below it.
+pub(super) fn blocking_path(
+    git: &GitHome,
+    ignores: &Ignores,
+    path: &[u8],
+    removed: &HashSet<&[u8]>,
+) -> Result<Option<Vec<u8>>> {
+    let root = git.repo.root()?;
+    for a in ancestors(path) {
+        match lexists(&fs_path(root, a)) {
+            Some(m) if !m.is_dir() && !removed.contains(a) => return Ok(Some(a.to_vec())),
+            _ => {}
+        }
+    }
+    let Some(meta) = lexists(&fs_path(root, path)) else {
+        return Ok(None);
+    };
+    if meta.is_dir() {
+        let mut below = Vec::new();
+        files_under(root, path, &mut below)?;
+        let lost = below.iter().any(|p| !removed.contains(p.as_slice()));
+        return Ok(lost.then(|| path.to_vec()));
+    }
+    Ok((!ignores.hides(git, path, false)?).then(|| path.to_vec()))
+}
+
 pub(super) fn in_the_way(
     git: &GitHome,
     ignores: &Ignores,
     path: &[u8],
     removed: &HashSet<&[u8]>,
 ) -> Result<bool> {
-    let root = git.repo.root()?;
-    for a in ancestors(path) {
-        match lexists(&fs_path(root, a)) {
-            Some(m) if !m.is_dir() && !removed.contains(a) => return Ok(true),
-            _ => {}
-        }
-    }
-    let Some(meta) = lexists(&fs_path(root, path)) else {
-        return Ok(false);
-    };
-    if meta.is_dir() {
-        let mut below = Vec::new();
-        files_under(root, path, &mut below)?;
-        return Ok(below.iter().any(|p| !removed.contains(p.as_slice())));
-    }
-    Ok(!ignores.hides(git, path, false)?)
+    Ok(blocking_path(git, ignores, path, removed)?.is_some())
+}
+
+/// Whether `inner` is `outer` or below it.
+pub(super) fn within(outer: &[u8], inner: &[u8]) -> bool {
+    inner == outer || (inner.starts_with(outer) && inner.get(outer.len()) == Some(&b'/'))
 }
 
 /// Computes what moving from `old` to `new` does, and refuses before any change when it would lose local work.
@@ -259,8 +300,8 @@ fn plan(
         ignore: repo.ignore()?,
     };
     for path in &absent_checks {
-        if in_the_way(git, &ignores, path, &removed)? {
-            blocked.untracked.push(path.clone());
+        if let Some(way) = blocking_path(git, &ignores, path, &removed)? {
+            blocked.add_way(repo.root()?, way);
         }
     }
     for (path, act) in &acts {
@@ -272,10 +313,15 @@ fn plan(
                 let mut below = Vec::new();
                 files_under(root, path, &mut below)?;
                 if below.iter().any(|p| !removed.contains(p.as_slice())) {
-                    blocked.untracked.push(path.clone());
+                    blocked.add_way(root, path.clone());
                 }
             }
         }
+    }
+    let local = blocked.local.clone();
+    for list in [&mut blocked.untracked, &mut blocked.directories] {
+        list.sort();
+        list.retain(|u| !local.iter().any(|l| within(l, u) || within(u, l)));
     }
     if blocked.is_empty() {
         Ok(Ok(acts))
