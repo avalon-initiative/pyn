@@ -880,7 +880,7 @@ content file.
 
 **Finishing a merge.** While `MERGE_HEAD` exists `commit` makes a merge commit: the merged-in commits are further parents, and
 without `-m` the message is `MERGE_MSG` with its `#` comment lines removed (what git's editor flow leaves; `git commit
---no-edit` keeps them). An empty merge is allowed, and unmerged entries are refused. `commit -a` stages a resolved file first.
+--no-edit` keeps them, so the `# Conflicts:` list stays in the commit and the id matches git's; git 2.43 and 2.55 agree on this, and `merge --continue` strips them). An empty merge is allowed, and unmerged entries are refused. `commit -a` stages a resolved file first.
 `add` of an unmerged path stages the file as it is (or its removal) and clears the conflict stages. `commit` removes `MERGE_HEAD`,
 `MERGE_MSG` and `MERGE_MODE`. A cherry-pick, revert or rebase in progress still stops it.
 

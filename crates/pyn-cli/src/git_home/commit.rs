@@ -225,7 +225,7 @@ pub fn commit(git: &GitHome, opts: &CommitOptions) -> Result<()> {
         eprintln!("Aborting commit due to empty commit message.");
         std::process::exit(1);
     }
-    let mut message = match (explicit, &tip, merge_message(git)?) {
+    let mut message = match (explicit, &tip, merge_message(git, opts.flags.no_edit)?) {
         (Some(m), ..) => m,
         (None, Some(t), _) => clean_bytes(&t.message),
         (None, None, Some(m)) if !merged.is_empty() => m,

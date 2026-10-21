@@ -67,7 +67,8 @@ struct Pair {
 fn dir_env(c: &mut Command, root: &Path) {
     c.env("HOME", root.join("home"))
         .env("TZ", "UTC")
-        .env("GIT_CONFIG_NOSYSTEM", "1");
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_EDITOR", "true");
     for (k, v) in BASE_ENV {
         c.env(k, v);
     }
@@ -448,6 +449,29 @@ fn amend_rewrites_the_tip_as_git_does() {
             &["--amend", "-m", "x"],
             None,
         ),
+    ]);
+}
+
+/// A merge of `side` into `main` that conflicts on `a.txt`, with the conflict resolved and staged.
+const CONFLICTED_MERGE: &[Step] = &[
+    Git(&["checkout", "-q", "side"]),
+    W("a.txt", "side\n"),
+    Git(&["commit", "-q", "-am", "side change"]),
+    Git(&["checkout", "-q", "main"]),
+    W("a.txt", "main\n"),
+    Git(&["commit", "-q", "-am", "main change"]),
+    Git(&["merge", "side"]),
+    W("a.txt", "resolved\n"),
+    Git(&["add", "a.txt"]),
+];
+
+#[test]
+fn concluding_a_conflicted_merge_matches_git() {
+    // --no-edit keeps the `# Conflicts:` comment lines; an editor (or none) strips them.
+    run_cases(&[
+        case("no-edit", CONFLICTED_MERGE, &["--no-edit"], None),
+        case("no editor", CONFLICTED_MERGE, &[], None),
+        case("explicit message", CONFLICTED_MERGE, &["-m", "done"], None),
     ]);
 }
 

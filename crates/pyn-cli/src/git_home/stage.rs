@@ -851,13 +851,16 @@ pub(super) fn clear_merge_state(git: &GitHome) {
     }
 }
 
-/// `MERGE_MSG` with its comment lines dropped, as `git commit` uses it.
-pub(super) fn merge_message(git: &GitHome) -> Result<Option<Vec<u8>>> {
+/// `MERGE_MSG` with its comment lines dropped, as `git commit` uses it; `--no-edit` keeps them.
+pub(super) fn merge_message(git: &GitHome, keep_comments: bool) -> Result<Option<Vec<u8>>> {
     let Some(bytes) = read_raw(&git.repo.git().git_dir().join("MERGE_MSG"))? else {
         return Ok(None);
     };
     let text = String::from_utf8_lossy(&bytes);
-    let kept: Vec<&str> = text.lines().filter(|l| !l.starts_with('#')).collect();
+    let kept: Vec<&str> = text
+        .lines()
+        .filter(|l| keep_comments || !l.starts_with('#'))
+        .collect();
     Ok(Some(clean_message(&[kept.join("\n")])))
 }
 

@@ -674,7 +674,7 @@ fn continue_pick(git: &GitHome) -> Result<()> {
                 say_empty(verb);
                 std::process::exit(1);
             }
-            let message = match merge_message(git)? {
+            let message = match merge_message(git, false)? {
                 Some(m) => m,
                 None => clean_message(&[String::from_utf8_lossy(&picked.message).into_owned()]),
             };
