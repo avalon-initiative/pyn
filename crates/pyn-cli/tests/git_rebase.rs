@@ -153,7 +153,13 @@ fn state(env: &Env, dir: &Path) -> Vec<String> {
         "author-script",
         "autostash",
     ] {
-        out.push(read(dir, &format!("rebase-merge/{name}")));
+        let text = read(dir, &format!("rebase-merge/{name}"));
+        // git 2.43 ends `message` with an extra newline, later versions do not.
+        out.push(if name == "message" {
+            text.trim_end().to_string()
+        } else {
+            text
+        });
     }
     out.push(sheet(dir, "git-rebase-todo"));
     out.push(sheet(dir, "done"));
@@ -275,7 +281,17 @@ fn commit_all(env: &Env, dir: &Path, message: &str) {
     env.ok(dir, &["add", "-A"]);
     let tick = TICK.fetch_add(10, std::sync::atomic::Ordering::SeqCst);
     let out = Command::new("git")
-        .args(["commit", "-q", "--allow-empty", "-m", message])
+        .args([
+            "-c",
+            "gc.auto=0",
+            "-c",
+            "maintenance.auto=false",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            message,
+        ])
         .current_dir(dir)
         .env("HOME", &env.home)
         .env("GIT_CONFIG_NOSYSTEM", "1")
