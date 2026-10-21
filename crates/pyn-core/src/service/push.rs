@@ -159,7 +159,15 @@ impl RepoService {
         let mut commits = Vec::with_capacity(records.len());
         let mut previous: Option<Commit> = None;
         let mut total_changes = 0usize;
+        let mut in_known_prefix = true;
         for record in records {
+            let known = in_known_prefix
+                && self
+                    .meta
+                    .get_commit(&self.repo, &record.id)
+                    .await?
+                    .is_some();
+            in_known_prefix = known;
             let parent_tree = match (&previous, record.parents.first()) {
                 (Some(prev), Some(parent)) if parent == &prev.id => Some(prev.tree),
                 (Some(_), _) => {
@@ -188,6 +196,12 @@ impl RepoService {
             let mut adopted = Vec::new();
             let mut arriving = None;
             let mut changes = diff.changes;
+            if known && on_default && changes.iter().any(|c| c.path == policy_path) {
+                return Err(invalid(format!(
+                    "commit {} changes the policy and is already in the repository; commit the change again",
+                    record.id
+                )));
+            }
             if let (true, Some(chain)) = (record.parents.len() > 1, chain.as_mut()) {
                 if !on_default
                     && let Some(theirs) = self.policy_revision_at(&record.parents[1]).await?
@@ -201,8 +215,16 @@ impl RepoService {
                     .await?;
                 changes = out.news;
                 adopted = out.adopted;
-                merges.push((record.id, record.parents[1]));
+                if !known {
+                    merges.push((record.id, record.parents[1]));
+                }
                 if on_default && let Some(rev) = adopted.iter().find(|r| r.path == policy_path) {
+                    if known {
+                        return Err(invalid(format!(
+                            "commit {} brings in a policy change and is already in the repository",
+                            record.id
+                        )));
+                    }
                     let parsed = self.check_policy_edit(who, &rev.content).await?;
                     arrivals.push((record.id, rev.clone(), parsed.clone()));
                     arriving = Some(parsed);
@@ -236,7 +258,9 @@ impl RepoService {
                     unlocked.push(policy_path.clone());
                 }
                 has_policy = true;
-                policies.push(new.clone());
+                if !known {
+                    policies.push(new.clone());
+                }
                 rules = Arc::new(new);
             }
             total_changes += items.len() + adopted.len();
@@ -244,7 +268,7 @@ impl RepoService {
                 return Err(too_large_push());
             }
             let mut record = record;
-            if items.len() > 1 {
+            if items.len() > 1 && !known {
                 record.changeset = Some(changeset_id()?);
             }
             let items = items
@@ -257,10 +281,11 @@ impl RepoService {
             previous = Some(record.clone());
             commits.push(PushedCommit {
                 record,
-                trees: diff.trees,
+                trees: if known { Vec::new() } else { diff.trees },
                 items,
                 unlocked,
-                adopted,
+                adopted: if known { Vec::new() } else { adopted },
+                known,
             });
         }
         let now = self.clock.now();

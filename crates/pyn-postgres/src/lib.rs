@@ -1136,10 +1136,13 @@ impl MetadataStore for PgMetadataStore {
                     )));
                 }
             }
-            if commit_known(&mut tx, repo, &c.record.id).await? {
-                if i == 0 {
+            if c.known {
+                if let Some(h) = head
+                    && is_ancestor_in(&mut tx, repo, &c.record.id, &h).await?
+                {
                     return Err(PynError::NotFastForward(branch.to_string()));
                 }
+            } else if commit_known(&mut tx, repo, &c.record.id).await? {
                 return Err(PynError::PushInvalid(format!(
                     "commit {} is already in the repository",
                     c.record.id
@@ -1188,7 +1191,11 @@ impl MetadataStore for PgMetadataStore {
             .iter()
             .flat_map(|c| c.items.iter().map(|i| i.path.as_str().to_string()))
             .collect();
-        let start = commits[0].record.parents.first().copied();
+        let known = commits.iter().take_while(|c| c.known).count();
+        let start = match known {
+            0 => commits[0].record.parents.first().copied(),
+            n => Some(commits[n - 1].record.id),
+        };
         let mut at_branch: HashMap<String, i64> = match &start {
             Some(p) => pointers(&mut *tx, repo, p, Some(&paths))
                 .await?
@@ -1197,8 +1204,17 @@ impl MetadataStore for PgMetadataStore {
             None => HashMap::new(),
         };
         let mut out = Vec::new();
-        for (i, c) in commits.into_iter().enumerate() {
-            if i > 0 {
+        if known > 0 {
+            sqlx::query("UPDATE branches SET head = $3 WHERE repo = $1 AND name = $2")
+                .bind(repo.as_str())
+                .bind(branch)
+                .bind(commits[known - 1].record.id.to_hex())
+                .execute(&mut *tx)
+                .await
+                .map_err(db)?;
+        }
+        for (i, c) in commits.into_iter().enumerate().skip(known) {
+            if i > known {
                 seq = next_commit(&mut tx, repo).await?;
             }
             let mut revs = Vec::with_capacity(c.items.len());

@@ -222,6 +222,107 @@ pub async fn a_push_must_fast_forward_the_branch(store: Store) {
     assert!(h.svc.head(&path("Source/z.cpp")).await.unwrap().is_none());
 }
 
+pub async fn a_commit_already_on_another_branch_is_moved_onto_not_duplicated(store: Store) {
+    let h = harness(store);
+    let (x, y) = (blob(&h, "x").await, blob(&h, "y").await);
+    let mut files = Files::new();
+    set(&mut files, "Source/a.cpp", x);
+    let root = build(&files, None, "root", 1);
+    h.svc
+        .push_commits(&who("alice"), "main", objects(&[&root]))
+        .await
+        .unwrap();
+    h.svc
+        .create_branch(&who("alice"), "feature", Some("main"))
+        .await
+        .unwrap();
+    set(&mut files, "Source/b.cpp", y);
+    let next = build(&files, Some(root.id), "next", 2);
+    h.svc
+        .push_commits(&who("alice"), "feature", objects(&[&next]))
+        .await
+        .unwrap();
+
+    let revs = h
+        .svc
+        .push_commits(&who("alice"), "main", objects(&[&next]))
+        .await
+        .unwrap();
+    assert!(revs.is_empty());
+    assert_eq!(head(&h, "main").await, Some(next.id));
+    assert_eq!(head(&h, "feature").await, Some(next.id));
+    assert_eq!(h.svc.history(&path("Source/b.cpp")).await.unwrap().len(), 1);
+
+    // Pushing it again, or an older commit the branch already has, still is no fast-forward.
+    for again in [&next, &root] {
+        let err = h
+            .svc
+            .push_commits(&who("alice"), "main", objects(&[again]))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, PynError::NotFastForward(_)), "{err}");
+    }
+
+    // Known commits followed by a new one.
+    set(&mut files, "Source/c.cpp", y);
+    let after = build(&files, Some(next.id), "after", 3);
+    h.svc
+        .create_branch(&who("alice"), "other", Some(&root.id.to_hex()))
+        .await
+        .unwrap();
+    let revs = h
+        .svc
+        .push_commits(&who("alice"), "other", objects(&[&next, &after]))
+        .await
+        .unwrap();
+    assert_eq!(revs.len(), 1);
+    assert_eq!(head(&h, "other").await, Some(after.id));
+}
+
+pub async fn moving_a_branch_onto_a_known_commit_needs_the_locks_a_new_one_would(store: Store) {
+    let h = harness(store);
+    let (x, m) = (blob(&h, "x").await, blob(&h, "map").await);
+    let mut files = Files::new();
+    set(&mut files, "Source/a.cpp", x);
+    let root = build(&files, None, "root", 1);
+    h.svc
+        .push_commits(&who("alice"), "main", objects(&[&root]))
+        .await
+        .unwrap();
+    h.svc
+        .create_branch(&who("alice"), "feature", Some("main"))
+        .await
+        .unwrap();
+    set(&mut files, "Content/Dungeon.umap", m);
+    let map = build(&files, Some(root.id), "map", 2);
+    h.svc
+        .checkout(&path("Content/Dungeon.umap"), &user("alice"), None)
+        .await
+        .unwrap();
+    h.svc
+        .push_commits(&who("alice"), "feature", objects(&[&map]))
+        .await
+        .unwrap();
+
+    let err = h
+        .svc
+        .push_commits(&who("bob"), "main", objects(&[&map]))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::LockRequired(_)), "{err}");
+    assert_eq!(head(&h, "main").await, Some(root.id));
+
+    h.svc
+        .checkout(&path("Content/Dungeon.umap"), &user("bob"), None)
+        .await
+        .unwrap();
+    h.svc
+        .push_commits(&who("bob"), "main", objects(&[&map]))
+        .await
+        .unwrap();
+    assert_eq!(head(&h, "main").await, Some(map.id));
+}
+
 pub async fn an_exclusive_path_needs_the_pushers_live_lock_at_push_time(store: Store) {
     let h = harness(store);
     let map = path("Content/Dungeon.umap");
