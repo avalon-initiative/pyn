@@ -413,11 +413,6 @@ fn commit_refuses_what_it_cannot_do_safely_and_changes_nothing() {
     assert!(err.contains("rebase-merge"), "{err}");
     fs::remove_dir(repo.main.join(".git/rebase-merge")).unwrap();
 
-    let head = fs::read_to_string(repo.main.join(".git/refs/heads/main")).unwrap();
-    git_dir_file(&repo, "HEAD", &head);
-    let (_, err) = repo.fails(&["commit", "-m", "x"]);
-    assert!(err.contains("HEAD is detached"), "{err}");
-    git_dir_file(&repo, "HEAD", "ref: refs/heads/main\n");
     assert_eq!(
         snapshot(&repo.main),
         before,

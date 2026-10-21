@@ -644,9 +644,13 @@ fn branch_messages_follow_git() {
     let out = repo.run_in(&repo.main, &["checkout", "--detach", "old"]);
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(
-        err.contains("You are in 'detached HEAD' state") && err.contains("HEAD is now at "),
+        !err.contains("You are in 'detached HEAD' state") && err.contains("HEAD is now at "),
         "{err}"
     );
+    repo.ok(&["switch", "main"]);
+    let out = repo.run_in(&repo.main, &["checkout", "old^0"]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("You are in 'detached HEAD' state"), "{err}");
     assert_eq!(repo.ok(&["branch", "--show-current"]), "");
     assert!(repo.ok(&["branch"]).starts_with("* (HEAD detached at "));
     repo.ok(&["switch", "main"]);

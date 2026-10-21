@@ -1,12 +1,12 @@
 //! `switch`, `checkout` and the work tree forms of `restore` on a git repository: they move `HEAD`, the index and
 //! the work tree as git does, and never overwrite local changes unless `-f` (or the command's purpose) says to.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
 use anyhow::{Result, bail};
 use pyn_git::IndexEntry;
-use pyn_gitwork::{Entry, Head, Kind};
+use pyn_gitwork::{Entry, Head, Kind, Pathspec};
 use pyn_object::ObjectId;
 
 use super::refwrite::BRANCHES;
@@ -34,8 +34,15 @@ pub(super) fn subject(git: &GitHome, id: &ObjectId) -> Result<String> {
 /// Where a switch lands.
 enum Landing {
     Branch(String),
-    NewBranch { name: String, start: Option<String> },
-    Detach(String),
+    NewBranch {
+        name: String,
+        start: Option<String>,
+    },
+    /// `explicit` is `--detach`, which leaves out the advice.
+    Detach {
+        spec: String,
+        explicit: bool,
+    },
 }
 
 struct Go {
@@ -114,13 +121,18 @@ fn tree_of(git: &GitHome, commit: Option<&ObjectId>) -> Result<Option<ObjectId>>
     })
 }
 
+fn advice_on(git: &GitHome, name: &str) -> bool {
+    git.repo.config().get(name).is_none_or(|v| v != "false")
+}
+
 pub(super) fn detach_advice(git: &GitHome, label: &str, id: &ObjectId) -> Result<()> {
-    if git
-        .repo
-        .config()
-        .get("advice.detachedhead")
-        .is_none_or(|v| v != "false")
-    {
+    detach_note(git, label);
+    eprintln!("HEAD is now at {} {}", abbrev(id), subject(git, id)?);
+    Ok(())
+}
+
+fn detach_note(git: &GitHome, label: &str) {
+    if advice_on(git, "advice.detachedhead") {
         eprintln!(
             "Note: switching to '{label}'.\n\n\
              You are in 'detached HEAD' state. You can look around, make experimental\n\
@@ -133,7 +145,63 @@ pub(super) fn detach_advice(git: &GitHome, label: &str, id: &ObjectId) -> Result
              Turn off this advice by setting config variable advice.detachedHead to false\n"
         );
     }
-    eprintln!("HEAD is now at {} {}", abbrev(id), subject(git, id)?);
+}
+
+/// Commits reachable from `old` that no ref, `HEAD` included, reaches.
+fn left_behind(git: &GitHome, old: &ObjectId) -> Result<Vec<ObjectId>> {
+    let mut covered = HashSet::new();
+    let mut tips: Vec<ObjectId> = git.repo.head_commit()?.into_iter().collect();
+    for (name, _) in git.repo.refs().list("refs/")? {
+        if let Ok(id) = git.repo.resolve(&name) {
+            tips.push(id);
+        }
+    }
+    for tip in tips {
+        if !covered.contains(&tip) {
+            covered.extend(git.reachable(&tip)?);
+        }
+    }
+    let mut log = git.repo.log_hiding(&[*old], covered, Pathspec::default())?;
+    let mut out = Vec::new();
+    while let Some(entry) = log.next_entry()? {
+        out.push(entry.id);
+    }
+    Ok(out)
+}
+
+const ORPHAN_LISTED: usize = 4;
+
+/// What git says on leaving a detached `HEAD`: the commits no branch keeps, or where `HEAD` was.
+fn leaving_detached(git: &GitHome, old: &ObjectId) -> Result<()> {
+    let lost = left_behind(git, old)?;
+    if lost.is_empty() {
+        eprintln!(
+            "Previous HEAD position was {} {}",
+            abbrev(old),
+            subject(git, old)?
+        );
+        return Ok(());
+    }
+    let n = lost.len();
+    eprintln!(
+        "Warning: you are leaving {n} commit{} behind, not connected to\nany of your branches:\n",
+        if n == 1 { "" } else { "s" }
+    );
+    for id in lost.iter().take(ORPHAN_LISTED) {
+        eprintln!("  {} {}", abbrev(id), subject(git, id)?);
+    }
+    if n > ORPHAN_LISTED {
+        eprintln!(" ... and {} more.", n - ORPHAN_LISTED);
+    }
+    eprintln!();
+    if advice_on(git, "advice.detachedhead") {
+        eprintln!(
+            "If you want to keep {} by creating a new branch, this may be a good time\n\
+             to do so with:\n\n git branch <new-branch-name> {}\n",
+            if n == 1 { "it" } else { "them" },
+            abbrev(&lost[0])
+        );
+    }
     Ok(())
 }
 
@@ -142,6 +210,7 @@ fn go(git: &GitHome, go: Go) -> Result<()> {
     let head = git.repo.head()?;
     let from = current_label(git)?;
     let old_commit = head.id();
+    let was_detached = matches!(head, Head::Detached(_));
     let (target, branch_ref, label, created): (Option<ObjectId>, Option<String>, String, bool) =
         match &go.landing {
             Landing::Branch(name) => {
@@ -167,7 +236,9 @@ fn go(git: &GitHome, go: Go) -> Result<()> {
                 };
                 (id, Some(GitHome::branch_ref(name)), name.clone(), true)
             }
-            Landing::Detach(spec) => (Some(git.repo.resolve(spec)?), None, spec.clone(), false),
+            Landing::Detach { spec, .. } => {
+                (Some(git.repo.resolve(spec)?), None, spec.clone(), false)
+            }
         };
     let same_branch = matches!(&head, Head::Branch { name, .. } if Some(format!("{BRANCHES}{name}")) == branch_ref);
     if let Landing::Branch(name) = &go.landing
@@ -201,6 +272,7 @@ fn go(git: &GitHome, go: Go) -> Result<()> {
             git.set_head(Some(r), id, &message)?;
         }
         (Some(r), None) => git.repo.refs().set_symbolic("HEAD", r)?,
+        (None, Some(id)) if was_detached && old_commit == Some(*id) => {}
         (None, Some(id)) => git.set_head(None, id, &message)?,
         (None, None) => unreachable!("a detach has a commit"),
     }
@@ -210,11 +282,26 @@ fn go(git: &GitHome, go: Go) -> Result<()> {
         }
     }
     warn_about_hooks_for(git, &CHECKOUT_HOOKS);
+    if let (true, Landing::Branch(_) | Landing::NewBranch { .. }, Some(old)) =
+        (was_detached, &go.landing, old_commit)
+        && target != Some(old)
+    {
+        leaving_detached(git, &old)?;
+    }
     match &go.landing {
         Landing::NewBranch { name, .. } => eprintln!("Switched to a new branch '{name}'"),
         Landing::Branch(name) if same_branch => eprintln!("Already on '{name}'"),
         Landing::Branch(name) => eprintln!("Switched to branch '{name}'"),
-        Landing::Detach(spec) => detach_advice(git, spec, &target.expect("a detach has a commit"))?,
+        Landing::Detach { spec, explicit } => {
+            let id = target.expect("a detach has a commit");
+            if !explicit && !was_detached {
+                detach_note(git, spec);
+            }
+            if was_detached && old_commit != Some(id) {
+                leaving_detached(git, &old_commit.expect("a detached head has a commit"))?;
+            }
+            eprintln!("HEAD is now at {} {}", abbrev(&id), subject(git, &id)?);
+        }
     }
     Ok(())
 }
@@ -223,8 +310,14 @@ pub fn switch(git: &GitHome, args: SwitchArgs) -> Result<()> {
     let landing = match (args.create, args.start, args.detach) {
         (Some(name), start, false) => Landing::NewBranch { name, start },
         (Some(_), _, true) => bail!("options '-c' and '--detach' cannot be used together"),
-        (None, Some(spec), true) => Landing::Detach(spec),
-        (None, None, true) => Landing::Detach("HEAD".into()),
+        (None, Some(spec), true) => Landing::Detach {
+            spec,
+            explicit: true,
+        },
+        (None, None, true) => Landing::Detach {
+            spec: "HEAD".into(),
+            explicit: true,
+        },
         (None, Some(name), false) => {
             let name = expand_branch_name(git, name)?;
             if git.branch_commit(&name)?.is_none() {
@@ -471,6 +564,18 @@ pub fn checkout(git: &GitHome, cwd: &Path, args: CheckoutArgs) -> Result<()> {
             },
         );
     }
+    if detach && names.is_empty() {
+        return go(
+            git,
+            Go {
+                landing: Landing::Detach {
+                    spec: "HEAD".into(),
+                    explicit: true,
+                },
+                force,
+            },
+        );
+    }
     let Some(first) = names.first() else {
         bail!("no branch or commit given; name one, or use `pyn status` to see where you are");
     };
@@ -513,7 +618,10 @@ pub fn checkout(git: &GitHome, cwd: &Path, args: CheckoutArgs) -> Result<()> {
         return go(
             git,
             Go {
-                landing: Landing::Detach(name),
+                landing: Landing::Detach {
+                    spec: name,
+                    explicit: detach,
+                },
                 force,
             },
         );

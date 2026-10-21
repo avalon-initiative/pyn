@@ -205,10 +205,8 @@ pub fn commit(git: &GitHome, opts: &CommitOptions) -> Result<()> {
     let head = git.repo.head()?;
     let (branch_ref, parent) = match (&head, git.repo.git().refs().head()?) {
         (Head::Branch { id, .. }, Ref::Symbolic(target)) => (Some(target), *id),
-        (Head::Detached(id), _) if rebasing => (None, Some(*id)),
-        _ => bail!(
-            "HEAD is detached; pyn commits only on a branch, so create or switch to one with git first"
-        ),
+        (Head::Detached(id), _) => (None, Some(*id)),
+        _ => bail!("HEAD does not name a branch or a commit"),
     };
     let merged = merge_heads(git)?;
     let tip = match (amend, parent) {
