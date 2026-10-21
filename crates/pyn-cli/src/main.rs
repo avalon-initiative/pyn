@@ -19,6 +19,7 @@ mod limits;
 mod local_commit;
 mod local_merge;
 mod local_pick;
+mod local_rebase;
 mod local_reset;
 mod local_store;
 mod local_sync;
@@ -1533,9 +1534,13 @@ fn run(cli: Cli) -> Result<()> {
             eprintln!("{}", unsupported::message("clean"));
             std::process::exit(1);
         }
-        Command::Rebase(_) => {
-            eprintln!("{}", unsupported::message("rebase"));
-            std::process::exit(1);
+        Command::Rebase(args) => {
+            if ws.as_ref().is_some_and(|w| w.settings().local_store_on()) {
+                local_rebase::rebase(&backend, in_workspace("rebase")?, &args)?;
+            } else {
+                eprintln!("{}", unsupported::message("rebase"));
+                std::process::exit(1);
+            }
         }
         Command::Remote(args) => {
             git_home::remote_on_server(&args, &server_url, repo_name.as_deref())?

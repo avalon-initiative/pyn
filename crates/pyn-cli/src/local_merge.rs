@@ -13,6 +13,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::backend::Backend;
 use crate::git_home::clean_message;
+use crate::git_home::meld;
+use crate::git_home::todo::Cmd;
 use crate::local_commit::signature;
 use crate::local_store::{ALGORITHM, Files, LocalStore, build_trees, file_mode, parse_id};
 use crate::local_sync::{
@@ -39,6 +41,8 @@ pub enum Op {
     Rebase,
     Pick,
     Revert,
+    /// `pyn rebase` over unpublished local commits.
+    Rewrite,
 }
 
 impl Op {
@@ -46,20 +50,51 @@ impl Op {
         match self {
             Op::Pick => "pyn cherry-pick",
             Op::Revert => "pyn revert",
+            Op::Rewrite => "pyn rebase",
             _ => "pyn pull",
         }
     }
 
-    /// The command word of a pick or revert.
+    /// The command word of a pick, revert or rebase.
     pub fn noun(self) -> &'static str {
         match self {
             Op::Revert => "revert",
+            Op::Rewrite => "rebase",
             _ => "cherry-pick",
         }
     }
 
     fn replays(self) -> bool {
+        matches!(self, Op::Pick | Op::Revert | Op::Rewrite)
+    }
+
+    /// Whether each commit made is announced as it is made.
+    fn announces(self) -> bool {
         matches!(self, Op::Pick | Op::Revert)
+    }
+}
+
+/// One command of a replay and the commit it names.
+pub type Move = (Cmd, ObjectId);
+
+fn move_line((cmd, id): &Move) -> String {
+    match cmd {
+        Cmd::Pick => id.to_hex(),
+        _ => format!("{} {}", cmd.word(), id.to_hex()),
+    }
+}
+
+fn parse_move(line: &str) -> Result<Move> {
+    let mut words = line.split_whitespace();
+    let (first, second) = (words.next(), words.next());
+    match (first, second) {
+        (Some(hex), None) => Ok((Cmd::Pick, id_of(hex)?)),
+        (Some(word), Some(hex)) => Ok((
+            Cmd::from_word(word)
+                .with_context(|| format!("unknown command '{word}' in the record"))?,
+            id_of(hex)?,
+        )),
+        _ => bail!("the record has an empty step"),
     }
 }
 
@@ -115,6 +150,7 @@ impl LocalOp {
             Op::Rebase => "rebase",
             Op::Pick => "cherry-pick",
             Op::Revert => "revert",
+            Op::Rewrite => "rebase",
         }
     }
 
@@ -126,7 +162,7 @@ impl LocalOp {
                  or give the rebase up with `pyn pull --abort`"
                     .into()
             }
-            Op::Pick | Op::Revert => {
+            Op::Pick | Op::Revert | Op::Rewrite => {
                 let cmd = self.op.command();
                 format!(
                     "conclude this step with `pyn commit` (or `{cmd} --continue`), drop the commit with `{cmd} --skip`, \
@@ -149,13 +185,13 @@ impl LocalOp {
                     self.todo.len()
                 )
             }
-            Op::Pick | Op::Revert => {
+            Op::Pick | Op::Revert | Op::Rewrite => {
                 let at = self.total - self.todo.len();
                 let cmd = self.op.command();
-                let doing = if self.op == Op::Pick {
-                    "cherry-picking"
-                } else {
-                    "reverting"
+                let doing = match self.op {
+                    Op::Pick => "cherry-picking",
+                    Op::Revert => "reverting",
+                    _ => "rebasing",
                 };
                 format!(
                     "You are {doing} (commit {at} of {}, {} left).\n  \
@@ -414,7 +450,7 @@ fn record(
             version: STATE_VERSION,
             branch: branch.to_string(),
             source: match op.op {
-                Op::Pick | Op::Revert => op.op.noun().to_string(),
+                Op::Pick | Op::Revert | Op::Rewrite => op.op.noun().to_string(),
                 _ => format!("origin/{branch}"),
             },
             source_commit: op.theirs.clone(),
@@ -478,7 +514,7 @@ struct Run {
     orig: ObjectId,
     onto: ObjectId,
     tip: ObjectId,
-    todo: VecDeque<ObjectId>,
+    todo: VecDeque<Move>,
     total: usize,
     dropped: usize,
 }
@@ -487,7 +523,7 @@ enum Replayed {
     Done(Run),
     Stopped {
         run: Run,
-        current: ObjectId,
+        current: Move,
         files: Files,
         conflicts: BTreeMap<Vec<u8>, Conflict>,
         kept: Vec<String>,
@@ -502,10 +538,11 @@ fn subject(message: &[u8]) -> String {
         .to_string()
 }
 
-/// Replays the commits of `run.todo` over its tip, stopping at the first that has a conflict.
+/// Replays the commands of `run.todo` over its tip, stopping at the first that has a conflict.
 fn replay(
     store: &LocalStore,
     backend: &dyn Backend,
+    ws: &Workspace,
     (who, branch): (&Signature, &str),
     mut run: Run,
 ) -> Result<Replayed> {
@@ -516,8 +553,14 @@ fn replay(
     }
     let mut files = flat(store, Some(run.tip))?;
     let mut parent_tree = repo.commit(&run.tip)?.tree;
-    while let Some(id) = run.todo.pop_front() {
+    while let Some((cmd, id)) = run.todo.pop_front() {
         let commit = repo.commit(&id)?;
+        if run.op == Op::Rewrite && cmd == Cmd::Pick && commit.parents.first() == Some(&run.tip) {
+            run.tip = id;
+            files = flat_tree(store, &commit.tree)?;
+            parent_tree = commit.tree;
+            continue;
+        }
         let parent = store.tree_of(commit.parents.first().copied())?;
         // A revert merges with the commit as the base and its parent as the incoming side.
         let (before, after) = match run.op {
@@ -548,10 +591,41 @@ fn replay(
                 }
             }
         }
+        if cmd.melds() {
+            std::fs::create_dir_all(meld_dir(ws))?;
+            let head = repo.commit(&run.tip)?;
+            let text = meld::add(
+                &meld_dir(ws),
+                &String::from_utf8_lossy(&head.message),
+                &String::from_utf8_lossy(&commit.message),
+                cmd,
+                &id,
+            )?;
+            if conflicts.is_empty() {
+                let tree = write_trees(store, &files)?;
+                let message = melded_message(ws, more_melds(&run), &text)?;
+                let record = Commit {
+                    tree,
+                    parents: head.parents,
+                    author: head.author,
+                    committer: who.clone(),
+                    extra_headers: Vec::new(),
+                    message,
+                };
+                run.tip = repo
+                    .objects()
+                    .write(Kind::Commit, &record.encode(ALGORITHM)?)?;
+                parent_tree = tree;
+                if !more_melds(&run) {
+                    meld::clear(&meld_dir(ws));
+                }
+                continue;
+            }
+        }
         if !conflicts.is_empty() {
             return Ok(Replayed::Stopped {
                 run,
-                current: id,
+                current: (cmd, id),
                 files,
                 conflicts,
                 kept,
@@ -571,23 +645,48 @@ fn replay(
             }
             continue;
         }
+        let message = if cmd == Cmd::Reword {
+            crate::local_rebase::edit_message(ws, &commit.message)?
+        } else {
+            replayed_message(run.op, run.origin, &id, commit.message)
+        };
         let record = Commit {
             tree,
             parents: vec![run.tip],
             author: replayed_author(run.op, who, commit.author),
             committer: who.clone(),
             extra_headers: Vec::new(),
-            message: replayed_message(run.op, run.origin, &id, commit.message),
+            message,
         };
         run.tip = repo
             .objects()
             .write(Kind::Commit, &record.encode(ALGORITHM)?)?;
         parent_tree = tree;
-        if run.op.replays() {
+        if run.op.announces() {
             print_pick(branch, &run.tip, &record.message);
         }
     }
     Ok(Replayed::Done(run))
+}
+
+fn meld_dir(ws: &Workspace) -> std::path::PathBuf {
+    ws.dir.join("local_only").join("state").join("rebase-meld")
+}
+
+fn more_melds(run: &Run) -> bool {
+    run.todo.front().is_some_and(|(cmd, _)| cmd.melds())
+}
+
+/// The message of the commit a squash chain makes now: the collected text while more members follow, then the first
+/// message alone when only fixups joined it, else what the person makes of the collected text.
+fn melded_message(ws: &Workspace, more: bool, text: &str) -> Result<Vec<u8>> {
+    if more {
+        return Ok(text.as_bytes().to_vec());
+    }
+    if let Ok(only) = std::fs::read(meld_dir(ws).join(meld::FIXUP)) {
+        return Ok(only);
+    }
+    crate::local_rebase::edit_message(ws, text.as_bytes())
 }
 
 fn set_entry(files: &mut Files, path: &[u8], entry: Option<Entry>) {
@@ -643,7 +742,7 @@ pub fn begin_pick(
         onto: pick.onto,
         tip: pick.tip,
         total: pick.commits.len(),
-        todo: pick.commits.into(),
+        todo: pick.commits.into_iter().map(|c| (Cmd::Pick, c)).collect(),
         dropped: 0,
     };
     let disk = flat(store, Some(pick.tip))?;
@@ -685,10 +784,55 @@ pub fn begin_rebase(
         onto,
         tip: onto,
         total: outgoing.commits.len(),
-        todo: outgoing.commits.into(),
+        todo: outgoing
+            .commits
+            .into_iter()
+            .map(|c| (Cmd::Pick, c))
+            .collect(),
         dropped: 0,
     };
     let disk = flat(store, Some(orig))?;
+    proceed(
+        backend,
+        ws,
+        store,
+        (branch, who),
+        run,
+        &disk,
+        &BTreeSet::new(),
+    )
+}
+
+/// The commands of a `pyn rebase` over unpublished commits: replayed over `base` from the local tip `tip`;
+/// `published` is the commit whose modes the server is asked about.
+pub struct Rewrite {
+    pub moves: Vec<Move>,
+    pub base: ObjectId,
+    pub tip: ObjectId,
+    pub published: ObjectId,
+}
+
+/// Replays the commands over the base; a conflict leaves the rebase in progress.
+pub fn begin_rewrite(
+    backend: &dyn Backend,
+    ws: &Workspace,
+    store: &LocalStore,
+    branch: &str,
+    rewrite: Rewrite,
+    who: &Signature,
+) -> Result<()> {
+    let _ = std::fs::remove_dir_all(meld_dir(ws));
+    let run = Run {
+        op: Op::Rewrite,
+        origin: false,
+        orig: rewrite.tip,
+        onto: rewrite.published,
+        tip: rewrite.base,
+        total: rewrite.moves.len(),
+        todo: rewrite.moves.into(),
+        dropped: 0,
+    };
+    let disk = flat(store, Some(rewrite.tip))?;
     proceed(
         backend,
         ws,
@@ -710,7 +854,7 @@ fn proceed(
     disk: &Files,
     force: &BTreeSet<String>,
 ) -> Result<()> {
-    match replay(store, backend, (who, branch), run)? {
+    match replay(store, backend, ws, (who, branch), run)? {
         Replayed::Done(run) => {
             let end = flat(store, Some(run.tip))?;
             materialize(
@@ -728,6 +872,10 @@ fn proceed(
                 .context("the local branch moved while pulling; run the command again")?;
             merging::clear(ws)?;
             Index::default().save(ws)?;
+            let _ = std::fs::remove_dir_all(meld_dir(ws));
+            if run.op == Op::Rewrite {
+                println!("Successfully rebased and updated refs/heads/{branch}.");
+            }
             if run.op.replays() {
                 return Ok(());
             }
@@ -750,6 +898,7 @@ fn proceed(
             conflicts,
             kept,
         } => {
+            let (cmd, current) = current;
             let commit = store.repo().commit(&current)?;
             let result_tree = write_trees(store, &files)?;
             let op = LocalOp {
@@ -760,18 +909,21 @@ fn proceed(
                 result_tree: result_tree.to_hex(),
                 sides: sides_of(&conflicts)?,
                 tip: Some(run.tip.to_hex()),
-                current: Some(current.to_hex()),
-                todo: run.todo.iter().map(ObjectId::to_hex).collect(),
+                current: Some(move_line(&(cmd, current))),
+                todo: run.todo.iter().map(move_line).collect(),
                 total: run.total,
                 dropped: run.dropped,
             };
-            let message = String::from_utf8_lossy(&replayed_message(
-                run.op,
-                run.origin,
-                &current,
-                commit.message.clone(),
-            ))
-            .into_owned();
+            let message = match std::fs::read(meld_dir(ws).join(meld::SQUASH)) {
+                Ok(text) if cmd.melds() => String::from_utf8_lossy(&text).into_owned(),
+                _ => String::from_utf8_lossy(&replayed_message(
+                    run.op,
+                    run.origin,
+                    &current,
+                    commit.message.clone(),
+                ))
+                .into_owned(),
+            };
             let at = run.total - run.todo.len();
             let cmd = run.op.command();
             let (mut text, exclusive) = conflict_lines(&conflicts, &kept);
@@ -921,8 +1073,8 @@ pub fn finish(backend: &dyn Backend, ws: &Workspace, message: Option<String>) ->
             println!("Merge made by the 'ort' strategy.");
             sync::update(backend, ws, &[], None)
         }
-        Op::Rebase | Op::Pick | Op::Revert => {
-            let current = id_of(
+        Op::Rebase | Op::Pick | Op::Revert | Op::Rewrite => {
+            let (cmd, current) = parse_move(
                 op.current
                     .as_deref()
                     .context("the rebase has no current commit")?,
@@ -935,28 +1087,60 @@ pub fn finish(backend: &dyn Backend, ws: &Workspace, message: Option<String>) ->
                 orig,
                 onto: theirs,
                 tip,
-                todo: op.todo.iter().map(|t| id_of(t)).collect::<Result<_>>()?,
+                todo: op
+                    .todo
+                    .iter()
+                    .map(|t| parse_move(t))
+                    .collect::<Result<_>>()?,
                 total: op.total,
                 dropped: op.dropped,
             };
-            if tree == repo.commit(&tip)?.tree {
+            if cmd.melds() {
+                let head = repo.commit(&tip)?;
+                let message = match message {
+                    Some(m) => clean_message(&[m]),
+                    None => {
+                        let text = std::fs::read_to_string(meld_dir(ws).join(meld::SQUASH))
+                            .context("the squash chain has no collected message")?;
+                        melded_message(ws, more_melds(&run), &text)?
+                    }
+                };
+                let record = Commit {
+                    tree,
+                    parents: head.parents,
+                    author: head.author,
+                    committer: who.clone(),
+                    extra_headers: Vec::new(),
+                    message,
+                };
+                run.tip = repo
+                    .objects()
+                    .write(Kind::Commit, &record.encode(ALGORITHM)?)?;
+                if !more_melds(&run) {
+                    let _ = std::fs::remove_dir_all(meld_dir(ws));
+                }
+            } else if tree == repo.commit(&tip)?.tree {
                 run.dropped += 1;
             } else {
+                let message = match message {
+                    Some(m) => clean_message(&[m]),
+                    None if cmd == Cmd::Reword => {
+                        crate::local_rebase::edit_message(ws, &picked.message)?
+                    }
+                    None => replayed_message(op.op, op.origin, &current, picked.message),
+                };
                 let record = Commit {
                     tree,
                     parents: vec![tip],
                     author: replayed_author(op.op, &who, picked.author),
                     committer: who.clone(),
                     extra_headers: Vec::new(),
-                    message: message.map_or(
-                        replayed_message(op.op, op.origin, &current, picked.message),
-                        |m| clean_message(&[m]),
-                    ),
+                    message,
                 };
                 run.tip = repo
                     .objects()
                     .write(Kind::Commit, &record.encode(ALGORITHM)?)?;
-                if op.op.replays() {
+                if op.op.announces() {
                     print_pick(&state.branch, &run.tip, &record.message);
                 }
             }
@@ -982,6 +1166,11 @@ pub fn skip(backend: &dyn Backend, ws: &Workspace) -> Result<()> {
     }
     let (orig, onto) = (id_of(&op.orig)?, id_of(&op.theirs)?);
     let tip = id_of(op.tip.as_deref().context("the rebase has no tip")?)?;
+    if let Some(line) = op.current.as_deref()
+        && parse_move(line)?.0.melds()
+    {
+        meld::drop_last(&meld_dir(ws));
+    }
     let disk = flat_tree(&store, &id_of(&op.result_tree)?)?;
     let back = flat(&store, Some(tip))?;
     let touched: BTreeSet<String> = state.paths.keys().cloned().collect();
@@ -1002,7 +1191,11 @@ pub fn skip(backend: &dyn Backend, ws: &Workspace) -> Result<()> {
         orig,
         onto,
         tip,
-        todo: op.todo.iter().map(|t| id_of(t)).collect::<Result<_>>()?,
+        todo: op
+            .todo
+            .iter()
+            .map(|t| parse_move(t))
+            .collect::<Result<_>>()?,
         total: op.total,
         dropped: op.dropped + 1,
     };
@@ -1036,6 +1229,7 @@ pub fn abort(backend: &dyn Backend, ws: &Workspace) -> Result<()> {
     index.entries.retain(|p, _| !touched.contains(p));
     index.save(ws)?;
     merging::clear(ws)?;
+    let _ = std::fs::remove_dir_all(meld_dir(ws));
     println!(
         "The {} was given up; your branch is back at {}",
         op.name(),
@@ -1117,6 +1311,17 @@ mod tests {
         };
         let back: MergeState = toml::from_str(&toml::to_string_pretty(&state).unwrap()).unwrap();
         assert_eq!(back.local, Some(op));
+    }
+
+    #[test]
+    fn a_step_is_a_bare_id_for_a_pick_and_a_word_and_id_otherwise() {
+        let id = ObjectId::from_hex(pyn_object::Algorithm::Sha256, &"ab".repeat(32)).unwrap();
+        for cmd in [Cmd::Pick, Cmd::Reword, Cmd::Squash, Cmd::Fixup] {
+            assert_eq!(parse_move(&move_line(&(cmd, id))).unwrap(), (cmd, id));
+        }
+        assert_eq!(move_line(&(Cmd::Pick, id)), id.to_hex());
+        assert!(parse_move("").is_err());
+        assert!(parse_move(&format!("nope {id}")).is_err());
     }
 
     #[test]

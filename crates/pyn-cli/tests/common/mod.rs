@@ -159,6 +159,18 @@ impl Env {
     }
 
     pub fn run_in_tz(&self, cwd: &Path, user: &str, args: &[&str], tz: &str) -> Output {
+        self.run_with_vars(cwd, user, args, tz, &[])
+    }
+
+    /// Runs the CLI with extra environment variables, such as an editor.
+    pub fn run_with_vars(
+        &self,
+        cwd: &Path,
+        user: &str,
+        args: &[&str],
+        tz: &str,
+        vars: &[(&str, &str)],
+    ) -> Output {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_pyn"));
         cmd.args(args)
             .current_dir(cwd)
@@ -172,6 +184,7 @@ impl Env {
         if let Some(repo) = self.default_repo {
             cmd.env("PYN_REPO", repo);
         }
+        cmd.envs(vars.iter().copied());
         cmd.output().unwrap()
     }
 

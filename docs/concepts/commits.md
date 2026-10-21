@@ -339,6 +339,37 @@ ranges are named as for [cherry-pick](#cherry-pick); a range is reverted newest 
   merged; staged changes, uncommitted edits to a file the commits change, and a workspace without a fetched branch stop the
   command before anything changes.
 
+### Rebase
+
+`pyn rebase [-i] [--autosquash] [--onto <newbase>] [<upstream>]` rewrites the **unpublished** local commits of the workspace's
+branch: with `-i` they are reordered, reworded, squashed, fixed up or dropped before `pyn push`. `<upstream>` defaults to the
+fetched tip, so the commits replayed are exactly the unpublished ones; a hash, `HEAD~N` or a branch name of the local store may
+name a later commit to rewrite only the newest ones. Published history is never rewritten.
+
+- **The sheet.** `-i` opens the editor (`GIT_SEQUENCE_EDITOR`, then `GIT_EDITOR`, `VISUAL`, `EDITOR`) on git's instruction
+  sheet and reads `pick`, `reword`, `squash`, `fixup`, `drop` (and `noop`) lines, in any order; a line left out loses that
+  commit. `reword` and the end of a `squash` chain open the editor on the message (`GIT_EDITOR`); a chain of only `fixup` keeps
+  the first message. `--autosquash` moves `fixup!` and `squash!` commits under the commit they name, with or without `-i`. A
+  commit that is not changed and still follows the same parent is reused as it is. Without `-i` and `--autosquash` the command
+  says `Current branch <b> is up to date.`, since the replay would change nothing.
+- **Published commits.** A range that includes a published commit (an `<upstream>` older than the fetched tip, or a sheet line
+  naming one) is refused, naming the commit, before anything changes. So is a new base that does not contain the fetched tip,
+  and a merge commit.
+- **The merge.** Each commit is applied like a [cherry-pick](#cherry-pick) over the commits made so far, with the same per-file
+  rules: an exclusive path only the replayed commit changed is taken, and one both sides changed (the commit and the commits
+  before it in the new order) is always a conflict, even when the person holds its lock; it is resolved with `pyn checkout
+  --ours|--theirs`, `pyn lock <path>`, `pyn add` and `pyn rebase --continue`. A commit that changes nothing in the new order is
+  dropped and said so.
+- **Stopping.** A conflict stops the run in the same `.pyn/local_only/state/merge.toml` as a conflicted pull; the branch moves
+  only when the whole run is done. `pyn rebase --continue` (or `pyn commit`) records the resolved commit (a squashed one with
+  the combined message) and goes on, `--skip` drops it, and `--abort` (or `pyn merge --abort`) puts the files back and leaves the
+  branch as it was. `pyn status` says `You are rebasing`, and `pull`, `reset`, `switch`, `update`, `cherry-pick`, `revert` and a
+  second `rebase` are refused while it is in progress.
+- **Not built.** `edit`, `exec` and `break` lines, `--exec`, `--edit-todo`, `--no-ff`, `--autostash`, `--quit` and a
+  `<branch>` argument are refused by name (`pyn switch` to the branch first; `--abort` is the way out); staged changes,
+  uncommitted edits to a file the commits change, and a workspace without a fetched branch stop the command before anything
+  changes. `pyn pull --rebase` ([above](#fetch-pull-and-push-with-a-local-store)) is the replay onto newly fetched commits.
+
 ## Command line
 
 The CLI follows git where it has an equivalent; the differences are listed below.
