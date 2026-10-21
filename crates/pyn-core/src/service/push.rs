@@ -159,7 +159,29 @@ impl RepoService {
         let mut commits = Vec::with_capacity(records.len());
         let mut previous: Option<Commit> = None;
         let mut total_changes = 0usize;
+        let mut in_known_prefix = true;
         for record in records {
+            if in_known_prefix
+                && self
+                    .meta
+                    .get_commit(&self.repo, &record.id)
+                    .await?
+                    .is_some()
+            {
+                self.admit_known(on_default, &record, previous.as_ref(), &pushed_trees)
+                    .await?;
+                previous = Some(record.clone());
+                commits.push(PushedCommit {
+                    record,
+                    trees: Vec::new(),
+                    items: Vec::new(),
+                    unlocked: Vec::new(),
+                    adopted: Vec::new(),
+                    known: true,
+                });
+                continue;
+            }
+            in_known_prefix = false;
             let parent_tree = match (&previous, record.parents.first()) {
                 (Some(prev), Some(parent)) if parent == &prev.id => Some(prev.tree),
                 (Some(_), _) => {
@@ -261,6 +283,7 @@ impl RepoService {
                 items,
                 unlocked,
                 adopted,
+                known: false,
             });
         }
         let now = self.clock.now();
@@ -372,6 +395,44 @@ impl RepoService {
             )));
         }
         Ok((entries, from_push))
+    }
+
+    /// A commit the repository already holds may be moved onto a branch, but not onto the default branch when it changes
+    /// the policy: that needs the validation of a new commit.
+    async fn admit_known(
+        &self,
+        on_default: bool,
+        record: &Commit,
+        previous: Option<&Commit>,
+        pushed: &HashMap<ObjectId, Vec<u8>>,
+    ) -> Result<()> {
+        if !on_default {
+            return Ok(());
+        }
+        let parent_tree = match (previous, record.parents.first()) {
+            (Some(prev), _) => Some(prev.tree),
+            (None, Some(parent)) => self
+                .meta
+                .get_commit(&self.repo, parent)
+                .await?
+                .map(|c| c.tree),
+            (None, None) => None,
+        };
+        let diff = self
+            .diff_pushed(
+                parent_tree,
+                record.tree,
+                pushed,
+                ChangeCap::new(MAX_PUSH_CHANGES),
+            )
+            .await?;
+        if diff.changes.iter().any(|c| c.path.as_str() == POLICY_PATH) {
+            return Err(invalid(format!(
+                "commit {} changes the policy and is already in the repository; commit the change again",
+                record.id
+            )));
+        }
+        Ok(())
     }
 
     /// The files `new` adds, changes or removes against `parent`; a submodule is refused.

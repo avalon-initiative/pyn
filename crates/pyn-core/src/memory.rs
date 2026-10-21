@@ -250,6 +250,10 @@ impl State {
             .entry(repo.clone())
             .or_default()
             .push(draft.record);
+        self.set_head(repo, branch, id);
+    }
+
+    fn set_head(&mut self, repo: &RepoId, branch: &str, id: ObjectId) {
         if let Some(b) = self
             .branches
             .get_mut(repo)
@@ -340,10 +344,11 @@ impl State {
                     )));
                 }
             }
-            if self.commit_record(repo, &c.record.id).is_some() {
-                if i == 0 {
+            if c.known {
+                if head.is_some_and(|h| self.ancestors(repo, &h).contains(&c.record.id)) {
                     return Err(PynError::NotFastForward(branch.to_string()));
                 }
+            } else if self.commit_record(repo, &c.record.id).is_some() {
                 return Err(PynError::PushInvalid(format!(
                     "commit {} is already in the repository",
                     c.record.id
@@ -376,10 +381,17 @@ impl State {
             }
         }
 
-        let start = commits[0].record.parents.first().copied();
+        let known = commits.iter().take_while(|c| c.known).count();
+        let start = match known {
+            0 => commits[0].record.parents.first().copied(),
+            n => Some(commits[n - 1].record.id),
+        };
         let mut pointers = start.map_or_else(BTreeMap::new, |p| self.pointers_at(repo, &p));
         let mut out = Vec::new();
-        for (i, c) in commits.into_iter().enumerate() {
+        if known > 0 {
+            self.set_head(repo, branch, commits[known - 1].record.id);
+        }
+        for (i, c) in commits.into_iter().enumerate().skip(known) {
             let items = c
                 .items
                 .into_iter()

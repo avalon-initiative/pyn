@@ -1347,3 +1347,44 @@ fn a_rebase_can_skip_the_conflicting_commit_or_be_aborted() {
     assert!(!env.ok(&ws, "alice", &["status"]).contains("unmerged"));
     let _ = local;
 }
+
+/// Two clones commit the same change at the start of a wall-clock second, so both get the same commit id.
+fn identical_pair(env: &Env, names: [&str; 2]) -> Option<[PathBuf; 2]> {
+    let ws = names.map(|n| clone_with(env, n, &["--local-store"]));
+    for (w, branch) in ws.iter().zip(["one", "two"]) {
+        env.ok(w, "alice", &["branch", branch]);
+        env.ok(w, "alice", &["switch", branch]);
+        env.ok(w, "alice", &["update"]);
+    }
+    let into_second = u64::from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .subsec_millis(),
+    );
+    std::thread::sleep(std::time::Duration::from_millis(1000 - into_second));
+    for w in &ws {
+        commit_local(env, w, "alice", "Source/a.cpp", "same\n", "same change");
+    }
+    let ids = ws.clone().map(|w| git(&w, &["rev-parse", "HEAD"]));
+    (ids[0] == ids[1]).then_some(ws)
+}
+
+#[test]
+fn a_commit_identical_to_one_pushed_on_another_branch_is_pushed() {
+    let env = start();
+    env.seed("alice", "Source/a.cpp", "one\ntwo\nthree\n", None);
+    let mut pair = None;
+    for attempt in 0..10 {
+        pair = identical_pair(&env, [&format!("a{attempt}"), &format!("b{attempt}")]);
+        if pair.is_some() {
+            break;
+        }
+    }
+    let [one, two] = pair.expect("two identical commits in one second");
+    env.ok(&one, "alice", &["push"]);
+    let out = env.ok(&two, "alice", &["push"]);
+    assert!(!out.contains("rejected"), "{out}");
+    let log = |ws: &Path| env.ok(ws, "alice", &["log", "--commits", "--limit", "1"]);
+    assert_eq!(log(&one), log(&two));
+}

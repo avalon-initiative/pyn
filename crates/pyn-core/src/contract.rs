@@ -3225,6 +3225,7 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_file_on_one_side_and_a_folder_on_the_other_cannot_merge);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_push_lands_its_commits_under_their_own_ids);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_push_must_fast_forward_the_branch);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_commit_already_on_another_branch_is_moved_onto_not_duplicated);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; an_exclusive_path_needs_the_pushers_live_lock_at_push_time);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_lock_is_consumed_after_the_paths_last_revision_in_the_push);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_pushed_exclusive_revision_is_based_on_the_branchs_pointer);

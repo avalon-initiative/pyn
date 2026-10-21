@@ -353,6 +353,8 @@ pub struct PushedCommit {
     pub unlocked: Vec<RepoPath>,
     /// For a merge commit: existing revisions the merge points paths at, taken from the second parent.
     pub adopted: Vec<Revision>,
+    /// The repository already holds this commit (from another branch): the push only moves the branch onto it.
+    pub known: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
