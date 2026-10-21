@@ -1,6 +1,6 @@
-//! `pyn cherry-pick` on a git repository: each commit's change is merged onto the index and becomes a new commit (or
-//! stays staged with `-n`). A stop leaves `CHERRY_PICK_HEAD`, `MERGE_MSG` and, for several commits, `.git/sequencer`
-//! as git writes them, so either tool can continue, skip or abort.
+//! `pyn cherry-pick` and `pyn revert` on a git repository: each commit's change (or its inverse) is merged onto the
+//! index and becomes a new commit (or stays staged with `-n`). A stop leaves `CHERRY_PICK_HEAD` or `REVERT_HEAD`,
+//! `MERGE_MSG` and, for several commits, `.git/sequencer` as git writes them, so either tool can continue, skip or abort.
 
 use std::path::{Path, PathBuf};
 
@@ -18,12 +18,51 @@ use super::stage::{
 };
 use super::treemerge::{Labels, merge_trees};
 use super::{convert, path_string, reset};
-use crate::local_pick::{PickArgs, select, with_origin};
+use crate::local_pick::{PickArgs, revert_message, select, with_origin};
 
 const ABBREV: usize = 7;
 const HOOKS: [&str; 3] = ["prepare-commit-msg", "commit-msg", "post-commit"];
 const PICK_HEAD: &str = "CHERRY_PICK_HEAD";
+const REVERT_HEAD: &str = "REVERT_HEAD";
 const SEQUENCER: &str = "sequencer";
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Verb {
+    Pick,
+    Revert,
+}
+
+impl Verb {
+    fn error_word(self) -> &'static str {
+        match self {
+            Verb::Pick => "apply",
+            Verb::Revert => "revert",
+        }
+    }
+
+    fn word(self) -> &'static str {
+        match self {
+            Verb::Pick => "pick",
+            Verb::Revert => "revert",
+        }
+    }
+
+    fn command(self) -> &'static str {
+        match self {
+            Verb::Pick => "cherry-pick",
+            Verb::Revert => "revert",
+        }
+    }
+
+    fn head_file(self) -> &'static str {
+        match self {
+            Verb::Pick => PICK_HEAD,
+            Verb::Revert => REVERT_HEAD,
+        }
+    }
+}
+
+type Todo = Vec<(Verb, ObjectId)>;
 
 /// The options that outlive one command, kept in `sequencer/opts`.
 #[derive(Default, Clone)]
@@ -121,10 +160,38 @@ fn fail(lines: &[&str]) -> anyhow::Error {
     for line in lines {
         eprintln!("{line}");
     }
-    anyhow!("cherry-pick failed")
+    anyhow::Error::new(Failed)
 }
 
+/// A refusal whose reasons were already printed; the command names itself when it reports it.
+#[derive(Debug)]
+struct Failed;
+
+impl std::fmt::Display for Failed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("failed")
+    }
+}
+
+impl std::error::Error for Failed {}
+
 pub fn cherry_pick(git: &GitHome, args: &PickArgs) -> Result<()> {
+    control_or_start(git, Verb::Pick, args).map_err(|e| named(e, Verb::Pick))
+}
+
+pub fn revert(git: &GitHome, args: &PickArgs) -> Result<()> {
+    control_or_start(git, Verb::Revert, args).map_err(|e| named(e, Verb::Revert))
+}
+
+fn named(e: anyhow::Error, verb: Verb) -> anyhow::Error {
+    if e.is::<Failed>() {
+        anyhow!("{} failed", verb.command())
+    } else {
+        e
+    }
+}
+
+fn control_or_start(git: &GitHome, verb: Verb, args: &PickArgs) -> Result<()> {
     if args.quit {
         return quit(git);
     }
@@ -137,22 +204,17 @@ pub fn cherry_pick(git: &GitHome, args: &PickArgs) -> Result<()> {
     if args.continue_pick {
         return continue_pick(git);
     }
-    start(git, args)
+    start(git, verb, args)
 }
 
 fn in_progress(git: &GitHome) -> bool {
     let dir = git_dir(git);
-    dir.join(PICK_HEAD).exists() || dir.join(SEQUENCER).exists()
+    dir.join(PICK_HEAD).exists() || dir.join(REVERT_HEAD).exists() || dir.join(SEQUENCER).exists()
 }
 
-fn start(git: &GitHome, args: &PickArgs) -> Result<()> {
+fn start(git: &GitHome, verb: Verb, args: &PickArgs) -> Result<()> {
     let opts = Opts::of(args);
-    if in_progress(git) || git_dir(git).join("REVERT_HEAD").exists() {
-        return Err(fail(&[
-            "error: a cherry-pick or revert is already in progress",
-            "hint: try \"pyn cherry-pick (--continue | --skip | --abort | --quit)\"",
-        ]));
-    }
+    let cmd = verb.command();
     refuse_states(git, &["MERGE_HEAD", "rebase-merge", "rebase-apply"])?;
     let opened = git.open_index()?;
     if opened.index.entries.iter().any(|e| e.skip_worktree) {
@@ -160,7 +222,14 @@ fn start(git: &GitHome, args: &PickArgs) -> Result<()> {
     }
     if opened.index.entries.iter().any(|e| e.stage > 0) {
         return Err(fail(&[
-            "error: Cherry-picking is not possible because you have unmerged files.",
+            &format!(
+                "error: {} is not possible because you have unmerged files.",
+                if verb == Verb::Pick {
+                    "Cherry-picking"
+                } else {
+                    "Reverting"
+                }
+            ),
             "hint: Fix them up in the work tree, and then use 'pyn add/rm <file>'",
             "hint: as appropriate to mark resolution and make a commit.",
         ]));
@@ -175,6 +244,7 @@ fn start(git: &GitHome, args: &PickArgs) -> Result<()> {
         },
         "HEAD",
         &args.commits,
+        verb == Verb::Revert,
     )?;
     if picks.is_empty() {
         return Err(fail(&["error: empty commit set passed"]));
@@ -182,6 +252,7 @@ fn start(git: &GitHome, args: &PickArgs) -> Result<()> {
     for id in &picks {
         parent_of(git, id, opts.mainline)?;
     }
+    let picks: Todo = picks.into_iter().map(|id| (verb, id)).collect();
     if !opts.no_commit {
         let tree = match head.id() {
             Some(h) => Some(git.repo.commit(&h)?.tree),
@@ -190,12 +261,18 @@ fn start(git: &GitHome, args: &PickArgs) -> Result<()> {
         let committed = git.repo.flatten(tree.as_ref(), &Pathspec::default())?;
         if git.repo.index_leaves(&opened.index) != committed {
             return Err(fail(&[
-                "error: your local changes would be overwritten by cherry-pick.",
+                &format!("error: your local changes would be overwritten by {cmd}."),
                 "hint: commit your changes or stash them to proceed.",
             ]));
         }
     }
     let single = args.commits.len() == 1 && !args.commits[0].contains("..");
+    if !single && in_progress(git) {
+        return Err(fail(&[
+            "error: a cherry-pick or revert is already in progress",
+            &format!("hint: try \"pyn {cmd} (--continue | --skip | --abort | --quit)\""),
+        ]));
+    }
     if !single && head.id().is_none() {
         bail!("an unborn branch takes one commit at a time; pick the first, then the rest");
     }
@@ -231,11 +308,12 @@ fn parent_of(git: &GitHome, id: &ObjectId, mainline: Option<u32>) -> Result<Opti
     }
 }
 
-fn write_todo(git: &GitHome, picks: &[ObjectId]) -> Result<()> {
+fn write_todo(git: &GitHome, picks: &[(Verb, ObjectId)]) -> Result<()> {
     let mut text = String::new();
-    for id in picks {
+    for (verb, id) in picks {
         text.push_str(&format!(
-            "pick {id} {}\n",
+            "{} {id} {}\n",
+            verb.word(),
             subject_of(&git.repo.commit(id)?.message)
         ));
     }
@@ -243,12 +321,12 @@ fn write_todo(git: &GitHome, picks: &[ObjectId]) -> Result<()> {
 }
 
 /// Applies `picks` in order. With `sequenced` the todo list is kept current for `--continue`, `--skip` and `--abort`.
-fn run(git: &GitHome, opts: &Opts, picks: &[ObjectId], sequenced: bool) -> Result<()> {
-    for (i, id) in picks.iter().enumerate() {
+fn run(git: &GitHome, opts: &Opts, picks: &[(Verb, ObjectId)], sequenced: bool) -> Result<()> {
+    for (i, (verb, id)) in picks.iter().enumerate() {
         if sequenced {
             write_todo(git, &picks[i..])?;
         }
-        let outcome = match apply(git, opts, id) {
+        let outcome = match apply(git, opts, *verb, id) {
             Ok(outcome) => outcome,
             Err(e) => {
                 if sequenced && i == 0 {
@@ -271,19 +349,31 @@ fn run(git: &GitHome, opts: &Opts, picks: &[ObjectId], sequenced: bool) -> Resul
     Ok(())
 }
 
-fn apply(git: &GitHome, opts: &Opts, id: &ObjectId) -> Result<Outcome> {
+fn apply(git: &GitHome, opts: &Opts, verb: Verb, id: &ObjectId) -> Result<Outcome> {
     let picked = git.repo.commit(id)?;
     let parent = parent_of(git, id, opts.mainline)?;
-    let base_tree = match &parent {
+    let parent_tree = match &parent {
         Some(p) => Some(git.repo.commit(p)?.tree),
         None => None,
     };
     let opened = git.open_index()?;
     let ours_tree = write_tree(git, &opened.index)?;
     let label = format!("{} ({})", short(id), subject_of(&picked.message));
-    let incoming =
-        git.repo
-            .diff_trees(base_tree.as_ref(), Some(&picked.tree), &Pathspec::default())?;
+    // A revert merges with the commit as the base and its parent as the incoming side.
+    let (base_tree, theirs_tree) = match verb {
+        Verb::Pick => (parent_tree, Some(picked.tree)),
+        Verb::Revert => (Some(picked.tree), parent_tree),
+    };
+    let (theirs_label, base_label) = match (verb, &parent) {
+        (Verb::Pick, Some(_)) => (label.clone(), format!("parent of {label}")),
+        (Verb::Pick, None) => (label.clone(), "(empty tree)".to_string()),
+        (Verb::Revert, _) => (format!("parent of {label}"), label.clone()),
+    };
+    let incoming = git.repo.diff_trees(
+        base_tree.as_ref(),
+        theirs_tree.as_ref(),
+        &Pathspec::default(),
+    )?;
     convert::refuse_conversions(
         git,
         incoming
@@ -294,26 +384,34 @@ fn apply(git: &GitHome, opts: &Opts, id: &ObjectId) -> Result<Outcome> {
         git,
         base_tree.as_ref(),
         Some(&ours_tree),
-        Some(&picked.tree),
+        theirs_tree.as_ref(),
         &Labels {
             ours: "HEAD",
-            theirs: &label,
-            base: &match parent {
-                Some(_) => format!("parent of {label}"),
-                None => "(empty tree)".to_string(),
-            },
+            theirs: &theirs_label,
+            base: &base_label,
         },
     )?;
     let committer = identity(git, "committer")?;
-    let mut message = picked.message.clone();
-    if opts.record_origin {
+    let mut message = match verb {
+        Verb::Pick => picked.message.clone(),
+        Verb::Revert => revert_message(
+            &picked.message,
+            id,
+            parent.as_ref().filter(|_| picked.parents.len() > 1),
+        ),
+    };
+    if opts.record_origin && verb == Verb::Pick {
         message = with_origin(message, id);
     }
     if opts.signoff {
         message = append_signoff(message, &committer.name, &committer.email);
     }
+    let author = match verb {
+        Verb::Pick => picked.author.clone(),
+        Verb::Revert => identity(git, "author")?,
+    };
     let landing = Landing {
-        theirs: &label,
+        theirs: &theirs_label,
         orig_head: None,
         strict_index: false,
     };
@@ -335,30 +433,39 @@ fn apply(git: &GitHome, opts: &Opts, id: &ObjectId) -> Result<Outcome> {
         }
         write_state(git, "MERGE_MSG", &String::from_utf8_lossy(&text))?;
         if opts.no_commit {
-            eprintln!("error: could not apply {label}");
+            if verb == Verb::Revert {
+                write_state(git, REVERT_HEAD, &format!("{id}\n"))?;
+            }
+            eprintln!("error: could not {} {label}", verb.error_word());
             eprintln!("hint: after resolving the conflicts, mark the corrected paths");
             eprintln!("hint: with 'pyn add <paths>' or 'pyn rm <paths>'");
         } else {
-            write_state(git, PICK_HEAD, &format!("{id}\n"))?;
-            eprintln!("error: could not apply {label}");
+            write_state(git, verb.head_file(), &format!("{id}\n"))?;
+            let cmd = verb.command();
+            eprintln!("error: could not {} {label}", verb.error_word());
             eprintln!("hint: After resolving the conflicts, mark them with");
             eprintln!("hint: \"pyn add/rm <pathspec>\", then run");
-            eprintln!("hint: \"pyn cherry-pick --continue\".");
-            eprintln!("hint: You can instead skip this commit with \"pyn cherry-pick --skip\".");
-            eprintln!("hint: To abort and get back to the state before \"pyn cherry-pick\",");
-            eprintln!("hint: run \"pyn cherry-pick --abort\".");
+            eprintln!("hint: \"pyn {cmd} --continue\".");
+            eprintln!("hint: You can instead skip this commit with \"pyn {cmd} --skip\".");
+            eprintln!("hint: To abort and get back to the state before \"pyn {cmd}\",");
+            eprintln!("hint: run \"pyn {cmd} --abort\".");
         }
         return Ok(Outcome::Stopped);
     }
     if opts.no_commit {
+        if verb == Verb::Revert {
+            write_state(git, REVERT_HEAD, &format!("{id}\n"))?;
+        }
         write_state(git, "MERGE_MSG", &String::from_utf8_lossy(&message))?;
         return Ok(Outcome::Applied);
     }
     let tree = write_tree(git, &applied.index)?;
     if tree == ours_tree {
-        write_state(git, PICK_HEAD, &format!("{id}\n"))?;
+        if verb == Verb::Pick {
+            write_state(git, PICK_HEAD, &format!("{id}\n"))?;
+        }
         write_state(git, "MERGE_MSG", &String::from_utf8_lossy(&message))?;
-        say_empty();
+        say_empty(verb);
         return Ok(Outcome::Stopped);
     }
     let made = commit_pick(
@@ -366,17 +473,18 @@ fn apply(git: &GitHome, opts: &Opts, id: &ObjectId) -> Result<Outcome> {
         &Pending {
             tree,
             ours_tree,
-            author: picked.author,
+            author,
             message,
-            reflog: "cherry-pick",
+            reflog: verb.command(),
         },
     )?;
     Ok(Outcome::Committed(made))
 }
 
-fn say_empty() {
-    eprintln!("The previous cherry-pick is now empty, possibly due to conflict resolution.");
-    eprintln!("pyn does not keep empty commits; drop it with 'pyn cherry-pick --skip'.");
+fn say_empty(verb: Verb) {
+    let cmd = verb.command();
+    eprintln!("The previous {cmd} is now empty, possibly due to conflict resolution.");
+    eprintln!("pyn does not keep empty commits; drop it with 'pyn {cmd} --skip'.");
 }
 
 struct Pending {
@@ -449,21 +557,25 @@ fn commit_pick(git: &GitHome, pending: &Pending) -> Result<ObjectId> {
 }
 
 /// The picks the sequencer still has to do, the first being the one that stopped.
-fn read_todo(git: &GitHome) -> Result<Vec<ObjectId>> {
+fn read_todo(git: &GitHome) -> Result<Todo> {
     let Some(text) = read_text(&git_dir(git).join(SEQUENCER).join("todo")) else {
         return Ok(Vec::new());
     };
     let mut out = Vec::new();
     for line in text.lines() {
         let mut words = line.split_whitespace();
-        match (words.next(), words.next()) {
-            (Some("pick" | "p"), Some(rev)) => out.push(
-                git.repo
-                    .resolve(rev)
-                    .map_err(|_| anyhow!("unusable instruction sheet: {line}"))?,
-            ),
-            (None, _) => {}
+        let verb = match (words.next(), words.next()) {
+            (Some("pick" | "p"), Some(rev)) => Some((Verb::Pick, rev)),
+            (Some("revert" | "r"), Some(rev)) => Some((Verb::Revert, rev)),
+            (None, _) => None,
             _ => bail!("unusable instruction sheet: {line}"),
+        };
+        if let Some((verb, rev)) = verb {
+            let id = git
+                .repo
+                .resolve(rev)
+                .map_err(|_| anyhow!("unusable instruction sheet: {line}"))?;
+            out.push((verb, id));
         }
     }
     Ok(out)
@@ -476,7 +588,10 @@ fn saved_opts(git: &GitHome) -> Opts {
 
 fn continue_pick(git: &GitHome) -> Result<()> {
     let dir = git_dir(git);
-    let stopped = read_id(git, &dir.join(PICK_HEAD))?;
+    let stopped = match read_id(git, &dir.join(PICK_HEAD))? {
+        Some(id) => Some((Verb::Pick, id)),
+        None => read_id(git, &dir.join(REVERT_HEAD))?.map(|id| (Verb::Revert, id)),
+    };
     let sequenced = dir.join(SEQUENCER).exists();
     if stopped.is_none() && !sequenced {
         return Err(fail(&["error: no cherry-pick or revert in progress"]));
@@ -496,38 +611,45 @@ fn continue_pick(git: &GitHome) -> Result<()> {
     };
     let tree = write_tree(git, &opened.index)?;
     match stopped {
-        Some(id) => {
+        Some((verb, id)) => {
             let picked = git.repo.commit(&id)?;
             let ours_tree = match head_tree {
                 Some(t) => t,
                 None => write_tree(git, &pyn_git::Index::new(2))?,
             };
             if tree == ours_tree {
-                say_empty();
+                say_empty(verb);
                 std::process::exit(1);
             }
             let message = match merge_message(git)? {
                 Some(m) => m,
                 None => clean_message(&[String::from_utf8_lossy(&picked.message).into_owned()]),
             };
+            let author = match verb {
+                Verb::Pick => picked.author,
+                Verb::Revert => identity(git, "author")?,
+            };
             commit_pick(
                 git,
                 &Pending {
                     tree,
                     ours_tree,
-                    author: picked.author,
+                    author,
                     message,
-                    reflog: "commit (cherry-pick)",
+                    reflog: match verb {
+                        Verb::Pick => "commit (cherry-pick)",
+                        Verb::Revert => "commit",
+                    },
                 },
             )?;
-            let _ = std::fs::remove_file(dir.join(PICK_HEAD));
+            let _ = std::fs::remove_file(dir.join(verb.head_file()));
             clear_merge_state(git);
         }
         None => {
             let committed = git.repo.flatten(head_tree.as_ref(), &Pathspec::default())?;
             if git.repo.index_leaves(&opened.index) != committed {
                 return Err(fail(&[
-                    "error: your local changes would be overwritten by cherry-pick.",
+                    "error: your local changes would be overwritten by cherry-pick or revert.",
                     "hint: commit your changes or stash them to proceed.",
                 ]));
             }
@@ -571,7 +693,7 @@ fn abort(git: &GitHome) -> Result<()> {
         let _ = std::fs::remove_dir_all(&seq);
         return Ok(());
     }
-    if !dir.join(PICK_HEAD).exists() {
+    if !dir.join(PICK_HEAD).exists() && !dir.join(REVERT_HEAD).exists() {
         return Err(fail(&["error: no cherry-pick or revert in progress"]));
     }
     reset_merge(git, None)
@@ -579,8 +701,10 @@ fn abort(git: &GitHome) -> Result<()> {
 
 fn skip(git: &GitHome) -> Result<()> {
     let dir = git_dir(git);
-    if !dir.join(PICK_HEAD).exists() {
-        return Err(fail(&["error: cannot skip - no cherry-pick in progress"]));
+    if !dir.join(PICK_HEAD).exists() && !dir.join(REVERT_HEAD).exists() {
+        return Err(fail(&[
+            "error: cannot skip - no cherry-pick or revert in progress",
+        ]));
     }
     reset_merge(git, None)?;
     if !dir.join(SEQUENCER).exists() {
@@ -594,7 +718,7 @@ fn skip(git: &GitHome) -> Result<()> {
 fn quit(git: &GitHome) -> Result<()> {
     let dir = git_dir(git);
     let _ = std::fs::remove_dir_all(dir.join(SEQUENCER));
-    for name in [PICK_HEAD, "REVERT_HEAD", "SQUASH_MSG"] {
+    for name in [PICK_HEAD, REVERT_HEAD, "SQUASH_MSG"] {
         let _ = std::fs::remove_file(dir.join(name));
     }
     clear_merge_state(git);

@@ -319,6 +319,26 @@ already published. Nothing is sent: the result is an unpublished commit like any
   only the commits it merged; staged changes, uncommitted edits to a file the commits change, and a workspace without a
   fetched branch stop the command before anything changes.
 
+### Revert
+
+`pyn revert <commit>...` undoes the change each named commit made with a new local commit on the workspace's branch. The
+message is `Revert "<subject>"` (`Reapply "<inner>"` when the subject is itself a revert) with `This reverts commit <id>.`, the
+person is author and committer, and nothing is sent: the result is an unpublished commit, concluded by `pyn push`. Commits and
+ranges are named as for [cherry-pick](#cherry-pick); a range is reverted newest first.
+
+- **The merge.** The same rules as cherry-pick with the roles turned round: the commit is the base, the branch is `HEAD`, and
+  the commit's parent is the other side. A shared file the branch changed since is merged line by line, a binary file, a mode
+  change on both sides or a deletion against an edit is a conflict. An exclusive path only the reverted commit changed goes
+  back to its earlier revision; one both the commit and the branch changed is always a conflict, even when the person holds its
+  lock, resolved with `pyn checkout --ours|--theirs`, `pyn lock <path>`, `pyn add` and `pyn revert --continue`. A commit
+  already undone is dropped and said so.
+- **Stopping.** As cherry-pick: `pyn revert --continue` (or `pyn commit`), `--skip` and `--abort` (or `pyn merge --abort`),
+  `pyn status` says `You are reverting`, and `pull`, `reset`, `switch`, `update`, `cherry-pick` and a second `revert` are refused
+  while it is in progress.
+- **Refused.** `-n`, `-s`, `-m` and `--quit` need a git repository; a merge commit cannot be reverted, only the commits it
+  merged; staged changes, uncommitted edits to a file the commits change, and a workspace without a fetched branch stop the
+  command before anything changes.
+
 ## Command line
 
 The CLI follows git where it has an equivalent; the differences are listed below.

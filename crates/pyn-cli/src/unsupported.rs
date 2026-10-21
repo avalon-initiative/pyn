@@ -1,7 +1,7 @@
 //! Git commands pyn has no equivalent for yet: a clear message instead of a usage error.
 
 const GIT_ONLY: &[&str] = &[
-    "init", "fetch", "pull", "push", "tag", "stash", "rebase", "revert", "blame", "grep", "clean",
+    "init", "fetch", "pull", "push", "tag", "stash", "rebase", "blame", "grep", "clean",
 ];
 
 /// A git command, or a pyn command that wraps one, that a git home will gain with a named issue.

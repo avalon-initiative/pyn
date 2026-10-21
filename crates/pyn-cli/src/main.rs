@@ -146,6 +146,8 @@ enum Command {
     Migrate,
     /// Apply the changes of existing commits as new commits on the current branch.
     CherryPick(local_pick::PickArgs),
+    /// Undo the changes of existing commits with new commits on the current branch.
+    Revert(local_pick::RevertArgs),
     /// Drop unpublished local commits, keeping their changes staged (--soft) or in the files
     /// (default), or discarding them (--hard, asks for confirmation).
     Reset(local_reset::ResetArgs),
@@ -1511,6 +1513,9 @@ fn run(cli: Cli) -> Result<()> {
         }
         Command::CherryPick(args) => {
             local_pick::pick(&backend, in_workspace("cherry-pick")?, args)?;
+        }
+        Command::Revert(args) => {
+            local_pick::revert(&backend, in_workspace("revert")?, args)?;
         }
         Command::Tag(_) => {
             eprintln!("{}", unsupported::message("tag"));

@@ -145,7 +145,8 @@ revisions with a pointer per branch (decision #299).
 | `git checkout <branch>`, `-b <new> [<start>]`, `-f`, `[<tree-ish>] -- <path>...` | `pyn checkout ...` | supported | Reserved for git's meaning. `-- <path>` restores from the revision the workspace has (git: the index; a staged path must be unstaged first), `<branch\|commit> -- <path>` from that branch or commit. On a pyn server a path that is `exclusive` and has a local edit (locked by you or not) is not discarded silently: the files are named and the discard needs the path typed back or `--yes`, and a run without a terminal refuses (`128`, nothing changed); `shared` paths discard silently as in git. There is no detached HEAD: `checkout <commit>` is refused with what to use instead. Taking a lock is `pyn lock`. |
 | `git merge <branch\|commit>`, `-m`, `--no-ff`, `--ff-only`, `--no-commit`, `--abort`, `--continue` | `pyn merge ...` | supported | Shared files merge three-way with diff3 conflict markers; a binary conflicts as a whole file. Exclusive files take the pointer that descends from the other, and conflict where both branches changed one or a path became exclusive while a branch edited it (a person chooses a side, taking the lock). A conflicted merge leaves the workspace as git does and is concluded with `pyn add` and `pyn commit` (no `-m` needed), or given up with `--abort`. Differences: `--preview` (pyn's own) reports what would merge and conflict and changes nothing; a merge needs a clean index and no local edits to the files it touches; `--squash`, `-s`, `-X`, `--no-verify`, `--edit`, `--signoff`, `-S` and `--ff` are usage errors. `git checkout --ours` and `--theirs` are `pyn checkout --ours\|--theirs -- <path>`. `pyn status` marks unmerged paths in its `STATE` column. Recursive merge of criss-cross histories as git does, with the base of a conflict shown as `merged common ancestors`. |
 | `git cherry-pick <commit>...`, ranges, `-n`, `-x`, `-s`, `-m <n>`, `--continue`, `--skip`, `--abort`, `--quit` | `pyn cherry-pick ...` | supported | Each commit's change becomes a new commit, with its author and message. On a git home see [Cherry-pick](#cherry-pick). On a pyn server workspace with local commits the commits, ranges and `-x` work, and `-n`, `-s`, `-m` and `--quit` are refused; see [cherry-pick in commits](commits.md#cherry-pick). A pyn server workspace without local commits refuses the command. |
-| `git rebase`, `git revert` | none | unsupported | See [Not planned](#not-planned). |
+| `git revert <commit>...`, ranges, `-n`, `-s`, `-m <n>`, `--no-edit`, `--continue`, `--skip`, `--abort`, `--quit` | `pyn revert ...` | supported | Each commit's change is undone by a new commit (`Revert "<subject>"`). On a git home see [Revert](#revert). On a pyn server workspace with local commits the commits and ranges work, and `-n`, `-s`, `-m` and `--quit` are refused; see [revert in commits](commits.md#revert). A pyn server workspace without local commits refuses the command. |
+| `git rebase` | none | unsupported | See [Not planned](#not-planned). |
 
 ## Remotes
 
@@ -640,7 +641,7 @@ schedules them.
 | Git | Reason |
 | --- | --- |
 | `git clean` | Not planned. |
-| `git rebase`, `git revert` | History is append-only on the server. |
+| `git rebase` | History is append-only on the server. |
 | `git blame`, `git grep` | Not scheduled. |
 | Commands that maintain git's own storage or run its hooks (`gc`, `fsck`, `bundle`, `submodule`, `worktree`, hooks in `.git/hooks`) | pyn reads a git repository's `.git/` on a git home (decision #245) but does not maintain it or run its hooks. pyn's own hooks are tracked in #216. |
 
@@ -1035,7 +1036,7 @@ the merge rules above apply: no renames, `ort`-style results for everything else
 and `A...B` name ranges (applied oldest first, parents before children), and several arguments are applied in the order given.
 
 1. Before anything changes it refuses, with git's wording and exit `128` (`fatal: cherry-pick failed` after `error:` lines): a
-   cherry-pick or revert already in progress, unmerged entries, an unknown revision, an empty range (`empty commit set passed`),
+   sequence while a cherry-pick or revert is already in progress, unmerged entries, an unknown revision, an empty range (`empty commit set passed`),
    a merge commit without `-m <n>` (or `-m` past its parents), and a staged change (`your local changes would be overwritten by
    cherry-pick`; `-n` allows it). A merge in progress, a rebase, a sparse checkout and several commits onto an unborn branch are
    refused by pyn. `-m 1` on a commit that is not a merge is accepted, and `-m 0` is a usage error (`129`).
@@ -1072,6 +1073,30 @@ Differences from git: a range or list with a merge commit and no `-m` is refused
 ones before it); `-e`, `--edit`, `--ff`, `--cleanup`, `-X`, `--strategy`, `--rerere-autoupdate`, `-S`, `--allow-empty` and
 `--keep-redundant-commits` are usage errors; `--no-edit` is accepted. Covered against the real git by
 `crates/pyn-cli/tests/git_cherry_pick.rs`.
+
+### Revert
+
+`revert <commit>...` is the inverse of [cherry-pick](#cherry-pick): each commit's change is undone by a merge with the commit
+as the base and its parent as the incoming side (`(empty tree)` for a root commit), so the merge rules and the checks before
+anything changes are the ones of cherry-pick. The new commit has the committer as its author, the message
+`Revert "<subject>"` (`Reapply "<inner>"` when the subject is itself `Revert "<inner>"`), a blank line and `This reverts commit
+<id>.`; for a merge commit with `-m <n>` the line is `This reverts commit <id>, reversing` and `changes made to <parent>.`.
+Diff3 markers are labelled `HEAD` and `parent of <abbreviation> (<subject>)`, with the base `<abbreviation> (<subject>)`. A range
+`A..B` or `A...B` is reverted newest first, and several arguments in the order given. The tests compare ids, refs, the index,
+the files, the state files and the reflogs with the real git (`crates/pyn-cli/tests/git_revert.rs`).
+
+1. `-n` leaves the result staged and in the files and writes `MERGE_MSG` and `REVERT_HEAD`; `-s` adds `Signed-off-by:`;
+   `--no-edit` is accepted. `-x`, `-e`, `--edit`, `--cleanup`, `-X`, `--strategy`, `--rerere-autoupdate`, `-S`,
+   `--allow-empty` and `--keep-redundant-commits` are usage errors.
+2. The reflog line is `revert: <subject>`, and `commit: <subject>` for a commit made by `--continue`.
+3. A conflict exits `1` with `error: could not revert <abbreviation> (<subject>)`, the hints, the unmerged entries, markers,
+   `REVERT_HEAD` and `MERGE_MSG`; several commits keep `.git/sequencer/` with `revert <id> <subject>` lines in `todo`. A revert
+   that changes nothing (already undone) exits `1` with `MERGE_MSG` but, as in git, without `REVERT_HEAD`, so a single
+   commit leaves nothing in progress.
+4. `--continue`, `--skip`, `--abort` and `--quit` are shared with cherry-pick and work on either kind of stop, so a sequence of
+   both (as git can hold) is continued by one command; git and pyn continue each other's stops.
+5. Only a sequence of several commits (or a range) refuses while an operation is in progress, as in git; a single commit is
+   checked by its own rules (unmerged entries, staged changes, files the revert touches).
 
 ### Tags
 
@@ -1138,7 +1163,7 @@ set to true, `core.eol=crlf` with a `text` attribute, `eol=crlf`, a `filter` oth
 symlinks and submodules are never converted). A Git LFS filter writes the pointer file as it is, with a warning (decision #245; see [Git LFS](#git-lfs)).
 The same limit applies to `status`, which compares raw bytes (#273). Hooks are never run; one warning names the hooks that exist
 for the command (`post-checkout`, `pre-merge-commit`, `commit-msg` and the like). Sparse checkouts, submodule updates, the split
-index and `GIT_DIR` are not supported, and `rebase`, `revert`, `--squash` and anything that talks to a remote other than `ls-remote`, `fetch`, `pull`, `push` and `clone` are not built yet (epic #301; see [Transports and credentials](#transports-and-credentials)).
+index and `GIT_DIR` are not supported, and `rebase`, `--squash` and anything that talks to a remote other than `ls-remote`, `fetch`, `pull`, `push` and `clone` are not built yet (epic #301; see [Transports and credentials](#transports-and-credentials)).
 
 ### Git LFS
 

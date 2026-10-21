@@ -38,14 +38,28 @@ pub enum Op {
     Merge,
     Rebase,
     Pick,
+    Revert,
 }
 
 impl Op {
     fn command(self) -> &'static str {
         match self {
             Op::Pick => "pyn cherry-pick",
+            Op::Revert => "pyn revert",
             _ => "pyn pull",
         }
+    }
+
+    /// The command word of a pick or revert.
+    pub fn noun(self) -> &'static str {
+        match self {
+            Op::Revert => "revert",
+            _ => "cherry-pick",
+        }
+    }
+
+    fn replays(self) -> bool {
+        matches!(self, Op::Pick | Op::Revert)
     }
 }
 
@@ -100,6 +114,7 @@ impl LocalOp {
             Op::Merge => "pull",
             Op::Rebase => "rebase",
             Op::Pick => "cherry-pick",
+            Op::Revert => "revert",
         }
     }
 
@@ -111,10 +126,13 @@ impl LocalOp {
                  or give the rebase up with `pyn pull --abort`"
                     .into()
             }
-            Op::Pick => {
-                "conclude this step with `pyn commit` (or `pyn cherry-pick --continue`), drop the commit with `pyn cherry-pick --skip`, \
-                 or give the cherry-pick up with `pyn cherry-pick --abort`"
-                    .into()
+            Op::Pick | Op::Revert => {
+                let cmd = self.op.command();
+                format!(
+                    "conclude this step with `pyn commit` (or `{cmd} --continue`), drop the commit with `{cmd} --skip`, \
+                     or give the {} up with `{cmd} --abort`",
+                    self.name()
+                )
             }
         }
     }
@@ -131,11 +149,17 @@ impl LocalOp {
                     self.todo.len()
                 )
             }
-            Op::Pick => {
+            Op::Pick | Op::Revert => {
                 let at = self.total - self.todo.len();
+                let cmd = self.op.command();
+                let doing = if self.op == Op::Pick {
+                    "cherry-picking"
+                } else {
+                    "reverting"
+                };
                 format!(
-                    "You are cherry-picking (commit {at} of {}, {} left).\n  \
-                     (use \"pyn cherry-pick --skip\" to drop this commit, \"pyn cherry-pick --abort\" to give up)\n",
+                    "You are {doing} (commit {at} of {}, {} left).\n  \
+                     (use \"{cmd} --skip\" to drop this commit, \"{cmd} --abort\" to give up)\n",
                     self.total,
                     self.todo.len()
                 )
@@ -390,7 +414,7 @@ fn record(
             version: STATE_VERSION,
             branch: branch.to_string(),
             source: match op.op {
-                Op::Pick => "cherry-pick".to_string(),
+                Op::Pick | Op::Revert => op.op.noun().to_string(),
                 _ => format!("origin/{branch}"),
             },
             source_commit: op.theirs.clone(),
@@ -487,17 +511,22 @@ fn replay(
 ) -> Result<Replayed> {
     let repo = store.repo();
     let mut judge = Judge::new(backend, run.onto);
-    if run.op == Op::Pick {
+    if run.op.replays() {
         judge.never_keep();
     }
     let mut files = flat(store, Some(run.tip))?;
     let mut parent_tree = repo.commit(&run.tip)?.tree;
     while let Some(id) = run.todo.pop_front() {
         let commit = repo.commit(&id)?;
-        let before = store.tree_of(commit.parents.first().copied())?;
+        let parent = store.tree_of(commit.parents.first().copied())?;
+        // A revert merges with the commit as the base and its parent as the incoming side.
+        let (before, after) = match run.op {
+            Op::Revert => (Some(commit.tree), parent),
+            _ => (parent, Some(commit.tree)),
+        };
         let theirs_label = format!("{} ({})", short(&id.to_hex()), subject(&commit.message));
         let (mut conflicts, mut kept) = (BTreeMap::new(), Vec::new());
-        for change in repo.diff_trees(before.as_ref(), Some(&commit.tree), &Pathspec::default())? {
+        for change in repo.diff_trees(before.as_ref(), after.as_ref(), &Pathspec::default())? {
             let ours = files.get(&change.path).copied();
             let sides = (change.old, ours, change.new);
             match store.join_path(
@@ -534,7 +563,7 @@ fn replay(
         let tree = write_trees(store, &files)?;
         if tree == parent_tree {
             run.dropped += 1;
-            if run.op == Op::Pick {
+            if run.op.replays() {
                 println!(
                     "{} changes nothing here and is dropped",
                     short(&id.to_hex())
@@ -545,16 +574,16 @@ fn replay(
         let record = Commit {
             tree,
             parents: vec![run.tip],
-            author: commit.author,
+            author: replayed_author(run.op, who, commit.author),
             committer: who.clone(),
             extra_headers: Vec::new(),
-            message: picked_message(run.origin, &id, commit.message),
+            message: replayed_message(run.op, run.origin, &id, commit.message),
         };
         run.tip = repo
             .objects()
             .write(Kind::Commit, &record.encode(ALGORITHM)?)?;
         parent_tree = tree;
-        if run.op == Op::Pick {
+        if run.op.replays() {
             print_pick(branch, &run.tip, &record.message);
         }
     }
@@ -568,11 +597,20 @@ fn set_entry(files: &mut Files, path: &[u8], entry: Option<Entry>) {
     };
 }
 
-fn picked_message(origin: bool, id: &ObjectId, message: Vec<u8>) -> Vec<u8> {
-    if origin {
-        crate::local_pick::with_origin(message, id)
+fn replayed_message(op: Op, origin: bool, id: &ObjectId, message: Vec<u8>) -> Vec<u8> {
+    match op {
+        Op::Revert => crate::local_pick::revert_message(&message, id, None),
+        _ if origin => crate::local_pick::with_origin(message, id),
+        _ => message,
+    }
+}
+
+/// A revert is the reverting person's change; anything else keeps its author.
+fn replayed_author(op: Op, who: &Signature, author: Signature) -> Signature {
+    if op == Op::Revert {
+        who.clone()
     } else {
-        message
+        author
     }
 }
 
@@ -580,8 +618,9 @@ fn print_pick(branch: &str, id: &ObjectId, message: &[u8]) {
     println!("[{branch} {}] {}", short(&id.to_hex()), subject(message));
 }
 
-/// The commits a cherry-pick applies on top of `tip`; `onto` is the commit whose modes the server is asked about.
+/// The commits a cherry-pick or revert applies on top of `tip`; `onto` is the commit whose modes the server is asked about.
 pub struct Pick {
+    pub op: Op,
     pub commits: Vec<ObjectId>,
     pub tip: ObjectId,
     pub onto: ObjectId,
@@ -598,7 +637,7 @@ pub fn begin_pick(
     who: &Signature,
 ) -> Result<()> {
     let run = Run {
-        op: Op::Pick,
+        op: pick.op,
         origin: pick.origin,
         orig: pick.tip,
         onto: pick.onto,
@@ -689,7 +728,7 @@ fn proceed(
                 .context("the local branch moved while pulling; run the command again")?;
             merging::clear(ws)?;
             Index::default().save(ws)?;
-            if run.op == Op::Pick {
+            if run.op.replays() {
                 return Ok(());
             }
             println!(
@@ -726,7 +765,8 @@ fn proceed(
                 total: run.total,
                 dropped: run.dropped,
             };
-            let message = String::from_utf8_lossy(&picked_message(
+            let message = String::from_utf8_lossy(&replayed_message(
+                run.op,
                 run.origin,
                 &current,
                 commit.message.clone(),
@@ -772,19 +812,27 @@ fn in_progress(ws: &Workspace) -> Result<Option<Op>> {
     Ok(merging::load(ws)?.and_then(|s| s.local).map(|l| l.op))
 }
 
-/// Stops a cherry-pick command when no cherry-pick is in progress.
-pub fn require_pick(ws: &Workspace) -> Result<()> {
+/// Stops a cherry-pick or revert command when none of its kind is in progress.
+pub fn require_op(ws: &Workspace, op: Op) -> Result<()> {
     match in_progress(ws)? {
-        Some(Op::Pick) => Ok(()),
-        _ => bail!("there is no cherry-pick in progress"),
+        Some(found) if found == op => Ok(()),
+        Some(found) if found.replays() => bail!(
+            "a {} is in progress, not a {}; use `{} --continue`, `--skip` or `--abort`",
+            found.noun(),
+            op.noun(),
+            found.command()
+        ),
+        _ => bail!("there is no {} in progress", op.noun()),
     }
 }
 
-/// Stops a pull command while a cherry-pick is in progress.
+/// Stops a pull command while a cherry-pick or revert is in progress.
 pub fn require_pull(ws: &Workspace) -> Result<()> {
-    if in_progress(ws)? == Some(Op::Pick) {
+    if let Some(op) = in_progress(ws)?.filter(|o| o.replays()) {
         bail!(
-            "a cherry-pick is in progress, not a pull; use `pyn cherry-pick --continue`, `--skip` or `--abort`"
+            "a {} is in progress, not a pull; use `{} --continue`, `--skip` or `--abort`",
+            op.noun(),
+            op.command()
         );
     }
     Ok(())
@@ -873,7 +921,7 @@ pub fn finish(backend: &dyn Backend, ws: &Workspace, message: Option<String>) ->
             println!("Merge made by the 'ort' strategy.");
             sync::update(backend, ws, &[], None)
         }
-        Op::Rebase | Op::Pick => {
+        Op::Rebase | Op::Pick | Op::Revert => {
             let current = id_of(
                 op.current
                     .as_deref()
@@ -897,18 +945,18 @@ pub fn finish(backend: &dyn Backend, ws: &Workspace, message: Option<String>) ->
                 let record = Commit {
                     tree,
                     parents: vec![tip],
-                    author: picked.author,
+                    author: replayed_author(op.op, &who, picked.author),
                     committer: who.clone(),
                     extra_headers: Vec::new(),
-                    message: message
-                        .map_or(picked_message(op.origin, &current, picked.message), |m| {
-                            clean_message(&[m])
-                        }),
+                    message: message.map_or(
+                        replayed_message(op.op, op.origin, &current, picked.message),
+                        |m| clean_message(&[m]),
+                    ),
                 };
                 run.tip = repo
                     .objects()
                     .write(Kind::Commit, &record.encode(ALGORITHM)?)?;
-                if op.op == Op::Pick {
+                if op.op.replays() {
                     print_pick(&state.branch, &run.tip, &record.message);
                 }
             }
