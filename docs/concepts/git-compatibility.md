@@ -143,8 +143,8 @@ revisions with a pointer per branch (decision #299).
 
 | Git | pyn | Status | Notes |
 | --- | --- | --- | --- |
-| `git branch [<name> [<start>]]`, `-d`, `-D`, `-m`, `-l`, `-v`, `--show-current` | `pyn branch ...` | supported | `-d` refuses a branch that is not on the default branch (git: not merged into `HEAD`). `-a` and `-r` list the server as the remote `origin` (see [Remotes on a pyn server](#remotes-on-a-pyn-server)); `-M`, `-c` and patterns are not built; they are usage errors. The workspace's branch cannot be deleted. |
-| `git switch <branch>`, `-c <new> [<start>]`, `-f` | `pyn switch ...` | supported | Local changes carry over where the target branch has the same file, and stop the switch (nothing changed, the paths listed) where it does not; `-f` discards them. On a pyn server `-`, `--detach` and `-C` are not built; a git home has `-` and `--detach` (see below). Prints `Switched to branch '<name>'` on standard error, as git. |
+| `git branch [<name> [<start>]]`, `-d`, `-D`, `-m`, `-l`, `-v`, `--show-current` | `pyn branch ...` | supported | `-d` refuses a branch that is not on the default branch (git: not merged into `HEAD`). `-a` and `-r` list the server as the remote `origin` (see [Remotes on a pyn server](#remotes-on-a-pyn-server)); `-M`, `-c`, `-C`, `-f`, `-u`, `--unset-upstream` and patterns are not built on a pyn server (usage errors); a git home has them (see below). The workspace's branch cannot be deleted. |
+| `git switch <branch>`, `-c <new> [<start>]`, `-f` | `pyn switch ...` | supported | Local changes carry over where the target branch has the same file, and stop the switch (nothing changed, the paths listed) where it does not; `-f` discards them. On a pyn server `-`, `--detach` and `-C` are not built; a git home has `-`, `--detach`, `-C` and `--orphan` (see below). Prints `Switched to branch '<name>'` on standard error, as git. |
 | `git checkout <branch>`, `-b <new> [<start>]`, `-f`, `[<tree-ish>] -- <path>...` | `pyn checkout ...` | supported | Reserved for git's meaning. `-- <path>` restores from the revision the workspace has (git: the index; a staged path must be unstaged first), `<branch\|commit> -- <path>` from that branch or commit. On a pyn server a path that is `exclusive` and has a local edit (locked by you or not) is not discarded silently: the files are named and the discard needs the path typed back or `--yes`, and a run without a terminal refuses (`128`, nothing changed); `shared` paths discard silently as in git. On a pyn server there is no detached HEAD: `checkout <commit>` is refused with what to use instead. Taking a lock is `pyn lock`. |
 | `git merge <branch\|commit>`, `-m`, `--no-ff`, `--ff-only`, `--no-commit`, `--abort`, `--continue` | `pyn merge ...` | supported | Shared files merge three-way with diff3 conflict markers; a binary conflicts as a whole file. Exclusive files take the pointer that descends from the other, and conflict where both branches changed one or a path became exclusive while a branch edited it (a person chooses a side, taking the lock). A conflicted merge leaves the workspace as git does and is concluded with `pyn add` and `pyn commit` (no `-m` needed), or given up with `--abort`. Differences: `--preview` (pyn's own) reports what would merge and conflict and changes nothing; a merge needs a clean index and no local edits to the files it touches; `--squash`, `-s`, `-X`, `--no-verify`, `--edit`, `--signoff`, `-S` and `--ff` are usage errors. `git checkout --ours` and `--theirs` are `pyn checkout --ours\|--theirs -- <path>`. `pyn status` marks unmerged paths in its `STATE` column. Recursive merge of criss-cross histories as git does, with the base of a conflict shown as `merged common ancestors`. |
 | `git cherry-pick <commit>...`, ranges, `-n`, `-x`, `-s`, `-m <n>`, `--continue`, `--skip`, `--abort`, `--quit` | `pyn cherry-pick ...` | supported | Each commit's change becomes a new commit, with its author and message. On a git home see [Cherry-pick](#cherry-pick). On a pyn server workspace with local commits the commits, ranges and `-x` work, and `-n`, `-s`, `-m` and `--quit` are refused; see [cherry-pick in commits](commits.md#cherry-pick). A pyn server workspace without local commits refuses the command. |
@@ -936,9 +936,25 @@ with the same reflog lines.
 <start>`, and refuses an existing name or one that clashes with a folder of refs. `-d` deletes a branch merged into `HEAD`, `-D` any
 branch; both refuse a branch checked out in a work tree, and delete its reflog and its `[branch "<name>"]` configuration section
 (the section is rewritten as plain text, nothing else in `config` changes). `-m [<old>] <new>` renames the ref and its reflog,
-moves the configuration section and, for the current branch, points `HEAD` at the new name. `-M`, `-c`, `-f`, `-a`, `-r`, `-u` and
-`--contains` are not built (usage errors).
+moves the configuration section and, for the current branch, points `HEAD` at the new name (a branch checked out in another work tree
+is refused; git renames it and updates that work tree). `-M` (or `-m -f`) also replaces an existing branch, except one checked out in a work tree
+(`cannot force update the branch '<name>' used by worktree at '<path>'`, `128`); the replaced branch's reflog is replaced and its
+`[branch]` section is left as it was, as in git. `-c` and `-C` copy the ref, its reflog and its `[branch "<name>"]` section (the copy sits right
+after the original), log `Branch: copied <old> to <new>`, and `-C` replaces an existing branch like `-M`. `-f` on a create resets an
+existing branch (`branch: Reset to <start>`, nothing when it is already there); `-f -d` is `-D`.
 
+`-r` and `-a` list the remote-tracking branches under `refs/remotes/` (`-r` as `origin/main`, `-a` as the local branches then `remotes/origin/main`,
+and the detached `HEAD` line only with `-a`); a symbolic ref prints as `origin/HEAD -> origin/main`, and with `-v` the arrow is aligned
+with the other names. Patterns (`--list <pattern>`) match the name without `remotes/`; a bare name with `-a` or `-r` is `fatal: the -a, and
+-r, options to 'git branch' do not take a branch name.` (`128`). `-r -d`, `-vv` (the upstream column) and `--contains` are not built.
+
+`-u <upstream> [<branch>]` (`--set-upstream-to`) writes `branch.<name>.remote` and `merge` and prints `branch '<name>' set up to track '<upstream>'.`
+on standard output. A local branch as upstream is remote `.` with `merge = refs/heads/<name>`; a remote-tracking branch needs a
+`remote.<name>.fetch` refspec that maps it, else `cannot set up tracking information; starting point '<ref>' is not a branch`. Naming the
+branch itself only warns (`not setting branch '<name>' as its own upstream`), an unknown upstream is `fatal: the requested upstream branch
+'<name>' does not exist` with git's hint (off with `advice.setUpstreamFailure`), and an unknown branch `branch '<name>' does not exist`
+(all `128`). `--unset-upstream [<branch>]` removes both settings, or is `fatal: branch '<name>' has no upstream information` (`128`).
+Covered against the real git (2.43 and 2.55) by `crates/pyn-cli/tests/git_branch_flags.rs`. 
 **`switch` and `checkout`.** Move `HEAD`, the index and the work tree from `HEAD`'s tree to the target's with git's two-way merge rules:
 
 - A file that is the same in both trees keeps whatever local change it has; a file that differs is written only if the work tree
@@ -952,6 +968,12 @@ moves the configuration section and, for the current branch, points `HEAD` at th
   `core.symlinks=false`); `core.filemode=false` is honored when deciding what is a local change. Folders emptied by a removal are
   removed.
 - Unmerged index entries, a merge, cherry-pick, revert or rebase in progress, and a sparse checkout refuse the command.
+- `switch -C <branch> [<start>]` (`--force-create`) creates the branch or resets an existing one to the start point (default `HEAD`), logs
+  `branch: Reset to <start>` (on `HEAD` alone when the branch is already there and current), and prints `Switched to and reset branch`,
+  `Reset branch` (already on it) or `Switched to a new branch`. `switch --orphan <new>` points `HEAD` at an unborn branch and empties the index and the
+  tracked files of the work tree (untracked files stay; local changes stop it unless `-f`), logs nothing in the `HEAD` reflog and prints
+  `Switched to a new branch '<new>'`; it refuses a start point, an existing name, and being combined with `-c`, `-C` or `--detach`.
+  `checkout --orphan` and `-B` are not built. On a pyn server `-C` and `--orphan` are usage errors.
 - `switch -c <new> [<start>]` and `checkout -b` create the branch first (an unborn branch just points `HEAD` at the name),
   `switch -` and `checkout -` (also `@{-N}`) return to the previous branch (read from the `HEAD` reflog), `--detach` and `checkout <commit>` (or a
   tag) detach `HEAD`; `checkout --detach` alone detaches at the current commit. Entering from a branch prints git's advice

@@ -429,37 +429,56 @@ impl ConfigFile {
     pub fn rename_section(&mut self, section: &str, sub: &str, new_sub: &str) -> Result<usize> {
         let mut changed = 0;
         for i in 0..self.items.len() {
-            if !self.is_header(i, section, Some(sub)) {
-                continue;
+            if self.is_header(i, section, Some(sub)) {
+                self.retitle(i, new_sub)?;
+                changed += 1;
             }
-            let Kind::Header {
-                section: name,
-                close,
-                ..
-            } = self.items[i].kind.clone()
-            else {
-                continue;
-            };
-            let tail = self.items[i].text.get(close..).unwrap_or("").to_owned();
-            let head = Self::header_text(&name, Some(new_sub))?;
-            let head = head.trim_end_matches('\n');
-            let item = &mut self.items[i];
-            item.text = format!("{head}{tail}");
-            if let Kind::Header {
-                sub: s, close: c, ..
-            } = &mut item.kind
-            {
-                *s = Some(new_sub.to_owned());
-                *c = head.len();
-            }
-            for j in i + 1..self.section_end(i) {
-                if let Kind::Var { sub: s, .. } = &mut self.items[j].kind {
-                    *s = Some(new_sub.to_owned());
-                }
-            }
-            changed += 1;
         }
         Ok(changed)
+    }
+
+    /// Copies every occurrence of the section to `new_sub`, each right after its original; returns how many.
+    pub fn copy_section(&mut self, section: &str, sub: &str, new_sub: &str) -> Result<usize> {
+        let headers: Vec<usize> = (0..self.items.len())
+            .filter(|&i| self.is_header(i, section, Some(sub)))
+            .collect();
+        for &h in headers.iter().rev() {
+            let end = self.section_end(h);
+            self.ensure_newline_at(end - 1);
+            let copy: Vec<Item> = self.items[h..end].to_vec();
+            self.items.splice(end..end, copy);
+            self.retitle(end, new_sub)?;
+        }
+        Ok(headers.len())
+    }
+
+    fn retitle(&mut self, i: usize, new_sub: &str) -> Result<()> {
+        let Kind::Header {
+            section: name,
+            close,
+            ..
+        } = self.items[i].kind.clone()
+        else {
+            return Ok(());
+        };
+        let tail = self.items[i].text.get(close..).unwrap_or("").to_owned();
+        let head = Self::header_text(&name, Some(new_sub))?;
+        let head = head.trim_end_matches('\n');
+        let item = &mut self.items[i];
+        item.text = format!("{head}{tail}");
+        if let Kind::Header {
+            sub: s, close: c, ..
+        } = &mut item.kind
+        {
+            *s = Some(new_sub.to_owned());
+            *c = head.len();
+        }
+        for j in i + 1..self.section_end(i) {
+            if let Kind::Var { sub: s, .. } = &mut self.items[j].kind {
+                *s = Some(new_sub.to_owned());
+            }
+        }
+        Ok(())
     }
 }
 
@@ -601,6 +620,18 @@ mod tests {
             "[remote \"b\\\"x\"] # c\n\turl = u\n[remote \"b\\\"x\"]\n\turl = v\n[remote \"b\\\"x\"]\n[remote \"z\"]\n"
         );
         assert_eq!(f.values("remote", Some("b\"x"), "url"), ["u", "v"]);
+    }
+
+    #[test]
+    fn copied_sections_follow_their_originals() {
+        let mut f = file("[branch \"a\"]\n\tx = 1\n[core]\n\ty = 2\n[branch \"a\"]\n\tz = 3");
+        assert_eq!(f.copy_section("branch", "a", "b").unwrap(), 2);
+        assert_eq!(
+            f.render(),
+            "[branch \"a\"]\n\tx = 1\n[branch \"b\"]\n\tx = 1\n[core]\n\ty = 2\n[branch \"a\"]\n\tz = 3\n[branch \"b\"]\n\tz = 3\n"
+        );
+        assert_eq!(f.values("branch", Some("b"), "z"), ["3"]);
+        assert_eq!(f.copy_section("branch", "none", "c").unwrap(), 0);
     }
 
     #[test]

@@ -3,7 +3,7 @@
 
 use anyhow::{Result, bail};
 use globset::Glob;
-use pyn_git::ConfigFile;
+use pyn_git::{ConfigFile, Ref};
 use pyn_gitwork::Head;
 use pyn_object::ObjectId;
 
@@ -22,15 +22,26 @@ struct Row {
     marker: char,
     name: String,
     id: Option<ObjectId>,
+    /// What a symbolic remote-tracking ref points at.
+    arrow: Option<String>,
 }
 
-/// Drops the `[branch "name"]` section from the repository configuration, or renames it to `to`.
-fn move_config_section(git: &GitHome, name: &str, to: Option<&str>) -> Result<()> {
+const REMOTES: &str = "refs/remotes/";
+
+enum Section<'a> {
+    Drop,
+    Rename(&'a str),
+    Copy(&'a str),
+}
+
+/// Drops the `[branch "name"]` section from the repository configuration, or renames or copies it.
+fn edit_config_section(git: &GitHome, name: &str, how: Section<'_>) -> Result<()> {
     let path = git.repo.git().common_dir().join("config");
     let mut file = ConfigFile::read(&path)?;
-    let changed = match to {
-        Some(to) => file.rename_section("branch", name, to)? > 0,
-        None => file.remove_section("branch", Some(name)),
+    let changed = match how {
+        Section::Rename(to) => file.rename_section("branch", name, to)? > 0,
+        Section::Copy(to) => file.copy_section("branch", name, to)? > 0,
+        Section::Drop => file.remove_section("branch", Some(name)),
     };
     if changed {
         file.write(&path)?;
@@ -45,31 +56,61 @@ fn list(git: &GitHome, args: &BranchArgs) -> Result<()> {
         .iter()
         .map(|p| Glob::new(p).map(|g| g.compile_matcher()))
         .collect::<std::result::Result<_, _>>()?;
+    let wanted = |name: &str| patterns.is_empty() || patterns.iter().any(|p| p.is_match(name));
+    let remotes_only = args.remotes && !args.all;
     let mut rows: Vec<Row> = Vec::new();
-    if patterns.is_empty()
+    if !remotes_only
+        && patterns.is_empty()
         && let Head::Detached(id) = &head
     {
         rows.push(Row {
             marker: '*',
             name: format!("(HEAD detached at {})", short(id)),
             id: Some(*id),
+            arrow: None,
         });
     }
-    for (full, id) in git.repo.refs().list(BRANCHES)? {
-        let name = full[BRANCHES.len()..].to_string();
-        if !patterns.is_empty() && !patterns.iter().any(|p| p.is_match(&name)) {
-            continue;
+    if !remotes_only {
+        for (full, id) in git.repo.refs().list(BRANCHES)? {
+            let name = full[BRANCHES.len()..].to_string();
+            if !wanted(&name) {
+                continue;
+            }
+            let marker = match &head {
+                Head::Branch { name: n, .. } if *n == name => '*',
+                _ if git.used_elsewhere(&name)?.is_some() => '+',
+                _ => ' ',
+            };
+            rows.push(Row {
+                marker,
+                name,
+                id: Some(id),
+                arrow: None,
+            });
         }
-        let marker = match &head {
-            Head::Branch { name: n, .. } if *n == name => '*',
-            _ if git.used_elsewhere(&name)?.is_some() => '+',
-            _ => ' ',
-        };
-        rows.push(Row {
-            marker,
-            name,
-            id: Some(id),
-        });
+    }
+    if args.all || args.remotes {
+        for (full, id) in git.repo.refs().list(REMOTES)? {
+            let short_name = &full[REMOTES.len()..];
+            if !wanted(short_name) {
+                continue;
+            }
+            let arrow = match git.repo.refs().read(&full)? {
+                Some(Ref::Symbolic(t)) => Some(t.strip_prefix(REMOTES).unwrap_or(&t).to_string()),
+                _ => None,
+            };
+            let name = if args.all {
+                format!("remotes/{short_name}")
+            } else {
+                short_name.to_string()
+            };
+            rows.push(Row {
+                marker: ' ',
+                name,
+                id: Some(id),
+                arrow,
+            });
+        }
     }
     let width = rows
         .iter()
@@ -77,7 +118,10 @@ fn list(git: &GitHome, args: &BranchArgs) -> Result<()> {
         .max()
         .unwrap_or(0);
     for row in rows {
-        if args.verbose
+        if let Some(target) = &row.arrow {
+            let pad = if args.verbose { width } else { 0 };
+            println!("{} {:<pad$} -> {target}", row.marker, row.name);
+        } else if args.verbose
             && let Some(id) = &row.id
         {
             println!(
@@ -94,12 +138,21 @@ fn list(git: &GitHome, args: &BranchArgs) -> Result<()> {
     Ok(())
 }
 
-fn create(git: &GitHome, name: &str, start: Option<&str>) -> Result<()> {
+fn create(git: &GitHome, name: &str, start: Option<&str>, force: bool) -> Result<()> {
     GitHome::check_branch_name(name)?;
-    if git.branch_commit(name)?.is_some() {
-        bail!("a branch named '{name}' already exists");
+    let existing = git.branch_commit(name)?;
+    match existing {
+        Some(_) if !force => bail!("a branch named '{name}' already exists"),
+        Some(_) => {
+            if let Some(tree) = git.checked_out_path(name)? {
+                bail!(
+                    "cannot force update the branch '{name}' used by worktree at '{}'",
+                    tree.display()
+                );
+            }
+        }
+        None => git.check_ref_room(&GitHome::branch_ref(name))?,
     }
-    git.check_ref_room(&GitHome::branch_ref(name))?;
     let id = match start {
         Some(s) => git
             .repo
@@ -121,11 +174,12 @@ fn create(git: &GitHome, name: &str, start: Option<&str>) -> Result<()> {
         (None, Head::Branch { name, .. }) => name,
         (None, Head::Detached(_)) => "HEAD".into(),
     };
-    git.create_ref(
-        &GitHome::branch_ref(name),
-        &id,
-        &format!("branch: Created from {label}"),
-    )
+    let full = GitHome::branch_ref(name);
+    match existing {
+        Some(old) if old == id => Ok(()),
+        Some(old) => git.move_ref(&full, Some(&old), &id, &format!("branch: Reset to {label}")),
+        None => git.create_ref(&full, &id, &format!("branch: Created from {label}")),
+    }
 }
 
 fn delete(git: &GitHome, names: &[String], force: bool) -> Result<()> {
@@ -165,7 +219,7 @@ fn delete(git: &GitHome, names: &[String], force: bool) -> Result<()> {
         }
         git.repo.refs().delete(&full, pyn_git::Expect::Id(id))?;
         git.repo.refs().write_reflog(&full, &[])?;
-        move_config_section(git, name, None)?;
+        edit_config_section(git, name, Section::Drop)?;
         println!("Deleted branch {name} (was {}).", short(&id));
     }
     if failed {
@@ -174,58 +228,120 @@ fn delete(git: &GitHome, names: &[String], force: bool) -> Result<()> {
     Ok(())
 }
 
-fn rename(git: &GitHome, names: &[String]) -> Result<()> {
+/// The two `HEAD` lines git writes when the branch `HEAD` is on is renamed: away to nothing, then back.
+fn log_head_swap(git: &GitHome, id: &ObjectId, message: &str) -> Result<()> {
+    git.log_ref("HEAD", Some(id), &git.zero_id(), message, false)?;
+    git.log_ref("HEAD", Some(&git.zero_id()), id, message, false)
+}
+
+/// `-m`/`-M` (a rename) and `-c`/`-C` (a copy of the ref, its reflog and its `branch.<name>.*` settings).
+fn relocate(git: &GitHome, names: &[String], copy: bool, force: bool) -> Result<()> {
     let head = git.repo.head()?;
     let (old, new) = match names {
         [new] => match &head {
             Head::Branch { name, .. } => (name.clone(), new.clone()),
+            Head::Detached(_) if copy => bail!("cannot copy the current branch while not on any"),
             Head::Detached(_) => bail!("cannot rename the current branch while not on any"),
         },
         [old, new] => (old.clone(), new.clone()),
+        [] => bail!("branch name required"),
+        _ if copy => bail!("too many branches for a copy operation"),
         _ => bail!("too many arguments for a rename operation"),
     };
-    GitHome::check_branch_name(&new)?;
     let on_it = matches!(&head, Head::Branch { name, .. } if *name == old);
     let (old_ref, new_ref) = (GitHome::branch_ref(&old), GitHome::branch_ref(&new));
-    let unborn_current = on_it && git.branch_commit(&old)?.is_none();
     let id = git.branch_commit(&old)?;
-    if id.is_none() && !unborn_current {
-        bail!("branch '{old}' not found");
+    if id.is_none() && (copy || !on_it) {
+        if copy && on_it {
+            bail!("no commit on branch '{old}' yet");
+        }
+        bail!("no branch named '{old}'");
     }
-    if let Some(tree) = git.used_elsewhere(&old)? {
+    if !copy && let Some(tree) = git.used_elsewhere(&old)? {
         bail!(
             "cannot rename branch '{old}' used by worktree at '{}'",
             tree.display()
         );
     }
+    let refs = git.repo.refs();
+    let message = format!(
+        "Branch: {} {old_ref} to {new_ref}",
+        if copy { "copied" } else { "renamed" }
+    );
     if old == new {
+        if let Some(id) = id {
+            git.log_ref(&new_ref, Some(&id), &id, &message, false)?;
+            if on_it && copy {
+                git.log_ref("HEAD", Some(&id), &id, &message, false)?;
+            } else if on_it {
+                git.log_ref("HEAD", Some(&id), &git.zero_id(), &message, false)?;
+                git.log_ref("HEAD", Some(&id), &id, &message, false)?;
+            }
+        }
         return Ok(());
     }
-    if git.branch_commit(&new)?.is_some() {
-        bail!("a branch named '{new}' already exists");
-    }
-    git.check_ref_room(&new_ref)?;
-    if let Some(id) = id {
-        let refs = git.repo.refs();
-        refs.update_checked(&new_ref, pyn_git::Expect::Absent, &id)?;
-        refs.rename_reflog(&old_ref, &new_ref)?;
-        refs.delete(&old_ref, pyn_git::Expect::Id(id))?;
-        let message = format!("Branch: renamed {old_ref} to {new_ref}");
-        git.log_ref(&new_ref, Some(&id), &id, &message, false)?;
-        if on_it {
-            git.log_ref("HEAD", Some(&id), &git.zero_id(), &message, false)?;
-            git.repo.refs().set_symbolic("HEAD", &new_ref)?;
-            git.log_ref("HEAD", Some(&git.zero_id()), &id, &message, false)?;
+    GitHome::check_branch_name(&new)?;
+    let existing = git.branch_commit(&new)?;
+    match existing {
+        Some(_) if !force => bail!("a branch named '{new}' already exists"),
+        Some(_) => {
+            if let Some(tree) = git.checked_out_path(&new)? {
+                bail!(
+                    "cannot force update the branch '{new}' used by worktree at '{}'",
+                    tree.display()
+                );
+            }
         }
-    } else {
-        git.repo.refs().set_symbolic("HEAD", &new_ref)?;
+        None => git.check_ref_room(&new_ref)?,
     }
-    move_config_section(git, &old, Some(&new))
+    let Some(id) = id else {
+        refs.set_symbolic("HEAD", &new_ref)?;
+        return edit_config_section(git, &old, Section::Rename(&new));
+    };
+    refs.update_checked(
+        &new_ref,
+        existing.map_or(pyn_git::Expect::Absent, pyn_git::Expect::Id),
+        &id,
+    )?;
+    if copy {
+        let entries = refs.read_reflog(&old_ref)?;
+        refs.write_reflog(&new_ref, &entries)?;
+        git.log_ref(&new_ref, Some(&id), &id, &message, false)?;
+        return edit_config_section(git, &old, Section::Copy(&new));
+    }
+    refs.rename_reflog(&old_ref, &new_ref)?;
+    refs.delete(&old_ref, pyn_git::Expect::Id(id))?;
+    git.log_ref(&new_ref, Some(&id), &id, &message, false)?;
+    if on_it {
+        log_head_swap(git, &id, &message)?;
+        refs.set_symbolic("HEAD", &new_ref)?;
+    }
+    edit_config_section(git, &old, Section::Rename(&new))
 }
 
 pub fn branch(git: &GitHome, args: BranchArgs) -> Result<()> {
-    if args.all || args.remotes {
-        crate::usage_error("`branch -a` and `-r` are not built on a git repository");
+    let listing = args.all || args.remotes;
+    let delete = args.delete || args.force_delete;
+    let rename = args.rename || args.force_rename;
+    let copy = args.copy || args.force_copy;
+    let upstream = args.set_upstream_to.is_some();
+    let modes = [
+        delete,
+        rename,
+        copy,
+        args.list,
+        args.show_current,
+        upstream,
+        args.unset_upstream,
+    ];
+    if modes.iter().filter(|m| **m).count() > 1 {
+        crate::usage_error("choose one of --delete, --move, --copy, --list, --set-upstream-to");
+    }
+    if listing && (delete || rename || copy || upstream || args.unset_upstream) {
+        if args.all && delete {
+            bail!("cannot use -a with -d");
+        }
+        crate::usage_error("`pyn branch -a` and `-r` only list on a git repository");
     }
     if args.show_current {
         if let Head::Branch { name, .. } = git.repo.head()? {
@@ -233,18 +349,32 @@ pub fn branch(git: &GitHome, args: BranchArgs) -> Result<()> {
         }
         return Ok(());
     }
-    if args.delete || args.force_delete {
-        return delete(git, &args.names, args.force_delete);
+    if delete {
+        return self::delete(git, &args.names, args.force_delete || args.force);
     }
-    if args.rename {
-        return rename(git, &args.names);
+    if rename {
+        return relocate(git, &args.names, false, args.force_rename || args.force);
     }
-    if args.list || args.names.is_empty() {
+    if copy {
+        return relocate(git, &args.names, true, args.force_copy || args.force);
+    }
+    if let Some(up) = &args.set_upstream_to {
+        return super::upstream::set_upstream(git, up, &args.names);
+    }
+    if args.unset_upstream {
+        return super::upstream::unset_upstream(git, &args.names);
+    }
+    if listing && !args.list && !args.names.is_empty() {
+        bail!(
+            "the -a, and -r, options to 'git branch' do not take a branch name.\nDid you mean to use: -a|-r --list <pattern>?"
+        );
+    }
+    if args.list || listing || args.names.is_empty() {
         return list(git, &args);
     }
     match args.names.as_slice() {
-        [name] => create(git, name, None),
-        [name, start] => create(git, name, Some(start)),
+        [name] => create(git, name, None, args.force),
+        [name, start] => create(git, name, Some(start), args.force),
         _ => bail!(
             "too many arguments to create a branch; the usage is `pyn branch <name> [<start>]`"
         ),

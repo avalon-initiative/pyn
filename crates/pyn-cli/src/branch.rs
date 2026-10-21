@@ -72,6 +72,24 @@ pub struct BranchArgs {
     /// Rename a branch (the current one if only the new name is given).
     #[arg(short = 'm', long = "move")]
     pub(crate) rename: bool,
+    /// Rename a branch even if the new name exists (a git repository only).
+    #[arg(short = 'M')]
+    pub(crate) force_rename: bool,
+    /// Copy a branch, its reflog and its `branch.<name>.*` settings (a git repository only).
+    #[arg(short = 'c', long)]
+    pub(crate) copy: bool,
+    /// Copy a branch even if the new name exists (a git repository only).
+    #[arg(short = 'C')]
+    pub(crate) force_copy: bool,
+    /// Create or reset a branch even if it exists (a git repository only).
+    #[arg(short = 'f', long)]
+    pub(crate) force: bool,
+    /// Make the branch track an upstream branch (a git repository only).
+    #[arg(short = 'u', long = "set-upstream-to", value_name = "UPSTREAM")]
+    pub(crate) set_upstream_to: Option<String>,
+    /// Remove the branch's upstream information (a git repository only).
+    #[arg(long)]
+    pub(crate) unset_upstream: bool,
     /// List branches (the default with no arguments).
     #[arg(short = 'l', long)]
     pub(crate) list: bool,
@@ -97,6 +115,12 @@ pub struct SwitchArgs {
     /// Create the branch and switch to it.
     #[arg(short = 'c', long)]
     pub(crate) create: Option<String>,
+    /// Create the branch, or reset it if it exists, and switch to it (a git repository only).
+    #[arg(short = 'C', long = "force-create")]
+    pub(crate) force_create: Option<String>,
+    /// Switch to a new branch with no commits (a git repository only).
+    #[arg(long)]
+    pub(crate) orphan: Option<String>,
     /// Discard local changes that the switch would overwrite.
     #[arg(short = 'f', long, alias = "discard-changes")]
     pub(crate) force: bool,
@@ -202,7 +226,18 @@ pub fn branch_command(
         show_current,
         all,
         remotes,
+        force_rename,
+        copy,
+        force_copy,
+        force,
+        set_upstream_to,
+        unset_upstream,
     } = args;
+    if force_rename || copy || force_copy || force || set_upstream_to.is_some() || unset_upstream {
+        crate::usage_error(
+            "`pyn branch` -M, -c, -C, -f, -u and --unset-upstream need a git repository",
+        );
+    }
     if (all || remotes) && (delete || force_delete || rename || show_current || !names.is_empty()) {
         bail!("`pyn branch -a` and `-r` only list");
     }
@@ -377,6 +412,9 @@ pub fn switch_command(
     args: SwitchArgs,
 ) -> Result<()> {
     let api = backend.pyn_server("switch")?;
+    if args.force_create.is_some() || args.orphan.is_some() {
+        crate::usage_error("`pyn switch` -C and --orphan need a git repository");
+    }
     if args.detach {
         bail!(
             "`pyn switch --detach` needs a git repository; a pyn server's branches always have a head"

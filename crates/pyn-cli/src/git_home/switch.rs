@@ -38,6 +38,13 @@ enum Landing {
         name: String,
         start: Option<String>,
     },
+    /// `-C`: the branch is created, or reset to the start point when it exists.
+    ResetBranch {
+        name: String,
+        start: Option<String>,
+    },
+    /// `--orphan`: an unborn branch with an empty index and work tree.
+    Orphan(String),
     /// `explicit` is `--detach`, which leaves out the advice.
     Detach {
         spec: String,
@@ -205,6 +212,12 @@ fn leaving_detached(git: &GitHome, old: &ObjectId) -> Result<()> {
     Ok(())
 }
 
+fn start_commit(git: &GitHome, spec: &str) -> Result<ObjectId> {
+    git.repo
+        .resolve(spec)
+        .map_err(|_| anyhow::anyhow!("invalid reference: {spec}"))
+}
+
 fn go(git: &GitHome, go: Go) -> Result<()> {
     refuse_in_progress(git)?;
     let head = git.repo.head()?;
@@ -231,10 +244,41 @@ fn go(git: &GitHome, go: Go) -> Result<()> {
                 }
                 git.check_ref_room(&GitHome::branch_ref(name))?;
                 let id = match start {
-                    Some(s) => Some(git.repo.resolve(s)?),
+                    Some(s) => Some(start_commit(git, s)?),
                     None => old_commit,
                 };
                 (id, Some(GitHome::branch_ref(name)), name.clone(), true)
+            }
+            Landing::ResetBranch { name, start } => {
+                GitHome::check_branch_name(name)?;
+                let full = GitHome::branch_ref(name);
+                let exists = git.branch_commit(name)?.is_some();
+                if exists {
+                    if let Some(tree) = git.used_elsewhere(name)? {
+                        bail!(
+                            "cannot force update the branch '{name}' used by worktree at '{}'",
+                            tree.display()
+                        );
+                    }
+                } else {
+                    git.check_ref_room(&full)?;
+                }
+                let id = match start {
+                    Some(s) => start_commit(git, s)?,
+                    None => match old_commit {
+                        Some(id) => id,
+                        None => bail!("invalid reference: HEAD"),
+                    },
+                };
+                (Some(id), Some(full), name.clone(), !exists)
+            }
+            Landing::Orphan(name) => {
+                GitHome::check_branch_name(name)?;
+                if git.branch_commit(name)?.is_some() {
+                    bail!("a branch named '{name}' already exists");
+                }
+                git.check_ref_room(&GitHome::branch_ref(name))?;
+                (None, Some(GitHome::branch_ref(name)), name.clone(), false)
             }
             Landing::Detach { spec, .. } => {
                 (Some(git.repo.resolve(spec)?), None, spec.clone(), false)
@@ -262,12 +306,21 @@ fn go(git: &GitHome, go: Go) -> Result<()> {
     let message = format!("checkout: moving from {from} to {label}");
     match (&branch_ref, &target) {
         (Some(r), Some(id)) => {
+            let start_label = match &go.landing {
+                Landing::NewBranch { start: Some(s), .. }
+                | Landing::ResetBranch { start: Some(s), .. } => s.clone(),
+                _ => "HEAD".into(),
+            };
             if created {
-                let start_label = match &go.landing {
-                    Landing::NewBranch { start: Some(s), .. } => s.clone(),
-                    _ => "HEAD".into(),
-                };
                 git.create_ref(r, id, &format!("branch: Created from {start_label}"))?;
+            } else if matches!(go.landing, Landing::ResetBranch { .. }) {
+                let old = git.branch_commit(&label)?;
+                let reset = format!("branch: Reset to {start_label}");
+                if old != Some(*id) {
+                    git.move_ref(r, old.as_ref(), id, &reset)?;
+                } else if same_branch {
+                    git.log_ref("HEAD", Some(id), id, &reset, false)?;
+                }
             }
             git.set_head(Some(r), id, &message)?;
         }
@@ -282,14 +335,27 @@ fn go(git: &GitHome, go: Go) -> Result<()> {
         }
     }
     warn_about_hooks_for(git, &CHECKOUT_HOOKS);
-    if let (true, Landing::Branch(_) | Landing::NewBranch { .. }, Some(old)) =
-        (was_detached, &go.landing, old_commit)
+    if let (
+        true,
+        Landing::Branch(_)
+        | Landing::NewBranch { .. }
+        | Landing::ResetBranch { .. }
+        | Landing::Orphan(_),
+        Some(old),
+    ) = (was_detached, &go.landing, old_commit)
         && target != Some(old)
     {
         leaving_detached(git, &old)?;
     }
     match &go.landing {
-        Landing::NewBranch { name, .. } => eprintln!("Switched to a new branch '{name}'"),
+        Landing::NewBranch { name, .. } | Landing::Orphan(name) => {
+            eprintln!("Switched to a new branch '{name}'");
+        }
+        Landing::ResetBranch { name, .. } if created => {
+            eprintln!("Switched to a new branch '{name}'");
+        }
+        Landing::ResetBranch { name, .. } if same_branch => eprintln!("Reset branch '{name}'"),
+        Landing::ResetBranch { name, .. } => eprintln!("Switched to and reset branch '{name}'"),
         Landing::Branch(name) if same_branch => eprintln!("Already on '{name}'"),
         Landing::Branch(name) => eprintln!("Switched to branch '{name}'"),
         Landing::Detach { spec, explicit } => {
@@ -307,30 +373,49 @@ fn go(git: &GitHome, go: Go) -> Result<()> {
 }
 
 pub fn switch(git: &GitHome, args: SwitchArgs) -> Result<()> {
-    let landing = match (args.create, args.start, args.detach) {
-        (Some(name), start, false) => Landing::NewBranch { name, start },
-        (Some(_), _, true) => bail!("options '-c' and '--detach' cannot be used together"),
-        (None, Some(spec), true) => Landing::Detach {
-            spec,
-            explicit: true,
-        },
-        (None, None, true) => Landing::Detach {
-            spec: "HEAD".into(),
-            explicit: true,
-        },
-        (None, Some(name), false) => {
-            let name = expand_branch_name(git, name)?;
-            if git.branch_commit(&name)?.is_none() {
-                if git.repo.resolve(&name).is_ok() {
-                    bail!(
-                        "a branch is expected, got commit '{name}'; use `pyn switch --detach {name}` to check it out"
-                    );
-                }
-                bail!("invalid reference: {name}");
-            }
-            Landing::Branch(name)
+    let makers = [&args.create, &args.force_create, &args.orphan];
+    if makers.iter().filter(|m| m.is_some()).count() > 1 {
+        bail!("options '-c', '-C', and '--orphan' cannot be used together");
+    }
+    if args.detach && makers.iter().any(|m| m.is_some()) {
+        bail!("'--detach' cannot be used with '-b/-B/--orphan'");
+    }
+    if args.orphan.is_some() && args.start.is_some() {
+        bail!("'--orphan' cannot take <start-point>");
+    }
+    let landing = if let Some(name) = args.orphan {
+        Landing::Orphan(name)
+    } else if let Some(name) = args.force_create {
+        Landing::ResetBranch {
+            name,
+            start: args.start,
         }
-        (None, None, false) => bail!("missing branch or commit argument"),
+    } else {
+        match (args.create, args.start, args.detach) {
+            (Some(name), start, false) => Landing::NewBranch { name, start },
+            (Some(_), _, true) => unreachable!("refused above"),
+            (None, Some(spec), true) => Landing::Detach {
+                spec,
+                explicit: true,
+            },
+            (None, None, true) => Landing::Detach {
+                spec: "HEAD".into(),
+                explicit: true,
+            },
+            (None, Some(name), false) => {
+                let name = expand_branch_name(git, name)?;
+                if git.branch_commit(&name)?.is_none() {
+                    if git.repo.resolve(&name).is_ok() {
+                        bail!(
+                            "a branch is expected, got commit '{name}'; use `pyn switch --detach {name}` to check it out"
+                        );
+                    }
+                    bail!("invalid reference: {name}");
+                }
+                Landing::Branch(name)
+            }
+            (None, None, false) => bail!("missing branch or commit argument"),
+        }
     };
     go(
         git,

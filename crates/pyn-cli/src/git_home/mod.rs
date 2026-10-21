@@ -35,6 +35,7 @@ mod switch;
 mod tags;
 pub(crate) mod todo;
 mod treemerge;
+mod upstream;
 mod worktree;
 
 use std::path::{Path, PathBuf};
