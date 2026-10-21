@@ -82,6 +82,7 @@ impl Twin {
             .env("GIT_SSH_COMMAND", &self.shim)
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("GIT_EDITOR", "true")
+            .env("GIT_COMMITTER_DATE", DATE)
             .output()
             .unwrap();
         out_of(out)
@@ -101,6 +102,7 @@ impl Twin {
             .env("GIT_AUTHOR_EMAIL", "t@example.com")
             .env("GIT_COMMITTER_NAME", "t")
             .env("GIT_COMMITTER_EMAIL", "t@example.com")
+            .env("GIT_COMMITTER_DATE", DATE)
             .output()
             .unwrap();
         out_of(out)
@@ -447,29 +449,107 @@ fn rebase_configured_pulls_into_an_unborn_branch() {
 }
 
 #[test]
-fn rebase_configured_with_diverged_history_fails_after_the_fetch() {
+fn rebase_replays_the_local_commits_onto_the_fetched_tip() {
+    type Case<'a> = (&'a [&'a str], Option<(&'a str, &'a str)>);
+    let cases: [Case; 4] = [
+        (&["--rebase"], None),
+        (&[], Some(("pull.rebase", "true"))),
+        (&[], Some(("branch.main.rebase", "true"))),
+        (&["--rebase", "--quiet"], None),
+    ];
+    for (format, via) in [("sha1", Via::Ssh), ("sha256", Via::Http)] {
+        for (args, config) in cases {
+            let t = Twin::new(format, via);
+            if let Some((k, v)) = config {
+                t.configure(k, v);
+            }
+            t.local("l.txt", "local\n", "local");
+            t.local("m.txt", "more\n", "local 2");
+            let remote = t.remote("n.txt", "new\n", "remote");
+            let (g, p) = t.both(args);
+            assert_eq!(
+                (g.code, p.code),
+                (0, 0),
+                "{args:?} {config:?}: {}",
+                p.stderr
+            );
+            assert_eq!(
+                run(&t.pyn, &["log", "--format=%s", "-3"]),
+                "local 2\nlocal\nremote\n"
+            );
+            assert_eq!(
+                run(&t.pyn, &["rev-parse", "HEAD~2"]).trim(),
+                remote,
+                "the local commits sit on the fetched tip"
+            );
+            assert!(!t.pyn.join(".git/rebase-merge").exists());
+            t.both_ok(args);
+        }
+    }
+}
+
+#[test]
+fn a_rebase_that_conflicts_is_concluded_with_rebase() {
+    let t = Twin::new("sha1", Via::Ssh);
+    t.local("a.txt", "local\n", "local a");
+    t.local("b.txt", "kept\n", "local b");
+    t.remote("a.txt", "remote\n", "remote a");
+    let (g, p) = t.both(&["--rebase"]);
+    assert_eq!((g.code, p.code), (1, 1), "{}", p.stderr);
+    assert!(t.pyn.join(".git/rebase-merge").is_dir());
+    assert!(t.pyn.join(".git/REBASE_HEAD").exists());
+    for dir in [&t.git, &t.pyn] {
+        fs::write(dir.join("a.txt"), "resolved\n").unwrap();
+    }
+    run(&t.git, &["add", "a.txt"]);
+    let add = t.pyn_cmd(&t.pyn, &["add", "a.txt"]);
+    assert_eq!(add.code, 0, "{}", add.stderr);
+    let g = t.git_cmd(&t.git, &["rebase", "--continue"]);
+    let p = t.pyn_cmd(&t.pyn, &["rebase", "--continue"]);
+    assert_eq!((g.code, p.code), (0, 0), "{}", p.stderr);
+    assert_eq!(state(&t.git), state(&t.pyn));
+    assert!(!t.pyn.join(".git/rebase-merge").exists());
+    assert_eq!(
+        run(&t.pyn, &["log", "--format=%s", "-3"]),
+        "local b\nlocal a\nremote a\n"
+    );
+}
+
+#[test]
+fn autostash_goes_with_a_rebase_only() {
+    let t = Twin::new("sha1", Via::Ssh);
+    t.local("l.txt", "local\n", "local");
+    t.remote("n.txt", "new\n", "remote");
+    for dir in [&t.git, &t.pyn] {
+        fs::write(dir.join("l.txt"), "edited\n").unwrap();
+    }
+    let refused = t.both(&["--rebase"]);
+    assert_eq!(
+        (refused.0.code, refused.1.code),
+        (128, 128),
+        "{}",
+        refused.1.stderr
+    );
+    t.both_ok(&["--rebase", "--autostash"]);
+    assert_eq!(fs::read_to_string(t.pyn.join("l.txt")).unwrap(), "edited\n");
+    let p = t.pyn_cmd(&t.pyn, &["pull", "--autostash", "--no-rebase"]);
+    assert_eq!(p.code, 129, "{}", p.stderr);
+}
+
+#[test]
+fn rebase_merges_and_interactive_are_not_built_when_a_replay_is_needed() {
     let t = Twin::new("sha1", Via::Ssh);
     t.local("l.txt", "local\n", "local");
     let remote = t.remote("n.txt", "new\n", "remote");
-    for (args, config) in [(&["--rebase"][..], None), (&[][..], Some("true"))] {
-        if let Some(v) = config {
-            t.configure("pull.rebase", v);
-        }
-        let head = t.head(&t.pyn);
-        let files = tree_files(&t.pyn);
-        let mut full = vec!["pull"];
-        full.extend(args);
-        let p = t.pyn_cmd(&t.pyn, &full);
-        assert_eq!(p.code, 128, "{}", p.stderr);
-        assert!(p.stderr.contains("use --no-rebase"), "{}", p.stderr);
+    let head = t.head(&t.pyn);
+    for mode in ["--rebase=merges", "--rebase=interactive"] {
+        let p = t.pyn_cmd(&t.pyn, &["pull", mode]);
+        assert_eq!(p.code, 128, "{mode}: {}", p.stderr);
+        assert!(p.stderr.contains("not built"), "{}", p.stderr);
         assert_eq!(t.head(&t.pyn), head);
-        assert_eq!(tree_files(&t.pyn), files);
         let tracked = run(&t.pyn, &["rev-parse", "refs/remotes/origin/main"]);
         assert_eq!(tracked.trim(), remote, "the fetch stays");
-        assert!(!t.pyn.join(".git/MERGE_HEAD").exists());
     }
-    t.configure("pull.rebase", "true");
-    t.both_ok(&["--no-rebase", "--no-edit"]);
 }
 
 #[test]

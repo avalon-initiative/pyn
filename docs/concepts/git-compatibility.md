@@ -146,7 +146,7 @@ revisions with a pointer per branch (decision #299).
 | `git merge <branch\|commit>`, `-m`, `--no-ff`, `--ff-only`, `--no-commit`, `--abort`, `--continue` | `pyn merge ...` | supported | Shared files merge three-way with diff3 conflict markers; a binary conflicts as a whole file. Exclusive files take the pointer that descends from the other, and conflict where both branches changed one or a path became exclusive while a branch edited it (a person chooses a side, taking the lock). A conflicted merge leaves the workspace as git does and is concluded with `pyn add` and `pyn commit` (no `-m` needed), or given up with `--abort`. Differences: `--preview` (pyn's own) reports what would merge and conflict and changes nothing; a merge needs a clean index and no local edits to the files it touches; `--squash`, `-s`, `-X`, `--no-verify`, `--edit`, `--signoff`, `-S` and `--ff` are usage errors. `git checkout --ours` and `--theirs` are `pyn checkout --ours\|--theirs -- <path>`. `pyn status` marks unmerged paths in its `STATE` column. Recursive merge of criss-cross histories as git does, with the base of a conflict shown as `merged common ancestors`. |
 | `git cherry-pick <commit>...`, ranges, `-n`, `-x`, `-s`, `-m <n>`, `--continue`, `--skip`, `--abort`, `--quit` | `pyn cherry-pick ...` | supported | Each commit's change becomes a new commit, with its author and message. On a git home see [Cherry-pick](#cherry-pick). On a pyn server workspace with local commits the commits, ranges and `-x` work, and `-n`, `-s`, `-m` and `--quit` are refused; see [cherry-pick in commits](commits.md#cherry-pick). A pyn server workspace without local commits refuses the command. |
 | `git revert <commit>...`, ranges, `-n`, `-s`, `-m <n>`, `--no-edit`, `--continue`, `--skip`, `--abort`, `--quit` | `pyn revert ...` | supported | Each commit's change is undone by a new commit (`Revert "<subject>"`). On a git home see [Revert](#revert). On a pyn server workspace with local commits the commits and ranges work, and `-n`, `-s`, `-m` and `--quit` are refused; see [revert in commits](commits.md#revert). A pyn server workspace without local commits refuses the command. |
-| `git rebase` | none | unsupported | See [Not planned](#not-planned). |
+| `git rebase [--onto <newbase>] [<upstream> [<branch>]]`, `--continue`, `--skip`, `--abort`, `--quit`, `--autostash`, `--no-ff` | `pyn rebase ...` | supported (git home) | Replays the commits after the upstream one by one onto the new base, with the same ids as git. See [Rebase](#rebase). Interactive rebase, `--rebase-merges` and `--root` are not built. A pyn server workspace refuses the command; `pyn pull --rebase` there replays local commits ([commits](commits.md#fetch-pull-and-push-with-a-local-store)). |
 
 ## Remotes
 
@@ -303,14 +303,18 @@ not be written names `pyn remote prune`.
 `FETCH_HEAD` written) followed by `pyn merge` of the fetched merge candidates into the current branch, as `git pull` with the
 merge mode. Git's own prose is not copied everywhere: where a message names a command it names `pyn`.
 
-1. Rebase is not built, but it is not refused up front: `--rebase`, `-r`, `pull.rebase` or `branch.<name>.rebase` set to `true`,
-   `merges` or `interactive` (and `--rebase=` those or `i`, `m`) is decided after the fetch. A candidate the branch already
-   contains prints `Current branch <b> is up to date.` and exits `0`; a branch that can fast-forward (or is unborn) fast-forwards
-   exactly as without rebase, with the same dirty-tree protection; a branch with local commits the candidate lacks needs a real
-   rebase and is `fatal: rebase is not built; use --no-rebase` (`128`) with the fetched refs kept and nothing else changed:
-   run `pyn pull --no-rebase`. `--no-rebase`, `--rebase=false`, `pull.rebase=false` and
+1. `--rebase`, `-r`, `pull.rebase` or `branch.<name>.rebase` set to `true` rebases instead of merging, decided after the fetch.
+   A dirty work tree or index is `error: cannot pull with rebase: You have unstaged changes.` (or `Your index contains
+   uncommitted changes.`, `128`) before anything is fetched, unless `--autostash` or `rebase.autoStash` is set. A candidate the
+   branch already contains prints `Current branch <b> is up to date.` and exits `0`; a branch that can fast-forward (or is
+   unborn) fast-forwards exactly as without rebase; a branch with local commits the candidate lacks has them replayed onto the
+   candidate as [`pyn rebase`](#rebase) does (`pull --rebase` in the reflog), and a conflict is concluded with `pyn rebase
+   --continue`, `--skip` or `--abort`. `merges` and `interactive` (and `--rebase=` those or `i`, `m`) behave as `true` while
+   nothing needs replaying, and are `fatal: rebasing with merges or interactively is not built; use --rebase or --no-rebase`
+   (`128`, fetched refs kept) when it does. `--no-rebase`, `--rebase=false`, `pull.rebase=false` and
    `branch.<name>.rebase=false` merge. With unmerged index entries it is `fatal: Exiting because of an unresolved conflict.`
-   and with `MERGE_HEAD` present `fatal: You have not concluded your merge (MERGE_HEAD exists).` (both `128`).
+   and with `MERGE_HEAD` present `fatal: You have not concluded your merge (MERGE_HEAD exists).` (both `128`). Unlike git, the
+   replay starts at the fetched tip and does not use the fork point from the remote-tracking ref's reflog.
 2. The fetch. A failed fetch exits `1` (git's `pull` does, not `fetch`'s `128`); `--dry-run` fetches only and ends there.
 3. The merge candidates are the `FETCH_HEAD` lines that are not `not-for-merge`: the branch named by `branch.<name>.merge` when
    no refspec is given, else what the command line fetched. None: git's explanation and exit `1` (`There is no tracking
@@ -339,8 +343,8 @@ that cannot fast-forward is `fatal: Not possible to fast-forward, aborting.` (`1
 | `-p`, `--prune`, `--no-prune`, `-t`, `--tags`, `--no-tags`, `-f`, `--force`, `-a`, `--append`, `--dry-run` | As for `pyn fetch`. |
 | `--ff`, `--no-ff`, `--ff-only`, `--commit`, `--no-commit` | As for `pyn merge`; `--no-commit` stops before the commit with `MERGE_HEAD` set. |
 | `--no-edit` | Accepted: no editor is ever started. |
-| `--no-rebase`, `--rebase`, `-r` | `--no-rebase` merges; `--rebase` fast-forwards or stops as above. |
-| `--edit`, `-e`, `--squash`, `-s`/`--strategy`, `-X`/`--strategy-option`, `--autostash`, `-S`/`--gpg-sign`, `--signoff`, `--cleanup`, `--stat`, `-n`/`--no-stat`, `--recurse-submodules`, `--allow-unrelated-histories`, `--all` | Usage error (`129`): not built (`--all`: use `pyn fetch --all`). |
+| `--no-rebase`, `--rebase`, `-r`, `--autostash` | `--no-rebase` merges; `--rebase` fast-forwards or replays as above; `--autostash` stashes before a rebase and applies after (a usage error unless the pull rebases). |
+| `--edit`, `-e`, `--squash`, `-s`/`--strategy`, `-X`/`--strategy-option`, `-S`/`--gpg-sign`, `--signoff`, `--cleanup`, `--stat`, `-n`/`--no-stat`, `--recurse-submodules`, `--allow-unrelated-histories`, `--all` | Usage error (`129`): not built (`--all`: use `pyn fetch --all`). |
 
 Config read: `pull.ff`, `pull.rebase`, `branch.<name>.rebase`, `branch.<name>.merge`, `branch.<name>.remote`, `merge.ff`, plus what
 `pyn fetch` reads. The summary after a merge is `pyn merge`'s file count, not git's diffstat, and the message of an annotated tag
@@ -641,7 +645,6 @@ schedules them.
 | Git | Reason |
 | --- | --- |
 | `git clean` | Not planned. |
-| `git rebase` | History is append-only on the server. |
 | `git blame`, `git grep` | Not scheduled. |
 | Commands that maintain git's own storage or run its hooks (`gc`, `fsck`, `bundle`, `submodule`, `worktree`, hooks in `.git/hooks`) | pyn reads a git repository's `.git/` on a git home (decision #245) but does not maintain it or run its hooks. pyn's own hooks are tracked in #216. |
 
@@ -704,6 +707,7 @@ whatever the rules say.
 | `branch`, `switch`, `checkout`, `restore` | See [Branches, switching and the work tree](#branches-switching-and-the-work-tree). |
 | `reset` | See [Reset](#reset). |
 | `merge` | See [Merging](#merging). |
+| `rebase` | See [Rebase](#rebase). |
 | `tag` | See [Tags](#tags). |
 | `stash` | See [Stashing](#stashing). |
 | `init` | See above. |
@@ -1098,6 +1102,59 @@ the files, the state files and the reflogs with the real git (`crates/pyn-cli/te
 5. Only a sequence of several commits (or a range) refuses while an operation is in progress, as in git; a single commit is
    checked by its own rules (unmerged entries, staged changes, files the revert touches).
 
+### Rebase
+
+`rebase [--onto <newbase>] [<upstream> [<branch>]]` replays the commits that are in `<branch>` (default the current branch) and
+not in `<upstream>` onto `<newbase>` (default `<upstream>`), then moves the branch there. With no upstream, `branch.<name>.remote`
+and `branch.<name>.merge` give it (the remote-tracking ref the remote's fetch refspec maps the merge ref to; `.` as remote means
+the local branch). Each commit is applied exactly as [cherry-pick](#cherry-pick) applies it, with the author and message kept, a
+new committer, and ids that match git's (the tests compare ids): diff3 markers labelled `HEAD` and `<abbreviation> (<subject>)`,
+no rename detection. The replay runs on a detached `HEAD`; the branch moves when the last commit is made.
+
+1. The list is the commits after the upstream, merge commits left out (their changes arrive through the commits they merged,
+   flattened, not recreated), in git's `--topo-order` reversed. A commit whose change the upstream already has (the same
+   changes, ignoring line numbers and whitespace, as git's patch id) is dropped, and one that becomes empty when replayed is
+   dropped with `dropping <id> <subject> -- patch contents already upstream`; one that was empty already is kept. A commit
+   whose parent is the commit `HEAD` is on is not recreated (git's fast-forward), so unchanged leading commits keep their ids,
+   unless `--no-ff` (`-f`, `--force-rebase`) is given.
+2. A branch that already contains `<newbase>` in a straight line, with the upstream's merge base being that base, prints `Current
+   branch <b> is up to date.` and changes nothing (`Current branch <b> is up to date, rebase forced.` and a replay with
+   `--no-ff`). A branch behind the upstream moves to it (`Successfully rebased and updated refs/heads/<b>.` on standard error).
+   `<branch>` is switched to first, and a detached `HEAD` is rebased and stays detached.
+3. Before anything changes it refuses with `error: cannot rebase: You have unstaged changes.` or `Your index contains uncommitted
+   changes.` (exit `1`, untracked files do not count), an invalid upstream, `--onto` or branch (`fatal:`, `128`), a rebase,
+   merge, cherry-pick or revert already in progress, a sparse checkout, and an unborn branch. `--autostash` (or
+   `rebase.autoStash`; `--no-autostash` overrides it) stashes the changes first (`Created autostash: <id>`, the commit id in
+   `rebase-merge/autostash`) and applies them at the end (`Applied autostash.`); changes that do not apply cleanly are put on
+   `refs/stash` with `Applying autostash resulted in conflicts.`.
+4. A conflict prints the same lines as a cherry-pick conflict with `could not apply <abbreviation>... <subject>` and the hints
+   naming `pyn rebase --continue`, `--skip` and `--abort`, exits `1`, and leaves the unmerged entries and markers, `REBASE_HEAD`,
+   `MERGE_MSG` with git's `# Conflicts:` list, and `.git/rebase-merge/` as git's merge backend writes it: `head-name`, `onto`,
+   `orig-head`, `git-rebase-todo` (the commits still to do as `pick <id> <subject>`), `done`, `msgnum`, `end`, `stopped-sha`,
+   `message`, `author-script`, `interactive`, `autostash` when there is one. `ORIG_HEAD` is where the branch was. git reads and
+   continues what pyn stopped and the reverse; the tests do both.
+5. `--continue` needs every unmerged entry staged (otherwise it prints that the conflicts must be resolved and exits `1`),
+   commits the index with the `message` file and the `author-script` author (reflog `rebase (continue)`), and goes on; an index
+   equal to `HEAD` (the commit was made by hand, or the resolution is empty) commits nothing and goes on. `--skip` is `reset
+   --hard` to `HEAD`, then the rest. `--abort` is `reset --hard` to `orig-head`, putting the branch and `HEAD` back
+   and applying the autostash. `--quit` removes `rebase-merge/` and leaves `HEAD`, the files, `REBASE_HEAD` and `MERGE_MSG`; an
+   autostash is put on `refs/stash`. With nothing in progress they are `fatal: No rebase in progress?` (`128`). `commit`,
+   `merge` and the other writing commands refuse while `rebase-merge/` exists.
+6. A step that cannot run for local reasons (an untracked file in the way) leaves that commit first in `git-rebase-todo`, so
+   `--continue` tries it again.
+
+Reflog lines are `rebase (start): checkout <newbase>`, `rebase (pick): <subject>`, `rebase (continue): <subject>`, `rebase
+(finish): returning to refs/heads/<b>` and `rebase (finish): refs/heads/<b> onto <id>` (`pull --rebase` instead of `rebase`
+for a pull).
+
+Differences from git: `-i`, `--rebase-merges`, `--root`, `--exec`, `-s`, `-X`, `--autosquash`, `--fork-point`, `--signoff`,
+`--keep-base`, `--update-refs`, `--reapply-cherry-picks`, `--apply`, `--empty` other than `drop` and `-S` are usage errors
+(`129`); interactive rebase is #476. `-m`, `-v`, `-n`, `--no-fork-point`, `--keep-empty` and the `--no-` forms of the refused flags
+are accepted and ignored. With no upstream argument git also looks for the fork point in the upstream's reflog; pyn replays
+`<upstream>..<branch>`, so a rewritten upstream replays commits git would skip. Commits whose timestamps tie are ordered by the
+walk of the graph, as git's, not by date. Covered against the real git by `crates/pyn-cli/tests/git_rebase.rs` and, for pull,
+`crates/pyn-cli/tests/git_pull.rs`.
+
 ### Tags
 
 `tag` lists `refs/tags` sorted (`-l <pattern>` filters). `tag <name> [<object>]` writes a lightweight tag at `HEAD` or the object
@@ -1163,7 +1220,7 @@ set to true, `core.eol=crlf` with a `text` attribute, `eol=crlf`, a `filter` oth
 symlinks and submodules are never converted). A Git LFS filter writes the pointer file as it is, with a warning (decision #245; see [Git LFS](#git-lfs)).
 The same limit applies to `status`, which compares raw bytes (#273). Hooks are never run; one warning names the hooks that exist
 for the command (`post-checkout`, `pre-merge-commit`, `commit-msg` and the like). Sparse checkouts, submodule updates, the split
-index and `GIT_DIR` are not supported, and `rebase`, `--squash` and anything that talks to a remote other than `ls-remote`, `fetch`, `pull`, `push` and `clone` are not built yet (epic #301; see [Transports and credentials](#transports-and-credentials)).
+index and `GIT_DIR` are not supported, and `--squash` and anything that talks to a remote other than `ls-remote`, `fetch`, `pull`, `push` and `clone` are not built yet (epic #301; see [Transports and credentials](#transports-and-credentials)).
 
 ### Git LFS
 

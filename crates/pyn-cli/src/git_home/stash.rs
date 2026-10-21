@@ -34,16 +34,16 @@ pub struct StashArgs {
 }
 
 #[derive(Debug, Args, Default)]
-struct PushArgs {
+pub(super) struct PushArgs {
     /// Stash untracked files too (they are removed from the work tree).
     #[arg(short = 'u', long)]
-    include_untracked: bool,
+    pub(super) include_untracked: bool,
     /// The stash's message.
     #[arg(short = 'm', long)]
-    message: Option<String>,
+    pub(super) message: Option<String>,
     /// Paths to stash; not supported yet.
     #[arg(last = true)]
-    paths: Vec<String>,
+    pub(super) paths: Vec<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -143,6 +143,20 @@ fn tree_of_entries(git: &GitHome, entries: Entries, version: u32) -> Result<Obje
 }
 
 fn push(git: &GitHome, args: PushArgs) -> Result<()> {
+    if let Some((_, message)) = save(git, &args, true, false)? {
+        println!("Saved working directory and index state {message}");
+    }
+    Ok(())
+}
+
+/// Stashes the local changes: the commit and its message, or `None` when there is nothing to save. With `store` the
+/// commit is also put on `refs/stash`; `quiet` leaves out the notices.
+pub(super) fn save(
+    git: &GitHome,
+    args: &PushArgs,
+    store: bool,
+    quiet: bool,
+) -> Result<Option<(ObjectId, String)>> {
     if !args.paths.is_empty() {
         bail!(
             "`pyn stash` of named paths is not supported yet; stash everything, or use `pyn add` and `pyn commit`"
@@ -190,8 +204,10 @@ fn push(git: &GitHome, args: PushArgs) -> Result<()> {
     };
     check_writes(&untracked)?;
     if index_tree == head_tree && work_tree == head_tree && untracked.is_empty() {
-        println!("No local changes to save");
-        return Ok(());
+        if !quiet {
+            println!("No local changes to save");
+        }
+        return Ok(None);
     }
     let branch = branch_label(git)?;
     let base = format!("{branch}: {} {}", short(&head), subject(git, &head)?);
@@ -215,11 +231,9 @@ fn push(git: &GitHome, args: PushArgs) -> Result<()> {
         None => format!("WIP on {base}"),
     };
     let stash = commit_with(git, work_tree, parents, message.clone())?;
-    let old = git.repo.refs().resolve(STASH)?;
-    git.repo
-        .refs()
-        .update_checked(STASH, old.map_or(Expect::Absent, Expect::Id), &stash)?;
-    git.log_ref(STASH, old.as_ref(), &stash, &message, true)?;
+    if store {
+        store_stash(git, &stash, &message)?;
+    }
 
     if let Err(blocked) = move_tree(
         git,
@@ -238,8 +252,16 @@ fn push(git: &GitHome, args: PushArgs) -> Result<()> {
     for path in &untracked {
         remove_entry_file(git, path)?;
     }
-    println!("Saved working directory and index state {message}");
-    Ok(())
+    Ok(Some((stash, message)))
+}
+
+/// Puts a stash commit on `refs/stash` as the newest entry.
+pub(super) fn store_stash(git: &GitHome, stash: &ObjectId, message: &str) -> Result<()> {
+    let old = git.repo.refs().resolve(STASH)?;
+    git.repo
+        .refs()
+        .update_checked(STASH, old.map_or(Expect::Absent, Expect::Id), stash)?;
+    git.log_ref(STASH, old.as_ref(), stash, message, true)
 }
 
 fn commit_tree(git: &GitHome, id: &ObjectId) -> Result<ObjectId> {
@@ -247,9 +269,33 @@ fn commit_tree(git: &GitHome, id: &ObjectId) -> Result<ObjectId> {
 }
 
 fn apply(git: &GitHome, name: Option<&str>, pop: bool) -> Result<()> {
-    refuse_in_progress(git).map_err(|e| Refused(e.to_string()))?;
     let (n, id) = find(git, name)?;
-    let stash = git.repo.commit(&id)?;
+    match apply_commit(git, &id)? {
+        Applying::Blocked(blocked) => blocked.report("merge", "merge", 1),
+        Applying::Conflicted => {
+            println!("The stash entry is kept in case you need it again.");
+            std::process::exit(1);
+        }
+        Applying::Clean => {}
+    }
+    super::commands::status_table(&git.repo.status()?)?;
+    if pop {
+        drop_at(git, n)?;
+    }
+    Ok(())
+}
+
+pub(super) enum Applying {
+    Clean,
+    Conflicted,
+    /// Local changes or untracked files in the way; nothing was changed.
+    Blocked(Blocked),
+}
+
+/// Merges the changes a stash commit holds onto the work tree and index.
+pub(super) fn apply_commit(git: &GitHome, id: &ObjectId) -> Result<Applying> {
+    refuse_in_progress(git).map_err(|e| Refused(e.to_string()))?;
+    let stash = git.repo.commit(id)?;
     if stash.parents.len() < 2 {
         bail!("{} is not a stash commit", id);
     }
@@ -321,7 +367,7 @@ fn apply(git: &GitHome, name: Option<&str>, pop: bool) -> Result<()> {
         }
     }
     if !blocked.local.is_empty() || !blocked.untracked.is_empty() {
-        blocked.report("merge", "merge", 1);
+        return Ok(Applying::Blocked(blocked));
     }
     let in_the_way: Vec<&Vec<u8>> = restore_untracked
         .keys()
@@ -394,15 +440,11 @@ fn apply(git: &GitHome, name: Option<&str>, pop: bool) -> Result<()> {
         }
         return Err(Refused("could not restore untracked files from stash".into()).into());
     }
-    if conflicted {
-        println!("The stash entry is kept in case you need it again.");
-        std::process::exit(1);
-    }
-    super::commands::status_table(&git.repo.status()?)?;
-    if pop {
-        drop_at(git, n)?;
-    }
-    Ok(())
+    Ok(if conflicted {
+        Applying::Conflicted
+    } else {
+        Applying::Clean
+    })
 }
 
 /// Removes entry `n` (0 is the newest) and rewrites the reflog chain, as `git stash drop` does.

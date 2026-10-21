@@ -797,6 +797,12 @@ pub(super) fn refuse_states(git: &GitHome, states: &[&str]) -> Result<()> {
                  or give it up with `pyn merge --abort`"
             );
         }
+        if *name == "rebase-merge" {
+            bail!(
+                "a rebase is in progress ({name}); conclude it with `pyn rebase --continue`, \
+                 `--skip` or `--abort`"
+            );
+        }
         bail!(
             "a merge, cherry-pick, revert or rebase is in progress ({name}); \
              pyn cannot continue it, so finish or abort it with git first"

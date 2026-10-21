@@ -10,7 +10,7 @@ use pyn_object::{Commit, Kind as ObjectKind, ObjectId};
 
 use super::GitHome;
 use super::commit::append_signoff;
-use super::merge::{Landing, apply_merge, write_state};
+use super::merge::{Applied, Landing, apply_merge, write_state};
 use super::signing::{SignFlag, header_name, header_value, signer_for};
 use super::stage::{
     clean_message, clear_merge_state, identity, merge_message, refuse_states, warn_about_hooks_for,
@@ -27,7 +27,7 @@ const REVERT_HEAD: &str = "REVERT_HEAD";
 const SEQUENCER: &str = "sequencer";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Verb {
+pub(super) enum Verb {
     Pick,
     Revert,
 }
@@ -128,11 +128,11 @@ enum Outcome {
     Stopped,
 }
 
-fn short(id: &ObjectId) -> String {
+pub(super) fn short(id: &ObjectId) -> String {
     id.to_hex()[..ABBREV].to_string()
 }
 
-fn subject_of(message: &[u8]) -> String {
+pub(super) fn subject_of(message: &[u8]) -> String {
     String::from_utf8_lossy(message)
         .lines()
         .next()
@@ -140,15 +140,15 @@ fn subject_of(message: &[u8]) -> String {
         .to_string()
 }
 
-fn git_dir(git: &GitHome) -> PathBuf {
+pub(super) fn git_dir(git: &GitHome) -> PathBuf {
     git.repo.git().git_dir().to_path_buf()
 }
 
-fn read_text(path: &Path) -> Option<String> {
+pub(super) fn read_text(path: &Path) -> Option<String> {
     std::fs::read_to_string(path).ok()
 }
 
-fn read_id(git: &GitHome, path: &Path) -> Result<Option<ObjectId>> {
+pub(super) fn read_id(git: &GitHome, path: &Path) -> Result<Option<ObjectId>> {
     let Some(text) = read_text(path) else {
         return Ok(None);
     };
@@ -156,7 +156,7 @@ fn read_id(git: &GitHome, path: &Path) -> Result<Option<ObjectId>> {
     Ok(Some(ObjectId::from_hex(git.repo.algorithm(), hex)?))
 }
 
-fn fail(lines: &[&str]) -> anyhow::Error {
+pub(super) fn fail(lines: &[&str]) -> anyhow::Error {
     for line in lines {
         eprintln!("{line}");
     }
@@ -165,7 +165,7 @@ fn fail(lines: &[&str]) -> anyhow::Error {
 
 /// A refusal whose reasons were already printed; the command names itself when it reports it.
 #[derive(Debug)]
-struct Failed;
+pub(super) struct Failed;
 
 impl std::fmt::Display for Failed {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -292,7 +292,11 @@ fn start(git: &GitHome, verb: Verb, args: &PickArgs) -> Result<()> {
 }
 
 /// The parent a commit is picked relative to: its only one, or the one `-m` names for a merge.
-fn parent_of(git: &GitHome, id: &ObjectId, mainline: Option<u32>) -> Result<Option<ObjectId>> {
+pub(super) fn parent_of(
+    git: &GitHome,
+    id: &ObjectId,
+    mainline: Option<u32>,
+) -> Result<Option<ObjectId>> {
     let parents = git.repo.commit(id)?.parents;
     match (parents.len(), mainline) {
         (0, None) => Ok(None),
@@ -349,9 +353,23 @@ fn run(git: &GitHome, opts: &Opts, picks: &[(Verb, ObjectId)], sequenced: bool) 
     Ok(())
 }
 
-fn apply(git: &GitHome, opts: &Opts, verb: Verb, id: &ObjectId) -> Result<Outcome> {
+/// A commit's change merged onto `HEAD`: the index and work tree are written, conflicts left as unmerged entries.
+pub(super) struct Merged {
+    pub picked: Commit,
+    pub parent: Option<ObjectId>,
+    pub label: String,
+    pub ours_tree: ObjectId,
+    pub applied: Applied,
+}
+
+pub(super) fn merge_pick(
+    git: &GitHome,
+    verb: Verb,
+    id: &ObjectId,
+    mainline: Option<u32>,
+) -> Result<Merged> {
     let picked = git.repo.commit(id)?;
-    let parent = parent_of(git, id, opts.mainline)?;
+    let parent = parent_of(git, id, mainline)?;
     let parent_tree = match &parent {
         Some(p) => Some(git.repo.commit(p)?.tree),
         None => None,
@@ -391,6 +409,35 @@ fn apply(git: &GitHome, opts: &Opts, verb: Verb, id: &ObjectId) -> Result<Outcom
             base: &base_label,
         },
     )?;
+    let landing = Landing {
+        theirs: &theirs_label,
+        orig_head: None,
+        strict_index: false,
+    };
+    let applied = match apply_merge(git, &opened, Some(&ours_tree), &merged, &landing)? {
+        Ok(applied) => applied,
+        Err(refusal) => {
+            refusal.blocked.print("merge", "merge");
+            return Err(fail(&["Aborting"]));
+        }
+    };
+    Ok(Merged {
+        picked,
+        parent,
+        label,
+        ours_tree,
+        applied,
+    })
+}
+
+fn apply(git: &GitHome, opts: &Opts, verb: Verb, id: &ObjectId) -> Result<Outcome> {
+    let Merged {
+        picked,
+        parent,
+        label,
+        ours_tree,
+        applied,
+    } = merge_pick(git, verb, id, opts.mainline)?;
     let committer = identity(git, "committer")?;
     let mut message = match verb {
         Verb::Pick => picked.message.clone(),
@@ -409,18 +456,6 @@ fn apply(git: &GitHome, opts: &Opts, verb: Verb, id: &ObjectId) -> Result<Outcom
     let author = match verb {
         Verb::Pick => picked.author.clone(),
         Verb::Revert => identity(git, "author")?,
-    };
-    let landing = Landing {
-        theirs: &theirs_label,
-        orig_head: None,
-        strict_index: false,
-    };
-    let applied = match apply_merge(git, &opened, Some(&ours_tree), &merged, &landing)? {
-        Ok(applied) => applied,
-        Err(refusal) => {
-            refusal.blocked.print("merge", "merge");
-            return Err(fail(&["Aborting"]));
-        }
     };
     if !applied.conflicted.is_empty() {
         let mut text = message.clone();
@@ -475,7 +510,7 @@ fn apply(git: &GitHome, opts: &Opts, verb: Verb, id: &ObjectId) -> Result<Outcom
             ours_tree,
             author,
             message,
-            reflog: verb.command(),
+            reflog: verb.command().to_string(),
         },
     )?;
     Ok(Outcome::Committed(made))
@@ -487,18 +522,18 @@ fn say_empty(verb: Verb) {
     eprintln!("pyn does not keep empty commits; drop it with 'pyn {cmd} --skip'.");
 }
 
-struct Pending {
-    tree: ObjectId,
+pub(super) struct Pending {
+    pub(super) tree: ObjectId,
     /// The tree of `HEAD`, which the new commit's changes are counted against.
-    ours_tree: ObjectId,
-    author: pyn_object::Signature,
-    message: Vec<u8>,
+    pub(super) ours_tree: ObjectId,
+    pub(super) author: pyn_object::Signature,
+    pub(super) message: Vec<u8>,
     /// The reflog action: git words a commit made by `--continue` differently from one made directly.
-    reflog: &'static str,
+    pub(super) reflog: String,
 }
 
-/// Writes the commit, moves the branch (or a detached `HEAD`) to it and reports it as `git commit` does.
-fn commit_pick(git: &GitHome, pending: &Pending) -> Result<ObjectId> {
+/// Writes the commit and moves the branch (or a detached `HEAD`) to it, logging the move as `pending.reflog`.
+pub(super) fn make_commit(git: &GitHome, pending: &Pending) -> Result<ObjectId> {
     let head = git.repo.head()?;
     let committer = identity(git, "committer")?;
     let mut record = Commit {
@@ -526,7 +561,16 @@ fn commit_pick(git: &GitHome, pending: &Pending) -> Result<ObjectId> {
         .write(ObjectKind::Commit, &record.encode(git.algorithm())?)?;
     let first = subject_of(&pending.message);
     git.move_head(&id, &format!("{}: {first}", pending.reflog))
-        .map_err(|e| e.context("HEAD moved while cherry-picking; run the command again"))?;
+        .map_err(|e| e.context("HEAD moved while committing; run the command again"))?;
+    Ok(id)
+}
+
+/// Makes the commit and reports it as `git commit` does.
+fn commit_pick(git: &GitHome, pending: &Pending) -> Result<ObjectId> {
+    let head = git.repo.head()?;
+    let committer = identity(git, "committer")?;
+    let id = make_commit(git, pending)?;
+    let first = subject_of(&pending.message);
     let place = match &head {
         Head::Branch { name, id: None } => format!("{name} (root-commit)"),
         Head::Branch { name, .. } => name.clone(),
@@ -639,7 +683,8 @@ fn continue_pick(git: &GitHome) -> Result<()> {
                     reflog: match verb {
                         Verb::Pick => "commit (cherry-pick)",
                         Verb::Revert => "commit",
-                    },
+                    }
+                    .to_string(),
                 },
             )?;
             let _ = std::fs::remove_file(dir.join(verb.head_file()));

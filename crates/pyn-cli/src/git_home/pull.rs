@@ -148,12 +148,12 @@ impl PullArgs {
             (
                 "--abort",
                 self.abort,
-                "a git merge is given up with `pyn merge --abort`",
+                "a git merge is given up with `pyn merge --abort`, a rebase with `pyn rebase --abort`",
             ),
             (
                 "--continue",
                 self.continue_pull,
-                "a git merge is concluded with `pyn commit`",
+                "a git merge is concluded with `pyn commit`, a rebase with `pyn rebase --continue`",
             ),
             (
                 "--skip",
@@ -170,11 +170,6 @@ impl PullArgs {
                 "--strategy-option",
                 self.strategy_option.is_some(),
                 "merge strategies are not built",
-            ),
-            (
-                "--autostash",
-                self.autostash,
-                "stash the changes with `pyn stash`",
             ),
             (
                 "--gpg-sign",
@@ -306,6 +301,8 @@ impl Candidate {
 enum Rebase {
     Off,
     On,
+    /// `merges` or `interactive`: fine while nothing needs replaying.
+    Unbuilt,
     Unset,
 }
 
@@ -315,6 +312,7 @@ fn rebase_setting(git: &GitHome, args: &PullArgs, branch: Option<&str>) -> Resul
     }
     let from = |v: &str| match v.to_ascii_lowercase().as_str() {
         "false" | "no" | "off" | "0" | "" => Rebase::Off,
+        "merges" | "m" | "interactive" | "i" => Rebase::Unbuilt,
         _ => Rebase::On,
     };
     if let Some(given) = &args.rebase {
@@ -449,11 +447,19 @@ pub fn pull(git: &GitHome, args: PullArgs) -> Result<()> {
         Head::Detached(_) => None,
     };
     let rebase = rebase_setting(git, &args, branch)?;
-    let rebase_on = matches!(rebase, Rebase::On);
+    let rebase_on = matches!(rebase, Rebase::On | Rebase::Unbuilt);
     let rebase_unset = matches!(rebase, Rebase::Unset);
+    if args.autostash && !rebase_on {
+        crate::usage_error(
+            "`pyn pull --autostash`: only a rebase stashes first; run `pyn stash`, or pull with --rebase",
+        );
+    }
     let how = integration(git, &args)?;
     if !args.dry_run {
         refuse_unfinished(git)?;
+        if rebase_on {
+            super::rebase::require_clean_for_pull(git, args.autostash)?;
+        }
     }
 
     let typed: Vec<String> = std::env::args()
@@ -505,7 +511,17 @@ pub fn pull(git: &GitHome, args: PullArgs) -> Result<()> {
             return Ok(());
         }
         if !git.is_ancestor(&ours, &theirs)? {
-            die("rebase is not built; use --no-rebase");
+            if matches!(rebase, Rebase::Unbuilt) {
+                die(
+                    "rebasing with merges or interactively is not built; use --rebase or --no-rebase",
+                );
+            }
+            return super::rebase::pull_rebase(
+                git,
+                &theirs,
+                args.autostash.then_some(true),
+                args.quiet > 0,
+            );
         }
     }
     if rebase_unset

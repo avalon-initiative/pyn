@@ -57,6 +57,16 @@ impl ResetArgs {
         }
     }
 
+    /// `reset --hard -q [<rev>]`, which rebase uses to drop a stopped pick or to go back.
+    pub(crate) fn quiet_hard(rev: Option<&str>) -> Self {
+        Self {
+            hard: true,
+            quiet: true,
+            revs: rev.map(str::to_string).into_iter().collect(),
+            ..Self::default()
+        }
+    }
+
     pub(crate) fn kind(&self) -> crate::git_home::ResetKind {
         use crate::git_home::ResetKind;
         match () {
