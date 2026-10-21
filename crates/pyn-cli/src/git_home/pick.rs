@@ -534,11 +534,20 @@ pub(super) struct Pending {
 
 /// Writes the commit and moves the branch (or a detached `HEAD`) to it, logging the move as `pending.reflog`.
 pub(super) fn make_commit(git: &GitHome, pending: &Pending) -> Result<ObjectId> {
-    let head = git.repo.head()?;
+    let parents = git.repo.head()?.id().into_iter().collect();
+    make_commit_on(git, pending, parents)
+}
+
+/// Like [`make_commit`] with the parents given, so a commit can replace the one `HEAD` is on.
+pub(super) fn make_commit_on(
+    git: &GitHome,
+    pending: &Pending,
+    parents: Vec<ObjectId>,
+) -> Result<ObjectId> {
     let committer = identity(git, "committer")?;
     let mut record = Commit {
         tree: pending.tree,
-        parents: head.id().into_iter().collect(),
+        parents,
         author: pending.author.clone(),
         committer: committer.clone(),
         extra_headers: Vec::new(),

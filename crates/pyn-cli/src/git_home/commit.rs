@@ -179,16 +179,24 @@ fn forced_author(opts: &CommitOptions) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
 }
 
 pub fn commit(git: &GitHome, opts: &CommitOptions) -> Result<()> {
-    refuse_states(
-        git,
+    let rebasing = super::rebase::in_progress(git);
+    let blocked: &[&str] = if rebasing {
+        &[
+            "CHERRY_PICK_HEAD",
+            "REVERT_HEAD",
+            "rebase-apply",
+            "sequencer",
+        ]
+    } else {
         &[
             "CHERRY_PICK_HEAD",
             "REVERT_HEAD",
             "rebase-merge",
             "rebase-apply",
             "sequencer",
-        ],
-    )?;
+        ]
+    };
+    refuse_states(git, blocked)?;
     let amend = opts.flags.amend;
     let file = opts.flags.message_file.as_ref().or(opts.file.as_ref());
     if file.is_some() && !opts.messages.is_empty() {
@@ -196,7 +204,8 @@ pub fn commit(git: &GitHome, opts: &CommitOptions) -> Result<()> {
     }
     let head = git.repo.head()?;
     let (branch_ref, parent) = match (&head, git.repo.git().refs().head()?) {
-        (Head::Branch { id, .. }, Ref::Symbolic(target)) => (target, *id),
+        (Head::Branch { id, .. }, Ref::Symbolic(target)) => (Some(target), *id),
+        (Head::Detached(id), _) if rebasing => (None, Some(*id)),
         _ => bail!(
             "HEAD is detached; pyn commits only on a branch, so create or switch to one with git first"
         ),
@@ -329,8 +338,9 @@ pub fn commit(git: &GitHome, opts: &CommitOptions) -> Result<()> {
     if staged_now {
         git.save_index(&opened, &index)?;
     }
-    let Head::Branch { name, .. } = &head else {
-        unreachable!("checked above");
+    let name = match &head {
+        Head::Branch { name, .. } => name.as_str(),
+        Head::Detached(_) => "detached HEAD",
     };
     let subject = String::from_utf8_lossy(&message);
     let first = subject.lines().next().unwrap_or_default();
@@ -340,12 +350,11 @@ pub fn commit(git: &GitHome, opts: &CommitOptions) -> Result<()> {
         (_, _, false) => " (merge)",
         _ => "",
     };
-    git.move_ref(
-        &branch_ref,
-        parent.as_ref(),
-        &id,
-        &format!("commit{kind}: {first}"),
-    )
+    let note = format!("commit{kind}: {first}");
+    match &branch_ref {
+        Some(target) => git.move_ref(target, parent.as_ref(), &id, &note),
+        None => git.move_head(&id, &note),
+    }
     .context("HEAD moved while committing; run the command again")?;
     clear_merge_state(git);
     let root = if rooted { " (root-commit)" } else { "" };

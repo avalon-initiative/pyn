@@ -27,6 +27,10 @@ struct Env {
 
 impl Env {
     fn git(&self, cwd: &Path, args: &[&str]) -> Output {
+        self.git_env(cwd, args, &[])
+    }
+
+    fn git_env(&self, cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> Output {
         Command::new("git")
             .args([
                 "-c",
@@ -45,6 +49,7 @@ impl Env {
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("GIT_EDITOR", "true")
             .envs(IDENTITY)
+            .envs(envs.iter().copied())
             .output()
             .expect("git is installed")
     }
@@ -60,16 +65,22 @@ impl Env {
     }
 
     fn pyn(&self, cwd: &Path, args: &[&str]) -> Output {
+        self.pyn_env(cwd, args, &[])
+    }
+
+    fn pyn_env(&self, cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> Output {
         Command::new(env!("CARGO_BIN_EXE_pyn"))
             .args(args)
             .current_dir(cwd)
             .env("HOME", &self.home)
             .env("XDG_CONFIG_HOME", self.home.join("xdg"))
             .env("TZ", "UTC")
+            .env("GIT_EDITOR", "true")
             .envs(IDENTITY)
             .env("PYN_CONFIG_DIR", self.home.join("pyn-config"))
             .env_remove("PYN_SERVER")
             .env_remove("PYN_REPO")
+            .envs(envs.iter().copied())
             .output()
             .unwrap()
     }
@@ -120,6 +131,7 @@ fn read(dir: &Path, name: &str) -> String {
 fn sheet(dir: &Path, name: &str) -> String {
     read(dir, &format!("rebase-merge/{name}"))
         .lines()
+        .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
         .map(|l| {
             let mut w = l.splitn(3, ' ');
             let (cmd, id, rest) = (w.next(), w.next().unwrap_or(""), w.next().unwrap_or(""));
@@ -131,18 +143,32 @@ fn sheet(dir: &Path, name: &str) -> String {
         .join("\n")
 }
 
+/// The text without git 2.55's `# Conflicts:` list, which 2.43 does not write.
+fn without_conflict_list(text: String) -> String {
+    match text.split_once("\n# Conflicts:\n") {
+        Some((before, _)) => format!("{before}\n"),
+        None => text,
+    }
+}
+
 /// What a rebase may change: refs, pseudo-refs, the state folder, the index, the work tree and the stash.
 fn state(env: &Env, dir: &Path) -> Vec<String> {
+    let rebasing = dir.join(".git/rebase-merge").is_dir();
     let mut files = BTreeMap::new();
     files_under(dir, dir, &mut files);
     let mut out = vec![
         read(dir, "HEAD"),
         env.ok(dir, &["for-each-ref"]),
         read(dir, "ORIG_HEAD"),
-        read(dir, "REBASE_HEAD"),
+        // git leaves REBASE_HEAD behind after some interactive rebases; pyn removes it.
+        if rebasing {
+            read(dir, "REBASE_HEAD")
+        } else {
+            String::new()
+        },
         read(dir, "MERGE_HEAD"),
-        read(dir, "MERGE_MSG"),
-        format!("{}", dir.join(".git/rebase-merge").is_dir()),
+        without_conflict_list(read(dir, "MERGE_MSG")),
+        format!("{rebasing}"),
     ];
     for name in [
         "head-name",
@@ -172,6 +198,22 @@ fn state(env: &Env, dir: &Path) -> Vec<String> {
     out.push(sheet(dir, "git-rebase-todo"));
     out.push(sheet(dir, "done"));
     out.push(env.ok(dir, &["ls-files", "-s"]));
+    // git leaves the chain's message files behind after the chain; they only matter while it is stopped.
+    let in_chain = sheet(dir, "done")
+        .lines()
+        .last()
+        .is_some_and(|l| l.starts_with("squash") || l.starts_with("fixup"));
+    for name in ["amend", "message-squash", "message-fixup", "current-fixups"] {
+        let text = read(dir, &format!("rebase-merge/{name}"))
+            .trim_end()
+            .to_string();
+        out.push(if name == "amend" || in_chain {
+            text
+        } else {
+            String::new()
+        });
+    }
+    out.push(without_conflict_list(read(dir, "SQUASH_MSG")));
     out.push(
         env.ok(dir, &["stash", "list", "--format=%H %s"])
             .replace(' ', "_"),
@@ -207,7 +249,12 @@ fn part_name(i: usize) -> String {
         16 => "git-rebase-todo".into(),
         17 => "done".into(),
         18 => "ls-files".into(),
-        19 => "stash list".into(),
+        19 => "rebase-merge/amend".into(),
+        20 => "rebase-merge/message-squash".into(),
+        21 => "rebase-merge/message-fixup".into(),
+        22 => "rebase-merge/current-fixups".into(),
+        23 => "SQUASH_MSG".into(),
+        24 => "stash list".into(),
         _ => "work tree".into(),
     }
 }
@@ -245,11 +292,22 @@ impl Pair {
 
     /// Runs `rebase <args>` in both; the exit status and every piece of state must agree. Returns the status.
     fn same(&self, args: &[&str], label: &str) -> i32 {
+        self.same_env(args, label, &[])
+    }
+
+    /// [`Pair::same`] with extra environment variables (the editors) for both.
+    fn same_env(&self, args: &[&str], label: &str, envs: &[(&str, &str)]) -> i32 {
         let mut full = vec!["rebase"];
         full.extend(args);
-        let g = self.env.git(&self.git, &full);
-        let p = self.env.pyn(&self.pyn, &full);
-        let what = format!("{label}: rebase {args:?}");
+        self.same_command(&full, label, envs)
+    }
+
+    /// Runs any command in both; the exit status and the state must agree.
+    fn same_command(&self, full: &[&str], label: &str, envs: &[(&str, &str)]) -> i32 {
+        let args = &full[1..];
+        let g = self.env.git_env(&self.git, full, envs);
+        let p = self.env.pyn_env(&self.pyn, full, envs);
+        let what = format!("{label}: {} {args:?}", full[0]);
         assert_eq!(
             p.status.code(),
             g.status.code(),
@@ -318,8 +376,12 @@ static TICK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1_
 
 /// Commits everything with a later date each time, so history order never depends on ties.
 fn commit_all(env: &Env, dir: &Path, message: &str) {
-    env.ok(dir, &["add", "-A"]);
     let tick = TICK.fetch_add(10, std::sync::atomic::Ordering::SeqCst);
+    commit_at(env, dir, message, tick);
+}
+
+fn commit_at(env: &Env, dir: &Path, message: &str, tick: u64) {
+    env.ok(dir, &["add", "-A"]);
     let out = Command::new("git")
         .args([
             "-c",
@@ -712,11 +774,512 @@ fn pyn_continues_what_git_stopped() {
 }
 
 #[test]
-fn interactive_and_the_other_unbuilt_options_are_usage_errors() {
+fn the_other_unbuilt_options_are_usage_errors() {
     let p = history("sha1");
     p.on("clean");
-    for flag in ["-i", "--root", "--rebase-merges", "--autosquash", "--apply"] {
+    for flag in ["--root", "--rebase-merges", "--apply", "--keep-base"] {
         let out = p.env.pyn(&p.pyn, &["rebase", flag, "main"]);
         assert_eq!(out.status.code(), Some(129), "{flag}");
     }
+}
+
+fn seq(expr: &str) -> String {
+    format!("sed -i -e '{expr}'")
+}
+
+impl Pair {
+    /// A commit with the same dates in both.
+    fn commit(&self, name: &str, text: &str, message: &str) {
+        let tick = TICK.fetch_add(10, std::sync::atomic::Ordering::SeqCst);
+        for dir in [&self.git, &self.pyn] {
+            write(dir, name, text);
+            commit_at(&self.env, dir, message, tick);
+        }
+    }
+
+    /// `clean` (c1, c2) with a `fixup!`, a `squash!` and a nested `fixup!` commit after them.
+    fn with_fixups(&self) {
+        self.on("clean");
+        self.commit("y1", "y1\n", "fixup! c1 first line");
+        self.commit("y2", "y2\n", "squash! c2");
+        self.commit("y3", "y3\n", "fixup! fixup! c1 first line");
+    }
+
+    fn sheet(&self, expr: &str) -> [(&'static str, String); 1] {
+        [("GIT_SEQUENCE_EDITOR", seq(expr))]
+    }
+}
+
+#[test]
+fn an_unedited_sheet_replays_like_a_plain_rebase() {
+    both_formats(|f| {
+        let p = history(f);
+        p.on("clean");
+        let keep = p.sheet("1s/^pick/pick/");
+        let envs: Vec<(&str, &str)> = keep.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        assert_eq!(p.same_env(&["-i", "main"], &format!("{f} -i"), &envs), 0);
+        let p = history(f);
+        p.on("clean");
+        assert_eq!(
+            p.same_env(&["-i", "base"], &format!("{f} -i on its base"), &envs),
+            0
+        );
+        let p = history(f);
+        p.on("clean");
+        assert_eq!(
+            p.same_env(&["-i", "clean"], &format!("{f} -i nothing"), &envs),
+            0
+        );
+    });
+}
+
+fn run_sheet(p: &Pair, expr: &str, args: &[&str], label: &str, more: &[(&str, &str)]) -> i32 {
+    let sheet = seq(expr);
+    let mut envs = vec![("GIT_SEQUENCE_EDITOR", sheet.as_str())];
+    envs.extend_from_slice(more);
+    let mut full = vec!["-i"];
+    full.extend_from_slice(args);
+    p.same_env(&full, label, &envs)
+}
+
+#[test]
+fn reorder_and_drop() {
+    both_formats(|f| {
+        let p = history(f);
+        p.on("clean");
+        assert_eq!(
+            run_sheet(&p, "1{h;d};2{G}", &["main"], &format!("{f} swap"), &[]),
+            0
+        );
+        let p = history(f);
+        p.on("clean");
+        assert_eq!(
+            run_sheet(&p, "1s/^pick/drop/", &["main"], &format!("{f} drop"), &[]),
+            0
+        );
+        let p = history(f);
+        p.on("clean");
+        assert_eq!(
+            run_sheet(
+                &p,
+                "1s/^pick/d/;2s/^pick/p/",
+                &["main"],
+                &format!("{f} letters"),
+                &[]
+            ),
+            0
+        );
+    });
+}
+
+#[test]
+fn reword_uses_the_message_the_editor_leaves() {
+    both_formats(|f| {
+        let p = history(f);
+        p.on("clean");
+        let editor = seq("1s/^/Reworded: /");
+        let more = [("GIT_EDITOR", editor.as_str())];
+        assert_eq!(
+            run_sheet(
+                &p,
+                "1s/^pick/reword/;2s/^pick/r/",
+                &["main"],
+                &format!("{f} reword"),
+                &more
+            ),
+            0
+        );
+        let p = history(f);
+        p.on("clean");
+        assert_eq!(
+            run_sheet(
+                &p,
+                "1s/^pick/reword/",
+                &["base"],
+                &format!("{f} reword in place"),
+                &more
+            ),
+            0
+        );
+        let p = history(f);
+        p.on("clean");
+        let empty = seq("1,$d");
+        let none = [("GIT_EDITOR", empty.as_str())];
+        let code = run_sheet(
+            &p,
+            "1s/^pick/reword/",
+            &["main"],
+            &format!("{f} empty message"),
+            &none,
+        );
+        assert_ne!(code, 0);
+    });
+}
+
+#[test]
+fn edit_stops_and_continue_goes_on() {
+    both_formats(|f| {
+        let p = history(f);
+        p.on("clean");
+        assert_eq!(
+            run_sheet(&p, "1s/^pick/edit/", &["main"], &format!("{f} edit"), &[]),
+            0
+        );
+        assert_eq!(p.same(&["--continue"], &format!("{f} continue")), 0);
+        let p = history(f);
+        p.on("clean");
+        assert_eq!(
+            run_sheet(&p, "1s/^pick/edit/", &["main"], &format!("{f} edit"), &[]),
+            0
+        );
+        p.both(|_, d| write(d, "extra", "x\n"));
+        p.both(|env, d| {
+            env.ok(d, &["add", "extra"]);
+        });
+        let editor = seq("1s/^/Amended: /");
+        let more = [("GIT_EDITOR", editor.as_str())];
+        assert_eq!(
+            p.same_env(&["--continue"], &format!("{f} staged"), &more),
+            0
+        );
+        let p = history(f);
+        p.on("clean");
+        assert_eq!(
+            run_sheet(&p, "1s/^pick/edit/", &["main"], &format!("{f} edit"), &[]),
+            0
+        );
+        assert_eq!(
+            p.same_command(
+                &["commit", "--amend", "-m", "by hand"],
+                &format!("{f} amend"),
+                &[]
+            ),
+            0
+        );
+        p.both(|_, d| write(d, "more", "m\n"));
+        p.both(|env, d| {
+            env.ok(d, &["add", "more"]);
+        });
+        assert_eq!(
+            p.same_command(
+                &["commit", "-m", "another"],
+                &format!("{f} new commit"),
+                &[]
+            ),
+            0
+        );
+        assert_eq!(p.same(&["--continue"], &format!("{f} continue after")), 0);
+        let p = history(f);
+        p.on("clean");
+        assert_eq!(
+            run_sheet(&p, "1s/^pick/edit/", &["main"], &format!("{f} edit"), &[]),
+            0
+        );
+        p.both(|_, d| write(d, "c1", "dirty\n"));
+        assert_eq!(p.same(&["--continue"], &format!("{f} dirty")), 1);
+        let p = history(f);
+        p.on("clean");
+        assert_eq!(
+            run_sheet(&p, "1s/^pick/edit/", &["main"], &format!("{f} edit"), &[]),
+            0
+        );
+        assert_eq!(p.same(&["--skip"], &format!("{f} skip")), 0);
+        let p = history(f);
+        p.on("clean");
+        assert_eq!(
+            run_sheet(&p, "1s/^pick/edit/", &["main"], &format!("{f} edit"), &[]),
+            0
+        );
+        assert_eq!(p.same(&["--abort"], &format!("{f} abort")), 0);
+    });
+}
+
+#[test]
+fn squash_and_fixup_meld_commits_and_their_messages() {
+    both_formats(|f| {
+        for expr in [
+            "2s/^pick/squash/",
+            "2s/^pick/fixup/",
+            "2s/^pick/s/;1s/^pick/r/",
+        ] {
+            let p = history(f);
+            p.on("clean");
+            let editor = seq("1s/^/Melded: /");
+            let more = [("GIT_EDITOR", editor.as_str())];
+            assert_eq!(
+                run_sheet(&p, expr, &["main"], &format!("{f} {expr}"), &more),
+                0
+            );
+        }
+        let p = history(f);
+        p.on("clean");
+        assert_eq!(
+            run_sheet(
+                &p,
+                "1,2s/^pick/edit/",
+                &["base"],
+                &format!("{f} edit twice"),
+                &[]
+            ),
+            0
+        );
+        let p = history(f);
+        p.on("side");
+        assert_eq!(
+            run_sheet(
+                &p,
+                "3s/^pick/fixup/;4s/^pick/squash/",
+                &["main"],
+                &format!("{f} chain"),
+                &[]
+            ),
+            1
+        );
+    });
+}
+
+#[test]
+fn a_conflict_in_a_chain_keeps_the_messages_for_continue_and_skip() {
+    both_formats(|f| {
+        for resolution in ["continue", "skip"] {
+            for word in ["squash", "fixup"] {
+                let p = history(f);
+                p.on("side");
+                let expr = format!("2s/^pick/{word}/");
+                let label = format!("{f} {word} {resolution}");
+                assert_eq!(run_sheet(&p, &expr, &["main"], &label, &[]), 1);
+                if resolution == "continue" {
+                    p.resolve("g", "gM+gS\n");
+                    assert_eq!(p.same(&["--continue"], &format!("{label} resolved")), 1);
+                } else {
+                    assert_eq!(p.same(&["--skip"], &format!("{label} skipped")), 1);
+                }
+                p.resolve("bin", "resolved\n");
+                assert_eq!(p.same(&["--continue"], &format!("{label} last")), 0);
+            }
+        }
+        let p = history(f);
+        p.on("side");
+        assert_eq!(
+            run_sheet(
+                &p,
+                "2s/^pick/reword/",
+                &["main"],
+                &format!("{f} reword stop"),
+                &[]
+            ),
+            1
+        );
+        p.resolve("g", "gM+gS\n");
+        let editor = seq("1s/^/Fixed: /");
+        let more = [("GIT_EDITOR", editor.as_str())];
+        assert_eq!(
+            p.same_env(&["--continue"], &format!("{f} reword resolved"), &more),
+            1
+        );
+    });
+}
+
+#[test]
+fn exec_runs_commands_and_stops_when_one_fails() {
+    both_formats(|f| {
+        let p = history(f);
+        p.on("clean");
+        assert_eq!(
+            run_sheet(
+                &p,
+                "1a exec test -f c1",
+                &["main"],
+                &format!("{f} exec"),
+                &[]
+            ),
+            0
+        );
+        let p = history(f);
+        p.on("clean");
+        assert_eq!(
+            run_sheet(&p, "1a exec false", &["main"], &format!("{f} failing"), &[]),
+            1
+        );
+        assert_eq!(p.same(&["--continue"], &format!("{f} continue past it")), 0);
+        let p = history(f);
+        p.on("clean");
+        assert_eq!(
+            run_sheet(
+                &p,
+                "1a exec echo dirt >> c1",
+                &["main"],
+                &format!("{f} dirty"),
+                &[]
+            ),
+            1
+        );
+        let p = history(f);
+        p.on("clean");
+        assert_eq!(
+            run_sheet(&p, "1a break", &["main"], &format!("{f} break"), &[]),
+            0
+        );
+        assert_eq!(p.same(&["--continue"], &format!("{f} after break")), 0);
+        let p = history(f);
+        p.on("clean");
+        assert_eq!(
+            p.same(
+                &["-x", "test -f c1", "-x", "true", "main"],
+                &format!("{f} -x")
+            ),
+            0
+        );
+        let p = history(f);
+        p.on("clean");
+        assert_eq!(
+            p.same(&["--exec", "false", "main"], &format!("{f} --exec fails")),
+            1
+        );
+        assert_eq!(p.same(&["--continue"], &format!("{f} --exec continue")), 1);
+    });
+}
+
+#[test]
+fn autosquash_moves_fixup_commits_under_their_targets() {
+    both_formats(|f| {
+        let p = history(f);
+        p.with_fixups();
+        assert_eq!(
+            p.same_env(
+                &["-i", "--autosquash", "main"],
+                &format!("{f} autosquash"),
+                &[("GIT_SEQUENCE_EDITOR", ":")]
+            ),
+            0
+        );
+        let p = history(f);
+        p.with_fixups();
+        p.both(|env, d| {
+            env.ok(d, &["config", "rebase.autosquash", "true"]);
+        });
+        let editor = seq("1s/^/Squashed: /");
+        let envs = [
+            ("GIT_SEQUENCE_EDITOR", ":"),
+            ("GIT_EDITOR", editor.as_str()),
+        ];
+        assert_eq!(
+            p.same_env(&["-i", "main"], &format!("{f} configured"), &envs),
+            0
+        );
+        let p = history(f);
+        p.with_fixups();
+        p.both(|env, d| {
+            env.ok(d, &["config", "rebase.autosquash", "true"]);
+        });
+        assert_eq!(
+            p.same_env(
+                &["-i", "--no-autosquash", "main"],
+                &format!("{f} declined"),
+                &[("GIT_SEQUENCE_EDITOR", ":")]
+            ),
+            0
+        );
+        // git 2.43 ignores --autosquash without -i and later versions apply it, so only pyn is checked.
+        let p = history(f);
+        p.with_fixups();
+        let out = p.env.pyn(&p.pyn, &["rebase", "--autosquash", "main"]);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            p.env.ok(
+                &p.pyn,
+                &["log", "--format=%s", "-3", "--reverse", "main..HEAD"]
+            ),
+            "c1 first line\nc2\n"
+        );
+    });
+}
+
+#[test]
+fn a_bad_sheet_stops_and_edit_todo_fixes_it() {
+    both_formats(|f| {
+        let p = history(f);
+        p.on("clean");
+        assert_eq!(
+            run_sheet(&p, "2s/^pick/bogus/", &["main"], &format!("{f} bogus"), &[]),
+            1
+        );
+        assert_eq!(p.same(&["--continue"], &format!("{f} still bogus")), 1);
+        let fix = seq("s/^bogus/pick/");
+        let envs = [("GIT_SEQUENCE_EDITOR", fix.as_str())];
+        assert_eq!(
+            p.same_env(&["--edit-todo"], &format!("{f} edit-todo"), &envs),
+            0
+        );
+        assert_eq!(p.same(&["--continue"], &format!("{f} fixed")), 0);
+        let p = history(f);
+        p.on("clean");
+        assert_eq!(
+            run_sheet(
+                &p,
+                "1s/^pick/squash/",
+                &["main"],
+                &format!("{f} squash first"),
+                &[]
+            ),
+            1
+        );
+        let p = history(f);
+        p.on("clean");
+        assert_eq!(
+            run_sheet(
+                &p,
+                "/^pick/d",
+                &["main"],
+                &format!("{f} nothing to do"),
+                &[]
+            ),
+            1
+        );
+    });
+}
+
+#[test]
+fn git_and_pyn_continue_each_others_interactive_stops() {
+    both_formats(|f| {
+        for edit_word in ["edit", "squash"] {
+            let p = history(f);
+            p.on("side");
+            let expr = format!("2s/^pick/{edit_word}/");
+            let sheet = seq(&expr);
+            let envs = [("GIT_SEQUENCE_EDITOR", sheet.as_str())];
+            let stopped = p.env.pyn_env(&p.pyn, &["rebase", "-i", "main"], &envs);
+            let reference = p.env.git_env(&p.git, &["rebase", "-i", "main"], &envs);
+            assert_eq!(stopped.status.code(), reference.status.code());
+            for (dir, git_first) in [(&p.pyn, true), (&p.git, false)] {
+                write(dir, "g", "gM+gS\n");
+                p.env.ok(dir, &["add", "g"]);
+                let step = |who_git: bool, dir: &Path| {
+                    if who_git {
+                        p.env.git(dir, &["rebase", "--continue"])
+                    } else {
+                        p.env.pyn(dir, &["rebase", "--continue"])
+                    }
+                };
+                let first = step(git_first, dir);
+                write(dir, "bin", "resolved\n");
+                p.env.ok(dir, &["add", "bin"]);
+                let second = step(git_first, dir);
+                assert!(
+                    first.status.code().is_some() && second.status.code().is_some(),
+                    "{f} {edit_word}"
+                );
+                let _ = (first, second);
+            }
+            let ids = |d: &Path| p.env.ok(d, &["rev-parse", "HEAD"]);
+            let log = |d: &Path| p.env.ok(d, &["log", "--format=%H %s"]);
+            assert_eq!(log(&p.git), log(&p.pyn), "{f} {edit_word}: {}", ids(&p.git));
+            assert!(!p.git.join(".git/rebase-merge").exists());
+            assert!(!p.pyn.join(".git/rebase-merge").exists());
+        }
+    });
 }
