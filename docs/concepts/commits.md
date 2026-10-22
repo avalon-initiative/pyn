@@ -401,6 +401,11 @@ The CLI follows git where it has an equivalent; the differences are listed below
   file whose revision there is newer, `ahead (<commit> has rM)` or `ahead (not in <commit>)` for one that is newer than, or missing from, it.
 - `pyn update --revision <commit>` brings the workspace to that commit, older or newer: files are fetched at the commit's
   revision and files it does not have are removed. A file with local changes is never touched and is reported as skipped.
+- `pyn commit` takes `-m`, `-F`, `-a` and, so scripts written for `git commit` run unchanged, `-q`/`--quiet` (no summary; errors and
+  warnings still print), `-n`/`--no-verify`, `--verify`, `-v`/`--verbose`, `--status`, `--no-status` and `--no-edit`, the last six
+  accepted and ignored because pyn runs no hooks and opens no editor. The rest of git's flags (`--author`, `--date`, `-s`, `--amend`, `--allow-empty`,
+  `--allow-empty-message`, `--cleanup`, `--reset-author`, `--trailer`, `-C`, ...) are a usage error (`129`) naming the flag;
+  [the full list](git-compatibility.md#commit-flags-on-a-git-home) says which a git repository takes.
 - `pyn show [<commit>]` prints `commit <full hash>`, `Author: <name> <<email>>`, `Date:` and the message, then what the commit changed against its parent (the newest if none is named).
 - `pyn diff` prints a [unified diff](#diff-output).
 

@@ -952,7 +952,7 @@ pub fn finish(
     adopt(backend, api, ws, &snap, &touched)?;
     Index::default().save(ws)?;
     clear(ws)?;
-    println!("Merge made; {} is now at {}.", state.branch, short(&commit));
+    crate::quiet::say!("Merge made; {} is now at {}.", state.branch, short(&commit));
     stranded::print(
         "The merged policy left shared versions on other branches that can no longer merge:",
         &done.stranded,

@@ -310,7 +310,7 @@ With the store on, `add`, `commit`, `status` and `branch` work against the store
 - `pyn reset [--soft|--mixed|--hard] [<commit>]` moves the local branch back to `HEAD~N`, a hash on its unpublished chain, or
   the last published commit (never further), which is the way out of a commit the server will not accept. `--soft` keeps the
   dropped changes staged, `--mixed` (the default) keeps them in the files unstaged and clears the staging area, `--hard` puts
-  the files back to the commit and asks you to type the branch name (`--yes` skips that). Untracked files are left alone.
+  the files back to the commit and asks you to type the branch name. `--yes` skips that; without a terminal and without `--yes` it refuses and changes nothing, so a script passes `--yes`. Untracked files are left alone.
 - `pyn lock <path>` for a path a local commit changed takes the server's head revision as the base, so the lock the pull hint
   asks for works after another person pushed a newer revision of it; `pyn pull` then keeps your version.
 

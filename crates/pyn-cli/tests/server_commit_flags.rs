@@ -138,3 +138,77 @@ fn allow_empty_is_refused_because_the_server_refuses_empty_commits() {
         assert!(err.contains("not supported on a pyn server"), "{err}");
     }
 }
+
+#[test]
+fn quiet_prints_no_summary_but_still_commits() {
+    for (extra, flag) in [
+        (&["--local-store"][..], "-q"),
+        (&["--local-store"], "--quiet"),
+        (&["--no-local-store"], "-q"),
+    ] {
+        let (env, ws) = seeded(extra);
+        stage_edit(&env, &ws);
+        let out = env.run(&ws, "alice", &["commit", flag, "-m", "quietly"]);
+        assert!(out.status.success(), "{out:?}");
+        assert!(out.stdout.is_empty(), "{flag}: {out:?}");
+        let log = env.ok(&ws, "alice", &["log", "--commits"]);
+        assert!(log.contains("quietly"), "{log}");
+    }
+}
+
+#[test]
+fn quiet_covers_a_commit_of_named_paths() {
+    let (env, ws) = seeded(&["--no-local-store"]);
+    std::fs::write(ws.join("Source/a.cpp"), "two").unwrap();
+    let out = env.run(
+        &ws,
+        "alice",
+        &["commit", "-q", "-m", "named", "Source/a.cpp"],
+    );
+    assert!(out.status.success(), "{out:?}");
+    assert!(out.stdout.is_empty(), "{out:?}");
+}
+
+#[test]
+fn flags_that_change_nothing_here_are_accepted() {
+    let (env, ws) = seeded(&["--local-store"]);
+    for (i, flags) in [
+        &["-n"][..],
+        &["--no-verify"],
+        &["--verify"],
+        &["-v"],
+        &["--status"],
+        &["--no-status"],
+        &["--no-edit"],
+        &["-q", "-n", "--no-status", "--no-edit"],
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        std::fs::write(ws.join("Source/a.cpp"), format!("edit {i}")).unwrap();
+        env.ok(&ws, "alice", &["add", "Source/a.cpp"]);
+        let mut args = vec!["commit", "-m", "accepted"];
+        args.extend(flags);
+        env.ok(&ws, "alice", &args);
+    }
+    let log = env.ok(&ws, "alice", &["log", "--commits"]);
+    assert_eq!(log.matches("accepted").count(), 8, "{log}");
+}
+
+#[test]
+fn flags_that_need_git_are_still_refused_here() {
+    let (env, ws) = seeded(&["--local-store"]);
+    stage_edit(&env, &ws);
+    for flag in [
+        &["--allow-empty-message"][..],
+        &["--cleanup=strip"],
+        &["--reset-author"],
+        &["--trailer", "A: b"],
+        &["-C", "HEAD"],
+    ] {
+        let mut args = vec!["commit", "-m", "x"];
+        args.extend(flag);
+        let out = env.run(&ws, "alice", &args);
+        assert_eq!(out.status.code(), Some(129), "{flag:?}");
+    }
+}
