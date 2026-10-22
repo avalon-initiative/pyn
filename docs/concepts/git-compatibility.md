@@ -1337,18 +1337,22 @@ input. `<Verb>` and the help text follow the command: `Stage` for `add`, `Stash`
 current state towards the source, with the `a/` and `b/` names swapped, as git does). A mode change, a deletion and an addition
 are asked as `mode change`, `deletion` and `addition`.
 
-The answers are `y`, `n`, `q`, `a`, `d` (upper case too), `j`, `J`, `k`, `K`, `g`, `/`, `s`, `e` and `?`. Only the keys that can
-apply are offered and listed in the help; a blank line asks again and any other answer prints the help. `j` and `k` go to the
-next and previous undecided hunk, `J` and `K` to the next and previous one. `g` lists the hunks in pages of 20 (` ` undecided,
-`+` chosen, `-` skipped) and asks for a number, or takes it right after the key (`g3`); `/` takes a regular expression (the
-`regex` crate's syntax, not POSIX) matched against the hunk text, from the current hunk on. `s` splits a hunk at the context between
-its runs of changes and prints `Split into <n> hunks.`; `e` writes the hunk to `.git/addp-hunk-edit.diff`, starts the editor
-(`GIT_EDITOR`, `core.editor`, `VISUAL`, `EDITOR`) and takes the hunk back with `#` lines removed; an edit that leaves nothing
-keeps the hunk unchanged, one that does not fit the file is reported (`error: patch failed: <path>:<line>`) and asks
-`Your edited hunk does not apply. Edit again (saying "no" discards!) [y/n]? `. Messages about a key that cannot be used go to
-standard error, `Split into <n> hunks.` and the prompts to standard output. A blank line follows each file's questions, end of input leaves
-the file with what was chosen so far, and `q` stops with the choices already made applied. With nothing to ask about it prints
-`No changes.` (or `Only binary files changed.`) on standard error and exits `0`.
+The answers are `y`, `n`, `q`, `a`, `d` (upper case too), `j`, `J`, `k`, `K`, `g`, `/`, `s`, `e`, `p`, `P` and `?`, as in git 2.55.
+An answer is one letter: a blank line asks again, `Only one letter is expected, got '<text>'` answers a longer one (except `g<n>`
+and `/<regex>`, which take their argument at once), and `Unknown command '<c>' (use '?' for help)` a letter that is no key. Only
+the keys that can apply are offered and listed in the help. `j` and `k` go to the next and previous undecided hunk and `J` and `K`
+to the next and previous one, all rolling over at the ends; they say `No other undecided hunk` or `No other hunk` when there is
+nowhere to go. A hunk already decided shows `(was: y)` or `(was: n)` in its prompt. The hunk is printed when the prompt moves to it
+(and again by `p` and `P`, which print it the same way without a pager), not after help or a refused key. `g` lists the hunks in
+pages of 20 (` ` undecided, `+` chosen, `-` skipped) and asks for a number; `/` takes a regular expression (the `regex` crate's
+syntax, not POSIX) matched against the hunk text, from the current hunk on. `s` splits a hunk at the context between its runs of
+changes and prints `Split into <n> hunks.` (`Sorry, cannot split this hunk` when it has one run); `e` writes the hunk to
+`.git/addp-hunk-edit.diff`, starts the editor (`GIT_EDITOR`, `core.editor`, `VISUAL`, `EDITOR`) and takes the hunk back with `#`
+lines removed; an edit that leaves nothing keeps the hunk unchanged, one that does not fit the file is reported
+(`error: patch failed: <path>:<line>`) and asks `Your edited hunk does not apply. Edit again (saying "no" discards!) [y/n]? `.
+Messages about a key go to standard output, errors from applying to standard error. A blank line follows each file's questions;
+`q` stops with the choices already made applied, and so does the end of input, which also skips the files not yet asked about.
+With nothing to ask about it prints `No changes.` (or `Only binary files changed.`) on standard output and exits `0`.
 
 What a choice does: `add -p` writes the chosen hunks (and mode changes) into the index only. `restore -p` takes them out of the
 work tree, the index or both; when the chosen hunks fit the work tree but not the index it says so and asks
@@ -1359,13 +1363,13 @@ files, saves a stash whose work tree is `HEAD` with the chosen hunks, takes them
 combined with `-n`, nor `restore -p` with `--ours`, `--theirs` or `--merge`. The prompt reads standard input, so a
 script can answer it; binary files and a file replaced by a symlink (or the reverse) are not offered.
 
-Differences from git 2.43, which this was written against: binary files are counted for the notice but never asked about; the
-text of regular-expression errors is the `regex` crate's; the diff uses 3 lines of context and ignores `diff.context`,
-`--inter-hunk-context` and colour (`color.ui`, `interactive.diffFilter` and `interactive.singleKey` are not read); and where git
-2.43 acts on a key it did not offer because it remembers permissions from an earlier hunk (`K` or `k` on the first hunk, `J` or
-`j` on the last, `s` on a hunk that has a single change after a split), pyn gives the same refusal it gives when nothing has been
-shown before. Covered against the real git by `git_patch.rs`, which compares the index, work tree, stash and exit status after
-the same answers.
+Differences from git: binary files are counted for the notice but never asked about; the text of regular-expression errors is
+the `regex` crate's; the diff uses 3 lines of context and ignores `diff.context`, `--inter-hunk-context` and colour (`color.ui`,
+`interactive.diffFilter` and `interactive.singleKey` are not read). git 2.43 differs from 2.55 in the prompt (no `p`, `P` or
+`(was: ...)`, `j`/`k` offered only when they apply, help wording, hunk printed again after every answer, first letter of a longer
+answer taken, end of input moving on to the next file, messages on standard error); pyn follows 2.55, and the tests that compare
+with the real git check only the index, work tree, stash and exit status, on inputs both versions treat alike. Covered by
+`git_patch.rs`.
 
 ### Clean
 

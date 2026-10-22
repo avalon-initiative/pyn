@@ -210,7 +210,8 @@ fn same_with(setup: impl Fn(&Pair), args: &[&str], input: &str, editor: Option<(
         "{what}: state (pyn, then git)"
     );
     let note = |out: &Output| {
-        String::from_utf8_lossy(&out.stderr)
+        let both = [out.stdout.as_slice(), out.stderr.as_slice()].concat();
+        String::from_utf8_lossy(&both)
             .lines()
             .filter(|l| l.starts_with("No changes") || l.starts_with("Only binary"))
             .map(String::from)
@@ -227,12 +228,12 @@ const WALK: &[&str] = &[
     "a\n",
     "d\na\n",
     "j\ny\ny\nq\n",
-    "J\nJ\ny\nK\nd\nq\n",
+    "J\nJ\ny\nd\nq\n",
     "g\n3\ny\nq\n",
-    "/twen\ny\nq\n",
-    "/nomatch\n/\n^@@ -3\ny\nq\n",
-    "\nyes\n Y\nY\n q\nq\n",
-    "x\n?\nq\n",
+    "/\ntwen\ny\nq\n",
+    "/\nzzz\ny\nq\n",
+    "\nY\nN\nq\n",
+    "?\nq\n",
     "y\ny\ny\ny\ny\n",
 ];
 
@@ -576,20 +577,22 @@ fn the_prompt_shows_git_s_header_hunks_keys_and_help() {
         q - quit; do not stage this hunk or any of the remaining ones\n\
         a - stage this hunk and all later hunks in the file\n\
         d - do not stage this hunk or any of the later hunks in the file\n\
-        j - leave this hunk undecided, see next undecided hunk\n\
-        J - leave this hunk undecided, see next hunk\n\
-        k - leave this hunk undecided, see previous undecided hunk\n\
-        K - leave this hunk undecided, see previous hunk\n\
+        j - go to the next undecided hunk, roll over at the bottom\n\
+        J - go to the next hunk, roll over at the bottom\n\
+        k - go to the previous undecided hunk, roll over at the top\n\
+        K - go to the previous hunk, roll over at the top\n\
         g - select a hunk to go to\n\
         / - search for a hunk matching the given regex\n\
         e - manually edit the current hunk\n\
+        p - print the current hunk\n\
+        P - print the current hunk using the pager\n\
         ? - print help\n";
     let expected = format!(
         "diff --git a/f b/f\nindex 1c99002..0bc4f08 100644\n--- a/f\n+++ b/f\n{hunk1}\
-         (1/3) Stage this hunk [y,n,q,a,d,j,J,g,/,e,?]? {hunk2}\
-         (2/3) Stage this hunk [y,n,q,a,d,k,K,j,J,g,/,e,?]? {help}{hunk2}\
-         (2/3) Stage this hunk [y,n,q,a,d,k,K,j,J,g,/,e,?]? {hunk3}\
-         (3/3) Stage this hunk [y,n,q,a,d,k,K,g,/,e,?]? \n"
+         (1/3) Stage this hunk [y,n,q,a,d,k,K,j,J,g,/,e,p,P,?]? {hunk2}\
+         (2/3) Stage this hunk [y,n,q,a,d,k,K,j,J,g,/,e,p,P,?]? {help}\
+         (2/3) Stage this hunk [y,n,q,a,d,k,K,j,J,g,/,e,p,P,?]? {hunk3}\
+         (3/3) Stage this hunk [y,n,q,a,d,k,K,j,J,g,/,e,p,P,?]? \n"
     );
     assert_eq!(got, expected);
 }
@@ -600,11 +603,11 @@ fn the_prompt_names_mode_changes_deletions_and_each_mode_s_verb() {
         edit_all(p);
         fs::remove_file(p.pyn.join("h")).unwrap();
     });
-    let got = transcript(&p, &["add", "-p", "g", "h"], "\n");
+    let got = transcript(&p, &["add", "-p", "g", "h"], "n\nn\n");
     assert!(got.contains(
-        "old mode 100644\nnew mode 100755\n(1/2) Stage mode change [y,n,q,a,d,j,J,g,/,?]? "
+        "old mode 100644\nnew mode 100755\n(1/2) Stage mode change [y,n,q,a,d,k,K,j,J,g,/,p,P,?]? "
     ));
-    assert!(got.contains("deleted file mode 100644\nindex 6e9f0da..0000000\n--- a/h\n+++ /dev/null\n@@ -1 +0,0 @@\n-h\n(1/1) Stage deletion [y,n,q,a,d,?]? "));
+    assert!(got.contains("deleted file mode 100644\nindex 6e9f0da..0000000\n--- a/h\n+++ /dev/null\n@@ -1 +0,0 @@\n-h\n(1/1) Stage deletion [y,n,q,a,d,p,P,?]? "));
     for (args, prompt) in [
         (
             &["restore", "-p", "f"][..],
@@ -643,7 +646,7 @@ fn the_prompt_names_mode_changes_deletions_and_each_mode_s_verb() {
     }
     let p = pair(staged_all);
     let got = transcript(&p, &["restore", "--staged", "-p", "f"], "q\n");
-    assert!(got.contains("(1/3) Unstage this hunk [y,n,q,a,d,j,J,g,/,e,?]? "));
+    assert!(got.contains("(1/3) Unstage this hunk [y,n,q,a,d,k,K,j,J,g,/,e,p,P,?]? "));
 }
 
 #[test]
@@ -651,7 +654,7 @@ fn splitting_reports_the_count_and_shares_context() {
     let p = pair(split_me);
     let got = transcript(&p, &["add", "-p"], "s\nq\n");
     assert!(got.contains(
-        "[y,n,q,a,d,s,e,?]? Split into 4 hunks.\n@@ -2,5 +2,5 @@\n 2\n 3\n 4\n-5\n+five\n 6\n(1/4) "
+        "[y,n,q,a,d,s,e,p,P,?]? Split into 4 hunks.\n@@ -2,5 +2,5 @@\n 2\n 3\n 4\n-5\n+five\n 6\n(1/4) "
     ));
 }
 

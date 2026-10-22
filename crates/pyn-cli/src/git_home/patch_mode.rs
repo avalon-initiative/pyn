@@ -478,7 +478,7 @@ fn choose(
 ) -> Result<Option<Vec<Chosen>>> {
     let found = gather(git, opened, mode, spec)?;
     if found.files.is_empty() {
-        eprintln!(
+        println!(
             "{}",
             if found.binary > 0 {
                 "Only binary files changed."
@@ -567,13 +567,13 @@ fn write_file(
                 for line in e.to_string().lines() {
                     io.err(&format!("error: {line}\n"));
                 }
-                io.err("The selected hunks do not apply to the index!\n");
+                io.out("The selected hunks do not apply to the index!\n");
                 loop {
                     io.out("Apply them to the worktree anyway? ");
                     match io.read_line().and_then(|l| l.chars().next()) {
                         Some('y' | 'Y') => break,
                         Some('n' | 'N') | None => {
-                            io.err("Nothing was applied.\n\n");
+                            io.out("Nothing was applied.\n\n");
                             return Ok(false);
                         }
                         Some(_) => {}

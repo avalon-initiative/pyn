@@ -173,27 +173,32 @@ fn update_file(
 ) -> Flow {
     io.out(&file.header);
     let mut at = 0;
+    let mut shown = None;
     let mut flow = Flow::Next;
     loop {
         let n = file.items.len();
         if at >= n {
             at = 0;
         }
-        let prev = (0..at).rev().find(|i| file.uses[*i] == Use::Undecided);
-        let next = (at + 1..n).find(|i| file.uses[*i] == Use::Undecided);
-        if prev.is_none() && next.is_none() && file.uses[at] != Use::Undecided {
+        let undecided = |i: &usize| file.uses[*i] == Use::Undecided;
+        let next = (at + 1..n).chain(0..at).find(undecided);
+        let prev = (0..at).rev().chain((at + 1..n).rev()).find(undecided);
+        if next.is_none() && file.uses[at] != Use::Undecided {
             break;
         }
-        io.out(&file.text(at));
+        if shown != Some(at) {
+            io.out(&file.text(at));
+            shown = Some(at);
+        }
         let splittable = file.items[at]
             .hunk()
             .is_some_and(|h| h.splittable_into() > 1);
         let mut keys = String::from("y,n,q,a,d");
         for (allowed, key) in [
-            (prev.is_some(), ",k"),
-            (at > 0, ",K"),
+            (next.is_some(), ",k"),
+            (n > 1, ",K"),
             (next.is_some(), ",j"),
-            (at + 1 < n, ",J"),
+            (n > 1, ",J"),
             (n > 1, ",g,/"),
             (splittable, ",s"),
             (file.can_edit(at), ",e"),
@@ -203,15 +208,28 @@ fn update_file(
             }
         }
         io.out(&format!(
-            "({}/{n}) {} [{keys},?]? ",
+            "({}/{n}) {}{} [{keys},p,P,?]? ",
             at + 1,
-            w.prompt(file.what(at))
+            w.prompt(file.what(at)),
+            match file.uses[at] {
+                Use::Yes => " (was: y)",
+                Use::No => " (was: n)",
+                Use::Undecided => "",
+            }
         ));
-        let Some(answer) = io.read_line() else { break };
-        let Some(first) = answer.chars().next() else {
+        let Some(answer) = io.read_line() else {
+            flow = Flow::Quit;
+            break;
+        };
+        let mut letters = answer.chars();
+        let Some(first) = letters.next() else {
             continue;
         };
-        let advance = next.unwrap_or(n);
+        let rest = letters.as_str().to_string();
+        if letters.next().is_some() && !matches!(first, 'g' | '/') {
+            say(io, &format!("Only one letter is expected, got '{answer}'"));
+            continue;
+        }
         match first {
             'y' | 'Y' | 'n' | 'N' => {
                 file.uses[at] = if first.eq_ignore_ascii_case(&'y') {
@@ -219,7 +237,7 @@ fn update_file(
                 } else {
                     Use::No
                 };
-                at = advance;
+                at = next.unwrap_or(at);
             }
             'a' | 'A' | 'd' | 'D' => {
                 let choice = if first.eq_ignore_ascii_case(&'a') {
@@ -232,7 +250,9 @@ fn update_file(
                         *u = choice;
                     }
                 }
-                at = n;
+                at = (0..n)
+                    .find(|i| file.uses[*i] == Use::Undecided)
+                    .unwrap_or(at);
             }
             'q' | 'Q' => {
                 for u in &mut file.uses[at..] {
@@ -245,49 +265,61 @@ fn update_file(
             }
             'j' => match next {
                 Some(i) => at = i,
-                None => say(io, "No next hunk"),
+                None => say(io, "No other undecided hunk"),
             },
-            'J' if at + 1 < n => at += 1,
-            'J' => say(io, "No next hunk"),
+            'J' if n > 1 => at = (at + 1) % n,
+            'J' => say(io, "No other hunk"),
             'k' => match prev {
                 Some(i) => at = i,
-                None => say(io, "No previous hunk"),
+                None => say(io, "No other undecided hunk"),
             },
-            'K' if at > 0 => at -= 1,
-            'K' => say(io, "No previous hunk"),
-            'g' if n > 1 => match goto(file, at, &answer[1..], io) {
+            'K' if n > 1 => at = (at + n - 1) % n,
+            'K' => say(io, "No other hunk"),
+            'g' if n > 1 => match goto(file, at, rest.trim(), io) {
                 Goto::To(i) => at = i,
                 Goto::Stay => {}
-                Goto::End => break,
+                Goto::End => {
+                    flow = Flow::Quit;
+                    break;
+                }
             },
             'g' => say(io, "No other hunks to goto"),
-            '/' if n > 1 => match search(file, at, &answer[1..], io) {
+            '/' if n > 1 => match search(file, at, &rest, io) {
                 Goto::To(i) => at = i,
                 Goto::Stay => {}
-                Goto::End => break,
+                Goto::End => {
+                    flow = Flow::Quit;
+                    break;
+                }
             },
             '/' => say(io, "No other hunks to search"),
-            's' => split(file, at, io),
+            's' => {
+                if split(file, at, io) {
+                    shown = None;
+                }
+            }
             'e' if file.can_edit(at) => {
                 if edit(file, at, w, io) {
                     file.uses[at] = Use::Yes;
-                    at = advance;
+                    at = next.unwrap_or(at);
+                    shown = None;
                 }
             }
             'e' => say(io, "Sorry, cannot edit this hunk"),
-            _ => {
+            'p' | 'P' => io.out(&file.text(at)),
+            '?' => {
                 io.out(&w.help());
                 for (allowed, line) in [
                     (
                         next.is_some(),
-                        "j - leave this hunk undecided, see next undecided hunk\n",
+                        "j - go to the next undecided hunk, roll over at the bottom\n",
                     ),
-                    (at + 1 < n, "J - leave this hunk undecided, see next hunk\n"),
+                    (n > 1, "J - go to the next hunk, roll over at the bottom\n"),
                     (
-                        prev.is_some(),
-                        "k - leave this hunk undecided, see previous undecided hunk\n",
+                        next.is_some(),
+                        "k - go to the previous undecided hunk, roll over at the top\n",
                     ),
-                    (at > 0, "K - leave this hunk undecided, see previous hunk\n"),
+                    (n > 1, "K - go to the previous hunk, roll over at the top\n"),
                     (
                         n > 1,
                         "g - select a hunk to go to\n/ - search for a hunk matching the given regex\n",
@@ -297,13 +329,17 @@ fn update_file(
                         "s - split the current hunk into smaller hunks\n",
                     ),
                     (file.can_edit(at), "e - manually edit the current hunk\n"),
-                    (true, "? - print help\n"),
+                    (
+                        true,
+                        "p - print the current hunk\nP - print the current hunk using the pager\n? - print help\n",
+                    ),
                 ] {
                     if allowed {
                         io.out(line);
                     }
                 }
             }
+            _ => say(io, &format!("Unknown command '{first}' (use '?' for help)")),
         }
     }
     after(file, io);
@@ -312,7 +348,7 @@ fn update_file(
 }
 
 fn say(io: &mut dyn Io, text: &str) {
-    io.err(&format!("{text}\n"));
+    io.out(&format!("{text}\n"));
 }
 
 enum Goto {
@@ -325,7 +361,7 @@ enum Goto {
 fn goto(file: &FileDiff, at: usize, given: &str, io: &mut dyn Io) -> Goto {
     let n = file.items.len();
     let first_listed = usize::from(matches!(file.items[0], Item::Mode { .. }));
-    let mut answer = given.trim().to_string();
+    let mut answer = given.to_string();
     let mut from = at.saturating_sub(LIST_LINES / 2).max(first_listed);
     while answer.is_empty() {
         let end = (from + LIST_LINES).min(n);
@@ -363,10 +399,11 @@ fn goto(file: &FileDiff, at: usize, given: &str, io: &mut dyn Io) -> Goto {
 }
 
 fn search(file: &FileDiff, at: usize, given: &str, io: &mut dyn Io) -> Goto {
-    let mut pattern = given.trim().to_string();
+    let mut pattern = given.to_string();
     if pattern.is_empty() {
         io.out("search for regex? ");
         match io.read_line() {
+            Some(line) if line.trim().is_empty() => return Goto::Stay,
             Some(line) => pattern = line,
             None => return Goto::End,
         }
@@ -391,10 +428,13 @@ fn search(file: &FileDiff, at: usize, given: &str, io: &mut dyn Io) -> Goto {
     }
 }
 
-fn split(file: &mut FileDiff, at: usize, io: &mut dyn Io) {
+fn split(file: &mut FileDiff, at: usize, io: &mut dyn Io) -> bool {
     let parts = match &file.items[at] {
         Item::Hunk(h) if h.splittable_into() > 1 => h.split(),
-        _ => return say(io, "Sorry, cannot split this hunk"),
+        _ => {
+            say(io, "Sorry, cannot split this hunk");
+            return false;
+        }
     };
     let count = parts.len();
     let used = file.uses[at];
@@ -402,6 +442,7 @@ fn split(file: &mut FileDiff, at: usize, io: &mut dyn Io) {
         .splice(at..=at, parts.into_iter().map(Item::Hunk));
     file.uses.splice(at..=at, vec![used; count]);
     io.out(&format!("Split into {count} hunks.\n"));
+    true
 }
 
 const EDIT_GUIDE: &str = "# ---\n\
@@ -532,30 +573,35 @@ mod tests {
         io
     }
 
+    fn three() -> FileDiff {
+        file(&[(3, "three"), (20, "twenty"), (38, "t38")])
+    }
+
     #[test]
     fn keys_offered_follow_the_position_and_the_decisions() {
-        let mut f = file(&[(3, "three"), (20, "twenty"), (38, "t38")]);
-        let io = run(&mut f, &["j"]);
+        let io = run(&mut three(), &["n", "n"]);
         assert!(
             io.out
-                .contains("(1/3) Stage this hunk [y,n,q,a,d,j,J,g,/,e,?]? ")
+                .contains("(1/3) Stage this hunk [y,n,q,a,d,k,K,j,J,g,/,e,p,P,?]? ")
         );
         assert!(
             io.out
-                .contains("(2/3) Stage this hunk [y,n,q,a,d,k,K,j,J,g,/,e,?]? ")
+                .contains("(3/3) Stage this hunk [y,n,q,a,d,K,J,g,/,e,p,P,?]? ")
         );
+        let io = run(&mut file(&[(3, "three")]), &["q"]);
+        assert!(io.out.contains("[y,n,q,a,d,e,p,P,?]? "));
         assert!(io.out.ends_with("]? \n"));
     }
 
     #[test]
-    fn y_n_a_d_decide_and_wrap_to_what_is_left() {
-        let mut f = file(&[(3, "three"), (20, "twenty"), (38, "t38")]);
+    fn y_n_a_d_decide_and_roll_over_to_what_is_left() {
+        let mut f = three();
         run(&mut f, &["j", "y", "y", "n"]);
         assert_eq!(f.uses, [Use::No, Use::Yes, Use::Yes]);
-        let mut f = file(&[(3, "three"), (20, "twenty"), (38, "t38")]);
+        let mut f = three();
         run(&mut f, &["J", "J", "y", "d"]);
         assert_eq!(f.uses, [Use::No, Use::No, Use::Yes]);
-        let mut f = file(&[(3, "three"), (20, "twenty"), (38, "t38")]);
+        let mut f = three();
         run(&mut f, &["n", "A"]);
         assert_eq!(f.uses, [Use::No, Use::Yes, Use::Yes]);
     }
@@ -569,54 +615,62 @@ mod tests {
     }
 
     #[test]
-    fn unknown_answers_print_the_help_and_blank_ones_nothing() {
-        let mut f = file(&[(3, "three"), (20, "twenty")]);
-        let io = run(&mut f, &["", "x"]);
+    fn one_letter_answers_only_and_the_hunk_is_shown_when_it_changes() {
+        let mut f = three();
+        let io = run(&mut f, &["", "yes", " Y", "x", "?", "Y"]);
+        assert_eq!(f.uses, [Use::Yes, Use::Undecided, Use::Undecided]);
+        assert!(io.out.contains("Only one letter is expected, got 'yes'\n"));
+        assert!(io.out.contains("Only one letter is expected, got ' Y'\n"));
+        assert!(io.out.contains("Unknown command 'x' (use '?' for help)\n"));
         assert!(
             io.out
                 .contains("y - stage this hunk\nn - do not stage this hunk\n")
         );
         assert!(
             io.out
-                .contains("j - leave this hunk undecided, see next undecided hunk\nJ - ")
+                .contains("j - go to the next undecided hunk, roll over at the bottom\nJ - ")
         );
-        assert!(!io.out.contains("k - leave"));
-        assert!(io.out.contains("? - print help\n"));
+        assert_eq!(io.out.matches("@@ -1,6 +1,6 @@").count(), 1);
     }
 
     #[test]
-    fn moves_that_go_nowhere_are_refused() {
-        let mut f = file(&[(3, "three"), (20, "twenty")]);
-        let io = run(&mut f, &["k", "K", "g2", "J", "J"]);
-        assert!(io.err.contains("No previous hunk\n"));
-        assert!(io.err.contains("No next hunk\n"));
-        let mut f = file(&[(3, "three")]);
-        let io = run(&mut f, &["g", "/x", "j"]);
-        assert!(io.err.contains("No other hunks to goto\n"));
-        assert!(io.err.contains("No other hunks to search\n"));
-        assert!(io.err.contains("No next hunk\n"));
+    fn p_prints_the_hunk_again() {
+        let io = run(&mut three(), &["p", "P"]);
+        assert_eq!(io.out.matches("@@ -1,6 +1,6 @@").count(), 3);
+    }
+
+    #[test]
+    fn j_and_k_roll_over_and_refuse_when_nothing_else_is_undecided() {
+        let mut f = three();
+        let io = run(&mut f, &["k", "K", "J", "j"]);
+        assert!(io.out.contains("(3/3) "));
+        assert!(io.out.contains("(2/3) "));
+        let io = run(&mut file(&[(3, "three")]), &["j", "K", "g", "/x"]);
+        assert!(io.out.contains("No other undecided hunk\n"));
+        assert!(io.out.contains("No other hunk\n"));
+        assert!(io.out.contains("No other hunks to goto\n"));
+        assert!(io.out.contains("No other hunks to search\n"));
     }
 
     #[test]
     fn g_lists_hunks_and_jumps() {
-        let mut f = file(&[(3, "three"), (20, "twenty"), (38, "t38")]);
-        let io = run(&mut f, &["y", "g", "3", "q"]);
+        let io = run(&mut three(), &["y", "g", "3", "q"]);
         assert!(io.out.contains("+ 1:  -1,6 +1,6          -3\n"));
         assert!(io.out.contains("  3:  -35,6 +35,6        -38\n"));
         assert!(io.out.contains("go to which hunk? "));
         assert!(io.out.contains("(3/3) "));
-        let io = run(&mut file(&[(3, "x"), (20, "y")]), &["g9", "gz"]);
-        assert!(io.err.contains("Sorry, only 2 hunks available.\n"));
-        assert!(io.err.contains("Invalid number: 'z'\n"));
+        let io = run(&mut file(&[(3, "x"), (20, "y")]), &["g9", "gz", "g 2"]);
+        assert!(io.out.contains("Sorry, only 2 hunks available.\n"));
+        assert!(io.out.contains("Invalid number: 'z'\n"));
+        assert!(io.out.contains("(2/2) "));
     }
 
     #[test]
     fn slash_searches_from_the_current_hunk() {
-        let mut f = file(&[(3, "three"), (20, "twenty"), (38, "t38")]);
-        let io = run(&mut f, &["/twen", "/nomatch", "/(", "/"]);
+        let io = run(&mut three(), &["/twen", "/nomatch", "/(", "/", ""]);
         assert!(io.out.contains("(2/3) "));
-        assert!(io.err.contains("No hunk matches the given pattern\n"));
-        assert!(io.err.contains("Malformed search regexp ("));
+        assert!(io.out.contains("No hunk matches the given pattern\n"));
+        assert!(io.out.contains("Malformed search regexp ("));
         assert!(io.out.contains("search for regex? "));
     }
 
@@ -624,11 +678,19 @@ mod tests {
     fn s_splits_a_hunk_and_says_how_many() {
         let mut f = file(&[(5, "five"), (7, "seven"), (11, "eleven")]);
         let io = run(&mut f, &["s"]);
-        assert!(io.out.contains("[y,n,q,a,d,s,e,?]? Split into 3 hunks.\n"));
+        assert!(io.out.contains("Split into 3 hunks.\n"));
         assert_eq!(f.items.len(), 3);
-        let mut f = file(&[(5, "five")]);
-        let io = run(&mut f, &["s"]);
-        assert!(io.err.contains("Sorry, cannot split this hunk\n"));
+        let io = run(&mut file(&[(5, "five")]), &["s"]);
+        assert!(io.out.contains("Sorry, cannot split this hunk\n"));
+    }
+
+    #[test]
+    fn the_end_of_input_stops_all_files_and_a_decided_hunk_shows_its_answer() {
+        let mut f = three();
+        let mut io = Script::new(&["y", "K"]);
+        let flow = update_file(&mut f, &WORDS, &mut io, &mut |_, _| {});
+        assert!(flow == Flow::Quit);
+        assert!(io.out.contains("Stage this hunk (was: y) ["));
     }
 
     #[test]
