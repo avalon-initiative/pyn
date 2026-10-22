@@ -8,6 +8,7 @@ use anyhow::{Result, bail};
 use clap::Args;
 use pyn_gitwork::{Ignore, Level, Pathspec, fs_path, parse_rules};
 
+use super::clean_menu::{self, Console, Outcome, screen_width};
 use super::stage::{Ignores, child, dir_entries};
 use super::{GitHome, path_string};
 
@@ -28,7 +29,7 @@ pub struct CleanArgs {
     /// Remove only ignored files.
     #[arg(short = 'X')]
     ignored_only: bool,
-    /// Interactive mode; not built.
+    /// Choose what to remove from a menu.
     #[arg(short = 'i', long)]
     interactive: bool,
     #[arg(short, long)]
@@ -36,7 +37,7 @@ pub struct CleanArgs {
     /// Treat the pattern as an ignore rule for this run.
     #[arg(short = 'e', long = "exclude", value_name = "PATTERN")]
     exclude: Vec<String>,
-    /// Limit the clean to these files and folders (literal paths, no globs).
+    /// Limit the clean to these files and folders; a name with `*`, `?` or `[` is a glob.
     paths: Vec<String>,
 }
 
@@ -57,6 +58,8 @@ struct Item {
     kind: Kind,
     /// Overrides the path relative to the current folder, for what is listed from a folder you stand in.
     display: Option<Vec<u8>>,
+    /// The untracked folder a nested repository sits in, which the menu lists as one entry.
+    group: Option<Vec<u8>>,
 }
 
 /// What a folder holds: `whole` when everything in it is to be removed, so it is one entry.
@@ -141,6 +144,7 @@ impl Cleaner<'_> {
                         path,
                         kind: Kind::File,
                         display: None,
+                        group: None,
                     });
                 }
                 continue;
@@ -174,27 +178,44 @@ impl Cleaner<'_> {
         if !self.only_ignored && ignored {
             return Ok(());
         }
-        let scan = self.scan(dir, levels, ignored)?;
+        // git lists an all-ignored folder whole once a glob can lead into it
+        let inside = self.spec.matches_dir(dir)
+            || (self.only_ignored && ignored && self.spec.glob_leads_into(dir));
+        let scan = self.scan(dir, levels, ignored, inside)?;
         if scan.whole {
             if self.list_dirs {
                 out.push(Item {
                     path: dir.to_vec(),
                     kind: Kind::Dir { bare: false },
                     display: None,
+                    group: None,
                 });
             }
         } else if self.list_dirs {
-            out.extend(scan.items);
+            let mut items = scan.items;
+            if scan.nested {
+                for item in &mut items {
+                    item.group = Some(dir.to_vec());
+                }
+            }
+            out.extend(items);
         } else {
             out.extend(scan.items.into_iter().filter(|i| i.kind == Kind::File));
         }
         Ok(())
     }
 
-    fn scan(&self, dir: &[u8], levels: &mut Vec<Level>, inherited: bool) -> Result<Scan> {
+    /// `inside` says the folder, or one above it, matches the pathspec, so everything in it does.
+    fn scan(
+        &self,
+        dir: &[u8],
+        levels: &mut Vec<Level>,
+        inherited: bool,
+        inside: bool,
+    ) -> Result<Scan> {
         let pushed = self.push(levels, dir)?;
         let mut scan = Scan {
-            whole: self.spec.matches(dir),
+            whole: inside,
             ..Scan::default()
         };
         let mut any = false;
@@ -208,41 +229,45 @@ impl Cleaner<'_> {
             }
             any = true;
             let path = child(dir, &name);
-            if !self.spec.may_contain(&path) {
+            if !inside && !self.spec.may_contain(&path) {
                 scan.whole = false;
                 continue;
             }
             let ignored = self.ignored(levels, &path, kind.is_dir(), inherited);
             if !kind.is_dir() {
-                if self.wanted(ignored) {
+                if self.wanted(ignored) && (inside || self.spec.matches(&path)) {
                     scan.items.push(Item {
                         path,
                         kind: Kind::File,
                         display: None,
+                        group: None,
                     });
                 } else {
                     scan.whole = false;
                 }
             } else if self.has_git(&path) && !self.nested_too {
                 scan.whole = false;
-                if !self.only_ignored {
+                if !self.only_ignored && (inside || self.spec.matches_dir(&path)) {
                     scan.nested = true;
                     scan.items.push(Item {
                         path,
                         kind: Kind::Skip,
                         display: None,
+                        group: None,
                     });
                 }
             } else if !self.only_ignored && ignored {
                 scan.whole = false;
             } else {
-                let sub = self.scan(&path, levels, ignored)?;
+                let sub_inside = inside || self.spec.matches_dir(&path);
+                let sub = self.scan(&path, levels, ignored, sub_inside)?;
                 scan.nested |= sub.nested;
-                if sub.whole && self.spec.matches(&path) {
+                if sub.whole {
                     scan.items.push(Item {
                         path,
                         kind: Kind::Dir { bare: false },
                         display: None,
+                        group: None,
                     });
                 } else {
                     scan.whole = false;
@@ -315,6 +340,7 @@ fn expand_cwd(
                 Kind::File
             },
             display: Some(shown),
+            group: None,
         });
     }
     Ok(())
@@ -341,15 +367,92 @@ fn remove(git: &GitHome, item: &Item) -> std::io::Result<()> {
     }
 }
 
+/// A menu entry: one listed name and the items removing it removes.
+struct Entry {
+    name: String,
+    items: Vec<Item>,
+}
+
+fn entry_name(item: &Item, cwd: &[u8]) -> String {
+    if !matches!(item.kind, Kind::Dir { .. }) || !holds_cwd(&item.path, cwd) {
+        return shown(item, cwd);
+    }
+    let mut name = relative(&item.path, cwd);
+    while name.last() == Some(&b'/') {
+        name.pop();
+    }
+    if name.is_empty() {
+        name.push(b'.');
+    }
+    name.push(b'/');
+    path_string(&name)
+}
+
+/// Groups the items into the entries git lists, runs the menu and returns what was chosen; `None` when nothing is.
+fn choose(items: Vec<Item>, cwd: &[u8]) -> Option<Vec<Item>> {
+    let mut entries: Vec<Entry> = Vec::new();
+    for mut item in items {
+        let Some(group) = item.group.clone() else {
+            entries.push(Entry {
+                name: entry_name(&item, cwd),
+                items: vec![item],
+            });
+            continue;
+        };
+        let mut shown = relative(&group, cwd);
+        while shown.last() == Some(&b'/') {
+            shown.pop();
+        }
+        if holds_cwd(&group, cwd) {
+            if shown.is_empty() {
+                shown.push(b'.');
+            }
+            let inner = item.path.strip_prefix(&group[..]).unwrap_or(&item.path);
+            let mut text = shown.clone();
+            text.push(b'/');
+            text.extend_from_slice(inner.strip_prefix(b"/").unwrap_or(inner));
+            item.display = Some(text);
+        }
+        match entries.last_mut() {
+            Some(last) if last.items[0].group.as_ref() == Some(&group) => last.items.push(item),
+            _ => {
+                shown.push(b'/');
+                entries.push(Entry {
+                    name: path_string(&shown),
+                    items: vec![item],
+                });
+            }
+        }
+    }
+    let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+    let mut console = Console::new(
+        std::io::stdin().lock(),
+        std::io::stdout().lock(),
+        screen_width(),
+    );
+    let Outcome::Run(picked) = clean_menu::run(&mut console, &names) else {
+        return None;
+    };
+    let mut slots: Vec<Option<Entry>> = entries.into_iter().map(Some).collect();
+    Some(
+        picked
+            .into_iter()
+            .filter_map(|i| slots[i].take())
+            .flat_map(|e| e.items)
+            .collect(),
+    )
+}
+
 /// `pyn clean`: exit status 1 when something could not be removed.
 pub fn clean(git: &GitHome, cwd: &Path, args: &CleanArgs) -> Result<bool> {
     if args.ignored && args.ignored_only {
         bail!("-x and -X cannot be used together");
     }
-    if args.interactive {
-        crate::usage_error("`pyn clean -i` is not built");
-    }
-    if !args.dry_run && args.force == 0 && git.repo.bool_setting("clean.requireForce", true) {
+    if !args.interactive
+        && !args.dry_run
+        && args.force == 0
+        && git.repo.bool_setting("clean.requireForce", true)
+    {
         bail!(
             "clean.requireForce defaults to true and neither -i, -n, nor -f given; refusing to clean"
         );
@@ -393,7 +496,7 @@ pub fn clean(git: &GitHome, cwd: &Path, args: &CleanArgs) -> Result<bool> {
     let cleaner = Cleaner {
         git,
         ignores,
-        spec: specs.spec,
+        spec: Pathspec::with_globs(specs.named.iter().map(|(_, p)| p.clone().into_bytes())),
         files,
         dirs,
         standard,
@@ -413,6 +516,12 @@ pub fn clean(git: &GitHome, cwd: &Path, args: &CleanArgs) -> Result<bool> {
         k
     });
     let cwd_bytes = &cleaner.cwd_prefix;
+    if args.interactive && !items.is_empty() {
+        match choose(items, cwd_bytes) {
+            Some(chosen) => items = chosen,
+            None => return Ok(false),
+        }
+    }
     let mut listed = Vec::new();
     for item in items {
         if matches!(item.kind, Kind::Dir { .. }) && holds_cwd(&item.path, cwd_bytes) {
@@ -427,6 +536,7 @@ pub fn clean(git: &GitHome, cwd: &Path, args: &CleanArgs) -> Result<bool> {
                 path: item.path.clone(),
                 kind: Kind::Refuse,
                 display: None,
+                group: None,
             });
             expand_cwd(git, &item.path, &display, cwd_bytes, &mut listed)?;
         } else {
