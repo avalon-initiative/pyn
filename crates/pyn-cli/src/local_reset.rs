@@ -176,6 +176,11 @@ pub fn reset(backend: &dyn Backend, ws: &Workspace, args: ResetArgs) -> Result<(
     let chain = candidates(&store, tip, store.published(&branch)?)?;
     let target = pick(&store, commit.unwrap_or("HEAD"), tip, &chain)?;
     if kind == Kind::Hard && !args.yes {
+        if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+            bail!(
+                "`--hard` discards local commits and changes and needs confirmation, but there is no terminal to ask on; pass --yes to confirm. Nothing was changed"
+            );
+        }
         eprint!(
             "This discards local commits and uncommitted changes. Type the branch name to confirm: "
         );
