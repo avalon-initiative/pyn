@@ -83,17 +83,45 @@ fn push_resolved<T: Clone>(out: &mut Vec<Chunk<T>>, lines: &[T]) {
     }
 }
 
+/// Which side wins a conflicting hunk instead of leaving a conflict (`-X ours`, `-X theirs`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Favor {
+    Ours,
+    Theirs,
+}
+
 /// Merges `ours` and `theirs`, both derived from `base`, into resolved runs and conflicts.
 pub fn merge<T: PartialEq + Clone>(base: &[T], ours: &[T], theirs: &[T]) -> Vec<Chunk<T>> {
-    let mut all: Vec<(bool, Region)> = regions(&diff(base, ours))
-        .into_iter()
-        .map(|r| (false, r))
-        .chain(regions(&diff(base, theirs)).into_iter().map(|r| (true, r)))
+    merge_favoring(base, ours, theirs, None)
+}
+
+/// Where the unchanged `base[b]` sits in a side; an insertion exactly at `b` lies after it.
+fn locate(rs: &[Region], b: usize) -> usize {
+    let shift: isize = rs
+        .iter()
+        .filter(|r| r.b1 < b || (r.b1 == b && r.b0 < b))
+        .map(|r| (r.s1 - r.s0) as isize - (r.b1 - r.b0) as isize)
+        .sum();
+    (b as isize + shift) as usize
+}
+
+/// As [`merge`], resolving each conflicting hunk to `favor`'s side when given. Unchanged runs come from `ours`.
+pub fn merge_favoring<T: PartialEq + Clone>(
+    base: &[T],
+    ours: &[T],
+    theirs: &[T],
+    favor: Option<Favor>,
+) -> Vec<Chunk<T>> {
+    let (ro, rt) = (regions(&diff(base, ours)), regions(&diff(base, theirs)));
+    let mut all: Vec<(bool, Region)> = ro
+        .iter()
+        .map(|r| (false, *r))
+        .chain(rt.iter().map(|r| (true, *r)))
         .collect();
     all.sort_by_key(|(_, r)| (r.b0, r.b1));
 
     let mut out = Vec::new();
-    let mut pos = 0;
+    let mut ours_pos = 0;
     let mut i = 0;
     while i < all.len() {
         let start = all[i].1.b0;
@@ -112,30 +140,38 @@ pub fn merge<T: PartialEq + Clone>(base: &[T], ours: &[T], theirs: &[T]) -> Vec<
         };
         let (rs_ours, rs_theirs) = (pick(false), pick(true));
 
-        push_resolved(&mut out, &base[pos..start]);
-        pos = end;
-        match (
+        push_resolved(&mut out, &ours[ours_pos..locate(&ro, start)]);
+        ours_pos = locate(&ro, end);
+        let (side_ours, side_theirs) = (
             side_range(&rs_ours, start, end),
             side_range(&rs_theirs, start, end),
-        ) {
+        );
+        if let Some((_, b)) = side_ours {
+            ours_pos = b;
+        }
+        match (side_ours, side_theirs) {
             (Some((a, b)), None) => push_resolved(&mut out, &ours[a..b]),
             (None, Some((a, b))) => push_resolved(&mut out, &theirs[a..b]),
             (Some((oa, ob)), Some((ta, tb))) => {
                 if ours[oa..ob] == theirs[ta..tb] {
                     push_resolved(&mut out, &ours[oa..ob]);
                 } else {
-                    out.push(Chunk::Conflict(Conflict {
-                        base: base[start..end].to_vec(),
-                        ours: ours[oa..ob].to_vec(),
-                        theirs: theirs[ta..tb].to_vec(),
-                    }));
+                    match favor {
+                        Some(Favor::Ours) => push_resolved(&mut out, &ours[oa..ob]),
+                        Some(Favor::Theirs) => push_resolved(&mut out, &theirs[ta..tb]),
+                        None => out.push(Chunk::Conflict(Conflict {
+                            base: base[start..end].to_vec(),
+                            ours: ours[oa..ob].to_vec(),
+                            theirs: theirs[ta..tb].to_vec(),
+                        })),
+                    }
                 }
             }
             (None, None) => unreachable!("a cluster has at least one region"),
         }
         i = j;
     }
-    push_resolved(&mut out, &base[pos..]);
+    push_resolved(&mut out, &ours[ours_pos..]);
     out
 }
 
@@ -149,8 +185,89 @@ pub fn merge_cost(base: &[u8], ours: &[u8], theirs: &[u8]) -> u64 {
     (lines(base) + lines(ours) + lines(theirs)).saturating_mul(pyn_diff::MAX_EDITS as u64)
 }
 
+/// Which whitespace differences between lines do not count (`-X ignore-*`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Space {
+    pub all: bool,
+    pub change: bool,
+    pub at_eol: bool,
+    pub cr_at_eol: bool,
+}
+
+impl Space {
+    fn any(self) -> bool {
+        self.all || self.change || self.at_eol || self.cr_at_eol
+    }
+
+    /// The line reduced to what still has to match.
+    fn key(self, line: &[u8]) -> Vec<u8> {
+        let is_space = |b: &u8| matches!(b, b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r');
+        let mut line = line.to_vec();
+        if self.cr_at_eol && line.ends_with(b"\r\n") {
+            line.splice(line.len() - 2.., *b"\n");
+        }
+        if self.all {
+            line.retain(|b| !is_space(b));
+        } else if self.change || self.at_eol {
+            line.truncate(line.iter().rposition(|b| !is_space(b)).map_or(0, |i| i + 1));
+            if self.change {
+                let mut out: Vec<u8> = Vec::with_capacity(line.len());
+                for b in line {
+                    if !is_space(&b) {
+                        out.push(b);
+                    } else if out.last() != Some(&b' ') {
+                        out.push(b' ');
+                    }
+                }
+                return out;
+            }
+        }
+        line
+    }
+}
+
+/// How to merge text: which side wins conflicts and which whitespace differences are ignored.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Options {
+    pub favor: Option<Favor>,
+    pub space: Space,
+}
+
+/// A line that equals another when their reduced forms do, and keeps its own bytes for output.
+#[derive(Clone)]
+struct Keyed<'a> {
+    raw: &'a [u8],
+    key: Vec<u8>,
+}
+
+impl PartialEq for Keyed<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.key == other.key
+    }
+}
+
+fn keyed<'a>(bytes: &'a [u8], space: Space) -> Vec<Keyed<'a>> {
+    split_lines(bytes)
+        .into_iter()
+        .map(|raw| Keyed {
+            raw,
+            key: space.key(raw),
+        })
+        .collect()
+}
+
 /// Merges text line by line; any NUL in an input makes the whole file the unit of conflict.
 pub fn merge_text<'a>(base: &'a [u8], ours: &'a [u8], theirs: &'a [u8]) -> Outcome<'a> {
+    merge_text_with(base, ours, theirs, Options::default())
+}
+
+/// As [`merge_text`], with `options` applied.
+pub fn merge_text_with<'a>(
+    base: &'a [u8],
+    ours: &'a [u8],
+    theirs: &'a [u8],
+    options: Options,
+) -> Outcome<'a> {
     if ours == theirs || theirs == base {
         return Outcome::Clean(ours.to_vec());
     }
@@ -160,7 +277,38 @@ pub fn merge_text<'a>(base: &'a [u8], ours: &'a [u8], theirs: &'a [u8]) -> Outco
     if is_binary(base) || is_binary(ours) || is_binary(theirs) {
         return Outcome::BinaryConflict;
     }
-    let chunks = merge(&split_lines(base), &split_lines(ours), &split_lines(theirs));
+    let chunks: Vec<Chunk<&[u8]>> = if options.space.any() {
+        let space = options.space;
+        let (base_lines, our_lines, their_lines) =
+            (keyed(base, space), keyed(ours, space), keyed(theirs, space));
+        // A side that only differs in ignored whitespace changed nothing: the other side is the result.
+        if base_lines == our_lines {
+            return Outcome::Clean(theirs.to_vec());
+        }
+        if base_lines == their_lines {
+            return Outcome::Clean(ours.to_vec());
+        }
+        let merged = merge_favoring(&base_lines, &our_lines, &their_lines, options.favor);
+        let raw = |lines: Vec<Keyed<'a>>| lines.into_iter().map(|l| l.raw).collect::<Vec<_>>();
+        merged
+            .into_iter()
+            .map(|c| match c {
+                Chunk::Resolved(lines) => Chunk::Resolved(raw(lines)),
+                Chunk::Conflict(c) => Chunk::Conflict(Conflict {
+                    base: raw(c.base),
+                    ours: raw(c.ours),
+                    theirs: raw(c.theirs),
+                }),
+            })
+            .collect()
+    } else {
+        merge_favoring(
+            &split_lines(base),
+            &split_lines(ours),
+            &split_lines(theirs),
+            options.favor,
+        )
+    };
     if chunks.iter().any(|c| matches!(c, Chunk::Conflict(_))) {
         return Outcome::Conflicted(chunks);
     }
@@ -216,5 +364,119 @@ mod cost_tests {
         let small = merge_cost(b"a\n", b"b\n", b"c\n");
         let big = merge_cost(b"a\na\na\n", b"b\nb\nb\n", b"c\nc\nc\n");
         assert!(small > 0 && big > small);
+    }
+}
+
+#[cfg(test)]
+mod option_tests {
+    use super::*;
+
+    fn clean(outcome: Outcome) -> String {
+        match outcome {
+            Outcome::Clean(bytes) => String::from_utf8(bytes).unwrap(),
+            other => panic!("not clean: {other:?}"),
+        }
+    }
+
+    const BASE: &[u8] = b"a\nb\nc\nd\ne\n";
+
+    #[test]
+    fn favor_settles_conflicting_hunks_and_keeps_the_rest_merged() {
+        let (ours, theirs) = (
+            b"a\nB1\nc\nd\ne\nours\n".as_slice(),
+            b"a\nB2\nc\nd\ne\n".as_slice(),
+        );
+        assert!(matches!(
+            merge_text(BASE, ours, theirs),
+            Outcome::Conflicted(_)
+        ));
+        for (favor, want) in [
+            (Favor::Ours, "a\nB1\nc\nd\ne\nours\n"),
+            (Favor::Theirs, "a\nB2\nc\nd\ne\nours\n"),
+        ] {
+            let options = Options {
+                favor: Some(favor),
+                ..Options::default()
+            };
+            assert_eq!(clean(merge_text_with(BASE, ours, theirs, options)), want);
+        }
+    }
+
+    #[test]
+    fn a_side_that_changes_only_ignored_whitespace_changed_nothing() {
+        let options = Options {
+            space: Space {
+                change: true,
+                ..Space::default()
+            },
+            ..Options::default()
+        };
+        let base = b"a\nb b\nc\n";
+        let (ours, theirs) = (b"A\nb  b\nc\n".as_slice(), b"a\nb b\nC\n".as_slice());
+        assert_eq!(
+            clean(merge_text_with(base, ours, theirs, options)),
+            "A\nb  b\nC\n"
+        );
+        assert!(matches!(
+            merge_text(base, ours, theirs),
+            Outcome::Conflicted(_)
+        ));
+        let loose = b"a\nb   b\nc\n".as_slice();
+        assert_eq!(
+            clean(merge_text_with(base, ours, loose, options)),
+            "A\nb  b\nc\n"
+        );
+        assert_eq!(
+            clean(merge_text_with(base, loose, ours, options)),
+            "A\nb  b\nc\n"
+        );
+        assert_eq!(
+            clean(merge_text_with(base, loose, loose, options)),
+            "a\nb   b\nc\n"
+        );
+    }
+
+    #[test]
+    fn whitespace_keys_follow_each_option() {
+        let key = |space: Space, line: &str| String::from_utf8(space.key(line.as_bytes())).unwrap();
+        let all = Space {
+            all: true,
+            ..Space::default()
+        };
+        let change = Space {
+            change: true,
+            ..Space::default()
+        };
+        let eol = Space {
+            at_eol: true,
+            ..Space::default()
+        };
+        let cr = Space {
+            cr_at_eol: true,
+            ..Space::default()
+        };
+        assert_eq!(key(all, " a \t b \n"), "ab");
+        assert_eq!(key(change, " a \t b  \n"), " a b");
+        assert_eq!(key(eol, " a  b \r\n"), " a  b");
+        assert_eq!(key(cr, "a \r\n"), "a \n");
+        assert_eq!(key(cr, "a\r"), "a\r");
+    }
+
+    #[test]
+    fn unchanged_runs_are_ours_when_lines_only_match_loosely() {
+        let space = Space {
+            all: true,
+            ..Space::default()
+        };
+        let (base, ours, theirs) = (
+            keyed(b"x\ny\nz\n", space),
+            keyed(b"x \ny\nZ\n", space),
+            keyed(b"x\ny\nz\n", space),
+        );
+        let chunks = merge_favoring(&base, &ours, &theirs, None);
+        let Chunk::Resolved(lines) = &chunks[0] else {
+            panic!("resolved first")
+        };
+        assert_eq!(lines[0].raw, b"x \n");
     }
 }

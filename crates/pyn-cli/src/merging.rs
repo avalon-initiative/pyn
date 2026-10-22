@@ -60,6 +60,12 @@ pub struct MergeArgs {
     /// Print no diffstat after the merge.
     #[arg(short = 'n', long, alias = "no-summary", overrides_with = "stat")]
     pub(crate) no_stat: bool,
+    /// The merge strategy (a git repository only): ort, recursive, resolve, octopus, ours or subtree.
+    #[arg(short = 's', long = "strategy", value_name = "STRATEGY", conflicts_with_all = ["abort", "continue_merge"])]
+    pub(crate) strategy: Vec<String>,
+    /// An option for the strategy, such as `ours` or `theirs` (a git repository only).
+    #[arg(short = 'X', long = "strategy-option", value_name = "OPTION", conflicts_with_all = ["abort", "continue_merge"])]
+    pub(crate) strategy_option: Vec<String>,
 }
 
 /// One side of a conflicted path, as the workspace needs it to take that side later.
@@ -345,6 +351,11 @@ pub fn merge_command(backend: &dyn Backend, ws: Option<&Workspace>, args: MergeA
     let ws = ws.context("`pyn merge` works inside a workspace; run `pyn clone` first")?;
     if args.stat || args.no_stat {
         bail!("`pyn merge --stat` and `-n` need a git repository; a pyn server prints no diffstat");
+    }
+    if !args.strategy.is_empty() || !args.strategy_option.is_empty() {
+        crate::usage_error(
+            "`pyn merge -s` and `-X` need a git repository; a pyn server merges by its own rules",
+        );
     }
     if args.abort {
         return abort(backend, api, ws);

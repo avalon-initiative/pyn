@@ -14,7 +14,8 @@ use super::stage::{
     Entries, clean_message, clear_merge_state, entries_of, identity, index_of, merge_heads,
     put_entry, raw_mode, refuse_in_progress, remove_entry, warn_about_hooks_for, write_tree,
 };
-use super::treemerge::{Conflicting, Labels, Merge, Resolved, Worktree, merge_trees};
+use super::strategy::{BadOption, Strategy, Which, shift_tree};
+use super::treemerge::{Conflicting, Labels, Merge, Resolved, Worktree, merge_trees, result_tree};
 use super::worktree::{
     Blocked, Mode, blocking_path, check_writes, move_tree, remove_entry_file, within, write_bytes,
     write_entry,
@@ -132,7 +133,7 @@ pub(super) fn write_orig_head_as(git: &GitHome, id: &ObjectId, action: Option<&s
     git.log_ref("ORIG_HEAD", old.as_ref(), id, &message, false)
 }
 
-pub fn merge(git: &GitHome, args: MergeArgs) -> Result<()> {
+pub fn merge(git: &GitHome, mut args: MergeArgs) -> Result<()> {
     if args.preview {
         bail!("`pyn merge --preview` needs a pyn server; a git repository has no merge preview");
     }
@@ -154,6 +155,7 @@ pub fn merge(git: &GitHome, args: MergeArgs) -> Result<()> {
     let Some(spec) = args.source.clone() else {
         bail!("no merge target given; name a branch or a commit");
     };
+    let strategy = Strategy::parse(&args.strategy, &args.strategy_option);
     let opened = git.open_index()?;
     refuse_unfinished(git, &opened);
     refuse_in_progress(git)?;
@@ -171,6 +173,9 @@ pub fn merge(git: &GitHome, args: MergeArgs) -> Result<()> {
         say("Already up to date.");
         return Ok(());
     }
+    if strategy.kind.no_fast_forward() {
+        (args.no_ff, args.ff_only) = (true, false);
+    }
     let can_ff = git.is_ancestor(&ours, &theirs)?;
     if can_ff && !args.no_ff {
         return fast_forward(git, &opened, Some(ours), &theirs, &spec, &args);
@@ -179,7 +184,14 @@ pub fn merge(git: &GitHome, args: MergeArgs) -> Result<()> {
         write_orig_head(git, &ours)?;
         bail!("Not possible to fast-forward, aborting.");
     }
-    true_merge(git, &args, &opened, ours, theirs, &spec, &what)
+    true_merge(
+        git,
+        &args,
+        &opened,
+        (ours, theirs),
+        (&spec, &what),
+        &strategy,
+    )
 }
 
 /// Git's refusals to start a merge on unmerged paths or over a merge or cherry-pick not yet concluded.
@@ -290,26 +302,104 @@ fn fast_forward(
     Ok(())
 }
 
+/// The paths whose index entry differs from `HEAD`'s tree, sorted.
+fn index_changes(
+    git: &GitHome,
+    opened: &super::stage::OpenIndex,
+    ours_tree: Option<&ObjectId>,
+) -> Result<Vec<Vec<u8>>> {
+    let head_leaves = git.repo.flatten(ours_tree, &Pathspec::default())?;
+    let index_leaves = git.repo.index_leaves(&opened.index);
+    let mut changed: Vec<Vec<u8>> = head_leaves
+        .keys()
+        .chain(index_leaves.keys())
+        .filter(|p| head_leaves.get(*p) != index_leaves.get(*p))
+        .cloned()
+        .collect();
+    changed.sort();
+    changed.dedup();
+    Ok(changed)
+}
+
+/// Ends a merge a strategy could not start, as git does: `ORIG_HEAD` is kept and nothing else changes.
+fn fail_start(
+    git: &GitHome,
+    ours: &ObjectId,
+    spec: &str,
+    kind: Which,
+    index_differs: bool,
+) -> Result<std::convert::Infallible> {
+    write_orig_head(git, ours)?;
+    if index_differs {
+        git.log_ref(
+            "HEAD",
+            Some(ours),
+            ours,
+            &format!("{}: updating HEAD", action(spec)),
+            false,
+        )?;
+    }
+    eprintln!("Merge with strategy {} failed.", kind.name());
+    std::process::exit(2);
+}
+
 fn true_merge(
     git: &GitHome,
     args: &MergeArgs,
     opened: &super::stage::OpenIndex,
-    ours: ObjectId,
-    theirs: ObjectId,
-    spec: &str,
-    what: &str,
+    (ours, theirs): (ObjectId, ObjectId),
+    (spec, what): (&str, &str),
+    strategy: &Strategy,
 ) -> Result<()> {
+    let kind = strategy.kind;
     let bases = git.merge_bases(&ours, &theirs)?;
     let base = match bases.as_slice() {
         [] => bail!("refusing to merge unrelated histories"),
-        [one] => *one,
+        [one] => Some(*one),
+        _ if kind == Which::Ours => None,
         _ => bail!(
             "the two histories have more than one merge base (a criss-cross merge); pyn cannot merge them yet, \
              and nothing was changed"
         ),
     };
     let tree_of = |c: &ObjectId| -> Result<ObjectId> { Ok(git.repo.commit(c)?.tree) };
-    let (base_tree, ours_tree, theirs_tree) = (tree_of(&base)?, tree_of(&ours)?, tree_of(&theirs)?);
+    let ours_tree = tree_of(&ours)?;
+    let finish = Finish {
+        git,
+        args,
+        ours,
+        theirs,
+        spec,
+        what,
+        ours_tree,
+    };
+    if kind == Which::Ours {
+        if !index_changes(git, opened, Some(&ours_tree))?.is_empty() {
+            match fail_start(git, &ours, spec, kind, true)? {}
+        }
+        write_orig_head(git, &ours)?;
+        return finish.conclude(Vec::new(), None, &Concluding::Strategy(kind), || {
+            Ok(ours_tree)
+        });
+    }
+    let base = base.expect("a single merge base was checked above");
+    let (mut base_tree, mut theirs_tree) = (tree_of(&base)?, tree_of(&theirs)?);
+    let settings = if kind.is_tree_merge() {
+        match strategy.settings() {
+            Ok(settings) => settings,
+            Err(BadOption::Unknown(opt) | BadOption::Unsupported(opt, _)) => {
+                write_orig_head(git, &ours)?;
+                eprintln!("fatal: unknown strategy option: -X{opt}");
+                std::process::exit(128);
+            }
+        }
+    } else {
+        Default::default()
+    };
+    if let Some(prefix) = &settings.shift {
+        theirs_tree = shift_tree(git, &ours_tree, &theirs_tree, prefix)?;
+        base_tree = shift_tree(git, &ours_tree, &base_tree, prefix)?;
+    }
     let base_label = short(&base);
     let incoming =
         git.repo
@@ -330,7 +420,36 @@ fn true_merge(
             theirs: spec,
             base: &base_label,
         },
+        &settings,
     )?;
+    let mut how = Concluding::Strategy(kind);
+    if kind.tries_trivial() && !args.no_commit {
+        let changed = index_changes(git, opened, Some(&ours_tree))?;
+        if !changed.is_empty() {
+            write_orig_head(git, &ours)?;
+            let names: Vec<String> = changed.iter().map(|p| path_string(p)).collect();
+            eprintln!(
+                "error: Your local changes to the following files would be overwritten by merge:\n  {}",
+                names.join(" ")
+            );
+            std::process::exit(2);
+        }
+        println!("Trying really trivial in-index merge...");
+        if merged.trivial {
+            println!("Wonderful.");
+            how = Concluding::InIndex;
+        } else {
+            println!("Nope.");
+        }
+    }
+    if matches!(how, Concluding::Strategy(_))
+        && (kind == Which::Octopus || (kind == Which::Resolve && strategy.has_options()))
+    {
+        if let (Which::Resolve, Some(opt)) = (kind, strategy.first_option()) {
+            eprintln!("error: unknown option `{opt}'");
+        }
+        match fail_start(git, &ours, spec, kind, false)? {}
+    }
     let landing = Landing {
         theirs: spec,
         orig_head: Some(ours),
@@ -364,61 +483,107 @@ fn true_merge(
                 refusal.blocked.print("merge", "merge");
                 eprintln!("Aborting");
             }
-            eprintln!("Merge with strategy ort failed.");
+            eprintln!("Merge with strategy {} failed.", kind.name());
             std::process::exit(2);
         }
     };
     let (index, conflicted) = (applied.index, applied.conflicted);
+    let auto_merge = if kind.writes_auto_merge() && (!conflicted.is_empty() || args.no_commit) {
+        Some(result_tree(git, &merged)?)
+    } else {
+        None
+    };
+    finish.conclude(conflicted, auto_merge, &how, || write_tree(git, &index))
+}
 
-    let message = match args.message.is_empty() {
-        true => match tag_message(git, spec) {
-            Some(tag) if what.starts_with("tag ") => {
-                format!("{}\n\n{tag}\n", default_message(git, what)?)
-            }
-            _ => format!("{}\n", default_message(git, what)?),
-        },
-        false => String::from_utf8_lossy(&clean_message(&args.message)).into_owned(),
-    };
-    let mode = if args.no_ff { "no-ff" } else { "" };
-    if !conflicted.is_empty() {
-        let mut text = format!("{message}\n# Conflicts:\n");
-        for p in &conflicted {
-            text.push_str(&format!("#\t{}\n", path_string(p)));
+/// How a merge that did not conflict is described: by its strategy, or as the plain in-index merge.
+enum Concluding {
+    Strategy(Which),
+    InIndex,
+}
+
+/// What a merge needs to end: stop for conflicts or `--no-commit`, or make the merge commit.
+struct Finish<'a> {
+    git: &'a GitHome,
+    args: &'a MergeArgs,
+    ours: ObjectId,
+    theirs: ObjectId,
+    spec: &'a str,
+    what: &'a str,
+    ours_tree: ObjectId,
+}
+
+impl Finish<'_> {
+    fn conclude(
+        &self,
+        conflicted: Vec<Vec<u8>>,
+        auto_merge: Option<ObjectId>,
+        how: &Concluding,
+        tree: impl FnOnce() -> Result<ObjectId>,
+    ) -> Result<()> {
+        let Self {
+            git,
+            args,
+            ours,
+            theirs,
+            spec,
+            what,
+            ours_tree,
+        } = self;
+        let message = match args.message.is_empty() {
+            true => match tag_message(git, spec) {
+                Some(tag) if what.starts_with("tag ") => {
+                    format!("{}\n\n{tag}\n", default_message(git, what)?)
+                }
+                _ => format!("{}\n", default_message(git, what)?),
+            },
+            false => String::from_utf8_lossy(&clean_message(&args.message)).into_owned(),
+        };
+        let mode = if args.no_ff { "no-ff" } else { "" };
+        if let Some(id) = auto_merge {
+            write_state(git, "AUTO_MERGE", &format!("{id}\n"))?;
         }
-        write_state(git, "MERGE_HEAD", &format!("{theirs}\n"))?;
-        write_state(git, "MERGE_MSG", &text)?;
-        write_state(git, "MERGE_MODE", mode)?;
-        println!("Automatic merge failed; fix conflicts and then commit the result.");
-        std::process::exit(1);
+        if !conflicted.is_empty() {
+            let mut text = format!("{message}\n# Conflicts:\n");
+            for p in &conflicted {
+                text.push_str(&format!("#\t{}\n", path_string(p)));
+            }
+            write_state(git, "MERGE_HEAD", &format!("{theirs}\n"))?;
+            write_state(git, "MERGE_MSG", &text)?;
+            write_state(git, "MERGE_MODE", mode)?;
+            println!("Automatic merge failed; fix conflicts and then commit the result.");
+            std::process::exit(1);
+        }
+        if args.no_commit {
+            write_state(git, "MERGE_HEAD", &format!("{theirs}\n"))?;
+            write_state(git, "MERGE_MSG", &message)?;
+            write_state(git, "MERGE_MODE", mode)?;
+            println!("Automatic merge went well; stopped before committing as requested");
+            return Ok(());
+        }
+        let tree = tree()?;
+        let record = Commit {
+            tree,
+            parents: vec![*ours, *theirs],
+            author: identity(git, "author")?,
+            committer: identity(git, "committer")?,
+            extra_headers: Vec::new(),
+            message: message.into_bytes(),
+        };
+        let id = git
+            .repo
+            .objects()
+            .write(ObjectKind::Commit, &record.encode(git.algorithm())?)?;
+        let summary = match how {
+            Concluding::Strategy(kind) => format!("Merge made by the '{}' strategy.", kind.name()),
+            Concluding::InIndex => "In-index merge".to_string(),
+        };
+        git.move_head(&id, &format!("{}: {summary}", action(spec)))?;
+        say(&summary);
+        show_stat(git, args, Some(ours_tree), &tree)?;
+        warn_about_hooks_for(git, &MERGE_HOOKS);
+        Ok(())
     }
-    if args.no_commit {
-        write_state(git, "MERGE_HEAD", &format!("{theirs}\n"))?;
-        write_state(git, "MERGE_MSG", &message)?;
-        write_state(git, "MERGE_MODE", mode)?;
-        println!("Automatic merge went well; stopped before committing as requested");
-        return Ok(());
-    }
-    let tree = write_tree(git, &index)?;
-    let record = Commit {
-        tree,
-        parents: vec![ours, theirs],
-        author: identity(git, "author")?,
-        committer: identity(git, "committer")?,
-        extra_headers: Vec::new(),
-        message: message.into_bytes(),
-    };
-    let id = git
-        .repo
-        .objects()
-        .write(ObjectKind::Commit, &record.encode(git.algorithm())?)?;
-    git.move_head(
-        &id,
-        &format!("{}: Merge made by the 'ort' strategy.", action(spec)),
-    )?;
-    say("Merge made by the 'ort' strategy.");
-    show_stat(git, args, Some(&ours_tree), &tree)?;
-    warn_about_hooks_for(git, &MERGE_HOOKS);
-    Ok(())
 }
 
 /// How a tree merge reaches the index and work tree.
@@ -458,17 +623,10 @@ pub(super) fn apply_merge(
 
     let mut blocked = Blocked::default();
     let index_leaves = git.repo.index_leaves(&opened.index);
-    let mut index_differs = false;
-    for path in head_leaves.keys().chain(index_leaves.keys()) {
-        if head_leaves.get(path) != index_leaves.get(path) {
-            index_differs = true;
-            if landing.strict_index && !blocked.local.contains(path) {
-                blocked.local.push(path.clone());
-            }
-        }
-    }
-    if landing.strict_index && !blocked.local.is_empty() {
-        blocked.local.sort();
+    let differing = index_changes(git, opened, ours_tree)?;
+    let index_differs = !differing.is_empty();
+    if landing.strict_index && index_differs {
+        blocked.local = differing;
         return Ok(Err(Refusal {
             blocked,
             index_differs,

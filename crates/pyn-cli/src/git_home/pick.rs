@@ -16,6 +16,7 @@ use super::stage::{
     clean_message, clear_merge_state, identity, merge_message, refuse_states, warn_about_hooks_for,
     write_tree,
 };
+use super::strategy::Settings;
 use super::treemerge::{Labels, merge_trees};
 use super::{convert, path_string, reset};
 use crate::local_pick::{PickArgs, revert_message, select, with_origin};
@@ -408,6 +409,7 @@ pub(super) fn merge_pick(
             theirs: &theirs_label,
             base: &base_label,
         },
+        &Settings::default(),
     )?;
     let landing = Landing {
         theirs: &theirs_label,

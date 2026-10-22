@@ -34,6 +34,7 @@ mod signing;
 mod stage;
 mod stash;
 mod stash_show;
+mod strategy;
 mod switch;
 mod tags;
 pub(crate) mod todo;

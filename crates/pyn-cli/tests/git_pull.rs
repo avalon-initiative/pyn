@@ -606,12 +606,63 @@ fn unsupported_flags_are_usage_errors() {
         assert_eq!(p.code, 129, "{flag}: {}", p.stderr);
         assert!(p.stderr.contains("pyn pull"), "{flag}: {}", p.stderr);
     }
-    for args in [["-s", "ours"], ["-X", "theirs"], ["--cleanup", "strip"]] {
+    for args in [
+        vec!["--cleanup", "strip"],
+        vec!["-X", "patience"],
+        vec!["-s", "ort", "-s", "ours"],
+        vec!["--rebase", "-s", "ours"],
+        vec!["--rebase", "-X", "theirs"],
+    ] {
         let mut full = vec!["pull"];
-        full.extend(args);
+        full.extend(&args);
         assert_eq!(t.pyn_cmd(&t.pyn, &full).code, 129, "{args:?}");
     }
     assert_eq!(state(&t.pyn), before);
+}
+
+#[test]
+fn merge_strategies_and_options_reach_the_merge() {
+    for (format, via) in [("sha1", Via::Ssh), ("sha256", Via::Http)] {
+        for args in [
+            vec!["-s", "ours"],
+            vec!["--strategy=resolve"],
+            vec!["-X", "ours"],
+            vec!["-Xtheirs"],
+            vec!["-s", "recursive", "--strategy-option=theirs"],
+        ] {
+            let t = Twin::new(format, via);
+            t.local("a.txt", "local\n", "local a");
+            t.remote("a.txt", "remote\n", "remote a");
+            let mut full = vec!["--no-rebase", "--no-edit"];
+            full.extend(&args);
+            let (g, p) = t.both(&full);
+            assert_eq!(g.code, p.code, "{args:?}: {}", p.stderr);
+        }
+    }
+}
+
+#[test]
+fn a_conflicting_pull_records_auto_merge() {
+    let t = Twin::new("sha1", Via::Ssh);
+    t.local("a.txt", "local\n", "local a");
+    t.remote("a.txt", "remote\n", "remote a");
+    let (g, p) = t.both(&["--no-rebase", "--no-edit"]);
+    assert_eq!((g.code, p.code), (1, 1));
+    // The conflict marker labels differ (pull names the other side by id), so the blobs are not compared.
+    let auto = |dir: &Path| run(dir, &["ls-tree", "-r", "--name-only", "AUTO_MERGE"]);
+    assert_eq!(auto(&t.git), auto(&t.pyn));
+}
+
+#[test]
+fn an_unknown_strategy_stops_the_pull() {
+    let t = Twin::new("sha1", Via::Ssh);
+    t.local("a.txt", "local\n", "local a");
+    t.remote("a.txt", "remote\n", "remote a");
+    let before = t.head(&t.pyn);
+    let p = t.pyn_cmd(&t.pyn, &["pull", "--no-rebase", "-s", "bogus"]);
+    assert_eq!(p.code, 1, "{}", p.stderr);
+    assert!(p.stderr.contains("Could not find merge strategy 'bogus'"));
+    assert_eq!(t.head(&t.pyn), before);
 }
 
 #[test]

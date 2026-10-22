@@ -77,10 +77,12 @@ pub struct PullArgs {
     skip: bool,
     #[arg(long, hide = true)]
     squash: bool,
-    #[arg(short = 's', long, hide = true, value_name = "STRATEGY")]
-    strategy: Option<String>,
-    #[arg(short = 'X', long, hide = true, value_name = "OPTION")]
-    strategy_option: Option<String>,
+    /// The merge strategy: ort, recursive, resolve, octopus, ours or subtree.
+    #[arg(short = 's', long, value_name = "STRATEGY")]
+    strategy: Vec<String>,
+    /// An option for the merge strategy, such as `ours` or `theirs`.
+    #[arg(short = 'X', long, value_name = "OPTION")]
+    strategy_option: Vec<String>,
     #[arg(long, hide = true)]
     autostash: bool,
     #[arg(short = 'S', long, hide = true, num_args = 0..=1, require_equals = true)]
@@ -161,16 +163,6 @@ impl PullArgs {
                 "a git rebase is skipped with `pyn rebase --skip`",
             ),
             ("--squash", self.squash, "a squash merge is not built"),
-            (
-                "--strategy",
-                self.strategy.is_some(),
-                "merge strategies are not built",
-            ),
-            (
-                "--strategy-option",
-                self.strategy_option.is_some(),
-                "merge strategies are not built",
-            ),
             (
                 "--gpg-sign",
                 self.gpg_sign.is_some(),
@@ -448,6 +440,12 @@ pub fn pull(git: &GitHome, args: PullArgs) -> Result<()> {
             "`pyn pull --autostash`: only a rebase stashes first; run `pyn stash`, or pull with --rebase",
         );
     }
+    if rebase_on && (!args.strategy.is_empty() || !args.strategy_option.is_empty()) {
+        crate::usage_error("`pyn pull --rebase -s` and `-X`: rebase strategies are not built");
+    }
+    if !rebase_on {
+        super::strategy::Strategy::parse(&args.strategy, &args.strategy_option);
+    }
     let how = integration(git, &args)?;
     if !args.dry_run {
         refuse_unfinished(git)?;
@@ -543,6 +541,8 @@ pub fn pull(git: &GitHome, args: PullArgs) -> Result<()> {
             preview: false,
             stat: args.stat,
             no_stat: args.no_stat,
+            strategy: args.strategy,
+            strategy_option: args.strategy_option,
         },
     )
 }

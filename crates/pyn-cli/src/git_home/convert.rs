@@ -210,6 +210,29 @@ pub(super) fn refuse_conversions<'a>(
     Ok(())
 }
 
+/// Fails when `-X renormalize` would change how `path` is merged: it normalizes line endings and runs filters on the
+/// way in, which pyn does not do.
+pub(super) fn refuse_renormalize(git: &GitHome, path: &[u8]) -> Result<()> {
+    let conv = attributes_of(git, path)?;
+    let set = |a: &Attr| !matches!(a, Attr::Unspecified | Attr::Unset);
+    let autocrlf = git
+        .repo
+        .config()
+        .get("core.autocrlf")
+        .is_some_and(|v| !v.eq_ignore_ascii_case("false"));
+    let line_endings = conv.text != Attr::Unset
+        && (set(&conv.text) || set(&conv.eol) || set(&conv.crlf) || autocrlf);
+    let converts = line_endings || set(&conv.filter) || set(&conv.ident) || set(&conv.encoding);
+    if converts {
+        bail!(
+            "`-X renormalize` would convert '{}' on its way into the merge, and pyn does not convert line endings or \
+             apply filters yet (#273); nothing was changed",
+            path_string(path)
+        );
+    }
+    Ok(())
+}
+
 static LFS_WARNED: AtomicBool = AtomicBool::new(false);
 
 /// Prints the Git LFS warning the first time it is asked for in this process.

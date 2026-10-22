@@ -6,10 +6,13 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Result, bail};
 use pyn_gitwork::{Entry, Pathspec};
-use pyn_merge::{Outcome as Text, merge_text, render_markers};
+use pyn_merge::{Favor, Outcome as Text, merge_text_with, render_markers};
 use pyn_object::{FileMode, Kind, ObjectId};
 
 use super::GitHome;
+use super::convert;
+use super::stage::write_leaves;
+use super::strategy::Settings;
 
 pub(super) struct Labels<'a> {
     pub ours: &'a str,
@@ -55,6 +58,8 @@ pub(super) struct Merge {
     pub paths: BTreeMap<Vec<u8>, Resolved>,
     /// Paths both sides changed, which needed a line merge (`Auto-merging` lines).
     pub line_merged: BTreeSet<Vec<u8>>,
+    /// Every path is taken whole from one side, which read-tree's plain three-way merge also resolves.
+    pub trivial: bool,
 }
 
 fn mode_of(b: Option<&Entry>, o: &Entry, t: &Entry) -> Option<FileMode> {
@@ -72,14 +77,21 @@ fn regular(mode: FileMode) -> bool {
     matches!(mode, FileMode::Regular | FileMode::Executable)
 }
 
+struct Both<'a> {
+    path: &'a [u8],
+    labels: &'a Labels<'a>,
+    settings: &'a Settings,
+}
+
 fn both_present(
     git: &GitHome,
     b: Option<&Entry>,
     o: &Entry,
     t: &Entry,
-    labels: &Labels,
+    at: &Both,
     line_merged: &mut bool,
 ) -> Result<Resolved> {
+    let (labels, settings) = (at.labels, at.settings);
     let conflict = |kind, worktree| {
         Ok(Resolved::Conflict(Conflict {
             base: b.copied(),
@@ -97,11 +109,21 @@ fn both_present(
     let Some(mode) = mode_of(b, o, t) else {
         return conflict(kind, Worktree::Keep);
     };
+    if o.mode == FileMode::Symlink
+        && t.mode == FileMode::Symlink
+        && let Some(favor) = settings.text.favor
+    {
+        let chosen = if favor == Favor::Ours { o } else { t };
+        return Ok(Resolved::Take(Some(*chosen)));
+    }
     if !regular(o.mode) || !regular(t.mode) || b.is_some_and(|b| !regular(b.mode)) {
         return conflict(kind, Worktree::Keep);
     }
     if o.id == t.id {
         return Ok(Resolved::Take(Some(Entry { mode, id: o.id })));
+    }
+    if settings.renormalize {
+        convert::refuse_renormalize(git, at.path)?;
     }
     *line_merged = true;
     let base = match b {
@@ -109,7 +131,7 @@ fn both_present(
         None => Vec::new(),
     };
     let (ours, theirs) = (git.repo.blob(&o.id)?, git.repo.blob(&t.id)?);
-    match merge_text(&base, &ours, &theirs) {
+    match merge_text_with(&base, &ours, &theirs, settings.text) {
         Text::Clean(bytes) => {
             let id = git.repo.objects().write(Kind::Blob, &bytes)?;
             Ok(Resolved::Take(Some(Entry { mode, id })))
@@ -118,7 +140,16 @@ fn both_present(
             let bytes = render_markers(&chunks, labels.ours, labels.base, labels.theirs);
             conflict(kind, Worktree::Write { mode, bytes })
         }
-        Text::BinaryConflict => conflict(Conflicting::Binary, Worktree::Keep),
+        Text::BinaryConflict => match settings.text.favor {
+            Some(favor) => {
+                let chosen = if favor == Favor::Ours { o } else { t };
+                Ok(Resolved::Take(Some(Entry {
+                    mode,
+                    id: chosen.id,
+                })))
+            }
+            None => conflict(Conflicting::Binary, Worktree::Keep),
+        },
     }
 }
 
@@ -129,6 +160,7 @@ pub(super) fn merge_trees(
     ours: Option<&ObjectId>,
     theirs: Option<&ObjectId>,
     labels: &Labels,
+    settings: &Settings,
 ) -> Result<Merge> {
     let spec = Pathspec::default();
     let (b, o, t) = (
@@ -140,9 +172,12 @@ pub(super) fn merge_trees(
     let mut out = Merge {
         paths: BTreeMap::new(),
         line_merged: BTreeSet::new(),
+        trivial: true,
     };
     for path in paths {
         let (pb, po, pt) = (b.get(path), o.get(path), t.get(path));
+        out.trivial &=
+            (po == pt && po.is_some()) || (po == pb && pt.is_some()) || (pt == pb && po.is_some());
         let resolved = if po == pt {
             Resolved::Take(po.copied())
         } else if po == pb {
@@ -153,7 +188,12 @@ pub(super) fn merge_trees(
             match (po, pt) {
                 (Some(o), Some(t)) => {
                     let mut merged = false;
-                    let r = both_present(git, pb, o, t, labels, &mut merged)?;
+                    let at = Both {
+                        path,
+                        labels,
+                        settings,
+                    };
+                    let r = both_present(git, pb, o, t, &at, &mut merged)?;
                     if merged {
                         out.line_merged.insert(path.clone());
                     }
@@ -185,6 +225,27 @@ pub(super) fn merge_trees(
     }
     refuse_file_folder_clashes(&out)?;
     Ok(out)
+}
+
+/// The tree `AUTO_MERGE` records: the merge as written to the work tree, conflict markers included.
+pub(super) fn result_tree(git: &GitHome, merge: &Merge) -> Result<ObjectId> {
+    let mut leaves = BTreeMap::new();
+    for (path, resolved) in &merge.paths {
+        let entry = match resolved {
+            Resolved::Take(e) => *e,
+            Resolved::Conflict(c) => match &c.worktree {
+                Worktree::Write { mode, bytes } => Some(Entry {
+                    mode: *mode,
+                    id: git.repo.objects().write(Kind::Blob, bytes)?,
+                }),
+                Worktree::Keep => c.ours.or(c.theirs),
+            },
+        };
+        if let Some(e) = entry {
+            leaves.insert(path.clone(), e);
+        }
+    }
+    write_leaves(git, &leaves)
 }
 
 fn kept(r: &Resolved) -> bool {

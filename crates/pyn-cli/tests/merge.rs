@@ -162,6 +162,24 @@ fn no_ff_makes_a_merge_commit_and_ff_only_refuses_one() {
 }
 
 #[test]
+fn strategies_need_a_git_repository() {
+    let env = start();
+    env.seed("alice", "Source/a.cpp", "a\n", None);
+    let ws = clone(&env, "ws");
+    env.ok(&ws, "alice", &["switch", "-c", "feature"]);
+    commit(&env, &ws, "Source/a.cpp", "feature\n");
+    env.ok(&ws, "alice", &["switch", "main"]);
+    for args in [["-s", "ours"], ["-X", "theirs"]] {
+        let mut full = vec!["merge"];
+        full.extend(args);
+        full.push("feature");
+        let err = env.fails(&ws, "alice", &full);
+        assert!(err.contains("need a git repository"), "{err}");
+    }
+    assert_eq!(read(&ws, "Source/a.cpp"), "a\n");
+}
+
+#[test]
 fn text_changed_in_different_places_merges_without_conflict() {
     let env = start();
     env.seed("alice", "Source/a.cpp", "1\n2\n3\n4\n5\n", None);

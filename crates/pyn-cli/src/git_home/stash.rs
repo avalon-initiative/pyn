@@ -16,6 +16,7 @@ use super::stage::{
     refuse_in_progress, remove_entry, resolve_specs, stage_file, stat_fields, under,
     untracked_files, write_tree,
 };
+use super::strategy::Settings;
 use super::switch::{subject, switch_to_new};
 use super::treemerge::{Labels, Merge, Resolved, Worktree, merge_trees};
 use super::worktree::{
@@ -818,6 +819,7 @@ fn apply_stash(git: &GitHome, id: &ObjectId, index: bool) -> Result<Applying> {
             theirs: "Stashed changes",
             base: "Stash base",
         },
+        &Settings::default(),
     )?;
     check_writes(merged.paths.keys().chain(restore_untracked.keys()))?;
     let ours = git.repo.index_leaves(&opened.index);
@@ -951,7 +953,14 @@ fn staged_state(
         theirs: "Stashed changes",
         base: "Stash base",
     };
-    let merged = merge_trees(git, Some(base), Some(current), Some(&saved), &labels)?;
+    let merged = merge_trees(
+        git,
+        Some(base),
+        Some(current),
+        Some(&saved),
+        &labels,
+        &Settings::default(),
+    )?;
     if merged
         .paths
         .values()

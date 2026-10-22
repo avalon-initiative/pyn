@@ -7,7 +7,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use pyn_git::{Index, IndexEntry, Timestamp};
-use pyn_gitwork::{Kind, Level, Pathspec, fs_path, parse_rules, worktree_mode};
+use pyn_gitwork::{Entry, Kind, Level, Pathspec, fs_path, parse_rules, worktree_mode};
 use pyn_object::{FileMode, Kind as ObjectKind, ObjectId, Signature, TreeEntry, encode_tree};
 
 use super::{GitHome, path_string};
@@ -641,6 +641,15 @@ pub(super) fn write_tree(git: &GitHome, index: &Index) -> Result<ObjectId> {
         .map(|e| (e.path.as_slice(), leaf_mode(e.mode), e.id))
         .collect();
     items.sort_by(|a, b| a.0.cmp(b.0));
+    write_dir(git, &items, 0)
+}
+
+/// Writes the trees for a map of paths to entries and returns the root tree.
+pub(super) fn write_leaves(git: &GitHome, leaves: &BTreeMap<Vec<u8>, Entry>) -> Result<ObjectId> {
+    let items: Vec<(&[u8], FileMode, ObjectId)> = leaves
+        .iter()
+        .map(|(p, e)| (p.as_slice(), e.mode, e.id))
+        .collect();
     write_dir(git, &items, 0)
 }
 
