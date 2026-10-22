@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::backend::Backend;
 use crate::git_home::clean_message;
 use crate::git_home::meld;
-use crate::git_home::todo::{Cmd, Flag};
+use crate::git_home::todo::{Cmd, Flag, Item};
 use crate::local_commit::signature;
 use crate::local_store::{ALGORITHM, Files, LocalStore, build_trees, file_mode, parse_id};
 use crate::local_sync::{
@@ -74,27 +74,37 @@ impl Op {
     }
 }
 
-/// One command of a replay and the commit it names.
-pub type Move = (Cmd, ObjectId);
+/// One command of a replay: a commit to apply, or an `exec` line or `break`.
+pub type Move = Item;
 
-fn move_line((cmd, id): &Move) -> String {
-    match cmd {
-        Cmd::Pick => id.to_hex(),
-        _ => format!("{} {}", cmd.word(), id.to_hex()),
+fn move_line(item: &Move) -> String {
+    match (item.cmd, item.id) {
+        (Cmd::Pick, Some(id)) => id.to_hex(),
+        (Cmd::Exec, _) => format!("exec {}", item.arg),
+        (Cmd::Break, _) => "break".into(),
+        (cmd, Some(id)) => format!("{} {}", cmd.word(), id.to_hex()),
+        (cmd, None) => cmd.word().to_string(),
     }
 }
 
 fn parse_move(line: &str) -> Result<Move> {
-    let mut words = line.split_whitespace();
-    let (first, second) = (words.next(), words.next());
-    match (first, second) {
-        (Some(hex), None) => Ok((Cmd::Pick, id_of(hex)?)),
-        (Some(word), Some(hex)) => Ok((
-            Cmd::from_word(word)
-                .with_context(|| format!("unknown command '{word}' in the record"))?,
-            id_of(hex)?,
-        )),
-        _ => bail!("the record has an empty step"),
+    let line = line.trim();
+    let (first, rest) = line
+        .split_once(char::is_whitespace)
+        .map_or((line, ""), |(w, r)| (w, r.trim()));
+    match (first, rest) {
+        ("", _) => bail!("the record has an empty step"),
+        ("break", "") => Ok(Item::with_arg(Cmd::Break, "")),
+        ("exec", line) if !line.is_empty() => Ok(Item::exec(line)),
+        (hex, "") => Ok(Item::pick(id_of(hex)?)),
+        (word, hex) => {
+            let cmd = Cmd::from_word(word)
+                .with_context(|| format!("unknown command '{word}' in the record"))?;
+            Ok(Item {
+                cmd,
+                ..Item::pick(id_of(hex)?)
+            })
+        }
     }
 }
 
@@ -113,6 +123,13 @@ pub struct Sides {
     theirs: Option<Side>,
     #[serde(default)]
     exclusive: bool,
+}
+
+/// A file `--autostash` put aside: what it was at the tip and what the working tree held.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Stashed {
+    base: Side,
+    stash: Side,
 }
 
 /// The part of the merge record that only a pull knows.
@@ -141,6 +158,13 @@ pub struct LocalOp {
     /// Cherry-pick: add the `(cherry picked from commit ...)` line to each message.
     #[serde(default)]
     origin: bool,
+    /// Rebase: stopped on `edit`, `break` or an `exec`, not on a conflict.
+    #[serde(default)]
+    paused: bool,
+    #[serde(default)]
+    no_ff: bool,
+    #[serde(default)]
+    autostash: BTreeMap<String, Stashed>,
 }
 
 impl LocalOp {
@@ -154,7 +178,15 @@ impl LocalOp {
         }
     }
 
+    pub fn paused(&self) -> bool {
+        self.paused
+    }
+
     pub fn how_to_end(&self) -> String {
+        if self.paused {
+            return "go on with `pyn rebase --continue`, or give the rebase up with `pyn rebase --abort`"
+                .into();
+        }
         match self.op {
             Op::Merge => "conclude it with `pyn commit` or give it up with `pyn pull --abort`".into(),
             Op::Rebase => {
@@ -174,6 +206,19 @@ impl LocalOp {
     }
 
     pub fn header(&self) -> String {
+        if self.paused {
+            let stop = self
+                .current
+                .as_deref()
+                .and_then(|l| l.split_whitespace().next())
+                .filter(|w| matches!(*w, "break" | "exec"))
+                .unwrap_or("edit");
+            return format!(
+                "You are rebasing (stopped at {stop}, {} left).\n  \
+                 (use \"pyn rebase --continue\" when you are done, \"pyn rebase --abort\" to give up the rebase)\n",
+                self.todo.len()
+            );
+        }
         match self.op {
             Op::Merge => "  (use \"pyn pull --abort\" to abort the merge)\n".into(),
             Op::Rebase => {
@@ -426,7 +471,8 @@ fn record(
         (&BTreeSet::new(), &editable),
     )?;
     let mut paths = BTreeMap::new();
-    for path in written.iter().chain(editable.iter()) {
+    let touched = if op.paused { BTreeSet::new() } else { written };
+    for path in touched.iter().chain(editable.iter()) {
         let c = conflicts.get(path.as_bytes());
         paths.insert(
             path.clone(),
@@ -485,6 +531,9 @@ pub fn stop_merge(
         total: 0,
         dropped: 0,
         origin: false,
+        paused: false,
+        no_ff: false,
+        autostash: BTreeMap::new(),
     };
     let disk = flat(store, Some(stop.orig))?;
     record(
@@ -517,6 +566,51 @@ struct Run {
     todo: VecDeque<Move>,
     total: usize,
     dropped: usize,
+    no_ff: bool,
+    stash: BTreeMap<String, Stashed>,
+}
+
+impl Run {
+    fn new(op: Op, orig: ObjectId, onto: ObjectId, tip: ObjectId, todo: VecDeque<Move>) -> Self {
+        Run {
+            op,
+            origin: false,
+            orig,
+            onto,
+            tip,
+            total: todo.len(),
+            todo,
+            dropped: 0,
+            no_ff: false,
+            stash: BTreeMap::new(),
+        }
+    }
+
+    /// The record of this run stopped at `current`: on conflicts, or `paused` on `edit`, `break` or `exec`.
+    fn record_of(
+        &self,
+        result_tree: ObjectId,
+        current: &Move,
+        sides: BTreeMap<String, Sides>,
+        paused: bool,
+    ) -> LocalOp {
+        LocalOp {
+            op: self.op,
+            origin: self.origin,
+            orig: self.orig.to_hex(),
+            theirs: self.onto.to_hex(),
+            result_tree: result_tree.to_hex(),
+            sides,
+            tip: Some(self.tip.to_hex()),
+            current: Some(move_line(current)),
+            todo: self.todo.iter().map(move_line).collect(),
+            total: self.total,
+            dropped: self.dropped,
+            paused,
+            no_ff: self.no_ff,
+            autostash: self.stash.clone(),
+        }
+    }
 }
 
 enum Replayed {
@@ -527,6 +621,12 @@ enum Replayed {
         files: Files,
         conflicts: BTreeMap<Vec<u8>, Conflict>,
         kept: Vec<String>,
+    },
+    /// `edit` after its commit was made, `break`, or an `exec` line to run.
+    Paused {
+        run: Run,
+        item: Move,
+        files: Files,
     },
 }
 
@@ -553,12 +653,28 @@ fn replay(
     }
     let mut files = flat(store, Some(run.tip))?;
     let mut parent_tree = repo.commit(&run.tip)?.tree;
-    while let Some((cmd, id)) = run.todo.pop_front() {
+    while let Some(item) = run.todo.pop_front() {
+        let cmd = item.cmd;
+        match cmd {
+            Cmd::Noop | Cmd::Drop | Cmd::Comment => continue,
+            Cmd::Break | Cmd::Exec => return Ok(Replayed::Paused { run, item, files }),
+            _ => {}
+        }
+        let id = item.id.context("a command without a commit")?;
         let commit = repo.commit(&id)?;
-        if run.op == Op::Rewrite && cmd == Cmd::Pick && commit.parents.first() == Some(&run.tip) {
+        let stops = cmd == Cmd::Edit;
+        let same_parent = commit.parents.first() == Some(&run.tip);
+        if run.op == Op::Rewrite
+            && matches!(cmd, Cmd::Pick | Cmd::Edit)
+            && same_parent
+            && !run.no_ff
+        {
             run.tip = id;
             files = flat_tree(store, &commit.tree)?;
             parent_tree = commit.tree;
+            if stops {
+                return Ok(Replayed::Paused { run, item, files });
+            }
             continue;
         }
         let parent = store.tree_of(commit.parents.first().copied())?;
@@ -626,7 +742,7 @@ fn replay(
         if !conflicts.is_empty() {
             return Ok(Replayed::Stopped {
                 run,
-                current: (cmd, id),
+                current: item,
                 files,
                 conflicts,
                 kept,
@@ -666,6 +782,9 @@ fn replay(
         if run.op.announces() {
             print_pick(branch, &run.tip, &record.message);
         }
+        if stops {
+            return Ok(Replayed::Paused { run, item, files });
+        }
     }
     Ok(Replayed::Done(run))
 }
@@ -675,7 +794,7 @@ fn meld_dir(ws: &Workspace) -> std::path::PathBuf {
 }
 
 fn more_melds(run: &Run) -> bool {
-    run.todo.front().is_some_and(|(cmd, _)| cmd.melds())
+    run.todo.front().is_some_and(|item| item.cmd.melds())
 }
 
 /// The message of the commit a squash chain makes now: the collected text while more members follow, then the first
@@ -736,26 +855,16 @@ pub fn begin_pick(
     pick: Pick,
     who: &Signature,
 ) -> Result<()> {
-    let run = Run {
-        op: pick.op,
-        origin: pick.origin,
-        orig: pick.tip,
-        onto: pick.onto,
-        tip: pick.tip,
-        total: pick.commits.len(),
-        todo: pick.commits.into_iter().map(|c| (Cmd::Pick, c)).collect(),
-        dropped: 0,
-    };
+    let mut run = Run::new(
+        pick.op,
+        pick.tip,
+        pick.onto,
+        pick.tip,
+        pick.commits.into_iter().map(Item::pick).collect(),
+    );
+    run.origin = pick.origin;
     let disk = flat(store, Some(pick.tip))?;
-    proceed(
-        backend,
-        ws,
-        store,
-        (branch, who),
-        run,
-        &disk,
-        &BTreeSet::new(),
-    )
+    proceed(backend, ws, store, (branch, who), run, Resume::new(&disk))
 }
 
 /// Replays the local commits onto the fetched tip; a conflict leaves the rebase in progress.
@@ -778,30 +887,15 @@ pub fn begin_rebase(
         }
     }
     let orig = *outgoing.commits.last().expect("outgoing has commits");
-    let run = Run {
-        op: Op::Rebase,
-        origin: false,
+    let run = Run::new(
+        Op::Rebase,
         orig,
         onto,
-        tip: onto,
-        total: outgoing.commits.len(),
-        todo: outgoing
-            .commits
-            .into_iter()
-            .map(|c| (Cmd::Pick, c))
-            .collect(),
-        dropped: 0,
-    };
+        onto,
+        outgoing.commits.into_iter().map(Item::pick).collect(),
+    );
     let disk = flat(store, Some(orig))?;
-    proceed(
-        backend,
-        ws,
-        store,
-        (branch, who),
-        run,
-        &disk,
-        &BTreeSet::new(),
-    )
+    proceed(backend, ws, store, (branch, who), run, Resume::new(&disk))
 }
 
 /// The commands of a `pyn rebase` over unpublished commits: replayed over `base` from the local tip `tip`;
@@ -811,6 +905,8 @@ pub struct Rewrite {
     pub base: ObjectId,
     pub tip: ObjectId,
     pub published: ObjectId,
+    pub no_ff: bool,
+    pub stash: BTreeMap<String, Stashed>,
 }
 
 /// Replays the commands over the base; a conflict leaves the rebase in progress.
@@ -823,127 +919,217 @@ pub fn begin_rewrite(
     who: &Signature,
 ) -> Result<()> {
     let _ = std::fs::remove_dir_all(meld_dir(ws));
-    let run = Run {
-        op: Op::Rewrite,
-        origin: false,
-        orig: rewrite.tip,
-        onto: rewrite.published,
-        tip: rewrite.base,
-        total: rewrite.moves.len(),
-        todo: rewrite.moves.into(),
-        dropped: 0,
-    };
+    let mut run = Run::new(
+        Op::Rewrite,
+        rewrite.tip,
+        rewrite.published,
+        rewrite.base,
+        rewrite.moves.into(),
+    );
+    run.no_ff = rewrite.no_ff;
+    run.stash = rewrite.stash;
     let disk = flat(store, Some(rewrite.tip))?;
-    proceed(
-        backend,
-        ws,
-        store,
-        (branch, who),
-        run,
-        &disk,
-        &BTreeSet::new(),
-    )
+    proceed(backend, ws, store, (branch, who), run, Resume::new(&disk))
 }
 
-/// Carries a rebase or cherry-pick on from `run` with `disk` in the working tree: to its end, or to the next conflict.
+/// Where `proceed` starts: the files on disk, and whether to stop at the tip first (an `edit` whose conflict was
+/// just resolved).
+struct Resume<'a> {
+    disk: &'a Files,
+    halt: bool,
+}
+
+impl<'a> Resume<'a> {
+    fn new(disk: &'a Files) -> Self {
+        Resume { disk, halt: false }
+    }
+}
+
+/// The commit message line `edit` and `break` stops report.
+fn stop_line(store: &LocalStore, tip: &ObjectId) -> Result<String> {
+    let commit = store.repo().commit(tip)?;
+    Ok(format!(
+        "{} ({})",
+        short(&tip.to_hex()),
+        subject(&commit.message)
+    ))
+}
+
+/// Runs an `exec` line in the working tree root; a failure, or changes it leaves behind, stops the rebase.
+fn run_exec(ws: &Workspace, line: &str) -> Result<()> {
+    eprintln!("Executing: {line}");
+    let ran = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(line)
+        .current_dir(&ws.root)
+        .status();
+    if !ran.is_ok_and(|s| s.success()) {
+        return Err(Rejected(format!(
+            "warning: execution failed: {line}\nYou can fix the problem, and then run\n\n  pyn rebase --continue\n"
+        ))
+        .into());
+    }
+    if !dirty_paths(ws)?.is_empty() || !Index::load(ws)?.entries.is_empty() {
+        return Err(Rejected(format!(
+            "error: execution succeeded: {line}\nbut left changes to the index and/or the working tree.\nCommit your changes, or put them back with `pyn checkout -- <path>`, and run\n\n  pyn rebase --continue\n"
+        ))
+        .into());
+    }
+    Ok(())
+}
+
+/// Carries a rebase or cherry-pick on from `run` with the files of `start` on disk: to its end, to the next
+/// conflict, or to the next `edit`, `break` or failed `exec`.
 fn proceed(
     backend: &dyn Backend,
     ws: &Workspace,
     store: &LocalStore,
     (branch, who): (&str, &Signature),
-    run: Run,
-    disk: &Files,
-    force: &BTreeSet<String>,
+    mut run: Run,
+    start: Resume<'_>,
 ) -> Result<()> {
-    match replay(store, backend, ws, (who, branch), run)? {
-        Replayed::Done(run) => {
-            let end = flat(store, Some(run.tip))?;
-            materialize(
-                store,
-                backend,
-                ws,
-                (disk, &end),
-                &BTreeMap::new(),
-                (force, &BTreeSet::new()),
-            )?;
-            store
-                .repo()
-                .refs()
-                .update_checked(&local_ref(branch), Expect::Id(run.orig), &run.tip)
-                .context("the local branch moved while pulling; run the command again")?;
-            merging::clear(ws)?;
-            Index::default().save(ws)?;
-            let _ = std::fs::remove_dir_all(meld_dir(ws));
-            if run.op == Op::Rewrite {
-                println!("Successfully rebased and updated refs/heads/{branch}.");
-            }
-            if run.op.replays() {
-                return Ok(());
-            }
-            println!(
-                "Rebased {} local commit(s) onto {}{}",
-                run.total - run.dropped,
-                short(&run.onto.to_hex()),
-                if run.dropped > 0 {
-                    format!(" ({} became empty and was dropped)", run.dropped)
-                } else {
-                    String::new()
+    let mut at = match store.tip(branch)? {
+        Some(now) if run.op == Op::Rewrite => now,
+        _ => run.orig,
+    };
+    let mut disk = start.disk.clone();
+    let mut halt = start.halt;
+    loop {
+        let replayed = if std::mem::take(&mut halt) {
+            let item = Item {
+                cmd: Cmd::Edit,
+                ..Item::pick(run.tip)
+            };
+            let files = flat(store, Some(run.tip))?;
+            Replayed::Paused { run, item, files }
+        } else {
+            replay(store, backend, ws, (who, branch), run)?
+        };
+        match replayed {
+            Replayed::Done(done) => {
+                let end = flat(store, Some(done.tip))?;
+                materialize(
+                    store,
+                    backend,
+                    ws,
+                    (&disk, &end),
+                    &BTreeMap::new(),
+                    (&BTreeSet::new(), &BTreeSet::new()),
+                )?;
+                store
+                    .repo()
+                    .refs()
+                    .update_checked(&local_ref(branch), Expect::Id(at), &done.tip)
+                    .context("the local branch moved while pulling; run the command again")?;
+                merging::clear(ws)?;
+                Index::default().save(ws)?;
+                let _ = std::fs::remove_dir_all(meld_dir(ws));
+                if done.op == Op::Rewrite {
+                    println!("Successfully rebased and updated refs/heads/{branch}.");
+                    unstash(backend, ws, store, &done.stash, (done.tip, done.onto))?;
                 }
-            );
-            sync::update(backend, ws, &[], None)
-        }
-        Replayed::Stopped {
-            run,
-            current,
-            files,
-            conflicts,
-            kept,
-        } => {
-            let (cmd, current) = current;
-            let commit = store.repo().commit(&current)?;
-            let result_tree = write_trees(store, &files)?;
-            let op = LocalOp {
-                op: run.op,
-                origin: run.origin,
-                orig: run.orig.to_hex(),
-                theirs: run.onto.to_hex(),
-                result_tree: result_tree.to_hex(),
-                sides: sides_of(&conflicts)?,
-                tip: Some(run.tip.to_hex()),
-                current: Some(move_line(&(cmd, current))),
-                todo: run.todo.iter().map(move_line).collect(),
-                total: run.total,
-                dropped: run.dropped,
-            };
-            let message = match std::fs::read(meld_dir(ws).join(meld::SQUASH)) {
-                Ok(text) if cmd.melds() => String::from_utf8_lossy(&text).into_owned(),
-                _ => String::from_utf8_lossy(&replayed_message(
-                    run.op,
-                    run.origin,
-                    &current,
-                    commit.message.clone(),
-                ))
-                .into_owned(),
-            };
-            let at = run.total - run.todo.len();
-            let cmd = run.op.command();
-            let (mut text, exclusive) = conflict_lines(&conflicts, &kept);
-            text.push_str(&format!(
-                "error: could not apply {} ({}), commit {at} of {}\n{RESOLVE} (or `{cmd} --continue`).\n{SIDES}\n",
-                short(&current.to_hex()),
-                subject(&commit.message),
-                run.total
-            ));
-            if exclusive {
-                text.push_str(&format!("{LOCKS}\n"));
+                if done.op.replays() {
+                    return Ok(());
+                }
+                println!(
+                    "Rebased {} local commit(s) onto {}{}",
+                    done.total - done.dropped,
+                    short(&done.onto.to_hex()),
+                    if done.dropped > 0 {
+                        format!(" ({} became empty and was dropped)", done.dropped)
+                    } else {
+                        String::new()
+                    }
+                );
+                return sync::update(backend, ws, &[], None);
             }
-            text.push_str(&format!(
-                "hint: To drop this commit, run `{cmd} --skip`; to put everything back as it was, `{cmd} --abort`."
-            ));
-            record(
-                store, backend, ws, branch, disk, &files, &conflicts, op, message,
-            )?;
-            Err(Rejected(text).into())
+            Replayed::Stopped {
+                run: stopped,
+                current,
+                files,
+                conflicts,
+                kept,
+            } => {
+                let cmd = stopped.op.command();
+                let id = current.id.context("a stop without a commit")?;
+                let commit = store.repo().commit(&id)?;
+                let result_tree = write_trees(store, &files)?;
+                let op = stopped.record_of(result_tree, &current, sides_of(&conflicts)?, false);
+                let message = match std::fs::read(meld_dir(ws).join(meld::SQUASH)) {
+                    Ok(text) if current.cmd.melds() => String::from_utf8_lossy(&text).into_owned(),
+                    _ => String::from_utf8_lossy(&replayed_message(
+                        stopped.op,
+                        stopped.origin,
+                        &id,
+                        commit.message.clone(),
+                    ))
+                    .into_owned(),
+                };
+                let at_n = stopped.total - stopped.todo.len();
+                let (mut text, exclusive) = conflict_lines(&conflicts, &kept);
+                text.push_str(&format!(
+                    "error: could not apply {} ({}), commit {at_n} of {}\n{RESOLVE} (or `{cmd} --continue`).\n{SIDES}\n",
+                    short(&id.to_hex()),
+                    subject(&commit.message),
+                    stopped.total
+                ));
+                if exclusive {
+                    text.push_str(&format!("{LOCKS}\n"));
+                }
+                text.push_str(&format!(
+                    "hint: To drop this commit, run `{cmd} --skip`; to put everything back as it was, `{cmd} --abort`."
+                ));
+                record(
+                    store, backend, ws, branch, &disk, &files, &conflicts, op, message,
+                )?;
+                return Err(Rejected(text).into());
+            }
+            Replayed::Paused {
+                run: paused,
+                item,
+                files,
+            } => {
+                run = paused;
+                let result_tree = write_trees(store, &files)?;
+                let op = run.record_of(result_tree, &item, BTreeMap::new(), true);
+                record(
+                    store,
+                    backend,
+                    ws,
+                    branch,
+                    &disk,
+                    &files,
+                    &BTreeMap::new(),
+                    op,
+                    String::new(),
+                )?;
+                if at != run.tip {
+                    store.move_tip(branch, at, run.tip)?;
+                    at = run.tip;
+                }
+                disk = files;
+                match item.cmd {
+                    Cmd::Exec => {
+                        run_exec(ws, &item.arg)?;
+                        if let Some(now) = store.tip(branch)? {
+                            run.tip = now;
+                            at = now;
+                            disk = flat(store, Some(now))?;
+                        }
+                    }
+                    Cmd::Break => {
+                        eprintln!("Stopped at {}", stop_line(store, &run.tip)?);
+                        return Ok(());
+                    }
+                    _ => {
+                        eprintln!("Stopped at {}", stop_line(store, &run.tip)?);
+                        eprintln!(
+                            "You can change files and add commits now with `pyn add` and `pyn commit`.\n\nOnce you are satisfied, run\n\n  pyn rebase --continue"
+                        );
+                        return Ok(());
+                    }
+                }
+            }
         }
     }
 }
@@ -1009,6 +1195,9 @@ fn adopt(ws: &Workspace, index: &Index) -> Result<()> {
 /// Concludes the pull in progress with the staged resolutions: the merge commit, or the replayed commit and the rest.
 pub fn finish(backend: &dyn Backend, ws: &Workspace, message: Option<String>) -> Result<()> {
     let (store, state, op) = open(ws)?;
+    if op.paused {
+        return resume(backend, ws, &store, &state, &op);
+    }
     let index = Index::load(ws)?;
     merging::check_resolved(&state, &index)?;
     let exclusive: Vec<&String> = op
@@ -1075,27 +1264,16 @@ pub fn finish(backend: &dyn Backend, ws: &Workspace, message: Option<String>) ->
             sync::update(backend, ws, &[], None)
         }
         Op::Rebase | Op::Pick | Op::Revert | Op::Rewrite => {
-            let (cmd, current) = parse_move(
+            let item = parse_move(
                 op.current
                     .as_deref()
                     .context("the rebase has no current commit")?,
             )?;
+            let cmd = item.cmd;
+            let current = item.id.context("the rebase has no current commit")?;
             let picked = repo.commit(&current)?;
             let tip = id_of(op.tip.as_deref().context("the rebase has no tip")?)?;
-            let mut run = Run {
-                op: op.op,
-                origin: op.origin,
-                orig,
-                onto: theirs,
-                tip,
-                todo: op
-                    .todo
-                    .iter()
-                    .map(|t| parse_move(t))
-                    .collect::<Result<_>>()?,
-                total: op.total,
-                dropped: op.dropped,
-            };
+            let mut run = run_of(&op, tip)?;
             if cmd.melds() {
                 let head = repo.commit(&tip)?;
                 let message = match message {
@@ -1146,29 +1324,113 @@ pub fn finish(backend: &dyn Backend, ws: &Workspace, message: Option<String>) ->
                 }
             }
             adopt(ws, &index)?;
-            proceed(
-                backend,
-                ws,
-                &store,
-                (&state.branch, &who),
-                run,
-                &files,
-                &BTreeSet::new(),
-            )
+            let mut start = Resume::new(&files);
+            start.halt = cmd == Cmd::Edit;
+            proceed(backend, ws, &store, (&state.branch, &who), run, start)
         }
     }
 }
 
-/// Drops the commit a rebase stopped on and goes on with the next.
+/// The run a record describes, continued from `tip`.
+fn run_of(op: &LocalOp, tip: ObjectId) -> Result<Run> {
+    let todo: VecDeque<Move> = op
+        .todo
+        .iter()
+        .map(|t| parse_move(t))
+        .collect::<Result<_>>()?;
+    Ok(Run {
+        op: op.op,
+        origin: op.origin,
+        orig: id_of(&op.orig)?,
+        onto: id_of(&op.theirs)?,
+        tip,
+        todo,
+        total: op.total,
+        dropped: op.dropped,
+        no_ff: op.no_ff,
+        stash: op.autostash.clone(),
+    })
+}
+
+/// Puts every uncommitted change back to what the tip holds.
+fn discard_changes(
+    store: &LocalStore,
+    backend: &dyn Backend,
+    ws: &Workspace,
+    tip: ObjectId,
+) -> Result<Files> {
+    let files = flat(store, Some(tip))?;
+    let dirty: BTreeSet<String> = dirty_paths(ws)?.into_iter().collect();
+    materialize(
+        store,
+        backend,
+        ws,
+        (&files, &files),
+        &BTreeMap::new(),
+        (&dirty, &BTreeSet::new()),
+    )?;
+    Index::default().save(ws)?;
+    Ok(files)
+}
+
+/// `--continue` on a stop at `edit`, `break` or `exec`: the commits made since are kept and the rest is replayed.
+fn resume(
+    backend: &dyn Backend,
+    ws: &Workspace,
+    store: &LocalStore,
+    state: &MergeState,
+    op: &LocalOp,
+) -> Result<()> {
+    if !Index::load(ws)?.entries.is_empty() {
+        bail!(
+            "you have staged changes in your working tree; commit them with `pyn commit`, or take them out with `pyn restore --staged`, then run `pyn rebase --continue` again"
+        );
+    }
+    if !dirty_paths(ws)?.is_empty() {
+        bail!(
+            "you have uncommitted changes; stage and commit them with `pyn add` and `pyn commit`, or put them back with `pyn checkout -- <path>`, then run `pyn rebase --continue` again"
+        );
+    }
+    let tip = store
+        .tip(&state.branch)?
+        .context("the rebase has no branch tip")?;
+    let disk = flat(store, Some(tip))?;
+    let who = signature(&backend.whoami()?);
+    proceed(
+        backend,
+        ws,
+        store,
+        (&state.branch, &who),
+        run_of(op, tip)?,
+        Resume::new(&disk),
+    )
+}
+
+/// Drops the commit a rebase stopped on and goes on with the next; at an `edit`, `break` or `exec` stop it only
+/// puts the uncommitted changes back.
 pub fn skip(backend: &dyn Backend, ws: &Workspace) -> Result<()> {
     let (store, state, op) = open(ws)?;
     if op.op == Op::Merge {
         bail!("`--skip` drops a commit of a rebase or cherry-pick; there is none in progress");
     }
-    let (orig, onto) = (id_of(&op.orig)?, id_of(&op.theirs)?);
+    let who = signature(&backend.whoami()?);
+    if op.paused {
+        let tip = store
+            .tip(&state.branch)?
+            .context("the rebase has no branch tip")?;
+        let back = discard_changes(&store, backend, ws, tip)?;
+        return proceed(
+            backend,
+            ws,
+            &store,
+            (&state.branch, &who),
+            run_of(&op, tip)?,
+            Resume::new(&back),
+        );
+    }
     let tip = id_of(op.tip.as_deref().context("the rebase has no tip")?)?;
     if let Some(line) = op.current.as_deref()
-        && parse_move(line)?.0.melds()
+        && parse_move(line)?.cmd.melds()
     {
         meld::drop_last(&meld_dir(ws));
     }
@@ -1186,38 +1448,31 @@ pub fn skip(backend: &dyn Backend, ws: &Workspace) -> Result<()> {
     let mut index = Index::load(ws)?;
     index.entries.retain(|p, _| !touched.contains(p));
     index.save(ws)?;
-    let run = Run {
-        op: op.op,
-        origin: op.origin,
-        orig,
-        onto,
-        tip,
-        todo: op
-            .todo
-            .iter()
-            .map(|t| parse_move(t))
-            .collect::<Result<_>>()?,
-        total: op.total,
-        dropped: op.dropped + 1,
-    };
-    let who = signature(&backend.whoami()?);
+    let mut run = run_of(&op, tip)?;
+    run.dropped += 1;
     proceed(
         backend,
         ws,
         &store,
         (&state.branch, &who),
         run,
-        &back,
-        &BTreeSet::new(),
+        Resume::new(&back),
     )
 }
 
 /// Gives the pull up: the working tree is what it was, and nothing in the local store or on the server changed.
 pub fn abort(backend: &dyn Backend, ws: &Workspace) -> Result<()> {
     let (store, state, op) = open(ws)?;
-    let disk = flat_tree(&store, &id_of(&op.result_tree)?)?;
-    let back = flat(&store, Some(id_of(&op.orig)?))?;
-    let touched: BTreeSet<String> = state.paths.keys().cloned().collect();
+    let orig = id_of(&op.orig)?;
+    let at = store.tip(&state.branch)?;
+    let back = flat(&store, Some(orig))?;
+    let mut touched: BTreeSet<String> = state.paths.keys().cloned().collect();
+    let disk = if op.paused {
+        touched.extend(dirty_paths(ws)?);
+        flat(&store, at)?
+    } else {
+        flat_tree(&store, &id_of(&op.result_tree)?)?
+    };
     materialize(
         &store,
         backend,
@@ -1227,8 +1482,17 @@ pub fn abort(backend: &dyn Backend, ws: &Workspace) -> Result<()> {
         (&touched, &BTreeSet::new()),
     )?;
     let mut index = Index::load(ws)?;
-    index.entries.retain(|p, _| !touched.contains(p));
+    if op.paused {
+        index = Index::default();
+    } else {
+        index.entries.retain(|p, _| !touched.contains(p));
+    }
     index.save(ws)?;
+    if op.op == Op::Rewrite
+        && let Some(now) = at.filter(|now| *now != orig)
+    {
+        store.move_tip(&state.branch, now, orig)?;
+    }
     merging::clear(ws)?;
     let _ = std::fs::remove_dir_all(meld_dir(ws));
     println!(
@@ -1236,6 +1500,175 @@ pub fn abort(backend: &dyn Backend, ws: &Workspace) -> Result<()> {
         op.name(),
         short(&op.orig)
     );
+    unstash(
+        backend,
+        ws,
+        &store,
+        &op.autostash,
+        (orig, id_of(&op.theirs)?),
+    )
+}
+
+/// Forgets the rebase in progress: the branch stays where the replay left it and the files are not touched.
+pub fn quit(backend: &dyn Backend, ws: &Workspace) -> Result<()> {
+    let (store, state, op) = open(ws)?;
+    let at = store
+        .tip(&state.branch)?
+        .context("the rebase has no branch tip")?;
+    merging::clear(ws)?;
+    let _ = std::fs::remove_dir_all(meld_dir(ws));
+    println!(
+        "The rebase was forgotten; branch '{}' stays at {} (it was at {} before the rebase)",
+        state.branch,
+        short(&at.to_hex()),
+        short(&op.orig)
+    );
+    unstash(backend, ws, &store, &op.autostash, (at, id_of(&op.theirs)?))
+}
+
+/// Lets `edit` change the commands still to do; the numbering follows the new count.
+pub fn edit_todo(
+    ws: &Workspace,
+    edit: impl FnOnce(&str, &[Move]) -> Result<Vec<Move>>,
+) -> Result<()> {
+    let (_, mut state, mut op) = open(ws)?;
+    let todo: Vec<Move> = op
+        .todo
+        .iter()
+        .map(|t| parse_move(t))
+        .collect::<Result<_>>()?;
+    let edited = edit(&state.branch, &todo)?;
+    op.total = op.total - op.todo.len() + edited.len();
+    op.todo = edited.iter().map(move_line).collect();
+    state.local = Some(op);
+    merging::save(ws, &state)
+}
+
+/// Puts the changed files of the working tree aside in the local store and restores them to what `tip` holds.
+pub fn stash_dirty(
+    backend: &dyn Backend,
+    ws: &Workspace,
+    store: &LocalStore,
+    tip: ObjectId,
+) -> Result<BTreeMap<String, Stashed>> {
+    let files = flat(store, Some(tip))?;
+    let mut from = files.clone();
+    let mut stash = BTreeMap::new();
+    for path in dirty_paths(ws)? {
+        let key = path.clone().into_bytes();
+        let Some(base) = files.get(&key).copied() else {
+            continue;
+        };
+        let (mode, bytes) = localfile::read(&ws.abs(&path))?;
+        let id = store.repo().objects().write(Kind::Blob, &bytes)?;
+        from.insert(
+            key,
+            Entry {
+                mode: file_mode(mode),
+                id,
+            },
+        );
+        let base = side(Some(base))?.expect("a base entry gives a side");
+        let stash_side = Side {
+            id: id.to_hex(),
+            mode,
+        };
+        stash.insert(
+            path,
+            Stashed {
+                base,
+                stash: stash_side,
+            },
+        );
+    }
+    if !stash.is_empty() {
+        let force: BTreeSet<String> = stash.keys().cloned().collect();
+        materialize(
+            store,
+            backend,
+            ws,
+            (&from, &files),
+            &BTreeMap::new(),
+            (&force, &BTreeSet::new()),
+        )?;
+        eprintln!("Created autostash: {} file(s) put aside.", stash.len());
+    }
+    Ok(stash)
+}
+
+fn entry_of(side: &Side) -> Result<Entry> {
+    Ok(Entry {
+        mode: file_mode(side.mode),
+        id: id_of(&side.id)?,
+    })
+}
+
+/// Puts the autostashed changes back over `tip`, merging them with what the rebase changed; a conflict leaves
+/// markers in the file. `onto` is the commit whose modes the server is asked about.
+pub fn unstash(
+    backend: &dyn Backend,
+    ws: &Workspace,
+    store: &LocalStore,
+    stash: &BTreeMap<String, Stashed>,
+    (tip, onto): (ObjectId, ObjectId),
+) -> Result<()> {
+    if stash.is_empty() {
+        return Ok(());
+    }
+    let ours_files = flat(store, Some(tip))?;
+    let mut judge = Judge::new(backend, onto);
+    let mut to = ours_files.clone();
+    let mut working = BTreeMap::new();
+    let mut conflicted = Vec::new();
+    for (path, stashed) in stash {
+        let key = path.clone().into_bytes();
+        let (base, theirs) = (entry_of(&stashed.base)?, entry_of(&stashed.stash)?);
+        let ours = ours_files.get(&key).copied();
+        let step = store.join_path(
+            backend,
+            &mut judge,
+            &key,
+            (Some(base), ours, Some(theirs)),
+            true,
+            ("HEAD", "autostash"),
+        )?;
+        let (entry, bytes) = match step {
+            Step::Take(Some(entry)) | Step::Kept(Some(entry)) => {
+                let bytes = store.blob(backend, &entry.id.to_hex())?;
+                (entry, bytes)
+            }
+            Step::Conflict(c) => {
+                conflicted.push(path.as_str());
+                let bytes = match c.working {
+                    Some(marked) => marked,
+                    None => store.blob(backend, &theirs.id.to_hex())?,
+                };
+                (theirs, bytes)
+            }
+            Step::Take(None) | Step::Kept(None) => {
+                (theirs, store.blob(backend, &theirs.id.to_hex())?)
+            }
+        };
+        to.insert(key.clone(), entry);
+        working.insert(key, bytes);
+    }
+    let force: BTreeSet<String> = stash.keys().cloned().collect();
+    materialize(
+        store,
+        backend,
+        ws,
+        (&ours_files, &to),
+        &working,
+        (&force, &BTreeSet::new()),
+    )?;
+    if conflicted.is_empty() {
+        eprintln!("Applied autostash.");
+    } else {
+        eprintln!(
+            "Applying autostash resulted in conflicts.\nYour changes are in the working tree, with conflict markers in: {}",
+            conflicted.join(", ")
+        );
+    }
     Ok(())
 }
 
@@ -1298,6 +1731,9 @@ mod tests {
             total: 3,
             dropped: 1,
             origin: false,
+            paused: false,
+            no_ff: false,
+            autostash: BTreeMap::new(),
         };
         let state = MergeState {
             version: STATE_VERSION,
@@ -1317,11 +1753,24 @@ mod tests {
     #[test]
     fn a_step_is_a_bare_id_for_a_pick_and_a_word_and_id_otherwise() {
         let id = ObjectId::from_hex(pyn_object::Algorithm::Sha256, &"ab".repeat(32)).unwrap();
-        for cmd in [Cmd::Pick, Cmd::Reword, Cmd::Squash, Cmd::Fixup] {
-            assert_eq!(parse_move(&move_line(&(cmd, id))).unwrap(), (cmd, id));
+        for cmd in [Cmd::Pick, Cmd::Reword, Cmd::Squash, Cmd::Fixup, Cmd::Edit] {
+            let item = Item {
+                cmd,
+                ..Item::pick(id)
+            };
+            let back = parse_move(&move_line(&item)).unwrap();
+            assert_eq!((back.cmd, back.id), (cmd, Some(id)));
         }
-        assert_eq!(move_line(&(Cmd::Pick, id)), id.to_hex());
+        assert_eq!(move_line(&Item::pick(id)), id.to_hex());
+        let exec = parse_move("exec make -j4 && echo done").unwrap();
+        assert_eq!(
+            (exec.cmd, exec.arg.as_str()),
+            (Cmd::Exec, "make -j4 && echo done")
+        );
+        assert_eq!(move_line(&exec), "exec make -j4 && echo done");
+        assert_eq!(parse_move("break").unwrap().cmd, Cmd::Break);
         assert!(parse_move("").is_err());
+        assert!(parse_move("exec").is_err());
         assert!(parse_move(&format!("nope {id}")).is_err());
     }
 
@@ -1339,6 +1788,9 @@ mod tests {
             total: 3,
             dropped: 0,
             origin: false,
+            paused: false,
+            no_ff: false,
+            autostash: BTreeMap::new(),
         };
         assert!(op.header().contains("commit 2 of 3, 1 left"));
     }

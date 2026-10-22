@@ -1082,7 +1082,8 @@ fn run(cli: Cli) -> Result<()> {
     if let Command::Commit { message, .. } = &cli.command
         && message.is_empty()
         && git.is_none()
-        && !Workspace::discover(&cwd).is_some_and(|w| merging::in_progress(&w))
+        && !Workspace::discover(&cwd)
+            .is_some_and(|w| merging::in_progress(&w) && !merging::is_paused(&w))
     {
         usage_error("the following required arguments were not provided:\n  --message <MESSAGE>");
     }
@@ -1771,7 +1772,7 @@ fn run(cli: Cli) -> Result<()> {
                 bail!("--file and --base need a path");
             }
             let w = in_workspace("commit")?;
-            if merging::in_progress(w) {
+            if merging::in_progress(w) && !merging::is_paused(w) {
                 if all {
                     bail!(
                         "cannot do a partial commit during a merge; stage what you resolved with `pyn add`"
