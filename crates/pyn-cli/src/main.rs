@@ -32,6 +32,7 @@ mod migrate;
 mod mv_plan;
 mod probe;
 mod pyn_server;
+mod quiet;
 mod repo_tool;
 mod rm_mv;
 mod sanitize;
@@ -1062,6 +1063,12 @@ fn run(cli: Cli) -> Result<()> {
              and `--file` is the content file"
         ));
     }
+    if git.is_none()
+        && let Command::Commit { git: opts, .. } = &cli.command
+        && opts.quiet
+    {
+        quiet::set();
+    }
     let mut cli = cli;
     if git.is_none()
         && let Command::Commit {
@@ -1827,7 +1834,7 @@ fn run(cli: Cli) -> Result<()> {
             let mut done = Vec::new();
             for (rev, (path, hash, file_mode)) in r.revisions.iter().zip(&hashes) {
                 sync::after_commit(&backend, w, path, rev.id, hash, *file_mode)?;
-                println!("{} is now at revision {}", rev.path, rev.id);
+                quiet::say!("{} is now at revision {}", rev.path, rev.id);
                 done.push(path.clone());
             }
             staging::Index::forget(w, &done)?;
@@ -1881,7 +1888,7 @@ fn run(cli: Cli) -> Result<()> {
                 sync::after_commit(&backend, w, &path, r.id, &hash, file_mode)?;
                 staging::Index::forget(w, std::slice::from_ref(&path))?;
             }
-            println!("{} is now at revision {}", r.path, r.id);
+            quiet::say!("{} is now at revision {}", r.path, r.id);
             stranded::print(
                 "The policy change left shared versions on other branches that can no longer merge:",
                 &r.stranded,

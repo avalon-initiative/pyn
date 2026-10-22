@@ -1,4 +1,4 @@
-//! `pyn commit -F`, `--allow-empty`, `--author`, `--date`, `-s` and `--amend` on a git repository compared with the
+//! `pyn commit` flags (`-F`, `--allow-empty`, `--author`, `--date`, `-s`, `--amend`, `--cleanup`, `-C`, ...) on a git repository compared with the
 //! real `git commit` on an identical repository: the commit object, reflogs, refs, index and exit statuses, never
 //! git's wording. Real git is the oracle in these tests only.
 
@@ -529,6 +529,308 @@ fn combinations_match_git() {
     ]);
 }
 
+const DIRTY_MESSAGE: &str =
+    "subj  \n\n\n# note\nbody  \n\n# ------------------------ >8 ------------------------\ncut\n";
+
+#[test]
+fn flags_scripts_pass_are_accepted_and_change_nothing() {
+    let mut cases = Vec::new();
+    for flag in [
+        "-q",
+        "--quiet",
+        "-n",
+        "--no-verify",
+        "--verify",
+        "-v",
+        "-vv",
+        "--verbose",
+        "--status",
+        "--no-status",
+    ] {
+        cases.push(case("accepted", STAGE_B, &[flag, "-m", "x"], None));
+    }
+    cases.push(case(
+        "all together",
+        STAGE_B,
+        &["-q", "-n", "--no-status", "--verify", "-m", "x"],
+        None,
+    ));
+    run_cases(&cases);
+}
+
+#[test]
+fn cleanup_modes_match_git() {
+    let mut cases = Vec::new();
+    for mode in ["default", "whitespace", "scissors", "strip", "verbatim"] {
+        let flag = format!("--cleanup={mode}");
+        cases.push(case("m", STAGE_B, &[&flag, "-m", DIRTY_MESSAGE], None));
+        cases.push(case(
+            "two m",
+            STAGE_B,
+            &[&flag, "-m", "one  ", "-m", "two  "],
+            None,
+        ));
+        cases.push(case(
+            "file",
+            &[W("m.txt", DIRTY_MESSAGE), STAGE_B[0], STAGE_B[1]],
+            &[&flag, "-F", "m.txt"],
+            None,
+        ));
+        cases.push(case(
+            "comment only",
+            STAGE_B,
+            &[&flag, "-m", "# only"],
+            None,
+        ));
+        cases.push(case("blank", STAGE_B, &[&flag, "-m", "  \n"], None));
+        cases.push(case(
+            "comment only, allowed",
+            STAGE_B,
+            &[&flag, "--allow-empty-message", "-m", "# only"],
+            None,
+        ));
+    }
+    cases.push(case(
+        "split flag",
+        STAGE_B,
+        &["--cleanup", "strip", "-m", "# a\nb"],
+        None,
+    ));
+    cases.push(case(
+        "bad mode",
+        STAGE_B,
+        &["--cleanup=nope", "-m", "x"],
+        None,
+    ));
+    run_cases(&cases);
+}
+
+#[test]
+fn empty_messages_need_allow_empty_message() {
+    run_cases(&[
+        case("refused", STAGE_B, &["-m", ""], None),
+        case(
+            "allowed",
+            STAGE_B,
+            &["--allow-empty-message", "-m", ""],
+            None,
+        ),
+        case(
+            "allowed from file",
+            &[W("m.txt", "\n\n"), STAGE_B[0], STAGE_B[1]],
+            &["--allow-empty-message", "-F", "m.txt"],
+            None,
+        ),
+        case(
+            "allowed from stdin",
+            STAGE_B,
+            &["--allow-empty-message", "-F", "-"],
+            Some(""),
+        ),
+        case(
+            "amend to empty",
+            &[],
+            &["--amend", "--allow-empty-message", "-m", ""],
+            None,
+        ),
+        case(
+            "empty commit",
+            &[],
+            &["--allow-empty", "--allow-empty-message", "-m", ""],
+            None,
+        ),
+    ]);
+}
+
+#[test]
+fn reset_author_takes_the_author_from_now() {
+    run_cases(&[
+        case(
+            "amend",
+            &[],
+            &["--amend", "--reset-author", "--no-edit"],
+            None,
+        ),
+        case(
+            "amend with author",
+            &[],
+            &[
+                "--amend",
+                "--reset-author",
+                "--author",
+                "Q <q@x>",
+                "-m",
+                "m",
+            ],
+            None,
+        ),
+        case(
+            "amend with date",
+            &[],
+            &[
+                "--amend",
+                "--reset-author",
+                "--date",
+                "1710000000 +0000",
+                "-m",
+                "m",
+            ],
+            None,
+        ),
+        case("alone", STAGE_B, &["--reset-author", "-m", "x"], None),
+        case(
+            "with reuse",
+            STAGE_B,
+            &["--reset-author", "-C", "side~1"],
+            None,
+        ),
+    ]);
+}
+
+#[test]
+fn trailers_follow_interpret_trailers() {
+    run_cases(&[
+        case("colon", STAGE_B, &["--trailer", "Fix: 12", "-m", "t"], None),
+        case("equals", STAGE_B, &["--trailer", "Fix=12", "-m", "t"], None),
+        case(
+            "spaces",
+            STAGE_B,
+            &["--trailer", "  Fix :  12 ", "-m", "t"],
+            None,
+        ),
+        case(
+            "several",
+            STAGE_B,
+            &[
+                "--trailer",
+                "A: 1",
+                "--trailer",
+                "B: 2",
+                "--trailer",
+                "A: 1",
+                "-m",
+                "t",
+            ],
+            None,
+        ),
+        case(
+            "repeated neighbour",
+            STAGE_B,
+            &["--trailer", "A: 1", "--trailer", "A: 1", "-m", "t"],
+            None,
+        ),
+        case(
+            "into a block",
+            STAGE_B,
+            &["--trailer", "B: 2", "-m", "t\n\nA: 1"],
+            None,
+        ),
+        case(
+            "after a body",
+            STAGE_B,
+            &["--trailer", "B: 2", "-m", "t\n\nbody text"],
+            None,
+        ),
+        case(
+            "with signoff",
+            STAGE_B,
+            &["-s", "--trailer", "B: 2", "-m", "t"],
+            None,
+        ),
+        case("no value", STAGE_B, &["--trailer", "Fix:", "-m", "t"], None),
+        case(
+            "no separator",
+            STAGE_B,
+            &["--trailer", "bare", "-m", "t"],
+            None,
+        ),
+        case(
+            "amend",
+            &[],
+            &["--amend", "--no-edit", "--trailer", "Cc: z"],
+            None,
+        ),
+    ]);
+}
+
+#[test]
+fn reuse_message_takes_the_message_and_the_author() {
+    let crafted = &[
+        STAGE_B[0],
+        STAGE_B[1],
+        Git(&["commit", "-q", "-m", "crafted  \n\n\n# kept?  \nbody\n\n"]),
+        Git(&["tag", "crafted", "HEAD"]),
+        Git(&["reset", "-q", "--hard", "HEAD~1"]),
+        W("b.txt", "four\n"),
+        Git(&["add", "b.txt"]),
+    ];
+    run_cases(&[
+        case("tip", STAGE_B, &["-C", "HEAD"], None),
+        case("older", STAGE_B, &["-C", "HEAD~1"], None),
+        case("branch", STAGE_B, &["--reuse-message=side"], None),
+        case("crafted", crafted, &["-C", "crafted"], None),
+        case(
+            "crafted verbatim",
+            crafted,
+            &["-C", "crafted", "--cleanup=verbatim"],
+            None,
+        ),
+        case(
+            "crafted strip",
+            crafted,
+            &["-C", "crafted", "--cleanup=strip"],
+            None,
+        ),
+        case("signoff", STAGE_B, &["-C", "HEAD~1", "-s"], None),
+        case(
+            "author",
+            STAGE_B,
+            &["-C", "HEAD~1", "--author", "Q <q@x>"],
+            None,
+        ),
+        case(
+            "date",
+            STAGE_B,
+            &["-C", "HEAD~1", "--date", "1710000000 +0000"],
+            None,
+        ),
+        case("amend", &[], &["--amend", "-C", "HEAD~1"], None),
+        case("with m", STAGE_B, &["-C", "HEAD", "-m", "x"], None),
+        case(
+            "with F",
+            &[W("m.txt", "x\n"), STAGE_B[0], STAGE_B[1]],
+            &["-C", "HEAD", "-F", "m.txt"],
+            None,
+        ),
+        case("unknown", STAGE_B, &["-C", "nope"], None),
+        case("allow empty", &[], &["-C", "HEAD~1", "--allow-empty"], None),
+    ]);
+}
+
+#[test]
+fn quiet_prints_nothing_and_commits_all_the_same() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path().canonicalize().unwrap();
+    fs::create_dir_all(root.join("home")).unwrap();
+    let dir = root.join("repo");
+    init(&dir, "sha1", false);
+    fs::write(dir.join("a.txt"), "x\n").unwrap();
+    let mut c = git(&dir);
+    dir_env(&mut c, &root);
+    assert!(c.args(["add", "."]).status().unwrap().success());
+    for flag in ["-q", "--quiet"] {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_pyn"));
+        c.env_clear().env("PATH", path_env()).current_dir(&dir);
+        dir_env(&mut c, &root);
+        let out = c
+            .args(["commit", flag, "--allow-empty", "-m", "x"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+        assert!(out.stdout.is_empty(), "{flag}: {out:?}");
+    }
+}
+
 #[test]
 fn a_pyn_server_home_still_refuses_the_git_only_flags() {
     let tmp = tempdir().unwrap();
@@ -538,7 +840,11 @@ fn a_pyn_server_home_still_refuses_the_git_only_flags() {
         &["-s"],
         &["--signoff"],
         &["--amend"],
-        &["--no-edit"],
+        &["--allow-empty-message"],
+        &["--cleanup=strip"],
+        &["--reset-author"],
+        &["--trailer", "A: b"],
+        &["-C", "HEAD"],
     ] {
         let out = Command::new(env!("CARGO_BIN_EXE_pyn"))
             .current_dir(tmp.path())

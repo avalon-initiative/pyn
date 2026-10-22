@@ -11,9 +11,9 @@ use pyn_object::{Commit, Kind as ObjectKind, ObjectId, Signature, hash_object};
 use super::GitHome;
 use super::signing::{SignFlag, header_name, header_value, signer_for};
 use super::stage::{
-    clean_bytes, clean_ident, clean_message, clear_merge_state, entries_of, env, identity,
-    index_of, merge_heads, merge_message, parse_date, refuse_states, stage_tracked,
-    warn_about_hooks, write_tree,
+    clean_bytes, clean_ident, clear_merge_state, entries_of, env, identity, index_of, merge_heads,
+    merge_message, parse_date, refuse_states, stage_tracked, warn_about_hooks,
+    warn_about_hooks_for, write_tree,
 };
 
 /// The git flags of `pyn commit`; a pyn server takes only `-F` and refuses the rest.
@@ -46,9 +46,58 @@ pub struct GitCommitArgs {
     /// Do not sign, whatever `commit.gpgsign` says.
     #[arg(long, overrides_with = "gpg_sign")]
     no_gpg_sign: bool,
+    /// Print nothing on success.
+    #[arg(short = 'q', long)]
+    pub quiet: bool,
+    /// Accepted for scripts (pyn never opens an editor, so there is no diff to show).
+    #[arg(short = 'v', long, action = clap::ArgAction::Count)]
+    verbose: u8,
+    /// Accepted for scripts: pyn runs no `pre-commit` or `commit-msg` hook either way.
+    #[arg(short = 'n', long, overrides_with = "verify")]
+    no_verify: bool,
+    /// Opposite of `--no-verify`.
+    #[arg(long, overrides_with = "no_verify")]
+    verify: bool,
+    /// Accepted for scripts (there is no message template to add the status to).
+    #[arg(long, overrides_with = "no_status")]
+    status: bool,
+    /// Opposite of `--status`.
+    #[arg(long, overrides_with = "status")]
+    no_status: bool,
+    /// Allow a commit whose message is empty.
+    #[arg(long)]
+    allow_empty_message: bool,
+    /// How the message is cleaned: `strip`, `whitespace`, `verbatim`, `scissors` or `default`.
+    #[arg(long, value_name = "MODE")]
+    cleanup: Option<String>,
+    /// With `--amend` or `-C`, take the author from now on instead of the commit's.
+    #[arg(long)]
+    reset_author: bool,
+    /// Add a trailer, `Token: value` or `Token=value`; repeatable.
+    #[arg(long, value_name = "TRAILER")]
+    trailer: Vec<String>,
+    /// Reuse the message and the author of a commit.
+    #[arg(short = 'C', long, value_name = "COMMIT")]
+    reuse_message: Option<String>,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Cleanup {
+    Strip,
+    Whitespace,
+    Verbatim,
 }
 
 impl GitCommitArgs {
+    fn cleanup_mode(&self) -> Result<Cleanup> {
+        match self.cleanup.as_deref() {
+            None | Some("default" | "whitespace" | "scissors") => Ok(Cleanup::Whitespace),
+            Some("strip") => Ok(Cleanup::Strip),
+            Some("verbatim") => Ok(Cleanup::Verbatim),
+            Some(other) => bail!("Invalid cleanup mode {other}"),
+        }
+    }
+
     /// The first flag that was given, for the refusal on a pyn server.
     pub fn first_given(&self) -> Option<&'static str> {
         let flags = [
@@ -57,7 +106,11 @@ impl GitCommitArgs {
             ("--date", self.date.is_some()),
             ("--signoff", self.signoff),
             ("--amend", self.amend),
-            ("--no-edit", self.no_edit),
+            ("--allow-empty-message", self.allow_empty_message),
+            ("--cleanup", self.cleanup.is_some()),
+            ("--reset-author", self.reset_author),
+            ("--trailer", !self.trailer.is_empty()),
+            ("--reuse-message", self.reuse_message.is_some()),
             ("--gpg-sign", self.gpg_sign.is_some()),
             ("--no-gpg-sign", self.no_gpg_sign),
         ];
@@ -174,6 +227,73 @@ pub(super) fn append_signoff(message: Vec<u8>, name: &[u8], email: &[u8]) -> Vec
     append_trailer(message, &sob)
 }
 
+/// `-m` paragraphs as git joins them: each completed to a line, a blank line between.
+fn joined_messages(messages: &[String]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for m in messages {
+        if !out.is_empty() {
+            out.push(b'\n');
+        }
+        out.extend_from_slice(m.as_bytes());
+        if !out.is_empty() && out.last() != Some(&b'\n') {
+            out.push(b'\n');
+        }
+    }
+    out
+}
+
+/// The message after `--cleanup`; empty when nothing but blanks (or comments, for `strip`) is left.
+fn cleaned(raw: &[u8], mode: Cleanup) -> Vec<u8> {
+    let out = match mode {
+        Cleanup::Verbatim => return raw.to_vec(),
+        Cleanup::Whitespace => clean_bytes(raw),
+        Cleanup::Strip => {
+            let kept: Vec<&[u8]> = raw
+                .split(|b| *b == b'\n')
+                .filter(|l| !l.starts_with(b"#"))
+                .collect();
+            clean_bytes(&kept.join(&b'\n'))
+        }
+    };
+    if out == b"\n" { Vec::new() } else { out }
+}
+
+/// Where the token ends: a token is alphanumerics and `-`, with blanks allowed only before the separator.
+fn trailer_separator(arg: &str) -> Option<usize> {
+    let mut blank = false;
+    for (i, c) in arg.char_indices() {
+        if c == ':' || c == '=' {
+            return Some(i);
+        }
+        if !blank && (c.is_ascii_alphanumeric() || c == '-') {
+            continue;
+        }
+        if i > 0 && (c == ' ' || c == '\t') {
+            blank = true;
+            continue;
+        }
+        return None;
+    }
+    None
+}
+
+/// Adds `--trailer` values (`Token: value` or `Token=value`) as git's `interpret-trailers` does.
+fn append_trailers(mut message: Vec<u8>, trailers: &[String]) -> Vec<u8> {
+    for t in trailers {
+        let (token, value) = match trailer_separator(t) {
+            Some(i) => (t[..i].trim(), t[i + 1..].trim()),
+            None => (t.trim(), ""),
+        };
+        let line = if value.is_empty() {
+            format!("{token}:")
+        } else {
+            format!("{token}: {value}")
+        };
+        message = append_trailer(message, &line);
+    }
+    message
+}
+
 fn forced_author(opts: &CommitOptions) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
     opts.flags.author.as_deref().map(parse_author).transpose()
 }
@@ -217,11 +337,36 @@ pub fn commit(git: &GitHome, opts: &CommitOptions) -> Result<()> {
         (true, Some(p)) => Some(git.repo.commit(&p)?),
         _ => None,
     };
-    let explicit = match file {
-        Some(f) => Some(clean_bytes(&read_message(f)?)),
-        None => (!opts.messages.is_empty()).then(|| clean_message(&opts.messages)),
+    let mode = opts.flags.cleanup_mode()?;
+    let reused = match &opts.flags.reuse_message {
+        Some(spec) => {
+            if file.is_some() {
+                bail!("options '-C' and '-F' cannot be used together");
+            }
+            if !opts.messages.is_empty() {
+                bail!("options '-m' and '-C' cannot be used together");
+            }
+            let id = git
+                .repo
+                .resolve(spec)
+                .map_err(|_| anyhow::anyhow!("could not lookup commit '{spec}'"))?;
+            Some(git.repo.commit(&id)?)
+        }
+        None => None,
     };
-    if explicit.as_deref() == Some(b"\n") {
+    if opts.flags.reset_author && opts.flags.author.is_some() {
+        bail!("options '--reset-author' and '--author' cannot be used together");
+    }
+    if opts.flags.reset_author && !amend && reused.is_none() {
+        bail!("--reset-author can be used only with -C, -c or --amend.");
+    }
+    let raw = match (file, &reused) {
+        (Some(f), _) => Some(read_message(f)?),
+        (None, Some(c)) => Some(c.message.clone()),
+        (None, None) => (!opts.messages.is_empty()).then(|| joined_messages(&opts.messages)),
+    };
+    let explicit = raw.map(|r| cleaned(&r, mode));
+    if explicit.as_ref().is_some_and(|m| m.is_empty()) && !opts.flags.allow_empty_message {
         eprintln!("Aborting commit due to empty commit message.");
         std::process::exit(1);
     }
@@ -237,9 +382,18 @@ pub fn commit(git: &GitHome, opts: &CommitOptions) -> Result<()> {
     if opts.flags.signoff {
         message = append_signoff(message, &committer.name, &committer.email);
     }
+    message = append_trailers(message, &opts.flags.trailer);
     let forced = forced_author(opts)?;
-    let mut author = match (&tip, &forced) {
-        (Some(t), _) => t.author.clone(),
+    let kept = if opts.flags.reset_author {
+        None
+    } else {
+        reused
+            .as_ref()
+            .map(|c| c.author.clone())
+            .or_else(|| tip.as_ref().map(|t| t.author.clone()))
+    };
+    let mut author = match (&kept, &forced) {
+        (Some(a), _) => a.clone(),
         (None, Some((name, email))) => {
             let (time, offset_minutes) = match env("GIT_AUTHOR_DATE") {
                 Some(d) => parse_date(&d)?,
@@ -257,7 +411,7 @@ pub fn commit(git: &GitHome, opts: &CommitOptions) -> Result<()> {
         }
         (None, None) => identity(git, "author")?,
     };
-    if let (Some(_), Some((name, email))) = (&tip, forced) {
+    if let (Some(_), Some((name, email))) = (&kept, forced) {
         author.name = name;
         author.email = email;
     }
@@ -295,7 +449,11 @@ pub fn commit(git: &GitHome, opts: &CommitOptions) -> Result<()> {
         }
         std::process::exit(1);
     }
-    warn_about_hooks(git);
+    if opts.flags.no_verify {
+        warn_about_hooks_for(git, &["prepare-commit-msg", "post-commit"]);
+    } else {
+        warn_about_hooks(git);
+    }
     let (parents, extra_headers) = match &tip {
         Some(t) => (
             t.parents.clone(),
@@ -364,6 +522,9 @@ pub fn commit(git: &GitHome, opts: &CommitOptions) -> Result<()> {
             &Pathspec::default(),
         )?
         .len();
+    if opts.flags.quiet {
+        return Ok(());
+    }
     println!("[{name}{root} {}] {first}", &id.to_hex()[..7]);
     if (author.name.as_slice(), author.email.as_slice())
         != (committer.name.as_slice(), committer.email.as_slice())

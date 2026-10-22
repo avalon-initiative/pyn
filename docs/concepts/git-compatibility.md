@@ -78,8 +78,9 @@ The commands named in decision #218.
 | `git commit -a`, `-am <msg>` | `pyn commit -a`, `-am <msg>` | same | Stages every changed tracked file, then commits; new files are not included. |
 | `git commit <path>...` | `pyn commit -m <msg> <path>...` | different | On a pyn server: one atomic commit of the named paths as they are on disk, whatever is staged (git's `--only`). Not available on a git home, which says to `add` the paths first. |
 | `git commit -F <file>` (`-` is standard input) | same | git home: supported; pyn server: supported | The same message reading and cleanup on both homes, with and without the local store; `-m` and `-F` together are refused. On a pyn server `--file` stays the content file (it has no short form, so `-F` does not clash). See [Commit flags on a git home](#commit-flags-on-a-git-home). |
-| `git commit --file=<file>`, `--allow-empty`, `--author=<name <email>>`, `--date=<date>`, `-s`, `--signoff`, `--amend`, `--no-edit`, `-S[<keyid>]`, `--gpg-sign[=<keyid>]`, `--no-gpg-sign` | same | git home: supported | Git's behaviour on a git home; on a pyn server a usage error (`129`) naming the flag, because commits there are immutable (no `--amend`) and `--file` is the content file. `--allow-empty` is refused there because the server rejects a pushed commit that changes no file. See [Commit flags on a git home](#commit-flags-on-a-git-home). |
-| `git commit -S`, `--no-verify`, `-v`, `-c`, `-C`, `--fixup`, `--squash`, `--reset-author`, `--allow-empty-message`, `-e` | none | unsupported | Usage error (`129`). |
+| `git commit --file=<file>`, `--allow-empty`, `--author=<name <email>>`, `--date=<date>`, `-s`, `--signoff`, `--amend`, `-S[<keyid>]`, `--gpg-sign[=<keyid>]`, `--no-gpg-sign`, `--allow-empty-message`, `--cleanup=<mode>`, `--reset-author`, `--trailer <trailer>`, `-C <commit>`, `--reuse-message=<commit>` | same | git home: supported | Git's behaviour on a git home; on a pyn server a usage error (`129`) naming the flag, because commits there are immutable (no `--amend`) and `--file` is the content file. `--allow-empty` is refused there because the server rejects a pushed commit that changes no file. See [Commit flags on a git home](#commit-flags-on-a-git-home). |
+| `git commit -q`, `--quiet`, `-n`, `--no-verify`, `--verify`, `-v`, `--verbose`, `--status`, `--no-status`, `--no-edit` | same | supported | Both homes. `-q` prints no summary (errors and warnings stay); the rest are accepted and ignored because pyn runs no hooks and opens no editor. On a git home `--no-verify` also leaves out the warning about the `pre-commit` and `commit-msg` hooks. |
+| `git commit -c <commit>`, `--reedit-message`, `-e`, `--edit`, `-t <file>`, `--template`, `--fixup`, `--squash`, `--dry-run`, `--short`, `--branch`, `--long`, `--porcelain`, `-z`, `--ahead-behind`, `-u`, `--untracked-files`, `-i`, `--include`, `-o`, `--only`, `-p`, `--patch`, `--interactive`, `-U`, `--unified`, `--inter-hunk-context`, `--pathspec-from-file`, `--pathspec-file-nul`, `--no-post-rewrite`, `--post-rewrite`, `--no-quiet`, `--no-verbose` and the other `--no-` forms git generates for its options | none | unsupported | Usage error (`129`). Each needs an editor, a status report, or a path selection `commit` does not have: use `add` to choose paths and `-m`/`-F` for the message. |
 | `pyn commit --file <local>` | | pyn only | Content file for a single path. In a workspace the file at the path is the default. |
 | `pyn commit --base <rev>` | | pyn only | The revision the edit started from; the server rejects the commit if the branch has moved on from it on an exclusive path. |
 | `git log [-n <n>] [<path>]` | `pyn log [-n <n>] [<path>]` (alias `history`) | different | Without a path, newest first, 50 by default. With a path, oldest first and all revisions (git prints newest first). It lists the workspace's branch (`On branch <name>` goes to standard error). Output is a table of per-path revisions, not commit blocks. `-n` is also `--max-count`; `--limit` is an alias. On a git home it is git's output (see below). |
@@ -882,11 +883,29 @@ git would give the same tree, parent, identity, dates and message. `commit <path
   The branch and `HEAD` logs get `commit (amend): <subject>`, and `ORIG_HEAD` is not written.
 - `-S`, `--gpg-sign[=<keyid>]` (the key id attached or after `=`) and `--no-gpg-sign` (the last of the two wins) sign the commit;
   `commit.gpgsign=true` signs by default. See [Signing](#signing).
+- `--allow-empty-message` accepts a message that is empty after cleanup, and stores it as zero bytes. `--cleanup=<mode>` is
+  `strip` (also drops `#` lines), `whitespace` (the default, and `default` and `scissors`, which differ from it only when an editor
+  is used) or `verbatim` (the message exactly as given, `-m` paragraphs joined by a blank line); it applies to `-m`, `-F` and `-C`,
+  and an unknown mode is an error (`128`). `core.commentChar` is not read. A comment-only message is not empty under `whitespace`.
+- `--reset-author` takes the author from now (and `GIT_AUTHOR_*`) instead of the commit's, and needs `--amend` or `-C` (exit `128`);
+  it cannot be combined with `--author`.
+- `--trailer <Token: value>` (or `Token=value`) adds a trailer after any `-s` line, joining the last paragraph when it is a trailer
+  block, and is skipped when the last line is the same trailer. Only that default `interpret-trailers` behaviour is built: `trailer.*`
+  configuration is not read, and an argument without a valid token is added as `<text>:`.
+- `-C <commit>`, `--reuse-message=<commit>` takes the message and the author (name, email and date) from that commit; the committer
+  is new. It combines with `-s`, `--trailer`, `--cleanup`, `--author`, `--date`, `--reset-author` and `--amend`, not with `-m` or `-F` (exit `128`),
+  and an unknown commit exits `128`.
+- `-q` prints nothing on success; `-n`/`--no-verify`, `--verify`, `-v`, `--status` and `--no-status` are accepted and ignored.
 - The output is `[<branch> <id>] <subject>`, an ` Author:` line when the author differs from the committer, and pyn's
   changed-file count; it has no `Date:` line.
 
-A pyn server refuses all of these with a usage error (`129`), because its commits are immutable and `--file` there is the
-content file.
+A pyn server refuses all of these except `-q`, `-n`, `--no-verify`, `--verify`, `-v`, `--status`, `--no-status`, `--no-edit` and `-F` with a
+usage error (`129`), because its commits are immutable and `--file` there is the content file.
+
+Not built, on either home: `-c`/`--reedit-message`, `-e`/`--edit`, `-t`/`--template`, `--fixup`, `--squash`, `--dry-run`, `--short`,
+`--branch`, `--long`, `--porcelain`, `-z`, `--ahead-behind`, `-u`/`--untracked-files`, `-i`/`--include`, `-o`/`--only`, `-p`/`--patch`,
+`--interactive`, `-U`/`--unified`, `--inter-hunk-context`, `--pathspec-from-file`, `--pathspec-file-nul`, `--no-post-rewrite` and
+`--post-rewrite`.
 
 **Finishing a merge.** While `MERGE_HEAD` exists `commit` makes a merge commit: the merged-in commits are further parents, and
 without `-m` the message is `MERGE_MSG` with its `#` comment lines removed (what git's editor flow leaves; `git commit

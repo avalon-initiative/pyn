@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::backend::Backend;
 use crate::local_commit::{self, Staged};
 use crate::local_store::LocalStore;
+use crate::quiet::say;
 use crate::workspace::{Workspace, hash_of, set_read_only};
 use crate::{branch, localfile, sync};
 
@@ -485,12 +486,12 @@ pub fn commit(backend: &dyn Backend, ws: &Workspace, message: &str, all: bool) -
     let (made, gone) = response.revisions.split_at(written.len());
     for (rev, (path, staged)) in made.iter().zip(&written) {
         sync::after_commit(backend, ws, path, rev.id, &staged.hash, staged.file_mode)?;
-        println!("{} is now at revision {}", rev.path, rev.id);
+        say!("{} is now at revision {}", rev.path, rev.id);
     }
     let mut state = ws.load_state()?;
     for (rev, path) in gone.iter().zip(&removed) {
         state.remove(path.as_str());
-        println!("{} was deleted at revision {}", rev.path, rev.id);
+        say!("{} was deleted at revision {}", rev.path, rev.id);
     }
     if !removed.is_empty() {
         ws.save_state(&state)?;
@@ -555,12 +556,12 @@ fn commit_local(
     Index::default().save(ws)?;
     let first = message.lines().next().unwrap_or_default();
     let root = if made.root { " (root-commit)" } else { "" };
-    println!(
+    say!(
         "[{branch}{root} {}] {first}",
         crate::snapshot::short(&made.id.to_hex())
     );
-    println!("{} file(s) changed", made.changed);
-    println!("this commit is local and not yet published to the server");
+    say!("{} file(s) changed", made.changed);
+    say!("this commit is local and not yet published to the server");
     Ok(())
 }
 
