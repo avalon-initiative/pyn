@@ -8,7 +8,7 @@ use crate::backend::Backend;
 use crate::branch;
 use crate::git_home::RebaseArgs;
 use crate::git_home::editor::{self, Which};
-use crate::git_home::todo::{self, Cmd, Commits, Item};
+use crate::git_home::todo::{self, Cmd, Commits, Flag, Item};
 use crate::local_commit::signature;
 use crate::local_merge::{self, Move, Op, Rewrite};
 use crate::local_pick::{ancestors, require_nothing_staged, walk};
@@ -40,6 +40,14 @@ impl Commits for Named<'_> {
             .next()
             .unwrap_or_default()
             .to_string())
+    }
+
+    fn label(&self, id: &ObjectId) -> Result<String> {
+        self.subject(id)
+    }
+
+    fn is_empty(&self, _: &ObjectId) -> Result<bool> {
+        Ok(false)
     }
 }
 
@@ -191,7 +199,7 @@ pub fn rebase(backend: &dyn Backend, ws: &Workspace, args: &RebaseArgs) -> Resul
     }
     let mut items: Vec<Item> = range.into_iter().map(Item::pick).collect();
     if args.autosquash && !args.no_autosquash {
-        items = todo::autosquash(&names, items)?;
+        items = todo::autosquash(&names, items, false)?;
     }
     if args.interactive {
         let span = format!("{}..{}", &upstream.to_hex()[..7], &tip.to_hex()[..7]);
@@ -205,6 +213,11 @@ pub fn rebase(backend: &dyn Backend, ws: &Workspace, args: &RebaseArgs) -> Resul
     }
     let mut moves: Vec<Move> = Vec::new();
     for item in items {
+        if item.flag != Flag::None {
+            bail!(
+                "`fixup -C` and `fixup -c` are not available in a workspace; nothing was changed"
+            );
+        }
         match (item.cmd, item.id) {
             (Cmd::Noop | Cmd::Drop, _) => {}
             (Cmd::Edit | Cmd::Exec | Cmd::Break, _) => bail!(

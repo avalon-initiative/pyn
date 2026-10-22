@@ -349,7 +349,8 @@ name a later commit to rewrite only the newest ones. Published history is never 
 - **The sheet.** `-i` opens the editor (`GIT_SEQUENCE_EDITOR`, then `GIT_EDITOR`, `VISUAL`, `EDITOR`) on git's instruction
   sheet and reads `pick`, `reword`, `squash`, `fixup`, `drop` (and `noop`) lines, in any order; a line left out loses that
   commit. `reword` and the end of a `squash` chain open the editor on the message (`GIT_EDITOR`); a chain of only `fixup` keeps
-  the first message. `--autosquash` moves `fixup!` and `squash!` commits under the commit they name, with or without `-i`. A
+  the first message. `--autosquash` moves `fixup!` and `squash!` commits under the commit they name, with or without `-i` (`amend!`
+  commits stay where they are, and `fixup -C` and `-c` are refused). A
   commit that is not changed and still follows the same parent is reused as it is. Without `-i` and `--autosquash` the command
   says `Current branch <b> is up to date.`, since the replay would change nothing.
 - **Published commits.** A range that includes a published commit (an `<upstream>` older than the fetched tip, or a sheet line

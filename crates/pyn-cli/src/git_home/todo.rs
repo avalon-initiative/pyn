@@ -8,11 +8,16 @@ use pyn_object::ObjectId;
 
 use super::GitHome;
 use super::pick::subject_of;
+use crate::commit_format::{Context, DateStyle, Decorations, Pretty, render};
 
 /// What a sheet needs from the repository it is about: the commit a name means and a commit's subject.
 pub(crate) trait Commits {
     fn find(&self, spec: &str) -> Option<ObjectId>;
     fn subject(&self, id: &ObjectId) -> Result<String>;
+    /// The text after the id on a sheet line: the subject, or `rebase.instructionFormat` applied.
+    fn label(&self, id: &ObjectId) -> Result<String>;
+    /// Whether the commit changes nothing against its first parent.
+    fn is_empty(&self, id: &ObjectId) -> Result<bool>;
 }
 
 impl Commits for GitHome {
@@ -25,6 +30,48 @@ impl Commits for GitHome {
 
     fn subject(&self, id: &ObjectId) -> Result<String> {
         Ok(subject_of(&self.repo.commit(id)?.message))
+    }
+
+    fn label(&self, id: &ObjectId) -> Result<String> {
+        let Some(format) = self.repo.config().get("rebase.instructionformat") else {
+            return self.subject(id);
+        };
+        let pretty = Pretty::parse(&format!("format:{format}"))?;
+        let decorations = Decorations::new();
+        let ctx = Context {
+            style: DateStyle::parse("default")?,
+            now: chrono::Utc::now().timestamp(),
+            decorations: &decorations,
+        };
+        let text = render(&pretty, &ctx, id, &self.repo.commit(id)?);
+        Ok(text.replace('\n', " "))
+    }
+
+    fn is_empty(&self, id: &ObjectId) -> Result<bool> {
+        let commit = self.repo.commit(id)?;
+        let Some(parent) = commit.parents.first() else {
+            return Ok(false);
+        };
+        Ok(self.repo.commit(parent)?.tree == commit.tree)
+    }
+}
+
+/// How a `fixup` treats the messages: `-C` takes this commit's, `-c` also opens the editor.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub(crate) enum Flag {
+    #[default]
+    None,
+    Replace,
+    Edit,
+}
+
+impl Flag {
+    fn word(self) -> &'static str {
+        match self {
+            Flag::None => "",
+            Flag::Replace => " -C",
+            Flag::Edit => " -c",
+        }
     }
 }
 
@@ -90,6 +137,7 @@ pub(crate) struct Item {
     pub cmd: Cmd,
     pub id: Option<ObjectId>,
     pub arg: String,
+    pub flag: Flag,
 }
 
 impl Item {
@@ -98,6 +146,7 @@ impl Item {
             cmd: Cmd::Pick,
             id: Some(id),
             arg: String::new(),
+            flag: Flag::None,
         }
     }
 
@@ -110,6 +159,7 @@ impl Item {
             cmd,
             id: None,
             arg: String::new(),
+            flag: Flag::None,
         }
     }
 
@@ -118,6 +168,7 @@ impl Item {
             cmd: Cmd::Exec,
             id: None,
             arg: line.to_string(),
+            flag: Flag::None,
         }
     }
 
@@ -132,7 +183,12 @@ impl Item {
                 } else {
                     id.to_hex()
                 };
-                format!("{word} {shown} {}\n", git.subject(id)?)
+                let empty = if git.is_empty(id)? { " # empty" } else { "" };
+                format!(
+                    "{word}{} {shown} {}{empty}\n",
+                    self.flag.word(),
+                    git.label(id)?
+                )
             }
             _ => format!("{word}\n"),
         })
@@ -171,7 +227,16 @@ pub(crate) fn parse(git: &dyn Commits, text: &str, prior: bool) -> Result<Vec<It
             Cmd::Exec => items.push(Item::exec(rest)),
             Cmd::Break | Cmd::Noop => items.push(Item::plain(cmd)),
             _ => {
-                let Some(rev) = rest.split_whitespace().next() else {
+                let mut words = rest.split_whitespace();
+                let mut flag = Flag::None;
+                let mut rev = words.next();
+                if cmd == Cmd::Fixup
+                    && let Some(f @ ("-C" | "-c")) = rev
+                {
+                    flag = if f == "-C" { Flag::Replace } else { Flag::Edit };
+                    rev = words.next();
+                }
+                let Some(rev) = rev else {
                     bad(&mut errors, format!("missing arguments for {}", cmd.word()));
                     continue;
                 };
@@ -204,6 +269,7 @@ pub(crate) fn parse(git: &dyn Commits, text: &str, prior: bool) -> Result<Vec<It
                     cmd,
                     id: Some(id),
                     arg: String::new(),
+                    flag,
                 });
             }
         }
@@ -229,49 +295,74 @@ pub(crate) fn editor_text(
         &onto.to_hex()[..7],
         if count == 1 { "" } else { "s" }
     ));
-    text.push_str(HELP);
+    text.push_str(&format!(
+        "{HELP_COMMANDS}#\n{HELP_ORDER}#\n# If you remove a line here THAT COMMIT WILL BE LOST.\n#\n{HELP_ABORT}#\n"
+    ));
     Ok(text)
 }
 
-pub(crate) const HELP: &str = "\
+/// The help under the sheet `--edit-todo` opens.
+pub(crate) fn edit_help(strict: bool) -> String {
+    let lost = if strict {
+        "# Do not remove any line. Use 'drop' explicitly to remove a commit.\n"
+    } else {
+        "# If you remove a line here THAT COMMIT WILL BE LOST.\n"
+    };
+    format!(
+        "#\n{HELP_COMMANDS}#\n{HELP_ORDER}#\n{lost}#\n# You are editing the todo file of an ongoing interactive rebase.\n# To continue rebase after editing, run:\n#     pyn rebase --continue\n#\n"
+    )
+}
+
+const HELP_COMMANDS: &str = "\
 # Commands:
 # p, pick <commit> = use commit
 # r, reword <commit> = use commit, but edit the commit message
 # e, edit <commit> = use commit, but stop for amending
 # s, squash <commit> = use commit, but meld into previous commit
-# f, fixup <commit> = like \"squash\", but discard this commit's log message
+# f, fixup [-C | -c] <commit> = like \"squash\" but keep only the previous
+#                    commit's log message, unless -C is used, in which case
+#                    keep only this commit's message; -c is same as -C but
+#                    opens the editor
 # x, exec <command> = run command (the rest of the line) using shell
-# b, break = stop here (continue rebase later with 'rebase --continue')
+# b, break = stop here (continue rebase later with 'pyn rebase --continue')
 # d, drop <commit> = remove commit
-#
-# These lines can be re-ordered; they are executed from top to bottom.
-#
-# If you remove a line here THAT COMMIT WILL BE LOST.
-#
-# However, if you remove everything, the rebase will be aborted.
-#
+# l, label <label> = label current HEAD with a name
+# t, reset <label> = reset HEAD to a label
+# m, merge [-C <commit> | -c <commit>] <label> [# <oneline>]
+#         create a merge commit using the original merge commit's
+#         message (or the oneline, if no original merge commit was
+#         specified); use -c <commit> to reword the commit message
+# u, update-ref <ref> = track a placeholder for the <ref> to be updated
+#                       to this position in the new commits. The <ref> is
+#                       updated at the end of the rebase
 ";
+const HELP_ORDER: &str = "# These lines can be re-ordered; they are executed from top to bottom.\n";
+const HELP_ABORT: &str = "# However, if you remove everything, the rebase will be aborted.\n";
 
-/// The prefix of a `fixup!` or `squash!` subject, and what follows it.
-fn fixup_target(subject: &str) -> Option<(Cmd, &str)> {
-    let strip = |s: &str| -> Option<(Cmd, usize)> {
-        for (prefix, cmd) in [("fixup! ", Cmd::Fixup), ("squash! ", Cmd::Squash)] {
-            if s.starts_with(prefix) {
-                return Some((cmd, prefix.len()));
+/// The command a `fixup!`, `amend!` (when `amend` is set) or `squash!` subject asks for, and the subject it names.
+fn fixup_target(subject: &str, amend: bool) -> Option<(Cmd, Flag, &str)> {
+    let strip = |s: &str| -> Option<(Cmd, Flag, usize)> {
+        for (prefix, cmd, flag) in [
+            ("fixup! ", Cmd::Fixup, Flag::None),
+            ("amend! ", Cmd::Fixup, Flag::Replace),
+            ("squash! ", Cmd::Squash, Flag::None),
+        ] {
+            if s.starts_with(prefix) && (amend || flag != Flag::Replace) {
+                return Some((cmd, flag, prefix.len()));
             }
         }
         None
     };
-    let (cmd, len) = strip(subject)?;
+    let (cmd, flag, len) = strip(subject)?;
     let mut rest = subject[len..].trim_start();
-    while let Some((_, len)) = strip(rest) {
+    while let Some((_, _, len)) = strip(rest) {
         rest = rest[len..].trim_start();
     }
-    Some((cmd, rest))
+    Some((cmd, flag, rest))
 }
 
 /// Moves each `fixup! <subject>` and `squash! <subject>` commit under the commit it names, as `--autosquash` does.
-pub(crate) fn autosquash(git: &dyn Commits, items: Vec<Item>) -> Result<Vec<Item>> {
+pub(crate) fn autosquash(git: &dyn Commits, items: Vec<Item>, amend: bool) -> Result<Vec<Item>> {
     let subjects: Vec<String> = items
         .iter()
         .map(|i| match &i.id {
@@ -288,9 +379,9 @@ pub(crate) fn autosquash(git: &dyn Commits, items: Vec<Item>) -> Result<Vec<Item
     let mut next: Vec<Option<usize>> = vec![None; items.len()];
     let mut tail: Vec<Option<usize>> = vec![None; items.len()];
     let mut moved = vec![false; items.len()];
-    let mut cmds: Vec<Cmd> = items.iter().map(|i| i.cmd).collect();
+    let mut cmds: Vec<(Cmd, Flag)> = items.iter().map(|i| (i.cmd, i.flag)).collect();
     for i in 0..items.len() {
-        let target = fixup_target(&subjects[i]).and_then(|(cmd, name)| {
+        let target = fixup_target(&subjects[i], amend).and_then(|(cmd, flag, name)| {
             let found = by_subject.get(name).copied().or_else(|| {
                 let by_id = (!name.contains(' '))
                     .then(|| git.find(name))
@@ -299,11 +390,11 @@ pub(crate) fn autosquash(git: &dyn Commits, items: Vec<Item>) -> Result<Vec<Item
                     .filter(|p| *p < i);
                 by_id.or_else(|| (0..i).find(|j| subjects[*j].starts_with(name)))
             });
-            found.map(|j| (cmd, j))
+            found.map(|j| (cmd, flag, j))
         });
         match target {
-            Some((cmd, j)) => {
-                cmds[i] = cmd;
+            Some((cmd, flag, j)) => {
+                cmds[i] = (cmd, flag);
                 moved[i] = true;
                 let last = tail[j].unwrap_or(j);
                 next[i] = next[last];
@@ -320,7 +411,7 @@ pub(crate) fn autosquash(git: &dyn Commits, items: Vec<Item>) -> Result<Vec<Item
         let mut at = Some(i);
         while let Some(c) = at {
             let mut item = items[c].clone();
-            item.cmd = cmds[c];
+            (item.cmd, item.flag) = cmds[c];
             out.push(item);
             at = next[c];
         }
@@ -356,11 +447,51 @@ mod tests {
     #[test]
     fn nested_prefixes_are_stripped_to_the_target_subject() {
         assert_eq!(
-            fixup_target("fixup! fixup! squash! three"),
-            Some((Cmd::Fixup, "three"))
+            fixup_target("fixup! fixup! squash! three", true),
+            Some((Cmd::Fixup, Flag::None, "three"))
         );
-        assert_eq!(fixup_target("squash! two"), Some((Cmd::Squash, "two")));
-        assert_eq!(fixup_target("fixup!x"), None);
+        assert_eq!(
+            fixup_target("squash! two", true),
+            Some((Cmd::Squash, Flag::None, "two"))
+        );
+        assert_eq!(
+            fixup_target("amend! two", true),
+            Some((Cmd::Fixup, Flag::Replace, "two"))
+        );
+        assert_eq!(fixup_target("fixup!x", true), None);
+        assert_eq!(fixup_target("amend! two", false), None);
+    }
+
+    struct Names;
+
+    impl Commits for Names {
+        fn find(&self, spec: &str) -> Option<ObjectId> {
+            ObjectId::from_hex(pyn_object::Algorithm::Sha1, spec).ok()
+        }
+        fn subject(&self, _: &ObjectId) -> Result<String> {
+            Ok("subject".into())
+        }
+        fn label(&self, _: &ObjectId) -> Result<String> {
+            Ok("subject".into())
+        }
+        fn is_empty(&self, _: &ObjectId) -> Result<bool> {
+            Ok(false)
+        }
+    }
+
+    #[test]
+    fn fixup_flags_are_parsed_and_written_back() {
+        let id = "1".repeat(40);
+        let text = format!("pick {id} a\nfixup -C {id} b\nfixup -c {id}\nfixup {id} d\n");
+        let items = parse(&Names, &text, false).unwrap();
+        let flags: Vec<Flag> = items.iter().map(|i| i.flag).collect();
+        assert_eq!(flags, [Flag::None, Flag::Replace, Flag::Edit, Flag::None]);
+        assert_eq!(
+            sheet(&Names, &items, true).unwrap(),
+            "pick 1111111 subject\nfixup -C 1111111 subject\nfixup -c 1111111 subject\nfixup 1111111 subject\n"
+        );
+        let errors = parse(&Names, &format!("pick {id}\nfixup -C\n"), false).unwrap_err();
+        assert_eq!(errors[0], "error: missing arguments for fixup");
     }
 
     #[test]
@@ -372,6 +503,7 @@ mod tests {
                 cmd: Cmd::Squash,
                 id: Some(id),
                 arg: String::new(),
+                flag: Flag::None,
             },
             Item::pick(id),
         ];

@@ -127,18 +127,31 @@ fn read(dir: &Path, name: &str) -> String {
     fs::read_to_string(dir.join(".git").join(name)).unwrap_or_else(|_| "(absent)".into())
 }
 
+/// `fixup -C <id> <subject>` and the other lines with the id cut to seven digits; git 2.55 writes `<id> # <subject>`.
+fn normalized_line(l: &str) -> String {
+    let mut w = l.splitn(2, ' ');
+    let cmd = w.next().unwrap_or("");
+    let mut rest = w.next().unwrap_or("");
+    let mut flag = String::new();
+    for f in ["-C ", "-c "] {
+        if let Some(r) = rest.strip_prefix(f) {
+            flag = format!(" {}", f.trim());
+            rest = r;
+        }
+    }
+    let mut w = rest.splitn(2, ' ');
+    let id = w.next().unwrap_or("");
+    let subject = w.next().unwrap_or("");
+    let subject = subject.strip_prefix("# ").unwrap_or(subject);
+    format!("{cmd}{flag} {} {subject}", &id[..id.len().min(7)])
+}
+
 /// The todo list with every id cut to seven digits (git abbreviates them, pyn writes them whole).
 fn sheet(dir: &Path, name: &str) -> String {
     read(dir, &format!("rebase-merge/{name}"))
         .lines()
         .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
-        .map(|l| {
-            let mut w = l.splitn(3, ' ');
-            let (cmd, id, rest) = (w.next(), w.next().unwrap_or(""), w.next().unwrap_or(""));
-            // git 2.55 writes `pick <id> # <subject>`.
-            let rest = rest.strip_prefix("# ").unwrap_or(rest);
-            format!("{} {} {rest}", cmd.unwrap_or(""), &id[..id.len().min(7)])
-        })
+        .map(normalized_line)
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -219,6 +232,9 @@ fn state(env: &Env, dir: &Path) -> Vec<String> {
             .replace(' ', "_"),
     );
     out.push(format!("{files:?}"));
+    for name in ["patch", "rewritten-list", "rewritten-pending"] {
+        out.push(read(dir, &format!("rebase-merge/{name}")));
+    }
     out
 }
 
@@ -255,7 +271,10 @@ fn part_name(i: usize) -> String {
         22 => "rebase-merge/current-fixups".into(),
         23 => "SQUASH_MSG".into(),
         24 => "stash list".into(),
-        _ => "work tree".into(),
+        25 => "work tree".into(),
+        26 => "rebase-merge/patch".into(),
+        27 => "rebase-merge/rewritten-list".into(),
+        _ => "rebase-merge/rewritten-pending".into(),
     }
 }
 
@@ -370,6 +389,8 @@ fn init(env: &Env, dir: &Path, format: &str) {
             &format!("--object-format={format}"),
         ],
     );
+    env.ok(dir, &["config", "gc.auto", "0"]);
+    env.ok(dir, &["config", "maintenance.auto", "false"]);
 }
 
 static TICK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1_600_000_000);
@@ -1280,6 +1301,466 @@ fn git_and_pyn_continue_each_others_interactive_stops() {
             assert_eq!(log(&p.git), log(&p.pyn), "{f} {edit_word}: {}", ids(&p.git));
             assert!(!p.git.join(".git/rebase-merge").exists());
             assert!(!p.pyn.join(".git/rebase-merge").exists());
+        }
+    });
+}
+
+impl Pair {
+    /// `clean` (c1, c2) with two more commits, then an `amend!` commit for c1 and a `fixup!` one.
+    fn with_amend(&self) {
+        self.on("clean");
+        self.commit("c3", "c3\n", "c3 third\n\nbody of c3");
+        self.commit("c4", "c4\n", "c4 fourth");
+        self.commit(
+            "y1",
+            "y1\n",
+            "amend! c1 first line\n\nc1 reworded\n\nnew body",
+        );
+        self.commit("y2", "y2\n", "fixup! c2");
+    }
+
+    fn config(&self, key: &str, value: &str) {
+        self.both(|env, d| {
+            env.ok(d, &["config", key, value]);
+        });
+    }
+}
+
+fn editor_env<'a>(sheet: &'a str, message: &'a str) -> [(&'a str, &'a str); 2] {
+    [("GIT_SEQUENCE_EDITOR", sheet), ("GIT_EDITOR", message)]
+}
+
+#[test]
+fn amend_commits_are_autosquashed_as_fixup_dash_c() {
+    both_formats(|f| {
+        let p = history(f);
+        p.with_amend();
+        assert_eq!(
+            p.same_env(
+                &["-i", "--autosquash", "main"],
+                &format!("{f} amend! autosquash"),
+                &[("GIT_SEQUENCE_EDITOR", ":")]
+            ),
+            0
+        );
+        let p = history(f);
+        p.with_amend();
+        let editor = seq("1s/^/Edited: /");
+        let sheet = seq("s/^fixup -C/fixup -c/");
+        assert_eq!(
+            p.same_env(
+                &["-i", "--autosquash", "main"],
+                &format!("{f} amend! autosquash edited"),
+                &editor_env(&sheet, &editor)
+            ),
+            0
+        );
+    });
+}
+
+#[test]
+fn fixup_dash_c_and_dash_lowercase_c_replace_the_message() {
+    both_formats(|f| {
+        let sheets = [
+            "2s/^pick/fixup -C/",
+            "2s/^pick/fixup -c/",
+            "2s/^pick/fixup/;3s/^pick/fixup -C/",
+            "2s/^pick/fixup -c/;3s/^pick/fixup -C/",
+            "2s/^pick/fixup -C/;3s/^pick/fixup -c/",
+            "2s/^pick/fixup -C/;3s/^pick/squash/",
+            "2s/^pick/squash/;3s/^pick/fixup -C/",
+            "2s/^pick/fixup -C/;3s/^pick/fixup/;4s/^pick/fixup -c/",
+            "2s/^pick/fixup -c/;3s/^pick/fixup/;4s/^pick/fixup/",
+            "3s/^pick/fixup -C/",
+            "3s/^pick/fixup -c/;4s/^pick/squash/",
+            "2s/^pick/squash/;3s/^pick/fixup -C/;4s/^pick/fixup/",
+        ];
+        for expr in sheets {
+            let p = history(f);
+            p.with_amend();
+            let editor = seq("1s/^/Edited: /");
+            let sheet = seq(expr);
+            // The branch has c1 to c4, an `amend!` and a `fixup!` commit; lines 5 and 6 stay picks.
+            assert_eq!(
+                p.same_env(
+                    &["-i", "main"],
+                    &format!("{f} {expr}"),
+                    &editor_env(&sheet, &editor)
+                ),
+                0,
+                "{expr}"
+            );
+        }
+    });
+}
+
+#[test]
+fn marker_subjects_are_commented_out_after_a_squash() {
+    both_formats(|f| {
+        for expr in [
+            "5s/^pick/squash/",
+            "5s/^pick/fixup -C/",
+            "2s/^pick/squash/;5s/^pick/fixup -C/",
+            "2s/^pick/squash/;6s/^pick/fixup -c/",
+            "6s/^pick/fixup -C/",
+            "5s/^pick/fixup -c/",
+            "5s/^pick/fixup/;6s/^pick/squash/",
+        ] {
+            let p = history(f);
+            p.with_amend();
+            let editor = seq("1s/^/Edited: /");
+            let sheet = seq(expr);
+            assert_eq!(
+                p.same_env(
+                    &["-i", "main"],
+                    &format!("{f} {expr}"),
+                    &editor_env(&sheet, &editor)
+                ),
+                0,
+                "{expr}"
+            );
+        }
+    });
+}
+
+#[test]
+fn a_conflict_in_a_fixup_dash_c_chain_keeps_the_messages() {
+    both_formats(|f| {
+        for resolution in ["continue", "skip"] {
+            for word in ["fixup -C", "fixup -c"] {
+                let p = history(f);
+                p.on("side");
+                let expr = format!("2s/^pick/{word}/");
+                let label = format!("{f} {word} {resolution}");
+                let editor = seq("1s/^/Edited: /");
+                let sheet = seq(&expr);
+                let envs = editor_env(&sheet, &editor);
+                assert_eq!(p.same_env(&["-i", "main"], &label, &envs), 1);
+                if resolution == "continue" {
+                    p.resolve("g", "gM+gS\n");
+                    assert_eq!(
+                        p.same_env(&["--continue"], &format!("{label} resolved"), &envs),
+                        1
+                    );
+                } else {
+                    assert_eq!(
+                        p.same_env(&["--skip"], &format!("{label} skipped"), &envs),
+                        1
+                    );
+                }
+                p.resolve("bin", "resolved\n");
+                assert_eq!(
+                    p.same_env(&["--continue"], &format!("{label} last"), &envs),
+                    0
+                );
+            }
+        }
+    });
+}
+
+#[test]
+fn a_bad_flag_on_a_fixup_is_an_invalid_line() {
+    both_formats(|f| {
+        let p = history(f);
+        p.on("clean");
+        let sheet = seq("2s/^pick/fixup -x/");
+        let envs = [("GIT_SEQUENCE_EDITOR", sheet.as_str())];
+        let g = p.env.git_env(&p.git, &["rebase", "-i", "main"], &envs);
+        let q = p.env.pyn_env(&p.pyn, &["rebase", "-i", "main"], &envs);
+        assert_eq!(q.status.code(), g.status.code(), "{f}");
+        assert!(p.pyn.join(".git/rebase-merge").is_dir());
+    });
+}
+
+#[test]
+fn missing_commits_check_warns_or_stops_on_a_dropped_line() {
+    both_formats(|f| {
+        for level in ["ignore", "warn", "error", "bogus"] {
+            let p = history(f);
+            p.on("clean");
+            p.config("rebase.missingCommitsCheck", level);
+            let label = format!("{f} {level}");
+            let expected = i32::from(level == "error");
+            assert_eq!(
+                run_sheet(&p, "1d", &["main"], &label, &[]),
+                expected,
+                "{label}"
+            );
+            if level != "error" {
+                continue;
+            }
+            assert_eq!(
+                p.same_env(
+                    &["--continue"],
+                    &format!("{label} continue"),
+                    &[("GIT_SEQUENCE_EDITOR", ":")]
+                ),
+                1
+            );
+            assert_eq!(
+                p.same_env(
+                    &["--edit-todo"],
+                    &format!("{label} edit-todo"),
+                    &[("GIT_SEQUENCE_EDITOR", ":")]
+                ),
+                1
+            );
+            let restore = "cp .git/rebase-merge/git-rebase-todo.backup";
+            let fix = format!("{restore} \"$1\"; sed -i -e '1s/^pick/drop/' \"$1\" #");
+            assert_eq!(
+                p.same_env(
+                    &["--edit-todo"],
+                    &format!("{label} fixed"),
+                    &[("GIT_SEQUENCE_EDITOR", fix.as_str())]
+                ),
+                0
+            );
+            assert_eq!(p.same(&["--continue"], &format!("{label} done")), 0);
+        }
+        let p = history(f);
+        p.on("clean");
+        p.config("rebase.missingCommitsCheck", "error");
+        assert_eq!(
+            run_sheet(
+                &p,
+                "1s/^pick/drop/",
+                &["main"],
+                &format!("{f} drop ok"),
+                &[]
+            ),
+            0
+        );
+    });
+}
+
+/// The `#` lines of the sheet the editor was given, saved by the editor command itself.
+fn seen_comments(dir: &Path) -> Vec<String> {
+    read(dir, "seen-sheet")
+        .lines()
+        .filter(|l| l.starts_with('#'))
+        .map(|l| l.replace("git rebase", "pyn rebase"))
+        .collect()
+}
+
+fn seen_commands(dir: &Path) -> Vec<String> {
+    read(dir, "seen-sheet")
+        .lines()
+        .filter(|l| !l.starts_with('#') && !l.is_empty())
+        .map(normalized_line)
+        .collect()
+}
+
+#[test]
+fn the_editor_sees_git_s_full_comment_block_and_the_instruction_format() {
+    both_formats(|f| {
+        for (strict, format) in [(false, None), (true, Some("%s (%an) %ae"))] {
+            let p = history(f);
+            p.with_amend();
+            p.commit("e1", "e1\n", "empty one");
+            p.both(|env, d| {
+                env.ok(d, &["commit", "-q", "--allow-empty", "-m", "empty two"]);
+            });
+            if strict {
+                p.config("rebase.missingCommitsCheck", "warn");
+            }
+            if let Some(format) = format {
+                p.config("rebase.instructionFormat", format);
+            }
+            let save = ("GIT_SEQUENCE_EDITOR", "cp \"$1\" .git/seen-sheet #");
+            assert_eq!(
+                p.same_env(&["-i", "main"], &format!("{f} sheet"), &[save]),
+                0
+            );
+            assert_eq!(seen_comments(&p.pyn), seen_comments(&p.git), "{f} {strict}");
+            assert_eq!(seen_commands(&p.pyn), seen_commands(&p.git), "{f} {strict}");
+            assert!(seen_comments(&p.pyn).len() > 20);
+        }
+        let p = history(f);
+        p.on("clean");
+        p.config("rebase.instructionFormat", "%s [%an]");
+        let envs = [("GIT_SEQUENCE_EDITOR", "sed -i -e '1s/^pick/edit/'")];
+        assert_eq!(
+            p.same_env(&["-i", "main"], &format!("{f} format state"), &envs),
+            0
+        );
+    });
+}
+
+#[test]
+fn the_progress_line_counts_the_commands() {
+    both_formats(|f| {
+        let p = history(f);
+        p.on("clean");
+        let run = |quiet: bool| {
+            let mut args = vec!["rebase", "main"];
+            if quiet {
+                args.push("-q");
+            }
+            let g = p.env.git(&p.git, &args);
+            let q = p.env.pyn(&p.pyn, &args);
+            (
+                String::from_utf8_lossy(&g.stderr).into_owned(),
+                String::from_utf8_lossy(&q.stderr).into_owned(),
+            )
+        };
+        let (g, q) = run(false);
+        for out in [&g, &q] {
+            assert!(
+                out.contains("Rebasing (1/2)") && out.contains("Rebasing (2/2)"),
+                "{f}: {out:?}"
+            );
+        }
+        let p2 = history(f);
+        p2.on("clean");
+        let g = p2.env.git(&p2.git, &["rebase", "-q", "main"]);
+        let q = p2.env.pyn(&p2.pyn, &["rebase", "-q", "main"]);
+        assert!(!String::from_utf8_lossy(&g.stderr).contains("Rebasing"));
+        assert!(!String::from_utf8_lossy(&q.stderr).contains("Rebasing"));
+    });
+}
+
+impl Pair {
+    /// A note on each revision, made by git in both repositories.
+    fn note(&self, rev: &str, text: &str) {
+        self.both(|env, d| {
+            env.ok(d, &["notes", "add", "-m", text, rev]);
+        });
+    }
+
+    fn notes(&self, label: &str) -> String {
+        let (g, p) = (
+            self.env.ok(&self.git, &["notes", "list"]),
+            self.env.ok(&self.pyn, &["notes", "list"]),
+        );
+        assert_eq!(p, g, "{label}: notes list");
+        g
+    }
+}
+
+#[test]
+fn rewritten_list_follows_each_command_and_stop() {
+    both_formats(|f| {
+        let cases: [(&str, &str, &[&str]); 7] = [
+            ("pick break", "1a break", &["main"]),
+            ("squash break", "2s/^pick/squash/;2a break", &["main"]),
+            (
+                "fixup chain break",
+                "2s/^pick/fixup/;3s/^pick/fixup -C/;3a break",
+                &["main"],
+            ),
+            ("drop", "1s/^pick/drop/;2a break", &["main"]),
+            ("exec", "1a exec true\n1a break", &["main"]),
+            ("unchanged leading picks", "1a break", &["base"]),
+            ("reordered ff pick", "1i break", &["base"]),
+        ];
+        for (name, expr, args) in cases {
+            let p = history(f);
+            p.on("clean");
+            let label = format!("{f} {name}");
+            assert_eq!(run_sheet(&p, expr, args, &label, &[]), 0, "{label}");
+            assert_eq!(p.same(&["--continue"], &format!("{label} continue")), 0);
+        }
+        let p = history(f);
+        p.on("dup");
+        assert_eq!(
+            run_sheet(
+                &p,
+                "$a break",
+                &["main"],
+                &format!("{f} dropped as upstream"),
+                &[]
+            ),
+            0
+        );
+        assert_eq!(p.same(&["--continue"], &format!("{f} dup continue")), 0);
+    });
+}
+
+#[test]
+fn rewritten_list_after_edit_conflict_and_skip() {
+    both_formats(|f| {
+        let p = history(f);
+        p.on("side");
+        assert_eq!(
+            run_sheet(&p, "1s/^pick/edit/", &["main"], &format!("{f} edit"), &[]),
+            0
+        );
+        p.both(|env, d| {
+            env.ok(d, &["commit", "-q", "--amend", "-m", "amended"]);
+        });
+        assert_eq!(p.same(&["--continue"], &format!("{f} edit continue")), 1);
+        assert_eq!(p.same(&["--skip"], &format!("{f} skip")), 1);
+        p.resolve("bin", "resolved\n");
+        assert_eq!(p.same(&["--continue"], &format!("{f} last")), 0);
+        let p = history(f);
+        p.on("side");
+        assert_eq!(p.same(&["main"], &format!("{f} plain conflict")), 1);
+        p.resolve("g", "gM+gS\n");
+        assert_eq!(p.same(&["--continue"], &format!("{f} plain resolved")), 1);
+    });
+}
+
+#[test]
+fn notes_are_copied_to_the_rewritten_commits() {
+    both_formats(|f| {
+        for (name, args, expr) in [
+            ("plain", vec!["main"], None),
+            ("squashed", vec!["-i", "main"], Some("2s/^pick/squash/")),
+            ("fixup c", vec!["-i", "main"], Some("2s/^pick/fixup -C/")),
+            ("dropped", vec!["-i", "main"], Some("2s/^pick/drop/")),
+            ("onto base", vec!["base"], None),
+        ] {
+            let p = history(f);
+            p.on("clean");
+            p.config("notes.rewriteRef", "refs/notes/commits");
+            p.note("clean~1", "note one");
+            p.note("clean", "note two");
+            let editor = seq("1s/^/Edited: /");
+            let sheet = seq(expr.unwrap_or("1s/^pick/pick/"));
+            let label = format!("{f} {name}");
+            let mut full: Vec<&str> = args.clone();
+            if args[0] != "-i" {
+                full.insert(0, "--no-fork-point");
+            }
+            let envs = editor_env(&sheet, &editor);
+            assert_eq!(p.same_env(&full, &label, &envs), 0, "{label}");
+            let listed = p.notes(&label);
+            if name != "dropped" {
+                assert!(listed.lines().count() >= 2, "{label}: {listed}");
+            }
+        }
+    });
+}
+
+#[test]
+fn note_rewriting_follows_its_settings() {
+    both_formats(|f| {
+        let setups: [(&str, &[(&str, &str)]); 7] = [
+            ("off", &[("notes.rewrite.rebase", "false")]),
+            ("no ref", &[]),
+            ("glob", &[("notes.rewriteRef", "refs/notes/*")]),
+            ("overwrite", &[("notes.rewriteMode", "overwrite")]),
+            ("ignore", &[("notes.rewriteMode", "ignore")]),
+            ("cat_sort_uniq", &[("notes.rewriteMode", "cat_sort_uniq")]),
+            ("concatenate", &[("notes.rewriteMode", "concatenate")]),
+        ];
+        for (name, settings) in setups {
+            let p = history(f);
+            p.on("clean");
+            if name != "no ref" {
+                p.config("notes.rewriteRef", "refs/notes/commits");
+            }
+            for (k, v) in settings {
+                p.config(k, v);
+            }
+            p.note("clean~1", "shared\nfirst");
+            p.note("clean", "shared\nsecond");
+            let editor = seq("1s/^/Edited: /");
+            let sheet = seq("2s/^pick/squash/");
+            let label = format!("{f} {name}");
+            let envs = editor_env(&sheet, &editor);
+            assert_eq!(p.same_env(&["-i", "main"], &label, &envs), 0);
+            p.notes(&label);
         }
     });
 }

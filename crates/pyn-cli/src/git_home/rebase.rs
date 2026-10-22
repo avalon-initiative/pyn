@@ -17,10 +17,12 @@ use super::GitHome;
 use super::editor::{self, Which};
 use super::meld;
 use super::merge::{write_orig_head_as, write_state};
+use super::patch_file;
 use super::pick::{
     Failed, Merged, Pending, Verb, git_dir, make_commit, make_commit_on, merge_pick, read_id,
     read_text, short, subject_of,
 };
+use super::rewrite;
 use super::stage::{clean_message, parse_date, raw_mode, write_tree};
 use super::stash::{Applying, PushArgs, apply_commit, save, store_stash};
 use super::todo::{self, Cmd, Item};
@@ -614,7 +616,7 @@ fn begin(git: &GitHome, plan: &Plan) -> Result<()> {
     let picks = picks(git, &plan.upstream, &orig_head)?;
     let mut items: Vec<Item> = picks.into_iter().map(Item::pick).collect();
     if plan.autosquash {
-        items = todo::autosquash(git, items)?;
+        items = todo::autosquash(git, items, true)?;
     }
     if !plan.exec.is_empty() {
         items = todo::with_exec(items, &plan.exec);
@@ -649,6 +651,7 @@ fn begin(git: &GitHome, plan: &Plan) -> Result<()> {
     };
     let mut state = state;
     let mut bad_sheet = None;
+    let original = todo::sheet(git, &state.todo, false)?;
     if plan.interactive {
         bad_sheet = edit_sheet(git, &mut state, &plan.upstream)?;
     }
@@ -657,6 +660,9 @@ fn begin(git: &GitHome, plan: &Plan) -> Result<()> {
     state.create(git)?;
     if state.quiet {
         state.put(git, "quiet", "")?;
+    }
+    if plan.interactive {
+        state.put(git, "git-rebase-todo.backup", &original)?;
     }
     if let Some((edited, errors)) = bad_sheet {
         state.put(git, "git-rebase-todo", &edited)?;
@@ -672,11 +678,29 @@ fn begin(git: &GitHome, plan: &Plan) -> Result<()> {
         eprintln!("Or you can abort the rebase with 'pyn rebase --abort'.");
         std::process::exit(1);
     }
-    if plan.interactive {
-        let initial = todo::sheet(git, &state.todo, false)?;
-        state.put(git, "git-rebase-todo.backup", &initial)?;
+    let skipped = if plan.no_ff {
+        0
+    } else {
+        unchanged_leading(git, &state)?
+    };
+    run(git, state, skipped)
+}
+
+/// How many commands at the start are picks whose commits already sit on the base in order; git does not run them.
+fn unchanged_leading(git: &GitHome, state: &State) -> Result<usize> {
+    let mut at = state.onto;
+    let mut count = 0;
+    for item in &state.todo {
+        let Some(id) = item.id.filter(|_| item.cmd == Cmd::Pick) else {
+            break;
+        };
+        if git.repo.commit(&id)?.parents != [at] {
+            break;
+        }
+        at = id;
+        count += 1;
     }
-    run(git, state)
+    Ok(count)
 }
 
 /// Lets the user edit the sheet before anything is checked out. A sheet that cannot be read comes back with git's
@@ -691,6 +715,7 @@ fn edit_sheet(
         &upstream.to_hex()[..7],
         &state.orig_head.to_hex()[..7]
     );
+    let level = missing_check(git);
     let text = todo::editor_text(git, &state.todo, &range, &state.onto)?;
     std::fs::create_dir_all(dir_of(git))?;
     let edited = match run_sheet_editor(git, &text) {
@@ -710,9 +735,17 @@ fn edit_sheet(
             std::process::exit(1);
         }
         Ok(items) => {
+            let report = dropped_report(git, &state.todo, &items, level)?;
             state.todo = items;
             let _ = std::fs::remove_dir_all(dir_of(git));
-            Ok(None)
+            match report {
+                Some(lines) if level == Check::Error => Ok(Some((edited, lines))),
+                Some(lines) => {
+                    print_report(&lines);
+                    Ok(None)
+                }
+                None => Ok(None),
+            }
         }
         Err(errors) => {
             let _ = std::fs::remove_dir_all(dir_of(git));
@@ -736,7 +769,7 @@ fn edit_todo(git: &GitHome) -> Result<()> {
     } else {
         read_text(&dir_of(git).join("git-rebase-todo")).unwrap_or_default()
     };
-    text.push_str("\n# You are editing the todo file of an ongoing interactive rebase.\n# To continue rebase after editing, run:\n#     pyn rebase --continue\n#\n");
+    text.push_str(&todo::edit_help(missing_check(git) != Check::Ignore));
     let edited = run_sheet_editor(git, &text)?;
     match todo::parse(git, &edited, !state.done.is_empty()) {
         Ok(items) => state.todo = items,
@@ -752,7 +785,104 @@ fn edit_todo(git: &GitHome) -> Result<()> {
         git,
         "git-rebase-todo",
         &todo::sheet(git, &state.todo, false)?,
-    )
+    )?;
+    refuse_if_dropped(git, &state)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Check {
+    Ignore,
+    Warn,
+    Error,
+}
+
+/// `rebase.missingCommitsCheck`.
+fn missing_check(git: &GitHome) -> Check {
+    match git.repo.config().get("rebase.missingcommitscheck") {
+        None => Check::Ignore,
+        Some(v) => match v.to_ascii_lowercase().as_str() {
+            "ignore" => Check::Ignore,
+            "warn" => Check::Warn,
+            "error" => Check::Error,
+            _ => {
+                eprintln!(
+                    "warning: unrecognized setting {v} for option rebase.missingCommitsCheck. Ignoring."
+                );
+                Check::Ignore
+            }
+        },
+    }
+}
+
+/// git's report of the commits in `before` that `after` lacks, newest first; `None` when nothing is missing or the check is off.
+fn dropped_report(
+    git: &GitHome,
+    before: &[Item],
+    after: &[Item],
+    level: Check,
+) -> Result<Option<Vec<String>>> {
+    if level == Check::Ignore {
+        return Ok(None);
+    }
+    let kept: HashSet<ObjectId> = after.iter().filter_map(|i| i.id).collect();
+    let mut lines = Vec::new();
+    for id in before
+        .iter()
+        .rev()
+        .filter_map(|i| i.id)
+        .filter(|id| !kept.contains(id))
+    {
+        let subject = subject_of(&git.repo.commit(&id)?.message);
+        lines.push(format!(" - {} {subject}", short(&id)));
+    }
+    if lines.is_empty() {
+        return Ok(None);
+    }
+    let mut out = vec![
+        "Warning: some commits may have been dropped accidentally.".to_string(),
+        "Dropped commits (newer to older):".to_string(),
+    ];
+    out.extend(lines);
+    out.extend(
+        [
+            "To avoid this message, use \"drop\" to explicitly remove a commit.",
+            "",
+            "Use 'pyn config rebase.missingCommitsCheck' to change the level of warnings.",
+            "The possible behaviours are: ignore, warn, error.",
+            "",
+        ]
+        .map(String::from),
+    );
+    Ok(Some(out))
+}
+
+fn print_report(lines: &[String]) {
+    for line in lines {
+        eprintln!("{line}");
+    }
+    eprintln!(
+        "You can fix this with 'pyn rebase --edit-todo' and then run 'pyn rebase --continue'."
+    );
+    eprintln!("Or you can abort the rebase with 'pyn rebase --abort'.");
+}
+
+/// Compares the finished and remaining commands with the sheet as first written; `error` stops, `warn` only says so.
+fn refuse_if_dropped(git: &GitHome, state: &State) -> Result<()> {
+    let level = missing_check(git);
+    let Some(text) = read_text(&dir_of(git).join("git-rebase-todo.backup")) else {
+        return Ok(());
+    };
+    let Ok(before) = todo::parse(git, &text, true) else {
+        return Ok(());
+    };
+    let now: Vec<Item> = state.done.iter().chain(&state.todo).cloned().collect();
+    if let Some(lines) = dropped_report(git, &before, &now, level)? {
+        print_report(&lines);
+        if level == Check::Error {
+            std::process::exit(1);
+        }
+    }
+    Ok(())
 }
 
 fn say_up_to_date(head_name: &str) {
@@ -949,17 +1079,33 @@ fn squeeze(line: &[u8]) -> Vec<u8> {
         .collect()
 }
 
-fn run(git: &GitHome, mut state: State) -> Result<()> {
+fn run(git: &GitHome, mut state: State, mut unrun: usize) -> Result<()> {
     require_valid(&state);
     while !state.todo.is_empty() {
         let item = state.todo.remove(0);
         state.done.push(item.clone());
         state.save_progress(git)?;
+        if !state.quiet {
+            eprint!(
+                "Rebasing ({}/{})\r",
+                state.done.len(),
+                state.done.len() + state.todo.len()
+            );
+        }
         if let Err(e) = step(git, &state, &item) {
             state.done.pop();
             state.todo.insert(0, item);
             state.save_progress(git)?;
             return Err(e);
+        }
+        match item.id {
+            Some(_) if unrun > 0 => unrun -= 1,
+            Some(id) if !matches!(item.cmd, Cmd::Drop | Cmd::Edit) => {
+                if let Some(head) = git.repo.head_commit()? {
+                    rewrite::record(&dir_of(git), &id, &head, more_melds(&state))?;
+                }
+            }
+            _ => {}
         }
     }
     finish(git, &state)
@@ -1167,6 +1313,7 @@ fn meld_in(
         &String::from_utf8_lossy(&head.message),
         &String::from_utf8_lossy(&picked.message),
         item.cmd,
+        item.flag,
         id,
     )?;
     let subject = subject_of(&picked.message);
@@ -1175,7 +1322,7 @@ fn meld_in(
         stop(git, state, id, picked, conflicted, &subject, kept)?;
     }
     let tree = write_tree(git, index)?;
-    let message = match combined_message(git, state, &text) {
+    let message = match combined_message(git, state, &text, false) {
         Ok(m) => m,
         Err(e) => {
             eprintln!("error: {e}");
@@ -1195,12 +1342,13 @@ fn more_melds(state: &State) -> bool {
 }
 
 /// The message of the commit a chain makes now: the collected text while more members follow, then the first
-/// commit's own message when only `fixup` joined it, else what the user makes of the collected text.
-fn combined_message(git: &GitHome, state: &State, text: &str) -> Result<Vec<u8>> {
+/// commit's own message when only `fixup` joined it, else what the user makes of the collected text. `resumed`
+/// (after a stop) always opens the editor, as git does.
+fn combined_message(git: &GitHome, state: &State, text: &str, resumed: bool) -> Result<Vec<u8>> {
     if more_melds(state) {
         return Ok(text.as_bytes().to_vec());
     }
-    if let Ok(only) = std::fs::read(dir_of(git).join(meld::FIXUP)) {
+    if !resumed && let Ok(only) = std::fs::read(dir_of(git).join(meld::FIXUP)) {
         return Ok(only);
     }
     editor::edit_message(git, text.as_bytes(), &rebase_comment(git, state))?
@@ -1245,6 +1393,7 @@ fn stop_to_edit(git: &GitHome, id: &ObjectId, picked: &Commit, failed: bool) -> 
         &format!("{}\n", String::from_utf8_lossy(&picked.message)),
     )?;
     put("author-script", &author_script(&picked.author))?;
+    put("patch", &patch_file::of_commit(git, id)?)?;
     write_state(git, HEAD_FILE, &format!("{id}\n"))?;
     if !failed {
         eprintln!(
@@ -1312,6 +1461,7 @@ fn stop_with(
     };
     state.put(git, "message", &String::from_utf8_lossy(&message))?;
     state.put(git, "author-script", &author_script(&picked.author))?;
+    state.put(git, "patch", &patch_file::of_commit(git, id)?)?;
     write_state(git, HEAD_FILE, &format!("{id}\n"))?;
     let mut text = match &meld {
         Some((text, head)) => {
@@ -1421,6 +1571,8 @@ fn finish(git: &GitHome, state: &State) -> Result<()> {
         )?;
     }
     write_orig_head_as(git, &state.orig_head, Some("rebase"))?;
+    let _ = rewrite::flush(&dir_of(git), &end);
+    let _ = rewrite::copy_notes(git, &dir_of(git));
     clear_state(git);
     if !state.quiet {
         let what = if state.head_name.starts_with("refs/") {
@@ -1455,6 +1607,10 @@ fn restore_autostash(git: &GitHome, stash: &ObjectId) {
 fn cont(git: &GitHome) -> Result<()> {
     let state = load(git)?;
     require_valid(&state);
+    if state.done.is_empty() {
+        state.put(git, "end", &format!("{}\n", state.todo.len()))?;
+        refuse_if_dropped(git, &state)?;
+    }
     let opened = git.open_index()?;
     let unfinished = opened.index.entries.iter().any(|e| e.stage > 0)
         || git
@@ -1478,7 +1634,7 @@ fn cont(git: &GitHome) -> Result<()> {
     if amending && chain {
         if tree != head.tree || !more_melds(&state) {
             let text = read_text(&dir.join(meld::SQUASH)).unwrap_or_default();
-            let message = combined_message(git, &state, &text)?;
+            let message = combined_message(git, &state, &text, true)?;
             commit_over(git, &state, &head, tree, head.tree, message, "continue")?;
         }
         if !more_melds(&state) {
@@ -1502,11 +1658,9 @@ fn cont(git: &GitHome) -> Result<()> {
                 }
                 None => picked.message.clone(),
             };
-            if state.done.last().is_some_and(|i| i.cmd == Cmd::Reword) {
-                let comment = rebase_comment(git, &state);
-                message = editor::edit_message(git, &message, &comment)?
-                    .ok_or_else(|| anyhow!("Aborting commit due to empty commit message."))?;
-            }
+            let comment = rebase_comment(git, &state);
+            message = editor::edit_message(git, &message, &comment)?
+                .ok_or_else(|| anyhow!("Aborting commit due to empty commit message."))?;
             let author = read_text(&dir.join("author-script"))
                 .and_then(|t| parse_author_script(&t))
                 .unwrap_or(picked.author);
@@ -1530,8 +1684,13 @@ fn cont(git: &GitHome) -> Result<()> {
             1,
         );
     }
+    if let Some(stopped) = stopped
+        && let Some(end) = git.repo.head_commit()?
+    {
+        rewrite::record(&dir, &stopped, &end, more_melds(&state))?;
+    }
     clear_stop(git);
-    run(git, state)
+    run(git, state, 0)
 }
 
 /// Removes what a stopped command left behind.
@@ -1551,6 +1710,7 @@ fn skip(git: &GitHome) -> Result<()> {
     hard_reset(git, None)?;
     write_orig_head_as(git, &state.orig_head, Some("rebase"))?;
     let dir = dir_of(git);
+    let stopped = read_id(git, &dir.join("stopped-sha"))?;
     let skipped_meld =
         dir.join("amend").exists() && state.done.last().is_some_and(|i| i.cmd.melds());
     if skipped_meld {
@@ -1562,15 +1722,20 @@ fn skip(git: &GitHome) -> Result<()> {
                 .ok_or_else(|| anyhow!("the rebase has no HEAD"))?;
             let head = git.repo.commit(&head_id)?;
             let text = read_text(&dir.join(meld::SQUASH)).unwrap_or_default();
-            let message = combined_message(git, &state, &text)?;
+            let message = combined_message(git, &state, &text, false)?;
             commit_over(
                 git, &state, &head, head.tree, head.tree, message, "continue",
             )?;
             meld::clear(&dir);
         }
     }
+    if let Some(stopped) = stopped
+        && let Some(end) = git.repo.head_commit()?
+    {
+        rewrite::record(&dir, &stopped, &end, more_melds(&state))?;
+    }
     clear_stop(git);
-    run(git, state)
+    run(git, state, 0)
 }
 
 fn hard_reset(git: &GitHome, rev: Option<&ObjectId>) -> Result<()> {

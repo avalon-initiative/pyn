@@ -1283,16 +1283,38 @@ for a pull).
    - `--autosquash` moves each `fixup! <subject>` or `squash! <subject>` commit under the earlier commit whose subject it names
      (the subject, the start of it, or an abbreviated id; `fixup! fixup! ...` is stripped to the target), making it `fixup` or
      `squash`, in git's order. `rebase.autoSquash` turns it on for `-i`, and `--no-autosquash` turns it off. Like current git, a
-     bare `--autosquash` reorders without opening an editor (git 2.43 ignores it without `-i`).
+     bare `--autosquash` reorders without opening an editor (git 2.43 ignores it without `-i`). An `amend! <subject>` commit
+     becomes `fixup -C`.
+   - `fixup -C <commit>` keeps only that commit's message (an `amend!` commit's without its `amend!` line) and `fixup -c`
+     does the same but opens the editor on the collected text at the end of the chain. The earlier messages are written as
+     skipped (`# The 1st commit message will be skipped:`); after a `squash` in the chain, `-C` and `-c` behave like `squash`.
+     A `squash!` or `fixup!` subject line is commented out of a message that is squashed in, an `amend!` line always.
+     `--continue` after a conflict opens the editor on the collected text (the last command of a chain) or on the message of
+     the resolved commit, as git does.
+   - `rebase.missingCommitsCheck` (`ignore`, `warn`, `error`; anything else warns and is ignored) compares the sheet with
+     `git-rebase-todo.backup` once the editor is closed, on `--edit-todo` and on a `--continue` before the first command:
+     a commit with no line is listed under `Warning: some commits may have been dropped accidentally.`; `error` then stops
+     with the edited sheet kept (`--edit-todo`, `--continue` or `--abort` go on from there), `warn` goes on. Use `drop` to
+     remove a commit.
+   - `rebase.instructionFormat` is the text after the id on each sheet line (a `--format` template). An empty commit gets
+     `# empty` after it. The sheet ends with git's whole comment block, which also lists `label`, `reset`, `merge` and
+     `update-ref`; those commands are still refused.
+   - `Rebasing (n/m)` goes to standard error, followed by `\r`, before each command (not with `-q`). A stop writes `patch`
+     (the commit's change against its first parent as `diff-tree -p` prints it: no renames, `Binary files ... differ`).
+   - `rewritten-pending` and `rewritten-list` hold `<old> <new>` lines as in git: written after each `pick`, `reword`,
+     `squash` and `fixup` once the commands that melt into it are done, and after `edit`, a conflict or `--skip` when the
+     rebase goes on; leading picks that already sit on the new base are not recorded. When the rebase ends the list is used
+     to copy notes (`notes.rewrite.rebase`, default on; `notes.rewriteRef` or `GIT_NOTES_REWRITE_REF`, globs allowed;
+     `notes.rewriteMode` `concatenate`, `overwrite`, `ignore` or `cat_sort_uniq`) in one commit per notes ref, `Notes added by
+     'git notes copy'`. A notes tree gets 0, 1 or 2 levels of two-digit directories by size. The `post-rewrite` hook is not run.
    - `rebase-merge/` is git's: `git-rebase-todo`, `git-rebase-todo.backup`, `done`, `msgnum`, `end`, `stopped-sha`, `amend`,
-     `message`, `author-script`, `interactive`; git continues what pyn stopped and the reverse (the tests do both).
+     `message`, `author-script`, `interactive`, `patch`, `rewritten-pending`, `rewritten-list`; git continues what pyn stopped and
+     the reverse (the tests do both).
 
 Differences from git: `--rebase-merges`, `--root`, `-s`, `-X`, `--fork-point`, `--signoff`, `--keep-base`, `--update-refs`,
 `--reapply-cherry-picks`, `--apply`, `--empty` other than `drop` and `-S` are usage errors (`129`). In the sheet,
-`fixup -C`/`-c` (and so `amend!` commits, which `--autosquash` leaves where they are), `label`, `reset`, `merge` and `update-ref`
-are not built (an invalid line); there is no `patch` file, `rewritten-list` or notes copying, no `Rebasing (n/m)` progress, no
-`rebase.missingCommitsCheck`, no `rebase.instructionFormat`, and the editor's comment block is shorter than git's. `-m`, `-v`,
-`-n`, `--no-fork-point`, `--keep-empty` and the `--no-` forms of the refused flags are accepted and ignored. With no upstream
+`label`, `reset`, `merge` and `update-ref` are not built (an invalid line), and a workspace's own rebase refuses
+`fixup -C`/`-c` and leaves `amend!` commits where they are. There is no `post-rewrite` hook. `-m`, `-v`, `-n`, `--no-fork-point`, `--keep-empty` and the `--no-` forms of the refused flags are accepted and ignored. With no upstream
 argument git also looks for the fork point in the upstream's reflog; pyn replays `<upstream>..<branch>`, so a rewritten
 upstream replays commits git would skip. Commits whose timestamps tie are ordered by the walk of the graph, as git's, not by
 date. After an interactive rebase git leaves `REBASE_HEAD` behind in some cases; pyn removes it. Covered against the real git

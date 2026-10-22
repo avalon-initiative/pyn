@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::backend::Backend;
 use crate::git_home::clean_message;
 use crate::git_home::meld;
-use crate::git_home::todo::Cmd;
+use crate::git_home::todo::{Cmd, Flag};
 use crate::local_commit::signature;
 use crate::local_store::{ALGORITHM, Files, LocalStore, build_trees, file_mode, parse_id};
 use crate::local_sync::{
@@ -599,6 +599,7 @@ fn replay(
                 &String::from_utf8_lossy(&head.message),
                 &String::from_utf8_lossy(&commit.message),
                 cmd,
+                Flag::None,
                 &id,
             )?;
             if conflicts.is_empty() {

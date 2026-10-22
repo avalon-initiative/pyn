@@ -97,6 +97,7 @@ impl Twin {
             .env("HOME", &self.home)
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("GIT_TERMINAL_PROMPT", "0")
+            .env("GIT_EDITOR", "true")
             .env("GIT_SSH_COMMAND", &self.shim)
             .env("GIT_AUTHOR_NAME", "t")
             .env("GIT_AUTHOR_EMAIL", "t@example.com")

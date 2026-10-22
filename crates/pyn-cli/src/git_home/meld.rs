@@ -5,7 +5,7 @@ use std::path::Path;
 use anyhow::Result;
 use pyn_object::ObjectId;
 
-use super::todo::Cmd;
+use super::todo::{Cmd, Flag};
 
 pub(crate) const SQUASH: &str = "message-squash";
 pub(crate) const FIXUP: &str = "message-fixup";
@@ -20,26 +20,30 @@ fn completed(text: &str) -> String {
     }
 }
 
-/// A squashed commit's own `squash!` / `fixup!` subject line is left out, with the blank lines after it.
-fn without_marker(message: &str) -> &str {
-    if !(message.starts_with("squash!") || message.starts_with("fixup!")) {
-        return message;
+/// Git's commented lines: `# ` before each, `#` for an empty one, and a newline after each line that had one.
+fn commented(text: &str) -> String {
+    let mut out = String::new();
+    for line in text.split_inclusive('\n') {
+        let bare = line.strip_suffix('\n');
+        match bare.unwrap_or(line) {
+            "" => out.push('#'),
+            l => {
+                out.push_str("# ");
+                out.push_str(l);
+            }
+        }
+        if bare.is_some() {
+            out.push('\n');
+        }
     }
-    let rest = message.split_once('\n').map_or("", |(_, rest)| rest);
-    rest.trim_start_matches('\n')
+    out
 }
 
-fn commented(text: &str) -> String {
-    completed(text)
-        .lines()
-        .map(|l| {
-            if l.is_empty() {
-                "#\n".into()
-            } else {
-                format!("# {l}\n")
-            }
-        })
-        .collect()
+/// Bytes of the leading paragraph: the subject that is commented out of a squashed message.
+fn subject_len(message: &str) -> usize {
+    message
+        .find("\n\n")
+        .unwrap_or(message.trim_end_matches('\n').len())
 }
 
 fn ordinal(n: usize) -> String {
@@ -49,51 +53,132 @@ fn ordinal(n: usize) -> String {
     }
 }
 
+fn skipped_title(n: usize) -> String {
+    match n {
+        1 => "The 1st commit message will be skipped:".into(),
+        _ => format!("The commit message #{n} will be skipped:"),
+    }
+}
+
+/// Whether the chain so far holds a `squash`, after which `fixup -C` behaves like `squash`.
+fn seen_squash(dir: &Path) -> bool {
+    let fixups = std::fs::read_to_string(dir.join(FIXUPS)).unwrap_or_default();
+    fixups.starts_with("squash") || fixups.contains("\nsquash")
+}
+
+fn is_title(line: &str) -> bool {
+    let Some(t) = line.strip_prefix("# ") else {
+        return false;
+    };
+    t.ends_with(':')
+        && [
+            "This is the 1st commit message",
+            "This is the commit message #",
+            "The 1st commit message will",
+            "The commit message #",
+        ]
+        .iter()
+        .any(|p| t.starts_with(p))
+}
+
+/// Turns every message still kept into a skipped one, as `fixup -C` and `-c` replace them.
+fn skip_kept(text: &str) -> String {
+    let (first, rest) = text.split_once('\n').unwrap_or((text, ""));
+    let mut sections: Vec<(&str, String)> = Vec::new();
+    for line in rest.split_inclusive('\n') {
+        if is_title(line.trim_end_matches('\n')) {
+            sections.push((line.trim_end_matches('\n'), String::new()));
+        } else if let Some((_, body)) = sections.last_mut() {
+            body.push_str(line);
+        }
+    }
+    let mut out = format!("{first}\n");
+    let last = sections.len().saturating_sub(1);
+    for (i, (title, body)) in sections.iter().enumerate() {
+        let body = body.strip_prefix('\n').unwrap_or(body);
+        let body = if i < last {
+            body.strip_suffix('\n').unwrap_or(body)
+        } else {
+            body
+        };
+        if i > 0 {
+            out.push('\n');
+        }
+        if title.starts_with("# This is the ") {
+            out.push_str(&format!(
+                "# {}\n\n{}",
+                skipped_title(i + 1),
+                commented(body)
+            ));
+        } else {
+            out.push_str(&format!("{title}\n\n{body}"));
+        }
+    }
+    out
+}
+
 /// Adds a chain member to the message files and returns the combined message.
 pub(crate) fn add(
     dir: &Path,
     head_message: &str,
     message: &str,
     cmd: Cmd,
+    flag: Flag,
     id: &ObjectId,
 ) -> Result<String> {
     let squash_path = dir.join(SQUASH);
+    let replacing = cmd == Cmd::Fixup && flag != Flag::None;
+    let had_squash = squash_path.exists();
+    let seen = seen_squash(dir);
     let mut text = match std::fs::read_to_string(&squash_path) {
         Ok(text) => {
-            let (first, rest) = text.split_once('\n').unwrap_or((&text, ""));
-            let count = first
-                .strip_prefix(HEADER)
-                .and_then(|r| r.split_whitespace().next())
-                .and_then(|n| n.parse::<usize>().ok())
-                .unwrap_or(1)
-                + 1;
-            if cmd == Cmd::Squash {
-                let _ = std::fs::remove_file(dir.join(FIXUP));
+            let count = count_of(&text) + 1;
+            let rest = text.split_once('\n').map_or("", |(_, rest)| rest);
+            let mut text = format!("{HEADER}{count} commits.\n{rest}");
+            if replacing && !seen {
+                text = skip_kept(&text);
             }
-            format!("{HEADER}{count} commits.\n{rest}")
+            text
         }
         Err(_) => {
-            if cmd == Cmd::Fixup {
+            if cmd == Cmd::Fixup && flag == Flag::None {
                 std::fs::write(dir.join(FIXUP), completed(head_message))?;
             }
-            format!(
-                "{HEADER}2 commits.\n# This is the 1st commit message:\n\n{}",
-                completed(head_message)
-            )
+            let (title, body) = if replacing {
+                (skipped_title(1), commented(&completed(head_message)))
+            } else {
+                (
+                    "This is the 1st commit message:".into(),
+                    completed(head_message),
+                )
+            };
+            format!("{HEADER}2 commits.\n# {title}\n\n{body}")
         }
     };
     let count = count_of(&text);
-    if cmd == Cmd::Squash {
+    if cmd == Cmd::Squash || replacing {
+        let hide = message.starts_with("amend!")
+            || ((cmd == Cmd::Squash || seen)
+                && (message.starts_with("squash!") || message.starts_with("fixup!")));
+        let cut = if hide { subject_len(message) } else { 0 };
         text.push_str(&format!(
             "\n# This is the commit message {}:\n\n{}",
             ordinal(count),
-            completed(without_marker(message))
+            commented(&message[..cut])
         ));
+        text.push_str(&completed(&message[cut..]));
+        let keeps = flag == Flag::Replace && !seen && (dir.join(FIXUP).exists() || !had_squash);
+        if keeps {
+            let body = message[cut..].trim_start_matches('\n');
+            std::fs::write(dir.join(FIXUP), completed(body))?;
+        } else {
+            let _ = std::fs::remove_file(dir.join(FIXUP));
+        }
     } else {
         text.push_str(&format!(
-            "\n# The commit message {} will be skipped:\n\n{}",
-            ordinal(count),
-            commented(message)
+            "\n# {}\n\n{}",
+            skipped_title(count),
+            commented(&completed(message))
         ));
     }
     std::fs::write(&squash_path, &text)?;
@@ -159,8 +244,24 @@ mod tests {
     #[test]
     fn a_chain_collects_squashed_messages_and_comments_out_fixups() {
         let dir = tempfile::tempdir().unwrap();
-        add(dir.path(), "first\n", "second\n", Cmd::Squash, &id()).unwrap();
-        let text = add(dir.path(), "first\n", "third\nmore\n", Cmd::Fixup, &id()).unwrap();
+        add(
+            dir.path(),
+            "first\n",
+            "second\n",
+            Cmd::Squash,
+            Flag::None,
+            &id(),
+        )
+        .unwrap();
+        let text = add(
+            dir.path(),
+            "first\n",
+            "third\nmore\n",
+            Cmd::Fixup,
+            Flag::None,
+            &id(),
+        )
+        .unwrap();
         assert_eq!(
             text,
             "# This is a combination of 3 commits.\n# This is the 1st commit message:\n\nfirst\n\n# This is the commit message #2:\n\nsecond\n\n# The commit message #3 will be skipped:\n\n# third\n# more\n"
@@ -173,9 +274,42 @@ mod tests {
     }
 
     #[test]
+    fn fixup_dash_c_skips_the_kept_messages_and_keeps_its_own() {
+        let dir = tempfile::tempdir().unwrap();
+        add(
+            dir.path(),
+            "first\n\nbody\n",
+            "second\n",
+            Cmd::Fixup,
+            Flag::None,
+            &id(),
+        )
+        .unwrap();
+        let text = add(
+            dir.path(),
+            "first\n",
+            "amend! first\n\nnew subject\n",
+            Cmd::Fixup,
+            Flag::Replace,
+            &id(),
+        )
+        .unwrap();
+        assert_eq!(
+            text,
+            "# This is a combination of 3 commits.\n# The 1st commit message will be skipped:\n\n# first\n#\n# body\n\n# The commit message #2 will be skipped:\n\n# second\n\n# This is the commit message #3:\n\n# amend! first\n\nnew subject\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join(FIXUP)).unwrap(),
+            "new subject\n"
+        );
+        add(dir.path(), "first\n", "z\n", Cmd::Fixup, Flag::Edit, &id()).unwrap();
+        assert!(!dir.path().join(FIXUP).exists());
+    }
+
+    #[test]
     fn a_leading_fixup_keeps_the_first_message_for_reuse() {
         let dir = tempfile::tempdir().unwrap();
-        add(dir.path(), "first\n", "x\n", Cmd::Fixup, &id()).unwrap();
+        add(dir.path(), "first\n", "x\n", Cmd::Fixup, Flag::None, &id()).unwrap();
         assert_eq!(
             std::fs::read_to_string(dir.path().join(FIXUP)).unwrap(),
             "first\n"
