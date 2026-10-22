@@ -150,6 +150,16 @@ pub fn in_progress(ws: &Workspace) -> bool {
     state_path(ws).exists()
 }
 
+/// Whether the merge in progress is a rebase stopped on `edit`, `break` or `exec`, where `pyn commit` makes an ordinary
+/// commit.
+pub fn is_paused(ws: &Workspace) -> bool {
+    load(ws)
+        .ok()
+        .flatten()
+        .and_then(|s| s.local)
+        .is_some_and(|l| l.paused())
+}
+
 /// Refuses a command that cannot run while a merge is unfinished.
 pub fn refuse_during_merge(ws: &Workspace, what: &str) -> Result<()> {
     if in_progress(ws) {
@@ -218,7 +228,9 @@ pub fn status_header(ws: &Workspace) -> Result<Option<String>> {
         return Ok(None);
     };
     let pending = unmerged(ws)?.len();
-    let mut text = if pending > 0 {
+    let mut text = if state.local.as_ref().is_some_and(|l| l.paused()) {
+        String::new()
+    } else if pending > 0 {
         format!(
             "You have unmerged paths ({} of {}).\n  (fix conflicts, stage each with \"pyn add <path>\", then run \"pyn commit\")\n",
             pending,
