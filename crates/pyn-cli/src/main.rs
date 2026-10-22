@@ -1064,6 +1064,17 @@ fn run(cli: Cli) -> Result<()> {
         ));
     }
     if git.is_none()
+        && let Command::Commit {
+            git: opts, paths, ..
+        } = &cli.command
+        && !paths.is_empty()
+        && let Some(flag) = opts.author_flag()
+    {
+        usage_error(&format!(
+            "`pyn commit {flag}` applies to staged changes committed to the local store, not to a path commit"
+        ));
+    }
+    if git.is_none()
         && let Command::Commit { git: opts, .. } = &cli.command
         && opts.quiet
     {
@@ -1773,6 +1784,7 @@ fn run(cli: Cli) -> Result<()> {
             base,
             message,
             all,
+            git: flags,
             ..
         } if paths.is_empty() => {
             if file.is_some() || base.is_some() {
@@ -1780,6 +1792,9 @@ fn run(cli: Cli) -> Result<()> {
             }
             let w = in_workspace("commit")?;
             if merging::in_progress(w) && !merging::is_paused(w) {
+                if let Some(flag) = flags.author_flag() {
+                    bail!("`pyn commit {flag}` does not apply while finishing a merge");
+                }
                 if all {
                     bail!(
                         "cannot do a partial commit during a merge; stage what you resolved with `pyn add`"
@@ -1788,7 +1803,7 @@ fn run(cli: Cli) -> Result<()> {
                 let message = (!message.is_empty()).then(|| message.join("\n\n"));
                 merging::finish(&backend, backend.pyn_server("commit")?, w, message)?;
             } else {
-                staging::commit(&backend, w, &message.join("\n\n"), all)?;
+                staging::commit(&backend, w, &message.join("\n\n"), all, &flags)?;
             }
         }
         Command::Commit { all: true, .. } => {

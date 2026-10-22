@@ -102,8 +102,6 @@ impl GitCommitArgs {
     pub fn first_given(&self) -> Option<&'static str> {
         let flags = [
             ("--allow-empty", self.allow_empty),
-            ("--author", self.author.is_some()),
-            ("--date", self.date.is_some()),
             ("--signoff", self.signoff),
             ("--amend", self.amend),
             ("--allow-empty-message", self.allow_empty_message),
@@ -115,6 +113,30 @@ impl GitCommitArgs {
             ("--no-gpg-sign", self.no_gpg_sign),
         ];
         flags.into_iter().find(|(_, on)| *on).map(|(f, _)| f)
+    }
+
+    /// The first of `--author` and `--date` that was given.
+    pub fn author_flag(&self) -> Option<&'static str> {
+        [
+            ("--author", self.author.is_some()),
+            ("--date", self.date.is_some()),
+        ]
+        .into_iter()
+        .find(|(_, on)| *on)
+        .map(|(f, _)| f)
+    }
+
+    /// The author of a local-store commit: `committer` with `--author` and `--date` applied.
+    pub fn server_author(&self, committer: &Signature) -> Result<Signature> {
+        let mut author = committer.clone();
+        if let Some((name, email)) = self.author.as_deref().map(parse_author).transpose()? {
+            author.name = name;
+            author.email = email;
+        }
+        if let Some(d) = &self.date {
+            (author.time, author.offset_minutes) = parse_date(d)?;
+        }
+        Ok(author)
     }
 
     /// The `-F` message for a commit on a pyn server, cleaned as on a git home; `None` without `-F`.

@@ -106,6 +106,7 @@ impl LocalStore {
         branch: &str,
         staged: &[Staged],
         message: &str,
+        author: &Signature,
         who: &Signature,
     ) -> Result<Option<Made>> {
         let repo = self.repo();
@@ -145,7 +146,7 @@ impl LocalStore {
         let record = Commit {
             tree,
             parents: parent.into_iter().collect(),
-            author: who.clone(),
+            author: author.clone(),
             committer: who.clone(),
             extra_headers: Vec::new(),
             message: clean_message(&[message.to_string()]),
