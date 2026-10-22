@@ -41,7 +41,11 @@ impl Pair {
             git,
             home,
         };
-        let init = format!("git init -q -b main --object-format={format} .\n{script}");
+        // Background auto-gc would remove loose objects while `copy_tree` runs.
+        let init = format!(
+            "git init -q -b main --object-format={format} .\n\
+             git config gc.auto 0\ngit config maintenance.auto false\n{script}"
+        );
         let out = Command::new("sh")
             .args(["-e", "-c", &init])
             .current_dir(&pair.git)
