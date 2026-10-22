@@ -212,3 +212,162 @@ fn flags_that_need_git_are_still_refused_here() {
         assert_eq!(out.status.code(), Some(129), "{flag:?}");
     }
 }
+
+#[test]
+fn author_and_date_are_recorded_and_the_committer_stays_the_pusher() {
+    let (env, ws) = seeded(&["--local-store"]);
+    stage_edit(&env, &ws);
+    env.ok(
+        &ws,
+        "alice",
+        &[
+            "commit",
+            "-m",
+            "authored",
+            "--author",
+            "Pat Doe <pat@example.org>",
+            "--date",
+            "1700000000 +0200",
+        ],
+    );
+    assert_eq!(
+        git(
+            &ws,
+            &["log", "-1", "--format=%an|%ae|%at|%ai|%cn|%ce", "main"]
+        ),
+        "Pat Doe|pat@example.org|1700000000|2023-11-15 00:13:20 +0200|alice|alice@pyn.invalid\n"
+    );
+}
+
+#[test]
+fn date_alone_keeps_the_pusher_as_the_author() {
+    let (env, ws) = seeded(&["--local-store"]);
+    stage_edit(&env, &ws);
+    env.ok(
+        &ws,
+        "alice",
+        &[
+            "commit",
+            "-m",
+            "dated",
+            "--date",
+            "2023-11-14T22:13:20+00:00",
+        ],
+    );
+    assert_eq!(
+        git(&ws, &["log", "-1", "--format=%an|%at", "main"]),
+        "alice|1700000000\n"
+    );
+}
+
+#[test]
+fn a_bad_author_or_date_commits_nothing() {
+    let (env, ws) = seeded(&["--local-store"]);
+    stage_edit(&env, &ws);
+    let tip = git(&ws, &["rev-parse", "main"]);
+    let err = env.fails(&ws, "alice", &["commit", "-m", "x", "--author", "nobody"]);
+    assert!(err.contains("not 'Name <email>'"), "{err}");
+    let err = env.fails(&ws, "alice", &["commit", "-m", "x", "--date", "yesterday"]);
+    assert!(err.contains("invalid date format"), "{err}");
+    assert_eq!(git(&ws, &["rev-parse", "main"]), tip);
+}
+
+#[test]
+fn author_and_date_survive_a_push_and_show_in_log_and_show() {
+    let (env, ws) = seeded(&["--local-store"]);
+    stage_edit(&env, &ws);
+    env.ok(
+        &ws,
+        "alice",
+        &[
+            "commit",
+            "-m",
+            "authored",
+            "--author",
+            "Pat Doe <pat@example.org>",
+            "--date",
+            "1700000000 +0200",
+        ],
+    );
+    env.ok(&ws, "alice", &["push"]);
+    let fmt = "--format=%an|%ae|%at|%cn";
+    let want = "Pat Doe|pat@example.org|1700000000|alice\n";
+    let other = clone_with(&env, "other", &["--no-local-store"]);
+    assert_eq!(env.ok(&other, "alice", &["log", "-n", "1", fmt]), want);
+    assert_eq!(env.ok(&other, "alice", &["show", "--no-patch", fmt]), want);
+    let audit = env.ok(&other, "alice", &["audit"]);
+    assert!(!audit.contains("Pat Doe"), "{audit}");
+}
+
+#[test]
+fn an_exclusive_path_with_a_foreign_author_still_needs_the_lock() {
+    let (env, ws) = seeded(&["--local-store"]);
+    std::fs::set_permissions(
+        ws.join("Content/m.umap"),
+        std::os::unix::fs::PermissionsExt::from_mode(0o644),
+    )
+    .unwrap();
+    std::fs::write(ws.join("Content/m.umap"), "edited").unwrap();
+    env.ok(&ws, "bob", &["lock", "Content/m.umap"]);
+    let err = env.fails(
+        &ws,
+        "alice",
+        &[
+            "commit",
+            "-a",
+            "-m",
+            "x",
+            "--author",
+            "Bob <bob@example.org>",
+        ],
+    );
+    assert!(err.contains("locked by bob"), "{err}");
+    env.ok(&ws, "bob", &["unlock", "Content/m.umap"]);
+    env.ok(&ws, "alice", &["lock", "Content/m.umap"]);
+    env.ok(
+        &ws,
+        "alice",
+        &[
+            "commit",
+            "-a",
+            "-m",
+            "x",
+            "--author",
+            "Bob <bob@example.org>",
+        ],
+    );
+    env.ok(&ws, "alice", &["push"]);
+    assert_eq!(
+        git(&ws, &["log", "-1", "--format=%an|%cn", "main"]),
+        "Bob|alice\n"
+    );
+}
+
+#[test]
+fn author_and_date_are_refused_without_the_local_store() {
+    let (env, ws) = seeded(&["--no-local-store"]);
+    stage_edit(&env, &ws);
+    for flags in [
+        &["--author", "A <a@b.c>"][..],
+        &["--date", "1700000000 +0000"],
+    ] {
+        let mut args = vec!["commit", "-m", "x"];
+        args.extend(flags);
+        let err = env.fails(&ws, "alice", &args);
+        assert!(err.contains("needs the local store"), "{err}");
+    }
+    let log = env.ok(&ws, "alice", &["log", "--commits"]);
+    assert!(!log.contains(" x"), "{log}");
+}
+
+#[test]
+fn author_and_date_are_refused_on_a_path_commit() {
+    let (env, ws) = seeded(&["--local-store"]);
+    std::fs::write(ws.join("Source/a.cpp"), "two").unwrap();
+    let out = env.run(
+        &ws,
+        "alice",
+        &["commit", "-m", "x", "--author", "A <a@b.c>", "Source/a.cpp"],
+    );
+    assert_eq!(out.status.code(), Some(129), "{out:?}");
+}

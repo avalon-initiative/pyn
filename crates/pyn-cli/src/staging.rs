@@ -12,6 +12,7 @@ use pyn_proto as api;
 use serde::{Deserialize, Serialize};
 
 use crate::backend::Backend;
+use crate::git_home::GitCommitArgs;
 use crate::local_commit::{self, Staged};
 use crate::local_store::LocalStore;
 use crate::quiet::say;
@@ -422,7 +423,13 @@ pub fn unstage(ws: &Workspace, cwd: &Path, paths: &[String]) -> Result<()> {
 }
 
 /// `pyn commit` of the staged changes (after staging every changed tracked file with `all`).
-pub fn commit(backend: &dyn Backend, ws: &Workspace, message: &str, all: bool) -> Result<()> {
+pub fn commit(
+    backend: &dyn Backend,
+    ws: &Workspace,
+    message: &str,
+    all: bool,
+    flags: &GitCommitArgs,
+) -> Result<()> {
     if all {
         let args = AddArgs {
             paths: Vec::new(),
@@ -439,7 +446,13 @@ pub fn commit(backend: &dyn Backend, ws: &Workspace, message: &str, all: bool) -
         std::process::exit(1);
     }
     if let Some(store) = LocalStore::open(ws) {
-        return commit_local(backend, ws, &store, &index, message);
+        return commit_local(backend, ws, &store, &index, message, flags);
+    }
+    if let Some(flag) = flags.author_flag() {
+        bail!(
+            "`pyn commit {flag}` needs the local store: without it the server records the commit and \
+             attributes it to you; use a workspace cloned with `--local-store`"
+        );
     }
     let mut entries = Vec::new();
     let mut deletions = Vec::new();
@@ -506,6 +519,7 @@ fn commit_local(
     store: &LocalStore,
     index: &Index,
     message: &str,
+    flags: &GitCommitArgs,
 ) -> Result<()> {
     let paths: Vec<&String> = index.entries.keys().collect();
     require_locks(backend, &paths)?;
@@ -531,7 +545,8 @@ fn commit_local(
         );
     }
     let who = local_commit::signature(&backend.whoami()?);
-    let Some(made) = store.commit_staged(&branch, &changes, message, &who)? else {
+    let author = flags.server_author(&who)?;
+    let Some(made) = store.commit_staged(&branch, &changes, message, &author, &who)? else {
         eprintln!("nothing to commit; the staged changes match the local branch");
         std::process::exit(1);
     };

@@ -835,9 +835,7 @@ fn quiet_prints_nothing_and_commits_all_the_same() {
 fn a_pyn_server_home_still_refuses_the_git_only_flags() {
     let tmp = tempdir().unwrap();
     for flags in [
-        &["--author", "A <a@x>"][..],
-        &["--date", "1700000000"],
-        &["-s"],
+        &["-s"][..],
         &["--signoff"],
         &["--amend"],
         &["--allow-empty-message"],
