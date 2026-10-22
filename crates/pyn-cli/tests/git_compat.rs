@@ -34,7 +34,7 @@ fn git_log_options_are_usage_errors_on_a_pyn_server() {
     let home = env.dir("home");
     for args in [
         &["log", "--reverse"][..],
-        &["log", "--author=x"],
+        &["log", "--committer=x"],
         &["log", "--skip=1"],
         &["log", "Source/a.ts", "Source/b.ts"],
         &["log", "--", "Source/a.ts", "Source/b.ts"],

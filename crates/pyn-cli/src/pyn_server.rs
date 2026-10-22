@@ -9,6 +9,7 @@ use pyn_proto as api;
 use crate::backend::Backend;
 use crate::client::Api;
 use crate::local_store::LocalStore;
+use crate::log_filter::CommitFilter;
 use crate::transfer;
 
 pub struct PynServer {
@@ -60,11 +61,23 @@ impl Backend for PynServer {
     }
 
     fn commit_page(&self, before: Option<&str>, limit: usize) -> Result<api::CommitPage> {
+        self.commit_page_filtered(before, limit, &CommitFilter::default())
+    }
+
+    fn commit_page_filtered(
+        &self,
+        before: Option<&str>,
+        limit: usize,
+        filter: &CommitFilter,
+    ) -> Result<api::CommitPage> {
         let api = &self.api;
-        let mut req = api.on_branch(
-            api.get(&api.repo_route("/commits")?)
-                .query(&[("limit", limit)]),
-        );
+        let mut req = api
+            .get(&api.repo_route("/commits")?)
+            .query(&[("limit", limit)])
+            .query(&filter.query());
+        if filter.from.is_none() {
+            req = api.on_branch(req);
+        }
         if let Some(b) = before {
             req = req.query(&[("before", b)]);
         }

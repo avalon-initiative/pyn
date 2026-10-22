@@ -105,6 +105,66 @@ impl GitLogArgs {
         flags.into_iter().find(|(_, on)| *on).map(|(f, _)| f)
     }
 
+    /// The first argument given that a pyn server's commit filters cannot take.
+    pub fn server_unsupported(&self) -> Option<String> {
+        let literal = |ps: &[String]| ps.iter().any(|p| p.contains(['\\', '[', '*', '^', '$']));
+        let flags = [
+            ("--committer", !self.committer.is_empty()),
+            ("--invert-grep", self.invert_grep),
+            ("--all-match", self.all_match),
+            ("--no-merges", self.no_merges),
+            ("--merges", self.merges),
+            ("--skip", self.skip.is_some()),
+            ("--reverse", self.reverse),
+            ("--author given more than once", self.author.len() > 1),
+            ("--grep given more than once", self.grep.len() > 1),
+            ("--author with a regular expression", literal(&self.author)),
+            ("--grep with a regular expression", literal(&self.grep)),
+            ("--", self.dashed.len() > 1),
+        ];
+        flags
+            .into_iter()
+            .find(|(_, on)| *on)
+            .map(|(f, _)| f.to_string())
+    }
+
+    /// Whether `--author`, `--grep`, `--since` or `--until` was given.
+    pub fn has_server_filter(&self) -> bool {
+        !self.author.is_empty()
+            || !self.grep.is_empty()
+            || self.since.is_some()
+            || self.until.is_some()
+    }
+
+    /// The revision arguments after the first positional.
+    pub fn positionals(&self) -> &[String] {
+        &self.more
+    }
+
+    /// The paths after `--`.
+    pub fn dashed(&self) -> &[String] {
+        &self.dashed
+    }
+
+    /// The `/commits` parameters of `--author`, `--grep`, `--since` and `--until`.
+    pub fn commit_filter(&self) -> Result<crate::log_filter::CommitFilter> {
+        let now = Local::now();
+        let date = |d: &Option<String>| -> Result<Option<String>> {
+            let Some(d) = d else { return Ok(None) };
+            let secs = parse_date(d, now)?;
+            let t = chrono::DateTime::from_timestamp(secs, 0)
+                .ok_or_else(|| anyhow::anyhow!("date out of range: {d}"))?;
+            Ok(Some(t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)))
+        };
+        Ok(crate::log_filter::CommitFilter {
+            author: self.author.first().cloned(),
+            grep: self.grep.first().cloned(),
+            since: date(&self.since)?,
+            until: date(&self.until)?,
+            ..Default::default()
+        })
+    }
+
     /// Whether any diff output flag (`--stat`, `-p`, `-U`, ...) was given.
     pub fn diff_given(&self) -> bool {
         self.diff_parts().any()

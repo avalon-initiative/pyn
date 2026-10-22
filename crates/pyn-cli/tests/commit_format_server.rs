@@ -175,11 +175,10 @@ fn show_no_patch_prints_only_the_commit() {
 }
 
 #[test]
-fn a_formatted_log_takes_no_path_and_bad_formats_fail() {
+fn a_formatted_log_takes_no_filter_glob_and_bad_formats_fail() {
     let (env, ws) = setup();
     for args in [
-        &["log", "--oneline", "Source/a.txt"][..],
-        &["log", "--oneline", "--filter", "*.txt"],
+        &["log", "--oneline", "--filter", "*.txt"][..],
         &["log", "--date=bogus", "--oneline"],
         &["log", "--pretty=nonsense"],
     ] {
@@ -187,8 +186,8 @@ fn a_formatted_log_takes_no_path_and_bad_formats_fail() {
         assert!(!out.status.success(), "{args:?}");
         assert!(out.stdout.is_empty(), "{args:?}");
     }
-    let out = env.run(&ws, "alice", &["log", "--oneline", "Source/a.txt"]);
+    let out = env.run(&ws, "alice", &["log", "--oneline", "--filter", "*.txt"]);
     assert_eq!(out.status.code(), Some(129));
-    let out = env.run(&ws, "alice", &["log", "--author=x"]);
+    let out = env.run(&ws, "alice", &["log", "--committer=x"]);
     assert_eq!(out.status.code(), Some(129));
 }

@@ -48,6 +48,16 @@ pub trait Backend {
     /// Commits newest first, strictly older than `before` (an id or abbreviation) when given.
     fn commit_page(&self, before: Option<&str>, limit: usize) -> Result<api::CommitPage>;
 
+    /// `commit_page` narrowed by the server's commit filters.
+    fn commit_page_filtered(
+        &self,
+        _before: Option<&str>,
+        _limit: usize,
+        _filter: &crate::log_filter::CommitFilter,
+    ) -> Result<api::CommitPage> {
+        anyhow::bail!("this home does not filter commits")
+    }
+
     /// A commit by id or unique abbreviation.
     fn commit(&self, id: &str) -> Result<api::Commit>;
 
