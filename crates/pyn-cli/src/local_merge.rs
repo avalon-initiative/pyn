@@ -932,21 +932,16 @@ pub fn begin_rewrite(
     proceed(backend, ws, store, (branch, who), run, Resume::new(&disk))
 }
 
-/// Where `proceed` starts: the files on disk, the paths that may overwrite uncommitted changes, and whether to stop
-/// at the tip first (an `edit` whose conflict was just resolved).
+/// Where `proceed` starts: the files on disk, and whether to stop at the tip first (an `edit` whose conflict was
+/// just resolved).
 struct Resume<'a> {
     disk: &'a Files,
-    force: BTreeSet<String>,
     halt: bool,
 }
 
 impl<'a> Resume<'a> {
     fn new(disk: &'a Files) -> Self {
-        Resume {
-            disk,
-            force: BTreeSet::new(),
-            halt: false,
-        }
+        Resume { disk, halt: false }
     }
 }
 
@@ -1019,7 +1014,7 @@ fn proceed(
                     ws,
                     (&disk, &end),
                     &BTreeMap::new(),
-                    (&start.force, &BTreeSet::new()),
+                    (&BTreeSet::new(), &BTreeSet::new()),
                 )?;
                 store
                     .repo()
