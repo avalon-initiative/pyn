@@ -355,7 +355,8 @@ name a later commit to rewrite only the newest ones. Published history is never 
   says `Current branch <b> is up to date.`, since the replay would change nothing.
 - **Published commits.** A range that includes a published commit (an `<upstream>` older than the fetched tip, or a sheet line
   naming one) is refused, naming the commit, before anything changes. So is a new base that does not contain the fetched tip,
-  and a merge commit.
+  and a merge commit. `--rebase-merges`, `--root`, `--fork-point`, `--update-refs` and the sheet commands `label`, `reset`, `merge`
+  and `update-ref` are refused as `not available in a workspace`.
 - **The merge.** Each commit is applied like a [cherry-pick](#cherry-pick) over the commits made so far, with the same per-file
   rules: an exclusive path only the replayed commit changed is taken, and one both sides changed (the commit and the commits
   before it in the new order) is always a conflict, even when the person holds its lock; it is resolved with `pyn checkout

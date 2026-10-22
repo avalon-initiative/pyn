@@ -25,6 +25,7 @@ mod pull;
 mod push;
 mod push_plan;
 mod rebase;
+mod rebase_merges;
 mod reflog;
 mod refwrite;
 mod remerge;

@@ -150,7 +150,7 @@ revisions with a pointer per branch (decision #299).
 | `git merge <branch\|commit>`, `-m`, `--no-ff`, `--ff-only`, `--no-commit`, `--abort`, `--continue`, `--stat`, `-n`/`--no-stat` | `pyn merge ...` | supported | Shared files merge three-way with diff3 conflict markers; a binary conflicts as a whole file. Exclusive files take the pointer that descends from the other, and conflict where both branches changed one or a path became exclusive while a branch edited it (a person chooses a side, taking the lock). A conflicted merge leaves the workspace as git does and is concluded with `pyn add` and `pyn commit` (no `-m` needed), or given up with `--abort`. Differences: `--preview` (pyn's own) reports what would merge and conflict and changes nothing; a merge needs a clean index and no local edits to the files it touches; `--squash`, `--no-verify`, `--edit`, `--signoff`, `-S` and `--ff` are usage errors, and so are `-s` and `-X` (they need a git repository; see [Merging](#merging)). `git checkout --ours` and `--theirs` are `pyn checkout --ours\|--theirs -- <path>`. `pyn status` marks unmerged paths in its `STATE` column. Recursive merge of criss-cross histories as git does, with the base of a conflict shown as `merged common ancestors`. |
 | `git cherry-pick <commit>...`, ranges, `-n`, `-x`, `-s`, `-m <n>`, `--continue`, `--skip`, `--abort`, `--quit` | `pyn cherry-pick ...` | supported | Each commit's change becomes a new commit, with its author and message. On a git home see [Cherry-pick](#cherry-pick). On a pyn server workspace with local commits the commits, ranges and `-x` work, and `-n`, `-s`, `-m` and `--quit` are refused; see [cherry-pick in commits](commits.md#cherry-pick). A pyn server workspace without local commits refuses the command. |
 | `git revert <commit>...`, ranges, `-n`, `-s`, `-m <n>`, `--no-edit`, `--continue`, `--skip`, `--abort`, `--quit` | `pyn revert ...` | supported | Each commit's change is undone by a new commit (`Revert "<subject>"`). On a git home see [Revert](#revert). On a pyn server workspace with local commits the commits and ranges work, and `-n`, `-s`, `-m` and `--quit` are refused; see [revert in commits](commits.md#revert). A pyn server workspace without local commits refuses the command. |
-| `git rebase [--onto <newbase>] [<upstream> [<branch>]]`, `--continue`, `--skip`, `--abort`, `--quit`, `--autostash`, `--no-ff` | `pyn rebase ...` | supported (git home) | Replays the commits after the upstream one by one onto the new base, with the same ids as git. See [Rebase](#rebase). `--rebase-merges` and `--root` are not built. A pyn server workspace with a local store rebases only its unpublished local commits, interactively too, and refuses a range with a published one ([commits](commits.md#rebase)); without a local store it refuses the command. |
+| `git rebase [--onto <newbase>] [<upstream> [<branch>]]`, `--continue`, `--skip`, `--abort`, `--quit`, `--autostash`, `--no-ff` | `pyn rebase ...` | supported (git home) | Replays the commits after the upstream one by one onto the new base, with the same ids as git. See [Rebase](#rebase), including `--rebase-merges`, `--root`, `--update-refs` and the fork point. A pyn server workspace with a local store rebases only its unpublished local commits, interactively too, and refuses a range with a published one ([commits](commits.md#rebase)); without a local store it refuses the command. |
 
 ## Remotes
 
@@ -1207,15 +1207,15 @@ the files, the state files and the reflogs with the real git (`crates/pyn-cli/te
 
 ### Rebase
 
-`rebase [--onto <newbase>] [<upstream> [<branch>]]` replays the commits that are in `<branch>` (default the current branch) and
+`rebase [--onto <newbase>] [<upstream> [<branch>]]` (or `rebase --root [<branch>]`) replays the commits that are in `<branch>` (default the current branch) and
 not in `<upstream>` onto `<newbase>` (default `<upstream>`), then moves the branch there. With no upstream, `branch.<name>.remote`
 and `branch.<name>.merge` give it (the remote-tracking ref the remote's fetch refspec maps the merge ref to; `.` as remote means
 the local branch). Each commit is applied exactly as [cherry-pick](#cherry-pick) applies it, with the author and message kept, a
 new committer, and ids that match git's (the tests compare ids): diff3 markers labelled `HEAD` and `<abbreviation> (<subject>)`,
 no rename detection. The replay runs on a detached `HEAD`; the branch moves when the last commit is made.
 
-1. The list is the commits after the upstream, merge commits left out (their changes arrive through the commits they merged,
-   flattened, not recreated), in git's `--topo-order` reversed. A commit whose change the upstream already has (the same
+1. The list is the commits after the upstream, merge commits left out unless `--rebase-merges` is given (their changes arrive
+   through the commits they merged, flattened, see [Rebasing merges](#rebasing-merges)), in git's `--topo-order` reversed. A commit whose change the upstream already has (the same
    changes, ignoring line numbers and whitespace, as git's patch id) is dropped, and one that becomes empty when replayed is
    dropped with `dropping <id> <subject> -- patch contents already upstream`; one that was empty already is kept. A commit
    whose parent is the commit `HEAD` is on is not recreated (git's fast-forward), so unchanged leading commits keep their ids,
@@ -1297,8 +1297,10 @@ for a pull).
      with the edited sheet kept (`--edit-todo`, `--continue` or `--abort` go on from there), `warn` goes on. Use `drop` to
      remove a commit.
    - `rebase.instructionFormat` is the text after the id on each sheet line (a `--format` template). An empty commit gets
-     `# empty` after it. The sheet ends with git's whole comment block, which also lists `label`, `reset`, `merge` and
-     `update-ref`; those commands are still refused.
+     `# empty` after it. A line keeps the text it was written with, so `pick <id>` stays without a subject. The sheet ends with
+     git's whole comment block, which also lists `label`, `reset`, `merge` and `update-ref`. What the editor leaves is cleaned as
+     `git stripspace --strip-comments` does (comment lines and doubled blank lines go), as in git; the blank and `#` lines the
+     sheet was generated with stay in `git-rebase-todo` and `done` when no editor runs.
    - `Rebasing (n/m)` goes to standard error, followed by `\r`, before each command (not with `-q`). A stop writes `patch`
      (the commit's change against its first parent as `diff-tree -p` prints it: no renames, `Binary files ... differ`).
    - `rewritten-pending` and `rewritten-list` hold `<old> <new>` lines as in git: written after each `pick`, `reword`,
@@ -1308,15 +1310,68 @@ for a pull).
      `notes.rewriteMode` `concatenate`, `overwrite`, `ignore` or `cat_sort_uniq`) in one commit per notes ref, `Notes added by
      'git notes copy'`. A notes tree gets 0, 1 or 2 levels of two-digit directories by size. The `post-rewrite` hook is not run.
    - `rebase-merge/` is git's: `git-rebase-todo`, `git-rebase-todo.backup`, `done`, `msgnum`, `end`, `stopped-sha`, `amend`,
-     `message`, `author-script`, `interactive`, `patch`, `rewritten-pending`, `rewritten-list`; git continues what pyn stopped and
-     the reverse (the tests do both).
+     `message`, `author-script`, `interactive`, `patch`, `rewritten-pending`, `rewritten-list`, `refs-to-delete`, `update-refs`,
+     `squash-onto`; git continues what pyn stopped and the reverse (the tests do both).
+   - A fast-forward of `HEAD` onto a replayed commit is logged `rebase: fast-forward` and, when `HEAD` is already there, not at
+     all. Leading picks that already sit on the new base are not run: the start checks the last of them out, as git does.
 
-Differences from git: `--rebase-merges`, `--root`, `-s`, `-X`, `--fork-point`, `--signoff`, `--keep-base`, `--update-refs`,
-`--reapply-cherry-picks`, `--apply`, `--empty` other than `drop` and `-S` are usage errors (`129`). In the sheet,
-`label`, `reset`, `merge` and `update-ref` are not built (an invalid line), and a workspace's own rebase refuses
-`fixup -C`/`-c` and leaves `amend!` commits where they are. There is no `post-rewrite` hook. `-m`, `-v`, `-n`, `--no-fork-point`, `--keep-empty` and the `--no-` forms of the refused flags are accepted and ignored. With no upstream
-argument git also looks for the fork point in the upstream's reflog; pyn replays `<upstream>..<branch>`, so a rewritten
-upstream replays commits git would skip. Commits whose timestamps tie are ordered by the walk of the graph, as git's, not by
+#### Rebasing merges
+
+`--rebase-merges[=rebase-cousins|no-rebase-cousins]` (`-r`; `rebase.rebaseMerges` is `true`, `false` or a mode;
+`--no-rebase-merges` turns it off; any other mode is `fatal: unknown mode: <mode>`, `128`) recreates the merge commits. The
+sheet is git's: it starts with `label onto` (the first merge base of the upstream and the branch), then for each branch tip
+(merged branches first, the rebased branch last) a `# Branch <label>` comment, a `reset` to where the branch started (`onto` for
+the merge base, `[new root]` for a root, in `no-rebase-cousins` mode the abbreviated id of a fork point that is not the merge
+base, followed by `# <subject>`; `rebase-cousins` resets those to `onto`), its `pick` lines, a `label` where a later `merge`
+or branch needs one (`branch-point`, or the name of the merged branch), and `merge -C <merge> <label> # <subject>`. A label is
+the quoted name in `Merge branch '<x>'`, the branch of `Merge pull request ... from <x>` or the whole subject, with every run of
+other characters turned into `-` and a `-2`, `-3` suffix to keep it unique; **like git 2.55, a local branch that points at the
+tip of a merged branch names it instead** (the last such branch in ref order; git 2.43 uses the subject). Every command counts
+in `Rebasing (n/m)`, `msgnum` and `end`; blank and `#` lines do not.
+
+- `label <name>` writes `refs/rewritten/<name>` at `HEAD` and lists it in `refs-to-delete`; the refs are deleted when the rebase
+  ends, is aborted or quit. A name `refs/rewritten/<name>` cannot be is `error: '<name>' is not a valid label` when the sheet is
+  read.
+- `reset <label>` moves `HEAD` and the work tree, local changes included, to the label (or any revision, or `[new root]`: an
+  empty commit, written to `squash-onto`), logged `rebase (reset): '<label>'`. Nothing is logged when `HEAD` does not move.
+- `merge [-C <commit> | -c <commit>] <label> [# <oneline>]` merges the label into `HEAD` with the original merge's message and
+  author (the author is the current identity without `-C`/`-c`; the message is the oneline or `Merge branch '<label>'`), and the
+  committer is the current identity. When the original merge's parents are `HEAD` and the labels unchanged, and `--no-ff` is not
+  given, it is a fast-forward to the original (`rebase: fast-forward`). A label that is already merged does nothing. `-c`, and
+  a merge without a commit, make the commit with the original message and then open the editor on it; the commit is amended only
+  when the message changes. The merge commit's reflog line is `rebase (merge): <subject>` as in git 2.55 (git 2.43 names the
+  command before it). A conflict stops with the merge in progress (`MERGE_HEAD`, `MERGE_MODE` `no-ff`, `AUTO_MERGE`, `MERGE_MSG`
+  with git's `# Conflicts:` list), `stopped-sha`, `message`, `author-script`, an empty `patch` and `REBASE_HEAD`; conflict
+  markers are labelled `HEAD` and `refs/rewritten/<label>`. `--continue` commits it with both parents (and drops it, as git
+  does, when nothing is staged), `--skip` and `--abort` undo it. A merge is recorded in `rewritten-list` when it ran or stopped.
+  A label that does not name a commit, a merge with nothing to merge, or a merge that cannot run leaves the command first in
+  `git-rebase-todo` with `REBASE_HEAD` set, exits `1`, and prints git's `Could not execute the todo command` hint.
+- `update-ref <ref>` records `HEAD` for a branch. `--update-refs` (or `rebase.updateRefs`; `--no-update-refs`) puts an
+  `update-ref` line after the last command of every commit a local branch points at (the rebased branch left out), in reverse ref
+  order, and writes `update-refs` (`<ref>`, the id it had, the id `update-ref` found, zeros before that, sorted by name). When the
+  rebase ends each branch that still has its old value moves to the recorded one (reflog `rewritten during rebase`) and
+  `Updated the following refs with --update-refs:` lists them; one that moved meanwhile is listed under `Failed to update ...`.
+  It also works without `--rebase-merges`.
+
+`--root` replays every commit down to the root (the first argument is then the branch). Without `--onto` the new base is an empty
+commit (`rebase (start): checkout <its id>`, `onto` and `squash-onto` hold its id) and the root commit is fast-forwarded onto it,
+so a plain `--root` keeps every id. With `--onto <newbase>` the commits after `<newbase>` are replayed on it (the root commit
+too, if `<newbase>` does not contain it). The sheet's header names only the branch tip. `--root` with `--fork-point` is
+`fatal: options '--root' and '--fork-point' cannot be used together` (`128`).
+
+The **fork point** is used with no `<upstream>` argument and with `--fork-point` (`--no-fork-point` turns it off): the branch's
+commits are counted from the best common ancestor of the branch and every commit the upstream's reflog names, if that is one of
+them, so commits of a rewritten upstream are not replayed again. A name that is not a ref is `fatal: No such ref: '<name>'`.
+The upstream stays the new base (`--onto` aside), the comment line still says `<upstream>..<branch>`, and a branch whose fork
+point is not the new base is not fast-forwarded. In `no-rebase-cousins` mode the sheet then keeps the fork point as the base of
+the branch, as git does.
+
+Differences from git: `-s`, `-X`, `--signoff`, `--keep-base`, `--reapply-cherry-picks`, `--apply`, `--empty` other than `drop` and
+`-S` are usage errors (`129`). A `merge` of several labels (an octopus merge) stops with `octopus merges are not built` and
+leaves the command first in the sheet; git continues it (`git rebase --continue`) and a merge whose branches have more than one
+merge base stops the same way. pyn writes `AUTO_MERGE` only for a merge that stopped on conflicts; git writes it for every pick. A workspace's own
+rebase refuses `fixup -C`/`-c` and `--rebase-merges`, `--root`, `--fork-point` and `--update-refs` (and the sheet commands `label`,
+`reset`, `merge` and `update-ref`), and leaves `amend!` commits where they are. There is no `post-rewrite` hook. `-m`, `-v`, `-n`, `--keep-empty` and the `--no-` forms of the refused flags are accepted and ignored. Commits whose timestamps tie are ordered by the walk of the graph, as git's, not by
 date. After an interactive rebase git leaves `REBASE_HEAD` behind in some cases; pyn removes it. Covered against the real git
 (2.43 and 2.55) by `crates/pyn-cli/tests/git_rebase.rs` and, for pull, `crates/pyn-cli/tests/git_pull.rs`.
 

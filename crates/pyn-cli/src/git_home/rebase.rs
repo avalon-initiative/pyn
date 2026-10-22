@@ -1,8 +1,10 @@
 //! `pyn rebase` on a git repository: the commits of `upstream..HEAD` are replayed one by one onto a detached `HEAD` with
 //! the cherry-pick merge, and the branch is moved at the end. A stop leaves `.git/rebase-merge/`, `REBASE_HEAD` and
 //! `MERGE_MSG` as git's merge backend writes them, so either tool can continue, skip or abort. With `-i` the commits are
-//! an instruction sheet (`todo`) the user edits: `pick`, `reword`, `edit`, `squash`, `fixup`, `drop`, `exec`, `break`.
+//! an instruction sheet (`todo`) the user edits: `pick`, `reword`, `edit`, `squash`, `fixup`, `drop`, `exec`, `break`; with
+//! `--rebase-merges` also `label`, `reset`, `merge` and `update-ref` (see `rebase_merges`).
 
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::PathBuf;
@@ -16,19 +18,23 @@ use pyn_object::{Commit, ObjectId, Signature};
 use super::GitHome;
 use super::editor::{self, Which};
 use super::meld;
-use super::merge::{write_orig_head_as, write_state};
+use super::merge::{Landing, apply_merge, write_orig_head_as, write_state};
 use super::patch_file;
 use super::pick::{
-    Failed, Merged, Pending, Verb, git_dir, make_commit, make_commit_on, merge_pick, read_id,
-    read_text, short, subject_of,
+    Failed, Merged, Pending, Verb, git_dir, make_commit_on, merge_pick, read_id, read_text, short,
+    subject_of,
 };
+use super::rebase_merges::{self as merges, Mode as MergeMode, Range};
 use super::rewrite;
-use super::stage::{clean_message, parse_date, raw_mode, write_tree};
+use super::stage::{clean_message, merge_heads, parse_date, raw_mode, write_tree};
 use super::stash::{Applying, PushArgs, apply_commit, save, store_stash};
-use super::todo::{self, Cmd, Item};
+use super::strategy::Settings;
+use super::todo::{self, Cmd, Flag, Item};
+use super::treemerge::{Labels, merge_trees, result_tree};
 use super::worktree::{Mode, move_tree};
 use super::{path_string, reset};
 use crate::local_reset::ResetArgs;
+use pyn_object::Kind as ObjectKind;
 
 const DIR: &str = "rebase-merge";
 const HEAD_FILE: &str = "REBASE_HEAD";
@@ -94,22 +100,26 @@ pub struct RebaseArgs {
     pub(crate) no_stat: bool,
     #[arg(long, hide = true)]
     pub(crate) stat: bool,
-    #[arg(long, hide = true)]
+    #[arg(long, overrides_with = "fork_point")]
     pub(crate) no_fork_point: bool,
     #[arg(long, hide = true)]
     pub(crate) keep_empty: bool,
     #[arg(long, overrides_with = "autosquash")]
     pub(crate) no_autosquash: bool,
-    #[arg(long, hide = true)]
+    #[arg(long, overrides_with_all = ["rebase_merges"])]
     pub(crate) no_rebase_merges: bool,
-    #[arg(long, hide = true)]
+    #[arg(long, overrides_with = "update_refs")]
     pub(crate) no_update_refs: bool,
-    /// Edit the list of commits (`pick`, `reword`, `edit`, `squash`, `fixup`, `drop`, `exec`) before replaying them.
+    /// Edit the list of commits (`pick`, `reword`, `edit`, `squash`, `fixup`, `drop`, `exec`, `label`, `reset`,
+    /// `merge`, `update-ref`) before replaying them.
     #[arg(short = 'i', long, conflicts_with = "control")]
     pub(crate) interactive: bool,
-    #[arg(short = 'r', long, hide = true, num_args = 0..=1, require_equals = true)]
+    /// Recreate merge commits instead of flattening them; `=rebase-cousins` also rebases branches that do not start at
+    /// the upstream.
+    #[arg(short = 'r', long, value_name = "MODE", num_args = 0..=1, require_equals = true, overrides_with_all = ["no_rebase_merges", "rebase_merges"], conflicts_with = "control")]
     pub(crate) rebase_merges: Option<Option<String>>,
-    #[arg(long, hide = true)]
+    /// Replay every commit down to the root; the first positional argument is then the branch.
+    #[arg(long, conflicts_with = "control")]
     pub(crate) root: bool,
     /// Run this command after every commit that is made (repeatable).
     #[arg(short = 'x', long, value_name = "CMD", action = clap::ArgAction::Append, conflicts_with = "control")]
@@ -121,13 +131,15 @@ pub struct RebaseArgs {
     /// With `-i`, move `fixup!` and `squash!` commits under the commit they name.
     #[arg(long, overrides_with = "no_autosquash")]
     pub(crate) autosquash: bool,
-    #[arg(long, hide = true)]
+    /// Take the commits to replay from where the upstream was in its reflog (the default without an upstream argument).
+    #[arg(long, overrides_with = "no_fork_point", conflicts_with = "control")]
     pub(crate) fork_point: bool,
     #[arg(long, hide = true)]
     pub(crate) signoff: bool,
     #[arg(long, hide = true)]
     pub(crate) keep_base: bool,
-    #[arg(long, hide = true)]
+    /// Move the other branches that point into the replayed commits.
+    #[arg(long, overrides_with = "no_update_refs", conflicts_with = "control")]
     pub(crate) update_refs: bool,
     #[arg(long, hide = true)]
     pub(crate) reapply_cherry_picks: bool,
@@ -143,12 +155,6 @@ impl RebaseArgs {
     pub(crate) fn refuse_unsupported(&self) {
         let given = [
             (
-                "--rebase-merges",
-                self.rebase_merges.is_some(),
-                "merge commits are flattened, not recreated",
-            ),
-            ("--root", self.root, "rebasing the root is not built"),
-            (
                 "--strategy",
                 self.strategy.is_some(),
                 "merge strategies are not built",
@@ -158,18 +164,8 @@ impl RebaseArgs {
                 self.strategy_option.is_some(),
                 "merge strategies are not built",
             ),
-            (
-                "--fork-point",
-                self.fork_point,
-                "the upstream's reflog is not consulted",
-            ),
             ("--signoff", self.signoff, "trailers are not added"),
             ("--keep-base", self.keep_base, "the merge base is not kept"),
-            (
-                "--update-refs",
-                self.update_refs,
-                "other branches are not moved",
-            ),
             (
                 "--reapply-cherry-picks",
                 self.reapply_cherry_picks,
@@ -195,7 +191,10 @@ impl RebaseArgs {
 
 /// What a rebase is asked to do, from the command line or from `pull --rebase`.
 pub(super) struct Plan {
-    pub upstream: ObjectId,
+    /// The commit the branch is compared with; none for `--root`.
+    pub upstream: Option<ObjectId>,
+    /// Where the upstream was in its reflog, which replaces it as the start of the commits to replay.
+    pub restrict: Option<ObjectId>,
     pub onto: ObjectId,
     /// What the reflog calls the new base.
     pub onto_name: String,
@@ -211,9 +210,20 @@ pub(super) struct Plan {
     pub interactive: bool,
     pub exec: Vec<String>,
     pub autosquash: bool,
+    /// `--rebase-merges`: `Some(true)` for `rebase-cousins`.
+    pub merges: Option<bool>,
+    pub root: bool,
+    /// `--root` without `--onto`: the empty commit the new root is built on.
+    pub squash_onto: Option<ObjectId>,
+    pub update_refs: bool,
 }
 
 impl Plan {
+    /// What the commits to replay are counted from: the upstream, or the new base for `--root`.
+    fn range_base(&self) -> ObjectId {
+        self.upstream.unwrap_or(self.onto)
+    }
+
     fn refusal_word(&self) -> &'static str {
         if self.action == "rebase" {
             "rebase"
@@ -267,8 +277,8 @@ fn commit_named(git: &GitHome, spec: &str, what: &str) -> ObjectId {
     }
 }
 
-/// The remote-tracking ref the current branch's upstream configuration names.
-fn configured_upstream(git: &GitHome) -> Result<ObjectId> {
+/// The remote-tracking ref the current branch's upstream configuration names, and its commit.
+fn configured_upstream(git: &GitHome) -> Result<(ObjectId, String)> {
     let Head::Branch { name, .. } = git.repo.head()? else {
         eprintln!("You are not currently on a branch.");
         eprintln!("Please specify which branch you want to rebase against.");
@@ -291,32 +301,182 @@ fn configured_upstream(git: &GitHome) -> Result<ObjectId> {
     } else {
         Remote::read(config, remote).and_then(|r| map_ref(&r.fetch_specs(), merge))
     };
-    match tracked.and_then(|t| git.repo.resolve(&t).ok()) {
-        Some(id) => Ok(id),
+    match tracked.and_then(|t| git.repo.resolve(&t).ok().map(|id| (id, t))) {
+        Some(found) => Ok(found),
         None => die(&format!("invalid upstream '{merge}'")),
     }
 }
 
-fn plan_of(git: &GitHome, args: &RebaseArgs) -> Result<Plan> {
-    let upstream = match &args.upstream {
-        Some(spec) => commit_named(git, spec, "invalid upstream"),
-        None => configured_upstream(git)?,
+/// The commit the upstream's reflog says the branch forked from: the one best common ancestor of `head` and
+/// every commit the upstream was at, if it is one of them.
+fn fork_point(git: &GitHome, refname: &str, head: &ObjectId) -> Result<Option<ObjectId>> {
+    let Some(full) = git.repo.expand_ref_name(refname)? else {
+        die(&format!("No such ref: '{refname}'"));
     };
-    let (onto, onto_name) = match &args.onto {
-        Some(spec) => (
+    let mut named: Vec<ObjectId> = Vec::new();
+    for (n, entry) in git.repo.refs().read_reflog(&full)?.iter().enumerate() {
+        if n == 0 {
+            named.push(entry.old);
+        }
+        named.push(entry.new);
+    }
+    if named.is_empty()
+        && let Some(id) = git.repo.refs().resolve(&full)?
+    {
+        named.push(id);
+    }
+    let mut seen: Vec<ObjectId> = Vec::new();
+    for id in named {
+        if !seen.contains(&id) && git.repo.commit(&id).is_ok() {
+            seen.push(id);
+        }
+    }
+    let mut theirs: HashSet<ObjectId> = HashSet::new();
+    for id in &seen {
+        theirs.extend(git.reachable(id)?);
+    }
+    let common: Vec<ObjectId> = git
+        .reachable(head)?
+        .into_iter()
+        .filter(|id| theirs.contains(id))
+        .collect();
+    let mut covered: HashSet<ObjectId> = HashSet::new();
+    for id in &common {
+        for parent in &git.repo.commit(id)?.parents {
+            if !covered.contains(parent) {
+                covered.extend(git.reachable(parent)?);
+            }
+        }
+    }
+    let best: Vec<ObjectId> = common
+        .into_iter()
+        .filter(|id| !covered.contains(id))
+        .collect();
+    Ok(match best.as_slice() {
+        [only] if seen.contains(only) => Some(*only),
+        _ => None,
+    })
+}
+
+/// `--rebase-merges[=<mode>]` or `rebase.rebaseMerges`: `Some(true)` for `rebase-cousins`.
+fn merges_mode(git: &GitHome, args: &RebaseArgs) -> Option<bool> {
+    let mode = |text: &str| match text {
+        "" | "no-rebase-cousins" => Some(false),
+        "rebase-cousins" => Some(true),
+        other => die(&format!("unknown mode: {other}")),
+    };
+    if args.no_rebase_merges {
+        return None;
+    }
+    if let Some(given) = &args.rebase_merges {
+        return mode(given.as_deref().unwrap_or(""));
+    }
+    let configured = git.repo.config().get("rebase.rebasemerges")?;
+    match configured.to_ascii_lowercase().as_str() {
+        "false" | "no" | "off" | "0" => None,
+        "true" | "yes" | "on" | "1" => Some(false),
+        other => mode(other),
+    }
+}
+
+/// The empty commit a `--root` rebase without `--onto` builds the new root on.
+fn make_squash_onto(git: &GitHome) -> Result<ObjectId> {
+    let empty = git.repo.objects().write(ObjectKind::Tree, &[])?;
+    let record = Commit {
+        tree: empty,
+        parents: Vec::new(),
+        author: super::stage::identity(git, "author")?,
+        committer: super::stage::identity(git, "committer")?,
+        extra_headers: Vec::new(),
+        message: Vec::new(),
+    };
+    Ok(git
+        .repo
+        .objects()
+        .write(ObjectKind::Commit, &record.encode(git.algorithm())?)?)
+}
+
+fn plan_of(git: &GitHome, args: &RebaseArgs) -> Result<Plan> {
+    let (upstream_spec, switch_to) = if args.root {
+        if args.branch.is_some() {
+            crate::usage_error("`pyn rebase --root` takes at most one argument, the branch");
+        }
+        (None, args.upstream.clone())
+    } else {
+        (args.upstream.clone(), args.branch.clone())
+    };
+    if args.root && args.fork_point {
+        die("options '--root' and '--fork-point' cannot be used together");
+    }
+    let mut upstream_name = upstream_spec.clone();
+    let upstream = if args.root {
+        None
+    } else {
+        Some(match &upstream_spec {
+            Some(spec) => commit_named(git, spec, "invalid upstream"),
+            None => {
+                let (id, name) = configured_upstream(git)?;
+                upstream_name = Some(name);
+                id
+            }
+        })
+    };
+    let fork = if args.fork_point {
+        true
+    } else if args.no_fork_point {
+        false
+    } else {
+        upstream_spec.is_none() && !args.root
+    };
+    let restrict = match (fork, &upstream_name) {
+        (true, Some(name)) => {
+            let orig = match &switch_to {
+                Some(b) => match git.branch_commit(b)? {
+                    Some(id) => Some(id),
+                    None => git.repo.resolve(b).ok(),
+                },
+                None => git.repo.head_commit()?,
+            };
+            match orig {
+                Some(head) => fork_point(git, name, &head)?,
+                None => None,
+            }
+        }
+        _ => None,
+    };
+    let mut squash_onto = None;
+    let (onto, onto_name) = match (&args.onto, upstream) {
+        (Some(spec), _) => (
             commit_named(git, spec, "Does not point to a valid commit"),
             spec.clone(),
         ),
-        None => (
+        (None, Some(upstream)) => (
             upstream,
-            args.upstream.clone().unwrap_or_else(|| upstream.to_hex()),
+            upstream_spec
+                .clone()
+                .or_else(|| upstream_name.clone())
+                .unwrap_or_else(|| upstream.to_hex()),
         ),
+        (None, None) => {
+            let empty = make_squash_onto(git)?;
+            squash_onto = Some(empty);
+            (empty, empty.to_hex())
+        }
     };
+    let update_refs = if args.update_refs {
+        true
+    } else if args.no_update_refs {
+        false
+    } else {
+        git.repo.bool_setting("rebase.updaterefs", false)
+    };
+    let merges = merges_mode(git, args);
     Ok(Plan {
         upstream,
+        restrict,
         onto,
         onto_name,
-        switch_to: args.branch.clone(),
+        switch_to,
         no_ff: args.no_ff,
         quiet: args.quiet,
         autostash: if args.autostash {
@@ -332,6 +492,10 @@ fn plan_of(git: &GitHome, args: &RebaseArgs) -> Result<Plan> {
         autosquash: !args.no_autosquash
             && (args.autosquash
                 || (args.interactive && git.repo.bool_setting("rebase.autosquash", false))),
+        merges,
+        root: args.root,
+        squash_onto,
+        update_refs,
     })
 }
 
@@ -343,7 +507,8 @@ pub(super) fn pull_rebase(
     quiet: bool,
 ) -> Result<()> {
     let plan = Plan {
-        upstream: *theirs,
+        upstream: Some(*theirs),
+        restrict: None,
         onto: *theirs,
         onto_name: theirs.to_hex(),
         switch_to: None,
@@ -354,6 +519,10 @@ pub(super) fn pull_rebase(
         interactive: false,
         exec: Vec::new(),
         autosquash: false,
+        merges: None,
+        root: false,
+        squash_onto: None,
+        update_refs: false,
     };
     begin(git, &plan).map_err(|e| {
         if e.is::<Failed>() {
@@ -380,6 +549,10 @@ struct State {
     /// A commit that becomes empty stops the rebase (`-i`) instead of being dropped.
     stop_empty: bool,
     action: &'static str,
+    /// The empty commit a new root is built on (`--root`, or `reset [new root]`).
+    squash_onto: Cell<Option<ObjectId>>,
+    /// What git leaves in `GIT_REFLOG_ACTION` for the commits it makes through `git commit`.
+    reflog_env: RefCell<String>,
 }
 
 fn dir_of(git: &GitHome) -> PathBuf {
@@ -403,11 +576,12 @@ impl State {
             &todo::sheet(git, &self.todo, false)?,
         )?;
         self.put(git, "done", &todo::sheet(git, &self.done, false)?)?;
-        self.put(git, "msgnum", &format!("{}\n", self.done.len()))?;
+        let counted = |items: &[Item]| items.iter().filter(|i| i.counts()).count();
+        self.put(git, "msgnum", &format!("{}\n", counted(&self.done)))?;
         self.put(
             git,
             "end",
-            &format!("{}\n", self.done.len() + self.todo.len()),
+            &format!("{}\n", counted(&self.done) + counted(&self.todo)),
         )
     }
 
@@ -424,6 +598,9 @@ impl State {
         }
         if let Some(stash) = &self.autostash {
             self.put(git, "autostash", &format!("{stash}\n"))?;
+        }
+        if let Some(empty) = self.squash_onto.get() {
+            self.put(git, "squash-onto", &format!("{empty}\n"))?;
         }
         self.save_progress(git)
     }
@@ -469,6 +646,8 @@ fn load(git: &GitHome) -> Result<State> {
         no_ff: false,
         stop_empty: !dir.join("drop_redundant_commits").exists(),
         action: "rebase",
+        squash_onto: Cell::new(read_id(git, &dir.join("squash-onto"))?),
+        reflog_env: RefCell::new("rebase".into()),
     })
 }
 
@@ -486,8 +665,9 @@ fn require_valid(state: &State) {
 
 fn clear_state(git: &GitHome) {
     let dir = git_dir(git);
+    merges::delete_rewritten(git, &dir.join(DIR));
     let _ = std::fs::remove_dir_all(dir.join(DIR));
-    for name in [HEAD_FILE, "MERGE_MSG", "AUTO_MERGE", "SQUASH_MSG"] {
+    for name in [HEAD_FILE, "AUTO_MERGE", "SQUASH_MSG"] {
         let _ = std::fs::remove_file(dir.join(name));
     }
 }
@@ -613,16 +793,26 @@ fn begin(git: &GitHome, plan: &Plan) -> Result<()> {
             None => println!("HEAD is up to date, rebase forced."),
         }
     }
-    let picks = picks(git, &plan.upstream, &orig_head)?;
-    let mut items: Vec<Item> = picks.into_iter().map(Item::pick).collect();
+    let base = plan.range_base();
+    let mut items = match plan.merges {
+        Some(cousins) => merge_items(git, plan, &orig_head, cousins)?,
+        None => picks(git, &base, plan.restrict.as_ref(), &orig_head)?
+            .into_iter()
+            .map(Item::pick)
+            .collect(),
+    };
+    if items.is_empty() && sheet_run {
+        items.push(Item::noop());
+    }
+    let mut tracked = Vec::new();
+    if plan.update_refs {
+        (items, tracked) = merges::add_update_refs(git, items, &head_name)?;
+    }
     if plan.autosquash {
         items = todo::autosquash(git, items, true)?;
     }
     if !plan.exec.is_empty() {
         items = todo::with_exec(items, &plan.exec);
-    }
-    if sheet_run && items.is_empty() {
-        items.push(Item::noop());
     }
     let autostash = if stash_it && unclean(git)?.is_some() {
         let args = PushArgs {
@@ -648,16 +838,33 @@ fn begin(git: &GitHome, plan: &Plan) -> Result<()> {
         no_ff: plan.no_ff,
         stop_empty: plan.interactive,
         action: plan.action,
+        squash_onto: Cell::new(plan.squash_onto),
+        reflog_env: RefCell::new(plan.action.into()),
     };
     let mut state = state;
     let mut bad_sheet = None;
     let original = todo::sheet(git, &state.todo, false)?;
     if plan.interactive {
-        bad_sheet = edit_sheet(git, &mut state, &plan.upstream)?;
+        let range = if !plan.root {
+            format!("{}..{}", short(&base), short(&state.orig_head))
+        } else {
+            short(&state.orig_head)
+        };
+        bad_sheet = edit_sheet(git, &mut state, &range)?;
     }
-    detach_at_onto(git, &state, plan)?;
+    let skipped = if plan.no_ff {
+        0
+    } else {
+        unchanged_leading(git, &state)?
+    };
+    let start = match skipped {
+        0 => state.onto,
+        n => state.todo[n - 1].id.expect("a skipped pick has a commit"),
+    };
+    detach_at_onto(git, &state, plan, &start)?;
     write_orig_head_as(git, &state.orig_head, Some("rebase"))?;
     state.create(git)?;
+    merges::write_tracked(git, &dir_of(git), &tracked)?;
     if state.quiet {
         state.put(git, "quiet", "")?;
     }
@@ -678,11 +885,6 @@ fn begin(git: &GitHome, plan: &Plan) -> Result<()> {
         eprintln!("Or you can abort the rebase with 'pyn rebase --abort'.");
         std::process::exit(1);
     }
-    let skipped = if plan.no_ff {
-        0
-    } else {
-        unchanged_leading(git, &state)?
-    };
     run(git, state, skipped)
 }
 
@@ -708,15 +910,10 @@ fn unchanged_leading(git: &GitHome, state: &State) -> Result<usize> {
 fn edit_sheet(
     git: &GitHome,
     state: &mut State,
-    upstream: &ObjectId,
+    range: &str,
 ) -> Result<Option<(String, Vec<String>)>> {
-    let range = format!(
-        "{}..{}",
-        &upstream.to_hex()[..7],
-        &state.orig_head.to_hex()[..7]
-    );
     let level = missing_check(git);
-    let text = todo::editor_text(git, &state.todo, &range, &state.onto)?;
+    let text = todo::editor_text(git, &state.todo, range, &state.onto)?;
     std::fs::create_dir_all(dir_of(git))?;
     let edited = match run_sheet_editor(git, &text) {
         Ok(edited) => edited,
@@ -758,7 +955,7 @@ fn run_sheet_editor(git: &GitHome, text: &str) -> Result<String> {
     let path = dir_of(git).join("git-rebase-todo");
     std::fs::write(&path, text)?;
     editor::run(git, Which::Sequence, &path)?;
-    Ok(std::fs::read_to_string(&path)?)
+    Ok(todo::stripspace(&std::fs::read_to_string(&path)?))
 }
 
 /// `--edit-todo`: the commands still to do, in the editor.
@@ -894,8 +1091,14 @@ fn say_up_to_date(head_name: &str) {
 
 /// Whether the branch already sits on the new base in a straight line and the upstream's merge base is that base.
 fn can_fast_forward(git: &GitHome, plan: &Plan, head: &ObjectId) -> Result<bool> {
+    let Some(upstream) = plan.upstream else {
+        return Ok(false);
+    };
+    if plan.restrict.is_some_and(|r| r != plan.onto) {
+        return Ok(false);
+    }
     let ours = git.merge_bases(&plan.onto, head)?;
-    let theirs = git.merge_bases(&plan.upstream, head)?;
+    let theirs = git.merge_bases(&upstream, head)?;
     if ours != [plan.onto] || theirs != [plan.onto] {
         return Ok(false);
     }
@@ -928,13 +1131,13 @@ fn switch_to(git: &GitHome, branch_ref: Option<&str>, id: &ObjectId, plan: &Plan
 }
 
 /// Checks the new base out onto a detached `HEAD`; a local change in the way stops with the autostash put back.
-fn detach_at_onto(git: &GitHome, state: &State, plan: &Plan) -> Result<()> {
+fn detach_at_onto(git: &GitHome, state: &State, plan: &Plan, target: &ObjectId) -> Result<()> {
     let opened = git.open_index()?;
     let from = match git.repo.head_commit()? {
         Some(h) => Some(git.repo.commit(&h)?.tree),
         None => None,
     };
-    let to = git.repo.commit(&state.onto)?.tree;
+    let to = git.repo.commit(target)?.tree;
     if let Err(blocked) = move_tree(git, &opened, from.as_ref(), Some(&to), Mode::Safe)? {
         if let Some(stash) = &state.autostash {
             restore_autostash(git, stash);
@@ -943,52 +1146,89 @@ fn detach_at_onto(git: &GitHome, state: &State, plan: &Plan) -> Result<()> {
     }
     git.set_head(
         None,
-        &state.onto,
+        target,
         &format!("{} (start): checkout {}", plan.action, plan.onto_name),
     )
 }
 
-/// The commits to replay, oldest first: those after the upstream, without merges and without the ones whose change
-/// the upstream already has.
-fn picks(git: &GitHome, upstream: &ObjectId, head: &ObjectId) -> Result<Vec<ObjectId>> {
-    let theirs = git.reachable(upstream)?;
+/// The commits after `base` (and `exclude`) that lead to `head`, oldest first, with the ones whose change the base
+/// side already has marked.
+fn range_of(
+    git: &GitHome,
+    base: &ObjectId,
+    exclude: Option<&ObjectId>,
+    head: &ObjectId,
+) -> Result<Range> {
+    let theirs = git.reachable(base)?;
+    let mut skipped = HashSet::new();
+    if let Some(e) = exclude {
+        skipped = git.reachable(e)?;
+    }
     let mine = git.reachable(head)?;
-    let mine_only: Vec<ObjectId> = mine
-        .iter()
-        .filter(|id| !theirs.contains(id))
-        .copied()
-        .collect();
     let mut commits: HashMap<ObjectId, Commit> = HashMap::new();
-    for id in &mine_only {
+    for id in mine
+        .iter()
+        .filter(|id| !theirs.contains(id) && !skipped.contains(id))
+    {
         commits.insert(*id, git.repo.commit(id)?);
     }
-    let candidates: HashSet<ObjectId> = commits
-        .iter()
-        .filter(|(_, c)| c.parents.len() <= 1)
-        .map(|(id, _)| *id)
-        .collect();
+    let single = |c: &Commit| c.parents.len() <= 1;
     let mut upstream_changes: HashSet<u64> = HashSet::new();
-    if !candidates.is_empty() {
+    if commits.values().any(single) {
         for id in theirs.iter().filter(|id| !mine.contains(id)) {
             let c = git.repo.commit(id)?;
-            if c.parents.len() <= 1 {
+            if single(&c) {
                 upstream_changes.insert(patch_id(git, &c)?);
             }
         }
     }
-    let out = topo_oldest_first(head, &commits);
+    let mut same_patch = HashSet::new();
+    if !upstream_changes.is_empty() {
+        for (id, c) in &commits {
+            if single(c) && upstream_changes.contains(&patch_id(git, c)?) {
+                same_patch.insert(*id);
+            }
+        }
+    }
+    let order = topo_oldest_first(head, &commits);
+    Ok(Range {
+        commits,
+        order,
+        same_patch,
+    })
+}
+
+/// The commits to replay, oldest first: those after the base, without merges and without the ones whose change
+/// the base already has.
+fn picks(
+    git: &GitHome,
+    base: &ObjectId,
+    exclude: Option<&ObjectId>,
+    head: &ObjectId,
+) -> Result<Vec<ObjectId>> {
+    let range = range_of(git, base, exclude, head)?;
     let mut kept = Vec::new();
-    for id in out {
-        if !candidates.contains(&id) {
-            continue;
+    for id in &range.order {
+        let applied = range.same_patch.contains(id) && !todo::Commits::is_empty(git, id)?;
+        if range.commits[id].parents.len() <= 1 && !applied {
+            kept.push(*id);
         }
-        let c = &commits[&id];
-        if !upstream_changes.is_empty() && upstream_changes.contains(&patch_id(git, c)?) {
-            continue;
-        }
-        kept.push(id);
     }
     Ok(kept)
+}
+
+/// The sheet of `--rebase-merges`: every commit of the range with its merges, and `onto` for the first merge base.
+fn merge_items(git: &GitHome, plan: &Plan, head: &ObjectId, cousins: bool) -> Result<Vec<Item>> {
+    let base = plan.range_base();
+    let range = range_of(git, &base, plan.restrict.as_ref(), head)?;
+    let mut bases = git.merge_bases(&base, head)?;
+    bases.sort_by_key(|id| std::cmp::Reverse(git.repo.commit(id).map_or(0, |c| c.committer.time)));
+    let bottom = bases.first().copied();
+    let mode = MergeMode {
+        cousins,
+        root_with_onto: plan.root && plan.squash_onto.is_none(),
+    };
+    merges::make_script(git, &range, bottom, &mode)
 }
 
 /// Git's `--topo-order --reverse`: a stack walk from the tip that emits a commit once all its children are out, so
@@ -1085,22 +1325,39 @@ fn run(git: &GitHome, mut state: State, mut unrun: usize) -> Result<()> {
         let item = state.todo.remove(0);
         state.done.push(item.clone());
         state.save_progress(git)?;
+        if !item.counts() {
+            continue;
+        }
         if !state.quiet {
+            let counted = |items: &[Item]| items.iter().filter(|i| i.counts()).count();
             eprint!(
                 "Rebasing ({}/{})\r",
-                state.done.len(),
-                state.done.len() + state.todo.len()
+                counted(&state.done),
+                counted(&state.done) + counted(&state.todo)
             );
         }
+        if unrun > 0 {
+            unrun -= 1;
+            continue;
+        }
+        clear_item_state(git);
         if let Err(e) = step(git, &state, &item) {
+            if e.is::<Rescheduled>() {
+                state.todo.insert(0, item);
+                state.put(
+                    git,
+                    "git-rebase-todo",
+                    &todo::sheet(git, &state.todo, false)?,
+                )?;
+                std::process::exit(1);
+            }
             state.done.pop();
             state.todo.insert(0, item);
             state.save_progress(git)?;
             return Err(e);
         }
         match item.id {
-            Some(_) if unrun > 0 => unrun -= 1,
-            Some(id) if !matches!(item.cmd, Cmd::Drop | Cmd::Edit) => {
+            Some(id) if !matches!(item.cmd, Cmd::Drop | Cmd::Edit | Cmd::Merge) => {
                 if let Some(head) = git.repo.head_commit()? {
                     rewrite::record(&dir_of(git), &id, &head, more_melds(&state))?;
                 }
@@ -1111,9 +1368,49 @@ fn run(git: &GitHome, mut state: State, mut unrun: usize) -> Result<()> {
     finish(git, &state)
 }
 
+/// A command that failed and stays on the sheet, as git reschedules a `label`, `reset` or `merge` that could not run.
+#[derive(Debug)]
+struct Rescheduled(String);
+
+impl std::fmt::Display for Rescheduled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Rescheduled {}
+
+/// What git removes before each command: the previous stop's files and the merge state.
+fn clear_item_state(git: &GitHome) {
+    let dir = dir_of(git);
+    for name in ["message", "author-script", "stopped-sha", "amend"] {
+        let _ = std::fs::remove_file(dir.join(name));
+    }
+    for name in ["MERGE_HEAD", "AUTO_MERGE", HEAD_FILE] {
+        let _ = std::fs::remove_file(git_dir(git).join(name));
+    }
+}
+
+fn reschedule(git: &GitHome, item: &Item, why: &anyhow::Error) -> anyhow::Error {
+    eprintln!("error: {why}");
+    eprintln!("hint: Could not execute the todo command");
+    eprintln!("hint: ");
+    eprintln!(
+        "hint:     {}",
+        item.line(git, false).unwrap_or_default().trim_end()
+    );
+    eprintln!("hint: ");
+    eprintln!("hint: It has been rescheduled; To edit the command before continuing, please");
+    eprintln!("hint: edit the todo list first:");
+    eprintln!("hint: ");
+    eprintln!("hint:     pyn rebase --edit-todo");
+    eprintln!("hint:     pyn rebase --continue");
+    anyhow::Error::new(Rescheduled(why.to_string()))
+}
+
 fn step(git: &GitHome, state: &State, item: &Item) -> Result<()> {
     match item.cmd {
-        Cmd::Noop | Cmd::Drop => Ok(()),
+        Cmd::Noop | Cmd::Drop | Cmd::Comment => Ok(()),
         Cmd::Break => {
             let head = git
                 .repo
@@ -1124,7 +1421,20 @@ fn step(git: &GitHome, state: &State, item: &Item) -> Result<()> {
             std::process::exit(0);
         }
         Cmd::Exec => exec(git, &item.arg),
-        _ => replay(git, state, item),
+        Cmd::Label => {
+            merges::do_label(git, &dir_of(git), &item.arg).map_err(|e| reschedule(git, item, &e))
+        }
+        Cmd::Reset => do_reset(git, state, &item.arg).map_err(|e| reschedule(git, item, &e)),
+        Cmd::UpdateRef => merges::do_update_ref(git, &dir_of(git), &item.arg)
+            .map_err(|e| reschedule(git, item, &e)),
+        Cmd::Merge => {
+            *state.reflog_env.borrow_mut() = format!("{} (merge)", state.action);
+            do_merge(git, state, item)
+        }
+        _ => {
+            *state.reflog_env.borrow_mut() = format!("{} ({})", state.action, item.cmd.word());
+            replay(git, state, item)
+        }
     }
 }
 
@@ -1193,20 +1503,19 @@ fn replay(git: &GitHome, state: &State, item: &Item) -> Result<()> {
         return Ok(());
     }
     let reflog = format!("{} ({})", state.action, item.cmd.word());
-    let fast = picked.parents.len() == 1 && head == picked.parents.first().copied() && !state.no_ff;
+    let at_new_root = head.is_some() && head == state.squash_onto.get();
+    let fast = !state.no_ff && lands_on_head(&picked, head, at_new_root);
     let message = if item.cmd == Cmd::Reword {
         match reworded(git, state, &picked.message) {
             Ok(m) => m,
             Err(e) => {
                 eprintln!("error: {e}");
-                let fast = picked.parents.len() == 1
-                    && head == picked.parents.first().copied()
-                    && !state.no_ff;
                 if fast {
-                    git.move_head(id, &format!("{reflog}: {subject}"))?;
+                    move_forward(git, state, id)?;
                     stop_to_edit(git, id, &picked, true)?;
                 }
-                make_commit(
+                commit_here(
+                    state,
                     git,
                     &Pending {
                         tree,
@@ -1224,9 +1533,10 @@ fn replay(git: &GitHome, state: &State, item: &Item) -> Result<()> {
         picked.message.clone()
     };
     if fast && item.cmd != Cmd::Reword {
-        git.move_head(id, &format!("{reflog}: {subject}"))?;
+        move_forward(git, state, id)?;
     } else {
-        make_commit(
+        commit_here(
+            state,
             git,
             &Pending {
                 tree,
@@ -1241,6 +1551,327 @@ fn replay(git: &GitHome, state: &State, item: &Item) -> Result<()> {
         stop_to_edit(git, id, &picked, false)?;
     }
     Ok(())
+}
+
+/// `reset <label>`: `HEAD` and the work tree go to the commit the label names; `[new root]` is an empty commit.
+fn do_reset(git: &GitHome, state: &State, arg: &str) -> Result<()> {
+    let name = arg.split_whitespace().next().unwrap_or(arg);
+    let target = if arg.starts_with("[new root]") {
+        match state.squash_onto.get() {
+            Some(empty) => empty,
+            None => {
+                let empty = make_squash_onto(git)?;
+                state.squash_onto.set(Some(empty));
+                state.put(git, "squash-onto", &format!("{empty}\n"))?;
+                empty
+            }
+        }
+    } else {
+        merges::lookup_label(git, name)?.0
+    };
+    let shown = if arg.starts_with("[new root]") {
+        arg
+    } else {
+        name
+    };
+    let message = format!("{} (reset): '{shown}'", state.action);
+    *state.reflog_env.borrow_mut() = message.clone();
+    move_to(git, &target, &message, Mode::Force)
+}
+
+/// Checks `target` out onto the detached `HEAD`, logging the move under `message`.
+fn move_to(git: &GitHome, target: &ObjectId, message: &str, mode: Mode) -> Result<()> {
+    let head = git.repo.head_commit()?;
+    let opened = git.open_index()?;
+    let from = match head {
+        Some(h) => Some(git.repo.commit(&h)?.tree),
+        None => None,
+    };
+    let to = git.repo.commit(target)?.tree;
+    if let Err(blocked) = move_tree(git, &opened, from.as_ref(), Some(&to), mode)? {
+        blocked.report("checkout", "switch branches", 1);
+    }
+    if head != Some(*target) {
+        git.move_head(target, message)?;
+    }
+    Ok(())
+}
+
+fn fast_forward(git: &GitHome, state: &State, to: &ObjectId) -> Result<()> {
+    move_to(
+        git,
+        to,
+        &format!("{}: fast-forward", state.action),
+        Mode::Safe,
+    )
+}
+
+/// The labels of a `merge` line, the text up to the last of them, and the oneline after a `#`.
+fn split_merge_arg(arg: &str) -> (Vec<&str>, &str, Option<&str>) {
+    let mut labels = Vec::new();
+    let mut end = 0;
+    let mut at = 0;
+    let mut oneline = None;
+    while at < arg.len() {
+        at += arg[at..].len() - arg[at..].trim_start().len();
+        let rest = &arg[at..];
+        if rest.is_empty() {
+            break;
+        }
+        let word = rest.split_whitespace().next().unwrap_or(rest);
+        if word == "#" {
+            oneline = Some(rest[1..].trim_start());
+            break;
+        }
+        labels.push(word);
+        at += word.len();
+        end = at;
+    }
+    (labels, &arg[..end], oneline)
+}
+
+/// `merge [-C|-c <commit>] <label>... [# <oneline>]`: recreates the merge on `HEAD`, or fast-forwards to the original
+/// when nothing changed. A conflict stops the rebase with the merge in progress.
+fn do_merge(git: &GitHome, state: &State, item: &Item) -> Result<()> {
+    let fail = |why: String| {
+        if let Some(id) = item.id {
+            let _ = write_state(git, HEAD_FILE, &format!("{id}\n"));
+        }
+        reschedule(git, item, &anyhow!(why))
+    };
+    let Some(head_id) = git.repo.head_commit()? else {
+        return Err(fail("cannot merge without a current revision".into()));
+    };
+    let (labels, merge_arg, oneline) = split_merge_arg(&item.arg);
+    let mut heads: Vec<(ObjectId, String)> = Vec::new();
+    for label in &labels {
+        match merges::lookup_label(git, label) {
+            Ok(found) => heads.push(found),
+            Err(_) => return Err(fail(format!("unable to parse '{label}'"))),
+        }
+    }
+    if heads.is_empty() {
+        return Err(fail(format!("nothing to merge: '{}'", item.arg)));
+    }
+    let original = match item.id {
+        Some(id) => Some((id, git.repo.commit(&id)?)),
+        None => None,
+    };
+    let record = |git: &GitHome| -> Result<()> {
+        if let (Some((id, _)), Some(head)) = (&original, git.repo.head_commit()?) {
+            rewrite::record(&dir_of(git), id, &head, false)?;
+        }
+        Ok(())
+    };
+    if state.squash_onto.get() == Some(head_id) {
+        if heads.len() > 1 {
+            return Err(fail(
+                "octopus merge cannot be executed on top of a [new root]".into(),
+            ));
+        }
+        fast_forward(git, state, &heads[0].0)?;
+        return record(git);
+    }
+    let can_ff = !state.no_ff
+        && original.as_ref().is_some_and(|(_, c)| {
+            c.parents.first() == Some(&head_id)
+                && heads.iter().zip(&c.parents[1..]).all(|(h, p)| h.0 == *p)
+        });
+    if can_ff {
+        let (id, commit) = original.as_ref().expect("a fast-forward has an original");
+        fast_forward(git, state, id)?;
+        if item.flag == Flag::Edit {
+            amend_merge(git, state, item, commit)?;
+        }
+        return record(git);
+    }
+    if heads.len() > 1 {
+        return Err(fail(
+            "octopus merges are not built; merge the branches one at a time".into(),
+        ));
+    }
+    let author = match &original {
+        Some((_, c)) => c.author.clone(),
+        None => super::stage::identity(git, "author")?,
+    };
+    state.put(git, "author-script", &author_script(&author))?;
+    let message = match (&original, oneline) {
+        (Some((_, c)), _) => c.message.clone(),
+        (None, Some(line)) => line.as_bytes().to_vec(),
+        (None, None) => format!("Merge branch '{merge_arg}'").into_bytes(),
+    };
+    write_state(git, "MERGE_MSG", &String::from_utf8_lossy(&message))?;
+    let (theirs, theirs_name) = &heads[0];
+    let bases = git.merge_bases(&head_id, theirs)?;
+    if bases.first() == Some(theirs) {
+        return record(git);
+    }
+    write_state(git, "MERGE_HEAD", &theirs.to_hex())?;
+    write_state(git, "MERGE_MODE", "no-ff")?;
+    if bases.len() > 1 {
+        return Err(fail(
+            "the histories have more than one merge base (a criss-cross merge); pyn cannot merge them yet".into(),
+        ));
+    }
+    let tree_of = |c: &ObjectId| -> Result<ObjectId> { Ok(git.repo.commit(c)?.tree) };
+    let base_tree = match bases.first() {
+        Some(b) => Some(tree_of(b)?),
+        None => None,
+    };
+    let opened = git.open_index()?;
+    let ours_tree = write_tree(git, &opened.index)?;
+    let theirs_tree = tree_of(theirs)?;
+    let incoming =
+        git.repo
+            .diff_trees(base_tree.as_ref(), Some(&theirs_tree), &Pathspec::default())?;
+    super::convert::refuse_conversions(
+        git,
+        incoming
+            .iter()
+            .filter_map(|c| c.new.map(|e| (c.path.as_slice(), e.mode))),
+    )?;
+    let base_label = bases.first().map_or_else(String::new, short);
+    let merged = merge_trees(
+        git,
+        base_tree.as_ref(),
+        Some(&ours_tree),
+        Some(&theirs_tree),
+        &Labels {
+            ours: "HEAD",
+            theirs: theirs_name,
+            base: &base_label,
+        },
+        &Settings::default(),
+    )?;
+    let landing = Landing {
+        theirs: theirs_name,
+        orig_head: None,
+        strict_index: false,
+    };
+    let applied = match apply_merge(git, &opened, Some(&ours_tree), &merged, &landing)? {
+        Ok(applied) => applied,
+        Err(refusal) => {
+            refusal.blocked.print("merge", "merge");
+            return Err(fail("Aborting".into()));
+        }
+    };
+    if !applied.conflicted.is_empty() {
+        write_state(
+            git,
+            "AUTO_MERGE",
+            &format!("{}\n", result_tree(git, &merged)?),
+        )?;
+        record(git)?;
+        return stop_merge(git, state, item, &message, &applied.conflicted);
+    }
+    let tree = write_tree(git, &applied.index)?;
+    let id = make_commit_on(
+        git,
+        &Pending {
+            tree,
+            ours_tree,
+            author,
+            message: message.clone(),
+            reflog: state.reflog_env.borrow().clone(),
+        },
+        vec![head_id, *theirs],
+    )?;
+    clear_merge_files(git);
+    if item.flag == Flag::Edit {
+        amend_merge(git, state, item, &git.repo.commit(&id)?)?;
+    }
+    record(git)
+}
+
+/// Lets the user reword the merge commit `HEAD` is on; an empty message stops the rebase there.
+fn amend_merge(git: &GitHome, state: &State, item: &Item, commit: &Commit) -> Result<()> {
+    let comment = rebase_comment(git, state);
+    let Some(message) = editor::edit_message(git, &commit.message, &comment)? else {
+        eprintln!("Aborting commit due to empty commit message.");
+        return stop_merge(git, state, item, &commit.message, &[]);
+    };
+    if message == commit.message {
+        return Ok(());
+    }
+    make_commit_on(
+        git,
+        &Pending {
+            tree: commit.tree,
+            ours_tree: commit.tree,
+            author: commit.author.clone(),
+            message,
+            reflog: state.reflog_env.borrow().clone(),
+        },
+        commit.parents.clone(),
+    )?;
+    Ok(())
+}
+
+fn clear_merge_files(git: &GitHome) {
+    for name in ["MERGE_HEAD", "MERGE_MSG", "MERGE_MODE", "AUTO_MERGE"] {
+        let _ = std::fs::remove_file(git_dir(git).join(name));
+    }
+}
+
+/// Leaves the state git expects for a merge that stopped on conflicts (or on a message that could not be made) and
+/// ends the command with status 1.
+fn stop_merge(
+    git: &GitHome,
+    state: &State,
+    item: &Item,
+    message: &[u8],
+    conflicted: &[Vec<u8>],
+) -> Result<()> {
+    let mut text = message.to_vec();
+    if !conflicted.is_empty() {
+        if !text.ends_with(b"\n") {
+            text.push(b'\n');
+        }
+        text.extend_from_slice(b"\n# Conflicts:\n");
+        for p in conflicted {
+            text.extend_from_slice(format!("#\t{}\n", path_string(p)).as_bytes());
+        }
+    }
+    write_state(git, "MERGE_MSG", &String::from_utf8_lossy(&text))?;
+    let mut copy = text.clone();
+    copy.push(b'\n');
+    state.put(git, "message", &String::from_utf8_lossy(&copy))?;
+    if let Some(id) = item.id {
+        state.put(git, "stopped-sha", &format!("{id}\n"))?;
+        state.put(git, "patch", "")?;
+        write_state(git, HEAD_FILE, &format!("{id}\n"))?;
+        let subject = &item.arg;
+        eprintln!("Could not apply {}... {subject}", short(&id));
+    } else {
+        eprintln!("error: could not apply {}", item.arg);
+    }
+    std::process::exit(1);
+}
+
+/// Fast-forwards `HEAD` to a replayed commit; a `HEAD` that is already there is not logged.
+fn move_forward(git: &GitHome, state: &State, id: &ObjectId) -> Result<()> {
+    if git.repo.head_commit()? == Some(*id) {
+        return Ok(());
+    }
+    git.move_head(id, &format!("{}: fast-forward", state.action))
+}
+
+/// Whether the commit already sits on `HEAD` (or is a root and `HEAD` is the empty commit of a new root).
+fn lands_on_head(picked: &Commit, head: Option<ObjectId>, at_new_root: bool) -> bool {
+    match picked.parents.as_slice() {
+        [parent] => head == Some(*parent),
+        [] => at_new_root,
+        _ => false,
+    }
+}
+
+/// Commits on top of `HEAD`; on the empty commit of a new root the commit has no parent.
+fn commit_here(state: &State, git: &GitHome, pending: &Pending) -> Result<ObjectId> {
+    let parents = match git.repo.head_commit()? {
+        Some(h) if state.squash_onto.get() != Some(h) => vec![h],
+        _ => Vec::new(),
+    };
+    make_commit_on(git, pending, parents)
 }
 
 /// The message the user gives a reworded commit.
@@ -1572,6 +2203,7 @@ fn finish(git: &GitHome, state: &State) -> Result<()> {
     }
     write_orig_head_as(git, &state.orig_head, Some("rebase"))?;
     let _ = rewrite::flush(&dir_of(git), &end);
+    let ref_report = merges::update_refs(git, &dir_of(git), state.quiet);
     let _ = rewrite::copy_notes(git, &dir_of(git));
     clear_state(git);
     if !state.quiet {
@@ -1581,6 +2213,9 @@ fn finish(git: &GitHome, state: &State) -> Result<()> {
             "detached HEAD"
         };
         eprintln!("Successfully rebased and updated {what}.");
+    }
+    for line in &ref_report {
+        eprintln!("{line}");
     }
     if let Some(stash) = &state.autostash {
         restore_autostash(git, stash);
@@ -1629,6 +2264,7 @@ fn cont(git: &GitHome) -> Result<()> {
     let head = git.repo.commit(&head_id)?;
     let tree = write_tree(git, &opened.index)?;
     let stopped = read_id(git, &dir.join("stopped-sha"))?;
+    let merging = !merge_heads(git)?.is_empty();
     let amending = dir.join("amend").exists();
     let chain = dir.join(meld::SQUASH).exists();
     if amending && chain {
@@ -1648,23 +2284,41 @@ fn cont(git: &GitHome) -> Result<()> {
             };
             commit_over(git, &state, &head, tree, head.tree, message, "continue")?;
         }
-    } else if let Some(stopped) = stopped {
+    } else if stopped.is_some() || merging {
         if tree != head.tree {
-            let picked = git.repo.commit(&stopped)?;
-            let mut message = match read_text(&dir.join("message")) {
-                Some(m) => {
+            let picked = match stopped {
+                Some(id) => Some(git.repo.commit(&id)?),
+                None => None,
+            };
+            let mut message = match (read_text(&dir.join("message")), &picked) {
+                (Some(m), _) => {
                     let kept: Vec<&str> = m.lines().filter(|l| !l.starts_with('#')).collect();
                     clean_message(&[kept.join("\n")])
                 }
-                None => picked.message.clone(),
+                (None, Some(p)) => p.message.clone(),
+                (None, None) => Vec::new(),
             };
             let comment = rebase_comment(git, &state);
             message = editor::edit_message(git, &message, &comment)?
                 .ok_or_else(|| anyhow!("Aborting commit due to empty commit message."))?;
-            let author = read_text(&dir.join("author-script"))
-                .and_then(|t| parse_author_script(&t))
-                .unwrap_or(picked.author);
-            make_commit(
+            let author =
+                match read_text(&dir.join("author-script")).and_then(|t| parse_author_script(&t)) {
+                    Some(a) => a,
+                    None => match &picked {
+                        Some(p) => p.author.clone(),
+                        None => super::stage::identity(git, "author")?,
+                    },
+                };
+            let parents = if merging {
+                let mut all = vec![head_id];
+                all.extend(merge_heads(git)?);
+                all
+            } else if state.squash_onto.get() == Some(head_id) {
+                Vec::new()
+            } else {
+                vec![head_id]
+            };
+            make_commit_on(
                 git,
                 &Pending {
                     tree,
@@ -1673,7 +2327,11 @@ fn cont(git: &GitHome) -> Result<()> {
                     message,
                     reflog: "rebase (continue)".into(),
                 },
+                parents,
             )?;
+            if merging {
+                let _ = std::fs::remove_file(git_dir(git).join("MERGE_MODE"));
+            }
         }
     } else if tree != head.tree {
         refuse(
@@ -1699,7 +2357,13 @@ fn clear_stop(git: &GitHome) {
     for name in ["stopped-sha", "message", "author-script", "amend", "patch"] {
         let _ = std::fs::remove_file(dir.join(name));
     }
-    for name in [HEAD_FILE, "MERGE_MSG", "SQUASH_MSG"] {
+    for name in [
+        HEAD_FILE,
+        "MERGE_MSG",
+        "SQUASH_MSG",
+        "MERGE_HEAD",
+        "AUTO_MERGE",
+    ] {
         let _ = std::fs::remove_file(git_dir(git).join(name));
     }
 }
@@ -1779,6 +2443,7 @@ fn abort(git: &GitHome) -> Result<()> {
 
 fn quit(git: &GitHome) -> Result<()> {
     let state = load(git)?;
+    merges::delete_rewritten(git, &dir_of(git));
     std::fs::remove_dir_all(dir_of(git))?;
     if let Some(stash) = &state.autostash {
         store_stash(git, stash, "autostash")?;
@@ -1791,6 +2456,19 @@ fn quit(git: &GitHome) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_merge_line_splits_into_labels_and_oneline() {
+        assert_eq!(
+            split_merge_arg("topic  other # Merge x"),
+            (vec!["topic", "other"], "topic  other", Some("Merge x"))
+        );
+        assert_eq!(split_merge_arg("a"), (vec!["a"], "a", None));
+        assert_eq!(
+            split_merge_arg("# only"),
+            (Vec::<&str>::new(), "", Some("only"))
+        );
+    }
 
     #[test]
     fn the_author_script_round_trips() {

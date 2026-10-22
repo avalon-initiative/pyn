@@ -115,6 +115,26 @@ fn refuse_unbuilt(args: &RebaseArgs) -> Result<()> {
             args.edit_todo,
             "the sheet is edited once, before the rebase starts",
         ),
+        (
+            "--rebase-merges",
+            args.rebase_merges.is_some(),
+            "a workspace cannot rebase a merge",
+        ),
+        (
+            "--root",
+            args.root,
+            "a workspace rebases onto an upstream, not from the root",
+        ),
+        (
+            "--fork-point",
+            args.fork_point,
+            "the upstream's reflog is not kept",
+        ),
+        (
+            "--update-refs",
+            args.update_refs,
+            "other branches are not moved",
+        ),
     ];
     if let Some((flag, _, why)) = given.iter().find(|(_, on, _)| *on) {
         bail!("`pyn rebase {flag}` is not available in a workspace: {why}");
@@ -205,22 +225,31 @@ pub fn rebase(backend: &dyn Backend, ws: &Workspace, args: &RebaseArgs) -> Resul
         let span = format!("{}..{}", &upstream.to_hex()[..7], &tip.to_hex()[..7]);
         let text = todo::editor_text(&names, &items, &span, &base)?;
         let edited = edit_sheet(ws, &text)?;
-        items = todo::parse(&names, &edited, false)
+        items = todo::parse(&names, &todo::stripspace(&edited), false)
             .map_err(|errors| anyhow!("{}\nnothing was changed", errors.join("\n")))?;
-        if items.is_empty() {
+        if items.iter().all(|i| !i.counts()) {
             bail!("nothing to do");
         }
     }
     let mut moves: Vec<Move> = Vec::new();
     for item in items {
-        if item.flag != Flag::None {
+        if item.cmd == Cmd::Fixup && item.flag != Flag::None {
             bail!(
                 "`fixup -C` and `fixup -c` are not available in a workspace; nothing was changed"
             );
         }
         match (item.cmd, item.id) {
-            (Cmd::Noop | Cmd::Drop, _) => {}
-            (Cmd::Edit | Cmd::Exec | Cmd::Break, _) => bail!(
+            (Cmd::Noop | Cmd::Drop | Cmd::Comment, _) => {}
+            (
+                Cmd::Edit
+                | Cmd::Exec
+                | Cmd::Break
+                | Cmd::Label
+                | Cmd::Reset
+                | Cmd::Merge
+                | Cmd::UpdateRef,
+                _,
+            ) => bail!(
                 "'{}' is not available in a workspace; use pick, reword, squash, fixup or drop; nothing was changed",
                 item.cmd.word()
             ),

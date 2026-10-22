@@ -86,6 +86,12 @@ pub(crate) enum Cmd {
     Exec,
     Break,
     Noop,
+    Label,
+    Reset,
+    Merge,
+    UpdateRef,
+    /// A blank or `#` line; it is kept so the file reads as git wrote it.
+    Comment,
 }
 
 impl Cmd {
@@ -100,6 +106,11 @@ impl Cmd {
             Cmd::Exec => "exec",
             Cmd::Break => "break",
             Cmd::Noop => "noop",
+            Cmd::Label => "label",
+            Cmd::Reset => "reset",
+            Cmd::Merge => "merge",
+            Cmd::UpdateRef => "update-ref",
+            Cmd::Comment => "",
         }
     }
 
@@ -114,6 +125,10 @@ impl Cmd {
             "exec" | "x" => Cmd::Exec,
             "break" | "b" => Cmd::Break,
             "noop" => Cmd::Noop,
+            "label" | "l" => Cmd::Label,
+            "reset" | "t" => Cmd::Reset,
+            "merge" | "m" => Cmd::Merge,
+            "update-ref" | "u" => Cmd::UpdateRef,
             _ => return None,
         })
     }
@@ -126,18 +141,21 @@ impl Cmd {
     fn makes_commit(self) -> bool {
         matches!(
             self,
-            Cmd::Pick | Cmd::Reword | Cmd::Edit | Cmd::Squash | Cmd::Fixup
+            Cmd::Pick | Cmd::Reword | Cmd::Edit | Cmd::Squash | Cmd::Fixup | Cmd::Merge
         )
     }
 }
 
-/// One line of the sheet: the commit it names, or the command line of an `exec`.
+/// One line of the sheet: the commit it names, or the rest of the line for `exec`, `label`, `reset`, `merge` (the
+/// labels and the `#` oneline) and `update-ref`; a comment keeps its whole line.
 #[derive(Clone, Debug)]
 pub(crate) struct Item {
     pub cmd: Cmd,
     pub id: Option<ObjectId>,
     pub arg: String,
     pub flag: Flag,
+    /// The text after the commit was written by hand or by git, and is kept as it is.
+    pub given: bool,
 }
 
 impl Item {
@@ -147,6 +165,7 @@ impl Item {
             id: Some(id),
             arg: String::new(),
             flag: Flag::None,
+            given: false,
         }
     }
 
@@ -160,29 +179,67 @@ impl Item {
             id: None,
             arg: String::new(),
             flag: Flag::None,
+            given: false,
         }
     }
 
     pub(crate) fn exec(line: &str) -> Self {
+        Self::with_arg(Cmd::Exec, line)
+    }
+
+    pub(crate) fn with_arg(cmd: Cmd, arg: &str) -> Self {
         Self {
-            cmd: Cmd::Exec,
+            cmd,
             id: None,
-            arg: line.to_string(),
+            arg: arg.to_string(),
             flag: Flag::None,
+            given: false,
         }
+    }
+
+    pub(crate) fn counts(&self) -> bool {
+        self.cmd != Cmd::Comment
     }
 
     /// The sheet line; `abbrev` cuts the id to seven digits for the editor.
     pub(crate) fn line(&self, git: &dyn Commits, abbrev: bool) -> Result<String> {
         let word = self.cmd.word();
         Ok(match (self.cmd, &self.id) {
-            (Cmd::Exec, _) => format!("exec {}\n", self.arg),
+            (Cmd::Comment, _) => format!("{}\n", self.arg),
+            (Cmd::Exec | Cmd::Label | Cmd::Reset | Cmd::UpdateRef, _) => {
+                format!("{word} {}\n", self.arg)
+            }
+            (Cmd::Merge, id) => {
+                let mut line = word.to_string();
+                if let Some(id) = id {
+                    let shown = if abbrev {
+                        id.to_hex()[..7].to_string()
+                    } else {
+                        id.to_hex()
+                    };
+                    line.push_str(&format!("{} {shown}", self.flag.word()));
+                }
+                if !self.arg.is_empty() {
+                    line.push(' ');
+                    line.push_str(&self.arg);
+                }
+                line.push('\n');
+                line
+            }
             (_, Some(id)) => {
                 let shown = if abbrev {
                     id.to_hex()[..7].to_string()
                 } else {
                     id.to_hex()
                 };
+                if self.given {
+                    let sep = if self.arg.is_empty() { "" } else { " " };
+                    return Ok(format!(
+                        "{word}{} {shown}{sep}{}\n",
+                        self.flag.word(),
+                        self.arg
+                    ));
+                }
                 let empty = if git.is_empty(id)? { " # empty" } else { "" };
                 format!(
                     "{word}{} {shown} {}{empty}\n",
@@ -207,6 +264,7 @@ pub(crate) fn parse(git: &dyn Commits, text: &str, prior: bool) -> Result<Vec<It
     for (n, line) in text.lines().enumerate() {
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {
+            items.push(Item::with_arg(Cmd::Comment, line.trim_end()));
             continue;
         }
         let (word, rest) = trimmed
@@ -226,6 +284,17 @@ pub(crate) fn parse(git: &dyn Commits, text: &str, prior: bool) -> Result<Vec<It
             }
             Cmd::Exec => items.push(Item::exec(rest)),
             Cmd::Break | Cmd::Noop => items.push(Item::plain(cmd)),
+            Cmd::Label | Cmd::Reset | Cmd::UpdateRef if rest.is_empty() => {
+                bad(&mut errors, format!("missing arguments for {}", cmd.word()));
+            }
+            Cmd::Label if !super::rebase_merges::valid_label(rest) => {
+                bad(&mut errors, format!("'{rest}' is not a valid label"));
+            }
+            Cmd::Label | Cmd::Reset | Cmd::UpdateRef => items.push(Item::with_arg(cmd, rest)),
+            Cmd::Merge => match merge_item(git, rest) {
+                Ok(item) => items.push(item),
+                Err(why) => bad(&mut errors, why),
+            },
             _ => {
                 let mut words = rest.split_whitespace();
                 let mut flag = Flag::None;
@@ -265,11 +334,13 @@ pub(crate) fn parse(git: &dyn Commits, text: &str, prior: bool) -> Result<Vec<It
                     );
                     continue;
                 }
+                let text = rest.split_once(rev).map_or("", |(_, after)| after.trim());
                 items.push(Item {
                     cmd,
                     id: Some(id),
-                    arg: String::new(),
+                    arg: text.to_string(),
                     flag,
+                    given: true,
                 });
             }
         }
@@ -281,6 +352,54 @@ pub(crate) fn parse(git: &dyn Commits, text: &str, prior: bool) -> Result<Vec<It
     }
 }
 
+/// A `merge` line: `[-C <commit> | -c <commit>] <label>... [# <oneline>]`; without a commit the editor opens.
+fn merge_item(git: &dyn Commits, rest: &str) -> Result<Item, String> {
+    let mut item = Item::with_arg(Cmd::Merge, rest);
+    item.flag = Flag::Edit;
+    let Some(tail) = rest
+        .strip_prefix("-C")
+        .map(|t| (Flag::Replace, t))
+        .or_else(|| rest.strip_prefix("-c").map(|t| (Flag::Edit, t)))
+    else {
+        if rest.is_empty() {
+            return Err("missing arguments for merge".into());
+        }
+        return Ok(item);
+    };
+    let tail = (tail.0, tail.1.trim_start());
+    let (rev, arg) = tail
+        .1
+        .split_once(char::is_whitespace)
+        .map_or((tail.1, ""), |(r, a)| (r, a.trim_start()));
+    let Some(id) = git.find(rev) else {
+        return Err(format!("could not parse '{rev}'"));
+    };
+    item.flag = tail.0;
+    item.id = Some(id);
+    item.arg = arg.to_string();
+    Ok(item)
+}
+
+/// What the editor leaves, cleaned as `git stripspace --strip-comments` does: no comment lines, trailing blanks or
+/// doubled blank lines.
+pub(crate) fn stripspace(text: &str) -> String {
+    let mut out: Vec<&str> = Vec::new();
+    for line in text.lines() {
+        let line = line.trim_end();
+        if line.starts_with('#') {
+            continue;
+        }
+        if line.is_empty() && out.last().is_none_or(|l| l.is_empty()) {
+            continue;
+        }
+        out.push(line);
+    }
+    while out.last().is_some_and(|l| l.is_empty()) {
+        out.pop();
+    }
+    out.iter().map(|l| format!("{l}\n")).collect()
+}
+
 /// The text of the sheet as the editor opens it: the commands, then the summary and the help.
 pub(crate) fn editor_text(
     git: &dyn Commits,
@@ -288,7 +407,10 @@ pub(crate) fn editor_text(
     range: &str,
     onto: &ObjectId,
 ) -> Result<String> {
-    let count = items.iter().filter(|i| i.cmd != Cmd::Noop).count();
+    let count = items
+        .iter()
+        .filter(|i| i.counts() && i.cmd != Cmd::Noop)
+        .count();
     let mut text = sheet(git, items, true)?;
     text.push_str(&format!(
         "\n# Rebase {range} onto {} ({count} command{})\n#\n",
@@ -488,10 +610,44 @@ mod tests {
         assert_eq!(flags, [Flag::None, Flag::Replace, Flag::Edit, Flag::None]);
         assert_eq!(
             sheet(&Names, &items, true).unwrap(),
-            "pick 1111111 subject\nfixup -C 1111111 subject\nfixup -c 1111111 subject\nfixup 1111111 subject\n"
+            "pick 1111111 a\nfixup -C 1111111 b\nfixup -c 1111111\nfixup 1111111 d\n"
         );
         let errors = parse(&Names, &format!("pick {id}\nfixup -C\n"), false).unwrap_err();
         assert_eq!(errors[0], "error: missing arguments for fixup");
+    }
+
+    #[test]
+    fn merge_label_reset_and_update_ref_lines_are_kept_as_written() {
+        let id = "1".repeat(40);
+        let text = format!(
+            "label onto\n\nreset onto # x\nmerge -C {id} topic other # Merge branches\nmerge topic\nupdate-ref refs/heads/a\n"
+        );
+        let items = parse(&Names, &text, false).unwrap();
+        let words: Vec<&str> = items.iter().map(|i| i.cmd.word()).collect();
+        assert_eq!(
+            words,
+            ["label", "", "reset", "merge", "merge", "update-ref"]
+        );
+        assert_eq!(items[3].flag, Flag::Replace);
+        assert_eq!(items[3].arg, "topic other # Merge branches");
+        assert_eq!((items[4].flag, items[4].id), (Flag::Edit, None));
+        assert_eq!(
+            sheet(&Names, &items, true).unwrap(),
+            "label onto\n\nreset onto # x\nmerge -C 1111111 topic other # Merge branches\nmerge topic\nupdate-ref refs/heads/a\n"
+        );
+        let errors = parse(&Names, "label a..b\nreset\nmerge -C zzz t\n", false).unwrap_err();
+        assert_eq!(errors[0], "error: 'a..b' is not a valid label");
+        assert_eq!(errors[2], "error: missing arguments for reset");
+        assert_eq!(errors[4], "error: could not parse 'zzz'");
+    }
+
+    #[test]
+    fn stripspace_drops_comments_and_collapses_blank_lines() {
+        assert_eq!(
+            stripspace("\n\nlabel onto  \n\n\n# note\nreset onto\n\n#c\n\n"),
+            "label onto\n\nreset onto\n"
+        );
+        assert_eq!(stripspace("# only\n\n"), "");
     }
 
     #[test]
@@ -504,6 +660,7 @@ mod tests {
                 id: Some(id),
                 arg: String::new(),
                 flag: Flag::None,
+                given: false,
             },
             Item::pick(id),
         ];

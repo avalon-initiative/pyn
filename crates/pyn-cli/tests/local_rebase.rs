@@ -249,23 +249,33 @@ fn plain_rebase_is_up_to_date_and_unbuilt_options_are_refused() {
         ("--exec=true", "--exec"),
         ("--edit-todo", "--edit-todo"),
         ("--quit", "--quit"),
+        ("--rebase-merges", "--rebase-merges"),
+        ("--root", "--root"),
+        ("--fork-point", "--fork-point"),
+        ("--update-refs", "--update-refs"),
     ] {
         let err = env.fails(&ws, "alice", &["rebase", flag]);
         assert!(err.contains(word) && err.contains("workspace"), "{err}");
     }
     let tools = env.dir("tools");
-    for word in ["edit", "break", "exec true"] {
+    for word in [
+        "edit",
+        "break",
+        "exec true",
+        "label onto",
+        "reset onto",
+        "merge topic",
+        "update-ref refs/heads/x",
+    ] {
         let ids = git(
             &ws,
             &["log", "--reverse", "--format=%H", "origin/main..main"],
         );
         let first = ids.lines().next().unwrap();
-        let line = if word == "break" {
-            format!("{word}\npick {first}\n")
-        } else if word == "exec true" {
-            format!("pick {first}\n{word}\n")
-        } else {
-            format!("{word} {first}\n")
+        let line = match word {
+            "break" => format!("{word}\npick {first}\n"),
+            "edit" => format!("{word} {first}\n"),
+            _ => format!("pick {first}\n{word}\n"),
         };
         let seq = script(
             &tools,

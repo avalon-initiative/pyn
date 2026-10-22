@@ -1,6 +1,7 @@
 //! `pyn rebase` on a git repository, compared with the real `git rebase` on a copy of the same repository: the exit
 //! status, the commits made (same ids), the refs, the index, the work tree, the stash and the `rebase-merge` state
-//! (never the messages or the reflogs). Needs `git` on the PATH (tests only).
+//! (never the messages; the reflog subjects of `HEAD` only where a test sets `Pair::reflog`). Needs `git` on the PATH
+//! (tests only).
 
 mod common;
 
@@ -235,7 +236,42 @@ fn state(env: &Env, dir: &Path) -> Vec<String> {
     for name in ["patch", "rewritten-list", "rewritten-pending"] {
         out.push(read(dir, &format!("rebase-merge/{name}")));
     }
+    for name in [
+        "rebase-merge/squash-onto",
+        "rebase-merge/refs-to-delete",
+        "rebase-merge/update-refs",
+        "MERGE_MODE",
+    ] {
+        out.push(read(dir, name));
+    }
+    // git also writes AUTO_MERGE for clean picks; it only matters while a merge waits for its conflicts.
+    out.push(if dir.join(".git/MERGE_HEAD").exists() {
+        read(dir, "AUTO_MERGE")
+    } else {
+        String::new()
+    });
+    let log = env.ok(dir, &["log", "-g", "--format=%gs", "HEAD"]);
+    // git before 2.55 logs a merge under the action of the command before it, which is a pick in these tests.
+    out.push(if git_before_2_55() {
+        log.replace("rebase (merge): ", "rebase (pick): ")
+    } else {
+        log
+    });
     out
+}
+
+fn git_before_2_55() -> bool {
+    static OLD: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *OLD.get_or_init(|| {
+        let out = Command::new("git").arg("--version").output().unwrap();
+        let text = String::from_utf8_lossy(&out.stdout).into_owned();
+        let minor: u32 = text
+            .split('.')
+            .nth(1)
+            .and_then(|m| m.parse().ok())
+            .unwrap_or(0);
+        minor < 55
+    })
 }
 
 fn part_name(i: usize) -> String {
@@ -274,7 +310,13 @@ fn part_name(i: usize) -> String {
         25 => "work tree".into(),
         26 => "rebase-merge/patch".into(),
         27 => "rebase-merge/rewritten-list".into(),
-        _ => "rebase-merge/rewritten-pending".into(),
+        28 => "rebase-merge/rewritten-pending".into(),
+        29 => "rebase-merge/squash-onto".into(),
+        30 => "rebase-merge/refs-to-delete".into(),
+        31 => "rebase-merge/update-refs".into(),
+        32 => "MERGE_MODE".into(),
+        33 => "AUTO_MERGE (merging)".into(),
+        _ => "HEAD reflog subjects".into(),
     }
 }
 
@@ -283,6 +325,8 @@ struct Pair {
     env: Env,
     git: PathBuf,
     pyn: PathBuf,
+    /// Also compare the reflog subjects of `HEAD`.
+    reflog: std::cell::Cell<bool>,
 }
 
 impl Pair {
@@ -306,6 +350,7 @@ impl Pair {
             env,
             git,
             pyn,
+            reflog: std::cell::Cell::new(false),
         }
     }
 
@@ -336,7 +381,7 @@ impl Pair {
         );
         let (gs, ps) = (state(&self.env, &self.git), state(&self.env, &self.pyn));
         for (i, (a, b)) in ps.iter().zip(&gs).enumerate() {
-            if a != b {
+            if a != b && (i != 34 || self.reflog.get()) {
                 panic!(
                     "{what}: state part {i} ({}) differs\npyn: {a:?}\ngit: {b:?}\npyn said {}",
                     part_name(i),
@@ -798,7 +843,7 @@ fn pyn_continues_what_git_stopped() {
 fn the_other_unbuilt_options_are_usage_errors() {
     let p = history("sha1");
     p.on("clean");
-    for flag in ["--root", "--rebase-merges", "--apply", "--keep-base"] {
+    for flag in ["--apply", "--keep-base"] {
         let out = p.env.pyn(&p.pyn, &["rebase", flag, "main"]);
         assert_eq!(out.status.code(), Some(129), "{flag}");
     }
@@ -1762,5 +1807,766 @@ fn note_rewriting_follows_its_settings() {
             assert_eq!(p.same_env(&["-i", "main"], &label, &envs), 0);
             p.notes(&label);
         }
+    });
+}
+
+// Rebasing merges (`--rebase-merges`), `--root`, `--update-refs` and the fork point.
+
+/// From `base`: `main` (`m1`, `m2` on other files), `side` (`s1`, the merge `Merge branch 'topic' into side` of
+/// `topic` (`t1`, `t2`), `s2`), `csid` (`cs1` on `m1`, then the merge of `cousin`, a branch from `base`), `conf`
+/// (`x1`, the merge of `ytopic` resolved by hand after a conflict in `f`, `x2`) and `two` (`o1`, a merge of `ta`, then
+/// a merge of `tb`).
+fn merge_history(format: &str) -> Pair {
+    let (tmp, env, git) = Pair::root();
+    init(&env, &git, format);
+    write(&git, "f", FILE);
+    commit_all(&env, &git, "base");
+    env.ok(&git, &["tag", "base"]);
+    let branch = |name: &str, from: &str| {
+        env.ok(&git, &["checkout", "-q", "-b", name, from]);
+    };
+    let merge = |what: &str, message: &str| {
+        env.ok(&git, &["merge", "-q", "--no-ff", "-m", message, what]);
+    };
+    branch("topic", "base");
+    write(&git, "t1", "t1\n");
+    commit_all(&env, &git, "t1");
+    write(&git, "t2", "t2\n");
+    commit_all(&env, &git, "t2");
+    branch("cousin", "base");
+    write(&git, "c1", "c1\n");
+    commit_all(&env, &git, "c1 on a cousin branch");
+    branch("ytopic", "base");
+    write(&git, "f", &with_line(2, "Y"));
+    commit_all(&env, &git, "y1");
+    branch("ta", "base");
+    write(&git, "ta", "ta\n");
+    commit_all(&env, &git, "ta1");
+    branch("tb", "base");
+    write(&git, "tb", "tb\n");
+    commit_all(&env, &git, "tb1");
+    branch("main2", "base");
+    write(&git, "m1", "m1\n");
+    commit_all(&env, &git, "m1");
+    env.ok(&git, &["tag", "m1"]);
+    write(&git, "m2", "m2\n");
+    commit_all(&env, &git, "m2");
+    env.ok(&git, &["branch", "-M", "main"]);
+    branch("side", "base");
+    write(&git, "s1", "s1\n");
+    commit_all(&env, &git, "s1");
+    merge("topic", "Merge branch 'topic' into side");
+    write(&git, "s2", "s2\n");
+    commit_all(&env, &git, "s2");
+    branch("csid", "m1");
+    write(&git, "cs1", "cs1\n");
+    commit_all(&env, &git, "cs1");
+    merge("cousin", "Merge branch 'cousin'");
+    write(&git, "cs2", "cs2\n");
+    commit_all(&env, &git, "cs2");
+    branch("conf", "base");
+    write(&git, "f", &with_line(2, "X"));
+    commit_all(&env, &git, "x1");
+    let out = env.git(
+        &git,
+        &[
+            "merge",
+            "--no-ff",
+            "-m",
+            "Merge branch 'ytopic' into conf",
+            "ytopic",
+        ],
+    );
+    assert_eq!(out.status.code(), Some(1));
+    write(&git, "f", &with_line(2, "R"));
+    env.ok(&git, &["add", "f"]);
+    env.ok(&git, &["commit", "-q", "--no-edit"]);
+    write(&git, "x2", "x2\n");
+    commit_all(&env, &git, "x2");
+    branch("two", "base");
+    write(&git, "o1", "o1\n");
+    commit_all(&env, &git, "o1");
+    merge("ta", "Merge branch 'ta' into two");
+    write(&git, "o2", "o2\n");
+    commit_all(&env, &git, "o2");
+    merge("tb", "Merge branch 'tb' into two");
+    env.ok(&git, &["checkout", "-q", "main"]);
+    Pair::copied(tmp, env, git)
+}
+
+/// The editor of a sheet: a script that writes `lines` (with `$(git rev-parse ..)` expanded) to the file it is given.
+fn sheet_script(p: &Pair, lines: &str) -> String {
+    let script = p.git.parent().unwrap().join("sheet.sh");
+    fs::write(&script, format!("cat > \"$1\" <<EOF\n{lines}EOF\n")).unwrap();
+    format!("sh {}", script.display())
+}
+
+#[test]
+fn merges_are_recreated_with_the_same_ids() {
+    both_formats(|f| {
+        for (branch, name) in [("side", "side"), ("csid", "cousin"), ("two", "two merges")] {
+            for args in [
+                &["-r", "main"][..],
+                &["--rebase-merges", "main"],
+                &["--rebase-merges=no-rebase-cousins", "main"],
+                &["--rebase-merges=rebase-cousins", "main"],
+                &["-r", "--no-ff", "main"],
+                &["-r", "-q", "main"],
+            ] {
+                let p = merge_history(f);
+                p.reflog.set(true);
+                p.on(branch);
+                let label = format!("{f} {name} {args:?}");
+                assert_eq!(p.same(args, &label), 0, "{label}");
+            }
+        }
+        let p = merge_history(f);
+        p.reflog.set(true);
+        p.on("side");
+        assert_eq!(
+            p.same_env(&["-i", "-r", "main"], &format!("{f} -i"), &[]),
+            0
+        );
+        let p = merge_history(f);
+        p.reflog.set(true);
+        p.on("side");
+        assert_eq!(
+            p.same(&["--no-rebase-merges", "main"], &format!("{f} flat")),
+            0
+        );
+        let p = merge_history(f);
+        p.reflog.set(true);
+        p.on("side");
+        p.config("rebase.rebaseMerges", "true");
+        assert_eq!(p.same(&["main"], &format!("{f} configured")), 0);
+        p.config("rebase.rebaseMerges", "rebase-cousins");
+        let p = merge_history(f);
+        p.on("csid");
+        p.config("rebase.rebaseMerges", "rebase-cousins");
+        assert_eq!(p.same(&["main"], &format!("{f} configured cousins")), 0);
+    });
+}
+
+#[test]
+fn the_editor_sees_the_merge_sheet_and_the_cousin_modes() {
+    both_formats(|f| {
+        for (branch, mode) in [
+            ("side", "-r"),
+            ("csid", "--rebase-merges=no-rebase-cousins"),
+            ("csid", "--rebase-merges=rebase-cousins"),
+            ("two", "-r"),
+        ] {
+            let p = merge_history(f);
+            p.on(branch);
+            let save = ("GIT_SEQUENCE_EDITOR", "cp \"$1\" .git/seen-sheet #");
+            let label = format!("{f} {branch} {mode}");
+            assert_eq!(
+                p.same_env(&["-i", mode, "main"], &label, &[save]),
+                0,
+                "{label}"
+            );
+            assert_eq!(seen_comments(&p.pyn), seen_comments(&p.git), "{label}");
+            assert_eq!(seen_commands(&p.pyn), seen_commands(&p.git), "{label}");
+            assert!(
+                seen_commands(&p.git)
+                    .iter()
+                    .any(|l| l.starts_with("merge -C")),
+                "{label}"
+            );
+        }
+    });
+}
+
+#[test]
+fn a_conflicting_merge_stops_and_continue_skip_abort_work() {
+    both_formats(|f| {
+        let resolved = with_line(2, "R2");
+        let p = merge_history(f);
+        p.reflog.set(true);
+        p.on("conf");
+        assert_eq!(p.same(&["-r", "main"], &format!("{f} stop")), 1);
+        assert!(p.pyn.join(".git/MERGE_HEAD").exists());
+        p.resolve("f", &resolved);
+        assert_eq!(p.same(&["--continue"], &format!("{f} continue")), 0);
+
+        let p = merge_history(f);
+        p.reflog.set(true);
+        p.on("conf");
+        assert_eq!(p.same(&["-r", "main"], &format!("{f} stop for skip")), 1);
+        assert_eq!(p.same(&["--skip"], &format!("{f} skip")), 0);
+
+        let p = merge_history(f);
+        p.reflog.set(true);
+        p.on("conf");
+        assert_eq!(p.same(&["-r", "main"], &format!("{f} stop for abort")), 1);
+        assert_eq!(p.same(&["--abort"], &format!("{f} abort")), 0);
+
+        let p = merge_history(f);
+        p.on("conf");
+        assert_eq!(p.same(&["-r", "main"], &format!("{f} stop for quit")), 1);
+        assert_eq!(p.same(&["--quit"], &format!("{f} quit")), 0);
+
+        let p = merge_history(f);
+        p.on("conf");
+        assert_eq!(p.same(&["-r", "main"], &format!("{f} stop, unresolved")), 1);
+        assert_eq!(p.same(&["--continue"], &format!("{f} unresolved")), 1);
+
+        let p = merge_history(f);
+        p.on("conf");
+        assert_eq!(
+            p.same(&["-r", "main"], &format!("{f} resolved as first parent")),
+            1
+        );
+        p.resolve("f", &with_line(2, "X"));
+        assert_eq!(p.same(&["--continue"], &format!("{f} same tree")), 0);
+    });
+}
+
+#[test]
+fn git_and_pyn_continue_each_others_merge_stops() {
+    both_formats(|f| {
+        let p = merge_history(f);
+        p.on("conf");
+        assert_eq!(
+            p.env.pyn(&p.pyn, &["rebase", "-r", "main"]).status.code(),
+            Some(1)
+        );
+        assert_eq!(
+            p.env.git(&p.git, &["rebase", "-r", "main"]).status.code(),
+            Some(1)
+        );
+        for dir in [&p.pyn, &p.git] {
+            write(dir, "f", &with_line(2, "R2"));
+            p.env.ok(dir, &["add", "f"]);
+        }
+        let out = p.env.git(&p.pyn, &["rebase", "--continue"]);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let out = p.env.pyn(&p.git, &["rebase", "--continue"]);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        for dir in [&p.pyn, &p.git] {
+            assert!(!dir.join(".git/rebase-merge").exists());
+        }
+        let log = |d: &Path| p.env.ok(d, &["log", "--format=%H %P", "-3"]);
+        assert_eq!(log(&p.pyn), log(&p.git), "{f}");
+    });
+}
+
+/// The sheet that rebuilds `side` onto the new base by hand, ending with `tail`.
+const SIDE_SHEET: &str = "label onto
+reset onto
+pick $(git rev-parse topic~1) t1
+pick $(git rev-parse topic) t2
+label topic
+reset onto
+pick $(git rev-parse side~2) s1
+";
+
+fn run_text(p: &Pair, text: &str, args: &[&str], label: &str, more: &[(&str, &str)]) -> i32 {
+    let editor = sheet_script(p, text);
+    let mut envs = vec![("GIT_SEQUENCE_EDITOR", editor.as_str())];
+    envs.extend_from_slice(more);
+    let mut full = vec!["-i"];
+    full.extend_from_slice(args);
+    p.same_env(&full, label, &envs)
+}
+
+#[test]
+fn label_reset_and_merge_lines_run_like_git() {
+    both_formats(|f| {
+        let cases: [(&str, String, i32); 9] = [
+            (
+                "bare merge",
+                format!("{SIDE_SHEET}merge topic # Merge branch 'topic' of here\n"),
+                0,
+            ),
+            (
+                "bare merge without a oneline",
+                format!("{SIDE_SHEET}merge topic\n"),
+                0,
+            ),
+            (
+                "merge -C",
+                format!(
+                    "{SIDE_SHEET}merge -C $(git rev-parse side~1) topic # x\npick $(git rev-parse side)\n"
+                ),
+                0,
+            ),
+            (
+                "merge -c",
+                format!("{SIDE_SHEET}merge -c $(git rev-parse side~1) topic\n"),
+                0,
+            ),
+            (
+                "merge twice",
+                format!(
+                    "{SIDE_SHEET}merge -C $(git rev-parse side~1) topic\nmerge -C $(git rev-parse side~1) topic\n"
+                ),
+                0,
+            ),
+            (
+                "unknown label in a merge",
+                format!("{SIDE_SHEET}merge -C $(git rev-parse side~1) nolabel\n"),
+                1,
+            ),
+            (
+                "unknown label in a reset",
+                format!("{SIDE_SHEET}reset nolabel\n"),
+                1,
+            ),
+            (
+                "nothing to merge",
+                format!("{SIDE_SHEET}merge -C $(git rev-parse side~1)\n"),
+                1,
+            ),
+            (
+                "a revision as the label",
+                format!("{SIDE_SHEET}merge -C $(git rev-parse side~1) $(git rev-parse topic)\n"),
+                0,
+            ),
+        ];
+        for (name, text, status) in cases {
+            let p = merge_history(f);
+            p.reflog.set(true);
+            p.on("side");
+            let label = format!("{f} {name}");
+            assert_eq!(
+                run_text(&p, &text, &["main"], &label, &[]),
+                status,
+                "{label}"
+            );
+            if status == 1 {
+                assert!(p.pyn.join(".git/rebase-merge").exists(), "{label}");
+                assert_eq!(p.same(&["--abort"], &format!("{label} abort")), 0);
+            }
+        }
+    });
+}
+
+#[test]
+fn an_edited_merge_message_and_an_invalid_label() {
+    both_formats(|f| {
+        let p = merge_history(f);
+        p.reflog.set(true);
+        p.on("side");
+        let text = format!("{SIDE_SHEET}merge -c $(git rev-parse side~1) topic\n");
+        let editor = ("GIT_EDITOR", "sed -i -e '1s/.*/Edited merge/'");
+        assert_eq!(
+            run_text(&p, &text, &["main"], &format!("{f} edited"), &[editor]),
+            0
+        );
+        let p = merge_history(f);
+        p.on("side");
+        let text = "label onto\nlabel a..b\n".to_string();
+        assert_eq!(
+            run_text(&p, &text, &["main"], &format!("{f} bad label"), &[]),
+            1
+        );
+        assert_eq!(p.same(&["--abort"], &format!("{f} abort")), 0);
+        let p = merge_history(f);
+        p.on("side");
+        let text = format!(
+            "{SIDE_SHEET}merge -C $(git rev-parse side~1) topic\nbreak\npick $(git rev-parse side)\n"
+        );
+        assert_eq!(
+            run_text(&p, &text, &["main"], &format!("{f} break"), &[]),
+            0
+        );
+        assert_eq!(p.same(&["--continue"], &format!("{f} continue")), 0);
+    });
+}
+
+#[test]
+fn unchanged_merges_fast_forward_and_no_ff_recreates_them() {
+    both_formats(|f| {
+        for (branch, args) in [
+            ("side", vec!["-r", "base"]),
+            ("side", vec!["-r", "--no-ff", "base"]),
+            ("two", vec!["-r", "base"]),
+            ("csid", vec!["-r", "m1"]),
+            ("csid", vec!["-r", "--rebase-merges=rebase-cousins", "m1"]),
+        ] {
+            let p = merge_history(f);
+            p.reflog.set(true);
+            p.on(branch);
+            let label = format!("{f} {branch} {args:?}");
+            assert_eq!(p.same(&args, &label), 0, "{label}");
+            let p = merge_history(f);
+            p.reflog.set(true);
+            p.on(branch);
+            let label = format!("{f} {branch} -i {args:?}");
+            assert_eq!(
+                p.same_env(&[&["-i"][..], &args].concat(), &label, &[]),
+                0,
+                "{label}"
+            );
+        }
+    });
+}
+
+#[test]
+fn exec_and_break_lines_mix_with_merges() {
+    both_formats(|f| {
+        for args in [
+            vec!["-r", "-x", "true", "main"],
+            vec!["-r", "--exec", "false", "main"],
+        ] {
+            let p = merge_history(f);
+            p.reflog.set(true);
+            p.on("side");
+            let label = format!("{f} {args:?}");
+            let status = p.same(&args, &label);
+            if status == 1 {
+                assert!(p.same(&["--skip"], &format!("{label} skip")) <= 1);
+            }
+        }
+        let p = merge_history(f);
+        p.on("side");
+        let edit = ("GIT_SEQUENCE_EDITOR", "sed -i -e '/^merge/i break'");
+        assert_eq!(
+            p.same_env(&["-i", "-r", "main"], &format!("{f} break"), &[edit]),
+            0
+        );
+        let edit_todo = ("GIT_SEQUENCE_EDITOR", "sed -i -e 's/^pick/reword/'");
+        let out = p.same_command(
+            &["rebase", "--edit-todo"],
+            &format!("{f} edit-todo"),
+            &[edit_todo],
+        );
+        assert_eq!(out, 0);
+        assert_eq!(p.same(&["--continue"], &format!("{f} continue")), 0);
+    });
+}
+
+impl Pair {
+    /// Branches that point into the commits of `side`: two at `s1`, one at the tip.
+    fn with_update_refs_branches(&self) {
+        self.both(|env, d| {
+            for (name, rev) in [("mid", "side~2"), ("mid2", "side~2"), ("tip", "side")] {
+                env.ok(d, &["branch", name, rev]);
+            }
+        });
+    }
+}
+
+#[test]
+fn update_refs_moves_the_branches_that_point_into_the_replayed_commits() {
+    both_formats(|f| {
+        type Case<'a> = (&'a str, &'a [&'a str], &'a [(&'a str, &'a str)]);
+        let cases: [Case; 6] = [
+            ("-r", &["-r", "--update-refs", "main"], &[]),
+            ("-i -r", &["-i", "-r", "--update-refs", "main"], &[]),
+            ("flat", &["--update-refs", "main"], &[]),
+            ("flat -i", &["-i", "--update-refs", "main"], &[]),
+            (
+                "break",
+                &["-i", "-r", "--update-refs", "main"],
+                &[("GIT_SEQUENCE_EDITOR", "sed -i -e '/^pick.*s2/i break'")],
+            ),
+            (
+                "exec",
+                &["-i", "-r", "--update-refs", "-x", "true", "main"],
+                &[],
+            ),
+        ];
+        for (name, args, envs) in cases {
+            let p = merge_history(f);
+            p.reflog.set(true);
+            p.on("side");
+            p.with_update_refs_branches();
+            let label = format!("{f} {name}");
+            assert_eq!(
+                p.same_command(&[&["rebase"][..], args].concat(), &label, envs),
+                0,
+                "{label}"
+            );
+            if name == "break" {
+                assert_eq!(p.same(&["--continue"], &format!("{label} continue")), 0);
+            }
+            for branch in ["mid", "tip", "topic"] {
+                let log = |d: &Path| p.env.ok(d, &["log", "-g", "--format=%gs", branch]);
+                assert_eq!(log(&p.pyn), log(&p.git), "{label} {branch}");
+            }
+        }
+        let p = merge_history(f);
+        p.on("side");
+        p.with_update_refs_branches();
+        p.config("rebase.updateRefs", "true");
+        assert_eq!(p.same(&["-r", "main"], &format!("{f} configured")), 0);
+        let p = merge_history(f);
+        p.on("side");
+        p.with_update_refs_branches();
+        p.config("rebase.updateRefs", "true");
+        assert_eq!(
+            p.same(
+                &["-r", "--no-update-refs", "main"],
+                &format!("{f} disabled")
+            ),
+            0
+        );
+        let p = merge_history(f);
+        p.on("side");
+        p.with_update_refs_branches();
+        assert_eq!(
+            p.same(
+                &["-r", "--update-refs", "-q", "main"],
+                &format!("{f} quiet")
+            ),
+            0
+        );
+    });
+}
+
+#[test]
+fn update_refs_with_a_stop_and_abort() {
+    both_formats(|f| {
+        let p = merge_history(f);
+        p.on("conf");
+        p.both(|env, d| {
+            env.ok(d, &["branch", "xone", "conf~2"]);
+        });
+        assert_eq!(
+            p.same(&["-r", "--update-refs", "main"], &format!("{f} stop")),
+            1
+        );
+        assert_eq!(p.same(&["--abort"], &format!("{f} abort")), 0);
+        assert_eq!(
+            p.same(&["-r", "--update-refs", "main"], &format!("{f} stop again")),
+            1
+        );
+        p.resolve("f", &with_line(2, "R2"));
+        assert_eq!(p.same(&["--continue"], &format!("{f} continue")), 0);
+    });
+}
+
+#[test]
+fn root_rebases_every_commit_onto_a_new_root_or_onto_a_base() {
+    both_formats(|f| {
+        let cases: [(&str, &str, &[&str]); 12] = [
+            ("topic", "root", &["--root"]),
+            ("topic", "root -i", &["-i", "--root"]),
+            ("topic", "root no-ff", &["--root", "--no-ff"]),
+            ("topic", "root onto", &["--root", "--onto", "main"]),
+            ("topic", "root -i onto", &["-i", "--root", "--onto", "main"]),
+            ("side", "root -r", &["-r", "--root"]),
+            ("side", "root -r -i", &["-i", "-r", "--root"]),
+            ("side", "root -r onto", &["-r", "--root", "--onto", "main"]),
+            (
+                "csid",
+                "root -r cousins",
+                &["--rebase-merges=rebase-cousins", "--root"],
+            ),
+            ("two", "root -r onto", &["-r", "--root", "--onto", "m1"]),
+            ("side", "root flat", &["--root"]),
+            ("side", "root flat onto", &["--root", "--onto", "main"]),
+        ];
+        for (branch, name, args) in cases {
+            let p = merge_history(f);
+            p.reflog.set(true);
+            p.on(branch);
+            let label = format!("{f} {branch} {name}");
+            assert_eq!(p.same(args, &label), 0, "{label}");
+        }
+        let p = merge_history(f);
+        p.reflog.set(true);
+        p.on("main");
+        assert_eq!(
+            p.same(&["--root", "topic"], &format!("{f} branch argument")),
+            0
+        );
+        let p = merge_history(f);
+        p.on("topic");
+        let brk = ("GIT_SEQUENCE_EDITOR", "sed -i -e '2i break'");
+        assert_eq!(
+            p.same_env(&["-i", "--root"], &format!("{f} break"), &[brk]),
+            0
+        );
+        assert_eq!(p.same(&["--continue"], &format!("{f} continue")), 0);
+        let p = merge_history(f);
+        p.on("side");
+        let brk = ("GIT_SEQUENCE_EDITOR", "sed -i -e '/^merge/i break'");
+        assert_eq!(
+            p.same_env(&["-i", "-r", "--root"], &format!("{f} -r break"), &[brk]),
+            0
+        );
+        assert_eq!(p.same(&["--abort"], &format!("{f} abort")), 0);
+        let p = merge_history(f);
+        p.on("topic");
+        assert_eq!(
+            p.same(
+                &["--root", "--fork-point"],
+                &format!("{f} root and fork point")
+            ),
+            128
+        );
+        assert_eq!(
+            p.same(&["--root", "main", "topic"], &format!("{f} two arguments")),
+            129
+        );
+    });
+}
+
+impl Pair {
+    /// `up` was at `m1` when `side2` (`k1`, `k2`) was cut from it; then `up` was rewritten to `n1`, `n2` from `base`.
+    fn with_rewritten_upstream(&self) {
+        let tick = TICK.fetch_add(40, std::sync::atomic::Ordering::SeqCst);
+        for dir in [&self.git, &self.pyn] {
+            let e = &self.env;
+            e.ok(dir, &["branch", "up", "m1"]);
+            e.ok(dir, &["checkout", "-q", "-b", "side2", "m1"]);
+            write(dir, "k1", "k1\n");
+            commit_at(e, dir, "k1", tick);
+            write(dir, "k2", "k2\n");
+            commit_at(e, dir, "k2", tick + 10);
+            e.ok(dir, &["checkout", "-q", "up"]);
+            e.ok(dir, &["reset", "-q", "--hard", "base"]);
+            write(dir, "n1", "n1\n");
+            commit_at(e, dir, "n1", tick + 20);
+            write(dir, "n2", "n2\n");
+            commit_at(e, dir, "n2", tick + 30);
+            e.ok(dir, &["checkout", "-q", "side2"]);
+            e.ok(dir, &["config", "branch.side2.remote", "."]);
+            e.ok(dir, &["config", "branch.side2.merge", "refs/heads/up"]);
+        }
+    }
+}
+
+#[test]
+fn the_fork_point_of_a_rewritten_upstream_limits_the_commits() {
+    both_formats(|f| {
+        let cases: [(&str, &[&str]); 8] = [
+            ("default", &[]),
+            ("default -i", &["-i"]),
+            ("no fork point", &["--no-fork-point"]),
+            ("explicit", &["--fork-point", "up"]),
+            ("explicit -i", &["-i", "--fork-point", "up"]),
+            ("explicit upstream", &["up"]),
+            (
+                "fork point and onto",
+                &["--fork-point", "--onto", "main", "up"],
+            ),
+            ("-r", &["-r"]),
+        ];
+        for (name, args) in cases {
+            let p = merge_history(f);
+            p.with_rewritten_upstream();
+            p.reflog.set(true);
+            let label = format!("{f} {name}");
+            assert_eq!(p.same(args, &label), 0, "{label}");
+        }
+        let p = merge_history(f);
+        p.with_rewritten_upstream();
+        let base = p.env.ok(&p.git, &["rev-parse", "base"]);
+        assert_eq!(
+            p.same(&["--fork-point", base.trim()], &format!("{f} not a ref")),
+            128
+        );
+        let p = merge_history(f);
+        p.with_rewritten_upstream();
+        p.both(|env, d| {
+            env.ok(d, &["reflog", "expire", "--expire=now", "refs/heads/up"]);
+        });
+        assert_eq!(p.same(&[], &format!("{f} no reflog")), 0);
+    });
+}
+
+#[test]
+fn the_editor_sees_the_sheet_of_root_and_fork_point_rebases() {
+    both_formats(|f| {
+        let save = ("GIT_SEQUENCE_EDITOR", "cp \"$1\" .git/seen-sheet #");
+        let cases: [(&str, bool, &[&str]); 6] = [
+            ("topic", false, &["-i", "--root"]),
+            ("topic", false, &["-i", "--root", "--onto", "main"]),
+            ("side", false, &["-i", "-r", "--root"]),
+            ("side", false, &["-i", "-r", "--root", "--onto", "main"]),
+            ("side2", true, &["-i", "-r"]),
+            ("side2", true, &["-i", "--rebase-merges=rebase-cousins"]),
+        ];
+        for (branch, rewritten, args) in cases {
+            let p = merge_history(f);
+            if rewritten {
+                p.with_rewritten_upstream();
+            }
+            p.on(branch);
+            let label = format!("{f} {branch} {args:?}");
+            assert_eq!(p.same_env(args, &label, &[save]), 0, "{label}");
+            assert_eq!(seen_comments(&p.pyn), seen_comments(&p.git), "{label}");
+            assert_eq!(seen_commands(&p.pyn), seen_commands(&p.git), "{label}");
+        }
+    });
+}
+
+#[test]
+fn a_bad_mode_is_fatal_and_the_octopus_is_refused() {
+    let p = merge_history("sha1");
+    p.on("side");
+    for dir in [&p.git, &p.pyn] {
+        let out = if dir == &p.git {
+            p.env
+                .git(dir, &["rebase", "--rebase-merges=sideways", "main"])
+        } else {
+            p.env
+                .pyn(dir, &["rebase", "--rebase-merges=sideways", "main"])
+        };
+        assert_eq!(out.status.code(), Some(128), "{dir:?}");
+    }
+    // git recreates an octopus merge; pyn stops on it and leaves the sheet for git to continue.
+    let p = merge_history("sha1");
+    p.both(|env, d| {
+        env.ok(d, &["checkout", "-q", "-b", "oct", "base"]);
+        write(d, "oc", "oc\n");
+        commit_at(env, d, "oc", 1_600_100_000);
+        env.ok(d, &["merge", "-q", "--no-ff", "-m", "Octopus", "ta", "tb"]);
+    });
+    let out = p.env.pyn(&p.pyn, &["rebase", "-r", "main"]);
+    assert_eq!(out.status.code(), Some(1));
+    let text = String::from_utf8_lossy(&out.stderr);
+    assert!(text.contains("octopus"), "{text}");
+    assert!(p.pyn.join(".git/rebase-merge").exists());
+    let done = read(&p.pyn, "rebase-merge/git-rebase-todo");
+    assert!(
+        done.lines().next().unwrap().starts_with("merge -C"),
+        "{done}"
+    );
+    let out = p.env.git(&p.pyn, &["rebase", "--continue"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn a_merged_branch_is_labelled_by_the_local_branch_at_its_tip() {
+    both_formats(|f| {
+        if git_before_2_55() {
+            return;
+        }
+        let p = merge_history(f);
+        p.on("side");
+        p.both(|env, d| {
+            env.ok(d, &["branch", "zzz", "topic"]);
+            env.ok(d, &["branch", "-D", "topic"]);
+        });
+        let save = ("GIT_SEQUENCE_EDITOR", "cp \"$1\" .git/seen-sheet #");
+        assert_eq!(
+            p.same_env(&["-i", "-r", "main"], &format!("{f} label"), &[save]),
+            0
+        );
+        assert_eq!(seen_commands(&p.pyn), seen_commands(&p.git));
+        assert!(
+            seen_commands(&p.pyn)
+                .iter()
+                .any(|l| l.starts_with("label zzz")),
+            "{:?}",
+            seen_commands(&p.pyn)
+        );
     });
 }
