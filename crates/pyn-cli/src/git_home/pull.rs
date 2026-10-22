@@ -4,13 +4,14 @@ use std::sync::atomic::Ordering;
 
 use anyhow::{Result, anyhow, bail};
 use clap::{ArgAction, Args, Parser};
-use pyn_git::tracking;
+use pyn_git::{Remote, map_ref, tracking};
 use pyn_gitwork::Head;
 use pyn_object::ObjectId;
 
 use super::fetch::{FetchArgs, remotes_in_order};
 use super::fetch_apply::commit_of;
 use super::merge::{BLOCKED_STATUS, QUIET, default_message, initial_checkout};
+use super::rebase::PullMode;
 use super::{GitHome, merge};
 use crate::merging::MergeArgs;
 
@@ -286,23 +287,44 @@ impl Candidate {
 
 enum Rebase {
     Off,
-    On,
-    /// `merges` or `interactive`: fine while nothing needs replaying.
-    Unbuilt,
+    On(PullMode),
     Unset,
+}
+
+impl Rebase {
+    fn on(&self) -> bool {
+        matches!(self, Rebase::On(_))
+    }
+}
+
+/// A `--rebase` or `pull.rebase` value, or the text of git's complaint.
+fn parse_rebase(v: &str) -> Result<Rebase, Option<&'static str>> {
+    Ok(match v {
+        "merges" | "m" => Rebase::On(PullMode::Merges),
+        "interactive" | "i" => Rebase::On(PullMode::Interactive),
+        "preserve" | "p" => return Err(Some("error: {}: 'preserve' superseded by 'merges'")),
+        _ => match v.to_ascii_lowercase().as_str() {
+            "false" | "no" | "off" | "0" | "" => Rebase::Off,
+            "true" | "yes" | "on" | "1" => Rebase::On(PullMode::Plain),
+            _ => return Err(None),
+        },
+    })
 }
 
 fn rebase_setting(git: &GitHome, args: &PullArgs, branch: Option<&str>) -> Result<Rebase> {
     if args.no_rebase {
         return Ok(Rebase::Off);
     }
-    let from = |v: &str| match v.to_ascii_lowercase().as_str() {
-        "false" | "no" | "off" | "0" | "" => Rebase::Off,
-        "merges" | "m" | "interactive" | "i" => Rebase::Unbuilt,
-        _ => Rebase::On,
-    };
     if let Some(given) = &args.rebase {
-        return Ok(given.as_deref().map_or(Rebase::On, from));
+        let Some(v) = given else {
+            return Ok(Rebase::On(PullMode::Plain));
+        };
+        return Ok(parse_rebase(v).unwrap_or_else(|why| {
+            if let Some(line) = why {
+                eprintln!("{}", line.replace("{}", v));
+            }
+            crate::usage_error(&format!("invalid value for '--rebase': '{v}'"))
+        }));
     }
     let config = git.config();
     let keys = branch
@@ -311,10 +333,40 @@ fn rebase_setting(git: &GitHome, args: &PullArgs, branch: Option<&str>) -> Resul
         .chain(["pull.rebase".to_owned()]);
     for key in keys {
         if let Some(v) = config.get(&key) {
-            return Ok(from(v));
+            return Ok(parse_rebase(v).unwrap_or_else(|why| {
+                if let Some(line) = why {
+                    eprintln!("{}", line.replace("{}", v));
+                }
+                die(&format!("invalid value for '{key}': '{v}'"))
+            }));
         }
     }
     Ok(Rebase::Unset)
+}
+
+/// The ref that `merge-base --fork-point` looks at, as `git pull` picks it: the tracking ref of the first refspec's
+/// source, else the branch's upstream when the remote is its own.
+fn fork_ref(git: &GitHome, args: &PullArgs, branch: Option<&str>) -> Option<String> {
+    let config = git.config();
+    let t = tracking(config, branch?);
+    let remote = args.repository.clone().or_else(|| t.remote.clone())?;
+    let from_specs =
+        |src: &str| Remote::read(config, &remote).and_then(|r| map_ref(&r.fetch_specs(), src));
+    match args.refspecs.first() {
+        Some(spec) => {
+            let src = spec.trim_start_matches('+').split(':').next()?;
+            let src = src.strip_prefix("heads/").unwrap_or(src);
+            let full = if src.starts_with("refs/") {
+                src.to_owned()
+            } else {
+                format!("refs/heads/{src}")
+            };
+            from_specs(&full)
+        }
+        None if t.remote.as_deref() != Some(remote.as_str()) => None,
+        None if remote == "." => t.merge.first().cloned(),
+        None => from_specs(t.merge.first()?),
+    }
 }
 
 /// How the histories are joined, from the command line, `pull.ff` and `merge.ff`.
@@ -433,7 +485,7 @@ pub fn pull(git: &GitHome, args: PullArgs) -> Result<()> {
         Head::Detached(_) => None,
     };
     let rebase = rebase_setting(git, &args, branch)?;
-    let rebase_on = matches!(rebase, Rebase::On | Rebase::Unbuilt);
+    let rebase_on = rebase.on();
     let rebase_unset = matches!(rebase, Rebase::Unset);
     if args.autostash && !rebase_on {
         crate::usage_error(
@@ -492,8 +544,9 @@ pub fn pull(git: &GitHome, args: PullArgs) -> Result<()> {
     }
     let candidate = &found[0];
     let theirs = peel(git, candidate)?;
-    if rebase_on {
-        if git.is_ancestor(&theirs, &ours)? {
+    if let Rebase::On(mode) = rebase {
+        let interactive = mode == PullMode::Interactive;
+        if !interactive && git.is_ancestor(&theirs, &ours)? {
             if args.quiet == 0 {
                 match branch {
                     Some(b) => println!("Current branch {b} is up to date."),
@@ -503,14 +556,16 @@ pub fn pull(git: &GitHome, args: PullArgs) -> Result<()> {
             return Ok(());
         }
         if !git.is_ancestor(&ours, &theirs)? {
-            if matches!(rebase, Rebase::Unbuilt) {
-                die(
-                    "rebasing with merges or interactively is not built; use --rebase or --no-rebase",
-                );
-            }
+            let fork = match fork_ref(git, &args, branch) {
+                Some(name) => super::rebase::fork_point(git, &name, &ours)?,
+                None => None,
+            };
             return super::rebase::pull_rebase(
                 git,
                 &theirs,
+                fork,
+                mode,
+                action,
                 args.autostash.then_some(true),
                 args.quiet > 0,
             );

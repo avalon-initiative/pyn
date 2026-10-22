@@ -575,18 +575,19 @@ fn autostash_goes_with_a_rebase_only() {
 }
 
 #[test]
-fn rebase_merges_and_interactive_are_not_built_when_a_replay_is_needed() {
-    let t = Twin::new("sha1", Via::Ssh);
-    t.local("l.txt", "local\n", "local");
-    let remote = t.remote("n.txt", "new\n", "remote");
-    let head = t.head(&t.pyn);
+fn rebase_merges_and_interactive_replay_the_local_commits() {
     for mode in ["--rebase=merges", "--rebase=interactive"] {
-        let p = t.pyn_cmd(&t.pyn, &["pull", mode]);
-        assert_eq!(p.code, 128, "{mode}: {}", p.stderr);
-        assert!(p.stderr.contains("not built"), "{}", p.stderr);
-        assert_eq!(t.head(&t.pyn), head);
-        let tracked = run(&t.pyn, &["rev-parse", "refs/remotes/origin/main"]);
-        assert_eq!(tracked.trim(), remote, "the fetch stays");
+        let t = Twin::new("sha1", Via::Ssh);
+        t.each(&["config", "gc.auto", "0"]);
+        t.local("l.txt", "local\n", "local");
+        let remote = t.remote("n.txt", "new\n", "remote");
+        t.both_ok(&[mode]);
+        assert_eq!(
+            run(&t.pyn, &["rev-parse", "HEAD~1"]).trim(),
+            remote,
+            "{mode}"
+        );
+        assert!(!t.pyn.join(".git/rebase-merge").exists());
     }
 }
 

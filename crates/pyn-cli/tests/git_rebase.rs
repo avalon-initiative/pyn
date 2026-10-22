@@ -49,6 +49,7 @@ impl Env {
             .env("XDG_CONFIG_HOME", self.home.join("xdg"))
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("GIT_EDITOR", "true")
+            .env("GIT_SSH_COMMAND", self.home.join("../ssh-shim"))
             .envs(IDENTITY)
             .envs(envs.iter().copied())
             .output()
@@ -77,6 +78,7 @@ impl Env {
             .env("XDG_CONFIG_HOME", self.home.join("xdg"))
             .env("TZ", "UTC")
             .env("GIT_EDITOR", "true")
+            .env("GIT_SSH_COMMAND", self.home.join("../ssh-shim"))
             .envs(IDENTITY)
             .env("PYN_CONFIG_DIR", self.home.join("pyn-config"))
             .env_remove("PYN_SERVER")
@@ -253,7 +255,7 @@ fn state(env: &Env, dir: &Path) -> Vec<String> {
     let log = env.ok(dir, &["log", "-g", "--format=%gs", "HEAD"]);
     // git before 2.55 logs a merge under the action of the command before it, which is a pick in these tests.
     out.push(if git_before_2_55() {
-        log.replace("rebase (merge): ", "rebase (pick): ")
+        log.replace("(merge): ", "(pick): ")
     } else {
         log
     });
@@ -2568,5 +2570,481 @@ fn a_merged_branch_is_labelled_by_the_local_branch_at_its_tip() {
             "{:?}",
             seen_commands(&p.pyn)
         );
+    });
+}
+
+impl Pair {
+    fn root_dir(&self) -> &Path {
+        self.git.parent().unwrap()
+    }
+
+    /// `origin` is a bare copy of the repository as it stands, fetched into both; `side`, `csid`, `two` and `conf`
+    /// track its `main`.
+    fn with_origin(&self) {
+        let origin = self.root_dir().join("origin.git");
+        self.env.ok(
+            self.root_dir(),
+            &[
+                "clone",
+                "-q",
+                "--bare",
+                self.git.to_str().unwrap(),
+                origin.to_str().unwrap(),
+            ],
+        );
+        let shim = self.root_dir().join("ssh-shim");
+        fs::write(
+            &shim,
+            "#!/bin/sh\nwhile [ $# -gt 0 ]; do case \"$1\" in -o|-p|-P) shift 2;; --|-batch) shift;; *) break;; esac; done\ncmd=\"$2\"\nPATH=\"$(git --exec-path):$PATH\"; export PATH\nexec sh -c \"$cmd\"\n",
+        )
+        .unwrap();
+        fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).unwrap();
+        let url = format!("ssh://git@example.invalid{}", origin.display());
+        self.both(|env, d| {
+            env.ok(d, &["remote", "add", "origin", &url]);
+            env.ok(d, &["fetch", "-q", "origin"]);
+            env.ok(d, &["remote", "set-head", "origin", "main"]);
+            for b in ["side", "csid", "two", "conf"] {
+                env.ok(d, &["config", &format!("branch.{b}.remote"), "origin"]);
+                env.ok(
+                    d,
+                    &["config", &format!("branch.{b}.merge"), "refs/heads/main"],
+                );
+            }
+        });
+    }
+
+    /// Two commits (`r1`, `r2`) on the origin's `main`, or, with `rewrite`, `main` replaced by `n1`, `n2` from `base`.
+    fn advance_origin(&self, rewrite: bool) {
+        let origin = self.root_dir().join("origin.git");
+        let work = self.root_dir().join("work");
+        self.env.ok(
+            self.root_dir(),
+            &[
+                "clone",
+                "-q",
+                origin.to_str().unwrap(),
+                work.to_str().unwrap(),
+            ],
+        );
+        if rewrite {
+            self.env
+                .ok(&work, &["checkout", "-q", "-B", "main", "base"]);
+        }
+        let names = if rewrite { ["n1", "n2"] } else { ["r1", "r2"] };
+        for name in names {
+            let tick = TICK.fetch_add(10, std::sync::atomic::Ordering::SeqCst);
+            write(&work, name, &format!("{name}\n"));
+            commit_at(&self.env, &work, name, tick);
+        }
+        self.env
+            .ok(&work, &["push", "-q", "--force", "origin", "main"]);
+    }
+
+    /// A commit on the origin's `main` that writes `text` over `file`.
+    fn origin_commit(&self, file: &str, text: &str, message: &str) {
+        let origin = self.root_dir().join("origin.git");
+        let work = self.root_dir().join("work2");
+        self.env.ok(
+            self.root_dir(),
+            &[
+                "clone",
+                "-q",
+                origin.to_str().unwrap(),
+                work.to_str().unwrap(),
+            ],
+        );
+        let tick = TICK.fetch_add(10, std::sync::atomic::Ordering::SeqCst);
+        write(&work, file, text);
+        commit_at(&self.env, &work, message, tick);
+        self.env.ok(&work, &["push", "-q", "origin", "main"]);
+    }
+
+    fn pull(&self, args: &[&str], label: &str) -> i32 {
+        self.pull_env(args, label, &[])
+    }
+
+    fn pull_env(&self, args: &[&str], label: &str, envs: &[(&str, &str)]) -> i32 {
+        let mut full = vec!["pull"];
+        full.extend(args);
+        self.same_command(&full, label, envs)
+    }
+
+    /// `up` is `side2` (`k1`, `k2`) cut from the origin's `main`, which is then rewritten to `n1`, `n2`.
+    fn with_rewritten_origin(&self) {
+        self.with_origin();
+        let tick = TICK.fetch_add(40, std::sync::atomic::Ordering::SeqCst);
+        self.both(|e, d| {
+            e.ok(d, &["checkout", "-q", "-b", "fp", "origin/main"]);
+            write(d, "k1", "k1\n");
+            commit_at(e, d, "k1", tick);
+            write(d, "k2", "k2\n");
+            commit_at(e, d, "k2", tick + 10);
+            e.ok(d, &["config", "branch.fp.remote", "origin"]);
+            e.ok(d, &["config", "branch.fp.merge", "refs/heads/main"]);
+        });
+        self.advance_origin(true);
+    }
+}
+
+type PullCase = (
+    &'static str,
+    Vec<&'static str>,
+    Vec<(&'static str, &'static str)>,
+);
+
+fn pull_modes() -> Vec<PullCase> {
+    vec![
+        ("plain", vec!["--rebase"], vec![]),
+        ("interactive", vec!["--rebase=interactive"], vec![]),
+        ("i", vec!["--rebase=i"], vec![]),
+        ("merges", vec!["--rebase=merges"], vec![]),
+        ("m", vec!["--rebase=m"], vec![]),
+        ("-r", vec!["-r"], vec![]),
+        ("-rmerges", vec!["-rmerges"], vec![]),
+        ("-ri", vec!["-ri"], vec![]),
+        ("quiet merges", vec!["--rebase=merges", "-q"], vec![]),
+        (
+            "pull.rebase merges",
+            vec![],
+            vec![("pull.rebase", "merges")],
+        ),
+        ("pull.rebase m", vec![], vec![("pull.rebase", "m")]),
+        (
+            "pull.rebase interactive",
+            vec![],
+            vec![("pull.rebase", "interactive")],
+        ),
+        ("pull.rebase i", vec![], vec![("pull.rebase", "i")]),
+        ("pull.rebase yes", vec![], vec![("pull.rebase", "yes")]),
+        (
+            "branch beats pull",
+            vec![],
+            vec![("pull.rebase", "false"), ("branch.side.rebase", "merges")],
+        ),
+        (
+            "option beats config",
+            vec!["--rebase=merges"],
+            vec![("pull.rebase", "interactive")],
+        ),
+        (
+            "plain with rebase.rebaseMerges",
+            vec!["--rebase"],
+            vec![("rebase.rebaseMerges", "true")],
+        ),
+        (
+            "interactive with rebase.rebaseMerges",
+            vec!["--rebase=interactive"],
+            vec![("rebase.rebaseMerges", "true")],
+        ),
+        (
+            "plain with rebase.updateRefs",
+            vec!["--rebase"],
+            vec![("rebase.updateRefs", "true")],
+        ),
+        (
+            "explicit remote and branch",
+            vec!["--rebase=merges", "origin", "main"],
+            vec![],
+        ),
+        (
+            "remote only",
+            vec!["--rebase=interactive", "origin"],
+            vec![],
+        ),
+    ]
+}
+
+#[test]
+fn pull_rebase_modes_replay_like_git() {
+    both_formats(|f| {
+        for (name, args, config) in pull_modes() {
+            let all = ["plain", "interactive", "merges"].contains(&name);
+            for branch in ["side", "csid", "two"].iter().take(if all { 3 } else { 1 }) {
+                let p = merge_history(f);
+                p.with_origin();
+                p.advance_origin(false);
+                p.on(branch);
+                p.reflog.set(true);
+                for (k, v) in &config {
+                    p.config(k, v);
+                }
+                let label = format!("{f} {name} {branch}");
+                assert_eq!(p.pull(&args, &label), 0, "{label}");
+                assert!(!p.pyn.join(".git/rebase-merge").exists());
+            }
+        }
+    });
+}
+
+#[test]
+fn pull_rebase_with_nothing_to_replay_or_nothing_new() {
+    both_formats(|f| {
+        for mode in ["--rebase", "--rebase=merges", "--rebase=interactive"] {
+            // up to date with local commits, and behind with none
+            let p = merge_history(f);
+            p.with_origin();
+            p.on("side");
+            p.reflog.set(true);
+            assert_eq!(p.pull(&[mode], &format!("{f} {mode} up to date")), 0);
+            let p = merge_history(f);
+            p.with_origin();
+            p.advance_origin(false);
+            p.on("main");
+            p.both(|env, d| {
+                env.ok(d, &["config", "branch.main.remote", "origin"]);
+                env.ok(d, &["config", "branch.main.merge", "refs/heads/main"]);
+            });
+            p.reflog.set(true);
+            assert_eq!(p.pull(&[mode], &format!("{f} {mode} fast-forward")), 0);
+        }
+    });
+}
+
+#[test]
+fn an_interactive_pull_that_is_up_to_date_still_opens_the_editor() {
+    both_formats(|f| {
+        let p = merge_history(f);
+        p.with_origin();
+        p.on("side");
+        let save = ("GIT_SEQUENCE_EDITOR", "cp \"$1\" .git/seen-sheet #");
+        assert_eq!(
+            p.pull_env(
+                &["--rebase=interactive"],
+                &format!("{f} up to date"),
+                &[save]
+            ),
+            0
+        );
+        assert_eq!(
+            p.pyn.join(".git/seen-sheet").exists(),
+            p.git.join(".git/seen-sheet").exists()
+        );
+        assert_eq!(seen_commands(&p.pyn), seen_commands(&p.git), "{f}");
+        let envs = [("GIT_SEQUENCE_EDITOR", "sed -i -e '1s/^pick/reword/;2d'")];
+        let p = merge_history(f);
+        p.with_origin();
+        p.on("side");
+        p.reflog.set(true);
+        assert_eq!(
+            p.pull_env(
+                &["--rebase=interactive"],
+                &format!("{f} up to date edited"),
+                &envs
+            ),
+            0
+        );
+    });
+}
+
+#[test]
+fn the_editor_of_a_rebasing_pull_sees_the_sheet_and_can_change_it() {
+    both_formats(|f| {
+        let p = merge_history(f);
+        p.with_origin();
+        p.advance_origin(false);
+        p.on("side");
+        let save = ("GIT_SEQUENCE_EDITOR", "cp \"$1\" .git/seen-sheet #");
+        assert_eq!(
+            p.pull_env(&["--rebase=interactive"], &format!("{f} sheet"), &[save]),
+            0
+        );
+        assert_eq!(seen_comments(&p.pyn), seen_comments(&p.git), "{f}");
+        assert_eq!(seen_commands(&p.pyn), seen_commands(&p.git), "{f}");
+        assert!(seen_comments(&p.pyn).len() > 10);
+
+        let p = merge_history(f);
+        p.with_origin();
+        p.advance_origin(false);
+        p.on("side");
+        let save = ("GIT_SEQUENCE_EDITOR", "cp \"$1\" .git/seen-sheet #");
+        assert_eq!(
+            p.pull_env(
+                &["--rebase=merges"],
+                &format!("{f} merges ran no editor"),
+                &[save]
+            ),
+            0
+        );
+        assert!(!p.pyn.join(".git/seen-sheet").exists());
+        assert!(!p.git.join(".git/seen-sheet").exists());
+
+        let p = merge_history(f);
+        p.with_origin();
+        p.advance_origin(false);
+        p.on("side");
+        p.reflog.set(true);
+        let envs = [("GIT_SEQUENCE_EDITOR", "sed -i -e '1s/^pick/reword/;2d'")];
+        assert_eq!(
+            p.pull_env(&["--rebase=interactive"], &format!("{f} edited"), &envs),
+            0
+        );
+    });
+}
+
+#[test]
+fn a_stopped_rebasing_pull_goes_on_with_rebase_continue_skip_and_abort() {
+    both_formats(|f| {
+        for mode in ["--rebase=interactive", "--rebase=merges", "--rebase"] {
+            for finish in ["continue", "skip", "abort", "quit"] {
+                let p = merge_history(f);
+                p.with_origin();
+                p.origin_commit("f", &with_line(2, "R"), "origin changes f");
+                p.on("conf");
+                let label = format!("{f} {mode} {finish}");
+                assert_eq!(p.pull(&[mode], &label), 1, "{label}: stops");
+                assert!(p.pyn.join(".git/rebase-merge").is_dir(), "{label}");
+                match finish {
+                    "continue" | "skip" => {
+                        for _ in 0..6 {
+                            if finish == "continue" {
+                                p.resolve("f", &with_line(2, "RX"));
+                            }
+                            let word = format!("--{finish}");
+                            let code = p.same_command(&["rebase", &word], &label, &[]);
+                            if code == 0 {
+                                break;
+                            }
+                        }
+                    }
+                    _ => {
+                        let word = format!("--{finish}");
+                        assert_eq!(p.same_command(&["rebase", &word], &label, &[]), 0);
+                    }
+                }
+                assert!(!p.pyn.join(".git/rebase-merge").exists(), "{label}");
+            }
+        }
+    });
+}
+
+#[test]
+fn the_fork_point_of_a_rewritten_origin_limits_the_commits_of_a_pull() {
+    both_formats(|f| {
+        let cases: [(&str, &[&str]); 8] = [
+            ("plain", &["--rebase"]),
+            ("merges", &["--rebase=merges"]),
+            ("interactive", &["--rebase=interactive"]),
+            ("remote and branch", &["--rebase", "origin", "main"]),
+            ("remote only", &["--rebase", "origin"]),
+            ("heads/ spelling", &["--rebase", "origin", "heads/main"]),
+            ("full ref", &["--rebase", "origin", "refs/heads/main"]),
+            ("other branch", &["--rebase", "origin", "side"]),
+        ];
+        for (name, args) in cases {
+            let p = merge_history(f);
+            p.with_rewritten_origin();
+            p.reflog.set(true);
+            let label = format!("{f} {name}");
+            let code = p.pull(args, &label);
+            if name == "other branch" {
+                assert!(code == 0 || code == 1, "{label}: {code}");
+            } else {
+                assert_eq!(code, 0, "{label}");
+                let log = p.env.ok(&p.pyn, &["log", "--format=%s", "-4"]);
+                assert_eq!(
+                    log, "k2\nk1\nn2\nn1\n",
+                    "{label}: only the commits after the fork point"
+                );
+            }
+        }
+        let p = merge_history(f);
+        p.with_rewritten_origin();
+        let url2 = format!(
+            "ssh://git@example.invalid{}",
+            p.root_dir().join("origin.git").display()
+        );
+        p.both(|env, d| {
+            env.ok(d, &["remote", "add", "second", &url2]);
+            env.ok(d, &["fetch", "-q", "second"]);
+        });
+        p.reflog.set(true);
+        let code = p.pull(
+            &["--rebase", "second", "main"],
+            &format!("{f} second remote"),
+        );
+        assert!(code == 0 || code == 1);
+    });
+}
+
+#[test]
+fn bad_rebase_values_are_refused_before_anything_changes() {
+    both_formats(|f| {
+        for args in [
+            &["--rebase=bogus"][..],
+            &["--rebase=preserve"],
+            &["--rebase=p"],
+            &["--rebase=Merges"],
+        ] {
+            let p = merge_history(f);
+            p.with_origin();
+            p.advance_origin(false);
+            p.on("side");
+            assert_eq!(p.pull(args, &format!("{f} {args:?}")), 129);
+        }
+        for value in ["bogus", "preserve", "Merges", "Interactive"] {
+            for key in ["pull.rebase", "branch.side.rebase"] {
+                let p = merge_history(f);
+                p.with_origin();
+                p.advance_origin(false);
+                p.on("side");
+                p.config(key, value);
+                let label = format!("{f} {key}={value}");
+                assert_eq!(p.pull(&[], &label), 128, "{label}");
+                assert_eq!(p.pull(&["--no-rebase", "--no-edit"], &label), 0, "{label}");
+            }
+        }
+    });
+}
+
+#[test]
+fn strategies_with_a_rebasing_pull_are_a_usage_error() {
+    // git hands -s and -X to its rebase; pyn's rebase has no strategies yet.
+    let p = merge_history("sha1");
+    p.with_origin();
+    p.advance_origin(false);
+    p.on("side");
+    for args in [
+        &["--rebase", "-s", "ours"][..],
+        &["--rebase=merges", "-X", "theirs"],
+        &["--rebase=interactive", "-s", "ort"],
+    ] {
+        let out = p.env.pyn(&p.pyn, &[&["pull"], args].concat());
+        assert_eq!(out.status.code(), Some(129), "{args:?}");
+        assert!(!p.pyn.join(".git/rebase-merge").exists());
+    }
+}
+
+#[test]
+fn a_dirty_tree_refuses_a_rebasing_pull_unless_autostash() {
+    both_formats(|f| {
+        for mode in ["--rebase=interactive", "--rebase=merges"] {
+            let p = merge_history(f);
+            p.with_origin();
+            p.advance_origin(false);
+            p.on("side");
+            p.both(|_, d| write(d, "f", "dirty\n"));
+            assert_eq!(p.pull(&[mode], &format!("{f} {mode} dirty")), 128);
+            assert_eq!(
+                p.pull(&[mode, "--autostash"], &format!("{f} {mode} autostash")),
+                0
+            );
+        }
+    });
+}
+
+#[test]
+fn skipping_a_pick_before_a_merge_that_then_applies_cleanly_leaves_no_merge_message() {
+    both_formats(|f| {
+        let p = merge_history(f);
+        p.on("main");
+        p.commit("f", &with_line(2, "R"), "mr");
+        p.on("conf");
+        assert_eq!(p.same(&["-r", "main"], &format!("{f} start")), 1);
+        for _ in 0..4 {
+            if p.same(&["--skip"], &format!("{f} skip")) == 0 {
+                break;
+            }
+        }
     });
 }

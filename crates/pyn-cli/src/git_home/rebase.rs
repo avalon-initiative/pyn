@@ -204,8 +204,8 @@ pub(super) struct Plan {
     pub quiet: bool,
     /// `Some` when the command line decided; otherwise `rebase.autostash`.
     pub autostash: Option<bool>,
-    /// `rebase`, or `pull --rebase`: the reflog action.
-    pub action: &'static str,
+    /// `rebase`, or `pull` with the arguments as typed: the reflog action.
+    pub action: String,
     /// `-i`: the user edits the sheet.
     pub interactive: bool,
     pub exec: Vec<String>,
@@ -309,7 +309,11 @@ fn configured_upstream(git: &GitHome) -> Result<(ObjectId, String)> {
 
 /// The commit the upstream's reflog says the branch forked from: the one best common ancestor of `head` and
 /// every commit the upstream was at, if it is one of them.
-fn fork_point(git: &GitHome, refname: &str, head: &ObjectId) -> Result<Option<ObjectId>> {
+pub(super) fn fork_point(
+    git: &GitHome,
+    refname: &str,
+    head: &ObjectId,
+) -> Result<Option<ObjectId>> {
     let Some(full) = git.repo.expand_ref_name(refname)? else {
         die(&format!("No such ref: '{refname}'"));
     };
@@ -486,7 +490,7 @@ fn plan_of(git: &GitHome, args: &RebaseArgs) -> Result<Plan> {
         } else {
             None
         },
-        action: "rebase",
+        action: "rebase".into(),
         interactive: args.interactive,
         exec: args.exec.clone(),
         autosquash: !args.no_autosquash
@@ -499,15 +503,31 @@ fn plan_of(git: &GitHome, args: &RebaseArgs) -> Result<Plan> {
     })
 }
 
-/// Replays the local commits onto `theirs`, as `pull --rebase` does after fetching.
+/// How `pull` was told to rebase: `--rebase`, `--rebase=merges` or `--rebase=interactive`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum PullMode {
+    Plain,
+    Merges,
+    Interactive,
+}
+
+/// Replays the local commits onto `theirs` (from `fork`, else `theirs`), as `pull --rebase` does after fetching.
 pub(super) fn pull_rebase(
     git: &GitHome,
     theirs: &ObjectId,
+    fork: Option<ObjectId>,
+    mode: PullMode,
+    action: String,
     autostash: Option<bool>,
     quiet: bool,
 ) -> Result<()> {
+    let interactive = mode == PullMode::Interactive;
+    let merges_args = RebaseArgs {
+        rebase_merges: (mode == PullMode::Merges).then_some(None),
+        ..RebaseArgs::default()
+    };
     let plan = Plan {
-        upstream: Some(*theirs),
+        upstream: Some(fork.unwrap_or(*theirs)),
         restrict: None,
         onto: *theirs,
         onto_name: theirs.to_hex(),
@@ -515,14 +535,14 @@ pub(super) fn pull_rebase(
         no_ff: false,
         quiet,
         autostash,
-        action: "pull --rebase",
-        interactive: false,
+        action,
+        interactive,
         exec: Vec::new(),
-        autosquash: false,
-        merges: None,
+        autosquash: interactive && git.repo.bool_setting("rebase.autosquash", false),
+        merges: merges_mode(git, &merges_args),
         root: false,
         squash_onto: None,
-        update_refs: false,
+        update_refs: git.repo.bool_setting("rebase.updaterefs", false),
     };
     begin(git, &plan).map_err(|e| {
         if e.is::<Failed>() {
@@ -548,7 +568,7 @@ struct State {
     no_ff: bool,
     /// A commit that becomes empty stops the rebase (`-i`) instead of being dropped.
     stop_empty: bool,
-    action: &'static str,
+    action: String,
     /// The empty commit a new root is built on (`--root`, or `reset [new root]`).
     squash_onto: Cell<Option<ObjectId>>,
     /// What git leaves in `GIT_REFLOG_ACTION` for the commits it makes through `git commit`.
@@ -645,7 +665,7 @@ fn load(git: &GitHome) -> Result<State> {
         quiet: dir.join("quiet").exists(),
         no_ff: false,
         stop_empty: !dir.join("drop_redundant_commits").exists(),
-        action: "rebase",
+        action: "rebase".into(),
         squash_onto: Cell::new(read_id(git, &dir.join("squash-onto"))?),
         reflog_env: RefCell::new("rebase".into()),
     })
@@ -837,9 +857,9 @@ fn begin(git: &GitHome, plan: &Plan) -> Result<()> {
         quiet: plan.quiet,
         no_ff: plan.no_ff,
         stop_empty: plan.interactive,
-        action: plan.action,
+        action: plan.action.clone(),
         squash_onto: Cell::new(plan.squash_onto),
-        reflog_env: RefCell::new(plan.action.into()),
+        reflog_env: RefCell::new(plan.action.clone()),
     };
     let mut state = state;
     let mut bad_sheet = None;
@@ -1511,7 +1531,7 @@ fn replay(git: &GitHome, state: &State, item: &Item) -> Result<()> {
             Err(e) => {
                 eprintln!("error: {e}");
                 if fast {
-                    move_forward(git, state, id)?;
+                    move_forward(git, id)?;
                     stop_to_edit(git, id, &picked, true)?;
                 }
                 commit_here(
@@ -1533,7 +1553,7 @@ fn replay(git: &GitHome, state: &State, item: &Item) -> Result<()> {
         picked.message.clone()
     };
     if fast && item.cmd != Cmd::Reword {
-        move_forward(git, state, id)?;
+        move_forward(git, id)?;
     } else {
         commit_here(
             state,
@@ -1597,13 +1617,8 @@ fn move_to(git: &GitHome, target: &ObjectId, message: &str, mode: Mode) -> Resul
     Ok(())
 }
 
-fn fast_forward(git: &GitHome, state: &State, to: &ObjectId) -> Result<()> {
-    move_to(
-        git,
-        to,
-        &format!("{}: fast-forward", state.action),
-        Mode::Safe,
-    )
+fn fast_forward(git: &GitHome, to: &ObjectId) -> Result<()> {
+    move_to(git, to, "rebase: fast-forward", Mode::Safe)
 }
 
 /// The labels of a `merge` line, the text up to the last of them, and the oneline after a `#`.
@@ -1669,7 +1684,7 @@ fn do_merge(git: &GitHome, state: &State, item: &Item) -> Result<()> {
                 "octopus merge cannot be executed on top of a [new root]".into(),
             ));
         }
-        fast_forward(git, state, &heads[0].0)?;
+        fast_forward(git, &heads[0].0)?;
         return record(git);
     }
     let can_ff = !state.no_ff
@@ -1679,7 +1694,7 @@ fn do_merge(git: &GitHome, state: &State, item: &Item) -> Result<()> {
         });
     if can_ff {
         let (id, commit) = original.as_ref().expect("a fast-forward has an original");
-        fast_forward(git, state, id)?;
+        fast_forward(git, id)?;
         if item.flag == Flag::Edit {
             amend_merge(git, state, item, commit)?;
         }
@@ -1849,11 +1864,11 @@ fn stop_merge(
 }
 
 /// Fast-forwards `HEAD` to a replayed commit; a `HEAD` that is already there is not logged.
-fn move_forward(git: &GitHome, state: &State, id: &ObjectId) -> Result<()> {
+fn move_forward(git: &GitHome, id: &ObjectId) -> Result<()> {
     if git.repo.head_commit()? == Some(*id) {
         return Ok(());
     }
-    git.move_head(id, &format!("{}: fast-forward", state.action))
+    git.move_head(id, "rebase: fast-forward")
 }
 
 /// Whether the commit already sits on `HEAD` (or is a root and `HEAD` is the empty commit of a new root).
@@ -1871,7 +1886,9 @@ fn commit_here(state: &State, git: &GitHome, pending: &Pending) -> Result<Object
         Some(h) if state.squash_onto.get() != Some(h) => vec![h],
         _ => Vec::new(),
     };
-    make_commit_on(git, pending, parents)
+    let id = make_commit_on(git, pending, parents)?;
+    let _ = std::fs::remove_file(git_dir(git).join("MERGE_MSG"));
+    Ok(id)
 }
 
 /// The message the user gives a reworded commit.
@@ -2186,7 +2203,7 @@ fn finish(git: &GitHome, state: &State) -> Result<()> {
     let Some(end) = git.repo.head_commit()? else {
         bail!("the rebase has no HEAD");
     };
-    let action = state.action;
+    let action = &state.action;
     if state.head_name.starts_with("refs/heads/") {
         let old = git.repo.refs().resolve(&state.head_name)?;
         git.move_ref(

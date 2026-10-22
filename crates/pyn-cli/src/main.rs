@@ -824,7 +824,9 @@ fn main() {
         eprintln!("{}", unsupported::message(&name));
         std::process::exit(1);
     }
-    let cli = match Cli::try_parse_from(attached_gpg_keys(std::env::args_os().collect())) {
+    let cli = match Cli::try_parse_from(attached_gpg_keys(attached_pull_rebase(
+        std::env::args_os().collect(),
+    ))) {
         Ok(cli) => cli,
         Err(e) => {
             let code = if e.use_stderr() { 129 } else { 0 };
@@ -877,6 +879,33 @@ fn in_git_home() -> bool {
         .ok()
         .and_then(|cwd| git_home::detect(&cwd).ok().flatten())
         .is_some()
+}
+
+/// Rewrites `pull -r<mode>` to `--rebase=<mode>`; clap takes an optional value only after `=`.
+fn attached_pull_rebase(args: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsString> {
+    let Some(at) = args.iter().skip(1).position(|a| a == "pull").map(|i| i + 1) else {
+        return args;
+    };
+    let mut out = args[..=at].to_vec();
+    let mut rest = args[at + 1..].iter();
+    while let Some(arg) = rest.next() {
+        let text = arg.to_string_lossy();
+        match text.as_ref() {
+            "--" => {
+                out.push(arg.clone());
+                out.extend(rest.by_ref().cloned());
+            }
+            "-s" | "-X" | "--strategy" | "--strategy-option" => {
+                out.push(arg.clone());
+                out.extend(rest.next().cloned());
+            }
+            t if t.len() > 2 && t.starts_with("-r") => {
+                out.push(format!("--rebase={}", &t[2..]).into());
+            }
+            _ => out.push(arg.clone()),
+        }
+    }
+    out
 }
 
 /// Rewrites `commit -S<keyid>` to `--gpg-sign=<keyid>`; clap takes an optional value only after `=`.

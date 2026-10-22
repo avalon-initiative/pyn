@@ -312,13 +312,19 @@ merge mode. Git's own prose is not copied everywhere: where a message names a co
    uncommitted changes.`, `128`) before anything is fetched, unless `--autostash` or `rebase.autoStash` is set. A candidate the
    branch already contains prints `Current branch <b> is up to date.` and exits `0`; a branch that can fast-forward (or is
    unborn) fast-forwards exactly as without rebase; a branch with local commits the candidate lacks has them replayed onto the
-   candidate as [`pyn rebase`](#rebase) does (`pull --rebase` in the reflog), and a conflict is concluded with `pyn rebase
-   --continue`, `--skip` or `--abort`. `merges` and `interactive` (and `--rebase=` those or `i`, `m`) behave as `true` while
-   nothing needs replaying, and are `fatal: rebasing with merges or interactively is not built; use --rebase or --no-rebase`
-   (`128`, fetched refs kept) when it does. `--no-rebase`, `--rebase=false`, `pull.rebase=false` and
+   candidate as [`pyn rebase`](#rebase) does, and a conflict or a stop is concluded with `pyn rebase --continue`, `--skip` or
+   `--abort` (a git home has no `pull --continue`, as git has none). The value is `true` (also `yes`, `on`, `1`), `false` (also
+   `no`, `off`, `0`, empty), `merges` or `m` (the replay recreates merge commits, as `pyn rebase --rebase-merges` does) or
+   `interactive` or `i` (the editor opens on the instruction sheet, as `pyn rebase -i` does, whenever commits need replaying); the values are case sensitive, `-r<value>` is `--rebase=<value>`, and `preserve`
+   or any other value is `error: invalid value for '--rebase': '<v>'` (`129`) or, from `pull.rebase` or `branch.<name>.rebase`,
+   `fatal: invalid value for '<key>': '<v>'` (`128`, before the fetch). The reflog action is `pull` with the arguments as typed
+   (`pull --rebase=merges (pick): ...`), and a fast-forward inside the replay is logged as `rebase: fast-forward`, as in git. The
+   rebase reads `rebase.rebaseMerges`, `rebase.updateRefs`, `rebase.autoSquash` (with `interactive`) and `rebase.autoStash`
+   as `pyn rebase` does. The commits to replay start at the fork point of the remote-tracking ref (as `merge-base --fork-point`
+   finds it in the ref's reflog) when the pull names the branch's own remote and upstream, or the tracking ref of the first
+   refspec argument; otherwise at the fetched tip. `--no-rebase`, `--rebase=false`, `pull.rebase=false` and
    `branch.<name>.rebase=false` merge. With unmerged index entries it is `fatal: Exiting because of an unresolved conflict.`
-   and with `MERGE_HEAD` present `fatal: You have not concluded your merge (MERGE_HEAD exists).` (both `128`). Unlike git, the
-   replay starts at the fetched tip and does not use the fork point from the remote-tracking ref's reflog.
+   and with `MERGE_HEAD` present `fatal: You have not concluded your merge (MERGE_HEAD exists).` (both `128`).
 2. The fetch. A failed fetch exits `1` (git's `pull` does, not `fetch`'s `128`); `--dry-run` fetches only and ends there.
 3. The merge candidates are the `FETCH_HEAD` lines that are not `not-for-merge`: the branch named by `branch.<name>.merge` when
    no refspec is given, else what the command line fetched. None: git's explanation and exit `1` (`There is no tracking
@@ -348,7 +354,7 @@ that cannot fast-forward is `fatal: Not possible to fast-forward, aborting.` (`1
 | `--ff`, `--no-ff`, `--ff-only`, `--commit`, `--no-commit`, `--stat`, `-n`, `--no-stat` | As for `pyn merge`; `--no-commit` stops before the commit with `MERGE_HEAD` set, and the diffstat follows `--stat`, `-n` and `merge.stat`. |
 | `--no-edit` | Accepted: no editor is ever started. |
 | `--no-rebase`, `--rebase`, `-r`, `--autostash` | `--no-rebase` merges; `--rebase` fast-forwards or replays as above; `--autostash` stashes before a rebase and applies after (a usage error unless the pull rebases). |
-| `-s`, `--strategy`, `-X`, `--strategy-option` | Passed to the merge as for `pyn merge`, see [Strategies and options](#strategies-and-options). A strategy name git does not define is `Could not find merge strategy '<name>'.` (`1`); more than one `-s`, and `-X` options pyn cannot honor, are usage errors (`129`), as are `-s` and `-X` with a pull that rebases. |
+| `-s`, `--strategy`, `-X`, `--strategy-option` | Passed to the merge as for `pyn merge`, see [Strategies and options](#strategies-and-options). A strategy name git does not define is `Could not find merge strategy '<name>'.` (`1`); more than one `-s`, and `-X` options pyn cannot honor, are usage errors (`129`), as are `-s` and `-X` with a pull that rebases (git hands them to its rebase; pyn's rebase has no strategies yet). |
 | `--edit`, `-e`, `--squash`, `-S`/`--gpg-sign`, `--signoff`, `--cleanup`, `--recurse-submodules`, `--allow-unrelated-histories`, `--all` | Usage error (`129`): not built (`--all`: use `pyn fetch --all`). |
 
 Config read: `pull.ff`, `pull.rebase`, `branch.<name>.rebase`, `branch.<name>.merge`, `branch.<name>.remote`, `merge.ff`, plus what
@@ -1248,8 +1254,8 @@ no rename detection. The replay runs on a detached `HEAD`; the branch moves when
    `--continue` tries it again.
 
 Reflog lines are `rebase (start): checkout <newbase>`, `rebase (pick): <subject>`, `rebase (continue): <subject>`, `rebase
-(finish): returning to refs/heads/<b>` and `rebase (finish): refs/heads/<b> onto <id>` (`pull --rebase` instead of `rebase`
-for a pull).
+(finish): returning to refs/heads/<b>` and `rebase (finish): refs/heads/<b> onto <id>` (`pull <arguments>` instead of `rebase`
+for a pull, and `rebase: fast-forward` for a fast-forward in either).
 
 7. `-i` (`--interactive`) writes the commits as an instruction sheet and opens it in the editor: `GIT_SEQUENCE_EDITOR`, then
    `sequence.editor`, then the message editor (`GIT_EDITOR`, `core.editor`, `VISUAL`, `EDITOR`, `vi`; `Terminal is dumb, but EDITOR
