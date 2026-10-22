@@ -258,7 +258,7 @@ enum Command {
     },
     /// Stage changes for the next commit: paths, folders or `.`. Exclusive paths need your lock first.
     Add {
-        #[arg(required_unless_present_any = ["update", "all"])]
+        #[arg(required_unless_present_any = ["update", "all", "patch"])]
         paths: Vec<String>,
         /// Stage changes to files that are already tracked, not new files.
         #[arg(short = 'u', long)]
@@ -274,6 +274,9 @@ enum Command {
         /// Stage files that ignore rules hide.
         #[arg(short, long)]
         force: bool,
+        /// Choose the hunks to stage, one at a time (a git repository only).
+        #[arg(short, long, conflicts_with = "dry_run")]
+        patch: bool,
     },
     /// Remove files from the work tree and stage the removal (`--cached` keeps the files). Exclusive paths need your lock.
     Rm(rm_mv::RmArgs),
@@ -315,7 +318,7 @@ enum Command {
     /// with --staged take paths out of the staged changes.
     Restore {
         /// A path and its older revision (or use --source), or with --staged the paths to unstage.
-        #[arg(required = true)]
+        #[arg(required_unless_present = "patch")]
         args: Vec<String>,
         /// The older revision to restore from, as in `git restore --source`; with --staged on a git repository, a commit.
         #[arg(short = 's', long)]
@@ -335,6 +338,9 @@ enum Command {
         /// Recreate the conflicted merge of unmerged paths (a git repository only).
         #[arg(long)]
         merge: bool,
+        /// Choose the hunks to restore, one at a time (a git repository only).
+        #[arg(short, long, conflicts_with_all = ["ours", "theirs", "merge", "message", "yes"])]
+        patch: bool,
         #[arg(short, long)]
         message: Option<String>,
         /// Skip the typed confirmation.
@@ -1700,6 +1706,9 @@ fn run(cli: Cli) -> Result<()> {
             }
             println!("locked {} until {}", l.path, time::local(l.expires_at));
         }
+        Command::Add { patch: true, .. } => {
+            usage_error("`add --patch` needs a git repository; a pyn server stages whole files")
+        }
         Command::Add {
             paths,
             update,
@@ -1967,6 +1976,9 @@ fn run(cli: Cli) -> Result<()> {
                 std::process::exit(1);
             }
         }
+        Command::Restore { patch: true, .. } => usage_error(
+            "`restore --patch` needs a git repository; a pyn server restores whole files",
+        ),
         Command::Restore { ours: true, .. }
         | Command::Restore { theirs: true, .. }
         | Command::Restore { merge: true, .. } => usage_error(

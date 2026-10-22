@@ -105,6 +105,9 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
         Command::Pull(args) => super::pull::pull(git, args),
         Command::Push(args) => super::push::push(git, args),
         Command::Add {
+            paths, patch: true, ..
+        } => super::patch_mode::add(git, cwd, &paths),
+        Command::Add {
             paths,
             update,
             dry_run,
@@ -153,6 +156,14 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
                 },
             )
         }
+        Command::Restore {
+            args,
+            source,
+            staged,
+            worktree,
+            patch: true,
+            ..
+        } => super::patch_mode::restore(git, cwd, &args, source.as_deref(), staged, worktree),
         Command::Restore {
             args,
             source,

@@ -10,6 +10,7 @@ use pyn_git::{Expect, Index, IndexEntry, ReflogEntry};
 use pyn_gitwork::{Entry, Head, Kind, Pathspec, fs_path, hash_worktree_file};
 use pyn_object::{Commit, FileMode, Kind as ObjectKind, ObjectId};
 
+use super::patch_mode::{self, StashPatch};
 use super::stage::{
     Entries, OpenIndex, Specs, entries_of, identity, index_of, put_entry, raw_mode,
     refuse_in_progress, remove_entry, resolve_specs, stage_file, stat_fields, under,
@@ -47,6 +48,12 @@ pub(super) struct PushArgs {
     /// Keep the staged changes in the index and work tree.
     #[arg(short = 'k', long)]
     pub(super) keep_index: bool,
+    /// Take the staged changes out of the index too (with `--patch` they stay unless this is given).
+    #[arg(long, conflicts_with = "keep_index")]
+    pub(super) no_keep_index: bool,
+    /// Choose the hunks to stash, one at a time.
+    #[arg(short = 'p', long)]
+    pub(super) patch: bool,
     /// Stash only these paths (literal, not patterns).
     #[arg(last = true)]
     pub(super) paths: Vec<String>,
@@ -232,6 +239,10 @@ fn tree_of_entries(git: &GitHome, entries: Entries, version: u32) -> Result<Obje
 }
 
 fn push(git: &GitHome, cwd: &Path, args: PushArgs) -> Result<()> {
+    if args.patch && args.include_untracked {
+        eprintln!("Can't use --patch and --include-untracked or --all at the same time");
+        std::process::exit(1);
+    }
     let scope = Scope::of(git, cwd, &args.paths)?;
     if let Some((_, message)) = save_in(git, &args, &scope, true, false)? {
         println!("Saved working directory and index state {message}");
@@ -354,6 +365,7 @@ impl Local {
 }
 
 struct Created {
+    patched: Option<StashPatch>,
     commit: ObjectId,
     message: String,
     head_tree: ObjectId,
@@ -426,6 +438,19 @@ fn create(
     if !changed && untracked.is_empty() {
         return Ok(None);
     }
+    let patched = if args.patch {
+        let Some(chosen) = patch_mode::stash(git, opened, head, &scope.spec)? else {
+            eprintln!("No changes selected");
+            std::process::exit(1);
+        };
+        Some(chosen)
+    } else {
+        None
+    };
+    let work_tree = match &patched {
+        Some(p) => tree_of_entries(git, p.work.clone(), version)?,
+        None => work_tree,
+    };
     let branch = branch_label(git)?;
     let base = format!("{branch}: {} {}", short(&head), subject(git, &head)?);
     let index_commit = commit_with(git, index_tree, vec![head], format!("index on {base}\n"))?;
@@ -449,6 +474,7 @@ fn create(
     };
     let commit = commit_with(git, work_tree, parents, message.clone())?;
     Ok(Some(Created {
+        patched,
         commit,
         message,
         head_tree,
@@ -475,6 +501,16 @@ fn save_in(
     };
     if store {
         store_stash(git, &made.commit, &made.message)?;
+    }
+    if let Some(patch) = &made.patched {
+        if let Some(why) = &patch.failure {
+            println!("Saved working directory and index state {}", made.message);
+            why.lines().for_each(|l| eprintln!("error: {l}"));
+            eprintln!("Cannot remove worktree changes");
+            std::process::exit(1);
+        }
+        finish_patch(git, patch, args, scope, &made.local)?;
+        return Ok(Some((made.commit, made.message)));
     }
     if scope.limited() && args.include_untracked {
         // git's clean step complains only once the stash is saved, and before changing anything
@@ -505,6 +541,39 @@ fn save_in(
         restore_staged(git, &made.local, scope)?;
     }
     Ok(Some((made.commit, made.message)))
+}
+
+/// Takes the stashed hunks out of the work tree, and with `--no-keep-index` the staged changes out of the index.
+fn finish_patch(
+    git: &GitHome,
+    patch: &StashPatch,
+    args: &PushArgs,
+    scope: &Scope,
+    local: &Local,
+) -> Result<()> {
+    for (path, state) in &patch.reverts {
+        match state {
+            Some((mode, bytes)) => {
+                write_bytes(git, path, *mode, bytes)?;
+            }
+            None => remove_entry_file(git, path)?,
+        }
+    }
+    if !args.no_keep_index {
+        return Ok(());
+    }
+    let opened = git.open_index()?;
+    let mut entries = entries_of(&opened.index);
+    for path in local.paths().into_iter().filter(|p| scope.spec.matches(p)) {
+        match local.committed.get(path) {
+            Some(e) => put_entry(
+                &mut entries,
+                IndexEntry::new(path.clone(), raw_mode(e.mode), e.id),
+            ),
+            None => remove_entry(&mut entries, path),
+        }
+    }
+    git.save_index(&opened, &index_of(opened.index.version, entries))
 }
 
 /// Resets the whole index and work tree to `HEAD` (`reset --hard`), then back to the index with `keep_index`.

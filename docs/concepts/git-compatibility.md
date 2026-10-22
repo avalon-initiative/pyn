@@ -72,7 +72,8 @@ The commands named in decision #218.
 | `git add -u`, `-A`, `-n`, `-v`, `-f` and their long forms | same | same | `-u` and `--update` stage tracked files only; `-A` and `--all` take new files too and, with no path, cover the whole repository. `-n` and `--dry-run` print `add '<path>'` and `remove '<path>'` and stage nothing. Ignored files are refused (exit `1`, as git) without `-f`. |
 | `git rm [-r] [-f] [-n] [-q] [--cached] [--ignore-unmatch] [--] <path>...` | `pyn rm ...` | supported | Removes tracked files from the work tree and stages the removal. On a git home it is git's `rm`, see [Removing and moving](#removing-and-moving). On a pyn server it stages a deletion for the next commit, and an exclusive path needs your lock first. |
 | `git mv [-f] [-n] [-k] [-v] <source>... <destination>` | `pyn mv ...` | supported | Renames a file or folder, or moves them into an existing folder. On a git home it is git's `mv`; on a pyn server it stages a deletion at the old path and an addition at the new one. See [Removing and moving](#removing-and-moving). |
-| `git add -p`, `-i`, `-e`, `--intent-to-add`, `--chmod`, `--renormalize`, `--pathspec-from-file`, glob and magic pathspecs | none | unsupported | Usage error (`129`), or `pathspec ... did not match any files` for a glob the shell did not expand. A path is a file or a folder, taken relative to where you stand. |
+| `git add -p` | `pyn add -p` (`--patch`) | git home only | Asks about each hunk with git's answers, see [Choosing hunks](#choosing-hunks). On a pyn server it is a usage error (`129`): a pyn server stages whole files. |
+| `git add -i`, `-e`, `--intent-to-add`, `--chmod`, `--renormalize`, `--pathspec-from-file`, glob and magic pathspecs | none | unsupported | Usage error (`129`), or `pathspec ... did not match any files` for a glob the shell did not expand. A path is a file or a folder, taken relative to where you stand. |
 | `git commit -m <msg>` | `pyn commit -m <msg>` | different | Commits what is staged as one unit of work. On a pyn server it is one changeset uploaded to the server, so commit and publish are one step (no `push` needed), it releases the locks it held, and the output is `<path> is now at revision N` for each file. On a git home it is a git commit on the current branch (or on a detached `HEAD`, which moves only `HEAD`) and prints `[<branch> <id>] <subject>`, with `detached HEAD` in place of the branch name when detached. `-m` is required (no editor) and repeats for more paragraphs. Nothing staged exits `1` with a message. |
 | `git commit -a`, `-am <msg>` | `pyn commit -a`, `-am <msg>` | same | Stages every changed tracked file, then commits; new files are not included. |
 | `git commit <path>...` | `pyn commit -m <msg> <path>...` | different | On a pyn server: one atomic commit of the named paths as they are on disk, whatever is staged (git's `--only`). Not available on a git home, which says to `add` the paths first. |
@@ -103,7 +104,7 @@ The commands named in decision #218.
 | `git restore [-s <rev>] [-S] [-W] <path>...` (the work tree) | `pyn restore ...` on a git home | git home only | Takes the paths from the index (or `--source`) into the work tree, and with `--staged --worktree` into both. See [Branches, switching and the work tree](#branches-switching-and-the-work-tree). On a pyn server `--worktree` is a usage error (`129`): a restore there makes an older revision the new head. |
 | `git restore --ours\|--theirs [-W] <path>...` | `pyn restore --ours\|--theirs <path>...` | git home only | Writes one side of an unmerged path into the work tree and leaves the path unmerged. On a pyn server it is a usage error (`129`). See [`restore`](#branches-switching-and-the-work-tree). |
 | `git restore --merge <path>...` | `pyn restore --merge <path>...` | git home only | Recreates the conflicted merge of an unmerged path in the work tree, with diff3 markers. `--merge` has no `-m` short form (that is `--message`), and `--conflict=<style>` is not accepted. |
-| `git restore -p` | none | unsupported | Usage error (`129`). |
+| `git restore -p` | `pyn restore -p` (`--patch`) | git home only | Asks about each hunk of the work tree, the index (`--staged`) or both, from the index, `HEAD` or `--source`, see [Choosing hunks](#choosing-hunks). On a pyn server it is a usage error (`129`). |
 | `git reset [--soft\|--mixed\|--hard\|--keep\|--merge] [-q] [<rev>]`, `git reset [<rev>] [--] <path>...` | `pyn reset ...` | git home: supported; pyn server: different | On a git home it is git's reset, see [Reset](#reset). On a pyn server `pyn reset [--soft\|--mixed\|--hard] [<commit>]` only drops unpublished local commits ([workspace](workspace.md#the-local-store)); `--keep`, `--merge`, `-q`, paths and a second revision are a usage error there. |
 | `git branch`, `git switch`, `git checkout` | `pyn branch`, `pyn switch`, `pyn checkout` | supported | See [branching and merging](#branching-and-merging). On a git home they work on `.git` as git does, see [Branches, switching and the work tree](#branches-switching-and-the-work-tree). |
 | `git merge` | `pyn merge` | supported | See [branching and merging](#branching-and-merging). On a git home it merges as git does, see [Merging](#merging). |
@@ -112,7 +113,7 @@ The commands named in decision #218.
 | `git push` | `pyn push` on a git home | git home only | See [Push on a git home](#push-on-a-git-home). On a pyn server it publishes the local commits (a workspace cloned with `--no-local-store` prints that there is nothing to push, because a commit goes straight to the server); see [Remotes on a pyn server](#remotes-on-a-pyn-server). |
 | `git remote` | `pyn remote` | git home; pyn server partly | On a git home it lists and edits the remotes in `.git/config`, see [Remotes](#remotes). On a pyn server `pyn remote`, `pyn remote -v` and `pyn remote get-url origin` show the one remote, `origin`: the server and repository set by `--server` and `--repo` or `pyn config set server` and `repo`; `add`, `remove`, `rename` and `set-url` say that a server home has exactly one home and exit `1`. |
 | `git tag [-a] [-s] [-u <keyid>] [--no-sign] [-m <msg>] [-f] [<name> [<commit>]]`, `-d`, `-l` | `pyn tag ...` on a git home | git home only | See [Tags](#tags). On a pyn server it prints the git-command message (a server's commits are named by hash and have no tags yet, #223). |
-| `git stash [push] [-u] [-k] [-m <msg>] [-- <paths>]`, `list`, `pop`, `apply` (`--index`), `drop`, `clear`, `show`, `branch`, `create`, `store` | `pyn stash ...` on a git home | git home only | See [Stashing](#stashing). On a pyn server it prints the git-command message. |
+| `git stash [push] [-p] [-u] [-k] [-m <msg>] [-- <paths>]`, `list`, `pop`, `apply` (`--index`), `drop`, `clear`, `show`, `branch`, `create`, `store` | `pyn stash ...` on a git home | git home only | See [Stashing](#stashing). On a pyn server it prints the git-command message. |
 | `git clean [-n] [-f] [-d] [-x\|-X] [-q] [-e <pattern>] [--] [<path>...]` | `pyn clean ...` on a git home | git home only | See [Clean](#clean). Without `-f` or `-n` it refuses, as `clean.requireForce` does; `-i` is not built; pathspecs are literal files and folders. |
 
 `pyn update [<path>...]` is the pre-branch stand-in for `fetch` plus `pull`: it fast-forwards files without local
@@ -1302,7 +1303,7 @@ stay. `list` prints `stash@{N}: <message>`. `apply` and `pop` merge the stash's 
 with the same tree merge as `merge` (labels `Updated upstream`, `Stash base` and `Stashed changes`), stage files the stash adds,
 leave other changes unstaged, restore untracked files that do not already exist, and print the status; `pop` then drops the entry
 (`Dropped <name> (<id>)`, the name as typed or `refs/stash@{N}`). A conflict, or local changes to a file the stash touches, keeps the stash. `drop` and `clear`
-remove entries. `stash push -p` is not built (it waits on the shared hunk picker).
+remove entries. `stash push -p` is described in [Choosing hunks](#choosing-hunks).
 
 `stash push -- <paths>` stashes only the named paths (literal names, not patterns, relative to where you stand): the stash's work tree
 is the index with those paths taken from the work tree, and only they are put back to `HEAD`, with no `ORIG_HEAD` or `HEAD`
@@ -1325,6 +1326,46 @@ or changing the work tree (nothing is printed when there is nothing to stash), a
 such a commit on the list (`Created via "git stash store".` without `-m`; storing the newest entry again does nothing).
 
 git 2.43 cannot stash in a SHA-256 repository, so the SHA-256 stash is tested for consistency, not against git.
+
+### Choosing hunks
+
+`add -p`, `restore -p` and `stash push -p` share one prompt, with git's header, hunks, keys and texts. For each changed file it
+prints the diff header, then each hunk followed by `(<n>/<total>) <Verb> this hunk [<keys>]? `, and reads a line from standard
+input. `<Verb>` and the help text follow the command: `Stage` for `add`, `Stash` for `stash`, `Unstage` for `restore --staged`,
+`Discard ... from worktree` / `from index and worktree` for `restore` from the index or `HEAD`, and `Apply ... to worktree`,
+`to index` / `to index and worktree` when `--source` names anything but the literal word `HEAD` (the diff is then shown from the
+current state towards the source, with the `a/` and `b/` names swapped, as git does). A mode change, a deletion and an addition
+are asked as `mode change`, `deletion` and `addition`.
+
+The answers are `y`, `n`, `q`, `a`, `d` (upper case too), `j`, `J`, `k`, `K`, `g`, `/`, `s`, `e` and `?`. Only the keys that can
+apply are offered and listed in the help; a blank line asks again and any other answer prints the help. `j` and `k` go to the
+next and previous undecided hunk, `J` and `K` to the next and previous one. `g` lists the hunks in pages of 20 (` ` undecided,
+`+` chosen, `-` skipped) and asks for a number, or takes it right after the key (`g3`); `/` takes a regular expression (the
+`regex` crate's syntax, not POSIX) matched against the hunk text, from the current hunk on. `s` splits a hunk at the context between
+its runs of changes and prints `Split into <n> hunks.`; `e` writes the hunk to `.git/addp-hunk-edit.diff`, starts the editor
+(`GIT_EDITOR`, `core.editor`, `VISUAL`, `EDITOR`) and takes the hunk back with `#` lines removed; an edit that leaves nothing
+keeps the hunk unchanged, one that does not fit the file is reported (`error: patch failed: <path>:<line>`) and asks
+`Your edited hunk does not apply. Edit again (saying "no" discards!) [y/n]? `. Messages about a key that cannot be used go to
+standard error, `Split into <n> hunks.` and the prompts to standard output. A blank line follows each file's questions, end of input leaves
+the file with what was chosen so far, and `q` stops with the choices already made applied. With nothing to ask about it prints
+`No changes.` (or `Only binary files changed.`) on standard error and exits `0`.
+
+What a choice does: `add -p` writes the chosen hunks (and mode changes) into the index only. `restore -p` takes them out of the
+work tree, the index or both; when the chosen hunks fit the work tree but not the index it says so and asks
+`Apply them to the worktree anyway? ` as git does. `stash push -p` shows `HEAD` against the work tree, ignoring the index and new
+files, saves a stash whose work tree is `HEAD` with the chosen hunks, takes them out of the work tree and keeps the index
+(`--no-keep-index` also puts the staged changes of the paths back to `HEAD`); `-u` is refused, and with no hunk chosen it prints
+`No changes selected` and exits `1`. Each file is applied as soon as its questions are over, as git does. `add -p` cannot be
+combined with `-n`, nor `restore -p` with `--ours`, `--theirs` or `--merge`. The prompt reads standard input, so a
+script can answer it; binary files and a file replaced by a symlink (or the reverse) are not offered.
+
+Differences from git 2.43, which this was written against: binary files are counted for the notice but never asked about; the
+text of regular-expression errors is the `regex` crate's; the diff uses 3 lines of context and ignores `diff.context`,
+`--inter-hunk-context` and colour (`color.ui`, `interactive.diffFilter` and `interactive.singleKey` are not read); and where git
+2.43 acts on a key it did not offer because it remembers permissions from an earlier hunk (`K` or `k` on the first hunk, `J` or
+`j` on the last, `s` on a hunk that has a single change after a split), pyn gives the same refusal it gives when nothing has been
+shown before. Covered against the real git by `git_patch.rs`, which compares the index, work tree, stash and exit status after
+the same answers.
 
 ### Clean
 

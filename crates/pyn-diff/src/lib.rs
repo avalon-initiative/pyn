@@ -187,10 +187,249 @@ fn heading(a: &[&[u8]], start: usize, floor: isize) -> String {
     String::new()
 }
 
-/// The `@@` hunks of a unified diff from `old` to `new` with `context` lines around each change;
-/// `None` when the contents are identical (or, with `ignore_ws`, differ only in whitespace).
-/// Context lines print as they are in `new`.
-pub fn unified_hunks(old: &[u8], new: &[u8], context: usize, ignore_ws: bool) -> Option<String> {
+/// One hunk of a unified diff: its position on both sides and its lines in order.
+/// A side's start is the line its first line sits on; with no lines on that side it is the line after the gap.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Hunk {
+    pub old_start: usize,
+    pub old_count: usize,
+    pub new_start: usize,
+    pub new_count: usize,
+    /// The section heading shown after the `@@` header, with its leading space.
+    pub heading: String,
+    /// Each line keeps its newline; the last on a side may lack one.
+    pub lines: Vec<(Op, Vec<u8>)>,
+}
+
+impl Hunk {
+    pub fn header(&self) -> String {
+        format!(
+            "@@ -{} +{} @@{}\n",
+            range(self.old_start, self.old_count),
+            range(self.new_start, self.new_count),
+            self.heading
+        )
+    }
+
+    /// The header and the lines as `diff -u` prints them.
+    pub fn render(&self) -> String {
+        let mut out = self.header();
+        for (op, line) in &self.lines {
+            push_line(&mut out, tag(*op), line);
+        }
+        out
+    }
+
+    pub fn recount(&mut self) {
+        let side = |keep: Op| {
+            self.lines
+                .iter()
+                .filter(|(op, _)| *op == Op::Equal || *op == keep)
+                .count()
+        };
+        (self.old_count, self.new_count) = (side(Op::Delete), side(Op::Insert));
+    }
+
+    /// The hunk that undoes this one.
+    pub fn reversed(&self) -> Hunk {
+        Hunk {
+            old_start: self.new_start,
+            old_count: self.new_count,
+            new_start: self.old_start,
+            new_count: self.old_count,
+            heading: self.heading.clone(),
+            lines: self
+                .lines
+                .iter()
+                .map(|(op, line)| {
+                    let op = match op {
+                        Op::Equal => Op::Equal,
+                        Op::Delete => Op::Insert,
+                        Op::Insert => Op::Delete,
+                    };
+                    (op, line.clone())
+                })
+                .collect(),
+        }
+    }
+
+    fn blocks(&self) -> Vec<(usize, usize)> {
+        let mut blocks: Vec<(usize, usize)> = Vec::new();
+        for (i, (op, _)) in self.lines.iter().enumerate() {
+            match blocks.last_mut() {
+                _ if *op == Op::Equal => {}
+                Some((_, end)) if *end == i => *end = i + 1,
+                _ => blocks.push((i, i + 1)),
+            }
+        }
+        blocks
+    }
+
+    /// How many hunks `split` makes: the runs of changes with context between them.
+    pub fn splittable_into(&self) -> usize {
+        self.blocks().len().max(1)
+    }
+
+    /// One hunk per run of changes; the context between two runs belongs to both.
+    pub fn split(&self) -> Vec<Hunk> {
+        let blocks = self.blocks();
+        if blocks.len() < 2 {
+            return vec![self.clone()];
+        }
+        let mut out = Vec::new();
+        for (n, (_, block_end)) in blocks.iter().enumerate() {
+            let from = if n == 0 { 0 } else { blocks[n - 1].1 };
+            let to = blocks.get(n + 1).map_or(self.lines.len(), |b| b.0);
+            let before = &self.lines[..from];
+            let count = |lines: &[(Op, Vec<u8>)], keep: Op| {
+                lines
+                    .iter()
+                    .filter(|(op, _)| *op == Op::Equal || *op == keep)
+                    .count()
+            };
+            let mut hunk = Hunk {
+                old_start: self.old_start + count(before, Op::Delete),
+                old_count: 0,
+                new_start: self.new_start + count(before, Op::Insert),
+                new_count: 0,
+                heading: if n == 0 {
+                    self.heading.clone()
+                } else {
+                    String::new()
+                },
+                lines: self.lines[from..to.max(*block_end)].to_vec(),
+            };
+            hunk.recount();
+            out.push(hunk);
+        }
+        out
+    }
+
+    /// Reads a hunk back from text a person edited: the `@@` header and `#` lines are ignored, an empty line is
+    /// context. `None` when no lines are left; the position stays that of `self`.
+    pub fn from_edit(&self, text: &[u8]) -> Result<Option<Hunk>, String> {
+        let mut lines: Vec<(Op, Vec<u8>)> = Vec::new();
+        for raw in split_lines(text) {
+            if raw.starts_with(b"#") || (lines.is_empty() && raw.starts_with(b"@@")) {
+                continue;
+            }
+            let mut body = raw.to_vec();
+            if !body.ends_with(b"\n") {
+                body.push(b'\n');
+            }
+            let op = match body[0] {
+                b'\\' => {
+                    if let Some((_, last)) = lines.last_mut() {
+                        last.pop();
+                    }
+                    continue;
+                }
+                b'\n' => {
+                    lines.push((Op::Equal, body));
+                    continue;
+                }
+                b' ' => Op::Equal,
+                b'-' => Op::Delete,
+                b'+' => Op::Insert,
+                _ => {
+                    return Err(format!(
+                        "unrecognized line in the edited hunk: {}",
+                        String::from_utf8_lossy(raw).trim_end()
+                    ));
+                }
+            };
+            lines.push((op, body[1..].to_vec()));
+        }
+        if lines.is_empty() {
+            return Ok(None);
+        }
+        let mut hunk = Hunk {
+            lines,
+            heading: self.heading.clone(),
+            ..self.clone()
+        };
+        hunk.recount();
+        Ok(Some(hunk))
+    }
+}
+
+fn tag(op: Op) -> char {
+    match op {
+        Op::Equal => ' ',
+        Op::Delete => '-',
+        Op::Insert => '+',
+    }
+}
+
+/// Where a hunk would not go: the 1-based line it was meant for.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Misfit(pub usize);
+
+/// `content` with the hunks applied; each is placed at its line, or at the nearest place its old lines match.
+pub fn apply_hunks(content: &[u8], hunks: &[&Hunk]) -> Result<Vec<u8>, Misfit> {
+    let lines = split_lines(content);
+    let mut ordered: Vec<&Hunk> = hunks.to_vec();
+    ordered.sort_by_key(|h| h.old_start);
+    let mut out: Vec<u8> = Vec::new();
+    let mut done = 0;
+    for hunk in ordered {
+        let needle: Vec<&[u8]> = hunk
+            .lines
+            .iter()
+            .filter(|(op, _)| *op != Op::Insert)
+            .map(|(_, l)| l.as_slice())
+            .collect();
+        let expected = hunk.old_start.saturating_sub(1).min(lines.len());
+        let start = place(&lines, &needle, expected).ok_or(Misfit(hunk.old_start))?;
+        if start > done {
+            lines[done..start]
+                .iter()
+                .for_each(|l| out.extend_from_slice(l));
+            done = start;
+        }
+        let mut at = start;
+        for (op, text) in &hunk.lines {
+            match op {
+                Op::Equal => {
+                    if at >= done {
+                        out.extend_from_slice(lines[at]);
+                        done = at + 1;
+                    }
+                    at += 1;
+                }
+                Op::Delete => {
+                    if at < done {
+                        return Err(Misfit(hunk.old_start));
+                    }
+                    at += 1;
+                    done = at;
+                }
+                Op::Insert => out.extend_from_slice(text),
+            }
+        }
+    }
+    lines[done.min(lines.len())..]
+        .iter()
+        .for_each(|l| out.extend_from_slice(l));
+    Ok(out)
+}
+
+fn place(lines: &[&[u8]], needle: &[&[u8]], expected: usize) -> Option<usize> {
+    let fits = |at: usize| lines.get(at..at + needle.len()) == Some(needle);
+    if needle.is_empty() || fits(expected) {
+        return Some(expected);
+    }
+    (1..=lines.len()).find_map(|d| {
+        [expected.checked_sub(d), Some(expected + d)]
+            .into_iter()
+            .flatten()
+            .find(|at| fits(*at))
+    })
+}
+
+/// The hunks of a unified diff from `old` to `new` with `context` lines around each change; empty when the
+/// contents are identical (or, with `ignore_ws`, differ only in whitespace). Context lines are those of `new`.
+pub fn hunks(old: &[u8], new: &[u8], context: usize, ignore_ws: bool) -> Vec<Hunk> {
     let (a, b) = (split_lines(old), split_lines(new));
     let ops = line_ops(&a, &b, ignore_ws);
     let changed: Vec<usize> = ops
@@ -199,9 +438,6 @@ pub fn unified_hunks(old: &[u8], new: &[u8], context: usize, ignore_ws: bool) ->
         .filter(|(_, o)| **o != Op::Equal)
         .map(|(i, _)| i)
         .collect();
-    if changed.is_empty() {
-        return None;
-    }
 
     // Each group is a run of changes whose gaps are at most twice the context.
     let mut groups: Vec<(usize, usize)> = Vec::new();
@@ -212,7 +448,7 @@ pub fn unified_hunks(old: &[u8], new: &[u8], context: usize, ignore_ws: bool) ->
         }
     }
 
-    let mut out = String::new();
+    let mut out = Vec::new();
     let mut floor = -1isize;
     for (first, last) in groups {
         let start = first.saturating_sub(context);
@@ -226,34 +462,40 @@ pub fn unified_hunks(old: &[u8], new: &[u8], context: usize, ignore_ws: bool) ->
             }
         }
         let (a0, b0) = (ai, bi);
-        let mut body = String::new();
+        let mut lines = Vec::new();
         for op in &ops[start..end] {
             match op {
                 Op::Equal => {
-                    push_line(&mut body, ' ', b[bi]);
+                    lines.push((Op::Equal, b[bi].to_vec()));
                     (ai, bi) = (ai + 1, bi + 1);
                 }
                 Op::Delete => {
-                    push_line(&mut body, '-', a[ai]);
+                    lines.push((Op::Delete, a[ai].to_vec()));
                     ai += 1;
                 }
                 Op::Insert => {
-                    push_line(&mut body, '+', b[bi]);
+                    lines.push((Op::Insert, b[bi].to_vec()));
                     bi += 1;
                 }
             }
         }
-        let _ = writeln!(
-            out,
-            "@@ -{} +{} @@{}",
-            range(a0 + 1, ai - a0),
-            range(b0 + 1, bi - b0),
-            heading(&a, a0, floor)
-        );
+        out.push(Hunk {
+            old_start: a0 + 1,
+            old_count: ai - a0,
+            new_start: b0 + 1,
+            new_count: bi - b0,
+            heading: heading(&a, a0, floor),
+            lines,
+        });
         floor = a0 as isize - 1;
-        out.push_str(&body);
     }
-    Some(out)
+    out
+}
+
+/// The `@@` hunks of a unified diff, as `hunks` finds them, in text; `None` when there are none.
+pub fn unified_hunks(old: &[u8], new: &[u8], context: usize, ignore_ws: bool) -> Option<String> {
+    let found = hunks(old, new, context, ignore_ws);
+    (!found.is_empty()).then(|| found.iter().map(Hunk::render).collect())
 }
 
 /// Trailing whitespace and the first space-before-tab in a line's indent, as git's default whitespace rules find them.
@@ -481,6 +723,80 @@ mod tests {
             got,
             "@@ -1,2 +1,2 @@\n a\n-b\n\\ No newline at end of file\n+b\n"
         );
+    }
+
+    fn numbered(edit: &[(usize, &str)]) -> (Vec<u8>, Vec<u8>) {
+        let old: Vec<String> = (1..=20).map(|i| format!("{i}\n")).collect();
+        let mut new = old.clone();
+        for (i, text) in edit {
+            new[*i - 1] = format!("{text}\n");
+        }
+        (old.concat().into_bytes(), new.concat().into_bytes())
+    }
+
+    #[test]
+    fn a_hunk_splits_at_its_context_and_shares_it() {
+        let (old, new) = numbered(&[(5, "five"), (7, "seven"), (11, "eleven")]);
+        let whole = hunks(&old, &new, 3, false);
+        assert_eq!(whole.len(), 1);
+        assert_eq!(whole[0].splittable_into(), 3);
+        let parts = whole[0].split();
+        let heads: Vec<String> = parts.iter().map(Hunk::header).collect();
+        assert_eq!(
+            heads,
+            [
+                "@@ -2,5 +2,5 @@\n",
+                "@@ -6,5 +6,5 @@\n",
+                "@@ -8,7 +8,7 @@\n"
+            ]
+        );
+        assert_eq!(parts[1].splittable_into(), 1);
+    }
+
+    #[test]
+    fn chosen_hunks_apply_on_their_own_and_together() {
+        let (old, new) = numbered(&[(5, "five"), (7, "seven"), (11, "eleven")]);
+        let parts = hunks(&old, &new, 3, false)[0].split();
+        let both = apply_hunks(&old, &[&parts[0], &parts[1]]).unwrap();
+        let (_, expect) = numbered(&[(5, "five"), (7, "seven")]);
+        assert_eq!(both, expect);
+        assert_eq!(apply_hunks(&old, &[]).unwrap(), old);
+        let all: Vec<&Hunk> = parts.iter().collect();
+        assert_eq!(apply_hunks(&old, &all).unwrap(), new);
+    }
+
+    #[test]
+    fn a_reversed_hunk_takes_the_change_back() {
+        let (old, new) = numbered(&[(5, "five"), (15, "fifteen")]);
+        let found = hunks(&old, &new, 3, false);
+        let back = found[1].reversed();
+        let got = apply_hunks(&new, &[&back]).unwrap();
+        let (_, expect) = numbered(&[(5, "five")]);
+        assert_eq!(got, expect);
+    }
+
+    #[test]
+    fn a_hunk_finds_its_lines_when_the_file_moved_them() {
+        let (old, new) = numbered(&[(5, "five")]);
+        let hunk = &hunks(&old, &new, 3, false)[0];
+        let mut shifted = b"a\nb\n".to_vec();
+        shifted.extend_from_slice(&old);
+        let got = apply_hunks(&shifted, &[hunk]).unwrap();
+        assert!(got.starts_with(b"a\nb\n1\n2\n3\n4\nfive\n"));
+        assert_eq!(apply_hunks(b"x\ny\n", &[hunk]), Err(Misfit(2)));
+    }
+
+    #[test]
+    fn an_edited_hunk_is_read_back_without_comments_and_header() {
+        let (old, new) = numbered(&[(5, "five")]);
+        let hunk = &hunks(&old, &new, 1, false)[0];
+        let edited = b"# note\n@@ -4,3 +4,3 @@\n 4\n-5\n+FIVE\n\n\\ No newline at end of file\n";
+        let got = hunk.from_edit(edited).unwrap().unwrap();
+        assert_eq!(got.old_start, hunk.old_start);
+        assert_eq!((got.old_count, got.new_count), (3, 3));
+        assert_eq!(got.lines.last().unwrap().1, b"");
+        assert!(hunk.from_edit(b"# nothing\n").unwrap().is_none());
+        assert!(hunk.from_edit(b"?x\n").is_err());
     }
 
     #[test]
