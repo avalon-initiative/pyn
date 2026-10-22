@@ -114,7 +114,7 @@ The commands named in decision #218.
 | `git remote` | `pyn remote` | git home; pyn server partly | On a git home it lists and edits the remotes in `.git/config`, see [Remotes](#remotes). On a pyn server `pyn remote`, `pyn remote -v` and `pyn remote get-url origin` show the one remote, `origin`: the server and repository set by `--server` and `--repo` or `pyn config set server` and `repo`; `add`, `remove`, `rename` and `set-url` say that a server home has exactly one home and exit `1`. |
 | `git tag [-a] [-s] [-u <keyid>] [--no-sign] [-m <msg>] [-f] [<name> [<commit>]]`, `-d`, `-l` | `pyn tag ...` on a git home | git home only | See [Tags](#tags). On a pyn server it prints the git-command message (a server's commits are named by hash and have no tags yet, #223). |
 | `git stash [push] [-p] [-u] [-k] [-m <msg>] [-- <paths>]`, `list`, `pop`, `apply` (`--index`), `drop`, `clear`, `show`, `branch`, `create`, `store` | `pyn stash ...` on a git home | git home only | See [Stashing](#stashing). On a pyn server it prints the git-command message. |
-| `git clean [-n] [-f] [-d] [-x\|-X] [-q] [-e <pattern>] [--] [<path>...]` | `pyn clean ...` on a git home | git home only | See [Clean](#clean). Without `-f` or `-n` it refuses, as `clean.requireForce` does; `-i` is not built; pathspecs are literal files and folders. |
+| `git clean [-n] [-f] [-d] [-x\|-X] [-q] [-i] [-e <pattern>] [--] [<path>...]` | `pyn clean ...` on a git home | git home only | See [Clean](#clean). Without `-f`, `-n` or `-i` it refuses, as `clean.requireForce` does; `-i` is git's menu; pathspecs take globs (`*`, `?`, `[...]`) but no `:` magic. |
 
 `pyn update [<path>...]` is the pre-branch stand-in for `fetch` plus `pull`: it fast-forwards files without local
 changes and never overwrites an edit, reporting skipped files. `--revision <commit>` moves the workspace to an older or
@@ -1414,7 +1414,7 @@ with the real git check only the index, work tree, stash and exit status, on inp
 `clean` removes the files git does not track from the work tree, and prints git's lines: `Would remove <path>` with `-n`,
 otherwise `Removing <path>` (`-q` prints neither), paths relative to where you stand and a folder with a trailing `/`. It
 refuses with `fatal: clean.requireForce defaults to true and neither -i, -n, nor -f given; refusing to clean` (`128`) unless
-`-n` or `-f` is given (or `clean.requireForce` is `false`), and `-x` with `-X` is `128`. Tracked files, submodule folders,
+`-n`, `-f` or `-i` is given (or `clean.requireForce` is `false`), and `-x` with `-X` is `128`. Tracked files, submodule folders,
 `.git` and pyn's own `.pyn` folder are never removed, and a link is removed as a link, never followed.
 
 - Default: untracked files that no ignore rule hides (every `.gitignore`, `.git/info/exclude`, the global excludes file).
@@ -1426,16 +1426,42 @@ refuses with `fatal: clean.requireForce defaults to true and neither -i, -n, nor
 - A nested repository the index does not track is left alone, silently when it is the folder itself and as
   `Would skip repository <path>` / `Skipping repository <path>` when it is inside an untracked folder (the rest of that folder
   is still removed). `-ff` removes nested repositories whole.
-- Paths limit the clean to themselves and what is under them; standing in a folder limits it to that folder. They are literal
-  files and folders, so a glob matches nothing and a `:` pathspec is refused. A path outside the repository is `128`.
+- Paths limit the clean to themselves and what is under them; standing in a folder limits it to that folder. A name with
+  `*`, `?`, `[` or a backslash is a glob, matched against the whole path with `*` crossing folders, as in a plain git
+  pathspec (a folder also matches with a trailing slash, so `dir/*` takes `dir/` itself); a name that exists literally still
+  matches itself. A `:` pathspec is refused. A path outside the repository is `128`.
+- `-X` with a glob lists an all-ignored folder as one `dir/` entry when the text before the glob's first wildcard can lead into
+  it (`*.log` and `?` lead into every folder, `u*` only into folders starting with `u`), even if nothing inside matches, as git does.
 - A folder you stand in is not removed: `Would refuse to remove current working directory` / `Refusing to ...`, then the
   folder's entries are listed with paths built from it, as git does.
 - A path that cannot be removed prints `warning: failed to remove <path>` and the exit status is `1`.
 
-Differences from git: `-i` is a usage error (`129`), pathspecs take no globs or magic, and the order of the
+With `-i` the items to remove are listed first (`Would remove the following items:`, in columns down the page of the
+`COLUMNS` width, else 80), then the menu, with git's prompts and texts:
+
+| Command | Does |
+| --- | --- |
+| `1` clean | Removes what is listed, with the usual `Removing <path>` lines (`-n`, `-q` and `-ff` apply). |
+| `2` filter by pattern | Lists the items, then asks `Input ignore patterns>> ` until an empty line. Patterns are separated by spaces and are ignore rules (`!` negates, the last match wins); an item is dropped when a rule matches it, a folder above it, or a folder item with its trailing slash. A line that matches nothing prints `WARNING: Cannot find items matched by: <line>`. |
+| `3` select by numbers | Numbers the items in rows (`*` marks the chosen), asks `Select items to delete>> `, and keeps only the chosen. Answers are numbers, `3-5` ranges (`3-` to the end), `*`, a case-insensitive unique name prefix, and `-` before any of them to unselect, separated by spaces or commas; `?` shows the help and an empty line finishes. A word that names nothing prints `Huh (<word>)?`. |
+| `4` ask each | Asks `Remove <path> [y/N]? ` for each item; `y`, `ye` and `yes` in any case remove it, anything else keeps it. |
+| `5` quit | Prints `Bye.` and removes nothing. |
+| `6` help | Describes the commands. |
+
+A menu answer is a number or a case-insensitive prefix of a command name (`c`, `f`, `s`, `a`, `q`, `h`); an empty answer or
+`?` shows the menu or its help again, and anything else prints `Huh (<answer>)?`. A list that becomes empty prints
+`No more files to clean, exiting.` and ends the run. End of input quits (`Bye.`), cancels a selection, and stops
+asking. A folder holding a nested repository is one entry that, chosen, prints `Skipping repository <path>` for the
+repository and removes the rest; a folder you stand in is the entry `./` and is handled as above once chosen. Nothing is
+listed, and nothing printed, when there is nothing to clean. Colours (`color.interactive`) are not applied.
+
+Differences from git: `:` pathspec magic is refused; the order of the
 lines inside a folder that holds a nested repository is by name, where git uses the file system's order (and prints the
-folders in it without a trailing `/`, which pyn copies). Covered against the real git, on SHA-1 and SHA-256 repositories, by
-`crates/pyn-cli/tests/git_clean.rs`.
+folders in it without a trailing `/`, which pyn copies); names are laid out by their character count, not their
+display width; and a last answer without a newline in `ask each` is read the way git reads it (an `y` stays the answer for
+the items after it), but the filter prompt stops at the end of input where git can loop. Git 2.43 and 2.55 behave alike
+for every answer the menu reads. Covered against the real git, on SHA-1 and SHA-256 repositories, by
+`crates/pyn-cli/tests/git_clean.rs`, which compares exit status, the work tree and the actions taken, not the menu text.
 
 ### Reflogs
 

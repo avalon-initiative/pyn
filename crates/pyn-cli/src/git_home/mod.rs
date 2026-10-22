@@ -4,6 +4,7 @@
 mod ancestry;
 mod branches;
 mod clean;
+mod clean_menu;
 mod clone;
 mod commands;
 mod commit;
