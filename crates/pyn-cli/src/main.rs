@@ -1962,36 +1962,50 @@ fn run(cli: Cli) -> Result<()> {
         } => {
             branch::note_branch(ws.as_ref());
             let path = path.or_else(|| log_args.sole_dashed().map(str::to_string));
-            let (revs, repo_wide) = match path {
-                Some(path) => {
-                    let revs = backend.path_history(&rp(&path)?)?.into_iter().rev();
-                    (revs.take(limit.unwrap_or(usize::MAX)).collect(), false)
-                }
-                None => (
-                    backend.repo_history(filter.as_deref(), limit.unwrap_or(50))?,
-                    true,
-                ),
+            let path = path.map(|p| rp(&p)).transpose()?;
+            let store = ws.as_ref().and_then(local_store::LocalStore::open);
+            let scope = match &path {
+                Some(p) => local_view::LogScope::Path(p.as_str()),
+                None => local_view::LogScope::Repo(filter.as_deref()),
             };
-            let rows: Vec<Vec<String>> = revs
-                .into_iter()
-                .map(|r| {
-                    let restored = match (r.deleted, r.restored_from) {
-                        (true, _) => " (deleted)".to_string(),
-                        (false, Some(n)) => format!(" (restored from r{n})"),
-                        (false, None) => String::new(),
-                    };
-                    let mut row = vec![
-                        format!("r{}", r.id),
-                        r.author,
-                        time::local(r.created_at),
-                        format!("{}{restored}", r.message),
-                    ];
-                    if repo_wide {
-                        row.push(r.path);
-                    }
-                    row
-                })
-                .collect();
+            let mut local_rows = match &store {
+                Some(store) => {
+                    local_view::revision_rows(store, &branch::name(ws.as_ref()), &scope)?
+                }
+                None => Vec::new(),
+            };
+            let max = limit.unwrap_or(if path.is_some() { usize::MAX } else { 50 });
+            local_rows.truncate(max);
+            let rest = max - local_rows.len();
+            let repo_wide = path.is_none();
+            let revs = match path {
+                _ if rest == 0 => Vec::new(),
+                Some(path) => backend
+                    .path_history(&path)?
+                    .into_iter()
+                    .rev()
+                    .take(rest)
+                    .collect(),
+                None => backend.repo_history(filter.as_deref(), rest)?,
+            };
+            let mut rows = local_rows;
+            rows.extend(revs.into_iter().map(|r| {
+                let restored = match (r.deleted, r.restored_from) {
+                    (true, _) => " (deleted)".to_string(),
+                    (false, Some(n)) => format!(" (restored from r{n})"),
+                    (false, None) => String::new(),
+                };
+                let mut row = vec![
+                    format!("r{}", r.id),
+                    r.author,
+                    time::local(r.created_at),
+                    format!("{}{restored}", r.message),
+                ];
+                if repo_wide {
+                    row.push(r.path);
+                }
+                row
+            }));
             let header: &[&str] = if repo_wide {
                 &["REV", "AUTHOR", "WHEN", "MESSAGE", "PATH"]
             } else {

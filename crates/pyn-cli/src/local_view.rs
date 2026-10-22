@@ -86,7 +86,7 @@ pub fn log_rows(store: &LocalStore, branch: &str) -> Result<Vec<Vec<String>>> {
         .map(|id| {
             let c = api_commit(store, id)?;
             Ok(vec![
-                short(&c.id).to_string(),
+                format!("{} (local)", short(&c.id)),
                 c.author.name.clone(),
                 time::local(c.created_at),
                 changed_paths(store, &c)?.len().to_string(),
@@ -94,6 +94,76 @@ pub fn log_rows(store: &LocalStore, branch: &str) -> Result<Vec<Vec<String>>> {
             ])
         })
         .collect()
+}
+
+/// The glob `log --filter` takes: without a slash it matches at any depth, a trailing slash a folder.
+fn filter_matcher(pattern: &str) -> Result<globset::GlobMatcher> {
+    let anchored = if pattern.ends_with('/') {
+        format!("{pattern}**")
+    } else if pattern.contains('/') {
+        pattern.to_string()
+    } else {
+        format!("**/{pattern}")
+    };
+    Ok(globset::GlobBuilder::new(&anchored)
+        .literal_separator(true)
+        .build()?
+        .compile_matcher())
+}
+
+/// Which paths of the unpublished commits `log` lists.
+pub enum LogScope<'a> {
+    Path(&'a str),
+    Repo(Option<&'a str>),
+}
+
+/// The rows of the revisions view for the unpublished commits, one per changed path, newest first.
+/// The `REV` column says `local`; the repository view adds the path last.
+pub fn revision_rows(
+    store: &LocalStore,
+    branch: &str,
+    scope: &LogScope,
+) -> Result<Vec<Vec<String>>> {
+    let matcher = match scope {
+        LogScope::Repo(Some(f)) => Some(filter_matcher(f)?),
+        _ => None,
+    };
+    let mut rows = Vec::new();
+    for id in unpublished_chain(store, branch)? {
+        let c = api_commit(store, &id)?;
+        let parent = match c.parents.first() {
+            Some(p) => store.tree_of(Some(crate::local_store::parse_id(p)?))?,
+            None => None,
+        };
+        let tree = crate::local_store::parse_id(&c.tree)?;
+        let changes =
+            store
+                .repo()
+                .diff_trees(parent.as_ref(), Some(&tree), &Pathspec::default())?;
+        for d in changes {
+            let path = String::from_utf8_lossy(&d.path).into_owned();
+            let wanted = match scope {
+                LogScope::Path(p) => path == *p,
+                LogScope::Repo(_) => matcher.as_ref().is_none_or(|m| m.is_match(&path)),
+            };
+            if !wanted {
+                continue;
+            }
+            let first = c.message.lines().next().unwrap_or_default();
+            let deleted = if d.new.is_none() { " (deleted)" } else { "" };
+            let mut row = vec![
+                "local".to_string(),
+                c.author.name.clone(),
+                time::local(c.created_at),
+                format!("{first}{deleted}"),
+            ];
+            if matches!(scope, LogScope::Repo(_)) {
+                row.push(path);
+            }
+            rows.push(row);
+        }
+    }
+    Ok(rows)
 }
 
 fn tree_of(store: &LocalStore, tree: Option<ObjectId>) -> Result<Tree> {

@@ -44,8 +44,14 @@ fn a_clean_legacy_workspace_migrates_and_then_commits_locally() {
     assert!(out.contains("not yet published"), "{out}");
     let log = env.ok(&ws, "alice", &["log"]);
     assert!(
-        !log.contains("local"),
-        "nothing reached the server yet: {log}"
+        log.lines().any(|l| l.starts_with("local")) && log.contains("r1"),
+        "the local commit is listed above the server's: {log}"
+    );
+    assert_eq!(
+        env.ok(&ws, "alice", &["log", "--commits"])
+            .matches("(local)")
+            .count(),
+        1
     );
     env.ok(&ws, "alice", &["push"]);
     let log = env.ok(&ws, "alice", &["log"]);

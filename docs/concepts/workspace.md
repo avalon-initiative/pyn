@@ -297,8 +297,10 @@ With the store on, `add`, `commit`, `status` and `branch` work against the store
   closing line with the number of local commits the server lacks.
 - `pyn update` brings the server's tip and its history into the store but leaves the local branch and the files that
   local commits changed alone (it reports them as skipped).
-- `pyn log --commits` lists the unpublished commits above the server's, and `pyn show [<commit>]` shows one (`HEAD` or a
-  hash of an unpublished commit; anything else is read from the server). Per-path `pyn log` lists server revisions only.
+- `pyn log --commits` lists the unpublished commits above the server's (the hash is marked `(local)`), and `pyn show [<commit>]`
+  shows one (`HEAD` or a hash of an unpublished commit; anything else is read from the server). `pyn log` and
+  `pyn log <path>` list the unpublished commits first, newest first, one row per changed path with `local` as the `REV`
+  and `(deleted)` after the message when the commit removes the path; `--filter` and `-n`/`--limit` apply to them too.
 - `pyn commit <path>` on a file that has not changed since its last revision says `nothing to commit` (exit `1`).
 - `pyn status` shows `local` as the revision of a file only a local commit has added.
 - A file stays writable after a local commit while you still hold its lock; it goes read-only when you unlock.
