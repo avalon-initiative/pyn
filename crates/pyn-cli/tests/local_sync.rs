@@ -488,7 +488,11 @@ fn reset_soft_keeps_the_changes_staged_and_hard_restores_the_files() {
     );
 
     let err = env.fails(&ws, "alice", &["reset", "--hard", "HEAD~1"]);
-    assert!(err.contains("not confirmed"), "{err}");
+    assert!(
+        err.contains("no terminal") && err.contains("--yes") && err.contains("Nothing was changed"),
+        "{err}"
+    );
+    assert!(ws.join("Source/new.cpp").exists());
     env.ok(&ws, "alice", &["reset", "--hard", "--yes", "HEAD~1"]);
     assert_eq!(
         std::fs::read_to_string(ws.join("Source/a.cpp")).unwrap(),
