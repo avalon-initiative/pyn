@@ -31,6 +31,7 @@ mod reset;
 mod signing;
 mod stage;
 mod stash;
+mod stash_show;
 mod switch;
 mod tags;
 pub(crate) mod todo;

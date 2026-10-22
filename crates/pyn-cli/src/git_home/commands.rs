@@ -91,7 +91,7 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
         Command::Switch(args) => super::switch::switch(git, args),
         Command::Checkout(args) => super::switch::checkout(git, cwd, args),
         Command::Tag(args) => super::tags::tag(git, args),
-        Command::Stash(args) => super::stash::stash(git, args),
+        Command::Stash(args) => super::stash::stash(git, cwd, args),
         Command::Clean(args) => {
             if super::clean::clean(git, cwd, &args)? {
                 std::process::exit(1);

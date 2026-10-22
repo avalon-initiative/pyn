@@ -199,7 +199,25 @@ const REFUSALS: &[Refusal] = &[
     Refusal {
         fixture: "main",
         prelude: &[],
-        command: &["stash", "push", "--", "README.md"],
+        command: &["stash", "push", "--", "nope.txt"],
+        allowed: &[],
+    },
+    Refusal {
+        fixture: "main",
+        prelude: &[],
+        command: &["stash", "branch", "topic"],
+        allowed: &[],
+    },
+    Refusal {
+        fixture: "main",
+        prelude: &[],
+        command: &["stash", "show"],
+        allowed: &[],
+    },
+    Refusal {
+        fixture: "main",
+        prelude: &[],
+        command: &["stash", "store", "nope"],
         allowed: &[],
     },
     Refusal {

@@ -426,6 +426,20 @@ pub fn switch(git: &GitHome, args: SwitchArgs) -> Result<()> {
     )
 }
 
+/// Creates the branch `name` at the commit `start` and switches to it, as `checkout -b name start`.
+pub(super) fn switch_to_new(git: &GitHome, name: &str, start: &ObjectId) -> Result<()> {
+    go(
+        git,
+        Go {
+            landing: Landing::NewBranch {
+                name: name.to_string(),
+                start: Some(start.to_hex()),
+            },
+            force: false,
+        },
+    )
+}
+
 enum Source {
     Index,
     Tree(ObjectId),
