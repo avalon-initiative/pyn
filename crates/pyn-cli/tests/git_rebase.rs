@@ -1663,7 +1663,7 @@ fn editor_sheets_and_stopped_patches_use_the_repository_abbreviation_policy() {
             assert!(
                 expected
                     .iter()
-                    .all(|id| id.len() == width.parse::<usize>().unwrap())
+                    .all(|id| id.len() >= width.parse::<usize>().unwrap())
             );
             assert_eq!(ids(&p.pyn), expected);
             let expected = read(&p.git, "rebase-merge/patch");

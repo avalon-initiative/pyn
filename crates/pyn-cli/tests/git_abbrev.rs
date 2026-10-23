@@ -7,18 +7,24 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use common::gitfix::{FORMATS, Repo, copy_tree};
+use common::gitfix::{FORMATS, Repo, copy_tree, snapshot};
 
-fn git(repo: &Repo, dir: &Path, args: &[&str]) -> String {
-    let out = Command::new("git")
-        .args(args)
+fn git_command(repo: &Repo, dir: &Path) -> Command {
+    let mut command = Command::new("git");
+    command
         .current_dir(dir)
         .env("HOME", &repo.home)
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env_remove("XDG_CONFIG_HOME")
         .env("TZ", "UTC")
-        .output()
-        .unwrap();
+        .env("GIT_COMMITTER_NAME", "Staging Committer")
+        .env("GIT_COMMITTER_EMAIL", "committer@example.com")
+        .env("GIT_COMMITTER_DATE", "1700000100 -0530");
+    command
+}
+
+fn git(repo: &Repo, dir: &Path, args: &[&str]) -> String {
+    let out = git_command(repo, dir).args(args).output().unwrap();
     assert!(
         out.status.success(),
         "{args:?}: {}",
@@ -305,6 +311,28 @@ fn a_collision_in_an_alternate_extends_output_and_duplicate_ids_do_not() {
     }
 }
 
+fn pack_blobs(repo: &Repo, count: usize) {
+    // One compact pack at runtime instead of duplicating a large archived fixture.
+    let mut child = Command::new("git")
+        .args(["fast-import", "--quiet"])
+        .current_dir(&repo.main)
+        .env("HOME", &repo.home)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    {
+        let mut input = child.stdin.take().unwrap();
+        for n in 0..count {
+            let data = format!("abbrev-count-{n}\n");
+            write!(input, "blob\ndata {}\n{data}\n", data.len()).unwrap();
+        }
+        writeln!(input, "done").unwrap();
+    }
+    assert!(child.wait().unwrap().success());
+}
+
 #[test]
 fn packed_object_count_raises_the_default_abbreviation_above_seven() {
     // Catches a fixed-seven fallback, the wrong bit/hex rounding, and ignoring alternate pack counts.
@@ -312,25 +340,7 @@ fn packed_object_count_raises_the_default_abbreviation_above_seven() {
         let repo = Repo::new(format);
         let before = same(&repo, &["log", "-n", "1", "--format=%h"]);
         assert_eq!(before.trim_end().len(), 7);
-        // One compact pack at runtime instead of duplicating a large archived fixture.
-        let mut child = Command::new("git")
-            .args(["fast-import", "--quiet"])
-            .current_dir(&repo.main)
-            .env("HOME", &repo.home)
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .spawn()
-            .unwrap();
-        {
-            let mut input = child.stdin.take().unwrap();
-            for n in 0..16384 {
-                let data = format!("abbrev-count-{n}\n");
-                write!(input, "blob\ndata {}\n{data}\n", data.len()).unwrap();
-            }
-            writeln!(input, "done").unwrap();
-        }
-        assert!(child.wait().unwrap().success());
+        pack_blobs(&repo, 16384);
         for value in [None, Some("auto")] {
             if let Some(value) = value {
                 setting(&repo, value);
@@ -539,5 +549,185 @@ fn null_ids_extend_for_zero_prefix_collisions_in_diff_and_patch_editor_headers()
             patch_prompt_indices(&repo, env!("CARGO_BIN_EXE_pyn")),
             expected
         );
+    }
+}
+
+#[test]
+fn invalid_abbrev_refuses_write_commands_before_any_repository_change() {
+    // Kills validation after a write or only on a nonquiet rendering path.
+    let commands: &[&[&str]] = &[
+        &["branch", "-D", "topic"],
+        &["commit", "-m", "abbreviation validation"],
+        &["commit", "-q", "-m", "abbreviation validation"],
+        &["reset", "--hard", "HEAD~1"],
+        &["reset", "--hard", "-q", "HEAD~1"],
+        &["tag", "new"],
+    ];
+    for format in FORMATS {
+        for args in commands {
+            for invalid in [true, false] {
+                let repo = Repo::new(format);
+                same(&repo, &["log", "-n", "1", "--format=%h"]);
+                git(&repo, &repo.main, &["branch", "--create-reflog", "topic"]);
+                writeln!(
+                    OpenOptions::new()
+                        .append(true)
+                        .open(repo.main.join(".git/config"))
+                        .unwrap(),
+                    "\n[branch \"topic\"]\n\tremote = origin"
+                )
+                .unwrap();
+                let head = git(&repo, &repo.main, &["rev-parse", "HEAD"]);
+                setting(&repo, if invalid { "3" } else { "12" });
+                let before = snapshot(&repo.main);
+                if invalid {
+                    let oracle = git_command(&repo, &repo.main).args(*args).output().unwrap();
+                    assert_eq!(oracle.status.code(), Some(128), "{args:?}");
+                    assert!(String::from_utf8_lossy(&oracle.stderr).contains("core.abbrev"));
+                    assert_eq!(
+                        snapshot(&repo.main),
+                        before,
+                        "git refusal changed state: {args:?}"
+                    );
+                    let out = repo.run_in(&repo.main, args);
+                    assert_eq!(out.status.code(), Some(128), "{args:?}");
+                    assert!(String::from_utf8_lossy(&out.stderr).contains("core.abbrev"));
+                    assert_eq!(
+                        snapshot(&repo.main),
+                        before,
+                        "pyn refusal changed state: {args:?}"
+                    );
+                } else {
+                    let out = repo.run_in(&repo.main, args);
+                    assert!(
+                        out.status.success(),
+                        "{args:?}: {}",
+                        String::from_utf8_lossy(&out.stderr)
+                    );
+                    let repository = pyn_git::Repository::open(&repo.main).unwrap();
+                    match args[0] {
+                        "branch" => {
+                            assert!(
+                                repository
+                                    .refs()
+                                    .resolve("refs/heads/topic")
+                                    .unwrap()
+                                    .is_none()
+                            );
+                            assert!(repository.config().get("branch.topic.remote").is_none());
+                        }
+                        "commit" | "reset" => {
+                            let now = repository.refs().resolve("HEAD").unwrap().unwrap();
+                            assert_ne!(now.to_hex(), head.trim());
+                        }
+                        "tag" => assert_eq!(
+                            repository
+                                .refs()
+                                .resolve("refs/tags/new")
+                                .unwrap()
+                                .unwrap()
+                                .to_hex(),
+                            head.trim()
+                        ),
+                        _ => unreachable!(),
+                    }
+                    assert_ne!(
+                        snapshot(&repo.main),
+                        before,
+                        "valid operation did nothing: {args:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn every_abbrev_config_entry_is_validated_before_last_value_wins() {
+    // Kills validating only the last entry, including when repository config overrides global config.
+    for format in FORMATS {
+        for (first, last, width) in [
+            ("3", "12", None),
+            ("nonsense", "12", None),
+            ("12", "9", Some(9)),
+            ("12", "auto", Some(7)),
+            ("auto", "12", Some(12)),
+        ] {
+            for global in [false, true] {
+                let repo = Repo::new(format);
+                same(&repo, &["log", "-n", "1", "--format=%h"]);
+                if global {
+                    fs::write(
+                        repo.home.join(".gitconfig"),
+                        format!("[core]\n\tabbrev = {first}\n"),
+                    )
+                    .unwrap();
+                } else {
+                    setting(&repo, first);
+                }
+                setting(&repo, last);
+                if let Some(width) = width {
+                    let out = same(&repo, &["log", "-n", "1", "--format=%h"]);
+                    assert_eq!(out.trim_end().len(), width);
+                } else {
+                    let out = git_command(&repo, &repo.main)
+                        .args(["log", "-1", "--format=%h"])
+                        .output()
+                        .unwrap();
+                    assert_eq!(out.status.code(), Some(128));
+                    let (_, error) = repo.fails(&["log", "-n", "1", "--format=%h"]);
+                    assert!(error.contains("core.abbrev"));
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn alternate_count_is_invariant_under_duplicate_alias_and_diamond_routes() {
+    // Kills counting the same canonical store twice, while retaining counts from distinct packed stores.
+    for format in FORMATS {
+        let repo = Repo::new(format);
+        pack_blobs(&repo, 8192);
+        let objects = repo.main.join(".git/objects");
+        let shared = alternate(&repo, "shared");
+        fs::rename(objects.join("pack"), shared.join("packed")).unwrap();
+        fs::rename(shared.join("packed"), shared.join("pack")).unwrap();
+        link(&objects, &shared);
+        let baseline = same(&repo, &["log", "-n", "1", "--format=%h"]);
+        assert_eq!(baseline.trim_end().len(), 7);
+        fs::write(
+            objects.join("info/alternates"),
+            format!("{}\n{}\n", shared.display(), shared.display()),
+        )
+        .unwrap();
+        assert_eq!(same(&repo, &["log", "-n", "1", "--format=%h"]), baseline);
+        let alias = repo.home.join("shared-alias");
+        std::os::unix::fs::symlink(&shared, &alias).unwrap();
+        fs::write(
+            objects.join("info/alternates"),
+            format!("{}\n{}\n", shared.display(), alias.display()),
+        )
+        .unwrap();
+        assert_eq!(same(&repo, &["log", "-n", "1", "--format=%h"]), baseline);
+        let a = alternate(&repo, "diamond-a");
+        let b = alternate(&repo, "diamond-b");
+        link(&a, &shared);
+        link(&b, &alias);
+        fs::write(
+            objects.join("info/alternates"),
+            format!("{}\n{}\n", a.display(), b.display()),
+        )
+        .unwrap();
+        assert_eq!(same(&repo, &["log", "-n", "1", "--format=%h"]), baseline);
+        let distinct = alternate(&repo, "distinct");
+        copy_tree(&shared.join("pack"), &distinct.join("pack"));
+        fs::write(
+            objects.join("info/alternates"),
+            format!("{}\n{}\n", shared.display(), distinct.display()),
+        )
+        .unwrap();
+        let out = same(&repo, &["log", "-n", "1", "--format=%h"]);
+        assert_eq!(out.trim_end().len(), 8);
     }
 }

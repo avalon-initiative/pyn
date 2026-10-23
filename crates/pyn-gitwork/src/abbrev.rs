@@ -12,6 +12,7 @@ pub struct Abbreviations {
 }
 
 impl Abbreviations {
+    /// The configured/default minimum hex width, before uniqueness extension.
     pub fn minimum_len(&self) -> usize {
         self.len
     }
@@ -26,6 +27,7 @@ impl Abbreviations {
         self.short_hex(&"0".repeat(self.hex_len))
     }
 
+    /// Abbreviates a normalized lowercase ASCII hex id at the repository's full hash width (40 or 64 digits).
     pub fn short_hex(&self, hex: &str) -> String {
         let mut len = self.len.min(hex.len());
         let start = self
@@ -77,12 +79,11 @@ impl Repo {
     /// The configured minimum; explicit log/show widths override it, while a bare flag retains it.
     pub fn abbreviation_len(&self, explicit: Option<usize>) -> Result<usize> {
         let hex = self.algorithm().digest_len() * 2;
-        let entry = self.config().entries().iter().rev().find(|entry| {
+        let mut configured = None;
+        for entry in self.config().entries().iter().filter(|entry| {
             entry.section == "core" && entry.subsection.is_none() && entry.key == "abbrev"
-        });
-        let configured = match entry {
-            None => None,
-            Some(entry) => match entry.value.as_deref() {
+        }) {
+            configured = match entry.value.as_deref() {
                 None => return Err(Error::Invalid("missing value for core.abbrev".into())),
                 Some(value) if value.eq_ignore_ascii_case("auto") => None,
                 Some(value)
@@ -93,8 +94,8 @@ impl Repo {
                     Some(hex)
                 }
                 Some(value) => Some(configured_length(value, hex)?),
-            },
-        };
+            };
+        }
         if let Some(len) = explicit {
             return Ok(len.clamp(4, hex));
         }

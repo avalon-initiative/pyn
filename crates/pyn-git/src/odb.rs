@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -72,6 +73,7 @@ impl ObjectDb {
     }
 
     /// Object ids in this store and its recursive alternates, without duplicates.
+    /// `prefix` must be normalized lowercase ASCII hex: empty matches all ids, otherwise one or more digits.
     pub fn ids_with_prefix(&self, prefix: &str) -> Result<Vec<ObjectId>> {
         let mut found = Vec::new();
         self.collect_ids(prefix, &mut found)?;
@@ -110,12 +112,20 @@ impl ObjectDb {
         Ok(())
     }
 
-    /// Git estimates repository size from packed objects, including alternates, counting pack duplicates.
+    /// Git estimates size from packed objects, counting each canonical directory once and distinct packs separately.
     pub fn approximate_object_count(&self) -> Result<usize> {
+        self.count_packed_objects(&mut HashSet::new())
+    }
+
+    fn count_packed_objects(&self, seen: &mut HashSet<PathBuf>) -> Result<usize> {
+        let dir = fs::canonicalize(&self.dir).map_err(io_at(&self.dir))?;
+        if !seen.insert(dir) {
+            return Ok(0);
+        }
         self.rescan_packs()?;
         let mut count: usize = self.packs().iter().map(|pack| pack.len()).sum();
         for alternate in &self.alternates {
-            count = count.saturating_add(alternate.approximate_object_count()?);
+            count = count.saturating_add(alternate.count_packed_objects(seen)?);
         }
         Ok(count)
     }
