@@ -27,9 +27,13 @@ fn world_with(settings: WebhookSettings) -> World {
     let audit = Arc::new(MemoryAuditStore::new());
     let store = Arc::new(MemoryWebhookStore::new());
     let access = Arc::new(
-        AccessService::new(Arc::new(MemoryAccessStore::new()), clock)
-            .with_audit(audit.clone())
-            .with_webhooks(store.clone(), settings),
+        AccessService::new(
+            Arc::new(MemoryAccessStore::new()),
+            clock,
+            Arc::new(pyn_core::MemoryLimitEvents::new()),
+        )
+        .with_audit(audit.clone())
+        .with_webhooks(store.clone(), settings),
     );
     World {
         access,

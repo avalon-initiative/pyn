@@ -701,7 +701,7 @@ pub async fn limit_events_admit_each_owner_and_kind_only_after_an_hour(store: We
         for owner in ["alice", "studio"] {
             for kind in ["repositories", "members", "storage_bytes", "locks"] {
                 let event = store
-                    .append_limit_reached(&UserId::new(owner), kind, PAYLOAD, clock.now())
+                    .append_limit_reached(&UserId::new(owner), kind, "1", clock.now())
                     .await
                     .unwrap();
                 assert_eq!(
@@ -714,10 +714,7 @@ pub async fn limit_events_admit_each_owner_and_kind_only_after_an_hour(store: We
                     assert!(ids.insert(event.id));
                     assert_eq!(event.event_type, "owner.limit_reached");
                     assert_eq!(event.created_at, clock.now());
-                    assert_eq!(
-                        serde_json::from_str::<serde_json::Value>(&event.payload).unwrap(),
-                        serde_json::json!({"k": 1})
-                    );
+                    assert_eq!(event.payload, "1");
                 }
             }
         }
@@ -749,7 +746,7 @@ pub async fn racing_limit_admissions_append_exactly_one_event(store: Webhooks) {
         tasks.push(tokio::spawn(async move {
             barrier.wait().await;
             store
-                .append_limit_reached(&UserId::new("alice"), "repositories", PAYLOAD, t0())
+                .append_limit_reached(&UserId::new("alice"), "repositories", "1", t0())
                 .await
                 .unwrap()
         }));
@@ -775,6 +772,21 @@ pub async fn racing_limit_admissions_append_exactly_one_event(store: Webhooks) {
     );
 }
 
+/// Store-contract recorder for the repository-zero refusal exercised below.
+pub struct RepositoryLimitEvents(pub Webhooks);
+
+#[async_trait::async_trait]
+impl crate::LimitEvents for RepositoryLimitEvents {
+    async fn record(&self, event: crate::LimitReached, now: DateTime<Utc>) -> crate::Result<()> {
+        assert_eq!(event.kind, crate::LimitKind::Repositories);
+        assert_eq!(event.value, 0);
+        self.0
+            .append_limit_reached(&event.owner, "repositories", "1", now)
+            .await?;
+        Ok(())
+    }
+}
+
 pub async fn racing_limit_services_record_one_event(
     meta: super::Store,
     access_store: super::Access,
@@ -795,16 +807,20 @@ pub async fn racing_limit_services_record_one_event(
     let mut tasks = Vec::new();
     for (i, hook_store) in hooks.iter().enumerate() {
         let access = Arc::new(
-            AccessService::new(access_store.clone(), clock.clone())
-                .with_config(AccessConfig {
-                    default_limits: Limits {
-                        repositories: Some(0),
-                        ..Default::default()
-                    },
-                    ..AccessConfig::default()
-                })
-                .with_registry(meta.clone())
-                .with_webhooks(hook_store.clone(), WebhookSettings::default()),
+            AccessService::new(
+                access_store.clone(),
+                clock.clone(),
+                Arc::new(RepositoryLimitEvents(hook_store.clone())),
+            )
+            .with_config(AccessConfig {
+                default_limits: Limits {
+                    repositories: Some(0),
+                    ..Default::default()
+                },
+                ..AccessConfig::default()
+            })
+            .with_registry(meta.clone())
+            .with_webhooks(hook_store.clone(), WebhookSettings::default()),
         );
         let repos = Repositories::new(
             meta.clone(),
@@ -841,16 +857,8 @@ pub async fn racing_limit_services_record_one_event(
         .unwrap();
     assert_eq!(due.len(), 1);
     assert_eq!(due[0].subscription.id, sub.id);
-    let event: pyn_proto::Event = serde_json::from_str(&due[0].event.payload).unwrap();
-    assert_eq!(event.created_at, clock.now());
-    assert_eq!(
-        event.data,
-        pyn_proto::EventData::OwnerLimitReached(pyn_proto::OwnerLimitReachedData {
-            owner: "alice".into(),
-            limit: pyn_proto::LimitKind::Repositories,
-            value: 0
-        })
-    );
+    assert_eq!(due[0].event.created_at, clock.now());
+    assert_eq!(due[0].event.payload, "1");
 }
 
 /// Generates one `#[tokio::test]` per webhook-store case for the store built by `$factory`.

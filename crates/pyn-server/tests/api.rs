@@ -57,17 +57,20 @@ async fn state_full(
     .await
     .unwrap();
     let access = Arc::new(
-        AccessService::new(Arc::new(MemoryAccessStore::new()), clock.clone())
-            .with_config(AccessConfig {
-                registration: mode,
-                require_email_verification: false,
-                public_url: public_url
-                    .map_or_else(|| AccessConfig::default().public_url, Into::into),
-                allowed_origins,
-                ..AccessConfig::default()
-            })
-            .with_registry(meta.clone())
-            .with_audit(audit.clone()),
+        AccessService::new(
+            Arc::new(MemoryAccessStore::new()),
+            clock.clone(),
+            Arc::new(pyn_core::MemoryLimitEvents::new()),
+        )
+        .with_config(AccessConfig {
+            registration: mode,
+            require_email_verification: false,
+            public_url: public_url.map_or_else(|| AccessConfig::default().public_url, Into::into),
+            allowed_origins,
+            ..AccessConfig::default()
+        })
+        .with_registry(meta.clone())
+        .with_audit(audit.clone()),
     );
     let repos = Arc::new(Repositories::new(
         meta,

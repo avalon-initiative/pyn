@@ -35,14 +35,18 @@ fn app() -> Router {
     let audit = Arc::new(MemoryAuditStore::new());
     let meta = Arc::new(MemoryMetadataStore::new());
     let access = Arc::new(
-        AccessService::new(Arc::new(MemoryAccessStore::new()), clock.clone())
-            .with_config(AccessConfig {
-                registration: RegistrationMode::Open,
-                require_email_verification: false,
-                ..AccessConfig::default()
-            })
-            .with_registry(meta.clone())
-            .with_audit(audit.clone()),
+        AccessService::new(
+            Arc::new(MemoryAccessStore::new()),
+            clock.clone(),
+            Arc::new(pyn_core::MemoryLimitEvents::new()),
+        )
+        .with_config(AccessConfig {
+            registration: RegistrationMode::Open,
+            require_email_verification: false,
+            ..AccessConfig::default()
+        })
+        .with_registry(meta.clone())
+        .with_audit(audit.clone()),
     );
     let repos = Arc::new(Repositories::new(
         meta,

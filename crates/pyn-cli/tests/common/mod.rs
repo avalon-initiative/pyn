@@ -100,10 +100,14 @@ fn build_with(
             ..AccessConfig::default()
         }
     };
-    let mut service = AccessService::new(Arc::new(MemoryAccessStore::new()), clock.clone())
-        .with_config(config)
-        .with_registry(meta.clone())
-        .with_audit(audit.clone());
+    let mut service = AccessService::new(
+        Arc::new(MemoryAccessStore::new()),
+        clock.clone(),
+        Arc::new(pyn_core::MemoryLimitEvents::new()),
+    )
+    .with_config(config)
+    .with_registry(meta.clone())
+    .with_audit(audit.clone());
     if let Some(token) = setup_token {
         service = service.with_setup_token(token).unwrap();
     }

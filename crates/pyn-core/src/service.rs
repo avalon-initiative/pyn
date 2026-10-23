@@ -139,6 +139,13 @@ impl Default for ServiceConfig {
     }
 }
 
+/// The owner and event dependencies shared by a repository's operations.
+pub struct RepoServiceContext {
+    pub owner: UserId,
+    pub clock: Arc<dyn Clock>,
+    pub limit_events: Arc<dyn crate::LimitEvents>,
+}
+
 /// The per-user lock limit in force and whether the policy file set it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LockLimit {
@@ -197,7 +204,7 @@ pub struct RepoService {
     clock: Arc<dyn Clock>,
     config: ServiceConfig,
     storage: Option<(UserId, Arc<dyn StorageCaps>)>,
-    limit_events: Option<(UserId, Arc<crate::AccessService>)>,
+    limit_events: (UserId, Arc<dyn crate::LimitEvents>),
     unreferenced_cap: u64,
     merge_slots: Arc<tokio::sync::Semaphore>,
 }
@@ -209,7 +216,7 @@ impl RepoService {
         meta: Arc<dyn MetadataStore>,
         objects: Arc<dyn ObjectStore>,
         audit: Arc<dyn AuditStore>,
-        clock: Arc<dyn Clock>,
+        context: RepoServiceContext,
         config: ServiceConfig,
     ) -> Self {
         let rules = Arc::new(rules);
@@ -225,10 +232,10 @@ impl RepoService {
             meta,
             objects,
             audit,
-            clock,
+            clock: context.clock,
             config,
             storage: None,
-            limit_events: None,
+            limit_events: (context.owner, context.limit_events),
             unreferenced_cap: DEFAULT_UNREFERENCED_UPLOAD_BYTES,
             merge_slots: Arc::new(tokio::sync::Semaphore::new(
                 crate::merge::default_concurrent_merges(),
@@ -248,20 +255,9 @@ impl RepoService {
         self
     }
 
-    pub(crate) fn with_limit_events(
-        mut self,
-        owner: UserId,
-        access: Arc<crate::AccessService>,
-    ) -> Self {
-        self.limit_events = Some((owner, access));
-        self
-    }
-
     async fn limit_result<T>(&self, result: Result<T>) -> Result<T> {
-        match &self.limit_events {
-            Some((owner, access)) => access.limit_result(owner, result, self.clock.now()).await,
-            None => result,
-        }
+        let (owner, events) = &self.limit_events;
+        crate::limit_events::limit_result(events.as_ref(), owner, result, self.clock.now()).await
     }
 
     async fn record(

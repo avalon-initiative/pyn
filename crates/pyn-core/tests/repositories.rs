@@ -24,13 +24,17 @@ fn world() -> World {
     ));
     let audit = Arc::new(MemoryAuditStore::new());
     let access = Arc::new(
-        AccessService::new(Arc::new(MemoryAccessStore::new()), clock.clone())
-            .with_config(AccessConfig {
-                registration: pyn_core::RegistrationMode::Open,
-                require_email_verification: false,
-                ..AccessConfig::default()
-            })
-            .with_audit(audit.clone()),
+        AccessService::new(
+            Arc::new(MemoryAccessStore::new()),
+            clock.clone(),
+            Arc::new(pyn_core::MemoryLimitEvents::new()),
+        )
+        .with_config(AccessConfig {
+            registration: pyn_core::RegistrationMode::Open,
+            require_email_verification: false,
+            ..AccessConfig::default()
+        })
+        .with_audit(audit.clone()),
     );
     let repos = Repositories::new(
         Arc::new(MemoryMetadataStore::new()),

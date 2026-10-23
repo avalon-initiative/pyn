@@ -71,7 +71,11 @@ async fn rig(cap: u64, chunked: bool) -> Rig {
             meta.clone(),
             objects,
             Arc::new(MemoryAuditStore::new()),
-            Arc::new(SystemClock),
+            pyn_core::RepoServiceContext {
+                owner: pyn_core::UserId::new("owner"),
+                clock: Arc::new(SystemClock),
+                limit_events: Arc::new(pyn_core::MemoryLimitEvents::new()),
+            },
             ServiceConfig::default(),
         )
         .with_unreferenced_cap(cap),

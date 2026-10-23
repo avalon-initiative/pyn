@@ -8,7 +8,8 @@ use serde::{Deserialize, Serialize};
 use crate::error::{PynError, Result};
 use crate::types::UserId;
 
-pub(crate) fn event_id() -> Result<String> {
+/// Generates a random UUID for an event or delivery record.
+pub fn event_id() -> Result<String> {
     let mut b = [0u8; 16];
     getrandom::fill(&mut b).map_err(|e| PynError::Storage(format!("no randomness: {e}")))?;
     b[6] = (b[6] & 0x0f) | 0x40;
@@ -292,9 +293,8 @@ pub trait WebhookStore: Send + Sync {
         now: DateTime<Utc>,
     ) -> Result<OutboxEvent>;
 
-    /// Queues `owner.limit_reached` and its deliveries unless this owner and limit were admitted
-    /// less than one hour ago. Admission and append are atomic; `now` always uses the caller's clock.
-    /// Returns `None` when suppressed, without extending the window.
+    /// Atomically admits and queues `owner.limit_reached` for this owner and limit at most once an hour.
+    /// Returns `None` when suppressed, without extending the window; the store chooses the clock.
     async fn append_limit_reached(
         &self,
         owner: &UserId,

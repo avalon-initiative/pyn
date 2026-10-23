@@ -54,11 +54,15 @@ fn world_with(config: impl FnOnce(&mut AccessConfig)) -> World {
         ..AccessConfig::default()
     };
     config(&mut cfg);
-    let svc = AccessService::new(Arc::new(MemoryAccessStore::new()), clock.clone())
-        .with_config(cfg)
-        .with_email(mail.clone())
-        .with_passwords(passwords.clone())
-        .with_audit(audit.clone());
+    let svc = AccessService::new(
+        Arc::new(MemoryAccessStore::new()),
+        clock.clone(),
+        Arc::new(pyn_core::MemoryLimitEvents::new()),
+    )
+    .with_config(cfg)
+    .with_email(mail.clone())
+    .with_passwords(passwords.clone())
+    .with_audit(audit.clone());
     World {
         svc,
         clock,
@@ -730,6 +734,7 @@ async fn an_open_server_without_protection_warns() {
         AccessService::new(
             Arc::new(MemoryAccessStore::new()),
             Arc::new(ManualClock::new(Utc::now())),
+            Arc::new(pyn_core::MemoryLimitEvents::new()),
         )
         .with_config(config)
         .with_email(mail)

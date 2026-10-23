@@ -77,43 +77,7 @@ impl AccessService {
         result: Result<T>,
         now: DateTime<Utc>,
     ) -> Result<T> {
-        use pyn_proto::{Event, EventData, LimitKind, OwnerLimitReachedData};
-
-        let (limit, kind, value) = match &result {
-            Err(PynError::RepoLimitReached { limit, .. }) => {
-                ("repositories", LimitKind::Repositories, *limit)
-            }
-            Err(PynError::MemberLimitReached { limit, .. }) => {
-                ("members", LimitKind::Members, *limit)
-            }
-            Err(PynError::StorageLimitReached { limit, .. }) => {
-                ("storage_bytes", LimitKind::StorageBytes, *limit)
-            }
-            Err(PynError::LockLimitReached { limit }) => {
-                ("locks", LimitKind::Locks, u64::from(*limit))
-            }
-            _ => return result,
-        };
-        // Event failures must preserve the operation's original limit error.
-        let _ = async {
-            let event = Event::new(
-                crate::webhook::event_id()?,
-                now,
-                self.public_url(),
-                EventData::OwnerLimitReached(OwnerLimitReachedData {
-                    owner: owner.to_string(),
-                    limit: kind,
-                    value,
-                }),
-            );
-            let payload =
-                serde_json::to_string(&event).map_err(|e| PynError::Storage(e.to_string()))?;
-            self.webhooks
-                .append_limit_reached(owner, limit, &payload, now)
-                .await
-        }
-        .await;
-        result
+        crate::limit_events::limit_result(self.limit_events.as_ref(), owner, result, now).await
     }
 
     pub fn webhook_secret_key(&self) -> Option<&SecretKey> {

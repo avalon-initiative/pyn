@@ -2834,7 +2834,11 @@ mod tests {
             store.clone(),
             objects.clone(),
             Arc::new(MemoryAuditStore::new()),
-            Arc::new(ManualClock::new(Utc::now())),
+            pyn_core::RepoServiceContext {
+                owner: pyn_core::UserId::new("owner"),
+                clock: Arc::new(ManualClock::new(Utc::now())),
+                limit_events: Arc::new(pyn_core::MemoryLimitEvents::new()),
+            },
             ServiceConfig::default(),
         );
         let who = Principal::unrestricted(UserId::new("alice"));
@@ -2892,7 +2896,11 @@ mod tests {
             store.clone(),
             Arc::new(MemoryObjectStore::new()),
             Arc::new(MemoryAuditStore::new()),
-            Arc::new(ManualClock::new(Utc::now())),
+            pyn_core::RepoServiceContext {
+                owner: pyn_core::UserId::new("owner"),
+                clock: Arc::new(ManualClock::new(Utc::now())),
+                limit_events: Arc::new(pyn_core::MemoryLimitEvents::new()),
+            },
             ServiceConfig::default(),
         );
         let who = Principal::unrestricted(UserId::new("alice"));

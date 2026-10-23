@@ -84,7 +84,11 @@ fn service(objects: Arc<dyn ObjectStore>) -> Arc<RepoService> {
         Arc::new(MemoryMetadataStore::new()),
         objects,
         Arc::new(MemoryAuditStore::new()),
-        clock,
+        pyn_core::RepoServiceContext {
+            owner: pyn_core::UserId::new("owner"),
+            clock,
+            limit_events: Arc::new(pyn_core::MemoryLimitEvents::new()),
+        },
         ServiceConfig::default(),
     ))
 }
@@ -135,7 +139,11 @@ async fn text_merges_wait_for_a_free_slot() {
             Arc::new(MemoryMetadataStore::new()),
             Arc::new(MemoryObjectStore::new()),
             Arc::new(MemoryAuditStore::new()),
-            clock,
+            pyn_core::RepoServiceContext {
+                owner: pyn_core::UserId::new("owner"),
+                clock,
+                limit_events: Arc::new(pyn_core::MemoryLimitEvents::new()),
+            },
             ServiceConfig::default(),
         )
         .with_merge_slots(slots.clone()),
@@ -186,8 +194,12 @@ async fn a_token_on_many_repositories_writes_a_bounded_audit_detail() {
         Utc.with_ymd_and_hms(2026, 10, 8, 9, 0, 0).unwrap(),
     ));
     let audit = Arc::new(MemoryAuditStore::new());
-    let svc =
-        AccessService::new(Arc::new(MemoryAccessStore::new()), clock).with_audit(audit.clone());
+    let svc = AccessService::new(
+        Arc::new(MemoryAccessStore::new()),
+        clock,
+        Arc::new(pyn_core::MemoryLimitEvents::new()),
+    )
+    .with_audit(audit.clone());
     let root = UserId::new("root");
     svc.admin_for_tests(&root).await.unwrap();
     let repos: Vec<RepoId> = (0..40).map(|n| RepoId::new(format!("r{n}"))).collect();

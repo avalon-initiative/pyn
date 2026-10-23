@@ -101,7 +101,11 @@ fn harness_on(store: Store, objects: Arc<MemoryObjectStore>, repo: RepoId, rules
         store.clone(),
         objects.clone(),
         audit.clone(),
-        clock.clone(),
+        crate::RepoServiceContext {
+            owner: crate::UserId::new("owner"),
+            clock: clock.clone(),
+            limit_events: Arc::new(crate::MemoryLimitEvents::new()),
+        },
         ServiceConfig::default(),
     ));
     Harness {
@@ -416,7 +420,11 @@ fn tree_service(store: &Store, h: &Harness) -> RepoService {
         store.clone(),
         h.objects.clone(),
         h.audit.clone(),
-        h.clock.clone(),
+        crate::RepoServiceContext {
+            owner: crate::UserId::new("owner"),
+            clock: h.clock.clone(),
+            limit_events: Arc::new(crate::MemoryLimitEvents::new()),
+        },
         ServiceConfig::default(),
     )
 }
@@ -1055,7 +1063,11 @@ fn limited_service(store: &Store, h: &Harness, id: &str, max_locks: u32) -> Arc<
         store.clone(),
         h.objects.clone(),
         h.audit.clone(),
-        h.clock.clone(),
+        crate::RepoServiceContext {
+            owner: crate::UserId::new("owner"),
+            clock: h.clock.clone(),
+            limit_events: Arc::new(crate::MemoryLimitEvents::new()),
+        },
         ServiceConfig {
             max_locks,
             ..ServiceConfig::default()
@@ -1455,7 +1467,11 @@ fn service_in(store: &Store, h: &Harness, id: &str) -> RepoService {
         store.clone(),
         h.objects.clone(),
         h.audit.clone(),
-        h.clock.clone(),
+        crate::RepoServiceContext {
+            owner: crate::UserId::new("owner"),
+            clock: h.clock.clone(),
+            limit_events: Arc::new(crate::MemoryLimitEvents::new()),
+        },
         ServiceConfig::default(),
     )
 }
@@ -4278,8 +4294,14 @@ pub async fn the_deleting_mark_is_set_once_cleared_and_taken_over_when_stale(sto
 pub async fn repository_creation_cannot_slip_in_while_an_organization_is_deleted(store: Access) {
     let meta = HookedMeta::new();
     let clock = Arc::new(ManualClock::new(at(0)));
-    let access =
-        Arc::new(AccessService::new(store.clone(), clock.clone()).with_registry(meta.clone()));
+    let access = Arc::new(
+        AccessService::new(
+            store.clone(),
+            clock.clone(),
+            Arc::new(crate::MemoryLimitEvents::new()),
+        )
+        .with_registry(meta.clone()),
+    );
     let repos = Repositories::new(
         meta.clone(),
         Arc::new(MemoryObjectStore::new()),
@@ -4341,7 +4363,12 @@ pub async fn repository_creation_cannot_slip_in_while_an_organization_is_deleted
 pub async fn a_retried_delete_finishes_an_interrupted_one_once_its_mark_is_stale(store: Access) {
     let meta = HookedMeta::new();
     let clock = Arc::new(ManualClock::new(at(0)));
-    let access = AccessService::new(store.clone(), clock.clone()).with_registry(meta.clone());
+    let access = AccessService::new(
+        store.clone(),
+        clock.clone(),
+        Arc::new(crate::MemoryLimitEvents::new()),
+    )
+    .with_registry(meta.clone());
     let (acme, alice) = (user("acme"), session("alice"));
     access.create_org(&alice, "acme").await.unwrap();
 
@@ -4799,7 +4826,12 @@ fn token_identity(name: &str, permissions: &[Permission]) -> Identity {
 pub async fn effective_roles_resolve_across_direct_team_and_owner_grants(store: Access) {
     let meta = Arc::new(MemoryMetadataStore::new());
     let clock = Arc::new(ManualClock::new(at(0)));
-    let access = AccessService::new(store.clone(), clock).with_registry(meta.clone());
+    let access = AccessService::new(
+        store.clone(),
+        clock,
+        Arc::new(crate::MemoryLimitEvents::new()),
+    )
+    .with_registry(meta.clone());
     let (acme, alice) = (user("acme"), session("alice"));
     access.create_org(&alice, "acme").await.unwrap();
     for name in ["bob", "carol", "dave", "erin"] {
@@ -5942,6 +5974,7 @@ async fn limited_world(store: RateLimits) -> (AccessService, Arc<SlowVerifier>) 
     let svc = AccessService::new(
         Arc::new(crate::memory::MemoryAccessStore::new()),
         Arc::new(ManualClock::new(at(0))),
+        Arc::new(crate::MemoryLimitEvents::new()),
     )
     .with_config(crate::AccessConfig {
         registration: RegistrationMode::Open,
@@ -6046,9 +6079,13 @@ impl CreationWorld {
         let clock = Arc::new(ManualClock::new(at(0)));
         let audit = Arc::new(MemoryAuditStore::new());
         let access = Arc::new(
-            AccessService::new(store.clone(), clock.clone())
-                .with_registry(meta.clone())
-                .with_audit(audit.clone()),
+            AccessService::new(
+                store.clone(),
+                clock.clone(),
+                Arc::new(crate::MemoryLimitEvents::new()),
+            )
+            .with_registry(meta.clone())
+            .with_audit(audit.clone()),
         );
         let repos = Repositories::new(
             meta,
@@ -7038,7 +7075,12 @@ const KEY: &str = include_str!("../tests/fixtures/keys/ed1.pub");
 pub async fn account_routes_need_a_full_scope_credential(store: Access) {
     let meta = Arc::new(MemoryMetadataStore::new());
     let clock = Arc::new(ManualClock::new(at(0)));
-    let access = AccessService::new(store.clone(), clock).with_registry(meta.clone());
+    let access = AccessService::new(
+        store.clone(),
+        clock,
+        Arc::new(crate::MemoryLimitEvents::new()),
+    )
+    .with_registry(meta.clone());
     let game = RepoId::new("alice/game");
     store.create_user(&user("alice"), at(0)).await.unwrap();
     meta.create_repo(repo_record("alice/game", "alice", "game"))
@@ -7111,8 +7153,12 @@ pub async fn account_routes_need_a_full_scope_credential(store: Access) {
 
 pub async fn a_token_mints_nothing_that_outlives_it(store: Access) {
     let meta = Arc::new(MemoryMetadataStore::new());
-    let access = AccessService::new(store.clone(), Arc::new(ManualClock::new(at(0))))
-        .with_registry(meta.clone());
+    let access = AccessService::new(
+        store.clone(),
+        Arc::new(ManualClock::new(at(0))),
+        Arc::new(crate::MemoryLimitEvents::new()),
+    )
+    .with_registry(meta.clone());
     let game = RepoId::new("alice/game");
     store.create_user(&user("alice"), at(0)).await.unwrap();
     meta.create_repo(repo_record("alice/game", "alice", "game"))
@@ -7157,8 +7203,12 @@ pub async fn a_token_mints_nothing_that_outlives_it(store: Access) {
 
 pub async fn managers_cannot_act_on_admins_or_repository_owners(store: Access) {
     let meta = Arc::new(MemoryMetadataStore::new());
-    let access = AccessService::new(store.clone(), Arc::new(ManualClock::new(at(0))))
-        .with_registry(meta.clone());
+    let access = AccessService::new(
+        store.clone(),
+        Arc::new(ManualClock::new(at(0))),
+        Arc::new(crate::MemoryLimitEvents::new()),
+    )
+    .with_registry(meta.clone());
     let alice = session("alice");
     access.create_org(&alice, "acme").await.unwrap();
     let game = RepoId::new("acme/game");
@@ -7221,8 +7271,12 @@ pub async fn managers_cannot_act_on_admins_or_repository_owners(store: Access) {
 
 pub async fn a_manager_cannot_change_a_member_who_ranks_above_them(store: Access) {
     let meta = Arc::new(MemoryMetadataStore::new());
-    let access = AccessService::new(store.clone(), Arc::new(ManualClock::new(at(0))))
-        .with_registry(meta.clone());
+    let access = AccessService::new(
+        store.clone(),
+        Arc::new(ManualClock::new(at(0))),
+        Arc::new(crate::MemoryLimitEvents::new()),
+    )
+    .with_registry(meta.clone());
     let game = RepoId::new("alice/game");
     meta.create_repo(repo_record("alice/game", "alice", "game"))
         .await
@@ -7300,8 +7354,12 @@ pub async fn a_manager_sees_and_revokes_only_tokens_within_the_repositories_they
     store: Access,
 ) {
     let meta = Arc::new(MemoryMetadataStore::new());
-    let access = AccessService::new(store.clone(), Arc::new(ManualClock::new(at(0))))
-        .with_registry(meta.clone());
+    let access = AccessService::new(
+        store.clone(),
+        Arc::new(ManualClock::new(at(0))),
+        Arc::new(crate::MemoryLimitEvents::new()),
+    )
+    .with_registry(meta.clone());
     let (game, vault) = (RepoId::new("alice/game"), RepoId::new("alice/vault"));
     for (id, name) in [(&game, "game"), (&vault, "vault")] {
         meta.create_repo(repo_record(id.as_str(), "alice", name))

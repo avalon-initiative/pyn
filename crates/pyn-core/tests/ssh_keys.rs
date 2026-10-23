@@ -94,7 +94,11 @@ async fn world() -> (World, Identity, Identity) {
         Utc.with_ymd_and_hms(2026, 10, 8, 9, 0, 0).unwrap(),
     ));
     let w = World {
-        svc: AccessService::new(Arc::new(MemoryAccessStore::new()), clock),
+        svc: AccessService::new(
+            Arc::new(MemoryAccessStore::new()),
+            clock,
+            Arc::new(pyn_core::MemoryLimitEvents::new()),
+        ),
         repo: RepoId::new("game"),
     };
     w.svc.admin_for_tests(&UserId::new("root")).await.unwrap();

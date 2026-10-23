@@ -165,7 +165,11 @@ impl Repositories {
             self.meta.clone(),
             self.objects.clone(),
             self.audit.clone(),
-            self.clock.clone(),
+            crate::RepoServiceContext {
+                owner: record.owner.clone(),
+                clock: self.clock.clone(),
+                limit_events: self.access.limit_events.clone(),
+            },
             ServiceConfig {
                 lease: Duration::hours(i64::from(record.settings.lease_hours)),
                 max_locks: record.settings.max_locks.unwrap_or(self.default_max_locks),
@@ -173,7 +177,6 @@ impl Repositories {
         );
         let svc = Arc::new(
             svc.with_storage_caps(record.owner.clone(), self.access.clone())
-                .with_limit_events(record.owner.clone(), self.access.clone())
                 .with_unreferenced_cap(self.unreferenced_cap)
                 .with_merge_slots(self.merge_slots.clone()),
         );

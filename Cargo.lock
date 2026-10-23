@@ -1935,14 +1935,13 @@ dependencies = [
  "pyn-hash",
  "pyn-merge",
  "pyn-object",
- "pyn-proto",
  "serde",
- "serde_json",
  "sha2 0.11.1",
  "ssh-key",
  "thiserror",
  "tokio",
  "toml",
+ "tracing",
 ]
 
 [[package]]

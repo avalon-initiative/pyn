@@ -298,22 +298,23 @@ impl WebhookStore for PgMetadataStore {
     ) -> Result<Option<OutboxEvent>> {
         let mut tx = self.pool.begin().await.map_err(db)?;
         let admitted = sqlx::query(
-            "INSERT INTO webhook_limit_events (owner, limit_kind, last_event)
-             VALUES ($1, $2, $3)
-             ON CONFLICT (owner, limit_kind) DO UPDATE SET last_event = EXCLUDED.last_event
-             WHERE webhook_limit_events.last_event <= EXCLUDED.last_event - interval '1 hour'
+            "INSERT INTO webhook_limit_events (owner, limit_kind, last_event_at)
+             VALUES ($1, $2, COALESCE($3, now()))
+             ON CONFLICT (owner, limit_kind) DO UPDATE SET last_event_at = EXCLUDED.last_event_at
+             WHERE webhook_limit_events.last_event_at <= EXCLUDED.last_event_at - interval '1 hour'
              RETURNING owner",
         )
         .bind(owner.as_str())
         .bind(limit)
-        .bind(now)
+        .bind(self.bound_now(now))
         .fetch_optional(&mut *tx)
         .await
         .map_err(db)?;
         if admitted.is_none() {
             return Ok(None);
         }
-        let event = append_event_in(&mut tx, "owner.limit_reached", payload, Some(now)).await?;
+        let event =
+            append_event_in(&mut tx, "owner.limit_reached", payload, self.bound_now(now)).await?;
         tx.commit().await.map_err(db)?;
         Ok(Some(event))
     }

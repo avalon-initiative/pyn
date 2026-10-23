@@ -108,9 +108,9 @@ async fn a_failed_outbox_append_does_not_consume_admission() {
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs PYN_DATABASE_URL"]
-async fn limit_admission_uses_the_injected_time_even_with_database_lease_time() {
-    use chrono::{Duration, TimeZone, Utc};
-    use pyn_core::{Clock, ManualClock, UserId, WebhookStore};
+async fn limit_admission_and_outbox_use_database_time_with_skewed_callers() {
+    use chrono::{Duration, Utc};
+    use pyn_core::{UserId, WebhookStore};
     use pyn_postgres::TimeSource;
 
     let url = std::env::var("PYN_DATABASE_URL").expect("PYN_DATABASE_URL must be set");
@@ -118,30 +118,26 @@ async fn limit_admission_uses_the_injected_time_even_with_database_lease_time() 
         .await
         .unwrap()
         .with_time_source(TimeSource::Database);
-    let clock = ManualClock::new(Utc.with_ymd_and_hms(2030, 1, 1, 12, 0, 0).unwrap());
+    let real = Utc::now();
+    let behind = real - Duration::days(1);
+    let ahead = real + Duration::days(1);
     let owner = UserId::new("alice");
+    let event = store
+        .append_limit_reached(&owner, "locks", "{}", behind)
+        .await
+        .unwrap()
+        .unwrap();
+    // Mutant: pass Some(now) to append_event_in instead of bound_now(now).
+    assert!(event.created_at >= real);
+    assert!(event.created_at < ahead);
+    // Mutant: bind the caller's now for admission instead of bound_now(now).
     assert!(
         store
-            .append_limit_reached(&owner, "locks", "{}", clock.now())
-            .await
-            .unwrap()
-            .is_some()
-    );
-    clock.advance(Duration::hours(1) - Duration::microseconds(1));
-    assert!(
-        store
-            .append_limit_reached(&owner, "locks", "{}", clock.now())
+            .append_limit_reached(&owner, "locks", "{}", ahead)
             .await
             .unwrap()
             .is_none()
     );
-    clock.advance(Duration::microseconds(1));
-    let event = store
-        .append_limit_reached(&owner, "locks", "{}", clock.now())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(event.created_at, clock.now());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -172,16 +168,20 @@ async fn an_unavailable_event_store_preserves_the_limit_error() {
         Utc.with_ymd_and_hms(2030, 1, 1, 12, 0, 0).unwrap(),
     ));
     let access = Arc::new(
-        AccessService::new(pg.clone(), clock.clone())
-            .with_config(AccessConfig {
-                default_limits: Limits {
-                    repositories: Some(0),
-                    ..Default::default()
-                },
-                ..AccessConfig::default()
-            })
-            .with_registry(pg.clone())
-            .with_webhooks(pg.clone(), WebhookSettings::default()),
+        AccessService::new(
+            pg.clone(),
+            clock.clone(),
+            Arc::new(pyn_core::contract::RepositoryLimitEvents(pg.clone())),
+        )
+        .with_config(AccessConfig {
+            default_limits: Limits {
+                repositories: Some(0),
+                ..Default::default()
+            },
+            ..AccessConfig::default()
+        })
+        .with_registry(pg.clone())
+        .with_webhooks(pg.clone(), WebhookSettings::default()),
     );
     let repos = Repositories::new(
         pg,

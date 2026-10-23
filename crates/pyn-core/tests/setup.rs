@@ -25,14 +25,18 @@ fn world() -> World {
     let clock = Arc::new(ManualClock::new(
         Utc.with_ymd_and_hms(2026, 10, 8, 9, 0, 0).unwrap(),
     ));
-    let svc = AccessService::new(store.clone(), clock)
-        .with_config(AccessConfig {
-            registration: RegistrationMode::Closed,
-            ..AccessConfig::default()
-        })
-        .with_audit(audit.clone())
-        .with_setup_token(TOKEN)
-        .unwrap();
+    let svc = AccessService::new(
+        store.clone(),
+        clock,
+        Arc::new(pyn_core::MemoryLimitEvents::new()),
+    )
+    .with_config(AccessConfig {
+        registration: RegistrationMode::Closed,
+        ..AccessConfig::default()
+    })
+    .with_audit(audit.clone())
+    .with_setup_token(TOKEN)
+    .unwrap();
     World { svc, store, audit }
 }
 
@@ -63,6 +67,7 @@ async fn without_a_setup_token_the_server_counts_as_initialised() {
     let svc = AccessService::new(
         Arc::new(MemoryAccessStore::new()),
         Arc::new(ManualClock::new(Utc::now())),
+        Arc::new(pyn_core::MemoryLimitEvents::new()),
     );
     assert!(svc.is_initialised().await.unwrap());
     let err = svc
@@ -244,9 +249,13 @@ async fn setup_is_recorded_in_the_server_audit_log() {
 async fn a_restarted_server_reads_setup_from_the_store() {
     let w = world();
     w.svc.complete_setup(request(TOKEN, "root")).await.unwrap();
-    let restarted = AccessService::new(w.store.clone(), Arc::new(ManualClock::new(Utc::now())))
-        .with_setup_token("another-token-of-enough-length")
-        .unwrap();
+    let restarted = AccessService::new(
+        w.store.clone(),
+        Arc::new(ManualClock::new(Utc::now())),
+        Arc::new(pyn_core::MemoryLimitEvents::new()),
+    )
+    .with_setup_token("another-token-of-enough-length")
+    .unwrap();
     assert!(restarted.load_setup().await.unwrap());
     assert_eq!(restarted.registration_mode(), RegistrationMode::Open);
     let err = restarted
@@ -261,6 +270,7 @@ fn a_supplied_token_must_be_long_enough() {
     let svc = AccessService::new(
         Arc::new(MemoryAccessStore::new()),
         Arc::new(ManualClock::new(Utc::now())),
+        Arc::new(pyn_core::MemoryLimitEvents::new()),
     );
     assert!(svc.with_setup_token("short").is_err());
 }
