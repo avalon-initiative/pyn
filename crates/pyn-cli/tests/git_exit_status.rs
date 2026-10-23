@@ -198,18 +198,6 @@ const DIVERGENT: &[(&str, &str)] = &[
         "gap: outside a repository asks for a server (128), git prints --no-index usage (129)",
     ),
     (
-        "Outside: fetch",
-        "gap: outside a repository says a not-supported-yet message (1), git is fatal (128)",
-    ),
-    (
-        "Outside: pull",
-        "gap: outside a repository says a not-supported-yet message (1), git is fatal (128)",
-    ),
-    (
-        "Outside: push",
-        "gap: outside a repository says a not-supported-yet message (1), git is fatal (128)",
-    ),
-    (
         "Dirty: log --bogus",
         "gap: git exits 128 for a bad option of its revision commands, the parser exits 129",
     ),

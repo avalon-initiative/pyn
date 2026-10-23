@@ -824,8 +824,8 @@ fn main() {
         && !in_git_home()
         && !in_pyn_workspace()
     {
-        eprintln!("{}", unsupported::message(&name));
-        std::process::exit(1);
+        eprintln!("fatal: not a git repository (or any of the parent directories): .git");
+        std::process::exit(128);
     }
     let cli = match Cli::try_parse_from(attached_gpg_keys(attached_pull_rebase(
         std::env::args_os().collect(),

@@ -724,22 +724,62 @@ fn progress_is_shown_only_on_request_and_never_garbled() {
     assert!(!none.stderr.contains("remote:"), "{}", none.stderr);
 }
 
-#[test]
-fn outside_a_git_home_fetch_keeps_its_message() {
-    let tmp = tempdir().unwrap();
-    let p = Command::new(env!("CARGO_BIN_EXE_pyn"))
-        .current_dir(tmp.path())
-        .args(["fetch", "--depth", "1"])
-        .env("HOME", tmp.path())
+fn outside_run(dir: &std::path::Path, args: &[&str]) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_pyn"))
+        .current_dir(dir)
+        .args(args)
+        .env("HOME", dir)
+        .env("GIT_CEILING_DIRECTORIES", dir.parent().unwrap_or(dir))
         .output()
-        .unwrap();
-    assert_eq!(p.status.code(), Some(1));
-    assert!(
-        String::from_utf8_lossy(&p.stderr)
-            .contains("'fetch' is a git command pyn does not support yet"),
-        "{}",
-        String::from_utf8_lossy(&p.stderr)
-    );
+        .unwrap()
+}
+
+#[test]
+fn outside_a_repository_fetch_pull_and_push_are_fatal() {
+    let tmp = tempdir().unwrap();
+    let cwd = tmp.path().join("plain");
+    std::fs::create_dir(&cwd).unwrap();
+    for args in [
+        &["fetch"][..],
+        &["fetch", "origin"],
+        &["fetch", "--depth", "1"],
+        &["fetch", "--bogus"],
+        &["pull"],
+        &["pull", "origin", "main"],
+        &["push"],
+        &["push", "origin", "main"],
+        &["push", "--bogus"],
+    ] {
+        let p = outside_run(&cwd, args);
+        let err = String::from_utf8_lossy(&p.stderr);
+        assert_eq!(p.status.code(), Some(128), "{args:?}: {err}");
+        assert!(p.stdout.is_empty(), "{args:?}");
+        assert_eq!(
+            err.trim_end(),
+            "fatal: not a git repository (or any of the parent directories): .git",
+            "{args:?}"
+        );
+    }
+}
+
+#[test]
+fn outside_a_repository_ls_remote_and_clone_still_run() {
+    let tmp = tempdir().unwrap();
+    let cwd = tmp.path().join("plain");
+    std::fs::create_dir(&cwd).unwrap();
+    for args in [
+        &["ls-remote", "/nonexistent/pyn-oracle.git"][..],
+        &["clone", "/nonexistent/pyn-oracle.git", "target"],
+    ] {
+        let p = outside_run(&cwd, args);
+        let err = String::from_utf8_lossy(&p.stderr);
+        assert_ne!(p.status.code(), Some(0), "{args:?}");
+        assert!(
+            !err.contains("not a git repository"),
+            "{args:?} must not need a repository: {err}"
+        );
+        assert!(!err.contains("does not support yet"), "{args:?}: {err}");
+    }
 }
 
 #[test]
