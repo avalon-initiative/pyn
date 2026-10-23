@@ -66,6 +66,7 @@ pub use commands::run;
 pub use commit::GitCommitArgs;
 pub(crate) use commit::append_trailer;
 pub use fetch::FetchArgs;
+pub(crate) use init_git::is_tracked;
 pub use init_git::{InitGitArgs, init_git};
 pub use log::GitLogArgs;
 pub use pull::PullArgs;

@@ -67,26 +67,13 @@ fn porcelain_paths(out: &str) -> Vec<String> {
 }
 
 #[test]
-fn init_in_an_empty_folder_is_refused_with_the_git_command_message() {
-    let server = Server::start();
-    let empty = server.dir("empty");
-    let (code, err) = server.fails(&empty, "-", &["init"]);
-    assert_eq!(code, 1, "{err}");
-    assert!(
-        err.contains("'init' is a git command pyn does not support yet"),
-        "{err}"
-    );
-    assert_eq!(std::fs::read_dir(&empty).unwrap().count(), 0);
-}
-
-#[test]
-fn init_in_a_git_repository_changes_only_the_exclude_file_and_pyn_folder() {
+fn convert_in_a_git_repository_changes_only_the_exclude_file_and_pyn_folder() {
     let server = Server::start();
     let repo = git_repo(&server, "repo");
     let status = git(&repo, &["status", "--porcelain"]);
     let before = snapshot(&repo);
 
-    let out = server.ok(&repo, "-", &["init"]);
+    let out = server.ok(&repo, "-", &["convert"]);
     assert!(out.contains("added .pyn/"), "{out}");
     let after = snapshot(&repo);
     assert_eq!(
@@ -104,9 +91,9 @@ fn init_in_a_git_repository_changes_only_the_exclude_file_and_pyn_folder() {
         "git ignores the pyn folder"
     );
 
-    let again = server.ok(&repo, "-", &["init"]);
+    let again = server.ok(&repo, "-", &["convert"]);
     assert!(again.contains("already excluded"), "{again}");
-    assert_eq!(snapshot(&repo), after, "init is idempotent");
+    assert_eq!(snapshot(&repo), after, "convert is idempotent");
 }
 
 #[test]

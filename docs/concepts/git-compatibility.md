@@ -62,9 +62,9 @@ The commands named in decision #218.
 
 | Git | pyn | Status | Notes |
 | --- | --- | --- | --- |
-| `git init` | `pyn init` | different | In an existing git repository it adds `.pyn/` to `.git/info/exclude` and creates `.pyn/local_only/` (see [On a git home](#on-a-git-home)); it never creates a repository. Anywhere else it fails with the git-command message: repositories are created on the server with `pyn repo create` and then cloned, and a local `init` has no issue yet (epic #219). |
+| `git init` | `pyn init [<dir>]` | different | Starts a pyn server-home repository, not a git one: creates `<dir>` if missing (the current folder if omitted) with `.pyn/pyn.toml` (every path `shared`, with a commented example of an exclusive rule) and `.pyn/local_only/` holding `repo.toml` with `repo_tool = "pyn"`, and prints `Initialized empty pyn repository in <path>/.pyn`. In a folder that already has a `.git` or `.pyn`, or inside a git work tree or pyn workspace, it fails (`128`) and, for a git repository, names `pyn convert`. With a server set (`--server`, `PYN_SERVER` or the user setting) and `--repo owner/name`, it asks `Create owner/name on <server>? [y/N]` on a terminal (default no); `--create-on-server` creates it without asking, with the same call as `pyn repo create` and the folder's `.pyn/pyn.toml` as the first policy, and records the server and repository in `.pyn/local_only/config.toml`; `--no-create-on-server` never asks. `--create-on-server` without a server and `--repo` is a usage error (`129`). Without a terminal nothing is created on the server (decision #562). |
 | `git init [<dir>]` | `pyn init-git [<dir>]` | same | Starts a new repository: a real `.git` written by pyn (no git program) plus `.pyn/local_only/repo.toml` with `repo_tool = "git"`, and `.pyn/` hidden in `.git/info/exclude`. Creates `<dir>` if missing and prints `Initialized empty Git repository in <path>/.git/`. `-b`/`--initial-branch <name>`, `--object-format sha1\|sha256` and `-q`/`--quiet` work as in git. Divergence: with no `-b` and no `init.defaultBranch` the first branch is `main` (git's default is `master`). `--bare`, `--template`, `--separate-git-dir` and `--shared` are a usage error (`129`). In a folder that already has a `.git` or `.pyn`, or inside a git work tree or pyn workspace, it fails (`128`) and names `pyn convert` (decision #562). |
-| | `pyn convert [--home git\|pyn] [-y]` | pyn only | Without `--home`, adopts an existing git repository: exactly what `pyn init` does there today (hides `.pyn/` in `.git/info/exclude`, creates `.pyn/local_only/`, records `repo_tool = "git"`; safe to run again); outside a git repository, or in a pyn server workspace, it fails with `fatal: ...` (status 128). `--home git` in a pyn server workspace moves it to a git home keeping its history, see [Leaving a pyn server](#leaving-a-pyn-server). `--home pyn` is not built (it needs #95): it fails with `fatal: moving to a pyn server home is not built yet (#572)` (status 128) and changes nothing. Decision #562: `pyn init` will start a repository instead (#570). |
+| | `pyn convert [--home git\|pyn] [-y]` | pyn only | Without `--home`, adopts an existing git repository (hides `.pyn/` in `.git/info/exclude`, creates `.pyn/local_only/`, records `repo_tool = "git"`; safe to run again); outside a git repository, or in a pyn server workspace, it fails with `fatal: ...` (status 128). `--home git` in a pyn server workspace moves it to a git home keeping its history, see [Leaving a pyn server](#leaving-a-pyn-server). `--home pyn` is not built (it needs #95): it fails with `fatal: moving to a pyn server home is not built yet (#572)` (status 128) and changes nothing. |
 | `git clone <repo> [<dir>]` | `pyn clone <source> [<dir>]` | same | A source that is `<server>/owner/name` or `owner/name` on the configured server is cloned from a pyn server, and prints one summary line, not progress. A git URL (`https://`, `ssh://`, `user@host:path`) is cloned into a git repository with git's behaviour, flags and output; see [Clone from a git URL](#clone-from-a-git-url), which also says how an `http(s)` address is told apart. |
 | `git clone -b`, `--bare`, `-o`, `-n`, `--single-branch`, `--no-tags`, `-c`, `-q`, `--progress` | `pyn clone ...` | git URL: supported | Git's behaviour. On a pyn server clone they are a usage error (`129`): that clone takes everything the server has, on its default branch. |
 | `git clone --depth`, `--shallow-*`, `--filter`, `--mirror`, `--recurse-submodules`, `--sparse`, `--reference`, `--separate-git-dir`, `--template`, `--local`, `--no-hardlinks` | none | unsupported | Usage error (`129`) naming the flag: shallow, partial, mirror and submodule clones are not built, and a local-path source is refused by the transport. |
@@ -696,11 +696,11 @@ pyn looks upward from the working directory, folder by folder, and the first (ne
 
 So a clone made inside a git repository is a pyn workspace, and a git repository inside a pyn workspace is a git home. A nearer
 `.git` beats a marker in a parent folder, and a nearer marker beats a `.git` above it. Any other `.pyn` folder, such as one
-`pyn init` created before the marker existed or a committed `.pyn/pyn.toml`, leaves the home git. A marker that is not `git`
+a pre-marker `pyn init` created or a committed `.pyn/pyn.toml`, leaves the home git. A marker that is not `git`
 or `pyn` is an error naming the file.
 `GIT_DIR` and `GIT_WORK_TREE` are not read.
 
-`pyn convert` (and, until #570 changes it, `pyn init`) in a git repository adds `.pyn/` to `.git/info/exclude` (the shared one, found through the `.git` file in a
+`pyn convert` in a git repository adds `.pyn/` to `.git/info/exclude` (the shared one, found through the `.git` file in a
 worktree or submodule) unless a line there already hides it, creates `.pyn/local_only/`, where pyn keeps its own state
 for a git home, and records `repo_tool = "git"` there. It is safe to run again.
 
@@ -749,7 +749,7 @@ whatever the rules say.
 | `stash` | See [Stashing](#stashing). |
 | `clean` | See [Clean](#clean). |
 | `reflog` | See [Reflogs](#reflogs). |
-| `init` | See above. `pyn init-git` is the command that starts a repository. |
+| `init` | See above. `pyn init` starts a pyn repository; `pyn init-git` starts a git one. |
 | `login`, `logout`, `register`, `password`, `key`, `token`, `user`, `org`, `team`, `repo`, `usage`, `setup`, `admin`, `whoami`, `member`, `role`, `invite` | Run as anywhere else; see [Refused commands](#refused-commands). |
 | `lock`, `unlock`, `locks`, `policy`, `audit`, `verify`, `summary` | Refuse; see [Refused commands](#refused-commands). |
 | `config`, `clone` | Unchanged: they do not depend on the repository's home. A clone from a pyn server made inside a git repository is its own pyn workspace; a clone from a git URL is its own git repository. |

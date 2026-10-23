@@ -83,7 +83,8 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
             }
             super::log::log(git, cwd, path, limit, args)
         }
-        Command::Init | Command::Convert(_) => init(git),
+        Command::Convert(_) => init(git),
+        Command::Init(_) => unreachable!("handled before a repository is detected"),
         Command::InitGit(_) => unreachable!("handled before a repository is detected"),
         Command::Files => crate::files_command(git),
         Command::Ls { path } => crate::ls_command(git, path.as_deref()),
