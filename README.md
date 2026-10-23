@@ -102,3 +102,7 @@ pyn is a few repositories, each public under [avalon-initiative](https://github.
 New to pyn? Start with the [concepts](docs/concepts/README.md).
 
 Licensed under Apache-2.0.
+
+## Support the project
+
+<a href="https://www.buymeacoffee.com/lunarvagabond" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-blue.png" alt="Buy Me a Coffee" style="height: 60px !important;width: 217px !important;" ></a>
