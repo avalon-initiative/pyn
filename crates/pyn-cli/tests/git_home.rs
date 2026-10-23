@@ -283,54 +283,156 @@ fn nested_gitignore_files_and_negations_apply() {
     );
 }
 
+/// Every invocation that only reads; each must succeed and leave the repository as it was.
+const READ_ONLY: &[&[&str]] = &[
+    &["status"],
+    &["status", "-s"],
+    &["status", "--short"],
+    &["status", "--porcelain"],
+    &["status", "-b"],
+    &["status", "-sb"],
+    &["status", "--porcelain", "-b"],
+    &["status", "README.md"],
+    &["status", "-s", "src"],
+    &["diff"],
+    &["diff", "HEAD"],
+    &["diff", "HEAD~3", "HEAD~2", "--stat"],
+    &["diff", "HEAD~3..HEAD~2"],
+    &["diff", "--cached"],
+    &["diff", "--staged", "HEAD~1"],
+    &["diff", "--stat"],
+    &["diff", "--shortstat", "HEAD~3", "HEAD"],
+    &["diff", "--name-only", "HEAD~3", "HEAD"],
+    &["diff", "--name-status", "HEAD~3", "HEAD"],
+    &["diff", "-U1", "HEAD~3", "HEAD"],
+    &["diff", "--", "README.md"],
+    &["log"],
+    &["log", "--commits"],
+    &["log", "README.md"],
+    &["log", "-n", "2"],
+    &["log", "--oneline"],
+    &["log", "--format=%H %s"],
+    &["log", "--pretty=full"],
+    &["log", "--date=iso"],
+    &["log", "--stat"],
+    &["log", "-p"],
+    &["log", "--name-status"],
+    &["log", "--reverse", "--skip", "1"],
+    &["log", "--author", "Staging"],
+    &["log", "--grep", "a", "-i"],
+    &["log", "HEAD~3..HEAD"],
+    &["log", "^HEAD~2", "HEAD"],
+    &["log", "--", "README.md"],
+    &["show"],
+    &["show", "HEAD~3"],
+    &["show", "--stat"],
+    &["show", "--oneline", "HEAD"],
+    &["show", "--format=%h", "HEAD~1"],
+    &["files"],
+    &["ls"],
+    &["ls", "src"],
+    &["branch"],
+    &["branch", "-v"],
+    &["branch", "-a"],
+    &["branch", "-r"],
+    &["branch", "-a", "-v"],
+    &["branch", "--list"],
+    &["branch", "--list", "m*"],
+    &["branch", "--show-current"],
+    &["tag"],
+    &["tag", "-l"],
+    &["tag", "-l", "v*"],
+    &["stash", "list"],
+    &["stash", "show"],
+    &["remote"],
+    &["remote", "-v"],
+    &["remote", "get-url", "origin"],
+    &["reflog"],
+    &["reflog", "show"],
+    &["reflog", "show", "HEAD"],
+    &["clean", "-n"],
+    &["clean", "-nd"],
+    &["clean", "-nx"],
+    &["clean", "-nX"],
+    &["clean", "--dry-run", "src"],
+    &["add", "-n", "README.md"],
+    &["add", "--dry-run", "."],
+    &["rm", "-n", "--cached", "README.md"],
+    &["mv", "-n", "README.md", "MOVED.md"],
+    &["config", "list"],
+    &["config", "list", "--global"],
+    &["config", "get", "server"],
+];
+
+/// Invocations that fail or print nothing useful; the repository must still not change.
+const READ_ONLY_FAILING: &[&[&str]] = &[
+    &["lock", "a"],
+    &["audit"],
+    &["verify"],
+    &["commit", "-m", "x", "README.md"],
+    &["restore", "README.md", "1"],
+    &["status", "--revision", "HEAD"],
+    &["log", "--filter", "*.rs"],
+    &["show", "nonsense"],
+    &["diff", "nonsense"],
+    &["diff", "--cached", "nonsense"],
+    &["stash", "show", "-p", "stash@{3}"],
+    &["reflog", "show", "nonsense"],
+    &["branch", "--contains", "HEAD"],
+    &["branch", "-vv"],
+    &["branch", "-a", "main"],
+    &["remote", "show", "origin"],
+    &["reflog", "exists", "HEAD"],
+    &["remote", "get-url", "nonsense"],
+    &["clean"],
+    &["push", "-n"],
+    &["push", "--dry-run", "origin"],
+    &["rm", "-n", "README.md"],
+    &["whoami"],
+    &["get", "README.md"],
+    &["locks"],
+    &["summary"],
+];
+
 #[test]
 fn every_command_leaves_the_git_directory_and_work_tree_untouched() {
     for format in FORMATS {
         let repo = Repo::new(format);
+        // The fixture has a tag; add a remote and a stash so those listings read real data.
+        repo.ok(&["remote", "add", "origin", "http://127.0.0.1:9/seed.git"]);
+        fs::write(repo.main.join("README.md"), "seeded\n").unwrap();
+        repo.ok(&["stash"]);
         let before = snapshot(&repo.main);
-        for args in [
-            vec!["status"],
-            vec!["diff"],
-            vec!["diff", "HEAD"],
-            vec!["diff", "HEAD~3", "HEAD~2", "--stat"],
-            vec!["log"],
-            vec!["log", "--commits"],
-            vec!["log", "README.md"],
-            vec!["show"],
-            vec!["show", "HEAD~3"],
-            vec!["files"],
-            vec!["ls"],
-            vec!["ls", "src"],
-        ] {
-            repo.ok(&args);
+        let linked_before = snapshot(&repo.linked);
+        let unchanged = |args: &[&str], name: &str| {
             assert_eq!(
                 snapshot(&repo.main),
                 before,
-                "{format}: pyn {args:?} changed something"
+                "{format}: pyn {args:?} in {name} changed the main work tree or .git"
             );
-        }
-        for args in [
-            vec!["lock", "a"],
-            vec!["audit"],
-            vec!["verify"],
-            vec!["commit", "-m", "x", "README.md"],
-            vec!["add", "-n", "README.md"],
-            vec!["diff", "--cached"],
-            vec!["restore", "README.md", "1"],
-            vec!["status", "--revision", "HEAD"],
-            vec!["log", "--filter", "*.rs"],
-            vec!["show", "nonsense"],
-            vec!["diff", "nonsense"],
-        ] {
-            repo.run_in(&repo.main, &args);
             assert_eq!(
-                snapshot(&repo.main),
-                before,
-                "{format}: pyn {args:?} changed something"
+                snapshot(&repo.linked),
+                linked_before,
+                "{format}: pyn {args:?} in {name} changed the linked work tree"
             );
+        };
+        for (cwd, name) in [(&repo.main, "main"), (&repo.linked, "linked")] {
+            for args in READ_ONLY {
+                let out = repo.run_in(cwd, args);
+                // the linked worktree has its own, shorter history
+                assert!(
+                    name == "linked" || out.status.success(),
+                    "{format}: pyn {args:?} in {name}: {}{}",
+                    String::from_utf8_lossy(&out.stdout),
+                    String::from_utf8_lossy(&out.stderr)
+                );
+                unchanged(args, name);
+            }
+            for args in READ_ONLY_FAILING {
+                repo.run_in(cwd, args);
+                unchanged(args, name);
+            }
         }
-        repo.ok_in(&repo.linked, &["status"]);
-        assert_eq!(snapshot(&repo.main), before);
     }
 }
 
