@@ -37,6 +37,10 @@ Divergence rules:
 Exit codes follow git: `0` success, `128` for a failure (message prefixed `fatal: `), `129` for a usage error such as
 an unknown flag on a supported command (raised by the argument parser, which names the flag and the command's usage),
 `1` for an unknown or git-only command. `diff --exit-code` and `-q` exit `1` when there are differences, as in git.
+Messages that git writes to standard output (for example the nothing-to-commit notice and the unmerged-path listing of a
+conflicted commit) go to standard output, and errors to standard error. `fetch`, `pull` and `push` outside any repository fail
+with `fatal: not a git repository (or any of the parent directories): .git` (`128`). The statuses are checked against git by
+`crates/pyn-cli/tests/git_exit_status.rs`, whose allow-list names the differences that remain.
 
 Statuses used below:
 
@@ -650,7 +654,7 @@ No git equivalent; these keep their own names and are never aliased to a git com
 | `pyn login`, `logout`, `register`, `password`, `whoami`, `key`, `token` | Accounts, sessions, SSH keys and API tokens. |
 | `pyn invite`, `user`, `member`, `role` | Invitations, repository users, roles and what each role grants. |
 | `pyn org`, `pyn team` | Organizations and teams, and granting teams roles on repositories. |
-| `pyn repo` (`create`, `list`, `explore`, `visibility`, `usage`, `delete`) | Repositories live on the server; there is no local `git init` equivalent. |
+| `pyn repo` (`create`, `list`, `explore`, `visibility`, `usage`, `delete`) | Repositories live on the server; `pyn init-git` starts a local git-home repository (see `git init` above). |
 | `pyn setup`, `pyn admin`, `pyn usage` | First-run setup, server administration and per-owner usage and limits. |
 
 ## Not planned
