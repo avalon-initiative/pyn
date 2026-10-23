@@ -6,6 +6,7 @@ use anyhow::{Result, bail};
 
 use crate::backend::Backend;
 use crate::git_home::GitLogArgs;
+use crate::local_tags;
 use crate::snapshot;
 
 /// The server-side narrowing of a commit listing; every field is a `/commits` parameter.
@@ -38,10 +39,12 @@ impl CommitFilter {
 }
 
 /// Whether `arg` reads as a revision (a range, `^rev` or a commit reference that is not a file here).
-fn is_rev(arg: &str, cwd: &Path) -> bool {
+fn is_rev(arg: &str, cwd: &Path, tags: &[String]) -> bool {
+    let base = &arg[..arg.find(['~', '^']).unwrap_or(arg.len())];
     arg.starts_with('^')
         || arg.contains("..")
-        || (snapshot::parse_commit(arg).is_some() && !cwd.join(arg).exists())
+        || ((snapshot::parse_commit(arg).is_some() || tags.iter().any(|t| t == base))
+            && !cwd.join(arg).exists())
 }
 
 /// Whether the arguments ask for a filtered commit listing rather than the revision table; a path does when
@@ -50,7 +53,8 @@ pub fn selects(path: Option<&str>, args: &GitLogArgs, cwd: &Path, listing: bool)
     args.has_server_filter()
         || (listing && (path.is_some() || !args.dashed().is_empty()))
         || !args.positionals().is_empty()
-        || path.is_some_and(|p| !args.dashed().is_empty() || is_rev(p, cwd))
+        || path
+            .is_some_and(|p| !args.dashed().is_empty() || is_rev(p, cwd, &local_tags::names(cwd)))
 }
 
 /// More than one path, which the server's single `path` filter cannot take.
@@ -58,14 +62,23 @@ pub fn too_many_paths(path: Option<&str>, args: &GitLogArgs, cwd: &Path) -> bool
     if !args.dashed().is_empty() {
         return false;
     }
+    let tags = local_tags::names(cwd);
     let items = path
         .into_iter()
         .chain(args.positionals().iter().map(String::as_str));
-    items.skip_while(|a| is_rev(a, cwd)).count() > 1
+    items.skip_while(|a| is_rev(a, cwd, &tags)).count() > 1
 }
 
 /// A revision argument resolved to a full commit id; the empty side of `..` is `HEAD`.
-fn resolve(backend: &dyn Backend, text: &str) -> Result<String> {
+/// A tag leads to its commit, which must be published: the listing is the server's.
+fn resolve(backend: &dyn Backend, cwd: &Path, text: &str) -> Result<String> {
+    if let Some(named) = local_tags::expand_at(cwd, text)? {
+        return snapshot::resolve(backend, &named.rev).map_err(|_| {
+            anyhow::anyhow!(
+                "'{text}' names an unpublished local commit; `pyn log` revisions read the server's history, so push first"
+            )
+        });
+    }
     snapshot::resolve(backend, if text.is_empty() { "HEAD" } else { text })
 }
 
@@ -84,7 +97,8 @@ pub fn build(
         .collect();
     let mut paths: Vec<&str> = args.dashed().iter().map(String::as_str).collect();
     if paths.is_empty() {
-        let revs = items.iter().take_while(|a| is_rev(a, cwd)).count();
+        let tags = local_tags::names(cwd);
+        let revs = items.iter().take_while(|a| is_rev(a, cwd, &tags)).count();
         paths = items.split_off(revs);
     }
     let (mut from, mut to) = (None, None);
@@ -98,12 +112,12 @@ pub fn build(
         if item.contains("...") {
             bail!("`pyn log {item}` (symmetric difference) is not available on a pyn server");
         } else if let Some((a, b)) = item.split_once("..") {
-            set(&mut to, resolve(backend, a)?, "excluded")?;
-            set(&mut from, resolve(backend, b)?, "starting")?;
+            set(&mut to, resolve(backend, cwd, a)?, "excluded")?;
+            set(&mut from, resolve(backend, cwd, b)?, "starting")?;
         } else if let Some(rest) = item.strip_prefix('^') {
-            set(&mut to, resolve(backend, rest)?, "excluded")?;
+            set(&mut to, resolve(backend, cwd, rest)?, "excluded")?;
         } else {
-            set(&mut from, resolve(backend, item)?, "starting")?;
+            set(&mut from, resolve(backend, cwd, item)?, "starting")?;
         }
     }
     filter.from = from;

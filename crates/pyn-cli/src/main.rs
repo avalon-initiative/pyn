@@ -24,6 +24,7 @@ mod local_rebase;
 mod local_reset;
 mod local_store;
 mod local_sync;
+mod local_tags;
 mod local_view;
 mod localfile;
 mod log_filter;
@@ -142,7 +143,7 @@ enum Command {
     Checkout(branch::CheckoutArgs),
     /// Merge a branch into the current branch.
     Merge(merging::MergeArgs),
-    /// Create, list and delete tags (a git repository only).
+    /// Create, list and delete tags; on a pyn server they stay in the local store and are never pushed.
     Tag(git_home::TagArgs),
     /// Save, list and restore local changes (a git repository only).
     Stash(git_home::StashArgs),
@@ -1593,10 +1594,7 @@ fn run(cli: Cli) -> Result<()> {
         Command::Revert(args) => {
             local_pick::revert(&backend, in_workspace("revert")?, args)?;
         }
-        Command::Tag(_) => {
-            eprintln!("{}", unsupported::message("tag"));
-            std::process::exit(1);
-        }
+        Command::Tag(args) => local_tags::run(&backend, ws.as_ref(), args)?,
         Command::Stash(_) => {
             eprintln!("{}", unsupported::message("stash"));
             std::process::exit(1);
@@ -2297,6 +2295,8 @@ fn diff_command(
         paths,
         cached,
     } = *named;
+    let expanded = local_tags::expand_args(ws, args)?;
+    let args = expanded.as_slice();
     let mut refs: Vec<String> = Vec::new();
     let mut rest = args;
     while refs.len() < 2
@@ -2485,8 +2485,17 @@ fn show_command(
     commit: Option<&str>,
     opts: &ShowOpts,
 ) -> Result<()> {
-    if let Some(store) = ws.and_then(local_store::LocalStore::open)
-        && local_view::show(backend, &store, &branch::name(ws), commit, opts)?
+    let store = ws.and_then(local_store::LocalStore::open);
+    let tagged = match (&store, commit) {
+        (Some(store), Some(text)) => local_tags::expand(store, text)?,
+        _ => None,
+    };
+    if let Some(note) = tagged.as_ref().and_then(|t| t.annotation.as_deref()) {
+        print!("{note}");
+    }
+    let commit = tagged.as_ref().map_or(commit, |t| Some(t.rev.as_str()));
+    if let Some(store) = &store
+        && local_view::show(backend, store, &branch::name(ws), commit, opts)?
     {
         return Ok(());
     }

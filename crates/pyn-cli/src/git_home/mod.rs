@@ -74,6 +74,9 @@ pub use reset::ResetKind;
 pub(crate) use stage::clean_message;
 pub use stash::StashArgs;
 pub use tags::TagArgs;
+pub(crate) use tags::{
+    annotation, check_name, delete as delete_tags, list as list_tags, short, tag_ref,
+};
 
 /// A refusal git reports as `error: <message>` with exit status 1, rather than as a fatal error.
 #[derive(Debug)]
