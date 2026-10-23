@@ -231,7 +231,7 @@ fn commands_that_act_on_the_working_repository_still_refuse() {
         assert_eq!(out.status.code(), Some(128), "{args:?}");
         let err = String::from_utf8_lossy(&out.stderr);
         assert!(
-            err.starts_with(&format!("fatal: `pyn {}` needs a pyn server, and this repository is a git repository; `pyn convert` moves it to a pyn server", args[0])),
+            err.starts_with(&format!("fatal: `pyn {}` needs a pyn server, and this repository is a git repository; `pyn convert --home pyn` will move it to one (not built yet, #572)", args[0])),
             "{args:?}: {err}"
         );
     }

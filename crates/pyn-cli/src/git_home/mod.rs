@@ -42,6 +42,7 @@ mod stash_show;
 mod strategy;
 mod switch;
 mod tags;
+mod to_git;
 pub(crate) mod todo;
 mod treemerge;
 mod upstream;
@@ -79,6 +80,7 @@ pub use tags::TagArgs;
 pub(crate) use tags::{
     annotation, check_name, delete as delete_tags, list as list_tags, short, tag_ref,
 };
+pub use to_git::{ConvertArgs, Home, to_git};
 
 /// A refusal git reports as `error: <message>` with exit status 1, rather than as a fatal error.
 #[derive(Debug)]
