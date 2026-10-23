@@ -178,6 +178,8 @@ enum Command {
     Init,
     /// Start a new repository used like git: a real `.git` written by pyn, plus pyn's own folder.
     InitGit(git_home::InitGitArgs),
+    /// Adopt an existing git repository: hide `.pyn/` from git and create its local state folder.
+    Convert,
     /// Fetch new and newer files; files with local changes are left alone.
     Update {
         /// Only these paths; everything if omitted.
@@ -1126,6 +1128,12 @@ fn run(cli: Cli) -> Result<()> {
         eprintln!("{}", unsupported::message("init"));
         std::process::exit(1);
     }
+    if matches!(cli.command, Command::Convert) {
+        eprintln!(
+            "fatal: `pyn convert` adopts an existing git repository, and this is not one (or any of the parent directories): .git"
+        );
+        std::process::exit(128);
+    }
     let ws = if on_git {
         None
     } else {
@@ -1233,7 +1241,9 @@ fn run(cli: Cli) -> Result<()> {
 
     match cli.command {
         Command::External(_) => unreachable!("handled before run"),
-        Command::Init => unreachable!("handled before the server is consulted"),
+        Command::Init | Command::Convert => {
+            unreachable!("handled before the server is consulted")
+        }
         Command::InitGit(_) => unreachable!("handled before the server is consulted"),
         Command::LsRemote(_) => unreachable!("handled before the server is consulted"),
         Command::Login {

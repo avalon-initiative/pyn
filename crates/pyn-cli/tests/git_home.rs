@@ -628,6 +628,129 @@ fn init_outside_a_git_repository_says_it_is_not_supported_yet() {
 }
 
 #[test]
+fn convert_hides_pyn_from_git_and_changes_nothing_else() {
+    for format in FORMATS {
+        let repo = Repo::new(format);
+        let before = snapshot(&repo.main);
+        let status_before = repo.ok(&["status"]);
+        let out = repo.ok(&["convert"]);
+        assert!(out.contains("added .pyn/"), "{out}");
+        let after = snapshot(&repo.main);
+        let changed: Vec<&String> = after
+            .keys()
+            .filter(|k| before.get(*k) != after.get(*k))
+            .chain(before.keys().filter(|k| !after.contains_key(*k)))
+            .collect();
+        assert_eq!(
+            changed,
+            [
+                ".git/info/exclude",
+                ".pyn",
+                ".pyn/local_only",
+                ".pyn/local_only/repo.toml"
+            ],
+            "{format}: {changed:?}"
+        );
+        assert_eq!(
+            fs::read_to_string(repo.main.join(".git/info/exclude")).unwrap(),
+            "private/\n.pyn/\n"
+        );
+        assert_eq!(
+            fs::read_to_string(repo.main.join(".pyn/local_only/repo.toml")).unwrap(),
+            "repo_tool = \"git\"\n"
+        );
+        assert_eq!(
+            repo.ok(&["status"]),
+            status_before,
+            "the .pyn folder is invisible to git"
+        );
+
+        let again = snapshot(&repo.main);
+        let out = repo.ok(&["convert"]);
+        assert!(out.contains("already excluded"), "{out}");
+        assert_eq!(snapshot(&repo.main), again, "convert is idempotent");
+    }
+}
+
+#[test]
+fn convert_prints_what_init_prints() {
+    let (a, b) = (Repo::new("sha1"), Repo::new("sha1"));
+    let (init, convert) = (a.ok(&["init"]), b.ok(&["convert"]));
+    assert_eq!(
+        init.replace(a.main.to_str().unwrap(), "ROOT"),
+        convert.replace(b.main.to_str().unwrap(), "ROOT")
+    );
+}
+
+#[test]
+fn convert_adds_a_missing_newline_and_creates_the_exclude_file() {
+    let repo = Repo::new("sha1");
+    let exclude = repo.main.join(".git/info/exclude");
+    fs::write(&exclude, "private/").unwrap();
+    repo.ok(&["convert"]);
+    assert_eq!(fs::read_to_string(&exclude).unwrap(), "private/\n.pyn/\n");
+
+    fs::remove_dir_all(repo.main.join(".git/info")).unwrap();
+    fs::remove_dir_all(repo.main.join(".pyn")).unwrap();
+    repo.ok(&["convert"]);
+    assert_eq!(fs::read_to_string(&exclude).unwrap(), ".pyn/\n");
+}
+
+#[test]
+fn convert_leaves_an_existing_exclusion_alone() {
+    for existing in [".pyn\n", "/.pyn/\n", "# mine\n.pyn/\n"] {
+        let repo = Repo::new("sha1");
+        let exclude = repo.main.join(".git/info/exclude");
+        fs::write(&exclude, existing).unwrap();
+        assert!(repo.ok(&["convert"]).contains("already excluded"));
+        assert_eq!(fs::read_to_string(&exclude).unwrap(), existing);
+    }
+}
+
+#[test]
+fn convert_in_a_linked_worktree_writes_the_shared_exclude_file() {
+    let repo = Repo::new("sha1");
+    repo.ok_in(&repo.linked, &["convert"]);
+    assert!(repo.linked.join(".pyn/local_only").is_dir());
+    assert!(!repo.main.join(".pyn").exists());
+    let exclude = fs::read_to_string(repo.main.join(".git/info/exclude")).unwrap();
+    assert!(exclude.contains(".pyn/"), "{exclude}");
+}
+
+#[test]
+fn convert_outside_a_git_repository_is_fatal() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = Repo::new("sha1");
+    let out = repo.run_in(tmp.path(), &["convert"]);
+    assert_eq!(out.status.code(), Some(128));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.starts_with("fatal: `pyn convert` adopts an existing git repository"),
+        "{err}"
+    );
+    assert!(!tmp.path().join(".pyn").exists());
+}
+
+#[test]
+fn convert_in_a_pyn_server_workspace_is_fatal() {
+    let env = common::start();
+    env.seed("alice", "a.txt", "one", None);
+    let repo = Repo::new("sha1");
+    let source = env.source(common::REPO);
+    env.ok(&repo.main, "alice", &["clone", &source, "clones/game"]);
+    let clone = repo.main.join("clones/game");
+    let before = snapshot(&clone);
+    let out = env.run(&clone, "alice", &["convert"]);
+    assert_eq!(out.status.code(), Some(128));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.starts_with("fatal: `pyn convert` adopts an existing git repository"),
+        "{err}"
+    );
+    assert_eq!(snapshot(&clone), before);
+}
+
+#[test]
 fn repository_commands_refuse_and_name_the_pyn_server() {
     let repo = Repo::new("sha1");
     let before = snapshot(&repo.main);
@@ -670,9 +793,6 @@ fn commands_a_git_home_will_gain_name_the_issue() {
         );
         assert!(err.contains(issue), "{args:?}: {err}");
     }
-    let out = repo.run_in(&repo.main, &["convert"]);
-    assert_eq!(out.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("#95"));
     let out = repo.run_in(&repo.main, &["frobnicate"]);
     assert!(String::from_utf8_lossy(&out.stderr).contains("'frobnicate' is not a pyn command"));
 }

@@ -46,8 +46,8 @@ it, whereas the local settings layer in the order above.
 
 ## In a git repository
 
-In a git repository `.pyn/` holds only pyn's own state, in `local_only/`, and `pyn init` hides it from git by adding `.pyn/` to
-`.git/info/exclude`, so git never sees it. The policy file is not read there: a git repository has no exclusive paths. See
+In a git repository `.pyn/` holds only pyn's own state, in `local_only/`, and `pyn convert` hides it from git by adding `.pyn/` to
+`.git/info/exclude`, so git never sees it. `pyn convert` is today's `pyn init` behaviour in a git repository; #570 changes `init` to start a repository. The policy file is not read there: a git repository has no exclusive paths. See
 [git compatibility](git-compatibility.md#on-a-git-home) for how pyn tells a git repository from a pyn server workspace.
 
 ## The `repo_tool` marker
@@ -59,7 +59,7 @@ repo_tool = "git"
 ```
 
 It says which tool the checkout acts as. It is local to the checkout and never versioned, so a teammate's checkout of the same
-git repository is unaffected. `pyn init` in a git repository and `pyn init-git` (which also creates the `.git`, see [git compatibility](git-compatibility.md)) record `git`, and `pyn convert` will set it to `pyn`, after
+git repository is unaffected. `pyn init` in a git repository, `pyn convert` and `pyn init-git` (which also creates the `.git`, see [git compatibility](git-compatibility.md)) record `git`, and a later `pyn convert --home pyn` (#572) will set it to `pyn`, after
 which pyn's configs and server features apply even though a `.git` remains. A repository created or cloned from a pyn server
 needs no marker: absence means `pyn`. A present marker wins over inferring the home from `.git` and the clone's state files,
 and an unknown value is an error. The nearest folder that makes a claim decides; the full rule is in
