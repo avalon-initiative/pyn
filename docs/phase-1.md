@@ -11,6 +11,6 @@ tamper-evident history, and the web UI.
 
 Branches (create, list, rename, delete, commit on a branch, switch) and merge ([merging](concepts/merging.md): merge base, merge
 commits, conflicts and their resolution) have landed ([branches](concepts/branches.md)). Still ahead:
-per-branch policy, remotes, pull requests, reviews, CI, Git import/export, and engine
+per-branch policy, pull requests, reviews, CI, Git import/export, and engine
 and editor integrations. The git-style commands not yet built are listed as *planned* in
 [git compatibility](concepts/git-compatibility.md).
