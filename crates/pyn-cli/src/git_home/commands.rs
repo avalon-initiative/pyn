@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 use pyn_git::Refspec;
@@ -84,6 +84,7 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
             super::log::log(git, cwd, path, limit, args)
         }
         Command::Init => init(git),
+        Command::InitGit(_) => unreachable!("handled before a repository is detected"),
         Command::Files => crate::files_command(git),
         Command::Ls { path } => crate::ls_command(git, path.as_deref()),
         Command::Merge(args) => super::merge::merge(git, args),
@@ -749,12 +750,18 @@ fn add_exclude(exclude: &Path) -> Result<bool> {
     Ok(true)
 }
 
-fn init(git: &GitHome) -> Result<()> {
-    let root = git.repo.root()?;
+/// Hides `.pyn/` from git and records the `git` repository tool; returns the exclude file and whether it changed.
+pub(super) fn hide_pyn(git: &GitHome) -> Result<(PathBuf, bool)> {
     let exclude = git.repo.git().common_dir().join("info/exclude");
     let added = add_exclude(&exclude)?;
     std::fs::create_dir_all(git.ws.dir.join("local_only"))?;
     crate::repo_tool::set(&git.ws, crate::repo_tool::RepoTool::Git)?;
+    Ok((exclude, added))
+}
+
+fn init(git: &GitHome) -> Result<()> {
+    let root = git.repo.root()?;
+    let (exclude, added) = hide_pyn(git)?;
     let note = if added {
         format!("added {EXCLUDE_LINE} to {}", exclude.display())
     } else {

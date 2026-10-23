@@ -5,11 +5,26 @@ use pyn_object::Algorithm;
 use crate::config_file::ConfigFile;
 use crate::error::{Result, io_at};
 
-/// Creates an empty repository in `git_dir`: object and ref folders, `HEAD` on `branch` and a minimal config.
+/// Creates an empty repository in `git_dir`: object, ref, hook and info folders, `description`, `HEAD` on `branch` and a minimal config.
 pub fn init(git_dir: &Path, bare: bool, algorithm: Algorithm, branch: &str) -> Result<()> {
-    for sub in ["objects/info", "objects/pack", "refs/heads", "refs/tags"] {
+    for sub in [
+        "objects/info",
+        "objects/pack",
+        "refs/heads",
+        "refs/tags",
+        "hooks",
+        "info",
+    ] {
         let dir = git_dir.join(sub);
         std::fs::create_dir_all(&dir).map_err(io_at(&dir))?;
+    }
+    let description = git_dir.join("description");
+    if !description.exists() {
+        std::fs::write(
+            &description,
+            "Unnamed repository; edit this file 'description' to name the repository.\n",
+        )
+        .map_err(io_at(&description))?;
     }
     let head = git_dir.join("HEAD");
     std::fs::write(&head, format!("ref: refs/heads/{branch}\n")).map_err(io_at(&head))?;

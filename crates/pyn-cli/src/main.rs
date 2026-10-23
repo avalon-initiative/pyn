@@ -176,6 +176,8 @@ enum Command {
     Status(short_status::StatusArgs),
     /// Set up pyn in an existing git repository: hide `.pyn/` from git and create its local state folder.
     Init,
+    /// Start a new repository used like git: a real `.git` written by pyn, plus pyn's own folder.
+    InitGit(git_home::InitGitArgs),
     /// Fetch new and newer files; files with local changes are left alone.
     Update {
         /// Only these paths; everything if omitted.
@@ -1035,6 +1037,9 @@ fn run(cli: Cli) -> Result<()> {
     if clone_from_git(&cli, &cwd)?.is_some() {
         return Ok(());
     }
+    if let Command::InitGit(args) = &cli.command {
+        return git_home::init_git(args, &cwd);
+    }
     if let Command::Clone { git, .. } = &cli.command
         && let Some(flag) = git.first_given()
     {
@@ -1229,6 +1234,7 @@ fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Command::External(_) => unreachable!("handled before run"),
         Command::Init => unreachable!("handled before the server is consulted"),
+        Command::InitGit(_) => unreachable!("handled before the server is consulted"),
         Command::LsRemote(_) => unreachable!("handled before the server is consulted"),
         Command::Login {
             username,
