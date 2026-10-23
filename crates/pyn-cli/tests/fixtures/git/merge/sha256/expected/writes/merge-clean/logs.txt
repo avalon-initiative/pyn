@@ -1,4 +1,0 @@
-== logs/HEAD
-4d59c4deaa4ad373083260d59fba79a096709cda797fcc5ed24cb5913cc6e83d 63db7805dae51cc77bda642181adc6020c382ad19100577239a0a690f3c3d0bc Staging Committer <committer@example.com> 1700000100 -0530	merge clean: Merge made by the 'ort' strategy.
-== logs/refs/heads/main
-4d59c4deaa4ad373083260d59fba79a096709cda797fcc5ed24cb5913cc6e83d 63db7805dae51cc77bda642181adc6020c382ad19100577239a0a690f3c3d0bc Staging Committer <committer@example.com> 1700000100 -0530	merge clean: Merge made by the 'ort' strategy.

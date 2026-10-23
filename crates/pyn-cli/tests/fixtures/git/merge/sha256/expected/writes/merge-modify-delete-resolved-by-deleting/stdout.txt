@@ -1,2 +1,0 @@
-[main 31e4707] resolved
- Author: Staging Author <staging@example.com>

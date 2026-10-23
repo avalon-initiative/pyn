@@ -1,6 +1,0 @@
-tree 035070ae6a97f43bcf275b6abf93911dd17d17f4
-parent 4f4bd5dea8c2ef81d4b06b3b7008b42204bf4a8f
-author Staging Author <staging@example.com> 1700000000 +0200
-committer Staging Committer <committer@example.com> 1700000100 -0530
-
-in the worktree

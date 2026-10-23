@@ -1,6 +1,0 @@
-refs/heads/feature 4f4bd5dea8c2ef81d4b06b3b7008b42204bf4a8f
-refs/heads/main 13f0082b4632ce7fbd5ba2ce11f273a9a226fe6e
-refs/stash e74c0c382c646d29f39ba1e42526681f2b87d1c3
-refs/tags/light aefcf544acfbe5010466f38cd7557664e7b4a68b
-refs/tags/v1 5179af95107289b40a47139b06c567dce0de61d9
-HEAD ref: refs/heads/main

@@ -1,7 +1,0 @@
-== logs/HEAD
-06fbff9729778f6ff2a07d62d4566e7ddaf81437 06fbff9729778f6ff2a07d62d4566e7ddaf81437 Staging Committer <committer@example.com> 1700000100 -0530	reset: moving to HEAD
-06fbff9729778f6ff2a07d62d4566e7ddaf81437 128036cd7ff9bf9ad5ab698f051ca2426f98a070 Staging Committer <committer@example.com> 1700000100 -0530	checkout: moving from main to other
-== logs/refs/heads/other
-0000000000000000000000000000000000000000 128036cd7ff9bf9ad5ab698f051ca2426f98a070 Staging Committer <committer@example.com> 1700000100 -0530	branch: Created from HEAD~1
-== logs/refs/stash
-0000000000000000000000000000000000000000 e74c0c382c646d29f39ba1e42526681f2b87d1c3 Staging Committer <committer@example.com> 1700000100 -0530	WIP on main: 06fbff9 Merge branch 'feature'

@@ -1,7 +1,0 @@
-== HEAD
-tree d37a5cf4cb6c638cce43313de5c3f95430808370
-parent 0cab1cd9504a4c32708b04991a7496c0d75055c3
-author Fixture Author <author@example.com> 1700518400 +0200
-committer Fixture Committer <committer@example.com> 1700518400 -0530
-
-main side

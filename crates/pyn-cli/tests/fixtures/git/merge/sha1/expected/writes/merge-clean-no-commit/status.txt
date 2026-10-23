@@ -1,4 +1,0 @@
-M  a.txt
-M  b.txt
-A  clean-only.txt
-M  link

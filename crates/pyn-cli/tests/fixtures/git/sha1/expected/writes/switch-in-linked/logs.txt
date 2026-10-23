@@ -1,4 +1,0 @@
-== logs/refs/heads/wt-topic
-0000000000000000000000000000000000000000 4f4bd5dea8c2ef81d4b06b3b7008b42204bf4a8f Staging Committer <committer@example.com> 1700000100 -0530	branch: Created from HEAD
-== worktrees/linked/logs/HEAD
-4f4bd5dea8c2ef81d4b06b3b7008b42204bf4a8f 4f4bd5dea8c2ef81d4b06b3b7008b42204bf4a8f Staging Committer <committer@example.com> 1700000100 -0530	checkout: moving from feature to wt-topic

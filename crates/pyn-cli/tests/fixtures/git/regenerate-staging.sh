@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # Regenerates <format>/expected/staging/ with the real git binary, used only as an oracle: the tests never run git.
+# Payload paths below are inside the archives listed in archives.txt; regeneration packs its temporary trees.
 # Each scenario starts from a fresh copy of the committed fixtures (laid out as the tests lay them out), runs git, and
 # records `git ls-files -s`, `git status --porcelain` and `git diff --cached`, plus the commit for the scenarios
 # that commit. The scenario names and commands are mirrored in tests/git_staging.rs. Rerun only when they change.
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
+source "$here/archive-fixtures.sh"
 export GIT_AUTHOR_NAME="Staging Author" GIT_AUTHOR_EMAIL="staging@example.com"
 export GIT_COMMITTER_NAME="Staging Committer" GIT_COMMITTER_EMAIL="committer@example.com"
 export GIT_AUTHOR_DATE="1700000000 +0200" GIT_COMMITTER_DATE="1700000100 -0530"
@@ -20,9 +22,9 @@ copy_tree() {
 setup() {
   local format=$1 dest=$2
   mkdir -p "$dest/main" "$dest/linked"
-  copy_tree "$here/worktree" "$dest/main"
-  cp -a "$here/$format/dot-git" "$dest/main/.git"
-  copy_tree "$here/linked" "$dest/linked"
+  copy_tree "$fixtures/worktree" "$dest/main"
+  cp -a "$fixtures/$format/dot-git" "$dest/main/.git"
+  copy_tree "$fixtures/linked" "$dest/linked"
   echo "gitdir: $dest/main/.git/worktrees/linked" > "$dest/linked/.git"
   echo "$dest/linked/.git" > "$dest/main/.git/worktrees/linked/gitdir"
 }
@@ -31,9 +33,9 @@ setup() {
 scenario() {
   local name=$1 tree=$2 sub=$3; shift 3
   local work out
-  work="$(mktemp -d)"
+  work="$(mktemp -d "$fixture_tmp/work.XXXXXX")"
   setup "$format" "$work"
-  out="$here/$format/expected/staging/$name"
+  out="$fixtures/$format/expected/staging/$name"
   rm -rf "$out"; mkdir -p "$out"
   (
     cd "$work/$tree/$sub"
@@ -42,7 +44,7 @@ scenario() {
     git ls-files -s > "$out/ls-files.txt"
     git status --porcelain=v1 > "$out/status.txt"
     git diff --cached > "$out/diff-cached.txt"
-    if [ "$(git rev-parse HEAD)" != "$(cd "$here/$format/dot-git" && git --git-dir=. rev-parse refs/heads/main 2>/dev/null || true)" ]; then
+    if [ "$(git rev-parse HEAD)" != "$(cd "$fixtures/$format/dot-git" && git --git-dir=. rev-parse refs/heads/main 2>/dev/null || true)" ]; then
       git rev-parse HEAD > "$out/head.txt"
       git cat-file -p HEAD > "$out/commit.txt"
     fi
@@ -70,3 +72,5 @@ make() {
 
 make sha1
 make sha256
+
+pack_fixtures

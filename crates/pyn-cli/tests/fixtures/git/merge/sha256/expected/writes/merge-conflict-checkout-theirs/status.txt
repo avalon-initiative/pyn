@@ -1,2 +1,0 @@
-UU a.txt
-M  b.txt

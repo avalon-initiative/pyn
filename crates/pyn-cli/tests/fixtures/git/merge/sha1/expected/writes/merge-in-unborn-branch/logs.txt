@@ -1,6 +1,0 @@
-== logs/HEAD
-42afe410ca98e0ccbdd992aa42a766dd0c537860 42afe410ca98e0ccbdd992aa42a766dd0c537860 Staging Committer <committer@example.com> 1700000100 -0530	checkout: moving from main to work
-42afe410ca98e0ccbdd992aa42a766dd0c537860 14507c733d3b7dccd8684536073241a336daf47e Staging Committer <committer@example.com> 1700000100 -0530	merge ff: Fast-forward
-== logs/refs/heads/work
-0000000000000000000000000000000000000000 42afe410ca98e0ccbdd992aa42a766dd0c537860 Staging Committer <committer@example.com> 1700000100 -0530	branch: Created from HEAD
-42afe410ca98e0ccbdd992aa42a766dd0c537860 14507c733d3b7dccd8684536073241a336daf47e Staging Committer <committer@example.com> 1700000100 -0530	merge ff: Fast-forward

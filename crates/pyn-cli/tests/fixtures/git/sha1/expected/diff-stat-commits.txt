@@ -1,4 +1,0 @@
- docs/guide.md | 1 -
- feature.txt   | 1 +
- src/lib.rs    | 0
- 3 files changed, 1 insertion(+), 1 deletion(-)

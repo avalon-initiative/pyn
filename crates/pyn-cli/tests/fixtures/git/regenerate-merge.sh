@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # Regenerates the merge fixture with the real git binary, used only as an oracle: the tests never run git.
+# Payload paths below are inside the archives listed in archives.txt; regeneration packs its temporary trees.
 # merge/worktree is the work tree (clean, on `main`) and merge/<format>/dot-git the `.git` directory, with the
 # branches the merge scenarios in scenarios-writes.txt use. Objects and refs are deterministic; the index carries
 # stat data from the temporary work tree. Rerun only when the history changes.
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
+source "$here/archive-fixtures.sh"
 export GIT_AUTHOR_NAME="Fixture Author" GIT_AUTHOR_EMAIL="author@example.com"
 export GIT_COMMITTER_NAME="Fixture Committer" GIT_COMMITTER_EMAIL="committer@example.com"
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_NOSYSTEM=1
@@ -65,8 +67,8 @@ scenario() {
 
 make() {
   local format=$1
-  local root="$here/merge/$format" work
-  work="$(mktemp -d)"
+  local root="$fixtures/merge/$format" work
+  work="$(mktemp -d "$fixture_tmp/work.XXXXXX")"
   rm -rf "$root"; mkdir -p "$root"
   (
     cd "$work"
@@ -74,9 +76,9 @@ make() {
     git config core.autocrlf false
     scenario
     if [ "$format" = sha1 ]; then
-      rm -rf "$here/merge/worktree"; mkdir -p "$here/merge/worktree"
-      cp -a . "$here/merge/worktree/"
-      rm -rf "$here/merge/worktree/.git"
+      rm -rf "$fixtures/merge/worktree"; mkdir -p "$fixtures/merge/worktree"
+      cp -a . "$fixtures/merge/worktree/"
+      rm -rf "$fixtures/merge/worktree/.git"
     fi
     rm -rf .git/hooks .git/logs .git/description .git/COMMIT_EDITMSG .git/ORIG_HEAD .git/branches
     cp -r .git "$root/dot-git"
@@ -86,3 +88,5 @@ make() {
 
 make sha1
 make sha256
+
+pack_fixtures

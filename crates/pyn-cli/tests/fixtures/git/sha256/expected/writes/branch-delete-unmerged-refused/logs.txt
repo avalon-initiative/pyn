@@ -1,7 +1,0 @@
-== logs/HEAD
-941cd002cda4ba2e72e1afadf90c6e9e6798ad6428d364ac7c4f1b477e25eac9 941cd002cda4ba2e72e1afadf90c6e9e6798ad6428d364ac7c4f1b477e25eac9 Staging Committer <committer@example.com> 1700000100 -0530	checkout: moving from main to work
-941cd002cda4ba2e72e1afadf90c6e9e6798ad6428d364ac7c4f1b477e25eac9 f8082b46b821e13dc2f0a2ebc459ba44ba11d7024b03662fbe73ecbeff9c7fdf Staging Committer <committer@example.com> 1700000100 -0530	commit: work
-f8082b46b821e13dc2f0a2ebc459ba44ba11d7024b03662fbe73ecbeff9c7fdf 941cd002cda4ba2e72e1afadf90c6e9e6798ad6428d364ac7c4f1b477e25eac9 Staging Committer <committer@example.com> 1700000100 -0530	checkout: moving from work to main
-== logs/refs/heads/work
-0000000000000000000000000000000000000000000000000000000000000000 941cd002cda4ba2e72e1afadf90c6e9e6798ad6428d364ac7c4f1b477e25eac9 Staging Committer <committer@example.com> 1700000100 -0530	branch: Created from HEAD
-941cd002cda4ba2e72e1afadf90c6e9e6798ad6428d364ac7c4f1b477e25eac9 f8082b46b821e13dc2f0a2ebc459ba44ba11d7024b03662fbe73ecbeff9c7fdf Staging Committer <committer@example.com> 1700000100 -0530	commit: work

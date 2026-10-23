@@ -42,4 +42,7 @@ workspace = true
 axum = "0.8.9"
 pyn-core = { path = "../pyn-core", features = ["test-support"] }
 pyn-server = { path = "../pyn-server" }
+shutdown_hooks = "0.1.0"
+tar = { version = "0.4.46", default-features = false }
 tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros", "net", "sync"] }
+zstd = "0.14.3"

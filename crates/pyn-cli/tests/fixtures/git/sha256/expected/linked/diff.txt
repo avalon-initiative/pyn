@@ -1,7 +1,0 @@
-diff --git a/feature.txt b/feature.txt
-index f7fa4c2..7edd435 100644
---- a/feature.txt
-+++ b/feature.txt
-@@ -1 +1 @@
--feature
-+feature edit

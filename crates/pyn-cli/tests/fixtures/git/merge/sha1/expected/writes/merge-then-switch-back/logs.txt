@@ -1,8 +1,0 @@
-== logs/HEAD
-42afe410ca98e0ccbdd992aa42a766dd0c537860 7f01732a024959f88ce1445767f1383faedb3ac3 Staging Committer <committer@example.com> 1700000100 -0530	merge clean: Merge made by the 'ort' strategy.
-7f01732a024959f88ce1445767f1383faedb3ac3 7f01732a024959f88ce1445767f1383faedb3ac3 Staging Committer <committer@example.com> 1700000100 -0530	checkout: moving from main to after
-7f01732a024959f88ce1445767f1383faedb3ac3 7f01732a024959f88ce1445767f1383faedb3ac3 Staging Committer <committer@example.com> 1700000100 -0530	checkout: moving from after to main
-== logs/refs/heads/after
-0000000000000000000000000000000000000000 7f01732a024959f88ce1445767f1383faedb3ac3 Staging Committer <committer@example.com> 1700000100 -0530	branch: Created from HEAD
-== logs/refs/heads/main
-42afe410ca98e0ccbdd992aa42a766dd0c537860 7f01732a024959f88ce1445767f1383faedb3ac3 Staging Committer <committer@example.com> 1700000100 -0530	merge clean: Merge made by the 'ort' strategy.

@@ -1,2 +1,0 @@
-[main dfde688] resolved
- Author: Staging Author <staging@example.com>

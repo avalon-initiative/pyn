@@ -1,4 +1,0 @@
-== logs/HEAD
-42afe410ca98e0ccbdd992aa42a766dd0c537860 ee05d94faeff3d20883e774d71157846e5d662c4 Staging Committer <committer@example.com> 1700000100 -0530	merge ff: Merge made by the 'ort' strategy.
-== logs/refs/heads/main
-42afe410ca98e0ccbdd992aa42a766dd0c537860 ee05d94faeff3d20883e774d71157846e5d662c4 Staging Committer <committer@example.com> 1700000100 -0530	merge ff: Merge made by the 'ort' strategy.

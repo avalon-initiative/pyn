@@ -1,17 +1,51 @@
 //! The git home fixtures shared by the tests that run `pyn` on a git repository: a scenario repository per object
-//! format (built once with real git, see `fixtures/git/regenerate.sh`) copied into a temporary directory.
+//! format (built once with real git, see `fixtures/git/regenerate.sh`) extracted once per process and copied
+//! into a temporary directory for each test.
 #![allow(dead_code)]
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::OnceLock;
 
 pub const FORMATS: [&str; 2] = ["sha1", "sha256"];
 
+pub(crate) const ARCHIVES: &str = include_str!("../fixtures/git/archives.txt");
+
+pub(crate) fn extract_archives(from: &Path) -> io::Result<tempfile::TempDir> {
+    let tmp = tempfile::tempdir()?;
+    for line in ARCHIVES.lines() {
+        let name = line.split_whitespace().next().unwrap();
+        let file = fs::File::open(from.join(name))?;
+        let mut archive = tar::Archive::new(zstd::Decoder::new(file)?);
+        archive.set_preserve_permissions(true);
+        archive.unpack(tmp.path())?;
+    }
+    Ok(tmp)
+}
+
 pub fn fixtures() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/git")
+    static ROOT: OnceLock<tempfile::TempDir> = OnceLock::new();
+    extern "C" fn cleanup() {
+        if let Some(root) = ROOT.get() {
+            let _ = fs::remove_dir_all(root.path());
+        }
+    }
+    ROOT.get_or_init(|| {
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/git");
+        let tmp = extract_archives(&source).expect("unpack archived git fixtures");
+        // The exit hook runs after the harness has joined its test threads.
+        assert!(
+            shutdown_hooks::add_shutdown_hook(cleanup),
+            "register git fixture cleanup"
+        );
+        tmp
+    })
+    .path()
+    .to_path_buf()
 }
 
 pub fn copy_tree(from: &Path, to: &Path) {
@@ -229,7 +263,7 @@ pub struct Scenario {
 }
 
 pub fn scenarios() -> Vec<Scenario> {
-    let text = fs::read_to_string(fixtures().join("scenarios-writes.txt")).unwrap();
+    let text = include_str!("../fixtures/git/scenarios-writes.txt");
     text.lines()
         .filter(|l| !l.is_empty() && !l.starts_with('#'))
         .map(|line| {

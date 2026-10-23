@@ -1,4 +1,0 @@
-== logs/HEAD
-06fbff9729778f6ff2a07d62d4566e7ddaf81437 06fbff9729778f6ff2a07d62d4566e7ddaf81437 Staging Committer <committer@example.com> 1700000100 -0530	reset: moving to HEAD
-== logs/refs/stash
-0000000000000000000000000000000000000000 d9068b26fbb226e0553ed3ee5ff85406bfadc828 Staging Committer <committer@example.com> 1700000100 -0530	WIP on main: 06fbff9 Merge branch 'feature'

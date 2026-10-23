@@ -1,7 +1,0 @@
-diff --git a/src/main.rs b/src/main.rs
-index f328e4d..5b2f864 100644
---- a/src/main.rs
-+++ b/src/main.rs
-@@ -1 +1 @@
--fn main() {}
-+fn main() { println!("v2"); }

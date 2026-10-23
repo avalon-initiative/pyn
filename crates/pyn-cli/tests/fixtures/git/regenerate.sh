@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Regenerates the git home fixtures with the real git binary, used only as an oracle: the tests never run git.
+# Payload paths below are inside the archives listed in archives.txt; regeneration packs its temporary trees.
 # worktree/ and linked/ are the work trees (every `.gitignore` is stored as `dot-gitignore` so it does not apply to
 # this repository); <format>/dot-git is the `.git` directory and <format>/expected/ is what git prints for the
 # commands the tests compare. Objects, refs and expected/ are deterministic; the index files carry stat data from
@@ -7,6 +8,7 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
+source "$here/archive-fixtures.sh"
 export GIT_AUTHOR_NAME="Fixture Author" GIT_AUTHOR_EMAIL="author@example.com"
 export GIT_COMMITTER_NAME="Fixture Committer" GIT_COMMITTER_EMAIL="committer@example.com"
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_NOSYSTEM=1
@@ -104,8 +106,8 @@ capture() {
 
 make() {
   local format=$1
-  local root="$here/$format" work wt
-  work="$(mktemp -d)"; wt="$work-wt/linked"; mkdir -p "$work-wt"
+  local root="$fixtures/$format" work wt
+  work="$(mktemp -d "$fixture_tmp/work.XXXXXX")"; wt="$work-wt/linked"; mkdir -p "$work-wt"
   rm -rf "$root"; mkdir -p "$root"
   (
     cd "$work"
@@ -119,13 +121,13 @@ make() {
     (cd "$wt" && git status --porcelain=v1 > "$root/expected/linked/status.txt" && git diff > "$root/expected/linked/diff.txt")
     capture "$root/expected"
     if [ "$format" = sha1 ]; then
-      rm -rf "$here/worktree" "$here/linked"
-      mkdir -p "$here/worktree" "$here/linked"
-      cp -a . "$here/worktree/"
-      rm -rf "$here/worktree/.git"
-      cp -a "$wt/." "$here/linked/"
-      rm -f "$here/linked/.git"
-      while IFS= read -r f; do mv "$f" "$(dirname "$f")/dot-gitignore"; done < <(find "$here/worktree" "$here/linked" -name .gitignore)
+      rm -rf "$fixtures/worktree" "$fixtures/linked"
+      mkdir -p "$fixtures/worktree" "$fixtures/linked"
+      cp -a . "$fixtures/worktree/"
+      rm -rf "$fixtures/worktree/.git"
+      cp -a "$wt/." "$fixtures/linked/"
+      rm -f "$fixtures/linked/.git"
+      while IFS= read -r f; do mv "$f" "$(dirname "$f")/dot-gitignore"; done < <(find "$fixtures/worktree" "$fixtures/linked" -name .gitignore)
     fi
     echo /fixture/linked/.git > .git/worktrees/linked/gitdir
     rm -rf .git/hooks .git/logs .git/description .git/COMMIT_EDITMSG .git/ORIG_HEAD .git/branches .git/worktrees/*/logs
@@ -136,3 +138,5 @@ make() {
 
 make sha1
 make sha256
+
+pack_fixtures

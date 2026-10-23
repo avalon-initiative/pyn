@@ -1,4 +1,0 @@
-== logs/HEAD
-4d59c4deaa4ad373083260d59fba79a096709cda797fcc5ed24cb5913cc6e83d 8f17a9cb71c857fc88c358d584df834756e36239a7c0e55a5403869ca4493455 Staging Committer <committer@example.com> 1700000100 -0530	commit (merge): nope
-== logs/refs/heads/main
-4d59c4deaa4ad373083260d59fba79a096709cda797fcc5ed24cb5913cc6e83d 8f17a9cb71c857fc88c358d584df834756e36239a7c0e55a5403869ca4493455 Staging Committer <committer@example.com> 1700000100 -0530	commit (merge): nope

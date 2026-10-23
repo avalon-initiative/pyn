@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # Regenerates <format>/expected/writes/ with the real git binary, used only as an oracle: the tests never run git.
+# Payload paths below are inside the archives listed in archives.txt; regeneration packs its temporary trees.
 # Every line of scenarios-writes.txt starts from a fresh copy of the committed fixtures (laid out as
 # tests/git_writes.rs lays them out), runs the commands with git, and records what is left on disk. The same file
 # drives the pyn run in the tests. Rerun only when the scenarios change.
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
+source "$here/archive-fixtures.sh"
 export GIT_AUTHOR_NAME="Staging Author" GIT_AUTHOR_EMAIL="staging@example.com"
 export GIT_COMMITTER_NAME="Staging Committer" GIT_COMMITTER_EMAIL="committer@example.com"
 export GIT_AUTHOR_DATE="1700000000 +0200" GIT_COMMITTER_DATE="1700000100 -0530"
@@ -21,14 +23,14 @@ setup() {
   local format=$1 fixture=$2 dest=$3
   mkdir -p "$dest/main"
   if [ "$fixture" = merge ]; then
-    copy_tree "$here/merge/worktree" "$dest/main"
-    cp -a "$here/merge/$format/dot-git" "$dest/main/.git"
+    copy_tree "$fixtures/merge/worktree" "$dest/main"
+    cp -a "$fixtures/merge/$format/dot-git" "$dest/main/.git"
     return
   fi
   mkdir -p "$dest/linked"
-  copy_tree "$here/worktree" "$dest/main"
-  cp -a "$here/$format/dot-git" "$dest/main/.git"
-  copy_tree "$here/linked" "$dest/linked"
+  copy_tree "$fixtures/worktree" "$dest/main"
+  cp -a "$fixtures/$format/dot-git" "$dest/main/.git"
+  copy_tree "$fixtures/linked" "$dest/linked"
   echo "gitdir: $dest/main/.git/worktrees/linked" > "$dest/linked/.git"
   echo "$dest/linked/.git" > "$dest/main/.git/worktrees/linked/gitdir"
 }
@@ -56,10 +58,10 @@ dump() {
 scenario() {
   local format=$1 name=$2 fixture=$3 tree=$4 sub=$5 cmds=$6
   local work out code=0
-  work="$(mktemp -d)"
+  work="$(mktemp -d "$fixture_tmp/work.XXXXXX")"
   setup "$format" "$fixture" "$work"
-  out="$here/$format/expected/writes/$name"
-  [ "$fixture" = merge ] && out="$here/merge/$format/expected/writes/$name"
+  out="$fixtures/$format/expected/writes/$name"
+  [ "$fixture" = merge ] && out="$fixtures/merge/$format/expected/writes/$name"
   rm -rf "$out"; mkdir -p "$out"
   (
     cd "$work/$tree/$sub"
@@ -88,7 +90,7 @@ scenario() {
 }
 
 for format in sha1 sha256; do
-  rm -rf "$here/$format/expected/writes" "$here/merge/$format/expected/writes"
+  rm -rf "$fixtures/$format/expected/writes" "$fixtures/merge/$format/expected/writes"
   while IFS=$'\t' read -r name fixture tree sub cmds; do
     case "$name" in ''|'#'*) continue ;; esac
     # git 2.43 cannot stash in a SHA-256 repository ("Cannot save the current status")
@@ -96,3 +98,5 @@ for format in sha1 sha256; do
     scenario "$format" "$name" "$fixture" "$tree" "$sub" "$cmds"
   done < "$here/scenarios-writes.txt"
 done
+
+pack_fixtures

@@ -1,8 +1,0 @@
-== HEAD
-tree 210e2b1370a0a5ac22699e6a41a59616e5285a59675ebbd3ddf3ee74b87a992f
-parent 4d59c4deaa4ad373083260d59fba79a096709cda797fcc5ed24cb5913cc6e83d
-parent 4762400fa085bb0136c60a5e34d6a52c54980efe7f682da6311f9973ee51f4c6
-author Staging Author <staging@example.com> 1700000000 +0200
-committer Staging Committer <committer@example.com> 1700000100 -0530
-
-Merge clean side

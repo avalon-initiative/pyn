@@ -1,4 +1,0 @@
-== logs/HEAD
-42afe410ca98e0ccbdd992aa42a766dd0c537860 42afe410ca98e0ccbdd992aa42a766dd0c537860 Staging Committer <committer@example.com> 1700000100 -0530	reset: moving to HEAD
-== logs/refs/stash
-0000000000000000000000000000000000000000 5e8b60c8fdcc292eec828a550febeab88c38f5b6 Staging Committer <committer@example.com> 1700000100 -0530	WIP on main: 42afe41 main side

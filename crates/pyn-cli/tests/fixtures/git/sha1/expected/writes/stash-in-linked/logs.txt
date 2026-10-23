@@ -1,4 +1,0 @@
-== logs/refs/stash
-0000000000000000000000000000000000000000 201f96ecc6154a7d32317494e47c4427cad59a81 Staging Committer <committer@example.com> 1700000100 -0530	WIP on feature: 4f4bd5d feature work
-== worktrees/linked/logs/HEAD
-4f4bd5dea8c2ef81d4b06b3b7008b42204bf4a8f 4f4bd5dea8c2ef81d4b06b3b7008b42204bf4a8f Staging Committer <committer@example.com> 1700000100 -0530	reset: moving to HEAD

@@ -1,4 +1,0 @@
-Merge made by the 'ort' strategy.
- ff.txt | 1 +
- 1 file changed, 1 insertion(+)
- create mode 100644 ff.txt

@@ -1,7 +1,0 @@
-commit 941cd002cda4ba2e72e1afadf90c6e9e6798ad6428d364ac7c4f1b477e25eac9
-Merge: 61e35e6 f67558d
-Author: Fixture Author <author@example.com>
-Date:   Mon Nov 20 00:13:20 2023 +0200
-
-    Merge branch 'feature'
-

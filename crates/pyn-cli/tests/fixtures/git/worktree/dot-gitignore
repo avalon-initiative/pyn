@@ -1,4 +1,0 @@
-*.out
-build/
-!keep.out
-/root-only.txt

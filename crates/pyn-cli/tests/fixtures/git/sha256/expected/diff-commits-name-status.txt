@@ -1,3 +1,0 @@
-D	docs/guide.md
-A	feature.txt
-M	src/lib.rs
