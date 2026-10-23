@@ -570,3 +570,38 @@ async fn assembly_storage_refusal_records_the_owner_limit_event() {
     }
     assert_one_storage_event(&w, sub, 3).await;
 }
+
+#[tokio::test]
+async fn completed_upload_after_reservation_expiry_records_the_owner_limit_event() {
+    use pyn_core::object::Keying;
+    use std::future::{Future, poll_fn};
+    use std::task::Poll;
+    use tokio::io::AsyncWriteExt;
+
+    let w = world(Limits::default(), 3);
+    w.repos
+        .create(&who("alice"), &UserId::new("alice"), "game", None, None)
+        .await
+        .unwrap();
+    let open = w.repos.open("alice", "game").await.unwrap();
+    let (mut writer, reader) = tokio::io::duplex(2);
+    let mut uploading =
+        Box::pin(
+            open.service
+                .upload(Box::pin(reader), Keying::Blob { len: 2 }, None, 2),
+        );
+    poll_fn(|cx| {
+        assert!(uploading.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+
+    w.clock.advance(Duration::hours(6) + Duration::seconds(1));
+    open.service.upload_blob(b"cd".to_vec()).await.unwrap();
+    let sub = subscribe(&w).await;
+    writer.write_all(b"ab").await.unwrap();
+    drop(writer);
+    let err = uploading.await.unwrap_err();
+    assert_storage_error(&err, &open.record.id.to_string(), 3, 2);
+    assert_one_storage_event(&w, sub, 3).await;
+}
