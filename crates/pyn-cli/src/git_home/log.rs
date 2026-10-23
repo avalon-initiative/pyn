@@ -470,7 +470,7 @@ pub(super) fn log(
         style,
         now: chrono::Utc::now().timestamp(),
         decorations: &decorated,
-        abbreviations: Some(&abbreviations),
+        abbreviations: &crate::commit_format::IdFormat::Git(abbreviations),
     };
 
     let mut walk = git

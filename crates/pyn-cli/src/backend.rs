@@ -28,11 +28,8 @@ impl std::error::Error for NeedsPynServer {}
 
 pub trait Backend {
     /// Git object-id policy; server homes keep their existing display conventions.
-    fn abbreviations(
-        &self,
-        _explicit: Option<usize>,
-    ) -> Result<Option<pyn_gitwork::Abbreviations>> {
-        Ok(None)
+    fn abbreviations(&self, _explicit: Option<usize>) -> Result<crate::commit_format::IdFormat> {
+        Ok(crate::commit_format::IdFormat::Server)
     }
 
     /// The pyn server connection for a feature only a pyn server provides, such as locks, policy or audit.

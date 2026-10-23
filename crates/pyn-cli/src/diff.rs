@@ -196,11 +196,11 @@ fn contents(
     Ok(Contents { old, new, binary })
 }
 
-fn abbrev(blob: Option<&Blob>, abbreviations: Option<&pyn_gitwork::Abbreviations>) -> String {
-    match abbreviations {
-        Some(a) => blob.map_or_else(|| a.short_null(), |b| a.short_hex(&b.hash)),
-        None => blob.map_or_else(|| "0000000".to_string(), |b| b.hash[..7].to_string()),
-    }
+fn abbrev(blob: Option<&Blob>, abbreviations: &crate::commit_format::IdFormat) -> String {
+    blob.map_or_else(
+        || abbreviations.short_null(),
+        |b| abbreviations.short_hex(&b.hash),
+    )
 }
 
 fn patch(
@@ -209,7 +209,7 @@ fn patch(
     new: Option<&Blob>,
     c: &Contents,
     format: &Format,
-    abbreviations: Option<&pyn_gitwork::Abbreviations>,
+    abbreviations: &crate::commit_format::IdFormat,
 ) -> String {
     let mut out = format!("diff --git a/{path} b/{path}\n");
     let mut tail = String::new();
@@ -564,7 +564,7 @@ pub fn compare(
                 }
                 differs = true;
                 if format.kind == Kind::Patch {
-                    out.push_str(&patch(path, a, b, &c, format, abbreviations.as_ref()));
+                    out.push_str(&patch(path, a, b, &c, format, &abbreviations));
                     continue;
                 }
                 if format.kind == Kind::Check {

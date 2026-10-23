@@ -22,7 +22,7 @@ const EXCLUDE_LINE: &str = ".pyn/";
 
 /// Runs `command` on a git repository, or refuses it with the home that provides it.
 pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
-    // Validate before writes; renderers still build fresh contexts after object changes.
+    // Validate before writes; this repository caches the configured/default length.
     git.repo.abbreviation_len(None)?;
     let server_only = |feature: &str| -> Result<()> {
         match git.pyn_server(feature) {
@@ -689,7 +689,7 @@ fn show(
         style,
         now: chrono::Utc::now().timestamp(),
         decorations: &names,
-        abbreviations: Some(&abbreviations),
+        abbreviations: &crate::commit_format::IdFormat::Git(abbreviations),
     };
     let mut out = render(&pretty, &ctx, &id, &c);
     out.push_str(pretty.terminator());

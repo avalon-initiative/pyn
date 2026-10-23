@@ -13,6 +13,35 @@ use crate::time;
 /// The server renderer retains its existing abbreviation width.
 const ABBREV: usize = 7;
 
+/// Object-id rendering conventions selected by the repository's home.
+pub enum IdFormat {
+    Server,
+    Git(pyn_gitwork::Abbreviations),
+}
+
+impl IdFormat {
+    pub fn short(&self, id: &ObjectId) -> String {
+        match self {
+            Self::Server => id.to_hex()[..ABBREV].to_string(),
+            Self::Git(a) => a.short(id),
+        }
+    }
+
+    pub fn short_hex(&self, hex: &str) -> String {
+        match self {
+            Self::Server => hex[..ABBREV].to_string(),
+            Self::Git(a) => a.short_hex(hex),
+        }
+    }
+
+    pub fn short_null(&self) -> String {
+        match self {
+            Self::Server => "0".repeat(ABBREV),
+            Self::Git(a) => a.short_null(),
+        }
+    }
+}
+
 /// The format options `log` and `show` share.
 #[derive(clap::Args, Debug, Default)]
 pub struct FormatArgs {
@@ -174,7 +203,7 @@ pub fn render_api(r: &Rendering, c: &api::Commit) -> Result<String> {
         style: r.style,
         now: chrono::Utc::now().timestamp(),
         decorations: &none,
-        abbreviations: None,
+        abbreviations: &IdFormat::Server,
     };
     Ok(format!(
         "{}{}",
@@ -372,13 +401,12 @@ pub struct Context<'a> {
     pub style: DateStyle,
     pub now: i64,
     pub decorations: &'a Decorations,
-    pub abbreviations: Option<&'a pyn_gitwork::Abbreviations>,
+    pub abbreviations: &'a IdFormat,
 }
 
 impl Context<'_> {
     fn short(&self, id: &ObjectId) -> String {
-        self.abbreviations
-            .map_or_else(|| id.to_hex()[..ABBREV].to_string(), |a| a.short(id))
+        self.abbreviations.short(id)
     }
 }
 

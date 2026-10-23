@@ -112,6 +112,35 @@ impl ObjectDb {
         Ok(())
     }
 
+    /// Extends a minimum of at least two hex digits using pack-index searches and one loose fan-out read per store.
+    pub fn abbreviation_len(&self, id: &ObjectId, minimum: usize) -> usize {
+        let full = self.algorithm.digest_len() * 2;
+        let mut len = minimum.min(full);
+        if len == full {
+            return full;
+        }
+        for pack in self.packs() {
+            len = pack.abbreviation_len(id, len);
+        }
+        let hex = id.to_hex();
+        let dir = self.dir.join(&hex[..2]);
+        if let Ok(entries) = fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let other = format!("{}{}", &hex[..2], entry.file_name().to_string_lossy());
+                if let Ok(other) = ObjectId::from_hex(self.algorithm, &other) {
+                    len = len.max(crate::pack::distinguishing_len(
+                        id.as_bytes(),
+                        other.as_bytes(),
+                    ));
+                }
+            }
+        }
+        for alternate in &self.alternates {
+            len = alternate.abbreviation_len(id, len);
+        }
+        len
+    }
+
     /// Git estimates size from packed objects, counting each canonical directory once and distinct packs separately.
     pub fn approximate_object_count(&self) -> Result<usize> {
         self.count_packed_objects(&mut HashSet::new())

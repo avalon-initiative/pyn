@@ -522,6 +522,7 @@ struct Round<'a> {
     opts: &'a Opts,
     shown_url: String,
     abbrev: pyn_gitwork::Abbreviations,
+    width: usize,
 }
 
 impl Round<'_> {
@@ -579,7 +580,7 @@ impl Round<'_> {
         if !std::mem::replace(header, true) {
             eprintln!("To {}", self.shown_url);
         }
-        let width = 2 * self.abbrev.minimum_len() + 3;
+        let width = self.width;
         let names = match &e.src {
             Some(s) => format!("{} -> {}", pretty(s), pretty(&e.name)),
             None => pretty(&e.name).to_owned(),
@@ -750,6 +751,7 @@ fn push_one(
         opts,
         shown_url: anonymize(&conn.display),
         abbrev: git.repo.abbreviations(None)?,
+        width: 2 * git.repo.abbreviation_len(None)? + 3,
     };
     if opts.verbosity > 0 {
         eprintln!("Pushing to {}", round.shown_url);

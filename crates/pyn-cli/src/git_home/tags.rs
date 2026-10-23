@@ -12,8 +12,6 @@ use super::refwrite::TAGS;
 use super::signing::{SignFlag, signer_for};
 use super::stage::{clean_message, identity};
 
-const ABBREV: usize = 7;
-
 /// Create, list and delete tags. On a pyn server they live in the local store and are never pushed.
 #[derive(Debug, Args)]
 pub struct TagArgs {
@@ -72,10 +70,6 @@ impl TagArgs {
     }
 }
 
-pub(crate) fn short(id: &ObjectId) -> String {
-    id.to_hex()[..ABBREV].to_string()
-}
-
 pub(crate) fn tag_ref(name: &str) -> String {
     format!("{TAGS}{name}")
 }
@@ -97,7 +91,7 @@ pub(crate) fn list(repo: &Repo, patterns: &[String]) -> Result<()> {
 pub(crate) fn delete(
     repo: &Repo,
     names: &[String],
-    abbreviations: Option<&pyn_gitwork::Abbreviations>,
+    abbreviations: &crate::commit_format::IdFormat,
 ) -> Result<()> {
     let mut failed = false;
     for name in names {
@@ -114,10 +108,7 @@ pub(crate) fn delete(
         };
         repo.refs().delete(&full, Expect::Id(id))?;
         repo.refs().write_reflog(&full, &[])?;
-        println!(
-            "Deleted tag '{name}' (was {})",
-            abbreviations.map_or_else(|| short(&id), |a| a.short(&id))
-        );
+        println!("Deleted tag '{name}' (was {})", abbreviations.short(&id));
     }
     if failed {
         std::process::exit(1);
@@ -232,7 +223,11 @@ fn create(git: &GitHome, args: &TagArgs, name: &str, target: Option<&str>) -> Re
 pub fn tag(git: &GitHome, args: TagArgs) -> Result<()> {
     args.check_modes();
     if args.delete {
-        return delete(&git.repo, &args.names, Some(&git.repo.abbreviations(None)?));
+        return delete(
+            &git.repo,
+            &args.names,
+            &crate::commit_format::IdFormat::Git(git.repo.abbreviations(None)?),
+        );
     }
     if args.list || args.names.is_empty() {
         return list(&git.repo, &args.names);
