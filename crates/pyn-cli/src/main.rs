@@ -16,6 +16,7 @@ mod diff;
 mod diffstat;
 mod git_home;
 mod http_transport;
+mod init_pyn;
 mod limits;
 mod local_commit;
 mod local_merge;
@@ -174,8 +175,8 @@ enum Command {
     LsRemote(ls_remote::LsRemoteArgs),
     /// Show what differs between this workspace and the server.
     Status(short_status::StatusArgs),
-    /// Set up pyn in an existing git repository: hide `.pyn/` from git and create its local state folder.
-    Init,
+    /// Start a pyn repository in a folder that is not tracked yet (`pyn convert` adopts a git repository).
+    Init(init_pyn::InitArgs),
     /// Start a new repository used like git: a real `.git` written by pyn, plus pyn's own folder.
     InitGit(git_home::InitGitArgs),
     /// Adopt an existing git repository (hide `.pyn/` from git), or with `--home git` move a pyn server workspace to one, keeping its history.
@@ -1048,6 +1049,15 @@ fn run(cli: Cli) -> Result<()> {
         eprintln!("fatal: moving to a pyn server home is not built yet (#572)");
         std::process::exit(128);
     }
+    if let Command::Init(args) = &cli.command {
+        let remote = init_pyn::Remote {
+            server: cli.server.clone(),
+            repo: cli.repo.clone(),
+            token: cli.token.clone(),
+            user: cli.user.clone(),
+        };
+        return init_pyn::init(args, &cwd, remote);
+    }
     if let Command::Clone { git, .. } = &cli.command
         && let Some(flag) = git.first_given()
     {
@@ -1130,10 +1140,6 @@ fn run(cli: Cli) -> Result<()> {
         return git_home::run(cli.command, git, &cwd);
     }
     let on_git = git.is_some();
-    if matches!(cli.command, Command::Init) {
-        eprintln!("{}", unsupported::message("init"));
-        std::process::exit(1);
-    }
     if let Command::Convert(args) = &cli.command {
         let server_workspace = Workspace::discover(&cwd).is_some();
         if args.home != Some(git_home::Home::Git) || !server_workspace {
@@ -1195,19 +1201,7 @@ fn run(cli: Cli) -> Result<()> {
         None => resolve(cli.repo, mine.repo.as_ref(), yours.repo.as_ref(), None),
     };
     let base = server.trim_end_matches('/').to_string();
-    let token_on_command_line = std::env::args()
-        .skip(1)
-        .any(|a| a == "--token" || a.starts_with("--token="));
-    let cli_token = credentials::resolve_token(
-        cli.token,
-        token_on_command_line,
-        &mut std::io::stdin().lock(),
-        &mut std::io::stderr(),
-    )?;
-    let token = match cli_token {
-        Some(t) => Some(t),
-        None => credentials::load(&base)?.map(|saved| saved.token),
-    };
+    let token = credentials::token_for(cli.token, &base)?;
     if token.is_some()
         || matches!(
             cli.command,
@@ -1256,7 +1250,7 @@ fn run(cli: Cli) -> Result<()> {
 
     match cli.command {
         Command::External(_) => unreachable!("handled before run"),
-        Command::Init => {
+        Command::Init(_) => {
             unreachable!("handled before the server is consulted")
         }
         Command::InitGit(_) => unreachable!("handled before the server is consulted"),

@@ -60,12 +60,15 @@ impl InitGitArgs {
     }
 }
 
-/// Refuses a folder that a git repository or a pyn workspace already covers.
-fn refuse_tracked(target: &Path) -> Result<()> {
-    let tracked = git_root_of(target)?.is_some()
+/// Whether a git repository or a pyn workspace already covers `target`.
+pub(crate) fn is_tracked(target: &Path) -> Result<bool> {
+    Ok(git_root_of(target)?.is_some()
         || target.ancestors().any(|p| p.join(".git").exists())
-        || Workspace::discover(target).is_some();
-    if tracked {
+        || Workspace::discover(target).is_some())
+}
+
+fn refuse_tracked(target: &Path) -> Result<()> {
+    if is_tracked(target)? {
         bail!(
             "{} is already in a git repository or a pyn workspace; `pyn convert` adopts an existing repository",
             target.display()

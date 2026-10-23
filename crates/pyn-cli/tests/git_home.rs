@@ -519,93 +519,13 @@ fn every_command_leaves_the_git_directory_and_work_tree_untouched() {
 }
 
 #[test]
-fn init_hides_pyn_from_git_and_changes_nothing_else() {
-    for format in FORMATS {
-        let repo = Repo::new(format);
-        let before = snapshot(&repo.main);
-        let status_before = repo.ok(&["status"]);
-        let out = repo.ok(&["init"]);
-        assert!(out.contains("added .pyn/"), "{out}");
-        let after = snapshot(&repo.main);
-        let changed: Vec<&String> = after
-            .keys()
-            .filter(|k| before.get(*k) != after.get(*k))
-            .chain(before.keys().filter(|k| !after.contains_key(*k)))
-            .collect();
-        assert_eq!(
-            changed,
-            [
-                ".git/info/exclude",
-                ".pyn",
-                ".pyn/local_only",
-                ".pyn/local_only/repo.toml"
-            ],
-            "{format}: {changed:?}"
-        );
-        assert_eq!(
-            fs::read_to_string(repo.main.join(".git/info/exclude")).unwrap(),
-            "private/\n.pyn/\n"
-        );
-        assert_eq!(
-            repo.ok(&["status"]),
-            status_before,
-            "the .pyn folder is invisible to git"
-        );
-
-        let again = snapshot(&repo.main);
-        let out = repo.ok(&["init"]);
-        assert!(out.contains("already excluded"), "{out}");
-        assert_eq!(snapshot(&repo.main), again, "init is idempotent");
-    }
-}
-
-#[test]
-fn init_adds_a_missing_newline_and_creates_the_exclude_file() {
-    let repo = Repo::new("sha1");
-    let exclude = repo.main.join(".git/info/exclude");
-    fs::write(&exclude, "private/").unwrap();
-    repo.ok(&["init"]);
-    assert_eq!(fs::read_to_string(&exclude).unwrap(), "private/\n.pyn/\n");
-
-    fs::remove_dir_all(repo.main.join(".git/info")).unwrap();
-    fs::remove_dir_all(repo.main.join(".pyn")).unwrap();
-    repo.ok(&["init"]);
-    assert_eq!(fs::read_to_string(&exclude).unwrap(), ".pyn/\n");
-}
-
-#[test]
-fn init_leaves_an_existing_exclusion_alone() {
-    for existing in [".pyn\n", "/.pyn/\n", "# mine\n.pyn/\n"] {
-        let repo = Repo::new("sha1");
-        let exclude = repo.main.join(".git/info/exclude");
-        fs::write(&exclude, existing).unwrap();
-        assert!(repo.ok(&["init"]).contains("already excluded"));
-        assert_eq!(fs::read_to_string(&exclude).unwrap(), existing);
-    }
-}
-
-#[test]
-fn init_in_a_linked_worktree_writes_the_shared_exclude_file() {
-    let repo = Repo::new("sha1");
-    repo.ok_in(&repo.linked, &["init"]);
-    assert!(repo.linked.join(".pyn/local_only").is_dir());
-    assert!(!repo.main.join(".pyn").exists());
-    let exclude = fs::read_to_string(repo.main.join(".git/info/exclude")).unwrap();
-    assert!(exclude.contains(".pyn/"), "{exclude}");
-    assert!(
-        !repo.linked.join(".git").is_dir(),
-        "the linked .git stays a file"
-    );
-}
-
-#[test]
-fn init_follows_a_gitdir_file_to_a_separate_git_directory() {
+fn convert_follows_a_gitdir_file_to_a_separate_git_directory() {
     let repo = Repo::new("sha1");
     let moved = repo.main.parent().unwrap().join("elsewhere/store.git");
     fs::create_dir_all(moved.parent().unwrap()).unwrap();
     fs::rename(repo.main.join(".git"), &moved).unwrap();
     fs::write(repo.main.join(".git"), "gitdir: ../elsewhere/store.git\n").unwrap();
-    repo.ok(&["init"]);
+    repo.ok(&["convert"]);
     assert!(
         fs::read_to_string(moved.join("info/exclude"))
             .unwrap()
@@ -613,18 +533,6 @@ fn init_follows_a_gitdir_file_to_a_separate_git_directory() {
     );
     assert!(repo.main.join(".pyn/local_only").is_dir());
     assert!(repo.ok(&["status"]).contains("README.md"));
-}
-
-#[test]
-fn init_outside_a_git_repository_says_it_is_not_supported_yet() {
-    let tmp = tempfile::tempdir().unwrap();
-    let repo = Repo::new("sha1");
-    let out = repo.run_in(tmp.path(), &["init"]);
-    assert_eq!(out.status.code(), Some(1));
-    assert!(
-        String::from_utf8_lossy(&out.stderr)
-            .contains("'init' is a git command pyn does not support yet")
-    );
 }
 
 #[test]
@@ -670,16 +578,6 @@ fn convert_hides_pyn_from_git_and_changes_nothing_else() {
         assert!(out.contains("already excluded"), "{out}");
         assert_eq!(snapshot(&repo.main), again, "convert is idempotent");
     }
-}
-
-#[test]
-fn convert_prints_what_init_prints() {
-    let (a, b) = (Repo::new("sha1"), Repo::new("sha1"));
-    let (init, convert) = (a.ok(&["init"]), b.ok(&["convert"]));
-    assert_eq!(
-        init.replace(a.main.to_str().unwrap(), "ROOT"),
-        convert.replace(b.main.to_str().unwrap(), "ROOT")
-    );
 }
 
 #[test]
@@ -897,9 +795,9 @@ fn a_clone_made_inside_a_git_repository_is_still_a_pyn_workspace() {
 }
 
 #[test]
-fn init_records_the_git_marker_and_a_pyn_marker_turns_the_home_to_pyn() {
+fn convert_records_the_git_marker_and_a_pyn_marker_turns_the_home_to_pyn() {
     let repo = Repo::new("sha1");
-    repo.ok(&["init"]);
+    repo.ok(&["convert"]);
     let file = repo.main.join(".pyn/local_only/repo.toml");
     assert_eq!(fs::read_to_string(&file).unwrap(), "repo_tool = \"git\"\n");
     repo.ok(&["status"]);
@@ -908,8 +806,8 @@ fn init_records_the_git_marker_and_a_pyn_marker_turns_the_home_to_pyn() {
     let (_, err) = repo.fails(&["log"]);
     assert!(!err.contains("not available on a git repository"), "{err}");
     assert!(
-        repo.run_in(&repo.main, &["init"]).status.code() == Some(1),
-        "a pyn home refuses init"
+        repo.run_in(&repo.main, &["convert"]).status.code() == Some(128),
+        "a pyn home refuses convert"
     );
 
     fs::write(&file, "repo_tool = \"svn\"\n").unwrap();

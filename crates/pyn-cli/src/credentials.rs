@@ -278,6 +278,23 @@ pub fn resolve_token(
     }
 }
 
+/// The token to use against `base`: `--token` (or `-` for standard input), else the saved sign-in.
+pub fn token_for(cli_token: Option<String>, base: &str) -> Result<Option<String>> {
+    let on_command_line = std::env::args()
+        .skip(1)
+        .any(|a| a == "--token" || a.starts_with("--token="));
+    let given = resolve_token(
+        cli_token,
+        on_command_line,
+        &mut std::io::stdin().lock(),
+        &mut std::io::stderr(),
+    )?;
+    match given {
+        Some(t) => Ok(Some(t)),
+        None => Ok(load(base)?.map(|saved| saved.token)),
+    }
+}
+
 /// Asks for a new password twice.
 pub fn read_new_password(from_stdin: bool) -> Result<String> {
     let first = read_password("New password: ", from_stdin)?;
