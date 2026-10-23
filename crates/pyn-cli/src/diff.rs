@@ -52,10 +52,12 @@ pub enum Kind {
     Check,
 }
 
+#[derive(Clone)]
 pub struct Format {
     pub context: usize,
     pub kind: Kind,
     pub ignore_ws: bool,
+    pub abbrev: Option<usize>,
 }
 
 /// Revision 0 marks an entry with no per-path revision, as in a git home; it is read by its content id.
@@ -194,8 +196,11 @@ fn contents(
     Ok(Contents { old, new, binary })
 }
 
-fn abbrev(blob: Option<&Blob>) -> String {
-    blob.map_or("0000000".to_string(), |b| b.hash[..7].to_string())
+fn abbrev(blob: Option<&Blob>, abbreviations: Option<&pyn_gitwork::Abbreviations>) -> String {
+    match abbreviations {
+        Some(a) => blob.map_or_else(|| "0".repeat(a.minimum_len()), |b| a.short_hex(&b.hash)),
+        None => blob.map_or_else(|| "0000000".to_string(), |b| b.hash[..7].to_string()),
+    }
 }
 
 fn patch(
@@ -204,6 +209,7 @@ fn patch(
     new: Option<&Blob>,
     c: &Contents,
     format: &Format,
+    abbreviations: Option<&pyn_gitwork::Abbreviations>,
 ) -> String {
     let mut out = format!("diff --git a/{path} b/{path}\n");
     let mut tail = String::new();
@@ -226,7 +232,12 @@ fn patch(
         (None, None) => {}
     }
     if old.zip(new).is_none_or(|(a, b)| a.hash != b.hash) {
-        let _ = writeln!(out, "index {}..{}{tail}", abbrev(old), abbrev(new));
+        let _ = writeln!(
+            out,
+            "index {}..{}{tail}",
+            abbrev(old, abbreviations),
+            abbrev(new, abbreviations)
+        );
     }
     let (from, to) = (
         old.map_or("/dev/null".to_string(), |_| format!("a/{path}")),
@@ -520,6 +531,7 @@ pub fn compare(
     format: &Format,
     out: &mut String,
 ) -> Result<bool> {
+    let abbreviations = backend.abbreviations(format.abbrev)?;
     let paths: BTreeSet<&String> = old.keys().chain(new.keys()).collect();
     let mut stat_rows: Vec<(String, Counts)> = Vec::new();
     let mut differs = false;
@@ -552,7 +564,7 @@ pub fn compare(
                 }
                 differs = true;
                 if format.kind == Kind::Patch {
-                    out.push_str(&patch(path, a, b, &c, format));
+                    out.push_str(&patch(path, a, b, &c, format, abbreviations.as_ref()));
                     continue;
                 }
                 if format.kind == Kind::Check {
@@ -592,6 +604,7 @@ pub struct DiffParts {
     pub shortstat: bool,
     pub patch: bool,
     pub context: usize,
+    pub abbrev: Option<usize>,
 }
 
 impl DiffParts {
@@ -615,6 +628,7 @@ pub fn sections(
             context: parts.context,
             kind,
             ignore_ws: false,
+            abbrev: parts.abbrev,
         };
         differs |= compare(backend, old, new, only, &format, &mut out)?;
         Ok(out)

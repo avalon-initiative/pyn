@@ -71,6 +71,55 @@ impl ObjectDb {
         self.packs.read().expect("pack list lock").clone()
     }
 
+    /// Object ids in this store and its recursive alternates, without duplicates.
+    pub fn ids_with_prefix(&self, prefix: &str) -> Result<Vec<ObjectId>> {
+        let mut found = Vec::new();
+        self.collect_ids(prefix, &mut found)?;
+        found.sort_by_key(ObjectId::to_hex);
+        found.dedup();
+        Ok(found)
+    }
+
+    fn collect_ids(&self, prefix: &str, found: &mut Vec<ObjectId>) -> Result<()> {
+        self.rescan_packs()?;
+        for pack in self.packs() {
+            found.extend(pack.ids().filter(|id| id.to_hex().starts_with(prefix)));
+        }
+        let dirs: Vec<String> = if prefix.len() >= 2 {
+            vec![prefix[..2].to_string()]
+        } else {
+            (0..256).map(|n| format!("{n:02x}")).collect()
+        };
+        for fanout in dirs {
+            let dir = self.dir.join(&fanout);
+            if let Ok(entries) = fs::read_dir(&dir) {
+                for entry in entries {
+                    let entry = entry.map_err(io_at(&dir))?;
+                    let hex = format!("{fanout}{}", entry.file_name().to_string_lossy());
+                    if hex.starts_with(prefix)
+                        && let Ok(id) = ObjectId::from_hex(self.algorithm, &hex)
+                    {
+                        found.push(id);
+                    }
+                }
+            }
+        }
+        for alternate in &self.alternates {
+            alternate.collect_ids(prefix, found)?;
+        }
+        Ok(())
+    }
+
+    /// Git estimates repository size from packed objects, including alternates, counting pack duplicates.
+    pub fn approximate_object_count(&self) -> Result<usize> {
+        self.rescan_packs()?;
+        let mut count: usize = self.packs().iter().map(|pack| pack.len()).sum();
+        for alternate in &self.alternates {
+            count = count.saturating_add(alternate.approximate_object_count()?);
+        }
+        Ok(count)
+    }
+
     /// Picks up packs created since the last scan; returns whether any were added.
     pub(crate) fn rescan_packs(&self) -> Result<bool> {
         let pack_dir = self.dir.join("pack");

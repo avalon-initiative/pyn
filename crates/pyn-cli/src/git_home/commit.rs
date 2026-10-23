@@ -556,7 +556,7 @@ pub fn commit(git: &GitHome, opts: &CommitOptions) -> Result<()> {
     if opts.flags.quiet {
         return Ok(());
     }
-    println!("[{name}{root} {}] {first}", &id.to_hex()[..7]);
+    println!("[{name}{root} {}] {first}", git.repo.abbreviate(&id)?);
     if (author.name.as_slice(), author.email.as_slice())
         != (committer.name.as_slice(), committer.email.as_slice())
     {

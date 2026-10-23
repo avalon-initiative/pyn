@@ -10,7 +10,7 @@ use pyn_proto as api;
 
 use crate::time;
 
-/// The commit abbreviation `%h`, `%p` and `Merge:` lines use.
+/// The server renderer retains its existing abbreviation width.
 const ABBREV: usize = 7;
 
 /// The format options `log` and `show` share.
@@ -31,6 +31,12 @@ pub struct FormatArgs {
         default_missing_value = "medium"
     )]
     pretty: Option<String>,
+    /// Minimum object-id width; a bare flag uses the configured default on a git home.
+    #[arg(long, value_name = "N", num_args = 0..=1, require_equals = true, overrides_with = "no_abbrev")]
+    abbrev: Option<Option<String>>,
+    /// Show full object ids on a git home.
+    #[arg(long, overrides_with = "abbrev")]
+    no_abbrev: bool,
     /// `default`, `iso`, `iso-strict`, `rfc`, `short`, `relative`, `unix` or `raw`.
     #[arg(long, value_name = "STYLE")]
     date: Option<String>,
@@ -44,10 +50,35 @@ impl FormatArgs {
             ("--format", self.format.is_some()),
             ("--pretty", self.pretty.is_some()),
             ("--date", self.date.is_some()),
+            ("--abbrev", self.abbrev.is_some()),
+            ("--no-abbrev", self.no_abbrev),
         ]
         .into_iter()
         .find(|(_, on)| *on)
         .map(|(f, _)| f)
+    }
+
+    /// Git revision.c treats a nonnumeric --abbrev value as zero, then clamps to four.
+    pub fn abbreviation(&self) -> Option<usize> {
+        if self.no_abbrev {
+            Some(usize::MAX)
+        } else {
+            self.abbrev
+                .as_ref()
+                .and_then(|value| value.as_deref())
+                .map(|value| {
+                    value
+                        .parse::<usize>()
+                        .unwrap_or_else(|error| {
+                            if *error.kind() == std::num::IntErrorKind::PosOverflow {
+                                usize::MAX
+                            } else {
+                                0
+                            }
+                        })
+                        .max(4)
+                })
+        }
     }
 
     /// The pretty format; `medium` when none is named. `--format` and `--pretty` win over `--oneline`.
@@ -128,6 +159,7 @@ pub fn render_api(r: &Rendering, c: &api::Commit) -> Result<String> {
         style: r.style,
         now: chrono::Utc::now().timestamp(),
         decorations: &none,
+        abbreviations: None,
     };
     Ok(format!(
         "{}{}",
@@ -325,10 +357,14 @@ pub struct Context<'a> {
     pub style: DateStyle,
     pub now: i64,
     pub decorations: &'a Decorations,
+    pub abbreviations: Option<&'a pyn_gitwork::Abbreviations>,
 }
 
-fn short(id: &ObjectId) -> String {
-    id.to_hex()[..ABBREV].to_string()
+impl Context<'_> {
+    fn short(&self, id: &ObjectId) -> String {
+        self.abbreviations
+            .map_or_else(|| id.to_hex()[..ABBREV].to_string(), |a| a.short(id))
+    }
 }
 
 fn lossy(bytes: &[u8]) -> String {
@@ -392,22 +428,22 @@ fn indented(message: &[u8], first_paragraph: bool) -> String {
     out
 }
 
-fn merge_line(c: &Commit) -> String {
+fn merge_line(c: &Commit, ctx: &Context<'_>) -> String {
     if c.parents.len() < 2 {
         return String::new();
     }
-    let merged: Vec<String> = c.parents.iter().map(short).collect();
+    let merged: Vec<String> = c.parents.iter().map(|id| ctx.short(id)).collect();
     format!("Merge: {}\n", merged.join(" "))
 }
 
 /// One commit as a format prints it, without the separator or terminator between commits.
 pub fn render(pretty: &Pretty, ctx: &Context<'_>, id: &ObjectId, c: &Commit) -> String {
     let date = |who: &Signature| ctx.style.format(who, ctx.now);
-    let head = format!("commit {id}\n{}", merge_line(c));
+    let head = format!("commit {id}\n{}", merge_line(c, ctx));
     match pretty {
         Pretty::Oneline { abbrev } => {
             let (subject, _) = subject_and_body(&lossy(&c.message));
-            let name = if *abbrev { short(id) } else { id.to_hex() };
+            let name = if *abbrev { ctx.short(id) } else { id.to_hex() };
             format!("{name} {subject}")
         }
         Pretty::Short => format!(
@@ -498,11 +534,11 @@ fn placeholder(
         '%' => one("%".into()),
         'n' => one("\n".into()),
         'H' => one(id.to_hex()),
-        'h' => one(short(id)),
+        'h' => one(ctx.short(id)),
         'T' => one(c.tree.to_hex()),
-        't' => one(short(&c.tree)),
+        't' => one(ctx.short(&c.tree)),
         'P' => one(join(c.parents.iter().map(ObjectId::to_hex))),
-        'p' => one(join(c.parents.iter().map(short))),
+        'p' => one(join(c.parents.iter().map(|id| ctx.short(id)))),
         's' => one(subject_and_body(&message).0),
         'b' => one(subject_and_body(&message).1.to_string()),
         'B' => one(message),

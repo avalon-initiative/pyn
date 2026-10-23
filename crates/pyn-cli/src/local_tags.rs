@@ -46,7 +46,7 @@ pub fn run(backend: &dyn Backend, ws: Option<&Workspace>, args: TagArgs) -> Resu
     }
     let store = open(ws)?;
     if args.delete {
-        return git_home::delete_tags(store.repo(), &args.names);
+        return git_home::delete_tags(store.repo(), &args.names, None);
     }
     if args.list || args.names.is_empty() {
         return git_home::list_tags(store.repo(), &args.names);

@@ -20,7 +20,6 @@ use super::worktree::{
 use super::{GitHome, convert, path_string};
 use crate::local_reset::ResetArgs;
 
-const ABBREV: usize = 7;
 const BRANCH_STATE: [&str; 4] = ["MERGE_RR", "SQUASH_MSG", "CHERRY_PICK_HEAD", "REVERT_HEAD"];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -402,7 +401,7 @@ fn reset_logging(git: &GitHome, cwd: &Path, args: &ResetArgs, log: bool) -> Resu
         (ResetKind::Hard, Some(id)) if !unborn => {
             println!(
                 "HEAD is now at {} {}",
-                &id.to_hex()[..ABBREV],
+                git.repo.abbreviate(&id)?,
                 subject(git, id)?
             );
         }

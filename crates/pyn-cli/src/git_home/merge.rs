@@ -25,8 +25,6 @@ use crate::diff::{self, Tree};
 use crate::diffstat;
 use crate::merging::MergeArgs;
 
-const ABBREV: usize = 7;
-
 /// Set by `pyn pull -q`: the informational lines below are not printed.
 /// The reflog action when a command other than `merge` runs the merge (`pull ...`).
 pub(super) static ACTION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
@@ -60,10 +58,6 @@ const MERGE_HOOKS: [&str; 5] = [
     "post-merge",
     "post-commit",
 ];
-
-fn short(id: &ObjectId) -> String {
-    id.to_hex()[..ABBREV].to_string()
-}
 
 /// How git names what is being merged in a message: `branch 'x'`, `tag 'x'`, `commit 'x'`.
 fn describe(git: &GitHome, spec: &str) -> String {
@@ -282,7 +276,11 @@ fn fast_forward(
     };
     let new_tree = git.repo.commit(theirs)?.tree;
     if let Some(ours) = &ours {
-        say(&format!("Updating {}..{}", short(ours), short(theirs)));
+        say(&format!(
+            "Updating {}..{}",
+            git.repo.abbreviate(ours)?,
+            git.repo.abbreviate(theirs)?
+        ));
     }
     if let Err(blocked) = move_tree(git, opened, old_tree.as_ref(), Some(&new_tree), Mode::Safe)? {
         if let Some(ours) = &ours {
@@ -400,7 +398,7 @@ fn true_merge(
         theirs_tree = shift_tree(git, &ours_tree, &theirs_tree, prefix)?;
         base_tree = shift_tree(git, &ours_tree, &base_tree, prefix)?;
     }
-    let base_label = short(&base);
+    let base_label = git.repo.abbreviate(&base)?;
     let incoming =
         git.repo
             .diff_trees(Some(&base_tree), Some(&theirs_tree), &Pathspec::default())?;

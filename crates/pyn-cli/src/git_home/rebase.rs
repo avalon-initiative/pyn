@@ -21,7 +21,7 @@ use super::meld;
 use super::merge::{Landing, apply_merge, write_orig_head_as, write_state};
 use super::patch_file;
 use super::pick::{
-    Failed, Merged, Pending, Verb, git_dir, make_commit_on, merge_pick, read_id, read_text, short,
+    Failed, Merged, Pending, Verb, git_dir, make_commit_on, merge_pick, read_id, read_text,
     subject_of,
 };
 use super::rebase_merges::{self as merges, Mode as MergeMode, Range};
@@ -844,7 +844,7 @@ fn begin(git: &GitHome, plan: &Plan) -> Result<()> {
         None
     };
     if let Some(stash) = &autostash {
-        eprintln!("Created autostash: {}", short(stash));
+        eprintln!("Created autostash: {}", git.repo.abbreviate(stash)?);
     }
     let state = State {
         head_name,
@@ -866,9 +866,13 @@ fn begin(git: &GitHome, plan: &Plan) -> Result<()> {
     let original = todo::sheet(git, &state.todo, false)?;
     if plan.interactive {
         let range = if !plan.root {
-            format!("{}..{}", short(&base), short(&state.orig_head))
+            format!(
+                "{}..{}",
+                git.repo.abbreviate(&base)?,
+                git.repo.abbreviate(&state.orig_head)?
+            )
         } else {
-            short(&state.orig_head)
+            git.repo.abbreviate(&state.orig_head)?
         };
         bad_sheet = edit_sheet(git, &mut state, &range)?;
     }
@@ -1050,7 +1054,7 @@ fn dropped_report(
         .filter(|id| !kept.contains(id))
     {
         let subject = subject_of(&git.repo.commit(&id)?.message);
-        lines.push(format!(" - {} {subject}", short(&id)));
+        lines.push(format!(" - {} {subject}", git.repo.abbreviate(&id)?));
     }
     if lines.is_empty() {
         return Ok(None);
@@ -1437,7 +1441,7 @@ fn step(git: &GitHome, state: &State, item: &Item) -> Result<()> {
                 .head_commit()?
                 .ok_or_else(|| anyhow!("the rebase has no HEAD"))?;
             let subject = subject_of(&git.repo.commit(&head)?.message);
-            eprintln!("Stopped at {} ({subject})", short(&head));
+            eprintln!("Stopped at {} ({subject})", git.repo.abbreviate(&head)?);
             std::process::exit(0);
         }
         Cmd::Exec => exec(git, &item.arg),
@@ -1745,7 +1749,11 @@ fn do_merge(git: &GitHome, state: &State, item: &Item) -> Result<()> {
             .iter()
             .filter_map(|c| c.new.map(|e| (c.path.as_slice(), e.mode))),
     )?;
-    let base_label = bases.first().map_or_else(String::new, short);
+    let base_label = bases
+        .first()
+        .map(|id| git.repo.abbreviate(id))
+        .transpose()?
+        .unwrap_or_default();
     let merged = merge_trees(
         git,
         base_tree.as_ref(),
@@ -1800,7 +1808,7 @@ fn do_merge(git: &GitHome, state: &State, item: &Item) -> Result<()> {
 
 /// Lets the user reword the merge commit `HEAD` is on; an empty message stops the rebase there.
 fn amend_merge(git: &GitHome, state: &State, item: &Item, commit: &Commit) -> Result<()> {
-    let comment = rebase_comment(git, state);
+    let comment = rebase_comment(git, state)?;
     let Some(message) = editor::edit_message(git, &commit.message, &comment)? else {
         eprintln!("Aborting commit due to empty commit message.");
         return stop_merge(git, state, item, &commit.message, &[]);
@@ -1856,7 +1864,7 @@ fn stop_merge(
         state.put(git, "patch", "")?;
         write_state(git, HEAD_FILE, &format!("{id}\n"))?;
         let subject = &item.arg;
-        eprintln!("Could not apply {}... {subject}", short(&id));
+        eprintln!("Could not apply {}... {subject}", git.repo.abbreviate(&id)?);
     } else {
         eprintln!("error: could not apply {}", item.arg);
     }
@@ -1893,19 +1901,19 @@ fn commit_here(state: &State, git: &GitHome, pending: &Pending) -> Result<Object
 
 /// The message the user gives a reworded commit.
 fn reworded(git: &GitHome, state: &State, message: &[u8]) -> Result<Vec<u8>> {
-    editor::edit_message(git, message, &rebase_comment(git, state))?
+    editor::edit_message(git, message, &rebase_comment(git, state)?)?
         .ok_or_else(|| anyhow!("Aborting commit due to empty commit message."))
 }
 
 /// The `#` lines under a message in the editor: where the rebase is, as git shows it.
-fn rebase_comment(git: &GitHome, state: &State) -> String {
+fn rebase_comment(git: &GitHome, state: &State) -> Result<String> {
     let line = |item: &Item| item.line(git, true).unwrap_or_default();
     let list =
         |items: &[Item]| -> String { items.iter().map(|i| format!("#    {}", line(i))).collect() };
     let plural = |n: usize| if n == 1 { "" } else { "s" };
     let mut text = format!(
         "#\n# interactive rebase in progress; onto {}\n",
-        &state.onto.to_hex()[..7]
+        git.repo.abbreviate(&state.onto)?
     );
     let done = state.done.len();
     let from = done.saturating_sub(2);
@@ -1932,9 +1940,9 @@ fn rebase_comment(git: &GitHome, state: &State) -> String {
         .unwrap_or("HEAD");
     text.push_str(&format!(
         "# You are currently rebasing branch '{branch}' on '{}'.\n#\n",
-        &state.onto.to_hex()[..7]
+        git.repo.abbreviate(&state.onto)?
     ));
-    text
+    Ok(text)
 }
 
 /// A `squash` or `fixup`: the commit's change goes into the commit `HEAD` is on, the messages are collected, and
@@ -1999,7 +2007,7 @@ fn combined_message(git: &GitHome, state: &State, text: &str, resumed: bool) -> 
     if !resumed && let Ok(only) = std::fs::read(dir_of(git).join(meld::FIXUP)) {
         return Ok(only);
     }
-    editor::edit_message(git, text.as_bytes(), &rebase_comment(git, state))?
+    editor::edit_message(git, text.as_bytes(), &rebase_comment(git, state)?)?
         .ok_or_else(|| anyhow!("Aborting commit due to empty commit message."))
 }
 
@@ -2047,7 +2055,7 @@ fn stop_to_edit(git: &GitHome, id: &ObjectId, picked: &Commit, failed: bool) -> 
         eprintln!(
             "Stopped at {id7}...  {}",
             subject_of(&picked.message),
-            id7 = short(id)
+            id7 = git.repo.abbreviate(id)?
         );
     }
     eprintln!(
@@ -2143,7 +2151,7 @@ fn stop_with(
         eprintln!("hint: Fix the message problem, then run \"pyn rebase --continue\".");
         std::process::exit(1);
     }
-    let (id7, cmd) = (short(id), "pyn rebase");
+    let (id7, cmd) = (git.repo.abbreviate(id)?, "pyn rebase");
     eprintln!("error: could not apply {id7}... {subject}");
     eprintln!("hint: Resolve all conflicts manually, mark them as resolved with");
     eprintln!("hint: \"pyn add/rm <conflicted_files>\", then run \"{cmd} --continue\".");
@@ -2295,7 +2303,7 @@ fn cont(git: &GitHome) -> Result<()> {
         }
     } else if amending {
         if tree != head.tree {
-            let comment = rebase_comment(git, &state);
+            let comment = rebase_comment(git, &state)?;
             let Some(message) = editor::edit_message(git, &head.message, &comment)? else {
                 bail!("Aborting commit due to empty commit message.");
             };
@@ -2315,7 +2323,7 @@ fn cont(git: &GitHome) -> Result<()> {
                 (None, Some(p)) => p.message.clone(),
                 (None, None) => Vec::new(),
             };
-            let comment = rebase_comment(git, &state);
+            let comment = rebase_comment(git, &state)?;
             message = editor::edit_message(git, &message, &comment)?
                 .ok_or_else(|| anyhow!("Aborting commit due to empty commit message."))?;
             let author =

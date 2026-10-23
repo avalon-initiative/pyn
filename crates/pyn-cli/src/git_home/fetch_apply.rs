@@ -45,10 +45,6 @@ impl Settings {
     fn summary_width(&self) -> usize {
         2 * self.abbrev + 3
     }
-
-    fn short(&self, id: &ObjectId) -> String {
-        id.to_hex()[..self.abbrev].to_owned()
-    }
 }
 
 /// One output line without its leading space, in git's columns.
@@ -223,7 +219,13 @@ struct Verdict {
     rejected: bool,
 }
 
-fn verdict(git: &GitHome, s: &Settings, e: &Entry, old: Option<ObjectId>) -> Verdict {
+fn verdict(
+    git: &GitHome,
+    s: &Settings,
+    e: &Entry,
+    old: Option<ObjectId>,
+    abbreviations: &pyn_gitwork::Abbreviations,
+) -> Verdict {
     let local = e
         .local
         .as_deref()
@@ -271,7 +273,7 @@ fn verdict(git: &GitHome, s: &Settings, e: &Entry, old: Option<ObjectId>) -> Ver
         };
         return change(Change::New(message), say('*', what, None));
     };
-    let (a, b) = (s.short(&current), s.short(&updated));
+    let (a, b) = (abbreviations.short(&current), abbreviations.short(&updated));
     if git.is_ancestor(&current, &updated).unwrap_or(false) {
         change(Change::FastForward, say(' ', &format!("{a}..{b}"), None))
     } else if s.force || e.force {
@@ -289,6 +291,7 @@ pub fn store(git: &GitHome, s: &Settings, entries: &[Entry]) -> Result<bool> {
     if !s.dry_run && !s.clone {
         append_fetch_head(git, entries, &s.url)?;
     }
+    let abbreviations = git.repo.abbreviations(None)?;
     let refcol = refcol_width(git, s, entries);
     let (mut failed, mut blocked) = (false, false);
     for e in entries {
@@ -303,7 +306,7 @@ pub fn store(git: &GitHome, s: &Settings, entries: &[Entry]) -> Result<bool> {
         };
         let refs = git.repo.refs();
         let old = refs.resolve(local).ok().flatten();
-        let mut v = verdict(git, s, e, old);
+        let mut v = verdict(git, s, e, old, &abbreviations);
         if let (Some(change), false) = (&v.change, s.dry_run) {
             let expect = old.map_or(Expect::Absent, Expect::Id);
             let message = format!("{}: {}", s.action, change.message());

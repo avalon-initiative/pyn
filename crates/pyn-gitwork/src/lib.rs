@@ -1,6 +1,7 @@
 //! Read-only views of a git work tree, built on `pyn-git`: ignore rules, revisions, history, tree diffs and
 //! status. Nothing here writes to the repository or the work tree, and git is never invoked.
 
+mod abbrev;
 mod error;
 mod history;
 mod ignore;
@@ -13,6 +14,7 @@ mod status;
 mod tree;
 mod wildmatch;
 
+pub use abbrev::Abbreviations;
 pub use error::{Error, Result};
 pub use history::{Log, LogEntry};
 pub use ignore::{Ignore, Level, parse_rules};

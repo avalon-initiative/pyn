@@ -94,7 +94,11 @@ pub(crate) fn list(repo: &Repo, patterns: &[String]) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn delete(repo: &Repo, names: &[String]) -> Result<()> {
+pub(crate) fn delete(
+    repo: &Repo,
+    names: &[String],
+    abbreviations: Option<&pyn_gitwork::Abbreviations>,
+) -> Result<()> {
     let mut failed = false;
     for name in names {
         let full = tag_ref(name);
@@ -110,7 +114,10 @@ pub(crate) fn delete(repo: &Repo, names: &[String]) -> Result<()> {
         };
         repo.refs().delete(&full, Expect::Id(id))?;
         repo.refs().write_reflog(&full, &[])?;
-        println!("Deleted tag '{name}' (was {})", short(&id));
+        println!(
+            "Deleted tag '{name}' (was {})",
+            abbreviations.map_or_else(|| short(&id), |a| a.short(&id))
+        );
     }
     if failed {
         std::process::exit(1);
@@ -133,7 +140,10 @@ fn tag_log(git: &GitHome, object: &ObjectId) -> Result<String> {
         Kind::Tree => "tree".to_string(),
         Kind::Blob => "blob".to_string(),
     };
-    Ok(format!("tag: tagging {} ({what})", short(object)))
+    Ok(format!(
+        "tag: tagging {} ({what})",
+        git.repo.abbreviate(object)?
+    ))
 }
 
 /// The full ref of a tag, refusing names git refuses.
@@ -214,7 +224,7 @@ fn create(git: &GitHome, args: &TagArgs, name: &str, target: Option<&str>) -> Re
     git.repo.refs().update_checked(&full, expect, &id)?;
     git.log_ref(&full, old.as_ref(), &id, &tag_log(git, &object)?, false)?;
     if let Some(old) = old {
-        println!("Updated tag '{name}' (was {})", short(&old));
+        println!("Updated tag '{name}' (was {})", git.repo.abbreviate(&old)?);
     }
     Ok(())
 }
@@ -222,7 +232,7 @@ fn create(git: &GitHome, args: &TagArgs, name: &str, target: Option<&str>) -> Re
 pub fn tag(git: &GitHome, args: TagArgs) -> Result<()> {
     args.check_modes();
     if args.delete {
-        return delete(&git.repo, &args.names);
+        return delete(&git.repo, &args.names, Some(&git.repo.abbreviations(None)?));
     }
     if args.list || args.names.is_empty() {
         return list(&git.repo, &args.names);

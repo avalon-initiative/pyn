@@ -17,8 +17,6 @@ use super::push_plan::{
     Entry, Judge, LocalView, PlanError, Reason, Spec, Status, build, judge, ref_name_matches,
 };
 
-const DEFAULT_ABBREV: usize = 7;
-
 /// Update remote refs and the objects they need on a git remote (a git repository only).
 #[derive(Debug, Args)]
 pub struct PushArgs {
@@ -190,17 +188,6 @@ fn anonymize(url: &str) -> String {
                 anon(scheme + 3)
             }
         }
-    }
-}
-
-fn abbrev_len(git: &GitHome) -> usize {
-    let hex = git.algorithm().digest_len() * 2;
-    match git.config().get("core.abbrev") {
-        Some(v) if v.eq_ignore_ascii_case("no") => hex,
-        Some(v) => v
-            .parse::<usize>()
-            .map_or(DEFAULT_ABBREV, |n| n.clamp(4, hex)),
-        None => DEFAULT_ABBREV,
     }
 }
 
@@ -534,12 +521,12 @@ struct Round<'a> {
     target: &'a Target,
     opts: &'a Opts,
     shown_url: String,
-    abbrev: usize,
+    abbrev: pyn_gitwork::Abbreviations,
 }
 
 impl Round<'_> {
     fn short(&self, id: &ObjectId) -> String {
-        id.to_hex()[..self.abbrev].to_owned()
+        self.abbrev.short(id)
     }
 
     fn describe(&self, e: &Entry) -> (char, String, Option<String>) {
@@ -592,7 +579,7 @@ impl Round<'_> {
         if !std::mem::replace(header, true) {
             eprintln!("To {}", self.shown_url);
         }
-        let width = 2 * self.abbrev + 3;
+        let width = 2 * self.abbrev.minimum_len() + 3;
         let names = match &e.src {
             Some(s) => format!("{} -> {}", pretty(s), pretty(&e.name)),
             None => pretty(&e.name).to_owned(),
@@ -762,7 +749,7 @@ fn push_one(
         target,
         opts,
         shown_url: anonymize(&conn.display),
-        abbrev: abbrev_len(git),
+        abbrev: git.repo.abbreviations(None)?,
     };
     if opts.verbosity > 0 {
         eprintln!("Pushing to {}", round.shown_url);
