@@ -198,7 +198,7 @@ fn contents(
 
 fn abbrev(blob: Option<&Blob>, abbreviations: Option<&pyn_gitwork::Abbreviations>) -> String {
     match abbreviations {
-        Some(a) => blob.map_or_else(|| "0".repeat(a.minimum_len()), |b| a.short_hex(&b.hash)),
+        Some(a) => blob.map_or_else(|| a.short_null(), |b| a.short_hex(&b.hash)),
         None => blob.map_or_else(|| "0000000".to_string(), |b| b.hash[..7].to_string()),
     }
 }

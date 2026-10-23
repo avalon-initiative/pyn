@@ -31,7 +31,7 @@ pub(super) fn of_commit(git: &GitHome, id: &ObjectId) -> Result<String> {
     let abbreviations = git.repo.abbreviations(None)?;
     let abbrev = |entry: Option<&Entry>| {
         entry.map_or_else(
-            || "0".repeat(abbreviations.minimum_len()),
+            || abbreviations.short_null(),
             |e| abbreviations.short(&e.id),
         )
     };

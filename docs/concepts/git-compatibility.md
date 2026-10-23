@@ -304,7 +304,7 @@ server sha256` (`128`). A repository with no objects, refs or index takes the re
 `core.repositoryformatversion = 1` and `extensions.objectformat`), which git itself refuses to do outside `clone`.
 
 Differences from git, all deliberate or not yet done: `--dry-run` downloads objects like git does, but git lists auto-followed tags twice on a dry run and pyn once;
-ids are not lengthened to stay unique and do not scale with the repository's size; there is no per-object "Receiving objects" progress,
+there is no per-object "Receiving objects" progress,
 only what the server sends; local-path and `file://` remotes are refused (see [Transports and credentials](#transports-and-credentials));
 `fetch.output`, `fetch.showForcedUpdates`, `fetch.recurseSubmodules`, `fetch.writeCommitGraph`, `remote.<name>.promisor`,
 `--refmap`, `--negotiation-tip`, `--server-option`, `--stdin` and `-4`/`-6` are not read or taken; `--all` runs
@@ -504,7 +504,7 @@ What a push does, in git's order:
    `core.logAllRefUpdates`, as fetch does).
 
 Differences from git, all deliberate or not yet done: no per-object "Enumerating objects" or "Writing objects" progress, only what the
-server sends; ids are not lengthened to stay unique; `push.autoSetupRemote`, `push.negotiate`, `push.gpgSign`, `push.recurseSubmodules`,
+server sends; `push.autoSetupRemote`, `push.negotiate`, `push.gpgSign`, `push.recurseSubmodules`,
 `push.useForceIfIncludes` and `remote.<name>.receivepack` are not read; pre-push hooks are never run; `--dry-run` with `-u` prints `Would set upstream of ...`
 instead of setting anything; local-path and `file://` remotes are refused (see [Transports and credentials](#transports-and-credentials)).
 A push to a pyn server is not this command: see the push row above.
@@ -799,13 +799,19 @@ branches, remote-tracking branches, `tag: <name>` and `refs/stash` that point at
 
 On a git home, abbreviated object ids (including diff index lines) use a minimum width derived from the approximate
 packed object count, with a floor of seven. `core.abbrev=auto` or an unset value selects that default;
-`core.abbrev=<n>` selects a minimum between four and the hash's full width, and `no`, `off`, `false` or an empty value
-shows full ids. Out-of-range numeric configuration is rejected, as in git. Prefixes lengthen until unique across loose
+`core.abbrev=<n>` selects a minimum of at least four, capped at the hash's full width for rendering, and `no`, `off`,
+`false` (case-insensitive) or an explicitly empty value shows full ids. Numeric configuration accepts decimal, leading-zero
+octal and `0x` hexadecimal notation, with Git's binary `k`/`m`/`g` multipliers. Missing values, invalid numeric syntax,
+values below four and integer overflow are rejected; a valid integer above the hash width renders full ids. Prefixes lengthen until unique across loose
 objects and packs in the local store and its recursive alternates; duplicate copies of one object count only once for
 uniqueness. Abbreviated revision lookup uses the same stores. On a git home, `log` and `show` also accept
 `--abbrev[=<n>]` and `--no-abbrev`: an explicit numeric width overrides configuration and clamps to the valid range,
 while a bare `--abbrev` retains the configured default. As in git's log/show parser, `--abbrev=no` and `--abbrev=0` select
-a minimum of four; `--no-abbrev` selects full ids. These settings do not change server-home id conventions.
+a minimum of four. On a git home, repeating `--abbrev` uses its last numeric or bare occurrence. As in Git's revision parser,
+`--abbrev=<n>` accepts a signed decimal prefix (`--abbrev=12junk` selects twelve, `--abbrev=-1` full width).
+On a git home, `--no-abbrev` selects full commit ids while patch index ids keep the configured/default width;
+an explicit numeric width applies to both. On a git home, null ids in patch headers also lengthen for uniqueness.
+These settings do not change server-home id conventions.
 
 Filters apply in this order: `--author` and `--committer` (regular expressions on `Name <email>`, any of several of the same
 kind), `--grep` (on the whole message; any of several, or all with `--all-match`, or none with `--invert-grep`), `-i` for all

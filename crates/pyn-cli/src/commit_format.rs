@@ -32,7 +32,7 @@ pub struct FormatArgs {
     )]
     pretty: Option<String>,
     /// Minimum object-id width; a bare flag uses the configured default on a git home.
-    #[arg(long, value_name = "N", num_args = 0..=1, require_equals = true, overrides_with = "no_abbrev")]
+    #[arg(long, value_name = "N", num_args = 0..=1, require_equals = true, overrides_with_all = ["no_abbrev", "abbrev"])]
     abbrev: Option<Option<String>>,
     /// Show full object ids on a git home.
     #[arg(long, overrides_with = "abbrev")]
@@ -58,7 +58,7 @@ impl FormatArgs {
         .map(|(f, _)| f)
     }
 
-    /// Git revision.c treats a nonnumeric --abbrev value as zero, then clamps to four.
+    /// Git's revision parser reads a decimal prefix with strtoul, then clamps its unsigned-int width.
     pub fn abbreviation(&self) -> Option<usize> {
         if self.no_abbrev {
             Some(usize::MAX)
@@ -67,17 +67,32 @@ impl FormatArgs {
                 .as_ref()
                 .and_then(|value| value.as_deref())
                 .map(|value| {
-                    value
-                        .parse::<usize>()
-                        .unwrap_or_else(|error| {
-                            if *error.kind() == std::num::IntErrorKind::PosOverflow {
-                                usize::MAX
-                            } else {
-                                0
-                            }
-                        })
-                        .max(4)
+                    let value = value.trim_start();
+                    let (negative, value) = match value.as_bytes().first() {
+                        Some(b'-') => (true, &value[1..]),
+                        Some(b'+') => (false, &value[1..]),
+                        _ => (false, value),
+                    };
+                    let end = value.bytes().take_while(u8::is_ascii_digit).count();
+                    let n = match value[..end].parse::<u64>() {
+                        Ok(n) if negative => n.wrapping_neg(),
+                        Ok(n) => n,
+                        Err(error) if *error.kind() == std::num::IntErrorKind::PosOverflow => {
+                            u64::MAX
+                        }
+                        Err(_) => 0,
+                    };
+                    (n as u32 as usize).max(4)
                 })
+        }
+    }
+
+    /// A no-abbreviation header request leaves patch metadata at its configured default.
+    pub fn patch_abbreviation(&self) -> Option<usize> {
+        if self.no_abbrev {
+            None
+        } else {
+            self.abbreviation()
         }
     }
 

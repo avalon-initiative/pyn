@@ -669,7 +669,7 @@ fn show(
     format: &diff::Format,
 ) -> Result<()> {
     let mut format = format.clone();
-    format.abbrev = fmt.abbreviation();
+    format.abbrev = fmt.patch_abbreviation();
     let format = &format;
     let Rendering { pretty, style } = fmt.rendering()?;
     let id = match commit {

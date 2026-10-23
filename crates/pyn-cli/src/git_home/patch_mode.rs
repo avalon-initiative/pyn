@@ -268,7 +268,7 @@ fn header(
 ) -> String {
     let abbrev = |side: Option<&Side>| {
         side.map_or_else(
-            || "0".repeat(abbreviations.minimum_len()),
+            || abbreviations.short_null(),
             |s| abbreviations.short(&s.id),
         )
     };

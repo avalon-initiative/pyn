@@ -371,7 +371,7 @@ impl Filters {
 impl GitLogArgs {
     pub fn diff_parts(&self) -> DiffParts {
         DiffParts {
-            abbrev: self.fmt.abbreviation(),
+            abbrev: self.fmt.patch_abbreviation(),
             names: if self.name_only {
                 Some(Kind::NameOnly)
             } else if self.name_status {

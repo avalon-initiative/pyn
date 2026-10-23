@@ -49,34 +49,39 @@ fn same(repo: &Repo, args: &[&str]) -> String {
 fn core_abbrev_numeric_disabled_auto_and_unset_match_git() {
     // Catches ignoring each config arm, treating auto as full, and truncating disabled SHA-256 ids.
     for format in FORMATS {
-        for value in [
-            None,
-            Some("4"),
-            Some("12"),
-            Some("no"),
-            Some("off"),
-            Some("false"),
-            Some(""),
-            Some("auto"),
-            Some("AUTO"),
+        let full = if format == "sha1" { 40 } else { 64 };
+        for (value, width) in [
+            (None, 7),
+            (Some("4"), 4),
+            (Some("12"), 12),
+            (Some("999"), full),
+            (Some("012"), 10),
+            (Some("0x0c"), 12),
+            (Some("010"), 8),
+            (Some("0X0C"), 12),
+            (Some("+12"), 12),
+            (Some("+0x0c"), 12),
+            (Some("4k"), full),
+            (Some("4K"), full),
+            (Some("4m"), full),
+            (Some("1g"), full),
+            (Some("40"), 40),
+            (Some("64"), full),
+            (Some("no"), full),
+            (Some("NO"), full),
+            (Some("off"), full),
+            (Some("Off"), full),
+            (Some("false"), full),
+            (Some("FALSE"), full),
+            (Some(""), full),
+            (Some("auto"), 7),
+            (Some("AUTO"), 7),
         ] {
             let repo = Repo::new(format);
             if let Some(value) = value {
                 setting(&repo, value);
             }
             let out = same(&repo, &["log", "-n", "1", "--format=%h %t %p"]);
-            let width = match value {
-                Some("4") => 4,
-                Some("12") => 12,
-                Some("no" | "off" | "false" | "") => {
-                    if format == "sha1" {
-                        40
-                    } else {
-                        64
-                    }
-                }
-                _ => 7,
-            };
             assert_eq!(out.split_whitespace().next().unwrap().len(), width);
             same(&repo, &["show", "--format=%h %t %p", "HEAD~1"]);
             same(&repo, &["log", "-n", "1"]);
@@ -100,6 +105,13 @@ fn abbrev_flags_override_config_and_bare_retains_it_like_git() {
             ("--abbrev=", 4),
             ("--abbrev=0", 4),
             ("--abbrev=3", 4),
+            ("--abbrev=-1", if format == "sha1" { 40 } else { 64 }),
+            ("--abbrev=-0", 4),
+            ("--abbrev=+12", 12),
+            ("--abbrev=12junk", 12),
+            ("--abbrev=012", 12),
+            ("--abbrev=0x0c", 4),
+            ("--abbrev=4294967296", 4),
             ("--abbrev=999", if format == "sha1" { 40 } else { 64 }),
             (
                 "--abbrev=999999999999999999999999",
@@ -139,6 +151,9 @@ fn abbrev_flags_override_config_and_bare_retains_it_like_git() {
         assert_eq!(out.trim_end().len(), 9);
         let out = same(&repo, &["log", "-n", "1", "--format=%h", "--abbrev"]);
         assert_eq!(out.trim_end().len(), if format == "sha1" { 40 } else { 64 });
+        setting(&repo, "999");
+        let out = same(&repo, &["log", "-n", "1", "--format=%h", "--abbrev=9"]);
+        assert_eq!(out.trim_end().len(), 9);
     }
 }
 
@@ -146,10 +161,29 @@ fn abbrev_flags_override_config_and_bare_retains_it_like_git() {
 fn invalid_core_abbrev_is_rejected_even_with_an_explicit_override() {
     // Catches clamping invalid config instead of rejecting it, and skipping validation under an override.
     for format in FORMATS {
-        for value in ["3", "0", "999", "nonsense"] {
+        for value in [
+            Some("3"),
+            Some("0"),
+            Some("nonsense"),
+            Some("08"),
+            Some("12junk"),
+            Some("2147483648"),
+            Some("4g"),
+            None,
+        ] {
             let repo = Repo::new(format);
             same(&repo, &["log", "-n", "1", "--format=%h"]);
-            setting(&repo, value);
+            match value {
+                Some(value) => setting(&repo, value),
+                None => writeln!(
+                    OpenOptions::new()
+                        .append(true)
+                        .open(repo.main.join(".git/config"))
+                        .unwrap(),
+                    "\n[core]\n\tabbrev"
+                )
+                .unwrap(),
+            }
             let out = Command::new("git")
                 .args(["log", "-1", "--format=%h", "--abbrev=9"])
                 .current_dir(&repo.main)
@@ -307,8 +341,200 @@ fn packed_object_count_raises_the_default_abbreviation_above_seven() {
         let alt = alternate(&repo, "count-alternate");
         fs::rename(objects.join("pack"), alt.join("packed")).unwrap();
         fs::rename(alt.join("packed"), alt.join("pack")).unwrap();
-        link(&objects, &alt);
+        let bridge = alternate(&repo, "count-bridge");
+        link(&objects, &bridge);
+        link(&bridge, &alt);
         let out = same(&repo, &["log", "-n", "1", "--format=%h"]);
         assert_eq!(out.trim_end().len(), 8);
+    }
+}
+
+#[test]
+fn repeated_abbrev_flags_use_the_last_numeric_or_bare_value() {
+    // Kills self-conflict, first-value-wins and treating a repeated bare flag as its previous numeric value.
+    for format in FORMATS {
+        let repo = Repo::new(format);
+        setting(&repo, "12");
+        for (flags, width) in [
+            (["--abbrev=9", "--abbrev=5"], 5),
+            (["--abbrev=5", "--abbrev=9"], 9),
+            (["--abbrev=9", "--abbrev"], 12),
+            (["--abbrev", "--abbrev=9"], 9),
+            (["--abbrev", "--abbrev"], 12),
+        ] {
+            let out = same(
+                &repo,
+                &["log", "-n", "1", "--format=%h", flags[0], flags[1]],
+            );
+            assert_eq!(out.trim_end().len(), width);
+            same(
+                &repo,
+                &["show", "--format=%h", flags[0], flags[1], "HEAD~1"],
+            );
+        }
+    }
+}
+
+#[test]
+fn no_abbrev_keeps_patch_indices_at_the_configured_width() {
+    // Kills propagating the full-header sentinel as an explicit full-width patch request.
+    for format in FORMATS {
+        for value in [None, Some("12"), Some("auto")] {
+            let repo = Repo::new(format);
+            if let Some(value) = value {
+                setting(&repo, value);
+            }
+            let out = same(&repo, &["show", "--format=%h", "--no-abbrev", "HEAD~1"]);
+            assert_eq!(
+                out.lines().next().unwrap().len(),
+                if format == "sha1" { 40 } else { 64 }
+            );
+            let indices: Vec<_> = out
+                .lines()
+                .filter_map(|line| line.strip_prefix("index "))
+                .collect();
+            assert!(!indices.is_empty());
+            for index in indices {
+                for id in index.split_whitespace().next().unwrap().split("..") {
+                    assert_eq!(id.len(), if value == Some("12") { 12 } else { 7 });
+                }
+            }
+            same(
+                &repo,
+                &[
+                    "log",
+                    "-n",
+                    "1",
+                    "-p",
+                    "--format=%h",
+                    "--no-abbrev",
+                    "HEAD~1",
+                ],
+            );
+        }
+    }
+}
+
+#[test]
+fn many_loose_objects_do_not_raise_the_default_abbreviation() {
+    // Kills using total objects instead of packed objects for the size heuristic.
+    for format in FORMATS {
+        let repo = Repo::new(format);
+        assert_eq!(
+            same(&repo, &["log", "-n", "1", "--format=%h"])
+                .trim_end()
+                .len(),
+            7
+        );
+        let algorithm = pyn_object::Algorithm::from_name(format).unwrap();
+        let db = pyn_git::ObjectDb::open(&repo.main.join(".git/objects"), algorithm).unwrap();
+        for n in 0..16384 {
+            db.write(
+                pyn_object::Kind::Blob,
+                format!("loose object {n}\n").as_bytes(),
+            )
+            .unwrap();
+        }
+        let count = git(&repo, &repo.main, &["count-objects", "-v"]);
+        assert!(count.lines().any(|line| line == "in-pack: 0"), "{count}");
+        let loose: usize = count
+            .lines()
+            .find_map(|line| line.strip_prefix("count: "))
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(loose >= 16384);
+        assert_eq!(
+            same(&repo, &["log", "-n", "1", "--format=%h"])
+                .trim_end()
+                .len(),
+            7
+        );
+        setting(&repo, "auto");
+        assert_eq!(
+            same(&repo, &["log", "-n", "1", "--format=%h"])
+                .trim_end()
+                .len(),
+            7
+        );
+    }
+}
+
+fn patch_prompt_indices(repo: &Repo, program: &str) -> Vec<String> {
+    let mut child = Command::new(program)
+        .args(["add", "-p", "--", "README.md"])
+        .current_dir(&repo.main)
+        .env("HOME", &repo.home)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("PYN_SERVER")
+        .env_remove("PYN_REPO")
+        .env_remove("PYN_DIR")
+        .env("PYN_CONFIG_DIR", repo.home.join("pyn-config"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(b"q\n").unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout)
+        .unwrap()
+        .lines()
+        .filter(|line| line.starts_with("index "))
+        .map(str::to_string)
+        .collect()
+}
+
+#[test]
+fn patch_editor_headers_honor_the_nondefault_width() {
+    // Kills a patch-mode header that still uses seven despite the configured twelve.
+    for format in FORMATS {
+        let repo = Repo::new(format);
+        setting(&repo, "12");
+        let expected = patch_prompt_indices(&repo, "git");
+        assert!(!expected.is_empty());
+        assert_eq!(
+            patch_prompt_indices(&repo, env!("CARGO_BIN_EXE_pyn")),
+            expected
+        );
+        for line in expected {
+            assert!(
+                line.split_whitespace()
+                    .nth(1)
+                    .unwrap()
+                    .split("..")
+                    .all(|id| id.len() == 12)
+            );
+        }
+    }
+}
+
+#[test]
+fn null_ids_extend_for_zero_prefix_collisions_in_diff_and_patch_editor_headers() {
+    // Kills minimum-width zero repetition in normal diffs and interactive patch headers.
+    for format in FORMATS {
+        let repo = Repo::new(format);
+        setting(&repo, "4");
+        assert!(same(&repo, &["show", "--format=%h", "HEAD~1"]).contains("..0000\n"));
+        common::gitfix::write_zero_prefix_blob(&repo.main, format);
+        assert!(same(&repo, &["show", "--format=%h", "HEAD~1"]).contains("..00000\n"));
+        assert!(same(&repo, &["diff", "HEAD~2", "HEAD~1"]).contains("..00000\n"));
+        fs::remove_file(repo.main.join("README.md")).unwrap();
+        let expected = patch_prompt_indices(&repo, "git");
+        assert!(!expected.is_empty());
+        assert!(
+            expected.iter().any(|line| line.ends_with("..00000")),
+            "{expected:?}"
+        );
+        assert_eq!(
+            patch_prompt_indices(&repo, env!("CARGO_BIN_EXE_pyn")),
+            expected
+        );
     }
 }
