@@ -194,26 +194,6 @@ const DIVERGENT: &[(&str, &str)] = &[
         "gap: reports a pathspec miss (1), git says invalid reference (128)",
     ),
     (
-        "Dirty: diff nosuchrev",
-        "gap: unknown revision is ignored, prints nothing and exits 0 (git 128)",
-    ),
-    (
-        "Dirty: diff nosuchrev --",
-        "gap: unknown revision is ignored, prints nothing and exits 0 (git 128)",
-    ),
-    (
-        "Dirty: diff --cached nosuchrev",
-        "gap: unknown revision is ignored, prints nothing and exits 0 (git 128)",
-    ),
-    (
-        "Dirty: diff HEAD nosuchrev",
-        "gap: unknown revision is ignored, prints nothing and exits 0 (git 128)",
-    ),
-    (
-        "Dirty: diff nosuchpath",
-        "gap: unknown revision or path is ignored, prints nothing and exits 0 (git 128)",
-    ),
-    (
         "Outside: diff",
         "gap: outside a repository asks for a server (128), git prints --no-index usage (129)",
     ),

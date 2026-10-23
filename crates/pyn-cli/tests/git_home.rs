@@ -215,6 +215,88 @@ fn a_name_that_is_a_revision_and_a_file_is_ambiguous() {
 }
 
 #[test]
+fn diff_refuses_an_argument_that_is_neither_a_revision_nor_a_path() {
+    let repo = Repo::new("sha1");
+    for (args, named) in [
+        (vec!["diff", "nosuchrev"], "ambiguous argument 'nosuchrev'"),
+        (
+            vec!["diff", "nosuchpath"],
+            "ambiguous argument 'nosuchpath'",
+        ),
+        (
+            vec!["diff", "HEAD", "nosuchrev"],
+            "ambiguous argument 'nosuchrev'",
+        ),
+        (
+            vec!["diff", "--cached", "nosuchrev"],
+            "ambiguous argument 'nosuchrev'",
+        ),
+        (
+            vec!["diff", "nosuchrev..HEAD"],
+            "ambiguous argument 'nosuchrev..HEAD'",
+        ),
+        (
+            vec!["diff", "README.md", "nosuchx"],
+            "nosuchx: no such path",
+        ),
+        (vec!["diff", "nosuchrev", "--"], "bad revision 'nosuchrev'"),
+        (
+            vec!["diff", "HEAD", "nosuchrev", "--"],
+            "bad revision 'nosuchrev'",
+        ),
+    ] {
+        let out = repo.run_in(&repo.main, &args);
+        assert_eq!(out.status.code(), Some(128), "{args:?}");
+        assert!(out.stdout.is_empty(), "{args:?}");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            err.starts_with("fatal: ") && err.contains(named),
+            "{args:?}: {err}"
+        );
+    }
+}
+
+#[test]
+fn diff_still_takes_every_valid_form_of_argument() {
+    let repo = Repo::new("sha1");
+    for args in [
+        vec!["diff", "HEAD", "HEAD~1"],
+        vec!["diff", "HEAD~3..HEAD~2"],
+        vec!["diff", "--cached", "HEAD"],
+        vec!["diff", "README.md"],
+        vec!["diff", "HEAD", "README.md"],
+        vec!["diff", "HEAD", "--", "README.md"],
+        vec!["diff", "--", "nosuchpath"],
+        vec!["diff", "HEAD", "--", "nosuchpath"],
+    ] {
+        let out = repo.run_in(&repo.main, &args);
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let out = repo.ok_in(&repo.main.join("src"), &["diff", "HEAD", "lib.rs"]);
+    assert!(
+        out.starts_with("diff --git a/src/lib.rs b/src/lib.rs\n"),
+        "{out}"
+    );
+}
+
+#[test]
+fn diff_names_a_deleted_file_after_the_separator() {
+    let repo = Repo::new("sha1");
+    fs::remove_file(repo.main.join("src/lib.rs")).unwrap();
+    let out = repo.ok(&["diff", "--", "src/lib.rs"]);
+    assert!(out.contains("deleted file mode"), "{out}");
+    let out = repo.ok(&["diff", "HEAD", "--", "src/lib.rs"]);
+    assert!(out.contains("deleted file mode"), "{out}");
+    let (code, err) = repo.fails(&["diff", "src/lib.rs"]);
+    assert_eq!(code, 128);
+    assert!(err.contains("ambiguous argument 'src/lib.rs'"), "{err}");
+}
+
+#[test]
 fn ignore_rules_come_from_every_source() {
     let repo = Repo::new("sha1");
     let before = repo.ok(&["status"]);

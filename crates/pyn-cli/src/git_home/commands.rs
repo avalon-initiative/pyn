@@ -510,6 +510,30 @@ fn split_revisions(
     Ok((revs, rest.to_vec()))
 }
 
+/// Arguments left after the revisions must be existing paths, or follow `--`; git refuses the rest.
+fn check_loose(cwd: &Path, loose: &[String], separated: bool) -> Result<()> {
+    if separated {
+        if let Some(bad) = loose.first() {
+            bail!("bad revision '{bad}'");
+        }
+        return Ok(());
+    }
+    for (i, arg) in loose.iter().enumerate() {
+        if arg.starts_with(':') || std::fs::symlink_metadata(cwd.join(arg)).is_ok() {
+            continue;
+        }
+        if i > 0 {
+            bail!("{arg}: no such path in the working tree.");
+        }
+        bail!(
+            "ambiguous argument '{arg}': unknown revision or path not in the working tree.\n\
+             Use '--' to separate paths from revisions, like this:\n\
+             'git <command> [<revision>...] -- [<file>...]'"
+        );
+    }
+    Ok(())
+}
+
 pub(super) fn repo_paths(git: &GitHome, cwd: &Path, paths: &[String]) -> Result<Vec<String>> {
     paths
         .iter()
@@ -527,7 +551,9 @@ fn diff(
     quiet: bool,
     cached: bool,
 ) -> Result<bool> {
-    let (revs, loose) = split_revisions(git, cwd, args, !paths.is_empty())?;
+    let separated = !paths.is_empty() || std::env::args_os().any(|a| a == "--");
+    let (revs, loose) = split_revisions(git, cwd, args, separated)?;
+    check_loose(cwd, &loose, separated)?;
     let only = repo_paths(git, cwd, &[loose.as_slice(), paths].concat())?;
     let spec = Pathspec::new(only.iter().map(|p| p.as_bytes().to_vec()));
     let repo = &git.repo;
