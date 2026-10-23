@@ -178,8 +178,8 @@ enum Command {
     Init,
     /// Start a new repository used like git: a real `.git` written by pyn, plus pyn's own folder.
     InitGit(git_home::InitGitArgs),
-    /// Adopt an existing git repository: hide `.pyn/` from git and create its local state folder.
-    Convert,
+    /// Adopt an existing git repository (hide `.pyn/` from git), or with `--home git` move a pyn server workspace to one, keeping its history.
+    Convert(git_home::ConvertArgs),
     /// Fetch new and newer files; files with local changes are left alone.
     Update {
         /// Only these paths; everything if omitted.
@@ -1042,6 +1042,12 @@ fn run(cli: Cli) -> Result<()> {
     if let Command::InitGit(args) = &cli.command {
         return git_home::init_git(args, &cwd);
     }
+    if let Command::Convert(args) = &cli.command
+        && args.home == Some(git_home::Home::Pyn)
+    {
+        eprintln!("fatal: moving to a pyn server home is not built yet (#572)");
+        std::process::exit(128);
+    }
     if let Command::Clone { git, .. } = &cli.command
         && let Some(flag) = git.first_given()
     {
@@ -1128,11 +1134,20 @@ fn run(cli: Cli) -> Result<()> {
         eprintln!("{}", unsupported::message("init"));
         std::process::exit(1);
     }
-    if matches!(cli.command, Command::Convert) {
-        eprintln!(
-            "fatal: `pyn convert` adopts an existing git repository, and this is not one (or any of the parent directories): .git"
-        );
-        std::process::exit(128);
+    if let Command::Convert(args) = &cli.command {
+        let server_workspace = Workspace::discover(&cwd).is_some();
+        if args.home != Some(git_home::Home::Git) || !server_workspace {
+            if args.home == Some(git_home::Home::Git) {
+                eprintln!(
+                    "fatal: `pyn convert --home git` moves a pyn server workspace to a git repository, and this is not one"
+                );
+            } else {
+                eprintln!(
+                    "fatal: `pyn convert` adopts an existing git repository, and this is not one (or any of the parent directories): .git"
+                );
+            }
+            std::process::exit(128);
+        }
     }
     let ws = if on_git {
         None
@@ -1241,10 +1256,11 @@ fn run(cli: Cli) -> Result<()> {
 
     match cli.command {
         Command::External(_) => unreachable!("handled before run"),
-        Command::Init | Command::Convert => {
+        Command::Init => {
             unreachable!("handled before the server is consulted")
         }
         Command::InitGit(_) => unreachable!("handled before the server is consulted"),
+        Command::Convert(args) => git_home::to_git(&backend, in_workspace("convert")?, &args)?,
         Command::LsRemote(_) => unreachable!("handled before the server is consulted"),
         Command::Login {
             username,

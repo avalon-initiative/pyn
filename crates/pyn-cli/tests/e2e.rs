@@ -396,7 +396,7 @@ fn pyn_in_a_plain_git_repository_behaves_as_git_and_refuses_server_commands() {
         assert_eq!(code, 128, "{args:?}: {err}");
         assert!(
             err.contains(&format!(
-                "`pyn {}` needs a pyn server, and this repository is a git repository; `pyn convert` moves it to a pyn server",
+                "`pyn {}` needs a pyn server, and this repository is a git repository; `pyn convert --home pyn` will move it to one (not built yet, #572)",
                 args[0]
             )),
             "{args:?}: {err}"

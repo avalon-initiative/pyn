@@ -74,7 +74,7 @@ fn decode(data: &str, what: &str) -> Result<Vec<u8>> {
 }
 
 /// The body of an object the server sent, only if it hashes to the id it came with.
-fn verified(kind: Kind, id: &str, data: &str) -> Result<(ObjectId, Vec<u8>)> {
+pub(crate) fn verified(kind: Kind, id: &str, data: &str) -> Result<(ObjectId, Vec<u8>)> {
     let wanted = parse_id(id)?;
     let body = decode(data, &format!("{} {id}", kind.name()))?;
     if hash_object(ALGORITHM, kind, &body)? != wanted {

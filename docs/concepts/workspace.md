@@ -59,7 +59,7 @@ repo_tool = "git"
 ```
 
 It says which tool the checkout acts as. It is local to the checkout and never versioned, so a teammate's checkout of the same
-git repository is unaffected. `pyn init` in a git repository, `pyn convert` and `pyn init-git` (which also creates the `.git`, see [git compatibility](git-compatibility.md)) record `git`, and a later `pyn convert --home pyn` (#572) will set it to `pyn`, after
+git repository is unaffected. `pyn init` in a git repository, `pyn convert` and `pyn init-git` (which also creates the `.git`, see [git compatibility](git-compatibility.md)) record `git`, and `pyn convert --home git` writes it when it moves a pyn server workspace to a git home, and a later `pyn convert --home pyn` (#572) will set it to `pyn`, after
 which pyn's configs and server features apply even though a `.git` remains. A repository created or cloned from a pyn server
 needs no marker: absence means `pyn`. A present marker wins over inferring the home from `.git` and the clone's state files,
 and an unknown value is an error. The nearest folder that makes a claim decides; the full rule is in
