@@ -262,18 +262,6 @@ const DIVERGENT: &[(&str, &str)] = &[
         "gap: extra argument is 129 from the parser, git 1",
     ),
     (
-        "Dirty: tag -f",
-        "gap: bare `tag -f` lists the tags and exits 0, git is a usage error (129)",
-    ),
-    (
-        "Dirty: tag -l -d v1",
-        "gap: `-l` with `-d` lists the tags and exits 0, git is a usage error (129)",
-    ),
-    (
-        "Dirty: tag -m msg",
-        "gap: `-m` without a tag name lists the tags and exits 0, git is a usage error (129)",
-    ),
-    (
         "Clean: merge --ff-only --no-ff clean",
         "gap: conflicting merge flags are 129, git lets the last one win",
     ),
@@ -611,6 +599,12 @@ fn groups() -> Vec<(&'static str, Vec<Case>)> {
                 case(Dirty, "tag -l -d v1"),
                 case(Dirty, "tag a b c"),
                 case(Dirty, "tag -f"),
+                case(Dirty, "tag -a"),
+                case(Dirty, "tag -s"),
+                case(Dirty, "tag -d"),
+                case(Dirty, "tag -l -f"),
+                case(Dirty, "tag -d -f v1"),
+                case(Dirty, "tag -f newtag"),
                 case(Outside, "tag"),
             ],
         ),

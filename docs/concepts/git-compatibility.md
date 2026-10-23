@@ -1409,7 +1409,7 @@ date. After an interactive rebase git leaves `REBASE_HEAD` behind in some cases;
 (a tag name tags the tag object itself); `-a`, or just `-m`, writes an annotated tag: a tag object with the tagger from
 `GIT_COMMITTER_*` or `user.name` and `user.email` (an error without them), the object's type, and the cleaned message, byte for
 byte as git writes it. There is no editor, so `-a` needs `-m`. `-f` replaces a tag (`Updated tag '<name>' (was <id>)`), `-d` deletes
-(`Deleted tag '<name>' (was <id>)`). `-s`, `-u <keyid>`, `--no-sign` and `tag.gpgsign` sign an annotated tag (see [Signing](#signing)). Tags get no reflog unless `core.logAllRefUpdates=always`.
+(`Deleted tag '<name>' (was <id>)`). `-s`, `-u <keyid>`, `--no-sign` and `tag.gpgsign` sign an annotated tag (see [Signing](#signing)). Tags get no reflog unless `core.logAllRefUpdates=always`. As in git, `-a`, `-m`, `-f`, `-s` and `-u` need a tag name and are a usage error (`129`) when listing or with `-d`, and `-l` with `-d` is too; `-d` with no name does nothing.
 
 On a pyn server workspace with `local_store` on, `pyn tag` has the same create, list (`-l`), `-a`/`-m`, `-f` and `-d` forms, with the
 tag refs kept in the local store (`refs/tags/` there). The tagger is the signed-in account (`<account>@pyn.invalid`), `HEAD` is

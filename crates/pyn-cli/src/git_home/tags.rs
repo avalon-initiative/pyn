@@ -45,6 +45,33 @@ pub struct TagArgs {
     pub(crate) no_sign: bool,
 }
 
+impl TagArgs {
+    /// Refuses the flag mixes git rejects with a usage error: `-l` with `-d`, and create-only flags when listing or deleting.
+    pub(crate) fn check_modes(&self) {
+        if self.delete && self.list {
+            crate::usage_error("`pyn tag`: -d is incompatible with -l");
+        }
+        let creating = [
+            (self.annotate, "-a"),
+            (!self.message.is_empty(), "-m"),
+            (self.force, "-f"),
+            (self.sign, "-s"),
+            (self.local_user.is_some(), "-u"),
+        ]
+        .into_iter()
+        .find_map(|(set, flag)| set.then_some(flag));
+        let Some(flag) = creating else { return };
+        if self.delete {
+            crate::usage_error(&format!("`pyn tag`: {flag} cannot be used with -d"));
+        }
+        if self.list || self.names.is_empty() {
+            crate::usage_error(&format!(
+                "`pyn tag`: {flag} needs a tag name to create; it cannot be used when listing"
+            ));
+        }
+    }
+}
+
 pub(crate) fn short(id: &ObjectId) -> String {
     id.to_hex()[..ABBREV].to_string()
 }
@@ -68,9 +95,6 @@ pub(crate) fn list(repo: &Repo, patterns: &[String]) -> Result<()> {
 }
 
 pub(crate) fn delete(repo: &Repo, names: &[String]) -> Result<()> {
-    if names.is_empty() {
-        bail!("tag name required");
-    }
     let mut failed = false;
     for name in names {
         let full = tag_ref(name);
@@ -196,6 +220,7 @@ fn create(git: &GitHome, args: &TagArgs, name: &str, target: Option<&str>) -> Re
 }
 
 pub fn tag(git: &GitHome, args: TagArgs) -> Result<()> {
+    args.check_modes();
     if args.delete {
         return delete(&git.repo, &args.names);
     }

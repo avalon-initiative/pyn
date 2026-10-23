@@ -40,6 +40,7 @@ fn resolve_target(store: &LocalStore, branch: &str, spec: &str) -> Result<pyn_ob
 }
 
 pub fn run(backend: &dyn Backend, ws: Option<&Workspace>, args: TagArgs) -> Result<()> {
+    args.check_modes();
     if args.sign || args.local_user.is_some() {
         bail!("signed tags need a git repository; a pyn server workspace has no signing key");
     }
