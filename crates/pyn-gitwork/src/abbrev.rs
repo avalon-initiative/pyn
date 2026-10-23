@@ -66,6 +66,7 @@ fn configured_length(value: &str, hex: usize) -> Result<usize> {
     };
     let len = u64::from_str_radix(digits, radix)
         .ok()
+        .filter(|_| digits.chars().all(|digit| digit.is_digit(radix)))
         .and_then(|n| n.checked_mul(multiplier))
         .filter(|n| (4..=i32::MAX as u64).contains(n))
         .ok_or_else(|| Error::Invalid(format!("invalid core.abbrev: {value}")))?;
