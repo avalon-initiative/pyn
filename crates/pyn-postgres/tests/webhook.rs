@@ -48,7 +48,7 @@ async fn independent_services_racing_a_limit_record_exactly_one_event() {
         .await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs PYN_DATABASE_URL"]
 async fn a_failed_outbox_append_does_not_consume_admission() {
     use chrono::{TimeZone, Utc};
@@ -106,7 +106,7 @@ async fn a_failed_outbox_append_does_not_consume_admission() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs PYN_DATABASE_URL"]
 async fn limit_admission_uses_the_injected_time_even_with_database_lease_time() {
     use chrono::{Duration, TimeZone, Utc};
@@ -144,7 +144,7 @@ async fn limit_admission_uses_the_injected_time_even_with_database_lease_time() 
     assert_eq!(event.created_at, clock.now());
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs PYN_DATABASE_URL"]
 async fn an_unavailable_event_store_preserves_the_limit_error() {
     use chrono::{TimeZone, Utc};
