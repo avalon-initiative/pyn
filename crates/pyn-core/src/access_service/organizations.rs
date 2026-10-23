@@ -223,11 +223,11 @@ impl AccessService {
             Some(_) => {}
         }
         let max_members = self.effective_limits(org).await?.members;
-        if !self
+        let result = self
             .store
             .add_org_member_capped(org, user, role, max_members)
-            .await?
-        {
+            .await;
+        if !self.limit_result(org, result, self.clock.now()).await? {
             return Err(PynError::AlreadyOrgMember {
                 org: org.to_string(),
                 user: user.to_string(),

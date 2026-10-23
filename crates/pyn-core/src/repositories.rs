@@ -173,6 +173,7 @@ impl Repositories {
         );
         let svc = Arc::new(
             svc.with_storage_caps(record.owner.clone(), self.access.clone())
+                .with_limit_events(record.owner.clone(), self.access.clone())
                 .with_unreferenced_cap(self.unreferenced_cap)
                 .with_merge_slots(self.merge_slots.clone()),
         );
@@ -327,7 +328,11 @@ impl Repositories {
             created_at: self.clock.now(),
         };
         let max_repos = self.access.effective_limits(owner).await?.repositories;
-        let record = self.meta.create_repo_capped(record, max_repos).await?;
+        let result = self.meta.create_repo_capped(record, max_repos).await;
+        let record = self
+            .access
+            .limit_result(owner, result, self.clock.now())
+            .await?;
         if in_org && let Err(e) = self.access.require_org_open(owner).await {
             let _ = self.meta.delete_repo(&record.id).await;
             return Err(e);

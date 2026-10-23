@@ -197,6 +197,7 @@ pub struct RepoService {
     clock: Arc<dyn Clock>,
     config: ServiceConfig,
     storage: Option<(UserId, Arc<dyn StorageCaps>)>,
+    limit_events: Option<(UserId, Arc<crate::AccessService>)>,
     unreferenced_cap: u64,
     merge_slots: Arc<tokio::sync::Semaphore>,
 }
@@ -227,6 +228,7 @@ impl RepoService {
             clock,
             config,
             storage: None,
+            limit_events: None,
             unreferenced_cap: DEFAULT_UNREFERENCED_UPLOAD_BYTES,
             merge_slots: Arc::new(tokio::sync::Semaphore::new(
                 crate::merge::default_concurrent_merges(),
@@ -244,6 +246,22 @@ impl RepoService {
     pub fn with_storage_caps(mut self, owner: UserId, caps: Arc<dyn StorageCaps>) -> Self {
         self.storage = Some((owner, caps));
         self
+    }
+
+    pub(crate) fn with_limit_events(
+        mut self,
+        owner: UserId,
+        access: Arc<crate::AccessService>,
+    ) -> Self {
+        self.limit_events = Some((owner, access));
+        self
+    }
+
+    async fn limit_result<T>(&self, result: Result<T>) -> Result<T> {
+        match &self.limit_events {
+            Some((owner, access)) => access.limit_result(owner, result, self.clock.now()).await,
+            None => result,
+        }
     }
 
     async fn record(
@@ -667,14 +685,17 @@ impl RepoService {
         }
         let now = self.clock.now();
         let lock = self
-            .meta
-            .acquire_lock(
-                &self.repo,
-                path,
-                user,
-                now,
-                now + self.config.lease,
-                self.lock_limit().max,
+            .limit_result(
+                self.meta
+                    .acquire_lock(
+                        &self.repo,
+                        path,
+                        user,
+                        now,
+                        now + self.config.lease,
+                        self.lock_limit().max,
+                    )
+                    .await,
             )
             .await?;
         self.record(
@@ -795,8 +816,11 @@ impl RepoService {
             lock_holder: lock_holder.cloned(),
         };
         let mut revs = self
-            .meta
-            .commit_changeset_on(&self.repo, branch, vec![item], now, cap)
+            .limit_result(
+                self.meta
+                    .commit_changeset_on(&self.repo, branch, vec![item], now, cap)
+                    .await,
+            )
             .await?;
         let rev = revs.remove(0);
         let mut stranded = Vec::new();
@@ -1030,8 +1054,11 @@ impl RepoService {
             });
         }
         let revs = self
-            .meta
-            .commit_changeset_on(&self.repo, branch, items, now, cap)
+            .limit_result(
+                self.meta
+                    .commit_changeset_on(&self.repo, branch, items, now, cap)
+                    .await,
+            )
             .await?;
         for rev in &revs {
             let action = if rev.deleted {

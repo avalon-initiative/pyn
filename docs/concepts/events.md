@@ -2,8 +2,8 @@
 
 pyn can tell other systems when something happens on the server: an account is approved, a repository is created, an
 owner reaches a limit. This page is the schema of those events, the JSON body of a webhook delivery. Signing and delivery are separate (decision #452), and
-[subscriptions and their secrets](webhooks.md) are administered through the API; nothing raises these events yet, so this page describes the
-contract the server will follow. The schema lives in `pyn-proto` and is part of the OpenAPI document
+[subscriptions and their secrets](webhooks.md) are administered through the API. The service layer raises `owner.limit_reached`; the other event types describe
+the contract for future raising sites. The schema lives in `pyn-proto` and is part of the OpenAPI document
 (`docs/generated/openapi.json`, schemas `Event` and `*Data`).
 
 ## Envelope
@@ -248,9 +248,12 @@ An administrator or service credential set an owner's own [limits](limits.md).
 
 ### `owner.limit_reached`
 
-An operation was refused because the owner is at one of its limits. Raised after the refusal and throttled to once per owner and limit per hour.
+An operation was refused because the owner is at one of its limits. Recorded in the webhook outbox on repository, member, storage and lock limit refusals. Each owner and limit
+is admitted at most once per hour, measured from its last recorded event using the service clock. Admission and
+outbox fan-out are atomic, including across service instances sharing Postgres. The refusal error is unchanged
+if event recording fails. Repository-scoped limits name the repository owner, including when a different user hits a lock limit.
 
-`data`: `owner`, `limit` (`repositories`, `members` or `storage_bytes`), `value` (the limit in force). It names no actor: the refused caller is not part of the event.
+`data`: `owner`, `limit` (`repositories`, `members`, `storage_bytes` or `locks`), `value` (the limit in force). It names no actor: the refused caller is not part of the event.
 
 ```json
 {

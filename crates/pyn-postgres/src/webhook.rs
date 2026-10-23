@@ -69,6 +69,43 @@ fn is_uuid(s: &str) -> bool {
         })
 }
 
+async fn append_event_in(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    event_type: &str,
+    payload: &str,
+    now: Option<DateTime<Utc>>,
+) -> Result<OutboxEvent> {
+    let row = sqlx::query(
+        "INSERT INTO webhook_events (event_type, payload, created_at)
+             VALUES ($1, $2::text::jsonb, COALESCE($3::timestamptz, now()))
+             RETURNING id, event_type, payload::text AS payload, created_at",
+    )
+    .bind(event_type)
+    .bind(payload)
+    .bind(now)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(db)?;
+    let event = OutboxEvent {
+        id: row.get("id"),
+        event_type: row.get("event_type"),
+        payload: row.get("payload"),
+        created_at: row.get("created_at"),
+    };
+    sqlx::query(
+        "INSERT INTO webhook_deliveries (subscription_id, event_id, next_attempt_at, created_at)
+             SELECT id, $1, $3, $3 FROM webhook_subscriptions
+             WHERE enabled AND (cardinality(event_types) = 0 OR $2 = ANY(event_types))",
+    )
+    .bind(event.id)
+    .bind(event_type)
+    .bind(event.created_at)
+    .execute(&mut **tx)
+    .await
+    .map_err(db)?;
+    Ok(event)
+}
+
 impl PgMetadataStore {
     async fn delivery_by_id(&self, id: &str) -> Result<Option<Delivery>> {
         sqlx::query(sqlx::AssertSqlSafe(format!(
@@ -247,36 +284,38 @@ impl WebhookStore for PgMetadataStore {
         now: DateTime<Utc>,
     ) -> Result<OutboxEvent> {
         let mut tx = self.pool.begin().await.map_err(db)?;
-        let row = sqlx::query(
-            "INSERT INTO webhook_events (event_type, payload, created_at)
-             VALUES ($1, $2::text::jsonb, COALESCE($3::timestamptz, now()))
-             RETURNING id, event_type, payload::text AS payload, created_at",
-        )
-        .bind(event_type)
-        .bind(payload)
-        .bind(self.bound_now(now))
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(db)?;
-        let event = OutboxEvent {
-            id: row.get("id"),
-            event_type: row.get("event_type"),
-            payload: row.get("payload"),
-            created_at: row.get("created_at"),
-        };
-        sqlx::query(
-            "INSERT INTO webhook_deliveries (subscription_id, event_id, next_attempt_at, created_at)
-             SELECT id, $1, $3, $3 FROM webhook_subscriptions
-             WHERE enabled AND (cardinality(event_types) = 0 OR $2 = ANY(event_types))",
-        )
-        .bind(event.id)
-        .bind(event_type)
-        .bind(event.created_at)
-        .execute(&mut *tx)
-        .await
-        .map_err(db)?;
+        let event = append_event_in(&mut tx, event_type, payload, self.bound_now(now)).await?;
         tx.commit().await.map_err(db)?;
         Ok(event)
+    }
+
+    async fn append_limit_reached(
+        &self,
+        owner: &UserId,
+        limit: &str,
+        payload: &str,
+        now: DateTime<Utc>,
+    ) -> Result<Option<OutboxEvent>> {
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        let admitted = sqlx::query(
+            "INSERT INTO webhook_limit_events (owner, limit_kind, last_event)
+             VALUES ($1, $2, $3)
+             ON CONFLICT (owner, limit_kind) DO UPDATE SET last_event = EXCLUDED.last_event
+             WHERE webhook_limit_events.last_event <= EXCLUDED.last_event - interval '1 hour'
+             RETURNING owner",
+        )
+        .bind(owner.as_str())
+        .bind(limit)
+        .bind(now)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db)?;
+        if admitted.is_none() {
+            return Ok(None);
+        }
+        let event = append_event_in(&mut tx, "owner.limit_reached", payload, Some(now)).await?;
+        tx.commit().await.map_err(db)?;
+        Ok(Some(event))
     }
 
     async fn claim_due(

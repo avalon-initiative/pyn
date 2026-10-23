@@ -291,8 +291,11 @@ impl RepoService {
         let now = self.clock.now();
         let cap = self.storage_cap().await?;
         let revs = self
-            .meta
-            .push_commits_on(&self.repo, branch, commits, &who.user, now, cap)
+            .limit_result(
+                self.meta
+                    .push_commits_on(&self.repo, branch, commits, &who.user, now, cap)
+                    .await,
+            )
             .await?;
         let mut applied = policies.into_iter();
         let mut stranded = Vec::new();

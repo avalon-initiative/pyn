@@ -8,6 +8,22 @@ use serde::{Deserialize, Serialize};
 use crate::error::{PynError, Result};
 use crate::types::UserId;
 
+pub(crate) fn event_id() -> Result<String> {
+    let mut b = [0u8; 16];
+    getrandom::fill(&mut b).map_err(|e| PynError::Storage(format!("no randomness: {e}")))?;
+    b[6] = (b[6] & 0x0f) | 0x40;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    let h = hex::encode(b);
+    Ok(format!(
+        "{}-{}-{}-{}-{}",
+        &h[..8],
+        &h[8..12],
+        &h[12..16],
+        &h[16..20],
+        &h[20..]
+    ))
+}
+
 /// Attempts made before a delivery is marked failed.
 pub const MAX_ATTEMPTS: u32 = 8;
 
@@ -275,6 +291,17 @@ pub trait WebhookStore: Send + Sync {
         payload: &str,
         now: DateTime<Utc>,
     ) -> Result<OutboxEvent>;
+
+    /// Queues `owner.limit_reached` and its deliveries unless this owner and limit were admitted
+    /// less than one hour ago. Admission and append are atomic; `now` always uses the caller's clock.
+    /// Returns `None` when suppressed, without extending the window.
+    async fn append_limit_reached(
+        &self,
+        owner: &UserId,
+        limit: &str,
+        payload: &str,
+        now: DateTime<Utc>,
+    ) -> Result<Option<OutboxEvent>>;
 
     /// Takes up to `limit` pending deliveries that are due, unleased and of enabled subscriptions, leasing them for
     /// `lease`. No row goes to two concurrent claimers; a lapsed lease makes the row claimable again.

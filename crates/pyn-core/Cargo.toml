@@ -22,7 +22,9 @@ pyn-chunk = { version = "0.0.1", path = "../pyn-chunk" }
 pyn-hash = { version = "0.0.1", path = "../pyn-hash" }
 pyn-merge = { version = "0.0.1", path = "../pyn-merge" }
 pyn-object = { version = "0.0.1", path = "../pyn-object" }
+pyn-proto = { version = "0.0.1", path = "../pyn-proto" }
 serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
 sha2 = "0.11.0"
 ssh-key = { version = "0.6.7", features = ["ed25519", "p256", "p384", "p521", "rsa"] }
 thiserror = "2.0.21"

@@ -940,20 +940,23 @@ impl RepoService {
         }
         let cap = self.storage_cap().await?;
         let written = self
-            .meta
-            .commit_merge_on(
-                &self.repo,
-                &target.name,
-                MergeWrite {
-                    expected_head: head,
-                    other: plan.source,
-                    adopted,
-                    items,
-                    author: who.person(),
-                    message,
-                },
-                now,
-                cap,
+            .limit_result(
+                self.meta
+                    .commit_merge_on(
+                        &self.repo,
+                        &target.name,
+                        MergeWrite {
+                            expected_head: head,
+                            other: plan.source,
+                            adopted,
+                            items,
+                            author: who.person(),
+                            message,
+                        },
+                        now,
+                        cap,
+                    )
+                    .await,
             )
             .await?;
         self.record_repo(

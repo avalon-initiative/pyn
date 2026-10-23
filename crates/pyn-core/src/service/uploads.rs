@@ -33,13 +33,16 @@ impl RepoService {
         expect: u64,
     ) -> Result<ObjectId> {
         let hold = self
-            .meta
-            .reserve_upload(
-                &self.repo,
-                expect,
-                self.unreferenced_cap,
-                self.clock.now(),
-                UPLOAD_HOLD_SECS,
+            .limit_result(
+                self.meta
+                    .reserve_upload(
+                        &self.repo,
+                        expect,
+                        self.unreferenced_cap,
+                        self.clock.now(),
+                        UPLOAD_HOLD_SECS,
+                    )
+                    .await,
             )
             .await?;
         let guard = ReservationGuard::new(self.meta.clone(), self.repo.clone(), hold);
@@ -73,9 +76,12 @@ impl RepoService {
                 actual: size,
             });
         }
-        self.meta
-            .record_upload(&self.repo, id, size, self.unreferenced_cap)
-            .await
+        self.limit_result(
+            self.meta
+                .record_upload(&self.repo, id, size, self.unreferenced_cap)
+                .await,
+        )
+        .await
     }
 
     /// Joins chunks this repository knows into one object and records it; an unknown chunk is `ObjectMissing`.
@@ -85,9 +91,12 @@ impl RepoService {
         }
         let id = self.objects.assemble(chunks, max).await?;
         let size = self.stored_size(&id).await?;
-        self.meta
-            .record_assembled(&self.repo, &id, size, chunks, self.unreferenced_cap)
-            .await?;
+        self.limit_result(
+            self.meta
+                .record_assembled(&self.repo, &id, size, chunks, self.unreferenced_cap)
+                .await,
+        )
+        .await?;
         Ok(id)
     }
 
