@@ -401,7 +401,7 @@ fn reset_logging(git: &GitHome, cwd: &Path, args: &ResetArgs, log: bool) -> Resu
         (ResetKind::Hard, Some(id)) if !unborn => {
             println!(
                 "HEAD is now at {} {}",
-                git.repo.abbreviate(&id)?,
+                git.repo.abbreviate(id)?,
                 subject(git, id)?
             );
         }
