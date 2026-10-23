@@ -50,7 +50,9 @@ fn world(limits: Limits, upload_cap: u64) -> World {
     );
     let repos = Repositories::new(
         meta,
-        Arc::new(MemoryObjectStore::new()),
+        Arc::new(pyn_core::ChunkedStore::new(Arc::new(
+            MemoryObjectStore::new(),
+        ))),
         audit,
         access.clone(),
         clock.clone(),
@@ -300,4 +302,271 @@ async fn independent_services_racing_a_limit_record_exactly_one_event() {
         [hooks.clone(), hooks],
     )
     .await;
+}
+
+fn assert_storage_error(err: &PynError, owner: &str, limit: u64, used: u64) {
+    assert!(
+        matches!(err, PynError::StorageLimitReached { owner: actual_owner, limit: actual_limit, used: actual_used }
+        if actual_owner == owner && *actual_limit == limit && *actual_used == used),
+        "{err}"
+    );
+    assert_eq!(err.code(), "storage_limit_reached");
+    assert_eq!(
+        err.to_string(),
+        format!(
+            "storage limit reached: {owner} may store at most {limit} bytes on this server and uses {used}"
+        )
+    );
+}
+
+async fn assert_one_storage_event(w: &World, subscription: i64, limit: u64) {
+    assert_eq!(
+        deliveries(w, subscription).await,
+        1,
+        "storage refusal must queue one limit event"
+    );
+    let due = w
+        .hooks
+        .claim_due(10, Duration::minutes(1), w.clock.now())
+        .await
+        .unwrap();
+    assert_eq!(due.len(), 1);
+    assert_eq!(due[0].subscription.id, subscription);
+    assert_eq!(due[0].event.event_type, "owner.limit_reached");
+    let payload: serde_json::Value = serde_json::from_str(&due[0].event.payload).unwrap();
+    assert_eq!(payload["type"], "owner.limit_reached");
+    assert_eq!(
+        payload["data"],
+        serde_json::json!({"owner": "alice", "limit": "storage_bytes", "value": limit})
+    );
+}
+
+#[tokio::test]
+async fn push_storage_refusal_records_the_owner_limit_event() {
+    use pyn_core::commit_record::{TreeChange, tree_of};
+    use pyn_core::{FileMode, PushObjects};
+    use pyn_object::{Algorithm, Kind, Signature, hash_object};
+
+    let w = world(
+        Limits {
+            storage_bytes: Some(3),
+            ..Default::default()
+        },
+        100,
+    );
+    w.repos
+        .create(&who("alice"), &UserId::new("alice"), "game", None, None)
+        .await
+        .unwrap();
+    let open = w.repos.open("alice", "game").await.unwrap();
+    let principal = w
+        .access
+        .principal_in(&open.record.id, &who("alice"))
+        .await
+        .unwrap();
+    let blob = open.service.upload_blob(b"four".to_vec()).await.unwrap();
+    let tree = tree_of(vec![TreeChange {
+        path: RepoPath::new("file").unwrap(),
+        mode: FileMode::Regular,
+        id: blob,
+        removed: false,
+    }])
+    .unwrap();
+    let signature = Signature {
+        name: b"alice".to_vec(),
+        email: b"alice@example.test".to_vec(),
+        time: w.clock.now().timestamp(),
+        offset_minutes: 0,
+    };
+    let raw = pyn_object::Commit {
+        tree: tree.root,
+        parents: vec![],
+        author: signature.clone(),
+        committer: signature,
+        extra_headers: vec![],
+        message: b"push\n".to_vec(),
+    }
+    .encode(Algorithm::Sha256)
+    .unwrap();
+    let id = hash_object(Algorithm::Sha256, Kind::Commit, &raw).unwrap();
+    let sub = subscribe(&w).await;
+    for _ in 0..2 {
+        let err = open
+            .service
+            .push_commits(
+                &principal,
+                "main",
+                PushObjects {
+                    commits: vec![(id, raw.clone())],
+                    trees: tree.trees.clone(),
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_storage_error(&err, "alice", 3, 0);
+    }
+    assert_one_storage_event(&w, sub, 3).await;
+}
+
+#[tokio::test]
+async fn changeset_storage_refusal_records_the_owner_limit_event() {
+    use pyn_core::{ChangeEntry, FileMode};
+
+    let w = world(
+        Limits {
+            storage_bytes: Some(3),
+            ..Default::default()
+        },
+        100,
+    );
+    w.repos
+        .create(&who("alice"), &UserId::new("alice"), "game", None, None)
+        .await
+        .unwrap();
+    let open = w.repos.open("alice", "game").await.unwrap();
+    let principal = w
+        .access
+        .principal_in(&open.record.id, &who("alice"))
+        .await
+        .unwrap();
+    let a = open.service.upload_blob(b"ab".to_vec()).await.unwrap();
+    let b = open.service.upload_blob(b"cd".to_vec()).await.unwrap();
+    let sub = subscribe(&w).await;
+    for _ in 0..2 {
+        let entries = [("a", a), ("b", b)]
+            .into_iter()
+            .map(|(path, content)| ChangeEntry {
+                path: RepoPath::new(path).unwrap(),
+                content,
+                file_mode: FileMode::Regular,
+                base: None,
+            })
+            .collect();
+        let err = open
+            .service
+            .checkin_changeset(&principal, entries, "write two paths".into())
+            .await
+            .unwrap_err();
+        assert_storage_error(&err, "alice", 3, 2);
+    }
+    assert_one_storage_event(&w, sub, 3).await;
+}
+
+#[tokio::test]
+async fn merge_storage_refusal_records_the_owner_limit_event() {
+    use pyn_core::{FastForward, FileMode, LimitsChange, MergeRequest};
+
+    let w = world(Limits::default(), 100);
+    w.repos
+        .create(&who("alice"), &UserId::new("alice"), "game", None, None)
+        .await
+        .unwrap();
+    let open = w.repos.open("alice", "game").await.unwrap();
+    let principal = w
+        .access
+        .principal_in(&open.record.id, &who("alice"))
+        .await
+        .unwrap();
+    let path = RepoPath::new("file").unwrap();
+    let content = open
+        .service
+        .upload_blob(b"a\nb\nc\n".to_vec())
+        .await
+        .unwrap();
+    let base = open
+        .service
+        .checkin(&principal, &path, content, None, "base".into())
+        .await
+        .unwrap();
+    open.service
+        .create_branch(&principal, "feature", Some("main"))
+        .await
+        .unwrap();
+    for (branch, text) in [("feature", "A\nb\nc\n"), ("main", "a\nb\nC\n")] {
+        let content = open
+            .service
+            .upload_blob(text.as_bytes().to_vec())
+            .await
+            .unwrap();
+        open.service
+            .checkin_on(
+                branch,
+                &principal,
+                &path,
+                content,
+                FileMode::Regular,
+                Some(base.id),
+                "change".into(),
+            )
+            .await
+            .unwrap();
+    }
+    w.access
+        .admin_for_tests(&UserId::new("root"))
+        .await
+        .unwrap();
+    w.access
+        .set_owner_limits(
+            &who("root"),
+            &UserId::new("alice"),
+            LimitsChange {
+                repositories: None,
+                members: None,
+                storage_bytes: Some(Some(18)),
+            },
+        )
+        .await
+        .unwrap();
+    let sub = subscribe(&w).await;
+    for _ in 0..2 {
+        let err = open
+            .service
+            .merge(
+                &principal,
+                MergeRequest {
+                    source: "feature".into(),
+                    target: Some("main".into()),
+                    fast_forward: FastForward::Never,
+                    message: None,
+                    expect_target: None,
+                    resolutions: vec![],
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_storage_error(&err, "alice", 18, 18);
+    }
+    assert_one_storage_event(&w, sub, 18).await;
+}
+
+#[tokio::test]
+async fn assembly_storage_refusal_records_the_owner_limit_event() {
+    use pyn_core::object::Keying;
+
+    let w = world(Limits::default(), 3);
+    w.repos
+        .create(&who("alice"), &UserId::new("alice"), "game", None, None)
+        .await
+        .unwrap();
+    let open = w.repos.open("alice", "game").await.unwrap();
+    let chunk = open
+        .service
+        .upload(
+            Box::pin(std::io::Cursor::new(b"ab".to_vec())),
+            Keying::Raw,
+            None,
+            2,
+        )
+        .await
+        .unwrap();
+    let sub = subscribe(&w).await;
+    for _ in 0..2 {
+        let err = open
+            .service
+            .assemble(&[chunk, chunk], None)
+            .await
+            .unwrap_err();
+        assert_storage_error(&err, &open.record.id.to_string(), 3, 0);
+    }
+    assert_one_storage_event(&w, sub, 3).await;
 }
