@@ -502,7 +502,7 @@ fn apply(git: &GitHome, opts: &Opts, verb: Verb, id: &ObjectId) -> Result<Outcom
             write_state(git, PICK_HEAD, &format!("{id}\n"))?;
         }
         write_state(git, "MERGE_MSG", &String::from_utf8_lossy(&message))?;
-        say_empty(verb);
+        say_empty(git, verb)?;
         return Ok(Outcome::Stopped);
     }
     let made = commit_pick(
@@ -518,10 +518,12 @@ fn apply(git: &GitHome, opts: &Opts, verb: Verb, id: &ObjectId) -> Result<Outcom
     Ok(Outcome::Committed(made))
 }
 
-fn say_empty(verb: Verb) {
+fn say_empty(git: &GitHome, verb: Verb) -> Result<()> {
     let cmd = verb.command();
+    super::commands::status_table(&git.repo.status()?)?;
     eprintln!("The previous {cmd} is now empty, possibly due to conflict resolution.");
     eprintln!("pyn does not keep empty commits; drop it with 'pyn {cmd} --skip'.");
+    Ok(())
 }
 
 pub(super) struct Pending {
@@ -673,7 +675,7 @@ fn continue_pick(git: &GitHome) -> Result<()> {
                 None => write_tree(git, &pyn_git::Index::new(2))?,
             };
             if tree == ours_tree {
-                say_empty(verb);
+                say_empty(git, verb)?;
                 std::process::exit(1);
             }
             let message = match merge_message(git, false)? {

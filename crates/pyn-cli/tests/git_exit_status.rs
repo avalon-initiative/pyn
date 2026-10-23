@@ -158,22 +158,6 @@ const DIVERGENT: &[(&str, &str)] = &[
         "docs: Extras `git config`, pyn config has list/get/set only; other forms are 129",
     ),
     (
-        "Clean: cherry-pick HEAD",
-        "gap: the empty-pick notice is on stderr, git prints it on stdout",
-    ),
-    (
-        "Clean: cherry-pick -m 1 HEAD",
-        "gap: the empty-pick notice is on stderr, git prints it on stdout",
-    ),
-    (
-        "Clean: commit -m msg",
-        "gap: the nothing-to-commit notice is on stderr, git prints it on stdout (exit 1 matches)",
-    ),
-    (
-        "Dirty: rebase",
-        "gap: the no-tracking-information notice is on stderr, git prints it on stdout",
-    ),
-    (
         "Dirty: add",
         "gap: bare `add` is a usage error (129), git hints and exits 0",
     ),
@@ -252,14 +236,6 @@ const DIVERGENT: &[(&str, &str)] = &[
     (
         "Clean: merge --ff-only --no-ff clean",
         "gap: conflicting merge flags are 129, git lets the last one win",
-    ),
-    (
-        "Clean: merge --continue (after git merge conflict)",
-        "gap: the unmerged-path listing is on stderr, git prints it on stdout",
-    ),
-    (
-        "Clean: commit -m msg (after git merge conflict)",
-        "gap: the unmerged-path listing is on stderr, git prints it on stdout",
     ),
 ];
 

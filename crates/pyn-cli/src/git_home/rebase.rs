@@ -280,18 +280,18 @@ fn commit_named(git: &GitHome, spec: &str, what: &str) -> ObjectId {
 /// The remote-tracking ref the current branch's upstream configuration names, and its commit.
 fn configured_upstream(git: &GitHome) -> Result<(ObjectId, String)> {
     let Head::Branch { name, .. } = git.repo.head()? else {
-        eprintln!("You are not currently on a branch.");
-        eprintln!("Please specify which branch you want to rebase against.");
-        eprintln!("See pyn rebase --help for details.\n\n    pyn rebase '<branch>'\n");
+        println!("You are not currently on a branch.");
+        println!("Please specify which branch you want to rebase against.");
+        println!("See pyn rebase --help for details.\n\n    pyn rebase '<branch>'\n");
         std::process::exit(1);
     };
     let config = git.config();
     let t = tracking(config, &name);
     let (Some(remote), Some(merge)) = (t.remote.as_deref(), t.merge.first()) else {
-        eprintln!("There is no tracking information for the current branch.");
-        eprintln!("Please specify which branch you want to rebase against.");
-        eprintln!("See pyn rebase --help for details.\n\n    pyn rebase '<branch>'\n");
-        eprintln!(
+        println!("There is no tracking information for the current branch.");
+        println!("Please specify which branch you want to rebase against.");
+        println!("See pyn rebase --help for details.\n\n    pyn rebase '<branch>'\n");
+        println!(
             "If you wish to set tracking information for this branch you can do so with:\n\n    pyn branch --set-upstream-to=<remote>/<branch> {name}\n"
         );
         std::process::exit(1);

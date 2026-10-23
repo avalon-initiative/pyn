@@ -460,7 +460,7 @@ fn commit_needs_an_identity_and_staged_changes() {
     );
     let out = run(&["commit", "-m", "again"], true);
     assert_eq!(out.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("nothing to commit"));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("nothing to commit"));
 }
 
 #[test]

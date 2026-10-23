@@ -444,6 +444,15 @@ pub fn commit(git: &GitHome, opts: &CommitOptions) -> Result<()> {
     let mut entries = entries_of(&opened.index);
     let staged_now = opts.all && stage_tracked(git, &opened.index, &mut entries)?;
     if entries.keys().any(|(_, stage)| *stage > 0) {
+        let mut unmerged: Vec<&Vec<u8>> = entries
+            .keys()
+            .filter(|(_, stage)| *stage > 0)
+            .map(|(path, _)| path)
+            .collect();
+        unmerged.dedup();
+        for path in unmerged {
+            println!("U\t{}", super::path_string(path));
+        }
         bail!(
             "Committing is not possible because you have unmerged files; resolve them and stage them with `pyn add`"
         );
@@ -467,7 +476,7 @@ pub fn commit(git: &GitHome, opts: &CommitOptions) -> Result<()> {
                  You can repeat your command with --allow-empty."
             );
         } else {
-            eprintln!("nothing to commit; stage changes with `pyn add`, or use `pyn commit -a`");
+            println!("nothing to commit; stage changes with `pyn add`, or use `pyn commit -a`");
         }
         std::process::exit(1);
     }
