@@ -797,21 +797,13 @@ use the git home's abbreviation policy described below. `%d` and `%D` list `HEAD
 branches, remote-tracking branches, `tag: <name>` and `refs/stash` that point at the commit, in git's order. `--date=` takes `default`, `iso`, `iso-strict`, `rfc`, `short`,
 `relative`, `unix` and `raw` and applies to `Date:` and `%ad`/`%cd`; commit dates print in the offset recorded in the commit. `show` takes the same formats and `--date=`.
 
-On a git home, abbreviated object ids (including diff index lines) use a minimum width derived from the approximate
-packed object count, with a floor of seven. `core.abbrev=auto` or an unset value selects that default;
-`core.abbrev=<n>` selects a minimum of at least four, capped at the hash's full width for rendering, and `no`, `off`,
-`false` (case-insensitive) or an explicitly empty value shows full ids. Numeric configuration accepts decimal, leading-zero
-octal and `0x` hexadecimal notation, with Git's binary `k`/`m`/`g` multipliers. Missing values, invalid numeric syntax,
-values below four and integer overflow are rejected; a valid integer above the hash width renders full ids. Prefixes lengthen until unique across loose
-objects and packs in the local store and its recursive alternates; duplicate copies of one object count only once for
-uniqueness. Abbreviated revision lookup uses the same stores. On a git home, `log` and `show` also accept
-`--abbrev[=<n>]` and `--no-abbrev`: an explicit numeric width overrides configuration and clamps to the valid range,
-while a bare `--abbrev` retains the configured default. As in git's log/show parser, `--abbrev=no` and `--abbrev=0` select
-a minimum of four. On a git home, repeating `--abbrev` uses its last numeric or bare occurrence. As in Git's revision parser,
-`--abbrev=<n>` accepts a signed decimal prefix (`--abbrev=12junk` selects twelve, `--abbrev=-1` full width).
-On a git home, `--no-abbrev` selects full commit ids while patch index ids keep the configured/default width;
-an explicit numeric width applies to both. On a git home, null ids in patch headers also lengthen for uniqueness.
-These settings do not change server-home id conventions.
+On a git home, abbreviated ids (including patch headers) lengthen until unique across loose objects, packs and
+recursive alternates. The minimum defaults to at least seven, estimated from packed object counts;
+`core.abbrev=auto` or unset selects it. Numeric `core.abbrev` accepts decimal, octal, hexadecimal and binary
+`k`/`m`/`g` suffixes. Values below four, malformed or missing values and integer overflow fail;
+valid integers above the hash width render full ids in pyn, as in the tested git 2.47.3.
+`no`, `off`, `false` (case-insensitive) or an empty value selects full ids. Duplicate objects do not extend
+prefixes; null patch ids also lengthen for uniqueness. Server-home conventions are unchanged.
 
 Filters apply in this order: `--author` and `--committer` (regular expressions on `Name <email>`, any of several of the same
 kind), `--grep` (on the whole message; any of several, or all with `--all-match`, or none with `--invert-grep`), `-i` for all
@@ -827,6 +819,12 @@ implies `-p`) for the context. `--stat` and `--shortstat` combine with `-p` (git
 when `--stat` and `-p` are both given); the other combinations are a usage error. The diff is against the first parent, or
 against the empty tree for a root commit, limited to the paths. A merge commit prints none (git needs `-m`, `-c` or `--cc` for
 that). The engine is the one `pyn diff` uses, including its `--stat` layout.
+
+On a git home, `log` and `show` accept `--abbrev[=<n>]` and `--no-abbrev`. A numeric width overrides
+configuration and clamps to the valid range; a bare flag retains the configured default. Repeating `--abbrev`
+uses its last numeric or bare occurrence. The revision parser accepts a signed decimal prefix (`12junk` selects
+twelve, `-1` full width); `no` and `0` select four. `--no-abbrev` selects full commit ids while patch index ids
+keep the configured/default width; an explicit numeric width applies to both.
 
 Differences from git:
 

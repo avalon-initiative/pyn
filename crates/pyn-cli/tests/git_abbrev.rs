@@ -60,19 +60,13 @@ fn core_abbrev_numeric_disabled_auto_and_unset_match_git() {
             (None, 7),
             (Some("4"), 4),
             (Some("12"), 12),
-            (Some("999"), full),
             (Some("012"), 10),
             (Some("0x0c"), 12),
             (Some("010"), 8),
             (Some("0X0C"), 12),
             (Some("+12"), 12),
             (Some("+0x0c"), 12),
-            (Some("4k"), full),
-            (Some("4K"), full),
-            (Some("4m"), full),
-            (Some("1g"), full),
             (Some("40"), 40),
-            (Some("64"), full),
             (Some("no"), full),
             (Some("NO"), full),
             (Some("off"), full),
@@ -157,9 +151,45 @@ fn abbrev_flags_override_config_and_bare_retains_it_like_git() {
         assert_eq!(out.trim_end().len(), 9);
         let out = same(&repo, &["log", "-n", "1", "--format=%h", "--abbrev"]);
         assert_eq!(out.trim_end().len(), if format == "sha1" { 40 } else { 64 });
-        setting(&repo, "999");
-        let out = same(&repo, &["log", "-n", "1", "--format=%h", "--abbrev=9"]);
-        assert_eq!(out.trim_end().len(), 9);
+    }
+}
+
+#[test]
+fn pyn_config_lengths_include_above_width_values() {
+    // Git 2.43 rejects above-width values; pyn deliberately retains full-width rendering.
+    for format in FORMATS {
+        let full = if format == "sha1" { 40 } else { 64 };
+        for (value, width) in [
+            (None, 7),
+            (Some("12"), 12),
+            (Some("no"), full),
+            (Some("auto"), 7),
+            (Some("012"), 10),
+            (Some("0x0c"), 12),
+            (Some("999"), full),
+            (Some("4k"), full),
+            (Some("4K"), full),
+            (Some("4m"), full),
+            (Some("1g"), full),
+            (Some("64"), full),
+        ] {
+            let repo = Repo::new(format);
+            if let Some(value) = value {
+                setting(&repo, value);
+            }
+            let id = git(&repo, &repo.main, &["rev-parse", "HEAD"]);
+            assert_eq!(
+                repo.ok(&["log", "-n", "1", "--format=%h"]).trim_end(),
+                &id[..width],
+                "{format} {value:?}"
+            );
+            assert_eq!(
+                repo.ok(&["log", "-n", "1", "--format=%h", "--abbrev=9"])
+                    .trim_end(),
+                &id[..9],
+                "override {format} {value:?}"
+            );
+        }
     }
 }
 
@@ -729,5 +759,61 @@ fn alternate_count_is_invariant_under_duplicate_alias_and_diamond_routes() {
         .unwrap();
         let out = same(&repo, &["log", "-n", "1", "--format=%h"]);
         assert_eq!(out.trim_end().len(), 8);
+    }
+}
+
+#[test]
+fn git_renderers_share_the_configured_policy() {
+    // Spans the commit renderer, patch metadata and the shared tag-deletion helper.
+    for format in FORMATS {
+        let repo = Repo::new(format);
+        setting(&repo, "12");
+        let id = git(&repo, &repo.main, &["rev-parse", "HEAD"]);
+        assert_eq!(
+            same(&repo, &["log", "-n", "1", "--format=%h"]).trim_end(),
+            &id[..12]
+        );
+        assert_eq!(
+            same(&repo, &["show", "--no-patch", "--format=%h"]).trim_end(),
+            &id[..12]
+        );
+        assert!(same(&repo, &["branch", "-v"]).contains(&format!(" {} ", &id[..12])));
+        git(
+            &repo,
+            &repo.main,
+            &[
+                "update-ref",
+                "--create-reflog",
+                "-m",
+                "abbreviation policy",
+                "refs/heads/abbrev-log",
+                id.trim(),
+            ],
+        );
+        let reflog = same(&repo, &["reflog", "show", "abbrev-log"]);
+        assert!(!reflog.is_empty());
+        assert!(
+            reflog
+                .lines()
+                .all(|line| line.split_whitespace().next().unwrap().len() == 12)
+        );
+        let diff = same(&repo, &["diff", "HEAD~2", "HEAD~1"]);
+        let indices: Vec<_> = diff
+            .lines()
+            .filter_map(|line| line.strip_prefix("index "))
+            .collect();
+        assert!(!indices.is_empty());
+        assert!(indices.iter().all(|line| {
+            line.split_whitespace()
+                .next()
+                .unwrap()
+                .split("..")
+                .all(|id| id.len() == 12)
+        }));
+        git(&repo, &repo.main, &["tag", "abbrev-policy"]);
+        assert_eq!(
+            repo.ok(&["tag", "-d", "abbrev-policy"]),
+            format!("Deleted tag 'abbrev-policy' (was {})\n", &id[..12])
+        );
     }
 }
