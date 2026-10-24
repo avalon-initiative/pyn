@@ -827,6 +827,9 @@ pub fn checkout(git: &GitHome, cwd: &Path, args: CheckoutArgs) -> Result<()> {
             },
         );
     }
+    if std::env::args_os().any(|a| a == "--") {
+        bail!("invalid reference: {name}");
+    }
     if !detach && is_path(git, cwd, &name)? {
         let n = restore_paths(
             git,

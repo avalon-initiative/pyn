@@ -375,8 +375,8 @@ pub fn branch(git: &GitHome, args: BranchArgs) -> Result<()> {
     match args.names.as_slice() {
         [name] => create(git, name, None, args.force),
         [name, start] => create(git, name, Some(start), args.force),
-        _ => bail!(
-            "too many arguments to create a branch; the usage is `pyn branch <name> [<start>]`"
+        _ => crate::usage_error(
+            "too many arguments to create a branch; the usage is `pyn branch <name> [<start>]`",
         ),
     }
 }

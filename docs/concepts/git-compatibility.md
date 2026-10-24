@@ -40,7 +40,20 @@ an unknown flag on a supported command (raised by the argument parser, which nam
 Messages that git writes to standard output (for example the nothing-to-commit notice and the unmerged-path listing of a
 conflicted commit) go to standard output, and errors to standard error. `fetch`, `pull` and `push` outside any repository fail
 with `fatal: not a git repository (or any of the parent directories): .git` (`128`). The statuses are checked against git by
-`crates/pyn-cli/tests/git_exit_status.rs`, whose allow-list names the differences that remain.
+`crates/pyn-cli/tests/git_exit_status.rs`, whose allow-list names the differences that remain. Where git exits `128` for a bad
+value of an option of `log` or `show` (a missing `--since` value), and `255` for a failed
+`reflog expire` or `reflog delete`, pyn does the same.
+
+Deliberate status differences that remain:
+
+- **`checkout -B` is not built**, so `checkout -b <a> -B <b>` is a usage error (`129`) where git says the options cannot be
+  used together (`128`).
+- **An unknown option of `log`, `show` or `reflog`** is a usage error (`129`); git exits `128`. The parser cannot tell an
+  option git lacks from one pyn does not build, and the unbuilt ones are `129` by design.
+- **`status --porcelain=<version>`** takes only `v1`; `v2` is unbuilt and an unknown version such as `v9` (git: `128`) is
+  the same parser rejection, a usage error (`129`).
+- **`pyn diff` outside a repository** asks for a server (`128`); git prints its `--no-index` usage (`129`). pyn has no
+  `--no-index` form.
 
 Statuses used below:
 
@@ -98,12 +111,12 @@ The commands named in decision #218.
 | `pyn log --commits` | | pyn only | List commits (`COMMIT`, `AUTHOR`, `WHEN`, `FILES`, `MESSAGE`) instead of revisions. |
 | `pyn log --filter <glob>` | | pyn only | Only paths matching the glob. |
 | `git diff [<c1> [<c2>]] [-- <path>...]` | `pyn diff [<c1> [<c2>]] [-- <path>...]` | different | Unified output as git, computed in the CLI. Commits are hashes (or abbreviations of 4 or more digits), `HEAD`, `~N`, `^`, or `a..b`; two commits work outside a workspace. With no commit it compares the work tree with the index: the staged content, or the last update for what is not staged. File modes print as in git, including `old mode` and `new mode`. On a git home an argument that is neither a revision nor an existing path (a deleted file needs `--`) fails with `fatal: ambiguous argument '<arg>'` (or `bad revision` before `--`), exit `128`, as git does; `a...b` is not supported and fails the same way. |
-| `git diff -U<n>`, `--unified=<n>`, `--stat`, `--name-only`, `--name-status`, `--exit-code`, `-q` | same | same | `--name-status` prints `A`, `M`, and `D`; gitlink type changes print `T`. |
+| `git diff -U<n>`, `--unified=<n>`, `--stat`, `--name-only`, `--name-status`, `--exit-code`, `-q` | same | same | `--name-status` prints `A`, `M`, and `D`; gitlink type changes print `T`. On a git home `--stat` (also in `show`, `log` and `stash show`) prints a binary file as git does, `Bin <old> -> <new> bytes` (`Bin` alone for a rename with identical content, as in the merge diffstat), aligned in the graph column and left out of the insertion and deletion totals; `--numstat` prints `-` and `-`. `diff` and `show` list a moved file as a deleted and an added one, where git pairs them as a rename. |
 | `git diff --numstat` | same | different | Both homes. Prints added and deleted line counts per path, or `-` and `-` for a binary file. It combines with none of `--stat`, `--shortstat`, `--name-only`, `--name-status` or `--check` (usage error, `129`); git can combine numeric and other stats or give another format precedence. |
 | `git diff --cached`, `--staged` | `pyn diff --cached`, `--staged` | different | The staged content against the last commit (the last update on a pyn server). On a git home it takes one optional commit to compare with, as git; on a pyn server it takes none. |
 | `git diff --shortstat`, `-w` (`--ignore-all-space`), `--check` | same | same | Both homes. `--shortstat` prints only the totals line. `-w` compares lines with all whitespace removed, prints context lines as they are in the new file, and leaves out a file that differs only in whitespace (so `--exit-code` is `0` when nothing else changed); `--name-only` and `--name-status` still list it, as git 2.43 does (newer git versions differ on this edge; pyn lists the file). `--check` prints `path:line: trailing whitespace.` (or `space before tab in indent.`, or both) and the added line, then `path:line: new blank line at EOF.`, for git's default whitespace rules, and exits `2` if it printed anything; `-w` does not affect it (newer git versions differ here too). `--check` and `--shortstat` combine with no other format (`--stat`, `--name-only`, `--name-status`): a usage error (`129`), where git prints both stats or refuses with `128`. |
 | `git diff --word-diff`, `--color`, `--no-index`, `-M`, `-C` | none | unsupported | Usage error (`129`). |
-| `git show [<commit>]` | `pyn show [<commit>]` | different | Commit header (`commit`, `Author:`, `Date:`), message, then the commit's diff. The newest commit if none is named. The author line carries the email. On a git home the output is git's, except for merge commits (see below). |
+| `git show [<commit>...] [-- <path>...]` | `pyn show [<commit>...] [-- <path>...]` | different | Commit header (`commit`, `Author:`, `Date:`), message, then the commit's diff. The newest commit if none is named. The author line carries the email. On a git home the output is git's, except for merge commits (see below): it takes several commits, and paths (after `--`, or existing ones) limit each diff. A commit that changes none of the paths still prints its header, as git 2.55 does (older git leaves it out). A pyn server takes one commit and no paths (usage error, `129`). |
 | `git show -U<n>`, `--stat`, `--shortstat`, `-w`, `--check`, `--name-only`, `--name-status` | same | same | The diff flags behave as on `diff`, and `--stat` is laid out as git lays it out at 80 columns (long names cut with `...`, graph scaled); `--check` exits `2` when it reports a problem. |
 | `git show --numstat` | same | different | The numeric rows and format-combination limits are the same as `diff --numstat`. |
 | `git show <rev>:<path>` | `pyn get <path> [--rev N] [-o <file>]` | different | `show` takes commits only (`HEAD:foo` fails with `fatal: ... is not a commit`, `128`). File content at a revision is `pyn get`, to stdout or a file. `--rev` is a per-path revision, not a commit. |
