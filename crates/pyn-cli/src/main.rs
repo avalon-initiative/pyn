@@ -936,14 +936,36 @@ fn attached_pull_rebase(args: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsString
     out
 }
 
-/// Rewrites `commit -S<keyid>` to `--gpg-sign=<keyid>`; clap takes an optional value only after `=`.
+/// Rewrites `-S<keyid>` to `--gpg-sign=<keyid>` on the commands that sign; clap takes an optional value only after `=`.
 fn attached_gpg_keys(args: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsString> {
-    let Some(at) = args
-        .iter()
-        .skip(1)
-        .position(|a| a == "commit")
-        .map(|i| i + 1)
-    else {
+    const SIGNING: [&str; 6] = ["commit", "merge", "pull", "cherry-pick", "revert", "rebase"];
+    let Some((at, valued)) = args.iter().enumerate().skip(1).find_map(|(i, a)| {
+        let name = SIGNING.iter().find(|n| a == **n)?;
+        let valued: &[&str] = match *name {
+            "commit" => &["-m", "-F", "--message", "--file", "--author", "--date"],
+            "merge" => &[
+                "-m",
+                "-F",
+                "--message",
+                "-s",
+                "-X",
+                "--strategy",
+                "--strategy-option",
+            ],
+            "pull" => &["-s", "-X", "--strategy", "--strategy-option"],
+            "rebase" => &[
+                "-s",
+                "-X",
+                "-x",
+                "--exec",
+                "--onto",
+                "--strategy",
+                "--strategy-option",
+            ],
+            _ => &["-m", "--mainline", "-X", "--strategy-option", "--strategy"],
+        };
+        Some((i, valued))
+    }) else {
         return args;
     };
     let mut out = args[..=at].to_vec();
@@ -955,7 +977,7 @@ fn attached_gpg_keys(args: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsString> {
                 out.push(arg.clone());
                 out.extend(rest.by_ref().cloned());
             }
-            "-m" | "-F" | "--message" | "--file" | "--author" | "--date" => {
+            t if valued.contains(&t) => {
                 out.push(arg.clone());
                 out.extend(rest.next().cloned());
             }

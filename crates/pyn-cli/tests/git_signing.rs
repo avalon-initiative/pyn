@@ -6,6 +6,7 @@
 mod gitsrv;
 
 use std::fs;
+use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -43,7 +44,8 @@ fn set_env(c: &mut Command, root: &Path, log: &Path) {
     c.env("HOME", root.join("home"))
         .env("TZ", "UTC")
         .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("SIGNER_LOG", log);
+        .env("SIGNER_LOG", log)
+        .env("GIT_SSH_COMMAND", root.join("ssh-shim"));
     for (k, v) in BASE_ENV {
         c.env(k, v);
     }
@@ -374,6 +376,30 @@ fn have_ssh_keygen() -> bool {
         .is_ok()
 }
 
+/// A new ed25519 key `dir/key` for `cy@example.com` and an allowed-signers file naming it.
+fn ssh_key(dir: &Path) -> (PathBuf, PathBuf) {
+    let key = dir.join("key");
+    let made = Command::new("ssh-keygen")
+        .args([
+            "-q",
+            "-t",
+            "ed25519",
+            "-N",
+            "",
+            "-C",
+            "cy@example.com",
+            "-f",
+        ])
+        .arg(&key)
+        .status()
+        .unwrap();
+    assert!(made.success());
+    let public = fs::read_to_string(dir.join("key.pub")).unwrap();
+    let allowed = dir.join("allowed");
+    fs::write(&allowed, format!("cy@example.com {public}")).unwrap();
+    (key, allowed)
+}
+
 #[test]
 fn ssh_signatures_made_by_ssh_keygen_verify_in_git() {
     if !have_ssh_keygen() {
@@ -382,25 +408,7 @@ fn ssh_signatures_made_by_ssh_keygen_verify_in_git() {
     }
     for format in FORMATS {
         let tmp = tempdir().unwrap();
-        let key = tmp.path().join("key");
-        let made = Command::new("ssh-keygen")
-            .args([
-                "-q",
-                "-t",
-                "ed25519",
-                "-N",
-                "",
-                "-C",
-                "cy@example.com",
-                "-f",
-            ])
-            .arg(&key)
-            .status()
-            .unwrap();
-        assert!(made.success());
-        let public = fs::read_to_string(tmp.path().join("key.pub")).unwrap();
-        let allowed = tmp.path().join("allowed");
-        fs::write(&allowed, format!("cy@example.com {public}")).unwrap();
+        let (key, allowed) = ssh_key(tmp.path());
         for (name, signingkey) in [
             ("path", key.to_str().unwrap().to_string()),
             (
@@ -462,6 +470,301 @@ fn ssh_signatures_made_by_ssh_keygen_verify_in_git() {
                 "{format} {name}: commit"
             );
             assert_eq!(verify("verify-tag", "v1"), Some(0), "{format} {name}: tag");
+            fsck(&pair.ours);
+        }
+    }
+}
+
+const LOG_RAW: &[&str] = &["log", "--format=raw"];
+
+impl Pair {
+    /// Runs the git steps in both repositories, unsigned and with fixed dates, so the histories are identical.
+    fn setup(&self, steps: &[&[&str]]) {
+        for dir in [&self.oracle, &self.ours] {
+            for args in steps {
+                let mut c = git(dir);
+                set_env(&mut c, &self.root, &self.root.join("setup.log"));
+                let out = c
+                    .args(["-c", "commit.gpgsign=false"])
+                    .args(*args)
+                    .output()
+                    .unwrap();
+                assert!(out.status.success(), "git {args:?}");
+            }
+        }
+    }
+
+    /// `main` and `side` have diverged; `side` ends in a merge of `topic`; `pick` holds two more commits.
+    fn diverged(format: &str, signer: &str, config: &[(&str, &str)]) -> Self {
+        let pair = Self::new(format, signer, config);
+        pair.setup(&[
+            &["commit", "-q", "-m", "base"],
+            &["switch", "-q", "-c", "side"],
+        ]);
+        pair.write_commit("s1.txt");
+        pair.setup(&[&["switch", "-q", "-c", "topic"]]);
+        pair.write_commit("t1.txt");
+        pair.setup(&[&["switch", "-q", "side"]]);
+        pair.write_commit("s2.txt");
+        pair.setup(&[
+            &["merge", "-q", "--no-ff", "-m", "merge topic", "topic"],
+            &["switch", "-q", "-c", "pick", "main"],
+        ]);
+        pair.write_commit("p1.txt");
+        pair.write_commit("p2.txt");
+        pair.setup(&[&["switch", "-q", "main"]]);
+        pair.write_commit("m.txt");
+        ssh_shim(&pair.root, false);
+        let bare = pair.root.join("served.git");
+        init(&bare, format, true);
+        run(
+            &pair.oracle,
+            &["push", "-q", bare.to_str().unwrap(), "side"],
+        );
+        let url = format!("ssh://git@example.invalid{}", bare.display());
+        pair.setup(&[&["remote", "add", "origin", &url]]);
+        pair
+    }
+
+    fn write_commit(&self, file: &str) {
+        for dir in [&self.oracle, &self.ours] {
+            fs::write(dir.join(file), format!("{file}\n")).unwrap();
+        }
+        self.setup(&[&["add", file], &["commit", "-q", "-m", file]]);
+    }
+
+    /// How many of the commits `git rev-list <range>` lists (in the pyn repository) carry a signature header, and how many it lists.
+    fn signed_in(&self, range: &str) -> (usize, usize) {
+        let ids = self.git_out(
+            &self.ours,
+            &[&["rev-list"], &range.split(' ').collect::<Vec<_>>()[..]].concat(),
+        );
+        let all: Vec<&str> = ids.lines().collect();
+        let signed = all
+            .iter()
+            .filter(|id| {
+                self.git_out(&self.ours, &["cat-file", "commit", id])
+                    .contains("\ngpgsig")
+            })
+            .count();
+        (signed, all.len())
+    }
+}
+
+/// Commands that make commits, each with the arguments that sign and the revision range of the new commits.
+const SIGNING_RUNS: &[(&str, &str, &[&str], &str, usize)] = &[
+    (
+        "merge",
+        "merge",
+        &["side", "-m", "joined"],
+        "--max-count=1 HEAD",
+        1,
+    ),
+    (
+        "pull merge",
+        "pull",
+        &["--no-rebase", "--no-edit", "origin", "side"],
+        "--max-count=1 HEAD",
+        1,
+    ),
+    (
+        "pull rebase",
+        "pull",
+        &["--rebase", "origin", "side"],
+        "side..HEAD",
+        1,
+    ),
+    (
+        "cherry-pick",
+        "cherry-pick",
+        &["pick~1", "pick"],
+        "--max-count=2 HEAD",
+        2,
+    ),
+    ("revert", "revert", &["HEAD"], "--max-count=1 HEAD", 1),
+    ("rebase", "rebase", &["main", "side"], "main..HEAD", 3),
+    (
+        "rebase -i",
+        "rebase",
+        &["-i", "main", "side"],
+        "main..HEAD",
+        3,
+    ),
+    (
+        "rebase --rebase-merges",
+        "rebase",
+        &["--rebase-merges", "main", "side"],
+        "main..HEAD",
+        4,
+    ),
+];
+
+fn with_flag<'a>(args: &'a [&'a str], flag: &'a [&'a str]) -> Vec<&'a str> {
+    let mut all = flag.to_vec();
+    all.extend_from_slice(args);
+    all
+}
+
+#[test]
+fn every_commit_command_signs_like_git() {
+    for format in FORMATS {
+        for (name, cmd, args, range, count) in SIGNING_RUNS {
+            let cases: &[Case] = &[
+                ("flag", &["-S"], &[]),
+                ("long flag with key", &["--gpg-sign=ABCD1234"], &[]),
+                ("attached key", &["-SABCD1234"], &[]),
+                ("config", &[], &[("commit.gpgsign", "true")]),
+                ("signing key", &["-S"], &[("user.signingkey", "KEY99")]),
+                (
+                    "no-gpg-sign beats config",
+                    &["--no-gpg-sign"],
+                    &[("commit.gpgsign", "true")],
+                ),
+                ("unsigned", &[], &[]),
+            ];
+            for (case, flag, config) in cases {
+                let pair = Pair::diverged(format, FAKE_SIGNER, config);
+                if cmd == &"rebase" || cmd == &"pull" {
+                    pair.setup(&[&["config", "sequence.editor", "true"]]);
+                }
+                let label = format!("{format} {name} {case}");
+                let code = pair.same(
+                    cmd,
+                    &with_flag(args, flag),
+                    &[LOG_RAW, &["--all"]].concat(),
+                    &label,
+                );
+                assert_eq!(code, 0, "{label}");
+                let (signed, total) = pair.signed_in(range);
+                let want = !case.contains("no-gpg") && *case != "unsigned";
+                assert_eq!(total, *count, "{label}: commits in {range}");
+                assert_eq!(signed, if want { total } else { 0 }, "{label}");
+            }
+        }
+    }
+}
+
+#[test]
+fn a_failing_signer_stops_every_command_without_a_commit() {
+    for (name, cmd, args, _, _) in SIGNING_RUNS {
+        let pair = Pair::diverged("sha1", BROKEN_SIGNER, &[]);
+        pair.setup(&[&["config", "sequence.editor", "true"]]);
+        let branch = if *cmd == "rebase" { "side" } else { "main" };
+        let before = pair.git_out(&pair.ours, &["rev-parse", branch]);
+        let code = pair.run(true, cmd, &with_flag(args, &["-S"]));
+        assert_ne!(code, 0, "{name}: exit status");
+        assert_eq!(
+            pair.git_out(&pair.ours, &["rev-parse", branch]),
+            before,
+            "{name}: the branch moved"
+        );
+        let log = pair.git_out(&pair.ours, &["log", "--all", "--format=%H"]);
+        let signed = pair.git_out(&pair.ours, &["log", "--all", "--format=raw"]);
+        assert!(!signed.contains("gpgsig"), "{name}: {log}");
+    }
+}
+
+#[test]
+fn stash_commits_are_not_signed() {
+    let pair = Pair::diverged("sha1", FAKE_SIGNER, &[("commit.gpgsign", "true")]);
+    fs::write(pair.ours.join("a.txt"), "changed\n").unwrap();
+    assert_eq!(pair.run(true, "stash", &[]), 0);
+    let stash = pair.git_out(&pair.ours, &["cat-file", "commit", "refs/stash"]);
+    assert!(!stash.is_empty() && !stash.contains("gpgsig"), "{stash}");
+}
+
+#[test]
+fn a_stopped_pick_or_rebase_keeps_the_key_for_continue() {
+    for format in FORMATS {
+        for cmd in ["cherry-pick", "rebase"] {
+            let pair = Pair::diverged(format, FAKE_SIGNER, &[]);
+            pair.setup(&[&["config", "core.editor", "true"]]);
+            fs::write(pair.ours.join("p1.txt"), "main edit\n").unwrap();
+            fs::write(pair.oracle.join("p1.txt"), "main edit\n").unwrap();
+            pair.setup(&[&["add", "p1.txt"], &["commit", "-q", "-m", "clash"]]);
+            let (start, range): (&[&str], _) = match cmd {
+                "cherry-pick" => (&["-SKEY7", "pick~1", "pick"], "--max-count=2 HEAD"),
+                _ => (&["-SKEY7", "main", "pick"], "main..HEAD"),
+            };
+            assert_eq!(pair.run(true, cmd, start), 1, "{format} {cmd}");
+            fs::write(pair.ours.join("p1.txt"), "resolved\n").unwrap();
+            fs::write(pair.oracle.join("p1.txt"), "resolved\n").unwrap();
+            pair.setup(&[&["add", "p1.txt"]]);
+            assert_eq!(pair.run(true, cmd, &["--continue"]), 0, "{format} {cmd}");
+            let log = fs::read_to_string(pair.log(true)).unwrap_or_default();
+            assert_eq!(log.matches("KEY7").count(), 2, "{format} {cmd}: {log}");
+            assert_eq!(pair.signed_in(range), (2, 2), "{format} {cmd}");
+        }
+    }
+}
+
+/// Whether `ssh-keygen -Y verify` accepts the signature in commit `rev`, checked over the commit without its signature.
+fn ssh_verifies(pair: &Pair, rev: &str, allowed: &Path) -> bool {
+    let raw = Command::new("git")
+        .current_dir(&pair.ours)
+        .args(["cat-file", "commit", rev])
+        .output()
+        .unwrap()
+        .stdout;
+    let (mut payload, mut sig, mut in_sig) = (Vec::new(), Vec::new(), false);
+    for line in raw.split_inclusive(|b| *b == b'\n') {
+        let header = line.starts_with(b"gpgsig");
+        if header || (in_sig && line.starts_with(b" ")) {
+            in_sig = true;
+            let from = if header {
+                line.iter().position(|b| *b == b' ').unwrap()
+            } else {
+                0
+            };
+            sig.extend_from_slice(&line[from + 1..]);
+        } else {
+            in_sig = false;
+            payload.extend_from_slice(line);
+        }
+    }
+    let sig_file = pair.root.join("commit.sig");
+    fs::write(&sig_file, sig).unwrap();
+    let mut verify = Command::new("ssh-keygen")
+        .args(["-Y", "verify", "-n", "git", "-I", "cy@example.com", "-f"])
+        .arg(allowed)
+        .arg("-s")
+        .arg(&sig_file)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    verify.stdin.take().unwrap().write_all(&payload).unwrap();
+    verify.wait().unwrap().success()
+}
+
+#[test]
+fn commits_made_by_every_command_verify_with_ssh_keygen() {
+    if !have_ssh_keygen() {
+        eprintln!("ssh-keygen is not installed; skipped");
+        return;
+    }
+    for format in FORMATS {
+        for (name, cmd, args, range, count) in SIGNING_RUNS {
+            let tmp = tempdir().unwrap();
+            let (key, allowed) = ssh_key(tmp.path());
+            let signing = [
+                ("gpg.format", "ssh"),
+                ("user.signingkey", key.to_str().unwrap()),
+                ("commit.gpgsign", "true"),
+            ];
+            let pair = Pair::diverged(format, FAKE_SIGNER, &signing);
+            pair.setup(&[&["config", "sequence.editor", "true"]]);
+            let label = format!("{format} {name}");
+            assert_eq!(pair.run(true, cmd, args), 0, "{label}");
+            let ids = pair.git_out(
+                &pair.ours,
+                &[&["rev-list"], &range.split(' ').collect::<Vec<_>>()[..]].concat(),
+            );
+            assert_eq!(ids.lines().count(), *count, "{label}");
+            for id in ids.lines() {
+                assert!(ssh_verifies(&pair, id, &allowed), "{label}: {id}");
+            }
             fsck(&pair.ours);
         }
     }

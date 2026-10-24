@@ -159,10 +159,10 @@ revisions with a pointer per branch (decision #299).
 | `git branch [<name> [<start>]]`, `-d`, `-D`, `-m`, `-l`, `-v`, `--show-current` | `pyn branch ...` | supported | `-d` refuses a branch that is not on the default branch (git: not merged into `HEAD`). `-a` and `-r` list the server as the remote `origin` (see [Remotes on a pyn server](#remotes-on-a-pyn-server)); `-M`, `-c`, `-C`, `-f`, `-u`, `--unset-upstream` and patterns are not built on a pyn server (usage errors); a git home has them (see below). The workspace's branch cannot be deleted. |
 | `git switch <branch>`, `-c <new> [<start>]`, `-f` | `pyn switch ...` | supported | Local changes carry over where the target branch has the same file, and stop the switch (nothing changed, the paths listed) where it does not; `-f` discards them. On a pyn server `-`, `--detach` and `-C` are not built; a git home has `-`, `--detach`, `-C` and `--orphan` (see below). Prints `Switched to branch '<name>'` on standard error, as git. |
 | `git checkout <branch>`, `-b <new> [<start>]`, `-f`, `[<tree-ish>] -- <path>...` | `pyn checkout ...` | supported | Reserved for git's meaning. `-- <path>` restores from the revision the workspace has (git: the index; a staged path must be unstaged first), `<branch\|commit> -- <path>` from that branch or commit. On a pyn server a path that is `exclusive` and has a local edit (locked by you or not) is not discarded silently: the files are named and the discard needs the path typed back or `--yes`, and a run without a terminal refuses (`128`, nothing changed); `shared` paths discard silently as in git. On a pyn server there is no detached HEAD: `checkout <commit>` is refused with what to use instead. Taking a lock is `pyn lock`. |
-| `git merge <branch\|commit>`, `-m`, `--no-ff`, `--ff-only`, `--no-commit`, `--abort`, `--continue`, `--stat`, `-n`/`--no-stat` | `pyn merge ...` | supported | Shared files merge three-way with diff3 conflict markers; a binary conflicts as a whole file. Exclusive files take the pointer that descends from the other, and conflict where both branches changed one or a path became exclusive while a branch edited it (a person chooses a side, taking the lock). A conflicted merge leaves the workspace as git does and is concluded with `pyn add` and `pyn commit` (no `-m` needed), or given up with `--abort`. Differences: `--preview` (pyn's own) reports what would merge and conflict and changes nothing; a merge needs a clean index and no local edits to the files it touches; `--squash`, `--no-verify`, `--edit`, `--signoff`, `-S` and `--ff` are usage errors, and so are `-s` and `-X` (they need a git repository; see [Merging](#merging)). `git checkout --ours` and `--theirs` are `pyn checkout --ours\|--theirs -- <path>`. `pyn status` marks unmerged paths in its `STATE` column. Recursive merge of criss-cross histories as git does, with the base of a conflict shown as `merged common ancestors`. |
-| `git cherry-pick <commit>...`, ranges, `-n`, `-x`, `-s`, `-m <n>`, `--continue`, `--skip`, `--abort`, `--quit` | `pyn cherry-pick ...` | supported | Each commit's change becomes a new commit, with its author and message. On a git home see [Cherry-pick](#cherry-pick). On a pyn server workspace with local commits the commits, ranges and `-x` work, and `-n`, `-s`, `-m` and `--quit` are refused; see [cherry-pick in commits](commits.md#cherry-pick). A pyn server workspace without local commits refuses the command. |
-| `git revert <commit>...`, ranges, `-n`, `-s`, `-m <n>`, `--no-edit`, `--continue`, `--skip`, `--abort`, `--quit` | `pyn revert ...` | supported | Each commit's change is undone by a new commit (`Revert "<subject>"`). On a git home see [Revert](#revert). On a pyn server workspace with local commits the commits and ranges work, and `-n`, `-s`, `-m` and `--quit` are refused; see [revert in commits](commits.md#revert). A pyn server workspace without local commits refuses the command. |
-| `git rebase [--onto <newbase>] [<upstream> [<branch>]]`, `--continue`, `--skip`, `--abort`, `--quit`, `--autostash`, `--no-ff` | `pyn rebase ...` | supported (git home) | Replays the commits after the upstream one by one onto the new base, with the same ids as git. See [Rebase](#rebase), including `--rebase-merges`, `--root`, `--update-refs` and the fork point. A pyn server workspace with a local store rebases only its unpublished local commits, interactively too (`edit`, `exec`, `break`, `--exec`, `--edit-todo`, `--autostash`, `--no-ff`, `--quit` and `<branch>` work), and refuses a range with a published one, `--rebase-merges`, `--root`, `--fork-point` and `--update-refs` ([commits](commits.md#rebase)); without a local store it refuses the command. |
+| `git merge <branch\|commit>`, `-m`, `--no-ff`, `--ff-only`, `--no-commit`, `--abort`, `--continue`, `--stat`, `-n`/`--no-stat` | `pyn merge ...` | supported | Shared files merge three-way with diff3 conflict markers; a binary conflicts as a whole file. Exclusive files take the pointer that descends from the other, and conflict where both branches changed one or a path became exclusive while a branch edited it (a person chooses a side, taking the lock). A conflicted merge leaves the workspace as git does and is concluded with `pyn add` and `pyn commit` (no `-m` needed), or given up with `--abort`. Differences: `--preview` (pyn's own) reports what would merge and conflict and changes nothing; a merge needs a clean index and no local edits to the files it touches; `--squash`, `--no-verify`, `--edit`, `--signoff` and `--ff` are usage errors, and so are `-s`, `-X`, `-S` and `--no-gpg-sign` (they need a git repository; see [Merging](#merging) and [Signing](#signing)). `git checkout --ours` and `--theirs` are `pyn checkout --ours\|--theirs -- <path>`. `pyn status` marks unmerged paths in its `STATE` column. Recursive merge of criss-cross histories as git does, with the base of a conflict shown as `merged common ancestors`. |
+| `git cherry-pick <commit>...`, ranges, `-n`, `-x`, `-s`, `-S[<keyid>]`, `--no-gpg-sign`, `-m <n>`, `--continue`, `--skip`, `--abort`, `--quit` | `pyn cherry-pick ...` | supported | Each commit's change becomes a new commit, with its author and message. On a git home see [Cherry-pick](#cherry-pick). On a pyn server workspace with local commits the commits, ranges and `-x` work, and `-n`, `-s`, `-S`, `--no-gpg-sign`, `-m` and `--quit` are refused; see [cherry-pick in commits](commits.md#cherry-pick). A pyn server workspace without local commits refuses the command. |
+| `git revert <commit>...`, ranges, `-n`, `-s`, `-S[<keyid>]`, `--no-gpg-sign`, `-m <n>`, `--no-edit`, `--continue`, `--skip`, `--abort`, `--quit` | `pyn revert ...` | supported | Each commit's change is undone by a new commit (`Revert "<subject>"`). On a git home see [Revert](#revert). On a pyn server workspace with local commits the commits and ranges work, and `-n`, `-s`, `-S`, `--no-gpg-sign`, `-m` and `--quit` are refused; see [revert in commits](commits.md#revert). A pyn server workspace without local commits refuses the command. |
+| `git rebase [--onto <newbase>] [<upstream> [<branch>]]`, `--continue`, `--skip`, `--abort`, `--quit`, `--autostash`, `--no-ff`, `-S[<keyid>]`, `--no-gpg-sign` | `pyn rebase ...` | supported (git home) | Replays the commits after the upstream one by one onto the new base, with the same ids as git. See [Rebase](#rebase), including `--rebase-merges`, `--root`, `--update-refs` and the fork point. A pyn server workspace with a local store rebases only its unpublished local commits, interactively too (`edit`, `exec`, `break`, `--exec`, `--edit-todo`, `--autostash`, `--no-ff`, `--quit` and `<branch>` work), and refuses a range with a published one, `--rebase-merges`, `--root`, `--fork-point` and `--update-refs` ([commits](commits.md#rebase)); without a local store it refuses the command. |
 
 ## Remotes
 
@@ -367,7 +367,8 @@ that cannot fast-forward is `fatal: Not possible to fast-forward, aborting.` (`1
 | `--no-edit` | Accepted: no editor is ever started. |
 | `--no-rebase`, `--rebase`, `-r`, `--autostash` | `--no-rebase` merges; `--rebase` fast-forwards or replays as above; `--autostash` stashes before a rebase and applies after (a usage error unless the pull rebases). |
 | `-s`, `--strategy`, `-X`, `--strategy-option` | Passed to the merge as for `pyn merge`, see [Strategies and options](#strategies-and-options). A strategy name git does not define is `Could not find merge strategy '<name>'.` (`1`); more than one `-s`, and `-X` options pyn cannot honor, are usage errors (`129`), as are `-s` and `-X` with a pull that rebases (git hands them to its rebase; pyn's rebase has no strategies yet). |
-| `--edit`, `-e`, `--squash`, `-S`/`--gpg-sign`, `--signoff`, `--cleanup`, `--recurse-submodules`, `--allow-unrelated-histories`, `--all` | Usage error (`129`): not built (`--all`: use `pyn fetch --all`). |
+| `-S[<keyid>]`, `--gpg-sign[=<keyid>]`, `--no-gpg-sign` | Passed on: the merge commit of a merge pull, or each commit a rebasing pull makes, is signed as for `pyn merge` and `pyn rebase`, see [Signing](#signing). |
+| `--edit`, `-e`, `--squash`, `--signoff`, `--cleanup`, `--recurse-submodules`, `--allow-unrelated-histories`, `--all` | Usage error (`129`): not built (`--all`: use `pyn fetch --all`). |
 
 Config read: `pull.ff`, `pull.rebase`, `branch.<name>.rebase`, `branch.<name>.merge`, `branch.<name>.remote`, `merge.ff`, plus what
 `pyn fetch` reads, plus `merge.stat`. `pull.twohead`, `pull.octopus` and `branch.<name>.mergeOptions` are not read. The message of an annotated tag
@@ -1223,7 +1224,7 @@ and `A...B` name ranges (applied oldest first, parents before children), and sev
 3. A clean result is committed with the reflog line `cherry-pick: <subject>` on the branch (or a detached `HEAD`) and `HEAD`,
    and printed as `[<branch> <abbreviation>] <subject>` with `Author:` when it differs from the committer and the number of
    files changed (git's `Date:` line and insertion counts are not printed). On an unborn branch the commit is a root commit.
-   `commit.gpgsign` signs it; `-S` is not built. Hooks are not run (one warning names them).
+   `commit.gpgsign` or `-S[<keyid>]` signs it, `--no-gpg-sign` does not. Hooks are not run (one warning names them).
 4. `-x` adds `(cherry picked from commit <id>)` (inside the trailer block the message ends with, else after a blank line) and
    `-s` a `Signed-off-by:` for the committer, in that order. `-n` leaves the merged result staged and in the files, writes the
    message to `MERGE_MSG` and commits nothing; with several commits each one merges onto the index the previous left.
@@ -1248,7 +1249,7 @@ state and leaves the index and files. With nothing in progress `--continue`, `--
 `commit` and `merge` still refuse while a cherry-pick is in progress.
 
 Differences from git: a range or list with a merge commit and no `-m` is refused before any commit is made (git applies the
-ones before it); `-e`, `--edit`, `--ff`, `--cleanup`, `-X`, `--strategy`, `--rerere-autoupdate`, `-S`, `--allow-empty` and
+ones before it); `-e`, `--edit`, `--ff`, `--cleanup`, `-X`, `--strategy`, `--rerere-autoupdate`, `--allow-empty` and
 `--keep-redundant-commits` are usage errors; `--no-edit` is accepted. Covered against the real git by
 `crates/pyn-cli/tests/git_cherry_pick.rs`.
 
@@ -1264,7 +1265,7 @@ Diff3 markers are labelled `HEAD` and `parent of <abbreviation> (<subject>)`, wi
 the files, the state files and the reflogs with the real git (`crates/pyn-cli/tests/git_revert.rs`).
 
 1. `-n` leaves the result staged and in the files and writes `MERGE_MSG` and `REVERT_HEAD`; `-s` adds `Signed-off-by:`;
-   `--no-edit` is accepted. `-x`, `-e`, `--edit`, `--cleanup`, `-X`, `--strategy`, `--rerere-autoupdate`, `-S`,
+   `--no-edit` is accepted. `-x`, `-e`, `--edit`, `--cleanup`, `-X`, `--strategy`, `--rerere-autoupdate`,
    `--allow-empty` and `--keep-redundant-commits` are usage errors.
 2. The reflog line is `revert: <subject>`, and `commit: <subject>` for a commit made by `--continue`.
 3. A conflict exits `1` with `error: could not revert <abbreviation> (<subject>)`, the hints, the unmerged entries, markers,
@@ -1437,8 +1438,8 @@ The upstream stays the new base (`--onto` aside), the comment line still says `<
 point is not the new base is not fast-forwarded. In `no-rebase-cousins` mode the sheet then keeps the fork point as the base of
 the branch, as git does.
 
-Differences from git: `-s`, `-X`, `--signoff`, `--keep-base`, `--reapply-cherry-picks`, `--apply`, `--empty` other than `drop` and
-`-S` are usage errors (`129`). A `merge` of several labels (an octopus merge) stops with `octopus merges are not built` and
+Differences from git: `-s`, `-X`, `--signoff`, `--keep-base`, `--reapply-cherry-picks`, `--apply` and `--empty` other than `drop`
+are usage errors (`129`). A `merge` of several labels (an octopus merge) stops with `octopus merges are not built` and
 leaves the command first in the sheet; git continues it (`git rebase --continue`) and a merge whose branches have more than one
 merge base stops the same way. pyn writes `AUTO_MERGE` only for a merge that stopped on conflicts; git writes it for every pick. A workspace's own
 rebase refuses `fixup -C`/`-c` and `--rebase-merges`, `--root`, `--fork-point` and `--update-refs` (and the sheet commands `label`,
@@ -1481,9 +1482,23 @@ need git installed. It writes the signature as git encodes it, so the object ids
 - `tag.gpgsign` makes every tag annotated and signed, so it needs `-m`. If the signer fails or is missing, nothing is written
   and the exit status is `128`.
 
+The other commands that create commits sign them the same way and through the same signer:
+
+- `merge` signs the merge commit, `cherry-pick` and `revert` each commit they make, `rebase` (also `-i` and `--rebase-merges`)
+  each commit it replays, rewords or merges, and `pull` passes `-S` and `--no-gpg-sign` to its merge or its rebase. A
+  commit a rebase or cherry-pick fast-forwards over is reused, not signed again, as in git.
+- `-S[<keyid>]`, `--gpg-sign[=<keyid>]` and `--no-gpg-sign` (the last of the two wins) are accepted on all of them and win over
+  `commit.gpgsign`, which signs them when set. There is no `rebase.gpgSign` or `merge.gpgSign`, as in git. A stopped
+  cherry-pick, revert or rebase keeps the flag (`sequencer/opts`, `gpg_sign_opt`) for `--continue`, so the commits made after the
+  conflict are signed too; `pyn commit` and `pyn merge --continue` take their own flags. A pyn server workspace refuses the flags.
+- `stash` commits and the empty commit a `rebase --root` builds on are not signed, as in git.
+- A signer that fails, or a bad `gpg.format`, writes no commit. The branch does not move and the command stops with `128`,
+  leaving a merge, cherry-pick, revert or rebase stopped where it can be retried: `MERGE_HEAD` (merge), `CHERRY_PICK_HEAD` or
+  `REVERT_HEAD`, or the failed pick first in the rebase sheet, as git does. Fix the signer and run `pyn commit`,
+  `--continue` or the command again.
+
 `log --show-signature` and `verify-commit` / `verify-tag` equivalents are not built: pyn does not verify signatures, and `log
---show-signature` stays a usage error. `pyn merge`, `pull` and the other commands that create commits do not sign (their `-S`
-is a usage error), even with `commit.gpgsign=true`.
+--show-signature` stays a usage error.
 
 ### Stashing
 

@@ -66,6 +66,8 @@ pub struct MergeArgs {
     /// An option for the strategy, such as `ours` or `theirs` (a git repository only).
     #[arg(short = 'X', long = "strategy-option", value_name = "OPTION", conflicts_with_all = ["abort", "continue_merge"])]
     pub(crate) strategy_option: Vec<String>,
+    #[command(flatten)]
+    pub(crate) sign: crate::git_home::SignFlag,
 }
 
 /// One side of a conflicted path, as the workspace needs it to take that side later.
@@ -368,6 +370,11 @@ pub fn merge_command(backend: &dyn Backend, ws: Option<&Workspace>, args: MergeA
         crate::usage_error(
             "`pyn merge -s` and `-X` need a git repository; a pyn server merges by its own rules",
         );
+    }
+    if let Some(flag) = args.sign.first_given() {
+        crate::usage_error(&format!(
+            "`pyn merge {flag}` needs a git repository; a pyn server's commits are not signed"
+        ));
     }
     if args.abort {
         return abort(backend, api, ws);

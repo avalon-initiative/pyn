@@ -12,6 +12,7 @@ use super::fetch::{FetchArgs, remotes_in_order};
 use super::fetch_apply::commit_of;
 use super::merge::{BLOCKED_STATUS, QUIET, default_message, initial_checkout};
 use super::rebase::PullMode;
+use super::signing::SignFlag;
 use super::{GitHome, merge};
 use crate::merging::MergeArgs;
 
@@ -86,8 +87,8 @@ pub struct PullArgs {
     strategy_option: Vec<String>,
     #[arg(long, hide = true)]
     autostash: bool,
-    #[arg(short = 'S', long, hide = true, num_args = 0..=1, require_equals = true)]
-    gpg_sign: Option<Option<String>>,
+    #[command(flatten)]
+    sign: SignFlag,
     #[arg(long, hide = true)]
     signoff: bool,
     #[arg(long, hide = true, value_name = "MODE")]
@@ -164,11 +165,6 @@ impl PullArgs {
                 "a git rebase is skipped with `pyn rebase --skip`",
             ),
             ("--squash", self.squash, "a squash merge is not built"),
-            (
-                "--gpg-sign",
-                self.gpg_sign.is_some(),
-                "signing is not built",
-            ),
             ("--signoff", self.signoff, "trailers are not added"),
             (
                 "--cleanup",
@@ -566,8 +562,11 @@ pub fn pull(git: &GitHome, args: PullArgs) -> Result<()> {
                 fork,
                 mode,
                 action,
-                args.autostash.then_some(true),
-                args.quiet > 0,
+                super::rebase::PullOpts {
+                    autostash: args.autostash.then_some(true),
+                    quiet: args.quiet > 0,
+                    sign: args.sign.clone(),
+                },
             );
         }
     }
@@ -598,6 +597,7 @@ pub fn pull(git: &GitHome, args: PullArgs) -> Result<()> {
             no_stat: args.no_stat,
             strategy: args.strategy,
             strategy_option: args.strategy_option,
+            sign: args.sign,
         },
     )
 }

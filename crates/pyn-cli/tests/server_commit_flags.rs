@@ -371,3 +371,18 @@ fn author_and_date_are_refused_on_a_path_commit() {
     );
     assert_eq!(out.status.code(), Some(129), "{out:?}");
 }
+
+#[test]
+fn signing_flags_on_the_other_commit_commands_are_refused() {
+    let (env, ws) = seeded(&["--local-store"]);
+    for cmd in [
+        &["merge", "-S", "main"][..],
+        &["merge", "--no-gpg-sign", "main"],
+        &["cherry-pick", "-S", "HEAD"],
+        &["revert", "--gpg-sign=KEY", "HEAD"],
+        &["rebase", "-S", "main"],
+    ] {
+        let err = env.fails(&ws, "alice", cmd);
+        assert!(err.contains("gpg-sign"), "{cmd:?}: {err}");
+    }
+}

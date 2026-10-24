@@ -40,6 +40,8 @@ pub struct PickArgs {
     /// Keep the message (accepted for scripts; pyn never opens an editor).
     #[arg(long, conflicts_with = "control")]
     pub(crate) no_edit: bool,
+    #[command(flatten)]
+    pub(crate) sign: crate::git_home::SignFlag,
     /// Commit what was resolved and go on with the remaining commits.
     #[arg(long = "continue")]
     pub(crate) continue_pick: bool,
@@ -74,6 +76,8 @@ pub struct RevertArgs {
     /// Keep the generated message (accepted for scripts; pyn never opens an editor).
     #[arg(long, conflicts_with = "control")]
     pub(crate) no_edit: bool,
+    #[command(flatten)]
+    pub(crate) sign: crate::git_home::SignFlag,
     /// Commit what was resolved and go on with the remaining commits.
     #[arg(long = "continue")]
     pub(crate) continue_pick: bool,
@@ -97,6 +101,7 @@ impl From<RevertArgs> for PickArgs {
             signoff: a.signoff,
             mainline: a.mainline,
             no_edit: a.no_edit,
+            sign: a.sign,
             continue_pick: a.continue_pick,
             abort: a.abort,
             skip: a.skip,
@@ -239,7 +244,8 @@ fn refuse_git_only(args: &PickArgs, command: &str) -> Result<()> {
         ("-m", args.mainline.is_some()),
         ("--quit", args.quit),
     ];
-    if let Some((flag, _)) = given.into_iter().find(|(_, on)| *on) {
+    let flag = (given.into_iter().find_map(|(f, on)| on.then_some(f))).or(args.sign.first_given());
+    if let Some(flag) = flag {
         bail!(
             "`pyn {command} {flag}` needs a git repository; a workspace takes whole commits and gives up with `--abort`"
         );

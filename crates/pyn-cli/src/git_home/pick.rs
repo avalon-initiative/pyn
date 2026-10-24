@@ -11,7 +11,7 @@ use pyn_object::{Commit, Kind as ObjectKind, ObjectId};
 use super::GitHome;
 use super::commit::append_signoff;
 use super::merge::{Applied, Landing, apply_merge, write_state};
-use super::signing::{SignFlag, header_name, header_value, signer_for};
+use super::signing::{SignFlag, sign_commit};
 use super::stage::{
     clean_message, clear_merge_state, identity, merge_message, refuse_states, warn_about_hooks_for,
     write_tree,
@@ -72,6 +72,7 @@ struct Opts {
     record_origin: bool,
     signoff: bool,
     mainline: Option<u32>,
+    sign: SignFlag,
 }
 
 impl Opts {
@@ -81,6 +82,7 @@ impl Opts {
             record_origin: args.record_origin,
             signoff: args.signoff,
             mainline: args.mainline,
+            sign: args.sign.clone(),
         }
     }
 
@@ -98,6 +100,15 @@ impl Opts {
         if let Some(n) = self.mainline {
             text.push_str(&format!("\tmainline = {n}\n"));
         }
+        if let Some(key) = &self.sign.gpg_sign {
+            text.push_str(&format!(
+                "\tgpg-sign = {}\n",
+                key.as_deref().unwrap_or_default()
+            ));
+        }
+        if self.sign.no_gpg_sign {
+            text.push_str("\tno-gpg-sign = true\n");
+        }
         (!text.is_empty()).then(|| format!("[options]\n{text}"))
     }
 
@@ -113,6 +124,10 @@ impl Opts {
                 "record-origin" => opts.record_origin = value == "true",
                 "signoff" => opts.signoff = value == "true",
                 "mainline" => opts.mainline = value.parse().ok(),
+                "gpg-sign" => {
+                    opts.sign.gpg_sign = Some((!value.is_empty()).then(|| value.to_string()))
+                }
+                "no-gpg-sign" => opts.sign.no_gpg_sign = value == "true",
                 _ => {}
             }
         }
@@ -505,16 +520,19 @@ fn apply(git: &GitHome, opts: &Opts, verb: Verb, id: &ObjectId) -> Result<Outcom
         say_empty(git, verb)?;
         return Ok(Outcome::Stopped);
     }
-    let made = commit_pick(
-        git,
-        &Pending {
-            tree,
-            ours_tree,
-            author,
-            message,
-            reflog: verb.command().to_string(),
-        },
-    )?;
+    let pending = Pending {
+        tree,
+        ours_tree,
+        author,
+        message,
+        reflog: verb.command().to_string(),
+        sign: opts.sign.clone(),
+    };
+    let made = commit_pick(git, &pending).inspect_err(|_| {
+        // Like git, a commit that cannot be made leaves the pick stopped, so `--continue` can retry it.
+        let _ = write_state(git, verb.head_file(), &format!("{id}\n"));
+        let _ = write_state(git, "MERGE_MSG", &String::from_utf8_lossy(&pending.message));
+    })?;
     Ok(Outcome::Committed(made))
 }
 
@@ -535,6 +553,7 @@ pub(super) struct Pending {
     pub(super) message: Vec<u8>,
     /// The reflog action: git words a commit made by `--continue` differently from one made directly.
     pub(super) reflog: String,
+    pub(super) sign: SignFlag,
 }
 
 /// Writes the commit and moves the branch (or a detached `HEAD`) to it, logging the move as `pending.reflog`.
@@ -558,17 +577,7 @@ pub(super) fn make_commit_on(
         extra_headers: Vec::new(),
         message: pending.message.clone(),
     };
-    if let Some(signer) = signer_for(
-        git,
-        &SignFlag::default(),
-        "commit.gpgsign",
-        Some(&committer),
-    )? {
-        let sig = signer.sign(&record.encode(git.algorithm())?)?;
-        record
-            .extra_headers
-            .push((header_name(git.algorithm()).to_vec(), header_value(sig)));
-    }
+    sign_commit(git, &pending.sign, &mut record)?;
     let id = git
         .repo
         .objects()
@@ -699,6 +708,7 @@ fn continue_pick(git: &GitHome) -> Result<()> {
                         Verb::Revert => "commit",
                     }
                     .to_string(),
+                    sign: opts.sign.clone(),
                 },
             )?;
             let _ = std::fs::remove_file(dir.join(verb.head_file()));

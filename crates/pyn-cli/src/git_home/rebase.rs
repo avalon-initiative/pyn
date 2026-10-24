@@ -26,6 +26,7 @@ use super::pick::{
 };
 use super::rebase_merges::{self as merges, Mode as MergeMode, Range};
 use super::rewrite;
+use super::signing::SignFlag;
 use super::stage::{clean_message, merge_heads, parse_date, raw_mode, write_tree};
 use super::stash::{Applying, PushArgs, apply_commit, save, store_stash};
 use super::strategy::Settings;
@@ -147,8 +148,8 @@ pub struct RebaseArgs {
     pub(crate) apply: bool,
     #[arg(long, hide = true)]
     pub(crate) empty: Option<String>,
-    #[arg(short = 'S', long, hide = true, num_args = 0..=1, require_equals = true)]
-    pub(crate) gpg_sign: Option<Option<String>>,
+    #[command(flatten)]
+    pub(crate) sign: SignFlag,
 }
 
 impl RebaseArgs {
@@ -176,11 +177,6 @@ impl RebaseArgs {
                 "--empty",
                 self.empty.as_deref().is_some_and(|e| e != "drop"),
                 "commits that become empty are always dropped",
-            ),
-            (
-                "--gpg-sign",
-                self.gpg_sign.is_some(),
-                "set commit.gpgsign instead",
             ),
         ];
         if let Some((flag, _, why)) = given.iter().find(|(_, on, _)| *on) {
@@ -216,6 +212,7 @@ pub(super) struct Plan {
     /// `--root` without `--onto`: the empty commit the new root is built on.
     pub squash_onto: Option<ObjectId>,
     pub update_refs: bool,
+    pub sign: SignFlag,
 }
 
 impl Plan {
@@ -500,6 +497,7 @@ fn plan_of(git: &GitHome, args: &RebaseArgs) -> Result<Plan> {
         root: args.root,
         squash_onto,
         update_refs,
+        sign: args.sign.clone(),
     })
 }
 
@@ -511,6 +509,13 @@ pub(super) enum PullMode {
     Interactive,
 }
 
+/// What a pull hands to its rebase besides the commits.
+pub(super) struct PullOpts {
+    pub autostash: Option<bool>,
+    pub quiet: bool,
+    pub sign: SignFlag,
+}
+
 /// Replays the local commits onto `theirs` (from `fork`, else `theirs`), as `pull --rebase` does after fetching.
 pub(super) fn pull_rebase(
     git: &GitHome,
@@ -518,9 +523,13 @@ pub(super) fn pull_rebase(
     fork: Option<ObjectId>,
     mode: PullMode,
     action: String,
-    autostash: Option<bool>,
-    quiet: bool,
+    opts: PullOpts,
 ) -> Result<()> {
+    let PullOpts {
+        autostash,
+        quiet,
+        sign,
+    } = opts;
     let interactive = mode == PullMode::Interactive;
     let merges_args = RebaseArgs {
         rebase_merges: (mode == PullMode::Merges).then_some(None),
@@ -543,6 +552,7 @@ pub(super) fn pull_rebase(
         root: false,
         squash_onto: None,
         update_refs: git.repo.bool_setting("rebase.updaterefs", false),
+        sign,
     };
     begin(git, &plan).map_err(|e| {
         if e.is::<Failed>() {
@@ -573,6 +583,7 @@ struct State {
     squash_onto: Cell<Option<ObjectId>>,
     /// What git leaves in `GIT_REFLOG_ACTION` for the commits it makes through `git commit`.
     reflog_env: RefCell<String>,
+    sign: SignFlag,
 }
 
 fn dir_of(git: &GitHome) -> PathBuf {
@@ -622,6 +633,12 @@ impl State {
         if let Some(empty) = self.squash_onto.get() {
             self.put(git, "squash-onto", &format!("{empty}\n"))?;
         }
+        if let Some(opt) = self.sign.saved() {
+            self.put(git, "gpg_sign_opt", &format!("{opt}\n"))?;
+        }
+        if self.sign.no_gpg_sign {
+            self.put(git, "no_gpg_sign", "")?;
+        }
         self.save_progress(git)
     }
 }
@@ -668,6 +685,10 @@ fn load(git: &GitHome) -> Result<State> {
         action: "rebase".into(),
         squash_onto: Cell::new(read_id(git, &dir.join("squash-onto"))?),
         reflog_env: RefCell::new("rebase".into()),
+        sign: SignFlag {
+            no_gpg_sign: dir.join("no_gpg_sign").exists(),
+            ..text("gpg_sign_opt").map_or_else(SignFlag::default, |t| SignFlag::load(&t))
+        },
     })
 }
 
@@ -860,6 +881,7 @@ fn begin(git: &GitHome, plan: &Plan) -> Result<()> {
         action: plan.action.clone(),
         squash_onto: Cell::new(plan.squash_onto),
         reflog_env: RefCell::new(plan.action.clone()),
+        sign: plan.sign.clone(),
     };
     let mut state = state;
     let mut bad_sheet = None;
@@ -1543,6 +1565,7 @@ fn replay(git: &GitHome, state: &State, item: &Item) -> Result<()> {
                         author: picked.author.clone(),
                         message: picked.message.clone(),
                         reflog,
+                        sign: state.sign.clone(),
                     },
                 )?;
                 stop_with(git, state, id, &picked, &[], &subject, None, Why::Message)?;
@@ -1564,6 +1587,7 @@ fn replay(git: &GitHome, state: &State, item: &Item) -> Result<()> {
                 author: picked.author.clone(),
                 message,
                 reflog,
+                sign: state.sign.clone(),
             },
         )?;
     }
@@ -1788,6 +1812,7 @@ fn do_merge(git: &GitHome, state: &State, item: &Item) -> Result<()> {
             author,
             message: message.clone(),
             reflog: state.reflog_env.borrow().clone(),
+            sign: state.sign.clone(),
         },
         vec![head_id, *theirs],
     )?;
@@ -1816,6 +1841,7 @@ fn amend_merge(git: &GitHome, state: &State, item: &Item, commit: &Commit) -> Re
             author: commit.author.clone(),
             message,
             reflog: state.reflog_env.borrow().clone(),
+            sign: state.sign.clone(),
         },
         commit.parents.clone(),
     )?;
@@ -2021,6 +2047,7 @@ fn commit_over(
             author: head.author.clone(),
             message,
             reflog: format!("{} ({word})", state.action),
+            sign: state.sign.clone(),
         },
         head.parents.clone(),
     )?;
@@ -2343,6 +2370,7 @@ fn cont(git: &GitHome) -> Result<()> {
                     author,
                     message,
                     reflog: "rebase (continue)".into(),
+                    sign: state.sign.clone(),
                 },
                 parents,
             )?;

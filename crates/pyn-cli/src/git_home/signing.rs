@@ -4,7 +4,7 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, anyhow, bail};
-use pyn_object::{Algorithm, Signature};
+use pyn_object::{Algorithm, Commit, Signature};
 
 use super::GitHome;
 
@@ -23,10 +23,42 @@ pub(super) struct Signer {
 }
 
 /// What `-S` / `--no-gpg-sign` asked for on the command line.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, clap::Args)]
 pub struct SignFlag {
+    /// Sign the commits with `user.signingkey` or the given key id (git repository only).
+    #[arg(short = 'S', long, value_name = "KEYID", num_args = 0..=1, require_equals = true, overrides_with = "no_gpg_sign")]
     pub gpg_sign: Option<Option<String>>,
+    /// Do not sign, whatever `commit.gpgsign` says (git repository only).
+    #[arg(long, overrides_with = "gpg_sign")]
     pub no_gpg_sign: bool,
+}
+
+impl SignFlag {
+    /// The flag that was given, for the refusal where nothing signs.
+    pub fn first_given(&self) -> Option<&'static str> {
+        [
+            ("--gpg-sign", self.gpg_sign.is_some()),
+            ("--no-gpg-sign", self.no_gpg_sign),
+        ]
+        .into_iter()
+        .find_map(|(f, on)| on.then_some(f))
+    }
+
+    /// The `-S[<keyid>]` form git keeps in a rebase's `gpg_sign_opt`.
+    pub(super) fn saved(&self) -> Option<String> {
+        self.gpg_sign
+            .as_ref()
+            .map(|k| format!("-S{}", k.as_deref().unwrap_or_default()))
+    }
+
+    /// Reads back what [`SignFlag::saved`] wrote.
+    pub(super) fn load(text: &str) -> Self {
+        let key = text.trim().strip_prefix("-S");
+        Self {
+            gpg_sign: key.map(|k| (!k.is_empty()).then(|| k.to_string())),
+            no_gpg_sign: false,
+        }
+    }
 }
 
 /// The signer for a commit or tag, or `None` when it is not to be signed: the flags win over `config_key`.
@@ -84,6 +116,18 @@ pub(super) fn signer_for(
         program,
         key,
     }))
+}
+
+/// Adds the signature header to `record` when `flag` or `commit.gpgsign` asks for one.
+pub(super) fn sign_commit(git: &GitHome, flag: &SignFlag, record: &mut Commit) -> Result<()> {
+    let who = record.committer.clone();
+    if let Some(signer) = signer_for(git, flag, "commit.gpgsign", Some(&who))? {
+        let sig = signer.sign(&record.encode(git.algorithm())?)?;
+        record
+            .extra_headers
+            .push((header_name(git.algorithm()).to_vec(), header_value(sig)));
+    }
+    Ok(())
 }
 
 impl Signer {

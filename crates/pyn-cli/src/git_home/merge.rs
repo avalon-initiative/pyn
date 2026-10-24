@@ -563,14 +563,21 @@ impl Finish<'_> {
             return Ok(());
         }
         let tree = tree()?;
-        let record = Commit {
+        let mut record = Commit {
             tree,
             parents: vec![*ours, *theirs],
             author: identity(git, "author")?,
             committer: identity(git, "committer")?,
             extra_headers: Vec::new(),
-            message: message.into_bytes(),
+            message: message.clone().into_bytes(),
         };
+        if let Err(e) = super::signing::sign_commit(git, &args.sign, &mut record) {
+            // As git does, leave the merge to conclude with `pyn commit` once signing works.
+            write_state(git, "MERGE_HEAD", &format!("{theirs}\n"))?;
+            write_state(git, "MERGE_MSG", &message)?;
+            write_state(git, "MERGE_MODE", mode)?;
+            return Err(e);
+        }
         let id = git
             .repo
             .objects()

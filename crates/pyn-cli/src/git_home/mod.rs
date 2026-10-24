@@ -75,6 +75,7 @@ pub use rebase::RebaseArgs;
 pub use reflog::ReflogArgs;
 pub use remote::{RemoteArgs, on_server as remote_on_server};
 pub use reset::ResetKind;
+pub use signing::SignFlag;
 pub(crate) use stage::clean_message;
 pub use stash::StashArgs;
 pub use tags::TagArgs;
