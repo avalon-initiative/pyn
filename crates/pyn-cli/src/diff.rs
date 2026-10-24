@@ -350,8 +350,29 @@ fn similarity(src: &[u8], dst: &[u8], a: &BTreeMap<u64, u64>, b: &BTreeMap<u64, 
     copied * MAX_SCORE / large
 }
 
+/// The content of a blob.
+pub fn blob_bytes(backend: &dyn Backend, path: &str, blob: &Blob) -> Result<Vec<u8>> {
+    bytes(backend, path, blob, false)
+}
+
+/// The path `target` was renamed from in the change `old` to `new`, as `git log --follow` finds it.
+pub fn renamed_from(
+    backend: &dyn Backend,
+    old: &Tree,
+    new: &Tree,
+    target: &str,
+) -> Result<Option<String>> {
+    let new: Tree = new
+        .iter()
+        .filter(|(p, _)| p.as_str() == target || old.contains_key(*p))
+        .map(|(p, b)| (p.clone(), b.clone()))
+        .collect();
+    let found = detect_renames(backend, old, &new)?;
+    Ok(found.get(target).map(|(src, _)| (*src).to_string()))
+}
+
 /// Renames git detects: identical content first, then at least half-similar content, as `dst -> (src, percent)`.
-fn detect_renames<'a>(
+pub fn detect_renames<'a>(
     backend: &dyn Backend,
     old: &'a Tree,
     new: &'a Tree,

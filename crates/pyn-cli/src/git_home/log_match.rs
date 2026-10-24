@@ -4,9 +4,26 @@ use anyhow::{Result, bail};
 use chrono::{DateTime, Duration, Local, Months, NaiveDate, TimeZone, Utc};
 use regex::{Regex, RegexBuilder};
 
-/// A basic regular expression, matched per line as git does.
-pub fn compile(pattern: &str, ignore_case: bool) -> Result<Regex> {
-    let translated = bre_to_regex(pattern)?;
+/// How `--grep`, `--author` and `--committer` read their patterns.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Dialect {
+    Basic,
+    Extended,
+    Fixed,
+}
+
+/// An extended regular expression, as `-G` and `-E` take it.
+pub fn compile_ere(pattern: &str, ignore_case: bool) -> Result<Regex> {
+    compile_as(pattern, ignore_case, Dialect::Extended)
+}
+
+/// A pattern in `dialect`, matched per line as git does.
+pub fn compile_as(pattern: &str, ignore_case: bool, dialect: Dialect) -> Result<Regex> {
+    let translated = match dialect {
+        Dialect::Basic => bre_to_regex(pattern)?,
+        Dialect::Extended => ere_to_regex(pattern)?,
+        Dialect::Fixed => regex::escape(pattern),
+    };
     RegexBuilder::new(&translated)
         .multi_line(true)
         .case_insensitive(ignore_case)
@@ -71,6 +88,60 @@ fn bre_to_regex(pattern: &str) -> Result<String> {
         i += 1;
     }
     Ok(out)
+}
+
+/// Translates ERE into the `regex` crate's syntax.
+fn ere_to_regex(pattern: &str) -> Result<String> {
+    let chars: Vec<char> = pattern.chars().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        match c {
+            '\\' => {
+                i += 1;
+                let Some(&n) = chars.get(i) else {
+                    bail!("command line, '{pattern}': Trailing backslash");
+                };
+                match n {
+                    '<' | '>' => out.push_str("\\b"),
+                    'w' | 'W' | 's' | 'S' | 'b' | 'B' => {
+                        out.push('\\');
+                        out.push(n);
+                    }
+                    '1'..='9' => {
+                        bail!("command line, '{pattern}': back-references are not supported")
+                    }
+                    _ => literal(n, &mut out),
+                }
+            }
+            '[' => i = bracket(&chars, i, &mut out, pattern)?,
+            '}' => literal(c, &mut out),
+            '(' if chars.get(i + 1) == Some(&'?') => {
+                bail!("command line, '{pattern}': Invalid preceding regular expression")
+            }
+            '{' => match interval_end(&chars, i) {
+                Some(end) => {
+                    out.extend(&chars[i..=end]);
+                    i = end;
+                }
+                None => bail!("command line, '{pattern}': Invalid preceding regular expression"),
+            },
+            '(' | ')' | '|' | '*' | '+' | '?' | '.' | '^' | '$' => out.push(c),
+            _ => literal(c, &mut out),
+        }
+        i += 1;
+    }
+    Ok(out)
+}
+
+/// The index of the `}` closing an interval (`{2}`, `{2,}`, `{2,5}`) that starts at `chars[start]`.
+fn interval_end(chars: &[char], start: usize) -> Option<usize> {
+    let close = (start + 1..chars.len()).find(|&j| chars[j] == '}')?;
+    let body: String = chars[start + 1..close].iter().collect();
+    let (lo, hi) = body.split_once(',').unwrap_or((&body, &body));
+    let digits = |t: &str| t.bytes().all(|b| b.is_ascii_digit());
+    (!lo.is_empty() && digits(lo) && digits(hi)).then_some(close)
 }
 
 /// Copies the bracket expression starting at `chars[start]` and returns the index of its closing `]`.
@@ -229,6 +300,10 @@ fn iso(text: &str, now: DateTime<Local>) -> Option<i64> {
 mod tests {
     use super::*;
 
+    fn compile(pattern: &str, ignore_case: bool) -> Result<Regex> {
+        compile_as(pattern, ignore_case, Dialect::Basic)
+    }
+
     fn now() -> DateTime<Local> {
         Local.timestamp_opt(1_800_000_000, 0).unwrap()
     }
@@ -242,6 +317,17 @@ mod tests {
         assert!(m("*a", "*a") && m("a.c", "abc") && m("[[:digit:]]\\+", "x12"));
         assert!(m("[]x]", "]") && m("a$b", "a$b") && m("\\(ab\\)*c", "c"));
         assert!(compile("[a", false).is_err() && compile("a\\", false).is_err());
+    }
+
+    #[test]
+    fn extended_and_fixed_expressions() {
+        let ere = |p: &str, t: &str| compile_ere(p, false).unwrap().is_match(t);
+        assert!(ere("a|b", "b") && ere("(ab)+c", "ababc") && ere("a{2}", "aa"));
+        assert!(ere("a\\|b", "a|b") && !ere("a\\|b", "a") && compile_ere("x{", false).is_err());
+        assert!(ere("\\<ab\\>", "x ab y") && ere("a\\.b", "a.b") && !ere("a\\.b", "axb"));
+        assert!(compile_ere("(", false).is_err() && compile_ere("a\\1", false).is_err());
+        let fixed = compile_as("a.b*", false, Dialect::Fixed).unwrap();
+        assert!(fixed.is_match("xa.b*") && !fixed.is_match("axb"));
     }
 
     #[test]

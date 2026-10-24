@@ -852,9 +852,9 @@ fn main() {
         eprintln!("fatal: not a git repository (or any of the parent directories): .git");
         std::process::exit(128);
     }
-    let cli = match Cli::try_parse_from(attached_gpg_keys(attached_pull_rebase(
+    let cli = match Cli::try_parse_from(attached_gpg_keys(attached_pull_rebase(counted_log(
         std::env::args_os().collect(),
-    ))) {
+    )))) {
         Ok(cli) => cli,
         Err(e) => {
             let code = if e.use_stderr() { 129 } else { 0 };
@@ -907,6 +907,32 @@ fn in_git_home() -> bool {
         .ok()
         .and_then(|cwd| git_home::detect(&cwd).ok().flatten())
         .is_some()
+}
+
+/// Rewrites `log -<n>` to `--max-count=<n>`; clap has no option named by digits.
+fn counted_log(args: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsString> {
+    let Some(at) = args
+        .iter()
+        .skip(1)
+        .position(|a| a == "log" || a == "history")
+        .map(|i| i + 1)
+    else {
+        return args;
+    };
+    let mut ended = false;
+    let rewritten = args.iter().enumerate().map(|(i, arg)| {
+        let text = arg.to_string_lossy();
+        ended |= i > at && text == "--";
+        match text.strip_prefix('-') {
+            Some(n)
+                if i > at && !ended && !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) =>
+            {
+                format!("--max-count={n}").into()
+            }
+            _ => arg.clone(),
+        }
+    });
+    rewritten.collect()
 }
 
 /// Rewrites `pull -r<mode>` to `--rebase=<mode>`; clap takes an optional value only after `=`.
@@ -1155,6 +1181,12 @@ fn run(cli: Cli) -> Result<()> {
         && let Some(text) = opts.server_message(message)?
     {
         *message = vec![text];
+    }
+    if let Command::Log { git: opts, .. } = &cli.command
+        && git.is_some()
+        && let Some(why) = opts.refused()
+    {
+        usage_error(&format!("`pyn log {why}"));
     }
     if let Command::Log {
         git: opts, path, ..

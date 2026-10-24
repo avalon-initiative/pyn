@@ -30,15 +30,133 @@ fn identity(c: &mut Command, who: (&str, &str), date: &str) {
 
 impl Fixture {
     fn new(format: &'static str) -> Self {
+        let f = Self::empty(format);
+        f.build();
+        f
+    }
+
+    fn empty(format: &'static str) -> Self {
         let tmp = tempdir().unwrap();
         let repo = tmp.path().canonicalize().unwrap().join("repo");
         init(&repo, format, false);
-        let f = Self {
+        Self {
             _tmp: tmp,
             repo,
             format,
+        }
+    }
+
+    /// A random history of `n` commits built with `commit-tree`: forks, 2-way and octopus merges, equal dates.
+    fn with_dag(format: &'static str, seed: u64, n: usize) -> Self {
+        let f = Self::empty(format);
+        let mut state = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        let mut next = move |m: u64| {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (state >> 33) % m
         };
-        f.build();
+        let mut mk = git(&f.repo);
+        let tree = {
+            let out = mk
+                .arg("mktree")
+                .stdin(std::process::Stdio::null())
+                .output()
+                .unwrap();
+            String::from_utf8(out.stdout).unwrap().trim().to_string()
+        };
+        let mut ids: Vec<String> = Vec::new();
+        let mut time = 1_700_000_000u64;
+        for i in 0..n {
+            let count = if i == 0 || next(12) == 0 {
+                0
+            } else if i < 4 {
+                1
+            } else {
+                [1, 1, 1, 1, 2, 2, 3][next(7) as usize]
+            };
+            let recent = &ids[ids.len().saturating_sub(4)..];
+            let mut pool: Vec<String> = if next(10) < 7 {
+                recent.to_vec()
+            } else {
+                ids.clone()
+            };
+            let mut parents = Vec::new();
+            while parents.len() < count && !pool.is_empty() {
+                parents.push(pool.remove(next(pool.len() as u64) as usize));
+            }
+            time += [0, 10, 10, 50][next(4) as usize];
+            let mut c = git(&f.repo);
+            identity(&mut c, ("Dag", "dag@example.com"), &format!("{time} +0000"));
+            c.args(["commit-tree", &tree, "-m", &format!("c{i}")]);
+            for p in &parents {
+                c.args(["-p", p]);
+            }
+            let out = c.output().unwrap();
+            ids.push(String::from_utf8(out.stdout).unwrap().trim().to_string());
+        }
+        f.git(
+            ("t", "t@example.com"),
+            "1700000000 +0000",
+            &["update-ref", "refs/heads/main", ids.last().unwrap()],
+        );
+        for j in 0..next(4) {
+            let at = &ids[next(ids.len() as u64) as usize];
+            f.git(
+                ("t", "t@example.com"),
+                "1700000000 +0000",
+                &["update-ref", &format!("refs/heads/b{j}"), at],
+            );
+        }
+        f
+    }
+
+    /// History with renames: an exact one, an edited one into a folder, a merge, and a path that is deleted and added again.
+    fn with_renames(format: &'static str) -> Self {
+        let f = Self::empty(format);
+        let (ann, bob) = (
+            ("Ann Author", "ann@example.com"),
+            ("Bob Builder", "bob@example.com"),
+        );
+        let body: String = (1..=20).map(|i| format!("line {i}\n")).collect();
+        f.write("a.txt", body.as_bytes());
+        f.commit(ann, "1700000000 +0000", "add a");
+        f.write("other.txt", b"other\n");
+        f.commit(bob, "1700000100 +0000", "add other");
+        f.git(ann, "1700000200 +0000", &["mv", "a.txt", "b.txt"]);
+        f.commit(ann, "1700000200 +0000", "rename a to b");
+        f.write("b.txt", format!("{body}more\n").as_bytes());
+        f.commit(bob, "1700000300 +0000", "edit b");
+        f.git(bob, "1700000400 +0000", &["switch", "-q", "-c", "side"]);
+        f.write("other.txt", b"other\nside\n");
+        f.commit(bob, "1700000500 +0000", "side edits other");
+        f.git(bob, "1700000600 +0000", &["switch", "-q", "main"]);
+        f.write("b.txt", format!("{body}more\nmain\n").as_bytes());
+        f.commit(ann, "1700000700 +0000", "main edits b");
+        f.git(
+            ann,
+            "1700000800 +0000",
+            &["merge", "-q", "--no-ff", "-m", "merge side", "side"],
+        );
+        let edited = body
+            .replace("line 5\n", "line five\n")
+            .replace("line 6\n", "line six\n");
+        f.git(bob, "1700000900 +0000", &["mv", "b.txt", "sub_c.txt"]);
+        f.write("sub_c.txt", format!("{edited}more\nmain\n").as_bytes());
+        fs::create_dir_all(f.repo.join("sub")).unwrap();
+        f.git(bob, "1700000900 +0000", &["mv", "sub_c.txt", "sub/c.txt"]);
+        f.commit(bob, "1700000900 +0000", "move b into sub and edit");
+        f.write(
+            "sub/c.txt",
+            format!("{edited}more\nmain\nlast\n").as_bytes(),
+        );
+        f.commit(ann, "1700001000 +0000", "edit c");
+        f.git(ann, "1700001100 +0000", &["rm", "-q", "sub/c.txt"]);
+        f.commit(ann, "1700001100 +0000", "remove c");
+        f.write("sub/c.txt", b"fresh\n");
+        f.commit(bob, "1700001200 +0000", "new c");
         f
     }
 
@@ -492,19 +610,299 @@ fn bad_arguments_fail_as_git_does() {
 }
 
 #[test]
+fn counts_all_refs_and_first_parent_match_git() {
+    each_format(|f| {
+        for args in [
+            &["-1"][..],
+            &["-3"],
+            &["-2", "--oneline"],
+            &["-0"],
+            &["-2", "--reverse"],
+            &["-2", "--", "b.txt"],
+            &["-1", "-p"],
+            &["--all"],
+            &["--all", "--oneline"],
+            &["--all", "--format=%h%d"],
+            &["--all", "--", "b.txt"],
+            &["--all", "-2"],
+            &["--all", "--reverse", "--oneline"],
+            &["--all", "^v1", "--oneline"],
+            &["--all", "--first-parent", "--oneline"],
+            &["--first-parent"],
+            &["--first-parent", "--oneline"],
+            &["--first-parent", "--", "b.txt"],
+            &["--first-parent", "--", "s.txt"],
+            &["--first-parent", "a.txt"],
+            &["--first-parent", "v1..HEAD", "--oneline"],
+            &["--first-parent", "^v1", "HEAD", "--oneline"],
+            &["--first-parent", "side", "--oneline"],
+            &["--first-parent", "--stat"],
+            &["--first-parent", "--name-only"],
+            &["--first-parent", "-p", "-2"],
+            &["--first-parent", "--merges", "--oneline"],
+            &["--first-parent", "--no-merges", "--oneline"],
+        ] {
+            f.same(args);
+        }
+    });
+}
+
+#[test]
+fn decorate_matches_git() {
+    each_format(|f| {
+        for args in [
+            &["--decorate"][..],
+            &["--decorate=short"],
+            &["--decorate=full"],
+            &["--decorate=no"],
+            &["--decorate=auto"],
+            &["--decorate=yes"],
+            &["--decorate=off"],
+            &["--no-decorate"],
+            &["--decorate", "--no-decorate"],
+            &["--no-decorate", "--decorate"],
+            &["--decorate", "--oneline"],
+            &["--decorate=full", "--oneline"],
+            &["--decorate", "--pretty=oneline"],
+            &["--decorate", "--pretty=short"],
+            &["--decorate", "--pretty=full"],
+            &["--decorate", "--pretty=fuller"],
+            &["--decorate", "--pretty=raw"],
+            &["--decorate", "--format=%h"],
+            &["--decorate", "--format=%h%d"],
+            &["--decorate=full", "--format=%h%d"],
+            &["--decorate=full", "--format=%D"],
+            &["--no-decorate", "--format=%h%d"],
+            &["--decorate", "--all", "--oneline"],
+            &["--decorate=full", "--all", "--oneline"],
+            &["--decorate", "--stat"],
+            &["--decorate", "--oneline", "-p", "-3"],
+            &["--decorate=bogus"],
+            &["--decorate", "v1"],
+        ] {
+            f.same(args);
+        }
+        f.git(
+            ("t", "t@example.com"),
+            "1700009000 +0000",
+            &["switch", "-q", "--detach", "v1"],
+        );
+        f.same(&["--decorate", "--all", "--oneline"]);
+        f.same(&["--decorate=full", "--oneline", "HEAD", "main"]);
+    });
+}
+
+#[test]
+fn follow_matches_git() {
+    for format in FORMATS {
+        let f = Fixture::with_renames(format);
+        for args in [
+            &["--follow", "--", "sub/c.txt"][..],
+            &["--follow", "--oneline", "--", "sub/c.txt"],
+            &["--follow", "--oneline", "sub/c.txt"],
+            &["--follow", "--oneline", "--", "b.txt"],
+            &["--follow", "--oneline", "--", "a.txt"],
+            &["--follow", "--oneline", "--", "other.txt"],
+            &["--follow", "--oneline", "--", "nothing.txt"],
+            &["--follow", "--oneline", "-n", "2", "--", "sub/c.txt"],
+            &["--follow", "--oneline", "-1", "--", "other.txt"],
+            &["--follow", "--oneline", "--skip=1", "--", "sub/c.txt"],
+            &["--follow", "--oneline", "--reverse", "--", "sub/c.txt"],
+            &["--follow", "--oneline", "--first-parent", "--", "sub/c.txt"],
+            &["--follow", "--oneline", "--author=Bob", "--", "sub/c.txt"],
+            &["--follow", "--oneline", "--decorate", "--", "sub/c.txt"],
+            &["--follow", "--format=%h %an", "--", "sub/c.txt"],
+            &["--follow", "--oneline", "HEAD~3", "--", "b.txt"],
+            &["--follow", "--oneline", "--all", "--", "sub/c.txt"],
+            &["--follow", "--oneline", "--merges", "--", "sub/c.txt"],
+            &["--oneline", "--follow", "--", "sub"],
+            &["--follow", "--oneline"],
+            &["--follow", "--oneline", "--", "a.txt", "b.txt"],
+        ] {
+            f.same(args);
+        }
+    }
+}
+
+#[test]
+fn pickaxe_matches_git() {
+    each_format(|f| {
+        for args in [
+            &["-S", "tail", "--oneline"][..],
+            &["-Stail", "--oneline"],
+            &["-S", "line 3", "--oneline"],
+            &["-S", "fn start", "--oneline"],
+            &["-S", "b", "--oneline"],
+            &["-S", "side", "--oneline"],
+            &["-S", "x", "--oneline"],
+            &["-S", "nothing here", "--oneline"],
+            &["-S", "TAIL", "-i", "--oneline"],
+            &["-S", "TAIL", "--oneline"],
+            &["-G", "line [0-9]+", "--oneline"],
+            &["-G", "^q$", "--oneline"],
+            &["-G", "tail|more", "--oneline"],
+            &["-G", "tail\\|more", "--oneline"],
+            &["-G", "TAIL", "-i", "--oneline"],
+            &["-Gx", "--oneline"],
+            &["-G", "side", "-E", "--oneline"],
+            &["-S", "tail", "--format=%h%d"],
+            &["-S", "tail"],
+            &["-S", "tail", "--stat"],
+            &["-S", "b", "--name-only"],
+            &["-S", "b", "--name-status"],
+            &["-S", "b", "--shortstat"],
+            &["-S", "line", "-p"],
+            &["-G", "line", "-p", "-U1"],
+            &["-S", "more", "--oneline", "--", "s.txt"],
+            &["-S", "more", "--oneline", "s.txt", "b.txt"],
+            &["-S", "more", "--first-parent", "--oneline"],
+            &["-S", "feature", "--first-parent", "-p"],
+            &["-S", "b", "--reverse", "--oneline"],
+            &["-S", "b", "-n1", "--oneline"],
+            &["-S", "b", "--skip=1", "--oneline"],
+            &["-S", "b", "--all", "--oneline"],
+            &["-S", "b", "--merges", "--oneline"],
+            &["-S", "q", "--author=Bob", "--oneline"],
+            &["-S", "q", "v1..HEAD", "--oneline"],
+            &["-S", "b", "-G", "b"],
+        ] {
+            f.same(args);
+        }
+    });
+    for format in FORMATS {
+        let f = Fixture::with_renames(format);
+        for args in [
+            &["-S", "line 3", "--oneline"][..],
+            &["-S", "more", "--oneline"],
+            &["-S", "last", "--oneline"],
+            &["-S", "fresh", "--oneline"],
+            &["-S", "line five", "--oneline"],
+            &["-G", "line", "--oneline"],
+            &["-G", "five", "--oneline"],
+            &["-G", "side", "--oneline"],
+            &["-S", "line", "--oneline", "--", "sub"],
+        ] {
+            f.same(args);
+        }
+    }
+}
+
+#[test]
+fn regex_dialects_match_git() {
+    each_format(|f| {
+        for args in [
+            &["-E", "--grep=o(n|u)e"][..],
+            &["-E", "--grep=^t(wo|hree)$"],
+            &["-E", "--grep=s.d+e"],
+            &["-E", "--grep=s.{1,2}e one"],
+            &["-E", "--grep=side one|merge"],
+            &["--extended-regexp", "--grep=fo+ur"],
+            &["-E", "--grep=fo\\+ur"],
+            &["--grep=fo\\+ur"],
+            &["-E", "--author=Bob|Ann"],
+            &["-E", "--committer=^C (Cy|Dee)"],
+            &["-E", "--author=Bob|Ann", "-i"],
+            &["-E", "--grep=a{2"],
+            &["-E", "--grep=\\bone\\b"],
+            &["-E", "--grep=(", "--oneline"],
+            &["-E", "--grep=one", "--grep=two", "--all-match"],
+            &["-F", "--grep=side"],
+            &["-F", "--grep=a.b"],
+            &["-F", "--grep=s.de"],
+            &["-F", "--grep=SIDE", "-i"],
+            &["--fixed-strings", "--grep=two"],
+            &["-F", "--author=<cy@"],
+            &["-F", "--author=Ann.Author"],
+            &["-F", "--grep=side: more"],
+            &["-F", "--grep=^one"],
+            &["-F", "--grep=one$"],
+            &["-F", "--grep=(", "--oneline"],
+            &["-E", "-F", "--grep=s.de"],
+            &["-F", "-E", "--grep=s.de"],
+            &["-F", "--basic-regexp", "--grep=s.de"],
+            &["--basic-regexp", "-E", "--grep=o(n|u)e"],
+        ] {
+            f.same(args);
+        }
+    });
+}
+
+#[test]
+fn graph_matches_git() {
+    each_format(|f| {
+        for args in [
+            &["--graph", "--oneline"][..],
+            &["--graph"],
+            &["--graph", "--format=%h %s"],
+            &["--graph", "--format=format:%h"],
+            &["--graph", "--pretty=short"],
+            &["--graph", "--pretty=fuller", "-4"],
+            &["--graph", "--pretty=oneline", "--decorate"],
+            &["--graph", "--oneline", "--all"],
+            &["--graph", "--oneline", "--first-parent"],
+            &["--graph", "--oneline", "--skip=2", "-3"],
+            &["--graph", "--oneline", "v1..HEAD"],
+            &["--graph", "--oneline", "side", "feature"],
+        ] {
+            f.same(args);
+        }
+    });
+    for format in FORMATS {
+        for seed in 0..40 {
+            let f = Fixture::with_dag(format, seed, 6 + (seed as usize % 12));
+            for args in [
+                &["--graph", "--oneline"][..],
+                &["--graph"],
+                &["--graph", "--format=%h%n%s"],
+                &["--graph", "--oneline", "--all"],
+                &["--graph", "--oneline", "--first-parent"],
+                &["--graph", "--oneline", "-5"],
+            ] {
+                f.same(args);
+            }
+        }
+    }
+}
+
+#[test]
+fn graph_refusals() {
+    let f = Fixture::new("sha1");
+    f.same(&["--graph", "--reverse"]);
+    for args in [
+        &["--graph", "--oneline", "--", "a.txt"][..],
+        &["--graph", "a.txt"],
+    ] {
+        let (code, out, _) = f.pyn(&f.repo, args);
+        assert_eq!(code, 128, "{args:?}");
+        assert!(out.is_empty());
+    }
+    for args in [
+        &["--graph", "-p"][..],
+        &["--graph", "--stat"],
+        &["--graph", "--grep=one"],
+        &["--graph", "--author=Bob"],
+        &["--graph", "--merges"],
+        &["--graph", "--since=2020-01-01"],
+        &["--graph", "-S", "x"],
+    ] {
+        let (code, out, _) = f.pyn(&f.repo, args);
+        assert_eq!(code, 129, "{args:?}");
+        assert!(out.is_empty());
+    }
+}
+
+#[test]
 fn unsupported_variants_are_usage_errors() {
     let f = Fixture::new("sha1");
     for args in [
-        &["--graph"][..],
-        &["--all"],
-        &["--follow", "--", "b.txt"],
-        &["--decorate"],
-        &["-S", "x"],
-        &["-G", "x"],
-        &["--first-parent"],
+        &["-P", "--grep=x"][..],
+        &["--perl-regexp", "--grep=x"],
+        &["--follow", "-p", "--", "b.txt"],
+        &["--follow", "--stat", "--", "b.txt"],
+        &["--follow", "--name-only", "--", "b.txt"],
+        &["--follow", "-S", "x", "--", "b.txt"],
         &["--show-signature"],
         &["--notes"],
-        &["-E", "--grep=x"],
         &["--format"],
         &["--stat", "--shortstat"],
         &["--name-only", "-p"],

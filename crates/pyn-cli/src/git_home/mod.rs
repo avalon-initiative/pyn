@@ -16,6 +16,8 @@ mod fetch_map;
 mod hunk_pick;
 mod init_git;
 mod log;
+mod log_gate;
+mod log_graph;
 mod log_match;
 pub(crate) mod meld;
 mod merge;
