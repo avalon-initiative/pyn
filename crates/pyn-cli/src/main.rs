@@ -150,6 +150,8 @@ enum Command {
     Stash(git_home::StashArgs),
     /// Remove untracked files from the work tree (a git repository only).
     Clean(git_home::CleanArgs),
+    /// Search the work tree, the index (--cached) or revisions for a pattern, as `git grep` (a git repository only).
+    Grep(git_home::GrepArgs),
     /// Show, check and prune the reflog (a git repository only).
     Reflog(git_home::ReflogArgs),
     /// Reapply the current branch's commits on top of another base (a git repository only).
@@ -1669,6 +1671,10 @@ fn run(cli: Cli) -> Result<()> {
         }
         Command::Clean(_) => {
             eprintln!("{}", unsupported::message("clean"));
+            std::process::exit(1);
+        }
+        Command::Grep(_) => {
+            eprintln!("{}", unsupported::message("grep"));
             std::process::exit(1);
         }
         Command::Reflog(_) => {

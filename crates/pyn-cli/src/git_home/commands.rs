@@ -101,6 +101,12 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
             }
             Ok(())
         }
+        Command::Grep(_) => {
+            if !super::grep::grep(git, cwd)? {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
         Command::Reflog(args) => super::reflog::reflog(git, args),
         Command::Rebase(args) => super::rebase::rebase(git, &args),
         Command::Remote(args) => super::remote::remote(git, args),

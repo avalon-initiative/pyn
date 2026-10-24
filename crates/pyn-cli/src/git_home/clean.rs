@@ -290,7 +290,7 @@ impl Cleaner<'_> {
     }
 }
 
-fn relative(path: &[u8], cwd: &[u8]) -> Vec<u8> {
+pub(super) fn relative(path: &[u8], cwd: &[u8]) -> Vec<u8> {
     let mut p: Vec<&[u8]> = path
         .split(|b| *b == b'/')
         .filter(|s| !s.is_empty())

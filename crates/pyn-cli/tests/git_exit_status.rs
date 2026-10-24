@@ -812,6 +812,32 @@ fn groups() -> Vec<(&'static str, Vec<Case>)> {
                 case(Outside, "config --list --local"),
             ],
         ),
+        (
+            "grep",
+            vec![
+                case(Dirty, "grep"),
+                case(Dirty, "grep -e"),
+                case(Dirty, "grep --bogus"),
+                case(Dirty, "grep README"),
+                case(Dirty, "grep zzzzzz"),
+                case(Dirty, "grep -q README"),
+                case(Dirty, "grep -l README"),
+                case(Dirty, "grep README HEAD"),
+                case(Dirty, "grep --cached README"),
+                case(Dirty, "grep --cached README HEAD"),
+                case(Dirty, "grep README nosuchpath"),
+                case(Dirty, "grep README -- nosuchpath"),
+                case(Dirty, "grep README nosuchrev --"),
+                case(Dirty, "grep README -n"),
+                case(Dirty, "grep -E ("),
+                case(Dirty, "grep ("),
+                case(Dirty, "grep --not"),
+                case(Dirty, "grep -e README --and"),
+                case(Dirty, "grep README ../outside"),
+                case(Clean, "grep clean"),
+                case(Clean, "grep -c clean HEAD"),
+            ],
+        ),
     ]
 }
 
@@ -853,7 +879,8 @@ group_tests!(
     pull,
     push,
     clone,
-    config
+    config,
+    grep
 );
 
 #[test]
