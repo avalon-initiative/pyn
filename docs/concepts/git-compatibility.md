@@ -161,7 +161,8 @@ Commands people reach for that are not in the daily set.
 | `git grep [<options>] [-e] <pattern> [<rev>...] [[--] <path>...]` | `pyn grep ...` on a git home | git home only | See [Grep](#grep). Searches the tracked files of the work tree, the index (`--cached`) or the commits named; `-n -i -w -l -c -v -q -h -H -a -I -E -G -F`, `-e` (repeatable), `--and`, `--or`, `--not` and parentheses, pathspecs after the revisions or `--`. On a pyn server or local-store workspace it says it needs a git repository (`1`). |
 | `git blame`, `git annotate` | none | unsupported | Git-command message. Line history needs merge-capable text history; not scheduled. |
 | `git submodule` | none | unsupported | Submodule lifecycle commands are not built. On a git home, `status` and `diff` inspect recorded gitlinks and initialized submodule checkouts without changing them; see [On a git home](#on-a-git-home). |
-| `git archive`, `git bundle`, `git format-patch`, `git am`, `git apply`, `git notes`, `git bisect`, `git worktree`, `git gc`, `git fsck` | none | unsupported | `pyn: '<cmd>' is not a pyn command` (`1`). Only the commands in the git-only list print the "git command pyn does not support yet" message, so these read as unknown until that list is widened (#223). |
+| `git format-patch`, `git apply`, `git am` | the same names on a git home | git home only | See [Patches](#patches). On a pyn server `format-patch` and `am` fail with `fatal: not a git repository (or any of the parent directories): .git` (`128`), as does `apply`, which git would run outside a repository too. |
+| `git archive`, `git bundle`, `git notes`, `git bisect`, `git worktree`, `git gc`, `git fsck` | none | unsupported | `pyn: '<cmd>' is not a pyn command` (`1`). Only the commands in the git-only list print the "git command pyn does not support yet" message, so these read as unknown until that list is widened (#223). |
 
 ## Branching and merging
 
@@ -790,6 +791,7 @@ whatever the rules say.
 | `clean` | See [Clean](#clean). |
 | `reflog` | See [Reflogs](#reflogs). |
 | `rev-parse`, `ls-files`, `ls-tree`, `cat-file`, `show-ref`, `shortlog`, `describe`, `name-rev` | See [Inspection commands](#inspection-commands). |
+| `format-patch`, `apply`, `am` | See [Patches](#patches). |
 | `init` | See above. `pyn init` starts a pyn repository; `pyn init-git` starts a git one. |
 | `login`, `logout`, `register`, `password`, `key`, `token`, `user`, `org`, `team`, `repo`, `usage`, `setup`, `admin`, `whoami`, `member`, `role`, `invite` | Run as anywhere else; see [Refused commands](#refused-commands). |
 | `lock`, `unlock`, `locks`, `policy`, `audit`, `verify`, `summary` | Refuse; see [Refused commands](#refused-commands). |
@@ -1781,6 +1783,55 @@ with `fatal: not a git repository (or any of the parent directories): .git` (`12
 Abbreviations (`--short`, `--abbrev`, `describe`) start at `core.abbrev` or 7 digits and grow until the id is unique among all
 objects. git also grows the default length with the size of the repository (8 digits from about 16,000 objects); pyn does not,
 so past that size a default abbreviation can be one digit shorter than git's.
+
+### Patches
+
+`format-patch`, `apply` and `am` write and read the same text as git, and `crates/pyn-cli/tests/git_format_patch.rs`,
+`git_apply.rs` and `git_am.rs` compare each with the real git on twin repositories (SHA-1 and SHA-256): standard output, the
+files written, exit statuses, whether standard error carries anything, the work tree, the index and, for `am`, the commit ids
+and the session files in `.git/rebase-apply`, so git can carry on a session pyn stopped and the other way round. Settings and
+options that are not listed are a usage error (`129`) where git would accept them; settings that change the result and are
+not read (`format.*`, `am.*`, `apply.whitespace`, `apply.ignoreWhitespace`, `core.whitespace`) are refused the same way.
+
+| Command | Supported |
+| --- | --- |
+| `format-patch` | `<since>`, `<a>..<b>`, `-<n>` (alone, or ending at a revision), `--root`, `--stdout`, `-o <dir>`, `-n`/`--numbered`, `-N`/`--no-numbered`, `--subject-prefix`, `--cover-letter`, `-s`/`--signoff`, `--signature`, `--no-signature`, `--no-stat`/`-p`, `-U<n>`, `--suffix`, `-q`, `--no-renames`. Merge commits are skipped. Files are named `0001-subject.patch` as git names them and listed on standard output. Subjects and names are wrapped and encoded (`=?UTF-8?q?...?=`) as git does, with the MIME headers when the message is not ASCII. With no revision it uses `@{upstream}`, and prints nothing when there is none. |
+| `apply` | `--check`, `--stat`, `--numstat`, `--summary`, `--apply`, `--index`, `--cached`, `-R`, `-p<n>`, `-3`/`--3way`, `--whitespace=warn\|nowarn`, `--allow-empty`, patch files and `-` (standard input). |
+| `am` | mbox files and standard input, `--continue`/`-r`, `--skip`, `--abort`, `--quit`, `--show-current-patch[=diff\|raw]`, `-3`/`--3way`, `-s`/`--signoff`, `-q`, `--whitespace=warn\|nowarn`, `-S`/`--gpg-sign`, `--no-gpg-sign`. |
+
+`format-patch` ends each patch with `-- ` and `pyn <version>` where git prints its own version. A rename is a delete and a
+create (the diff has no rename detection), and a binary change is a usage error (`129`). `--cover-letter` is refused (`129`)
+when the range walks over a merge commit, because git's diffstat for that letter depends on what it walked. A commit message
+with a long first paragraph is joined and wrapped at 78 columns as git does.
+
+`apply` takes hunks exactly where git does: the context must match without fuzz, searched outwards from the line the hunk
+names, and a hunk without leading or trailing context is held to the start or end of the file. Everything is checked before
+anything is written, so a failure changes nothing (`1`; a malformed patch is `128`). It handles creations, deletions, renames,
+copies, mode changes, symlinks and several patches (or several files) in one input, applies to the work tree alone, to the work
+tree and index (`--index`, which requires the work tree to match the index by content, where git compares file stat data) or to
+the index alone, and reports whitespace errors in added lines (trailing whitespace, a space before a tab, blank lines at the end
+of the file) as `--whitespace=warn` does, but only when it applies the patch, as git does. `--3way` merges each file against the
+blob the patch's `index` line names; conflicts are left as `ours`/`theirs` markers (with a base section when
+`merge.conflictStyle` is `diff3`; `zdiff3` is a usage error) and as unmerged index entries, with `U <path>` and exit `1`.
+Binary patches (`GIT binary patch`), submodule patches and these options are a usage error (`129`): `--reject`, `-C`,
+`--ignore-space-change`, `--ignore-whitespace`, `--unidiff-zero`, `--directory`, `--include`, `--exclude`, `-z`, `--recount`,
+`--inaccurate-eof`, `--build-fake-ancestor`, `-N`, `--unsafe-paths`, `-v`, `-q`, `--no-add` and `--whitespace=error`, `fix`
+and `strip`. A `Binary files a and b differ` patch without data is refused at apply time as git refuses it. `apply` runs only
+inside a git repository.
+
+`am` reads UTF-8 and ASCII emails (`Content-Transfer-Encoding` 7bit or 8bit, no multipart) with RFC 2047 headers and the
+author, date and subject taken from the email or from the first lines of its body; the subject loses `Re:` and `[...]` tags, and
+the message ends at the `---` line. It applies each patch with `apply --index`, commits it with the author and date of the
+email and the committer from the configuration, logs `am: <subject>` and keeps the session in `.git/rebase-apply` with git's
+file names. Commits are signed when `commit.gpgsign` is set or `-S` is given (`--no-gpg-sign` overrides the setting), with
+`-S` applying to the invocation that gives it, as in git. On a failure it prints `Patch failed at <nnnn> <subject>` and the
+lines telling how to go on (naming `pyn am`), and exits `128`; `--continue` commits the index, `--skip` resets to `HEAD` and
+goes on, `--abort` restores `ORIG_HEAD`. `--3way` rebuilds a base from the blobs in the patch's `index` lines, applies the
+patch to it, and merges the result with the current tree as `cherry-pick` merges: conflict markers are diff3 style whatever
+`merge.conflictStyle` says, and no `Removing <path>` lines are printed (older git, which merges with merge-recursive, prints them). Maildirs, StGit and Mercurial formats, `-k`, `-b`, `-c`/scissors, `--ignore-date`, `--committer-date-is-author-date`,
+`-i`, `--rerere-autoupdate`, `--allow-empty` and `-C`/`-p` are not built (a patch with no changes stops the session with
+`Patch is empty.` and the hint to record an empty commit is left out). Hooks (`applypatch-msg`, `pre-applypatch`,
+`post-applypatch`) are not run, with the usual warning when one exists.
 
 ### What pyn will not write
 

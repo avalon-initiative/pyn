@@ -1,7 +1,14 @@
 //! The backend for a repository that lives in git: a real `.git` read through `pyn-gitwork`, never written.
 //! Nothing here changes what git sees; the only file pyn adds is its own `.pyn/` folder, hidden by `info/exclude`.
 
+mod am;
+mod am_3way;
+mod am_mail;
 mod ancestry;
+mod apply;
+mod apply_hunk;
+mod apply_parse;
+mod apply_ws;
 mod branches;
 mod cat_file;
 mod clean;
@@ -15,6 +22,7 @@ pub(crate) mod editor;
 mod fetch;
 mod fetch_apply;
 mod fetch_map;
+mod format_patch;
 mod grep;
 mod grep_regex;
 mod hunk_pick;
@@ -71,6 +79,8 @@ use crate::backend::Backend;
 use crate::repo_tool::{self, RepoTool};
 use crate::workspace::{self, Workspace};
 
+pub use am::AmArgs;
+pub use apply::ApplyArgs;
 pub use cat_file::CatFileArgs;
 pub use clean::CleanArgs;
 pub use clone::{CloneOptions, clone};
@@ -79,6 +89,7 @@ pub use commit::GitCommitArgs;
 pub(crate) use commit::append_trailer;
 pub use describe::DescribeArgs;
 pub use fetch::FetchArgs;
+pub use format_patch::FormatPatchArgs;
 pub use grep::GrepArgs;
 pub(crate) use init_git::is_tracked;
 pub use init_git::{InitGitArgs, init_git};
