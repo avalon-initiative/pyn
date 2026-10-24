@@ -134,6 +134,7 @@ pub(super) fn write_orig_head_as(git: &GitHome, id: &ObjectId, action: Option<&s
 }
 
 pub fn merge(git: &GitHome, mut args: MergeArgs) -> Result<()> {
+    git.repo.validate_diff_ignore_submodules()?;
     if args.preview {
         bail!("`pyn merge --preview` needs a pyn server; a git repository has no merge preview");
     }
@@ -259,7 +260,7 @@ fn show_stat(
     }
     let (mut before, mut after) = (Tree::new(), Tree::new());
     let changes = git.repo.diff_trees(old, Some(new), &Pathspec::default())?;
-    add_changes(&mut before, &mut after, &changes);
+    add_changes(git, &mut before, &mut after, &changes)?;
     let graph = config
         .get("diff.statgraphwidth")
         .and_then(|w| w.parse::<usize>().ok());

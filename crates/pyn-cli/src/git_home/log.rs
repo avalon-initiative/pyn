@@ -404,7 +404,7 @@ fn diff_body(
     let changes = git
         .repo
         .diff_trees(parent_tree.as_ref(), Some(&c.tree), spec)?;
-    add_changes(&mut old, &mut new, &changes);
+    add_changes(git, &mut old, &mut new, &changes)?;
     diff::sections(git, &old, &new, &[], parts)
 }
 
@@ -453,6 +453,7 @@ pub(super) fn log(
     limit: Option<usize>,
     args: GitLogArgs,
 ) -> Result<()> {
+    git.repo.validate_diff_ignore_submodules()?;
     let Rendering { pretty, style } = args.fmt.rendering()?;
     let filters = Filters::new(&args)?;
     let parts = args.diff_parts();

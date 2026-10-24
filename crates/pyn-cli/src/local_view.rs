@@ -8,7 +8,7 @@ use pyn_proto as api;
 
 use crate::backend::Backend;
 use crate::diff::{self, Blob, Source, Tree};
-use crate::local_store::LocalStore;
+use crate::local_store::{LocalStore, file_mode};
 use crate::local_sync::api_mode;
 use crate::snapshot::{self, Base, short};
 use crate::time;
@@ -173,7 +173,7 @@ fn tree_of(store: &LocalStore, tree: Option<ObjectId>) -> Result<Tree> {
             String::from_utf8_lossy(&path).into_owned(),
             Blob {
                 hash: e.id.to_hex(),
-                mode: api_mode(e.mode)?,
+                mode: file_mode(api_mode(e.mode)?),
                 source: Source::Object { id: e.id.to_hex() },
             },
         );

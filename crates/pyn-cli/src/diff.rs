@@ -6,10 +6,12 @@ use std::io::Read;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
+use pyn_object::FileMode;
 use pyn_proto as api;
 
 use crate::backend::Backend;
 use crate::diffstat::{self, Counts};
+use crate::local_store::file_mode;
 use crate::localfile;
 use crate::time;
 use crate::workspace::{FileState, Workspace, hash_of};
@@ -19,6 +21,10 @@ const PROBE: usize = 8000;
 
 #[derive(Clone)]
 pub enum Source {
+    /// A gitlink's synthetic `Subproject commit` line, never a blob in the superproject.
+    Gitlink {
+        dirty: bool,
+    },
     /// A path's revision on a pyn server.
     Remote {
         revision: u64,
@@ -35,8 +41,38 @@ pub enum Source {
 #[derive(Clone)]
 pub struct Blob {
     pub hash: String,
-    pub mode: api::FileMode,
+    pub mode: FileMode,
     pub source: Source,
+}
+
+impl Blob {
+    pub fn gitlink(hash: String, dirty: bool) -> Self {
+        Self {
+            hash,
+            mode: FileMode::Gitlink,
+            source: Source::Gitlink { dirty },
+        }
+    }
+
+    pub fn is_gitlink(&self) -> bool {
+        self.mode == FileMode::Gitlink
+    }
+
+    fn is_regular(&self) -> bool {
+        matches!(self.mode, FileMode::Regular | FileMode::Executable)
+    }
+
+    fn mode(&self) -> &str {
+        self.mode.as_str()
+    }
+
+    fn same_content(&self, other: &Self) -> bool {
+        self.hash == other.hash && self.dirty() == other.dirty()
+    }
+
+    fn dirty(&self) -> bool {
+        matches!(self.source, Source::Gitlink { dirty: true })
+    }
 }
 
 pub type Tree = BTreeMap<String, Blob>;
@@ -46,6 +82,7 @@ pub enum Kind {
     Patch,
     Stat,
     ShortStat,
+    NumStat,
     NameOnly,
     NameStatus,
     /// `--check`: only the whitespace problems in added lines.
@@ -65,7 +102,7 @@ pub fn tree_of_snapshot(entries: &[api::SnapshotEntry]) -> Tree {
         .map(|e| {
             let blob = Blob {
                 hash: e.content.clone(),
-                mode: e.file_mode,
+                mode: file_mode(e.file_mode),
                 source: if e.revision == 0 {
                     Source::Object {
                         id: e.content.clone(),
@@ -88,7 +125,7 @@ pub fn tree_of_state(state: &BTreeMap<String, FileState>) -> Tree {
         .map(|(p, k)| {
             let blob = Blob {
                 hash: k.hash.clone(),
-                mode: k.file_mode,
+                mode: file_mode(k.file_mode),
                 source: Source::Remote {
                     revision: k.revision,
                 },
@@ -107,7 +144,7 @@ pub fn tree_of_staged(ws: &Workspace, index: &crate::staging::Index) -> Tree {
         .map(|(p, e)| {
             let blob = Blob {
                 hash: e.hash.clone(),
-                mode: e.file_mode,
+                mode: file_mode(e.file_mode),
                 source: Source::Local {
                     file: crate::staging::content_path(ws, &e.hash),
                 },
@@ -130,7 +167,7 @@ pub fn tree_of_disk<'a>(ws: &Workspace, paths: impl Iterator<Item = &'a String>)
             path.clone(),
             Blob {
                 hash: hash_of(&bytes),
-                mode,
+                mode: file_mode(mode),
                 source: Source::Local { file },
             },
         );
@@ -140,6 +177,12 @@ pub fn tree_of_disk<'a>(ws: &Workspace, paths: impl Iterator<Item = &'a String>)
 
 fn bytes(backend: &dyn Backend, path: &str, blob: &Blob, probe: bool) -> Result<Vec<u8>> {
     match &blob.source {
+        Source::Gitlink { dirty } => Ok(format!(
+            "Subproject commit {}{}\n",
+            blob.hash,
+            if *dirty { "-dirty" } else { "" }
+        )
+        .into_bytes()),
         Source::Local { file } if localfile::is_symlink(file) => Ok(localfile::read(file)?.1),
         Source::Local { file } => {
             let mut f = std::fs::File::open(file).with_context(|| format!("reading {path}"))?;
@@ -209,20 +252,15 @@ fn patch(
     let mut tail = String::new();
     match (old, new) {
         (None, Some(b)) => {
-            let _ = writeln!(out, "new file mode {}", b.mode.as_str());
+            let _ = writeln!(out, "new file mode {}", b.mode());
         }
         (Some(a), None) => {
-            let _ = writeln!(out, "deleted file mode {}", a.mode.as_str());
+            let _ = writeln!(out, "deleted file mode {}", a.mode());
         }
-        (Some(a), Some(b)) if a.mode != b.mode => {
-            let _ = writeln!(
-                out,
-                "old mode {}\nnew mode {}",
-                a.mode.as_str(),
-                b.mode.as_str()
-            );
+        (Some(a), Some(b)) if a.mode() != b.mode() => {
+            let _ = writeln!(out, "old mode {}\nnew mode {}", a.mode(), b.mode());
         }
-        (Some(a), Some(_)) => tail = format!(" {}", a.mode.as_str()),
+        (Some(a), Some(_)) => tail = format!(" {}", a.mode()),
         (None, None) => {}
     }
     if old.zip(new).is_none_or(|(a, b)| a.hash != b.hash) {
@@ -261,10 +299,6 @@ struct Pair<'a> {
     new: Option<&'a Blob>,
     /// Similarity percent when git would show this pair as a rename.
     renamed: Option<u64>,
-}
-
-fn is_link(blob: &Blob) -> bool {
-    blob.mode == api::FileMode::Symlink
 }
 
 const MAX_SCORE: u64 = 60_000;
@@ -331,7 +365,9 @@ fn detect_renames<'a>(
         let mut same: Vec<&String> = dels
             .iter()
             .filter(|(p, b)| {
-                !taken.contains(p.as_str()) && b.hash == to.hash && is_link(b) == is_link(to)
+                !taken.contains(p.as_str())
+                    && b.hash == to.hash
+                    && ((b.is_regular() && to.is_regular()) || b.mode() == to.mode())
             })
             .map(|(p, _)| *p)
             .collect();
@@ -343,11 +379,11 @@ fn detect_renames<'a>(
     }
     let rest_adds: Vec<_> = adds
         .iter()
-        .filter(|(p, _)| !pairs.contains_key(p.as_str()))
+        .filter(|(p, b)| b.is_regular() && !pairs.contains_key(p.as_str()))
         .collect();
     let rest_dels: Vec<_> = dels
         .iter()
-        .filter(|(p, _)| !taken.contains(p.as_str()))
+        .filter(|(p, b)| b.is_regular() && !taken.contains(p.as_str()))
         .collect();
     if rest_adds.is_empty() || rest_dels.is_empty() {
         return Ok(pairs);
@@ -356,16 +392,13 @@ fn detect_renames<'a>(
     for (p, b) in &rest_dels {
         let data = bytes(backend, p, b, false)?;
         let counts = chunk_counts(&data);
-        sources.push((p.as_str(), is_link(b), data, counts));
+        sources.push((p.as_str(), data, counts));
     }
     let mut scored: Vec<(u64, bool, &str, &str)> = Vec::new();
     for (dst, to) in &rest_adds {
         let data = bytes(backend, dst, to, false)?;
         let counts = chunk_counts(&data);
-        for (src, link, sdata, scounts) in &sources {
-            if *link != is_link(to) {
-                continue;
-            }
+        for (src, sdata, scounts) in &sources {
             let score = similarity(sdata, &data, scounts, &counts);
             if score >= MIN_SCORE {
                 scored.push((score, base(src) != base(dst), src, dst.as_str()));
@@ -402,7 +435,7 @@ pub fn merge_stat(
     for path in paths {
         let (a, b) = (old.get(path), new.get(path));
         if a.zip(b)
-            .is_some_and(|(a, b)| a.hash == b.hash && a.mode == b.mode)
+            .is_some_and(|(a, b)| a.same_content(b) && a.mode() == b.mode())
             || sources.contains(path.as_str())
         {
             continue;
@@ -449,27 +482,22 @@ pub fn merge_stat(
         };
         match (p.old, p.new) {
             (None, Some(b)) => {
-                let _ = writeln!(summary, " create mode {} {}", b.mode.as_str(), p.new_path);
+                let _ = writeln!(summary, " create mode {} {}", b.mode(), p.new_path);
             }
             (Some(a), None) => {
-                let _ = writeln!(summary, " delete mode {} {}", a.mode.as_str(), p.old_path);
+                let _ = writeln!(summary, " delete mode {} {}", a.mode(), p.old_path);
             }
             (Some(a), Some(b)) => {
                 if let Some(percent) = p.renamed {
                     let _ = writeln!(summary, " rename {name} ({percent}%)");
                 }
-                if a.mode != b.mode {
+                if a.mode() != b.mode() {
                     let tail = if p.renamed.is_some() {
                         String::new()
                     } else {
                         format!(" {}", p.new_path)
                     };
-                    let _ = writeln!(
-                        summary,
-                        " mode change {} => {}{tail}",
-                        a.mode.as_str(),
-                        b.mode.as_str()
-                    );
+                    let _ = writeln!(summary, " mode change {} => {}{tail}", a.mode(), b.mode());
                 }
             }
             (None, None) => {}
@@ -484,7 +512,7 @@ pub fn merge_stat(
 /// A text file whose content differs from the other side only in whitespace.
 fn whitespace_only(old: Option<&Blob>, new: Option<&Blob>, c: &Contents) -> bool {
     old.zip(new)
-        .is_some_and(|(a, b)| a.mode == b.mode && !c.binary)
+        .is_some_and(|(a, b)| a.mode() == b.mode() && !c.binary)
         && pyn_diff::line_counts(&c.old, &c.new, true) == (0, 0)
 }
 
@@ -527,7 +555,7 @@ pub fn compare(
         let (a, b) = (old.get(path), new.get(path));
         if !selected(path, only)
             || a.zip(b)
-                .is_some_and(|(a, b)| a.hash == b.hash && a.mode == b.mode)
+                .is_some_and(|(a, b)| a.same_content(b) && a.mode() == b.mode())
         {
             continue;
         }
@@ -541,11 +569,33 @@ pub fn compare(
                 let letter = match (a, b) {
                     (None, _) => 'A',
                     (_, None) => 'D',
+                    (Some(a), Some(b)) if a.is_gitlink() != b.is_gitlink() => 'T',
                     _ => 'M',
                 };
                 let _ = writeln!(out, "{letter}\t{path}");
             }
-            Kind::Patch | Kind::Check | Kind::Stat | Kind::ShortStat => {
+            Kind::Patch | Kind::Check | Kind::Stat | Kind::ShortStat | Kind::NumStat => {
+                if format.kind == Kind::Patch
+                    && a.zip(b)
+                        .is_some_and(|(a, b)| a.is_gitlink() != b.is_gitlink())
+                {
+                    differs = true;
+                    out.push_str(&patch(
+                        path,
+                        a,
+                        None,
+                        &contents(backend, path, a, None)?,
+                        format,
+                    ));
+                    out.push_str(&patch(
+                        path,
+                        None,
+                        b,
+                        &contents(backend, path, None, b)?,
+                        format,
+                    ));
+                    continue;
+                }
                 let c = contents(backend, path, a, b)?;
                 if format.ignore_ws && format.kind != Kind::Check && whitespace_only(a, b, &c) {
                     continue;
@@ -563,11 +613,29 @@ pub fn compare(
                 }
                 let counts = if c.binary {
                     Counts::Binary(blob_size(backend, path, a)?, blob_size(backend, path, b)?)
+                } else if a
+                    .zip(b)
+                    .is_some_and(|(a, b)| a.is_gitlink() && b.is_gitlink() && a.hash == b.hash)
+                {
+                    Counts::Lines(0, 0)
                 } else {
                     let (x, y) = pyn_diff::line_counts(&c.old, &c.new, format.ignore_ws);
                     Counts::Lines(x, y)
                 };
                 stat_rows.push((path.clone(), counts));
+            }
+        }
+    }
+    if format.kind == Kind::NumStat {
+        for (path, counts) in &stat_rows {
+            let path = backend.quote_diff_path(path.as_bytes());
+            match counts {
+                Counts::Lines(a, d) => {
+                    let _ = writeln!(out, "{a}\t{d}\t{path}");
+                }
+                Counts::Binary(..) => {
+                    let _ = writeln!(out, "-\t-\t{path}");
+                }
             }
         }
     }

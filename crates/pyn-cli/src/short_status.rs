@@ -107,8 +107,22 @@ fn relative(prefix: &[u8], path: &[u8]) -> Vec<u8> {
 /// git's C-style quoting of a path, applied when it holds a space, a control character, a quote, a backslash or (with
 /// `quote_high`, git's `core.quotePath`) a byte above ASCII.
 pub fn quote(path: &[u8], quote_high: bool) -> String {
+    quote_path(path, quote_high, true)
+}
+
+/// Git's diff path quoting, which leaves spaces unquoted.
+pub fn quote_diff(path: &[u8], quote_high: bool) -> String {
+    quote_path(path, quote_high, false)
+}
+
+fn quote_path(path: &[u8], quote_high: bool, quote_spaces: bool) -> String {
     let needs = |b: u8| {
-        b < 0x20 || b == b'"' || b == b'\\' || b == b' ' || b == 0x7f || (quote_high && b >= 0x80)
+        b < 0x20
+            || b == b'"'
+            || b == b'\\'
+            || (quote_spaces && b == b' ')
+            || b == 0x7f
+            || (quote_high && b >= 0x80)
     };
     if !path.iter().any(|b| needs(*b)) {
         return String::from_utf8_lossy(path).into_owned();

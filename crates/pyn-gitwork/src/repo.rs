@@ -67,6 +67,10 @@ impl Repo {
         &self.git
     }
 
+    pub(crate) fn open_submodule(&self, root: &Path) -> Result<Self> {
+        Self::open(root, self.home.as_deref(), self.xdg.as_deref())
+    }
+
     pub fn algorithm(&self) -> Algorithm {
         self.git.algorithm()
     }

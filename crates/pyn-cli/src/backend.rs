@@ -35,6 +35,11 @@ pub trait Backend {
         .into())
     }
 
+    /// The home's quoting of a path in diff output.
+    fn quote_diff_path(&self, path: &[u8]) -> String {
+        crate::short_status::quote_diff(path, true)
+    }
+
     /// The signed-in user's name.
     fn whoami(&self) -> Result<String>;
 

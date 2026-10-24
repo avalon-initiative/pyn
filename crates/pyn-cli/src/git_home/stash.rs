@@ -682,7 +682,22 @@ fn apply_and_report(git: &GitHome, id: &ObjectId, index: bool, pop: bool) -> Res
         }
         Applying::Clean => {}
     }
-    super::commands::status_table(&git.repo.status()?)
+    match git
+        .repo
+        .validate_diff_ignore_submodules()
+        .and_then(|()| git.repo.status())
+    {
+        Ok(status) => super::commands::status_table(&status),
+        Err(error) => {
+            // Git completes a clean apply even when the status report fails.
+            let error = anyhow::Error::from(error);
+            eprintln!(
+                "fatal: {}",
+                crate::sanitize::text(&crate::fatal_message(&error))
+            );
+            Ok(())
+        }
+    }
 }
 
 fn branch(git: &GitHome, name: &str, stash: Option<&str>) -> Result<()> {

@@ -27,6 +27,7 @@ pub(super) struct ShowArgs {
 }
 
 pub(super) fn show(git: &GitHome, args: ShowArgs) -> Result<()> {
+    git.repo.validate_diff_ignore_submodules()?;
     if args.stash.len() > 1 {
         let named: Vec<String> = args.stash.iter().map(|s| format!("'{s}'")).collect();
         eprintln!("Too many revisions specified: {}", named.join(" "));
@@ -43,18 +44,19 @@ pub(super) fn show(git: &GitHome, args: ShowArgs) -> Result<()> {
     if !only_untracked {
         let base = commit_tree(git, &stash.parents[0])?;
         let changes = git.repo.diff_trees(Some(&base), Some(&stash.tree), &all)?;
-        add_changes(&mut old, &mut new, &changes);
+        add_changes(git, &mut old, &mut new, &changes)?;
     }
     if untracked && let Some(u) = stash.parents.get(2) {
         let tree = commit_tree(git, u)?;
         add_changes(
+            git,
             &mut old,
             &mut new,
             &git.repo.diff_trees(None, Some(&tree), &all)?,
-        );
+        )?;
     }
     let f = &args.format;
-    let flagged = f.stat || f.shortstat || f.name_only || f.name_status || f.check;
+    let flagged = f.stat || f.shortstat || f.numstat || f.name_only || f.name_status || f.check;
     let (summary, patch) = if flagged || args.patch {
         (flagged, args.patch)
     } else {

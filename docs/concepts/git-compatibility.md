@@ -98,12 +98,14 @@ The commands named in decision #218.
 | `pyn log --commits` | | pyn only | List commits (`COMMIT`, `AUTHOR`, `WHEN`, `FILES`, `MESSAGE`) instead of revisions. |
 | `pyn log --filter <glob>` | | pyn only | Only paths matching the glob. |
 | `git diff [<c1> [<c2>]] [-- <path>...]` | `pyn diff [<c1> [<c2>]] [-- <path>...]` | different | Unified output as git, computed in the CLI. Commits are hashes (or abbreviations of 4 or more digits), `HEAD`, `~N`, `^`, or `a..b`; two commits work outside a workspace. With no commit it compares the work tree with the index: the staged content, or the last update for what is not staged. File modes print as in git, including `old mode` and `new mode`. On a git home an argument that is neither a revision nor an existing path (a deleted file needs `--`) fails with `fatal: ambiguous argument '<arg>'` (or `bad revision` before `--`), exit `128`, as git does; `a...b` is not supported and fails the same way. |
-| `git diff -U<n>`, `--unified=<n>`, `--stat`, `--name-only`, `--name-status`, `--exit-code`, `-q` | same | same | `--name-status` prints `A`, `M`, `D` only. |
+| `git diff -U<n>`, `--unified=<n>`, `--stat`, `--name-only`, `--name-status`, `--exit-code`, `-q` | same | same | `--name-status` prints `A`, `M`, and `D`; gitlink type changes print `T`. |
+| `git diff --numstat` | same | different | Both homes. Prints added and deleted line counts per path, or `-` and `-` for a binary file. It combines with none of `--stat`, `--shortstat`, `--name-only`, `--name-status` or `--check` (usage error, `129`); git can combine numeric and other stats or give another format precedence. |
 | `git diff --cached`, `--staged` | `pyn diff --cached`, `--staged` | different | The staged content against the last commit (the last update on a pyn server). On a git home it takes one optional commit to compare with, as git; on a pyn server it takes none. |
 | `git diff --shortstat`, `-w` (`--ignore-all-space`), `--check` | same | same | Both homes. `--shortstat` prints only the totals line. `-w` compares lines with all whitespace removed, prints context lines as they are in the new file, and leaves out a file that differs only in whitespace (so `--exit-code` is `0` when nothing else changed); `--name-only` and `--name-status` still list it, as git 2.43 does (newer git versions differ on this edge; pyn lists the file). `--check` prints `path:line: trailing whitespace.` (or `space before tab in indent.`, or both) and the added line, then `path:line: new blank line at EOF.`, for git's default whitespace rules, and exits `2` if it printed anything; `-w` does not affect it (newer git versions differ here too). `--check` and `--shortstat` combine with no other format (`--stat`, `--name-only`, `--name-status`): a usage error (`129`), where git prints both stats or refuses with `128`. |
 | `git diff --word-diff`, `--color`, `--no-index`, `-M`, `-C` | none | unsupported | Usage error (`129`). |
 | `git show [<commit>]` | `pyn show [<commit>]` | different | Commit header (`commit`, `Author:`, `Date:`), message, then the commit's diff. The newest commit if none is named. The author line carries the email. On a git home the output is git's, except for merge commits (see below). |
 | `git show -U<n>`, `--stat`, `--shortstat`, `-w`, `--check`, `--name-only`, `--name-status` | same | same | The diff flags behave as on `diff`, and `--stat` is laid out as git lays it out at 80 columns (long names cut with `...`, graph scaled); `--check` exits `2` when it reports a problem. |
+| `git show --numstat` | same | different | The numeric rows and format-combination limits are the same as `diff --numstat`. |
 | `git show <rev>:<path>` | `pyn get <path> [--rev N] [-o <file>]` | different | `show` takes commits only (`HEAD:foo` fails with `fatal: ... is not a commit`, `128`). File content at a revision is `pyn get`, to stdout or a file. `--rev` is a per-path revision, not a commit. |
 | `git show --oneline`, `-s` (`--no-patch`), `--format=`, `--pretty=`, `--date=` | same | supported | Both homes, with the formats of `log`. `-s` prints the commit only; `--oneline` and the formats print their line, then the diff (blank line between for a template or a named format, none for `--oneline`). Without them a pyn server prints its own header (see above). |
 | `git show <tag>` | `pyn show <tag>` | different | On a pyn server with the local store, an annotated tag prints `tag <name>`, `Tagger:`, `Date:` and its message, then the commit; a lightweight tag, or a tag with `~N`/`^` steps, shows the commit. A git home shows the commit only. |
@@ -143,7 +145,8 @@ Commands people reach for that are not in the daily set.
 | `git fsck` | `pyn verify [<path>]` | different | Checks every revision's hash and its link to the one before, and the audit log's chain. Silent and exit 0 when intact, as git; otherwise a `PROBLEM`, `WHAT`, `PATH` table and exit 1. `-v` / `--verbose` also prints what was checked. See [integrity](integrity.md). |
 | `git reflog [show\|list\|exists\|expire\|delete]` | `pyn reflog ...` on a git home | git home only | See [Reflogs](#reflogs). On a pyn server it prints the git-command message; the closest analogue there is `pyn audit`, an append-only log of lock, revision and access events, filtered with `--path`, `--actor`, `--action`, `--before`, `--limit` and permission-gated (`view_audit`). |
 | `git blame`, `git annotate` | none | unsupported | Git-command message. Line history needs merge-capable text history; not scheduled. |
-| `git shortlog`, `git describe`, `git rev-parse`, `git archive`, `git bundle`, `git format-patch`, `git am`, `git apply`, `git notes`, `git bisect`, `git worktree`, `git submodule`, `git gc`, `git fsck` | none | unsupported | `pyn: '<cmd>' is not a pyn command` (`1`). Only the commands in the git-only list print the "git command pyn does not support yet" message, so these read as unknown until that list is widened (#223). |
+| `git submodule` | none | unsupported | Submodule lifecycle commands are not built. On a git home, `status` and `diff` inspect recorded gitlinks and initialized submodule checkouts without changing them; see [On a git home](#on-a-git-home). |
+| `git shortlog`, `git describe`, `git rev-parse`, `git archive`, `git bundle`, `git format-patch`, `git am`, `git apply`, `git notes`, `git bisect`, `git worktree`, `git gc`, `git fsck` | none | unsupported | `pyn: '<cmd>' is not a pyn command` (`1`). Only the commands in the git-only list print the "git command pyn does not support yet" message, so these read as unknown until that list is widened (#223). |
 
 ## Branching and merging
 
@@ -759,12 +762,26 @@ more digits, and any of `~N`, `^` and `^N` after one. Reflog forms (`HEAD@{2}`, 
 described in [Reflogs](#reflogs). SHA-1 and SHA-256 repositories are both read. Dates print in the
 offset recorded in the commit, as git does.
 
+On a git home, recorded submodules are inspected read-only for `status` and `diff`: a different submodule `HEAD`,
+tracked edits (including staged edits), and untracked content are distinguished. Short status uses `M`, `m` and `?`
+respectively; porcelain and the default table report these as modified. Dirt in recorded nested submodules keeps
+its tracked or untracked category at the enclosing submodule. An uninitialized directory is clean;
+a missing checkout is deleted. An initialized checkout with an unborn `HEAD` is inspected for staged and untracked
+content; its diff uses the recorded gitlink ID. A submodule's files are not listed as superproject files.
+
+On a git home, gitlink diffs use full-hex `Subproject commit <id>` lines, with `-dirty` for visible worktree dirt.
+`--cached` compares recorded commits only. `submodule.<name>.ignore` in git config overrides the setting in the
+worktree's `.gitmodules` (falling back to the index, then `HEAD`, when that file is absent), then
+`diff.ignoreSubmodules`, then the command default (status includes untracked
+content; diff ignores untracked-only content, including in nested submodules). `none`, `untracked`, `dirty` and `all`
+select what is ignored; staged gitlinks remain visible in status even under `all`. Submodule initialization and updates are not built.
+With no worktree `.gitmodules`, an unmerged index entry for that file disables the recorded configuration fallback.
+
 Differences from git, all deliberate or not yet done:
 
 - Files are read as they are on disk: `core.autocrlf`, `.gitattributes` filters and `core.eol` are not applied, so a
   repository that depends on them can show files as modified that git does not.
 - No rename or copy detection: a rename is a delete and an add.
-- Submodule entries are not compared, and a submodule folder is not descended into.
 - `log` and `show` print no ref decorations (`%d` in a `log` template does); commit abbreviations are 7 digits and are not
   lengthened to stay unique.
 - A nested repository that the index does not track is one untracked `dir/`.
@@ -869,7 +886,8 @@ while it was working; an existing `index.lock` stops the command.
 `core.filemode=false` keeps the index's mode. Ignore rules are `.gitignore` in every folder, `.git/info/exclude` and the global
 excludes file; a file or folder named on the command line that they hide is refused with git's message and exit status `1`
 (the other paths are still staged) unless `-f` is given, and a hidden file met while walking a folder is skipped silently. A
-nested git repository is skipped with a warning (pyn adds no submodules), and `.pyn/local_only` is never added. An unmerged
+nested git repository is skipped with a warning. An existing submodule is staged as a gitlink (`160000`) pointing to its
+current `HEAD`; its files are not staged in the superproject. `.pyn/local_only` is never added. An unmerged
 path is staged as the file is, which resolves it.
 
 **`commit`.** A linear commit on the current branch:
@@ -1493,9 +1511,10 @@ patch, pyn merges it, so a clash is judged by the tree merge. A stash is named `
 `apply`, `show` and `branch`, any stash-like commit.
 
 `stash show` prints the diffstat by default (`stash.showStat`), or the patch with `-p`/`--patch` (`stash.showPatch`), both with
-`-p --stat`, and takes `--stat`, `--shortstat`, `--name-only`, `--name-status`, `-U<n>` and `-w`; `-u`/`--include-untracked` and
-`--only-untracked` (or `stash.showIncludeUntracked`) add the untracked files the stash saved. `--numstat` and other diff options
-are not built. `stash branch <name> [<stash>]` creates the branch at the commit the stash was made on, switches to it, applies
+`-p --stat`, and takes `--stat`, `--shortstat`, `--numstat`, `--name-only`, `--name-status`, `-U<n>` and `-w`;
+`-u`/`--include-untracked` and `--only-untracked` (or `stash.showIncludeUntracked`) add the untracked files the stash saved. Numeric output has the same
+format-combination limits as `diff --numstat`. `stash branch <name> [<stash>]` creates the branch at the commit the stash was
+made on, switches to it, applies
 the stash with `--index` and drops it (a conflict keeps it). `stash create [<message>]` prints a stash commit without storing it
 or changing the work tree (nothing is printed when there is nothing to stash), and `stash store [-m <message>] <commit>` puts
 such a commit on the list (`Created via "git stash store".` without `-m`; storing the newest entry again does nothing).

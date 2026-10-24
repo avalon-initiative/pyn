@@ -519,6 +519,7 @@ fn apply(git: &GitHome, opts: &Opts, verb: Verb, id: &ObjectId) -> Result<Outcom
 }
 
 fn say_empty(git: &GitHome, verb: Verb) -> Result<()> {
+    git.repo.validate_diff_ignore_submodules()?;
     let cmd = verb.command();
     super::commands::status_table(&git.repo.status()?)?;
     eprintln!("The previous {cmd} is now empty, possibly due to conflict resolution.");

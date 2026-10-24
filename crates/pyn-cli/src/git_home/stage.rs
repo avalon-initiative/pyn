@@ -274,7 +274,7 @@ struct Plan {
 
 fn plan(git: &GitHome, index: &Index, specs: &Specs, update: bool, force: bool) -> Result<Plan> {
     let mut ops = BTreeMap::new();
-    for (path, kind) in git.repo.unstaged_changes(index)? {
+    for (path, kind) in git.repo.unstaged_changes_for_staging(index)? {
         if !specs.spec.matches(&path) {
             continue;
         }
@@ -383,6 +383,15 @@ pub(super) fn stage_file(
     let file = fs_path(git.repo.root()?, path);
     let meta =
         std::fs::symlink_metadata(&file).with_context(|| format!("reading {}", file.display()))?;
+    if meta.is_dir() && existing.is_some_and(|e| e.mode == GITLINK) {
+        let sub = pyn_gitwork::Repo::open(&file, None, None)?;
+        let id = sub
+            .head_commit()?
+            .context("submodule does not have a commit checked out")?;
+        let mut entry = IndexEntry::new(path, GITLINK, id);
+        stat_fields(&mut entry, &meta);
+        return Ok(entry);
+    }
     let mut mode = worktree_mode(&meta).with_context(|| {
         format!(
             "'{}' is not a regular file or a symbolic link",
@@ -479,7 +488,12 @@ fn apply(
                     println!("add '{name}'");
                 }
                 if !dry_run {
-                    let entry = stage_file(git, path, entries.get(&(path.clone(), 0)))?;
+                    let existing = entries.get(&(path.clone(), 0)).or_else(|| {
+                        (1..=3)
+                            .filter_map(|stage| entries.get(&(path.clone(), stage)))
+                            .find(|entry| entry.mode == GITLINK)
+                    });
+                    let entry = stage_file(git, path, existing)?;
                     put_entry(entries, entry);
                 }
             }
