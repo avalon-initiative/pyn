@@ -366,7 +366,12 @@ fn unknown_pathspecs_and_ignored_files_are_refused_like_git() {
         "an excluded folder is refused too"
     );
     let out = repo.run_in(&repo.main, &["add"]);
-    assert_eq!(out.status.code(), Some(129), "add needs a path, -u or -A");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "a bare add hints and stages nothing"
+    );
+    assert!(String::from_utf8_lossy(&out.stderr).contains("Nothing specified, nothing added."));
 }
 
 #[test]

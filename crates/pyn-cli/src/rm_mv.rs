@@ -33,7 +33,6 @@ pub struct RmArgs {
     /// Succeed when a path matches nothing.
     #[arg(long)]
     pub ignore_unmatch: bool,
-    #[arg(required = true)]
     pub paths: Vec<String>,
 }
 

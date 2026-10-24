@@ -40,7 +40,20 @@ an unknown flag on a supported command (raised by the argument parser, which nam
 Messages that git writes to standard output (for example the nothing-to-commit notice and the unmerged-path listing of a
 conflicted commit) go to standard output, and errors to standard error. `fetch`, `pull` and `push` outside any repository fail
 with `fatal: not a git repository (or any of the parent directories): .git` (`128`). The statuses are checked against git by
-`crates/pyn-cli/tests/git_exit_status.rs`, whose allow-list names the differences that remain.
+`crates/pyn-cli/tests/git_exit_status.rs`, whose allow-list names the differences that remain. Where git exits `128` for a bad
+value of an option of `log` or `show` (a missing `--since` value), and `255` for a failed
+`reflog expire` or `reflog delete`, pyn does the same.
+
+Deliberate status differences that remain:
+
+- **`checkout -B` is not built**, so `checkout -b <a> -B <b>` is a usage error (`129`) where git says the options cannot be
+  used together (`128`).
+- **An unknown option of `log`, `show` or `reflog`** is a usage error (`129`); git exits `128`. The parser cannot tell an
+  option git lacks from one pyn does not build, and the unbuilt ones are `129` by design.
+- **`status --porcelain=<version>`** takes only `v1`; `v2` is unbuilt and an unknown version such as `v9` (git: `128`) is
+  the same parser rejection, a usage error (`129`).
+- **`pyn diff` outside a repository** asks for a server (`128`); git prints its `--no-index` usage (`129`). pyn has no
+  `--no-index` form.
 
 Statuses used below:
 
@@ -98,12 +111,12 @@ The commands named in decision #218.
 | `pyn log --commits` | | pyn only | List commits (`COMMIT`, `AUTHOR`, `WHEN`, `FILES`, `MESSAGE`) instead of revisions. |
 | `pyn log --filter <glob>` | | pyn only | Only paths matching the glob. |
 | `git diff [<c1> [<c2>]] [-- <path>...]` | `pyn diff [<c1> [<c2>]] [-- <path>...]` | different | Unified output as git, computed in the CLI. Commits are hashes (or abbreviations of 4 or more digits), `HEAD`, `~N`, `^`, or `a..b`; two commits work outside a workspace. With no commit it compares the work tree with the index: the staged content, or the last update for what is not staged. File modes print as in git, including `old mode` and `new mode`. On a git home an argument that is neither a revision nor an existing path (a deleted file needs `--`) fails with `fatal: ambiguous argument '<arg>'` (or `bad revision` before `--`), exit `128`, as git does; `a...b` is not supported and fails the same way. |
-| `git diff -U<n>`, `--unified=<n>`, `--stat`, `--name-only`, `--name-status`, `--exit-code`, `-q` | same | same | `--name-status` prints `A`, `M`, and `D`; gitlink type changes print `T`. |
+| `git diff -U<n>`, `--unified=<n>`, `--stat`, `--name-only`, `--name-status`, `--exit-code`, `-q` | same | same | `--name-status` prints `A`, `M`, and `D`; gitlink type changes print `T`. On a git home `--stat` (also in `show`, `log` and `stash show`) prints a binary file as git does, `Bin <old> -> <new> bytes` (`Bin` alone for a rename with identical content, as in the merge diffstat), aligned in the graph column and left out of the insertion and deletion totals; `--numstat` prints `-` and `-`. `diff` and `show` list a moved file as a deleted and an added one, where git pairs them as a rename. |
 | `git diff --numstat` | same | different | Both homes. Prints added and deleted line counts per path, or `-` and `-` for a binary file. It combines with none of `--stat`, `--shortstat`, `--name-only`, `--name-status` or `--check` (usage error, `129`); git can combine numeric and other stats or give another format precedence. |
 | `git diff --cached`, `--staged` | `pyn diff --cached`, `--staged` | different | The staged content against the last commit (the last update on a pyn server). On a git home it takes one optional commit to compare with, as git; on a pyn server it takes none. |
 | `git diff --shortstat`, `-w` (`--ignore-all-space`), `--check` | same | same | Both homes. `--shortstat` prints only the totals line. `-w` compares lines with all whitespace removed, prints context lines as they are in the new file, and leaves out a file that differs only in whitespace (so `--exit-code` is `0` when nothing else changed); `--name-only` and `--name-status` still list it, as git 2.43 does (newer git versions differ on this edge; pyn lists the file). `--check` prints `path:line: trailing whitespace.` (or `space before tab in indent.`, or both) and the added line, then `path:line: new blank line at EOF.`, for git's default whitespace rules, and exits `2` if it printed anything; `-w` does not affect it (newer git versions differ here too). `--check` and `--shortstat` combine with no other format (`--stat`, `--name-only`, `--name-status`): a usage error (`129`), where git prints both stats or refuses with `128`. |
 | `git diff --word-diff`, `--color`, `--no-index`, `-M`, `-C` | none | unsupported | Usage error (`129`). |
-| `git show [<commit>]` | `pyn show [<commit>]` | different | Commit header (`commit`, `Author:`, `Date:`), message, then the commit's diff. The newest commit if none is named. The author line carries the email. On a git home the output is git's, except for merge commits (see below). |
+| `git show [<commit>...] [-- <path>...]` | `pyn show [<commit>...] [-- <path>...]` | different | Commit header (`commit`, `Author:`, `Date:`), message, then the commit's diff. The newest commit if none is named. The author line carries the email. On a git home the output is git's, except for merge commits (see below): it takes several commits, and paths (after `--`, or existing ones) limit each diff. A commit that changes none of the paths still prints its header, as git 2.55 does (older git leaves it out). A pyn server takes one commit and no paths (usage error, `129`). |
 | `git show -U<n>`, `--stat`, `--shortstat`, `-w`, `--check`, `--name-only`, `--name-status` | same | same | The diff flags behave as on `diff`, and `--stat` is laid out as git lays it out at 80 columns (long names cut with `...`, graph scaled); `--check` exits `2` when it reports a problem. |
 | `git show --numstat` | same | different | The numeric rows and format-combination limits are the same as `diff --numstat`. |
 | `git show <rev>:<path>` | `pyn get <path> [--rev N] [-o <file>]` | different | `show` takes commits only (`HEAD:foo` fails with `fatal: ... is not a commit`, `128`). File content at a revision is `pyn get`, to stdout or a file. `--rev` is a per-path revision, not a commit. |
@@ -144,6 +157,7 @@ Commands people reach for that are not in the daily set.
 | `git config --unset`, `-e`, `--system`, `--file` | none | unsupported | Usage error (`129`). |
 | `git fsck` | `pyn verify [<path>]` | different | Checks every revision's hash and its link to the one before, and the audit log's chain. Silent and exit 0 when intact, as git; otherwise a `PROBLEM`, `WHAT`, `PATH` table and exit 1. `-v` / `--verbose` also prints what was checked. See [integrity](integrity.md). |
 | `git reflog [show\|list\|exists\|expire\|delete]` | `pyn reflog ...` on a git home | git home only | See [Reflogs](#reflogs). On a pyn server it prints the git-command message; the closest analogue there is `pyn audit`, an append-only log of lock, revision and access events, filtered with `--path`, `--actor`, `--action`, `--before`, `--limit` and permission-gated (`view_audit`). |
+| `git grep [<options>] [-e] <pattern> [<rev>...] [[--] <path>...]` | `pyn grep ...` on a git home | git home only | See [Grep](#grep). Searches the tracked files of the work tree, the index (`--cached`) or the commits named; `-n -i -w -l -c -v -q -h -H -a -I -E -G -F`, `-e` (repeatable), `--and`, `--or`, `--not` and parentheses, pathspecs after the revisions or `--`. On a pyn server or local-store workspace it says it needs a git repository (`1`). |
 | `git blame`, `git annotate` | none | unsupported | Git-command message. Line history needs merge-capable text history; not scheduled. |
 | `git submodule` | none | unsupported | Submodule lifecycle commands are not built. On a git home, `status` and `diff` inspect recorded gitlinks and initialized submodule checkouts without changing them; see [On a git home](#on-a-git-home). |
 | `git shortlog`, `git describe`, `git rev-parse`, `git archive`, `git bundle`, `git format-patch`, `git am`, `git apply`, `git notes`, `git bisect`, `git worktree`, `git gc`, `git fsck` | none | unsupported | `pyn: '<cmd>' is not a pyn command` (`1`). Only the commands in the git-only list print the "git command pyn does not support yet" message, so these read as unknown until that list is widened (#223). |
@@ -688,7 +702,7 @@ schedules them.
 
 | Git | Reason |
 | --- | --- |
-| `git blame`, `git grep` | Not scheduled. |
+| `git blame` | Not scheduled. |
 | Commands that maintain git's own storage or run its hooks (`gc`, `fsck`, `bundle`, `submodule`, `worktree`, hooks in `.git/hooks`) | pyn reads a git repository's `.git/` on a git home (decision #245) but does not maintain it or run its hooks. pyn's own hooks are tracked in #216. |
 
 ## On a git home
@@ -762,6 +776,7 @@ whatever the rules say.
 | `diff` | Index against the work tree; one commit against the work tree (the paths in the commit or the index); two commits, or `a..b`. A name that is both a revision and a file needs `--`. Shows `old mode` and `new mode`, symlinks and binary files as git does. `--cached` and `--staged` compare the index with `HEAD` (or with one named commit). |
 | `show [<rev>]` | Commit header and message, then the diff against the first parent. A merge commit prints no diff (git prints a combined diff, which pyn does not compute). |
 | `log [<options>] [<rev>...] [--] [<path>...]` | Git's output: commit blocks, newest first across all parents, with git's history simplification for a path; revision ranges, formats, filters and diff output are in [Log on a git home](#log-on-a-git-home). `--commits` is the pyn table. `--filter` fails. |
+| `grep [<options>] [-e] <pattern> [<rev>...] [[--] <path>...]` | git's output over the work tree, the index (`--cached`) or revisions; see [Grep](#grep). |
 | `files`, `ls` | `files` lists the index and `ls` lists `HEAD`'s tree. Every entry is `shared`, with no revision, lock or last change. |
 | `add`, `restore --staged`, `commit` | See [staging](#staging-and-committing). |
 | `rm`, `mv` | See [Removing and moving](#removing-and-moving). |
@@ -1653,6 +1668,47 @@ display width; and a last answer without a newline in `ask each` is read the way
 the items after it), but the filter prompt stops at the end of input where git can loop. Git 2.43 and 2.55 behave alike
 for every answer the menu reads. Covered against the real git, on SHA-1 and SHA-256 repositories, by
 `crates/pyn-cli/tests/git_clean.rs`, which compares exit status, the work tree and the actions taken, not the menu text.
+
+### Grep
+
+`grep` prints git's lines for the pattern: `<path>:<line>` (with `-n`, `<path>:<number>:<line>`), paths relative to where you
+stand, quoted as git quotes them, in index order, and with revisions `<rev>:<path>` for each revision in turn. The exit
+status is `0` when anything matched (also under `-q`), `1` when nothing did, `128` for a fatal error (no pattern, a bad
+pattern, an unknown revision or path, `--cached` with a revision) and `129` for a usage error. A file with a NUL in its first
+8000 bytes is binary and prints `Binary file <name> matches` once (`-a` searches it as text, `-I` skips it); `-c` and `-l`
+treat it like any other file. Without a revision only tracked, regular files are searched, from the work tree (a file deleted
+there is skipped, an intent-to-add file is searched, an unmerged path once); `--cached` reads the index and leaves out
+unmerged and intent-to-add paths. Symbolic links and submodules are never searched. Options go before the pattern, as git
+requires, and `--` ends the revisions. Pathspecs are relative to where you stand, take `*`, `?` and `[...]` globs (a `*`
+crosses folders) but no `:` magic, and default to the current folder. The settings `grep.lineNumber`, `grep.patternType`
+(`default`, `basic`, `extended`, `fixed`), `grep.extendedRegexp`, `grep.fullName` and `core.quotePath` are read; colour is
+never produced.
+
+Patterns are POSIX basic expressions by default (`-G`), extended with `-E` (the last of `-G`, `-E`, `-F` wins), or fixed
+strings. The GNU additions git relies on work in both: `\w \W \s \S \b \B \< \>`, and in basic expressions `\| \+ \?`.
+Expressions are translated for the `regex` crate in `crates/pyn-cli/src/git_home/grep_regex.rs`, with the error messages of
+the GNU library (`fatal: command line, '<pattern>': Unmatched ( or \(`; `-e option, '...'` for `-e`). A pattern is split at
+newlines into several, as git does. `--and`, `--or`, `--not` and parentheses combine patterns per line with git's
+precedence (`--not`, then `--and`, then `--or`, which juxtaposed patterns also mean); a stray `--or` is ignored as git does.
+A plain pattern list that matches an empty line also matches the empty line git imagines after a final newline (so
+`grep -n '^$'` reports one more line for a file that ends in a newline), exactly as git does, but not with `-v`, `-w` or
+`--and`/`--not`/parentheses.
+
+What differs, all of it refused or documented rather than silently different:
+
+| Difference | pyn |
+| --- | --- |
+| Back-references (`\1`, `(a)\1`) | Fatal error `back-references are not supported` (`128`); a reference to a group that does not exist gives git's `Invalid back reference`. |
+| Alternation with `-w` | The regex engine takes the first branch that matches, where the GNU library takes the longest: `grep -Ew 'a\|ab'` can miss a word git finds. Without `-w` a line matches either way. |
+| ``\` ``, `\'` | Refused (`128`): git's result depends on how it reads the file, not on the line. With `-i`, a backslash before a lowercase letter that is not an operator (`\a`) is refused: git matches nothing there. |
+| Locale | Matching is by characters in UTF-8, as in a UTF-8 locale; `[[:alpha:]]` and similar classes are ASCII only. A pattern that is not valid UTF-8 is refused. |
+| Binary attributes | `.gitattributes` (`binary`, `-diff`, `diff`) and `textconv` are not consulted; a file is binary by its content only. |
+| Revisions | Commits and tags that peel to one (`HEAD~2`, a branch, a hash); a tree such as `HEAD:sub` is not a revision here, so it is read as a path and fails with git's `ambiguous argument`. |
+| Not built (usage error `129`) | `--untracked`, `--no-index` (so also searching outside a repository), `--recurse-submodules`, `--exclude-standard`, `-o`, `-L`, `-z`, `-f`, `-m`, `-P`, `-A`, `-B`, `-C`, `-p`, `-W`, `--column`, `--heading`, `--break`, `--color`, `--all-match`, `--max-depth`, abbreviated long options, and `:` pathspec magic. |
+
+Covered against the real git, on SHA-1 and SHA-256 repositories, by `crates/pyn-cli/tests/git_grep.rs` (output, order and
+exit status for the work tree, the index, revisions, binary files, subfolders, conflicts and a few hundred patterns of
+both syntaxes) and `crates/pyn-cli/tests/git_exit_status.rs`, which compare only behaviour the git releases in use agree on.
 
 ### Reflogs
 

@@ -1139,7 +1139,12 @@ fn submodule_config_reads(source: &str, args: &[&str]) {
         );
         assert_eq!(String::from_utf8_lossy(&got.stdout), want);
         let stderr = String::from_utf8_lossy(&got.stderr);
-        let mut counts = [0; 3];
+        let count = |event: &str| {
+            stderr
+                .lines()
+                .filter(|line| line.starts_with(&format!("submodule config {event}: ")))
+                .count()
+        };
         assert_eq!(
             stderr
                 .lines()
@@ -1147,19 +1152,8 @@ fn submodule_config_reads(source: &str, args: &[&str]) {
                 .count(),
             1
         );
-        for line in stderr.lines() {
-            if line.starts_with("submodule config validation: ") {
-                continue;
-            }
-            let values = line
-                .strip_prefix("submodule config reads: ")
-                .expect("unexpected diagnostic");
-            for (count, value) in counts.iter_mut().zip(values.split_whitespace()) {
-                *count += value.split_once('=').unwrap().1.parse::<usize>().unwrap();
-            }
-        }
         assert_eq!(
-            counts,
+            [count("parse"), count("index"), count("head")],
             [
                 1,
                 usize::from(source != "worktree"),
@@ -1187,18 +1181,18 @@ fn nested_config_reads(args: &[&str]) {
         assert_eq!(got.status.code(), want.status.code());
         assert_eq!(got.stdout, want.stdout);
         let stderr = String::from_utf8_lossy(&got.stderr);
-        let reads: Vec<_> = stderr
+        let parses: Vec<_> = stderr
             .lines()
-            .filter(|line| line.starts_with("submodule config reads: "))
+            .filter(|line| {
+                line.starts_with("submodule config ")
+                    && !line.starts_with("submodule config validation: ")
+            })
             .collect();
-        assert_eq!(reads.len(), 2, "{args:?}: {stderr}");
+        assert_eq!(parses.len(), 2, "{args:?}: {stderr}");
         for dir in [f.repo.join(".git"), f.sub_git_dir()] {
-            let event = format!(
-                "submodule config reads: parses=1 index=0 head=0 repo={}",
-                dir.display()
-            );
+            let event = format!("submodule config parse: {}", dir.display());
             assert_eq!(
-                reads.iter().filter(|line| **line == event).count(),
+                parses.iter().filter(|line| **line == event).count(),
                 1,
                 "{stderr}"
             );
@@ -1779,7 +1773,7 @@ fn observer_config_boundary(args: &[&str]) {
             );
             let diagnostics: String = stderr
                 .split_inclusive('\n')
-                .filter(|line| !line.starts_with("submodule config validation: "))
+                .filter(|line| !line.starts_with("submodule config "))
                 .collect();
             assert_eq!(diagnostics.as_bytes(), want.stderr);
             assert_eq!(gitfix::snapshot(&f.repo), before);
@@ -1840,7 +1834,7 @@ fn merge_global_config_boundary() {
                 let stderr = String::from_utf8_lossy(&got.stderr);
                 let diagnostics: String = stderr
                     .split_inclusive('\n')
-                    .filter(|line| !line.starts_with("submodule config validation: "))
+                    .filter(|line| !line.starts_with("submodule config "))
                     .collect();
                 assert_eq!(diagnostics.as_bytes(), want.stderr);
                 assert_eq!(

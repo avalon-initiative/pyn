@@ -13,6 +13,8 @@ pub(crate) mod editor;
 mod fetch;
 mod fetch_apply;
 mod fetch_map;
+mod grep;
+mod grep_regex;
 mod hunk_pick;
 mod init_git;
 mod log;
@@ -66,6 +68,7 @@ pub use commands::run;
 pub use commit::GitCommitArgs;
 pub(crate) use commit::append_trailer;
 pub use fetch::FetchArgs;
+pub use grep::GrepArgs;
 pub(crate) use init_git::is_tracked;
 pub use init_git::{InitGitArgs, init_git};
 pub use log::GitLogArgs;
@@ -95,6 +98,18 @@ impl std::fmt::Display for Refused {
 }
 
 impl std::error::Error for Refused {}
+
+/// An `error: <message>` failure that exits with a status of its own.
+#[derive(Debug)]
+pub struct Exits(pub i32, pub String);
+
+impl std::fmt::Display for Exits {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.1)
+    }
+}
+
+impl std::error::Error for Exits {}
 
 pub struct GitHome {
     repo: Repo,

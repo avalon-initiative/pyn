@@ -278,7 +278,7 @@ pub fn branch_command(
         _ if list => bail!("`pyn branch --list` takes no branch names"),
         [new] => create(backend, api, ws, new, None).map(drop),
         [new, start] => create(backend, api, ws, new, Some(start)).map(drop),
-        _ => bail!("`pyn branch` takes `<name> [<start>]`"),
+        _ => crate::usage_error("`pyn branch` takes `<name> [<start>]`"),
     }
 }
 
