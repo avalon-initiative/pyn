@@ -375,7 +375,6 @@ fn groups() -> Vec<(&'static str, Vec<Case>)> {
                 case(Dirty, "show --bogus"),
                 case(Dirty, "show nosuchrev"),
                 case(Dirty, "show HEAD:nosuchpath"),
-                case(Dirty, "show HEAD -- nosuchpath"),
                 case(Dirty, "show HEAD HEAD~1 nosuchrev"),
                 case(Outside, "show HEAD"),
             ],

@@ -10,7 +10,7 @@ use pyn_gitwork::{
     Change, Conflict, Entry, Head, Kind, Pathspec, StatusEntry, SubmoduleIgnore, Submodules,
     fs_path, hash_worktree_file,
 };
-use pyn_object::{Commit, ObjectId};
+use pyn_object::ObjectId;
 
 use super::{GitHome, path_string, stage};
 use crate::backend::Backend;
@@ -739,29 +739,6 @@ pub(super) fn head_or_refuse(git: &GitHome) -> Result<ObjectId> {
     }
 }
 
-/// Whether history simplification keeps the commit: it differs from every parent (or a root has a match) within `spec`.
-fn touches_paths(git: &GitHome, c: &Commit, spec: &Pathspec) -> Result<bool> {
-    let differs = |parent: Option<&ObjectId>| -> Result<bool> {
-        let old = match parent {
-            Some(p) => Some(git.repo.commit(p)?.tree),
-            None => None,
-        };
-        Ok(!git
-            .repo
-            .diff_trees(old.as_ref(), Some(&c.tree), spec)?
-            .is_empty())
-    };
-    if c.parents.is_empty() {
-        return differs(None);
-    }
-    for p in &c.parents {
-        if !differs(Some(p))? {
-            return Ok(false);
-        }
-    }
-    Ok(true)
-}
-
 fn show(
     git: &GitHome,
     cwd: &Path,
@@ -795,9 +772,6 @@ fn show(
     let mut check = String::new();
     for id in &ids {
         let c = git.repo.commit(id)?;
-        if !spec.is_empty() && !touches_paths(git, &c, &spec)? {
-            continue;
-        }
         if !out.is_empty() && !pretty.terminated() {
             out.push('\n');
         }
