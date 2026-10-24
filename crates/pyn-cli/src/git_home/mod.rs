@@ -2,6 +2,9 @@
 //! Nothing here changes what git sees; the only file pyn adds is its own `.pyn/` folder, hidden by `info/exclude`.
 
 mod ancestry;
+mod bisect;
+mod bisect_bases;
+mod bisect_walk;
 mod branches;
 mod cat_file;
 mod clean;
@@ -71,6 +74,7 @@ use crate::backend::Backend;
 use crate::repo_tool::{self, RepoTool};
 use crate::workspace::{self, Workspace};
 
+pub use bisect::BisectArgs;
 pub use cat_file::CatFileArgs;
 pub use clean::CleanArgs;
 pub use clone::{CloneOptions, clone};

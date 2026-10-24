@@ -166,6 +166,18 @@ const DIVERGENT: &[(&str, &str)] = &[
         "docs: Conventions, `pyn diff` outside a repository asks for a server (128); git prints --no-index usage (129)",
     ),
     (
+        "Clean: bisect visualize (after git bisect start HEAD HEAD~3)",
+        "docs: Bisect, `visualize` and `view` are not built (129)",
+    ),
+    (
+        "Clean: bisect view (after git bisect start HEAD HEAD~3)",
+        "docs: Bisect, `visualize` and `view` are not built (129)",
+    ),
+    (
+        "Clean: bisect skip a...b (after git bisect start HEAD HEAD~3)",
+        "docs: Bisect, a symmetric range `a...b` to `skip` is not built (129)",
+    ),
+    (
         "Dirty: log --bogus",
         "docs: Conventions, an option git lacks and one pyn does not build both exit 129, where git exits 128",
     ),
@@ -290,6 +302,7 @@ use At::{Clean, Dirty, Outside};
 fn groups() -> Vec<(&'static str, Vec<Case>)> {
     const ORIGIN: &[&[&str]] = &[&["remote", "add", "origin", "/nonexistent/pyn-oracle.git"]];
     const MERGING: &[&[&str]] = &[&["merge", "conflict"]];
+    const BISECTING: &[&[&str]] = &[&["bisect", "start", "HEAD", "HEAD~3"]];
     vec![
         (
             "status",
@@ -778,6 +791,47 @@ fn groups() -> Vec<(&'static str, Vec<Case>)> {
                 case(Clean, "grep -c clean HEAD"),
             ],
         ),
+        (
+            "bisect",
+            vec![
+                case(Clean, "bisect good"),
+                case(Clean, "bisect bad"),
+                case(Clean, "bisect skip"),
+                case(Clean, "bisect next"),
+                case(Clean, "bisect log"),
+                case(Clean, "bisect terms"),
+                case(Clean, "bisect run true"),
+                case(Clean, "bisect run"),
+                case(Clean, "bisect replay nosuchfile"),
+                case(Clean, "bisect start nosuchrev --"),
+                case(Clean, "bisect start --bogus"),
+                case(Clean, "bisect start HEAD HEAD~1"),
+                case(Clean, "bisect reset nosuchrev"),
+                case(Clean, "bisect reset a b"),
+                case(Clean, "bisect start HEAD HEAD"),
+                with(Clean, BISECTING, "bisect good"),
+                with(Clean, BISECTING, "bisect bad"),
+                with(Clean, BISECTING, "bisect good nosuchrev"),
+                with(Clean, BISECTING, "bisect bad HEAD HEAD~1"),
+                with(Clean, BISECTING, "bisect skip nosuchrev"),
+                with(Clean, BISECTING, "bisect next"),
+                with(Clean, BISECTING, "bisect log"),
+                with(Clean, BISECTING, "bisect terms"),
+                with(Clean, BISECTING, "bisect terms --term-good"),
+                with(Clean, BISECTING, "bisect terms --bogus"),
+                with(Clean, BISECTING, "bisect new"),
+                with(Clean, BISECTING, "bisect run true"),
+                with(Clean, BISECTING, "bisect run false"),
+                with(Clean, BISECTING, "bisect run sh -c exit-3"),
+                with(Clean, BISECTING, "bisect reset"),
+                with(Clean, BISECTING, "bisect reset HEAD~1"),
+                with(Clean, BISECTING, "bisect start HEAD HEAD~2"),
+                with(Clean, BISECTING, "bisect replay nosuchfile"),
+                with(Clean, BISECTING, "bisect visualize"),
+                with(Clean, BISECTING, "bisect view"),
+                with(Clean, BISECTING, "bisect skip a...b"),
+            ],
+        ),
     ]
 }
 
@@ -820,7 +874,8 @@ group_tests!(
     push,
     clone,
     config,
-    grep
+    grep,
+    bisect
 );
 
 #[test]

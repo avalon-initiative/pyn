@@ -355,7 +355,7 @@ fn skip_blank_lines(text: &str) -> &str {
 }
 
 /// The first paragraph joined on single spaces, and the text after the blank lines that follow it.
-fn subject_and_body(message: &str) -> (String, &str) {
+pub(crate) fn subject_and_body(message: &str) -> (String, &str) {
     let mut rest = skip_blank_lines(message);
     let mut subject = String::new();
     while !rest.is_empty() {
