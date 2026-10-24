@@ -210,8 +210,11 @@ enum Command {
     },
     /// Show a commit: its message and what it changed (the newest commit if none is named).
     Show {
-        /// `HEAD`, `HEAD~N`, `HEAD^` or a commit hash (an abbreviation of at least 4 digits is enough).
-        commit: Option<String>,
+        /// Commits (`HEAD`, `HEAD~N`, `HEAD^` or a hash of at least 4 digits), then paths; a git repository takes several.
+        args: Vec<String>,
+        /// Paths to limit the diff to, after `--`.
+        #[arg(last = true)]
+        paths: Vec<String>,
         /// Print only the commit, not its diff.
         #[arg(short = 's', long = "no-patch")]
         no_patch: bool,
@@ -1752,17 +1755,22 @@ fn run(cli: Cli) -> Result<()> {
             }
         }
         Command::Show {
-            commit,
+            args,
+            paths,
             no_patch,
             fmt,
             format,
         } => {
+            if args.len() > 1 || !paths.is_empty() {
+                usage_error("`pyn show` takes one commit and no paths on a pyn server");
+            }
+            let commit = args.first();
             let shown = ShowOpts {
                 diff: format.format(),
                 rendering: fmt.requested()?,
                 no_patch,
             };
-            show_command(&backend, ws.as_ref(), commit.as_deref(), &shown)?
+            show_command(&backend, ws.as_ref(), commit.map(String::as_str), &shown)?
         }
         Command::Policy(PolicyCommand::Preview { file }) => {
             let api = backend.pyn_server("policy")?;

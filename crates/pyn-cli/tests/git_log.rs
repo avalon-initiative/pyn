@@ -556,6 +556,31 @@ fn show_formats_match_git() {
 }
 
 #[test]
+fn show_limits_to_paths_and_takes_several_commits_like_git() {
+    each_format(|f| {
+        for args in [
+            &["HEAD~3", "--", "b.txt"][..],
+            &["HEAD~2", "--", "sub"],
+            &["HEAD~3", "--", "a.txt"],
+            &["HEAD~3", "b.txt"],
+            &["HEAD~3", "HEAD~2", "b.txt"],
+            &["HEAD~3", "--", "nosuchpath"],
+            &["HEAD~2", "--", "sub", "b.txt"],
+            &["--stat", "HEAD~2", "--", "sub"],
+            &["HEAD~3", "HEAD~2"],
+            &["--oneline", "HEAD~3", "HEAD~2", "HEAD"],
+            &["HEAD~3", "HEAD~2", "--", "b.txt"],
+            &["HEAD~1", "--", "f.txt"],
+            &["HEAD~1", "--", "b.txt"],
+            &["HEAD~1", "--", "a.txt", "f.txt"],
+            &["HEAD~3", "HEAD~2", "nosuchrev"],
+        ] {
+            f.same_show(args);
+        }
+    });
+}
+
+#[test]
 fn show_format_errors_match_git() {
     let f = Fixture::new("sha1");
     for args in [&["--format=%h", "nope"][..], &["-s", "--date=bogus"]] {
