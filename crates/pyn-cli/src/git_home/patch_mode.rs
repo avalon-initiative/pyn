@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, Write};
 use std::path::Path;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use pyn_diff::{Hunk, apply_hunks};
 use pyn_git::IndexEntry;
 use pyn_gitwork::{Entry, Pathspec, fs_path, worktree_mode};
@@ -29,7 +29,8 @@ type Applied = Option<(FileMode, Vec<u8>)>;
 enum Source {
     Index,
     Worktree,
-    Tree(ObjectId),
+    /// A commit's tree; `None` is the empty tree of an unborn `HEAD`.
+    Tree(Option<ObjectId>),
 }
 
 /// A mode of the prompt: which two states the hunks lead between and where a choice is written.
@@ -86,7 +87,7 @@ impl PatchMode {
         Self {
             stash: true,
             ..Self::new(
-                (Source::Tree(head), Source::Worktree),
+                (Source::Tree(Some(head)), Source::Worktree),
                 true,
                 (false, true),
                 words,
@@ -98,11 +99,8 @@ impl PatchMode {
     fn restore(git: &GitHome, source: Option<&str>, staged: bool, worktree: bool) -> Result<Self> {
         let to_worktree = worktree || !staged;
         let tree = match source {
-            Some(rev) => Some((git.repo.resolve(rev)?, rev == "HEAD")),
-            None if staged => match git.repo.head_commit()? {
-                Some(head) => Some((head, true)),
-                None => bail!("could not resolve HEAD"),
-            },
+            Some(rev) => Some((Some(git.repo.resolve(rev)?), rev == "HEAD")),
+            None if staged => Some((git.repo.head_commit()?, true)),
             None => None,
         };
         let from_head = tree.is_none_or(|(_, head)| head);
@@ -176,23 +174,39 @@ pub(super) struct Chosen {
     new: Option<Side>,
     hunks: Vec<Hunk>,
     mode: bool,
+    /// The empty file is added or removed.
+    whole: bool,
 }
 
 impl Chosen {
+    fn is_chosen(&self) -> bool {
+        self.mode || self.whole || !self.hunks.is_empty()
+    }
+
     /// What `target` becomes when the choices are applied forwards, or backwards with `reverse`; `None` removes it.
-    fn apply(&self, reverse: bool, target: Option<&Side>) -> Result<Applied> {
-        let desired = if reverse { &self.old } else { &self.new };
-        let applied = !self.hunks.is_empty();
-        if (applied && desired.is_none()) || (target.is_none() && !applied) {
+    fn apply(&self, reverse: bool, target: Option<&Side>, place: &str) -> Result<Applied> {
+        let (shown, desired) = if reverse {
+            (&self.new, &self.old)
+        } else {
+            (&self.old, &self.new)
+        };
+        let applied = !self.hunks.is_empty() || self.whole;
+        if target.is_none() && !applied {
             return Ok(None);
         }
         let name = path_string(&self.path);
+        if shown.is_some() && target.is_none() {
+            anyhow::bail!("{name}: does not exist in {place}");
+        }
+        if shown.is_none() && target.is_some() && applied {
+            anyhow::bail!("{name}: already exists in {place}");
+        }
         if self.mode
-            && let (Some(t), Some(shown)) = (target, if reverse { &self.new } else { &self.old })
+            && let (Some(t), Some(shown)) = (target, shown)
             && t.mode != shown.mode
         {
-            anyhow::bail!(
-                "{name} has type {:o}, expected {:o}",
+            eprintln!(
+                "warning: {name} has type {:o}, expected {:o}",
                 raw_mode(t.mode),
                 raw_mode(shown.mode)
             );
@@ -211,6 +225,12 @@ impl Chosen {
         } else {
             content.to_vec()
         };
+        if applied && desired.is_none() {
+            if !bytes.is_empty() {
+                anyhow::bail!("patch failed: {name}:1\n{name}: patch does not apply");
+            }
+            return Ok(None);
+        }
         let mode = match (target, desired) {
             (Some(_), Some(d)) if self.mode => d.mode,
             (Some(t), _) => t.mode,
@@ -300,7 +320,7 @@ fn gather(git: &GitHome, opened: &OpenIndex, mode: &PatchMode, spec: &Pathspec) 
         Source::Tree(commit) => Some(*commit),
         _ => None,
     });
-    let tree_map = match tree {
+    let tree_map = match tree.flatten() {
         Some(commit) => {
             let root = git.repo.commit(&commit)?.tree;
             git.repo.flatten(Some(&root), spec)?
@@ -394,7 +414,11 @@ fn gather(git: &GitHome, opened: &OpenIndex, mode: &PatchMode, spec: &Pathspec) 
                 new: mode_text(n.mode),
             });
         }
+        let empty_file = hunks.is_empty() && old.is_none() != new.is_none();
         items.extend(hunks.into_iter().map(Item::Hunk));
+        if empty_file {
+            items.push(Item::Whole);
+        }
         if items.is_empty() {
             continue;
         }
@@ -417,6 +441,7 @@ fn gather(git: &GitHome, opened: &OpenIndex, mode: &PatchMode, spec: &Pathspec) 
             new,
             hunks: Vec::new(),
             mode: false,
+            whole: false,
         };
         found.files.push((diff, chosen));
     }
@@ -500,14 +525,15 @@ fn choose(
             let mut c = pending.next().expect("a choice for every file");
             for (item, used) in d.items.iter().zip(&d.uses) {
                 if *used == Use::Yes {
-                    match item.hunk() {
-                        Some(h) => c.hunks.push(h.clone()),
-                        None => c.mode = true,
+                    match item {
+                        Item::Hunk(h) => c.hunks.push(h.clone()),
+                        Item::Mode { .. } => c.mode = true,
+                        Item::Whole => c.whole = true,
                     }
                 }
             }
             if failure.is_none()
-                && (c.mode || !c.hunks.is_empty())
+                && c.is_chosen()
                 && let Err(e) = each(&c, io)
             {
                 failure = Some(e);
@@ -518,7 +544,7 @@ fn choose(
     if let Some(e) = failure {
         return Err(e);
     }
-    done.retain(|c| c.mode || !c.hunks.is_empty());
+    done.retain(Chosen::is_chosen);
     Ok(Some(done))
 }
 
@@ -551,6 +577,22 @@ pub fn restore(
     )
 }
 
+/// `pyn reset -p [<rev>] [<paths>]`.
+pub(super) fn reset(git: &GitHome, cwd: &Path, rev: Option<&str>, paths: &[String]) -> Result<()> {
+    patch(git, cwd, paths, &PatchMode::restore(git, rev, true, false)?)
+}
+
+/// `pyn checkout -p [<rev>] [<paths>]`: the work tree alone from the index, or index and work tree from `rev`.
+pub(super) fn checkout(
+    git: &GitHome,
+    cwd: &Path,
+    rev: Option<&str>,
+    paths: &[String],
+) -> Result<()> {
+    let mode = PatchMode::restore(git, rev, rev.is_some(), true)?;
+    patch(git, cwd, paths, &mode)
+}
+
 /// Writes one file's choices to the index entries in memory and to the work tree; true when the index changed.
 fn write_file(
     git: &GitHome,
@@ -561,7 +603,7 @@ fn write_file(
 ) -> Result<bool> {
     let mut to_index = mode.index;
     let staged = if mode.index {
-        match c.apply(mode.reverse, c.sides.index.as_ref()) {
+        match c.apply(mode.reverse, c.sides.index.as_ref(), "index") {
             Ok(result) => Some(result),
             Err(e) if mode.worktree => {
                 for line in e.to_string().lines() {
@@ -588,7 +630,7 @@ fn write_file(
         None
     };
     if mode.worktree {
-        let result = c.apply(mode.reverse, c.sides.worktree.as_ref())?;
+        let result = c.apply(mode.reverse, c.sides.worktree.as_ref(), "working directory")?;
         if let Some((m, _)) = &result {
             convert::refuse_conversions(git, [(c.path.as_slice(), *m)])?;
         }
@@ -611,11 +653,19 @@ fn write_file(
 }
 
 fn patch(git: &GitHome, cwd: &Path, paths: &[String], mode: &PatchMode) -> Result<()> {
+    patch_spec(git, &spec_of(git, cwd, paths)?, mode)
+}
+
+/// `add -p` over repository paths already resolved, as `add -i` hands them over.
+pub(super) fn add_spec(git: &GitHome, spec: &Pathspec) -> Result<()> {
+    patch_spec(git, spec, &PatchMode::add())
+}
+
+fn patch_spec(git: &GitHome, spec: &Pathspec, mode: &PatchMode) -> Result<()> {
     let opened = git.open_index()?;
-    let spec = spec_of(git, cwd, paths)?;
     let mut entries: Entries = entries_of(&opened.index);
     let mut changed = false;
-    choose(git, &opened, mode, &spec, &mut |c, io| {
+    choose(git, &opened, mode, spec, &mut |c, io| {
         changed |= write_file(git, mode, &mut entries, c, io)?;
         Ok(())
     })?;
@@ -660,7 +710,7 @@ pub(super) fn stash(
     let mut reverts = Vec::new();
     let mut failure = None;
     for c in &chosen {
-        match c.apply(false, c.sides.tree.as_ref())? {
+        match c.apply(false, c.sides.tree.as_ref(), "index")? {
             Some((mode, bytes)) => {
                 let id = git.repo.objects().write(ObjectKind::Blob, &bytes)?;
                 put_entry(
@@ -670,7 +720,7 @@ pub(super) fn stash(
             }
             None => remove_entry(&mut work, &c.path),
         }
-        match c.apply(true, c.sides.worktree.as_ref()) {
+        match c.apply(true, c.sides.worktree.as_ref(), "working directory") {
             Ok(back) => reverts.push((c.path.clone(), back)),
             Err(e) => {
                 failure = Some(e.to_string());

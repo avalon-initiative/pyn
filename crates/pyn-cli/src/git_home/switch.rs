@@ -744,6 +744,33 @@ fn is_path(git: &GitHome, cwd: &Path, name: &str) -> Result<bool> {
         .any(|e| under(&e.path, prefix.as_bytes())))
 }
 
+/// The revision (if the first name is one) and the paths of `checkout -p`.
+fn patch_target(
+    git: &GitHome,
+    cwd: &Path,
+    names: &[String],
+    paths: Vec<String>,
+) -> Result<(Option<String>, Vec<String>)> {
+    let dashes = !paths.is_empty() || std::env::args_os().any(|a| a == "--");
+    let Some(first) = names.first() else {
+        return Ok((None, paths));
+    };
+    if dashes {
+        return Ok((Some(first.clone()), paths));
+    }
+    if git.repo.resolve(first).is_ok() {
+        if is_path(git, cwd, first)? {
+            bail!(
+                "ambiguous argument '{first}': both revision and filename\n\
+                 Use '--' to separate paths from revisions, like this:\n\
+                 'pyn <command> [<revision>...] -- [<file>...]'"
+            );
+        }
+        return Ok((Some(first.clone()), names[1..].to_vec()));
+    }
+    Ok((None, names.to_vec()))
+}
+
 pub fn checkout(git: &GitHome, cwd: &Path, args: CheckoutArgs) -> Result<()> {
     let CheckoutArgs {
         args: names,
@@ -754,7 +781,12 @@ pub fn checkout(git: &GitHome, cwd: &Path, args: CheckoutArgs) -> Result<()> {
         ours,
         theirs,
         yes: _,
+        patch,
     } = args;
+    if patch {
+        let (rev, paths) = patch_target(git, cwd, &names, paths)?;
+        return super::patch_mode::checkout(git, cwd, rev.as_deref(), &paths);
+    }
     let stage = match (ours, theirs) {
         (true, _) => Some(2),
         (_, true) => Some(3),

@@ -35,6 +35,9 @@ pub struct ResetArgs {
     /// Git repository: do not list the changes left unstaged.
     #[arg(short, long)]
     pub(crate) quiet: bool,
+    /// Choose the hunks to unstage, one at a time (a git repository only).
+    #[arg(short, long)]
+    pub(crate) patch: bool,
     /// Workspace: skip the typed confirmation of --hard.
     #[arg(long)]
     pub(crate) yes: bool,
@@ -82,11 +85,22 @@ impl ResetArgs {
         self.mixed
     }
 
+    /// Whether a mode flag was given, since `--patch` takes none.
+    pub(crate) fn has_mode(&self) -> bool {
+        self.soft || self.mixed || self.hard || self.keep || self.merge
+    }
+
     /// The one revision a workspace takes; git's other forms need a git repository.
     fn commit(&self) -> Result<Option<&str>> {
-        if self.keep || self.merge || self.quiet || !self.paths.is_empty() || self.revs.len() > 1 {
+        if self.patch
+            || self.keep
+            || self.merge
+            || self.quiet
+            || !self.paths.is_empty()
+            || self.revs.len() > 1
+        {
             bail!(
-                "`--keep`, `--merge`, `-q`, paths and more than one revision need a git repository; \
+                "`--patch`, `--keep`, `--merge`, `-q`, paths and more than one revision need a git repository; \
                  a workspace resets to one commit"
             );
         }
