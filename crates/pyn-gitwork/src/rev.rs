@@ -142,7 +142,8 @@ impl Repo {
         }
     }
 
-    fn ids_with_prefix(&self, prefix: &str) -> Result<Vec<ObjectId>> {
+    /// Every object, of any kind, whose id starts with the hex `prefix`.
+    pub fn ids_with_prefix(&self, prefix: &str) -> Result<Vec<ObjectId>> {
         let algorithm: Algorithm = self.algorithm();
         let mut found = Vec::new();
         for pack in self.objects().packs() {

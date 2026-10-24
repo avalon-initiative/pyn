@@ -78,7 +78,7 @@ pub fn require_literal(paths: &[String], exists: impl Fn(&str) -> bool) -> Resul
 }
 
 /// `path` as seen from the folder `prefix` (both from the root, no trailing slash on `prefix`).
-fn relative(prefix: &[u8], path: &[u8]) -> Vec<u8> {
+pub(crate) fn relative(prefix: &[u8], path: &[u8]) -> Vec<u8> {
     let is_dir = path.ends_with(b"/");
     let trimmed = path.strip_suffix(b"/").unwrap_or(path);
     let split = |p: &[u8]| -> Vec<Vec<u8>> {

@@ -102,6 +102,14 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
             Ok(())
         }
         Command::Reflog(args) => super::reflog::reflog(git, args),
+        Command::RevParse(args) => super::rev_parse::rev_parse(git, cwd, args),
+        Command::LsFiles(args) => super::ls_files::ls_files(git, cwd, args),
+        Command::LsTree(args) => super::ls_tree::ls_tree(git, cwd, args),
+        Command::CatFile(args) => super::cat_file::cat_file(git, cwd, args),
+        Command::ShowRef(args) => super::show_ref::show_ref(git, args),
+        Command::Shortlog(args) => super::shortlog::shortlog(git, cwd, args),
+        Command::Describe(args) => super::describe::describe(git, cwd, args),
+        Command::NameRev(args) => super::name_rev::name_rev(git, cwd, args),
         Command::Rebase(args) => super::rebase::rebase(git, &args),
         Command::Remote(args) => super::remote::remote(git, args),
         Command::Fetch(args) => super::fetch::fetch(git, args),

@@ -208,6 +208,22 @@ enum Command {
         #[arg(long, alias = "staged")]
         cached: bool,
     },
+    /// Print the object ids revisions name, and facts about the repository (a git repository only).
+    RevParse(git_home::RevParseArgs),
+    /// Show the files in the index and the work tree (a git repository only).
+    LsFiles(git_home::LsFilesArgs),
+    /// List the contents of a tree object (a git repository only).
+    LsTree(git_home::LsTreeArgs),
+    /// Show an object's type, size or content (a git repository only).
+    CatFile(git_home::CatFileArgs),
+    /// List the refs and the ids they point at (a git repository only).
+    ShowRef(git_home::ShowRefArgs),
+    /// Summarize the history by author (a git repository only).
+    Shortlog(git_home::ShortlogArgs),
+    /// Name a commit after the nearest tag it descends from (a git repository only).
+    Describe(git_home::DescribeArgs),
+    /// Name a commit relative to the refs that reach it (a git repository only).
+    NameRev(git_home::NameRevArgs),
     /// Show a commit: its message and what it changed (the newest commit if none is named).
     Show {
         /// `HEAD`, `HEAD~N`, `HEAD^` or a commit hash (an abbreviation of at least 4 digits is enough).
@@ -1674,6 +1690,17 @@ fn run(cli: Cli) -> Result<()> {
         Command::Reflog(_) => {
             eprintln!("{}", unsupported::message("reflog"));
             std::process::exit(1);
+        }
+        Command::RevParse(_)
+        | Command::LsFiles(_)
+        | Command::LsTree(_)
+        | Command::CatFile(_)
+        | Command::ShowRef(_)
+        | Command::Shortlog(_)
+        | Command::Describe(_)
+        | Command::NameRev(_) => {
+            eprintln!("fatal: not a git repository (or any of the parent directories): .git");
+            std::process::exit(128);
         }
         Command::Rebase(args) => {
             if ws.as_ref().is_some_and(|w| w.settings().local_store_on()) {
