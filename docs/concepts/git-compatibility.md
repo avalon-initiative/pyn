@@ -164,10 +164,11 @@ Commands people reach for that are not in the daily set.
 | `git fsck` | `pyn verify [<path>]` | different | Checks every revision's hash and its link to the one before, and the audit log's chain. Silent and exit 0 when intact, as git; otherwise a `PROBLEM`, `WHAT`, `PATH` table and exit 1. `-v` / `--verbose` also prints what was checked. See [integrity](integrity.md). |
 | `git reflog [show\|list\|exists\|expire\|delete]` | `pyn reflog ...` on a git home | git home only | See [Reflogs](#reflogs). On a pyn server it prints the git-command message; the closest analogue there is `pyn audit`, an append-only log of lock, revision and access events, filtered with `--path`, `--actor`, `--action`, `--before`, `--limit` and permission-gated (`view_audit`). |
 | `git grep [<options>] [-e] <pattern> [<rev>...] [[--] <path>...]` | `pyn grep ...` on a git home | git home only | See [Grep](#grep). Searches the tracked files of the work tree, the index (`--cached`) or the commits named; `-n -i -w -l -c -v -q -h -H -a -I -E -G -F`, `-e` (repeatable), `--and`, `--or`, `--not` and parentheses, pathspecs after the revisions or `--`. On a pyn server or local-store workspace it says it needs a git repository (`1`). |
-| `git blame`, `git annotate` | none | unsupported | Git-command message. Line history needs merge-capable text history; not scheduled. |
+| `git bisect start [--term-(bad\|new)=<term> --term-(good\|old)=<term>] [--no-checkout] [--first-parent] [<bad> [<good>...]] [--] [<pathspec>...]`, `good`\|`old`, `bad`\|`new`, `skip`, `next`, `reset`, `run`, `log`, `replay`, `terms` | `pyn bisect ...` on a git home | git home only | See [Bisect](#bisect). Git's search, output, exit statuses and `.git` state, so git and pyn can continue each other's bisection; `visualize` and `view` are not built (`129`). On a pyn server or local-store workspace it fails with `fatal: not a git repository (or any of the parent directories): .git` (`128`). |
+| `git blame [-L <range>] [-w] [<options>] [<rev>] [--] <file>`, `git annotate` | `pyn blame ...`, `pyn annotate ...` on a git home | git home only | See [Blame](#blame). Git's lines byte for byte: the default, `-e`, `-s`, `-f`, `-n`, `-l`, `-t`, `-b`, `--root`, `--abbrev`, `--date`, `-p`, `--line-porcelain`, `-L` ranges, `<rev>`, `<a>..<b>` and `^<rev>`. `-M`, `-C` and `--incremental` are usage errors (`129`). On a pyn server or local-store workspace it says it needs a git repository (`1`). |
 | `git submodule` | none | unsupported | Submodule lifecycle commands are not built. On a git home, `status` and `diff` inspect recorded gitlinks and initialized submodule checkouts without changing them; see [On a git home](#on-a-git-home). |
 | `git format-patch`, `git apply`, `git am` | the same names on a git home | git home only | See [Patches](#patches). On a pyn server `format-patch` and `am` fail with `fatal: not a git repository (or any of the parent directories): .git` (`128`), as does `apply`, which git would run outside a repository too. |
-| `git archive`, `git bundle`, `git notes`, `git bisect`, `git worktree`, `git gc`, `git fsck` | none | unsupported | `pyn: '<cmd>' is not a pyn command` (`1`). Only the commands in the git-only list print the "git command pyn does not support yet" message, so these read as unknown until that list is widened (#223). |
+| `git archive`, `git bundle`, `git notes`, `git worktree`, `git gc`, `git fsck` | none | unsupported | `pyn: '<cmd>' is not a pyn command` (`1`). Only the commands in the git-only list print the "git command pyn does not support yet" message, so these read as unknown until that list is widened (#223). |
 
 ## Branching and merging
 
@@ -709,7 +710,6 @@ schedules them.
 
 | Git | Reason |
 | --- | --- |
-| `git blame` | Not scheduled. |
 | Commands that maintain git's own storage or run its hooks (`gc`, `fsck`, `bundle`, `submodule`, `worktree`, hooks in `.git/hooks`) | pyn reads a git repository's `.git/` on a git home (decision #245) but does not maintain it or run its hooks. pyn's own hooks are tracked in #216. |
 
 ## On a git home
@@ -784,6 +784,8 @@ whatever the rules say.
 | `show [<rev>]` | Commit header and message, then the diff against the first parent. A merge commit prints no diff (git prints a combined diff, which pyn does not compute). |
 | `log [<options>] [<rev>...] [--] [<path>...]` | Git's output: commit blocks, newest first across all parents, with git's history simplification for a path; revision ranges, formats, filters and diff output are in [Log on a git home](#log-on-a-git-home). `--commits` is the pyn table. `--filter` fails. |
 | `grep [<options>] [-e] <pattern> [<rev>...] [[--] <path>...]` | git's output over the work tree, the index (`--cached`) or revisions; see [Grep](#grep). |
+| `bisect <subcommand>` | git's binary search, output and state; see [Bisect](#bisect). |
+| `blame`, `annotate` | git's output for the line history of a file, following renames and merges; see [Blame](#blame). |
 | `files`, `ls` | `files` lists the index and `ls` lists `HEAD`'s tree. Every entry is `shared`, with no revision, lock or last change. |
 | `add`, `restore --staged`, `commit` | See [staging](#staging-and-committing). |
 | `rm`, `mv` | See [Removing and moving](#removing-and-moving). |
@@ -1752,6 +1754,89 @@ What differs, all of it refused or documented rather than silently different:
 Covered against the real git, on SHA-1 and SHA-256 repositories, by `crates/pyn-cli/tests/git_grep.rs` (output, order and
 exit status for the work tree, the index, revisions, binary files, subfolders, conflicts and a few hundred patterns of
 both syntaxes) and `crates/pyn-cli/tests/git_exit_status.rs`, which compare only behaviour the git releases in use agree on.
+
+### Bisect
+
+`bisect` is `git bisect` with the same search, text, exit statuses and state. `start [<bad> [<good>...]] [-- <path>...]`
+begins (a bare `start` waits for `bad` and `good`), `good`/`old` and `bad`/`new` (or the words chosen with
+`--term-good`/`--term-old` and `--term-bad`/`--term-new`) answer for the commit checked out or the revisions named, `skip`
+takes revisions or `<a>..<b>` ranges, `next` repeats the step, `reset [<commit>]` ends it, `log` prints the record,
+`replay <file>` redoes one, `terms` prints the words and `run <command>...` answers by exit status until the bad commit is
+found. `--no-checkout` leaves `HEAD` alone and moves `BISECT_HEAD`; `--first-parent` follows only first parents.
+
+Each step prints `Bisecting: N revisions left to test after this (roughly M steps)` and `[<id>] <subject>`, and checks the
+commit out detached (the reflog line is `checkout: moving from <branch or id> to <id>`). The commit tried is the one git
+picks: the candidates are the commits reachable from the bad one and not from the good ones (history-simplified for a path
+limit), each weighed by how many candidates it reaches, and the one closest to half wins, with git's tie rules and its
+choice away from skipped commits. When a bad commit has no candidate before it, `<id> is the first bad commit` follows with
+the commit message and diffstat, and the bisection stays recorded until `reset`. Good commits that are not ancestors of the
+bad one make it test their merge base first (`Bisecting: a merge base must be tested`). Exit statuses are git's: `0` for a
+step and for the report, `1` for an error, `2` when only skipped commits are left, `3` for a bad merge base, `4` when a path
+limit leaves nothing to test, `129` for a usage error and `128` for a fatal one. `run` ends with `0` once the first bad
+commit is found. The command's status `0` means good, `125` skip and `1` to `127` bad; a status of `128` or more ends the
+run, and `bisect run` then exits with `256` minus that status. A first status of `126` or `127` makes `run` try the command on
+a good commit before it believes the status.
+
+The state is git's, byte for byte: `BISECT_START`, `BISECT_LOG`, `BISECT_TERMS`, `BISECT_NAMES`, `BISECT_EXPECTED_REV`,
+`BISECT_ANCESTORS_OK`, `BISECT_FIRST_PARENT`, `BISECT_HEAD` and `BISECT_RUN` in the git directory of the work tree, and
+`refs/bisect/<bad>`, `refs/bisect/<good>-<id>` and `refs/bisect/skip-<id>`. A bisection started by either tool continues
+in the other, and a log from either replays in the other.
+
+What differs, all of it refused or documented rather than silently different:
+
+| Difference | pyn |
+| --- | --- |
+| `visualize`, `view` | Usage error (`129`): they start `gitk` or `git log`. |
+| `skip <a>...<b>` | Usage error (`129`); `<a>..<b>` is built. |
+| Pathspecs | Paths and `*`, `?`, `[...]` globs, relative to where `start` and the later steps run; `:` magic is not read. |
+| Prompts | With a terminal on standard input, the questions git asks (`Do you want me to do it for you [Y/n]?`, `Are you sure [Y/n]?`) are asked and answered there; otherwise git's non-interactive answers apply. |
+| Wording | Messages say `pyn bisect` where git says `git bisect`; the text in `BISECT_LOG` stays `git bisect` so both tools read it. The report quotes the terms (`first 'bad' commit`) as git 2.55 does; older gits print them bare. |
+| `bisect run` | The command runs through `sh -c` from the work tree root, as git runs it. |
+| Linked work trees | Each work tree has its own state, as in git. |
+
+Covered against the real git, on SHA-1 and SHA-256 repositories, by `crates/pyn-cli/tests/git_bisect.rs` (a bad commit at
+several places of a straight history, random merge histories with equal and skewed commit times, skipped commits and
+ranges, path limits, `--first-parent`, `--no-checkout`, custom terms, `run`, `reset`, `replay`, and bisections that git
+starts and pyn continues, and the reverse; output, exit statuses, `HEAD`, refs and files are compared) and
+`crates/pyn-cli/tests/git_exit_status.rs`, which compare only behaviour the git releases in use agree on.
+
+### Blame
+
+`blame` and `annotate` print git's lines: for each line of the file at `<rev>` (the work tree file when no revision is
+given) the commit that last changed it, found by diffing along the parents as git does. A parent whose file is identical
+takes all of it; otherwise each parent in order takes the lines that are unchanged against it, so a merge hands a line to
+its first parent when both have it. A file that is not in a parent under the same path is looked up as a rename (exact
+content, then a uniquely same-named file at least 75% similar, then the best match of at least 50%) and
+followed; `-f` shows the old names. The diff is a port of git's own line diff with its hunk placement and
+`diff.indentHeuristic`, so ambiguous insertions land on the same lines. Every layout is git's: the default (abbreviated id
+with `^` on boundary commits, author, date, line number, aligned), `-e`, `-s`, `-f`, `-n`, `-l`, `-t`, `-b`, `--root`,
+`--abbrev=<n>`, `--date=<default|iso|iso-strict|rfc|short|relative|unix|raw>`, `-p` and `--line-porcelain`, and
+`annotate`'s tab-separated layout (also `-c`). `-L <start>,<end>`, `,+<n>`, `,-<n>`, `/<regex>/` (a basic expression)
+and `^/<regex>/` anchors work as git reads them, repeated or overlapping. `-w` ignores whitespace when comparing a commit
+with its parent. Revisions are `<rev>` (before or after the file, with or without `--`), `<a>..<b>` and `^<rev>`;
+commits reachable from the excluded side are boundaries, and so are root commits unless `--root` or `blame.showRoot`.
+`blame.blankBoundary`, `blame.showEmail`, `blame.date`, `diff.indentHeuristic` and `core.abbrev` are read.
+
+A modified work tree file is blamed on `Not Committed Yet <not.committed.yet>` at the current time, with `HEAD` (and
+`MERGE_HEAD`) as parents; `--contents <file>` (or `-` for standard input) does the same for another file's content as
+`External file (--contents)`. A file that is not in `HEAD` or the index is a fatal error (`128`), as is a path missing
+from the named revision. A binary file is blamed line by line like git does, not refused. The exit status is `0`, `128`
+for a fatal error and `129` for a usage error.
+
+What differs, all of it refused or documented rather than silently different:
+
+| Difference | pyn |
+| --- | --- |
+| Not built (usage error `129`) | `-M`, `-C`, `--incremental`, `-L :<funcname>`, `--ignore-rev`, `--ignore-revs-file`, `--reverse`, `--first-parent`, `--show-stats`, `--progress`, `--score-debug`, `--color-lines`, `--color-by-age`, `--minimal`, `--diff-algorithm`, `-S`, abbreviated long options, `<a>...<b>`, the other revision-list options, and `--date=human`, `local`, `format:...` and `auto:...`. |
+| Refused (`128`) | A `.mailmap`, `mailmap.file` or `mailmap.blob` (names are not mapped), and `diff.algorithm` other than `myers`. |
+| Abbreviation length | `core.abbrev`, else 7 digits, grown until the abbreviation of every blamed commit is unique, plus one for the boundary mark. Git also lengthens its default for repositories with tens of thousands of objects; pyn does not. |
+| Content filters | `textconv`, `core.autocrlf` and `.gitattributes` conversions are not applied to committed blobs or to the work tree file. |
+| Commit encodings | Author names and subjects are printed as stored, without re-encoding from an `encoding` header. |
+| Renames | The single added path is matched as git's rename detection would, but `diff.renameLimit` is not applied. |
+
+Covered against the real git, on SHA-1 and SHA-256 repositories, by `crates/pyn-cli/tests/git_blame.rs` (every layout,
+ranges, renames, merges, boundaries, a dirty work tree, awkward files and seeded random histories) and
+`crates/pyn-cli/tests/git_exit_status.rs`, which compare only behaviour the git releases in use agree on.
 
 ### Reflogs
 

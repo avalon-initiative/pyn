@@ -152,6 +152,12 @@ enum Command {
     Clean(git_home::CleanArgs),
     /// Search the work tree, the index (--cached) or revisions for a pattern, as `git grep` (a git repository only).
     Grep(git_home::GrepArgs),
+    /// Find the commit that introduced a change by binary search, as `git bisect` (a git repository only).
+    Bisect(git_home::BisectArgs),
+    /// Show what commit last changed each line of a file, as `git blame` (a git repository only).
+    Blame(git_home::BlameArgs),
+    /// Like `blame`, in `git annotate`'s layout (a git repository only).
+    Annotate(git_home::BlameArgs),
     /// Show, check and prune the reflog (a git repository only).
     Reflog(git_home::ReflogArgs),
     /// Reapply the current branch's commits on top of another base (a git repository only).
@@ -1828,6 +1834,14 @@ fn run(cli: Cli) -> Result<()> {
             eprintln!("{}", unsupported::message("grep"));
             std::process::exit(1);
         }
+        Command::Blame(_) => {
+            eprintln!("{}", unsupported::message("blame"));
+            std::process::exit(1);
+        }
+        Command::Annotate(_) => {
+            eprintln!("{}", unsupported::message("annotate"));
+            std::process::exit(1);
+        }
         Command::Reflog(_) => {
             eprintln!("{}", unsupported::message("reflog"));
             std::process::exit(1);
@@ -1840,6 +1854,7 @@ fn run(cli: Cli) -> Result<()> {
         | Command::Shortlog(_)
         | Command::Describe(_)
         | Command::NameRev(_)
+        | Command::Bisect(_)
         | Command::FormatPatch(_)
         | Command::Apply(_)
         | Command::Am(_) => {

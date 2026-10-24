@@ -219,6 +219,45 @@ fn start_commit(git: &GitHome, spec: &str) -> Result<ObjectId> {
 }
 
 fn go(git: &GitHome, go: Go) -> Result<()> {
+    go_quietly(git, go, Via::default())
+}
+
+/// How a caller drives a checkout: without chatter, onto a branch another work tree has, with a refusal returned.
+#[derive(Clone, Copy, Default)]
+pub(super) struct Via {
+    pub quiet: bool,
+    pub any_worktree: bool,
+    pub returned: bool,
+}
+
+/// Checks out a branch, else the commit `target` names (detached), as `git checkout [-q] <target> --`.
+pub(super) fn checkout_revision(git: &GitHome, target: &str, via: Via) -> Result<()> {
+    let landing = if git.branch_commit(target)?.is_some() {
+        Landing::Branch(target.to_string())
+    } else if git.repo.resolve(target).is_ok() {
+        Landing::Detach {
+            spec: target.to_string(),
+            explicit: false,
+        }
+    } else {
+        bail!("invalid reference: {target}");
+    };
+    go_quietly(
+        git,
+        Go {
+            landing,
+            force: false,
+        },
+        via,
+    )
+}
+
+fn go_quietly(git: &GitHome, go: Go, via: Via) -> Result<()> {
+    let Via {
+        quiet,
+        any_worktree: ignore_other_worktrees,
+        returned,
+    } = via;
     refuse_in_progress(git)?;
     let head = git.repo.head()?;
     let from = current_label(git)?;
@@ -287,6 +326,7 @@ fn go(git: &GitHome, go: Go) -> Result<()> {
     let same_branch = matches!(&head, Head::Branch { name, .. } if Some(format!("{BRANCHES}{name}")) == branch_ref);
     if let Landing::Branch(name) = &go.landing
         && !same_branch
+        && !ignore_other_worktrees
         && let Some(tree) = git.used_elsewhere(name)?
     {
         bail!(
@@ -301,7 +341,12 @@ fn go(git: &GitHome, go: Go) -> Result<()> {
     );
     let mode = if go.force { Mode::Force } else { Mode::Safe };
     if let Err(blocked) = move_tree(git, &opened, old_tree.as_ref(), new_tree.as_ref(), mode)? {
-        blocked.report("checkout", "switch branches", 1);
+        if !returned {
+            blocked.report("checkout", "switch branches", 1);
+        }
+        blocked.print("checkout", "switch branches");
+        eprintln!("Aborting");
+        bail!("");
     }
     let message = format!("checkout: moving from {from} to {label}");
     match (&branch_ref, &target) {
@@ -329,12 +374,15 @@ fn go(git: &GitHome, go: Go) -> Result<()> {
         (None, Some(id)) => git.set_head(None, id, &message)?,
         (None, None) => unreachable!("a detach has a commit"),
     }
-    if !go.force {
+    if !go.force && !quiet {
         for (letter, path) in local_changes(git)? {
             println!("{letter}\t{}", path_string(&path));
         }
     }
     warn_about_hooks_for(git, &CHECKOUT_HOOKS);
+    if quiet {
+        return Ok(());
+    }
     if let (
         true,
         Landing::Branch(_)
