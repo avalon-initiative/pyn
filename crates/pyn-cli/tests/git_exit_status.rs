@@ -74,12 +74,8 @@ const DIVERGENT: &[(&str, &str)] = &[
         "docs: Rebase differences, `-s` is unsupported (129)",
     ),
     (
-        "Dirty: clone ../main ../home",
-        "docs: Transports and credentials, local-path remotes are refused",
-    ),
-    (
         "Dirty: push origin nosuchbranch (after git remote add origin /nonexistent/pyn-oracle.git)",
-        "docs: Transports and credentials, local-path remotes are refused before refspecs are checked",
+        "docs: Transports and credentials, a local path that is not a repository fails on connect before refspecs are checked",
     ),
     (
         "Outside: clone --depth=0 /nonexistent/pyn-oracle.git",

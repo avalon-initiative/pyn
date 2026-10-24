@@ -67,7 +67,7 @@ The commands named in decision #218.
 | | `pyn convert [--home git\|pyn] [-y]` | pyn only | Without `--home`, adopts an existing git repository (hides `.pyn/` in `.git/info/exclude`, creates `.pyn/local_only/`, records `repo_tool = "git"`; safe to run again); outside a git repository, or in a pyn server workspace, it fails with `fatal: ...` (status 128). `--home git` in a pyn server workspace moves it to a git home keeping its history, see [Leaving a pyn server](#leaving-a-pyn-server). `--home pyn` is not built (it needs #95): it fails with `fatal: moving to a pyn server home is not built yet (#572)` (status 128) and changes nothing. |
 | `git clone <repo> [<dir>]` | `pyn clone <source> [<dir>]` | same | A source that is `<server>/owner/name` or `owner/name` on the configured server is cloned from a pyn server, and prints one summary line, not progress. A git URL (`https://`, `ssh://`, `user@host:path`) is cloned into a git repository with git's behaviour, flags and output; see [Clone from a git URL](#clone-from-a-git-url), which also says how an `http(s)` address is told apart. |
 | `git clone -b`, `--bare`, `-o`, `-n`, `--single-branch`, `--no-tags`, `-c`, `-q`, `--progress` | `pyn clone ...` | git URL: supported | Git's behaviour. On a pyn server clone they are a usage error (`129`): that clone takes everything the server has, on its default branch. |
-| `git clone --depth`, `--shallow-*`, `--filter`, `--mirror`, `--recurse-submodules`, `--sparse`, `--reference`, `--separate-git-dir`, `--template`, `--local`, `--no-hardlinks` | none | unsupported | Usage error (`129`) naming the flag: shallow, partial, mirror and submodule clones are not built, and a local-path source is refused by the transport. |
+| `git clone --depth`, `--shallow-*`, `--filter`, `--mirror`, `--recurse-submodules`, `--sparse`, `--reference`, `--separate-git-dir`, `--template`, `--local`, `--no-hardlinks` | none | unsupported | Usage error (`129`) naming the flag: shallow, partial, mirror and submodule clones are not built, and `--local`, `--no-local`, `--no-hardlinks` and `--shared` are not taken: a local-path source is cloned through the transfer protocol, see [Local paths](#local-paths-and-file-urls). |
 | `pyn clone --revision <commit>` | | pyn only | Clone as of a commit (a hash, `HEAD~N`). Git does this with `clone` then `checkout`. |
 | `pyn clone --no-local-store` | | pyn only | A pyn server clone keeps a partial local store of the history under `.pyn/local_only/store/` and commits locally by default (`--local-store` says the same); this opts out and commits straight to the server. See [the local store](workspace.md#the-local-store). A usage error for a git URL. |
 | `pyn migrate` | | pyn only | Converts a workspace made before local commits; see [migrating](workspace.md#migrating-a-workspace). |
@@ -307,7 +307,7 @@ server sha256` (`128`). A repository with no objects, refs or index takes the re
 
 Differences from git, all deliberate or not yet done: `--dry-run` downloads objects like git does, but git lists auto-followed tags twice on a dry run and pyn once;
 ids are not lengthened to stay unique and do not scale with the repository's size; there is no per-object "Receiving objects" progress,
-only what the server sends; local-path and `file://` remotes are refused (see [Transports and credentials](#transports-and-credentials));
+only what the server sends;
 `fetch.output`, `fetch.showForcedUpdates`, `fetch.recurseSubmodules`, `fetch.writeCommitGraph`, `remote.<name>.promisor`,
 `--refmap`, `--negotiation-tip`, `--server-option`, `--stdin` and `-4`/`-6` are not read or taken; `--all` runs
 the remotes one at a time whatever `-j` or `fetch.parallel` say, so `FETCH_HEAD` lists them in configuration order; the stale-ref hint after a ref could
@@ -382,7 +382,7 @@ is not appended to a tag merge's message. Pulling on a pyn server is #310 and st
 nothing but errors with `-q`. A failure is `fatal: ...` with exit `128`; an unsupported flag is a usage error (`129`).
 
 **Which sources are git.** `ssh://`, `git+ssh://`, `ssh+git://`, scp-like `[user@]host:path`, and any other URL scheme or local path
-(refused with the transport's `local-path remotes are not supported yet`) are always git. A bare `owner/name` is a pyn server
+(served in process, see [Local paths](#local-paths-and-file-urls)) are always git; a relative name such as `repo` is a local path only when that folder is a git repository, else it is read as `owner/name`. A bare `owner/name` is a pyn server
 repository on the configured server, and `<server>/owner/name` over `http(s)` is a pyn server when the server says so. For an
 `http(s)` address whose last two path segments could be `owner/name`, pyn asks the part in front of them for
 `/openapi.json`, without credentials and within three seconds, and calls it a pyn server only when the answer is a JSON document
@@ -507,7 +507,7 @@ What a push does, in git's order:
 Differences from git, all deliberate or not yet done: no per-object "Enumerating objects" or "Writing objects" progress, only what the
 server sends; ids are not lengthened to stay unique; `push.autoSetupRemote`, `push.negotiate`, `push.gpgSign`, `push.recurseSubmodules`,
 `push.useForceIfIncludes` and `remote.<name>.receivepack` are not read; pre-push hooks are never run; `--dry-run` with `-u` prints `Would set upstream of ...`
-instead of setting anything; local-path and `file://` remotes are refused (see [Transports and credentials](#transports-and-credentials)).
+instead of setting anything.
 A push to a pyn server is not this command: see the push row above.
 
 ### Text from a remote
@@ -531,8 +531,8 @@ streamed pack file on push) are what those commands call.
 Tests use real git as the oracle server (tests only, never at runtime): `crates/pyn-gittransport/tests/common/gitsrv.rs` holds
 the shared fixtures (bare repositories, the `GIT_SSH_COMMAND` shim, `git http-backend` behind a test HTTP server), and
 `crates/pyn-cli/tests/git_remote_matrix.rs` runs `ls-remote`, `clone`, `fetch`, `pull` and `push` over ssh, HTTP, HTTP with
-credentials, a local path and a `file://` URL, each for SHA-1 and SHA-256 repositories. The last two are not supported yet, so the matrix
-asserts that refusal. The per-command suites (`git_clone.rs`, `git_fetch.rs`, `git_pull.rs`, `git_push.rs`) go deeper on one command.
+credentials, a local path and a `file://` URL, each for SHA-1 and SHA-256 repositories. The per-command suites (`git_clone.rs`, `git_fetch.rs`, `git_pull.rs`, `git_push.rs`) go deeper on one command and also run against a local path and a `file://` URL, so
+those are compared with real git without a server or an ssh shim; `git_local_remote.rs` covers what only a local repository can do.
 
 ### URLs
 
@@ -541,12 +541,32 @@ asserts that refusal. The per-command suites (`git_clone.rs`, `git_fetch.rs`, `g
 | `https://host/path`, `http://host/path` | Smart HTTP |
 | `ssh://[user@]host[:port]/path`, `git+ssh://...`, `ssh+git://...` | System `ssh` |
 | `[user@]host:path` (scp-like; `[::1]:path` for IPv6) | System `ssh` |
-| `/path`, `./path`, `file:///path` | Not supported: `local-path remotes are not supported yet` (serving a local repository needs git itself) |
+| `/path`, `./path`, `file:///path` | Served in process, see [Local paths and `file://` URLs](#local-paths-and-file-urls) |
 | `git://host/path` | Not supported: unauthenticated and unencrypted |
 
 `url.<base>.insteadOf` and `pushInsteadOf` (longest matching prefix wins; `pushInsteadOf` first when pushing) are applied when
 connecting, so `remote -v` still shows what is configured. A password or token in a URL is never printed: messages show the URL
 without its user information, and error text from the network layer is redacted the same way.
+
+### Local paths and `file://` URLs
+
+A remote that is a directory on this machine is served by pyn itself, in process: the same upload-pack (protocol v2 `ls-refs` and
+`fetch`) and receive-pack (`report-status`, `delete-refs`, `atomic`, `side-band-64k`) exchanges a network remote speaks, answered
+from the repository's objects and refs. No `git` program, no child process and no hidden command are involved, so the only
+path ever opened is the one the remote names. It must be a git directory or a work tree root (`<path>.git` is tried too), and its
+object store must be readable, else `fatal: '<path>' does not appear to be a git repository` (`128`). `file://` takes an empty host
+or `localhost`; the path is percent-decoded. `clone` records a relative path as an absolute one, as git does.
+
+On a push the served repository decides like `git receive-pack`, with the same refusals and wording: updating or deleting the checked-out
+branch of a non-bare repository is refused (`receive.denyCurrentBranch`: `refuse` by default, `ignore`, `warn`), deleting the current branch
+of any repository is refused (`receive.denyDeleteCurrent`), and `receive.denyDeletes` and `receive.denyNonFastForwards` are honoured. A new
+tip must be connected to objects the repository holds. Configuration is the user's global files under the repository's own.
+
+Refused cleanly, because they need machinery pyn does not run: a repository with an executable `pre-receive`, `update`, `post-receive`,
+`post-update`, `push-to-checkout` or `reference-transaction` hook, `receive.fsckObjects` or `transfer.fsckObjects`, any `hideRefs`
+setting, and `receive.denyCurrentBranch=updateInstead`. Not done: the served repository gets no reflog entries from a push, a branch
+checked out in a linked worktree is not protected, packs are sent without deltas, and the objects of a rejected push stay in the
+repository unreferenced (there is no quarantine).
 
 ### ssh
 

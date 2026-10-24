@@ -1,5 +1,7 @@
 //! Parsing `owner/name` repository names and `<server>/owner/name` clone sources.
 
+use std::path::Path;
+
 use anyhow::{Result, bail};
 
 /// Where a clone comes from: the server it names (if any) and the repository.
@@ -85,7 +87,16 @@ pub fn kind(text: &str) -> Result<Kind> {
     if is_scp_like(text) || text.starts_with(['/', '.', '~']) {
         return Ok(Kind::Git);
     }
+    if is_local_repository(text) {
+        return Ok(Kind::Git);
+    }
     parse_source(text).map(Kind::Pyn)
+}
+
+/// A relative path naming a git repository on this machine, which git clones before any name.
+fn is_local_repository(text: &str) -> bool {
+    let dir = Path::new(text);
+    dir.join(".git").exists() || (dir.join("HEAD").is_file() && dir.join("objects").is_dir())
 }
 
 #[cfg(test)]

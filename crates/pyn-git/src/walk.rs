@@ -113,7 +113,7 @@ fn tree_children(alg: Algorithm, id: &ObjectId, body: &[u8]) -> Result<Vec<Child
 }
 
 /// Follows tags from `id` to the first non-tag object; returns the tags passed and the target with its kind.
-fn peel(db: &ObjectDb, id: ObjectId) -> Result<(Vec<ObjectId>, ObjectId, Kind)> {
+pub fn peel(db: &ObjectDb, id: ObjectId) -> Result<(Vec<ObjectId>, ObjectId, Kind)> {
     let mut tags = Vec::new();
     let mut cur = id;
     for _ in 0..MAX_TAG_CHAIN {

@@ -4,10 +4,6 @@ use std::io;
 pub enum Error {
     #[error("{0}")]
     Url(String),
-    #[error(
-        "local-path remotes are not supported yet: '{0}' is a path on this machine; use an ssh:// or https:// URL"
-    )]
-    LocalPath(String),
     #[error(transparent)]
     Wire(#[from] pyn_gitwire::Error),
     #[error(transparent)]
