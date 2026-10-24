@@ -2,11 +2,13 @@
 //! prints it (no renames; binary files as `Binary files ... differ`).
 
 use anyhow::Result;
-use pyn_gitwork::{Entry, Pathspec};
+use pyn_gitwork::{Change, Entry, Pathspec};
 use pyn_object::{FileMode, ObjectId};
 
 use super::GitHome;
 use super::stage::raw_mode;
+use crate::backend::Backend;
+use crate::diffstat::Counts;
 
 fn abbrev(entry: Option<&Entry>) -> String {
     entry.map_or_else(|| "0".repeat(7), |e| e.id.to_hex()[..7].to_string())
@@ -34,38 +36,78 @@ pub(super) fn of_commit(git: &GitHome, id: &ObjectId) -> Result<String> {
             .diff_trees(Some(&parent_tree), Some(&commit.tree), &Pathspec::default())?;
     let mut out = String::new();
     for change in &changes {
-        let path = super::path_string(&change.path);
-        let (old, new) = (change.old.as_ref(), change.new.as_ref());
-        out.push_str(&format!("diff --git a/{path} b/{path}\n"));
-        match (old, new) {
-            (None, Some(n)) => out.push_str(&format!("new file mode {:o}\n", raw_mode(n.mode))),
-            (Some(o), None) => out.push_str(&format!("deleted file mode {:o}\n", raw_mode(o.mode))),
-            (Some(o), Some(n)) if o.mode != n.mode => out.push_str(&format!(
-                "old mode {:o}\nnew mode {:o}\n",
-                raw_mode(o.mode),
-                raw_mode(n.mode)
-            )),
-            _ => {}
-        }
-        let same_id = old.zip(new).is_some_and(|(o, n)| o.id == n.id);
-        if same_id {
-            continue;
-        }
-        let tail = match (old, new) {
-            (Some(o), Some(n)) if o.mode == n.mode => format!(" {:o}", raw_mode(o.mode)),
-            _ => String::new(),
-        };
-        out.push_str(&format!("index {}..{}{tail}\n", abbrev(old), abbrev(new)));
-        let (from, to) = (
-            old.map_or("/dev/null".into(), |_| format!("a/{path}")),
-            new.map_or("/dev/null".into(), |_| format!("b/{path}")),
-        );
-        let (a, b) = (content(git, old)?, content(git, new)?);
-        if pyn_diff::is_binary(&a) || pyn_diff::is_binary(&b) {
-            out.push_str(&format!("Binary files {from} and {to} differ\n"));
-        } else if let Some(hunks) = pyn_diff::unified_hunks(&a, &b, 3, false) {
-            out.push_str(&format!("--- {from}\n+++ {to}\n{hunks}"));
-        }
+        out.push_str(&of_change(git, change, 3)?.text);
     }
     Ok(out)
+}
+
+/// One path's patch and its line counts (`Binary` sizes when the content is binary).
+pub(super) struct Rendered {
+    pub text: String,
+    pub counts: Counts,
+}
+
+/// The `diff --git` section for one change with `context` lines around each hunk; names are quoted as git does.
+pub(super) fn of_change(git: &GitHome, change: &Change, context: usize) -> Result<Rendered> {
+    let q = |prefix: &str| {
+        let mut full = prefix.as_bytes().to_vec();
+        full.extend_from_slice(&change.path);
+        git.quote_diff_path(&full)
+    };
+    let (a_name, b_name) = (q("a/"), q("b/"));
+    let (old, new) = (change.old.as_ref(), change.new.as_ref());
+    let mut out = format!("diff --git {a_name} {b_name}\n");
+    match (old, new) {
+        (None, Some(n)) => out.push_str(&format!("new file mode {:o}\n", raw_mode(n.mode))),
+        (Some(o), None) => out.push_str(&format!("deleted file mode {:o}\n", raw_mode(o.mode))),
+        (Some(o), Some(n)) if o.mode != n.mode => out.push_str(&format!(
+            "old mode {:o}\nnew mode {:o}\n",
+            raw_mode(o.mode),
+            raw_mode(n.mode)
+        )),
+        _ => {}
+    }
+    let same_id = old.zip(new).is_some_and(|(o, n)| o.id == n.id);
+    if same_id {
+        return Ok(Rendered {
+            text: out,
+            counts: Counts::Lines(0, 0),
+        });
+    }
+    let tail = match (old, new) {
+        (Some(o), Some(n)) if o.mode == n.mode => format!(" {:o}", raw_mode(o.mode)),
+        _ => String::new(),
+    };
+    out.push_str(&format!("index {}..{}{tail}\n", abbrev(old), abbrev(new)));
+    let spaced = |name: &str| {
+        if change.path.contains(&b' ') {
+            format!("{name}\t")
+        } else {
+            name.to_string()
+        }
+    };
+    let (from, to) = (
+        old.map_or("/dev/null".into(), |_| spaced(&a_name)),
+        new.map_or("/dev/null".into(), |_| spaced(&b_name)),
+    );
+    let (a, b) = (content(git, old)?, content(git, new)?);
+    if pyn_diff::is_binary(&a) || pyn_diff::is_binary(&b) {
+        out.push_str(&format!(
+            "Binary files {} and {} differ\n",
+            from.trim_end_matches('\t'),
+            to.trim_end_matches('\t')
+        ));
+        return Ok(Rendered {
+            text: out,
+            counts: Counts::Binary(a.len(), b.len()),
+        });
+    }
+    if let Some(hunks) = pyn_diff::unified_hunks(&a, &b, context, false) {
+        out.push_str(&format!("--- {from}\n+++ {to}\n{hunks}"));
+    }
+    let (added, deleted) = pyn_diff::line_counts(&a, &b, false);
+    Ok(Rendered {
+        text: out,
+        counts: Counts::Lines(added, deleted),
+    })
 }

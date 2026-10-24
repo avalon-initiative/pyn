@@ -166,6 +166,18 @@ const DIVERGENT: &[(&str, &str)] = &[
         "docs: Conventions, `pyn diff` outside a repository asks for a server (128); git prints --no-index usage (129)",
     ),
     (
+        "Clean: bisect visualize (after git bisect start HEAD HEAD~3)",
+        "docs: Bisect, `visualize` and `view` are not built (129)",
+    ),
+    (
+        "Clean: bisect view (after git bisect start HEAD HEAD~3)",
+        "docs: Bisect, `visualize` and `view` are not built (129)",
+    ),
+    (
+        "Clean: bisect skip a...b (after git bisect start HEAD HEAD~3)",
+        "docs: Bisect, a symmetric range `a...b` to `skip` is not built (129)",
+    ),
+    (
         "Dirty: log --bogus",
         "docs: Conventions, an option git lacks and one pyn does not build both exit 129, where git exits 128",
     ),
@@ -290,6 +302,7 @@ use At::{Clean, Dirty, Outside};
 fn groups() -> Vec<(&'static str, Vec<Case>)> {
     const ORIGIN: &[&[&str]] = &[&["remote", "add", "origin", "/nonexistent/pyn-oracle.git"]];
     const MERGING: &[&[&str]] = &[&["merge", "conflict"]];
+    const BISECTING: &[&[&str]] = &[&["bisect", "start", "HEAD", "HEAD~3"]];
     vec![
         (
             "status",
@@ -778,6 +791,100 @@ fn groups() -> Vec<(&'static str, Vec<Case>)> {
                 case(Clean, "grep -c clean HEAD"),
             ],
         ),
+        (
+            "patch-exchange",
+            vec![
+                case(Clean, "format-patch nosuchrev"),
+                case(Clean, "format-patch --stdout -o out -1"),
+                case(Clean, "format-patch --stdout -1"),
+                case(Clean, "format-patch --stdout HEAD"),
+                case(Clean, "format-patch --stdout nosuch..HEAD"),
+                case(Outside, "format-patch --stdout -1"),
+                case(Clean, "apply"),
+                case(Clean, "apply nosuch.patch"),
+                case(Clean, "apply --check"),
+                case(Clean, "apply --allow-empty"),
+                case(Clean, "apply --index --cached"),
+                case(Outside, "apply nosuch.patch"),
+                case(Clean, "am"),
+                case(Clean, "am nosuch.mbox"),
+                case(Clean, "am --continue"),
+                case(Clean, "am --skip"),
+                case(Clean, "am --abort"),
+                case(Clean, "am --quit"),
+                case(Clean, "am --show-current-patch"),
+                case(Outside, "am --continue"),
+            ],
+        ),
+        (
+            "bisect",
+            vec![
+                case(Clean, "bisect good"),
+                case(Clean, "bisect bad"),
+                case(Clean, "bisect skip"),
+                case(Clean, "bisect next"),
+                case(Clean, "bisect log"),
+                case(Clean, "bisect terms"),
+                case(Clean, "bisect run true"),
+                case(Clean, "bisect run"),
+                case(Clean, "bisect replay nosuchfile"),
+                case(Clean, "bisect start nosuchrev --"),
+                case(Clean, "bisect start --bogus"),
+                case(Clean, "bisect start HEAD HEAD~1"),
+                case(Clean, "bisect reset nosuchrev"),
+                case(Clean, "bisect reset a b"),
+                case(Clean, "bisect start HEAD HEAD"),
+                with(Clean, BISECTING, "bisect good"),
+                with(Clean, BISECTING, "bisect bad"),
+                with(Clean, BISECTING, "bisect good nosuchrev"),
+                with(Clean, BISECTING, "bisect bad HEAD HEAD~1"),
+                with(Clean, BISECTING, "bisect skip nosuchrev"),
+                with(Clean, BISECTING, "bisect next"),
+                with(Clean, BISECTING, "bisect log"),
+                with(Clean, BISECTING, "bisect terms"),
+                with(Clean, BISECTING, "bisect terms --term-good"),
+                with(Clean, BISECTING, "bisect terms --bogus"),
+                with(Clean, BISECTING, "bisect new"),
+                with(Clean, BISECTING, "bisect run true"),
+                with(Clean, BISECTING, "bisect run false"),
+                with(Clean, BISECTING, "bisect run sh -c exit-3"),
+                with(Clean, BISECTING, "bisect reset"),
+                with(Clean, BISECTING, "bisect reset HEAD~1"),
+                with(Clean, BISECTING, "bisect start HEAD HEAD~2"),
+                with(Clean, BISECTING, "bisect replay nosuchfile"),
+                with(Clean, BISECTING, "bisect visualize"),
+                with(Clean, BISECTING, "bisect view"),
+                with(Clean, BISECTING, "bisect skip a...b"),
+            ],
+        ),
+        (
+            "blame",
+            vec![
+                case(Dirty, "blame"),
+                case(Dirty, "blame --bogus README.md"),
+                case(Dirty, "blame README.md"),
+                case(Dirty, "blame -s -f -n README.md"),
+                case(Dirty, "blame HEAD README.md"),
+                case(Dirty, "blame README.md HEAD"),
+                case(Dirty, "blame HEAD -- README.md"),
+                case(Dirty, "blame -p README.md"),
+                case(Dirty, "blame nosuchpath"),
+                case(Dirty, "blame HEAD nosuchpath"),
+                case(Dirty, "blame nosuchrev -- README.md"),
+                case(Dirty, "blame HEAD"),
+                case(Dirty, "blame -L 99 README.md"),
+                case(Dirty, "blame -L x README.md"),
+                case(Dirty, "blame -L"),
+                case(Dirty, "blame --date=bogus README.md"),
+                case(Dirty, "blame HEAD HEAD~1 README.md"),
+                case(Dirty, "blame ../outside"),
+                case(Dirty, "annotate README.md"),
+                case(Dirty, "annotate nosuchpath"),
+                case(Clean, "blame clean"),
+                case(Clean, "blame -L 1,1 clean"),
+                case(Outside, "blame README.md"),
+            ],
+        ),
     ]
 }
 
@@ -820,7 +927,10 @@ group_tests!(
     push,
     clone,
     config,
-    grep
+    grep,
+    blame,
+    bisect,
+    patch_exchange
 );
 
 #[test]

@@ -1,7 +1,7 @@
 //! Git commands pyn has no equivalent for yet: a clear message instead of a usage error.
 
 const GIT_ONLY: &[&str] = &[
-    "fetch", "pull", "push", "tag", "stash", "reflog", "rebase", "blame", "clean",
+    "fetch", "pull", "push", "tag", "stash", "reflog", "rebase", "clean",
 ];
 
 /// A git command, or a pyn command that wraps one, that a git home will gain with a named issue.
@@ -32,6 +32,10 @@ pub fn message(name: &str) -> String {
     if name == "grep" {
         "pyn: 'grep' searches a git repository, and this is not one; see docs/concepts/git-compatibility.md."
             .into()
+    } else if name == "blame" || name == "annotate" {
+        format!(
+            "pyn: '{name}' reads a git repository's history, and this is not one; see docs/concepts/git-compatibility.md."
+        )
     } else if GIT_ONLY.contains(&name) {
         format!(
             "pyn: '{name}' is a git command pyn does not support yet; see docs/concepts/git-compatibility.md."

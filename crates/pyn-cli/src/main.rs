@@ -153,6 +153,12 @@ enum Command {
     Clean(git_home::CleanArgs),
     /// Search the work tree, the index (--cached) or revisions for a pattern, as `git grep` (a git repository only).
     Grep(git_home::GrepArgs),
+    /// Find the commit that introduced a change by binary search, as `git bisect` (a git repository only).
+    Bisect(git_home::BisectArgs),
+    /// Show what commit last changed each line of a file, as `git blame` (a git repository only).
+    Blame(git_home::BlameArgs),
+    /// Like `blame`, in `git annotate`'s layout (a git repository only).
+    Annotate(git_home::BlameArgs),
     /// Show, check and prune the reflog (a git repository only).
     Reflog(git_home::ReflogArgs),
     /// Reapply the current branch's commits on top of another base (a git repository only).
@@ -227,6 +233,12 @@ enum Command {
     Describe(git_home::DescribeArgs),
     /// Name a commit relative to the refs that reach it (a git repository only).
     NameRev(git_home::NameRevArgs),
+    /// Write commits as patch emails (a git repository only).
+    FormatPatch(git_home::FormatPatchArgs),
+    /// Apply a patch to the files and optionally the index (a git repository only).
+    Apply(git_home::ApplyArgs),
+    /// Apply patch emails from a mailbox and commit them (a git repository only).
+    Am(git_home::AmArgs),
     /// Show a commit: its message and what it changed (the newest commit if none is named).
     Show {
         /// Commits (`HEAD`, `HEAD~N`, `HEAD^` or a hash of at least 4 digits), then paths; a git repository takes several.
@@ -889,7 +901,7 @@ fn main() {
         std::process::exit(128);
     }
     let cli = match Cli::try_parse_from(attached_gpg_keys(attached_pull_rebase(counted_log(
-        rename::attached(std::env::args_os().collect()),
+        numbered_commits(rename::attached(std::env::args_os().collect())),
     )))) {
         Ok(cli) => cli,
         Err(e) => {
@@ -992,6 +1004,32 @@ fn in_git_home() -> bool {
         .is_some()
 }
 
+/// Rewrites `format-patch -<n>` to `--count=<n>`, since a number is not a clap flag name.
+fn numbered_commits(args: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsString> {
+    let Some(at) = args.iter().skip(1).position(|a| a == "format-patch") else {
+        return args;
+    };
+    let mut seen_dashes = false;
+    args.into_iter()
+        .enumerate()
+        .map(|(i, a)| {
+            let text = a.to_string_lossy();
+            seen_dashes |= i > at + 1 && text == "--";
+            match text.strip_prefix('-') {
+                Some(n)
+                    if i > at + 1
+                        && !seen_dashes
+                        && !n.is_empty()
+                        && n.bytes().all(|b| b.is_ascii_digit()) =>
+                {
+                    format!("--count={n}").into()
+                }
+                _ => a,
+            }
+        })
+        .collect()
+}
+
 /// Rewrites `log -<n>` to `--max-count=<n>`; clap has no option named by digits.
 fn counted_log(args: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsString> {
     let Some(at) = args
@@ -1047,7 +1085,15 @@ fn attached_pull_rebase(args: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsString
 
 /// Rewrites `-S<keyid>` to `--gpg-sign=<keyid>` on the commands that sign; clap takes an optional value only after `=`.
 fn attached_gpg_keys(args: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsString> {
-    const SIGNING: [&str; 6] = ["commit", "merge", "pull", "cherry-pick", "revert", "rebase"];
+    const SIGNING: [&str; 7] = [
+        "commit",
+        "merge",
+        "pull",
+        "cherry-pick",
+        "revert",
+        "rebase",
+        "am",
+    ];
     let Some((at, valued)) = args.iter().enumerate().skip(1).find_map(|(i, a)| {
         let name = SIGNING.iter().find(|n| a == **n)?;
         let valued: &[&str] = match *name {
@@ -1070,6 +1116,15 @@ fn attached_gpg_keys(args: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsString> {
                 "--onto",
                 "--strategy",
                 "--strategy-option",
+            ],
+            "am" => &[
+                "-p",
+                "--directory",
+                "--whitespace",
+                "-C",
+                "--patch-format",
+                "--exclude",
+                "--include",
             ],
             _ => &["-m", "--mainline", "-X", "--strategy-option", "--strategy"],
         };
@@ -1790,6 +1845,14 @@ fn run(cli: Cli) -> Result<()> {
             eprintln!("{}", unsupported::message("grep"));
             std::process::exit(1);
         }
+        Command::Blame(_) => {
+            eprintln!("{}", unsupported::message("blame"));
+            std::process::exit(1);
+        }
+        Command::Annotate(_) => {
+            eprintln!("{}", unsupported::message("annotate"));
+            std::process::exit(1);
+        }
         Command::Reflog(_) => {
             eprintln!("{}", unsupported::message("reflog"));
             std::process::exit(1);
@@ -1801,7 +1864,11 @@ fn run(cli: Cli) -> Result<()> {
         | Command::ShowRef(_)
         | Command::Shortlog(_)
         | Command::Describe(_)
-        | Command::NameRev(_) => {
+        | Command::NameRev(_)
+        | Command::Bisect(_)
+        | Command::FormatPatch(_)
+        | Command::Apply(_)
+        | Command::Am(_) => {
             eprintln!("fatal: not a git repository (or any of the parent directories): .git");
             std::process::exit(128);
         }

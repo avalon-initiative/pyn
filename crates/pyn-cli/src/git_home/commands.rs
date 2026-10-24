@@ -119,6 +119,9 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
             }
             Ok(())
         }
+        Command::Bisect(args) => super::bisect::bisect(git, cwd, args),
+        Command::Blame(args) => super::blame::blame(git, cwd, args, false),
+        Command::Annotate(args) => super::blame::blame(git, cwd, args, true),
         Command::Reflog(args) => super::reflog::reflog(git, args),
         Command::RevParse(args) => super::rev_parse::rev_parse(git, cwd, args),
         Command::LsFiles(args) => super::ls_files::ls_files(git, cwd, args),
@@ -128,6 +131,9 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
         Command::Shortlog(args) => super::shortlog::shortlog(git, cwd, args),
         Command::Describe(args) => super::describe::describe(git, cwd, args),
         Command::NameRev(args) => super::name_rev::name_rev(git, cwd, args),
+        Command::Am(args) => super::am::am(git, cwd, args),
+        Command::Apply(args) => super::apply::apply(git, cwd, args),
+        Command::FormatPatch(args) => super::format_patch::format_patch(git, cwd, args),
         Command::Rebase(args) => super::rebase::rebase(git, &args),
         Command::Remote(args) => super::remote::remote(git, args),
         Command::Fetch(args) => super::fetch::fetch(git, args),
