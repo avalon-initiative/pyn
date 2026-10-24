@@ -174,10 +174,10 @@ fn pyn_config_lengths_include_above_width_values() {
             (Some("64"), full),
         ] {
             let repo = Repo::new(format);
+            let id = git(&repo, &repo.main, &["rev-parse", "HEAD"]);
             if let Some(value) = value {
                 setting(&repo, value);
             }
-            let id = git(&repo, &repo.main, &["rev-parse", "HEAD"]);
             assert_eq!(
                 repo.ok(&["log", "-n", "1", "--format=%h"]).trim_end(),
                 &id[..width],
