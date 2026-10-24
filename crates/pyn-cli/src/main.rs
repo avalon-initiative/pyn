@@ -240,6 +240,8 @@ enum Command {
         #[command(flatten)]
         fmt: commit_format::FormatArgs,
         #[command(flatten)]
+        decorate: Box<git_home::DecorateArgs>,
+        #[command(flatten)]
         format: DiffFormat,
     },
     /// Read and write settings, per workspace or for your user.
@@ -1884,10 +1886,14 @@ fn run(cli: Cli) -> Result<()> {
             paths,
             no_patch,
             fmt,
+            decorate,
             format,
         } => {
             if args.len() > 1 || !paths.is_empty() {
                 usage_error("`pyn show` takes one commit and no paths on a pyn server");
+            }
+            if let Some((flag, _)) = decorate.given().into_iter().find(|(_, on)| *on) {
+                usage_error(&format!("`pyn show {flag}` needs a git repository"));
             }
             let commit = args.first();
             let shown = ShowOpts {

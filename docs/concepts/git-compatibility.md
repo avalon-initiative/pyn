@@ -107,7 +107,7 @@ The commands named in decision #218.
 | `git log --committer`, `--invert-grep`, `--all-match`, `--no-merges`, `--merges`, `--skip`, `--reverse`, `<a>...<b>`, a repeated `--author` or `--grep`, more than one path | same | git home: supported | Git's output on a git home. On a pyn server a usage error (`129`) naming the option (`<a>...<b>` fails with `1`): the server has no committer, merge, count or symmetric filters. |
 | `git log --stat`, `--shortstat`, `--name-only`, `--name-status`, `--summary`, `-p`, `-U<n>` | same | supported | Both homes. The diff of each commit against its first parent follows its text, as `show` prints it (a merge shows none); `--stat` with `-p` separates them with `---`. On a pyn server they list commits like `pyn log --commits` (`-n` or 50, medium format unless a format is given) and take no `--filter` (usage error, `129`); a path or revision narrows the commits (see the filter row above); unpublished local commits are diffed from the local store. Exclusive paths show as in `show`. `--stat`, `--shortstat`, `--name-only` and `--name-status` combine with no other of the four (usage error, `129`), and `-p` with a name flag too. |
 | `git log --oneline`, `--format=`, `--pretty=`, `--date=` | same | supported | Both homes, through one renderer (the formats and `%` placeholders of [Log on a git home](#log-on-a-git-home)). On a pyn server they list commits like `pyn log --commits` (newest first, `-n` or 50) and take no `--filter` (usage error, `129`); a path or revision narrows the commits (see the filter row above); `%d` and `%D` are empty there, as no refs are known. | |
-| `git log --all`, `--first-parent`, `--decorate[=short\|full\|no]`, `--no-decorate`, `-<n>` | same | git home: supported | Git's output on a git home (see [Log on a git home](#log-on-a-git-home)). `-<n>` is `-n <n>`. On a pyn server a usage error (`129`) naming the option. |
+| `git log --all`, `--first-parent`, `--decorate[=short\|full\|auto\|no]`, `--no-decorate`, `--decorate-refs[-exclude]`, `-<n>` | same | git home: supported | Git's output on a git home (see [Log on a git home](#log-on-a-git-home)). `-<n>` is `-n <n>`. On a pyn server a usage error (`129`) naming the option. |
 | `git log --follow`, `-S<string>`, `-G<regex>` | same | git home: supported | Git's output on a git home (see [Log on a git home](#log-on-a-git-home)); `--follow` takes no diff output. On a pyn server a usage error (`129`). |
 | `git log -E`, `-F`, `--basic-regexp` | same | git home: supported | The pattern syntax of `--grep`, `--author` and `--committer`; the last of the switches wins. On a pyn server a usage error (`129`). |
 | `git log -P` | none | unsupported | Usage error (`129`): pyn has no Perl-compatible regular expression engine, and `-E` covers extended expressions. |
@@ -825,8 +825,7 @@ Differences from git, all deliberate or not yet done:
 
 - Files are read as they are on disk: `core.autocrlf`, `.gitattributes` filters and `core.eol` are not applied, so a
   repository that depends on them can show files as modified that git does not.
-- `log` and `show` print no ref decorations (`%d` in a `log` template does); commit abbreviations are 7 digits and are not
-  lengthened to stay unique.
+- Commit abbreviations are 7 digits and are not lengthened to stay unique; `log` and `show` print no color on a terminal.
 - A nested repository that the index does not track is one untracked `dir/`.
 - `merge` and `stash apply` detect no renames, write diff3 conflict markers whatever `merge.conflictStyle` says and merge only when
   there is one merge base (`merge -s ours` needs none); `stash apply` does not write `AUTO_MERGE`; `switch` and `checkout` print their own wording where git's differs (`Fast-forward` without a diffstat, the status
@@ -872,10 +871,17 @@ that). The engine is the one `pyn diff` uses, including its `--stat` layout.
 
 `-<n>` is the same as `-n <n>`. `--all` starts from `HEAD` and every ref (`refs/`, including tags, remote-tracking branches and the
 stash), together with any revisions named. `--first-parent` follows only the first parent of each commit, with git's
-simplification when a path is given, and shows a merge's diff against its first parent. `--decorate` (`short`, `full`, `no`,
-and git's boolean spellings; `--no-decorate`, the last of the two wins) names the refs at a commit after its id in `--oneline`,
-`oneline`, `short`, `medium`, `full`, `fuller` and `raw`; `%d` and `%D` always do, in the `full` form (`refs/heads/main`) under
-`--decorate=full`. Unlike git, nothing is decorated by default on a terminal and `log.decorate` is not read.
+simplification when a path is given, and shows a merge's diff against its first parent. `--decorate[=short|full|auto|no]` (and git's boolean spellings;
+`--no-decorate`, the last of the two wins) names the refs at a commit after its id in `--oneline`, `oneline`, `short`, `medium`,
+`full`, `fuller` and `raw`; `%d` and `%D` always do, in the `full` form (`refs/heads/main`) under `--decorate=full`. Without a flag
+`log.decorate` decides (`short`, `full`, `auto`, `no`, git's booleans; a bare key is true, an unknown value is off) and
+otherwise `auto`: decorate when standard output is a terminal, so captured output has none. `auto` also decides for `--decorate=auto`.
+`--pretty=raw` is decorated only when a `--decorate` flag asks, as in git. `show` takes the same flags and config. A pyn server
+refuses them (`129`). `--decorate-refs=<pattern>` names only the refs that match, `--decorate-refs-exclude=<pattern>` and
+`log.excludeDecoration` (repeatable; ignored when `--decorate-refs` is given) leave refs out; they also filter `%d` and `%D`. A
+pattern without `refs/` gets it prepended (`tags/*` is `refs/tags/*`; `HEAD` stays), a glob uses `wildmatch` and any other pattern
+also matches the refs below it (`refs/heads/feature` matches `refs/heads/feature/x`). `HEAD -> <branch>` needs both to pass.
+`--source` is not built.
 
 `--follow -- <path>` needs exactly one path and walks the whole history, dropping the commits that do not touch the tracked
 path; when a commit adds it, git's rename detection (identical content, then at least half similar, see `pyn diff`) names the
