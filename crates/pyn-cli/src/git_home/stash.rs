@@ -83,11 +83,17 @@ enum StashAction {
     /// Remove a stash.
     Drop { stash: Option<String> },
     /// Remove every stash.
-    Clear,
+    Clear {
+        #[arg(hide = true)]
+        extra: Vec<String>,
+    },
     /// Show what a stash changed.
     Show(super::stash_show::ShowArgs),
     /// Create a branch at the commit a stash was made on, apply the stash there and drop it.
-    Branch { name: String, stash: Option<String> },
+    Branch {
+        name: Option<String>,
+        stash: Option<String>,
+    },
     /// Make a stash commit without storing it or touching the work tree; prints its id.
     Create {
         #[arg(allow_hyphen_values = true, trailing_var_arg = true)]
@@ -116,9 +122,18 @@ pub fn stash(git: &GitHome, cwd: &Path, args: StashArgs) -> Result<()> {
         Some(StashAction::Pop { index, stash }) => apply(git, stash.as_deref(), true, index),
         Some(StashAction::Apply { index, stash }) => apply(git, stash.as_deref(), false, index),
         Some(StashAction::Drop { stash }) => drop_entry(git, stash.as_deref()),
-        Some(StashAction::Clear) => clear(git),
+        Some(StashAction::Clear { extra }) if !extra.is_empty() => {
+            Err(Refused("git stash clear with arguments is unimplemented".into()).into())
+        }
+        Some(StashAction::Clear { .. }) => clear(git),
         Some(StashAction::Show(a)) => super::stash_show::show(git, a),
-        Some(StashAction::Branch { name, stash }) => branch(git, &name, stash.as_deref()),
+        Some(StashAction::Branch { name: None, .. }) => {
+            Err(Refused("No branch name specified".into()).into())
+        }
+        Some(StashAction::Branch {
+            name: Some(name),
+            stash,
+        }) => branch(git, &name, stash.as_deref()),
         Some(StashAction::Create { message }) => create_only(git, &message),
         Some(StashAction::Store {
             message,

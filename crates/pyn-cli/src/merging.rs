@@ -37,10 +37,10 @@ pub struct MergeArgs {
     #[arg(short = 'm', long = "message")]
     pub(crate) message: Vec<String>,
     /// Make a merge commit even when the branch could fast-forward.
-    #[arg(long)]
+    #[arg(long, overrides_with = "ff_only")]
     pub(crate) no_ff: bool,
     /// Refuse to merge unless the branch can fast-forward.
-    #[arg(long, conflicts_with = "no_ff")]
+    #[arg(long, overrides_with = "no_ff")]
     pub(crate) ff_only: bool,
     /// Perform the merge but stop before committing it.
     #[arg(long)]

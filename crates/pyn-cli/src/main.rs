@@ -266,7 +266,6 @@ enum Command {
     },
     /// Stage changes for the next commit: paths, folders or `.`. Exclusive paths need your lock first.
     Add {
-        #[arg(required_unless_present_any = ["update", "all", "patch"])]
         paths: Vec<String>,
         /// Stage changes to files that are already tracked, not new files.
         #[arg(short = 'u', long)]
@@ -857,11 +856,37 @@ fn main() {
     ))) {
         Ok(cli) => cli,
         Err(e) => {
-            let code = if e.use_stderr() { 129 } else { 0 };
+            let code = match (e.use_stderr(), fatal_option_error(&e)) {
+                (false, _) => 0,
+                (true, true) => 128,
+                (true, false) => 129,
+            };
             let _ = e.print();
             std::process::exit(code);
         }
     };
+    if let Command::Add {
+        paths,
+        update: false,
+        all: false,
+        patch: false,
+        ..
+    } = &cli.command
+        && paths.is_empty()
+        && (in_git_home() || in_pyn_workspace())
+    {
+        eprintln!("Nothing specified, nothing added.");
+        eprintln!("hint: Maybe you wanted to say 'git add .'?");
+        eprintln!("hint: Turn this message off by running");
+        eprintln!("hint: \"git config advice.addEmptyPathspec false\"");
+        std::process::exit(0);
+    }
+    if let Command::Rm(args) = &cli.command
+        && args.paths.is_empty()
+    {
+        eprintln!("fatal: No pathspec was given. Which files should I remove?");
+        std::process::exit(128);
+    }
     if let Command::Status(args) = &cli.command
         && let Err(e) =
             short_status::require_literal(&args.paths, |p| std::path::Path::new(p).exists())
@@ -883,6 +908,10 @@ fn main() {
             eprintln!("error: {}", sanitize::text(&refused.to_string()));
             std::process::exit(1);
         }
+        if let Some(exits) = e.downcast_ref::<git_home::Exits>() {
+            eprintln!("error: {}", sanitize::text(&exits.1));
+            std::process::exit(exits.0);
+        }
         if let Some(rejected) = e.downcast_ref::<local_sync::Rejected>() {
             eprintln!("{}", sanitize::text(&rejected.to_string()));
             std::process::exit(1);
@@ -893,6 +922,23 @@ fn main() {
         }
         eprintln!("fatal: {}", sanitize::text(&fatal_message(&e)));
         std::process::exit(128);
+    }
+}
+
+/// Whether git reports this parser error as fatal (128) rather than as a usage error (129).
+fn fatal_option_error(e: &clap::Error) -> bool {
+    use clap::error::ErrorKind::{
+        InvalidSubcommand, InvalidValue, UnknownArgument, ValueValidation,
+    };
+    let kind = e.kind();
+    match first_subcommand().as_deref() {
+        Some("log" | "show") => matches!(kind, InvalidValue | ValueValidation),
+        Some("stash") => {
+            let word = e.get(clap::error::ContextKind::InvalidArg);
+            matches!(kind, UnknownArgument | InvalidSubcommand)
+                && word.is_some_and(|w| !w.to_string().starts_with('-'))
+        }
+        _ => false,
     }
 }
 

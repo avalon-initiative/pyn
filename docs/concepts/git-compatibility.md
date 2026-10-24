@@ -40,7 +40,20 @@ an unknown flag on a supported command (raised by the argument parser, which nam
 Messages that git writes to standard output (for example the nothing-to-commit notice and the unmerged-path listing of a
 conflicted commit) go to standard output, and errors to standard error. `fetch`, `pull` and `push` outside any repository fail
 with `fatal: not a git repository (or any of the parent directories): .git` (`128`). The statuses are checked against git by
-`crates/pyn-cli/tests/git_exit_status.rs`, whose allow-list names the differences that remain.
+`crates/pyn-cli/tests/git_exit_status.rs`, whose allow-list names the differences that remain. Where git exits `128` for a bad
+value of an option of `log` or `show` (a missing `--since` value), and `255` for a failed
+`reflog expire` or `reflog delete`, pyn does the same.
+
+Deliberate status differences that remain:
+
+- **`checkout -B` is not built**, so `checkout -b <a> -B <b>` is a usage error (`129`) where git says the options cannot be
+  used together (`128`).
+- **An unknown option of `log`, `show` or `reflog`** is a usage error (`129`); git exits `128`. The parser cannot tell an
+  option git lacks from one pyn does not build, and the unbuilt ones are `129` by design.
+- **`status --porcelain=<version>`** takes only `v1`; `v2` is unbuilt and an unknown version such as `v9` (git: `128`) is
+  the same parser rejection, a usage error (`129`).
+- **`pyn diff` outside a repository** asks for a server (`128`); git prints its `--no-index` usage (`129`). pyn has no
+  `--no-index` form.
 
 Statuses used below:
 

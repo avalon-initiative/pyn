@@ -96,6 +96,18 @@ impl std::fmt::Display for Refused {
 
 impl std::error::Error for Refused {}
 
+/// An `error: <message>` failure that exits with a status of its own.
+#[derive(Debug)]
+pub struct Exits(pub i32, pub String);
+
+impl std::fmt::Display for Exits {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.1)
+    }
+}
+
+impl std::error::Error for Exits {}
+
 pub struct GitHome {
     repo: Repo,
     /// The work tree root with a `.pyn` folder beside `.git`, whether or not it exists yet.
