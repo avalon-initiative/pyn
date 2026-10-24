@@ -832,6 +832,34 @@ fn groups() -> Vec<(&'static str, Vec<Case>)> {
                 with(Clean, BISECTING, "bisect skip a...b"),
             ],
         ),
+        (
+            "blame",
+            vec![
+                case(Dirty, "blame"),
+                case(Dirty, "blame --bogus README.md"),
+                case(Dirty, "blame README.md"),
+                case(Dirty, "blame -s -f -n README.md"),
+                case(Dirty, "blame HEAD README.md"),
+                case(Dirty, "blame README.md HEAD"),
+                case(Dirty, "blame HEAD -- README.md"),
+                case(Dirty, "blame -p README.md"),
+                case(Dirty, "blame nosuchpath"),
+                case(Dirty, "blame HEAD nosuchpath"),
+                case(Dirty, "blame nosuchrev -- README.md"),
+                case(Dirty, "blame HEAD"),
+                case(Dirty, "blame -L 99 README.md"),
+                case(Dirty, "blame -L x README.md"),
+                case(Dirty, "blame -L"),
+                case(Dirty, "blame --date=bogus README.md"),
+                case(Dirty, "blame HEAD HEAD~1 README.md"),
+                case(Dirty, "blame ../outside"),
+                case(Dirty, "annotate README.md"),
+                case(Dirty, "annotate nosuchpath"),
+                case(Clean, "blame clean"),
+                case(Clean, "blame -L 1,1 clean"),
+                case(Outside, "blame README.md"),
+            ],
+        ),
     ]
 }
 
@@ -875,6 +903,7 @@ group_tests!(
     clone,
     config,
     grep,
+    blame,
     bisect
 );
 

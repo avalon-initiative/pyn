@@ -12,9 +12,10 @@ use pyn_gitwork::{
 };
 use pyn_object::ObjectId;
 
+use super::decorate::{DecorateArgs, with_decoration};
 use super::{GitHome, path_string, stage};
 use crate::backend::Backend;
-use crate::commit_format::{Context, Decorations, FormatArgs, Rendering, render};
+use crate::commit_format::{Context, FormatArgs, Rendering, render};
 use crate::diff::{self, Blob, Source, Tree};
 use crate::short_status::{self, Format, Row, StatusArgs};
 use crate::{Command, table, unsupported};
@@ -59,8 +60,17 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
             paths,
             no_patch,
             fmt,
+            decorate,
             format,
-        } => show(git, cwd, &args, &paths, no_patch, &fmt, &format.format()),
+        } => show(
+            git,
+            cwd,
+            &args,
+            &paths,
+            no_patch,
+            (&fmt, &decorate),
+            &format.format(),
+        ),
         Command::Log {
             path,
             filter,
@@ -109,6 +119,8 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
             Ok(())
         }
         Command::Bisect(args) => super::bisect::bisect(git, cwd, args),
+        Command::Blame(args) => super::blame::blame(git, cwd, args, false),
+        Command::Annotate(args) => super::blame::blame(git, cwd, args, true),
         Command::Reflog(args) => super::reflog::reflog(git, args),
         Command::RevParse(args) => super::rev_parse::rev_parse(git, cwd, args),
         Command::LsFiles(args) => super::ls_files::ls_files(git, cwd, args),
@@ -760,11 +772,12 @@ fn show(
     args: &[String],
     paths: &[String],
     no_patch: bool,
-    fmt: &FormatArgs,
+    (fmt, decorate): (&FormatArgs, &DecorateArgs),
     format: &diff::Format,
 ) -> Result<()> {
     git.repo.validate_diff_ignore_submodules()?;
     let Rendering { pretty, style } = fmt.rendering()?;
+    let decorate = decorate.resolve(git, &pretty)?;
     let separated = !paths.is_empty() || std::env::args_os().any(|a| a == "--");
     let (mut ids, loose) = split_revisions(git, cwd, args, separated, usize::MAX)?;
     check_loose(cwd, &loose, separated)?;
@@ -773,11 +786,7 @@ fn show(
     }
     let only = repo_paths(git, cwd, &[loose.as_slice(), paths].concat())?;
     let spec = Pathspec::new(only.iter().map(|p| p.as_bytes().to_vec()));
-    let names = if pretty.uses_decorations() {
-        super::log::decorations(git)?
-    } else {
-        Decorations::new()
-    };
+    let names = decorate.names(git, pretty.uses_decorations())?;
     let ctx = Context {
         style,
         now: chrono::Utc::now().timestamp(),
@@ -790,7 +799,12 @@ fn show(
         if !out.is_empty() && !pretty.terminated() {
             out.push('\n');
         }
-        out.push_str(&render(&pretty, &ctx, id, &c));
+        let text = render(&pretty, &ctx, id, &c);
+        out.push_str(&if decorate.on() {
+            with_decoration(text, &pretty, names.get(id))
+        } else {
+            text
+        });
         out.push_str(pretty.terminator());
         if no_patch {
             continue;

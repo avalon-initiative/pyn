@@ -154,6 +154,10 @@ enum Command {
     Grep(git_home::GrepArgs),
     /// Find the commit that introduced a change by binary search, as `git bisect` (a git repository only).
     Bisect(git_home::BisectArgs),
+    /// Show what commit last changed each line of a file, as `git blame` (a git repository only).
+    Blame(git_home::BlameArgs),
+    /// Like `blame`, in `git annotate`'s layout (a git repository only).
+    Annotate(git_home::BlameArgs),
     /// Show, check and prune the reflog (a git repository only).
     Reflog(git_home::ReflogArgs),
     /// Reapply the current branch's commits on top of another base (a git repository only).
@@ -240,6 +244,8 @@ enum Command {
         no_patch: bool,
         #[command(flatten)]
         fmt: commit_format::FormatArgs,
+        #[command(flatten)]
+        decorate: Box<git_home::DecorateArgs>,
         #[command(flatten)]
         format: DiffFormat,
     },
@@ -877,9 +883,9 @@ fn main() {
         eprintln!("fatal: not a git repository (or any of the parent directories): .git");
         std::process::exit(128);
     }
-    let cli = match Cli::try_parse_from(attached_gpg_keys(attached_pull_rebase(
+    let cli = match Cli::try_parse_from(attached_gpg_keys(attached_pull_rebase(counted_log(
         std::env::args_os().collect(),
-    ))) {
+    )))) {
         Ok(cli) => cli,
         Err(e) => {
             let code = match (e.use_stderr(), fatal_option_error(&e)) {
@@ -979,6 +985,32 @@ fn in_git_home() -> bool {
         .ok()
         .and_then(|cwd| git_home::detect(&cwd).ok().flatten())
         .is_some()
+}
+
+/// Rewrites `log -<n>` to `--max-count=<n>`; clap has no option named by digits.
+fn counted_log(args: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsString> {
+    let Some(at) = args
+        .iter()
+        .skip(1)
+        .position(|a| a == "log" || a == "history")
+        .map(|i| i + 1)
+    else {
+        return args;
+    };
+    let mut ended = false;
+    let rewritten = args.iter().enumerate().map(|(i, arg)| {
+        let text = arg.to_string_lossy();
+        ended |= i > at && text == "--";
+        match text.strip_prefix('-') {
+            Some(n)
+                if i > at && !ended && !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) =>
+            {
+                format!("--max-count={n}").into()
+            }
+            _ => arg.clone(),
+        }
+    });
+    rewritten.collect()
 }
 
 /// Rewrites `pull -r<mode>` to `--rebase=<mode>`; clap takes an optional value only after `=`.
@@ -1227,6 +1259,12 @@ fn run(cli: Cli) -> Result<()> {
         && let Some(text) = opts.server_message(message)?
     {
         *message = vec![text];
+    }
+    if let Command::Log { git: opts, .. } = &cli.command
+        && git.is_some()
+        && let Some(why) = opts.refused()
+    {
+        usage_error(&format!("`pyn log {why}"));
     }
     if let Command::Log {
         git: opts, path, ..
@@ -1747,6 +1785,14 @@ fn run(cli: Cli) -> Result<()> {
             eprintln!("{}", unsupported::message("grep"));
             std::process::exit(1);
         }
+        Command::Blame(_) => {
+            eprintln!("{}", unsupported::message("blame"));
+            std::process::exit(1);
+        }
+        Command::Annotate(_) => {
+            eprintln!("{}", unsupported::message("annotate"));
+            std::process::exit(1);
+        }
         Command::Reflog(_) => {
             eprintln!("{}", unsupported::message("reflog"));
             std::process::exit(1);
@@ -1844,10 +1890,14 @@ fn run(cli: Cli) -> Result<()> {
             paths,
             no_patch,
             fmt,
+            decorate,
             format,
         } => {
             if args.len() > 1 || !paths.is_empty() {
                 usage_error("`pyn show` takes one commit and no paths on a pyn server");
+            }
+            if let Some((flag, _)) = decorate.given().into_iter().find(|(_, on)| *on) {
+                usage_error(&format!("`pyn show {flag}` needs a git repository"));
             }
             let commit = args.first();
             let shown = ShowOpts {
