@@ -245,6 +245,8 @@ enum Command {
         #[command(flatten)]
         fmt: commit_format::FormatArgs,
         #[command(flatten)]
+        decorate: Box<git_home::DecorateArgs>,
+        #[command(flatten)]
         format: DiffFormat,
     },
     /// Read and write settings, per workspace or for your user.
@@ -881,8 +883,8 @@ fn main() {
         eprintln!("fatal: not a git repository (or any of the parent directories): .git");
         std::process::exit(128);
     }
-    let cli = match Cli::try_parse_from(attached_gpg_keys(attached_pull_rebase(numbered_commits(
-        std::env::args_os().collect(),
+    let cli = match Cli::try_parse_from(attached_gpg_keys(attached_pull_rebase(counted_log(
+        numbered_commits(std::env::args_os().collect()),
     )))) {
         Ok(cli) => cli,
         Err(e) => {
@@ -1009,6 +1011,32 @@ fn numbered_commits(args: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsString> {
             }
         })
         .collect()
+}
+
+/// Rewrites `log -<n>` to `--max-count=<n>`; clap has no option named by digits.
+fn counted_log(args: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsString> {
+    let Some(at) = args
+        .iter()
+        .skip(1)
+        .position(|a| a == "log" || a == "history")
+        .map(|i| i + 1)
+    else {
+        return args;
+    };
+    let mut ended = false;
+    let rewritten = args.iter().enumerate().map(|(i, arg)| {
+        let text = arg.to_string_lossy();
+        ended |= i > at && text == "--";
+        match text.strip_prefix('-') {
+            Some(n)
+                if i > at && !ended && !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) =>
+            {
+                format!("--max-count={n}").into()
+            }
+            _ => arg.clone(),
+        }
+    });
+    rewritten.collect()
 }
 
 /// Rewrites `pull -r<mode>` to `--rebase=<mode>`; clap takes an optional value only after `=`.
@@ -1274,6 +1302,12 @@ fn run(cli: Cli) -> Result<()> {
         && let Some(text) = opts.server_message(message)?
     {
         *message = vec![text];
+    }
+    if let Command::Log { git: opts, .. } = &cli.command
+        && git.is_some()
+        && let Some(why) = opts.refused()
+    {
+        usage_error(&format!("`pyn log {why}"));
     }
     if let Command::Log {
         git: opts, path, ..
@@ -1893,10 +1927,14 @@ fn run(cli: Cli) -> Result<()> {
             paths,
             no_patch,
             fmt,
+            decorate,
             format,
         } => {
             if args.len() > 1 || !paths.is_empty() {
                 usage_error("`pyn show` takes one commit and no paths on a pyn server");
+            }
+            if let Some((flag, _)) = decorate.given().into_iter().find(|(_, on)| *on) {
+                usage_error(&format!("`pyn show {flag}` needs a git repository"));
             }
             let commit = args.first();
             let shown = ShowOpts {

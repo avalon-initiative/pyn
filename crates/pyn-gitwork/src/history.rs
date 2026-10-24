@@ -50,6 +50,7 @@ pub struct Log<'a> {
     seen: HashSet<ObjectId>,
     hidden: HashSet<ObjectId>,
     next_seq: u64,
+    first_parent: bool,
 }
 
 impl Repo {
@@ -71,6 +72,7 @@ impl Repo {
             seen: HashSet::new(),
             hidden,
             next_seq: 0,
+            first_parent: false,
         };
         for id in start {
             log.push(*id)?;
@@ -80,6 +82,11 @@ impl Repo {
 }
 
 impl Log<'_> {
+    /// Follows only the first parent of each commit, as `--first-parent`.
+    pub fn first_parent_only(&mut self) {
+        self.first_parent = true;
+    }
+
     fn push(&mut self, id: ObjectId) -> Result<()> {
         if self.hidden.contains(&id) || !self.seen.insert(id) {
             return Ok(());
@@ -108,7 +115,10 @@ impl Log<'_> {
 
     pub fn next_entry(&mut self) -> Result<Option<LogEntry>> {
         while let Some(q) = self.queue.pop() {
-            let parents = q.commit.parents.clone();
+            let mut parents = q.commit.parents.clone();
+            if self.first_parent {
+                parents.truncate(1);
+            }
             if self.spec.is_empty() {
                 for p in parents {
                     self.push(p)?;
