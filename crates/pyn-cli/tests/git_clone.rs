@@ -690,20 +690,6 @@ fn unsupported_flags_are_usage_errors_and_leave_nothing_behind() {
 }
 
 #[test]
-fn local_paths_and_file_urls_are_refused_with_a_clear_error() {
-    let t = Rig::new("sha1", Via::Ssh);
-    for src in [
-        t.bare.display().to_string(),
-        format!("file://{}", t.bare.display()),
-    ] {
-        let p = t.pyn_clone(&src, &[], Some("x"));
-        assert_eq!(p.code, 128, "{}", p.stderr);
-        assert!(p.stderr.contains("not supported"), "{}", p.stderr);
-        assert!(!t.pyn_dir("x").exists());
-    }
-}
-
-#[test]
 fn pyn_works_in_a_fresh_clone_and_leaves_no_state_behind() {
     for format in FORMATS {
         let t = Rig::new(format, Via::Ssh);

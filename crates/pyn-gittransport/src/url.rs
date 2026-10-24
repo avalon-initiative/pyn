@@ -1,5 +1,7 @@
 //! Remote URLs: parsing, redaction, `insteadOf` rewriting and `<section>.<url>.<key>` scoping.
 
+use std::path::PathBuf;
+
 use pyn_git::Config;
 use reqwest::Url;
 
@@ -19,6 +21,11 @@ pub struct SshUrl {
 pub enum RemoteUrl {
     Http(Url),
     Ssh(SshUrl),
+    /// A directory on this machine, from a plain path or a `file://` URL; `shown` is the text as given.
+    Local {
+        path: PathBuf,
+        shown: String,
+    },
 }
 
 impl RemoteUrl {
@@ -28,7 +35,10 @@ impl RemoteUrl {
         }
         match scp_split(s) {
             Some((userhost, path)) => ssh_from_parts(userhost, None, path.to_owned(), true),
-            None => Err(Error::LocalPath(s.to_owned())),
+            None => Ok(Self::Local {
+                path: PathBuf::from(s),
+                shown: s.to_owned(),
+            }),
         }
     }
 
@@ -37,6 +47,7 @@ impl RemoteUrl {
         match self {
             Self::Http(u) => anonymized(u),
             Self::Ssh(s) => s.display(),
+            Self::Local { shown, .. } => shown.clone(),
         }
     }
 }
@@ -102,7 +113,18 @@ fn parse_scheme(scheme: &str, s: &str) -> Result<RemoteUrl> {
                 false,
             )
         }
-        "file" => Err(Error::LocalPath(s.to_owned())),
+        "file" => {
+            let url = Url::parse(s).map_err(|_| invalid(s))?;
+            let local_host = url.host_str().is_none_or(|h| h.is_empty() || h == "localhost");
+            let path = url.to_file_path().ok().filter(|_| local_host);
+            match path {
+                Some(path) => Ok(RemoteUrl::Local {
+                    path,
+                    shown: s.to_owned(),
+                }),
+                None => Err(invalid(s)),
+            }
+        }
         "git" => Err(Error::Url(
             "the git:// protocol is not supported: it is unauthenticated and unencrypted; use https:// or ssh://"
                 .into(),
@@ -345,6 +367,20 @@ mod tests {
     }
 
     #[test]
+    fn paths_and_file_urls_are_local() {
+        let local = |s: &str| match RemoteUrl::parse(s).unwrap() {
+            RemoteUrl::Local { path, shown } => (path, shown),
+            other => panic!("not local: {other:?}"),
+        };
+        assert_eq!(local("/srv/r").0, PathBuf::from("/srv/r"));
+        assert_eq!(local("../r").0, PathBuf::from("../r"));
+        let (path, shown) = local("file://localhost/srv/my%20repo");
+        assert_eq!(path, PathBuf::from("/srv/my repo"));
+        assert_eq!(shown, "file://localhost/srv/my%20repo");
+        assert!(RemoteUrl::parse("file://example.com/srv/r").is_err());
+    }
+
+    #[test]
     fn http_urls_parse_and_never_display_credentials() {
         let u = RemoteUrl::parse("https://user:s3cret@example.com:8443/a/b.git").unwrap();
         assert_eq!(u.display(), "https://example.com:8443/a/b.git");
@@ -393,7 +429,7 @@ mod tests {
     }
 
     #[test]
-    fn local_paths_and_unsupported_schemes_are_refused() {
+    fn paths_parse_as_local_and_other_schemes_are_refused() {
         for local in [
             "/srv/repo",
             "./repo",
@@ -402,15 +438,11 @@ mod tests {
             "file:///srv/repo",
             "a/b:c",
         ] {
-            let e = RemoteUrl::parse(local).unwrap_err();
-            assert!(matches!(e, Error::LocalPath(_)), "{local}: {e}");
+            assert!(
+                matches!(RemoteUrl::parse(local), Ok(RemoteUrl::Local { .. })),
+                "{local}"
+            );
         }
-        assert!(
-            RemoteUrl::parse("/srv/repo")
-                .unwrap_err()
-                .to_string()
-                .contains("local-path remotes are not supported yet")
-        );
         assert!(matches!(
             RemoteUrl::parse("git://host/x"),
             Err(Error::Url(_))

@@ -1,5 +1,4 @@
 //! The remote end-to-end matrix (#312): every transport against every hash format, with real git as the oracle server.
-//! Local-path and `file://` remotes are a known gap and are tested as the refusal they currently are.
 
 #[path = "../../pyn-gittransport/tests/common/gitsrv.rs"]
 mod gitsrv;
@@ -117,21 +116,6 @@ impl Rig {
         format!("{} {:?}", self.format, self.way)
     }
 
-    fn refused(&self) -> bool {
-        matches!(self.way, Way::LocalPath | Way::FileUrl)
-    }
-
-    /// `code` is what git itself exits with when the same command cannot reach its remote.
-    fn assert_refused(&self, out: &Out, what: &str, code: i32) {
-        assert_eq!(out.code, code, "{} {what}: {}", self.ctx(), out.stderr);
-        assert!(
-            out.stderr.contains("not supported"),
-            "{} {what}: {}",
-            self.ctx(),
-            out.stderr
-        );
-    }
-
     fn assert_ok(&self, out: &Out, what: &str) {
         assert_eq!(out.code, 0, "{} {what}: {}", self.ctx(), out.stderr);
     }
@@ -201,10 +185,6 @@ fn ls_remote_matches_git_on_every_transport_and_format() {
     for (format, way) in ways() {
         let t = Rig::new(format, way);
         let out = t.pyn(&t.root, &["ls-remote", &t.url]);
-        if t.refused() {
-            t.assert_refused(&out, "ls-remote", 128);
-            continue;
-        }
         t.assert_ok(&out, "ls-remote");
         let mut got: Vec<&str> = out.stdout.lines().collect();
         got.sort_unstable();
@@ -219,12 +199,6 @@ fn ls_remote_matches_git_on_every_transport_and_format() {
 fn clone_brings_every_branch_and_tag_whole() {
     for (format, way) in ways() {
         let t = Rig::new(format, way);
-        if t.refused() {
-            let out = t.pyn(&t.root, &["clone", &t.url, "dest"]);
-            t.assert_refused(&out, "clone", 128);
-            assert!(!t.root.join("dest").exists(), "{}", t.ctx());
-            continue;
-        }
         let dir = t.clone_to("dest");
         assert_eq!(tracked_as_served(&dir), t.served(), "{}", t.ctx());
         assert_eq!(
@@ -245,16 +219,6 @@ fn clone_brings_every_branch_and_tag_whole() {
 fn fetch_follows_the_server_across_updates() {
     for (format, way) in ways() {
         let t = Rig::new(format, way);
-        if t.refused() {
-            let dir = t.root.join("side");
-            init(&dir, format, false);
-            run(&dir, &["remote", "add", "origin", &t.url]);
-            let before = local_refs(&dir);
-            let out = t.pyn(&dir, &["fetch", "origin"]);
-            t.assert_refused(&out, "fetch", 128);
-            assert_eq!(local_refs(&dir), before, "{}", t.ctx());
-            continue;
-        }
         let dir = t.root.join("side");
         init(&dir, format, false);
         run(&dir, &["remote", "add", "origin", &t.url]);
@@ -277,15 +241,6 @@ fn fetch_follows_the_server_across_updates() {
 fn pull_fast_forwards_to_what_the_server_holds() {
     for (format, way) in ways() {
         let t = Rig::new(format, way);
-        if t.refused() {
-            let dir = t.root.join("side");
-            init(&dir, format, false);
-            run(&dir, &["remote", "add", "origin", &t.url]);
-            let out = t.pyn(&dir, &["pull", "origin", "main"]);
-            t.assert_refused(&out, "pull", 1);
-            assert!(local_refs(&dir).is_empty(), "{}", t.ctx());
-            continue;
-        }
         let dir = t.clone_to("side");
         let tip = t.advance("pulled.txt");
         t.assert_ok(&t.pyn(&dir, &["pull"]), "pull");
@@ -302,17 +257,6 @@ fn pull_fast_forwards_to_what_the_server_holds() {
 fn push_lands_commits_branches_and_tags_that_git_can_verify() {
     for (format, way) in ways() {
         let t = Rig::new(format, way);
-        if t.refused() {
-            let dir = t.root.join("side");
-            init(&dir, format, false);
-            commit(&dir, "x.txt", b"x\n", "x");
-            run(&dir, &["remote", "add", "origin", &t.url]);
-            let before = t.served();
-            let out = t.pyn(&dir, &["push", "origin", "main"]);
-            t.assert_refused(&out, "push", 128);
-            assert_eq!(t.served(), before, "{}", t.ctx());
-            continue;
-        }
         let dir = t.clone_to("side");
         let tip = commit(&dir, "pushed.txt", b"pushed\n", "pushed");
         run(&dir, &["tag", "-a", "v3", "-m", "third"]);

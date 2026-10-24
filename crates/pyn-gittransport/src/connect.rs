@@ -9,6 +9,7 @@ use crate::credential::{Prompt, SystemPrompt};
 use crate::env::Env;
 use crate::error::Result;
 use crate::http::HttpTransport;
+use crate::local::LocalTransport;
 use crate::ssh::SshTransport;
 use crate::url::{RemoteUrl, rewrite};
 
@@ -46,6 +47,9 @@ impl Connector {
         let display = parsed.display();
         let transport: Box<dyn Transport> = match parsed {
             RemoteUrl::Ssh(u) => Box::new(SshTransport::new(u, &self.config, &self.env)),
+            RemoteUrl::Local { path, shown } => {
+                Box::new(LocalTransport::new(path, shown, &self.env))
+            }
             RemoteUrl::Http(u) => {
                 let prompt = self
                     .prompt
@@ -99,14 +103,13 @@ mod tests {
     }
 
     #[test]
-    fn local_paths_are_refused_after_rewriting() {
-        let e = connect("", "/srv/repo", false).err().unwrap();
-        assert!(
-            e.to_string()
-                .contains("local-path remotes are not supported yet")
-        );
+    fn local_paths_and_file_urls_connect_after_rewriting() {
+        for url in ["/srv/repo", "./repo", "file:///srv/repo"] {
+            assert_eq!(connect("", url, false).unwrap().display, url);
+        }
         let rewritten = connect("[url \"/srv/\"]\n\tinsteadOf = srv:\n", "srv:r", false);
-        assert!(rewritten.is_err());
+        assert_eq!(rewritten.unwrap().display, "/srv/r");
+        assert!(connect("", "file://elsewhere/srv/repo", false).is_err());
     }
 
     #[test]

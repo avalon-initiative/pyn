@@ -114,6 +114,42 @@ fn ls_remote_over_ssh_matches_git() {
 }
 
 #[test]
+fn ls_remote_of_a_local_repository_matches_git() {
+    for format in FORMATS {
+        let tmp = tempdir().unwrap();
+        let bare = sample_bare(tmp.path(), format);
+        let home = tmp.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let rel = format!("./{}", bare.file_name().unwrap().to_str().unwrap());
+        for url in [
+            bare.display().to_string(),
+            format!("file://{}", bare.display()),
+            rel,
+        ] {
+            for flags in [
+                vec![],
+                vec!["--heads"],
+                vec!["--tags"],
+                vec!["--refs"],
+                vec!["--symref"],
+                vec!["--tags", "--refs"],
+            ] {
+                let mut args = vec!["ls-remote"];
+                args.extend(&flags);
+                args.push(&url);
+                let got = pyn(tmp.path(), &home, &[], &args);
+                assert_eq!(got.code(), 0, "{url} {flags:?}: {}", got.stderr());
+                assert_eq!(
+                    got.lines(),
+                    oracle(&bare, &flags),
+                    "{format} {url} {flags:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn ls_remote_uses_origin_on_a_git_home_and_applies_instead_of() {
     let tmp = tempdir().unwrap();
     let bare = sample_bare(tmp.path(), "sha1");
@@ -221,18 +257,18 @@ fn ls_remote_over_http_with_credentials_and_redaction() {
 #[test]
 fn local_paths_and_bad_remotes_fail_clearly() {
     let tmp = tempdir().unwrap();
-    let bare = sample_bare(tmp.path(), "sha1");
     let home = tmp.path().join("home");
     std::fs::create_dir_all(&home).unwrap();
     for target in [
-        bare.to_str().unwrap().to_owned(),
-        format!("file://{}", bare.display()),
+        tmp.path().join("missing").display().to_string(),
+        format!("file://{}", tmp.path().join("missing").display()),
+        tmp.path().display().to_string(),
     ] {
         let got = pyn(tmp.path(), &home, &[], &["ls-remote", &target]);
         assert_eq!(got.code(), 128);
         assert!(
             got.stderr()
-                .contains("local-path remotes are not supported yet"),
+                .contains("does not appear to be a git repository"),
             "{}",
             got.stderr()
         );

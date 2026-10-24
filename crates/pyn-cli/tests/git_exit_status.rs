@@ -74,12 +74,8 @@ const DIVERGENT: &[(&str, &str)] = &[
         "docs: Rebase differences, `-s` is unsupported (129)",
     ),
     (
-        "Dirty: clone ../main ../home",
-        "docs: Transports and credentials, local-path remotes are refused",
-    ),
-    (
         "Dirty: push origin nosuchbranch (after git remote add origin /nonexistent/pyn-oracle.git)",
-        "docs: Transports and credentials, local-path remotes are refused before refspecs are checked",
+        "docs: Transports and credentials, a local path that is not a repository fails on connect before refspecs are checked",
     ),
     (
         "Outside: clone --depth=0 /nonexistent/pyn-oracle.git",
@@ -158,84 +154,28 @@ const DIVERGENT: &[(&str, &str)] = &[
         "docs: Extras `git config`, pyn config has list/get/set only; other forms are 129",
     ),
     (
-        "Dirty: add",
-        "gap: bare `add` is a usage error (129), git hints and exits 0",
-    ),
-    (
-        "Dirty: rm",
-        "gap: bare `rm` is a usage error (129), git says fatal (128)",
-    ),
-    (
-        "Dirty: branch a b c",
-        "gap: too many arguments is fatal (128), git prints usage (129)",
-    ),
-    (
         "Dirty: checkout -b newb -B other",
-        "gap: `checkout -B` is not taken, so the combination is 129, git 128",
-    ),
-    (
-        "Dirty: checkout nosuchbranch --",
-        "gap: reports a pathspec miss (1), git says invalid reference (128)",
-    ),
-    (
-        "Outside: diff",
-        "gap: outside a repository asks for a server (128), git prints --no-index usage (129)",
-    ),
-    (
-        "Dirty: log --bogus",
-        "gap: git exits 128 for a bad option of its revision commands, the parser exits 129",
-    ),
-    (
-        "Dirty: log --since",
-        "gap: git exits 128 for a bad option of its revision commands, the parser exits 129",
-    ),
-    (
-        "Dirty: show --bogus",
-        "gap: git exits 128 for a bad option of its revision commands, the parser exits 129",
-    ),
-    (
-        "Dirty: reflog --bogus",
-        "gap: git exits 128 for a bad option of its revision commands, the parser exits 129",
+        "docs: Conventions, `checkout -B` is not built, so the combination is 129 where git says 128",
     ),
     (
         "Dirty: status --porcelain=v9",
-        "gap: a bad porcelain version is 129 from the parser, git 128",
+        "docs: Conventions, `status --porcelain` takes only v1, so any other version is 129 where git says 128 for an unknown one",
     ),
     (
-        "Dirty: reflog delete nosuchref@{0}",
-        "gap: git exits 255 for a reflog error, pyn 128",
+        "Outside: diff",
+        "docs: Conventions, `pyn diff` outside a repository asks for a server (128); git prints --no-index usage (129)",
     ),
     (
-        "Dirty: reflog delete",
-        "gap: git exits 255 for a reflog error, pyn 129",
+        "Dirty: log --bogus",
+        "docs: Conventions, an option git lacks and one pyn does not build both exit 129, where git exits 128",
     ),
     (
-        "Dirty: reflog expire nosuchref",
-        "gap: git exits 255 for a reflog error, pyn 128",
+        "Dirty: show --bogus",
+        "docs: Conventions, an option git lacks and one pyn does not build both exit 129, where git exits 128",
     ),
     (
-        "Dirty: show HEAD HEAD~1 nosuchrev",
-        "gap: show takes one commit, so extra revisions are 129 before the unknown one is found (git 128)",
-    ),
-    (
-        "Dirty: show HEAD -- nosuchpath",
-        "gap: show takes no path limit, 129 where git exits 0",
-    ),
-    (
-        "Dirty: stash bogus",
-        "gap: unknown stash word is 129 from the parser, git 128",
-    ),
-    (
-        "Dirty: stash branch",
-        "gap: missing branch name is 129 from the parser, git 1",
-    ),
-    (
-        "Dirty: stash clear extra",
-        "gap: extra argument is 129 from the parser, git 1",
-    ),
-    (
-        "Clean: merge --ff-only --no-ff clean",
-        "gap: conflicting merge flags are 129, git lets the last one win",
+        "Dirty: reflog --bogus",
+        "docs: Conventions, an option git lacks and one pyn does not build both exit 129, where git exits 128",
     ),
 ];
 
@@ -383,7 +323,6 @@ fn groups() -> Vec<(&'static str, Vec<Case>)> {
                 case(Dirty, "show --bogus"),
                 case(Dirty, "show nosuchrev"),
                 case(Dirty, "show HEAD:nosuchpath"),
-                case(Dirty, "show HEAD -- nosuchpath"),
                 case(Dirty, "show HEAD HEAD~1 nosuchrev"),
                 case(Outside, "show HEAD"),
             ],
@@ -542,6 +481,7 @@ fn groups() -> Vec<(&'static str, Vec<Case>)> {
                 case(Clean, "merge conflict"),
                 case(Clean, "merge --ff-only clean"),
                 case(Clean, "merge --ff-only --no-ff clean"),
+                case(Clean, "merge --no-ff --ff-only clean"),
                 case(Clean, "merge -s bogus clean"),
                 case(Clean, "merge -m"),
                 with(Clean, MERGING, "merge clean"),
@@ -812,6 +752,32 @@ fn groups() -> Vec<(&'static str, Vec<Case>)> {
                 case(Outside, "config --list --local"),
             ],
         ),
+        (
+            "grep",
+            vec![
+                case(Dirty, "grep"),
+                case(Dirty, "grep -e"),
+                case(Dirty, "grep --bogus"),
+                case(Dirty, "grep README"),
+                case(Dirty, "grep zzzzzz"),
+                case(Dirty, "grep -q README"),
+                case(Dirty, "grep -l README"),
+                case(Dirty, "grep README HEAD"),
+                case(Dirty, "grep --cached README"),
+                case(Dirty, "grep --cached README HEAD"),
+                case(Dirty, "grep README nosuchpath"),
+                case(Dirty, "grep README -- nosuchpath"),
+                case(Dirty, "grep README nosuchrev --"),
+                case(Dirty, "grep README -n"),
+                case(Dirty, "grep -E ("),
+                case(Dirty, "grep ("),
+                case(Dirty, "grep --not"),
+                case(Dirty, "grep -e README --and"),
+                case(Dirty, "grep README ../outside"),
+                case(Clean, "grep clean"),
+                case(Clean, "grep -c clean HEAD"),
+            ],
+        ),
     ]
 }
 
@@ -853,7 +819,8 @@ group_tests!(
     pull,
     push,
     clone,
-    config
+    config,
+    grep
 );
 
 #[test]

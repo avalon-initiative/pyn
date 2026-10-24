@@ -9,7 +9,7 @@ use pyn_git::{Expect, Ref, ReflogEntry};
 use pyn_object::ObjectId;
 
 use super::log_match::parse_date;
-use super::{GitHome, commands::emit};
+use super::{Exits, GitHome, commands::emit};
 
 const ABBREV: usize = 7;
 
@@ -84,7 +84,6 @@ struct DeleteArgs {
     #[command(flatten)]
     prune: Prune,
     /// The lines to remove, as `<ref>@{<n>}`.
-    #[arg(required = true)]
     selectors: Vec<String>,
 }
 
@@ -99,9 +98,17 @@ pub fn reflog(git: &GitHome, args: ReflogArgs) -> Result<()> {
             }
             Ok(())
         }
-        Some(ReflogAction::Expire(a)) => expire(git, a),
-        Some(ReflogAction::Delete(a)) => delete(git, a),
+        Some(ReflogAction::Expire(a)) => expire(git, a).map_err(exit_255),
+        Some(ReflogAction::Delete(a)) if a.selectors.is_empty() => {
+            Err(Exits(255, "no reflog specified to delete".into()).into())
+        }
+        Some(ReflogAction::Delete(a)) => delete(git, a).map_err(exit_255),
     }
+}
+
+/// git exits 255 for a failed reflog expire or delete.
+fn exit_255(e: anyhow::Error) -> anyhow::Error {
+    Exits(255, crate::fatal_message(&e)).into()
 }
 
 fn show(git: &GitHome, args: &ShowArgs) -> Result<()> {

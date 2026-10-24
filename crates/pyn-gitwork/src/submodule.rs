@@ -2,7 +2,6 @@
 
 use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
-use std::path::PathBuf;
 
 use pyn_git::Config;
 use pyn_object::ObjectId;
@@ -34,46 +33,32 @@ impl SubmoduleStatus {
     }
 }
 
-struct ConfigReads {
-    git_dir: PathBuf,
-    parses: usize,
-    index: usize,
-    head: usize,
-}
-
-impl Drop for ConfigReads {
-    fn drop(&mut self) {
-        if std::env::var_os("PYN_DEBUG_SUBMODULE_CONFIG").is_some() {
-            eprintln!(
-                "submodule config reads: parses={} index={} head={} repo={}",
-                self.parses,
-                self.index,
-                self.head,
-                self.git_dir.display()
-            );
-        }
+#[cfg(feature = "test-support")]
+fn probe(repo: &Repo, event: &str) {
+    if std::env::var_os("PYN_DEBUG_SUBMODULE_CONFIG").is_some() {
+        eprintln!(
+            "submodule config {event}: {}",
+            repo.git().git_dir().display()
+        );
     }
 }
 
+#[cfg(not(feature = "test-support"))]
+fn probe(_: &Repo, _: &str) {}
+
 impl Repo {
     fn gitmodules(&self) -> Result<Config> {
-        let mut reads = ConfigReads {
-            git_dir: self.git().git_dir().to_path_buf(),
-            parses: 0,
-            index: 0,
-            head: 0,
-        };
         let file = self.root()?.join(".gitmodules");
         match std::fs::symlink_metadata(&file) {
             Ok(m) if m.is_file() => {
-                reads.parses += 1;
+                probe(self, "parse");
                 return Ok(Config::read(&file)?);
             }
             Ok(_) => return Ok(Config::default()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(io_at(&file)(e)),
         }
-        reads.index += 1;
+        probe(self, "index");
         let index = self.read_index()?;
         if index
             .entries
@@ -89,7 +74,7 @@ impl Repo {
         {
             Some(e) => Some(e.id),
             None => {
-                reads.head += 1;
+                probe(self, "head");
                 match self.head_commit()? {
                     Some(head) => self
                         .entry_at(&self.commit(&head)?.tree, b".gitmodules")?
@@ -100,7 +85,7 @@ impl Repo {
         };
         Ok(match id {
             Some(id) => {
-                reads.parses += 1;
+                probe(self, "parse");
                 Config::parse(&self.blob(&id)?)?
             }
             None => Config::default(),
@@ -109,12 +94,7 @@ impl Repo {
 
     /// Validates the global diff setting without loading `.gitmodules`.
     pub fn validate_diff_ignore_submodules(&self) -> Result<()> {
-        if std::env::var_os("PYN_DEBUG_SUBMODULE_CONFIG").is_some() {
-            eprintln!(
-                "submodule config validation: {}",
-                self.git().git_dir().display()
-            );
-        }
+        probe(self, "validation");
         for value in self.config().get_all("diff.ignoresubmodules") {
             parse_ignore(value)?;
         }

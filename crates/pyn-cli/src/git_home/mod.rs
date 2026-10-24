@@ -3,27 +3,35 @@
 
 mod ancestry;
 mod branches;
+mod cat_file;
 mod clean;
 mod clean_menu;
 mod clone;
 mod commands;
 mod commit;
 mod convert;
+mod describe;
 pub(crate) mod editor;
 mod fetch;
 mod fetch_apply;
 mod fetch_map;
+mod grep;
+mod grep_regex;
 mod hunk_pick;
 mod init_git;
 mod log;
 mod log_gate;
 mod log_graph;
 mod log_match;
+mod ls_files;
+mod ls_tree;
 pub(crate) mod meld;
 mod merge;
+mod name_rev;
 mod patch_file;
 mod patch_mode;
 mod pick;
+mod plumbing;
 mod pull;
 mod push;
 mod push_plan;
@@ -36,7 +44,10 @@ mod remote;
 mod remote_query;
 mod remove;
 mod reset;
+mod rev_parse;
 mod rewrite;
+mod shortlog;
+mod show_ref;
 mod signing;
 mod stage;
 mod stash;
@@ -62,21 +73,30 @@ use crate::backend::Backend;
 use crate::repo_tool::{self, RepoTool};
 use crate::workspace::{self, Workspace};
 
+pub use cat_file::CatFileArgs;
 pub use clean::CleanArgs;
 pub use clone::{CloneOptions, clone};
 pub use commands::run;
 pub use commit::GitCommitArgs;
 pub(crate) use commit::append_trailer;
+pub use describe::DescribeArgs;
 pub use fetch::FetchArgs;
+pub use grep::GrepArgs;
 pub(crate) use init_git::is_tracked;
 pub use init_git::{InitGitArgs, init_git};
 pub use log::GitLogArgs;
+pub use ls_files::LsFilesArgs;
+pub use ls_tree::LsTreeArgs;
+pub use name_rev::NameRevArgs;
 pub use pull::PullArgs;
 pub use push::PushArgs;
 pub use rebase::RebaseArgs;
 pub use reflog::ReflogArgs;
 pub use remote::{RemoteArgs, on_server as remote_on_server};
 pub use reset::ResetKind;
+pub use rev_parse::RevParseArgs;
+pub use shortlog::ShortlogArgs;
+pub use show_ref::ShowRefArgs;
 pub use signing::SignFlag;
 pub(crate) use stage::clean_message;
 pub use stash::StashArgs;
@@ -97,6 +117,18 @@ impl std::fmt::Display for Refused {
 }
 
 impl std::error::Error for Refused {}
+
+/// An `error: <message>` failure that exits with a status of its own.
+#[derive(Debug)]
+pub struct Exits(pub i32, pub String);
+
+impl std::fmt::Display for Exits {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.1)
+    }
+}
+
+impl std::error::Error for Exits {}
 
 pub struct GitHome {
     repo: Repo,

@@ -252,12 +252,6 @@ const REFUSALS: &[Refusal] = &[
     },
     Refusal {
         fixture: "merge",
-        prelude: &[],
-        command: &["merge", "--ff-only", "--no-ff", "clean"],
-        allowed: &[],
-    },
-    Refusal {
-        fixture: "merge",
         prelude: &[&["merge", "conflict"]],
         command: &["merge", "clean"],
         allowed: &[],
@@ -302,7 +296,7 @@ const REFUSALS: &[Refusal] = &[
         fixture: "merge",
         prelude: &[],
         command: &["merge", "moddel", "--no-ff", "--ff-only"],
-        allowed: &[],
+        allowed: &[".git/ORIG_HEAD"],
     },
 ];
 
