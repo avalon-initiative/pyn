@@ -251,3 +251,59 @@ fn failed_pack_refresh_uses_full_width_and_recovers() {
         }
     }
 }
+
+#[test]
+fn nonempty_first_and_last_pack_buckets_match_reference() {
+    for algorithm in [Algorithm::Sha1, Algorithm::Sha256] {
+        let tmp = tempfile::tempdir().unwrap();
+        let ids = common::write_boundary_pack(tmp.path(), algorithm);
+        let db = ObjectDb::open(tmp.path(), algorithm).unwrap();
+        let packs = db.packs();
+        assert_eq!(packs.len(), 1);
+        packs[0].verify().unwrap();
+        let stored: Vec<_> = packs[0].ids().collect();
+        let mut sorted = ids.clone();
+        sorted.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+        assert_eq!(stored, sorted);
+        assert!(stored.iter().any(|id| id.as_bytes()[0] == 0));
+        assert!(stored.iter().any(|id| id.as_bytes()[0] == 255));
+        let full = algorithm.digest_len() * 2;
+        for (byte, label) in [(0, "null"), (255, "all-ones")] {
+            let id = ObjectId::from_bytes(algorithm, &vec![byte; algorithm.digest_len()]).unwrap();
+            let expected = reference(&id, 4, &ids);
+            assert_eq!(
+                expected, full,
+                "the {label} probe must collide until the last nibble"
+            );
+            assert_eq!(
+                packs[0].abbreviation_len(&id, 4),
+                expected,
+                "packed {label} collision must extend to full width"
+            );
+            assert_eq!(db.abbreviation_len(&id, 4), expected);
+        }
+        let mut probes = ids.clone();
+        for id in &ids {
+            for mask in [1, 0x10] {
+                let mut bytes = id.as_bytes().to_vec();
+                bytes[algorithm.digest_len() - 1] ^= mask;
+                probes.push(ObjectId::from_bytes(algorithm, &bytes).unwrap());
+            }
+        }
+        for id in probes {
+            for minimum in [2, 4, 7, full] {
+                let expected = reference(&id, minimum, &ids);
+                assert_eq!(
+                    packs[0].abbreviation_len(&id, minimum),
+                    expected,
+                    "edge pack {id}, minimum {minimum}"
+                );
+                assert_eq!(
+                    db.abbreviation_len(&id, minimum),
+                    expected,
+                    "edge database {id}, minimum {minimum}"
+                );
+            }
+        }
+    }
+}
