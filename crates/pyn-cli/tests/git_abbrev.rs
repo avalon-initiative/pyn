@@ -286,57 +286,77 @@ fn alternate_only_revision_and_duplicate_objects_resolve_in_loose_and_packed_sto
 
 #[test]
 fn a_collision_in_an_alternate_extends_output_and_duplicate_ids_do_not() {
-    // Catches checking only commit ids, ignoring alternate loose objects or packs, and extending for the object itself.
+    // Existing renderers must observe new local/alternate objects without extending for duplicate ids.
     for format in FORMATS {
         for packed in [false, true] {
-            let repo = Repo::new(format);
-            setting(&repo, "4");
-            let id = git(&repo, &repo.main, &["rev-parse", "HEAD"])
-                .trim()
-                .to_string();
-            let objects = repo.main.join(".git/objects");
-            let alt = alternate(&repo, "alternate");
-            copy_tree(&objects, &alt);
-            link(&objects, &alt);
-            let out = same(&repo, &["log", "-n", "1", "--format=%h"]);
-            assert_eq!(out.trim_end(), &id[..4]);
-            let algorithm = if format == "sha1" {
-                pyn_object::Algorithm::Sha1
-            } else {
-                pyn_object::Algorithm::Sha256
-            };
-            let body = (0..2_000_000)
-                .find_map(|n| {
-                    let data = format!("alternate collision {n}\n").into_bytes();
-                    let other =
-                        pyn_object::hash_object(algorithm, pyn_object::Kind::Blob, &data).unwrap();
-                    (other.to_hex().starts_with(&id[..4]) && !other.to_hex().starts_with(&id[..5]))
+            for local in [true, false] {
+                let repo = Repo::new(format);
+                setting(&repo, "4");
+                let id = git(&repo, &repo.main, &["rev-parse", "HEAD"])
+                    .trim()
+                    .to_string();
+                let objects = repo.main.join(".git/objects");
+                let alt = if local {
+                    objects.clone()
+                } else {
+                    let alt = alternate(&repo, "alternate");
+                    copy_tree(&objects, &alt);
+                    link(&objects, &alt);
+                    alt
+                };
+                fs::create_dir_all(alt.join("pack")).unwrap();
+                let out = same(&repo, &["log", "-n", "1", "--format=%h"]);
+                assert_eq!(out.trim_end(), &id[..4]);
+                let opened = pyn_gitwork::Repo::open(&repo.main, Some(&repo.home), None).unwrap();
+                let context = opened.abbreviations(None).unwrap();
+                let object = pyn_object::ObjectId::from_hex(opened.algorithm(), &id).unwrap();
+                assert_eq!(context.short(&object), &id[..4]);
+                let algorithm = if format == "sha1" {
+                    pyn_object::Algorithm::Sha1
+                } else {
+                    pyn_object::Algorithm::Sha256
+                };
+                let body = (0..2_000_000)
+                    .find_map(|n| {
+                        let data = format!("alternate collision {n}\n").into_bytes();
+                        let other =
+                            pyn_object::hash_object(algorithm, pyn_object::Kind::Blob, &data)
+                                .unwrap();
+                        (other.to_hex().starts_with(&id[..4])
+                            && !other.to_hex().starts_with(&id[..5]))
                         .then_some(data)
-                })
-                .expect("a deterministic four-digit collision");
-            let other = pyn_git::ObjectDb::open(&alt, algorithm)
-                .unwrap()
-                .write(pyn_object::Kind::Blob, &body)
-                .unwrap()
-                .to_hex();
-            if packed {
-                let prefix = alt.join("pack/pack");
-                let mut child = Command::new("git")
-                    .arg("pack-objects")
-                    .arg(prefix)
-                    .current_dir(&repo.main)
-                    .env("HOME", &repo.home)
-                    .env("GIT_CONFIG_NOSYSTEM", "1")
-                    .stdin(Stdio::piped())
-                    .stdout(Stdio::null())
-                    .spawn()
-                    .unwrap();
-                writeln!(child.stdin.take().unwrap(), "{other}").unwrap();
-                assert!(child.wait().unwrap().success());
-                fs::remove_file(alt.join(&other[..2]).join(&other[2..])).unwrap();
+                    })
+                    .expect("a deterministic four-digit collision");
+                let other = pyn_git::ObjectDb::open(&alt, algorithm)
+                    .unwrap()
+                    .write(pyn_object::Kind::Blob, &body)
+                    .unwrap()
+                    .to_hex();
+                if packed {
+                    let prefix = alt.join("pack/pack");
+                    let mut child = Command::new("git")
+                        .arg("pack-objects")
+                        .arg(prefix)
+                        .current_dir(&repo.main)
+                        .env("HOME", &repo.home)
+                        .env("GIT_CONFIG_NOSYSTEM", "1")
+                        .stdin(Stdio::piped())
+                        .stdout(Stdio::null())
+                        .spawn()
+                        .unwrap();
+                    writeln!(child.stdin.take().unwrap(), "{other}").unwrap();
+                    assert!(child.wait().unwrap().success());
+                    fs::remove_file(alt.join(&other[..2]).join(&other[2..])).unwrap();
+                }
+                let out = same(&repo, &["log", "-n", "1", "--format=%h"]);
+                assert_eq!(out.trim_end(), &id[..5]);
+                assert_eq!(opened.abbreviation_len(None).unwrap(), 4);
+                assert_eq!(
+                    (opened.abbreviate(&object).unwrap(), context.short(&object)),
+                    (out.trim_end().to_owned(), out.trim_end().to_owned()),
+                    "existing repository and context must see a newly installed collision (local={local}, packed={packed})"
+                );
             }
-            let out = same(&repo, &["log", "-n", "1", "--format=%h"]);
-            assert_eq!(out.trim_end(), &id[..5]);
         }
     }
 }

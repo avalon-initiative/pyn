@@ -18,6 +18,7 @@ pub mod error;
 
 thread_local! {
     static PACK_ENUMERATIONS: Cell<usize> = const { Cell::new(0) };
+    static PACK_OPENS: Cell<usize> = const { Cell::new(0) };
     static LOOSE_READS: Cell<usize> = const { Cell::new(0) };
 }
 
@@ -28,6 +29,7 @@ pub mod pack {
 
     impl Pack {
         pub fn open(path: &Path, algorithm: Algorithm) -> error::Result<Self> {
+            PACK_OPENS.with(|n| n.set(n.get() + 1));
             Ok(Self(
                 git::Pack::open(path, algorithm).expect("a valid fixture pack"),
             ))
@@ -206,6 +208,7 @@ fn every_render_uses_lazy_lookup_and_cached_default() {
             let tmp = tempfile::tempdir().unwrap();
             let (repo, id, stores) = fixture(algorithm, layout, tmp.path());
             PACK_ENUMERATIONS.with(|n| n.set(0));
+            PACK_OPENS.with(|n| n.set(0));
             LOOSE_READS.with(|n| n.set(0));
             let context = repo.abbreviations(None).unwrap();
             assert_eq!(
@@ -247,6 +250,13 @@ fn every_render_uses_lazy_lookup_and_cached_default() {
             );
             PACK_ENUMERATIONS
                 .with(|n| assert_eq!(n.get(), 0, "{layout}: rendering must not enumerate a pack"));
+            PACK_OPENS.with(|n| {
+                assert_eq!(
+                    n.get(),
+                    0,
+                    "{layout}: rendering must reuse loaded pack indexes"
+                )
+            });
             LOOSE_READS.with(|n| {
                 assert!(
                     n.get() <= stores * 15,

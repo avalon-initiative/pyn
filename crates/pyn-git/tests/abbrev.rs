@@ -164,3 +164,90 @@ fn packed_alternates_extend_without_counting_duplicate_ids() {
         );
     }
 }
+
+#[test]
+fn existing_handles_observe_new_local_and_alternate_packs() {
+    let mut results = Vec::new();
+    for algorithm in [Algorithm::Sha1, Algorithm::Sha256] {
+        for alternate in [false, true] {
+            let tmp = tempfile::tempdir().unwrap();
+            let local = tmp.path().join("objects");
+            let other = tmp.path().join("alternate");
+            fs::create_dir_all(local.join("info")).unwrap();
+            fs::create_dir_all(&other).unwrap();
+            if alternate {
+                fs::write(
+                    local.join("info/alternates"),
+                    format!("{}\n", other.display()),
+                )
+                .unwrap();
+            }
+            let source =
+                fixture_dir(&format!("{}-packed", algorithm.name())).join("dot-git/objects");
+            let fixture = ObjectDb::open(&source, algorithm).unwrap();
+            let id = fixture.packs()[0].ids().next().unwrap();
+            let mut bytes = id.as_bytes().to_vec();
+            bytes[algorithm.digest_len() - 1] ^= 1;
+            let absent = ObjectId::from_bytes(algorithm, &bytes).unwrap();
+            let db = ObjectDb::open(&local, algorithm).unwrap();
+            assert_eq!(db.abbreviation_len(&absent, 4), 4);
+            copy_dir(&source, if alternate { &other } else { &local });
+            let cached = db.abbreviation_len(&absent, 4);
+            let fresh = ObjectDb::open(&local, algorithm)
+                .unwrap()
+                .abbreviation_len(&absent, 4);
+            assert_eq!(fresh, algorithm.digest_len() * 2);
+            results.push((algorithm.name(), alternate, cached, fresh));
+        }
+    }
+    assert!(
+        results.iter().all(|(_, _, cached, fresh)| cached == fresh),
+        "new pack must be visible to existing handle: {results:?}"
+    );
+}
+
+#[test]
+fn failed_pack_refresh_uses_full_width_and_recovers() {
+    for algorithm in [Algorithm::Sha1, Algorithm::Sha256] {
+        for alternate in [false, true] {
+            let tmp = tempfile::tempdir().unwrap();
+            let local = tmp.path().join("objects");
+            let other = tmp.path().join("alternate");
+            fs::create_dir_all(local.join("info")).unwrap();
+            let store = if alternate { &other } else { &local };
+            copy_dir(
+                &fixture_dir(&format!("{}-packed", algorithm.name())).join("dot-git/objects"),
+                store,
+            );
+            if alternate {
+                fs::write(
+                    local.join("info/alternates"),
+                    format!("{}\n", other.display()),
+                )
+                .unwrap();
+            }
+            let db = ObjectDb::open(&local, algorithm).unwrap();
+            let id = ObjectDb::open(store, algorithm).unwrap().packs()[0]
+                .ids()
+                .next()
+                .unwrap();
+            assert_eq!(db.abbreviation_len(&id, 4), 4);
+            let index = store.join("pack/pack-corrupt.idx");
+            let pack = store.join("pack/pack-corrupt.pack");
+            fs::write(&index, b"not an index").unwrap();
+            fs::write(&pack, b"not a pack").unwrap();
+            assert_eq!(
+                db.abbreviation_len(&id, 4),
+                algorithm.digest_len() * 2,
+                "failed refresh must render a full id rather than an unchecked prefix"
+            );
+            fs::remove_file(index).unwrap();
+            fs::remove_file(pack).unwrap();
+            assert_eq!(
+                db.abbreviation_len(&id, 4),
+                4,
+                "the retained handle must retry after a failed refresh"
+            );
+        }
+    }
+}
