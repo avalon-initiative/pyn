@@ -24,7 +24,12 @@ fn world(mode: RegistrationMode) -> World {
         ..AccessConfig::default()
     };
     let store = Arc::new(MemoryAccessStore::new());
-    let svc = AccessService::new(store.clone(), clock.clone()).with_config(config);
+    let svc = AccessService::new(
+        store.clone(),
+        clock.clone(),
+        Arc::new(pyn_core::MemoryLimitEvents::new()),
+    )
+    .with_config(config);
     World {
         svc,
         store,
@@ -375,7 +380,11 @@ async fn an_account_with_no_role_can_sign_in_but_holds_no_permissions() {
         Utc.with_ymd_and_hms(2026, 10, 8, 9, 0, 0).unwrap(),
     ));
     let store = Arc::new(MemoryAccessStore::new());
-    let svc = AccessService::new(store.clone(), clock.clone());
+    let svc = AccessService::new(
+        store.clone(),
+        clock.clone(),
+        Arc::new(pyn_core::MemoryLimitEvents::new()),
+    );
     let ghost = UserId::new("ghost");
     AccessStore::create_user(&*store, &ghost, clock.now())
         .await
@@ -627,7 +636,12 @@ async fn adding_accounts_follows_the_registration_policy() {
     for (approval, verification) in [(true, false), (false, true)] {
         let mut w = world(RegistrationMode::Open);
         let wendy = repo_admin_not_server_admin(&w).await;
-        w.svc = AccessService::new(w.store.clone(), w.clock.clone()).with_config(AccessConfig {
+        w.svc = AccessService::new(
+            w.store.clone(),
+            w.clock.clone(),
+            Arc::new(pyn_core::MemoryLimitEvents::new()),
+        )
+        .with_config(AccessConfig {
             registration: RegistrationMode::Open,
             require_approval: approval,
             require_email_verification: verification,

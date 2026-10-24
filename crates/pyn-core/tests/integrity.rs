@@ -29,7 +29,11 @@ fn world() -> World {
         meta.clone(),
         objects.clone(),
         audit.clone(),
-        clock,
+        pyn_core::RepoServiceContext {
+            owner: pyn_core::UserId::new("owner"),
+            clock,
+            limit_events: Arc::new(pyn_core::MemoryLimitEvents::new()),
+        },
         ServiceConfig::default(),
     );
     World {

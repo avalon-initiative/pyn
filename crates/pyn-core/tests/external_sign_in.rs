@@ -67,16 +67,20 @@ fn world_with(policy: impl FnOnce(&mut ExternalPolicy)) -> World {
     let audit = Arc::new(MemoryAuditStore::new());
     let mut external = ExternalPolicy::default();
     policy(&mut external);
-    let svc = AccessService::new(store.clone(), clock.clone())
-        .with_config(AccessConfig {
-            registration: RegistrationMode::Open,
-            require_email_verification: false,
-            public_url: "https://pyn.example/".into(),
-            external,
-            ..AccessConfig::default()
-        })
-        .with_oidc(provider.clone())
-        .with_audit(audit.clone());
+    let svc = AccessService::new(
+        store.clone(),
+        clock.clone(),
+        Arc::new(pyn_core::MemoryLimitEvents::new()),
+    )
+    .with_config(AccessConfig {
+        registration: RegistrationMode::Open,
+        require_email_verification: false,
+        public_url: "https://pyn.example/".into(),
+        external,
+        ..AccessConfig::default()
+    })
+    .with_oidc(provider.clone())
+    .with_audit(audit.clone());
     World {
         svc,
         store,
@@ -221,6 +225,7 @@ async fn nothing_works_without_a_provider() {
     let svc = AccessService::new(
         Arc::new(MemoryAccessStore::new()),
         Arc::new(ManualClock::new(Utc::now())),
+        Arc::new(pyn_core::MemoryLimitEvents::new()),
     );
     assert!(svc.oidc_name().is_none());
     assert!(matches!(
@@ -572,6 +577,7 @@ async fn the_password_switch_means_nothing_without_a_provider() {
     let svc = AccessService::new(
         Arc::new(MemoryAccessStore::new()),
         Arc::new(ManualClock::new(Utc::now())),
+        Arc::new(pyn_core::MemoryLimitEvents::new()),
     )
     .with_config(AccessConfig {
         require_email_verification: false,

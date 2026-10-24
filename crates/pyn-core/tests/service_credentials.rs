@@ -28,9 +28,13 @@ fn world() -> World {
         require_email_verification: false,
         ..AccessConfig::default()
     };
-    let svc = AccessService::new(Arc::new(MemoryAccessStore::new()), clock.clone())
-        .with_config(cfg)
-        .with_audit(audit.clone());
+    let svc = AccessService::new(
+        Arc::new(MemoryAccessStore::new()),
+        clock.clone(),
+        Arc::new(pyn_core::MemoryLimitEvents::new()),
+    )
+    .with_config(cfg)
+    .with_audit(audit.clone());
     World { svc, clock, audit }
 }
 

@@ -71,6 +71,15 @@ impl AccessService {
         self
     }
 
+    pub(crate) async fn limit_result<T>(
+        &self,
+        owner: &UserId,
+        result: Result<T>,
+        now: DateTime<Utc>,
+    ) -> Result<T> {
+        crate::limit_events::limit_result(self.limit_events.as_ref(), owner, result, now).await
+    }
+
     pub fn webhook_secret_key(&self) -> Option<&SecretKey> {
         self.webhook_settings.secret_key.as_ref()
     }

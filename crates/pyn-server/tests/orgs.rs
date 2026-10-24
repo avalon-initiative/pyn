@@ -32,15 +32,19 @@ async fn server_with_store(org_creation: OrgCreation) -> (Router, String, Arc<Me
     let meta = Arc::new(MemoryMetadataStore::new());
     let store = Arc::new(MemoryAccessStore::new());
     let access = Arc::new(
-        AccessService::new(store.clone(), clock.clone())
-            .with_config(AccessConfig {
-                registration: RegistrationMode::Open,
-                require_email_verification: false,
-                org_creation,
-                ..AccessConfig::default()
-            })
-            .with_registry(meta.clone())
-            .with_audit(audit.clone()),
+        AccessService::new(
+            store.clone(),
+            clock.clone(),
+            Arc::new(pyn_core::MemoryLimitEvents::new()),
+        )
+        .with_config(AccessConfig {
+            registration: RegistrationMode::Open,
+            require_email_verification: false,
+            org_creation,
+            ..AccessConfig::default()
+        })
+        .with_registry(meta.clone())
+        .with_audit(audit.clone()),
     );
     let root = access.admin_for_tests(&UserId::new("root")).await.unwrap();
     let repos = Arc::new(Repositories::new(

@@ -8691,7 +8691,8 @@
         "enum": [
           "repositories",
           "members",
-          "storage_bytes"
+          "storage_bytes",
+          "locks"
         ]
       },
       "Limits": {

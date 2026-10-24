@@ -627,6 +627,7 @@ pub struct RepoMember {
 pub struct AccessService {
     store: Arc<dyn AccessStore>,
     clock: Arc<dyn Clock>,
+    pub(crate) limit_events: Arc<dyn crate::LimitEvents>,
     config: AccessConfig,
     audit: Option<Arc<dyn AuditStore>>,
     limits: Arc<dyn RateLimitStore>,
@@ -678,10 +679,15 @@ fn unauthenticated(why: &str) -> PynError {
 }
 
 impl AccessService {
-    pub fn new(store: Arc<dyn AccessStore>, clock: Arc<dyn Clock>) -> Self {
+    pub fn new(
+        store: Arc<dyn AccessStore>,
+        clock: Arc<dyn Clock>,
+        limit_events: Arc<dyn crate::LimitEvents>,
+    ) -> Self {
         Self {
             store,
             clock,
+            limit_events,
             config: AccessConfig::default(),
             audit: None,
             limits: Arc::new(MemoryRateLimitStore::new()),

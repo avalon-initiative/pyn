@@ -165,7 +165,11 @@ impl Repositories {
             self.meta.clone(),
             self.objects.clone(),
             self.audit.clone(),
-            self.clock.clone(),
+            crate::RepoServiceContext {
+                owner: record.owner.clone(),
+                clock: self.clock.clone(),
+                limit_events: self.access.limit_events.clone(),
+            },
             ServiceConfig {
                 lease: Duration::hours(i64::from(record.settings.lease_hours)),
                 max_locks: record.settings.max_locks.unwrap_or(self.default_max_locks),
@@ -327,7 +331,11 @@ impl Repositories {
             created_at: self.clock.now(),
         };
         let max_repos = self.access.effective_limits(owner).await?.repositories;
-        let record = self.meta.create_repo_capped(record, max_repos).await?;
+        let result = self.meta.create_repo_capped(record, max_repos).await;
+        let record = self
+            .access
+            .limit_result(owner, result, self.clock.now())
+            .await?;
         if in_org && let Err(e) = self.access.require_org_open(owner).await {
             let _ = self.meta.delete_repo(&record.id).await;
             return Err(e);

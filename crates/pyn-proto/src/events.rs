@@ -20,6 +20,7 @@ pub enum LimitKind {
     Repositories,
     Members,
     StorageBytes,
+    Locks,
 }
 
 /// `account.created`: a new account exists (sign-up, external sign-in or an administrator).
