@@ -152,6 +152,10 @@ enum Command {
     Clean(git_home::CleanArgs),
     /// Search the work tree, the index (--cached) or revisions for a pattern, as `git grep` (a git repository only).
     Grep(git_home::GrepArgs),
+    /// Show what commit last changed each line of a file, as `git blame` (a git repository only).
+    Blame(git_home::BlameArgs),
+    /// Like `blame`, in `git annotate`'s layout (a git repository only).
+    Annotate(git_home::BlameArgs),
     /// Show, check and prune the reflog (a git repository only).
     Reflog(git_home::ReflogArgs),
     /// Reapply the current branch's commits on top of another base (a git repository only).
@@ -1743,6 +1747,14 @@ fn run(cli: Cli) -> Result<()> {
         }
         Command::Grep(_) => {
             eprintln!("{}", unsupported::message("grep"));
+            std::process::exit(1);
+        }
+        Command::Blame(_) => {
+            eprintln!("{}", unsupported::message("blame"));
+            std::process::exit(1);
+        }
+        Command::Annotate(_) => {
+            eprintln!("{}", unsupported::message("annotate"));
             std::process::exit(1);
         }
         Command::Reflog(_) => {

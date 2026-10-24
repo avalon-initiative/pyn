@@ -2,6 +2,12 @@
 //! Nothing here changes what git sees; the only file pyn adds is its own `.pyn/` folder, hidden by `info/exclude`.
 
 mod ancestry;
+mod blame;
+mod blame_format;
+mod blame_range;
+mod blame_rename;
+mod blame_walk;
+mod blame_xdiff;
 mod branches;
 mod cat_file;
 mod clean;
@@ -71,6 +77,7 @@ use crate::backend::Backend;
 use crate::repo_tool::{self, RepoTool};
 use crate::workspace::{self, Workspace};
 
+pub use blame::BlameArgs;
 pub use cat_file::CatFileArgs;
 pub use clean::CleanArgs;
 pub use clone::{CloneOptions, clone};

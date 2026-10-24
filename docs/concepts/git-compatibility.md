@@ -159,7 +159,7 @@ Commands people reach for that are not in the daily set.
 | `git fsck` | `pyn verify [<path>]` | different | Checks every revision's hash and its link to the one before, and the audit log's chain. Silent and exit 0 when intact, as git; otherwise a `PROBLEM`, `WHAT`, `PATH` table and exit 1. `-v` / `--verbose` also prints what was checked. See [integrity](integrity.md). |
 | `git reflog [show\|list\|exists\|expire\|delete]` | `pyn reflog ...` on a git home | git home only | See [Reflogs](#reflogs). On a pyn server it prints the git-command message; the closest analogue there is `pyn audit`, an append-only log of lock, revision and access events, filtered with `--path`, `--actor`, `--action`, `--before`, `--limit` and permission-gated (`view_audit`). |
 | `git grep [<options>] [-e] <pattern> [<rev>...] [[--] <path>...]` | `pyn grep ...` on a git home | git home only | See [Grep](#grep). Searches the tracked files of the work tree, the index (`--cached`) or the commits named; `-n -i -w -l -c -v -q -h -H -a -I -E -G -F`, `-e` (repeatable), `--and`, `--or`, `--not` and parentheses, pathspecs after the revisions or `--`. On a pyn server or local-store workspace it says it needs a git repository (`1`). |
-| `git blame`, `git annotate` | none | unsupported | Git-command message. Line history needs merge-capable text history; not scheduled. |
+| `git blame [-L <range>] [-w] [<options>] [<rev>] [--] <file>`, `git annotate` | `pyn blame ...`, `pyn annotate ...` on a git home | git home only | See [Blame](#blame). Git's lines byte for byte: the default, `-e`, `-s`, `-f`, `-n`, `-l`, `-t`, `-b`, `--root`, `--abbrev`, `--date`, `-p`, `--line-porcelain`, `-L` ranges, `<rev>`, `<a>..<b>` and `^<rev>`. `-M`, `-C` and `--incremental` are usage errors (`129`). On a pyn server or local-store workspace it says it needs a git repository (`1`). |
 | `git submodule` | none | unsupported | Submodule lifecycle commands are not built. On a git home, `status` and `diff` inspect recorded gitlinks and initialized submodule checkouts without changing them; see [On a git home](#on-a-git-home). |
 | `git archive`, `git bundle`, `git format-patch`, `git am`, `git apply`, `git notes`, `git bisect`, `git worktree`, `git gc`, `git fsck` | none | unsupported | `pyn: '<cmd>' is not a pyn command` (`1`). Only the commands in the git-only list print the "git command pyn does not support yet" message, so these read as unknown until that list is widened (#223). |
 
@@ -703,7 +703,6 @@ schedules them.
 
 | Git | Reason |
 | --- | --- |
-| `git blame` | Not scheduled. |
 | Commands that maintain git's own storage or run its hooks (`gc`, `fsck`, `bundle`, `submodule`, `worktree`, hooks in `.git/hooks`) | pyn reads a git repository's `.git/` on a git home (decision #245) but does not maintain it or run its hooks. pyn's own hooks are tracked in #216. |
 
 ## On a git home
@@ -778,6 +777,7 @@ whatever the rules say.
 | `show [<rev>]` | Commit header and message, then the diff against the first parent. A merge commit prints no diff (git prints a combined diff, which pyn does not compute). |
 | `log [<options>] [<rev>...] [--] [<path>...]` | Git's output: commit blocks, newest first across all parents, with git's history simplification for a path; revision ranges, formats, filters and diff output are in [Log on a git home](#log-on-a-git-home). `--commits` is the pyn table. `--filter` fails. |
 | `grep [<options>] [-e] <pattern> [<rev>...] [[--] <path>...]` | git's output over the work tree, the index (`--cached`) or revisions; see [Grep](#grep). |
+| `blame`, `annotate` | git's output for the line history of a file, following renames and merges; see [Blame](#blame). |
 | `files`, `ls` | `files` lists the index and `ls` lists `HEAD`'s tree. Every entry is `shared`, with no revision, lock or last change. |
 | `add`, `restore --staged`, `commit` | See [staging](#staging-and-committing). |
 | `rm`, `mv` | See [Removing and moving](#removing-and-moving). |
@@ -1711,6 +1711,44 @@ What differs, all of it refused or documented rather than silently different:
 Covered against the real git, on SHA-1 and SHA-256 repositories, by `crates/pyn-cli/tests/git_grep.rs` (output, order and
 exit status for the work tree, the index, revisions, binary files, subfolders, conflicts and a few hundred patterns of
 both syntaxes) and `crates/pyn-cli/tests/git_exit_status.rs`, which compare only behaviour the git releases in use agree on.
+
+### Blame
+
+`blame` and `annotate` print git's lines: for each line of the file at `<rev>` (the work tree file when no revision is
+given) the commit that last changed it, found by diffing along the parents as git does. A parent whose file is identical
+takes all of it; otherwise each parent in order takes the lines that are unchanged against it, so a merge hands a line to
+its first parent when both have it. A file that is not in a parent under the same path is looked up as a rename (exact
+content, then a uniquely same-named file at least 75% similar, then the best match of at least 50%) and
+followed; `-f` shows the old names. The diff is a port of git's own line diff with its hunk placement and
+`diff.indentHeuristic`, so ambiguous insertions land on the same lines. Every layout is git's: the default (abbreviated id
+with `^` on boundary commits, author, date, line number, aligned), `-e`, `-s`, `-f`, `-n`, `-l`, `-t`, `-b`, `--root`,
+`--abbrev=<n>`, `--date=<default|iso|iso-strict|rfc|short|relative|unix|raw>`, `-p` and `--line-porcelain`, and
+`annotate`'s tab-separated layout (also `-c`). `-L <start>,<end>`, `,+<n>`, `,-<n>`, `/<regex>/` (a basic expression)
+and `^/<regex>/` anchors work as git reads them, repeated or overlapping. `-w` ignores whitespace when comparing a commit
+with its parent. Revisions are `<rev>` (before or after the file, with or without `--`), `<a>..<b>` and `^<rev>`;
+commits reachable from the excluded side are boundaries, and so are root commits unless `--root` or `blame.showRoot`.
+`blame.blankBoundary`, `blame.showEmail`, `blame.date`, `diff.indentHeuristic` and `core.abbrev` are read.
+
+A modified work tree file is blamed on `Not Committed Yet <not.committed.yet>` at the current time, with `HEAD` (and
+`MERGE_HEAD`) as parents; `--contents <file>` (or `-` for standard input) does the same for another file's content as
+`External file (--contents)`. A file that is not in `HEAD` or the index is a fatal error (`128`), as is a path missing
+from the named revision. A binary file is blamed line by line like git does, not refused. The exit status is `0`, `128`
+for a fatal error and `129` for a usage error.
+
+What differs, all of it refused or documented rather than silently different:
+
+| Difference | pyn |
+| --- | --- |
+| Not built (usage error `129`) | `-M`, `-C`, `--incremental`, `-L :<funcname>`, `--ignore-rev`, `--ignore-revs-file`, `--reverse`, `--first-parent`, `--show-stats`, `--progress`, `--score-debug`, `--color-lines`, `--color-by-age`, `--minimal`, `--diff-algorithm`, `-S`, abbreviated long options, `<a>...<b>`, the other revision-list options, and `--date=human`, `local`, `format:...` and `auto:...`. |
+| Refused (`128`) | A `.mailmap`, `mailmap.file` or `mailmap.blob` (names are not mapped), and `diff.algorithm` other than `myers`. |
+| Abbreviation length | `core.abbrev`, else 7 digits, grown until the abbreviation of every blamed commit is unique, plus one for the boundary mark. Git also lengthens its default for repositories with tens of thousands of objects; pyn does not. |
+| Content filters | `textconv`, `core.autocrlf` and `.gitattributes` conversions are not applied to committed blobs or to the work tree file. |
+| Commit encodings | Author names and subjects are printed as stored, without re-encoding from an `encoding` header. |
+| Renames | The single added path is matched as git's rename detection would, but `diff.renameLimit` is not applied. |
+
+Covered against the real git, on SHA-1 and SHA-256 repositories, by `crates/pyn-cli/tests/git_blame.rs` (every layout,
+ranges, renames, merges, boundaries, a dirty work tree, awkward files and seeded random histories) and
+`crates/pyn-cli/tests/git_exit_status.rs`, which compare only behaviour the git releases in use agree on.
 
 ### Reflogs
 
