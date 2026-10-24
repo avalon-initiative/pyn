@@ -18,12 +18,12 @@ use crate::diff::{self, Blob, Source, Tree};
 use crate::short_status::{self, Format, Row, StatusArgs};
 use crate::{Command, table, unsupported};
 
-/// The commit abbreviation `Merge:` lines use.
-const ABBREV: usize = 7;
 const EXCLUDE_LINE: &str = ".pyn/";
 
 /// Runs `command` on a git repository, or refuses it with the home that provides it.
 pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
+    // Validate before writes; this repository caches the configured/default length.
+    git.repo.abbreviation_len(None)?;
     let server_only = |feature: &str| -> Result<()> {
         match git.pyn_server(feature) {
             Ok(_) => unreachable!("a git home has no pyn server"),
@@ -270,10 +270,6 @@ fn kind_word(kind: Kind) -> &'static str {
     }
 }
 
-fn short(id: &ObjectId) -> String {
-    id.to_hex()[..ABBREV].to_string()
-}
-
 pub(super) fn status(git: &GitHome, cwd: &Path, args: &StatusArgs) -> Result<()> {
     let mut status = git.repo.status()?;
     let specs = stage::resolve_specs(git, cwd, &args.paths)?;
@@ -295,14 +291,14 @@ pub(super) fn status(git: &GitHome, cwd: &Path, args: &StatusArgs) -> Result<()>
             quote_high,
         );
     }
-    status_table(&status)
+    status_table(git, &status)
 }
 
-pub(super) fn status_table(status: &pyn_gitwork::Status) -> Result<()> {
+pub(super) fn status_table(git: &GitHome, status: &pyn_gitwork::Status) -> Result<()> {
     let line = match &status.head {
         Head::Branch { name, id: Some(_) } => format!("On branch {name}"),
         Head::Branch { name, id: None } => format!("On branch {name} (no commits yet)"),
-        Head::Detached(id) => format!("HEAD detached at {}", short(id)),
+        Head::Detached(id) => format!("HEAD detached at {}", git.repo.abbreviate(id)?),
     };
     println!("{line}");
     if status.entries.is_empty() {
@@ -674,6 +670,9 @@ fn show(
     fmt: &FormatArgs,
     format: &diff::Format,
 ) -> Result<()> {
+    let mut format = format.clone();
+    format.abbrev = fmt.patch_abbreviation();
+    let format = &format;
     let Rendering { pretty, style } = fmt.rendering()?;
     let id = match commit {
         Some(c) => git.repo.resolve(c)?,
@@ -685,10 +684,12 @@ fn show(
     } else {
         Decorations::new()
     };
+    let abbreviations = git.repo.abbreviations(fmt.abbreviation())?;
     let ctx = Context {
         style,
         now: chrono::Utc::now().timestamp(),
         decorations: &names,
+        abbreviations: &crate::commit_format::IdFormat::Git(abbreviations),
     };
     let mut out = render(&pretty, &ctx, &id, &c);
     out.push_str(pretty.terminator());

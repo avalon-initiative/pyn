@@ -255,15 +255,23 @@ fn read_worktree(git: &GitHome, path: &[u8], index: Option<&Entry>) -> Result<Op
     Ok(Some(Side { mode, bytes, id }))
 }
 
-fn abbrev(side: Option<&Side>) -> String {
-    side.map_or_else(|| "0000000".to_string(), |s| s.id.to_hex()[..7].to_string())
-}
-
 fn mode_text(mode: FileMode) -> String {
     format!("{:o}", raw_mode(mode))
 }
 
-fn header(path: &str, old: Option<&Side>, new: Option<&Side>, flipped: bool) -> String {
+fn header(
+    abbreviations: &pyn_gitwork::Abbreviations,
+    path: &str,
+    old: Option<&Side>,
+    new: Option<&Side>,
+    flipped: bool,
+) -> String {
+    let abbrev = |side: Option<&Side>| {
+        side.map_or_else(
+            || abbreviations.short_null(),
+            |s| abbreviations.short(&s.id),
+        )
+    };
     let (from, to) = if flipped { ("b", "a") } else { ("a", "b") };
     let mut out = format!("diff --git {from}/{path} {to}/{path}\n");
     match (old, new) {
@@ -295,6 +303,7 @@ struct Found {
 }
 
 fn gather(git: &GitHome, opened: &OpenIndex, mode: &PatchMode, spec: &Pathspec) -> Result<Found> {
+    let abbreviations = git.repo.abbreviations(None)?;
     let leaves = git.repo.index_leaves(&opened.index);
     let tree = [&mode.old, &mode.new].into_iter().find_map(|s| match s {
         Source::Tree(commit) => Some(*commit),
@@ -400,7 +409,13 @@ fn gather(git: &GitHome, opened: &OpenIndex, mode: &PatchMode, spec: &Pathspec) 
         }
         let name = path_string(path);
         let diff = FileDiff {
-            header: header(&name, old.as_ref(), new.as_ref(), mode.flipped()),
+            header: header(
+                &abbreviations,
+                &name,
+                old.as_ref(),
+                new.as_ref(),
+                mode.flipped(),
+            ),
             path: name,
             uses: vec![Use::Undecided; items.len()],
             items,

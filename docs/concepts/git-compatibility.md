@@ -266,7 +266,8 @@ What a fetch does, in git's order:
 
 Each update line is ` <code> <summary>  <remote ref> -> <local ref>` on standard error after one `From <url>` line (the URL
 without user name, `.git` or trailing slashes), with git's columns. The summary column is `2 * abbrev + 3` wide and the ref column at
-least 10. Ids are `core.abbrev` digits (default 7) and are not lengthened to stay unique.
+least 10. On a git home, ids use `core.abbrev` as a minimum width and lengthen for uniqueness, including objects in alternates.
+On a git home, unset or `auto` chooses the default from the packed object count; `no`, `off` and `false` show full ids.
 
 | Line | Meaning |
 | --- | --- |
@@ -303,7 +304,7 @@ server sha256` (`128`). A repository with no objects, refs or index takes the re
 `core.repositoryformatversion = 1` and `extensions.objectformat`), which git itself refuses to do outside `clone`.
 
 Differences from git, all deliberate or not yet done: `--dry-run` downloads objects like git does, but git lists auto-followed tags twice on a dry run and pyn once;
-ids are not lengthened to stay unique and do not scale with the repository's size; there is no per-object "Receiving objects" progress,
+there is no per-object "Receiving objects" progress,
 only what the server sends; local-path and `file://` remotes are refused (see [Transports and credentials](#transports-and-credentials));
 `fetch.output`, `fetch.showForcedUpdates`, `fetch.recurseSubmodules`, `fetch.writeCommitGraph`, `remote.<name>.promisor`,
 `--refmap`, `--negotiation-tip`, `--server-option`, `--stdin` and `-4`/`-6` are not read or taken; `--all` runs
@@ -492,8 +493,10 @@ What a push does, in git's order:
    relays the server's messages as `remote: ...` lines. The server decides each ref: `[remote rejected] (<its reason>)`, for example a
    `pre-receive` hook, `receive.denyNonFastForwards` or deleting its current branch.
 3. Prints `To <url>` (without user name or password) and then up to date lines (`-v`), the refs that were pushed, then the failures,
-   each ` <flag> <summary> <from> -> <to> (<reason>)` in git's columns. The summary column is `2 * abbrev + 3` wide, the ids are
-   `core.abbrev` digits (default 7). Then `-u`, then the tracking refs, then `error: failed to push some refs to '<url>'` and one
+   each ` <flag> <summary> <from> -> <to> (<reason>)` in git's columns. The summary column is `2 * abbrev + 3` wide.
+   On a git home, ids use `core.abbrev`'s minimum width, extended for uniqueness across local and alternate stores;
+   unset or `auto` derives the default from the packed object count, and `no`, `off` and `false` show full ids.
+   Then `-u`, then the tracking refs, then `error: failed to push some refs to '<url>'` and one
    `hint:` block (naming `pyn pull`) for the first kind of rejection, unless `advice.pushUpdateRejected` or the specific
    `advice.push...` setting is false; or `Everything up-to-date` when nothing needed sending.
 4. For a push to a named remote it moves each remote-tracking ref the remote's fetch refspecs map the pushed ref to (and deletes
@@ -501,7 +504,7 @@ What a push does, in git's order:
    `core.logAllRefUpdates`, as fetch does).
 
 Differences from git, all deliberate or not yet done: no per-object "Enumerating objects" or "Writing objects" progress, only what the
-server sends; ids are not lengthened to stay unique; `push.autoSetupRemote`, `push.negotiate`, `push.gpgSign`, `push.recurseSubmodules`,
+server sends; `push.autoSetupRemote`, `push.negotiate`, `push.gpgSign`, `push.recurseSubmodules`,
 `push.useForceIfIncludes` and `remote.<name>.receivepack` are not read; pre-push hooks are never run; `--dry-run` with `-u` prints `Would set upstream of ...`
 instead of setting anything; local-path and `file://` remotes are refused (see [Transports and credentials](#transports-and-credentials)).
 A push to a pyn server is not this command: see the push row above.
@@ -765,8 +768,7 @@ Differences from git, all deliberate or not yet done:
   repository that depends on them can show files as modified that git does not.
 - No rename or copy detection: a rename is a delete and an add.
 - Submodule entries are not compared, and a submodule folder is not descended into.
-- `log` and `show` print no ref decorations (`%d` in a `log` template does); commit abbreviations are 7 digits and are not
-  lengthened to stay unique.
+- `log` and `show` print no ref decorations (`%d` in a `log` template does).
 - A nested repository that the index does not track is one untracked `dir/`.
 - `merge` and `stash apply` detect no renames, write diff3 conflict markers whatever `merge.conflictStyle` says and merge only when
   there is one merge base (`merge -s ours` needs none); `stash apply` does not write `AUTO_MERGE`; `switch` and `checkout` print their own wording where git's differs (`Fast-forward` without a diffstat, the status
@@ -791,9 +793,17 @@ Formats: `--oneline` (abbreviated id and subject), `--format=<f>` and `--pretty[
 (the default), `full`, `fuller`, `raw`, `format:<template>` (a newline between commits) and `tformat:<template>` (a newline
 after each; also a bare template or `--format=<template>`). Templates take `%H %h %T %t %P %p %an %ae %ad %aD %ai %aI %as %at
 %ar %cn %ce %cd %cD %ci %cI %cs %ct %cr %s %b %B %d %D %n %%`; any other `%` sequence is printed as written. `%h`, `%t` and `%p`
-are 7 digits. `%d` and `%D` list `HEAD -> <branch>` (or `HEAD`), then the other branches, remote-tracking branches, `tag: <name>`
-and `refs/stash` that point at the commit, in git's order. `--date=` takes `default`, `iso`, `iso-strict`, `rfc`, `short`,
+use the git home's abbreviation policy described below. `%d` and `%D` list `HEAD -> <branch>` (or `HEAD`), then the other
+branches, remote-tracking branches, `tag: <name>` and `refs/stash` that point at the commit, in git's order. `--date=` takes `default`, `iso`, `iso-strict`, `rfc`, `short`,
 `relative`, `unix` and `raw` and applies to `Date:` and `%ad`/`%cd`; commit dates print in the offset recorded in the commit. `show` takes the same formats and `--date=`.
+
+On a git home, abbreviated ids (including patch headers) lengthen until unique across loose objects, packs and
+recursive alternates. The minimum defaults to at least seven, estimated from packed object counts;
+`core.abbrev=auto` or unset selects it. Numeric `core.abbrev` accepts decimal, octal, hexadecimal and binary
+`k`/`m`/`g` suffixes. Values below four, malformed or missing values and integer overflow fail;
+valid integers above the hash width render full ids in pyn, as in the tested git 2.47.3.
+`no`, `off`, `false` (case-insensitive) or an empty value selects full ids. Duplicate objects do not extend
+prefixes; null patch ids also lengthen for uniqueness. Server-home conventions are unchanged.
 
 Filters apply in this order: `--author` and `--committer` (regular expressions on `Name <email>`, any of several of the same
 kind), `--grep` (on the whole message; any of several, or all with `--all-match`, or none with `--invert-grep`), `-i` for all
@@ -809,6 +819,12 @@ implies `-p`) for the context. `--stat` and `--shortstat` combine with `-p` (git
 when `--stat` and `-p` are both given); the other combinations are a usage error. The diff is against the first parent, or
 against the empty tree for a root commit, limited to the paths. A merge commit prints none (git needs `-m`, `-c` or `--cc` for
 that). The engine is the one `pyn diff` uses, including its `--stat` layout.
+
+On a git home, `log` and `show` accept `--abbrev[=<n>]` and `--no-abbrev`. A numeric width overrides
+configuration and clamps to the valid range; a bare flag retains the configured default. Repeating `--abbrev`
+uses its last numeric or bare occurrence. The revision parser accepts a signed decimal prefix (`12junk` selects
+twelve, `-1` full width); `no` and `0` select four. `--no-abbrev` selects full commit ids while patch index ids
+keep the configured/default width; an explicit numeric width applies to both.
 
 Differences from git:
 
@@ -1307,8 +1323,9 @@ for a pull, and `rebase: fast-forward` for a fast-forward in either).
 7. `-i` (`--interactive`) writes the commits as an instruction sheet and opens it in the editor: `GIT_SEQUENCE_EDITOR`, then
    `sequence.editor`, then the message editor (`GIT_EDITOR`, `core.editor`, `VISUAL`, `EDITOR`, `vi`; `Terminal is dumb, but EDITOR
    unset` without one on a dumb terminal; an editor of `:` keeps the file). The sheet is git's: `pick`, `reword`, `edit`,
-   `squash`, `fixup`, `drop`, `exec`, `break` and `noop` (or `p`, `r`, `e`, `s`, `f`, `d`, `x`, `b`), ids abbreviated to seven
-   digits, comment lines and blank lines ignored, lines in any order. A bad line prints `error: invalid command '<word>'` and
+   `squash`, `fixup`, `drop`, `exec`, `break` and `noop` (or `p`, `r`, `e`, `s`, `f`, `d`, `x`, `b`), ids abbreviated by the
+   git home's unique-prefix policy, comment lines and blank lines ignored, lines in any order.
+   A bad line prints `error: invalid command '<word>'` and
    `error: invalid line <n>: <line>` (also `missing arguments`, `could not parse '<rev>'` and `cannot 'squash' without a previous
    commit`) and stops with `HEAD` on the new base, the sheet as written, and `--edit-todo` (the editor on the remaining sheet) or
    `--abort` to go on; `--continue` repeats the errors. A sheet with no command left prints `error: nothing to do` and changes

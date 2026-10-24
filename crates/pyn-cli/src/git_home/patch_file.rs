@@ -8,10 +8,6 @@ use pyn_object::{FileMode, ObjectId};
 use super::GitHome;
 use super::stage::raw_mode;
 
-fn abbrev(entry: Option<&Entry>) -> String {
-    entry.map_or_else(|| "0".repeat(7), |e| e.id.to_hex()[..7].to_string())
-}
-
 fn content(git: &GitHome, entry: Option<&Entry>) -> Result<Vec<u8>> {
     Ok(match entry {
         Some(e) if e.mode == FileMode::Gitlink => {
@@ -32,6 +28,13 @@ pub(super) fn of_commit(git: &GitHome, id: &ObjectId) -> Result<String> {
     let changes =
         git.repo
             .diff_trees(Some(&parent_tree), Some(&commit.tree), &Pathspec::default())?;
+    let abbreviations = git.repo.abbreviations(None)?;
+    let abbrev = |entry: Option<&Entry>| {
+        entry.map_or_else(
+            || abbreviations.short_null(),
+            |e| abbreviations.short(&e.id),
+        )
+    };
     let mut out = String::new();
     for change in &changes {
         let path = super::path_string(&change.path);

@@ -371,6 +371,7 @@ impl Filters {
 impl GitLogArgs {
     pub fn diff_parts(&self) -> DiffParts {
         DiffParts {
+            abbrev: self.fmt.patch_abbreviation(),
             names: if self.name_only {
                 Some(Kind::NameOnly)
             } else if self.name_status {
@@ -464,10 +465,12 @@ pub(super) fn log(
     } else {
         Decorations::new()
     };
+    let abbreviations = git.repo.abbreviations(args.fmt.abbreviation())?;
     let ctx = Context {
         style,
         now: chrono::Utc::now().timestamp(),
         decorations: &decorated,
+        abbreviations: &crate::commit_format::IdFormat::Git(abbreviations),
     };
 
     let mut walk = git
@@ -551,7 +554,7 @@ pub(super) fn log_table(git: &GitHome, limit: usize) -> Result<()> {
             .diff_trees(parent_tree.as_ref(), Some(&c.tree), &Pathspec::default())?
             .len();
         rows.push(vec![
-            crate::snapshot::short(&entry.id.to_hex()).to_string(),
+            git.repo.abbreviate(&entry.id)?,
             String::from_utf8_lossy(&c.author.name).into_owned(),
             time::local(chrono::DateTime::from_timestamp(c.author.time, 0).unwrap_or_default()),
             files.to_string(),

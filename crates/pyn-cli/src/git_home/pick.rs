@@ -21,7 +21,6 @@ use super::treemerge::{Labels, merge_trees};
 use super::{convert, path_string, reset};
 use crate::local_pick::{PickArgs, revert_message, select, with_origin};
 
-const ABBREV: usize = 7;
 const HOOKS: [&str; 3] = ["prepare-commit-msg", "commit-msg", "post-commit"];
 const PICK_HEAD: &str = "CHERRY_PICK_HEAD";
 const REVERT_HEAD: &str = "REVERT_HEAD";
@@ -127,10 +126,6 @@ enum Outcome {
     Applied,
     /// Conflicts, or an empty result: the state is written and the command ends with status 1.
     Stopped,
-}
-
-pub(super) fn short(id: &ObjectId) -> String {
-    id.to_hex()[..ABBREV].to_string()
 }
 
 pub(super) fn subject_of(message: &[u8]) -> String {
@@ -377,7 +372,11 @@ pub(super) fn merge_pick(
     };
     let opened = git.open_index()?;
     let ours_tree = write_tree(git, &opened.index)?;
-    let label = format!("{} ({})", short(id), subject_of(&picked.message));
+    let label = format!(
+        "{} ({})",
+        git.repo.abbreviate(id)?,
+        subject_of(&picked.message)
+    );
     // A revert merges with the commit as the base and its parent as the incoming side.
     let (base_tree, theirs_tree) = match verb {
         Verb::Pick => (parent_tree, Some(picked.tree)),
@@ -520,7 +519,7 @@ fn apply(git: &GitHome, opts: &Opts, verb: Verb, id: &ObjectId) -> Result<Outcom
 
 fn say_empty(git: &GitHome, verb: Verb) -> Result<()> {
     let cmd = verb.command();
-    super::commands::status_table(&git.repo.status()?)?;
+    super::commands::status_table(git, &git.repo.status()?)?;
     eprintln!("The previous {cmd} is now empty, possibly due to conflict resolution.");
     eprintln!("pyn does not keep empty commits; drop it with 'pyn {cmd} --skip'.");
     Ok(())
@@ -589,7 +588,7 @@ fn commit_pick(git: &GitHome, pending: &Pending) -> Result<ObjectId> {
         Head::Branch { name, .. } => name.clone(),
         Head::Detached(_) => "detached HEAD".into(),
     };
-    println!("[{place} {}] {first}", short(&id));
+    println!("[{place} {}] {first}", git.repo.abbreviate(&id)?);
     if (
         pending.author.name.as_slice(),
         pending.author.email.as_slice(),

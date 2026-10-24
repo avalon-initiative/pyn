@@ -481,6 +481,7 @@ impl DiffFormat {
             context: self.context,
             kind,
             ignore_ws: self.ignore_all_space,
+            abbrev: None,
         }
     }
 }

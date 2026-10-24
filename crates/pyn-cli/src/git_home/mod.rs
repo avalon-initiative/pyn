@@ -78,9 +78,7 @@ pub use reset::ResetKind;
 pub(crate) use stage::clean_message;
 pub use stash::StashArgs;
 pub use tags::TagArgs;
-pub(crate) use tags::{
-    annotation, check_name, delete as delete_tags, list as list_tags, short, tag_ref,
-};
+pub(crate) use tags::{annotation, check_name, delete as delete_tags, list as list_tags, tag_ref};
 pub use to_git::{ConvertArgs, Home, to_git};
 
 /// A refusal git reports as `error: <message>` with exit status 1, rather than as a fatal error.
@@ -237,6 +235,12 @@ impl GitHome {
 }
 
 impl Backend for GitHome {
+    fn abbreviations(&self, explicit: Option<usize>) -> Result<crate::commit_format::IdFormat> {
+        Ok(crate::commit_format::IdFormat::Git(
+            self.repo.abbreviations(explicit)?,
+        ))
+    }
+
     fn whoami(&self) -> Result<String> {
         self.repo
             .config()

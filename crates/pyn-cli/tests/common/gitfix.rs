@@ -13,6 +13,24 @@ use std::sync::OnceLock;
 
 pub const FORMATS: [&str; 2] = ["sha1", "sha256"];
 
+/// A real loose object that collides with the first four null-id digits but not the fifth.
+pub fn write_zero_prefix_blob(repo: &Path, format: &str) {
+    let algorithm = pyn_object::Algorithm::from_name(format).unwrap();
+    let data = (0..2_000_000)
+        .find_map(|n| {
+            let data = format!("zero prefix {n}\n").into_bytes();
+            let id = pyn_object::hash_object(algorithm, pyn_object::Kind::Blob, &data)
+                .unwrap()
+                .to_hex();
+            (id.starts_with("0000") && !id.starts_with("00000")).then_some(data)
+        })
+        .expect("a deterministic null-id prefix collision");
+    pyn_git::ObjectDb::open(&repo.join(".git/objects"), algorithm)
+        .unwrap()
+        .write(pyn_object::Kind::Blob, &data)
+        .unwrap();
+}
+
 pub(crate) const ARCHIVES: &str = include_str!("../fixtures/git/archives.txt");
 
 pub(crate) fn extract_archives(from: &Path) -> io::Result<tempfile::TempDir> {

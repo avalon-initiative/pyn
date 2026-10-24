@@ -10,8 +10,37 @@ use pyn_proto as api;
 
 use crate::time;
 
-/// The commit abbreviation `%h`, `%p` and `Merge:` lines use.
+/// The server renderer retains its existing abbreviation width.
 const ABBREV: usize = 7;
+
+/// Object-id rendering conventions selected by the repository's home.
+pub enum IdFormat {
+    Server,
+    Git(pyn_gitwork::Abbreviations),
+}
+
+impl IdFormat {
+    pub fn short(&self, id: &ObjectId) -> String {
+        match self {
+            Self::Server => id.to_hex()[..ABBREV].to_string(),
+            Self::Git(a) => a.short(id),
+        }
+    }
+
+    pub fn short_hex(&self, hex: &str) -> String {
+        match self {
+            Self::Server => hex[..ABBREV].to_string(),
+            Self::Git(a) => a.short_hex(hex),
+        }
+    }
+
+    pub fn short_null(&self) -> String {
+        match self {
+            Self::Server => "0".repeat(ABBREV),
+            Self::Git(a) => a.short_null(),
+        }
+    }
+}
 
 /// The format options `log` and `show` share.
 #[derive(clap::Args, Debug, Default)]
@@ -31,6 +60,12 @@ pub struct FormatArgs {
         default_missing_value = "medium"
     )]
     pretty: Option<String>,
+    /// Minimum object-id width; a bare flag uses the configured default on a git home.
+    #[arg(long, value_name = "N", num_args = 0..=1, require_equals = true, overrides_with_all = ["no_abbrev", "abbrev"])]
+    abbrev: Option<Option<String>>,
+    /// Show full object ids on a git home.
+    #[arg(long, overrides_with = "abbrev")]
+    no_abbrev: bool,
     /// `default`, `iso`, `iso-strict`, `rfc`, `short`, `relative`, `unix` or `raw`.
     #[arg(long, value_name = "STYLE")]
     date: Option<String>,
@@ -44,10 +79,50 @@ impl FormatArgs {
             ("--format", self.format.is_some()),
             ("--pretty", self.pretty.is_some()),
             ("--date", self.date.is_some()),
+            ("--abbrev", self.abbrev.is_some()),
+            ("--no-abbrev", self.no_abbrev),
         ]
         .into_iter()
         .find(|(_, on)| *on)
         .map(|(f, _)| f)
+    }
+
+    /// Git's revision parser reads a decimal prefix with strtoul, then clamps its unsigned-int width.
+    pub fn abbreviation(&self) -> Option<usize> {
+        if self.no_abbrev {
+            Some(usize::MAX)
+        } else {
+            self.abbrev
+                .as_ref()
+                .and_then(|value| value.as_deref())
+                .map(|value| {
+                    let value = value.trim_start();
+                    let (negative, value) = match value.as_bytes().first() {
+                        Some(b'-') => (true, &value[1..]),
+                        Some(b'+') => (false, &value[1..]),
+                        _ => (false, value),
+                    };
+                    let end = value.bytes().take_while(u8::is_ascii_digit).count();
+                    let n = match value[..end].parse::<u64>() {
+                        Ok(n) if negative => n.wrapping_neg(),
+                        Ok(n) => n,
+                        Err(error) if *error.kind() == std::num::IntErrorKind::PosOverflow => {
+                            u64::MAX
+                        }
+                        Err(_) => 0,
+                    };
+                    (n as u32 as usize).max(4)
+                })
+        }
+    }
+
+    /// A no-abbreviation header request leaves patch metadata at its configured default.
+    pub fn patch_abbreviation(&self) -> Option<usize> {
+        if self.no_abbrev {
+            None
+        } else {
+            self.abbreviation()
+        }
     }
 
     /// The pretty format; `medium` when none is named. `--format` and `--pretty` win over `--oneline`.
@@ -128,6 +203,7 @@ pub fn render_api(r: &Rendering, c: &api::Commit) -> Result<String> {
         style: r.style,
         now: chrono::Utc::now().timestamp(),
         decorations: &none,
+        abbreviations: &IdFormat::Server,
     };
     Ok(format!(
         "{}{}",
@@ -325,10 +401,13 @@ pub struct Context<'a> {
     pub style: DateStyle,
     pub now: i64,
     pub decorations: &'a Decorations,
+    pub abbreviations: &'a IdFormat,
 }
 
-fn short(id: &ObjectId) -> String {
-    id.to_hex()[..ABBREV].to_string()
+impl Context<'_> {
+    fn short(&self, id: &ObjectId) -> String {
+        self.abbreviations.short(id)
+    }
 }
 
 fn lossy(bytes: &[u8]) -> String {
@@ -392,22 +471,22 @@ fn indented(message: &[u8], first_paragraph: bool) -> String {
     out
 }
 
-fn merge_line(c: &Commit) -> String {
+fn merge_line(c: &Commit, ctx: &Context<'_>) -> String {
     if c.parents.len() < 2 {
         return String::new();
     }
-    let merged: Vec<String> = c.parents.iter().map(short).collect();
+    let merged: Vec<String> = c.parents.iter().map(|id| ctx.short(id)).collect();
     format!("Merge: {}\n", merged.join(" "))
 }
 
 /// One commit as a format prints it, without the separator or terminator between commits.
 pub fn render(pretty: &Pretty, ctx: &Context<'_>, id: &ObjectId, c: &Commit) -> String {
     let date = |who: &Signature| ctx.style.format(who, ctx.now);
-    let head = format!("commit {id}\n{}", merge_line(c));
+    let head = format!("commit {id}\n{}", merge_line(c, ctx));
     match pretty {
         Pretty::Oneline { abbrev } => {
             let (subject, _) = subject_and_body(&lossy(&c.message));
-            let name = if *abbrev { short(id) } else { id.to_hex() };
+            let name = if *abbrev { ctx.short(id) } else { id.to_hex() };
             format!("{name} {subject}")
         }
         Pretty::Short => format!(
@@ -498,11 +577,11 @@ fn placeholder(
         '%' => one("%".into()),
         'n' => one("\n".into()),
         'H' => one(id.to_hex()),
-        'h' => one(short(id)),
+        'h' => one(ctx.short(id)),
         'T' => one(c.tree.to_hex()),
-        't' => one(short(&c.tree)),
+        't' => one(ctx.short(&c.tree)),
         'P' => one(join(c.parents.iter().map(ObjectId::to_hex))),
-        'p' => one(join(c.parents.iter().map(short))),
+        'p' => one(join(c.parents.iter().map(|id| ctx.short(id)))),
         's' => one(subject_and_body(&message).0),
         'b' => one(subject_and_body(&message).1.to_string()),
         'B' => one(message),

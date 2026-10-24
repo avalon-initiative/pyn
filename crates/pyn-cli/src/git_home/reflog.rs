@@ -11,8 +11,6 @@ use pyn_object::ObjectId;
 use super::log_match::parse_date;
 use super::{GitHome, commands::emit};
 
-const ABBREV: usize = 7;
-
 /// Show and prune the reflog.
 #[derive(Debug, Args)]
 #[command(args_conflicts_with_subcommands = true)]
@@ -125,7 +123,7 @@ fn show(git: &GitHome, args: &ShowArgs) -> Result<()> {
     {
         out.push_str(&format!(
             "{} {shown}@{{{n}}}: {}\n",
-            &entry.new.to_hex()[..ABBREV],
+            git.repo.abbreviate(&entry.new)?,
             entry.message
         ));
     }
