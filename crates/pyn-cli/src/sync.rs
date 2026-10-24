@@ -324,6 +324,7 @@ pub fn status(
                 x,
                 y,
                 path: path.clone().into_bytes(),
+                from: None,
             });
         }
         if notes.is_empty() && lock.is_none() && staged_entry.is_none() {

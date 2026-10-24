@@ -29,6 +29,8 @@ pub struct GitLogArgs {
     dashed: Vec<String>,
     #[command(flatten)]
     fmt: FormatArgs,
+    #[command(flatten)]
+    renames: crate::rename::Flags,
     /// Read the patterns of `--author`, `--committer` and `--grep` as extended regular expressions.
     #[arg(short = 'E', long, overrides_with_all = ["fixed_strings", "basic_regexp", "perl_regexp"])]
     extended_regexp: bool,
@@ -117,6 +119,9 @@ pub struct GitLogArgs {
     /// The names of the changed files.
     #[arg(long, conflicts_with_all = ["name_status", "patch", "unified"])]
     name_only: bool,
+    /// Show creations, deletions, renames and mode changes.
+    #[arg(long)]
+    summary: bool,
     /// The names and the kind of change (A, M, D) of the changed files.
     #[arg(long, conflicts_with_all = ["patch", "unified"])]
     name_status: bool,
@@ -451,6 +456,8 @@ impl Filters {
 impl GitLogArgs {
     pub fn diff_parts(&self) -> DiffParts {
         DiffParts {
+            renames: self.renames.request(),
+            summary: self.summary,
             names: if self.name_only {
                 Some(Kind::NameOnly)
             } else if self.name_status {
@@ -486,7 +493,7 @@ fn diff_body(
         .repo
         .diff_trees(parent_tree.as_ref(), Some(&c.tree), spec)?;
     add_changes(git, &mut old, &mut new, &changes)?;
-    diff::sections(git, &old, &new, only, parts)
+    diff::sections(git, &old, &new, (&[], only), parts)
 }
 
 /// Every ref that names a commit, in ref order, then `HEAD`.

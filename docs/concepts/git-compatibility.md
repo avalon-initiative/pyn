@@ -105,7 +105,7 @@ The commands named in decision #218.
 | `git log [-n <n>] [<path>]` | `pyn log [-n <n>] [<path>]` (alias `history`) | different | Without a path, newest first, 50 by default. With a path, oldest first and all revisions (git prints newest first). It lists the workspace's branch (`On branch <name>` goes to standard error). Output is a table of per-path revisions, not commit blocks. `-n` is also `--max-count`; `--limit` is an alias. On a git home it is git's output (see below). |
 | `git log --author`, `--grep`, `-i`, `--since`, `--until`, `<rev>`, `<a>..<b>`, `^<rev>`, `[<rev>...] -- <path>` | same | supported | Git's output on a git home (see [Log on a git home](#log-on-a-git-home)). On a pyn server the server filters the commits (`GET /commits` parameters, see [commits](commits.md#filtering-commits)), so the output is the commit listing of `--commits` (or the given format), never a filtered page of a longer history. The differences from git: `--author` and `--grep` are a substring, always ignoring case (`-i` is accepted and changes nothing), and a pattern with `\ [ * ^ $` is a usage error; `--author` matches the name or email of the author; `--since` and `--until` compare the author date, inclusive, and take the date forms of a git home (RFC 3339, `YYYY-MM-DD`, `2 days ago`, ...); a revision is `HEAD`, a commit hash (4 digits or more) or a [local tag](#tags) (workspaces with the local store), each optionally followed by `~N`, `^`, so branch names are not revisions there; a tag of an unpublished local commit is refused with a message (the listing is the server's history), and a path with a tag's name is a path unless `--` follows the revisions; one path only, and not with diff output (`--stat`, `-p`, ...: usage error, `129`); unpublished local commits are not listed when a filter, revision or path is given. |
 | `git log --committer`, `--invert-grep`, `--all-match`, `--no-merges`, `--merges`, `--skip`, `--reverse`, `<a>...<b>`, a repeated `--author` or `--grep`, more than one path | same | git home: supported | Git's output on a git home. On a pyn server a usage error (`129`) naming the option (`<a>...<b>` fails with `1`): the server has no committer, merge, count or symmetric filters. |
-| `git log --stat`, `--shortstat`, `--name-only`, `--name-status`, `-p`, `-U<n>` | same | supported | Both homes. The diff of each commit against its first parent follows its text, as `show` prints it (a merge shows none); `--stat` with `-p` separates them with `---`. On a pyn server they list commits like `pyn log --commits` (`-n` or 50, medium format unless a format is given) and take no `--filter` (usage error, `129`); a path or revision narrows the commits (see the filter row above); unpublished local commits are diffed from the local store. Exclusive paths show as in `show`. `--stat`, `--shortstat`, `--name-only` and `--name-status` combine with no other of the four (usage error, `129`), and `-p` with a name flag too. |
+| `git log --stat`, `--shortstat`, `--name-only`, `--name-status`, `--summary`, `-p`, `-U<n>` | same | supported | Both homes. The diff of each commit against its first parent follows its text, as `show` prints it (a merge shows none); `--stat` with `-p` separates them with `---`. On a pyn server they list commits like `pyn log --commits` (`-n` or 50, medium format unless a format is given) and take no `--filter` (usage error, `129`); a path or revision narrows the commits (see the filter row above); unpublished local commits are diffed from the local store. Exclusive paths show as in `show`. `--stat`, `--shortstat`, `--name-only` and `--name-status` combine with no other of the four (usage error, `129`), and `-p` with a name flag too. |
 | `git log --oneline`, `--format=`, `--pretty=`, `--date=` | same | supported | Both homes, through one renderer (the formats and `%` placeholders of [Log on a git home](#log-on-a-git-home)). On a pyn server they list commits like `pyn log --commits` (newest first, `-n` or 50) and take no `--filter` (usage error, `129`); a path or revision narrows the commits (see the filter row above); `%d` and `%D` are empty there, as no refs are known. | |
 | `git log --all`, `--first-parent`, `--decorate[=short\|full\|no]`, `--no-decorate`, `-<n>` | same | git home: supported | Git's output on a git home (see [Log on a git home](#log-on-a-git-home)). `-<n>` is `-n <n>`. On a pyn server a usage error (`129`) naming the option. |
 | `git log --follow`, `-S<string>`, `-G<regex>` | same | git home: supported | Git's output on a git home (see [Log on a git home](#log-on-a-git-home)); `--follow` takes no diff output. On a pyn server a usage error (`129`). |
@@ -116,11 +116,12 @@ The commands named in decision #218.
 | `pyn log --commits` | | pyn only | List commits (`COMMIT`, `AUTHOR`, `WHEN`, `FILES`, `MESSAGE`) instead of revisions. |
 | `pyn log --filter <glob>` | | pyn only | Only paths matching the glob. |
 | `git diff [<c1> [<c2>]] [-- <path>...]` | `pyn diff [<c1> [<c2>]] [-- <path>...]` | different | Unified output as git, computed in the CLI. Commits are hashes (or abbreviations of 4 or more digits), `HEAD`, `~N`, `^`, or `a..b`; two commits work outside a workspace. With no commit it compares the work tree with the index: the staged content, or the last update for what is not staged. File modes print as in git, including `old mode` and `new mode`. On a git home an argument that is neither a revision nor an existing path (a deleted file needs `--`) fails with `fatal: ambiguous argument '<arg>'` (or `bad revision` before `--`), exit `128`, as git does; `a...b` is not supported and fails the same way. |
-| `git diff -U<n>`, `--unified=<n>`, `--stat`, `--name-only`, `--name-status`, `--exit-code`, `-q` | same | same | `--name-status` prints `A`, `M`, and `D`; gitlink type changes print `T`. On a git home `--stat` (also in `show`, `log` and `stash show`) prints a binary file as git does, `Bin <old> -> <new> bytes` (`Bin` alone for a rename with identical content, as in the merge diffstat), aligned in the graph column and left out of the insertion and deletion totals; `--numstat` prints `-` and `-`. `diff` and `show` list a moved file as a deleted and an added one, where git pairs them as a rename. |
+| `git diff -U<n>`, `--unified=<n>`, `--stat`, `--name-only`, `--name-status`, `--exit-code`, `-q` | same | same | `--name-status` prints `A`, `M`, and `D`; gitlink type changes print `T`, and on a git home a rename or copy prints `R<nn>` or `C<nn>` (see [Rename and copy detection](#rename-and-copy-detection)). On a git home `--stat` (also in `show`, `log` and `stash show`) prints a binary file as git does, `Bin <old> -> <new> bytes` (`Bin` alone for a rename with identical content, as in the merge diffstat), aligned in the graph column and left out of the insertion and deletion totals; `--numstat` prints `-` and `-`. |
 | `git diff --numstat` | same | different | Both homes. Prints added and deleted line counts per path, or `-` and `-` for a binary file. It combines with none of `--stat`, `--shortstat`, `--name-only`, `--name-status` or `--check` (usage error, `129`); git can combine numeric and other stats or give another format precedence. |
 | `git diff --cached`, `--staged` | `pyn diff --cached`, `--staged` | different | The staged content against the last commit (the last update on a pyn server). On a git home it takes one optional commit to compare with, as git; on a pyn server it takes none. |
 | `git diff --shortstat`, `-w` (`--ignore-all-space`), `--check` | same | same | Both homes. `--shortstat` prints only the totals line. `-w` compares lines with all whitespace removed, prints context lines as they are in the new file, and leaves out a file that differs only in whitespace (so `--exit-code` is `0` when nothing else changed); `--name-only` and `--name-status` still list it, as git 2.43 does (newer git versions differ on this edge; pyn lists the file). `--check` prints `path:line: trailing whitespace.` (or `space before tab in indent.`, or both) and the added line, then `path:line: new blank line at EOF.`, for git's default whitespace rules, and exits `2` if it printed anything; `-w` does not affect it (newer git versions differ here too). `--check` and `--shortstat` combine with no other format (`--stat`, `--name-only`, `--name-status`): a usage error (`129`), where git prints both stats or refuses with `128`. |
-| `git diff --word-diff`, `--color`, `--no-index`, `-M`, `-C` | none | unsupported | Usage error (`129`). |
+| `git diff --word-diff`, `--color`, `--no-index` | none | unsupported | Usage error (`129`). |
+| `git diff -M[<n>]`, `--find-renames[=<n>]`, `-C[<n>]`, `--find-copies[=<n>]`, `--no-renames`, `-l<n>`, `--summary` | same | git home: supported | Rename and copy detection and the `--summary` lines, as git does them; also in `show`, `log` and `stash show`. See [Rename and copy detection](#rename-and-copy-detection). `-C -C` and `--find-copies-harder` are a usage error (`129`). |
 | `git show [<commit>...] [-- <path>...]` | `pyn show [<commit>...] [-- <path>...]` | different | Commit header (`commit`, `Author:`, `Date:`), message, then the commit's diff. The newest commit if none is named. The author line carries the email. On a git home the output is git's, except for merge commits (see below): it takes several commits, and paths (after `--`, or existing ones) limit each diff. A commit that changes none of the paths still prints its header, as git 2.55 does (older git leaves it out). A pyn server takes one commit and no paths (usage error, `129`). |
 | `git show -U<n>`, `--stat`, `--shortstat`, `-w`, `--check`, `--name-only`, `--name-status` | same | same | The diff flags behave as on `diff`, and `--stat` is laid out as git lays it out at 80 columns (long names cut with `...`, graph scaled); `--check` exits `2` when it reports a problem. |
 | `git show --numstat` | same | different | The numeric rows and format-combination limits are the same as `diff --numstat`. |
@@ -824,7 +825,6 @@ Differences from git, all deliberate or not yet done:
 
 - Files are read as they are on disk: `core.autocrlf`, `.gitattributes` filters and `core.eol` are not applied, so a
   repository that depends on them can show files as modified that git does not.
-- No rename or copy detection: a rename is a delete and an add.
 - `log` and `show` print no ref decorations (`%d` in a `log` template does); commit abbreviations are 7 digits and are not
   lengthened to stay unique.
 - A nested repository that the index does not track is one untracked `dir/`.
@@ -898,8 +898,6 @@ the three wins. `-G` is always extended. Back-references fail in both regular ex
 
 Differences from git:
 
-- Diff output with `--follow`, `-S` or `-G` shows a renamed file as a deletion and an addition, not as a rename; `log -p`
-  does the same for any commit that renames a file.
 - With both a revision range that excludes history and a path, the choice of merge commits whose parents are on the excluded
   side can differ from git's, which decides it while the walk is still marking commits as excluded. Ranges alone, and paths
   alone, match.
@@ -911,6 +909,35 @@ Differences from git:
 - The `--stat` graph is at most 40 columns wide and names are never shortened; it has no `--stat=<width>` form.
 - Passing a revision that is not a commit, a dated reflog selector (`HEAD@{yesterday}`) or `:/<text>` fails with exit `128`
   where git accepts them.
+
+### Rename and copy detection
+
+On a git home `diff`, `show`, `log` and `stash show` pair a deleted file with an added one the way git's diffcore does, so
+their output matches git's byte for byte: `similarity index N%` with `rename from` and `rename to` (or `copy from` and `copy to`)
+in a patch, `{old => new}` names in `--stat` and `--numstat`, ` rename old => new (N%)` in `--summary`, and `R<nnn>` or `C<nnn>`
+in `--name-status`. A rename with no content change prints only its header. A mode change prints `old mode` and `new mode`
+first. The order of the steps is git's:
+
+1. Files with identical content, preferring a source with the same name, then a source no rename has used yet.
+2. Sources and added files whose name (after the last `/`) is unique on each side, when they are at least 75% alike (halfway
+   between the threshold and 100%).
+3. Every remaining pair, scored as git scores it (lines up to 64 bytes hashed into spans, with the share of the larger file's
+   bytes the two have in common), best first; a source is used once. Files that differ in size by more than the threshold, and
+   anything but regular files, are not compared.
+
+The threshold is 50%; `-M<n>` or `--find-renames=<n>` sets it (`-M90%`, `-M9`, `-M.5`), and the last of `-M`, `-C` and
+`--no-renames` wins. Detection is on by default (`diff.renames`), `diff.renames=copies` also finds copies, and `false` turns it
+off. `-C` adds copies from files the change modified; a deleted source copied to several places is a rename for the last
+destination in path order and a copy for the others. `-l<n>` and `diff.renameLimit` (default 1000) skip the exhaustive step
+when destinations times sources exceed the square of the limit, with git's warning. A path filter limits the files before
+pairing, so a rename across it shows as a deletion or an addition. `log -S` and `-G` pair before they filter.
+
+Not built, each a usage error (`129`): `-C -C` and `--find-copies-harder` (copies from unmodified files), including a bare `-C`
+while `diff.renames=copies`, which git reads as `-C -C`; `-B`; and `--follow` with diff output. `status` has no
+`--renames`, `--no-renames` or `-M`; it reads `status.renames` (else `diff.renames`) and shows a staged rename as `R  old -> new`
+(`C` for a copy), and a rename between the index and the work tree, which needs an intent-to-add file, as ` R`. Git 2.43 does
+not count a file's final span when it has no newline (or 64 bytes) to end it, so a similarity score can differ from git's by
+a few percent there; pyn follows git 2.55.
 
 ### The short status format
 

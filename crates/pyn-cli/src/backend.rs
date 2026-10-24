@@ -35,6 +35,11 @@ pub trait Backend {
         .into())
     }
 
+    /// Whether and how the home's settings turn on rename detection in diffs.
+    fn rename_defaults(&self) -> crate::rename::Defaults {
+        crate::rename::Defaults::default()
+    }
+
     /// The home's quoting of a path in diff output.
     fn quote_diff_path(&self, path: &[u8]) -> String {
         crate::short_status::quote_diff(path, true)

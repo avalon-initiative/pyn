@@ -272,7 +272,49 @@ impl GitHome {
     }
 }
 
+impl GitHome {
+    /// The rename detection `<scope>.renames` and `<scope>.renameLimit` turn on, falling back to `diff.*`.
+    pub(crate) fn rename_settings(&self, scope: &str) -> crate::rename::Defaults {
+        use crate::rename::{Defaults, Mode};
+        let cfg = self.repo.config();
+        let mode_of = |key: String| -> Option<Option<Mode>> {
+            let v = cfg.get(&key)?.to_ascii_lowercase();
+            Some(if v == "copies" || v == "copy" {
+                Some(Mode::Copies)
+            } else {
+                cfg.get_bool(&key)
+                    .ok()
+                    .flatten()
+                    .unwrap_or(false)
+                    .then_some(Mode::Renames)
+            })
+        };
+        let limit_of = |key: String| -> Option<i64> {
+            let v = cfg.get(&key)?.trim().to_ascii_lowercase();
+            let (digits, scale) = match v.chars().last()? {
+                'k' => (&v[..v.len() - 1], 1 << 10),
+                'm' => (&v[..v.len() - 1], 1 << 20),
+                'g' => (&v[..v.len() - 1], 1 << 30),
+                _ => (v.as_str(), 1),
+            };
+            digits.parse::<i64>().ok().map(|n| n * scale)
+        };
+        Defaults {
+            mode: mode_of(format!("{scope}.renames"))
+                .or_else(|| mode_of("diff.renames".into()))
+                .unwrap_or(Some(Mode::Renames)),
+            limit: limit_of(format!("{scope}.renameLimit"))
+                .or_else(|| limit_of("diff.renameLimit".into()))
+                .unwrap_or(crate::rename::DEFAULT_LIMIT as i64),
+        }
+    }
+}
+
 impl Backend for GitHome {
+    fn rename_defaults(&self) -> crate::rename::Defaults {
+        self.rename_settings("diff")
+    }
+
     fn quote_diff_path(&self, path: &[u8]) -> String {
         crate::short_status::quote_diff(path, self.repo.bool_setting("core.quotePath", true))
     }

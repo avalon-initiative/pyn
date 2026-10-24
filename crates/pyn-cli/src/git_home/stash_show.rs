@@ -56,7 +56,8 @@ pub(super) fn show(git: &GitHome, args: ShowArgs) -> Result<()> {
         )?;
     }
     let f = &args.format;
-    let flagged = f.stat || f.shortstat || f.numstat || f.name_only || f.name_status || f.check;
+    let flagged =
+        f.stat || f.shortstat || f.numstat || f.name_only || f.name_status || f.check || f.summary;
     let (summary, patch) = if flagged || args.patch {
         (flagged, args.patch)
     } else {
@@ -74,6 +75,7 @@ pub(super) fn show(git: &GitHome, args: ShowArgs) -> Result<()> {
         let mut body = String::new();
         let format = diff::Format {
             kind: diff::Kind::Patch,
+            summary: false,
             ..f.format()
         };
         diff::compare(git, &old, &new, &[], &format, &mut body)?;

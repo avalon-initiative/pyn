@@ -13,6 +13,7 @@ use crate::backend::Backend;
 use crate::diffstat::{self, Counts};
 use crate::local_store::file_mode;
 use crate::localfile;
+use crate::rename::{self, Moved};
 use crate::time;
 use crate::workspace::{FileState, Workspace, hash_of};
 
@@ -58,11 +59,11 @@ impl Blob {
         self.mode == FileMode::Gitlink
     }
 
-    fn is_regular(&self) -> bool {
+    pub(crate) fn is_regular(&self) -> bool {
         matches!(self.mode, FileMode::Regular | FileMode::Executable)
     }
 
-    fn mode(&self) -> &str {
+    pub(crate) fn mode(&self) -> &str {
         self.mode.as_str()
     }
 
@@ -87,12 +88,19 @@ pub enum Kind {
     NameStatus,
     /// `--check`: only the whitespace problems in added lines.
     Check,
+    /// `--summary` alone.
+    Summary,
 }
 
 pub struct Format {
     pub context: usize,
     pub kind: Kind,
     pub ignore_ws: bool,
+    pub renames: rename::Request,
+    /// `--summary` next to another output kind.
+    pub summary: bool,
+    /// Only the pairs whose new path is listed, applied after rename detection (the pickaxe's choice).
+    pub kept: Vec<String>,
 }
 
 /// Revision 0 marks an entry with no per-path revision, as in a git home; it is read by its content id.
@@ -241,14 +249,9 @@ fn abbrev(blob: Option<&Blob>) -> String {
     blob.map_or("0000000".to_string(), |b| b.hash[..7].to_string())
 }
 
-fn patch(
-    path: &str,
-    old: Option<&Blob>,
-    new: Option<&Blob>,
-    c: &Contents,
-    format: &Format,
-) -> String {
-    let mut out = format!("diff --git a/{path} b/{path}\n");
+fn patch(p: &Pair, c: &Contents, format: &Format) -> String {
+    let (old, new) = (p.old.as_ref(), p.new.as_ref());
+    let mut out = format!("diff --git a/{} b/{}\n", p.old_path, p.new_path);
     let mut tail = String::new();
     match (old, new) {
         (None, Some(b)) => {
@@ -263,15 +266,28 @@ fn patch(
         (Some(a), Some(_)) => tail = format!(" {}", a.mode()),
         (None, None) => {}
     }
-    if old.zip(new).is_none_or(|(a, b)| a.hash != b.hash) {
+    if let Some(m) = &p.moved {
+        let word = if m.copy { "copy" } else { "rename" };
+        let _ = writeln!(
+            out,
+            "similarity index {}%\n{word} from {}\n{word} to {}",
+            m.percent(),
+            p.old_path,
+            p.new_path
+        );
+    }
+    let changed = old.zip(new).is_none_or(|(a, b)| a.hash != b.hash);
+    if changed {
         let _ = writeln!(out, "index {}..{}{tail}", abbrev(old), abbrev(new));
     }
     let (from, to) = (
-        old.map_or("/dev/null".to_string(), |_| format!("a/{path}")),
-        new.map_or("/dev/null".to_string(), |_| format!("b/{path}")),
+        old.map_or("/dev/null".to_string(), |_| format!("a/{}", p.old_path)),
+        new.map_or("/dev/null".to_string(), |_| format!("b/{}", p.new_path)),
     );
     if c.binary {
-        let _ = writeln!(out, "Binary files {from} and {to} differ");
+        if changed {
+            let _ = writeln!(out, "Binary files {from} and {to} differ");
+        }
         return out;
     }
     if let Some(hunks) = pyn_diff::unified_hunks(&c.old, &c.new, format.context, format.ignore_ws) {
@@ -292,62 +308,13 @@ fn totals(rows: &[(String, Counts)]) -> (usize, usize) {
     })
 }
 
-struct Pair<'a> {
-    old_path: &'a str,
-    new_path: &'a str,
-    old: Option<&'a Blob>,
-    new: Option<&'a Blob>,
-    /// Similarity percent when git would show this pair as a rename.
-    renamed: Option<u64>,
-}
-
-const MAX_SCORE: u64 = 60_000;
-const MIN_SCORE: u64 = 30_000;
-
-/// Git's chunk hashes of a file: lines (up to 64 bytes a piece) with how many bytes carry each hash.
-fn chunk_counts(data: &[u8]) -> BTreeMap<u64, u64> {
-    use std::hash::{DefaultHasher, Hasher};
-    let text = !pyn_diff::is_binary(data);
-    let mut counts = BTreeMap::new();
-    let (mut hasher, mut n) = (DefaultHasher::new(), 0u64);
-    let mut flush = |hasher: &mut DefaultHasher, n: &mut u64| {
-        if *n > 0 {
-            *counts.entry(hasher.finish()).or_insert(0) += *n;
-        }
-        *hasher = DefaultHasher::new();
-        *n = 0;
-    };
-    let mut i = 0;
-    while i < data.len() {
-        let c = data[i];
-        i += 1;
-        if text && c == b'\r' && data.get(i) == Some(&b'\n') {
-            continue;
-        }
-        hasher.write_u8(c);
-        n += 1;
-        if (text && c == b'\n') || n >= 64 {
-            flush(&mut hasher, &mut n);
-        }
-    }
-    flush(&mut hasher, &mut n);
-    counts
-}
-
-/// Git's similarity of two files out of `MAX_SCORE`, or 0 when they differ too much in size to count.
-fn similarity(src: &[u8], dst: &[u8], a: &BTreeMap<u64, u64>, b: &BTreeMap<u64, u64>) -> u64 {
-    let (small, large) = (
-        src.len().min(dst.len()) as u64,
-        src.len().max(dst.len()) as u64,
-    );
-    if large == 0 || large * (MAX_SCORE - MIN_SCORE) < (large - small) * MAX_SCORE {
-        return 0;
-    }
-    let copied: u64 = b
-        .iter()
-        .map(|(h, n)| a.get(h).map_or(0, |m| *m.min(n)))
-        .sum();
-    copied * MAX_SCORE / large
+#[derive(Clone)]
+struct Pair {
+    old_path: String,
+    new_path: String,
+    old: Option<Blob>,
+    new: Option<Blob>,
+    moved: Option<Moved>,
 }
 
 /// The content of a blob.
@@ -367,79 +334,116 @@ pub fn renamed_from(
         .filter(|(p, _)| p.as_str() == target || old.contains_key(*p))
         .map(|(p, b)| (p.clone(), b.clone()))
         .collect();
-    let found = detect_renames(backend, old, &new)?;
-    Ok(found.get(target).map(|(src, _)| (*src).to_string()))
+    let found = rename::detect(backend, old, &new, &rename::Options::renames())?;
+    Ok(found.moved.get(target).map(|m| m.src.clone()))
 }
 
-/// Renames git detects: identical content first, then at least half-similar content, as `dst -> (src, percent)`.
+/// Renames git detects between `old` and `new`, as `dst -> (src, percent)`.
 pub fn detect_renames<'a>(
     backend: &dyn Backend,
     old: &'a Tree,
     new: &'a Tree,
 ) -> Result<BTreeMap<&'a str, (&'a str, u64)>> {
-    let mut taken: BTreeSet<&str> = BTreeSet::new();
-    let mut pairs = BTreeMap::new();
-    let base = |p: &str| p.rsplit('/').next().unwrap_or(p).to_string();
-    let adds: Vec<(&String, &Blob)> = new.iter().filter(|(p, _)| !old.contains_key(*p)).collect();
-    let dels: Vec<(&String, &Blob)> = old.iter().filter(|(p, _)| !new.contains_key(*p)).collect();
-    for (dst, to) in &adds {
-        let mut same: Vec<&String> = dels
-            .iter()
-            .filter(|(p, b)| {
-                !taken.contains(p.as_str())
-                    && b.hash == to.hash
-                    && ((b.is_regular() && to.is_regular()) || b.mode() == to.mode())
-            })
-            .map(|(p, _)| *p)
-            .collect();
-        same.sort_by_key(|p| base(p) != base(dst));
-        if let Some(src) = same.first() {
-            taken.insert(src.as_str());
-            pairs.insert(dst.as_str(), (src.as_str(), 100));
-        }
-    }
-    let rest_adds: Vec<_> = adds
+    let found = rename::detect(backend, old, new, &rename::Options::renames())?;
+    Ok(found
+        .moved
         .iter()
-        .filter(|(p, b)| b.is_regular() && !pairs.contains_key(p.as_str()))
-        .collect();
-    let rest_dels: Vec<_> = dels
-        .iter()
-        .filter(|(p, b)| b.is_regular() && !taken.contains(p.as_str()))
-        .collect();
-    if rest_adds.is_empty() || rest_dels.is_empty() {
-        return Ok(pairs);
-    }
-    let mut sources = Vec::new();
-    for (p, b) in &rest_dels {
-        let data = bytes(backend, p, b, false)?;
-        let counts = chunk_counts(&data);
-        sources.push((p.as_str(), data, counts));
-    }
-    let mut scored: Vec<(u64, bool, &str, &str)> = Vec::new();
-    for (dst, to) in &rest_adds {
-        let data = bytes(backend, dst, to, false)?;
-        let counts = chunk_counts(&data);
-        for (src, sdata, scounts) in &sources {
-            let score = similarity(sdata, &data, scounts, &counts);
-            if score >= MIN_SCORE {
-                scored.push((score, base(src) != base(dst), src, dst.as_str()));
-            }
-        }
-    }
-    scored.sort_by(|a, b| {
-        b.0.cmp(&a.0)
-            .then(a.1.cmp(&b.1))
-            .then(a.3.cmp(b.3))
-            .then(a.2.cmp(b.2))
-    });
-    for (score, _, src, dst) in scored {
-        if taken.contains(src) || pairs.contains_key(dst) {
+        .filter_map(|(dst, m)| {
+            let (dst, _) = new.get_key_value(dst)?;
+            let (src, _) = old.get_key_value(&m.src)?;
+            Some((dst.as_str(), (src.as_str(), m.percent())))
+        })
+        .collect())
+}
+
+/// The changed pairs of `old` against `new` limited to `only`, with the renames and copies `opts` finds folded in.
+fn pairs(
+    backend: &dyn Backend,
+    old: &Tree,
+    new: &Tree,
+    only: &[String],
+    opts: Option<&rename::Options>,
+) -> Result<Vec<Pair>> {
+    let keep = |t: &Tree| -> Tree {
+        t.iter()
+            .filter(|(p, _)| selected(p, only))
+            .map(|(p, b)| (p.clone(), b.clone()))
+            .collect()
+    };
+    let limited;
+    let (old, new) = if only.is_empty() {
+        (old, new)
+    } else {
+        limited = (keep(old), keep(new));
+        (&limited.0, &limited.1)
+    };
+    let found = match opts {
+        Some(o) => Some(rename::detect(backend, old, new, o)?),
+        None => None,
+    };
+    let mut out = Vec::new();
+    let paths: BTreeSet<&String> = old.keys().chain(new.keys()).collect();
+    for path in paths {
+        let (a, b) = (old.get(path), new.get(path));
+        if a.zip(b)
+            .is_some_and(|(a, b)| a.same_content(b) && a.mode() == b.mode())
+            || found.as_ref().is_some_and(|f| f.consumed.contains(path))
+        {
             continue;
         }
-        taken.insert(src);
-        pairs.insert(dst, (src, score * 100 / MAX_SCORE));
+        let moved = found.as_ref().and_then(|f| f.moved.get(path));
+        out.push(match moved {
+            Some(m) => Pair {
+                old_path: m.src.clone(),
+                new_path: path.clone(),
+                old: old.get(&m.src).cloned(),
+                new: b.cloned(),
+                moved: Some(m.clone()),
+            },
+            None => Pair {
+                old_path: path.clone(),
+                new_path: path.clone(),
+                old: a.cloned(),
+                new: b.cloned(),
+                moved: None,
+            },
+        });
     }
-    Ok(pairs)
+    Ok(out)
+}
+
+/// The create, delete, rename, copy and mode-change lines of `--summary` for a pair.
+fn summary_line(p: &Pair) -> String {
+    let mut out = String::new();
+    match (&p.old, &p.new) {
+        (None, Some(b)) => {
+            let _ = writeln!(out, " create mode {} {}", b.mode(), p.new_path);
+        }
+        (Some(a), None) => {
+            let _ = writeln!(out, " delete mode {} {}", a.mode(), p.old_path);
+        }
+        (Some(a), Some(b)) if a.is_gitlink() != b.is_gitlink() => {
+            let _ = writeln!(out, " delete mode {} {}", a.mode(), p.old_path);
+            let _ = writeln!(out, " create mode {} {}", b.mode(), p.new_path);
+        }
+        (Some(a), Some(b)) => {
+            if let Some(m) = &p.moved {
+                let word = if m.copy { "copy" } else { "rename" };
+                let name = diffstat::rename_name(&p.old_path, &p.new_path);
+                let _ = writeln!(out, " {word} {name} ({}%)", m.percent());
+            }
+            if a.mode() != b.mode() {
+                let tail = if p.moved.is_some() {
+                    String::new()
+                } else {
+                    format!(" {}", p.new_path)
+                };
+                let _ = writeln!(out, " mode change {} => {}{tail}", a.mode(), b.mode());
+            }
+        }
+        (None, None) => {}
+    }
+    out
 }
 
 /// The diffstat and the create, delete, mode-change and rename lines git prints after a merge or fast-forward.
@@ -449,80 +453,39 @@ pub fn merge_stat(
     new: &Tree,
     layout: (usize, Option<usize>),
 ) -> Result<String> {
-    let moved = detect_renames(backend, old, new)?;
-    let sources: BTreeSet<&str> = moved.values().map(|(src, _)| *src).collect();
-    let mut pairs: Vec<Pair> = Vec::new();
-    let paths: BTreeSet<&String> = old.keys().chain(new.keys()).collect();
-    for path in paths {
-        let (a, b) = (old.get(path), new.get(path));
-        if a.zip(b)
-            .is_some_and(|(a, b)| a.same_content(b) && a.mode() == b.mode())
-            || sources.contains(path.as_str())
-        {
-            continue;
-        }
-        match moved.get(path.as_str()) {
-            Some((src, percent)) => pairs.push(Pair {
-                old_path: src,
-                new_path: path,
-                old: old.get(*src),
-                new: b,
-                renamed: Some(*percent),
-            }),
-            None => pairs.push(Pair {
-                old_path: path,
-                new_path: path,
-                old: a,
-                new: b,
-                renamed: None,
-            }),
-        }
-    }
+    let opts = rename::Options {
+        limit: backend.rename_defaults().limit,
+        ..rename::Options::renames()
+    };
+    let pairs = pairs(backend, old, new, &[], Some(&opts))?;
     let mut rows = Vec::new();
     let mut summary = String::new();
     for p in &pairs {
-        let same = p.old.zip(p.new).is_some_and(|(a, b)| a.hash == b.hash);
+        let same = p
+            .old
+            .as_ref()
+            .zip(p.new.as_ref())
+            .is_some_and(|(a, b)| a.hash == b.hash);
         let counts = {
-            let c = contents(backend, p.new_path, p.old, p.new)?;
-            if c.binary && p.renamed.is_some() && same {
+            let c = contents(backend, &p.new_path, p.old.as_ref(), p.new.as_ref())?;
+            if c.binary && p.moved.is_some() && same {
                 Counts::Binary(0, 0)
             } else if c.binary {
                 Counts::Binary(
-                    blob_size(backend, p.old_path, p.old)?,
-                    blob_size(backend, p.new_path, p.new)?,
+                    blob_size(backend, &p.old_path, p.old.as_ref())?,
+                    blob_size(backend, &p.new_path, p.new.as_ref())?,
                 )
             } else {
                 let (x, y) = pyn_diff::line_counts(&c.old, &c.new, false);
                 Counts::Lines(x, y)
             }
         };
-        let name = if p.renamed.is_some() {
-            diffstat::rename_name(p.old_path, p.new_path)
+        let name = if p.moved.is_some() {
+            diffstat::rename_name(&p.old_path, &p.new_path)
         } else {
-            p.new_path.to_string()
+            p.new_path.clone()
         };
-        match (p.old, p.new) {
-            (None, Some(b)) => {
-                let _ = writeln!(summary, " create mode {} {}", b.mode(), p.new_path);
-            }
-            (Some(a), None) => {
-                let _ = writeln!(summary, " delete mode {} {}", a.mode(), p.old_path);
-            }
-            (Some(a), Some(b)) => {
-                if let Some(percent) = p.renamed {
-                    let _ = writeln!(summary, " rename {name} ({percent}%)");
-                }
-                if a.mode() != b.mode() {
-                    let tail = if p.renamed.is_some() {
-                        String::new()
-                    } else {
-                        format!(" {}", p.new_path)
-                    };
-                    let _ = writeln!(summary, " mode change {} => {}{tail}", a.mode(), b.mode());
-                }
-            }
-            (None, None) => {}
-        }
+        summary.push_str(&summary_line(p));
         rows.push(diffstat::Row { name, counts });
     }
     let mut out = diffstat::render(&rows, layout.0, layout.1);
@@ -537,9 +500,9 @@ fn whitespace_only(old: Option<&Blob>, new: Option<&Blob>, c: &Contents) -> bool
         && pyn_diff::line_counts(&c.old, &c.new, true) == (0, 0)
 }
 
-/// Whether `show` separates the diff from the message: git does for `--check` on any change, even a clean one.
+/// Whether `show` separates the diff from the message: git does for `--check` and `--summary` on any change, even a clean one.
 pub fn has_body(format: &Format, differs: bool, body: &str) -> bool {
-    !body.is_empty() || (format.kind == Kind::Check && differs)
+    !body.is_empty() || (matches!(format.kind, Kind::Check | Kind::Summary) && differs)
 }
 
 /// Exits 2 after `--check` printed problems, as git does.
@@ -569,17 +532,44 @@ pub fn compare(
     format: &Format,
     out: &mut String,
 ) -> Result<bool> {
-    let paths: BTreeSet<&String> = old.keys().chain(new.keys()).collect();
+    let opts = format
+        .renames
+        .resolve(backend.rename_defaults())
+        .unwrap_or_else(|message| crate::usage_error(&message));
+    let mut list = pairs(backend, old, new, only, opts.as_ref())?;
+    if !format.kept.is_empty() {
+        list.retain(|p| format.kept.contains(&p.new_path));
+    }
+    let summary: String = if format.summary || format.kind == Kind::Summary {
+        list.iter().map(summary_line).collect()
+    } else {
+        String::new()
+    };
+    if format.kind == Kind::Summary {
+        out.push_str(&summary);
+        return Ok(!list.is_empty());
+    }
+    let mut body = String::new();
+    let differs = render(backend, &list, format, &mut body)?;
+    if format.kind == Kind::Patch {
+        out.push_str(&summary);
+        if !summary.is_empty() && !body.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(&body);
+    } else {
+        out.push_str(&body);
+        out.push_str(&summary);
+    }
+    Ok(differs)
+}
+
+fn render(backend: &dyn Backend, list: &[Pair], format: &Format, out: &mut String) -> Result<bool> {
     let mut stat_rows: Vec<(String, Counts)> = Vec::new();
     let mut differs = false;
-    for path in paths {
-        let (a, b) = (old.get(path), new.get(path));
-        if !selected(path, only)
-            || a.zip(b)
-                .is_some_and(|(a, b)| a.same_content(b) && a.mode() == b.mode())
-        {
-            continue;
-        }
+    for p in list {
+        let (a, b) = (p.old.as_ref(), p.new.as_ref());
+        let path = &p.new_path;
         match format.kind {
             Kind::NameOnly => {
                 differs = true;
@@ -587,6 +577,11 @@ pub fn compare(
             }
             Kind::NameStatus => {
                 differs = true;
+                if let Some(m) = &p.moved {
+                    let letter = if m.copy { 'C' } else { 'R' };
+                    let _ = writeln!(out, "{letter}{:03}\t{}\t{path}", m.percent(), p.old_path);
+                    continue;
+                }
                 let letter = match (a, b) {
                     (None, _) => 'A',
                     (_, None) => 'D',
@@ -595,35 +590,36 @@ pub fn compare(
                 };
                 let _ = writeln!(out, "{letter}\t{path}");
             }
+            Kind::Summary => {}
             Kind::Patch | Kind::Check | Kind::Stat | Kind::ShortStat | Kind::NumStat => {
                 if format.kind == Kind::Patch
                     && a.zip(b)
                         .is_some_and(|(a, b)| a.is_gitlink() != b.is_gitlink())
                 {
                     differs = true;
-                    out.push_str(&patch(
-                        path,
-                        a,
-                        None,
-                        &contents(backend, path, a, None)?,
-                        format,
-                    ));
-                    out.push_str(&patch(
-                        path,
-                        None,
-                        b,
-                        &contents(backend, path, None, b)?,
-                        format,
-                    ));
+                    for (old, new) in [(a, None), (None, b)] {
+                        let split = Pair {
+                            old: old.cloned(),
+                            new: new.cloned(),
+                            moved: None,
+                            ..(*p).clone()
+                        };
+                        let c = contents(backend, path, old, new)?;
+                        out.push_str(&patch(&split, &c, format));
+                    }
                     continue;
                 }
                 let c = contents(backend, path, a, b)?;
-                if format.ignore_ws && format.kind != Kind::Check && whitespace_only(a, b, &c) {
+                if format.ignore_ws
+                    && format.kind != Kind::Check
+                    && p.moved.is_none()
+                    && whitespace_only(a, b, &c)
+                {
                     continue;
                 }
                 differs = true;
                 if format.kind == Kind::Patch {
-                    out.push_str(&patch(path, a, b, &c, format));
+                    out.push_str(&patch(p, &c, format));
                     continue;
                 }
                 if format.kind == Kind::Check {
@@ -632,8 +628,14 @@ pub fn compare(
                     }
                     continue;
                 }
-                let counts = if c.binary {
-                    Counts::Binary(blob_size(backend, path, a)?, blob_size(backend, path, b)?)
+                let same = a.zip(b).is_some_and(|(a, b)| a.hash == b.hash);
+                let counts = if c.binary && p.moved.is_some() && same {
+                    Counts::Binary(0, 0)
+                } else if c.binary {
+                    Counts::Binary(
+                        blob_size(backend, &p.old_path, a)?,
+                        blob_size(backend, path, b)?,
+                    )
                 } else if a
                     .zip(b)
                     .is_some_and(|(a, b)| a.is_gitlink() && b.is_gitlink() && a.hash == b.hash)
@@ -643,7 +645,12 @@ pub fn compare(
                     let (x, y) = pyn_diff::line_counts(&c.old, &c.new, format.ignore_ws);
                     Counts::Lines(x, y)
                 };
-                stat_rows.push((path.clone(), counts));
+                let name = if p.moved.is_some() {
+                    diffstat::rename_name(&p.old_path, path)
+                } else {
+                    path.clone()
+                };
+                stat_rows.push((name, counts));
             }
         }
     }
@@ -676,6 +683,8 @@ pub fn compare(
 
 /// The diff sections `log` prints after each commit.
 pub struct DiffParts {
+    pub renames: rename::Request,
+    pub summary: bool,
     pub names: Option<Kind>,
     pub stat: bool,
     pub shortstat: bool,
@@ -685,7 +694,7 @@ pub struct DiffParts {
 
 impl DiffParts {
     pub fn any(&self) -> bool {
-        self.names.is_some() || self.stat || self.shortstat || self.patch
+        self.names.is_some() || self.stat || self.shortstat || self.patch || self.summary
     }
 }
 
@@ -694,7 +703,7 @@ pub fn sections(
     backend: &dyn Backend,
     old: &Tree,
     new: &Tree,
-    only: &[String],
+    (only, kept): (&[String], &[String]),
     parts: &DiffParts,
 ) -> Result<Option<(String, bool)>> {
     let mut differs = false;
@@ -704,6 +713,9 @@ pub fn sections(
             context: parts.context,
             kind,
             ignore_ws: false,
+            renames: parts.renames,
+            summary: false,
+            kept: kept.to_vec(),
         };
         differs |= compare(backend, old, new, only, &format, &mut out)?;
         Ok(out)
@@ -717,6 +729,9 @@ pub fn sections(
     }
     if parts.shortstat {
         body.push_str(&section(Kind::ShortStat)?);
+    }
+    if parts.summary {
+        body.push_str(&section(Kind::Summary)?);
     }
     if parts.patch {
         let patch = section(Kind::Patch)?;

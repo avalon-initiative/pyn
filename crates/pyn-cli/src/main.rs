@@ -36,6 +36,7 @@ mod mv_plan;
 mod probe;
 mod pyn_server;
 mod quiet;
+mod rename;
 mod repo_tool;
 mod rm_mv;
 mod sanitize;
@@ -480,9 +481,14 @@ struct DiffFormat {
     /// Show only the names of changed files.
     #[arg(long, conflicts_with = "name_status")]
     name_only: bool,
-    /// Show the names and the kind of change (A, M, D) of changed files.
+    /// Show the names and the kind of change (A, M, D, and R or C with a similarity) of changed files.
     #[arg(long)]
     name_status: bool,
+    /// Show creations, deletions, renames and mode changes.
+    #[arg(long, conflicts_with = "check")]
+    summary: bool,
+    #[command(flatten)]
+    renames: rename::Flags,
 }
 
 impl DiffFormat {
@@ -499,6 +505,8 @@ impl DiffFormat {
             diff::Kind::NameOnly
         } else if self.name_status {
             diff::Kind::NameStatus
+        } else if self.summary {
+            diff::Kind::Summary
         } else {
             diff::Kind::Patch
         };
@@ -506,6 +514,9 @@ impl DiffFormat {
             context: self.context,
             kind,
             ignore_ws: self.ignore_all_space,
+            renames: self.renames.request(),
+            summary: self.summary,
+            kept: Vec::new(),
         }
     }
 }
@@ -876,7 +887,7 @@ fn main() {
         std::process::exit(128);
     }
     let cli = match Cli::try_parse_from(attached_gpg_keys(attached_pull_rebase(counted_log(
-        std::env::args_os().collect(),
+        rename::attached(std::env::args_os().collect()),
     )))) {
         Ok(cli) => cli,
         Err(e) => {
@@ -2629,7 +2640,7 @@ fn commit_sections(
         Some(store) => local_view::commit_trees(store, c)?,
         None => server_trees(backend, c)?,
     };
-    diff::sections(backend, &old, &new, &only, parts)
+    diff::sections(backend, &old, &new, (&only, &[]), parts)
 }
 
 /// The trees before and after a published commit (against its first parent) and the paths it changed.

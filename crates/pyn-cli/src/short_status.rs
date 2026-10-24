@@ -54,6 +54,8 @@ pub struct Row {
     pub x: char,
     pub y: char,
     pub path: Vec<u8>,
+    /// The path a rename or copy came from.
+    pub from: Option<Vec<u8>>,
 }
 
 impl Row {
@@ -62,6 +64,7 @@ impl Row {
             x: '?',
             y: '?',
             path,
+            from: None,
         }
     }
 }
@@ -165,12 +168,19 @@ pub fn print(
     let (untracked, changed): (Vec<&Row>, Vec<&Row>) =
         rows.iter().partition(|r| r.x == '?' && r.y == '?');
     for r in changed.into_iter().chain(untracked) {
-        let shown = if format == Format::Short {
-            relative(cwd_prefix, &r.path)
-        } else {
-            r.path.clone()
+        let shown = |p: &[u8]| {
+            let p = if format == Format::Short {
+                relative(cwd_prefix, p)
+            } else {
+                p.to_vec()
+            };
+            quote(&p, quote_high)
         };
-        out.push_str(&format!("{}{} {}\n", r.x, r.y, quote(&shown, quote_high)));
+        let name = match &r.from {
+            Some(from) => format!("{} -> {}", shown(from), shown(&r.path)),
+            None => shown(&r.path),
+        };
+        out.push_str(&format!("{}{} {name}\n", r.x, r.y));
     }
     std::io::stdout().write_all(out.as_bytes())?;
     Ok(())

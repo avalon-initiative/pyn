@@ -16,6 +16,7 @@ use super::{GitHome, path_string, stage};
 use crate::backend::Backend;
 use crate::commit_format::{Context, Decorations, FormatArgs, Rendering, render};
 use crate::diff::{self, Blob, Source, Tree};
+use crate::rename;
 use crate::short_status::{self, Format, Row, StatusArgs};
 use crate::{Command, table, unsupported};
 
@@ -303,7 +304,8 @@ pub(super) fn status(git: &GitHome, cwd: &Path, args: &StatusArgs) -> Result<()>
             .transpose()?;
         let prefix = git.ws.repo_prefix(cwd, ".")?;
         let quote_high = git.repo.bool_setting("core.quotePath", true);
-        let rows = short_rows(&status.entries, format);
+        let moves = status_moves(git, &status)?;
+        let rows = short_rows(&status.entries, format, &moves);
         return short_status::print(
             &rows,
             branch.as_deref(),
@@ -352,6 +354,10 @@ pub(super) fn status_table(status: &pyn_gitwork::Status) -> Result<()> {
     Ok(())
 }
 
+fn move_letter(m: &rename::Moved) -> char {
+    if m.copy { 'C' } else { 'R' }
+}
+
 fn letter(kind: Option<Kind>) -> char {
     match kind {
         Some(Kind::Added) => 'A',
@@ -375,15 +381,94 @@ fn conflict_code(c: Conflict) -> (char, char) {
     }
 }
 
-fn short_rows(entries: &[StatusEntry], format: Format) -> Vec<Row> {
+/// The renames (and copies, with `status.renames=copies`) among the staged changes and among the work tree's.
+struct Moves {
+    staged: rename::Detected,
+    unstaged: rename::Detected,
+}
+
+fn status_moves(git: &GitHome, status: &pyn_gitwork::Status) -> Result<Moves> {
+    let defaults = git.rename_settings("status");
+    let Ok(Some(opts)) = rename::Request::default().resolve(defaults) else {
+        return Ok(Moves {
+            staged: rename::Detected::default(),
+            unstaged: rename::Detected::default(),
+        });
+    };
+    let repo = &git.repo;
+    let added = |k: Option<Kind>| k == Some(Kind::Added);
+    let (mut old, mut new) = (Tree::new(), Tree::new());
+    let (mut old_wt, mut new_wt) = (Tree::new(), Tree::new());
+    if !status
+        .entries
+        .iter()
+        .any(|e| added(e.staged) || added(e.unstaged))
+    {
+        return Ok(Moves {
+            staged: rename::Detected::default(),
+            unstaged: rename::Detected::default(),
+        });
+    }
+    let tree = match status.head.id() {
+        Some(id) => Some(repo.commit(&id)?.tree),
+        None => None,
+    };
+    let committed = repo.flatten(tree.as_ref(), &Pathspec::default())?;
+    let staged = repo.index_leaves(&repo.read_index()?);
+    for e in status.entries.iter().filter(|e| e.staged.is_some()) {
+        let name = path_string(&e.path);
+        if let Some(b) = committed.get(&e.path).and_then(entry_blob) {
+            old.insert(name.clone(), b);
+        }
+        if let Some(b) = staged.get(&e.path).and_then(entry_blob) {
+            new.insert(name, b);
+        }
+    }
+    if status.entries.iter().any(|e| added(e.unstaged)) {
+        let modules = repo.submodules();
+        let worked =
+            |k: Option<Kind>| matches!(k, Some(Kind::Added | Kind::Deleted | Kind::Modified));
+        for e in status.entries.iter().filter(|e| worked(e.unstaged)) {
+            let name = path_string(&e.path);
+            if let Some(b) = staged.get(&e.path).and_then(entry_blob) {
+                old_wt.insert(name.clone(), b);
+            }
+            if let Some(b) = disk_blob(git, &modules, &e.path, staged.get(&e.path))? {
+                new_wt.insert(name, b);
+            }
+        }
+    }
+    Ok(Moves {
+        staged: rename::detect(git, &old, &new, &opts)?,
+        unstaged: rename::detect(git, &old_wt, &new_wt, &opts)?,
+    })
+}
+
+fn short_rows(entries: &[StatusEntry], format: Format, moves: &Moves) -> Vec<Row> {
     let mut rows = Vec::new();
     for e in entries {
+        let mut e = e.clone();
+        let name = path_string(&e.path);
+        if moves.staged.consumed.contains(&name) {
+            e.staged = None;
+        }
+        if moves.unstaged.consumed.contains(&name) {
+            e.unstaged = None;
+        }
+        if e.staged.is_none() && e.unstaged.is_none() && e.conflict.is_none() {
+            continue;
+        }
+        let (staged_move, unstaged_move) = (
+            moves.staged.moved.get(&name),
+            moves.unstaged.moved.get(&name),
+        );
         if let Some(c) = e.conflict {
             let (x, y) = conflict_code(c);
             rows.push(Row {
                 x,
                 y,
                 path: e.path.clone(),
+                from: None,
             });
         } else if e.unstaged == Some(Kind::Untracked) {
             if e.staged.is_some() {
@@ -391,12 +476,16 @@ fn short_rows(entries: &[StatusEntry], format: Format) -> Vec<Row> {
                     x: letter(e.staged),
                     y: ' ',
                     path: e.path.clone(),
+                    from: None,
                 });
             }
             rows.push(Row::untracked(e.path.clone()));
         } else {
             rows.push(Row {
-                x: letter(e.staged),
+                x: match staged_move {
+                    Some(m) => move_letter(m),
+                    None => letter(e.staged),
+                },
                 y: match e.submodule {
                     Some(s) if format == Format::Short && !s.new_commits => {
                         if s.modified {
@@ -405,9 +494,12 @@ fn short_rows(entries: &[StatusEntry], format: Format) -> Vec<Row> {
                             '?'
                         }
                     }
-                    _ => letter(e.unstaged),
+                    _ => unstaged_move.map_or_else(|| letter(e.unstaged), move_letter),
                 },
                 path: e.path.clone(),
+                from: staged_move
+                    .or(unstaged_move)
+                    .map(|m| m.src.clone().into_bytes()),
             });
         }
     }
@@ -674,7 +766,10 @@ fn diff(
             let leaves = repo.index_leaves(&index);
             for (path, kind) in repo.unstaged_changes_with_submodules(&index, &modules)? {
                 if !spec.matches(&path)
-                    || !matches!(kind, Kind::Modified | Kind::Deleted | Kind::TypeChange)
+                    || !matches!(
+                        kind,
+                        Kind::Added | Kind::Modified | Kind::Deleted | Kind::TypeChange
+                    )
                 {
                     continue;
                 }
@@ -693,7 +788,17 @@ fn diff(
             let index = repo.read_index()?;
             let leaves = repo.index_leaves(&index);
             let unstaged = repo.unstaged_changes_with_submodules(&index, &modules)?;
-            let paths: BTreeSet<&Vec<u8>> = committed.keys().chain(leaves.keys()).collect();
+            let intent: Vec<&Vec<u8>> = index
+                .entries
+                .iter()
+                .filter(|e| e.intent_to_add)
+                .map(|e| &e.path)
+                .collect();
+            let paths: BTreeSet<&Vec<u8>> = committed
+                .keys()
+                .chain(leaves.keys())
+                .chain(intent)
+                .collect();
             for path in paths.into_iter().filter(|p| spec.matches(p)) {
                 let name = path_string(path);
                 if let Some(b) = committed.get(path).and_then(entry_blob) {
