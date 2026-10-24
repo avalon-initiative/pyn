@@ -55,11 +55,12 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
             Ok(())
         }
         Command::Show {
-            commit,
+            args,
+            paths,
             no_patch,
             fmt,
             format,
-        } => show(git, commit.as_deref(), no_patch, &fmt, &format.format()),
+        } => show(git, cwd, &args, &paths, no_patch, &fmt, &format.format()),
         Command::Log {
             path,
             filter,
@@ -97,6 +98,12 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
         Command::Stash(args) => super::stash::stash(git, cwd, args),
         Command::Clean(args) => {
             if super::clean::clean(git, cwd, &args)? {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
+        Command::Grep(_) => {
+            if !super::grep::grep(git, cwd)? {
                 std::process::exit(1);
             }
             Ok(())
@@ -547,19 +554,21 @@ fn filter_gitlinks(modules: &Submodules<'_>, old: &mut Tree, new: &mut Tree) -> 
     Ok(())
 }
 
-/// A `a..b` pair, or a leading revision followed by paths; a name that is both a revision and a file is refused.
+/// Up to `max` revisions (an `a..b` pair when `max` is 2), then paths; a name that is both a revision and a file is refused.
 fn split_revisions(
     git: &GitHome,
     cwd: &Path,
     args: &[String],
     separated: bool,
+    max: usize,
 ) -> Result<(Vec<ObjectId>, Vec<String>)> {
     let mut revs: Vec<ObjectId> = Vec::new();
     let mut rest = args;
-    while revs.len() < 2
+    while revs.len() < max
         && let Some((first, tail)) = rest.split_first()
     {
         if let Some((a, b)) = first.split_once("..")
+            && max == 2
             && !b.starts_with('.')
             && revs.is_empty()
         {
@@ -627,7 +636,7 @@ fn diff(
     cached: bool,
 ) -> Result<bool> {
     let separated = !paths.is_empty() || std::env::args_os().any(|a| a == "--");
-    let (revs, loose) = split_revisions(git, cwd, args, separated)?;
+    let (revs, loose) = split_revisions(git, cwd, args, separated, 2)?;
     check_loose(cwd, &loose, separated)?;
     let only = repo_paths(git, cwd, &[loose.as_slice(), paths].concat())?;
     let spec = Pathspec::new(only.iter().map(|p| p.as_bytes().to_vec()));
@@ -746,18 +755,23 @@ pub(super) fn head_or_refuse(git: &GitHome) -> Result<ObjectId> {
 
 fn show(
     git: &GitHome,
-    commit: Option<&str>,
+    cwd: &Path,
+    args: &[String],
+    paths: &[String],
     no_patch: bool,
     fmt: &FormatArgs,
     format: &diff::Format,
 ) -> Result<()> {
     git.repo.validate_diff_ignore_submodules()?;
     let Rendering { pretty, style } = fmt.rendering()?;
-    let id = match commit {
-        Some(c) => git.repo.resolve(c)?,
-        None => head_or_refuse(git)?,
-    };
-    let c = git.repo.commit(&id)?;
+    let separated = !paths.is_empty() || std::env::args_os().any(|a| a == "--");
+    let (mut ids, loose) = split_revisions(git, cwd, args, separated, usize::MAX)?;
+    check_loose(cwd, &loose, separated)?;
+    if ids.is_empty() {
+        ids.push(head_or_refuse(git)?);
+    }
+    let only = repo_paths(git, cwd, &[loose.as_slice(), paths].concat())?;
+    let spec = Pathspec::new(only.iter().map(|p| p.as_bytes().to_vec()));
     let names = if pretty.uses_decorations() {
         super::log::decorations(git)?
     } else {
@@ -768,34 +782,42 @@ fn show(
         now: chrono::Utc::now().timestamp(),
         decorations: &names,
     };
-    let mut out = render(&pretty, &ctx, &id, &c);
-    out.push_str(pretty.terminator());
-    if no_patch {
-        emit(&out);
-        return Ok(());
-    }
-    let mut body = String::new();
-    let mut differs = false;
-    if c.parents.len() <= 1 {
-        let old_tree = match c.parents.first() {
-            Some(p) => Some(git.repo.commit(p)?.tree),
-            None => None,
-        };
-        let (mut old, mut new) = (Tree::new(), Tree::new());
-        let changes =
-            git.repo
-                .diff_trees(old_tree.as_ref(), Some(&c.tree), &Pathspec::default())?;
-        add_changes(git, &mut old, &mut new, &changes)?;
-        differs = diff::compare(git, &old, &new, &[], format, &mut body)?;
-    }
-    if diff::has_body(format, differs, &body) || c.parents.len() > 1 {
-        if pretty.blank_before_diff() {
+    let mut out = String::new();
+    let mut check = String::new();
+    for id in &ids {
+        let c = git.repo.commit(id)?;
+        if !out.is_empty() && !pretty.terminated() {
             out.push('\n');
         }
-        out.push_str(&body);
+        out.push_str(&render(&pretty, &ctx, id, &c));
+        out.push_str(pretty.terminator());
+        if no_patch {
+            continue;
+        }
+        let mut body = String::new();
+        let mut differs = false;
+        if c.parents.len() <= 1 {
+            let old_tree = match c.parents.first() {
+                Some(p) => Some(git.repo.commit(p)?.tree),
+                None => None,
+            };
+            let (mut old, mut new) = (Tree::new(), Tree::new());
+            let changes = git
+                .repo
+                .diff_trees(old_tree.as_ref(), Some(&c.tree), &spec)?;
+            add_changes(git, &mut old, &mut new, &changes)?;
+            differs = diff::compare(git, &old, &new, &only, format, &mut body)?;
+        }
+        if diff::has_body(format, differs, &body) || c.parents.len() > 1 {
+            if pretty.blank_before_diff() {
+                out.push('\n');
+            }
+            out.push_str(&body);
+        }
+        check.push_str(&body);
     }
     emit(&out);
-    diff::exit_if_check_failed(format, &body);
+    diff::exit_if_check_failed(format, &check);
     Ok(())
 }
 

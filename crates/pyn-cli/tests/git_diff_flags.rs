@@ -32,6 +32,9 @@ impl Fixture {
     }
 
     fn write(&self, path: &str, content: &[u8]) {
+        if let Some(dir) = self.repo.join(path).parent() {
+            fs::create_dir_all(dir).unwrap();
+        }
         fs::write(self.repo.join(path), content).unwrap();
     }
 
@@ -48,7 +51,8 @@ impl Fixture {
             .unwrap();
         assert!(
             out.status.success(),
-            "git {args:?}: {}",
+            "git {args:?}: {:?} {}",
+            out.status,
             String::from_utf8_lossy(&out.stderr)
         );
     }
@@ -223,6 +227,32 @@ fn incompatible_formats_are_usage_errors() {
 }
 
 #[test]
+fn numstat_combinations_are_usage_errors() {
+    let f = Fixture::new("sha1");
+    for command in [&["diff"][..], &["show"], &["stash", "show"]] {
+        for other in [
+            "--stat",
+            "--shortstat",
+            "--name-only",
+            "--name-status",
+            "--check",
+        ] {
+            let out = Command::new(env!("CARGO_BIN_EXE_pyn"))
+                .current_dir(&f.repo)
+                .args(command)
+                .args(["--numstat", other])
+                .env_clear()
+                .env("PATH", path_env())
+                .env("HOME", f.repo.parent().unwrap())
+                .output()
+                .unwrap();
+            assert_eq!(out.status.code(), Some(129), "{command:?} {other}");
+            assert!(out.stdout.is_empty(), "{command:?} {other}");
+        }
+    }
+}
+
+#[test]
 fn whitespace_only_files_under_w() {
     let f = Fixture::new("sha1");
     let pyn = |args: &[&str]| {
@@ -248,4 +278,66 @@ fn whitespace_only_files_under_w() {
         assert_eq!(out, want, "{flag}");
         assert_eq!(code, Some(if flag == "--check" { 2 } else { 0 }), "{flag}");
     }
+}
+
+#[test]
+fn stat_prints_binary_sizes_as_git_does() {
+    each_format(|f| {
+        f.write("grow.bin", b"\0ab");
+        f.write("shrink.bin", &[0u8; 1234]);
+        f.write("same.bin", b"\0\x01\x02");
+        f.write("gone.bin", &[5u8; 300]);
+        f.write(
+            "dir/with/a/rather/long/directory/name/and_a_long_file_name.bin",
+            b"\0\0",
+        );
+        f.commit("bins");
+        f.write("grow.bin", &[1u8; 100_000]);
+        f.write("shrink.bin", b"");
+        f.write("same.bin", b"\0\x02\x01");
+        f.write("added.bin", b"\0\0\0\0\0");
+        f.write("t.txt", b"one\ntwo\n");
+        f.write(
+            "dir/with/a/rather/long/directory/name/and_a_long_file_name.bin",
+            b"\0\0\0\0\0\0\0",
+        );
+        f.git(&["rm", "-q", "gone.bin"]);
+        f.commit("bins2");
+        f.write("grow.bin", b"\0");
+        f.write("t.txt", b"one\n");
+        f.write("same.bin", b"\0\x03\x03\x03");
+        f.write("new.bin", &[9u8; 7]);
+        f.git(&["add", "new.bin"]);
+        f.write("grow.bin", b"\0xy");
+        // git 2.43 cannot stash in a sha256 repository.
+        if f.format == "sha1" {
+            f.git(&["stash", "push", "-q"]);
+            f.same(&["stash", "show", "--stat"]);
+            f.same(&["stash", "show", "--numstat"]);
+            f.git(&["stash", "pop", "-q", "--index"]);
+        }
+        for args in [
+            &["diff", "--stat"][..],
+            &["diff", "--cached", "--stat"],
+            &["diff", "--stat", "HEAD~1", "HEAD"],
+            &["diff", "--stat", "HEAD~2", "HEAD"],
+            &["diff", "--stat", "HEAD~1", "HEAD", "--", "same.bin"],
+            &[
+                "diff",
+                "--stat",
+                "HEAD~1",
+                "HEAD",
+                "--",
+                "grow.bin",
+                "shrink.bin",
+            ],
+            &["diff", "--numstat", "HEAD~1", "HEAD"],
+            &["diff", "--numstat", "--cached"],
+            &["show", "--stat"],
+            &["show", "--stat", "HEAD~1"],
+            &["show", "--numstat"],
+        ] {
+            f.same(args);
+        }
+    });
 }

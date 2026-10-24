@@ -110,7 +110,8 @@ impl CloneOptions {
         let shallow = "shallow clone is not built; a clone always brings the whole history";
         let partial = "partial clone is not built; a clone always brings every object";
         let submodules = "submodules are not supported";
-        let local = "it only applies to a local-path clone, which is not supported";
+        let local =
+            "a local clone goes through the transfer protocol; hardlinks and sharing are not built";
         let given = [
             ("--mirror", self.mirror, "it is not built; use --bare"),
             ("--depth", self.depth.is_some(), shallow),
@@ -535,6 +536,13 @@ fn finish(
     Ok(())
 }
 
+/// A relative local-path source made absolute against `cwd`, as git records it.
+fn absolute_local(source: &str, cwd: &Path) -> Option<String> {
+    let path = cwd.join(source);
+    (!source.contains("://") && !Path::new(source).is_absolute() && path.is_dir())
+        .then(|| path.display().to_string())
+}
+
 /// `hint` is added to a failure of the transfer, for when the address might have been a pyn server.
 pub fn clone(
     source: &str,
@@ -557,6 +565,8 @@ pub fn clone(
         })?),
     };
     let target = cwd.join(&shown);
+    let absolute = absolute_local(source, cwd);
+    let source = absolute.as_deref().unwrap_or(source);
     let existed = target.exists();
     if existed && !(target.is_dir() && std::fs::read_dir(&target)?.next().is_none()) {
         bail!(

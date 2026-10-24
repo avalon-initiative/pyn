@@ -36,7 +36,9 @@ pub fn git(dir: &Path) -> Command {
         .env("GIT_AUTHOR_NAME", "t")
         .env("GIT_AUTHOR_EMAIL", "t@example.com")
         .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@example.com");
+        .env("GIT_COMMITTER_EMAIL", "t@example.com")
+        .env("GIT_AUTHOR_DATE", "1700000000 +0000")
+        .env("GIT_COMMITTER_DATE", "1700000000 +0000");
     c
 }
 
@@ -247,30 +249,37 @@ impl Drop for Server {
     }
 }
 
-/// How a test reaches its served repository: ssh through the shim, smart HTTP, or HTTP behind basic auth.
+/// How a test reaches its served repository: ssh through the shim, smart HTTP, HTTP behind basic auth, a local
+/// path or a `file://` URL.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Via {
     Ssh,
     Http,
     HttpAuth,
+    Local,
+    FileUrl,
 }
 
-/// Both hash formats over ssh and plain HTTP.
-pub const ALL_WAYS: [(&str, Via); 4] = [
+/// Both hash formats over ssh, plain HTTP, a local path and a `file://` URL.
+pub const ALL_WAYS: [(&str, Via); 8] = [
     ("sha1", Via::Ssh),
     ("sha256", Via::Ssh),
     ("sha1", Via::Http),
     ("sha256", Via::Http),
+    ("sha1", Via::Local),
+    ("sha256", Via::FileUrl),
+    ("sha256", Via::Local),
+    ("sha1", Via::FileUrl),
 ];
 
 pub const AUTH_USER: &str = "alice";
 pub const AUTH_PASS: &str = "s3cret";
 
 impl Via {
-    /// The HTTP server over `root` (none for ssh, which needs only the shim).
+    /// The HTTP server over `root` (none for the other ways).
     pub fn serve(self, root: &Path) -> Option<Server> {
         match self {
-            Via::Ssh => None,
+            Via::Ssh | Via::Local | Via::FileUrl => None,
             Via::Http => Some(Server::start(root, Opts::default())),
             Via::HttpAuth => Some(Server::start(
                 root,
@@ -285,6 +294,8 @@ impl Via {
     /// The URL of the repository `name` (a directory under the served root) whose bare path is `bare`.
     pub fn url(self, server: &Option<Server>, name: &str, bare: &Path) -> String {
         match (server, self) {
+            (None, Via::Local) => bare.display().to_string(),
+            (None, Via::FileUrl) => format!("file://{}", bare.display()),
             (None, _) => format!("ssh://git@example.invalid{}", bare.display()),
             (Some(s), Via::HttpAuth) => {
                 format!("http://{AUTH_USER}:{AUTH_PASS}@{}/{name}", &s.url[7..])

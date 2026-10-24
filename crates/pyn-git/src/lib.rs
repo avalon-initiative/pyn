@@ -39,4 +39,4 @@ pub use remote::{
     remove_remote, rename_remote, set_tracking, tracking, unset_tracking,
 };
 pub use repo::{Repository, resolve_git_dir};
-pub use walk::{Reachable, commits_newest_first, existing, reachable_objects};
+pub use walk::{Reachable, commits_newest_first, existing, peel, reachable_objects};

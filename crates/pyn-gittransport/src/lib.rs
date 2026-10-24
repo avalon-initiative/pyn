@@ -8,6 +8,7 @@ mod env;
 mod error;
 pub mod exchange;
 mod http;
+mod local;
 mod ssh;
 mod url;
 
@@ -19,5 +20,6 @@ pub use connect::{Connection, Connector, user_config};
 pub use env::Env;
 pub use error::{Error, Result};
 pub use http::{HttpTransport, USER_AGENT};
+pub use local::LocalTransport;
 pub use ssh::{SshTransport, Variant, remote_command, shell_quote};
 pub use url::{RemoteUrl, SshUrl, redact_text, rewrite};
