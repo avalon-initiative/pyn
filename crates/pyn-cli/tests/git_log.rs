@@ -555,6 +555,60 @@ fn show_formats_match_git() {
     });
 }
 
+/// git 2.55 prints a named commit even when it changes none of the paths; 2.43 leaves it out.
+fn git_prints_unchanged_commits() -> bool {
+    let out = git(Path::new(".")).arg("--version").output().unwrap();
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    let mut parts = text.trim().trim_start_matches("git version ").split('.');
+    let (major, minor) = (
+        parts
+            .next()
+            .and_then(|n| n.parse::<u32>().ok())
+            .unwrap_or(0),
+        parts
+            .next()
+            .and_then(|n| n.parse::<u32>().ok())
+            .unwrap_or(0),
+    );
+    (major, minor) >= (2, 55)
+}
+
+#[test]
+fn show_limits_to_paths_and_takes_several_commits_like_git() {
+    let newer = git_prints_unchanged_commits();
+    each_format(|f| {
+        for args in [
+            &["HEAD~3", "--", "b.txt"][..],
+            &["HEAD~2", "--", "sub"],
+            &["HEAD~3", "b.txt"],
+            &["HEAD~2", "--", "sub", "b.txt"],
+            &["--stat", "HEAD~2", "--", "sub"],
+            &["HEAD~3", "HEAD~2"],
+            &["--oneline", "HEAD~3", "HEAD~2", "HEAD"],
+            &["HEAD~3", "HEAD~2", "nosuchrev"],
+        ] {
+            f.same_show(args);
+        }
+        for args in [
+            &["HEAD~3", "--", "a.txt"][..],
+            &["HEAD~3", "HEAD~2", "b.txt"],
+            &["HEAD~3", "--", "nosuchpath"],
+            &["HEAD~3", "HEAD~2", "--", "b.txt"],
+            &["HEAD~1", "--", "f.txt"],
+            &["HEAD~1", "--", "b.txt"],
+            &["HEAD~1", "--", "a.txt", "f.txt"],
+        ] {
+            if newer {
+                f.same_show(args);
+            } else {
+                let (code, out, err) = f.pyn_cmd("show", &f.repo, args);
+                assert_eq!(code, 0, "{} show {args:?}: {err}", f.format);
+                assert!(out.starts_with("commit "), "{} show {args:?}", f.format);
+            }
+        }
+    });
+}
+
 #[test]
 fn show_format_errors_match_git() {
     let f = Fixture::new("sha1");

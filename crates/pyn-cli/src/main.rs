@@ -210,8 +210,11 @@ enum Command {
     },
     /// Show a commit: its message and what it changed (the newest commit if none is named).
     Show {
-        /// `HEAD`, `HEAD~N`, `HEAD^` or a commit hash (an abbreviation of at least 4 digits is enough).
-        commit: Option<String>,
+        /// Commits (`HEAD`, `HEAD~N`, `HEAD^` or a hash of at least 4 digits), then paths; a git repository takes several.
+        args: Vec<String>,
+        /// Paths to limit the diff to, after `--`.
+        #[arg(last = true)]
+        paths: Vec<String>,
         /// Print only the commit, not its diff.
         #[arg(short = 's', long = "no-patch")]
         no_patch: bool,
@@ -825,15 +828,18 @@ enum RoleCommand {
 
 fn fatal_message(error: &anyhow::Error) -> String {
     let mut message = String::new();
+    let mut previous = String::new();
     for cause in error.chain() {
         let detail = cause.to_string();
-        // A cause's Display may already include the next source in the chain.
-        if !message.ends_with(&detail) {
+        // A wrapper's Display may already embed its source as `{source}` or `<context>: {source}`.
+        let embedded = previous == detail || previous.ends_with(&format!(": {detail}"));
+        if !embedded {
             if !message.is_empty() {
                 message.push_str(": ");
             }
             message.push_str(&detail);
         }
+        previous = detail;
     }
     message
 }
@@ -1798,17 +1804,22 @@ fn run(cli: Cli) -> Result<()> {
             }
         }
         Command::Show {
-            commit,
+            args,
+            paths,
             no_patch,
             fmt,
             format,
         } => {
+            if args.len() > 1 || !paths.is_empty() {
+                usage_error("`pyn show` takes one commit and no paths on a pyn server");
+            }
+            let commit = args.first();
             let shown = ShowOpts {
                 diff: format.format(),
                 rendering: fmt.requested()?,
                 no_patch,
             };
-            show_command(&backend, ws.as_ref(), commit.as_deref(), &shown)?
+            show_command(&backend, ws.as_ref(), commit.map(String::as_str), &shown)?
         }
         Command::Policy(PolicyCommand::Preview { file }) => {
             let api = backend.pyn_server("policy")?;
@@ -3490,6 +3501,12 @@ mod fatal_formatter_tests {
             source: std::io::Error::other("source"),
         });
         assert_eq!(fatal_message(&error), "path: source");
+    }
+
+    #[test]
+    fn short_cause_that_is_a_suffix_of_its_context() {
+        let error = anyhow::anyhow!("file").context("reading file");
+        assert_eq!(fatal_message(&error), "reading file: file");
     }
 
     #[test]
