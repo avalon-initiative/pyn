@@ -692,6 +692,241 @@ fn decorate_matches_git() {
     });
 }
 
+const DECORATE_VIEWS: &[&[&str]] = &[
+    &[],
+    &["--oneline"],
+    &["--oneline", "--all"],
+    &["--oneline", "--decorate"],
+    &["--oneline", "--decorate=full"],
+    &["--oneline", "--decorate=auto"],
+    &["--oneline", "--decorate=no"],
+    &["--oneline", "--no-decorate"],
+    &["--oneline", "--no-decorate", "--decorate"],
+    &["--pretty=short", "-3"],
+    &["--pretty=raw", "-2"],
+    &["--format=%h%d"],
+    &["--format=%h %D"],
+    &["--oneline", "--graph"],
+    &["--oneline", "--graph", "--decorate"],
+    &["--oneline", "--decorate", "--decorate-refs=refs/tags"],
+    &[
+        "--oneline",
+        "--decorate",
+        "--decorate-refs-exclude=refs/tags",
+    ],
+    &["--oneline", "--decorate", "--decorate-refs=HEAD"],
+    &["--oneline", "--decorate", "--decorate-refs=bogus"],
+];
+
+const SHOW_VIEWS: &[&[&str]] = &[
+    &["-s"],
+    &["-s", "--oneline"],
+    &["-s", "--oneline", "--decorate"],
+    &["-s", "--oneline", "--decorate=full"],
+    &["-s", "--oneline", "--decorate=auto"],
+    &["-s", "--oneline", "--no-decorate"],
+    &["-s", "--decorate", "--no-decorate"],
+    &["-s", "--no-decorate", "--decorate=short"],
+    &["-s", "--decorate", "--pretty=fuller"],
+    &["-s", "--decorate", "--pretty=raw", "HEAD~2"],
+    &["-s", "--decorate", "--format=%h%d"],
+    &["-s", "--format=%h%d"],
+    &["--decorate", "--oneline", "--stat"],
+    &["--decorate", "--oneline", "HEAD~2", "side"],
+    &[
+        "-s",
+        "--decorate",
+        "--decorate-refs=refs/tags",
+        "--oneline",
+        "v1",
+    ],
+    &[
+        "-s",
+        "--decorate",
+        "--decorate-refs-exclude=refs/heads/*",
+        "--oneline",
+    ],
+    &["-s", "--decorate=bogus"],
+];
+
+impl Fixture {
+    fn set_config(&self, args: &[&str]) {
+        let mut all = vec!["config"];
+        all.extend_from_slice(args);
+        self.git(("t", "t@example.com"), "1700009000 +0000", &all);
+    }
+
+    fn views_match(&self) {
+        for args in DECORATE_VIEWS {
+            self.same(args);
+        }
+        for args in SHOW_VIEWS {
+            self.same_show(args);
+        }
+    }
+}
+
+/// Extra refs: a nested branch, a notes ref and a tag on the oldest commit.
+fn with_odd_refs(f: &Fixture) {
+    let who = ("t", "t@example.com");
+    let date = "1700009000 +0000";
+    f.git(who, date, &["branch", "other/deep", "HEAD~3"]);
+    f.git(who, date, &["update-ref", "refs/notes/x", "HEAD~3"]);
+    f.git(who, date, &["tag", "-a", "-m", "old", "old", "HEAD~5"]);
+}
+
+#[test]
+fn log_decorate_config_matches_git() {
+    each_format(|f| {
+        for value in [
+            "short", "full", "no", "false", "true", "yes", "on", "off", "0", "1", "2", "auto",
+            "bogus", "Full", "",
+        ] {
+            f.set_config(&["log.decorate", value]);
+            f.views_match();
+        }
+        f.set_config(&["--unset", "log.decorate"]);
+        let config = f.repo.join(".git/config");
+        let mut text = fs::read_to_string(&config).unwrap();
+        text.push_str("[log]\n\tdecorate\n");
+        fs::write(&config, text).unwrap();
+        f.views_match();
+    });
+}
+
+#[test]
+fn decorate_refs_patterns_match_git() {
+    each_format(|f| {
+        with_odd_refs(f);
+        for pattern in [
+            "refs/tags",
+            "refs/tags/",
+            "refs/tags/*",
+            "tags/*",
+            "tags/v*",
+            "refs/tags/v1",
+            "refs/heads/*",
+            "heads/*",
+            "refs/heads/other",
+            "refs/heads/other/deep",
+            "refs/heads/mai",
+            "refs/heads/ma*",
+            "refs/heads/[ms]*",
+            "refs/heads/?ain",
+            "refs/*/main",
+            "refs/remotes",
+            "refs/notes/x",
+            "refs",
+            "",
+            "HEAD",
+            "main",
+            "refs/main",
+        ] {
+            for style in ["--decorate", "--decorate=full"] {
+                for flag in ["--decorate-refs", "--decorate-refs-exclude"] {
+                    let arg = format!("{flag}={pattern}");
+                    f.same(&["--oneline", "--all", style, &arg]);
+                    f.same(&["--format=%h%d", "--all", &arg]);
+                    f.same(&["--oneline", "--graph", "--all", style, &arg]);
+                    f.same_show(&["-s", "--oneline", style, &arg, "HEAD~3"]);
+                }
+            }
+        }
+        for combo in [
+            &[
+                "--decorate-refs=refs/heads/*",
+                "--decorate-refs-exclude=refs/heads/side",
+            ][..],
+            &[
+                "--decorate-refs=refs/heads/side",
+                "--decorate-refs-exclude=refs/heads/*",
+            ],
+            &["--decorate-refs=refs/tags", "--decorate-refs=refs/remotes"],
+            &["--decorate-refs=HEAD", "--decorate-refs=refs/heads/main"],
+            &[
+                "--decorate-refs-exclude=HEAD",
+                "--decorate-refs-exclude=refs/tags",
+            ],
+            &["--decorate-refs-exclude=refs/heads/main"],
+            &[
+                "--decorate-refs=refs/heads/main",
+                "--decorate-refs-exclude=HEAD",
+            ],
+        ] {
+            let mut args = vec!["--oneline", "--all", "--decorate"];
+            args.extend_from_slice(combo);
+            f.same(&args);
+            let mut shown = vec!["-s", "--oneline", "--decorate"];
+            shown.extend_from_slice(combo);
+            f.same_show(&shown);
+        }
+        f.git(
+            ("t", "t@example.com"),
+            "1700009100 +0000",
+            &["switch", "-q", "--detach", "v1"],
+        );
+        f.same(&["--oneline", "--all", "--decorate", "--decorate-refs=HEAD"]);
+        f.same(&[
+            "--oneline",
+            "--all",
+            "--decorate",
+            "--decorate-refs-exclude=HEAD",
+        ]);
+    });
+}
+
+#[test]
+fn exclude_decoration_config_matches_git() {
+    each_format(|f| {
+        with_odd_refs(f);
+        let config = f.repo.join(".git/config");
+        for values in [
+            &["refs/tags"][..],
+            &["tags/*"],
+            &["refs/heads/main"],
+            &["HEAD"],
+            &["refs/tags", "refs/remotes/origin"],
+            &["refs/heads/*", "HEAD"],
+            &[""],
+        ] {
+            let mut text = String::from("[log]\n");
+            for v in values {
+                text.push_str(&format!("\texcludeDecoration = {v}\n"));
+            }
+            let saved = fs::read_to_string(&config).unwrap();
+            fs::write(&config, format!("{saved}{text}")).unwrap();
+            for args in [
+                &["--oneline", "--all", "--decorate"][..],
+                &["--format=%h%d", "--all"],
+                &[
+                    "--oneline",
+                    "--all",
+                    "--decorate",
+                    "--decorate-refs=refs/heads/*",
+                ],
+                &[
+                    "--oneline",
+                    "--all",
+                    "--decorate",
+                    "--decorate-refs-exclude=refs/remotes",
+                ],
+                &[
+                    "--oneline",
+                    "--all",
+                    "--decorate",
+                    "--decorate-refs-exclude=refs/heads/*",
+                ],
+                &["--oneline", "--all", "--graph", "--decorate"],
+            ] {
+                f.same(args);
+            }
+            f.same_show(&["-s", "--oneline", "--decorate", "HEAD~3"]);
+            f.same_show(&["-s", "--format=%d", "HEAD"]);
+            fs::write(&config, saved).unwrap();
+        }
+    });
+}
+
 #[test]
 fn follow_matches_git() {
     for format in FORMATS {

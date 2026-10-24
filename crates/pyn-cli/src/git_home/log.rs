@@ -5,16 +5,17 @@ use std::path::Path;
 
 use anyhow::{Result, bail};
 use chrono::Local;
-use pyn_gitwork::{Head, Pathspec, fs_path};
+use pyn_gitwork::{Pathspec, fs_path};
 use pyn_object::{Commit, ObjectId};
 use regex::Regex;
 
 use super::GitHome;
 use super::commands::{add_changes, emit, head_or_refuse, message_lines};
+use super::decorate::{DecorateArgs, with_decoration};
 use super::log_gate::{Gate, Pickaxe};
 use super::log_graph::{Graph, topo_order};
 use super::log_match::{Dialect, compile_as, compile_ere, parse_date};
-use crate::commit_format::{Context, Decorations, FormatArgs, Pretty, Rendering, render};
+use crate::commit_format::{Context, FormatArgs, Pretty, Rendering, render};
 use crate::diff::{self, DiffParts, Kind, Tree};
 use crate::{table, time};
 
@@ -95,19 +96,8 @@ pub struct GitLogArgs {
     /// Follow only the first parent of each commit.
     #[arg(long)]
     first_parent: bool,
-    /// Name the refs at each commit: `short` (the default), `full` or `no`.
-    #[arg(
-        long,
-        value_name = "STYLE",
-        num_args = 0..=1,
-        require_equals = true,
-        default_missing_value = "short",
-        overrides_with = "no_decorate"
-    )]
-    decorate: Option<String>,
-    /// Do not name the refs at each commit.
-    #[arg(long, overrides_with = "decorate")]
-    no_decorate: bool,
+    #[command(flatten)]
+    decorate: Box<DecorateArgs>,
     /// A diffstat after each commit.
     #[arg(long, conflicts_with_all = ["shortstat", "name_only", "name_status"])]
     stat: bool,
@@ -148,8 +138,6 @@ impl GitLogArgs {
             ("--reverse", self.reverse),
             ("--all", self.all),
             ("--first-parent", self.first_parent),
-            ("--decorate", self.decorate.is_some()),
-            ("--no-decorate", self.no_decorate),
             ("--graph", self.graph),
             ("--follow", self.follow),
             ("-S", self.pickaxe_text.is_some()),
@@ -159,7 +147,11 @@ impl GitLogArgs {
             ("--basic-regexp", self.basic_regexp),
             ("-P", self.perl_regexp),
         ];
-        flags.into_iter().find(|(_, on)| *on).map(|(f, _)| f)
+        flags
+            .into_iter()
+            .chain(self.decorate.given())
+            .find(|(_, on)| *on)
+            .map(|(f, _)| f)
     }
 
     /// The first argument given that a pyn server's commit filters cannot take.
@@ -175,8 +167,6 @@ impl GitLogArgs {
             ("--reverse", self.reverse),
             ("--all", self.all),
             ("--first-parent", self.first_parent),
-            ("--decorate", self.decorate.is_some()),
-            ("--no-decorate", self.no_decorate),
             ("--graph", self.graph),
             ("--follow", self.follow),
             ("-S", self.pickaxe_text.is_some()),
@@ -193,6 +183,7 @@ impl GitLogArgs {
         ];
         flags
             .into_iter()
+            .chain(self.decorate.given())
             .find(|(_, on)| *on)
             .map(|(f, _)| f.to_string())
     }
@@ -499,14 +490,6 @@ fn all_tips(git: &GitHome) -> Result<Vec<ObjectId>> {
     Ok(tips)
 }
 
-/// How `--decorate` names refs on the built-in formats.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Decorate {
-    Off,
-    Short,
-    Full,
-}
-
 impl GitLogArgs {
     fn dialect(&self) -> Dialect {
         if self.extended_regexp {
@@ -578,77 +561,6 @@ impl GitLogArgs {
             spec: spec.clone(),
         }))
     }
-
-    fn decorate_mode(&self) -> Result<Decorate> {
-        let Some(style) = self.decorate.as_deref() else {
-            return Ok(Decorate::Off);
-        };
-        Ok(match style.to_ascii_lowercase().as_str() {
-            "short" | "yes" | "on" | "true" | "1" => Decorate::Short,
-            "full" => Decorate::Full,
-            "no" | "off" | "false" | "0" | "auto" => Decorate::Off,
-            _ => bail!("invalid --decorate option: {style}"),
-        })
-    }
-}
-
-pub(super) fn decorations(git: &GitHome) -> Result<Decorations> {
-    decorations_as(git, false)
-}
-
-fn decorations_as(git: &GitHome, full: bool) -> Result<Decorations> {
-    let head = git.repo.head()?;
-    let current = match &head {
-        Head::Branch { name, .. } => Some(format!("refs/heads/{name}")),
-        Head::Detached(_) => None,
-    };
-    let mut map = Decorations::new();
-    let mut listed = git.repo.refs().list("refs/")?;
-    listed.reverse();
-    for (name, _) in listed {
-        if current.as_deref() == Some(name.as_str()) {
-            continue;
-        }
-        let Ok(id) = git.repo.resolve(&name) else {
-            continue;
-        };
-        let short = |prefix: &str| name.strip_prefix(prefix).filter(|_| !full);
-        let label = if name.starts_with("refs/tags/") {
-            format!("tag: {}", short("refs/tags/").unwrap_or(&name))
-        } else if let Some(n) = short("refs/heads/").or(short("refs/remotes/")) {
-            n.to_string()
-        } else {
-            name
-        };
-        map.entry(id).or_default().push(label);
-    }
-    let first = match (&head, head.id()) {
-        (Head::Branch { name, .. }, Some(id)) if full => {
-            Some((id, format!("HEAD -> refs/heads/{name}")))
-        }
-        (Head::Branch { name, .. }, Some(id)) => Some((id, format!("HEAD -> {name}"))),
-        (Head::Detached(id), _) => Some((*id, "HEAD".to_string())),
-        _ => None,
-    };
-    if let Some((id, label)) = first {
-        map.entry(id).or_default().insert(0, label);
-    }
-    Ok(map)
-}
-
-/// Inserts ` (names)` after the id on the first line of a built-in format.
-fn with_decoration(mut text: String, pretty: &Pretty, names: Option<&Vec<String>>) -> String {
-    let Some(names) = names else { return text };
-    let end = match pretty {
-        Pretty::User { .. } => return text,
-        Pretty::Oneline { .. } => text.find([' ', '\n']),
-        _ => text.find('\n'),
-    };
-    text.insert_str(
-        end.unwrap_or(text.len()),
-        &format!(" ({})", names.join(", ")),
-    );
-    text
 }
 
 pub(super) fn log(
@@ -664,13 +576,9 @@ pub(super) fn log(
     let parts = args.diff_parts();
     let positional: Vec<String> = path.into_iter().chain(args.more.iter().cloned()).collect();
     let selection = select(git, cwd, positional, args.dashed.clone(), args.all)?;
-    let decorate = args.decorate_mode()?;
+    let decorate = args.decorate.resolve(git, &pretty)?;
     let spec = Pathspec::new(selection.paths.iter().map(|p| p.as_bytes().to_vec()));
-    let decorated = if pretty.uses_decorations() || decorate != Decorate::Off {
-        decorations_as(git, decorate == Decorate::Full)?
-    } else {
-        Decorations::new()
-    };
+    let decorated = decorate.names(git, pretty.uses_decorations())?;
     let ctx = Context {
         style,
         now: chrono::Utc::now().timestamp(),
@@ -695,7 +603,7 @@ pub(super) fn log(
         ctx: &ctx,
         spec: &spec,
         parts: &parts,
-        decorate: decorate != Decorate::Off,
+        decorate: decorate.on(),
         first_parent: args.first_parent,
         gate,
         graph: None,
