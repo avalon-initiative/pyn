@@ -5,6 +5,9 @@ edition.workspace = true
 publish.workspace = true
 license.workspace = true
 
+[features]
+test-support = []
+
 [dependencies]
 pyn-git = { version = "0.0.1", path = "../pyn-git" }
 pyn-object = { version = "0.0.1", path = "../pyn-object" }

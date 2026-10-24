@@ -223,6 +223,32 @@ fn incompatible_formats_are_usage_errors() {
 }
 
 #[test]
+fn numstat_combinations_are_usage_errors() {
+    let f = Fixture::new("sha1");
+    for command in [&["diff"][..], &["show"], &["stash", "show"]] {
+        for other in [
+            "--stat",
+            "--shortstat",
+            "--name-only",
+            "--name-status",
+            "--check",
+        ] {
+            let out = Command::new(env!("CARGO_BIN_EXE_pyn"))
+                .current_dir(&f.repo)
+                .args(command)
+                .args(["--numstat", other])
+                .env_clear()
+                .env("PATH", path_env())
+                .env("HOME", f.repo.parent().unwrap())
+                .output()
+                .unwrap();
+            assert_eq!(out.status.code(), Some(129), "{command:?} {other}");
+            assert!(out.stdout.is_empty(), "{command:?} {other}");
+        }
+    }
+}
+
+#[test]
 fn whitespace_only_files_under_w() {
     let f = Fixture::new("sha1");
     let pyn = |args: &[&str]| {

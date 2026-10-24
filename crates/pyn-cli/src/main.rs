@@ -826,15 +826,18 @@ enum RoleCommand {
 
 fn fatal_message(error: &anyhow::Error) -> String {
     let mut message = String::new();
+    let mut previous = String::new();
     for cause in error.chain() {
         let detail = cause.to_string();
-        // A cause's Display may already include the next source in the chain.
-        if !message.ends_with(&detail) {
+        // A wrapper's Display may already embed its source as `{source}` or `<context>: {source}`.
+        let embedded = previous == detail || previous.ends_with(&format!(": {detail}"));
+        if !embedded {
             if !message.is_empty() {
                 message.push_str(": ");
             }
             message.push_str(&detail);
         }
+        previous = detail;
     }
     message
 }
@@ -3444,6 +3447,12 @@ mod fatal_formatter_tests {
             source: std::io::Error::other("source"),
         });
         assert_eq!(fatal_message(&error), "path: source");
+    }
+
+    #[test]
+    fn short_cause_that_is_a_suffix_of_its_context() {
+        let error = anyhow::anyhow!("file").context("reading file");
+        assert_eq!(fatal_message(&error), "reading file: file");
     }
 
     #[test]
