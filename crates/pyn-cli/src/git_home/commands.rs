@@ -49,8 +49,11 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
             exit_code,
             quiet,
             cached,
+            no_patch,
+            ..
         } => {
-            let differs = diff(git, cwd, &args, &paths, &format.format(), quiet, cached)?;
+            let format = format.format().silenced(no_patch);
+            let differs = diff(git, cwd, &args, &paths, &format, quiet, cached)?;
             if differs && (exit_code || quiet) {
                 std::process::exit(1);
             }
@@ -94,7 +97,7 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
                 }
                 return super::log::log_table(git, limit.unwrap_or(50));
             }
-            super::log::log(git, cwd, path, limit, args)
+            super::log::log(git, cwd, path, limit, *args)
         }
         Command::Convert(_) => init(git),
         Command::Init(_) => unreachable!("handled before a repository is detected"),
@@ -610,7 +613,7 @@ fn disk_blob(
     Ok(Some(Blob {
         hash: id.to_hex(),
         mode,
-        source: Source::Local { file },
+        source: Source::Worktree { file },
     }))
 }
 
@@ -884,8 +887,12 @@ fn show(
     format: &diff::Format,
 ) -> Result<()> {
     git.repo.validate_diff_ignore_submodules()?;
+    if format.opts.abbrev.is_some() && fmt.first_given().is_some() {
+        crate::usage_error("`--abbrev` together with a commit format is not built");
+    }
     let Rendering { pretty, style } = fmt.rendering()?;
     let decorate = decorate.resolve(git, &pretty)?;
+    let commit_color = diff::commit_color(git, &format.opts, decorate.on(), false);
     let separated = !paths.is_empty() || std::env::args_os().any(|a| a == "--");
     let (mut ids, loose) = split_revisions(git, cwd, args, separated, usize::MAX)?;
     check_loose(cwd, &loose, separated)?;
@@ -899,6 +906,7 @@ fn show(
         style,
         now: chrono::Utc::now().timestamp(),
         decorations: &names,
+        commit_color: commit_color.as_deref(),
     };
     let mut out = String::new();
     let mut check = String::new();
@@ -933,7 +941,8 @@ fn show(
         }
         if diff::has_body(format, differs, &body) || c.parents.len() > 1 {
             if pretty.blank_before_diff() {
-                out.push('\n');
+                let dashes = format.with_patch && format.kind == diff::Kind::Stat;
+                out.push_str(if dashes { "---\n" } else { "\n" });
             }
             out.push_str(&body);
         }

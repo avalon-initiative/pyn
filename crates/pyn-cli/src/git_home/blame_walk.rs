@@ -11,7 +11,7 @@ use pyn_object::{Commit, FileMode, ObjectId};
 
 use super::GitHome;
 use super::blame_rename::find_source;
-use super::blame_xdiff::hunks;
+use crate::xdiff::hunks;
 
 pub(super) struct Origin {
     pub commit: ObjectId,

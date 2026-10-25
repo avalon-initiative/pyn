@@ -40,6 +40,11 @@ pub trait Backend {
         crate::rename::Defaults::default()
     }
 
+    /// A setting the home's configuration holds, for the diff options that read one (`color.diff.old`, `core.whitespace`).
+    fn diff_setting(&self, _key: &str) -> Option<String> {
+        None
+    }
+
     /// The home's quoting of a path in diff output.
     fn quote_diff_path(&self, path: &[u8]) -> String {
         crate::short_status::quote_diff(path, true)

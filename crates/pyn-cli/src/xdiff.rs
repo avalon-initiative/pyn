@@ -30,9 +30,56 @@ fn is_space(c: u8) -> bool {
 
 /// The hunks turning `a` into `b`, as xdiff reports them with no context.
 pub fn hunks(a: &[u8], b: &[u8], ignore_whitespace: bool, indent_heuristic: bool) -> Vec<Hunk> {
+    let ws = if ignore_whitespace {
+        pyn_diff::Ws::all()
+    } else {
+        pyn_diff::Ws::default()
+    };
+    hunks_ws(a, b, &ws, indent_heuristic)
+}
+
+/// The edit script from `old` to `new` that git's diff would print.
+pub fn edits(old: &[u8], new: &[u8], ws: &pyn_diff::Ws) -> Vec<pyn_diff::Edit> {
+    hunks_ws(old, new, ws, true)
+        .iter()
+        .map(|h| (h.a_start, h.a_count, h.b_start, h.b_count))
+        .collect()
+}
+
+/// The hunks of a unified diff cut as `layout` says, found by this xdiff port.
+pub fn unified(
+    old: &[u8],
+    new: &[u8],
+    layout: &pyn_diff::Layout,
+    ws: &pyn_diff::Ws,
+) -> Vec<pyn_diff::Hunk> {
+    pyn_diff::hunks_from_script(old, new, layout, ws, &edits(old, new, ws))
+}
+
+/// Lines added and deleted going from `old` to `new`, as the diffstat counts them.
+pub fn line_counts(old: &[u8], new: &[u8], ws: &pyn_diff::Ws) -> (usize, usize) {
+    if ws.blank_lines {
+        let layout = pyn_diff::Layout::default();
+        return unified(old, new, &layout, ws)
+            .iter()
+            .flat_map(|h| h.lines.iter())
+            .fold((0, 0), |(a, d), (op, _)| match op {
+                pyn_diff::Op::Insert => (a + 1, d),
+                pyn_diff::Op::Delete => (a, d + 1),
+                pyn_diff::Op::Equal => (a, d),
+            });
+    }
+    hunks_ws(old, new, ws, true)
+        .iter()
+        .fold((0, 0), |(a, d), h| (a + h.b_count, d + h.a_count))
+}
+
+/// `hunks` comparing lines as `ws` says.
+pub fn hunks_ws(a: &[u8], b: &[u8], ws: &pyn_diff::Ws, indent_heuristic: bool) -> Vec<Hunk> {
     let (a, b) = trim_common_tail(a, b);
-    let (mut x, mut y) = prepare(a, b, ignore_whitespace);
-    recs_cmp_all(&mut x, &mut y);
+    let (mut x, mut y) = prepare(a, b, ws);
+    recs_cmp_all(&mut x, &mut y, ws.minimal);
+    let indent_heuristic = indent_heuristic && !ws.no_indent_heuristic;
     compact(&mut x, &mut y, indent_heuristic);
     compact(&mut y, &mut x, indent_heuristic);
     script(&x, &y)
@@ -97,17 +144,13 @@ fn records(data: &[u8]) -> Vec<&[u8]> {
     data.split_inclusive(|b| *b == b'\n').collect()
 }
 
-fn prepare<'a>(a: &'a [u8], b: &'a [u8], ignore_ws: bool) -> (Side<'a>, Side<'a>) {
+fn prepare<'a>(a: &'a [u8], b: &'a [u8], ws: &pyn_diff::Ws) -> (Side<'a>, Side<'a>) {
     let mut classes: HashMap<Vec<u8>, usize> = HashMap::new();
     let mut lens: Vec<(i64, i64)> = Vec::new();
     let mut classify = |recs: &[&[u8]], pass: usize| -> Vec<usize> {
         recs.iter()
             .map(|r| {
-                let key: Vec<u8> = if ignore_ws {
-                    r.iter().copied().filter(|c| !is_space(*c)).collect()
-                } else {
-                    r.to_vec()
-                };
+                let key = ws.key(r);
                 let next = classes.len();
                 let id = *classes.entry(key).or_insert(next);
                 if id == lens.len() {
@@ -551,7 +594,7 @@ fn recs_cmp(
     }
 }
 
-fn recs_cmp_all(x: &mut Side, y: &mut Side) {
+fn recs_cmp_all(x: &mut Side, y: &mut Side, minimal: bool) {
     let ndiags = x.nreff + y.nreff + 3;
     let mut env = Env {
         kv: vec![0; (2 * ndiags + 2) as usize],
@@ -560,7 +603,7 @@ fn recs_cmp_all(x: &mut Side, y: &mut Side) {
         mxcost: bogosqrt(ndiags as u64).max(MAX_COST_MIN),
     };
     let (n1, n2) = (x.nreff, y.nreff);
-    recs_cmp(x, 0, n1, y, 0, n2, false, &mut env);
+    recs_cmp(x, 0, n1, y, 0, n2, minimal, &mut env);
 }
 
 fn get_indent(rec: &[u8]) -> i32 {

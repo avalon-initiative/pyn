@@ -1087,6 +1087,7 @@ impl<'a> Bisect<'a> {
                 style,
                 now: chrono::Utc::now().timestamp(),
                 decorations: &names,
+                commit_color: None,
             };
             let mut out = render(&pretty, &ctx, id, &c);
             out.push_str(pretty.terminator());

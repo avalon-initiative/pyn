@@ -100,9 +100,9 @@ pub struct GitLogArgs {
     first_parent: bool,
     #[command(flatten)]
     decorate: Box<DecorateArgs>,
-    /// A diffstat after each commit.
-    #[arg(long, conflicts_with_all = ["shortstat", "name_only", "name_status"])]
-    stat: bool,
+    /// A diffstat after each commit, optionally `=<width>[,<name-width>[,<count>]]`.
+    #[arg(long, value_name = "WIDTHS", num_args = 0..=1, require_equals = true, default_missing_value = "", conflicts_with_all = ["shortstat", "name_only", "name_status"])]
+    stat: Option<String>,
     /// Only the summary line of the diffstat.
     #[arg(long, conflicts_with_all = ["name_only", "name_status"])]
     shortstat: bool,
@@ -121,6 +121,11 @@ pub struct GitLogArgs {
     /// Lines of context in the patch (implies `-p`).
     #[arg(short = 'U', long, value_name = "N")]
     unified: Option<usize>,
+    /// The modes, ids and status letter of each change.
+    #[arg(long, conflicts_with_all = ["name_only", "name_status", "stat", "shortstat"])]
+    raw: bool,
+    #[command(flatten)]
+    patch_flags: crate::diff_opts::PatchFlags,
 }
 
 impl GitLogArgs {
@@ -151,12 +156,15 @@ impl GitLogArgs {
             ("-F", self.fixed_strings),
             ("--basic-regexp", self.basic_regexp),
             ("-P", self.perl_regexp),
+            ("--raw", self.raw),
+            ("-w", self.patch_flags.all_space()),
         ];
         flags
             .into_iter()
             .chain(self.decorate.given())
             .find(|(_, on)| *on)
             .map(|(f, _)| f)
+            .or_else(|| self.patch_flags.given())
     }
 
     /// The first argument given that a pyn server's commit filters cannot take.
@@ -449,17 +457,21 @@ impl GitLogArgs {
         DiffParts {
             renames: self.renames.request(),
             summary: self.summary,
-            names: if self.name_only {
+            names: if self.raw {
+                Some(Kind::Raw)
+            } else if self.name_only {
                 Some(Kind::NameOnly)
             } else if self.name_status {
                 Some(Kind::NameStatus)
             } else {
                 None
             },
-            stat: self.stat,
+            stat: self.stat.is_some() || self.patch_flags.stat_implied(),
+            dirstat: self.patch_flags.dirstat_given(),
             shortstat: self.shortstat,
             patch: self.patch || self.unified.is_some(),
             context: self.unified.unwrap_or(3),
+            opts: self.patch_flags.opts(),
         }
     }
 }
@@ -514,6 +526,9 @@ impl GitLogArgs {
             return Some(
                 "-P` is not available: no Perl-compatible regular expression engine is built in; use -E".into(),
             );
+        }
+        if self.patch_flags.filters() {
+            return Some("--diff-filter` also selects commits, which is not built".into());
         }
         if self.follow
             && (self.diff_given() || self.pickaxe_text.is_some() || self.pickaxe_lines.is_some())
@@ -584,12 +599,14 @@ pub(super) fn log(
     let positional: Vec<String> = path.into_iter().chain(args.more.iter().cloned()).collect();
     let selection = select(git, cwd, positional, args.dashed.clone(), args.all)?;
     let decorate = args.decorate.resolve(git, &pretty)?;
+    let commit_color = diff::commit_color(git, &parts.opts, decorate.on(), args.graph);
     let spec = Pathspec::new(selection.paths.iter().map(|p| p.as_bytes().to_vec()));
     let decorated = decorate.names(git, pretty.uses_decorations())?;
     let ctx = Context {
         style,
         now: chrono::Utc::now().timestamp(),
         decorations: &decorated,
+        commit_color: commit_color.as_deref(),
     };
 
     let gate = args.gate(&selection.paths, &spec)?;

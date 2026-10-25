@@ -17,7 +17,6 @@ mod blame_format;
 mod blame_range;
 mod blame_rename;
 mod blame_walk;
-mod blame_xdiff;
 mod branches;
 mod cat_file;
 mod clean;
@@ -34,7 +33,7 @@ mod fetch_apply;
 mod fetch_map;
 mod format_patch;
 mod grep;
-mod grep_regex;
+pub(crate) mod grep_regex;
 mod hunk_pick;
 mod init_git;
 mod log;
@@ -341,6 +340,10 @@ impl Backend for GitHome {
 
     fn quote_diff_path(&self, path: &[u8]) -> String {
         crate::short_status::quote_diff(path, self.repo.bool_setting("core.quotePath", true))
+    }
+
+    fn diff_setting(&self, key: &str) -> Option<String> {
+        self.repo.config().get(key).map(str::to_string)
     }
 
     fn whoami(&self) -> Result<String> {
