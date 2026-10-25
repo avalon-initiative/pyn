@@ -2,6 +2,11 @@
 # Runs the pre-release checks, prompts for the next version, bumps, commits and tags.
 set -euo pipefail
 
+if ! git diff --quiet || ! git diff --cached --quiet; then
+  echo "the working tree has uncommitted changes; commit or stash them first" >&2
+  exit 1
+fi
+
 make check
 
 if [ "$(grep -c '^version = ' Cargo.toml)" -ne 1 ]; then
@@ -53,12 +58,10 @@ sed -i "s/^version = \"$current\"/version = \"$version\"/" Cargo.toml
 sed -i "s/^\\(pyn-[a-z-]* = { version = \"\\)$current/\\1$version/" crates/*/Cargo.toml
 
 # The lock pins the member versions, so metadata re-resolves and rewrites it.
-if [ -f Cargo.lock ]; then
-  cargo metadata > /dev/null
-  git add Cargo.toml Cargo.lock crates/*/Cargo.toml
-else
-  git add Cargo.toml crates/*/Cargo.toml
-fi
+cargo metadata --format-version 1 > /dev/null
+# The published OpenAPI document embeds the workspace version.
+make openapi
+git add Cargo.toml Cargo.lock crates/*/Cargo.toml docs/generated/openapi.json
 
 git commit -m "Release $tag"
 git tag "$tag"
