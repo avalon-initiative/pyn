@@ -323,8 +323,14 @@ enum Command {
         #[arg(short, long)]
         force: bool,
         /// Choose the hunks to stage, one at a time (a git repository only).
-        #[arg(short, long, conflicts_with = "dry_run")]
+        #[arg(short, long)]
         patch: bool,
+        /// Choose what to stage from a menu (a git repository only).
+        #[arg(short, long)]
+        interactive: bool,
+        /// Record new files as to be added later, with empty content in the index (a git repository only).
+        #[arg(short = 'N', long)]
+        intent_to_add: bool,
     },
     /// Remove files from the work tree and stage the removal (`--cached` keeps the files). Exclusive paths need your lock.
     Rm(rm_mv::RmArgs),
@@ -924,6 +930,7 @@ fn main() {
         update: false,
         all: false,
         patch: false,
+        interactive: false,
         ..
     } = &cli.command
         && paths.is_empty()
@@ -2044,6 +2051,15 @@ fn run(cli: Cli) -> Result<()> {
         Command::Add { patch: true, .. } => {
             usage_error("`add --patch` needs a git repository; a pyn server stages whole files")
         }
+        Command::Add {
+            interactive: true, ..
+        } => usage_error(
+            "`add --interactive` needs a git repository; a pyn server stages whole files",
+        ),
+        Command::Add {
+            intent_to_add: true,
+            ..
+        } => usage_error("`add --intent-to-add` needs a git repository"),
         Command::Add {
             paths,
             update,

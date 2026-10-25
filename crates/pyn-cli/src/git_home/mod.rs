@@ -1,6 +1,7 @@
 //! The backend for a repository that lives in git: a real `.git` read through `pyn-gitwork`, never written.
 //! Nothing here changes what git sees; the only file pyn adds is its own `.pyn/` folder, hidden by `info/exclude`.
 
+mod add_interactive;
 mod am;
 mod am_3way;
 mod am_mail;
