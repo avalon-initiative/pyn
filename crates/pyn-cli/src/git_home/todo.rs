@@ -42,6 +42,7 @@ impl Commits for GitHome {
             style: DateStyle::parse("default")?,
             now: chrono::Utc::now().timestamp(),
             decorations: &decorations,
+            commit_color: None,
         };
         let text = render(&pretty, &ctx, id, &self.repo.commit(id)?);
         Ok(text.replace('\n', " "))

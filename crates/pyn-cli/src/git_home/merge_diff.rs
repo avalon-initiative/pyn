@@ -214,8 +214,11 @@ impl Want {
             Kind::NameOnly | Kind::NameStatus => want.names = Some(f.kind),
             Kind::Summary => {}
             Kind::Check => crate::usage_error("`--check` does not combine with a combined diff"),
+            Kind::Raw | Kind::Dirstat | Kind::Nothing => {
+                crate::usage_error("this output format does not combine with a combined diff")
+            }
         }
-        if f.ignore_ws {
+        if f.opts.ws.any() {
             crate::usage_error("`-w` does not combine with a combined diff");
         }
         if f.summary || f.kind == Kind::Summary {
@@ -329,7 +332,8 @@ impl Shape<'_> {
             let format = Format {
                 context: want.context,
                 kind,
-                ignore_ws: false,
+                opts: crate::diff_opts::Opts::default(),
+                with_patch: false,
                 renames: want.renames,
                 summary: false,
                 kept: Vec::new(),

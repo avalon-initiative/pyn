@@ -34,12 +34,39 @@ fn scale(n: usize, width: usize, max: usize) -> usize {
     if n == 0 { 0 } else { 1 + n * (width - 1) / max }
 }
 
+/// How a diffstat is laid out: git's `--stat=<width>[,<name-width>[,<count>]]` and `--stat-graph-width`.
+#[derive(Debug, Clone, Default)]
+pub struct Layout {
+    pub width: usize,
+    pub name_width: Option<usize>,
+    pub graph_width: Option<usize>,
+    pub count: Option<usize>,
+    /// The escape sequences for added and deleted counts, when output is colored.
+    pub colors: Option<(String, String)>,
+}
+
 /// The stat lines and totals for `rows`, fitted to `width` columns (`graph` caps the graph part).
 pub fn render(rows: &[Row], width: usize, graph: Option<usize>) -> String {
+    render_with(
+        rows,
+        &Layout {
+            width,
+            graph_width: graph,
+            ..Layout::default()
+        },
+    )
+}
+
+pub fn render_with(all: &[Row], layout: &Layout) -> String {
     let mut out = String::new();
-    if rows.is_empty() {
+    if all.is_empty() {
         return out;
     }
+    let shown = layout
+        .count
+        .filter(|c| *c > 0)
+        .map_or(all.len(), |c| c.min(all.len()));
+    let rows = &all[..shown];
     let max_len = rows
         .iter()
         .map(|r| r.name.chars().count())
@@ -58,22 +85,26 @@ pub fn render(rows: &[Row], width: usize, graph: Option<usize>) -> String {
         }
     }
     number_width = number_width.max(digits(max_change));
-    let width = width.max(16 + 6 + number_width);
+    let width = layout.width.max(16 + 6 + number_width);
     let mut graph_width = if max_change + 4 > bin_width {
         max_change
     } else {
         bin_width - 4
     };
-    if let Some(cap) = graph.filter(|g| *g > 0 && *g < graph_width) {
+    let graph = layout.graph_width.filter(|g| *g > 0);
+    if let Some(cap) = graph.filter(|g| *g < graph_width) {
         graph_width = cap;
     }
-    let mut name_width = max_len;
+    let mut name_width = layout
+        .name_width
+        .filter(|n| *n > 0 && *n < max_len)
+        .unwrap_or(max_len);
     if name_width + number_width + 6 + graph_width > width {
         let limit = (width * 3 / 8).saturating_sub(number_width + 6);
         if graph_width > limit {
             graph_width = limit.max(6);
         }
-        if let Some(cap) = graph.filter(|g| *g > 0 && graph_width > *g) {
+        if let Some(cap) = graph.filter(|g| graph_width > *g) {
             graph_width = cap;
         }
         let room = width.saturating_sub(number_width + 6 + graph_width);
@@ -84,6 +115,10 @@ pub fn render(rows: &[Row], width: usize, graph: Option<usize>) -> String {
         }
     }
 
+    let (add_c, del_c, reset) = match &layout.colors {
+        Some((a, d)) => (a.as_str(), d.as_str(), "\x1b[m"),
+        None => ("", "", ""),
+    };
     let (mut added, mut deleted) = (0, 0);
     for row in rows {
         let name = shorten(&row.name, name_width);
@@ -109,25 +144,41 @@ pub fn render(rows: &[Row], width: usize, graph: Option<usize>) -> String {
                     Counts::Lines(x, y) => x + y,
                     Counts::Binary(..) => 0,
                 };
+                let bar = |c: &str, ch: &str, n: usize| {
+                    if n == 0 {
+                        String::new()
+                    } else {
+                        format!("{c}{}{reset}", ch.repeat(n))
+                    }
+                };
                 let _ = writeln!(
                     out,
                     " {name} | {n:>number_width$}{}{}{}",
                     if n > 0 { " " } else { "" },
-                    "+".repeat(a),
-                    "-".repeat(d),
+                    bar(add_c, "+", a),
+                    bar(del_c, "-", d),
                 );
             }
             Counts::Binary(old, new) => {
                 let sizes = if old + new == 0 {
                     String::new()
                 } else {
-                    format!(" {old} -> {new} bytes")
+                    format!(" {del_c}{old}{reset} -> {add_c}{new}{reset} bytes")
                 };
                 let _ = writeln!(out, " {name} | {:>number_width$}{sizes}", "Bin");
             }
         }
     }
-    out.push_str(&summary(rows.len(), added, deleted));
+    if shown < all.len() {
+        out.push_str(" ...\n");
+        for row in &all[shown..] {
+            if let Counts::Lines(a, d) = row.counts {
+                added += a;
+                deleted += d;
+            }
+        }
+    }
+    out.push_str(&summary(all.len(), added, deleted));
     out
 }
 

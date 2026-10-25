@@ -8,7 +8,6 @@ use anyhow::Result;
 use pyn_gitwork::Pathspec;
 
 use super::GitHome;
-use super::blame_xdiff;
 use super::commands::add_changes;
 use crate::backend::Backend;
 use crate::diff::{self, Blob, Tree};
@@ -162,7 +161,7 @@ fn coalesce(base: &mut Vec<LLine>, new: Vec<Vec<u8>>, parent: usize) {
 fn combine_one(parent: &[u8], result: &[u8], sline: &mut [SLine], n: usize, cnt: usize) {
     let nmask = 1u64 << n;
     let plines = lines(parent);
-    for h in blame_xdiff::hunks(parent, result, false, true) {
+    for h in crate::xdiff::hunks(parent, result, false, true) {
         for l in &plines[h.a_start..h.a_start + h.a_count] {
             sline[h.b_start].plost.push(chomp(l).to_vec());
         }

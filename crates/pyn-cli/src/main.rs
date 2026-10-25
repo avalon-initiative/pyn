@@ -13,7 +13,11 @@ mod client;
 mod commit_format;
 mod credentials;
 mod diff;
+mod diff_color;
+mod diff_opts;
+mod diff_raw;
 mod diffstat;
+mod dirstat;
 mod git_home;
 mod http_transport;
 mod init_pyn;
@@ -33,6 +37,7 @@ mod ls_remote;
 mod merging;
 mod migrate;
 mod mv_plan;
+mod no_index;
 mod pathspec;
 mod probe;
 mod pyn_server;
@@ -54,7 +59,9 @@ mod unsupported;
 mod userconfig;
 mod verify;
 mod webhook;
+mod word_diff;
 mod workspace;
+mod xdiff;
 
 use backend::Backend;
 use client::Api;
@@ -207,7 +214,7 @@ enum Command {
         #[arg(last = true)]
         paths: Vec<String>,
         #[command(flatten)]
-        format: DiffFormat,
+        format: Box<DiffFormat>,
         /// Exit with 1 if there are differences, 0 if none.
         #[arg(long)]
         exit_code: bool,
@@ -217,6 +224,12 @@ enum Command {
         /// Compare the staged changes with the last commit instead of the work tree with the staged changes.
         #[arg(long, alias = "staged")]
         cached: bool,
+        /// Compare two paths on the file system, in or out of a repository; exits with 1 if they differ.
+        #[arg(long)]
+        no_index: bool,
+        /// Print nothing; only the exit status says anything.
+        #[arg(short = 's', long = "no-patch")]
+        no_patch: bool,
     },
     /// Print the object ids revisions name, and facts about the repository (a git repository only).
     RevParse(git_home::RevParseArgs),
@@ -260,7 +273,7 @@ enum Command {
         #[command(flatten)]
         decorate: Box<git_home::DecorateArgs>,
         #[command(flatten)]
-        format: DiffFormat,
+        format: Box<DiffFormat>,
     },
     /// Read and write settings, per workspace or for your user.
     #[command(subcommand)]
@@ -431,7 +444,7 @@ enum Command {
         #[arg(long, conflicts_with_all = ["path", "filter"])]
         commits: bool,
         #[command(flatten)]
-        git: git_home::GitLogArgs,
+        git: Box<git_home::GitLogArgs>,
     },
     /// Check that history is intact: every revision's hash and its link to the one before, and the audit log's chain.
     ///
@@ -489,18 +502,15 @@ struct DiffFormat {
     /// Lines of context around each change.
     #[arg(short = 'U', long = "unified", value_name = "N", default_value_t = 3)]
     context: usize,
-    /// Show a diffstat instead of the patch.
-    #[arg(long, conflicts_with_all = ["name_only", "name_status", "check"])]
-    stat: bool,
+    /// Show a diffstat instead of the patch, optionally `=<width>[,<name-width>[,<count>]]`.
+    #[arg(long, value_name = "WIDTHS", num_args = 0..=1, require_equals = true, default_missing_value = "", conflicts_with_all = ["name_only", "name_status", "check"])]
+    stat: Option<String>,
     /// Show only the totals line of the diffstat.
     #[arg(long, conflicts_with_all = ["stat", "name_only", "name_status", "check"])]
     shortstat: bool,
     /// Show added and deleted line counts per file.
     #[arg(long, conflicts_with_all = ["stat", "shortstat", "name_only", "name_status", "check"])]
     numstat: bool,
-    /// Ignore whitespace when comparing lines.
-    #[arg(short = 'w', long = "ignore-all-space")]
-    ignore_all_space: bool,
     /// Report trailing whitespace and space before tab in added lines; exit with 2 if any.
     #[arg(long, conflicts_with_all = ["name_only", "name_status"])]
     check: bool,
@@ -515,13 +525,63 @@ struct DiffFormat {
     summary: bool,
     #[command(flatten)]
     renames: rename::Flags,
+    #[command(flatten)]
+    pub(crate) extra: diff_opts::OutputFlags,
 }
 
 impl DiffFormat {
+    /// Whether `--stat` or an option that implies it was given.
+    pub(crate) fn stat_given(&self) -> bool {
+        self.stat.is_some() || self.extra.stat_implied() || self.extra.patch_with_stat()
+    }
+
     fn format(&self) -> diff::Format {
-        let kind = if self.check {
+        if self.stat.is_none()
+            && self.extra.stat_implied()
+            && (self.shortstat
+                || self.numstat
+                || self.name_only
+                || self.name_status
+                || self.check
+                || self.extra.raw())
+        {
+            usage_error("a --stat option does not combine with another output format");
+        }
+        if self.extra.dirstat_given()
+            && (self.stat_given()
+                || self.shortstat
+                || self.numstat
+                || self.name_only
+                || self.name_status
+                || self.check
+                || self.summary
+                || self.extra.raw())
+        {
+            usage_error("`--dirstat` together with another output format is not built");
+        }
+        let mut format = self.build();
+        if self.extra.patch() && format.kind != diff::Kind::Patch {
+            match format.kind {
+                diff::Kind::Summary => format.kind = diff::Kind::Patch,
+                diff::Kind::Stat
+                | diff::Kind::ShortStat
+                | diff::Kind::NumStat
+                | diff::Kind::Raw
+                | diff::Kind::Dirstat => format.with_patch = true,
+                _ => usage_error("`-p` together with another output format is not built"),
+            }
+        }
+        format
+    }
+
+    fn build(&self) -> diff::Format {
+        let kind = if self.extra.dirstat_given() {
+            diff::Kind::Dirstat
+        } else if self.extra.raw() || self.extra.patch_with_raw() {
+            diff::Kind::Raw
+        } else if self.check {
             diff::Kind::Check
-        } else if self.stat {
+        } else if self.stat_given() || self.extra.patch_with_stat() {
             diff::Kind::Stat
         } else if self.shortstat {
             diff::Kind::ShortStat
@@ -539,9 +599,10 @@ impl DiffFormat {
         diff::Format {
             context: self.context,
             kind,
-            ignore_ws: self.ignore_all_space,
+            opts: self.extra.opts(),
             renames: self.renames.request(),
             summary: self.summary,
+            with_patch: false,
             kept: Vec::new(),
         }
     }
@@ -1286,6 +1347,29 @@ fn run(cli: Cli) -> Result<()> {
     if let Command::LsRemote(args) = &cli.command {
         return ls_remote::run(args, git.as_ref());
     }
+    if let Command::Diff {
+        args,
+        paths,
+        format,
+        quiet,
+        cached,
+        no_index,
+        no_patch,
+        ..
+    } = &cli.command
+        && (*no_index
+            || (!cached
+                && git.is_none()
+                && no_index::are_paths(args.iter().chain(paths))
+                && Workspace::discover(&cwd).is_none()))
+    {
+        let operands: Vec<String> = args.iter().chain(paths).cloned().collect();
+        let shown = format.format().silenced(*no_patch);
+        if no_index::run(&operands, &shown, *quiet, git.as_ref())? {
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
     if let Command::Commit { git: opts, .. } = &cli.command
         && git.is_none()
         && let Some(flag) = opts.first_given()
@@ -1940,6 +2024,8 @@ fn run(cli: Cli) -> Result<()> {
             exit_code,
             quiet,
             cached,
+            no_patch,
+            ..
         } => {
             let named = DiffArgs {
                 args: &args,
@@ -1947,7 +2033,16 @@ fn run(cli: Cli) -> Result<()> {
                 cached,
                 cwd: &cwd,
             };
-            let differs = diff_command(&backend, ws.as_ref(), &named, &format.format(), quiet)?;
+            if let Some(flag) = format.extra.git_only() {
+                usage_error(&format!("`pyn diff {flag}` needs a git repository"));
+            }
+            let differs = diff_command(
+                &backend,
+                ws.as_ref(),
+                &named,
+                &format.format().silenced(no_patch),
+                quiet,
+            )?;
             if differs && (exit_code || quiet) {
                 std::process::exit(1);
             }
@@ -1965,7 +2060,11 @@ fn run(cli: Cli) -> Result<()> {
             if args.len() > 1 || !paths.is_empty() {
                 usage_error("`pyn show` takes one commit and no paths on a pyn server");
             }
-            if let Some(flag) = merges.given().or(first_parent.then_some("--first-parent")) {
+            if let Some(flag) = merges
+                .given()
+                .or(first_parent.then_some("--first-parent"))
+                .or(format.extra.git_only())
+            {
                 usage_error(&format!("`pyn show {flag}` needs a git repository"));
             }
             if let Some((flag, _)) = decorate.given().into_iter().find(|(_, on)| *on) {

@@ -11,9 +11,6 @@ use crate::diff::{self, Tree};
 
 #[derive(Debug, Args)]
 pub(super) struct ShowArgs {
-    /// Show the patch (with a diffstat too when `--stat` is also given).
-    #[arg(short = 'p', long)]
-    patch: bool,
     /// Include the untracked files the stash saved.
     #[arg(short = 'u', long)]
     include_untracked: bool,
@@ -21,7 +18,7 @@ pub(super) struct ShowArgs {
     #[arg(long)]
     only_untracked: bool,
     #[command(flatten)]
-    format: crate::DiffFormat,
+    format: Box<crate::DiffFormat>,
     /// The stash to show (the newest if none is named).
     stash: Vec<String>,
 }
@@ -56,10 +53,19 @@ pub(super) fn show(git: &GitHome, args: ShowArgs) -> Result<()> {
         )?;
     }
     let f = &args.format;
-    let flagged =
-        f.stat || f.shortstat || f.numstat || f.name_only || f.name_status || f.check || f.summary;
-    let (summary, patch) = if flagged || args.patch {
-        (flagged, args.patch)
+    let flagged = f.stat_given()
+        || f.shortstat
+        || f.numstat
+        || f.name_only
+        || f.name_status
+        || f.check
+        || f.summary
+        || f.extra.raw()
+        || f.extra.dirstat_given();
+    let (summary, patch) = if flagged || f.extra.patch() {
+        (flagged, f.extra.patch())
+    } else if diff_option_given() {
+        (false, true)
     } else {
         (
             git.repo.bool_setting("stash.showStat", true),
@@ -68,7 +74,7 @@ pub(super) fn show(git: &GitHome, args: ShowArgs) -> Result<()> {
     };
     let mut out = String::new();
     if summary {
-        let kind = if flagged { f.format() } else { stat_default(f) };
+        let kind = if flagged { f.build() } else { stat_default(f) };
         diff::compare(git, &old, &new, &[], &kind, &mut out)?;
     }
     if patch {
@@ -76,7 +82,7 @@ pub(super) fn show(git: &GitHome, args: ShowArgs) -> Result<()> {
         let format = diff::Format {
             kind: diff::Kind::Patch,
             summary: false,
-            ..f.format()
+            ..f.build()
         };
         diff::compare(git, &old, &new, &[], &format, &mut body)?;
         if !out.is_empty() && !body.is_empty() {
@@ -88,9 +94,24 @@ pub(super) fn show(git: &GitHome, args: ShowArgs) -> Result<()> {
     Ok(())
 }
 
+/// Whether the command line has a diff option, which makes git show the patch rather than the configured default.
+fn diff_option_given() -> bool {
+    std::env::args()
+        .skip_while(|a| a != "show")
+        .skip(1)
+        .take_while(|a| a != "--")
+        .any(|a| {
+            a.starts_with('-')
+                && !matches!(
+                    a.as_str(),
+                    "-u" | "--include-untracked" | "--only-untracked"
+                )
+        })
+}
+
 fn stat_default(f: &crate::DiffFormat) -> diff::Format {
     diff::Format {
         kind: diff::Kind::Stat,
-        ..f.format()
+        ..f.build()
     }
 }
