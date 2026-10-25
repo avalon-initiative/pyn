@@ -283,6 +283,12 @@ fn reset_logging(git: &GitHome, cwd: &Path, args: &ResetArgs, log: bool) -> Resu
     }
     let kind = args.kind();
     let (rev, paths) = split(git, cwd, args)?;
+    if args.patch {
+        if args.has_mode() {
+            bail!("options '--patch' and '--{{hard,mixed,soft}}' cannot be used together");
+        }
+        return super::patch_mode::reset(git, cwd, rev.as_deref(), &paths);
+    }
     let rev = rev.unwrap_or_else(|| "HEAD".into());
     let head = git.repo.head_commit()?;
     let unborn = rev == "HEAD" && head.is_none();

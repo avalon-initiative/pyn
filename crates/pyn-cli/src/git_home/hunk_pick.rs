@@ -24,13 +24,15 @@ pub(super) enum Item {
         new: String,
     },
     Hunk(Hunk),
+    /// The addition or deletion of an empty file, which has no lines to show.
+    Whole,
 }
 
 impl Item {
     pub(super) fn hunk(&self) -> Option<&Hunk> {
         match self {
             Item::Hunk(h) => Some(h),
-            Item::Mode { .. } => None,
+            Item::Mode { .. } | Item::Whole => None,
         }
     }
 }
@@ -87,6 +89,7 @@ impl FileDiff {
         match &self.items[at] {
             Item::Mode { old, new } => format!("old mode {old}\nnew mode {new}\n"),
             Item::Hunk(h) => h.render(),
+            Item::Whole => String::new(),
         }
     }
 

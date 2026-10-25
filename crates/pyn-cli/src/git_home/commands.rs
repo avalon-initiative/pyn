@@ -140,14 +140,30 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
         Command::Pull(args) => super::pull::pull(git, args),
         Command::Push(args) => super::push::push(git, args),
         Command::Add {
+            dry_run: true,
+            patch: true,
+            ..
+        }
+        | Command::Add {
+            dry_run: true,
+            interactive: true,
+            ..
+        } => bail!("options '--dry-run' and '--interactive/--patch' cannot be used together"),
+        Command::Add {
             paths, patch: true, ..
         } => super::patch_mode::add(git, cwd, &paths),
+        Command::Add {
+            paths,
+            interactive: true,
+            ..
+        } => super::add_interactive::add_interactive(git, cwd, &paths),
         Command::Add {
             paths,
             update,
             dry_run,
             verbose,
             force,
+            intent_to_add,
             ..
         } => {
             let options = stage::AddOptions {
@@ -156,6 +172,7 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
                 dry_run,
                 verbose,
                 force,
+                intent_to_add,
             };
             if stage::add(git, cwd, &options)? {
                 std::process::exit(1);

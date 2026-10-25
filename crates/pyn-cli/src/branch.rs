@@ -156,6 +156,9 @@ pub struct CheckoutArgs {
     /// Skip the typed confirmation before discarding an edit to an exclusive file.
     #[arg(long)]
     pub(crate) yes: bool,
+    /// Choose the hunks to take from the index or the named commit, one at a time (a git repository only).
+    #[arg(short, long, conflicts_with_all = ["create", "force", "detach", "ours", "theirs", "yes"])]
+    pub(crate) patch: bool,
 }
 
 fn branches(api: &Api) -> Result<Vec<api::Branch>> {
@@ -446,6 +449,9 @@ pub fn checkout_command(
     rp: &dyn Fn(&str) -> Result<String>,
 ) -> Result<()> {
     let api = backend.pyn_server("checkout")?;
+    if args.patch {
+        bail!("`pyn checkout --patch` needs a git repository; a pyn server restores whole files");
+    }
     if args.detach {
         bail!(
             "`pyn checkout --detach` needs a git repository; a pyn server's branches always have a head"
@@ -464,6 +470,7 @@ pub fn checkout_command(
         ours,
         theirs,
         yes,
+        patch: _,
     } = args;
     if ours || theirs {
         if paths.is_empty() || new.is_some() {

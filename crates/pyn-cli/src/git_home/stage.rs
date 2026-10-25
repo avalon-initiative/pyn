@@ -38,6 +38,7 @@ pub struct AddOptions {
     pub dry_run: bool,
     pub verbose: bool,
     pub force: bool,
+    pub intent_to_add: bool,
 }
 
 pub(super) fn raw_mode(mode: FileMode) -> u32 {
@@ -545,8 +546,7 @@ fn apply(
     git: &GitHome,
     entries: &mut Entries,
     ops: &BTreeMap<Vec<u8>, Op>,
-    dry_run: bool,
-    verbose: bool,
+    (dry_run, verbose, intent): (bool, bool, bool),
 ) -> Result<()> {
     for (path, op) in ops {
         let name = path_string(path);
@@ -563,13 +563,18 @@ fn apply(
                 if dry_run || verbose {
                     println!("add '{name}'");
                 }
-                if !dry_run {
+                let tracked = (0..=3).any(|stage| entries.contains_key(&(path.clone(), stage)));
+                if !dry_run && !(intent && tracked) {
                     let existing = entries.get(&(path.clone(), 0)).or_else(|| {
                         (1..=3)
                             .filter_map(|stage| entries.get(&(path.clone(), stage)))
                             .find(|entry| entry.mode == GITLINK)
                     });
-                    let entry = stage_file(git, path, existing)?;
+                    let mut entry = stage_file(git, path, existing)?;
+                    if intent {
+                        entry.id = git.repo.objects().write(ObjectKind::Blob, b"")?;
+                        entry.intent_to_add = true;
+                    }
                     put_entry(entries, entry);
                 }
             }
@@ -629,8 +634,7 @@ pub fn add(git: &GitHome, cwd: &Path, options: &AddOptions) -> Result<bool> {
         git,
         &mut entries,
         &plan.ops,
-        options.dry_run,
-        options.verbose,
+        (options.dry_run, options.verbose, options.intent_to_add),
     )?;
     if !options.dry_run && !plan.ops.is_empty() {
         git.save_index(&opened, &index_of(opened.index.version, entries))?;
@@ -892,7 +896,7 @@ pub(super) fn stage_tracked(git: &GitHome, index: &Index, entries: &mut Entries)
         spec: Pathspec::default(),
     };
     let plan = plan(git, index, &specs, true, false)?;
-    apply(git, entries, &plan.ops, false, false)?;
+    apply(git, entries, &plan.ops, (false, false, false))?;
     Ok(!plan.ops.is_empty())
 }
 

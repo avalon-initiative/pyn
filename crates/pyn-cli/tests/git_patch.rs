@@ -1,4 +1,4 @@
-//! `pyn add -p`, `restore -p` and `stash push -p` on a git repository: the same answers given to real git and to
+//! `pyn add -p`, `restore -p`, `checkout -p`, `reset -p`, `stash push -p` and `add -N` on a git repository: the same answers given to real git and to
 //! pyn on copies of one repository must end in the same index, work tree and stash. Needs `git` on the PATH (tests
 //! only); the wording of git's prompts differs between versions, so only the outcome and the pinned prompts of pyn's
 //! own transcript tests are checked.
@@ -112,6 +112,10 @@ impl Pair {
 
 /// Two copies of a repository with `f` (three separate hunks once edited), `g`, `h` and `d/n` committed.
 fn pair(setup: impl Fn(&Pair)) -> Pair {
+    pair_in("sha1", setup)
+}
+
+fn pair_in(format: &str, setup: impl Fn(&Pair)) -> Pair {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().canonicalize().unwrap();
     let p = Pair {
@@ -128,7 +132,13 @@ fn pair(setup: impl Fn(&Pair)) -> Pair {
         let out = p.git_in(&p.git, args);
         assert!(out.status.success(), "git {args:?}");
     };
-    ok(&["init", "-q", "-b", "main"]);
+    ok(&[
+        "init",
+        "-q",
+        "-b",
+        "main",
+        &format!("--object-format={format}"),
+    ]);
     ok(&["config", "gc.auto", "0"]);
     ok(&["config", "maintenance.auto", "false"]);
     p.write("f", &numbered(&[]));
@@ -193,7 +203,17 @@ fn same(setup: impl Fn(&Pair), args: &[&str], input: &str) {
 }
 
 fn same_with(setup: impl Fn(&Pair), args: &[&str], input: &str, editor: Option<(&str, &str)>) {
-    let p = pair(setup);
+    same_in("sha1", setup, args, input, editor);
+}
+
+fn same_in(
+    format: &str,
+    setup: impl Fn(&Pair),
+    args: &[&str],
+    input: &str,
+    editor: Option<(&str, &str)>,
+) {
+    let p = pair_in(format, setup);
     let editor = editor.map(|(name, script)| p.editor(name, script));
     let (g, y) = run(&p, args, input, editor.as_deref());
     let what = format!("{args:?} with {input:?}");
@@ -207,7 +227,9 @@ fn same_with(setup: impl Fn(&Pair), args: &[&str], input: &str, editor: Option<(
     assert_eq!(
         p.state(&p.pyn),
         p.state(&p.git),
-        "{what}: state (pyn, then git)"
+        "{what}: state (pyn, then git); pyn said {}{}",
+        String::from_utf8_lossy(&y.stdout),
+        String::from_utf8_lossy(&y.stderr)
     );
     let note = |out: &Output| {
         let both = [out.stdout.as_slice(), out.stderr.as_slice()].concat();
@@ -348,6 +370,31 @@ fn deleted_new_and_mode_changed_files_match_git() {
         &["add", "-p"],
         "y\n",
     );
+}
+
+#[test]
+fn empty_files_are_added_and_deleted_like_git() {
+    let empties = |p: &Pair| {
+        p.write("e1", "");
+        p.write("e2", "");
+        for root in [&p.git, &p.pyn] {
+            assert!(p.git_in(root, &["add", "e1", "e2"]).status.success());
+            assert!(
+                p.git_in(root, &["commit", "-q", "-m", "e"])
+                    .status
+                    .success()
+            );
+            fs::remove_file(root.join("e1")).unwrap();
+            fs::write(root.join("e3"), "").unwrap();
+            assert!(p.git_in(root, &["add", "-N", "e3"]).status.success());
+        }
+        edit_f(p);
+    };
+    for args in [&["add", "-p"][..], &["restore", "-p"], &["checkout", "-p"]] {
+        same(empties, args, "y\ny\ny\ny\ny\n");
+        same(empties, args, "n\ny\ny\nn\ny\n");
+        same(empties, args, "y\nn\nq\n");
+    }
 }
 
 #[test]
@@ -663,4 +710,261 @@ fn g_lists_hunks_with_their_state_and_first_changed_line() {
     let p = pair(edit_f);
     let got = transcript(&p, &["add", "-p"], "y\ng\n2\nq\n");
     assert!(got.contains("+ 1:  -1,6 +1,6          -3\n  2:  -17,7 +17,7        -20\n  3:  -35,6 +35,6        -38\ngo to which hunk? "));
+}
+
+fn later_commit(p: &Pair) {
+    edit_all(p);
+    for root in [&p.git, &p.pyn] {
+        assert!(p.git_in(root, &["add", "-A"]).status.success());
+        assert!(
+            p.git_in(root, &["commit", "-q", "-m", "two"])
+                .status
+                .success()
+        );
+    }
+    p.write(
+        "f",
+        &numbered(&[(3, "three"), (20, "twenty"), (38, "t38"), (40, "end")]),
+    );
+}
+
+#[test]
+fn checkout_patch_matches_git() {
+    for input in WALK {
+        same(edit_all, &["checkout", "-p"], input);
+        let padded = format!("{input}{}", "n\n".repeat(12));
+        same(edit_all, &["checkout", "-p", "HEAD"], &padded);
+        same(staged_all, &["checkout", "-p", "HEAD"], input);
+    }
+    for args in [
+        &["checkout", "-p", "f"][..],
+        &["checkout", "-p", "--", "f"],
+        &["checkout", "--patch", "HEAD", "--", "f", "d"],
+        &["checkout", "-p", "HEAD", "g", "h"],
+        &["checkout", "-p", "main", "f"],
+        &["checkout", "-p", "HEAD~0"],
+        &["checkout", "-p", "nothing"],
+        &["checkout", "-p", "HEAD", "nothing"],
+        &["checkout", "-p", "HEAD~1"],
+    ] {
+        same(later_commit, args, "y\nn\ny\ny\ny\ny\ny\n");
+        same(later_commit, args, "y\ny\ny\ny\ny\ny\ny\n");
+    }
+}
+
+#[test]
+fn checkout_patch_asks_when_the_index_differs() {
+    let differs = |p: &Pair| {
+        staged_all(p);
+        p.write(
+            "f",
+            &numbered(&[(3, "three"), (20, "twenty"), (38, "t38"), (40, "end")]),
+        );
+    };
+    for input in ["y\ny\ny\ny\ny\ny\n", "y\ny\ny\nn\n", "y\ny\ny\n"] {
+        same(differs, &["checkout", "-p", "HEAD~0"], input);
+        same(differs, &["checkout", "-p", "HEAD"], input);
+    }
+}
+
+#[test]
+fn reset_patch_matches_git() {
+    for input in WALK {
+        same(staged_all, &["reset", "-p"], input);
+        same(staged_all, &["reset", "--patch", "HEAD"], input);
+    }
+    for args in [
+        &["reset", "-p", "f"][..],
+        &["reset", "-p", "--", "f", "d"],
+        &["reset", "-p", "HEAD", "g"],
+        &["reset", "-p", "-q"],
+        &["reset", "-p", "HEAD~0"],
+        &["reset", "-p", "HEAD~1"],
+        &["reset", "-p", "--", "nothing"],
+        &["reset", "-p", "nothing"],
+    ] {
+        same(later_commit, args, "y\nn\ny\ny\ny\ny\ny\n");
+        same(staged_all, args, "y\ny\ny\ny\ny\ny\ny\n");
+    }
+}
+
+#[test]
+fn reset_patch_refuses_a_mode_like_git() {
+    for flag in ["--hard", "--soft", "--mixed", "--keep", "--merge"] {
+        same(staged_all, &["reset", "-p", flag], "y\n");
+    }
+}
+
+#[test]
+fn reset_patch_on_an_unborn_branch_matches_git() {
+    let unborn = |p: &Pair| {
+        for root in [&p.git, &p.pyn] {
+            let out = p.git_in(root, &["update-ref", "-d", "refs/heads/main"]);
+            assert!(out.status.success());
+        }
+    };
+    same(unborn, &["reset", "-p"], "y\ny\ny\ny\ny\n");
+    same(unborn, &["reset", "-p", "--", "f"], "n\ny\n");
+}
+
+fn untracked(p: &Pair) {
+    p.write("new", "one\ntwo\n");
+    p.write("d/more", "m\n");
+    p.write("empty", "");
+    p.write("sub/deep/x", "x\n");
+    edit_f(p);
+    for root in [&p.git, &p.pyn] {
+        fs::remove_file(root.join("h")).unwrap();
+        std::os::unix::fs::symlink("f", root.join("link")).unwrap();
+        let mut perms = fs::metadata(root.join("new")).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(root.join("new"), perms).unwrap();
+    }
+}
+
+#[test]
+fn intent_to_add_matches_git() {
+    for args in [
+        &["add", "-N", "new"][..],
+        &["add", "--intent-to-add", "new", "empty", "link"],
+        &["add", "-N", "."],
+        &["add", "-N", "d", "sub"],
+        &["add", "-N", "-A"],
+        &["add", "-N", "-u"],
+        &["add", "-N", "f"],
+        &["add", "-N", "h"],
+        &["add", "-N", "f", "h", "new"],
+        &["add", "-N", "-n", "new"],
+        &["add", "-N", "-v", "new", "empty"],
+        &["add", "-N", "nothing"],
+        &["add", "-N", "-f", "new"],
+    ] {
+        same(untracked, args, "");
+    }
+}
+
+#[test]
+fn intent_to_add_then_stage_commit_and_unstage_match_git() {
+    let marked = |p: &Pair| {
+        untracked(p);
+        for root in [&p.git, &p.pyn] {
+            assert!(
+                p.git_in(root, &["add", "-N", "new", "empty"])
+                    .status
+                    .success()
+            );
+        }
+    };
+    for args in [
+        &["add", "new"][..],
+        &["add", "."],
+        &["add", "-u"],
+        &["add", "-p"],
+        &["restore", "--staged", "new"],
+        &["rm", "--cached", "new"],
+        &["commit", "-m", "x"],
+        &["commit", "-a", "-m", "x"],
+        &["stash", "push", "-p"],
+        &["checkout", "-p"],
+    ] {
+        same(marked, args, "y\ny\ny\ny\n");
+    }
+}
+
+#[test]
+fn intent_to_add_is_listed_like_git() {
+    let p = pair(untracked);
+    let args = ["add", "-N", "new", "empty", "link"];
+    let (g, y) = run(&p, &args, "", None);
+    assert!(g.status.success() && y.status.success());
+    for cmd in [
+        &["status", "-s"][..],
+        &["diff"],
+        &["diff", "--stat"],
+        &["diff", "--cached"],
+        &["ls-files", "-s"],
+    ] {
+        let (g, y) = run(&p, cmd, "", None);
+        assert_eq!(
+            String::from_utf8_lossy(&y.stdout),
+            String::from_utf8_lossy(&g.stdout),
+            "{cmd:?}"
+        );
+    }
+}
+
+#[test]
+fn intent_to_add_is_ignored_with_patch_like_git() {
+    same(untracked, &["add", "-N", "-p"], "y\ny\ny\ny\ny\n");
+}
+
+#[test]
+fn patch_modes_work_in_sha256_repositories() {
+    for (args, input) in [
+        (&["add", "-p"][..], "y\nn\ny\ny\ny\ny\n"),
+        (&["add", "-N", "new", "empty"], ""),
+        (&["restore", "-p", "-S"], "y\nn\ny\ny\ny\ny\n"),
+        (&["checkout", "-p", "HEAD"], "y\ny\ny\ny\ny\ny\ny\n"),
+        (&["reset", "-p"], "y\nn\ny\ny\ny\ny\n"),
+    ] {
+        same_in("sha256", staged_all, args, input, None);
+        same_in("sha256", untracked, args, input, None);
+    }
+}
+
+/// git 2.55 and later print the prompt pyn follows; earlier versions differ in wording and are only compared on outcome.
+fn git_prints_the_current_prompt() -> bool {
+    let out = Command::new("git").arg("--version").output().unwrap();
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    let version: Vec<u32> = text
+        .split_whitespace()
+        .nth(2)
+        .unwrap_or("")
+        .split('.')
+        .filter_map(|n| n.parse().ok())
+        .collect();
+    version >= vec![2, 55]
+}
+
+fn same_transcript(setup: impl Fn(&Pair), args: &[&str], input: &str) {
+    let p = pair(setup);
+    let (g, y) = run(&p, args, input, None);
+    let what = format!("{args:?} with {input:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&y.stdout),
+        String::from_utf8_lossy(&g.stdout),
+        "{what}: transcript (pyn, then git)"
+    );
+    assert_eq!(y.status.code(), g.status.code(), "{what}: exit");
+}
+
+#[test]
+fn transcripts_match_git_when_it_prints_the_current_prompt() {
+    if !git_prints_the_current_prompt() {
+        return;
+    }
+    let inputs = [
+        "y\nn\ny\ny\ny\ny\ny\n",
+        "q\n",
+        "j\ny\nk\nJ\nK\nd\n",
+        "g\n2\ny\nq\n",
+        "/\ntwen\ny\nq\n",
+        "?\nz\nyn\n\nq\n",
+        "a\n",
+        "",
+    ];
+    for input in inputs {
+        same_transcript(edit_all, &["add", "-p"], input);
+        same_transcript(edit_all, &["restore", "-p"], input);
+        same_transcript(edit_all, &["checkout", "-p"], input);
+        same_transcript(staged_all, &["reset", "-p"], input);
+        same_transcript(staged_all, &["restore", "-p", "-S"], input);
+        same_transcript(staged_all, &["checkout", "-p", "HEAD"], input);
+        same_transcript(edit_all, &["stash", "push", "-p"], input);
+    }
+    for input in ["s\ny\nn\ny\nn\n", "s\ns\nn\ny\nq\n", "s\nj\nj\ny\nn\n"] {
+        same_transcript(split_me, &["add", "-p"], input);
+    }
+    same_transcript(|_| {}, &["add", "-p"], "y\n");
+    same_transcript(|_| {}, &["reset", "-p"], "y\n");
 }
