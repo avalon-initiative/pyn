@@ -313,6 +313,11 @@ impl Pretty {
         }
     }
 
+    /// `--format=` with nothing in it: git prints no separator for a diff after it.
+    pub fn empty_format(&self) -> bool {
+        matches!(self, Self::User { template, .. } if template.is_empty())
+    }
+
     pub fn uses_decorations(&self) -> bool {
         matches!(self, Self::User { template, .. } if template.contains("%d") || template.contains("%D"))
     }
@@ -327,7 +332,7 @@ pub struct Context<'a> {
     pub decorations: &'a Decorations,
 }
 
-fn short(id: &ObjectId) -> String {
+pub(crate) fn short(id: &ObjectId) -> String {
     id.to_hex()[..ABBREV].to_string()
 }
 

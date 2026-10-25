@@ -15,6 +15,7 @@ use super::decorate::{DecorateArgs, with_decoration};
 use super::log_gate::{Gate, Pickaxe};
 use super::log_graph::{Graph, topo_order};
 use super::log_match::{Dialect, compile_as, compile_ere, parse_date};
+use super::merge_diff::{Body, MergeArgs, Plan, Shape, Want, with_from};
 use crate::commit_format::{Context, FormatArgs, Pretty, Rendering, render};
 use crate::diff::{self, DiffParts, Kind, Tree};
 use crate::{table, time};
@@ -100,6 +101,8 @@ pub struct GitLogArgs {
     first_parent: bool,
     #[command(flatten)]
     decorate: Box<DecorateArgs>,
+    #[command(flatten)]
+    merge_diff: MergeArgs,
     /// A diffstat after each commit.
     #[arg(long, conflicts_with_all = ["shortstat", "name_only", "name_status"])]
     stat: bool,
@@ -155,6 +158,10 @@ impl GitLogArgs {
         flags
             .into_iter()
             .chain(self.decorate.given())
+            .chain([(
+                self.merge_diff.given().unwrap_or(""),
+                self.merge_diff.given().is_some(),
+            )])
             .find(|(_, on)| *on)
             .map(|(f, _)| f)
     }
@@ -189,6 +196,10 @@ impl GitLogArgs {
         flags
             .into_iter()
             .chain(self.decorate.given())
+            .chain([(
+                self.merge_diff.given().unwrap_or(""),
+                self.merge_diff.given().is_some(),
+            )])
             .find(|(_, on)| *on)
             .map(|(f, _)| f.to_string())
     }
@@ -464,29 +475,6 @@ impl GitLogArgs {
     }
 }
 
-/// The diff of a non-merge commit against its parent, limited to `spec`; merges show none, as in git.
-fn diff_body(
-    git: &GitHome,
-    c: &Commit,
-    spec: &Pathspec,
-    parts: &DiffParts,
-    (first_parent, only): (bool, &[String]),
-) -> Result<Option<(String, bool)>> {
-    if c.parents.len() > 1 && !first_parent {
-        return Ok(None);
-    }
-    let parent_tree = match c.parents.first() {
-        Some(p) => Some(git.repo.commit(p)?.tree),
-        None => None,
-    };
-    let (mut old, mut new) = (Tree::new(), Tree::new());
-    let changes = git
-        .repo
-        .diff_trees(parent_tree.as_ref(), Some(&c.tree), spec)?;
-    add_changes(git, &mut old, &mut new, &changes)?;
-    diff::sections(git, &old, &new, (&[], only), parts)
-}
-
 /// Every ref that names a commit, in ref order, then `HEAD`.
 fn all_tips(git: &GitHome) -> Result<Vec<ObjectId>> {
     let mut tips = Vec::new();
@@ -516,13 +504,24 @@ impl GitLogArgs {
             );
         }
         if self.follow
-            && (self.diff_given() || self.pickaxe_text.is_some() || self.pickaxe_lines.is_some())
+            && (self.diff_given()
+                || self.pickaxe_text.is_some()
+                || self.pickaxe_lines.is_some()
+                || self.merge_diff.given().is_some())
         {
-            return Some("--follow` does not combine with diff output, -S or -G".into());
+            return Some(
+                "--follow` does not combine with diff output, merge diff options, -S or -G".into(),
+            );
+        }
+        if let Some(flag) = self.merge_diff.given()
+            && (self.pickaxe_text.is_some() || self.pickaxe_lines.is_some())
+        {
+            return Some(format!("{flag}` does not combine with -S or -G"));
         }
         if self.graph {
             let combined = [
                 ("diff output", self.diff_given()),
+                ("merge diff options", self.merge_diff.given().is_some()),
                 ("--author", !self.author.is_empty()),
                 ("--committer", !self.committer.is_empty()),
                 ("--grep", !self.grep.is_empty()),
@@ -581,6 +580,11 @@ pub(super) fn log(
     let Rendering { pretty, style } = args.fmt.rendering()?;
     let filters = Filters::new(&args)?;
     let parts = args.diff_parts();
+    let patch_parts = DiffParts {
+        patch: true,
+        ..args.diff_parts()
+    };
+    let plan = args.merge_diff.plan(git, args.first_parent, false)?;
     let positional: Vec<String> = path.into_iter().chain(args.more.iter().cloned()).collect();
     let selection = select(git, cwd, positional, args.dashed.clone(), args.all)?;
     let decorate = args.decorate.resolve(git, &pretty)?;
@@ -592,6 +596,11 @@ pub(super) fn log(
         decorations: &decorated,
     };
 
+    if plan.needs_full_history() && !selection.paths.is_empty() {
+        crate::usage_error(
+            "`pyn log` cannot limit history to paths with `-m` or `--diff-merges` separate or first-parent",
+        );
+    }
     let gate = args.gate(&selection.paths, &spec)?;
     let walk_spec = if gate.as_ref().is_some_and(|g| g.follow.is_some()) {
         Pathspec::default()
@@ -610,8 +619,10 @@ pub(super) fn log(
         ctx: &ctx,
         spec: &spec,
         parts: &parts,
+        patch_parts: &patch_parts,
+        plan,
+        headers: 0,
         decorate: decorate.on(),
-        first_parent: args.first_parent,
         gate,
         graph: None,
         missing_newline: false,
@@ -675,8 +686,10 @@ struct Printer<'a> {
     ctx: &'a Context<'a>,
     spec: &'a Pathspec,
     parts: &'a DiffParts,
+    patch_parts: &'a DiffParts,
+    plan: Plan,
+    headers: usize,
     decorate: bool,
-    first_parent: bool,
     gate: Option<Gate>,
     graph: Option<Graph>,
     missing_newline: bool,
@@ -789,29 +802,54 @@ impl Printer<'_> {
             },
             None => Vec::new(),
         };
-        if self.shown > 0 && !self.pretty.terminated() {
-            self.out.push('\n');
-        }
-        let text = render(self.pretty, self.ctx, &entry.id, &entry.commit);
-        self.out.push_str(&if self.decorate {
-            with_decoration(text, self.pretty, self.ctx.decorations.get(&entry.id))
+        let c = &entry.commit;
+        let asked = self.parts.any();
+        let segments = if self.plan.diffs(c.parents.len() > 1, asked) {
+            let parts = if asked { self.parts } else { self.patch_parts };
+            let git = self.git;
+            let spec = self.spec;
+            let shape = Shape {
+                git,
+                pretty: self.pretty,
+                spec,
+                only: &[],
+                quiet: false,
+            };
+            let mut against = |parent: Option<ObjectId>| -> Result<Option<Body>> {
+                let parent_tree = match parent {
+                    Some(p) => Some(git.repo.commit(&p)?.tree),
+                    None => None,
+                };
+                let (mut old, mut new) = (Tree::new(), Tree::new());
+                let changes = git
+                    .repo
+                    .diff_trees(parent_tree.as_ref(), Some(&c.tree), spec)?;
+                add_changes(git, &mut old, &mut new, &changes)?;
+                Ok(diff::sections(git, &old, &new, (&[], &only), parts)?
+                    .map(|(text, dashes)| Body { text, dashes }))
+            };
+            shape.segments(&self.plan, c, &|| Want::of_parts(parts), &mut against)?
         } else {
-            text
-        });
-        self.out.push_str(self.pretty.terminator());
-        if self.parts.any()
-            && let Some((body, dashes)) = diff_body(
-                self.git,
-                &entry.commit,
-                self.spec,
-                self.parts,
-                (self.first_parent, &only),
-            )?
-        {
-            if self.pretty.blank_before_diff() {
-                self.out.push_str(if dashes { "---\n" } else { "\n" });
+            vec![super::merge_diff::Segment {
+                from: None,
+                tail: String::new(),
+            }]
+        };
+        for seg in segments {
+            if self.headers > 0 && !self.pretty.terminated() {
+                self.out.push('\n');
             }
-            self.out.push_str(&body);
+            let text = render(self.pretty, self.ctx, &entry.id, c);
+            let text = if self.decorate {
+                with_decoration(text, self.pretty, self.ctx.decorations.get(&entry.id))
+            } else {
+                text
+            };
+            self.out
+                .push_str(&with_from(text, self.pretty, seg.from.as_ref()));
+            self.out.push_str(self.pretty.terminator());
+            self.out.push_str(&seg.tail);
+            self.headers += 1;
         }
         self.shown += 1;
         if self.out.len() > 64 * 1024 {

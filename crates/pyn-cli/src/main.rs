@@ -249,6 +249,11 @@ enum Command {
         /// Print only the commit, not its diff.
         #[arg(short = 's', long = "no-patch")]
         no_patch: bool,
+        /// Diff a merge against its first parent unless an option says otherwise.
+        #[arg(long)]
+        first_parent: bool,
+        #[command(flatten)]
+        merges: git_home::MergeArgs,
         #[command(flatten)]
         fmt: commit_format::FormatArgs,
         #[command(flatten)]
@@ -1955,9 +1960,14 @@ fn run(cli: Cli) -> Result<()> {
             fmt,
             decorate,
             format,
+            first_parent,
+            merges,
         } => {
             if args.len() > 1 || !paths.is_empty() {
                 usage_error("`pyn show` takes one commit and no paths on a pyn server");
+            }
+            if let Some(flag) = merges.given().or(first_parent.then_some("--first-parent")) {
+                usage_error(&format!("`pyn show {flag}` needs a git repository"));
             }
             if let Some((flag, _)) = decorate.given().into_iter().find(|(_, on)| *on) {
                 usage_error(&format!("`pyn show {flag}` needs a git repository"));
