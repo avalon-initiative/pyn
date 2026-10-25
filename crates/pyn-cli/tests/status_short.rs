@@ -260,17 +260,41 @@ fn a_path_with_a_space_is_quoted_as_git_does() {
 #[test]
 fn unsupported_variants_are_usage_errors() {
     let (env, ws) = seeded();
-    for args in [
-        &["-z"][..],
-        &["--porcelain=v2"],
-        &["-s", "Source/*.cpp"],
-        &["Source/?.cpp"],
-    ] {
+    for args in [&["-z"][..], &["--porcelain=v2"]] {
         let mut full = vec!["status"];
         full.extend_from_slice(args);
         let out = env.run(&ws, "alice", &full);
         assert_eq!(out.status.code(), Some(129), "{args:?}");
         assert!(out.stdout.is_empty(), "{args:?}");
+    }
+}
+
+#[test]
+fn glob_and_magic_pathspecs_limit_the_listing() {
+    let (env, ws) = seeded();
+    write(&ws, "Source/a.cpp", "edited\n");
+    write(&ws, "Source/b.cpp", "edited\n");
+    write(&ws, "notes.txt", "x\n");
+    write(&ws, "Other/n.txt", "x\n");
+    for (args, want) in [
+        (
+            &["-s", "Source/*.cpp"][..],
+            " M Source/a.cpp\n M Source/b.cpp\n",
+        ),
+        (
+            &["-s", "Source/?.cpp"],
+            " M Source/a.cpp\n M Source/b.cpp\n",
+        ),
+        (&["-s", ":(glob)*.txt"], "?? notes.txt\n"),
+        (&["-s", "**/*.txt"], "?? Other/n.txt\n"),
+        (&["-s", ":(glob)**/*.txt"], "?? Other/n.txt\n?? notes.txt\n"),
+        (&["-s", ":!Source", ":!Other"], "?? notes.txt\n"),
+        (&["-s", ":(icase)SOURCE/A.CPP"], " M Source/a.cpp\n"),
+    ] {
+        let mut full = vec!["status"];
+        full.extend_from_slice(args);
+        let got = env.ok(&ws, "alice", &full);
+        assert_eq!(got.replace("\r", ""), want, "{args:?}");
     }
 }
 

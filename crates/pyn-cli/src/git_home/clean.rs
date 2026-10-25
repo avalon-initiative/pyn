@@ -229,7 +229,12 @@ impl Cleaner<'_> {
             }
             any = true;
             let path = child(dir, &name);
-            if !inside && !self.spec.may_contain(&path) {
+            let enters = if kind.is_dir() {
+                self.spec.walks_into(&path)
+            } else {
+                self.spec.may_contain(&path)
+            };
+            if !inside && !enters {
                 scan.whole = false;
                 continue;
             }
@@ -457,16 +462,14 @@ pub fn clean(git: &GitHome, cwd: &Path, args: &CleanArgs) -> Result<bool> {
             "clean.requireForce defaults to true and neither -i, -n, nor -f given; refusing to clean"
         );
     }
-    if let Some(magic) = args.paths.iter().find(|p| p.starts_with(':')) {
-        bail!("pathspec '{magic}': pathspec magic is not supported; name files and folders");
-    }
     let prefix = git.ws.repo_prefix(cwd, ".")?;
-    let named: Vec<String> = if args.paths.is_empty() {
-        vec![".".into()]
-    } else {
-        args.paths.clone()
-    };
-    let specs = super::stage::resolve_specs(git, cwd, &named)?;
+    let spec = git.pathspec(cwd, &args.paths, true)?;
+    if let Some(n) = (0..spec.len()).find(|n| spec.item_is_glob_folder(*n)) {
+        super::plumbing::usage(&format!(
+            "pathspec '{}': a glob that names folders is not supported by `pyn clean`",
+            String::from_utf8_lossy(spec.original(n))
+        ));
+    }
     let opened = git.open_index()?;
     let mut files = HashSet::new();
     let mut dirs = HashSet::new();
@@ -496,7 +499,7 @@ pub fn clean(git: &GitHome, cwd: &Path, args: &CleanArgs) -> Result<bool> {
     let cleaner = Cleaner {
         git,
         ignores,
-        spec: Pathspec::with_globs(specs.named.iter().map(|(_, p)| p.clone().into_bytes())),
+        spec,
         files,
         dirs,
         standard,

@@ -366,19 +366,28 @@ fn the_branch_line_without_an_upstream_or_a_branch_matches_git() {
 #[test]
 fn unsupported_variants_are_usage_errors() {
     let f = changed("sha1");
-    for args in [
-        &["-z"][..],
-        &["--porcelain=v2"],
-        &["--porcelain=v3"],
-        &["-s", "*.txt"],
-        &["d/*"],
-        &["a?.txt"],
-        &["[ab].txt"],
-        &[":(glob)*.txt"],
-    ] {
+    for args in [&["-z"][..], &["--porcelain=v2"], &["--porcelain=v3"]] {
         let (code, out, err) = f.pyn(&f.repo, args);
         assert_eq!(code, 129, "{args:?}: {out}{err}");
         assert!(out.is_empty(), "{args:?}: {out}");
+    }
+}
+
+#[test]
+fn glob_and_magic_pathspecs_limit_the_listing_like_git() {
+    let f = changed("sha1");
+    for args in [
+        &["-s", "*.txt"][..],
+        &["-s", "d/*"],
+        &["-s", "a?.txt"],
+        &["-s", "[ab].txt"],
+        &["-s", ":(glob)*.txt"],
+        &["-s", ":(glob)d/*"],
+        &["-s", ":!b.txt"],
+        &["-s", ":(icase)B.TXT"],
+        &["--porcelain", ":(exclude)d"],
+    ] {
+        f.same(&f.repo, args);
     }
 }
 

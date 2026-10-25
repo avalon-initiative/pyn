@@ -327,12 +327,14 @@ fn select(
             }
             None if explicit => bail!("bad revision '{arg}'"),
             None => {
-                let rel = git.ws.repo_prefix(cwd, &arg)?;
-                if !on_disk(git, &rel) && !in_head(git, &rel)? {
-                    bail!(
-                        "ambiguous argument '{arg}': unknown revision or path not in the working tree.\n\
-                         Use '--' to separate paths from revisions"
-                    );
+                if !super::stage::looks_like_pathspec(&arg) {
+                    let rel = git.ws.repo_prefix(cwd, &arg)?;
+                    if !on_disk(git, &rel) && !in_head(git, &rel)? {
+                        bail!(
+                            "ambiguous argument '{arg}': unknown revision or path not in the working tree.\n\
+                             Use '--' to separate paths from revisions"
+                        );
+                    }
                 }
                 paths.push(arg);
             }
@@ -361,10 +363,6 @@ fn select(
     } else if !given {
         include.push(head_or_refuse(git)?);
     }
-    let paths = paths
-        .iter()
-        .map(|p| git.ws.repo_prefix(cwd, p))
-        .collect::<Result<Vec<_>>>()?;
     Ok(Selection {
         include,
         hidden,
@@ -584,7 +582,7 @@ pub(super) fn log(
     let positional: Vec<String> = path.into_iter().chain(args.more.iter().cloned()).collect();
     let selection = select(git, cwd, positional, args.dashed.clone(), args.all)?;
     let decorate = args.decorate.resolve(git, &pretty)?;
-    let spec = Pathspec::new(selection.paths.iter().map(|p| p.as_bytes().to_vec()));
+    let spec = git.pathspec(cwd, &selection.paths, false)?;
     let decorated = decorate.names(git, pretty.uses_decorations())?;
     let ctx = Context {
         style,
@@ -592,7 +590,16 @@ pub(super) fn log(
         decorations: &decorated,
     };
 
-    let gate = args.gate(&selection.paths, &spec)?;
+    let followed = if args.follow {
+        selection
+            .paths
+            .iter()
+            .map(|p| git.ws.repo_prefix(cwd, p))
+            .collect::<Result<Vec<_>>>()?
+    } else {
+        Vec::new()
+    };
+    let gate = args.gate(&followed, &spec)?;
     let walk_spec = if gate.as_ref().is_some_and(|g| g.follow.is_some()) {
         Pathspec::default()
     } else {

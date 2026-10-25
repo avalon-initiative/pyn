@@ -85,14 +85,14 @@ The commands named in decision #218.
 | `pyn clone --no-local-store` | | pyn only | A pyn server clone keeps a partial local store of the history under `.pyn/local_only/store/` and commits locally by default (`--local-store` says the same); this opts out and commits straight to the server. See [the local store](workspace.md#the-local-store). A usage error for a git URL. |
 | `pyn migrate` | | pyn only | Converts a workspace made before local commits; see [migrating](workspace.md#migrating-a-workspace). |
 | `git status` | `pyn status` | different | Header `On branch <name>`, then a table with mode, revision, staged, state, lock and path plus a summary line, because mode and lock state have no place in git's layout. `STAGED` is `added` or `modified` for a staged path, and `STATE` then describes what changed after it was staged. Lock state is shown in this default table's lock column and by `pyn lock`/`pyn locks`, not in `-s`/`--porcelain` output. On a git home the table is `STAGED`, `UNSTAGED`, `PATH` with git's states. |
-| `git status -s`, `--short`, `--porcelain[=v1]`, `-b`, `--branch`, `<pathspec>...` | same | same | Git's `XY <path>` lines; see [the short format](#the-short-status-format). Pathspecs are literal files and folders, taken relative to where you stand, and limit every format. `-z`, `--porcelain=v2`, `--ignored`, `-u<mode>`, `--ahead-behind` and glob or magic pathspecs are a usage error (`129`). `pyn status --revision` fails on a git home. |
+| `git status -s`, `--short`, `--porcelain[=v1]`, `-b`, `--branch`, `<pathspec>...` | same | same | Git's `XY <path>` lines; see [the short format](#the-short-status-format). Pathspecs are git's (see [Pathspecs](#pathspecs)) and limit every format. `-z`, `--porcelain=v2`, `--ignored`, `-u<mode>` and `--ahead-behind` are a usage error (`129`). `pyn status --revision` fails on a git home. |
 | `pyn status --revision <commit>` | | pyn only | Compare the workspace with a past commit (`behind` / `ahead`). |
 | `git add <path>...` | `pyn add <path>...` | same | Stages a path, a folder or `.`; a path is required unless `-u` or `-A` is given. On an exclusive path of a pyn server it fails unless you hold the lock (see below). |
 | `git add -u`, `-A`, `-n`, `-v`, `-f` and their long forms | same | same | `-u` and `--update` stage tracked files only; `-A` and `--all` take new files too and, with no path, cover the whole repository. `-n` and `--dry-run` print `add '<path>'` and `remove '<path>'` and stage nothing. Ignored files are refused (exit `1`, as git) without `-f`. |
 | `git rm [-r] [-f] [-n] [-q] [--cached] [--ignore-unmatch] [--] <path>...` | `pyn rm ...` | supported | Removes tracked files from the work tree and stages the removal. On a git home it is git's `rm`, see [Removing and moving](#removing-and-moving). On a pyn server it stages a deletion for the next commit, and an exclusive path needs your lock first. |
 | `git mv [-f] [-n] [-k] [-v] <source>... <destination>` | `pyn mv ...` | supported | Renames a file or folder, or moves them into an existing folder. On a git home it is git's `mv`; on a pyn server it stages a deletion at the old path and an addition at the new one. See [Removing and moving](#removing-and-moving). |
 | `git add -p` | `pyn add -p` (`--patch`) | git home only | Asks about each hunk with git's answers, see [Choosing hunks](#choosing-hunks). On a pyn server it is a usage error (`129`): a pyn server stages whole files. |
-| `git add -i`, `-e`, `--intent-to-add`, `--chmod`, `--renormalize`, `--pathspec-from-file`, glob and magic pathspecs | none | unsupported | Usage error (`129`), or `pathspec ... did not match any files` for a glob the shell did not expand. A path is a file or a folder, taken relative to where you stand. |
+| `git add -i`, `-e`, `--intent-to-add`, `--chmod`, `--renormalize`, `--pathspec-from-file` | none | unsupported | Usage error (`129`). A path is a file, a folder or a git pathspec (globs and `:` magic, see [Pathspecs](#pathspecs)), taken relative to where you stand; `:(attr:...)` is refused. |
 | `git commit -m <msg>` | `pyn commit -m <msg>` | different | Commits what is staged as one unit of work. On a pyn server it is one changeset uploaded to the server, so commit and publish are one step (no `push` needed), it releases the locks it held, and the output is `<path> is now at revision N` for each file. On a git home it is a git commit on the current branch (or on a detached `HEAD`, which moves only `HEAD`) and prints `[<branch> <id>] <subject>`, with `detached HEAD` in place of the branch name when detached. `-m` is required (no editor) and repeats for more paragraphs. Nothing staged exits `1` with a message. |
 | `git commit -a`, `-am <msg>` | `pyn commit -a`, `-am <msg>` | same | Stages every changed tracked file, then commits; new files are not included. |
 | `git commit <path>...` | `pyn commit -m <msg> <path>...` | different | On a pyn server: one atomic commit of the named paths as they are on disk, whatever is staged (git's `--only`). Not available on a git home, which says to `add` the paths first. |
@@ -144,7 +144,7 @@ The commands named in decision #218.
 | `git remote` | `pyn remote` | git home; pyn server partly | On a git home it lists and edits the remotes in `.git/config`, see [Remotes](#remotes). On a pyn server `pyn remote`, `pyn remote -v` and `pyn remote get-url origin` show the one remote, `origin`: the server and repository set by `--server` and `--repo` or `pyn config set server` and `repo`; `add`, `remove`, `rename` and `set-url` say that a server home has exactly one home and exit `1`. |
 | `git tag [-a] [-s] [-u <keyid>] [--no-sign] [-m <msg>] [-f] [<name> [<commit>]]`, `-d`, `-l` | `pyn tag ...` | supported | See [Tags](#tags). On a pyn server the tags are local-only refs in the local store (workspaces with `local_store` on); they are never pushed, and `-s`, `-u` are refused (#447). |
 | `git stash [push] [-p] [-u] [-k] [-m <msg>] [-- <paths>]`, `list`, `pop`, `apply` (`--index`), `drop`, `clear`, `show`, `branch`, `create`, `store` | `pyn stash ...` on a git home | git home only | See [Stashing](#stashing). On a pyn server it prints the git-command message. |
-| `git clean [-n] [-f] [-d] [-x\|-X] [-q] [-i] [-e <pattern>] [--] [<path>...]` | `pyn clean ...` on a git home | git home only | See [Clean](#clean). Without `-f`, `-n` or `-i` it refuses, as `clean.requireForce` does; `-i` is git's menu; pathspecs take globs (`*`, `?`, `[...]`) but no `:` magic. |
+| `git clean [-n] [-f] [-d] [-x\|-X] [-q] [-i] [-e <pattern>] [--] [<path>...]` | `pyn clean ...` on a git home | git home only | See [Clean](#clean). Without `-f`, `-n` or `-i` it refuses, as `clean.requireForce` does; `-i` is git's menu; pathspecs are git's, see [Pathspecs](#pathspecs). |
 
 `pyn update [<path>...]` is the pre-branch stand-in for `fetch` plus `pull`: it fast-forwards files without local
 changes and never overwrites an edit, reporting skipped files. `--revision <commit>` moves the workspace to an older or
@@ -776,6 +776,40 @@ and asks `Continue? [y/N]`; `-y` or `--yes` skips the question, and without a te
 escapes and `core.ignoreCase`. A file inside an ignored folder cannot be re-included, and a tracked file stays tracked
 whatever the rules say.
 
+### Pathspecs
+
+One matcher serves every command that takes paths (`add`, `rm`, `restore`, `checkout`, `reset`, `stash push`, `clean`,
+`status`, `diff`, `log`, `show`, `shortlog`, `bisect start`, `grep`, `ls-files`, `ls-tree`), as git's pathspec matching does,
+and it is the one a pyn server or local-store workspace uses for `add`, `rm`, `status`, `diff` and `restore --staged`.
+
+- **Plain paths.** A file, or a folder with everything under it. A trailing slash names a folder only (`a.txt/` matches no
+  file `a.txt`). `.` and `..` are resolved against where you stand, and a path outside the repository is
+  `fatal: <arg>: '<path>' is outside repository at '<root>'` (`128`), as is an empty string
+  (`empty string is not a valid pathspec. please use . instead if you meant to match all paths`). An absolute path inside
+  the work tree is taken from the root.
+- **Wildcards.** `*`, `?`, `[...]` and a backslash escape. In a plain pathspec a `*` also matches `/` (`src/*.rs` takes
+  `src/deep/a.rs`), and a name that exists literally still matches itself. The text up to the first wildcard, and the folder
+  you stand in, are never read as patterns.
+- **Magic.** `:(top)` (`:/`), `:(literal)`, `:(glob)` (a `*` stops at `/`, and `**` crosses folders as a whole path segment),
+  `:(icase)` (ASCII letters; inside a bracket class git keeps the members as written), `:(exclude)` (`:!`, `:^`), combined
+  as `:(top,exclude)`. Only excludes means everything else (the working folder alone for `clean`, `grep`, `ls-files` and
+  `rm`). A bad magic is `Invalid pathspec magic '<name>' in '<arg>'`, `Missing ')' at the end of pathspec magic in '<arg>'`,
+  `Unimplemented pathspec magic '<c>' in '<arg>'`, or `<arg>: 'literal' and 'glob' are incompatible` (`128`).
+  `add` and `ls-tree` refuse the magic git refuses there (`<arg>: pathspec magic not supported by this command: 'attr'`).
+- **Settings.** `GIT_LITERAL_PATHSPECS`, `GIT_GLOB_PATHSPECS`, `GIT_NOGLOB_PATHSPECS` and `GIT_ICASE_PATHSPECS` are read as
+  git reads them (`bad boolean environment value`, and the `incompatible` pair messages, are `128`). On a pyn server they
+  are not read.
+- **Reporting.** A pathspec that selects nothing is git's per-command error (`pathspec '<arg>' did not match any files` for
+  `add` and `rm`, `error: pathspec '<arg>' did not match any file(s) known to git` for `restore`, `checkout`, `stash` and
+  `ls-files --error-unmatch`); an exclude is never reported. Like git, a command that reports unmatched pathspecs stops
+  matching a pathspec that has named a path exactly (`a*c` taken for the file `a*c` leaves out `abc`).
+
+Not built: `:(attr:...)` (a usage error, `129`, where git reads `.gitattributes`), `--pathspec-from-file`, the
+`pathspec '<arg>' is beyond a symbolic link` check, and, for `clean`, a `:(glob)` pattern that names folders (it ends in a
+slash: usage error, `129`). On a pyn server `log` sends a literal path to the server, `update`, `lock` and
+`restore <path> <revision>` take exact paths, and `mv` and `commit <paths>` stay literal: they need a server contract change
+to take patterns.
+
 ### Commands
 
 | Command | On a git home |
@@ -966,8 +1000,9 @@ The branch line is `No commits yet on <branch>` before the first commit and `HEA
 comes from `branch.<name>.remote` and `branch.<name>.merge` mapped through the remote's fetch refspecs; `[gone]` marks a
 tracking ref that does not exist. Counts are commits reachable from one side and not the other.
 
-Differences from git: an untracked folder is listed as `dir/` even when a pathspec names a path inside it (git lists the
-files under the path), and pathspecs are never globs.
+A pathspec decides how an untracked folder shows, as in git: `dir/` when the pathspec takes the folder whole and a
+selected file lies in it, the files or folders inside when it names only part of it. Pathspecs are git's, see
+[Pathspecs](#pathspecs).
 
 On a pyn server `STAGED` becomes `X` (`added` is `A`, `modified` `M`, `deleted` `D`) and the work tree state becomes `Y`
 (`modified` is `M`, `deleted locally` `D`, `untracked` is `??`). A conflicted path is `UU`, or `AA` when both sides added it
@@ -1075,7 +1110,7 @@ lacks. The replaced entries carry no stat data, so git re-reads those files on i
 ### Removing and moving
 
 `rm` and `mv` change the index and the work tree together, as git does, and check everything before writing anything: a
-refused run leaves both untouched. Paths are literal files and folders relative to where you stand (no globs).
+refused run leaves both untouched. Paths are git pathspecs (see [Pathspecs](#pathspecs)); `mv` takes literal files and folders relative to where you stand.
 
 **`rm`.** Takes every index entry under the paths, unmerged ones included. A path that matches nothing is `pathspec '<path>' did
 not match any files` (`128`) unless `--ignore-unmatch` is given, which makes the command succeed when nothing matched at all; a
@@ -1176,7 +1211,7 @@ git` (`1`); an unmerged path is `error: path '<path>' is unmerged`.
 
 **`restore`.** `restore <path>...` writes the index entries into the work tree; `--source <rev>` writes that commit's files instead
 and, as in git, removes tracked files the commit lacks; `--staged --worktree` does both for index and work tree, from `HEAD` unless
-`--source` is given; `--staged` alone is described under [staging](#staging-and-committing). The paths are prefixes (no globs).
+`--source` is given; `--staged` alone is described under [staging](#staging-and-committing). The paths are git pathspecs, see [Pathspecs](#pathspecs).
 
 `restore --ours` and `--theirs` write that stage of each unmerged path under the paths into the work tree (the later of the two
 wins), and `restore --merge` merges stages 2 and 3 over stage 1 again and writes the result with `ours`, `base` and `theirs` as the
@@ -1620,7 +1655,7 @@ leave other changes unstaged, restore untracked files that do not already exist,
 (`Dropped <name> (<id>)`, the name as typed or `refs/stash@{N}`). A conflict, or local changes to a file the stash touches, keeps the stash. `drop` and `clear`
 remove entries. `stash push -p` is described in [Choosing hunks](#choosing-hunks).
 
-`stash push -- <paths>` stashes only the named paths (literal names, not patterns, relative to where you stand): the stash's work tree
+`stash push -- <paths>` stashes only the named paths (pathspecs, see [Pathspecs](#pathspecs), relative to where you stand): the stash's work tree
 is the index with those paths taken from the work tree, and only they are put back to `HEAD`, with no `ORIG_HEAD` or `HEAD`
 reflog line (a whole-tree stash writes both). A name that matches nothing in the index fails with `error: pathspec '...' did not
 match any file(s) known to git` (`1`), before anything is saved; with `-u` a name must match a tracked or untracked file, and git's
@@ -1704,10 +1739,9 @@ refuses with `fatal: clean.requireForce defaults to true and neither -i, -n, nor
 - A nested repository the index does not track is left alone, silently when it is the folder itself and as
   `Would skip repository <path>` / `Skipping repository <path>` when it is inside an untracked folder (the rest of that folder
   is still removed). `-ff` removes nested repositories whole.
-- Paths limit the clean to themselves and what is under them; standing in a folder limits it to that folder. A name with
-  `*`, `?`, `[` or a backslash is a glob, matched against the whole path with `*` crossing folders, as in a plain git
-  pathspec (a folder also matches with a trailing slash, so `dir/*` takes `dir/` itself); a name that exists literally still
-  matches itself. A `:` pathspec is refused. A path outside the repository is `128`.
+- Paths limit the clean to themselves and what is under them; standing in a folder limits it to that folder. Paths are
+  git pathspecs, see [Pathspecs](#pathspecs) (a folder also matches with a trailing slash, so `dir/*` takes `dir/` itself).
+  A path outside the repository is `128`.
 - `-X` with a glob lists an all-ignored folder as one `dir/` entry when the text before the glob's first wildcard can lead into
   it (`*.log` and `?` lead into every folder, `u*` only into folders starting with `u`), even if nothing inside matches, as git does.
 - A folder you stand in is not removed: `Would refuse to remove current working directory` / `Refusing to ...`, then the
@@ -1733,7 +1767,7 @@ asking. A folder holding a nested repository is one entry that, chosen, prints `
 repository and removes the rest; a folder you stand in is the entry `./` and is handled as above once chosen. Nothing is
 listed, and nothing printed, when there is nothing to clean. Colours (`color.interactive`) are not applied.
 
-Differences from git: `:` pathspec magic is refused; the order of the
+Differences from git: the order of the
 lines inside a folder that holds a nested repository is by name, where git uses the file system's order (and prints the
 folders in it without a trailing `/`, which pyn copies); names are laid out by their character count, not their
 display width; and a last answer without a newline in `ask each` is read the way git reads it (an `y` stays the answer for
@@ -1751,8 +1785,7 @@ pattern, an unknown revision or path, `--cached` with a revision) and `129` for 
 treat it like any other file. Without a revision only tracked, regular files are searched, from the work tree (a file deleted
 there is skipped, an intent-to-add file is searched, an unmerged path once); `--cached` reads the index and leaves out
 unmerged and intent-to-add paths. Symbolic links and submodules are never searched. Options go before the pattern, as git
-requires, and `--` ends the revisions. Pathspecs are relative to where you stand, take `*`, `?` and `[...]` globs (a `*`
-crosses folders) but no `:` magic, and default to the current folder. The settings `grep.lineNumber`, `grep.patternType`
+requires, and `--` ends the revisions. Pathspecs are git's (see [Pathspecs](#pathspecs)) and default to the current folder. The settings `grep.lineNumber`, `grep.patternType`
 (`default`, `basic`, `extended`, `fixed`), `grep.extendedRegexp`, `grep.fullName` and `core.quotePath` are read; colour is
 never produced.
 
@@ -1776,7 +1809,7 @@ What differs, all of it refused or documented rather than silently different:
 | Locale | Matching is by characters in UTF-8, as in a UTF-8 locale; `[[:alpha:]]` and similar classes are ASCII only. A pattern that is not valid UTF-8 is refused. |
 | Binary attributes | `.gitattributes` (`binary`, `-diff`, `diff`) and `textconv` are not consulted; a file is binary by its content only. |
 | Revisions | Commits and tags that peel to one (`HEAD~2`, a branch, a hash); a tree such as `HEAD:sub` is not a revision here, so it is read as a path and fails with git's `ambiguous argument`. |
-| Not built (usage error `129`) | `--untracked`, `--no-index` (so also searching outside a repository), `--recurse-submodules`, `--exclude-standard`, `-o`, `-L`, `-z`, `-f`, `-m`, `-P`, `-A`, `-B`, `-C`, `-p`, `-W`, `--column`, `--heading`, `--break`, `--color`, `--all-match`, `--max-depth`, abbreviated long options, and `:` pathspec magic. |
+| Not built (usage error `129`) | `--untracked`, `--no-index` (so also searching outside a repository), `--recurse-submodules`, `--exclude-standard`, `-o`, `-L`, `-z`, `-f`, `-m`, `-P`, `-A`, `-B`, `-C`, `-p`, `-W`, `--column`, `--heading`, `--break`, `--color`, `--all-match`, `--max-depth` and abbreviated long options. |
 
 Covered against the real git, on SHA-1 and SHA-256 repositories, by `crates/pyn-cli/tests/git_grep.rs` (output, order and
 exit status for the work tree, the index, revisions, binary files, subfolders, conflicts and a few hundred patterns of
@@ -1815,7 +1848,7 @@ What differs, all of it refused or documented rather than silently different:
 | --- | --- |
 | `visualize`, `view` | Usage error (`129`): they start `gitk` or `git log`. |
 | `skip <a>...<b>` | Usage error (`129`); `<a>..<b>` is built. |
-| Pathspecs | Paths and `*`, `?`, `[...]` globs, relative to where `start` and the later steps run; `:` magic is not read. |
+| Pathspecs | Git's, see [Pathspecs](#pathspecs), relative to where `start` and the later steps run. |
 | Prompts | With a terminal on standard input, the questions git asks (`Do you want me to do it for you [Y/n]?`, `Are you sure [Y/n]?`) are asked and answered there; otherwise git's non-interactive answers apply. |
 | Wording | Messages say `pyn bisect` where git says `git bisect`; the text in `BISECT_LOG` stays `git bisect` so both tools read it. The report quotes the terms (`first 'bad' commit`) as git 2.55 does; older gits print them bare. |
 | `bisect run` | The command runs through `sh -c` from the work tree root, as git runs it. |
@@ -1923,8 +1956,8 @@ with `fatal: not a git repository (or any of the parent directories): .git` (`12
 | Command | Supported |
 | --- | --- |
 | `rev-parse` | `<rev>` in any form `log` takes, plus `^{}`, `^{commit}`, `^{tree}`, `^{blob}`, `^{tag}`, `^{object}`, `<tree-ish>:<path>` (also `./` and `../` paths), `:<path>` and `:<n>:<path>` for the index, `^<rev>`, `<a>..<b>`, `<a>...<b>`, `<rev>^@`, `<rev>^!`; `--verify`, `-q`, `--short[=<n>]`, `--abbrev-ref[=strict\|loose]`, `--symbolic`, `--symbolic-full-name`, `--git-dir`, `--absolute-git-dir`, `--git-common-dir`, `--show-toplevel`, `--show-prefix`, `--show-cdup`, `--is-inside-work-tree`, `--is-inside-git-dir`, `--is-bare-repository`, `--show-object-format`, `--all`, `--branches`, `--tags`, `--remotes`. Options act on the revisions after them, as in git; a name that is no revision is printed back and must be a file. |
-| `ls-files` | `-c`, `-d`, `-m`, `-o`, `-s`, `-u`, `-i` with `--exclude-standard`, `-z`, `--full-name`, `--error-unmatch`, and pathspecs (`*` and `?` are patterns; `:(...)` magic is a usage error). Paths are relative to the current folder, and only that folder is listed unless a pathspec says otherwise. `-m` lists deleted files too, so `-m -d` lists them twice, as git does. |
-| `ls-tree` | `-d`, `-r`, `-t`, `-l`, `-z`, `--name-only`, `--name-status`, `--object-only`, `--full-name`, `--full-tree`, `--abbrev[=<n>]`, and paths. Paths are literal; `.` and `..` name a folder's contents. |
+| `ls-files` | `-c`, `-d`, `-m`, `-o`, `-s`, `-u`, `-i` with `--exclude-standard`, `-z`, `--full-name`, `--error-unmatch`, and pathspecs (see [Pathspecs](#pathspecs)). Paths are relative to the current folder, and only that folder is listed unless a pathspec says otherwise. `-m` lists deleted files too, so `-m -d` lists them twice, as git does. |
+| `ls-tree` | `-d`, `-r`, `-t`, `-l`, `-z`, `--name-only`, `--name-status`, `--object-only`, `--full-name`, `--full-tree`, `--abbrev[=<n>]`, and paths. Paths are literal (a `*` is an ordinary character), `:(top)`, `:/` and `:(literal)` are read, and any other magic is git's `pathspec magic not supported by this command` (`128`); `.` and `..` name a folder's contents. |
 | `cat-file` | `-t`, `-s`, `-p`, `-e`, `<type> <object>` (tags are followed to the type), `--batch` and `--batch-check` with git's default format. |
 | `show-ref` | `--head` (shown whatever the other options say, as git documents), `--heads`, `--tags`, `-d`, `-s`/`--hash[=<n>]`, `--abbrev[=<n>]`, `--verify`, `--exists`, `-q`, and patterns that match the end of a ref name on a `/`. |
 | `shortlog` | `-n`, `-s`, `-e`, `-c`, a revision range and `-- <path>...`; with no revision it reads a `git log` on standard input unless that is a terminal, then it uses `HEAD`. Refused (`128`) when the repository has a `.mailmap` file or sets `mailmap.file` or `mailmap.blob`, which git would apply. |

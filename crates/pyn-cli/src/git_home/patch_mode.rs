@@ -15,7 +15,6 @@ use super::editor::{self, Which};
 use super::hunk_pick::{FileDiff, Io, Item, Use, Wording, pick};
 use super::stage::{
     Entries, OpenIndex, entries_of, index_of, link_target, put_entry, raw_mode, remove_entry,
-    resolve_specs,
 };
 use super::worktree::{remove_entry_file, write_bytes};
 use super::{GitHome, convert, path_string};
@@ -523,10 +522,7 @@ fn choose(
 }
 
 fn spec_of(git: &GitHome, cwd: &Path, paths: &[String]) -> Result<Pathspec> {
-    if paths.is_empty() {
-        return Ok(Pathspec::default());
-    }
-    Ok(resolve_specs(git, cwd, paths)?.spec)
+    git.pathspec(cwd, paths, false)
 }
 
 /// `pyn add -p`.

@@ -1,101 +1,666 @@
-use crate::wildmatch;
+use crate::wildmatch::matches_fold;
 
-/// Repository paths (`/`-separated, from the root) that limit a comparison to themselves and what is under them.
+/// Git's pathspecs: literal paths and folders, globs and the `:(...)` magic, matched on repository paths
+/// (`/`-separated, from the root). An empty pathspec matches everything.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Pathspec {
-    entries: Vec<Entry>,
+    items: Vec<Item>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum Entry {
-    Path(Vec<u8>),
-    /// A pattern whose `*` also crosses `/`, as in a plain git pathspec; `base` is the folder it is rooted in.
-    Glob {
-        pattern: Vec<u8>,
-        base: Vec<u8>,
-    },
+struct Item {
+    /// The path from the root, prefix included; a trailing `/` is kept.
+    text: Vec<u8>,
+    /// The argument as given, for messages.
+    original: Vec<u8>,
+    /// Leading bytes of `text` that are literal whatever they contain (the working folder, then the text up to the
+    /// first wildcard).
+    nowild: usize,
+    /// Bytes of `text` that come from the working folder.
+    prefix: usize,
+    magic: MagicSet,
+}
+
+/// The pathspec magic in effect for one pathspec, or the kinds a command refuses.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MagicSet {
+    pub top: bool,
+    pub literal: bool,
+    pub glob: bool,
+    pub icase: bool,
+    pub exclude: bool,
+    pub attr: bool,
+}
+
+impl MagicSet {
+    fn refused(self, by: Self) -> Vec<&'static str> {
+        [
+            (self.top && by.top, "'top' (mnemonic: '/')"),
+            (self.literal && by.literal, "'literal'"),
+            (self.glob && by.glob, "'glob'"),
+            (self.icase && by.icase, "'icase'"),
+            (self.exclude && by.exclude, "'exclude' (mnemonic: '!')"),
+            (self.attr && by.attr, "'attr'"),
+        ]
+        .into_iter()
+        .filter_map(|(on, name)| on.then_some(name))
+        .collect()
+    }
+}
+
+/// What git's directory walk does with an untracked folder given the pathspecs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DirMatch {
+    /// Not selected: skip it.
+    None,
+    /// Something below may be selected: look inside.
+    Leading,
+    /// Selected as a whole: it is one entry when it holds a selected file.
+    Whole,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct Mode {
+    directory: bool,
+    leading: bool,
+}
+
+/// How a pathspec selected a path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Match {
+    /// The path is under the named folder.
+    Recursive,
+    /// The folder may hold matches (only asked for with a folder).
+    Leading,
+    Fnmatch,
+    /// The path is the one named.
+    Exact,
+}
+
+/// The `GIT_*_PATHSPECS` settings, which apply to every pathspec of a command.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PathspecOptions {
+    pub literal: bool,
+    pub glob: bool,
+    pub noglob: bool,
+    pub icase: bool,
+}
+
+/// What [`Pathspec::parse`] needs to know about the command line.
+#[derive(Debug, Clone, Copy)]
+pub struct PathspecContext<'a> {
+    /// The work tree's absolute path, to resolve absolute arguments.
+    pub root: &'a [u8],
+    /// The working folder from the root, without a trailing slash.
+    pub prefix: &'a [u8],
+    pub options: PathspecOptions,
+    /// Magic the command refuses, as git does for `add` (`attr`) and `ls-tree` (all but `top` and `literal`).
+    pub unsupported: MagicSet,
+    /// With no argument, or only excludes, limit to the working folder rather than the whole repository.
+    pub prefer_cwd: bool,
+}
+
+/// Why a pathspec failed to parse.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathspecError {
+    /// Git dies with this message (status 128).
+    Fatal(String),
+    /// Valid in git but not built here; the caller reports a usage error.
+    Unsupported(String),
+}
+
+impl std::fmt::Display for PathspecError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (Self::Fatal(m) | Self::Unsupported(m)) = self;
+        f.write_str(m)
+    }
+}
+
+impl std::error::Error for PathspecError {}
+
+const GLOB_CHARS: &[u8] = b"*?[\\";
+
+fn simple_length(p: &[u8]) -> usize {
+    p.iter()
+        .position(|b| GLOB_CHARS.contains(b))
+        .unwrap_or(p.len())
+}
+
+fn lossy(b: &[u8]) -> String {
+    String::from_utf8_lossy(b).into_owned()
 }
 
 impl Pathspec {
+    /// Literal paths and folders; a trailing slash is dropped.
     pub fn new(paths: impl IntoIterator<Item = impl Into<Vec<u8>>>) -> Self {
-        Self::build(paths, false)
-    }
-
-    /// Like [`Self::new`], but a path with `*`, `?`, `[` or a backslash is a glob.
-    pub fn with_globs(paths: impl IntoIterator<Item = impl Into<Vec<u8>>>) -> Self {
-        Self::build(paths, true)
-    }
-
-    fn build(paths: impl IntoIterator<Item = impl Into<Vec<u8>>>, globs: bool) -> Self {
-        let entries = paths
+        let items = paths
             .into_iter()
             .map(Into::into)
             .map(|p: Vec<u8>| trim_slashes(&p).to_vec())
             .filter(|p| !p.is_empty())
-            .map(|p| match p.iter().position(|b| b"*?[\\".contains(b)) {
-                Some(at) if globs => {
-                    let end = p[..at].iter().rposition(|b| *b == b'/').unwrap_or(0);
-                    Entry::Glob {
-                        base: p[..end].to_vec(),
-                        pattern: p,
-                    }
-                }
-                _ => Entry::Path(p),
+            .map(|p| Item {
+                nowild: p.len(),
+                original: p.clone(),
+                text: p,
+                prefix: 0,
+                magic: MagicSet::default(),
             })
             .collect();
-        Self { entries }
+        Self { items }
+    }
+
+    /// Parses command-line pathspecs as git does: magic, relative paths, the global settings.
+    pub fn parse(
+        args: &[impl AsRef<[u8]>],
+        cx: &PathspecContext<'_>,
+    ) -> Result<Self, PathspecError> {
+        let mut items = Vec::new();
+        for arg in args {
+            items.push(parse_item(arg.as_ref(), cx)?);
+        }
+        let excludes = items.iter().filter(|i| i.magic.exclude).count();
+        if items.len() == excludes && (!items.is_empty() || cx.prefer_cwd) {
+            let text = if cx.prefer_cwd && !cx.prefix.is_empty() {
+                [cx.prefix, b"/"].concat()
+            } else {
+                Vec::new()
+            };
+            if !(items.is_empty() && text.is_empty()) {
+                items.push(Item {
+                    nowild: text.len(),
+                    prefix: text.len(),
+                    original: Vec::new(),
+                    text,
+                    magic: MagicSet::default(),
+                });
+            }
+        }
+        Ok(Self { items })
     }
 
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.items.is_empty()
+    }
+
+    /// How many pathspecs there are, excludes included.
+    pub fn len(&self) -> usize {
+        self.items.len()
+    }
+
+    /// The `n`th pathspec as given on the command line.
+    pub fn original(&self, n: usize) -> &[u8] {
+        &self.items[n].original
+    }
+
+    /// Picks from `paths`, in order, the ones this selects; see [`Tracker`] for how that differs from `matches`.
+    pub fn select<'a>(
+        &self,
+        paths: impl IntoIterator<Item = &'a [u8]>,
+    ) -> (Vec<&'a [u8]>, Vec<Option<Match>>) {
+        let mut tracker = self.tracker();
+        let picked = paths.into_iter().filter(|p| tracker.picks(p)).collect();
+        (picked, tracker.seen)
+    }
+
+    /// For each pathspec, the strongest way it selected one of `paths`; an exclude is never reported.
+    pub fn seen<'a>(&self, paths: impl IntoIterator<Item = &'a [u8]>) -> Vec<Option<Match>> {
+        self.select(paths).1
+    }
+
+    pub fn tracker(&self) -> Tracker<'_> {
+        Tracker {
+            spec: self,
+            seen: vec![None; self.items.len()],
+        }
+    }
+
+    /// The pathspecs, by position, that select none of `paths` (git's `report_path_error`); a repeat of one that did
+    /// select something is not reported.
+    pub fn unmatched<'a>(&self, paths: impl IntoIterator<Item = &'a [u8]>) -> Vec<usize> {
+        let seen = self.seen(paths);
+        (0..self.items.len())
+            .filter(|n| seen[*n].is_none() && !self.items[*n].magic.exclude)
+            .filter(|n| {
+                !(0..self.items.len())
+                    .any(|m| seen[m].is_some() && self.items[m].original == self.items[*n].original)
+            })
+            .collect()
+    }
+
+    /// The first of [`Self::unmatched`], as given.
+    pub fn first_unmatched<'a>(&self, paths: impl IntoIterator<Item = &'a [u8]>) -> Option<&[u8]> {
+        let n = *self.unmatched(paths).first()?;
+        Some(&self.items[n].original)
+    }
+
+    /// How the `n`th pathspec selects `path`, if it does (never for an exclude).
+    pub fn item_match(&self, n: usize, path: &[u8]) -> Option<Match> {
+        let item = &self.items[n];
+        item.how(path, Mode::default())
+            .filter(|_| !item.magic.exclude)
+    }
+
+    /// The `n`th pathspec's path from the root, a trailing slash kept.
+    pub fn item_path(&self, n: usize) -> &[u8] {
+        &self.items[n].text
+    }
+
+    /// Whether the `n`th pathspec is an exclude.
+    pub fn item_is_exclude(&self, n: usize) -> bool {
+        self.items[n].magic.exclude
+    }
+
+    /// Whether the `n`th pathspec is read as a glob or ignoring case, so naming a file does not make it match.
+    pub fn item_is_pattern(&self, n: usize) -> bool {
+        self.items[n].magic.glob || self.items[n].magic.icase
+    }
+
+    /// Whether the `n`th pathspec is a `:(glob)` pattern ending in a slash, which names folders by pattern.
+    pub fn item_is_glob_folder(&self, n: usize) -> bool {
+        let i = &self.items[n];
+        i.magic.glob && i.nowild < i.text.len() && i.text.ends_with(b"/")
+    }
+
+    /// The `n`th pathspec as git words it in `stash` messages: its magic, its working-folder length and its path.
+    pub fn item_form(&self, n: usize) -> String {
+        let i = &self.items[n];
+        let mut parts: Vec<String> = [
+            (i.magic.top, "top"),
+            (i.magic.literal, "literal"),
+            (i.magic.glob, "glob"),
+            (i.magic.icase, "icase"),
+        ]
+        .into_iter()
+        .filter(|(on, _)| *on)
+        .map(|(_, name)| name.to_string())
+        .collect();
+        parts.push(format!("prefix:{}", i.prefix));
+        format!(":({}){}", parts.join(","), lossy(&i.text))
+    }
+
+    /// The `n`th pathspec's text up to its first wildcard.
+    pub fn item_literal(&self, n: usize) -> &[u8] {
+        let i = &self.items[n];
+        &i.text[..i.nowild]
     }
 
     pub fn matches(&self, path: &[u8]) -> bool {
-        self.matching(path, false)
+        self.chosen(|i| i.how(path, Mode::default()).is_some())
     }
 
-    /// Like [`Self::matches`] for a folder, which a glob also matches with a trailing slash (`sub/*` takes `sub`).
+    /// Whether the folder `path` (no trailing slash) is selected as a whole, which git decides by matching `path/`
+    /// (so `sub/*` takes `sub`, and `:(glob)su*` does not).
     pub fn matches_dir(&self, path: &[u8]) -> bool {
-        self.matching(path, true)
+        self.dir_match(path) == DirMatch::Whole
     }
 
-    fn matching(&self, path: &[u8], dir: bool) -> bool {
-        self.entries.is_empty()
-            || self.entries.iter().any(|e| match e {
-                Entry::Path(p) => is_under(path, p),
-                Entry::Glob { pattern, .. } => {
-                    is_under(path, pattern)
-                        || wildmatch::matches(pattern, path, false)
-                        || (dir && wildmatch::matches(pattern, &[path, b"/"].concat(), false))
-                }
-            })
+    /// How an untracked folder `path` (no trailing slash) stands with the pathspecs, as git's directory walk sees it.
+    pub fn dir_match(&self, path: &[u8]) -> DirMatch {
+        if self.items.is_empty() {
+            return DirMatch::Whole;
+        }
+        let slashed = [path, b"/"].concat();
+        let leading = Mode {
+            directory: false,
+            leading: true,
+        };
+        let positive = self
+            .items
+            .iter()
+            .filter(|i| !i.magic.exclude)
+            .filter_map(|i| i.how(&slashed, leading))
+            .max();
+        let excluded = self
+            .items
+            .iter()
+            .any(|i| i.magic.exclude && i.how(&slashed, Mode::default()).is_some());
+        match positive {
+            None => DirMatch::None,
+            _ if excluded => DirMatch::None,
+            Some(Match::Leading) => DirMatch::Leading,
+            Some(_) => DirMatch::Whole,
+        }
     }
 
-    /// Whether a glob could match something under the folder, judging only by the literal text before its first
+    fn chosen(&self, hit: impl Fn(&Item) -> bool) -> bool {
+        self.items.is_empty()
+            || (self.items.iter().any(|i| !i.magic.exclude && hit(i))
+                && !self.items.iter().any(|i| i.magic.exclude && hit(i)))
+    }
+
+    /// Whether a pattern could match something under the folder, judging only by the literal text before its first
     /// wildcard (so `*.log` leads into every folder, `u*` only into folders starting with `u`).
     pub fn glob_leads_into(&self, dir: &[u8]) -> bool {
-        self.entries.iter().any(|e| match e {
-            Entry::Glob { pattern, .. } => {
-                let at = pattern
-                    .iter()
-                    .position(|b| b"*?[\\".contains(b))
-                    .unwrap_or(0);
-                let literal = &pattern[..at];
+        self.items.iter().any(|i| {
+            !i.magic.exclude && i.nowild < i.text.len() && {
+                let literal = &i.text[..i.nowild];
                 dir.starts_with(literal) || is_under(literal, dir)
             }
-            Entry::Path(_) => false,
         })
+    }
+
+    /// Whether a walk of untracked files goes into the folder `dir` (no trailing slash), which git decides by
+    /// matching `dir/`, so an exclude that takes the folder keeps the walk out.
+    pub fn walks_into(&self, dir: &[u8]) -> bool {
+        self.dir_match(dir) != DirMatch::None
     }
 
     /// Whether anything under the folder `dir` (no trailing slash) can match.
     pub fn may_contain(&self, dir: &[u8]) -> bool {
-        self.entries.is_empty()
-            || self.entries.iter().any(|e| match e {
-                Entry::Path(p) | Entry::Glob { base: p, .. } => {
-                    p.is_empty() || is_under(dir, p) || is_under(p, dir)
-                }
-            })
+        let folder = Mode {
+            directory: true,
+            leading: true,
+        };
+        self.items.is_empty()
+            || self
+                .items
+                .iter()
+                .any(|i| !i.magic.exclude && i.how(dir, folder).is_some())
     }
+}
+
+/// Matching as git does it for the commands that report unmatched pathspecs: a literal pathspec that has named a path
+/// exactly selects nothing after it (git before 2.50 did so for patterns too).
+#[derive(Debug)]
+pub struct Tracker<'a> {
+    spec: &'a Pathspec,
+    seen: Vec<Option<Match>>,
+}
+
+impl Tracker<'_> {
+    pub fn picks(&mut self, path: &[u8]) -> bool {
+        let items = &self.spec.items;
+        if items.is_empty() {
+            return true;
+        }
+        let mut best = None;
+        for (n, item) in items
+            .iter()
+            .enumerate()
+            .rev()
+            .filter(|(_, i)| !i.magic.exclude)
+        {
+            if self.seen[n] == Some(Match::Exact) && item.nowild == item.text.len() {
+                continue;
+            }
+            if let Some(how) = item.how(path, Mode::default()) {
+                best = best.max(Some(how));
+                self.seen[n] = self.seen[n].max(Some(how));
+            }
+        }
+        best.is_some()
+            && !items
+                .iter()
+                .any(|i| i.magic.exclude && i.how(path, Mode::default()).is_some())
+    }
+}
+
+impl Item {
+    fn same(&self, a: &[u8], b: &[u8]) -> bool {
+        if self.magic.icase {
+            a.eq_ignore_ascii_case(b)
+        } else {
+            a == b
+        }
+    }
+
+    fn how(&self, name: &[u8], mode: Mode) -> Option<Match> {
+        let m = &self.text[..];
+        if self.prefix > 0 && self.magic.icase && !self.in_prefix(name, mode) {
+            return None;
+        }
+        if m.is_empty() {
+            return Some(Match::Recursive);
+        }
+        if m.len() <= name.len() && self.same(m, &name[..m.len()]) {
+            if m.len() == name.len() {
+                return Some(Match::Exact);
+            }
+            if m[m.len() - 1] == b'/' || name[m.len()] == b'/' {
+                return Some(Match::Recursive);
+            }
+        } else if mode.directory
+            && m[m.len() - 1] == b'/'
+            && name.len() + 1 == m.len()
+            && self.same(&m[..name.len()], name)
+        {
+            return Some(Match::Exact);
+        }
+        if self.nowild < m.len() && self.fnmatch(name) {
+            return Some(Match::Fnmatch);
+        }
+        if !mode.leading {
+            return None;
+        }
+        let offset = usize::from(name.last() == Some(&b'/'));
+        if name.len() < m.len()
+            && !name.is_empty()
+            && m[name.len() - offset] == b'/'
+            && self.same(&m[..name.len()], name)
+        {
+            return Some(Match::Leading);
+        }
+        let n = self.nowild;
+        if n < m.len() && !(name.len() >= n && self.same(&m[..n], &name[..n])) {
+            return None;
+        }
+        (n < m.len()).then_some(Match::Leading)
+    }
+
+    /// Under `:(icase)` the working folder part of the name must match exactly (a folder may be named without its slash).
+    fn in_prefix(&self, name: &[u8], mode: Mode) -> bool {
+        let (m, prefix) = (&self.text[..], self.prefix);
+        if name.len() >= prefix {
+            name[..prefix] == m[..prefix]
+        } else {
+            mode.directory && m[..name.len()] == *name && m[name.len()] == b'/'
+        }
+    }
+
+    fn fnmatch(&self, name: &[u8]) -> bool {
+        let n = self.nowild;
+        name.len() >= n
+            && self.same(&self.text[..n], &name[..n])
+            && matches_fold(
+                &self.text[n..],
+                &name[n..],
+                self.magic.glob,
+                self.magic.icase,
+            )
+    }
+}
+
+fn parse_item(arg: &[u8], cx: &PathspecContext<'_>) -> Result<Item, PathspecError> {
+    let fatal = |m: String| PathspecError::Fatal(m);
+    if arg.is_empty() {
+        return Err(fatal(
+            "empty string is not a valid pathspec. please use . instead if you meant to match all paths"
+                .into(),
+        ));
+    }
+    let (mut magic, rest) = if arg[0] == b':' && !cx.options.literal {
+        parse_magic(arg)?
+    } else {
+        (MagicSet::default(), arg)
+    };
+    let opts = cx.options;
+    let mut global = MagicSet {
+        literal: opts.literal,
+        glob: opts.glob && !magic.literal,
+        icase: opts.icase,
+        ..MagicSet::default()
+    };
+    if opts.glob && opts.noglob {
+        return Err(fatal(
+            "global 'glob' and 'noglob' pathspec settings are incompatible".into(),
+        ));
+    }
+    if global.literal && (global.glob || global.icase) {
+        return Err(fatal(
+            "global 'literal' pathspec setting is incompatible with all other global pathspec settings"
+                .into(),
+        ));
+    }
+    global.literal |= opts.noglob && !magic.glob;
+    magic.literal |= global.literal;
+    magic.glob |= global.glob;
+    magic.icase |= global.icase;
+    if magic.literal && magic.glob {
+        return Err(fatal(format!(
+            "{}: 'literal' and 'glob' are incompatible",
+            lossy(arg)
+        )));
+    }
+    let (text, prefix) = if magic.top {
+        (rest.to_vec(), 0)
+    } else {
+        rooted(arg, rest, cx)?
+    };
+    let refused = magic.refused(cx.unsupported);
+    if !refused.is_empty() {
+        return Err(fatal(format!(
+            "{}: pathspec magic not supported by this command: {}",
+            lossy(arg),
+            refused.join(", ")
+        )));
+    }
+    if magic.attr {
+        return Err(PathspecError::Unsupported(
+            "pathspec magic 'attr' is not supported".into(),
+        ));
+    }
+    let nowild = if magic.literal {
+        text.len()
+    } else {
+        simple_length(&text).max(prefix)
+    };
+    Ok(Item {
+        text,
+        original: arg.to_vec(),
+        nowild,
+        prefix,
+        magic,
+    })
+}
+
+/// Reads the `:` magic at the start of `arg`; returns it and the path after it.
+fn parse_magic(arg: &[u8]) -> Result<(MagicSet, &[u8]), PathspecError> {
+    let fatal = |m: String| PathspecError::Fatal(m);
+    let mut magic = MagicSet::default();
+    if arg.get(1) != Some(&b'(') {
+        let mut at = 1;
+        while at < arg.len() && arg[at] != b':' {
+            match arg[at] {
+                b'/' => magic.top = true,
+                b'!' | b'^' => magic.exclude = true,
+                c if b"\"#%&',-;<=>@_`~".contains(&c) => {
+                    return Err(fatal(format!(
+                        "Unimplemented pathspec magic '{}' in '{}'",
+                        c as char,
+                        lossy(arg)
+                    )));
+                }
+                _ => break,
+            }
+            at += 1;
+        }
+        return Ok((magic, &arg[at + usize::from(arg.get(at) == Some(&b':'))..]));
+    }
+    let mut at = 2;
+    while at < arg.len() && arg[at] != b')' {
+        let len = arg[at..]
+            .iter()
+            .position(|b| *b == b',' || *b == b')')
+            .unwrap_or(arg.len() - at);
+        let name = &arg[at..at + len];
+        at += len + usize::from(arg.get(at + len) == Some(&b','));
+        match name {
+            b"" => {}
+            b"top" => magic.top = true,
+            b"literal" => magic.literal = true,
+            b"glob" => magic.glob = true,
+            b"icase" => magic.icase = true,
+            b"exclude" => magic.exclude = true,
+            b"attr" => magic.attr = true,
+            n if n.starts_with(b"attr:") => magic.attr = true,
+            n if n.starts_with(b"prefix:") => {
+                return Err(PathspecError::Unsupported(
+                    "pathspec magic 'prefix' is not supported".into(),
+                ));
+            }
+            n => {
+                return Err(fatal(format!(
+                    "Invalid pathspec magic '{}' in '{}'",
+                    lossy(n),
+                    lossy(arg)
+                )));
+            }
+        }
+    }
+    if arg.get(at) != Some(&b')') {
+        return Err(fatal(format!(
+            "Missing ')' at the end of pathspec magic in '{}'",
+            lossy(arg)
+        )));
+    }
+    Ok((magic, &arg[at + 1..]))
+}
+
+/// The path from the root for `rest` as typed in the working folder, and how much of it is that folder.
+fn rooted(
+    arg: &[u8],
+    rest: &[u8],
+    cx: &PathspecContext<'_>,
+) -> Result<(Vec<u8>, usize), PathspecError> {
+    let outside = || {
+        PathspecError::Fatal(format!(
+            "{}: '{}' is outside repository at '{}'",
+            lossy(arg),
+            lossy(rest),
+            lossy(cx.root)
+        ))
+    };
+    let segments = |p: &'_ [u8]| -> Vec<Vec<u8>> {
+        p.split(|b| *b == b'/')
+            .filter(|s| !s.is_empty())
+            .map(<[u8]>::to_vec)
+            .collect()
+    };
+    let absolute = rest.starts_with(b"/");
+    let mut out = if absolute {
+        Vec::new()
+    } else {
+        segments(cx.prefix)
+    };
+    let mut kept = out.len();
+    let mut trailing = rest.is_empty() || rest.ends_with(b"/");
+    for (n, seg) in rest.split(|b| *b == b'/').enumerate() {
+        let last = rest.split(|b| *b == b'/').count() == n + 1;
+        match seg {
+            b"" => {}
+            b"." => trailing |= last,
+            b".." => {
+                out.pop().ok_or_else(outside)?;
+                kept = kept.min(out.len());
+                trailing |= last;
+            }
+            s => out.push(s.to_vec()),
+        }
+    }
+    if absolute {
+        let root = segments(cx.root);
+        if !out.starts_with(&root) {
+            return Err(outside());
+        }
+        out.drain(..root.len());
+        kept = 0;
+    }
+    let prefix_len = out.iter().take(kept).map(|s| s.len() + 1).sum();
+    let mut text = out.join(&b'/');
+    if trailing && !text.is_empty() {
+        text.push(b'/');
+    }
+    Ok((text, prefix_len))
 }
 
 fn trim_slashes(p: &[u8]) -> &[u8] {
@@ -114,6 +679,21 @@ fn is_under(path: &[u8], prefix: &[u8]) -> bool {
 mod tests {
     use super::*;
 
+    fn parse_in(args: &[&str], prefix: &str) -> Result<Pathspec, PathspecError> {
+        let cx = PathspecContext {
+            root: b"/work",
+            prefix: prefix.as_bytes(),
+            options: PathspecOptions::default(),
+            unsupported: MagicSet::default(),
+            prefer_cwd: false,
+        };
+        Pathspec::parse(args, &cx)
+    }
+
+    fn spec(args: &[&str]) -> Pathspec {
+        parse_in(args, "").unwrap()
+    }
+
     #[test]
     fn matches_files_and_folders_but_not_name_prefixes() {
         let s = Pathspec::new(["src", "a.txt/"]);
@@ -123,22 +703,187 @@ mod tests {
     }
 
     #[test]
-    fn globs_cross_folders_and_are_rooted_at_their_literal_folder() {
-        let s = Pathspec::with_globs(["*.txt", "src/a*"]);
+    fn a_trailing_slash_names_a_folder_only() {
+        let s = spec(&["a.txt/", "src/"]);
+        assert!(!s.matches(b"a.txt") && s.matches(b"src/a.rs") && !s.matches(b"src"));
+        assert!(s.matches_dir(b"src") && s.matches_dir(b"a.txt") && !s.matches_dir(b"zzz"));
+    }
+
+    #[test]
+    fn plain_wildcards_cross_folders_and_glob_magic_does_not() {
+        let s = spec(&["*.txt", "src/a*"]);
         assert!(s.matches(b"x.txt") && s.matches(b"deep/x.txt") && s.matches(b"src/abc/y"));
         assert!(!s.matches(b"x.log") && !s.matches(b"src/b"));
-        let s = Pathspec::with_globs(["src/*.rs"]);
-        assert!(s.may_contain(b"src") && s.may_contain(b"src/deep") && !s.may_contain(b"docs"));
-        let s = Pathspec::with_globs(["src/*"]);
-        assert!(!s.matches(b"src") && s.matches_dir(b"src") && !s.matches_dir(b"docs"));
-        let literal = Pathspec::new(["*.txt"]);
-        assert!(literal.matches(b"*.txt") && !literal.matches(b"a.txt"));
+        let g = spec(&[":(glob)src/*.rs", ":(glob)**/x.go"]);
+        assert!(g.matches(b"src/a.rs") && !g.matches(b"src/deep/a.rs"));
+        assert!(g.matches(b"x.go") && g.matches(b"a/b/x.go"));
+        assert!(!spec(&[":(glob)src*"]).matches(b"src/a"));
+        assert!(
+            spec(&[":(glob)src**"]).matches(b"src/a"),
+            "git reads `**` here as a whole segment"
+        );
+    }
+
+    #[test]
+    fn literal_magic_and_a_literal_name_beat_the_wildcards() {
+        let s = spec(&[":(literal)a*c"]);
+        assert!(s.matches(b"a*c") && !s.matches(b"abc"));
+        assert!(spec(&["a*c"]).matches(b"a*c") && spec(&["a*c"]).matches(b"abc"));
+        assert!(spec(&[r"a\*c"]).matches(b"a*c") && !spec(&[r"a\*c"]).matches(b"abc"));
+    }
+
+    #[test]
+    fn icase_folds_ascii_letters() {
+        let s = spec(&[":(icase)SRC/*.RS"]);
+        assert!(s.matches(b"src/a.rs") && s.matches(b"Src/B.Rs"));
+        assert!(
+            !spec(&[":(icase)src/[A]*"]).matches(b"src/a"),
+            "git keeps bracket members as written"
+        );
+        assert!(spec(&[":(icase)[A-Z]rc"]).matches(b"src"));
+    }
+
+    #[test]
+    fn excludes_remove_from_the_rest_and_alone_leave_everything_else() {
+        let s = spec(&["src", ":!src/deep", ":(exclude)*.md"]);
+        assert!(s.matches(b"src/a.rs") && !s.matches(b"src/deep/x") && !s.matches(b"src/r.md"));
+        let alone = spec(&[":^docs"]);
+        assert!(alone.matches(b"src/a") && !alone.matches(b"docs/a"));
+        let cwd = Pathspec::parse(
+            &[":!x"],
+            &PathspecContext {
+                root: b"/work",
+                prefix: b"src",
+                options: PathspecOptions::default(),
+                unsupported: MagicSet::default(),
+                prefer_cwd: true,
+            },
+        )
+        .unwrap();
+        assert!(cwd.matches(b"src/a") && !cwd.matches(b"other/a") && !cwd.matches(b"src/x"));
+    }
+
+    #[test]
+    fn relative_paths_resolve_against_the_working_folder() {
+        let s = parse_in(&["../docs", "./a.txt", "sub/../b"], "src").unwrap();
+        assert_eq!(s.item_path(0), b"docs");
+        assert_eq!(s.item_path(1), b"src/a.txt");
+        assert_eq!(s.item_path(2), b"src/b");
+        assert_eq!(parse_in(&[":/top"], "src").unwrap().item_path(0), b"top");
+        assert_eq!(parse_in(&["."], "src").unwrap().item_path(0), b"src/");
+        assert_eq!(parse_in(&["x/.."], "").unwrap().item_path(0), b"");
+        assert_eq!(parse_in(&["a/b/.."], "").unwrap().item_path(0), b"a/");
+        assert_eq!(
+            parse_in(&["/work/x//y/"], "src").unwrap().item_path(0),
+            b"x/y/"
+        );
+    }
+
+    #[test]
+    fn the_working_folder_is_never_a_pattern() {
+        let s = parse_in(&["*.rs"], "g*b").unwrap();
+        assert!(s.matches(b"g*b/x.rs") && !s.matches(b"gxb/x.rs"));
+    }
+
+    #[test]
+    fn bad_pathspecs_fail_with_gits_words() {
+        let fatal = |args: &[&str]| match parse_in(args, "") {
+            Err(PathspecError::Fatal(m)) => m,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            fatal(&[":(bogus)x"]),
+            "Invalid pathspec magic 'bogus' in ':(bogus)x'"
+        );
+        assert_eq!(
+            fatal(&[":(top"]),
+            "Missing ')' at the end of pathspec magic in ':(top'"
+        );
+        assert_eq!(fatal(&[":#x"]), "Unimplemented pathspec magic '#' in ':#x'");
+        assert_eq!(
+            fatal(&[":(glob,literal)x"]),
+            ":(glob,literal)x: 'literal' and 'glob' are incompatible"
+        );
+        assert_eq!(
+            fatal(&["../x"]),
+            "../x: '../x' is outside repository at '/work'"
+        );
+        assert_eq!(
+            fatal(&["/etc/x"]),
+            "/etc/x: '/etc/x' is outside repository at '/work'"
+        );
+        assert!(fatal(&[""]).starts_with("empty string is not a valid pathspec"));
+        assert!(matches!(
+            parse_in(&[":(attr:x)y"], ""),
+            Err(PathspecError::Unsupported(_))
+        ));
+    }
+
+    #[test]
+    fn global_settings_apply_to_every_pathspec() {
+        let with = |options: PathspecOptions, arg: &str| {
+            let cx = PathspecContext {
+                root: b"/work",
+                prefix: b"",
+                options,
+                unsupported: MagicSet::default(),
+                prefer_cwd: false,
+            };
+            Pathspec::parse(&[arg], &cx)
+        };
+        let lit = PathspecOptions {
+            literal: true,
+            ..PathspecOptions::default()
+        };
+        assert!(
+            with(lit, "*.rs").unwrap().matches(b"*.rs")
+                && !with(lit, "*.rs").unwrap().matches(b"a.rs")
+        );
+        assert!(with(lit, ":!x").unwrap().matches(b":!x"));
+        let glob = PathspecOptions {
+            glob: true,
+            ..PathspecOptions::default()
+        };
+        assert!(!with(glob, "*.rs").unwrap().matches(b"d/a.rs"));
+        assert!(with(glob, ":(literal)a*").unwrap().matches(b"a*"));
+        let noglob = PathspecOptions {
+            noglob: true,
+            ..PathspecOptions::default()
+        };
+        assert!(!with(noglob, "*.rs").unwrap().matches(b"a.rs"));
+        assert!(with(noglob, ":(glob)*.rs").unwrap().matches(b"a.rs"));
+        let both = PathspecOptions {
+            glob: true,
+            noglob: true,
+            ..PathspecOptions::default()
+        };
+        assert!(with(both, "x").is_err());
+        let mixed = PathspecOptions {
+            literal: true,
+            icase: true,
+            ..PathspecOptions::default()
+        };
+        assert!(with(mixed, "x").is_err());
+    }
+
+    #[test]
+    fn an_exact_literal_name_stops_a_pathspec_from_matching_later_paths() {
+        let s = spec(&[":(icase)a.c"]);
+        let (picked, seen) = s.select([b"A.c".as_slice(), b"a.c"]);
+        assert_eq!(picked, [b"A.c".as_slice()]);
+        assert_eq!(seen, [Some(Match::Exact)]);
+        let pattern = spec(&["a*c"]);
+        let (picked, _) = pattern.select([b"a*c".as_slice(), b"abc"]);
+        assert_eq!(picked.len(), 2);
+        assert_eq!(pattern.unmatched([b"zzz".as_slice()]), [0]);
     }
 
     #[test]
     fn folders_on_the_way_to_a_spec_may_contain_it() {
-        let s = Pathspec::new(["src/deep/mod.rs"]);
-        assert!(s.may_contain(b"src") && s.may_contain(b"src/deep"));
-        assert!(!s.may_contain(b"docs") && !s.may_contain(b"src/other"));
+        let s = spec(&["src/deep/mod.rs", "lib/*.c", ":(glob)**/x"]);
+        assert!(s.may_contain(b"src") && s.may_contain(b"src/deep") && s.may_contain(b"lib"));
+        assert!(s.may_contain(b"anywhere"), "`**` leads everywhere");
+        let t = spec(&["src/deep/mod.rs", "lib/*.c"]);
+        assert!(!t.may_contain(b"docs") && !t.may_contain(b"src/other"));
     }
 }

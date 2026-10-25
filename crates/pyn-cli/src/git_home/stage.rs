@@ -7,10 +7,12 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use pyn_git::{Index, IndexEntry, Timestamp};
-use pyn_gitwork::{Entry, Kind, Level, Pathspec, fs_path, parse_rules, worktree_mode};
+use pyn_gitwork::{
+    Entry, Kind, Level, MagicSet, Pathspec, Tracker, fs_path, parse_rules, worktree_mode,
+};
 use pyn_object::{FileMode, Kind as ObjectKind, ObjectId, Signature, TreeEntry, encode_tree};
 
-use super::{GitHome, path_string};
+use super::{GitHome, Refused, path_string};
 
 pub(super) const GITLINK: u32 = 0o160000;
 const LOCAL_ONLY: &str = ".pyn/local_only";
@@ -89,23 +91,61 @@ impl GitHome {
     }
 }
 
-/// The repository paths the arguments name, with `""` (everything) when one of them is the root.
+/// The pathspecs a command was given, parsed as git does.
 pub(super) struct Specs {
     pub(super) spec: Pathspec,
-    pub(super) named: Vec<(String, String)>,
 }
 
 pub(super) fn resolve_specs(git: &GitHome, cwd: &Path, args: &[String]) -> Result<Specs> {
-    let named = args
-        .iter()
-        .map(|a| Ok((a.clone(), git.ws.repo_prefix(cwd, a)?)))
-        .collect::<Result<Vec<_>>>()?;
-    let spec = if named.iter().any(|(_, p)| p.is_empty()) {
-        Pathspec::default()
-    } else {
-        Pathspec::new(named.iter().map(|(_, p)| p.clone().into_bytes()))
-    };
-    Ok(Specs { spec, named })
+    Ok(Specs {
+        spec: git.pathspec(cwd, args, false)?,
+    })
+}
+
+impl GitHome {
+    /// Parses `args` as pathspecs for a command run in `cwd`; with `prefer_cwd`, none (or only excludes) means the
+    /// working folder rather than the whole repository.
+    pub(super) fn pathspec(
+        &self,
+        cwd: &Path,
+        args: &[String],
+        prefer_cwd: bool,
+    ) -> Result<Pathspec> {
+        self.pathspec_without(cwd, args, prefer_cwd, MagicSet::default())
+    }
+
+    /// Like [`Self::pathspec`], for a command that refuses the `unsupported` magic.
+    pub(super) fn pathspec_without(
+        &self,
+        cwd: &Path,
+        args: &[String],
+        prefer_cwd: bool,
+        unsupported: MagicSet,
+    ) -> Result<Pathspec> {
+        crate::pathspec::parse(
+            &self.ws,
+            cwd,
+            args,
+            (crate::pathspec::options_from_env()?, unsupported),
+            prefer_cwd,
+            super::plumbing::usage,
+        )
+    }
+}
+
+/// Whether git reads a loose argument as a pathspec without it naming a file: a wildcard or `:` magic.
+pub(super) fn looks_like_pathspec(arg: &str) -> bool {
+    let mut escaped = false;
+    for b in arg.bytes() {
+        match b {
+            _ if escaped => escaped = false,
+            b'\\' => escaped = true,
+            b'*' | b'?' | b'[' => return true,
+            _ => {}
+        }
+    }
+    let b = arg.as_bytes();
+    b.first() == Some(&b':') && b.get(1).is_some_and(|c| b"(!/^".contains(c))
 }
 
 pub(super) fn under(path: &[u8], prefix: &[u8]) -> bool {
@@ -114,18 +154,27 @@ pub(super) fn under(path: &[u8], prefix: &[u8]) -> bool {
         || (path.starts_with(prefix) && path.get(prefix.len()) == Some(&b'/'))
 }
 
-/// Fails for a name that matches nothing in the index, `from` or the work tree, as git does.
-fn require_matches(
+/// Fails, as `git add` does, for a pathspec that selects nothing known or in the work tree.
+fn require_seen<'a>(
     git: &GitHome,
-    named: &[(String, String)],
-    known: &[&[u8]],
-    what: &str,
+    spec: &Pathspec,
+    seen: impl Iterator<Item = &'a [u8]> + Clone,
 ) -> Result<()> {
-    for (arg, prefix) in named {
-        let on_disk =
-            std::fs::symlink_metadata(fs_path(git.repo.root()?, prefix.as_bytes())).is_ok();
-        if !on_disk && !known.iter().any(|p| under(p, prefix.as_bytes())) {
-            bail!("pathspec '{arg}' did not match any {what}");
+    for n in 0..spec.len() {
+        let text = spec.item_path(n);
+        if spec.item_is_exclude(n)
+            || text.is_empty()
+            || seen.clone().any(|p| spec.item_match(n, p).is_some())
+        {
+            continue;
+        }
+        if spec.item_is_pattern(n)
+            || std::fs::symlink_metadata(fs_path(git.repo.root()?, text)).is_err()
+        {
+            bail!(
+                "pathspec '{}' did not match any files",
+                String::from_utf8_lossy(spec.original(n))
+            );
         }
     }
     Ok(())
@@ -216,12 +265,23 @@ struct Walk<'a> {
     git: &'a GitHome,
     ignores: &'a Ignores,
     spec: &'a Pathspec,
+    picks: std::cell::RefCell<Tracker<'a>>,
     tracked: &'a HashSet<&'a [u8]>,
+    dirs: &'a HashSet<Vec<u8>>,
     gitlinks: &'a HashSet<&'a [u8]>,
     force: bool,
 }
 
 impl Walk<'_> {
+    /// Tracked folders are always opened; an untracked one only when the pathspecs let the walk in.
+    fn enters(&self, dir: &[u8]) -> bool {
+        if self.dirs.contains(dir) {
+            self.spec.may_contain(dir)
+        } else {
+            self.spec.walks_into(dir)
+        }
+    }
+
     fn folder(&self, dir: &[u8], levels: &mut Vec<Level>, found: &mut Found) -> Result<()> {
         let pushed = Ignores::level(self.git, dir)?
             .map(|l| levels.push(l))
@@ -235,7 +295,7 @@ impl Walk<'_> {
             if kind.is_dir() {
                 if path == LOCAL_ONLY.as_bytes()
                     || self.gitlinks.contains(path.as_slice())
-                    || !self.spec.may_contain(&path)
+                    || !self.enters(&path)
                     || (!self.force && self.ignores.ignore.is_ignored(levels, &path, true))
                 {
                     continue;
@@ -250,6 +310,7 @@ impl Walk<'_> {
             } else if self.spec.matches(&path)
                 && !self.tracked.contains(path.as_slice())
                 && (self.force || !self.ignores.ignore.is_ignored(levels, &path, false))
+                && self.picks.borrow_mut().picks(&path)
             {
                 found.files.push(path);
             }
@@ -296,6 +357,15 @@ fn plan(git: &GitHome, index: &Index, specs: &Specs, update: bool, force: bool) 
         return Ok(out);
     }
     let tracked: HashSet<&[u8]> = index.entries.iter().map(|e| e.path.as_slice()).collect();
+    let mut dirs: HashSet<Vec<u8>> = HashSet::new();
+    for path in &tracked {
+        let mut end = 0;
+        while let Some(i) = path[end..].iter().position(|b| *b == b'/') {
+            end += i;
+            dirs.insert(path[..end].to_vec());
+            end += 1;
+        }
+    }
     let gitlinks: HashSet<&[u8]> = index
         .entries
         .iter()
@@ -307,12 +377,16 @@ fn plan(git: &GitHome, index: &Index, specs: &Specs, update: bool, force: bool) 
     };
     let root = git.repo.root()?;
     if !force {
-        for (_, prefix) in &specs.named {
-            let bytes = prefix.as_bytes();
+        for n in 0..specs.spec.len() {
+            let literal = specs.spec.item_path(n);
+            if specs.spec.item_is_exclude(n) || specs.spec.item_literal(n).len() != literal.len() {
+                continue;
+            }
+            let bytes = literal.strip_suffix(b"/").unwrap_or(literal);
             let Ok(meta) = std::fs::symlink_metadata(fs_path(root, bytes)) else {
                 continue;
             };
-            if !prefix.is_empty()
+            if !bytes.is_empty()
                 && !tracked.iter().any(|p| under(p, bytes))
                 && ignores.hides(git, bytes, meta.is_dir())?
                 && !out.ignored.iter().any(|p| p == bytes)
@@ -325,7 +399,9 @@ fn plan(git: &GitHome, index: &Index, specs: &Specs, update: bool, force: bool) 
         git,
         ignores: &ignores,
         spec: &specs.spec,
+        picks: std::cell::RefCell::new(specs.spec.tracker()),
         tracked: &tracked,
+        dirs: &dirs,
         gitlinks: &gitlinks,
         force,
     };
@@ -506,7 +582,6 @@ fn apply(
 pub(super) fn untracked_files(git: &GitHome, index: &Index) -> Result<Vec<Vec<u8>>> {
     let specs = Specs {
         spec: Pathspec::default(),
-        named: Vec::new(),
     };
     let tracked: HashSet<&[u8]> = index.entries.iter().map(|e| e.path.as_slice()).collect();
     let found = plan(git, index, &specs, false, false)?;
@@ -520,15 +595,29 @@ pub(super) fn untracked_files(git: &GitHome, index: &Index) -> Result<Vec<Vec<u8
 /// `pyn add`: returns whether some named path was refused (the exit status is then 1, as in git).
 pub fn add(git: &GitHome, cwd: &Path, options: &AddOptions) -> Result<bool> {
     let opened = git.open_index()?;
-    let specs = resolve_specs(git, cwd, &options.paths)?;
-    let known: Vec<&[u8]> = opened
-        .index
-        .entries
-        .iter()
-        .map(|e| e.path.as_slice())
-        .collect();
-    require_matches(git, &specs.named, &known, "files")?;
+    let specs = Specs {
+        spec: git.pathspec_without(
+            cwd,
+            &options.paths,
+            false,
+            MagicSet {
+                attr: true,
+                ..MagicSet::default()
+            },
+        )?,
+    };
     let plan = plan(git, &opened.index, &specs, options.update, options.force)?;
+    require_seen(
+        git,
+        &specs.spec,
+        opened
+            .index
+            .entries
+            .iter()
+            .map(|e| e.path.as_slice())
+            .chain(plan.ops.keys().map(Vec::as_slice))
+            .chain(plan.nested.iter().map(Vec::as_slice)),
+    )?;
     for path in &plan.nested {
         eprintln!(
             "warning: '{}/' is a nested git repository; pyn does not add submodules",
@@ -582,10 +671,12 @@ pub fn restore_staged(
         .map(|e| e.path.as_slice())
         .collect();
     known.extend(committed.keys().map(Vec::as_slice));
-    for (arg, prefix) in &specs.named {
-        if !known.iter().any(|p| under(p, prefix.as_bytes())) {
-            bail!("pathspec '{arg}' did not match any file(s) known to git");
-        }
+    if let Some(arg) = specs.spec.first_unmatched(known.iter().copied()) {
+        return Err(Refused(format!(
+            "pathspec '{}' did not match any file(s) known to git",
+            String::from_utf8_lossy(arg)
+        ))
+        .into());
     }
     let mut entries = entries_of(&opened.index);
     let current: Vec<Vec<u8>> = entries
@@ -799,7 +890,6 @@ pub(super) fn clean_bytes(text: &[u8]) -> Vec<u8> {
 pub(super) fn stage_tracked(git: &GitHome, index: &Index, entries: &mut Entries) -> Result<bool> {
     let specs = Specs {
         spec: Pathspec::default(),
-        named: Vec::new(),
     };
     let plan = plan(git, index, &specs, true, false)?;
     apply(git, entries, &plan.ops, false, false)?;

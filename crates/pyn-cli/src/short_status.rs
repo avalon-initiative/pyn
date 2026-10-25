@@ -2,7 +2,7 @@
 
 use std::io::Write;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use clap::Args;
 
 /// Flags of `pyn status` that choose the output format and its pathspecs.
@@ -67,17 +67,6 @@ impl Row {
             from: None,
         }
     }
-}
-
-/// Fails on a pathspec with glob characters or magic, which only literal paths and folders are supported.
-pub fn require_literal(paths: &[String], exists: impl Fn(&str) -> bool) -> Result<()> {
-    for p in paths {
-        let globby = p.contains(['*', '?', '[']) || p.starts_with(':');
-        if globby && !exists(p) {
-            bail!("pathspec '{p}' is a pattern; `pyn status` takes literal files and folders");
-        }
-    }
-    Ok(())
 }
 
 /// `path` as seen from the folder `prefix` (both from the root, no trailing slash on `prefix`).

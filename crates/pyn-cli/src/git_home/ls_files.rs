@@ -8,7 +8,7 @@ use clap::Args;
 use pyn_gitwork::{Kind, Pathspec, fs_path, hash_worktree_file};
 
 use super::GitHome;
-use super::plumbing::{emit_bytes, prefix, quote, usage};
+use super::plumbing::{emit_bytes, prefix, quote};
 use super::stage::{Ignores, child, dir_entries};
 use crate::short_status::relative;
 
@@ -60,22 +60,8 @@ pub(super) fn ls_files(git: &GitHome, cwd: &Path, args: LsFilesArgs) -> Result<(
     if args.ignored && !args.others && !args.cached {
         bail!("ls-files -i must be used with either -o or -c");
     }
-    if args.paths.iter().any(|p| p.starts_with(':')) {
-        usage("pathspec magic is not supported by ls-files");
-    }
     let pre = prefix(git, cwd)?;
-    let specs: Vec<String> = args
-        .paths
-        .iter()
-        .map(|p| git.ws.repo_prefix(cwd, p))
-        .collect::<Result<_>>()?;
-    let spec = if args.paths.is_empty() {
-        Pathspec::new([pre.strip_suffix(b"/").unwrap_or(&pre).to_vec()])
-    } else if specs.iter().any(String::is_empty) {
-        Pathspec::default()
-    } else {
-        Pathspec::with_globs(specs.iter().map(|s| s.as_bytes().to_vec()))
-    };
+    let spec = git.pathspec(cwd, &args.paths, true)?;
     let show_stage = args.stage || args.unmerged;
     let any = args.cached || args.deleted || args.modified || args.others || show_stage;
     let show_cached = args.cached || !any || show_stage;
@@ -115,8 +101,14 @@ pub(super) fn ls_files(git: &GitHome, cwd: &Path, args: LsFilesArgs) -> Result<(
     } else {
         Default::default()
     };
+    let mut picks = spec.tracker();
     for e in &index.entries {
-        if !spec.matches(&e.path) {
+        let picked = if args.error_unmatch {
+            picks.picks(&e.path)
+        } else {
+            spec.matches(&e.path)
+        };
+        if !picked {
             continue;
         }
         matched.insert(e.path.clone());
@@ -149,15 +141,16 @@ pub(super) fn ls_files(git: &GitHome, cwd: &Path, args: LsFilesArgs) -> Result<(
     }
     emit_bytes(&out);
     if args.error_unmatch {
-        for (arg, spec_path) in args.paths.iter().zip(&specs) {
-            let one = Pathspec::with_globs([spec_path.as_bytes().to_vec()]);
-            if !tracked.iter().any(|p| one.matches(p)) {
-                eprintln!(
-                    "error: pathspec '{arg}' did not match any file(s) known to git\n\
-                     Did you forget to 'git add'?"
-                );
-                std::process::exit(1);
-            }
+        let missing = spec.unmatched(tracked.iter().copied());
+        for n in &missing {
+            eprintln!(
+                "error: pathspec '{}' did not match any file(s) known to git",
+                String::from_utf8_lossy(spec.original(*n))
+            );
+        }
+        if !missing.is_empty() {
+            eprintln!("Did you forget to 'git add'?");
+            std::process::exit(1);
         }
     }
     Ok(())
@@ -201,7 +194,12 @@ fn untracked(
             }
             let path = child(&dir, &name);
             if kind.is_dir() {
-                if files.contains(path.as_slice()) || !spec.may_contain(&path) {
+                let enters = if dirs.contains(&path) {
+                    spec.may_contain(&path)
+                } else {
+                    spec.walks_into(&path)
+                };
+                if files.contains(path.as_slice()) || !enters {
                     continue;
                 }
                 let nested = !dirs.contains(&path) && fs_path(root, &path).join(".git").exists();

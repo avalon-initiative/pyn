@@ -17,7 +17,9 @@ mod wildmatch;
 pub use error::{Error, Result};
 pub use history::{Log, LogEntry};
 pub use ignore::{Ignore, Level, parse_rules};
-pub use pathspec::Pathspec;
+pub use pathspec::{
+    MagicSet, Match, Pathspec, PathspecContext, PathspecError, PathspecOptions, Tracker,
+};
 pub use repo::{Head, Repo};
 pub use safepath::{
     MAX_DEPTH, MAX_PATH_BYTES, Reason, UnsafePath, check_link_target, check_path, check_path_as,
@@ -26,4 +28,4 @@ pub use safepath::{
 pub use status::{Conflict, Kind, Status, StatusEntry, fs_path, hash_worktree_file, worktree_mode};
 pub use submodule::{SubmoduleIgnore, SubmoduleStatus, Submodules};
 pub use tree::{Change, Entry, MAX_TREE_DEPTH};
-pub use wildmatch::matches as wildmatch;
+pub use wildmatch::{matches as wildmatch, matches_fold as wildmatch_fold};

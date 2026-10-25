@@ -6,7 +6,6 @@ use std::path::Path;
 
 use anyhow::{Result, bail};
 use clap::Args;
-use pyn_gitwork::Pathspec;
 use pyn_object::{Kind, ObjectId};
 
 use super::GitHome;
@@ -93,12 +92,7 @@ fn from_history(git: &GitHome, cwd: &Path, args: &ShortlogArgs, groups: &mut Gro
         };
         include.push(head);
     }
-    let paths = args
-        .paths
-        .iter()
-        .map(|p| git.ws.repo_prefix(cwd, p).map(String::into_bytes))
-        .collect::<Result<Vec<_>>>()?;
-    let spec = Pathspec::new(paths);
+    let spec = git.pathspec(cwd, &args.paths, false)?;
     let mut walk = git.repo.log_hiding(&include, hidden, spec)?;
     while let Some(entry) = walk.next_entry()? {
         let who = if args.committer {

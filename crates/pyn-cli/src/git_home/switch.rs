@@ -512,15 +512,29 @@ fn restore_paths(git: &GitHome, cwd: &Path, paths: &[String], r: Restore) -> Res
     let opened = git.open_index()?;
     let specs = resolve_specs(git, cwd, paths)?;
     let mut entries: Entries = entries_of(&opened.index);
-    let in_spec = |p: &[u8]| specs.spec.matches(p);
-    let mut remerged: BTreeMap<Vec<u8>, (Option<Entry>, Entry, Entry)> = BTreeMap::new();
-    let mut all_versions: Vec<String> = Vec::new();
-    let mut lacking: Vec<Vec<u8>> = Vec::new();
-    let sources: BTreeMap<Vec<u8>, Entry> = match &r.source {
+    let indexed: Vec<Vec<u8>> = entries.keys().map(|(p, _)| p.clone()).collect();
+    let from_tree = match &r.source {
         Source::Tree(commit) => {
             let tree = git.repo.commit(commit)?.tree;
             git.repo.flatten(Some(&tree), &specs.spec)?
         }
+        Source::Index => BTreeMap::new(),
+    };
+    let picked: HashSet<Vec<u8>> = {
+        let mut tracker = specs.spec.tracker();
+        let candidates: BTreeSet<&Vec<u8>> = from_tree.keys().chain(indexed.iter()).collect();
+        candidates
+            .into_iter()
+            .filter(|p| tracker.picks(p))
+            .cloned()
+            .collect()
+    };
+    let in_spec = |p: &[u8]| picked.contains(p);
+    let mut remerged: BTreeMap<Vec<u8>, (Option<Entry>, Entry, Entry)> = BTreeMap::new();
+    let mut all_versions: Vec<String> = Vec::new();
+    let mut lacking: Vec<Vec<u8>> = Vec::new();
+    let sources: BTreeMap<Vec<u8>, Entry> = match &r.source {
+        Source::Tree(_) => from_tree,
         Source::Index => {
             let mut found = BTreeMap::new();
             let paths: BTreeSet<&Vec<u8>> = entries
@@ -567,18 +581,15 @@ fn restore_paths(git: &GitHome, cwd: &Path, paths: &[String], r: Restore) -> Res
             found
         }
     };
-    let indexed: Vec<Vec<u8>> = entries.keys().map(|(p, _)| p.clone()).collect();
-    for (arg, prefix) in &specs.named {
-        let known = sources
-            .keys()
-            .chain(indexed.iter())
-            .any(|p| under(p, prefix.as_bytes()));
-        if !known {
-            return Err(Refused(format!(
-                "pathspec '{arg}' did not match any file(s) known to git"
-            ))
-            .into());
-        }
+    if let Some(arg) = specs
+        .spec
+        .first_unmatched(sources.keys().chain(indexed.iter()).map(Vec::as_slice))
+    {
+        return Err(Refused(format!(
+            "pathspec '{}' did not match any file(s) known to git",
+            String::from_utf8_lossy(arg)
+        ))
+        .into());
     }
     let mut errors: Vec<String> = all_versions
         .iter()
@@ -606,11 +617,18 @@ fn restore_paths(git: &GitHome, cwd: &Path, paths: &[String], r: Restore) -> Res
         Vec::new()
     };
     if r.to_worktree {
-        check_writes(sources.keys().chain(remerged.keys()).chain(doomed.iter()))?;
+        check_writes(
+            sources
+                .keys()
+                .filter(|p| in_spec(p))
+                .chain(remerged.keys())
+                .chain(doomed.iter()),
+        )?;
         convert::refuse_conversions(
             git,
             sources
                 .iter()
+                .filter(|(p, _)| in_spec(p))
                 .map(|(p, e)| (p.as_slice(), e.mode))
                 .chain(remerged.iter().map(|(p, (_, o, _))| (p.as_slice(), o.mode))),
         )?;
@@ -620,7 +638,7 @@ fn restore_paths(git: &GitHome, cwd: &Path, paths: &[String], r: Restore) -> Res
         }
     }
     for (path, entry) in &sources {
-        let written = if r.to_worktree {
+        let written = if r.to_worktree && in_spec(path) {
             Some(write_entry(git, path, entry)?)
         } else {
             None

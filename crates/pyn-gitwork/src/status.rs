@@ -10,7 +10,7 @@ use pyn_object::{Algorithm, FileMode, Kind as ObjectKind, ObjectHasher, ObjectId
 
 use crate::error::{Error, Result, io_at};
 use crate::ignore::{Ignore, Level, parse_rules};
-use crate::pathspec::Pathspec;
+use crate::pathspec::{DirMatch, Pathspec};
 use crate::repo::{Head, Repo};
 use crate::tree::Entry;
 use crate::{SubmoduleIgnore, SubmoduleStatus, Submodules};
@@ -178,6 +178,12 @@ fn is_link(mode: FileMode) -> bool {
 
 impl Repo {
     pub fn status(&self) -> Result<Status> {
+        self.status_in(&Pathspec::default())
+    }
+
+    /// Like [`Self::status`], listing untracked paths only where `spec` selects them: a folder is one `dir/` entry
+    /// when the pathspec takes it whole, and is opened up otherwise.
+    pub fn status_in(&self, spec: &Pathspec) -> Result<Status> {
         let head = self.head()?;
         let index = self.read_index()?;
         let modules = self.submodules();
@@ -209,7 +215,7 @@ impl Repo {
                 _ => c.theirs = true,
             }
         }
-        for path in self.untracked(&index)? {
+        for path in self.untracked_in(&index, spec)? {
             row(&mut rows, path).unstaged = Some(Kind::Untracked);
         }
         Ok(Status {
@@ -379,6 +385,11 @@ impl Repo {
     /// Files and folders in the work tree that the index does not track and no ignore rule hides. A folder with
     /// nothing tracked in it is reported once, as `dir/`.
     pub fn untracked(&self, index: &Index) -> Result<Vec<Vec<u8>>> {
+        self.untracked_in(index, &Pathspec::default())
+    }
+
+    /// Like [`Self::untracked`], limited to what `spec` selects.
+    pub fn untracked_in(&self, index: &Index, spec: &Pathspec) -> Result<Vec<Vec<u8>>> {
         let root = self.root()?;
         let ignore = self.ignore()?;
         let mut files: HashSet<&[u8]> = HashSet::new();
@@ -402,6 +413,7 @@ impl Repo {
             files: &files,
             dirs: &dirs,
             gitlinks: &gitlinks,
+            spec,
         };
         let mut out = Vec::new();
         walk.folder(b"", &mut Vec::new(), &mut out)?;
@@ -416,6 +428,7 @@ struct Walk<'a> {
     files: &'a HashSet<&'a [u8]>,
     dirs: &'a HashSet<Vec<u8>>,
     gitlinks: &'a HashSet<&'a [u8]>,
+    spec: &'a Pathspec,
 }
 
 impl Walk<'_> {
@@ -479,13 +492,27 @@ impl Walk<'_> {
                     continue;
                 }
                 if self.dirs.contains(&path) {
-                    self.folder(&path, levels, out)?;
-                } else if self.holds_untracked(&path, levels)? {
-                    let mut shown = path;
-                    shown.push(b'/');
-                    out.push(shown);
+                    if self.spec.may_contain(&path) {
+                        self.folder(&path, levels, out)?;
+                    }
+                    continue;
                 }
-            } else if !self.files.contains(path.as_slice()) && !self.ignored(levels, &path, false) {
+                let nested = fs_path(self.root, &path).join(".git").exists();
+                match self.spec.dir_match(&path) {
+                    DirMatch::None => {}
+                    DirMatch::Leading if !nested => self.folder(&path, levels, out)?,
+                    DirMatch::Leading => {}
+                    DirMatch::Whole if self.holds_untracked(&path, levels)? => {
+                        let mut shown = path;
+                        shown.push(b'/');
+                        out.push(shown);
+                    }
+                    DirMatch::Whole => {}
+                }
+            } else if !self.files.contains(path.as_slice())
+                && self.spec.matches(&path)
+                && !self.ignored(levels, &path, false)
+            {
                 out.push(path);
             }
         }
@@ -495,7 +522,8 @@ impl Walk<'_> {
         Ok(())
     }
 
-    /// Whether an untracked folder has anything in it that is not ignored; a nested repository counts.
+    /// Whether an untracked folder has anything in it that the pathspec selects and no rule ignores; a nested
+    /// repository counts.
     fn holds_untracked(&self, dir: &[u8], levels: &mut Vec<Level>) -> Result<bool> {
         let pushed = self.level(dir)?.map(|l| levels.push(l)).is_some();
         let mut found = false;
@@ -504,10 +532,11 @@ impl Walk<'_> {
             if name == b".git" {
                 found = true;
             } else if kind.is_dir() {
-                found =
-                    !self.ignored(levels, &path, true) && self.holds_untracked(&path, levels)?;
+                found = self.spec.dir_match(&path) != DirMatch::None
+                    && !self.ignored(levels, &path, true)
+                    && self.holds_untracked(&path, levels)?;
             } else {
-                found = !self.ignored(levels, &path, false);
+                found = self.spec.matches(&path) && !self.ignored(levels, &path, false);
             }
             if found {
                 break;

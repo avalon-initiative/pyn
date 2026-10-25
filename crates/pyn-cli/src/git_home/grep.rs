@@ -6,7 +6,7 @@ use std::path::Path;
 
 use anyhow::{Result, anyhow, bail};
 use clap::Args;
-use pyn_gitwork::{Pathspec, fs_path};
+use pyn_gitwork::fs_path;
 use pyn_object::{FileMode, ObjectId};
 use regex::bytes::Regex;
 
@@ -486,10 +486,7 @@ fn targets(git: &GitHome, cwd: &Path, rest: &[OsString]) -> Result<Targets> {
         if text.starts_with('-') {
             bail!("option '{text}' must come before non-option arguments");
         }
-        if text.starts_with(':') {
-            usage("pathspec magic is not supported by `pyn grep`");
-        }
-        if !exists(text) && !text.contains(['*', '?', '[', '\\']) {
+        if !exists(text) && !super::stage::looks_like_pathspec(text) {
             if n == 0 {
                 bail!(
                     "ambiguous argument '{text}': unknown revision or path not in the working tree.\n\
@@ -630,17 +627,7 @@ pub fn grep(git: &GitHome, cwd: &Path) -> Result<bool> {
     }
 
     let prefix = git.ws.repo_prefix(cwd, ".")?;
-    let mut specs = Vec::new();
-    for path in &found.paths {
-        specs.push(git.ws.repo_prefix(cwd, path)?);
-    }
-    let spec = if specs.is_empty() {
-        Pathspec::new([prefix.clone().into_bytes()])
-    } else if specs.iter().any(String::is_empty) {
-        Pathspec::default()
-    } else {
-        Pathspec::with_globs(specs.into_iter().map(String::into_bytes))
-    };
+    let spec = git.pathspec(cwd, &found.paths, true)?;
 
     let line_numbers = opts
         .line_numbers

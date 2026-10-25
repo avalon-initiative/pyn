@@ -152,8 +152,8 @@ fn time_left(expires_at: chrono::DateTime<chrono::Utc>) -> String {
 pub struct StatusView<'a> {
     pub format: Format,
     pub branch: bool,
-    /// Repository paths (files or folders); empty for everything, and `""` is the root.
-    pub only: &'a [String],
+    /// What the paths on the command line select; an empty one selects everything.
+    pub only: &'a pyn_gitwork::Pathspec,
     pub cwd: &'a Path,
 }
 
@@ -186,14 +186,7 @@ pub fn status(
         .chain(index.entries.keys())
         .chain(unmerged.keys())
         .chain(merged.iter())
-        .filter(|p| {
-            view.only.is_empty()
-                || view.only.iter().any(|o| {
-                    o.is_empty()
-                        || p.strip_prefix(o.as_str())
-                            .is_some_and(|r| r.is_empty() || r.starts_with('/'))
-                })
-        })
+        .filter(|p| view.only.matches(p.as_bytes()))
         .collect();
     let mut short_rows: Vec<Row> = Vec::new();
 

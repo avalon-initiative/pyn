@@ -239,6 +239,81 @@ fn another_users_lock_is_named_when_add_refuses() {
 }
 
 #[test]
+fn globs_and_magic_pathspecs_stage_unstage_and_remove_files() {
+    let env = start();
+    env.seed("alice", "Source/a.cpp", "a one", None);
+    env.seed("alice", "Source/b.cpp", "b one", None);
+    env.seed("alice", "Source/c.h", "c one", None);
+    let ws = clone(&env);
+    for p in ["Source/a.cpp", "Source/b.cpp", "Source/c.h"] {
+        write(&ws, p, "two");
+    }
+    write(&ws, "Source/new.h", "new");
+    write(&ws, "notes.txt", "x");
+
+    env.ok(&ws, "alice", &["add", "Source/*.cpp"]);
+    assert_eq!(staged_cell(&env, &ws, "Source/a.cpp"), "modified");
+    assert_eq!(staged_cell(&env, &ws, "Source/b.cpp"), "modified");
+    assert_eq!(staged_cell(&env, &ws, "Source/c.h"), "-");
+    env.ok(
+        &ws,
+        "alice",
+        &["restore", "--staged", ":(glob)Source/*.cpp"],
+    );
+    assert_eq!(staged_cell(&env, &ws, "Source/a.cpp"), "-");
+
+    env.ok(&ws, "alice", &["add", ":(glob)**/*.h", ":!Source/c.h"]);
+    assert_eq!(staged_cell(&env, &ws, "Source/new.h"), "added");
+    assert_eq!(staged_cell(&env, &ws, "Source/c.h"), "-");
+    env.ok(
+        &ws,
+        "alice",
+        &["restore", "--staged", ":(icase)SOURCE/NEW.H"],
+    );
+    assert_eq!(staged_cell(&env, &ws, "Source/new.h"), "-");
+
+    let dry = env.ok(&ws, "alice", &["add", "-n", ":(top)Source/?.cpp"]);
+    assert!(
+        dry.contains("add 'Source/a.cpp'") && dry.contains("add 'Source/b.cpp'"),
+        "{dry}"
+    );
+    let err = env.fails(&ws, "alice", &["add", "nomatch*"]);
+    assert!(
+        err.contains("pathspec 'nomatch*' did not match any files"),
+        "{err}"
+    );
+    let err = env.fails(&ws, "alice", &["add", ":(bogus)x"]);
+    assert!(
+        err.contains("Invalid pathspec magic 'bogus' in ':(bogus)x'"),
+        "{err}"
+    );
+
+    let out = env.ok(&ws, "alice", &["rm", "-n", "-f", "Source/*.h"]);
+    assert_eq!(out.trim(), "rm 'Source/c.h'");
+    env.ok(&ws, "alice", &["rm", "-f", "Source/*.h"]);
+    assert!(!ws.join("Source/c.h").exists() && ws.join("Source/new.h").exists());
+    assert_eq!(staged_cell(&env, &ws, "Source/c.h"), "deleted");
+}
+
+#[test]
+fn diff_takes_globs_on_a_server_workspace() {
+    let env = start();
+    env.seed("alice", "Source/a.cpp", "one\n", None);
+    env.seed("alice", "Source/b.txt", "one\n", None);
+    let ws = clone(&env);
+    write(&ws, "Source/a.cpp", "two\n");
+    write(&ws, "Source/b.txt", "two\n");
+    let names = |args: &[&str]| -> String {
+        let mut full = vec!["diff", "--name-only"];
+        full.extend_from_slice(args);
+        env.ok(&ws, "alice", &full)
+    };
+    assert_eq!(names(&["Source/*.cpp"]), "Source/a.cpp\n");
+    assert_eq!(names(&[":!Source/*.cpp"]), "Source/b.txt\n");
+    assert_eq!(names(&[":(glob)**/b.*"]), "Source/b.txt\n");
+}
+
+#[test]
 fn ignored_files_need_force_and_dry_run_stages_nothing() {
     let env = start();
     env.seed("alice", "Source/a.cpp", "one", None);

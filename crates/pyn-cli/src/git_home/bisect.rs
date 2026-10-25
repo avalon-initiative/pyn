@@ -931,14 +931,10 @@ impl<'a> Bisect<'a> {
             }
             paths.extend(words);
         }
-        let mut rooted = Vec::new();
-        for p in &paths {
-            match self.git.ws.repo_prefix(self.cwd, p) {
-                Ok(r) => rooted.push(r),
-                Err(e) => die(&e.to_string()),
-            }
+        match self.git.pathspec(self.cwd, &paths, false) {
+            Ok(spec) => spec,
+            Err(e) => die(&e.to_string()),
         }
-        Pathspec::with_globs(rooted)
     }
 
     fn error_if_skipped(&mut self, tried: &[ObjectId], bad: Option<&ObjectId>) -> i32 {

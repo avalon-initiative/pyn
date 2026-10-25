@@ -2,7 +2,12 @@
 
 /// Matches `text` against `pattern`. With `pathname`, `*` and `?` stop at `/` and `**` spans folders.
 pub fn matches(pattern: &[u8], text: &[u8], pathname: bool) -> bool {
-    Matcher::new(pattern, pathname).walk(0, text) == Outcome::Match
+    matches_fold(pattern, text, pathname, false)
+}
+
+/// Like [`matches`]; with `fold`, ASCII letters match regardless of case (git's `WM_CASEFOLD`).
+pub fn matches_fold(pattern: &[u8], text: &[u8], pathname: bool, fold: bool) -> bool {
+    Matcher::new(pattern, pathname, fold).walk(0, text) == Outcome::Match
 }
 
 /// Most `*` groups one pattern may nest; deeper patterns never match.
@@ -20,15 +25,17 @@ enum Outcome {
 struct Matcher<'a> {
     p: &'a [u8],
     pathname: bool,
+    fold: bool,
     depth: usize,
     steps: u64,
 }
 
 impl<'a> Matcher<'a> {
-    fn new(p: &'a [u8], pathname: bool) -> Self {
+    fn new(p: &'a [u8], pathname: bool, fold: bool) -> Self {
         Self {
             p,
             pathname,
+            fold,
             depth: 0,
             steps: 0,
         }
@@ -54,7 +61,7 @@ impl<'a> Matcher<'a> {
                     let Some((end, class)) = parse_class(p, pi) else {
                         return Outcome::AbortAll;
                     };
-                    if (self.pathname && t[0] == b'/') || !class.matches(t[0]) {
+                    if (self.pathname && t[0] == b'/') || !class.matches(t[0], self.fold) {
                         return Outcome::NoMatch;
                     }
                     t = &t[1..];
@@ -63,7 +70,7 @@ impl<'a> Matcher<'a> {
                 b'\\' => {
                     pi += 1;
                     match p.get(pi) {
-                        Some(a) if *a == t[0] => {
+                        Some(a) if *a == self.case(t[0]) => {
                             pi += 1;
                             t = &t[1..];
                         }
@@ -71,7 +78,7 @@ impl<'a> Matcher<'a> {
                     }
                 }
                 c => {
-                    if c != t[0] {
+                    if self.case(c) != self.case(t[0]) {
                         return Outcome::NoMatch;
                     }
                     pi += 1;
@@ -84,6 +91,10 @@ impl<'a> Matcher<'a> {
         } else {
             Outcome::NoMatch
         }
+    }
+
+    fn case(&self, c: u8) -> u8 {
+        if self.fold { c.to_ascii_lowercase() } else { c }
     }
 
     fn star(&mut self, at: usize, t: &[u8]) -> Outcome {
@@ -149,15 +160,25 @@ struct Class {
 }
 
 enum Item {
+    Char(u8),
     Range(u8, u8),
     Named(&'static str),
 }
 
 impl Class {
-    fn matches(&self, c: u8) -> bool {
+    // Under `fold` git lowercases the text byte only: bracket members stay as written, ranges also try the uppercase.
+    fn matches(&self, c: u8, fold: bool) -> bool {
+        let t = if fold { c.to_ascii_lowercase() } else { c };
         let hit = self.items.iter().any(|i| match i {
-            Item::Range(a, b) => (*a..=*b).contains(&c),
-            Item::Named(name) => named(name, c),
+            Item::Char(a) => *a == t,
+            Item::Range(a, b) => {
+                (*a..=*b).contains(&t)
+                    || (fold
+                        && t.is_ascii_lowercase()
+                        && (*a..=*b).contains(&t.to_ascii_uppercase()))
+            }
+            Item::Named("upper") if fold => t.is_ascii_alphabetic(),
+            Item::Named(name) => named(name, t),
         });
         hit != self.negated
     }
@@ -229,7 +250,7 @@ fn parse_class(p: &[u8], at: usize) -> Option<(usize, Class)> {
             i += 1;
             items.push(Item::Range(lo, hi));
         } else {
-            items.push(Item::Range(lo, lo));
+            items.push(Item::Char(lo));
         }
     }
 }
@@ -247,7 +268,7 @@ mod tests {
     }
 
     fn steps(p: &str, t: &str, pathname: bool) -> (bool, u64) {
-        let mut m = Matcher::new(p.as_bytes(), pathname);
+        let mut m = Matcher::new(p.as_bytes(), pathname, false);
         let r = m.walk(0, t.as_bytes()) == Outcome::Match;
         (r, m.steps)
     }

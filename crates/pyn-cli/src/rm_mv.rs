@@ -6,11 +6,12 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use clap::Args;
+use pyn_gitwork::Match;
 
 use crate::backend::Backend;
 use crate::git_home::Refused;
 use crate::mv_plan::{self, MvArgs};
-use crate::staging::{Entry, Index, require_locks, store, under};
+use crate::staging::{Entry, Index, require_locks, store};
 use crate::workspace::{FileState, Workspace, hash_of};
 use crate::{localfile, merging};
 
@@ -177,22 +178,36 @@ pub fn rm(backend: &dyn Backend, ws: &Workspace, cwd: &Path, args: &RmArgs) -> R
     let mut index = Index::load(ws)?;
     let state = ws.load_state()?;
     let known = tracked(&state, &index);
-    let mut matched: BTreeSet<String> = BTreeSet::new();
-    for arg in &args.paths {
-        let prefix = ws.repo_prefix(cwd, arg)?;
-        let hits: Vec<&String> = known.iter().filter(|p| under(p, &prefix)).collect();
-        if hits.is_empty() {
+    let spec = crate::pathspec::parse(
+        ws,
+        cwd,
+        &args.paths,
+        Default::default(),
+        true,
+        crate::usage_error,
+    )?;
+    let (picked, seen) = spec.select(known.iter().map(|p| p.as_bytes()));
+    for (n, how) in seen
+        .iter()
+        .enumerate()
+        .filter(|(n, _)| !spec.item_is_exclude(*n))
+    {
+        let arg = String::from_utf8_lossy(spec.original(n));
+        if how.is_none() {
             if args.ignore_unmatch {
                 continue;
             }
             bail!("pathspec '{arg}' did not match any files");
         }
-        if !args.recursive && hits.iter().any(|p| **p != prefix) {
-            let shown = if prefix.is_empty() { "." } else { arg };
+        if !args.recursive && *how == Some(Match::Recursive) {
+            let shown = if arg.is_empty() { ".".into() } else { arg };
             bail!("not removing '{shown}' recursively without -r");
         }
-        matched.extend(hits.into_iter().cloned());
     }
+    let matched: BTreeSet<String> = picked
+        .into_iter()
+        .map(|p| String::from_utf8_lossy(p).into_owned())
+        .collect();
     let conflicted = merging::conflicted(ws);
     if let Some(p) = matched.iter().find(|p| conflicted.contains(*p)) {
         bail!("{p} has a merge conflict; resolve it and stage it with `pyn add` first");

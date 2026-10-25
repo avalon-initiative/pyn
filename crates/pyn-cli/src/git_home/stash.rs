@@ -12,9 +12,8 @@ use pyn_object::{Commit, FileMode, Kind as ObjectKind, ObjectId};
 
 use super::patch_mode::{self, StashPatch};
 use super::stage::{
-    Entries, OpenIndex, Specs, entries_of, identity, index_of, put_entry, raw_mode,
-    refuse_in_progress, remove_entry, resolve_specs, stage_file, stat_fields, under,
-    untracked_files, write_tree,
+    Entries, OpenIndex, entries_of, identity, index_of, put_entry, raw_mode, refuse_in_progress,
+    remove_entry, stage_file, stat_fields, untracked_files, write_tree,
 };
 use super::strategy::Settings;
 use super::switch::{subject, switch_to_new};
@@ -269,69 +268,42 @@ fn push(git: &GitHome, cwd: &Path, args: PushArgs) -> Result<()> {
 /// The paths a stash is limited to; empty `named` means the whole work tree.
 pub(super) struct Scope {
     spec: Pathspec,
-    named: Vec<(String, String)>,
-    cwd_prefix: String,
+    limited: bool,
 }
 
 impl Scope {
     pub(super) fn all() -> Self {
         Self {
             spec: Pathspec::default(),
-            named: Vec::new(),
-            cwd_prefix: String::new(),
+            limited: false,
         }
     }
 
     fn of(git: &GitHome, cwd: &Path, paths: &[String]) -> Result<Self> {
-        if paths.iter().any(String::is_empty) {
-            bail!(
-                "empty string is not a valid pathspec. please use . instead if you meant to match all paths"
-            );
-        }
-        for p in paths {
-            if git.ws.repo_prefix(cwd, p).is_err() {
-                bail!(
-                    "{p}: '{p}' is outside repository at '{}'",
-                    git.repo.root()?.display()
-                );
-            }
-        }
-        let Specs { spec, named } = resolve_specs(git, cwd, paths)?;
-        let cwd_prefix = if paths.is_empty() {
-            String::new()
-        } else {
-            git.ws.repo_prefix(cwd, ".")?
-        };
+        let spec = git.pathspec(cwd, paths, false)?;
         Ok(Self {
             spec,
-            named,
-            cwd_prefix,
+            limited: !paths.is_empty(),
         })
     }
 
     fn limited(&self) -> bool {
-        !self.named.is_empty()
+        self.limited
     }
 
     /// The paths named that neither the index nor `extra` knows, as git words them.
     fn unknown(&self, index: &Index, extra: &[Vec<u8>]) -> Vec<String> {
+        let known = index
+            .entries
+            .iter()
+            .map(|e| e.path.as_slice())
+            .chain(extra.iter().map(Vec::as_slice));
         let mut missing = Vec::new();
-        for (arg, prefix) in &self.named {
-            let p = prefix.as_bytes();
-            if prefix.is_empty()
-                || index.entries.iter().any(|e| under(&e.path, p))
-                || extra.iter().any(|e| under(e, p))
-            {
+        for n in self.spec.unmatched(known) {
+            if self.spec.item_path(n).is_empty() {
                 continue;
             }
-            let here = &self.cwd_prefix;
-            let n = if here.is_empty() || !under(p, here.as_bytes()) {
-                0
-            } else {
-                here.len() + 1
-            };
-            let slash = if arg.ends_with('/') { "/" } else { "" };
-            missing.push(format!(":(prefix:{n}){prefix}{slash}"));
+            missing.push(self.spec.item_form(n));
         }
         missing
     }

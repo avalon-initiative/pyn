@@ -5,11 +5,9 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use anyhow::{Result, bail};
-use pyn_gitwork::{Kind, Pathspec, fs_path};
+use pyn_gitwork::{Kind, Match, Pathspec, fs_path};
 
-use super::stage::{
-    GITLINK, entries_of, index_of, put_entry, raw_mode, remove_entry, resolve_specs, under,
-};
+use super::stage::{GITLINK, entries_of, index_of, put_entry, raw_mode, remove_entry};
 use super::worktree::{check_writes, remove_entry_file_keeping};
 use super::{GitHome, Refused, path_string};
 use crate::mv_plan::{self, MvArgs};
@@ -29,28 +27,26 @@ fn list(title: &str, advice: &str, paths: &[&Vec<u8>]) -> Option<String> {
 /// `pyn rm`: drops the paths from the index and, without `--cached`, from the work tree.
 pub fn rm(git: &GitHome, cwd: &Path, args: &RmArgs) -> Result<()> {
     let opened = git.open_index()?;
-    let specs = resolve_specs(git, cwd, &args.paths)?;
-    let mut matched: BTreeSet<Vec<u8>> = BTreeSet::new();
-    for (arg, prefix) in &specs.named {
-        let hits: Vec<&Vec<u8>> = opened
-            .index
-            .entries
-            .iter()
-            .map(|e| &e.path)
-            .filter(|p| under(p, prefix.as_bytes()))
-            .collect();
-        if hits.is_empty() {
+    let spec = &git.pathspec(cwd, &args.paths, true)?;
+    let (picked, seen) = spec.select(opened.index.entries.iter().map(|e| e.path.as_slice()));
+    for (n, how) in seen
+        .iter()
+        .enumerate()
+        .filter(|(n, _)| !spec.item_is_exclude(*n))
+    {
+        let arg = String::from_utf8_lossy(spec.original(n));
+        if how.is_none() {
             if args.ignore_unmatch {
                 continue;
             }
             bail!("pathspec '{arg}' did not match any files");
         }
-        if !args.recursive && hits.iter().any(|p| p.as_slice() != prefix.as_bytes()) {
-            let shown = if prefix.is_empty() { "." } else { arg };
+        if !args.recursive && *how == Some(Match::Recursive) {
+            let shown = if arg.is_empty() { ".".into() } else { arg };
             bail!("not removing '{shown}' recursively without -r");
         }
-        matched.extend(hits.into_iter().cloned());
     }
+    let matched: BTreeSet<Vec<u8>> = picked.into_iter().map(<[u8]>::to_vec).collect();
     if matched.is_empty() {
         return Ok(());
     }

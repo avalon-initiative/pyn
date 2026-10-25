@@ -4,6 +4,7 @@ use std::path::Path;
 
 use anyhow::{Result, bail};
 use clap::Args;
+use pyn_gitwork::MagicSet;
 use pyn_object::{FileMode, Kind, ObjectId, TreeEntry};
 
 use super::GitHome;
@@ -72,28 +73,24 @@ pub(super) fn ls_tree(git: &GitHome, cwd: &Path, args: LsTreeArgs) -> Result<()>
     let Some(tree) = peel(git, &id, Some(Kind::Tree))? else {
         bail!("not a tree object");
     };
-    let mut patterns = Vec::new();
-    for p in &args.paths {
-        let rel = if args.full_tree {
-            git.ws.repo_prefix(git.repo.root()?, p).ok()
-        } else {
-            git.ws.repo_prefix(cwd, p).ok()
-        };
-        let Some(rel) = rel else {
-            bail!("{p}: '{p}' is outside repository");
-        };
-        if rel.is_empty() {
-            continue;
-        }
-        let mut bytes = rel.into_bytes();
-        if p.ends_with('/') || names_folder(p) {
-            bytes.push(b'/');
-        }
-        patterns.push(bytes);
-    }
-    if args.paths.is_empty() && !pre.is_empty() {
-        patterns.push(pre.clone());
-    }
+    let base = if args.full_tree {
+        git.repo.root()?.to_path_buf()
+    } else {
+        cwd.to_path_buf()
+    };
+    let refused = MagicSet {
+        glob: true,
+        icase: true,
+        exclude: true,
+        attr: true,
+        ..MagicSet::default()
+    };
+    let spec = git.pathspec_without(&base, &args.paths, true, refused)?;
+    let patterns: Vec<Vec<u8>> = (0..spec.len())
+        .map(|n| spec.item_path(n))
+        .filter(|p| !p.is_empty())
+        .map(<[u8]>::to_vec)
+        .collect();
     let abbrev = args.abbrev.as_deref().map(|v| match v.parse::<usize>() {
         Ok(n) => n.clamp(4, git.algorithm().digest_len() * 2),
         Err(_) => default_abbrev(git),
@@ -197,9 +194,4 @@ impl Walk<'_> {
         out.push(if self.args.nul { 0 } else { b'\n' });
         Ok(())
     }
-}
-
-/// Whether the path names a folder by its last component (`.`, `..`), which git reads as `folder/`.
-fn names_folder(path: &str) -> bool {
-    matches!(path.rsplit('/').find(|c| !c.is_empty()), Some("." | ".."))
 }

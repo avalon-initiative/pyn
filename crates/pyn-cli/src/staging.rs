@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use pyn_gitwork::{MagicSet, Pathspec, PathspecOptions};
 use pyn_proto as api;
 use serde::{Deserialize, Serialize};
 
@@ -147,38 +148,49 @@ pub(crate) fn store(ws: &Workspace, hash: &str, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn under(path: &str, prefix: &str) -> bool {
-    prefix.is_empty()
-        || path == prefix
-        || (path.starts_with(prefix) && path[prefix.len()..].starts_with('/'))
-}
-
-/// The paths named on the command line, as repository paths; the empty path is everything.
+/// The pathspecs named on the command line; none means everything.
 struct Specs {
-    named: Vec<(String, String)>,
+    spec: Pathspec,
 }
 
 impl Specs {
     fn resolve(ws: &Workspace, cwd: &Path, args: &[String]) -> Result<Self> {
-        let named = args
-            .iter()
-            .map(|a| Ok((a.clone(), ws.repo_prefix(cwd, a)?)))
-            .collect::<Result<_>>()?;
-        Ok(Self { named })
+        let refused = MagicSet {
+            attr: true,
+            ..MagicSet::default()
+        };
+        let options = (PathspecOptions::default(), refused);
+        let spec = crate::pathspec::parse(ws, cwd, args, options, false, crate::usage_error)?;
+        Ok(Self { spec })
     }
 
     fn matches(&self, path: &str) -> bool {
-        self.named.is_empty() || self.named.iter().any(|(_, p)| under(path, p))
+        self.spec.matches(path.as_bytes())
     }
 
-    /// Fails for a name that is neither on disk nor known to the workspace.
-    fn require_known(&self, ws: &Workspace, known: &BTreeSet<&str>, what: &str) -> Result<()> {
-        for (arg, prefix) in &self.named {
-            let on_disk = prefix.is_empty()
-                || std::fs::symlink_metadata(ws.abs(prefix)).is_ok()
-                || known.iter().any(|p| under(p, prefix));
-            if !on_disk {
-                bail!("pathspec '{arg}' did not match any {what}");
+    /// Fails for a name that matches nothing known or staged and is not a file on disk, as `git add` does.
+    fn require_seen<'a>(
+        &self,
+        ws: &Workspace,
+        seen: impl Iterator<Item = &'a str> + Clone,
+    ) -> Result<()> {
+        let spec = &self.spec;
+        for n in 0..spec.len() {
+            let text = spec.item_path(n);
+            if spec.item_is_exclude(n)
+                || text.is_empty()
+                || seen
+                    .clone()
+                    .any(|p| spec.item_match(n, p.as_bytes()).is_some())
+            {
+                continue;
+            }
+            let on_disk = std::fs::symlink_metadata(ws.abs(&String::from_utf8_lossy(text))).is_ok();
+            if spec.item_is_pattern(n) || !on_disk {
+                bail!(
+                    "pathspec '{}' did not match any files",
+                    String::from_utf8_lossy(spec.original(n))
+                );
             }
         }
         Ok(())
@@ -259,7 +271,12 @@ fn plan(ws: &Workspace, index: &Index, specs: &Specs, args: &AddArgs) -> Result<
         return Ok(Plan { ops, ignored });
     }
     let mut candidates: BTreeSet<String> = ws.scan_with(!args.force)?.into_iter().collect();
-    for (_, prefix) in &specs.named {
+    for n in 0..specs.spec.len() {
+        let text = specs.spec.item_path(n);
+        if specs.spec.item_is_exclude(n) || specs.spec.item_literal(n).len() != text.len() {
+            continue;
+        }
+        let prefix = &String::from_utf8_lossy(text.strip_suffix(b"/").unwrap_or(text)).into_owned();
         if !prefix.is_empty()
             && localfile::exists(&ws.abs(prefix))
             && !state.contains_key(prefix)
@@ -269,7 +286,9 @@ fn plan(ws: &Workspace, index: &Index, specs: &Specs, args: &AddArgs) -> Result<
             ignored.push(prefix.clone());
         }
     }
-    candidates.retain(|p| !state.contains_key(p) && specs.matches(p) && !ignored.contains(p));
+    let mut picks = specs.spec.tracker();
+    candidates
+        .retain(|p| !state.contains_key(p) && !ignored.contains(p) && picks.picks(p.as_bytes()));
     for path in candidates {
         let (file_mode, bytes) = localfile::read(&ws.abs(&path))?;
         let staged_same = index
@@ -321,13 +340,15 @@ pub fn add(backend: &dyn Backend, ws: &Workspace, cwd: &Path, args: &AddArgs) ->
     let mut index = Index::load(ws)?;
     let specs = Specs::resolve(ws, cwd, &args.paths)?;
     let state = ws.load_state()?;
-    let known: BTreeSet<&str> = state
-        .keys()
-        .map(String::as_str)
-        .chain(index.entries.keys().map(String::as_str))
-        .collect();
-    specs.require_known(ws, &known, "files")?;
     let plan = plan(ws, &index, &specs, args)?;
+    specs.require_seen(
+        ws,
+        state
+            .keys()
+            .map(String::as_str)
+            .chain(index.entries.keys().map(String::as_str))
+            .chain(plan.ops.keys().map(String::as_str)),
+    )?;
     let conflicted = crate::merging::conflicted(ws);
     let puts: Vec<&String> = plan
         .ops
@@ -413,10 +434,14 @@ pub fn unstage(ws: &Workspace, cwd: &Path, paths: &[String]) -> Result<()> {
         .map(String::as_str)
         .chain(index.entries.keys().map(String::as_str))
         .collect();
-    for (arg, prefix) in &specs.named {
-        if !known.iter().any(|p| under(p, prefix)) {
-            bail!("pathspec '{arg}' did not match any file(s) known to pyn");
-        }
+    if let Some(arg) = specs
+        .spec
+        .first_unmatched(known.iter().map(|p| p.as_bytes()))
+    {
+        bail!(
+            "pathspec '{}' did not match any file(s) known to pyn",
+            String::from_utf8_lossy(arg)
+        );
     }
     index.entries.retain(|p, _| !specs.matches(p));
     index.save(ws)
@@ -583,12 +608,6 @@ fn commit_local(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn names_are_under_a_folder_only_at_a_slash() {
-        assert!(under("src/a", "src") && under("src", "src") && under("x", ""));
-        assert!(!under("srcx/a", "src"));
-    }
 
     #[test]
     fn a_staged_entry_differs_when_content_or_mode_does() {

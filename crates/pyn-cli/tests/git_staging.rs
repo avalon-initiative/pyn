@@ -348,7 +348,7 @@ fn unknown_pathspecs_and_ignored_files_are_refused_like_git() {
         "{err}"
     );
     let (code, err) = repo.fails(&["restore", "--staged", "nothing-here"]);
-    assert_eq!(code, 128);
+    assert_eq!(code, 1);
     assert!(err.contains("did not match"), "{err}");
     let out = repo.run_in(&repo.main, &["add", "debug.out"]);
     assert_eq!(out.status.code(), Some(1));
