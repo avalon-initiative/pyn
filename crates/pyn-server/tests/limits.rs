@@ -31,15 +31,19 @@ async fn server_with_cap(default_limits: Limits, upload_cap: Option<u64>) -> Rou
     let audit = Arc::new(MemoryAuditStore::new());
     let meta = Arc::new(MemoryMetadataStore::new());
     let access = Arc::new(
-        AccessService::new(Arc::new(MemoryAccessStore::new()), clock.clone())
-            .with_config(AccessConfig {
-                registration: RegistrationMode::Open,
-                require_email_verification: false,
-                default_limits,
-                ..AccessConfig::default()
-            })
-            .with_registry(meta.clone())
-            .with_audit(audit.clone()),
+        AccessService::new(
+            Arc::new(MemoryAccessStore::new()),
+            clock.clone(),
+            Arc::new(pyn_core::MemoryLimitEvents::new()),
+        )
+        .with_config(AccessConfig {
+            registration: RegistrationMode::Open,
+            require_email_verification: false,
+            default_limits,
+            ..AccessConfig::default()
+        })
+        .with_registry(meta.clone())
+        .with_audit(audit.clone()),
     );
     access.admin_for_tests(&UserId::new("root")).await.unwrap();
     let mut repos = Repositories::new(

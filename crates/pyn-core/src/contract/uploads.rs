@@ -180,7 +180,11 @@ pub async fn assembling_needs_chunks_the_repository_uploaded(store: Store) {
             store.clone(),
             shared.clone(),
             h.audit.clone(),
-            h.clock.clone(),
+            crate::RepoServiceContext {
+                owner: crate::UserId::new("owner"),
+                clock: h.clock.clone(),
+                limit_events: Arc::new(crate::MemoryLimitEvents::new()),
+            },
             ServiceConfig::default(),
         )
     };
@@ -210,7 +214,11 @@ pub async fn unreferenced_uploads_are_capped_per_repository(store: Store) {
         store.clone(),
         h.objects.clone(),
         h.audit.clone(),
-        h.clock.clone(),
+        crate::RepoServiceContext {
+            owner: crate::UserId::new("owner"),
+            clock: h.clock.clone(),
+            limit_events: Arc::new(crate::MemoryLimitEvents::new()),
+        },
         ServiceConfig::default(),
     )
     .with_unreferenced_cap(10);
@@ -242,7 +250,11 @@ fn capped_service(h: &super::Harness, store: &Store, repo: &str, cap: u64) -> Ar
             store.clone(),
             h.objects.clone(),
             h.audit.clone(),
-            h.clock.clone(),
+            crate::RepoServiceContext {
+                owner: crate::UserId::new("owner"),
+                clock: h.clock.clone(),
+                limit_events: Arc::new(crate::MemoryLimitEvents::new()),
+            },
             ServiceConfig::default(),
         )
         .with_unreferenced_cap(cap),
@@ -409,7 +421,11 @@ pub async fn a_failed_upload_keeps_an_object_another_repository_recorded(store: 
         store.clone(),
         racing,
         h.audit.clone(),
-        h.clock.clone(),
+        crate::RepoServiceContext {
+            owner: crate::UserId::new("owner"),
+            clock: h.clock.clone(),
+            limit_events: Arc::new(crate::MemoryLimitEvents::new()),
+        },
         ServiceConfig::default(),
     );
 

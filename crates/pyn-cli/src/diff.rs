@@ -412,6 +412,51 @@ fn pairs(
     Ok(out)
 }
 
+/// A path of `new` that differs from `old`: the blob it came from (following a rename), the blob it is, and git's status letter.
+pub struct Origin {
+    pub path: String,
+    pub from: Option<Blob>,
+    pub to: Option<Blob>,
+    pub status: char,
+}
+
+/// The changed paths of `old` against `new` as `Origin`s, in path order.
+pub fn origins(
+    backend: &dyn Backend,
+    old: &Tree,
+    new: &Tree,
+    only: &[String],
+    renames: rename::Request,
+) -> Result<Vec<Origin>> {
+    let opts = renames
+        .resolve(backend.rename_defaults())
+        .unwrap_or_else(|message| crate::usage_error(&message));
+    let class = |b: &Blob| match b.mode {
+        FileMode::Symlink => 1,
+        FileMode::Gitlink => 2,
+        _ => 0,
+    };
+    Ok(pairs(backend, old, new, only, opts.as_ref())?
+        .into_iter()
+        .map(|p| {
+            let status = match (&p.old, &p.new, &p.moved) {
+                (_, _, Some(m)) if m.copy => 'C',
+                (_, _, Some(_)) => 'R',
+                (None, _, _) => 'A',
+                (_, None, _) => 'D',
+                (Some(a), Some(b), _) if class(a) != class(b) => 'T',
+                _ => 'M',
+            };
+            Origin {
+                path: p.new_path,
+                from: p.old,
+                to: p.new,
+                status,
+            }
+        })
+        .collect())
+}
+
 /// The create, delete, rename, copy and mode-change lines of `--summary` for a pair.
 fn summary_line(p: &Pair) -> String {
     let mut out = String::new();

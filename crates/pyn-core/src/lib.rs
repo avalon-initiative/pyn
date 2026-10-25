@@ -15,6 +15,7 @@ pub mod error;
 pub mod gate;
 pub mod history;
 pub mod integrity;
+pub mod limit_events;
 pub mod limits;
 pub mod memory;
 pub mod merge;
@@ -64,6 +65,7 @@ pub use history::{
     HistoryScan, PathHistoryPage, decode_path_cursor, encode_path_cursor,
 };
 pub use integrity::{BreakKind, Problem, VerifyReport};
+pub use limit_events::{LimitEvents, LimitKind, LimitReached, MemoryLimitEvents};
 pub use limits::{
     Limits, LimitsChange, MAX_LIMIT_VALUE, RepoUsage, StorageCap, StorageCaps, Usage,
 };
@@ -94,8 +96,8 @@ pub use rules::{Mode, PathFilter, Rules};
 pub use service::{
     ChangeEntry, CommitPage, Deletion, FETCH_DEFAULT_LIMIT, FETCH_MAX_EXAMINED, FETCH_MAX_HAVES,
     FETCH_MAX_LIMIT, FetchPage, FetchQuery, FetchedCommit, FileEntry, LockLimit, PolicyPreview,
-    PushObjects, Pushed, Recorded, RepoService, ServiceConfig, Snapshot, SnapshotEntry,
-    VERIFY_BUDGET,
+    PushObjects, Pushed, Recorded, RepoService, RepoServiceContext, ServiceConfig, Snapshot,
+    SnapshotEntry, VERIFY_BUDGET,
 };
 pub use store::{MetadataStore, UploadReservation};
 pub use stranded::{ConversionNote, StrandedVersion};

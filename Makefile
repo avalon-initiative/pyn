@@ -7,7 +7,7 @@ LOG_DIR := $(RUN_DIR)/logs
 PID_FILE := $(PID_DIR)/pyn.pid
 LOG_FILE := $(LOG_DIR)/pyn.log
 
-.PHONY: dev demo docs-check boundary-check openapi help build run start stop restart status test test-live e2e fmt fmt-check lint check clean
+.PHONY: dev demo docs-check boundary-check openapi help build run start stop restart status test test-live e2e fmt fmt-check lint check release clean
 
 help:
 	@echo "pyn — local dev commands"
@@ -29,6 +29,7 @@ help:
 	@echo "  make boundary-check  fail on private references, secrets, or a git spawn in runtime source"
 	@echo "  make openapi       regenerate docs/generated/openapi.json"
 	@echo "  make check         fmt-check + lint + test — what CI runs"
+	@echo "  make release       run the release flow: checks, version prompt, bump, commit and tag"
 	@echo "  make clean         remove build artifacts and PID/log files"
 
 build:
@@ -116,6 +117,9 @@ openapi:
 	PYN_UPDATE_OPENAPI=1 cargo test -p pyn-server --test openapi
 
 check: fmt-check lint test
+
+release:
+	scripts/release.sh
 
 clean:
 	cargo clean

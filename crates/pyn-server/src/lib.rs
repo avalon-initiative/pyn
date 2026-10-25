@@ -26,6 +26,7 @@ pub mod auth;
 mod branch_api;
 mod client;
 pub mod email;
+pub mod events;
 mod limits_api;
 mod merge_api;
 mod oidc_api;

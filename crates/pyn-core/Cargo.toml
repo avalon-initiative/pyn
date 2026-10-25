@@ -28,6 +28,7 @@ ssh-key = { version = "0.6.7", features = ["ed25519", "p256", "p384", "p521", "r
 thiserror = "2.0.21"
 tokio = { version = "1.53.2", features = ["io-util", "rt", "sync"] }
 toml = "1.1.7"
+tracing = "0.1.44"
 
 [lints]
 workspace = true

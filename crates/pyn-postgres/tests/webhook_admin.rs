@@ -22,14 +22,18 @@ async fn secrets_rotate_retire_and_are_encrypted_in_postgres() {
             .unwrap(),
     );
     let key = SecretKey::from_hex(KEY).unwrap();
-    let access = AccessService::new(Arc::new(MemoryAccessStore::new()), Arc::new(SystemClock))
-        .with_webhooks(
-            pg.clone(),
-            WebhookSettings {
-                secret_key: Some(key.clone()),
-                allow_http: false,
-            },
-        );
+    let access = AccessService::new(
+        Arc::new(MemoryAccessStore::new()),
+        Arc::new(SystemClock),
+        Arc::new(pyn_core::MemoryLimitEvents::new()),
+    )
+    .with_webhooks(
+        pg.clone(),
+        WebhookSettings {
+            secret_key: Some(key.clone()),
+            allow_http: false,
+        },
+    );
     let root = UserId::new("root");
     access.admin_for_tests(&root).await.unwrap();
     let who = Identity {

@@ -32,15 +32,19 @@ fn build(org_creation: OrgCreation, registration: RegistrationMode) -> World {
     let meta = Arc::new(MemoryMetadataStore::new());
     let store = Arc::new(MemoryAccessStore::new());
     let access = Arc::new(
-        AccessService::new(store.clone(), clock.clone())
-            .with_config(AccessConfig {
-                registration,
-                require_email_verification: false,
-                org_creation,
-                ..AccessConfig::default()
-            })
-            .with_registry(meta.clone())
-            .with_audit(audit.clone()),
+        AccessService::new(
+            store.clone(),
+            clock.clone(),
+            Arc::new(pyn_core::MemoryLimitEvents::new()),
+        )
+        .with_config(AccessConfig {
+            registration,
+            require_email_verification: false,
+            org_creation,
+            ..AccessConfig::default()
+        })
+        .with_registry(meta.clone())
+        .with_audit(audit.clone()),
     );
     let repos = Repositories::new(
         meta,

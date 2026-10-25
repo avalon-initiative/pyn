@@ -49,15 +49,19 @@ fn build(
     let store = Arc::new(MemoryAccessStore::new());
     let mut policy = ExternalPolicy::default();
     external(&mut policy);
-    let mut service = AccessService::new(store.clone(), clock.clone())
-        .with_config(AccessConfig {
-            registration: RegistrationMode::Open,
-            require_email_verification: false,
-            public_url: WEB.into(),
-            external: policy,
-            ..AccessConfig::default()
-        })
-        .with_audit(audit.clone());
+    let mut service = AccessService::new(
+        store.clone(),
+        clock.clone(),
+        Arc::new(pyn_core::MemoryLimitEvents::new()),
+    )
+    .with_config(AccessConfig {
+        registration: RegistrationMode::Open,
+        require_email_verification: false,
+        public_url: WEB.into(),
+        external: policy,
+        ..AccessConfig::default()
+    })
+    .with_audit(audit.clone());
     if let Some(provider) = provider {
         service = service.with_oidc(provider);
     }

@@ -37,10 +37,14 @@ fn server_with(trust_forwarded: bool, config: impl FnOnce(&mut AccessConfig)) ->
     };
     config(&mut cfg);
     let access = Arc::new(
-        AccessService::new(Arc::new(MemoryAccessStore::new()), clock.clone())
-            .with_config(cfg)
-            .with_email(mail.clone())
-            .with_audit(audit.clone()),
+        AccessService::new(
+            Arc::new(MemoryAccessStore::new()),
+            clock.clone(),
+            Arc::new(pyn_core::MemoryLimitEvents::new()),
+        )
+        .with_config(cfg)
+        .with_email(mail.clone())
+        .with_audit(audit.clone()),
     );
     let repos = Arc::new(Repositories::new(
         Arc::new(MemoryMetadataStore::new()),

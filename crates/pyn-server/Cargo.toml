@@ -32,7 +32,7 @@ utoipa = "6.0.0"
 workspace = true
 
 [dev-dependencies]
-pyn-core = { path = "../pyn-core", features = ["test-support"] }
+pyn-core = { path = "../pyn-core", features = ["contract", "test-support"] }
 http-body-util = "0.1.5"
 pyn-oidc = { path = "../pyn-oidc", features = ["test-support"] }
 pyn-object = { path = "../pyn-object" }

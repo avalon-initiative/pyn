@@ -43,8 +43,12 @@ fn world() -> World {
     ));
     let audit = Arc::new(MemoryAuditStore::new());
     let access = Arc::new(
-        AccessService::new(Arc::new(MemoryAccessStore::new()), clock.clone())
-            .with_audit(audit.clone()),
+        AccessService::new(
+            Arc::new(MemoryAccessStore::new()),
+            clock.clone(),
+            Arc::new(pyn_core::MemoryLimitEvents::new()),
+        )
+        .with_audit(audit.clone()),
     );
     let meta = Arc::new(MemoryMetadataStore::new());
     let objects = Arc::new(MemoryObjectStore::new());

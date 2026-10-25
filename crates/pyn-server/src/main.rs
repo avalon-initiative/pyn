@@ -323,8 +323,15 @@ async fn main() -> anyhow::Result<()> {
         Some(token) => token.clone(),
         None => generate_setup_token()?,
     };
-    let mut service = AccessService::new(access_store, clock.clone())
-        .with_webhooks(webhooks, webhook_settings()?);
+    let mut service = AccessService::new(
+        access_store,
+        clock.clone(),
+        Arc::new(pyn_server::events::WebhookLimitEvents::new(
+            webhooks.clone(),
+            config.public_url.clone(),
+        )),
+    )
+    .with_webhooks(webhooks, webhook_settings()?);
     if let Some(provider) = oidc {
         tracing::info!("sign-in with the OpenID Connect provider is on");
         service = service.with_oidc(provider);

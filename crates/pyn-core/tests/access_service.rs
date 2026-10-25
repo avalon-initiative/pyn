@@ -19,7 +19,11 @@ async fn world() -> World {
     let clock = Arc::new(ManualClock::new(
         Utc.with_ymd_and_hms(2026, 10, 8, 9, 0, 0).unwrap(),
     ));
-    let svc = AccessService::new(Arc::new(MemoryAccessStore::new()), clock.clone());
+    let svc = AccessService::new(
+        Arc::new(MemoryAccessStore::new()),
+        clock.clone(),
+        Arc::new(pyn_core::MemoryLimitEvents::new()),
+    );
     World {
         svc,
         clock,

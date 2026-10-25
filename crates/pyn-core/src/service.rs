@@ -139,6 +139,13 @@ impl Default for ServiceConfig {
     }
 }
 
+/// The owner and event dependencies shared by a repository's operations.
+pub struct RepoServiceContext {
+    pub owner: UserId,
+    pub clock: Arc<dyn Clock>,
+    pub limit_events: Arc<dyn crate::LimitEvents>,
+}
+
 /// The per-user lock limit in force and whether the policy file set it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LockLimit {
@@ -197,6 +204,7 @@ pub struct RepoService {
     clock: Arc<dyn Clock>,
     config: ServiceConfig,
     storage: Option<(UserId, Arc<dyn StorageCaps>)>,
+    limit_events: (UserId, Arc<dyn crate::LimitEvents>),
     unreferenced_cap: u64,
     merge_slots: Arc<tokio::sync::Semaphore>,
 }
@@ -208,7 +216,7 @@ impl RepoService {
         meta: Arc<dyn MetadataStore>,
         objects: Arc<dyn ObjectStore>,
         audit: Arc<dyn AuditStore>,
-        clock: Arc<dyn Clock>,
+        context: RepoServiceContext,
         config: ServiceConfig,
     ) -> Self {
         let rules = Arc::new(rules);
@@ -224,9 +232,10 @@ impl RepoService {
             meta,
             objects,
             audit,
-            clock,
+            clock: context.clock,
             config,
             storage: None,
+            limit_events: (context.owner, context.limit_events),
             unreferenced_cap: DEFAULT_UNREFERENCED_UPLOAD_BYTES,
             merge_slots: Arc::new(tokio::sync::Semaphore::new(
                 crate::merge::default_concurrent_merges(),
@@ -244,6 +253,11 @@ impl RepoService {
     pub fn with_storage_caps(mut self, owner: UserId, caps: Arc<dyn StorageCaps>) -> Self {
         self.storage = Some((owner, caps));
         self
+    }
+
+    async fn limit_result<T>(&self, result: Result<T>) -> Result<T> {
+        let (owner, events) = &self.limit_events;
+        crate::limit_events::limit_result(events.as_ref(), owner, result, self.clock.now()).await
     }
 
     async fn record(
@@ -667,14 +681,17 @@ impl RepoService {
         }
         let now = self.clock.now();
         let lock = self
-            .meta
-            .acquire_lock(
-                &self.repo,
-                path,
-                user,
-                now,
-                now + self.config.lease,
-                self.lock_limit().max,
+            .limit_result(
+                self.meta
+                    .acquire_lock(
+                        &self.repo,
+                        path,
+                        user,
+                        now,
+                        now + self.config.lease,
+                        self.lock_limit().max,
+                    )
+                    .await,
             )
             .await?;
         self.record(
@@ -795,8 +812,11 @@ impl RepoService {
             lock_holder: lock_holder.cloned(),
         };
         let mut revs = self
-            .meta
-            .commit_changeset_on(&self.repo, branch, vec![item], now, cap)
+            .limit_result(
+                self.meta
+                    .commit_changeset_on(&self.repo, branch, vec![item], now, cap)
+                    .await,
+            )
             .await?;
         let rev = revs.remove(0);
         let mut stranded = Vec::new();
@@ -1030,8 +1050,11 @@ impl RepoService {
             });
         }
         let revs = self
-            .meta
-            .commit_changeset_on(&self.repo, branch, items, now, cap)
+            .limit_result(
+                self.meta
+                    .commit_changeset_on(&self.repo, branch, items, now, cap)
+                    .await,
+            )
             .await?;
         for rev in &revs {
             let action = if rev.deleted {

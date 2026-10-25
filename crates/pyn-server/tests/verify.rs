@@ -36,10 +36,14 @@ async fn world() -> World {
     .await
     .unwrap();
     let access = Arc::new(
-        AccessService::new(Arc::new(MemoryAccessStore::new()), clock.clone())
-            .with_config(AccessConfig::default())
-            .with_registry(meta.clone())
-            .with_audit(audit.clone()),
+        AccessService::new(
+            Arc::new(MemoryAccessStore::new()),
+            clock.clone(),
+            Arc::new(pyn_core::MemoryLimitEvents::new()),
+        )
+        .with_config(AccessConfig::default())
+        .with_registry(meta.clone())
+        .with_audit(audit.clone()),
     );
     let repos = Arc::new(Repositories::new(
         meta.clone(),

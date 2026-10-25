@@ -13,6 +13,7 @@ use pyn_gitwork::{
 use pyn_object::ObjectId;
 
 use super::decorate::{DecorateArgs, with_decoration};
+use super::merge_diff::{Body, MergeArgs, Shape, Want, with_from};
 use super::{GitHome, path_string, stage};
 use crate::backend::Backend;
 use crate::commit_format::{Context, FormatArgs, Rendering, render};
@@ -63,12 +64,13 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
             fmt,
             decorate,
             format,
+            first_parent,
+            merges,
         } => show(
             git,
             cwd,
-            &args,
-            &paths,
-            no_patch,
+            (&args, &paths),
+            (no_patch, first_parent, &merges),
             (&fmt, &decorate),
             &format.format(),
         ),
@@ -885,15 +887,15 @@ pub(super) fn head_or_refuse(git: &GitHome) -> Result<ObjectId> {
 fn show(
     git: &GitHome,
     cwd: &Path,
-    args: &[String],
-    paths: &[String],
-    no_patch: bool,
+    (args, paths): (&[String], &[String]),
+    (no_patch, first_parent, merges): (bool, bool, &MergeArgs),
     (fmt, decorate): (&FormatArgs, &DecorateArgs),
     format: &diff::Format,
 ) -> Result<()> {
     git.repo.validate_diff_ignore_submodules()?;
     let Rendering { pretty, style } = fmt.rendering()?;
     let decorate = decorate.resolve(git, &pretty)?;
+    let plan = merges.plan(git, first_parent, true)?;
     let separated = !paths.is_empty() || std::env::args_os().any(|a| a == "--");
     let (mut ids, loose) = split_revisions(git, cwd, args, separated, usize::MAX)?;
     check_loose(cwd, &loose, separated)?;
@@ -907,28 +909,20 @@ fn show(
         now: chrono::Utc::now().timestamp(),
         decorations: &names,
     };
+    let shape = Shape {
+        git,
+        pretty: &pretty,
+        spec: &spec,
+        only: &[],
+        quiet: no_patch,
+    };
     let mut out = String::new();
     let mut check = String::new();
     for id in &ids {
         let c = git.repo.commit(id)?;
-        if !out.is_empty() && !pretty.terminated() {
-            out.push('\n');
-        }
-        let text = render(&pretty, &ctx, id, &c);
-        out.push_str(&if decorate.on() {
-            with_decoration(text, &pretty, names.get(id))
-        } else {
-            text
-        });
-        out.push_str(pretty.terminator());
-        if no_patch {
-            continue;
-        }
-        let mut body = String::new();
-        let mut differs = false;
-        if c.parents.len() <= 1 {
-            let old_tree = match c.parents.first() {
-                Some(p) => Some(git.repo.commit(p)?.tree),
+        let mut against = |parent: Option<ObjectId>| -> Result<Option<Body>> {
+            let old_tree = match parent {
+                Some(p) => Some(git.repo.commit(&p)?.tree),
                 None => None,
             };
             let (mut old, mut new) = (Tree::new(), Tree::new());
@@ -936,15 +930,35 @@ fn show(
                 .repo
                 .diff_trees(old_tree.as_ref(), Some(&c.tree), &spec)?;
             add_changes(git, &mut old, &mut new, &changes)?;
-            differs = diff::compare(git, &old, &new, &[], format, &mut body)?;
-        }
-        if diff::has_body(format, differs, &body) || c.parents.len() > 1 {
-            if pretty.blank_before_diff() {
+            let mut text = String::new();
+            let differs = diff::compare(git, &old, &new, &[], format, &mut text)?;
+            if no_patch {
+                return Ok(differs.then(|| Body {
+                    text: String::new(),
+                    dashes: false,
+                }));
+            }
+            check.push_str(&text);
+            Ok(diff::has_body(format, differs, &text).then_some(Body {
+                text,
+                dashes: false,
+            }))
+        };
+        let segments = shape.segments(&plan, &c, &|| Want::of_format(format), &mut against)?;
+        for seg in segments {
+            if !out.is_empty() && !pretty.terminated() {
                 out.push('\n');
             }
-            out.push_str(&body);
+            let text = render(&pretty, &ctx, id, &c);
+            let text = if decorate.on() {
+                with_decoration(text, &pretty, names.get(id))
+            } else {
+                text
+            };
+            out.push_str(&with_from(text, &pretty, seg.from.as_ref()));
+            out.push_str(pretty.terminator());
+            out.push_str(&seg.tail);
         }
-        check.push_str(&body);
     }
     emit(&out);
     diff::exit_if_check_failed(format, &check);

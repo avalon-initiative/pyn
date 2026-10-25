@@ -2922,10 +2922,54 @@ struct WebhookState {
     next_subscription: i64,
     next_secret: i64,
     next_event: i64,
+    limit_events: HashMap<(UserId, String), DateTime<Utc>>,
     subscriptions: BTreeMap<i64, Subscription>,
     secrets: Vec<WebhookSecret>,
     events: BTreeMap<i64, OutboxEvent>,
     deliveries: Vec<Delivery>,
+}
+
+impl WebhookState {
+    fn append_event(
+        &mut self,
+        event_type: &str,
+        payload: &str,
+        now: DateTime<Utc>,
+    ) -> Result<OutboxEvent> {
+        let event = OutboxEvent {
+            id: self.next_event + 1,
+            event_type: event_type.to_string(),
+            payload: payload.to_string(),
+            created_at: now,
+        };
+        let targets: Vec<i64> = self
+            .subscriptions
+            .values()
+            .filter(|sub| sub.wants(event_type))
+            .map(|sub| sub.id)
+            .collect();
+        let mut deliveries = Vec::new();
+        for subscription_id in targets {
+            deliveries.push(Delivery {
+                id: crate::webhook::event_id()?,
+                subscription_id,
+                event_id: event.id,
+                attempt_count: 0,
+                next_attempt_at: now,
+                claimed_until: None,
+                status: DeliveryStatus::Pending,
+                last_status_code: None,
+                last_error: None,
+                created_at: now,
+                delivered_at: None,
+                failed_at: None,
+            });
+        }
+        self.next_event = event.id;
+        self.deliveries.extend(deliveries);
+        self.events.insert(event.id, event.clone());
+        Ok(event)
+    }
 }
 
 /// In-memory webhook store; the passed `now` is its clock.
@@ -2938,22 +2982,6 @@ impl MemoryWebhookStore {
     pub fn new() -> Self {
         Self::default()
     }
-}
-
-fn delivery_id() -> Result<String> {
-    let mut b = [0u8; 16];
-    getrandom::fill(&mut b).map_err(|e| PynError::Storage(format!("no randomness: {e}")))?;
-    b[6] = (b[6] & 0x0f) | 0x40;
-    b[8] = (b[8] & 0x3f) | 0x80;
-    let h = hex::encode(b);
-    Ok(format!(
-        "{}-{}-{}-{}-{}",
-        &h[..8],
-        &h[8..12],
-        &h[12..16],
-        &h[16..20],
-        &h[20..]
-    ))
 }
 
 #[async_trait]
@@ -3096,37 +3124,27 @@ impl WebhookStore for MemoryWebhookStore {
         now: DateTime<Utc>,
     ) -> Result<OutboxEvent> {
         let mut s = self.state.lock().unwrap();
-        s.next_event += 1;
-        let event = OutboxEvent {
-            id: s.next_event,
-            event_type: event_type.to_string(),
-            payload: payload.to_string(),
-            created_at: now,
-        };
-        let targets: Vec<i64> = s
-            .subscriptions
-            .values()
-            .filter(|sub| sub.wants(event_type))
-            .map(|sub| sub.id)
-            .collect();
-        for subscription_id in targets {
-            s.deliveries.push(Delivery {
-                id: delivery_id()?,
-                subscription_id,
-                event_id: event.id,
-                attempt_count: 0,
-                next_attempt_at: now,
-                claimed_until: None,
-                status: DeliveryStatus::Pending,
-                last_status_code: None,
-                last_error: None,
-                created_at: now,
-                delivered_at: None,
-                failed_at: None,
-            });
+        s.append_event(event_type, payload, now)
+    }
+
+    async fn append_limit_reached(
+        &self,
+        owner: &UserId,
+        limit: &str,
+        payload: &str,
+        now: DateTime<Utc>,
+    ) -> Result<Option<OutboxEvent>> {
+        let mut s = self.state.lock().unwrap();
+        let key = (owner.clone(), limit.to_string());
+        if s.limit_events
+            .get(&key)
+            .is_some_and(|last| now < *last + Duration::hours(1))
+        {
+            return Ok(None);
         }
-        s.events.insert(event.id, event.clone());
-        Ok(event)
+        let event = s.append_event("owner.limit_reached", payload, now)?;
+        s.limit_events.insert(key, now);
+        Ok(Some(event))
     }
 
     async fn claim_due(

@@ -669,10 +669,204 @@ pub async fn deliveries_list_newest_event_first_and_page(store: Webhooks) {
     );
 }
 
+pub async fn limit_events_admit_each_owner_and_kind_only_after_an_hour(store: Webhooks) {
+    use crate::{Clock, ManualClock};
+
+    let clock = ManualClock::new(t0());
+    let all = store
+        .create_subscription(sub("all", &[], true), t0())
+        .await
+        .unwrap();
+    let matching = store
+        .create_subscription(sub("limits", &["owner.limit_reached"], true), t0())
+        .await
+        .unwrap();
+    let other = store
+        .create_subscription(sub("other", &["repository.created"], true), t0())
+        .await
+        .unwrap();
+    let off = store
+        .create_subscription(sub("off", &[], false), t0())
+        .await
+        .unwrap();
+    let mut ids = HashSet::new();
+    for (advance, admitted, count) in [
+        (Duration::zero(), true, 8),
+        (Duration::zero(), false, 8),
+        (Duration::hours(1) - Duration::microseconds(1), false, 8),
+        (Duration::microseconds(1), true, 16),
+        (Duration::hours(1) + Duration::microseconds(1), true, 24),
+    ] {
+        clock.advance(advance);
+        for owner in ["alice", "studio"] {
+            for kind in ["repositories", "members", "storage_bytes", "locks"] {
+                let event = store
+                    .append_limit_reached(&UserId::new(owner), kind, "1", clock.now())
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    event.is_some(),
+                    admitted,
+                    "{owner}/{kind} at {}",
+                    clock.now()
+                );
+                if let Some(event) = event {
+                    assert!(ids.insert(event.id));
+                    assert_eq!(event.event_type, "owner.limit_reached");
+                    assert_eq!(event.created_at, clock.now());
+                    assert_eq!(event.payload, "1");
+                }
+            }
+        }
+        let q = DeliveryQuery {
+            limit: 100,
+            ..Default::default()
+        };
+        for (s, expected) in [(&all, count), (&matching, count), (&other, 0), (&off, 0)] {
+            assert_eq!(
+                store.list_deliveries(s.id, &q).await.unwrap().len(),
+                expected,
+                "{}",
+                s.name
+            );
+        }
+    }
+}
+
+pub async fn racing_limit_admissions_append_exactly_one_event(store: Webhooks) {
+    let s = store
+        .create_subscription(sub("limits", &[], true), t0())
+        .await
+        .unwrap();
+    let barrier = Arc::new(tokio::sync::Barrier::new(2));
+    let mut tasks = Vec::new();
+    for _ in 0..2 {
+        let store = store.clone();
+        let barrier = barrier.clone();
+        tasks.push(tokio::spawn(async move {
+            barrier.wait().await;
+            store
+                .append_limit_reached(&UserId::new("alice"), "repositories", "1", t0())
+                .await
+                .unwrap()
+        }));
+    }
+    let mut admitted = 0;
+    for task in tasks {
+        admitted += usize::from(task.await.unwrap().is_some());
+    }
+    assert_eq!(admitted, 1);
+    assert_eq!(
+        store
+            .list_deliveries(
+                s.id,
+                &DeliveryQuery {
+                    limit: 10,
+                    ..Default::default()
+                }
+            )
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+/// Store-contract recorder for the repository-zero refusal exercised below.
+pub struct RepositoryLimitEvents(pub Webhooks);
+
+#[async_trait::async_trait]
+impl crate::LimitEvents for RepositoryLimitEvents {
+    async fn record(&self, event: crate::LimitReached, now: DateTime<Utc>) -> crate::Result<()> {
+        assert_eq!(event.kind, crate::LimitKind::Repositories);
+        assert_eq!(event.value, 0);
+        self.0
+            .append_limit_reached(&event.owner, "repositories", "1", now)
+            .await?;
+        Ok(())
+    }
+}
+
+pub async fn racing_limit_services_record_one_event(
+    meta: super::Store,
+    access_store: super::Access,
+    hooks: [Webhooks; 2],
+) {
+    use crate::memory::{MemoryAuditStore, MemoryObjectStore};
+    use crate::{
+        AccessConfig, AccessService, Clock, Credential, Identity, Limits, ManualClock,
+        Repositories, Rules, WebhookSettings,
+    };
+
+    let clock = Arc::new(ManualClock::new(t0()));
+    let sub = hooks[0]
+        .create_subscription(sub("limits", &["owner.limit_reached"], true), t0())
+        .await
+        .unwrap();
+    let barrier = Arc::new(tokio::sync::Barrier::new(2));
+    let mut tasks = Vec::new();
+    for (i, hook_store) in hooks.iter().enumerate() {
+        let access = Arc::new(
+            AccessService::new(
+                access_store.clone(),
+                clock.clone(),
+                Arc::new(RepositoryLimitEvents(hook_store.clone())),
+            )
+            .with_config(AccessConfig {
+                default_limits: Limits {
+                    repositories: Some(0),
+                    ..Default::default()
+                },
+                ..AccessConfig::default()
+            })
+            .with_registry(meta.clone())
+            .with_webhooks(hook_store.clone(), WebhookSettings::default()),
+        );
+        let repos = Repositories::new(
+            meta.clone(),
+            Arc::new(MemoryObjectStore::new()),
+            Arc::new(MemoryAuditStore::new()),
+            access,
+            clock.clone(),
+            Rules::empty(),
+        );
+        let barrier = barrier.clone();
+        tasks.push(tokio::spawn(async move {
+            let who = Identity {
+                user: UserId::new("alice"),
+                credential: Credential::Session,
+            };
+            barrier.wait().await;
+            let err = repos
+                .create(&who, &who.user, &format!("repo{i}"), None, None)
+                .await
+                .unwrap_err();
+            assert!(matches!(
+                err,
+                crate::PynError::RepoLimitReached { limit: 0, .. }
+            ));
+            assert_eq!(err.code(), "repo_limit_reached");
+        }));
+    }
+    for task in tasks {
+        task.await.unwrap();
+    }
+    let due = hooks[0]
+        .claim_due(10, Duration::minutes(1), clock.now())
+        .await
+        .unwrap();
+    assert_eq!(due.len(), 1);
+    assert_eq!(due[0].subscription.id, sub.id);
+    assert_eq!(due[0].event.created_at, clock.now());
+    assert_eq!(due[0].event.payload, "1");
+}
+
 /// Generates one `#[tokio::test]` per webhook-store case for the store built by `$factory`.
 #[macro_export]
 macro_rules! webhook_contract_tests {
     ($factory:expr $(, #[$attr:meta])*) => {
+        $crate::webhook_contract_tests!(@one $factory; [$(#[$attr])*]; limit_events_admit_each_owner_and_kind_only_after_an_hour);
+        $crate::webhook_contract_tests!(@one $factory; [$(#[$attr])*]; racing_limit_admissions_append_exactly_one_event);
         $crate::webhook_contract_tests!(@one $factory; [$(#[$attr])*]; subscriptions_are_created_listed_updated_and_deleted);
         $crate::webhook_contract_tests!(@one $factory; [$(#[$attr])*]; fan_out_follows_the_event_type_filter_and_the_enabled_flag);
         $crate::webhook_contract_tests!(@one $factory; [$(#[$attr])*]; a_delivery_is_claimed_only_when_due_and_only_by_one_claimer);
