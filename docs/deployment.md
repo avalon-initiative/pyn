@@ -1,22 +1,20 @@
 # Deployment and backups
 
 Running a pyn server you keep: one node with Docker Compose, TLS in front, upgrades, several copies, and backups with a
-tested restore. Provisional: the images are built locally and not published to a registry yet.
+tested restore. Provisional: the first release has not been published yet.
 
 ## What runs
 
 - `pyn-server`: the HTTP API, one static-config process. State lives in two places only: PostgreSQL (accounts, history,
   locks, sessions, policy) and the object store directory `PYN_DATA_DIR` (file content).
 - PostgreSQL 16.
-- The `pyn` CLI is a client; it has its own image target (`pyn-cli`) for scripts and CI, not for the server host.
+- The `pyn` CLI is a client; install it from the release archives ([releasing](releasing.md)).
 
-The [`Dockerfile`](../Dockerfile) has two targets, `server` and `cli`. Both build with `--locked` from pinned base images
-(tag and digest), run as the non-root user `pyn` (uid 10001), and the server image works with a read-only root filesystem:
-it writes only to `/data` (a volume) and `/tmp`. The server image has a `HEALTHCHECK` on `GET /healthz`.
-
-```bash
-make docker-build            # pyn-server:local and pyn-cli:local; nothing is pushed
-```
+The server image is `ghcr.io/avalon-initiative/pyn-core`, tagged with the release (`v1.0.0`; there is no `latest`).
+The [`Dockerfile`](../Dockerfile) builds it with `--locked` from pinned base images (tag and digest); it runs as the
+non-root user `pyn` (uid 10001) and works with a read-only root filesystem: it writes only to `/data` (a volume) and
+`/tmp`. It has a `HEALTHCHECK` on `GET /healthz`. `make docker-build` builds `pyn-core:local` from a checkout for anyone
+with Docker; a deployment normally pulls a release instead.
 
 ## Single node with Compose
 
@@ -29,8 +27,12 @@ cp .env.example .env
 sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$(openssl rand -hex 24)/" .env
 sed -i "s/^PYN_SECRET_KEY=.*/PYN_SECRET_KEY=$(openssl rand -hex 32)/" .env
 # set PYN_PUBLIC_URL in .env to the address people will use
-docker compose up --build --detach --wait
+# set PYN_IMAGE in .env to a release, for example ghcr.io/avalon-initiative/pyn-core:v1.0.0
+docker compose pull server
+docker compose up --detach --wait
 ```
+
+Without `PYN_IMAGE` the Compose file builds the image from the checkout (`docker compose up --build --detach --wait`).
 
 `.env` holds secrets and is git-ignored; `.env.example` holds placeholders only. Every variable in
 [configuration](configuration.md) can be added to `.env`. Keep `PYN_SECRET_KEY` with the backups: webhook secrets in the
@@ -49,7 +51,7 @@ PYN_SETUP_TOKEN="$TOKEN" pyn --server http://127.0.0.1:7878 setup admin --public
 ```
 
 Pass the token in `PYN_SETUP_TOKEN` or on standard input (`--setup-token -`), not as a plain argument. Remove `PYN_SETUP_TOKEN` from `.env` after setup; the server
-warns while it is still set. The CLI is also available as `docker run --rm -it --network host pyn-cli:local ...`.
+warns while it is still set.
 
 ### Production settings
 
@@ -94,7 +96,7 @@ volumes: content is only added, and [limits](concepts/limits.md) are off by defa
 Migrations run at server start and take a database lock, so an upgrade is a restart on the new image.
 
 1. [Back up](#backups).
-2. `git pull` (or fetch the new release), then `docker compose up --build --detach --wait`.
+2. Set `PYN_IMAGE` in `.env` to the new tag, then `docker compose pull server && docker compose up --detach --wait`.
 3. Check `docker compose logs server` for the migration lines and `curl -fsS http://127.0.0.1:7878/healthz`.
 
 Migrations only move forward; to go back, restore the backup taken in step 1 onto the older image.
