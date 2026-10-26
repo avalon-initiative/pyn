@@ -82,7 +82,8 @@ pub struct PushArgs {
     thin: bool,
     #[arg(long, hide = true)]
     no_thin: bool,
-    #[arg(long, hide = true)]
+    /// Send every ref and delete the remote refs that are gone here.
+    #[arg(long)]
     mirror: bool,
     #[arg(long, hide = true)]
     prune: bool,
@@ -124,7 +125,6 @@ impl PushArgs {
 
     fn refuse_unsupported(&self) {
         let given = [
-            ("--mirror", self.mirror, "mirroring is not built"),
             ("--prune", self.prune, "pruning remote refs is not built"),
             (
                 "--signed",
@@ -183,6 +183,8 @@ struct Target {
     name: Option<String>,
     /// What messages call the remote: its name, or the URL typed.
     shown: String,
+    /// Set by `remote.<name>.mirror`.
+    mirror: bool,
     remote: Option<Remote>,
     urls: Vec<String>,
 }
@@ -288,16 +290,12 @@ fn resolve_target(git: &GitHome, repo: Option<&str>, branch: Option<&str>) -> Re
             if urls.is_empty() {
                 bail!("'{name}' does not appear to be a git repository");
             }
-            if git
+            let mirror = git
                 .config()
                 .get_bool(&format!("remote.{name}.mirror"))?
-                .unwrap_or(false)
-            {
-                crate::usage_error(&format!(
-                    "`pyn push`: remote.{name}.mirror is set, and mirroring is not built"
-                ));
-            }
+                .unwrap_or(false);
             Ok(Target {
+                mirror,
                 shown: name.clone(),
                 name: Some(name),
                 remote: Some(r),
@@ -308,6 +306,7 @@ fn resolve_target(git: &GitHome, repo: Option<&str>, branch: Option<&str>) -> Re
             "No configured push destination.\nEither specify the URL from the command-line or configure a remote repository using\n\n    pyn remote add <name> <url>\n\nand then push using the remote name\n\n    pyn push <name>\n"
         ),
         None => Ok(Target {
+            mirror: false,
             shown: name.clone(),
             urls: vec![name],
             name: None,
@@ -384,6 +383,12 @@ fn refspecs(
     target: &Target,
     branch: Option<&str>,
 ) -> Result<Vec<Spec>> {
+    if args.mirror || target.mirror {
+        if !args.refspecs.is_empty() {
+            bail!("--mirror can't be combined with refspecs");
+        }
+        return Ok(vec![Spec::parse("+refs/*:refs/*")]);
+    }
     let mut specs = Vec::new();
     let mut it = args.refspecs.iter();
     while let Some(arg) = it.next() {
@@ -811,6 +816,20 @@ fn push_one(
         head_ref: head_ref.as_deref(),
         rev: &rev,
     };
+    let mut specs = specs.to_vec();
+    if args.mirror || target.mirror {
+        specs.extend(
+            remote
+                .iter()
+                .filter(|(name, _)| !local.iter().any(|(l, _)| l == name))
+                .map(|(name, _)| Spec {
+                    force: false,
+                    src: String::new(),
+                    dst: Some(name.clone()),
+                }),
+        );
+    }
+    let specs = specs.as_slice();
     let planned = |specs: &[Spec]| match build(specs, &view, &remote) {
         Ok(v) => Ok(v),
         Err(PlanError::Fatal(m)) => Err(anyhow!("{m}")),
@@ -962,6 +981,18 @@ fn push_one(
 fn run(git: &GitHome, a: &PushArgs) -> Result<bool> {
     a.refuse_unsupported();
     let given = usize::from(a.repository.is_some()) + a.refspecs.len();
+    if a.mirror {
+        for (flag, on) in [("--all", a.all), ("--tags", a.tags)] {
+            if on {
+                bail!("options '{flag}' and '--mirror' cannot be used together");
+            }
+        }
+        if a.delete {
+            bail!(
+                "options '--delete' and '--all/--branches/--mirror/--tags' cannot be used together"
+            );
+        }
+    }
     if a.all && a.tags {
         bail!("options '--all' and '--tags' cannot be used together");
     }

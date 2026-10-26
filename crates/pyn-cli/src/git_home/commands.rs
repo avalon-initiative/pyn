@@ -34,6 +34,9 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
             Err(e) => Err(e),
         }
     };
+    if git.is_bare() && needs_work_tree(&command) {
+        git.need_work_tree()?;
+    }
     match command {
         Command::Status(args) => {
             if args.revision.is_some() {
@@ -297,6 +300,29 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
         Command::Clone { .. } | Command::Config(_) | Command::External(_) => {
             unreachable!("handled before a git home is consulted")
         }
+    }
+}
+
+/// The commands git runs only with a work tree; it checks before reading their options.
+fn needs_work_tree(command: &Command) -> bool {
+    match command {
+        Command::Rm(args) => !args.cached,
+        Command::Status(_)
+        | Command::Merge(_)
+        | Command::Switch(_)
+        | Command::Checkout(_)
+        | Command::Stash(_)
+        | Command::Clean(_)
+        | Command::Add { .. }
+        | Command::Mv(_)
+        | Command::Commit { .. }
+        | Command::Restore { .. }
+        | Command::CherryPick(_)
+        | Command::Revert(_)
+        | Command::Rebase(_)
+        | Command::Pull(_)
+        | Command::Am(_) => true,
+        _ => false,
     }
 }
 
@@ -722,7 +748,7 @@ fn split_revisions(
         let Ok(id) = git.repo.resolve(first) else {
             break;
         };
-        if !separated && std::fs::symlink_metadata(cwd.join(first)).is_ok() {
+        if !separated && git.cwd_has(cwd, first) {
             bail!(
                 "ambiguous argument '{first}': both revision and filename; \
                  use '--' to separate paths from revisions"
@@ -735,7 +761,7 @@ fn split_revisions(
 }
 
 /// Arguments left after the revisions must be existing paths, or follow `--`; git refuses the rest.
-fn check_loose(cwd: &Path, loose: &[String], separated: bool) -> Result<()> {
+fn check_loose(git: &GitHome, cwd: &Path, loose: &[String], separated: bool) -> Result<()> {
     if separated {
         if let Some(bad) = loose.first() {
             bail!("bad revision '{bad}'");
@@ -743,7 +769,7 @@ fn check_loose(cwd: &Path, loose: &[String], separated: bool) -> Result<()> {
         return Ok(());
     }
     for (i, arg) in loose.iter().enumerate() {
-        if stage::looks_like_pathspec(arg) || std::fs::symlink_metadata(cwd.join(arg)).is_ok() {
+        if stage::looks_like_pathspec(arg) || git.cwd_has(cwd, arg) {
             continue;
         }
         if i > 0 {
@@ -769,7 +795,10 @@ fn diff(
 ) -> Result<bool> {
     let separated = !paths.is_empty() || std::env::args_os().any(|a| a == "--");
     let (revs, loose) = split_revisions(git, cwd, args, separated, 2)?;
-    check_loose(cwd, &loose, separated)?;
+    check_loose(git, cwd, &loose, separated)?;
+    if !cached && revs.len() < 2 {
+        git.need_work_tree()?;
+    }
     let spec = git.pathspec(cwd, &[loose.as_slice(), paths].concat(), false)?;
     let repo = &git.repo;
     repo.validate_diff_ignore_submodules()?;
@@ -915,7 +944,7 @@ fn show(
     let commit_color = diff::commit_color(git, &format.opts, decorate.on(), false);
     let separated = !paths.is_empty() || std::env::args_os().any(|a| a == "--");
     let (mut ids, loose) = split_revisions(git, cwd, args, separated, usize::MAX)?;
-    check_loose(cwd, &loose, separated)?;
+    check_loose(git, cwd, &loose, separated)?;
     if ids.is_empty() {
         ids.push(head_or_refuse(git)?);
     }

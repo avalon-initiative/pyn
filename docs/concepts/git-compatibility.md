@@ -85,11 +85,11 @@ The commands named in decision #218.
 | Git | pyn | Status | Notes |
 | --- | --- | --- | --- |
 | `git init` | `pyn init [<dir>]` | different | Starts a pyn server-home repository, not a git one: creates `<dir>` if missing (the current folder if omitted) with `.pyn/pyn.toml` (every path `shared`, with a commented example of an exclusive rule) and `.pyn/local_only/` holding `repo.toml` with `repo_tool = "pyn"`, and prints `Initialized empty pyn repository in <path>/.pyn`. In a folder that already has a `.git` or `.pyn`, or inside a git work tree or pyn workspace, it fails (`128`) and, for a git repository, names `pyn convert`. With a server set (`--server`, `PYN_SERVER` or the user setting) and `--repo owner/name`, it asks `Create owner/name on <server>? [y/N]` on a terminal (default no); `--create-on-server` creates it without asking, with the same call as `pyn repo create` and the folder's `.pyn/pyn.toml` as the first policy, and records the server and repository in `.pyn/local_only/config.toml`; `--no-create-on-server` never asks. `--create-on-server` without a server and `--repo` is a usage error (`129`). Without a terminal nothing is created on the server (decision #562). |
-| `git init [<dir>]` | `pyn init-git [<dir>]` | same | Starts a new repository: a real `.git` written by pyn (no git program) plus `.pyn/local_only/repo.toml` with `repo_tool = "git"`, and `.pyn/` hidden in `.git/info/exclude`. Creates `<dir>` if missing and prints `Initialized empty Git repository in <path>/.git/`. `-b`/`--initial-branch <name>`, `--object-format sha1\|sha256` and `-q`/`--quiet` work as in git. Divergence: with no `-b` and no `init.defaultBranch` the first branch is `main` (git's default is `master`). `--bare`, `--template`, `--separate-git-dir` and `--shared` are a usage error (`129`). In a folder that already has a `.git` or `.pyn`, or inside a git work tree or pyn workspace, it fails (`128`) and names `pyn convert` (decision #562). |
+| `git init [<dir>]` | `pyn init-git [<dir>]` | same | Starts a new repository: a real `.git` written by pyn (no git program) plus `.pyn/local_only/repo.toml` with `repo_tool = "git"`, and `.pyn/` hidden in `.git/info/exclude`. Creates `<dir>` if missing and prints `Initialized empty Git repository in <path>/.git/`. `-b`/`--initial-branch <name>`, `--object-format sha1\|sha256` and `-q`/`--quiet` work as in git. Divergence: with no `-b` and no `init.defaultBranch` the first branch is `main` (git's default is `master`). `--bare` makes `<dir>` the git directory (`core.bare = true`, no `.pyn/`, prints `Initialized empty Git repository in <dir>/`); `--separate-git-dir <gitdir>` puts the git directory there (its parent must exist, it must be absent or empty) and leaves a `.git` file `gitdir: <absolute path>` in the work tree, and with `--bare` is `fatal` (`128`), as in git. `--template` and `--shared` are a usage error (`129`). In a folder that already has a `.git` or `.pyn`, or inside a git work tree or pyn workspace, it fails (`128`) and names `pyn convert` (decision #562). |
 | | `pyn convert [--home git\|pyn] [-y]` | pyn only | Without `--home`, adopts an existing git repository (hides `.pyn/` in `.git/info/exclude`, creates `.pyn/local_only/`, records `repo_tool = "git"`; safe to run again); outside a git repository, or in a pyn server workspace, it fails with `fatal: ...` (status 128). `--home git` in a pyn server workspace moves it to a git home keeping its history, see [Leaving a pyn server](#leaving-a-pyn-server). `--home pyn` is not built (it needs #95): it fails with `fatal: moving to a pyn server home is not built yet (#572)` (status 128) and changes nothing. |
 | `git clone <repo> [<dir>]` | `pyn clone <source> [<dir>]` | same | A source that is `<server>/owner/name` or `owner/name` on the configured server is cloned from a pyn server, and prints one summary line, not progress. A git URL (`https://`, `ssh://`, `user@host:path`) is cloned into a git repository with git's behaviour, flags and output; see [Clone from a git URL](#clone-from-a-git-url), which also says how an `http(s)` address is told apart. |
-| `git clone -b`, `--bare`, `-o`, `-n`, `--single-branch`, `--no-tags`, `-c`, `-q`, `--progress`, `--depth`, `--shallow-since`, `--shallow-exclude` | `pyn clone ...` | git URL: supported | Git's behaviour. On a pyn server clone they are a usage error (`129`): that clone takes everything the server has, on its default branch. |
-| `git clone --shallow-submodules`, `--filter`, `--mirror`, `--recurse-submodules`, `--sparse`, `--reference`, `--separate-git-dir`, `--template`, `--local`, `--no-hardlinks` | none | unsupported | Usage error (`129`) naming the flag: partial, mirror and submodule clones are not built, and `--local`, `--no-local`, `--no-hardlinks` and `--shared` are not taken: a local-path source is cloned through the transfer protocol, see [Local paths](#local-paths-and-file-urls). |
+| `git clone -b`, `--bare`, `--mirror`, `--separate-git-dir`, `-o`, `-n`, `--single-branch`, `--no-tags`, `-c`, `-q`, `--progress`, `--depth`, `--shallow-since`, `--shallow-exclude` | `pyn clone ...` | git URL: supported | Git's behaviour. On a pyn server clone they are a usage error (`129`): that clone takes everything the server has, on its default branch. |
+| `git clone --shallow-submodules`, `--filter`, `--recurse-submodules`, `--sparse`, `--reference`, `--template`, `--local`, `--no-hardlinks` | none | unsupported | Usage error (`129`) naming the flag: partial and submodule clones are not built, and `--local`, `--no-local`, `--no-hardlinks` and `--shared` are not taken: a local-path source is cloned through the transfer protocol, see [Local paths](#local-paths-and-file-urls). |
 | `pyn clone --revision <commit>` | | pyn only | Clone as of a commit (a hash, `HEAD~N`). Git does this with `clone` then `checkout`. |
 | `pyn clone --no-local-store` | | pyn only | A pyn server clone keeps a partial local store of the history under `.pyn/local_only/store/` and commits locally by default (`--local-store` says the same); this opts out and commits straight to the server. See [the local store](workspace.md#the-local-store). A usage error for a git URL. |
 | `pyn migrate` | | pyn only | Converts a workspace made before local commits; see [migrating](workspace.md#migrating-a-workspace). |
@@ -242,7 +242,7 @@ A pyn server home has exactly one remote, `origin`: the server and repository it
 | --- | --- |
 | `pyn remote` | The remote names, sorted, one per line. |
 | `pyn remote -v` | `<name>`, a tab and `<url> (fetch)` (the first URL), then one `<url> (push)` line for each push URL (`pushurl`, else each `url`). A remote with no URL prints `<name>` and a tab. |
-| `pyn remote add <name> <url>` | Writes `url` and the default `fetch = +refs/heads/*:refs/remotes/<name>/*`. An invalid name is `fatal: '<name>' is not a valid remote name` (`128`), an existing one `error: remote <name> already exists.` (`3`). `-f` then fetches the remote (see [Fetch on a git home](#fetch-on-a-git-home)). |
+| `pyn remote add <name> <url>` | Writes `url` and the default `fetch = +refs/heads/*:refs/remotes/<name>/*`. `--mirror=fetch` writes `fetch = +refs/*:refs/*` instead, `--mirror=push` writes `mirror = true` and no `fetch`, and a bare `--mirror` writes both and warns that it is deprecated, as git does; any other value is `error: unknown mirror argument` (`129`). An invalid name is `fatal: '<name>' is not a valid remote name` (`128`), an existing one `error: remote <name> already exists.` (`3`). `-f` then fetches the remote (see [Fetch on a git home](#fetch-on-a-git-home)). |
 | `pyn remote remove\|rm <name>` | Deletes the `[remote]` section, every ref and reflog under `refs/remotes/<name>/`, and the `branch.<b>.remote`, `merge` and `pushRemote` of branches that tracked it, and `remote.pushDefault` if it named it. A missing remote is `error: No such remote: '<name>'` (`2`). |
 | `pyn remote rename <old> <new>` | Renames the section, moves `refs/remotes/<old>/*` (and its reflogs, with a `remote: renamed ...` line) to `<new>`, rewrites fetch refspecs whose destination is under `refs/remotes/<old>/`, and repoints `branch.<b>.remote`, `pushRemote` and `remote.pushDefault`. A refspec that does not fit is kept and reported as git does (`warning: Not updating non-default fetch refspec`). |
 | `pyn remote set-url [--push] <name> <new> [<old>]` | Sets the URL, or replaces the URLs that contain `<old>`. `--add` appends one, `--delete` removes the URLs that contain `<url>` (refusing to remove every non-push URL). |
@@ -489,7 +489,10 @@ fetched; `--no-tags` fetches none and stores `remote.<name>.tagOpt = --no-tags`.
 `--single-branch` narrows the fetch refspec to the cloned branch (or to `+refs/tags/<tag>:refs/tags/<tag>` for `-b <tag>`) and
 `--no-single-branch` undoes it. `--bare` creates `<dir>` as the git directory with `core.bare = true`, copies the heads to
 `refs/heads` and the tags to `refs/tags` (no remote-tracking refs, no fetch refspec, no branch tracking), and points `HEAD` at the
-branch. `-o <name>` names the remote. `-c <key>=<value>` is written to the new repository's config before the fetch, so transport
+branch. `--mirror` is `--bare` that mirrors every ref: it fetches `+refs/*:refs/*` (notes and any other namespace too) and writes
+`remote.<name>.fetch = +refs/*:refs/*` and `remote.<name>.mirror = true`, so a later `pyn fetch` brings the remote's new refs and
+`pyn push` sends all of them. With `--depth` (or another shallow flag) a mirror fetches only the cloned branch, as git does, and `--depth` composes with `--bare`, `--mirror` and `--separate-git-dir` (the `shallow` file lives in the git directory). `--separate-git-dir <gitdir>` puts the git directory there (absent or empty, its parent existing) and
+leaves a `.git` file `gitdir: <absolute path>` in the work tree; with `--bare` or `--mirror` it is `fatal` (`128`). `-o <name>` names the remote. `-c <key>=<value>` is written to the new repository's config before the fetch, so transport
 settings such as `http.extraHeader` or `url.<base>.insteadOf` apply to it. `-v` and `-j` are accepted and change nothing.
 
 **Empty and unusual remotes.** An empty remote gives `warning: You appear to have cloned an empty repository.` (also with `-q`), an
@@ -501,8 +504,8 @@ branches exist, keeps that unborn `HEAD`, fetches the rest and warns `remote HEA
 removed: the new directory, or only `.git` (or the contents of a bare target) when the directory already existed and was empty. A
 failure while checking out leaves the repository in place, as git does.
 
-Differences from git, all deliberate or not yet done: no hooks, templates or `description` file are created; there is no "Updating files" progress; `--mirror`, `--shallow-submodules`, `--filter`, `--also-filter-submodules`, `--recurse-submodules`,
-`--sparse`, `--reference`, `--reference-if-able`, `--dissociate`, `--separate-git-dir`, `--template`, `--local`, `--no-local`,
+Differences from git, all deliberate or not yet done: no hooks, templates or `description` file are created; there is no "Updating files" progress; `--shallow-submodules`, `--filter`, `--also-filter-submodules`, `--recurse-submodules`,
+`--sparse`, `--reference`, `--reference-if-able`, `--dissociate`, `--template`, `--local`, `--no-local`,
 `--no-hardlinks`, `--shared`, `--upload-pack`, `--server-option`, `--bundle-uri` and `--ref-format` are usage errors.
 
 ### Push on a git home
@@ -515,7 +518,7 @@ error.
 **Which remote.** `<repository>` is a remote name or a URL. Without one: `branch.<name>.pushRemote`, then `remote.pushDefault`,
 then `branch.<name>.remote`, else `origin`; with none configured it is `fatal: No configured push destination.` (`128`). The
 URLs are the remote's `pushurl`, else its `url`; every one is pushed to in turn. `url.<base>.pushInsteadOf` and `insteadOf` are
-applied. `remote.<name>.mirror` is a usage error.
+applied. A remote with `remote.<name>.mirror = true` is pushed as `--mirror` is.
 
 **What is pushed.** Each `<refspec>` is `[+]<src>[:<dst>]`:
 
@@ -550,7 +553,8 @@ goes with these fatal errors names `pyn`. Refspecs that cannot be parsed are `fa
 | `--porcelain` | `<flag> <tab> <from>:<to> <tab> <summary> (<reason>)` lines and a final `Done`, on standard output. |
 | `-q`, `-v` | `-q` prints errors only; `-v` also prints `Pushing to <url>`, `= [up to date]` lines and the tracking refs it updates. |
 | `--progress`, `--no-progress`, `--verify`, `--no-verify`, `--thin`, `--no-thin`, `-4`, `-6`, `--recurse-submodules=no` | Accepted and ignored. No hooks run; the server's own messages (`remote: ...`, including its hooks' output) are always shown. |
-| `--mirror`, `--prune`, `--signed`, `-o`, `--push-option`, `--recurse-submodules` (other than `no`), `--receive-pack`, `--exec`, `--repo`, `--force-if-includes` | Usage error (`129`) naming the flag. `--force-if-includes` is refused because ignoring it would push less safely than asked. |
+| `--mirror` | Sends every ref under `refs/` (branches, tags, notes, remote-tracking refs, anything else) as `+refs/*:refs/*` and deletes the remote refs this repository does not have. Not with refspecs, `--all`, `--tags` or `--delete` (`fatal`, `128`). A remote with `remote.<name>.mirror = true` (`remote add --mirror=push`) does this on a plain `pyn push <name>` and refuses refspecs. |
+| `--prune`, `--signed`, `-o`, `--push-option`, `--recurse-submodules` (other than `no`), `--receive-pack`, `--exec`, `--repo`, `--force-if-includes` | Usage error (`129`) naming the flag. `--force-if-includes` is refused because ignoring it would push less safely than asked. |
 
 What a push does, in git's order:
 
@@ -1877,6 +1881,29 @@ absolute (no `worktree.useRelativePaths`).
 
 Not built: `add --track`/`--guess-remote` and `worktree.guessRemote`, `--[no-]relative-paths`, sparse and per-worktree config
 (`config.worktree`), the `HEAD` reflog of a new work tree, and `ORIG_HEAD`. `remove` and `move` do not run hooks.
+
+### Bare repositories
+
+A folder that is itself a git directory (`HEAD`, `objects/` and `refs/`, and `core.bare = true` or no work tree) is a git home, found from
+the folder or any folder inside it. `pyn init-git --bare` and `pyn clone --bare` / `--mirror` make one. A command that git runs
+only with a work tree fails as git does, before looking at its options: `fatal: this operation must be run in a work tree` (`128`)
+for `status`, `add`, `rm`, `mv`, `commit`, `restore`, `switch`, `checkout`, `merge`, `pull`, `rebase`,
+`cherry-pick`, `revert`, `am`, `stash`, `clean`, `reset --hard`/`--merge`/`--keep`, `diff` with fewer than two revisions and no
+`--cached`, `grep` without a revision or `--cached`, and `ls-files -o`/`-m`/`-d`. `reset --soft` works, and `reset` and `reset --mixed`
+are `fatal: mixed reset is not allowed in a bare repository`.
+
+Everything that reads history or refs works unchanged: `log`, `show`, `diff <a> <b>`, `blame` (of `HEAD` unless a revision is given),
+`grep <rev>`, `branch` (a branch is never "checked out" in a bare repository, so its `HEAD` branch can be moved or deleted), `tag`,
+`ls-tree`, `cat-file`, `rev-parse` (`--git-dir` prints `.` at the top; `--is-bare-repository`, `--show-toplevel` fails), `fetch`,
+`push`, `remote`, `bisect` (which never checks out) and `worktree list` (`(bare)`). A bare repository writes no reflogs unless
+`core.logAllRefUpdates` is set, as in git. `pyn`'s own folder is not created in one.
+
+### Separate git directory
+
+`pyn init-git --separate-git-dir` and `pyn clone --separate-git-dir` keep the git directory away from the work tree, which holds a
+`.git` file `gitdir: <absolute path>`. Nothing else differs: git and pyn open the repository through that file, and a command run
+inside the git directory itself fails as git does for the commands that need a work tree. Moving an existing repository with
+`git init --separate-git-dir` is not built (an existing repository is `pyn convert`'s).
 
 ### Clean
 

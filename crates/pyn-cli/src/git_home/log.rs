@@ -336,7 +336,7 @@ fn select(
         }
         match parse_rev(git, &arg)? {
             Some(rev) => {
-                if !explicit && std::fs::symlink_metadata(cwd.join(&arg)).is_ok() {
+                if !explicit && git.cwd_has(cwd, &arg) {
                     bail!(
                         "ambiguous argument '{arg}': both revision and filename; \
                          use '--' to separate paths from revisions"

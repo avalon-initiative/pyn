@@ -58,10 +58,14 @@ pub struct CloneOptions {
     /// Accepted; there are no submodules to fetch in parallel.
     #[arg(short, long, value_name = "N")]
     jobs: Option<usize>,
-    #[arg(long, hide = true)]
+    /// Make a bare repository that mirrors every ref, fetched with `+refs/*:refs/*`.
+    #[arg(long)]
     mirror: bool,
     #[command(flatten)]
     shallow: ShallowFlags,
+    /// Keep the git directory here and leave a `.git` file pointing at it in the work tree.
+    #[arg(long, value_name = "DIR")]
+    separate_git_dir: Option<PathBuf>,
     #[arg(long, hide = true)]
     shallow_submodules: bool,
     #[arg(long, hide = true)]
@@ -80,8 +84,6 @@ pub struct CloneOptions {
     reference_if_able: Vec<String>,
     #[arg(long, hide = true)]
     dissociate: bool,
-    #[arg(long, hide = true, value_name = "DIR")]
-    separate_git_dir: Option<String>,
     #[arg(long, hide = true, value_name = "DIR")]
     template: Option<String>,
     #[arg(short, long, hide = true)]
@@ -108,6 +110,10 @@ impl CloneOptions {
         self.single_branch || (!self.no_single_branch && self.shallow.given())
     }
 
+    fn is_bare(&self) -> bool {
+        self.bare || self.mirror
+    }
+
     fn refuse_unsupported(&self) {
         let shallow = "submodules are not supported";
         let partial = "partial clone is not built; a clone always brings every object";
@@ -115,7 +121,6 @@ impl CloneOptions {
         let local =
             "a local clone goes through the transfer protocol; hardlinks and sharing are not built";
         let given = [
-            ("--mirror", self.mirror, "it is not built; use --bare"),
             ("--shallow-submodules", self.shallow_submodules, shallow),
             (
                 "--no-shallow-submodules",
@@ -143,11 +148,6 @@ impl CloneOptions {
                 "--dissociate",
                 self.dissociate,
                 "alternates are not supported",
-            ),
-            (
-                "--separate-git-dir",
-                self.separate_git_dir.is_some(),
-                "the git directory is always `.git` in the work tree",
             ),
             (
                 "--template",
@@ -191,6 +191,8 @@ impl CloneOptions {
             ("--origin", self.origin.is_some()),
             ("--no-checkout", self.no_checkout),
             ("--bare", self.bare),
+            ("--mirror", self.mirror),
+            ("--separate-git-dir", self.separate_git_dir.is_some()),
             ("--quiet", self.quiet),
             ("--verbose", self.verbose > 0),
             ("--progress", self.progress || self.no_progress),
@@ -308,12 +310,16 @@ fn choose_specs(
 ) -> Result<Vec<String>> {
     let id_of = |name: String| refs.iter().find(|r| r.name == name && r.id.is_some());
     let single = opts.single();
-    let dest = if opts.bare {
+    let dest = if opts.is_bare() {
         "refs/heads/".to_owned()
     } else {
         format!("refs/remotes/{origin}/")
     };
-    let all = vec![format!("+refs/heads/*:{dest}*")];
+    let all = if opts.mirror {
+        vec!["+refs/*:refs/*".to_owned()]
+    } else {
+        vec![format!("+refs/heads/*:{dest}*")]
+    };
     let branch_spec = |b: &str| vec![format!("+refs/heads/{b}:{dest}{b}")];
     if let Some(b) = &opts.branch {
         let is_branch = id_of(format!("refs/heads/{b}")).is_some();
@@ -351,8 +357,13 @@ fn clean_up(target: &Path, existed: bool, git_dir: &Path, bare: bool) {
         }
         (true, true) => remove_contents(target),
         (true, false) => {
-            let _ = std::fs::remove_dir_all(git_dir);
+            let dot_git = target.join(".git");
+            let _ = std::fs::remove_dir_all(&dot_git);
+            let _ = std::fs::remove_file(&dot_git);
         }
+    }
+    if git_dir != target && git_dir != target.join(".git") {
+        let _ = std::fs::remove_dir_all(git_dir);
     }
 }
 
@@ -371,7 +382,7 @@ fn download(
     git_dir: &Path,
     root: &Path,
 ) -> Result<Downloaded> {
-    pyn_git::init(git_dir, opts.bare, Algorithm::Sha1, prefer)?;
+    pyn_git::init(git_dir, opts.is_bare(), Algorithm::Sha1, prefer)?;
     let config_path = git_dir.join("config");
     let mut file = ConfigFile::read(&config_path)?;
     apply_settings(&mut file, &opts.config)?;
@@ -464,7 +475,10 @@ fn finish(
     let message = format!("clone: from {}", redact_text(url));
     let config_path = git.repo.git().common_dir().join("config");
     let mut file = ConfigFile::read(&config_path)?;
-    if !opts.bare {
+    if opts.mirror {
+        file.add("remote", Some(origin), "fetch", "+refs/*:refs/*")?;
+        file.add("remote", Some(origin), "mirror", "true")?;
+    } else if !opts.is_bare() {
         for spec in &fetched.specs {
             file.add("remote", Some(origin), "fetch", spec)?;
         }
@@ -484,7 +498,7 @@ fn finish(
         Landing::Branch(b) => {
             let id = remote_id(b).expect("a landing branch exists on the remote");
             let name = GitHome::branch_ref(b);
-            if opts.bare {
+            if opts.is_bare() {
                 git.repo.refs().set_symbolic("HEAD", &name)?;
             } else {
                 git.repo.refs().set_symbolic("HEAD", &name)?;
@@ -493,7 +507,7 @@ fn finish(
             }
             commit = Some(id);
         }
-        Landing::Detached(id) if opts.bare => {
+        Landing::Detached(id) if opts.is_bare() => {
             git.repo.refs().update_checked("HEAD", Expect::Any, id)?;
             commit = Some(*id);
         }
@@ -507,7 +521,7 @@ fn finish(
             .set_symbolic("HEAD", &GitHome::branch_ref(b))?,
         Landing::Nothing => {}
     }
-    if !opts.bare
+    if !opts.is_bare()
         && let RemoteHead::Branch(b) = head_of(refs, prefer)
     {
         let tracking = format!("refs/remotes/{origin}/{b}");
@@ -523,7 +537,7 @@ fn finish(
     } else if commit.is_none() && opts.branch.is_none() {
         eprintln!("warning: remote HEAD refers to nonexistent ref, unable to checkout");
     }
-    if let (false, false, Some(id)) = (opts.bare, opts.no_checkout, commit) {
+    if let (false, false, Some(id)) = (opts.is_bare(), opts.no_checkout, commit) {
         let tree = git.repo.commit(&id)?.tree;
         let opened = git.open_index()?;
         if let Err(blocked) = move_tree(&git, &opened, None, Some(&tree), Mode::Force)? {
@@ -554,13 +568,16 @@ pub fn clone(
 ) -> Result<()> {
     opts.refuse_unsupported();
     let mut deepen = opts.shallow.request()?;
+    if opts.is_bare() && opts.separate_git_dir.is_some() {
+        bail!("options '--bare' and '--separate-git-dir' cannot be used together");
+    }
     let origin = opts.origin.as_deref().unwrap_or("origin");
     if !is_valid_remote_name(origin) {
         bail!("'{origin}' is not a valid remote name");
     }
     let shown = match dir {
         Some(d) => d.to_path_buf(),
-        None => PathBuf::from(default_dir(source, opts.bare).ok_or_else(|| {
+        None => PathBuf::from(default_dir(source, opts.is_bare()).ok_or_else(|| {
             anyhow!(
                 "No directory name could be guessed.\nPlease specify a directory on the command line"
             )
@@ -588,7 +605,11 @@ pub fn clone(
         })
         .unwrap_or_else(|| default_branch(&user));
     if !opts.quiet {
-        let bare = if opts.bare { "bare repository " } else { "" };
+        let bare = if opts.is_bare() {
+            "bare repository "
+        } else {
+            ""
+        };
         eprintln!("Cloning into {bare}'{}'...", shown.display());
     }
     if Path::new(source).is_dir() {
@@ -604,13 +625,23 @@ pub fn clone(
         }
         deepen = None;
     }
+    let separate = opts
+        .separate_git_dir
+        .as_deref()
+        .map(|d| super::init_git::separate_dir(cwd, d))
+        .transpose()?;
     std::fs::create_dir_all(&target)
         .with_context(|| format!("could not create work tree dir '{}'", shown.display()))?;
-    let git_dir = if opts.bare {
-        target.clone()
-    } else {
-        target.join(".git")
+    let git_dir = match (&separate, opts.is_bare()) {
+        (_, true) => target.clone(),
+        (Some(dir), false) => dir.clone(),
+        (None, false) => target.join(".git"),
     };
+    if let Some(dir) = &separate {
+        let link = target.join(".git");
+        std::fs::write(&link, format!("gitdir: {}\n", dir.display()))
+            .with_context(|| format!("cannot write {}", link.display()))?;
+    }
     let fetched = download(
         opts,
         deepen.as_ref(),
@@ -621,7 +652,7 @@ pub fn clone(
         &target,
     )
     .map_err(|e| {
-        clean_up(&target, existed, &git_dir, opts.bare);
+        clean_up(&target, existed, &git_dir, opts.is_bare());
         match hint {
             Some(h) => anyhow!("{e:#}\nhint: {h}"),
             None => e,
@@ -629,7 +660,7 @@ pub fn clone(
     })?;
     finish(opts, origin, source, &prefer, fetched, &target).inspect_err(|e| {
         if e.downcast_ref::<super::worktree::Unsafe>().is_some() {
-            clean_up(&target, existed, &git_dir, opts.bare);
+            clean_up(&target, existed, &git_dir, opts.is_bare());
         }
     })
 }

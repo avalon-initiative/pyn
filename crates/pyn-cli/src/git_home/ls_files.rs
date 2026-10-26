@@ -1,7 +1,7 @@
 //! `pyn ls-files` on a git repository: the index, and how the work tree differs from it.
 
 use std::collections::BTreeSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 use clap::Args;
@@ -53,7 +53,6 @@ pub struct LsFilesArgs {
 }
 
 pub(super) fn ls_files(git: &GitHome, cwd: &Path, args: LsFilesArgs) -> Result<()> {
-    let root = git.repo.root()?.to_path_buf();
     if args.ignored && !args.exclude_standard {
         bail!("ls-files --ignored needs some exclude pattern");
     }
@@ -65,6 +64,11 @@ pub(super) fn ls_files(git: &GitHome, cwd: &Path, args: LsFilesArgs) -> Result<(
     let show_stage = args.stage || args.unmerged;
     let any = args.cached || args.deleted || args.modified || args.others || show_stage;
     let show_cached = args.cached || !any || show_stage;
+    let root = if args.others || args.deleted || args.modified {
+        git.repo.root()?.to_path_buf()
+    } else {
+        PathBuf::new()
+    };
     let index = git.repo.read_index()?;
     let ignores = Ignores {
         ignore: git.repo.ignore()?,

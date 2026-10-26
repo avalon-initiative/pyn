@@ -193,6 +193,14 @@ fn pyn_dir_in(p: &Path) -> Workspace {
     }
 }
 
+/// Whether `p` is itself a git directory (a bare repository), as git's discovery tests it.
+pub(crate) fn is_bare_dir(p: &Path) -> bool {
+    p.file_name().is_none_or(|n| n != ".git")
+        && p.join("HEAD").is_file()
+        && p.join("objects").is_dir()
+        && p.join("refs").is_dir()
+}
+
 /// The folder whose `.git` makes `start` a git home, or `None` when it is a pyn home.
 /// The nearest folder with a claim decides: a `repo_tool` marker wins over a `.git` or a server workspace beside it,
 /// a `git` marker needs a `.git` there, and without a marker a server workspace wins over the `.git` in its folder.
@@ -200,7 +208,7 @@ fn git_root_of(start: &Path) -> Result<Option<&Path>> {
     for p in start.ancestors() {
         let ws = pyn_dir_in(p);
         let marker = repo_tool::read(&ws)?;
-        let has_git = p.join(".git").exists();
+        let has_git = p.join(".git").exists() || is_bare_dir(p);
         match (marker, has_git, is_server_workspace(&ws)) {
             (Some(RepoTool::Pyn), _, _) => return Ok(None),
             (_, true, false) | (Some(RepoTool::Git), true, true) => return Ok(Some(p)),
@@ -219,7 +227,7 @@ pub fn detect(start: &Path) -> Result<Option<GitHome>> {
     let (home, xdg) = user_dirs();
     let repo = Repo::open(git_root, home.as_deref(), xdg.as_deref())
         .with_context(|| format!("opening the git repository at {}", git_root.display()))?;
-    let root = repo.root()?.to_path_buf();
+    let root = repo.root().unwrap_or(git_root).to_path_buf();
     let ws = Workspace {
         dir: root.join(workspace::DIR),
         root,
@@ -267,6 +275,20 @@ impl GitHome {
             root,
         };
         Ok(GitHome { repo, ws })
+    }
+
+    pub fn is_bare(&self) -> bool {
+        self.repo.git().work_tree().is_none()
+    }
+
+    /// Fails as git does for a command that reads or writes the work tree.
+    pub(crate) fn need_work_tree(&self) -> Result<()> {
+        self.repo.root().map(|_| ()).map_err(Into::into)
+    }
+
+    /// Whether `name` is a path in `cwd`; a bare repository has no work tree to hold one.
+    pub(crate) fn cwd_has(&self, cwd: &Path, name: &str) -> bool {
+        !self.is_bare() && std::fs::symlink_metadata(cwd.join(name)).is_ok()
     }
 
     /// Opens the same repository again, to see a configuration or object format changed on disk.

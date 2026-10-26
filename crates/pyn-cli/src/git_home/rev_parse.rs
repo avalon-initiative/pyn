@@ -105,7 +105,9 @@ fn option(git: &GitHome, cwd: &Path, pre: &[u8], arg: &str, st: &mut State) -> R
         "--abbrev-ref=loose" => st.abbrev_ref = Some(false),
         "--git-dir" => {
             let at_top = work_tree().is_some_and(|w| cwd == w);
-            let text = if at_top && git_dir() == work_tree().unwrap_or(cwd).join(".git") {
+            let text = if cwd == git_dir() {
+                ".".to_string()
+            } else if at_top && git_dir() == work_tree().unwrap_or(cwd).join(".git") {
                 ".git".to_string()
             } else {
                 absolute(git_dir())

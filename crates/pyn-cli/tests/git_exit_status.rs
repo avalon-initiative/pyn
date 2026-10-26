@@ -78,14 +78,6 @@ const DIVERGENT: &[(&str, &str)] = &[
         "docs: Transports and credentials, a local path that is not a repository fails on connect before refspecs are checked",
     ),
     (
-        "Outside: clone --bare --separate-git-dir=x /nonexistent/pyn-oracle.git",
-        "docs: Daily set `git clone --separate-git-dir` is unsupported (129)",
-    ),
-    (
-        "Dirty: push --mirror main (after git remote add origin /nonexistent/pyn-oracle.git)",
-        "docs: Push on a git home, `--mirror` is unsupported (129)",
-    ),
-    (
         "Dirty: restore",
         "docs: Branches, switching and the work tree, `restore` with no path is 129 not 128",
     ),

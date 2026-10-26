@@ -719,7 +719,6 @@ fn a_history_with_merges_and_annotated_tags_arrives_whole() {
 fn usage_and_fatal_errors_have_gits_exit_codes() {
     let t = Twin::new(SSH, false);
     for flag in [
-        vec!["--mirror"],
         vec!["--prune", "origin"],
         vec!["--signed"],
         vec!["-o", "x", "origin", "main"],

@@ -29,6 +29,9 @@ enum RemoteCommand {
         /// Fetch the remote after adding it.
         #[arg(short = 'f', long)]
         fetch: bool,
+        /// Mirror the remote: `fetch` stores every ref, `push` makes `pyn push` send every ref.
+        #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "", value_name = "fetch|push")]
+        mirror: Option<String>,
         name: String,
         url: String,
     },
@@ -164,14 +167,38 @@ fn list(git: &GitHome, verbose: bool) {
     }
 }
 
-fn add(git: &GitHome, fetch: bool, name: &str, url: &str) -> Result<()> {
+fn add(git: &GitHome, fetch: bool, mirror: Option<&str>, name: &str, url: &str) -> Result<()> {
+    let (mirror_fetch, mirror_push) = match mirror {
+        None => (false, false),
+        Some("") => {
+            eprintln!(
+                "warning: --mirror is dangerous and deprecated; please\n\t use --mirror=fetch or --mirror=push instead"
+            );
+            (true, true)
+        }
+        Some("fetch") => (true, false),
+        Some("push") => (false, true),
+        Some(other) => fail(129, format!("error: unknown mirror argument: {other}")),
+    };
     if !is_valid_remote_name(name) {
         fail(128, format!("fatal: '{name}' is not a valid remote name"));
     }
     if remote_names(git.repo.config()).iter().any(|n| n == name) {
         fail(3, format!("error: remote {name} already exists."));
     }
-    edit(git, |file| add_remote(file, name, url))?;
+    edit(git, |file| {
+        if mirror.is_none() {
+            return add_remote(file, name, url);
+        }
+        file.add("remote", Some(name), "url", url)?;
+        if mirror_fetch {
+            file.add("remote", Some(name), "fetch", "+refs/*:refs/*")?;
+        }
+        if mirror_push {
+            file.add("remote", Some(name), "mirror", "true")?;
+        }
+        Ok(())
+    })?;
     if fetch {
         super::fetch::after_add(git, name)?;
     }
@@ -349,7 +376,12 @@ pub fn remote(git: &GitHome, args: RemoteArgs) -> Result<()> {
             list(git, args.verbose);
             Ok(())
         }
-        Some(RemoteCommand::Add { fetch, name, url }) => add(git, fetch, &name, &url),
+        Some(RemoteCommand::Add {
+            fetch,
+            mirror,
+            name,
+            url,
+        }) => add(git, fetch, mirror.as_deref(), &name, &url),
         Some(RemoteCommand::Remove { name }) => remove(git, &name),
         Some(RemoteCommand::Rename { old, new }) => rename(git, &old, &new),
         Some(RemoteCommand::SetUrl {

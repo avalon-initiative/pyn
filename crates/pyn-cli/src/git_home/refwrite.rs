@@ -42,6 +42,7 @@ impl GitHome {
         match self.repo.config().get("core.logallrefupdates") {
             Some(v) if v.eq_ignore_ascii_case("always") => LogPolicy::Always,
             Some(_) if !self.repo.bool_setting("core.logallrefupdates", true) => LogPolicy::Never,
+            None if self.is_bare() => LogPolicy::Never,
             _ => LogPolicy::Default,
         }
     }
@@ -202,11 +203,13 @@ impl GitHome {
                 found.push((name.to_string(), tree));
             }
         };
-        let main_tree = common
-            .parent()
-            .map(std::path::Path::to_path_buf)
-            .unwrap_or_default();
-        add(common, main_tree);
+        if !self.is_bare() {
+            let main_tree = common
+                .parent()
+                .map(std::path::Path::to_path_buf)
+                .unwrap_or_default();
+            add(common, main_tree);
+        }
         if let Ok(rd) = std::fs::read_dir(common.join("worktrees")) {
             for entry in rd.flatten() {
                 let dir = entry.path();
@@ -226,7 +229,7 @@ impl GitHome {
 
     /// The work tree, other than this one, that has `branch` checked out.
     pub(super) fn used_elsewhere(&self, branch: &str) -> Result<Option<std::path::PathBuf>> {
-        let here = std::fs::canonicalize(self.repo.root()?)?;
+        let here = std::fs::canonicalize(self.repo.root().unwrap_or(self.repo.git().git_dir()))?;
         Ok(self
             .checked_out()?
             .into_iter()

@@ -49,8 +49,8 @@ enum Act {
     Remove,
 }
 
-fn exists(cwd: &Path, name: &str) -> bool {
-    std::fs::symlink_metadata(cwd.join(name)).is_ok()
+fn exists(git: &GitHome, cwd: &Path, name: &str) -> bool {
+    git.cwd_has(cwd, name)
 }
 
 /// The revision (if named) and the paths a command line means, as git decides between them.
@@ -70,7 +70,7 @@ fn split(git: &GitHome, cwd: &Path, args: &ResetArgs) -> Result<(Option<String>,
         return Ok((Some(first.clone()), list[2..].to_vec()));
     }
     if git.repo.resolve(first).is_ok() {
-        if exists(cwd, first) {
+        if exists(git, cwd, first) {
             bail!(
                 "ambiguous argument '{first}': both revision and filename\n\
                  Use '--' to separate paths from revisions, like this:\n\
@@ -79,7 +79,7 @@ fn split(git: &GitHome, cwd: &Path, args: &ResetArgs) -> Result<(Option<String>,
         }
         return Ok((Some(first.clone()), list[1..].to_vec()));
     }
-    if !exists(cwd, first) {
+    if !exists(git, cwd, first) {
         bail!(
             "ambiguous argument '{first}': unknown revision or path not in the working tree.\n\
              Use '--' to separate paths from revisions, like this:\n\
@@ -300,6 +300,16 @@ fn reset_logging(git: &GitHome, cwd: &Path, args: &ResetArgs, log: bool) -> Resu
             Err(_) => bail!("Failed to resolve '{rev}' as a valid revision."),
         }
     };
+    if git.is_bare() {
+        if !paths.is_empty() && kind != ResetKind::Mixed {
+            bail!("Cannot do {} reset with paths.", kind.word());
+        }
+        match kind {
+            ResetKind::Soft => {}
+            ResetKind::Mixed => bail!("mixed reset is not allowed in a bare repository"),
+            _ => git.need_work_tree()?,
+        }
+    }
     if !paths.is_empty() {
         if kind != ResetKind::Mixed {
             bail!("Cannot do {} reset with paths.", kind.word());

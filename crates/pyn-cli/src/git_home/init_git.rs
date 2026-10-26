@@ -24,12 +24,14 @@ pub struct InitGitArgs {
     /// Print nothing but errors.
     #[arg(short, long)]
     quiet: bool,
-    #[arg(long, hide = true)]
+    /// Make the folder the git directory itself, with no work tree.
+    #[arg(long)]
     bare: bool,
+    /// Keep the git directory here and leave a `.git` file pointing at it in the work tree.
+    #[arg(long, value_name = "DIR")]
+    separate_git_dir: Option<PathBuf>,
     #[arg(long, hide = true, value_name = "DIR")]
     template: Option<String>,
-    #[arg(long, hide = true, value_name = "DIR")]
-    separate_git_dir: Option<String>,
     #[arg(long, hide = true, value_name = "PERMISSIONS", num_args = 0..=1, require_equals = true)]
     shared: Option<Option<String>>,
 }
@@ -37,16 +39,10 @@ pub struct InitGitArgs {
 impl InitGitArgs {
     fn refuse_unsupported(&self) {
         let given = [
-            ("--bare", self.bare, "a repository always has a work tree"),
             (
                 "--template",
                 self.template.is_some(),
                 "repositories are created without templates",
-            ),
-            (
-                "--separate-git-dir",
-                self.separate_git_dir.is_some(),
-                "the git directory is always `.git` in the work tree",
             ),
             (
                 "--shared",
@@ -97,16 +93,51 @@ pub fn init_git(args: &InitGitArgs, cwd: &Path) -> Result<()> {
         "sha256" => Algorithm::Sha256,
         _ => Algorithm::Sha1,
     };
+    if args.bare && args.separate_git_dir.is_some() {
+        bail!("options '--separate-git-dir' and '--bare' cannot be used together");
+    }
     std::fs::create_dir_all(&target)
         .with_context(|| format!("cannot mkdir {}", target.display()))?;
     let root = target.canonicalize()?;
-    pyn_git::init(&root.join(".git"), false, algorithm, &branch)?;
-    commands::hide_pyn(&GitHome::open_at(&root)?)?;
+    let git_dir = if args.bare {
+        root.clone()
+    } else if let Some(dir) = &args.separate_git_dir {
+        separate_dir(cwd, dir)?
+    } else {
+        root.join(".git")
+    };
+    pyn_git::init(&git_dir, args.bare, algorithm, &branch)?;
+    if !args.bare {
+        if args.separate_git_dir.is_some() {
+            let link = root.join(".git");
+            std::fs::write(&link, format!("gitdir: {}\n", git_dir.display()))
+                .with_context(|| format!("cannot write {}", link.display()))?;
+        }
+        commands::hide_pyn(&GitHome::open_at(&root)?)?;
+    }
     if !args.quiet {
-        println!(
-            "Initialized empty Git repository in {}/.git/",
-            root.display()
-        );
+        println!("Initialized empty Git repository in {}/", git_dir.display());
     }
     Ok(())
+}
+
+/// The absolute separate git directory: its parent must exist and it must be absent or empty.
+pub(super) fn separate_dir(cwd: &Path, dir: &Path) -> Result<PathBuf> {
+    let joined = cwd.join(dir);
+    let name = joined.file_name().map(PathBuf::from).unwrap_or_default();
+    let parent = joined.parent().unwrap_or(Path::new("/"));
+    let Ok(parent) = parent.canonicalize() else {
+        bail!(
+            "Invalid path '{}': No such file or directory",
+            parent.display()
+        );
+    };
+    let full = parent.join(name);
+    if full
+        .read_dir()
+        .is_ok_and(|mut entries| entries.next().is_some())
+    {
+        bail!("{} already exists and is not empty", full.display());
+    }
+    Ok(full)
 }

@@ -1002,6 +1002,7 @@ fn main() {
     } = &cli.command
         && paths.is_empty()
         && (in_git_home() || in_pyn_workspace())
+        && !in_bare_git_home()
     {
         eprintln!("Nothing specified, nothing added.");
         eprintln!("hint: Maybe you wanted to say 'git add .'?");
@@ -1081,6 +1082,13 @@ fn in_git_home() -> bool {
         .ok()
         .and_then(|cwd| git_home::detect(&cwd).ok().flatten())
         .is_some()
+}
+
+fn in_bare_git_home() -> bool {
+    std::env::current_dir()
+        .ok()
+        .and_then(|cwd| git_home::detect(&cwd).ok().flatten())
+        .is_some_and(|g| g.is_bare())
 }
 
 /// Rewrites `format-patch -<n>` to `--count=<n>`, since a number is not a clap flag name.

@@ -1115,7 +1115,8 @@ impl<'a> Bisect<'a> {
 
     fn start(&mut self, argv: &[String]) -> i32 {
         let has_double_dash = argv.iter().any(|a| a == "--");
-        let (mut no_checkout, mut first_parent, mut must_write_terms) = (false, false, false);
+        let (mut no_checkout, mut first_parent, mut must_write_terms) =
+            (self.git.is_bare(), false, false);
         let mut revs: Vec<ObjectId> = Vec::new();
         let mut i = 0;
         while i < argv.len() {

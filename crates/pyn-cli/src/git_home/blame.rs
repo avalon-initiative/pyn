@@ -286,7 +286,10 @@ pub(super) fn blame(git: &GitHome, cwd: &Path, args: BlameArgs, annotate: bool) 
 
     let algorithm = git.algorithm();
     let zero = ObjectId::from_bytes(algorithm, &vec![0; algorithm.digest_len()])?;
-    let positive = positives.first().cloned();
+    let mut positive = positives.first().cloned();
+    if positive.is_none() && git.is_bare() && p.contents.is_none() {
+        positive = git.repo.head_commit()?.map(|id| ("HEAD".to_string(), id));
+    }
     let (content, mode, blob, final_commit, fake) = if let Some((name, id)) =
         positive.clone().filter(|_| p.contents.is_none())
     {

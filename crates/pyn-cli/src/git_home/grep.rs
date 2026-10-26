@@ -2,7 +2,7 @@
 
 use std::ffi::{OsStr, OsString};
 use std::io::{BufWriter, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Result, anyhow, bail};
 use clap::Args;
@@ -450,7 +450,7 @@ fn targets(git: &GitHome, cwd: &Path, rest: &[OsString]) -> Result<Targets> {
         revs: Vec::new(),
         paths: Vec::new(),
     };
-    let exists = |name: &str| std::fs::symlink_metadata(cwd.join(name)).is_ok();
+    let exists = |name: &str| git.cwd_has(cwd, name);
     if let Some(dashes) = rest.iter().position(|a| a == "--") {
         for arg in &rest[..dashes] {
             let text = utf8(arg)?;
@@ -654,7 +654,11 @@ pub fn grep(git: &GitHome, cwd: &Path) -> Result<bool> {
 
     if found.revs.is_empty() {
         let index = git.repo.read_index()?;
-        let root = git.repo.root()?.to_path_buf();
+        let root = if opts.cached {
+            PathBuf::new()
+        } else {
+            git.repo.root()?.to_path_buf()
+        };
         let mut last: Option<&[u8]> = None;
         for e in &index.entries {
             if searcher.done() {

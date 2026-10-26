@@ -259,12 +259,7 @@ fn a_directory_inside_a_plain_git_repository_is_refused() {
 fn git_options_pyn_does_not_build_are_usage_errors() {
     let rig = Rig::new();
     for (args, flag) in [
-        (&["init-git", "--bare"][..], "--bare"),
         (&["init-git", "--template", "t"][..], "--template"),
-        (
-            &["init-git", "--separate-git-dir", "d"][..],
-            "--separate-git-dir",
-        ),
         (&["init-git", "--shared"][..], "--shared"),
         (&["init-git", "--shared=group"][..], "--shared"),
     ] {
