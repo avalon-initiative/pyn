@@ -255,19 +255,6 @@ fn unpublished_local_commits_are_kept() {
 }
 
 #[test]
-fn home_pyn_is_not_built_and_changes_nothing() {
-    let (env, ws) = fixture();
-    let before = snapshot(&ws);
-    let out = env.run(&ws, "alice", &["convert", "--home", "pyn", "--yes"]);
-    assert_eq!(out.status.code(), Some(128));
-    assert!(
-        String::from_utf8_lossy(&out.stderr)
-            .contains("fatal: moving to a pyn server home is not built yet (#572)")
-    );
-    assert_eq!(snapshot(&ws), before);
-}
-
-#[test]
 fn without_yes_and_without_a_terminal_it_refuses() {
     let (env, ws) = fixture();
     let before = snapshot(&ws);

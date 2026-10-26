@@ -18,7 +18,7 @@ impl std::fmt::Display for NeedsPynServer {
         write!(
             f,
             "`pyn {}` needs a pyn server, and this repository is a git repository; \
-             `pyn convert --home pyn` will move it to one (not built yet, #572)",
+             `pyn convert --home pyn` will move it to one",
             self.feature
         )
     }
@@ -200,7 +200,7 @@ mod tests {
         assert_eq!(
             err.to_string(),
             "`pyn lock` needs a pyn server, and this repository is a git repository; \
-             `pyn convert --home pyn` will move it to one (not built yet, #572)"
+             `pyn convert --home pyn` will move it to one"
         );
     }
 }

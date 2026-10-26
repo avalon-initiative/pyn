@@ -203,7 +203,7 @@ enum Command {
     Init(init_pyn::InitArgs),
     /// Start a new repository used like git: a real `.git` written by pyn, plus pyn's own folder.
     InitGit(git_home::InitGitArgs),
-    /// Adopt an existing git repository (hide `.pyn/` from git), or with `--home git` move a pyn server workspace to one, keeping its history.
+    /// Adopt an existing git repository (hide `.pyn/` from git), or move it between homes keeping its history: `--home git` from a pyn server workspace, `--home pyn` from a git repository.
     Convert(git_home::ConvertArgs),
     /// Fetch new and newer files; files with local changes are left alone.
     Update {
@@ -1357,8 +1357,13 @@ fn run(cli: Cli) -> Result<()> {
     if let Command::Convert(args) = &cli.command
         && args.home == Some(git_home::Home::Pyn)
     {
-        eprintln!("fatal: moving to a pyn server home is not built yet (#572)");
-        std::process::exit(128);
+        let remote = init_pyn::Remote {
+            server: cli.server.clone(),
+            repo: cli.repo.clone(),
+            token: cli.token.clone(),
+            user: cli.user.clone(),
+        };
+        return git_home::to_pyn(args, &cwd, remote);
     }
     if let Command::Init(args) = &cli.command {
         let remote = init_pyn::Remote {

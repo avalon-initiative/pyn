@@ -11,7 +11,7 @@ use crate::repo_tool::{self, RepoTool};
 use crate::workspace::{Settings, Workspace, resolve};
 use crate::{RepoCommand, address, credentials, git_home, http_transport, userconfig};
 
-const POLICY: &str = "\
+pub(crate) const POLICY: &str = "\
 # Collaboration policy: which paths are shared (merged) and which are exclusive (locked).
 [meta]
 default = \"shared\"

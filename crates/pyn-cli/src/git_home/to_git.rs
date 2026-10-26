@@ -33,12 +33,16 @@ pub enum Home {
 /// Options of `pyn convert`.
 #[derive(Debug, Args, Default, PartialEq, Eq)]
 pub struct ConvertArgs {
-    /// Move the repository to this home: `git` keeps the history of a pyn server workspace; `pyn` is not built yet.
+    /// Move the repository to this home, keeping its history: `git` from a pyn server workspace, `pyn` from a git
+    /// repository to the server named by `--server` and `--repo`.
     #[arg(long, value_enum)]
     pub home: Option<Home>,
-    /// Do not ask before `--home git` converts.
+    /// Do not ask before `--home git` or `--home pyn` converts.
     #[arg(short = 'y', long)]
     pub yes: bool,
+    /// With `--home pyn`: make paths matching this glob exclusive in the starter policy (repeatable).
+    #[arg(long, value_name = "GLOB", requires = "home")]
+    pub exclusive: Vec<String>,
 }
 
 /// Removes the temporary directory unless the conversion finished.
@@ -52,7 +56,7 @@ impl Drop for Cleanup {
     }
 }
 
-fn fatal(message: &str) -> ! {
+pub(super) fn fatal(message: &str) -> ! {
     eprintln!("fatal: {message}");
     std::process::exit(128);
 }

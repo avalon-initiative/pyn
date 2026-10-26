@@ -90,6 +90,7 @@ mod strategy;
 mod switch;
 mod tags;
 mod to_git;
+mod to_pyn;
 pub(crate) mod todo;
 mod treemerge;
 mod upstream;
@@ -156,6 +157,7 @@ pub(crate) use tags::{
     annotation, check_name, delete as delete_tags, list as list_tags, short, tag_ref,
 };
 pub use to_git::{ConvertArgs, Home, to_git};
+pub use to_pyn::to_pyn;
 pub use worktrees::WorktreeArgs;
 
 /// A refusal git reports as `error: <message>` with exit status 1, rather than as a fatal error.

@@ -86,7 +86,7 @@ The commands named in decision #218.
 | --- | --- | --- | --- |
 | `git init` | `pyn init [<dir>]` | different | Starts a pyn server-home repository, not a git one: creates `<dir>` if missing (the current folder if omitted) with `.pyn/pyn.toml` (every path `shared`, with a commented example of an exclusive rule) and `.pyn/local_only/` holding `repo.toml` with `repo_tool = "pyn"`, and prints `Initialized empty pyn repository in <path>/.pyn`. In a folder that already has a `.git` or `.pyn`, or inside a git work tree or pyn workspace, it fails (`128`) and, for a git repository, names `pyn convert`. With a server set (`--server`, `PYN_SERVER` or the user setting) and `--repo owner/name`, it asks `Create owner/name on <server>? [y/N]` on a terminal (default no); `--create-on-server` creates it without asking, with the same call as `pyn repo create` and the folder's `.pyn/pyn.toml` as the first policy, and records the server and repository in `.pyn/local_only/config.toml`; `--no-create-on-server` never asks. `--create-on-server` without a server and `--repo` is a usage error (`129`). Without a terminal nothing is created on the server (decision #562). |
 | `git init [<dir>]` | `pyn init-git [<dir>]` | same | Starts a new repository: a real `.git` written by pyn (no git program) plus `.pyn/local_only/repo.toml` with `repo_tool = "git"`, and `.pyn/` hidden in `.git/info/exclude`. Creates `<dir>` if missing and prints `Initialized empty Git repository in <path>/.git/`. `-b`/`--initial-branch <name>`, `--object-format sha1\|sha256` and `-q`/`--quiet` work as in git. Divergence: with no `-b` and no `init.defaultBranch` the first branch is `main` (git's default is `master`). `--bare` makes `<dir>` the git directory (`core.bare = true`, no `.pyn/`, prints `Initialized empty Git repository in <dir>/`); `--separate-git-dir <gitdir>` puts the git directory there (its parent must exist, it must be absent or empty) and leaves a `.git` file `gitdir: <absolute path>` in the work tree, and with `--bare` is `fatal` (`128`), as in git. `--template` and `--shared` are a usage error (`129`). In a folder that already has a `.git` or `.pyn`, or inside a git work tree or pyn workspace, it fails (`128`) and names `pyn convert` (decision #562). |
-| | `pyn convert [--home git\|pyn] [-y]` | pyn only | Without `--home`, adopts an existing git repository (hides `.pyn/` in `.git/info/exclude`, creates `.pyn/local_only/`, records `repo_tool = "git"`; safe to run again); outside a git repository, or in a pyn server workspace, it fails with `fatal: ...` (status 128). `--home git` in a pyn server workspace moves it to a git home keeping its history, see [Leaving a pyn server](#leaving-a-pyn-server). `--home pyn` is not built (it needs #95): it fails with `fatal: moving to a pyn server home is not built yet (#572)` (status 128) and changes nothing. |
+| | `pyn convert [--home git\|pyn] [-y] [--exclusive <glob>]...` | pyn only | Without `--home`, adopts an existing git repository (hides `.pyn/` in `.git/info/exclude`, creates `.pyn/local_only/`, records `repo_tool = "git"`; safe to run again); outside a git repository, or in a pyn server workspace, it fails with `fatal: ...` (status 128). `--home git` in a pyn server workspace moves it to a git home keeping its history, see [Leaving a pyn server](#leaving-a-pyn-server). `--home pyn` in a git repository moves it to a repository on a pyn server (`--server` and `--repo owner/name`) keeping its history, see [Moving to a pyn server](#moving-to-a-pyn-server); `--exclusive` (repeatable, `--home pyn` only) makes the paths matching a glob exclusive in the starter policy. |
 | `git clone <repo> [<dir>]` | `pyn clone <source> [<dir>]` | same | A source that is `<server>/owner/name` or `owner/name` on the configured server is cloned from a pyn server, and prints one summary line, not progress. A git URL (`https://`, `ssh://`, `user@host:path`) is cloned into a git repository with git's behaviour, flags and output; see [Clone from a git URL](#clone-from-a-git-url), which also says how an `http(s)` address is told apart. |
 | `git clone -b`, `--bare`, `--mirror`, `--separate-git-dir`, `-o`, `-n`, `--single-branch`, `--no-tags`, `-c`, `-q`, `--progress`, `--depth`, `--shallow-since`, `--shallow-exclude`, `--filter`, `--sparse` | `pyn clone ...` | git URL: supported | Git's behaviour. On a pyn server clone they are a usage error (`129`): that clone takes everything the server has, on its default branch. |
 | `git clone --shallow-submodules`, `--also-filter-submodules`, `--recurse-submodules`, `--reference`, `--template`, `--local`, `--no-hardlinks` | none | unsupported | Usage error (`129`) naming the flag: submodule clones are not built, and `--local`, `--no-local`, `--no-hardlinks` and `--shared` are not taken: a local-path source is cloned through the transfer protocol, see [Local paths](#local-paths-and-file-urls). |
@@ -828,7 +828,7 @@ schedules them.
 Decision #245: a repository has one home, a pyn server or git. In a git repository (a `.git` is found) pyn behaves as git,
 through its own implementation of git's object store, refs and index, with no git library or binary (decision #30). A
 `.pyn/pyn.toml` there is ignored: no path is exclusive, and the commands that need a pyn server refuse and name it. Going
-from a git home to a pyn server is one explicit step, `pyn convert --home pyn` (issues #572 and #95), which does not exist yet. The other direction exists: see [Leaving a pyn server](#leaving-a-pyn-server).
+from a git home to a pyn server is one explicit step, `pyn convert --home pyn`: see [Moving to a pyn server](#moving-to-a-pyn-server). The other direction is [Leaving a pyn server](#leaving-a-pyn-server).
 
 **Nothing git sees changes except what you asked for.** Hooks, notes, configuration and line endings are never touched, and
 the work tree changes only where a command you ran says it does (`switch`, `checkout`, `restore`, `merge`, `stash`), never
@@ -867,7 +867,7 @@ and asks `Continue? [y/N]`; `-y` or `--yes` skips the question, and without a te
 
 - **Kept:** every branch, and every commit with its author, committer, times, parents, message and signature, the trees and the
   content of every file. The server's SHA-256 ids are kept, so the result is a SHA-256 repository (`extensions.objectformat`) and
-  signatures stay valid; a SHA-1 repository needs the rehash tracked in #572. Local commits the server lacks, and the local tags,
+  signatures stay valid; a SHA-1 git home is rehashed on the way to a server, see [Moving to a pyn server](#moving-to-a-pyn-server). Local commits the server lacks, and the local tags,
   come along from the local store; a branch that has diverged from the server's is refused (`pull` or `rebase` first).
 - **Lost:** locks (a lock held on the server stays there and no longer applies), revision numbers, the shared and exclusive
   modes (`.pyn/pyn.toml` stays as local state that a git home ignores), changes staged with `pyn add`, and the record of which
@@ -877,6 +877,45 @@ and asks `Continue? [y/N]`; `-y` or `--yes` skips the question, and without a te
   The index is written from `HEAD`, so unmodified files are clean and edited ones show as modified. The command then records
   `repo_tool = "git"`, hides `.pyn/` in `.git/info/exclude`, and removes `.pyn/local_only/state/` and `store/` (the marker alone
   decides the home; the settings in `config.toml` stay). It refuses when a `.git` exists or a merge is in progress.
+
+### Moving to a pyn server
+
+`pyn convert --home pyn --server <url> --repo <owner/name>` (decision #562, issue #572) moves a git home repository to a
+repository on a pyn server and keeps the history. It shows what it will do and asks `Continue? [y/N]`; `-y` or `--yes` skips
+the question, and without a terminal and without `--yes` it fails (`128`) with nothing changed. `--server` can come from
+`PYN_SERVER` or the user config; `--repo` is required (`129` without it).
+
+- **The repository on the server:** created first (with the server's default settings and no policy) when it does not exist and
+  the server lets the caller create it; an existing repository must be empty, and one with history is refused, because the
+  command never merges histories.
+- **Kept:** every local branch with its commits (author, committer, times, parents, message), trees and file contents, and the
+  files on disk as they are. A SHA-256 git repository keeps every id. The server stores SHA-256, so a SHA-1 repository is
+  rehashed: every commit, tree and file gets a new id, the parent links and trees follow, and all other bytes of a commit are
+  kept, but a signature on a commit no longer verifies (it signed the old bytes). Commit ids therefore change for SHA-1 sources
+  and the confirmation says so.
+- **Branch names:** the server's default branch is `main`. The git branch called `main` becomes it; a repository with no
+  `main` has its checked-out branch pushed as `main` (the message says so), and the other branches keep their names. A
+  detached `HEAD` is refused.
+- **Policy:** after the history, the starter policy `.pyn/pyn.toml` (`default = "shared"`, plus the `--exclusive <glob>`
+  paths) is committed to `main` and written into the folder, which makes the matching existing files exclusive and read-only
+  until locked. A repository whose history already tracks `.pyn/pyn.toml` keeps it, and `--exclusive` is then a usage error. An
+  untracked `.pyn/pyn.toml` in the folder is sent instead of the starter policy. The history is sent before the policy, so
+  nothing in it needs a lock; a server whose default rules make a path of the history exclusive refuses the move for that reason.
+- **How:** everything the server would refuse is checked first, and a refusal lists the commits and changes nothing, on the server
+  or in the folder: a submodule entry, a merge of more than two parents, an empty commit, a commit that changes more than
+  10000 files, a tree over 100000 entries, a commit the server cannot store byte-for-byte (not in git's canonical form, or not
+  UTF-8), more than one root commit, a shallow clone, and an operation in progress (merge, rebase, cherry-pick, revert, bisect).
+  Then every file is uploaded, and each branch is pushed in batches inside the push limits. A commit merged into a branch whose
+  branch is gone is pushed through a temporary branch, deleted at the end.
+- **The folder:** only after every branch is on the server does the command write `.pyn/local_only/config.toml` (server and
+  repository), the revision each file is at, the branch the workspace is on, and `repo_tool = "pyn"`, last, which is what turns
+  the folder into a pyn home. If the folder cannot be set up it stays a git home. If the server refuses midway, the repository
+  stays on the server partly filled; delete it or convert into another name.
+- **`.git` is kept**, untouched, and ignored by pyn (a line in `.pyn/local_only/ignore`). Remove or move it when it is no longer
+  needed; `pyn convert --home git` refuses while one exists.
+- **Not carried over:** tags (the server has none; they stay in `.git`), stashes, the index (staged changes), hooks, remotes and
+  other git configuration. Files tracked through Git LFS arrive as their pointer files, with a warning. Files whose content on disk
+  differs from the committed content (line-ending or filter conversions) show as modified in `pyn status`.
 
 ### Ignored files
 
@@ -2373,7 +2412,7 @@ Only the commands that act on the repository in the working directory refuse, wi
 home that has them:
 
 ```text
-fatal: `pyn lock` needs a pyn server, and this repository is a git repository; `pyn convert --home pyn` will move it to one (not built yet, #572)
+fatal: `pyn lock` needs a pyn server, and this repository is a git repository; `pyn convert --home pyn` will move it to one
 ```
 
 These are `lock`, `unlock`, `locks`, `policy`, `audit`, `verify` and `summary`.
@@ -2394,7 +2433,7 @@ Commands a git home will gain fail with exit `1`, as the other git-only commands
 | `update` | `update` #310. |
 | `get` | Per-path revisions, which git has no equivalent of; not scheduled. |
 
-`pyn convert` adopts the repository as a git home today; moving it to a pyn server is `pyn convert --home pyn` (#572, #95), which does not exist yet.
+`pyn convert` adopts the repository as a git home; moving it to a pyn server is `pyn convert --home pyn`, see [Moving to a pyn server](#moving-to-a-pyn-server).
 
 ### Packs (library, provisional)
 
