@@ -56,6 +56,10 @@ jobs:
   test:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -73,7 +77,7 @@ jobs:
           tool: nextest
 
       - name: Tests
-        run: make test
+        run: make test NEXTEST_ARGS="--partition hash:${{ matrix.shard }}/3"
 
   # The required status check: passes only when every parallel job did.
   ci:

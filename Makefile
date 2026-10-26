@@ -68,10 +68,10 @@ status:
 		echo "not running"; \
 	fi
 
-# nextest runs test binaries in parallel (and skips doctests); plain cargo test is the fallback.
+# nextest runs tests in parallel (and skips doctests); NEXTEST_ARGS adds options such as a partition. Plain cargo test is the fallback.
 test:
 	@if cargo nextest --version >/dev/null 2>&1; then \
-		cargo nextest run --workspace && cargo test --workspace --doc; \
+		cargo nextest run --workspace $(NEXTEST_ARGS) && cargo test --workspace --doc; \
 	else cargo test --workspace; fi
 
 test-live:
