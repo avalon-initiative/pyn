@@ -659,12 +659,7 @@ fn remote_add_f_fetches_after_adding() {
 fn unsupported_and_invalid_options_are_clear_usage_errors() {
     let t = Twin::new("sha1", Via::Ssh);
     for args in [
-        vec!["fetch", "--depth", "1"],
-        vec!["fetch", "--depth=1", "origin"],
-        vec!["fetch", "--shallow-since", "2020-01-01"],
-        vec!["fetch", "--shallow-exclude", "main"],
-        vec!["fetch", "--unshallow"],
-        vec!["fetch", "--deepen", "2"],
+        vec!["fetch", "--update-shallow"],
         vec!["fetch", "--filter=blob:none"],
         vec!["fetch", "--atomic"],
         vec!["fetch", "--recurse-submodules"],

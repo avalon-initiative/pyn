@@ -1,7 +1,7 @@
 //! A reader and writer for git's on-disk formats, implemented in house: loose objects, packs (offset and
 //! reference deltas, pack index v2), refs and `packed-refs`, config (read and edit), refspecs, remotes, the index
 //! (v2 to v4), `.git` files and `init` of an empty repository.
-//! Packs are read, ingested (`index_pack`, thin packs included) and written, and `reachable_objects` walks what a fetch needs.
+//! Packs are read, ingested (`index_pack`, thin packs included) and written, and `reachable_objects` walks what a fetch needs, and the `shallow` file marks commits whose parents are absent.
 //! No git library or binary is involved. Depends only on `pyn-object` for ids and object encodings.
 
 mod config;
@@ -19,6 +19,7 @@ mod refs;
 mod refspec;
 mod remote;
 mod repo;
+mod shallow;
 mod util;
 mod walk;
 
@@ -39,4 +40,8 @@ pub use remote::{
     remove_remote, rename_remote, set_tracking, tracking, unset_tracking,
 };
 pub use repo::{Repository, resolve_git_dir};
-pub use walk::{Reachable, commits_newest_first, existing, peel, reachable_objects};
+pub use shallow::{read_shallow, write_shallow};
+pub use walk::{
+    Deepen, INFINITE_DEPTH, Reachable, ShallowCut, commits_newest_first, existing, peel,
+    reachable_objects, real_parents, shallow_cut,
+};

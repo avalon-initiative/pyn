@@ -78,28 +78,8 @@ const DIVERGENT: &[(&str, &str)] = &[
         "docs: Transports and credentials, a local path that is not a repository fails on connect before refspecs are checked",
     ),
     (
-        "Outside: clone --depth=0 /nonexistent/pyn-oracle.git",
-        "docs: Daily set `git clone --depth` is unsupported (129)",
-    ),
-    (
-        "Outside: clone --depth=x /nonexistent/pyn-oracle.git",
-        "docs: Daily set `git clone --depth` is unsupported (129)",
-    ),
-    (
         "Outside: clone --bare --separate-git-dir=x /nonexistent/pyn-oracle.git",
         "docs: Daily set `git clone --separate-git-dir` is unsupported (129)",
-    ),
-    (
-        "Dirty: fetch --depth=0 /nonexistent/pyn-oracle.git",
-        "docs: Fetch on a git home, shallow flags are 129",
-    ),
-    (
-        "Dirty: fetch --depth=x /nonexistent/pyn-oracle.git",
-        "docs: Fetch on a git home, shallow flags are 129",
-    ),
-    (
-        "Dirty: fetch --deepen=1 --unshallow /nonexistent/pyn-oracle.git",
-        "docs: Fetch on a git home, shallow flags are 129",
     ),
     (
         "Dirty: push --mirror main (after git remote add origin /nonexistent/pyn-oracle.git)",

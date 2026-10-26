@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -27,6 +28,7 @@ pub struct ObjectDb {
     algorithm: Algorithm,
     packs: RwLock<Vec<Arc<Pack>>>,
     alternates: Vec<ObjectDb>,
+    shallow: RwLock<Arc<HashSet<ObjectId>>>,
 }
 
 impl ObjectDb {
@@ -54,6 +56,7 @@ impl ObjectDb {
             algorithm,
             packs: RwLock::new(Vec::new()),
             alternates,
+            shallow: RwLock::default(),
         };
         db.rescan_packs()?;
         Ok(db)
@@ -61,6 +64,15 @@ impl ObjectDb {
 
     pub fn algorithm(&self) -> Algorithm {
         self.algorithm
+    }
+
+    /// Commits whose parents are treated as absent (a shallow repository's boundary).
+    pub fn set_shallow(&self, ids: HashSet<ObjectId>) {
+        *self.shallow.write().expect("shallow lock") = Arc::new(ids);
+    }
+
+    pub fn is_shallow(&self, id: &ObjectId) -> bool {
+        self.shallow.read().expect("shallow lock").contains(id)
     }
 
     pub fn dir(&self) -> &Path {

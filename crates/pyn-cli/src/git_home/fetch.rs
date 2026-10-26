@@ -7,9 +7,9 @@ use std::io::{IsTerminal, Write};
 use anyhow::{Result, anyhow, bail};
 use clap::{ArgAction, Args};
 use pyn_git::{ConfigFile, Ref, Refspec, Remote, map_ref, tracking};
-use pyn_gittransport::exchange::{fetch_objects, fetch_with, list_remote_refs};
+use pyn_gittransport::exchange::{fetch_objects, fetch_shallow_with, list_remote_refs};
 use pyn_gittransport::{Connector, Env};
-use pyn_gitwire::{LsRefsOptions, RemoteRef, Transport, UploadPack};
+use pyn_gitwire::{Deepen, LsRefsOptions, RemoteRef, Transport, UploadPack};
 use pyn_gitwork::Head;
 use pyn_object::{Algorithm, ObjectId};
 
@@ -18,6 +18,7 @@ use super::convert;
 use super::fetch_apply::{Settings, prune, stale_refs, store, tidy_url, truncate_fetch_head};
 pub(super) use super::fetch_map::TagMode;
 use super::fetch_map::{Entry, Inputs, build, follow_tags};
+use super::shallow::FetchShallow;
 
 const DEFAULT_ABBREV: usize = 7;
 
@@ -80,16 +81,8 @@ pub struct FetchArgs {
     no_write_commit_graph: bool,
     #[arg(long, hide = true)]
     no_recurse_submodules: bool,
-    #[arg(long, hide = true, value_name = "DEPTH")]
-    depth: Option<String>,
-    #[arg(long, hide = true, value_name = "DEPTH")]
-    deepen: Option<String>,
-    #[arg(long, hide = true, value_name = "DATE")]
-    shallow_since: Option<String>,
-    #[arg(long, hide = true, value_name = "REF")]
-    shallow_exclude: Option<String>,
-    #[arg(long, hide = true)]
-    unshallow: bool,
+    #[command(flatten)]
+    shallow: FetchShallow,
     #[arg(long, hide = true)]
     update_shallow: bool,
     #[arg(long, hide = true, value_name = "SPEC")]
@@ -187,14 +180,9 @@ impl Options {
 
 impl FetchArgs {
     fn refuse_unsupported(&self) {
-        let shallow = "shallow fetch is not built; a fetch always brings the whole history";
+        let shallow = "it is not built; a shallow fetch does not take it";
         let partial = "partial fetch is not built; a fetch always brings every object";
         let given = [
-            ("--depth", self.depth.is_some(), shallow),
-            ("--deepen", self.deepen.is_some(), shallow),
-            ("--shallow-since", self.shallow_since.is_some(), shallow),
-            ("--shallow-exclude", self.shallow_exclude.is_some(), shallow),
-            ("--unshallow", self.unshallow, shallow),
             ("--update-shallow", self.update_shallow, shallow),
             ("--filter", self.filter.is_some(), partial),
             ("--refetch", self.refetch, partial),
@@ -449,6 +437,7 @@ pub(super) fn query_refs(git: &GitHome, url: &str) -> Result<Vec<RemoteRef>> {
 pub(super) type Choose<'a> = &'a dyn Fn(&[RemoteRef]) -> Result<Vec<String>>;
 
 pub(super) struct Plan<'a> {
+    pub(super) deepen: Option<&'a Deepen>,
     pub(super) opts: &'a Options,
     pub(super) action: &'a str,
     pub(super) choose: Option<Choose<'a>>,
@@ -606,8 +595,15 @@ pub(super) fn fetch_core(
     };
     let wants = unique_ids(&entries);
     if !wants.is_empty() {
-        let got = fetch_with(&mut up, git.repo.git(), &wants, &mut |m| relay.feed(m))?;
+        let got = fetch_shallow_with(
+            &mut up,
+            git.repo.git(),
+            &wants,
+            plan.deepen.cloned(),
+            &mut |m| relay.feed(m),
+        )?;
         relay.finish();
+        reload_shallow(git)?;
         if got.is_some() {
             check_connected(git, &wants)?;
         }
@@ -661,6 +657,20 @@ pub(super) fn fetch_core(
         failed,
         remote_refs,
     })
+}
+
+/// Re-reads `shallow` into the open object database after a fetch changed it.
+fn reload_shallow(git: &GitHome) -> Result<()> {
+    let repo = git.repo.git();
+    git.repo
+        .objects()
+        .set_shallow(pyn_git::read_shallow(repo.common_dir(), repo.algorithm())?);
+    Ok(())
+}
+
+pub(super) fn is_shallow(git: &GitHome) -> Result<bool> {
+    let repo = git.repo.git();
+    Ok(!pyn_git::read_shallow(repo.common_dir(), repo.algorithm())?.is_empty())
 }
 
 fn tip_of(git: &GitHome, name: &str) -> Option<ObjectId> {
@@ -744,7 +754,12 @@ pub(super) fn default_update_set(git: &GitHome) -> Vec<String> {
         .collect()
 }
 
-pub(super) fn fetch_many(git: &GitHome, names: &[String], o: &Options) -> Result<bool> {
+pub(super) fn fetch_many(
+    git: &GitHome,
+    names: &[String],
+    o: &Options,
+    deepen: Option<&Deepen>,
+) -> Result<bool> {
     if !o.dry_run && !o.append {
         truncate_fetch_head(git)?;
     }
@@ -756,6 +771,7 @@ pub(super) fn fetch_many(git: &GitHome, names: &[String], o: &Options) -> Result
         }
         let action = format!("fetch --append --no-auto-gc --no-write-commit-graph {name}");
         let plan = Plan {
+            deepen,
             opts: &appending,
             action: &action,
             choose: None,
@@ -779,6 +795,7 @@ pub(super) fn fetch_many(git: &GitHome, names: &[String], o: &Options) -> Result
 pub(super) fn run(git: &GitHome, a: &FetchArgs, action: &str) -> Result<bool> {
     a.refuse_unsupported();
     let opts = Options::of(a);
+    let deepen = a.shallow.request(is_shallow(git)?)?;
     let config = git.config();
     if a.all {
         if a.repository.is_some() {
@@ -787,11 +804,11 @@ pub(super) fn run(git: &GitHome, a: &FetchArgs, action: &str) -> Result<bool> {
         if !a.refspecs.is_empty() {
             bail!("fetch --all does not make sense with refspecs");
         }
-        return fetch_many(git, &default_update_set(git), &opts);
+        return fetch_many(git, &default_update_set(git), &opts, deepen.as_ref());
     }
     if a.multiple {
         let names: Vec<String> = a.repository.iter().chain(&a.refspecs).cloned().collect();
-        return fetch_many(git, &names, &opts);
+        return fetch_many(git, &names, &opts, deepen.as_ref());
     }
     if let Some(group) = a.repository.as_deref()
         && Remote::read(config, group).is_none()
@@ -800,9 +817,10 @@ pub(super) fn run(git: &GitHome, a: &FetchArgs, action: &str) -> Result<bool> {
         if !a.refspecs.is_empty() {
             bail!("fetch group and refspecs does not make sense");
         }
-        return fetch_many(git, &group_members(git, group), &opts);
+        return fetch_many(git, &group_members(git, group), &opts, deepen.as_ref());
     }
     let plan = Plan {
+        deepen: deepen.as_ref(),
         opts: &opts,
         action,
         choose: None,
@@ -829,6 +847,7 @@ pub fn fetch(git: &GitHome, args: FetchArgs) -> Result<()> {
 pub(super) fn fetch_single(git: &GitHome, name: &str, o: &Options) -> bool {
     let action = format!("fetch {name}");
     let plan = Plan {
+        deepen: None,
         opts: o,
         action: &action,
         choose: None,
@@ -850,6 +869,7 @@ pub fn after_add(git: &GitHome, name: &str) -> Result<()> {
     let opts = Options::plain();
     let action = format!("fetch {name}");
     let plan = Plan {
+        deepen: None,
         opts: &opts,
         action: &action,
         choose: None,

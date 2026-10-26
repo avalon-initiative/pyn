@@ -122,7 +122,11 @@ impl Repo {
         if object.kind != Kind::Commit {
             return Err(Error::Revision(format!("{id} is not a commit")));
         }
-        Ok(Commit::parse(self.algorithm(), &object.data)?)
+        let mut commit = Commit::parse(self.algorithm(), &object.data)?;
+        if self.objects.is_shallow(id) {
+            commit.parents.clear();
+        }
+        Ok(commit)
     }
 
     pub fn tree(&self, id: &ObjectId) -> Result<Vec<TreeEntry>> {

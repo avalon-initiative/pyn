@@ -148,7 +148,10 @@ impl Walker<'_> {
             if o.kind != Kind::Commit {
                 return Err(corrupt("commit", format!("{id}: not a commit")));
             }
-            let info = parse_commit(self.db.algorithm(), id, &o.data)?;
+            let mut info = parse_commit(self.db.algorithm(), id, &o.data)?;
+            if self.db.is_shallow(id) {
+                info.parents.clear();
+            }
             self.commits.insert(*id, info);
         }
         Ok(&self.commits[id])
@@ -373,6 +376,148 @@ pub fn commits_newest_first(
         }
     }
     Ok(out)
+}
+
+/// How a shallow request limits history.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Deepen {
+    /// `n` commits from each want, or from each current shallow commit when `relative`.
+    Depth { n: u32, relative: bool },
+    /// Commits with a committer time at or after this.
+    Since(i64),
+    /// Commits not reachable from these.
+    Not(Vec<ObjectId>),
+}
+
+/// What a shallow request changes: new boundary commits and former boundary commits that now have parents.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ShallowCut {
+    pub shallow: Vec<ObjectId>,
+    pub unshallow: Vec<ObjectId>,
+}
+
+/// The depth git sends for `--unshallow`.
+pub const INFINITE_DEPTH: u32 = 0x7fff_ffff;
+
+/// Computes the boundary a shallow request cuts `wants` at, given the commits the client already holds as shallow.
+pub fn shallow_cut(
+    db: &ObjectDb,
+    wants: &[ObjectId],
+    client: &HashSet<ObjectId>,
+    deepen: &Deepen,
+) -> Result<ShallowCut> {
+    let mut w = Walker {
+        db,
+        commits: HashMap::new(),
+    };
+    let mut starts = Vec::new();
+    for x in wants {
+        let (_, target, kind) = peel(db, *x)?;
+        if kind == Kind::Commit {
+            starts.push(target);
+        }
+    }
+    let excluded = match deepen {
+        Deepen::Not(refs) => {
+            let mut set = HashSet::new();
+            let mut stack = Vec::new();
+            for r in refs {
+                let (_, t, k) = peel(db, *r)?;
+                if k == Kind::Commit && set.insert(t) {
+                    stack.push(t);
+                }
+            }
+            while let Some(c) = stack.pop() {
+                for p in w.commit(&c)?.parents.clone() {
+                    if set.insert(p) {
+                        stack.push(p);
+                    }
+                }
+            }
+            set
+        }
+        _ => HashSet::new(),
+    };
+    let (limit, relative) = match deepen {
+        Deepen::Depth { n, relative } => (u64::from(*n), *relative),
+        _ => (u64::MAX, false),
+    };
+    let limit = if relative {
+        limit.saturating_add(1)
+    } else {
+        limit
+    };
+    if relative {
+        let mut sorted: Vec<ObjectId> = client.iter().copied().collect();
+        sorted.sort_by_key(ObjectId::to_hex);
+        starts.extend(sorted);
+    }
+    let mut depth: HashMap<ObjectId, u64> = HashMap::new();
+    let mut queue = std::collections::VecDeque::new();
+    for s in starts {
+        let keep = match deepen {
+            Deepen::Since(t) => w.commit(&s)?.time >= *t,
+            Deepen::Not(_) => !excluded.contains(&s),
+            Deepen::Depth { .. } => true,
+        };
+        if keep && depth.insert(s, 1).is_none() {
+            queue.push_back(s);
+        }
+    }
+    let mut shallow = Vec::new();
+    let mut reached = Vec::new();
+    while let Some(c) = queue.pop_front() {
+        reached.push(c);
+        let d = depth[&c];
+        let parents = w.commit(&c)?.parents.clone();
+        if parents.is_empty() && !matches!(deepen, Deepen::Depth { .. }) {
+            continue;
+        }
+        let cut = match deepen {
+            Deepen::Depth { .. } => d >= limit,
+            Deepen::Since(t) => {
+                let mut older = false;
+                for p in &parents {
+                    older |= w.commit(p)?.time < *t;
+                }
+                older
+            }
+            Deepen::Not(_) => parents.iter().any(|p| excluded.contains(p)),
+        };
+        if cut {
+            shallow.push(c);
+            continue;
+        }
+        for p in parents {
+            if depth.contains_key(&p) {
+                continue;
+            }
+            depth.insert(p, d + 1);
+            queue.push_back(p);
+        }
+    }
+    if reached.is_empty() {
+        return Err(corrupt(
+            "shallow request",
+            "no commits selected for shallow requests",
+        ));
+    }
+    let boundary: HashSet<ObjectId> = shallow.iter().copied().collect();
+    let mut unshallow: Vec<ObjectId> = reached
+        .iter()
+        .filter(|c| client.contains(c) && !boundary.contains(c))
+        .copied()
+        .collect();
+    unshallow.sort_by_key(ObjectId::to_hex);
+    shallow.retain(|c| !client.contains(c));
+    shallow.sort_by_key(ObjectId::to_hex);
+    Ok(ShallowCut { shallow, unshallow })
+}
+
+/// The parents `id` has when not treated as shallow.
+pub fn real_parents(db: &ObjectDb, id: &ObjectId) -> Result<Vec<ObjectId>> {
+    let o = db.read(id)?;
+    Ok(parse_commit(db.algorithm(), id, &o.data)?.parents)
 }
 
 /// The ids of `ids` that this repository holds, in the order given.

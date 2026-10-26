@@ -495,7 +495,7 @@ pub fn update(git: &GitHome, prune: Option<bool>, verbose: bool, args: &[String]
     let opts = Options::for_update(prune, verbose);
     let failed = match names.as_slice() {
         [one] if !headed => fetch_single(git, one, &opts),
-        _ => fetch_many(git, &names, &opts)?,
+        _ => fetch_many(git, &names, &opts, None)?,
     };
     if failed {
         std::process::exit(1);

@@ -17,7 +17,7 @@ pub struct RevParseArgs {
     /// Options and revisions, handled in order: `--verify`, `--short[=<n>]`, `--abbrev-ref[=strict|loose]`,
     /// `--symbolic`, `--symbolic-full-name`, `-q`, `--git-dir`, `--absolute-git-dir`, `--git-common-dir`,
     /// `--show-toplevel`, `--show-prefix`, `--show-cdup`, `--is-inside-work-tree`, `--is-inside-git-dir`,
-    /// `--is-bare-repository`, `--show-object-format`, `--all`, `--branches`, `--tags`, `--remotes`, then
+    /// `--is-bare-repository`, `--is-shallow-repository`, `--show-object-format`, `--all`, `--branches`, `--tags`, `--remotes`, then
     /// `<rev>`, `^<rev>`, `<a>..<b>`, `<a>...<b>`, `<rev>^@`, `<rev>^!`, `<tree-ish>:<path>`, `:<path>`.
     #[arg(
         allow_hyphen_values = true,
@@ -158,6 +158,14 @@ fn option(git: &GitHome, cwd: &Path, pre: &[u8], arg: &str, st: &mut State) -> R
         "--is-bare-repository" => line(
             st,
             if work_tree().is_none() {
+                "true"
+            } else {
+                "false"
+            },
+        ),
+        "--is-shallow-repository" => line(
+            st,
+            if super::fetch::is_shallow(git)? {
                 "true"
             } else {
                 "false"

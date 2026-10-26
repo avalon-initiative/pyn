@@ -7,6 +7,7 @@ use crate::error::{Error, Result, corrupt, io_at};
 use crate::index::Index;
 use crate::odb::ObjectDb;
 use crate::refs::RefStore;
+use crate::shallow::read_shallow;
 
 /// An opened git repository: a main repository, a linked worktree or a submodule.
 pub struct Repository {
@@ -128,7 +129,9 @@ impl Repository {
     }
 
     pub fn objects(&self) -> Result<ObjectDb> {
-        ObjectDb::open(&self.common_dir.join("objects"), self.algorithm)
+        let db = ObjectDb::open(&self.common_dir.join("objects"), self.algorithm)?;
+        db.set_shallow(read_shallow(&self.common_dir, self.algorithm)?);
+        Ok(db)
     }
 
     pub fn refs(&self) -> RefStore {

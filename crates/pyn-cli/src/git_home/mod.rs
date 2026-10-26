@@ -66,6 +66,7 @@ mod remove;
 mod reset;
 mod rev_parse;
 mod rewrite;
+mod shallow;
 mod shortlog;
 mod show_ref;
 mod signing;

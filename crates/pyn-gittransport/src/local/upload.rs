@@ -3,7 +3,9 @@
 use std::collections::HashSet;
 use std::io::{BufWriter, Read, Write};
 
-use pyn_git::{Config, Ref, Repository, peel, reachable_objects, write_pack};
+use pyn_git::{
+    Config, Deepen, Ref, Repository, peel, reachable_objects, real_parents, shallow_cut, write_pack,
+};
 use pyn_gitwire::Error as Wire;
 use pyn_gitwire::pkt::{Packet, PktReader, PktWriter, text};
 
@@ -20,7 +22,7 @@ pub(super) fn advertisement(repo: &Repository, config: &Config) -> Result<Vec<u8
     w.write_line("version 2")?;
     w.write_line(pyn_gitwire::caps::AGENT)?;
     w.write_line("ls-refs=unborn")?;
-    w.write_line("fetch")?;
+    w.write_line("fetch=shallow")?;
     w.write_line(&format!("object-format={}", repo.algorithm().name()))?;
     w.write_flush()?;
     Ok(w.into_inner())
@@ -138,12 +140,29 @@ fn fetch(repo: &Repository, args: &[String]) -> Result<Box<dyn Read>> {
     let db = repo.objects()?;
     let alg = repo.algorithm();
     let (mut wants, mut haves, mut done) = (Vec::new(), Vec::new(), false);
+    let mut client_shallow = HashSet::new();
+    let (mut depth, mut relative, mut since, mut not) = (None, false, None, Vec::new());
     for a in args {
         match a.as_str() {
             "done" => done = true,
             "thin-pack" | "ofs-delta" | "no-progress" => {}
+            "deepen-relative" => relative = true,
             other => {
-                if let Some(h) = other.strip_prefix("want ") {
+                if let Some(h) = other.strip_prefix("shallow ") {
+                    client_shallow.insert(parse_id(alg, h)?);
+                } else if let Some(n) = other.strip_prefix("deepen ") {
+                    depth = Some(
+                        n.parse::<u32>()
+                            .map_err(|_| Wire::Remote(format!("expected a depth, got '{n}'")))?,
+                    );
+                } else if let Some(t) = other.strip_prefix("deepen-since ") {
+                    since = Some(
+                        t.parse::<i64>()
+                            .map_err(|_| Wire::Remote(format!("invalid deepen-since '{t}'")))?,
+                    );
+                } else if let Some(r) = other.strip_prefix("deepen-not ") {
+                    not.push(resolve_ref(repo, r)?);
+                } else if let Some(h) = other.strip_prefix("want ") {
                     wants.push(parse_id(alg, h)?);
                 } else if let Some(h) = other.strip_prefix("have ") {
                     haves.push(parse_id(alg, h)?);
@@ -156,10 +175,51 @@ fn fetch(repo: &Repository, args: &[String]) -> Result<Box<dyn Read>> {
     if let Some(missing) = wants.iter().find(|w| !db.contains(w).unwrap_or(false)) {
         return Err(Wire::Remote(format!("upload-pack: not our ref {missing}")).into());
     }
+    client_shallow.retain(|c| db.contains(c).unwrap_or(false));
+    let deepen = match (depth, since, not.is_empty()) {
+        (Some(n), None, true) => Some(Deepen::Depth { n, relative }),
+        (None, Some(t), true) => Some(Deepen::Since(t)),
+        (None, None, false) => Some(Deepen::Not(not)),
+        (None, None, true) => None,
+        _ => {
+            return Err(Wire::Remote(
+                "deepen and deepen-since (or deepen-not) cannot be used together".into(),
+            )
+            .into());
+        }
+    };
     let mut seen = HashSet::new();
     let common: Vec<ObjectId> = haves
         .into_iter()
         .filter(|h| seen.insert(*h) && db.contains(h).unwrap_or(false))
+        .collect();
+    let cut = match &deepen {
+        Some(d) => {
+            shallow_cut(&db, &wants, &client_shallow, d).map_err(|e| Wire::Remote(e.to_string()))?
+        }
+        None => pyn_git::ShallowCut::default(),
+    };
+    let mut pack_wants = wants.clone();
+    for s in &cut.unshallow {
+        pack_wants.extend(real_parents(&db, s)?);
+    }
+    let own = db_shallow(repo)?;
+    let mut grafts = client_shallow.clone();
+    grafts.extend(cut.shallow.iter().copied());
+    if !grafts.is_empty() {
+        let mut all = own.clone();
+        all.extend(grafts);
+        db.set_shallow(all);
+    }
+    let objects = if done || !common.is_empty() {
+        reachable_objects(&db, &pack_wants, &common)?.objects
+    } else {
+        Vec::new()
+    };
+    let inherited: Vec<ObjectId> = objects
+        .iter()
+        .filter(|o| own.contains(o) && !client_shallow.contains(o) && !cut.shallow.contains(o))
+        .copied()
         .collect();
     let mut out = BufWriter::new(scratch()?);
     {
@@ -179,14 +239,42 @@ fn fetch(repo: &Repository, args: &[String]) -> Result<Box<dyn Read>> {
             w.write_line("ready")?;
             w.write_delim()?;
         }
+        if deepen.is_some() || !client_shallow.is_empty() || !inherited.is_empty() {
+            w.write_line("shallow-info")?;
+            for id in cut.shallow.iter().chain(&inherited) {
+                w.write_line(&format!("shallow {id}"))?;
+            }
+            for id in &cut.unshallow {
+                w.write_line(&format!("unshallow {id}"))?;
+            }
+            w.write_delim()?;
+        }
         w.write_line("packfile")?;
     }
-    let objects = reachable_objects(&db, &wants, &common)?.objects;
     let mut band = BandWriter::new(&mut out, 1);
     write_pack(&db, &objects, &mut band)?;
     band.finish()?;
     PktWriter::new(&mut out).write_flush()?;
     finish(out)
+}
+
+fn db_shallow(repo: &Repository) -> Result<HashSet<ObjectId>> {
+    Ok(pyn_git::read_shallow(repo.common_dir(), repo.algorithm())?)
+}
+
+fn resolve_ref(repo: &Repository, name: &str) -> Result<ObjectId> {
+    let refs = repo.refs();
+    for candidate in [
+        name.to_owned(),
+        format!("refs/{name}"),
+        format!("refs/tags/{name}"),
+        format!("refs/heads/{name}"),
+    ] {
+        if let Some(id) = refs.resolve(&candidate)? {
+            return Ok(id);
+        }
+    }
+    Err(Wire::Remote(format!("git upload-pack: deepen-not is not a ref: {name}")).into())
 }
 
 fn finish(out: BufWriter<std::fs::File>) -> Result<Box<dyn Read>> {

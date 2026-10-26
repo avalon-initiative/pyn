@@ -700,9 +700,6 @@ fn unsupported_flags_are_usage_errors_and_leave_nothing_behind() {
     let t = Rig::new("sha1", Via::Ssh);
     for flag in [
         vec!["--mirror"],
-        vec!["--depth", "1"],
-        vec!["--shallow-since", "2020-01-01"],
-        vec!["--shallow-exclude", "v1"],
         vec!["--filter", "blob:none"],
         vec!["--recurse-submodules"],
         vec!["--sparse"],

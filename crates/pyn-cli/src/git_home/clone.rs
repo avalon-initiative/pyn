@@ -7,12 +7,13 @@ use anyhow::{Context, Result, anyhow, bail};
 use clap::{ArgAction, Args};
 use pyn_git::{ConfigFile, Expect, is_valid_remote_name, set_tracking};
 use pyn_gittransport::{Env, redact_text, user_config};
-use pyn_gitwire::RemoteRef;
+use pyn_gitwire::{Deepen, RemoteRef};
 use pyn_object::{Algorithm, ObjectId};
 
 use super::GitHome;
 use super::convert;
 use super::fetch::{Options, Plan, TagMode, fetch_core};
+use super::shallow::ShallowFlags;
 use super::switch::detach_advice;
 use super::worktree::{Mode, move_tree};
 
@@ -59,12 +60,8 @@ pub struct CloneOptions {
     jobs: Option<usize>,
     #[arg(long, hide = true)]
     mirror: bool,
-    #[arg(long, hide = true, value_name = "DEPTH")]
-    depth: Option<String>,
-    #[arg(long, hide = true, value_name = "DATE")]
-    shallow_since: Option<String>,
-    #[arg(long, hide = true, value_name = "REF")]
-    shallow_exclude: Option<String>,
+    #[command(flatten)]
+    shallow: ShallowFlags,
     #[arg(long, hide = true)]
     shallow_submodules: bool,
     #[arg(long, hide = true)]
@@ -106,17 +103,19 @@ pub struct CloneOptions {
 }
 
 impl CloneOptions {
+    /// Whether only one branch is fetched: asked for, or implied by a shallow flag.
+    fn single(&self) -> bool {
+        self.single_branch || (!self.no_single_branch && self.shallow.given())
+    }
+
     fn refuse_unsupported(&self) {
-        let shallow = "shallow clone is not built; a clone always brings the whole history";
+        let shallow = "submodules are not supported";
         let partial = "partial clone is not built; a clone always brings every object";
         let submodules = "submodules are not supported";
         let local =
             "a local clone goes through the transfer protocol; hardlinks and sharing are not built";
         let given = [
             ("--mirror", self.mirror, "it is not built; use --bare"),
-            ("--depth", self.depth.is_some(), shallow),
-            ("--shallow-since", self.shallow_since.is_some(), shallow),
-            ("--shallow-exclude", self.shallow_exclude.is_some(), shallow),
             ("--shallow-submodules", self.shallow_submodules, shallow),
             (
                 "--no-shallow-submodules",
@@ -308,7 +307,7 @@ fn choose_specs(
     prefer: &str,
 ) -> Result<Vec<String>> {
     let id_of = |name: String| refs.iter().find(|r| r.name == name && r.id.is_some());
-    let single = opts.single_branch && !opts.no_single_branch;
+    let single = opts.single();
     let dest = if opts.bare {
         "refs/heads/".to_owned()
     } else {
@@ -365,6 +364,7 @@ struct Downloaded {
 
 fn download(
     opts: &CloneOptions,
+    deepen: Option<&Deepen>,
     origin: &str,
     url: &str,
     prefer: &str,
@@ -388,8 +388,8 @@ fn download(
         chosen.replace(specs.clone());
         Ok(specs)
     };
-    let single = opts.single_branch && !opts.no_single_branch;
-    let tags = match (opts.no_tags, opts.tags || !single) {
+    let single = opts.single();
+    let tags = match (opts.no_tags, !single) {
         (true, _) => TagMode::None,
         (false, true) => TagMode::All,
         (false, false) => TagMode::Default,
@@ -401,6 +401,7 @@ fn download(
     };
     let o = Options::for_clone(opts.quiet, progress, tags);
     let plan = Plan {
+        deepen,
         opts: &o,
         action: "clone",
         choose: Some(&choose),
@@ -552,6 +553,7 @@ pub fn clone(
     hint: Option<&str>,
 ) -> Result<()> {
     opts.refuse_unsupported();
+    let mut deepen = opts.shallow.request()?;
     let origin = opts.origin.as_deref().unwrap_or("origin");
     if !is_valid_remote_name(origin) {
         bail!("'{origin}' is not a valid remote name");
@@ -589,6 +591,19 @@ pub fn clone(
         let bare = if opts.bare { "bare repository " } else { "" };
         eprintln!("Cloning into {bare}'{}'...", shown.display());
     }
+    if Path::new(source).is_dir() {
+        let f = &opts.shallow;
+        for (given, flag) in [
+            (f.depth.is_some(), "--depth"),
+            (f.shallow_since.is_some(), "--shallow-since"),
+            (!f.shallow_exclude.is_empty(), "--shallow-exclude"),
+        ] {
+            if given {
+                eprintln!("warning: {flag} is ignored in local clones; use file:// instead.");
+            }
+        }
+        deepen = None;
+    }
     std::fs::create_dir_all(&target)
         .with_context(|| format!("could not create work tree dir '{}'", shown.display()))?;
     let git_dir = if opts.bare {
@@ -596,7 +611,16 @@ pub fn clone(
     } else {
         target.join(".git")
     };
-    let fetched = download(opts, origin, source, &prefer, &git_dir, &target).map_err(|e| {
+    let fetched = download(
+        opts,
+        deepen.as_ref(),
+        origin,
+        source,
+        &prefer,
+        &git_dir,
+        &target,
+    )
+    .map_err(|e| {
         clean_up(&target, existed, &git_dir, opts.bare);
         match hint {
             Some(h) => anyhow!("{e:#}\nhint: {h}"),

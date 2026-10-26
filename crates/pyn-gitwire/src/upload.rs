@@ -38,9 +38,31 @@ pub struct LsRefsOptions {
     pub unborn: bool,
 }
 
+/// How a shallow fetch limits history. Servers take only one kind at a time (git also lets a date and exclusions combine).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Deepen {
+    /// Commits from each tip, or from the current shallow boundary when `relative`.
+    pub depth: Option<u32>,
+    pub relative: bool,
+    /// Commits at or after this Unix time.
+    pub since: Option<i64>,
+    /// Commits not reachable from these refs.
+    pub not: Vec<String>,
+}
+
+/// What a shallow fetch changed on the server's side of the boundary.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ShallowInfo {
+    pub shallow: Vec<ObjectId>,
+    pub unshallow: Vec<ObjectId>,
+}
+
 #[derive(Debug, Clone)]
 pub struct FetchRequest {
     pub wants: Vec<ObjectId>,
+    /// Commits the client holds as shallow.
+    pub shallow: Vec<ObjectId>,
+    pub deepen: Option<Deepen>,
     /// The pack may delta against objects the client has (it must complete the pack itself).
     pub thin_pack: bool,
     pub ofs_delta: bool,
@@ -52,6 +74,8 @@ impl FetchRequest {
     pub fn new(wants: Vec<ObjectId>) -> Self {
         Self {
             wants,
+            shallow: Vec::new(),
+            deepen: None,
             thin_pack: false,
             ofs_delta: true,
             no_progress: false,
@@ -88,6 +112,7 @@ pub struct UploadPack {
     session: Box<dyn Session>,
     advert: Advertisement,
     algorithm: Algorithm,
+    shallow_info: ShallowInfo,
 }
 
 impl UploadPack {
@@ -106,6 +131,7 @@ impl UploadPack {
             session,
             advert,
             algorithm,
+            shallow_info: ShallowInfo::default(),
         })
     }
 
@@ -119,6 +145,62 @@ impl UploadPack {
 
     pub fn object_format(&self) -> Algorithm {
         self.algorithm
+    }
+
+    /// The boundary changes the last fetch reported; empty when it was not a shallow request.
+    pub fn shallow_info(&self) -> &ShallowInfo {
+        &self.shallow_info
+    }
+
+    fn check_shallow(&self, req: &FetchRequest) -> Result<()> {
+        if req.shallow.is_empty() && req.deepen.is_none() {
+            return Ok(());
+        }
+        let ok = if self.advert.version == ProtocolVersion::V2 {
+            self.advert
+                .capabilities
+                .features("fetch")
+                .contains(&"shallow")
+        } else {
+            self.advert.capabilities.has("shallow")
+        };
+        if !ok {
+            return Err(Error::Unsupported(
+                "the server does not support shallow requests".into(),
+            ));
+        }
+        let Some(d) = &req.deepen else { return Ok(()) };
+        if self.advert.version != ProtocolVersion::V2 {
+            for (used, cap) in [
+                (d.since.is_some(), "deepen-since"),
+                (!d.not.is_empty(), "deepen-not"),
+                (d.relative, "deepen-relative"),
+            ] {
+                if used && !self.advert.capabilities.has(cap) {
+                    return Err(Error::Unsupported(format!(
+                        "the server does not support {cap}"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn deepen_lines(req: &FetchRequest, v2: bool) -> Vec<String> {
+        let mut out: Vec<String> = req.shallow.iter().map(|s| format!("shallow {s}")).collect();
+        if let Some(d) = &req.deepen {
+            if let Some(n) = d.depth {
+                out.push(format!("deepen {n}"));
+            }
+            if d.relative && v2 {
+                out.push("deepen-relative".into());
+            }
+            if let Some(t) = d.since {
+                out.push(format!("deepen-since {t}"));
+            }
+            out.extend(d.not.iter().map(|r| format!("deepen-not {r}")));
+        }
+        out
     }
 
     pub fn ls_refs(&mut self, opts: &LsRefsOptions) -> Result<Vec<RemoteRef>> {
@@ -222,6 +304,8 @@ impl UploadPack {
         if req.wants.is_empty() {
             return Err(Error::Usage("fetch needs at least one want".into()));
         }
+        self.check_shallow(req)?;
+        self.shallow_info = ShallowInfo::default();
         if self.advert.version == ProtocolVersion::V2 {
             self.fetch_v2(req, haves, progress)
         } else {
@@ -266,6 +350,9 @@ impl UploadPack {
             for id in &req.wants {
                 w.write_line(&format!("want {id}"))?;
             }
+            for line in Self::deepen_lines(req, true) {
+                w.write_line(&line)?;
+            }
             for id in common.iter().chain(&fresh) {
                 w.write_line(&format!("have {id}"))?;
             }
@@ -275,11 +362,14 @@ impl UploadPack {
             w.write_flush()?;
             self.session.send(&mut Cursor::new(w.into_inner()))?;
             let mut acks = Vec::new();
+            let mut info = ShallowInfo::default();
             if read_fetch_sections(
                 &mut PktReader::new(self.session.response()?),
                 self.algorithm,
                 &mut acks,
+                &mut info,
             )? {
+                self.shallow_info = info;
                 break;
             }
             if done {
@@ -324,6 +414,17 @@ impl UploadPack {
         if caps.has("object-format") {
             tokens.push(format!("object-format={}", self.algorithm.name()));
         }
+        if let Some(d) = &req.deepen {
+            for (on, name) in [
+                (d.since.is_some(), "deepen-since"),
+                (!d.not.is_empty(), "deepen-not"),
+                (d.relative, "deepen-relative"),
+            ] {
+                if on {
+                    tokens.push(name.to_owned());
+                }
+            }
+        }
         let mut w = PktWriter::new(Vec::new());
         for (i, id) in req.wants.iter().enumerate() {
             if i == 0 {
@@ -331,6 +432,9 @@ impl UploadPack {
             } else {
                 w.write_line(&format!("want {id}"))?;
             }
+        }
+        for line in Self::deepen_lines(req, false) {
+            w.write_line(&line)?;
         }
         w.write_flush()?;
         let mut sent = 0;
@@ -347,6 +451,32 @@ impl UploadPack {
         w.write_line("done")?;
         self.session.send(&mut Cursor::new(w.into_inner()))?;
         let mut pkts = PktReader::new(self.session.response()?);
+        if req.deepen.is_some() {
+            let mut info = ShallowInfo::default();
+            loop {
+                match pkts.read()? {
+                    Packet::Data(d) => {
+                        let line = text(&d)?;
+                        if let Some(h) = line.strip_prefix("shallow ") {
+                            info.shallow.push(ObjectId::from_hex(self.algorithm, h)?);
+                        } else if let Some(h) = line.strip_prefix("unshallow ") {
+                            info.unshallow.push(ObjectId::from_hex(self.algorithm, h)?);
+                        } else {
+                            return Err(Error::Protocol(format!(
+                                "unexpected shallow line {line:?}"
+                            )));
+                        }
+                    }
+                    Packet::Flush => break,
+                    other => {
+                        return Err(Error::Protocol(format!(
+                            "unexpected {other:?} in shallow lines"
+                        )));
+                    }
+                }
+            }
+            self.shallow_info = info;
+        }
         loop {
             match pkts.read()? {
                 Packet::Data(d) if d.starts_with(b"ACK ") || d.starts_with(b"NAK") => continue,
@@ -361,6 +491,7 @@ fn read_fetch_sections<R: Read>(
     pkts: &mut PktReader<R>,
     algorithm: Algorithm,
     acks: &mut Vec<ObjectId>,
+    info: &mut ShallowInfo,
 ) -> Result<bool> {
     loop {
         let header = match pkts.read()? {
@@ -395,7 +526,29 @@ fn read_fetch_sections<R: Read>(
                 }
             },
             "packfile" => return Ok(true),
-            "shallow-info" | "wanted-refs" | "packfile-uris" => loop {
+            "shallow-info" => loop {
+                match pkts.read()? {
+                    Packet::Data(d) => {
+                        let line = text(&d)?;
+                        if let Some(h) = line.strip_prefix("shallow ") {
+                            info.shallow.push(ObjectId::from_hex(algorithm, h)?);
+                        } else if let Some(h) = line.strip_prefix("unshallow ") {
+                            info.unshallow.push(ObjectId::from_hex(algorithm, h)?);
+                        } else {
+                            return Err(Error::Protocol(format!(
+                                "unexpected shallow-info line {line:?}"
+                            )));
+                        }
+                    }
+                    Packet::Delim => break,
+                    other => {
+                        return Err(Error::Protocol(format!(
+                            "unexpected {other:?} in shallow-info"
+                        )));
+                    }
+                }
+            },
+            "wanted-refs" | "packfile-uris" => loop {
                 match pkts.read()? {
                     Packet::Data(_) => {}
                     Packet::Delim => break,

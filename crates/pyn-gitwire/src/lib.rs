@@ -3,7 +3,7 @@
 //! [`pkt`] and [`sideband`] are the framing, [`caps`] parses advertisements and negotiates the object
 //! format, [`UploadPack`] fetches (protocol v2, with a v0/v1 fallback) and [`ReceivePack`] pushes
 //! (v0/v1 `receive-pack`). Connections come from a [`Transport`]; the SSH and HTTP ones live in `pyn-gittransport`.
-//! Shallow clones, push options, `wait-for-done` and v0 multi-round negotiation are not built.
+//! Push options, `wait-for-done` and v0 multi-round negotiation are not built.
 
 pub mod caps;
 mod error;
@@ -18,5 +18,6 @@ pub use error::{Error, PktError, Result};
 pub use receive::{PushOptions, PushReport, ReceivePack, RefResult, RefStatus, RefUpdate};
 pub use transport::{Service, Session, Transport};
 pub use upload::{
-    FetchRequest, HaveSource, LsRefsOptions, NoHaves, PackReader, RemoteRef, UploadPack,
+    Deepen, FetchRequest, HaveSource, LsRefsOptions, NoHaves, PackReader, RemoteRef, ShallowInfo,
+    UploadPack,
 };

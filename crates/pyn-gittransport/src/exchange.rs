@@ -2,10 +2,13 @@
 
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 
-use pyn_git::{IngestLimits, IngestedPack, ObjectDb, Repository, index_pack, reachable_objects};
+use pyn_git::{
+    IngestLimits, IngestedPack, ObjectDb, Repository, index_pack, reachable_objects, read_shallow,
+    write_shallow,
+};
 use pyn_gitwire::{
-    FetchRequest, HaveSource, LsRefsOptions, PushOptions, PushReport, ReceivePack, RefUpdate,
-    RemoteRef, Transport, UploadPack,
+    Deepen, FetchRequest, HaveSource, LsRefsOptions, PushOptions, PushReport, ReceivePack,
+    RefUpdate, RemoteRef, Transport, UploadPack,
 };
 use pyn_object::{Algorithm, ObjectId};
 
@@ -93,22 +96,52 @@ pub fn fetch_with(
     wants: &[ObjectId],
     progress: Progress<'_>,
 ) -> Result<Option<IngestedPack>> {
+    fetch_shallow_with(up, repo, wants, None, progress)
+}
+
+/// Like [`fetch_with`], limiting history by `deepen` and recording the new shallow boundary in `shallow`.
+/// A shallow request goes to the server even when every want is held, since it may only move the boundary.
+pub fn fetch_shallow_with(
+    up: &mut UploadPack,
+    repo: &Repository,
+    wants: &[ObjectId],
+    deepen: Option<Deepen>,
+    progress: Progress<'_>,
+) -> Result<Option<IngestedPack>> {
     let db = repo.objects()?;
-    let missing = wants
-        .iter()
-        .filter(|w| !db.contains(w).unwrap_or(false))
-        .copied()
-        .collect::<Vec<_>>();
+    let missing = if deepen.is_some() {
+        wants.to_vec()
+    } else {
+        wants
+            .iter()
+            .filter(|w| !db.contains(w).unwrap_or(false))
+            .copied()
+            .collect::<Vec<_>>()
+    };
     if missing.is_empty() {
         return Ok(None);
     }
+    let held = read_shallow(repo.common_dir(), repo.algorithm())?;
     let mut req = FetchRequest::new(missing);
     req.thin_pack = true;
     req.ofs_delta = true;
+    req.shallow = held.iter().copied().collect();
+    req.shallow.sort_by_key(ObjectId::to_hex);
+    req.deepen = deepen;
     let mut haves = LocalHaves::new(repo, &db)?;
     let mut pack = up.fetch(&req, &mut haves, Box::new(|m| progress(m)))?;
     let ingested = index_pack(&db, &mut pack, &IngestLimits::from_config(repo.config())?)?;
     std::io::copy(&mut pack, &mut std::io::sink())?;
+    drop(pack);
+    let info = up.shallow_info();
+    if !info.shallow.is_empty() || !info.unshallow.is_empty() {
+        let mut now = held;
+        for id in &info.unshallow {
+            now.remove(id);
+        }
+        now.extend(info.shallow.iter().copied());
+        write_shallow(repo.common_dir(), &now)?;
+    }
     Ok(Some(ingested))
 }
 

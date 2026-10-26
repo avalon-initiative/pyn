@@ -88,8 +88,8 @@ The commands named in decision #218.
 | `git init [<dir>]` | `pyn init-git [<dir>]` | same | Starts a new repository: a real `.git` written by pyn (no git program) plus `.pyn/local_only/repo.toml` with `repo_tool = "git"`, and `.pyn/` hidden in `.git/info/exclude`. Creates `<dir>` if missing and prints `Initialized empty Git repository in <path>/.git/`. `-b`/`--initial-branch <name>`, `--object-format sha1\|sha256` and `-q`/`--quiet` work as in git. Divergence: with no `-b` and no `init.defaultBranch` the first branch is `main` (git's default is `master`). `--bare`, `--template`, `--separate-git-dir` and `--shared` are a usage error (`129`). In a folder that already has a `.git` or `.pyn`, or inside a git work tree or pyn workspace, it fails (`128`) and names `pyn convert` (decision #562). |
 | | `pyn convert [--home git\|pyn] [-y]` | pyn only | Without `--home`, adopts an existing git repository (hides `.pyn/` in `.git/info/exclude`, creates `.pyn/local_only/`, records `repo_tool = "git"`; safe to run again); outside a git repository, or in a pyn server workspace, it fails with `fatal: ...` (status 128). `--home git` in a pyn server workspace moves it to a git home keeping its history, see [Leaving a pyn server](#leaving-a-pyn-server). `--home pyn` is not built (it needs #95): it fails with `fatal: moving to a pyn server home is not built yet (#572)` (status 128) and changes nothing. |
 | `git clone <repo> [<dir>]` | `pyn clone <source> [<dir>]` | same | A source that is `<server>/owner/name` or `owner/name` on the configured server is cloned from a pyn server, and prints one summary line, not progress. A git URL (`https://`, `ssh://`, `user@host:path`) is cloned into a git repository with git's behaviour, flags and output; see [Clone from a git URL](#clone-from-a-git-url), which also says how an `http(s)` address is told apart. |
-| `git clone -b`, `--bare`, `-o`, `-n`, `--single-branch`, `--no-tags`, `-c`, `-q`, `--progress` | `pyn clone ...` | git URL: supported | Git's behaviour. On a pyn server clone they are a usage error (`129`): that clone takes everything the server has, on its default branch. |
-| `git clone --depth`, `--shallow-*`, `--filter`, `--mirror`, `--recurse-submodules`, `--sparse`, `--reference`, `--separate-git-dir`, `--template`, `--local`, `--no-hardlinks` | none | unsupported | Usage error (`129`) naming the flag: shallow, partial, mirror and submodule clones are not built, and `--local`, `--no-local`, `--no-hardlinks` and `--shared` are not taken: a local-path source is cloned through the transfer protocol, see [Local paths](#local-paths-and-file-urls). |
+| `git clone -b`, `--bare`, `-o`, `-n`, `--single-branch`, `--no-tags`, `-c`, `-q`, `--progress`, `--depth`, `--shallow-since`, `--shallow-exclude` | `pyn clone ...` | git URL: supported | Git's behaviour. On a pyn server clone they are a usage error (`129`): that clone takes everything the server has, on its default branch. |
+| `git clone --shallow-submodules`, `--filter`, `--mirror`, `--recurse-submodules`, `--sparse`, `--reference`, `--separate-git-dir`, `--template`, `--local`, `--no-hardlinks` | none | unsupported | Usage error (`129`) naming the flag: partial, mirror and submodule clones are not built, and `--local`, `--no-local`, `--no-hardlinks` and `--shared` are not taken: a local-path source is cloned through the transfer protocol, see [Local paths](#local-paths-and-file-urls). |
 | `pyn clone --revision <commit>` | | pyn only | Clone as of a commit (a hash, `HEAD~N`). Git does this with `clone` then `checkout`. |
 | `pyn clone --no-local-store` | | pyn only | A pyn server clone keeps a partial local store of the history under `.pyn/local_only/store/` and commits locally by default (`--local-store` says the same); this opts out and commits straight to the server. See [the local store](workspace.md#the-local-store). A usage error for a git URL. |
 | `pyn migrate` | | pyn only | Converts a workspace made before local commits; see [migrating](workspace.md#migrating-a-workspace). |
@@ -295,7 +295,8 @@ applied.
 | `--progress`, `--no-progress` | The server's progress text, as `remote: <text>` lines. By default it is shown only when standard error is a terminal. |
 | `-j`, `--jobs` | Accepted; remotes are fetched one after the other. `fetch.parallel` is ignored. |
 | `--auto-gc`, `--write-commit-graph` and their `--no-` forms, `--no-recurse-submodules` | Accepted and ignored. |
-| `--depth`, `--deepen`, `--shallow-since`, `--shallow-exclude`, `--unshallow`, `--update-shallow` | Usage error (`129`): shallow fetch is not built. |
+| `--depth`, `--deepen`, `--shallow-since`, `--shallow-exclude`, `--unshallow` | Git's shallow fetch, see [Shallow repositories](#shallow-repositories). |
+| `--update-shallow` | Usage error (`129`): not built. |
 | `--filter`, `--refetch` | Usage error (`129`): partial fetch is not built. |
 | `--atomic`, `--set-upstream`, `--recurse-submodules` | Usage error (`129`): not built. Any other unknown flag is a usage error as everywhere. |
 
@@ -355,6 +356,31 @@ only what the server sends;
 `--refmap`, `--negotiation-tip`, `--server-option`, `--stdin` and `-4`/`-6` are not read or taken; `--all` runs
 the remotes one at a time whatever `-j` or `fetch.parallel` say, so `FETCH_HEAD` lists them in configuration order; the stale-ref hint after a ref could
 not be written names `pyn remote prune`.
+
+### Shallow repositories
+
+`pyn clone --depth <n>`, `--shallow-since <date>` and `--shallow-exclude <rev>` (repeatable), and `pyn fetch --depth <n>`,
+`--deepen <n>`, `--shallow-since`, `--shallow-exclude` and `--unshallow`, take git's meaning and its `.git/shallow` file (one
+boundary commit per line, removed when the history is complete). A shallow flag on a clone implies `--single-branch` unless
+`--no-single-branch` is given; `--tags` does not widen a single-branch clone. A local-path source ignores the flags with git's
+`warning: --depth is ignored in local clones; use file:// instead.`, and a `file://` URL honours them.
+
+- `--depth <n>` keeps `n` commits from each tip; `--deepen <n>` moves the current boundary `n` commits further (it does nothing on
+  a complete repository); `--unshallow` fetches the rest; `--shallow-since` keeps commits newer than the date (the same date forms
+  as `log --since`); `--shallow-exclude` keeps commits not reachable from the revision. A bad or conflicting combination is
+  `fatal:` (`128`) with git's wording.
+- Every fetch from a shallow repository tells the server which commits are boundaries; the server answers with the boundary changes
+  and pyn rewrites `.git/shallow` (a boundary commit that gained parents is dropped, new ones are added). A server that cannot do
+  shallow requests is refused cleanly.
+- A boundary commit has no parents for every command: `log`, `show`, `describe`, `blame`, `merge` (a merge whose base lies beyond
+  the boundary is `refusing to merge unrelated histories`), `rebase`, `bisect`, fetch negotiation and the objects a push sends. A
+  push from a shallow clone works when the remote holds the boundary's ancestry. `pyn rev-parse --is-shallow-repository` says which.
+- Cloning or fetching from a shallow repository inherits its boundary, over a path, `file://`, ssh and HTTP.
+- Wire: protocol v2 `shallow`, `deepen`, `deepen-relative`, `deepen-since`, `deepen-not` and the `shallow-info` section, and the v0/v1
+  `shallow` and `deepen*` lines. The in-process upload-pack for local remotes answers all of them, with `--shallow-since` and
+  `--shallow-exclude` not combinable there (git allows both together).
+
+Not done: `--update-shallow`, `--shallow-submodules` and partial clones (`--filter`).
 
 ### Pull on a git home
 
@@ -475,8 +501,7 @@ branches exist, keeps that unborn `HEAD`, fetches the rest and warns `remote HEA
 removed: the new directory, or only `.git` (or the contents of a bare target) when the directory already existed and was empty. A
 failure while checking out leaves the repository in place, as git does.
 
-Differences from git, all deliberate or not yet done: no hooks, templates or `description` file are created; there is no "Updating files" progress; `--mirror`, `--depth`,
-`--shallow-since`, `--shallow-exclude`, `--shallow-submodules`, `--filter`, `--also-filter-submodules`, `--recurse-submodules`,
+Differences from git, all deliberate or not yet done: no hooks, templates or `description` file are created; there is no "Updating files" progress; `--mirror`, `--shallow-submodules`, `--filter`, `--also-filter-submodules`, `--recurse-submodules`,
 `--sparse`, `--reference`, `--reference-if-able`, `--dissociate`, `--separate-git-dir`, `--template`, `--local`, `--no-local`,
 `--no-hardlinks`, `--shared`, `--upload-pack`, `--server-option`, `--bundle-uri` and `--ref-format` are usage errors.
 
@@ -2086,7 +2111,7 @@ with `fatal: not a git repository (or any of the parent directories): .git` (`12
 
 | Command | Supported |
 | --- | --- |
-| `rev-parse` | `<rev>` in any form `log` takes, plus `^{}`, `^{commit}`, `^{tree}`, `^{blob}`, `^{tag}`, `^{object}`, `<tree-ish>:<path>` (also `./` and `../` paths), `:<path>` and `:<n>:<path>` for the index, `^<rev>`, `<a>..<b>`, `<a>...<b>`, `<rev>^@`, `<rev>^!`; `--verify`, `-q`, `--short[=<n>]`, `--abbrev-ref[=strict\|loose]`, `--symbolic`, `--symbolic-full-name`, `--git-dir`, `--absolute-git-dir`, `--git-common-dir`, `--show-toplevel`, `--show-prefix`, `--show-cdup`, `--is-inside-work-tree`, `--is-inside-git-dir`, `--is-bare-repository`, `--show-object-format`, `--all`, `--branches`, `--tags`, `--remotes`. Options act on the revisions after them, as in git; a name that is no revision is printed back and must be a file. |
+| `rev-parse` | `<rev>` in any form `log` takes, plus `^{}`, `^{commit}`, `^{tree}`, `^{blob}`, `^{tag}`, `^{object}`, `<tree-ish>:<path>` (also `./` and `../` paths), `:<path>` and `:<n>:<path>` for the index, `^<rev>`, `<a>..<b>`, `<a>...<b>`, `<rev>^@`, `<rev>^!`; `--verify`, `-q`, `--short[=<n>]`, `--abbrev-ref[=strict\|loose]`, `--symbolic`, `--symbolic-full-name`, `--git-dir`, `--absolute-git-dir`, `--git-common-dir`, `--show-toplevel`, `--show-prefix`, `--show-cdup`, `--is-inside-work-tree`, `--is-inside-git-dir`, `--is-bare-repository`, `--is-shallow-repository`, `--show-object-format`, `--all`, `--branches`, `--tags`, `--remotes`. Options act on the revisions after them, as in git; a name that is no revision is printed back and must be a file. |
 | `ls-files` | `-c`, `-d`, `-m`, `-o`, `-s`, `-u`, `-i` with `--exclude-standard`, `-z`, `--full-name`, `--error-unmatch`, and pathspecs (see [Pathspecs](#pathspecs)). Paths are relative to the current folder, and only that folder is listed unless a pathspec says otherwise. `-m` lists deleted files too, so `-m -d` lists them twice, as git does. |
 | `ls-tree` | `-d`, `-r`, `-t`, `-l`, `-z`, `--name-only`, `--name-status`, `--object-only`, `--full-name`, `--full-tree`, `--abbrev[=<n>]`, and paths. Paths are literal (a `*` is an ordinary character), `:(top)`, `:/` and `:(literal)` are read, and any other magic is git's `pathspec magic not supported by this command` (`128`); `.` and `..` name a folder's contents. |
 | `cat-file` | `-t`, `-s`, `-p`, `-e`, `<type> <object>` (tags are followed to the type), `--batch` and `--batch-check` with git's default format. |
