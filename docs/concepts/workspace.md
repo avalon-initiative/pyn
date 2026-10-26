@@ -339,7 +339,7 @@ some branches exist only here, some only on the server, and the remote-tracking 
   change what a branch follows (`branch.<name>.remote` and `.merge` in the store's config, as git writes them).
 - `pyn switch <name>` and `pyn checkout <name>` for a name that is not a local branch but is a branch of the server make a
   local branch that follows it (fetching it first when the store does not have it yet), as git does. They work offline for
-  anything in the store; a file whose content the store lacks is read from the server by id.
+  anything in the store; a file whose content the store lacks is read from the server by id. Revisions and modes of published content are the server's; content that is only local has revision `0` and the mode the policy file (`.pyn/pyn.toml`) gives it at that commit, so a new path under an exclusive rule is exclusive (read-only without its lock).
 - A switch carries the work tree and the staged changes over, and stops, naming the paths, only where a local change
   would be overwritten; `--force` discards them. A branch with unpublished commits can be left and comes back as it was.
 - `pyn push` pushes the current branch to the server branch it follows and refuses a branch with no upstream, as git's

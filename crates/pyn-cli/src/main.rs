@@ -41,6 +41,7 @@ mod migrate;
 mod mv_plan;
 mod no_index;
 mod pathspec;
+mod policy;
 mod probe;
 mod pyn_server;
 mod quiet;

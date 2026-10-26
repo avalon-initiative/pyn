@@ -284,8 +284,8 @@ pub(crate) fn find_target(
     Ok(store.remote_tip(name)?.map(Target::Remote))
 }
 
-/// The files of `tip` as snapshot entries: revisions and modes come from the server for what it knows, and are `0` and
-/// the mode of the same path (shared otherwise) for unpublished content.
+/// The files of `tip` as snapshot entries: revisions and modes come from the server for what it knows; unpublished
+/// content has revision `0` and the mode the policy file at `tip` gives it.
 fn entries_at(
     backend: &dyn Backend,
     store: &LocalStore,
@@ -317,15 +317,24 @@ fn entries_at(
     };
     let tree = store.tree_of(Some(*tip))?;
     let files = store.repo().flatten(tree.as_ref(), &Pathspec::default())?;
+    let policy = match files.get(crate::policy::POLICY_PATH.as_bytes()) {
+        Some(e) => store
+            .repo()
+            .blob(&e.id)
+            .ok()
+            .and_then(|b| crate::policy::Policy::parse(&String::from_utf8_lossy(&b))),
+        None => Some(crate::policy::Policy::none()),
+    };
     let mut out = Vec::new();
     for (path, entry) in files {
         let path = String::from_utf8_lossy(&path).into_owned();
         let content = entry.id.to_hex();
         let known = server.get(&path);
-        let (revision, mode) = match known {
-            Some(s) if s.content == content => (s.revision, s.mode),
-            Some(s) => (0, s.mode),
-            None => (0, api::Mode::Shared),
+        let (revision, mode) = match (known, &policy) {
+            (Some(s), _) if s.content == content => (s.revision, s.mode),
+            (_, Some(p)) => (0, p.mode_for(&path)),
+            (Some(s), None) => (0, s.mode),
+            (None, None) => (0, api::Mode::Shared),
         };
         out.push(api::SnapshotEntry {
             path,

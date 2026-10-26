@@ -288,3 +288,54 @@ fn branches_made_on_the_server_by_the_web_flow_stay_server_side_without_a_store(
             .contains("direct")
     );
 }
+
+fn writable(ws: &Path, path: &str) -> bool {
+    !std::fs::metadata(ws.join(path))
+        .unwrap()
+        .permissions()
+        .readonly()
+}
+
+#[test]
+fn unpublished_content_takes_its_mode_from_the_policy_at_that_commit() {
+    let (env, ws) = seeded();
+    env.ok(&ws, "alice", &["switch", "-c", "topic"]);
+    std::fs::create_dir_all(ws.join("Assets")).unwrap();
+    commit(&env, &ws, "Assets/x.bin", "bits", "asset");
+    commit(
+        &env,
+        &ws,
+        ".pyn/pyn.toml",
+        "[meta]\ndefault = \"shared\"\n[exclusive]\npaths = [\"Assets/\"]\n",
+        "policy",
+    );
+    env.ok(&ws, "alice", &["switch", "main"]);
+    assert!(!ws.join("Assets/x.bin").exists());
+    env.ok(&ws, "alice", &["switch", "topic"]);
+    assert!(
+        !writable(&ws, "Assets/x.bin"),
+        "an exclusive path is read-only without its lock"
+    );
+    assert!(writable(&ws, "Source/a.cpp"));
+    let status = env.ok(&ws, "alice", &["status"]);
+    let row = status.lines().find(|l| l.contains("Assets/x.bin")).unwrap();
+    assert!(row.contains("exclusive"), "{status}");
+}
+
+#[test]
+fn a_policy_that_makes_a_new_path_shared_leaves_it_writable() {
+    let (env, ws) = seeded();
+    env.ok(&ws, "alice", &["switch", "-c", "topic"]);
+    std::fs::create_dir_all(ws.join("Notes")).unwrap();
+    commit(&env, &ws, "Notes/n.txt", "words", "note");
+    commit(
+        &env,
+        &ws,
+        ".pyn/pyn.toml",
+        "[meta]\ndefault = \"exclusive\"\n[shared]\npaths = [\"Notes/\", \"Source/\"]\n",
+        "policy",
+    );
+    env.ok(&ws, "alice", &["switch", "main"]);
+    env.ok(&ws, "alice", &["switch", "topic"]);
+    assert!(writable(&ws, "Notes/n.txt"));
+}
