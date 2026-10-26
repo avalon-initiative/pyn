@@ -345,7 +345,9 @@ some branches exist only here, some only on the server, and the remote-tracking 
 - `pyn push` pushes the current branch to the server branch it follows and refuses a branch with no upstream, as git's
   `push.default=simple` does; `pyn push [-u] origin <local>[:<remote>]` names the branches. `pyn push --delete <branch>` and
   `pyn push origin :<branch>` delete a branch on the server (whatever its state) and its remote-tracking ref.
-  Publishing a branch the server does not have is not available yet; the push says so and changes nothing.
+  A push to a branch the server does not have creates it in the same push (from the first new commit's parent, which the
+  server must have) and prints ` * [new branch]`; `pyn push -u origin <branch>` also sets the upstream. A new branch with no
+  commit of its own is refused, because the server creates a branch only from pushed commits.
 - A branch the server does not have (a local-only branch) has no server counterpart, so `pyn update` and `pyn commit <path>`
   refuse on it, `pyn pull` needs an upstream, and the server's file listing, modes and locks are those of the default branch.
   `pyn merge <branch>` is still the server's merge of two server branches.

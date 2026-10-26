@@ -964,7 +964,7 @@ pub fn push(backend: &dyn Backend, ws: &Workspace, mut req: ServerPush) -> Resul
         bail!("'{remote}' does not appear to be a remote; the server is `origin`");
     }
     if req.delete || req.refspecs.iter().any(|r| r.starts_with(':')) {
-        return delete_remote(backend, &store, &req);
+        return delete_remote(backend, Some(&store), &req);
     }
     let current = branch::name(Some(ws));
     let pairs: Vec<(String, String)> = if req.refspecs.is_empty() {
@@ -1003,16 +1003,28 @@ pub fn push(backend: &dyn Backend, ws: &Workspace, mut req: ServerPush) -> Resul
 }
 
 /// `push --delete <branch>` and `push origin :<branch>`: removes branches from the server.
-fn delete_remote(backend: &dyn Backend, store: &LocalStore, req: &ServerPush) -> Result<()> {
+pub fn delete_remote(
+    backend: &dyn Backend,
+    store: Option<&LocalStore>,
+    req: &ServerPush,
+) -> Result<()> {
     let api = backend.pyn_server("push")?;
-    if req.refspecs.is_empty() {
+    if req.refspecs.is_empty() && req.repository.as_deref().is_none_or(|r| r == "origin") {
         bail!("--delete doesn't make sense without any refs");
     }
     let mut first = true;
-    for spec in &req.refspecs {
+    let mut specs = req.refspecs.clone();
+    if specs.is_empty()
+        && let Some(only) = req.repository.clone().filter(|r| r != "origin")
+    {
+        specs.push(only);
+    }
+    for spec in &specs {
         let name = spec.strip_prefix(':').unwrap_or(spec);
         let name = name.strip_prefix("refs/heads/").unwrap_or(name);
-        if store.remote_tip(name)?.is_none() {
+        if let Some(store) = store
+            && store.remote_tip(name)?.is_none()
+        {
             bail!("error: unable to delete '{name}': remote ref does not exist");
         }
         let route = api.repo_route(&format!("/branches/{name}"))?;
@@ -1020,10 +1032,12 @@ fn delete_remote(backend: &dyn Backend, store: &LocalStore, req: &ServerPush) ->
             api.request(Method::DELETE, &route)
                 .query(&[("force", true)]),
         )?;
-        store
-            .repo()
-            .refs()
-            .delete(&tracking_ref(name), Expect::Any)?;
+        if let Some(store) = store {
+            store
+                .repo()
+                .refs()
+                .delete(&tracking_ref(name), Expect::Any)?;
+        }
         if first {
             println!(
                 "To {}/{}",
@@ -1047,13 +1061,17 @@ fn push_branch(
     let Some(local_tip) = store.tip(local)? else {
         bail!("src refspec {local} does not match any");
     };
-    let published = store.remote_tip(branch)?;
-    if published.is_none() {
-        bail!(
-            "cannot publish '{local}' as '{branch}': the server has no branch of that name and a push cannot create one yet (#618)"
-        );
-    }
+    let on_server = store.remote_tip(branch)?;
+    let published = match on_server {
+        Some(p) => Some(p),
+        None => store.published_or_base(local)?,
+    };
     let Some(outgoing) = store.outgoing_to(Some(local_tip), published)? else {
+        if on_server.is_none() {
+            bail!(
+                "the server has no branch '{branch}' and '{local}' has no commit it lacks, so a push would create nothing; commit first"
+            );
+        }
         println!("Everything up-to-date");
         return Ok(());
     };
@@ -1143,14 +1161,18 @@ fn print_pushed(
         api.base,
         api.repo.as_deref().unwrap_or_default()
     );
-    println!(
-        "   {}..{}  {local} -> {branch}",
-        published.map_or_else(
-            || "0".repeat(snapshot::ABBREV),
-            |p| short(&p.to_hex()).to_string()
-        ),
-        short(&head.to_hex())
-    );
+    if response.created {
+        println!(" * [new branch]      {local} -> {branch}");
+    } else {
+        println!(
+            "   {}..{}  {local} -> {branch}",
+            published.map_or_else(
+                || "0".repeat(snapshot::ABBREV),
+                |p| short(&p.to_hex()).to_string()
+            ),
+            short(&head.to_hex())
+        );
+    }
     stranded::print(
         "The policy change left shared versions on other branches that can no longer merge:",
         &response.stranded,

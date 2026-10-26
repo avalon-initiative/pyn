@@ -143,8 +143,6 @@ fn a_local_only_branch_has_no_upstream_to_push_to() {
     let err = env.fails(&ws, "alice", &["push"]);
     assert!(err.contains("has no upstream branch"), "{err}");
     assert!(err.contains("--set-upstream origin topic"), "{err}");
-    let err = env.fails(&ws, "alice", &["push", "-u", "origin", "topic"]);
-    assert!(err.contains("#618"), "{err}");
     let err = env.fails(&ws, "alice", &["pull"]);
     assert!(err.contains("no tracking information"), "{err}");
     let err = env.fails(&ws, "alice", &["update"]);
@@ -338,4 +336,111 @@ fn a_policy_that_makes_a_new_path_shared_leaves_it_writable() {
     env.ok(&ws, "alice", &["switch", "main"]);
     env.ok(&ws, "alice", &["switch", "topic"]);
     assert!(writable(&ws, "Notes/n.txt"));
+}
+
+#[test]
+fn pushing_a_local_only_branch_creates_it_on_the_server() {
+    let (env, ws) = seeded();
+    env.ok(&ws, "alice", &["switch", "-c", "topic"]);
+    commit(&env, &ws, "Source/a.cpp", "topic one", "on topic");
+    commit(&env, &ws, "Source/b.cpp", "topic bee", "more on topic");
+    let out = env.ok(&ws, "alice", &["push", "-u", "origin", "topic"]);
+    assert!(out.contains(" * [new branch]      topic -> topic"), "{out}");
+    assert!(
+        out.contains("branch 'topic' set up to track 'origin/topic'."),
+        "{out}"
+    );
+    assert_eq!(
+        git(&ws, &["rev-parse", "topic"]),
+        git(&ws, &["rev-parse", "origin/topic"])
+    );
+    assert_eq!(
+        git(&ws, &["config", "branch.topic.merge"]),
+        "refs/heads/topic\n"
+    );
+    let listed = env.ok(&env.dir("seed"), "alice", &["branch"]);
+    assert!(listed.contains("topic"), "{listed}");
+    assert_eq!(env.ok(&ws, "alice", &["push"]), "Everything up-to-date\n");
+
+    commit(&env, &ws, "Source/a.cpp", "topic two", "third");
+    let out = env.ok(&ws, "alice", &["push"]);
+    assert!(out.contains("topic -> topic"), "{out}");
+    assert!(!out.contains("[new branch]"), "{out}");
+    let status = env.ok(&ws, "alice", &["status", "--short", "--branch"]);
+    assert!(status.starts_with("## topic...origin/topic\n"), "{status}");
+}
+
+#[test]
+fn a_branch_can_be_published_under_another_name() {
+    let (env, ws) = seeded();
+    env.ok(&ws, "alice", &["switch", "-c", "topic"]);
+    commit(&env, &ws, "Source/a.cpp", "topic one", "on topic");
+    let out = env.ok(&ws, "alice", &["push", "origin", "topic:renamed"]);
+    assert!(
+        out.contains(" * [new branch]      topic -> renamed"),
+        "{out}"
+    );
+    assert_eq!(
+        git(&ws, &["rev-parse", "origin/renamed"]),
+        git(&ws, &["rev-parse", "topic"])
+    );
+    let err = env.fails(&ws, "alice", &["pull"]);
+    assert!(err.contains("no tracking information"), "{err}");
+}
+
+#[test]
+fn a_new_branch_with_no_commit_of_its_own_is_not_pushed() {
+    let (env, ws) = seeded();
+    env.ok(&ws, "alice", &["branch", "empty"]);
+    let err = env.fails(&ws, "alice", &["push", "origin", "empty"]);
+    assert!(err.contains("would create nothing"), "{err}");
+}
+
+#[test]
+fn a_published_branch_can_be_fetched_by_another_clone_and_deleted_again() {
+    let (env, ws) = seeded();
+    env.ok(&ws, "alice", &["switch", "-c", "shared"]);
+    commit(&env, &ws, "Source/a.cpp", "from one", "one");
+    env.ok(&ws, "alice", &["push", "-u", "origin", "shared"]);
+    let other = env.dir("other");
+    env.ok(
+        &env.dir("home"),
+        "alice",
+        &[
+            "clone",
+            "--local-store",
+            &env.source(REPO),
+            other.to_str().unwrap(),
+        ],
+    );
+    let other = other.canonicalize().unwrap();
+    env.ok(&other, "alice", &["switch", "shared"]);
+    assert_eq!(read(&other, "Source/a.cpp"), "from one");
+    env.ok(&ws, "alice", &["push", "--delete", "shared"]);
+    assert!(
+        !env.ok(&env.dir("seed"), "alice", &["branch"])
+            .contains("shared")
+    );
+}
+
+#[test]
+fn a_workspace_without_a_store_deletes_server_branches_through_push() {
+    let (env, _) = seeded();
+    let plain = env.dir("plain2");
+    env.ok(
+        &env.dir("home"),
+        "alice",
+        &[
+            "clone",
+            "--no-local-store",
+            &env.source(REPO),
+            plain.to_str().unwrap(),
+        ],
+    );
+    env.ok(&plain, "alice", &["branch", "one"]);
+    env.ok(&plain, "alice", &["branch", "two"]);
+    let out = env.ok(&plain, "alice", &["push", "--delete", "one"]);
+    assert!(out.contains(" - [deleted]         one"), "{out}");
+    env.ok(&plain, "alice", &["push", "origin", ":two"]);
+    assert_eq!(env.ok(&plain, "alice", &["branch"]), "* main\n");
 }

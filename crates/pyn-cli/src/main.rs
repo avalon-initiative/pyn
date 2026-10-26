@@ -1923,7 +1923,12 @@ fn run(cli: Cli) -> Result<()> {
             match ws.as_ref().filter(|w| w.settings().local_store_on()) {
                 Some(w) => local_sync::push(&backend, w, request)?,
                 None if request.delete
-                    || request.set_upstream
+                    || (!request.refspecs.is_empty()
+                        && request.refspecs.iter().all(|r| r.starts_with(':'))) =>
+                {
+                    local_sync::delete_remote(&backend, None, &request)?
+                }
+                None if request.set_upstream
                     || request.repository.is_some()
                     || !request.refspecs.is_empty() =>
                 {
