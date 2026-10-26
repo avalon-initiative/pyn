@@ -246,6 +246,14 @@ enum Command {
     CatFile(git_home::CatFileArgs),
     /// List the refs and the ids they point at (a git repository only).
     ShowRef(git_home::ShowRefArgs),
+    /// Count loose objects and packs and the space they take (a git repository only).
+    CountObjects(git_home::CountObjectsArgs),
+    /// Check the connectivity and validity of the objects (a git repository only).
+    Fsck(git_home::FsckArgs),
+    /// Remove unreachable loose objects (a git repository only).
+    Prune(git_home::PruneArgs),
+    /// Pack objects into packs and drop what they replace (a git repository only).
+    Repack(git_home::RepackArgs),
     /// Summarize the history by author (a git repository only).
     Shortlog(git_home::ShortlogArgs),
     /// Name a commit after the nearest tag it descends from (a git repository only).
@@ -2001,6 +2009,10 @@ fn run(cli: Cli) -> Result<()> {
         | Command::LsTree(_)
         | Command::CatFile(_)
         | Command::ShowRef(_)
+        | Command::CountObjects(_)
+        | Command::Fsck(_)
+        | Command::Prune(_)
+        | Command::Repack(_)
         | Command::Shortlog(_)
         | Command::Describe(_)
         | Command::NameRev(_)

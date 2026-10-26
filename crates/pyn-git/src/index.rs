@@ -65,6 +65,39 @@ impl IndexEntry {
     }
 }
 
+/// The tree ids a cache-tree extension records; stops at the first malformed node.
+fn cache_tree_ids(algorithm: Algorithm, mut data: &[u8]) -> Vec<ObjectId> {
+    let mut out = Vec::new();
+    let hl = algorithm.digest_len();
+    while !data.is_empty() {
+        let Some(nul) = data.iter().position(|b| *b == 0) else {
+            break;
+        };
+        let rest = &data[nul + 1..];
+        let Some(nl) = rest.iter().position(|b| *b == b'\n') else {
+            break;
+        };
+        let Some(count) = std::str::from_utf8(&rest[..nl])
+            .ok()
+            .and_then(|l| l.split_once(' '))
+            .and_then(|(c, _)| c.parse::<i64>().ok())
+        else {
+            break;
+        };
+        data = &rest[nl + 1..];
+        if count >= 0 {
+            let Some(raw) = data.get(..hl) else {
+                break;
+            };
+            if let Ok(id) = ObjectId::from_bytes(algorithm, raw) {
+                out.push(id);
+            }
+            data = &data[hl..];
+        }
+    }
+    out
+}
+
 /// The index file. Cache extensions (TREE, UNTR, ...) are skipped on read and never written; split and
 /// sparse indexes are refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,6 +121,14 @@ impl Index {
     }
 
     pub fn parse(bytes: &[u8], algorithm: Algorithm) -> Result<Self> {
+        Self::parse_with_cache_tree(bytes, algorithm).map(|(index, _)| index)
+    }
+
+    /// Like [`Index::parse`], also returning the tree ids the `TREE` (cache-tree) extension records.
+    pub fn parse_with_cache_tree(
+        bytes: &[u8],
+        algorithm: Algorithm,
+    ) -> Result<(Self, Vec<ObjectId>)> {
         let hl = algorithm.digest_len();
         if bytes.len() < 12 + hl {
             return Err(corrupt("index", "truncated"));
@@ -112,6 +153,7 @@ impl Index {
             pos = next;
             entries.push(entry);
         }
+        let mut trees = Vec::new();
         while pos < body.len() {
             let head = body
                 .get(pos..pos + 8)
@@ -123,12 +165,16 @@ impl Index {
                     String::from_utf8_lossy(&head[..4])
                 )));
             }
-            pos = pos
+            let end = pos
                 .checked_add(8 + len)
                 .filter(|e| *e <= body.len())
                 .ok_or_else(|| corrupt("index", "extension runs past the end"))?;
+            if &head[..4] == b"TREE" {
+                trees = cache_tree_ids(algorithm, &body[pos + 8..end]);
+            }
+            pos = end;
         }
-        Ok(Self { version, entries })
+        Ok((Self { version, entries }, trees))
     }
 
     /// Serializes in `version`, sorting entries by path then stage as git requires.

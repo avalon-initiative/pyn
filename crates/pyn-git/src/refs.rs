@@ -27,7 +27,7 @@ pub struct PackedRef {
 /// Loose refs, `packed-refs` and `HEAD` for one repository (and one worktree).
 pub struct RefStore {
     git_dir: PathBuf,
-    common_dir: PathBuf,
+    pub(crate) common_dir: PathBuf,
     pub(crate) algorithm: Algorithm,
 }
 
@@ -75,7 +75,7 @@ impl RefStore {
             .map(|p| Ref::Direct(p.id)))
     }
 
-    fn parse_loose(&self, name: &str, bytes: &[u8]) -> Result<Ref> {
+    pub(crate) fn parse_loose(&self, name: &str, bytes: &[u8]) -> Result<Ref> {
         let text = std::str::from_utf8(bytes)
             .map_err(|_| corrupt("ref", format!("{name} is not UTF-8")))?
             .trim_end();
@@ -294,7 +294,7 @@ pub(crate) fn lock_path(path: &Path) -> PathBuf {
     PathBuf::from(format!("{}.lock", path.display()))
 }
 
-fn walk(dir: &Path, name: &str, out: &mut Vec<String>) -> Result<()> {
+pub(crate) fn walk(dir: &Path, name: &str, out: &mut Vec<String>) -> Result<()> {
     let Ok(rd) = fs::read_dir(dir) else {
         return Ok(());
     };

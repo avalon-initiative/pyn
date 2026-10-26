@@ -75,6 +75,10 @@ impl ObjectDb {
         self.shallow.read().expect("shallow lock").contains(id)
     }
 
+    pub(crate) fn alternates_list(&self) -> &[ObjectDb] {
+        &self.alternates
+    }
+
     pub fn dir(&self) -> &Path {
         &self.dir
     }
@@ -211,7 +215,32 @@ impl ObjectDb {
         if self.contains(&id)? {
             return Ok(id);
         }
-        let path = self.loose_path(&id);
+        self.store_loose(&id, kind, data, None)?;
+        Ok(id)
+    }
+
+    /// Writes a loose copy even when a pack holds the object, stamping the file with `mtime` when given.
+    pub fn write_loose(
+        &self,
+        kind: Kind,
+        data: &[u8],
+        mtime: Option<std::time::SystemTime>,
+    ) -> Result<ObjectId> {
+        let id = hash_object(self.algorithm, kind, data)?;
+        if !self.loose_path(&id).is_file() {
+            self.store_loose(&id, kind, data, mtime)?;
+        }
+        Ok(id)
+    }
+
+    fn store_loose(
+        &self,
+        id: &ObjectId,
+        kind: Kind,
+        data: &[u8],
+        mtime: Option<std::time::SystemTime>,
+    ) -> Result<()> {
+        let path = self.loose_path(id);
         let parent = path.parent().expect("loose path has a parent");
         fs::create_dir_all(parent).map_err(io_at(parent))?;
 
@@ -228,6 +257,9 @@ impl ObjectDb {
             z.write_all(data)?;
             let file = z.finish()?;
             file.sync_all()?;
+            if let Some(t) = mtime {
+                file.set_modified(t)?;
+            }
             set_readonly(&file)?;
             fs::rename(&tmp, &path)
         })();
@@ -235,7 +267,7 @@ impl ObjectDb {
             let _ = fs::remove_file(&tmp);
             return Err(io_at(&path)(e));
         }
-        Ok(id)
+        Ok(())
     }
 }
 

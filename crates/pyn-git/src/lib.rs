@@ -13,6 +13,7 @@ mod ingest;
 mod init;
 mod odb;
 mod pack;
+mod pack_refs;
 mod pack_write;
 mod reflog;
 mod refs;
@@ -20,6 +21,7 @@ mod refspec;
 mod remote;
 mod repo;
 mod shallow;
+mod storage;
 mod util;
 mod walk;
 
@@ -41,6 +43,7 @@ pub use remote::{
 };
 pub use repo::{Repository, resolve_git_dir};
 pub use shallow::{read_shallow, write_shallow};
+pub use storage::{Garbage, LooseObject, PackItem, PackOptions, name_hash};
 pub use walk::{
     Deepen, INFINITE_DEPTH, Reachable, ShallowCut, commits_newest_first, existing, peel,
     reachable_objects, real_parents, shallow_cut,

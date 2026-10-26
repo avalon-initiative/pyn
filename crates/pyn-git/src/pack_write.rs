@@ -66,7 +66,15 @@ pub(crate) fn build_idx(
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub enum PackEntry<'a> {
-    Whole { kind: Kind, data: &'a [u8] },
+    Whole {
+        kind: Kind,
+        data: &'a [u8],
+    },
+    /// A delta against the entry at `base_offset`, which must already be in the pack.
+    OfsDelta {
+        base_offset: u64,
+        delta: &'a [u8],
+    },
 }
 
 struct HashingWriter<W> {
@@ -98,6 +106,16 @@ fn entry_header(type_bits: u8, size: u64) -> Vec<u8> {
         rest >>= 7;
     }
     out.push(byte);
+    out
+}
+
+fn ofs_distance(mut distance: u64) -> Vec<u8> {
+    let mut out = vec![(distance & 0x7f) as u8];
+    while distance >> 7 != 0 {
+        distance = (distance >> 7) - 1;
+        out.push(0x80 | (distance & 0x7f) as u8);
+    }
+    out.reverse();
     out
 }
 
@@ -153,18 +171,29 @@ impl<W: Write> PackWriter<W> {
                 format!("{id:?} in a different format"),
             ));
         }
-        let PackEntry::Whole { kind, data } = entry;
-        let type_bits = match kind {
-            Kind::Commit => 1,
-            Kind::Tree => 2,
-            Kind::Blob => 3,
-            Kind::Tag => 4,
+        let offset = self.out.written;
+        let (mut bytes, data) = match entry {
+            PackEntry::Whole { kind, data } => {
+                let type_bits = match kind {
+                    Kind::Commit => 1,
+                    Kind::Tree => 2,
+                    Kind::Blob => 3,
+                    Kind::Tag => 4,
+                };
+                (entry_header(type_bits, data.len() as u64), data)
+            }
+            PackEntry::OfsDelta { base_offset, delta } => {
+                if base_offset >= offset {
+                    return Err(invalid("pack", "delta base is not earlier in the pack"));
+                }
+                let mut head = entry_header(6, delta.len() as u64);
+                head.extend(ofs_distance(offset - base_offset));
+                (head, delta)
+            }
         };
-        let mut bytes = entry_header(type_bits, data.len() as u64);
-        let mut z = ZlibEncoder::new(bytes, Compression::default());
+        let mut z = ZlibEncoder::new(std::mem::take(&mut bytes), Compression::default());
         z.write_all(data).map_err(write_err)?;
         bytes = z.finish().map_err(write_err)?;
-        let offset = self.out.written;
         self.out.put(&bytes)?;
         self.entries.push(PackIndexEntry {
             id,
@@ -224,6 +253,9 @@ mod tests {
         assert_eq!(entry_header(3, 5), [0x35]);
         assert_eq!(entry_header(3, 16), [0xb0, 0x01]);
         assert_eq!(entry_header(1, 0x1234), [0x94, 0xa3, 0x02]);
+        assert_eq!(ofs_distance(5), [5]);
+        assert_eq!(ofs_distance(128), [0x80, 0x00]);
+        assert_eq!(ofs_distance(300), [0x81, 0x2c]);
     }
 
     #[test]
