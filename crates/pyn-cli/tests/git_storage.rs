@@ -1131,3 +1131,40 @@ fn commit_and_fetch_run_auto_gc() {
     assert!(!f.packs().is_empty(), "auto gc did not pack");
     f.assert_git_ok();
 }
+
+#[test]
+fn maintenance_works_on_a_bare_repository() {
+    let f = build("sha1");
+    leftovers(&f);
+    let bare = f.root.join("bare.git");
+    let status = Command::new("git")
+        .args(["clone", "-q", "--bare"])
+        .arg(&f.repo)
+        .arg(&bare)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let b = Fx {
+        _tmp: tempdir().unwrap(),
+        root: f.root.clone(),
+        repo: bare.clone(),
+        format: "sha1",
+        tick: Cell::new(0),
+    };
+    for args in [&["count-objects", "-v"][..], &["fsck"]] {
+        b.same_sorted(args);
+    }
+    for args in [
+        &["repack", "-a", "-d"][..],
+        &["pack-refs", "--all"],
+        &["gc"],
+        &["prune"],
+    ] {
+        let got = b.pyn(args);
+        assert_eq!(got.code, 0, "{args:?}: {}", got.err);
+    }
+    let full = b.oracle(&["fsck", "--full", "--strict"]);
+    assert_eq!(full.code, 0, "{}{}", full.out, full.err);
+    assert!(bare.join("packed-refs").exists());
+}
