@@ -52,10 +52,6 @@ fn local_ref(branch: &str) -> String {
     format!("refs/heads/{branch}")
 }
 
-fn tracking_ref(branch: &str) -> String {
-    format!("refs/remotes/origin/{branch}")
-}
-
 fn clean(text: &str) -> Vec<u8> {
     text.chars()
         .filter(|c| !matches!(c, '<' | '>' | '\n' | '\0'))
@@ -88,8 +84,10 @@ impl LocalStore {
         Ok(self.repo().refs().resolve(&local_ref(branch))?)
     }
 
+    /// The tip of the server branch the local branch follows as of the last fetch; for a branch that follows none, the
+    /// newest commit of it the server has.
     pub(crate) fn published(&self, branch: &str) -> Result<Option<ObjectId>> {
-        Ok(self.repo().refs().resolve(&tracking_ref(branch))?)
+        self.published_or_base(branch)
     }
 
     /// Points the local branch at `to`, if it still is at `from`.

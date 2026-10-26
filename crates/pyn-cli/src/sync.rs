@@ -346,10 +346,11 @@ pub fn status(
     if view.format != Format::Table {
         let line = view.branch.then(|| {
             let name = crate::branch::name(Some(ws));
-            match (LocalStore::open(ws), unpublished.ahead) {
-                (None, _) => name,
-                (Some(_), 0) => format!("{name}...origin/{name}"),
-                (Some(_), n) => format!("{name}...origin/{name} [ahead {n}]"),
+            let up = LocalStore::open(ws).map(|s| s.upstream(&name).ok().flatten());
+            match (up, unpublished.ahead) {
+                (None, _) | (Some(None), _) => name,
+                (Some(Some(up)), 0) => format!("{name}...origin/{up}"),
+                (Some(Some(up)), n) => format!("{name}...origin/{up} [ahead {n}]"),
             }
         });
         let prefix = ws.repo_prefix(view.cwd, ".")?;

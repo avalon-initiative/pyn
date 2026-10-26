@@ -102,7 +102,26 @@ pub struct PushArgs {
     refspecs: Vec<String>,
 }
 
+/// What a push to a pyn server can say.
+#[derive(Debug, Default)]
+pub struct ServerPush {
+    pub set_upstream: bool,
+    pub delete: bool,
+    pub repository: Option<String>,
+    pub refspecs: Vec<String>,
+}
+
 impl PushArgs {
+    /// Takes out the options a pyn server's push understands, leaving the rest for the bare-command check.
+    pub fn take_server(&mut self) -> ServerPush {
+        ServerPush {
+            set_upstream: std::mem::take(&mut self.set_upstream),
+            delete: std::mem::take(&mut self.delete),
+            repository: self.repository.take(),
+            refspecs: std::mem::take(&mut self.refspecs),
+        }
+    }
+
     fn refuse_unsupported(&self) {
         let given = [
             ("--mirror", self.mirror, "mirroring is not built"),

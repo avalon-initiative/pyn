@@ -259,6 +259,13 @@ impl Env {
         String::from_utf8_lossy(&out.stderr).into_owned()
     }
 
+    /// Creates the server branch `name` and switches the store workspace `ws` to a local branch following it.
+    pub fn server_branch(&self, ws: &Path, user: &str, name: &str) {
+        self.ok(&self.dir("seed"), user, &["branch", name]);
+        self.ok(ws, user, &["fetch"]);
+        self.ok(ws, user, &["switch", name]);
+    }
+
     /// Checks `text` in as `path` from outside any workspace.
     pub fn seed(&self, user: &str, path: &str, text: &str, base: Option<u64>) {
         let dir = self.dir("seed");

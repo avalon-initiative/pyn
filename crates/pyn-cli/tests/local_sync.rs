@@ -383,9 +383,7 @@ fn a_valid_policy_commit_is_pushed_and_then_enforced() {
 fn a_push_with_a_policy_commit_prints_the_versions_it_strands() {
     let (env, ws) = seeded();
     let other = clone_with(&env, "other", &["--local-store"]);
-    env.ok(&other, "bob", &["branch", "feature"]);
-    env.ok(&other, "bob", &["switch", "feature"]);
-    env.ok(&other, "bob", &["update"]);
+    env.server_branch(&other, "bob", "feature");
     commit_local(
         &env,
         &other,
@@ -1356,9 +1354,7 @@ fn a_rebase_can_skip_the_conflicting_commit_or_be_aborted() {
 fn identical_pair(env: &Env, names: [&str; 2]) -> Option<[PathBuf; 2]> {
     let ws = names.map(|n| clone_with(env, n, &["--local-store"]));
     for (w, branch) in ws.iter().zip(["one", "two"]) {
-        env.ok(w, "alice", &["branch", branch]);
-        env.ok(w, "alice", &["switch", branch]);
-        env.ok(w, "alice", &["update"]);
+        env.server_branch(w, "alice", branch);
     }
     let into_second = u64::from(
         std::time::SystemTime::now()

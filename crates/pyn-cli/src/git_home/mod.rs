@@ -117,6 +117,7 @@ pub use merge_diff::MergeArgs;
 pub use name_rev::NameRevArgs;
 pub use pull::PullArgs;
 pub use push::PushArgs;
+pub use push::ServerPush;
 pub use rebase::RebaseArgs;
 pub use reflog::ReflogArgs;
 pub use remote::{RemoteArgs, on_server as remote_on_server};

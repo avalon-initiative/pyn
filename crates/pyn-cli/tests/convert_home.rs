@@ -55,7 +55,7 @@ fn fixture() -> (Env, PathBuf) {
     env.seed("alice", "Source/a.cpp", "one\ntwo\n", Some(1));
     env.seed("alice", "Source/b.cpp", "bee\n", None);
     let ws = clone(&env, "ws");
-    env.ok(&ws, "alice", &["switch", "-c", "feature"]);
+    env.server_branch(&ws, "alice", "feature");
     let binary: Vec<u8> = (0..=255u8).chain([0, 0, 255, 10, 13]).collect();
     commit(&env, &ws, "assets/blob.bin", &binary, "binary on feature");
     commit(

@@ -35,13 +35,44 @@ pub fn name(ws: Option<&Workspace>) -> String {
     current(ws).unwrap_or_else(|| DEFAULT_BRANCH.to_string())
 }
 
-fn set_current(ws: &Workspace, branch: &str) -> Result<()> {
+/// The server branch the workspace's branch follows: with the local store its upstream, if it has one.
+pub fn server_branch(ws: Option<&Workspace>) -> Option<String> {
+    match ws.and_then(LocalStore::open) {
+        Some(store) => store.upstream(&name(ws)).ok().flatten(),
+        None => Some(name(ws)),
+    }
+}
+
+/// The branch a request to the server is about: the workspace's, or the upstream of a local branch.
+pub fn api_branch(ws: Option<&Workspace>) -> Option<String> {
+    match ws.and_then(LocalStore::open) {
+        Some(store) => store.upstream(&name(ws)).ok().flatten(),
+        None => current(ws),
+    }
+}
+
+pub(crate) fn set_current(ws: &Workspace, branch: &str) -> Result<()> {
     let path = state_path(ws);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
     std::fs::write(&path, format!("{branch}\n"))
         .with_context(|| format!("writing {}", path.display()))
+}
+
+/// Refuses a command that reads or writes the server's branch when the workspace is on a local-only branch.
+pub fn require_published(ws: &Workspace, what: &str) -> Result<()> {
+    let here = name(Some(ws));
+    if let Some(store) = LocalStore::open(ws)
+        && store.tip(&here)?.is_some()
+        && store.upstream(&here)?.is_none()
+    {
+        bail!(
+            "branch '{here}' is not on the server, so `pyn {what}` has nothing to work with; \
+             switch to a branch that follows one, or publish this branch with `pyn push -u origin {here}`"
+        );
+    }
+    Ok(())
 }
 
 /// Prints which branch a workspace command is about, on standard output.
@@ -170,7 +201,7 @@ fn branch_route(api: &Api, name: &str) -> Result<String> {
 }
 
 /// A branch by name; `None` when the server has no such branch.
-fn find(api: &Api, name: &str) -> Result<Option<api::Branch>> {
+pub(crate) fn find(api: &Api, name: &str) -> Result<Option<api::Branch>> {
     match api.send(api.get(&branch_route(api, name)?)) {
         Ok(resp) => Ok(Some(resp.json()?)),
         Err(e) => match e.downcast_ref::<crate::client::ApiError>() {
@@ -219,6 +250,11 @@ pub fn branch_command(
     args: BranchArgs,
 ) -> Result<()> {
     let api = backend.pyn_server("branch")?;
+    if let Some(w) = ws
+        && let Some(store) = LocalStore::open(w)
+    {
+        return crate::local_switch::branch_command(&store, w, args);
+    }
     let BranchArgs {
         names,
         delete,
@@ -424,6 +460,23 @@ pub fn switch_command(
         );
     }
     let ws = ws.context("`pyn switch` works inside a workspace; run `pyn clone` first")?;
+    if let Some(store) = LocalStore::open(ws) {
+        use crate::local_switch::{create_and_go, find_target, go as go_local};
+        return match (args.create, args.start) {
+            (Some(new), start) => {
+                create_and_go(backend, ws, &store, (&new, start.as_deref()), args.force)
+            }
+            (None, Some(target)) => {
+                let Some(found) = find_target(backend, api, ws, &store, &target)? else {
+                    bail!(
+                        "invalid reference: {target}; `pyn switch` takes a branch (see `pyn branch`)"
+                    );
+                };
+                go_local(backend, ws, &store, (&target, &found), (args.force, false))
+            }
+            (None, None) => bail!("missing branch name; see `pyn branch`"),
+        };
+    }
     match (args.create, args.start) {
         (Some(new), start) => {
             let made = create(backend, api, Some(ws), &new, start.as_deref())?;
@@ -490,9 +543,14 @@ pub fn checkout_command(
         };
         return restore_paths(backend, ws, cwd, source, &paths, yes, rp);
     }
+    let store = LocalStore::open(ws);
     if let Some(new) = new {
         if before.len() > 1 {
             bail!("`pyn checkout -b <name>` takes at most one start point");
+        }
+        if let Some(store) = &store {
+            let start = before.first().map(String::as_str);
+            return crate::local_switch::create_and_go(backend, ws, store, (&new, start), force);
         }
         let made = create(
             backend,
@@ -503,9 +561,27 @@ pub fn checkout_command(
         )?;
         return go(backend, api, ws, &made.name, force);
     }
+    let found = match (&store, before.as_slice()) {
+        (Some(store), [target]) => {
+            crate::local_switch::find_target(backend, api, ws, store, target)?
+        }
+        _ => None,
+    };
     match before.as_slice() {
         [] => bail!("missing branch name; see `pyn branch`"),
-        [target] if find(api, target)?.is_some() => go(backend, api, ws, target, force),
+        [target] if found.is_some() => {
+            let (store, found) = (store.as_ref().expect("found needs a store"), found.as_ref());
+            crate::local_switch::go(
+                backend,
+                ws,
+                store,
+                (target, found.expect("checked")),
+                (force, false),
+            )
+        }
+        [target] if store.is_none() && find(api, target)?.is_some() => {
+            go(backend, api, ws, target, force)
+        }
         [target] if Path::new(target).exists() || ws.root.join(target).exists() => {
             restore_paths(backend, ws, cwd, None, &before, yes, rp)
         }
@@ -522,16 +598,16 @@ pub fn checkout_command(
 }
 
 /// What each path needs, and the paths whose local changes are in the way with why.
-type Plan = (BTreeMap<String, Step>, Vec<(String, &'static str)>);
+pub(crate) type Plan = (BTreeMap<String, Step>, Vec<(String, &'static str)>);
 
 /// What switching does to one path.
-enum Step {
+pub(crate) enum Step {
     Fetch(api::SnapshotEntry),
     Adopt(api::SnapshotEntry),
     Remove,
 }
 
-fn state_of(entry: &api::SnapshotEntry) -> FileState {
+pub(crate) fn state_of(entry: &api::SnapshotEntry) -> FileState {
     FileState {
         revision: entry.revision,
         hash: entry.content.clone(),
@@ -548,7 +624,7 @@ fn same_content(known: &FileState, want: &api::SnapshotEntry) -> bool {
 }
 
 /// What each path needs for the workspace to match `snapshot`, and the paths whose local changes are in the way.
-fn plan(
+pub(crate) fn plan(
     ws: &Workspace,
     state: &BTreeMap<String, FileState>,
     index: &Index,
@@ -617,7 +693,7 @@ fn plan(
     Ok((steps, conflicts))
 }
 
-fn remove_empty_parents(ws: &Workspace, path: &str) {
+pub(crate) fn remove_empty_parents(ws: &Workspace, path: &str) {
     let mut dir = ws.abs(path);
     while dir.pop() && dir != ws.root && dir.starts_with(&ws.root) {
         if std::fs::remove_dir(&dir).is_err() {
@@ -630,16 +706,6 @@ fn remove_empty_parents(ws: &Workspace, path: &str) {
 fn go(backend: &dyn Backend, api: &Api, ws: &Workspace, target: &str, force: bool) -> Result<()> {
     crate::merging::refuse_during_merge(ws, "switch")?;
     let already = name(Some(ws)) == target;
-    if !already
-        && let Some(store) = LocalStore::open(ws)
-        && store.unpublished(&name(Some(ws)))?.ahead > 0
-    {
-        bail!(
-            "branch '{}' has local commits that are not yet published to the server; \
-             switching away would leave the workspace without them, so nothing was changed",
-            name(Some(ws))
-        );
-    }
     let found = find(api, target)?.with_context(|| format!("branch '{target}' not found"))?;
     let (_, snap) = match &found.commit {
         Some(head) => backend.snapshot(Some(head))?,
@@ -676,7 +742,7 @@ fn go(backend: &dyn Backend, api: &Api, ws: &Workspace, target: &str, force: boo
 
 /// Staged changes to files both branches share stay staged, on the new branch's revision; the rest are dropped, which only
 /// happens when the switch is forced.
-fn carry_staged(index: &mut Index, steps: &BTreeMap<String, Step>) {
+pub(crate) fn carry_staged(index: &mut Index, steps: &BTreeMap<String, Step>) {
     index.entries.retain(|path, entry| match steps.get(path) {
         Some(Step::Adopt(w)) => {
             entry.base_revision = Some(w.revision);
@@ -717,7 +783,7 @@ fn apply(
     Ok(())
 }
 
-fn file_entry(w: &api::SnapshotEntry, locks: &[api::Lock]) -> api::FileEntry {
+pub(crate) fn file_entry(w: &api::SnapshotEntry, locks: &[api::Lock]) -> api::FileEntry {
     api::FileEntry {
         path: w.path.clone(),
         mode: w.mode,

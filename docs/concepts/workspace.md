@@ -267,13 +267,15 @@ store/
   HEAD                         symbolic ref to refs/heads/<branch>
   config                       repository format (SHA-256, bare)
   objects/                     loose objects: commits, trees, and the blobs described below
-  refs/remotes/origin/<branch> the server's tip of the branch as of the last update
-  refs/heads/<branch>          the local branch; moved to the server's tip while it has no local commits
+  config                       branch.<name>.remote and .merge: the server branch a local branch follows
+  refs/remotes/origin/<branch> the server's tip of each branch as of the last fetch or update
+  refs/heads/<branch>          the local branches, as in git; the one the workspace is on is moved to the server's tip
+                               while it has no local commits
 ```
 
 What it holds:
 
-- **Commits and trees for all history.** Every commit reachable from the branch, with its trees, under the id the server
+- **Commits and trees for all history.** Every commit reachable from the branches, with its trees, under the id the server
   gives it. A commit and its trees are rebuilt from what the API already returns and checked against the server's ids; a
   mismatch fails the update instead of storing something different from the server.
 - **Blobs only for what is checked out and for local work.** After a clone or an update the store holds the blobs of the
@@ -308,9 +310,10 @@ With the store on, `add`, `commit`, `status` and `branch` work against the store
 - `pyn commit <path>` on a file that has not changed since its last revision says `nothing to commit` (exit `1`).
 - `pyn status` shows `local` as the revision of a file only a local commit has added.
 - A file stays writable after a local commit while you still hold its lock; it goes read-only when you unlock.
-- `pyn branch -v` shows the local tip, and how many commits are unpublished, for the branch the workspace is on.
-  Creating, renaming and deleting branches still act on the server.
-- `pyn switch` and `pyn checkout <branch>` refuse to leave a branch that has unpublished local commits.
+- `pyn branch -v` shows each local branch's tip, and how many commits a branch that follows a server branch has not
+  published.
+- Branches are local, as in git ([local branches](#local-branches)); `pyn switch` and `pyn checkout <branch>` leave a branch
+  with unpublished commits without touching them.
 - `pyn reset [--soft|--mixed|--hard] [<commit>]` moves the local branch back to `HEAD~N`, a hash on its unpublished chain, or
   the last published commit (never further), which is the way out of a commit the server will not accept. `--soft` keeps the
   dropped changes staged, `--mixed` (the default) keeps them in the files unstaged and clears the staging area, `--hard` puts
@@ -321,7 +324,32 @@ With the store on, `add`, `commit`, `status` and `branch` work against the store
   asks for works after another person pushed a newer revision of it; `pyn pull` then keeps your version.
 
 Unchanged by the store: `pyn commit <path> --file ... [--base ...]` and `pyn merge` still publish straight to the
-server, and the server stays the only authority over commits, locks and policy. Only the current branch is stored.
+server, and the server stays the only authority over commits, locks and policy.
+
+### Local branches
+
+With the store on, the local branches (`refs/heads`) and the server's (`refs/remotes/origin`) are independent, as in git:
+some branches exist only here, some only on the server, and the remote-tracking refs move only on `fetch`, `pull` and
+`push` (and `update`, for the branch the workspace is on).
+
+- `pyn fetch` stores every branch of the server and creates no local branch. `pyn branch -r` and `-a` list them.
+- `pyn branch <name> [<start>]`, `-d`, `-D` and `-m` act on local branches only, and never on the server. A start point is
+  a branch, `origin/<branch>`, a tag, a hash or `HEAD~N`; starting from a remote-tracking branch makes the new one follow it.
+  `-d` refuses a branch that is in neither its upstream nor the current branch. `-u origin/<branch>` and `--unset-upstream`
+  change what a branch follows (`branch.<name>.remote` and `.merge` in the store's config, as git writes them).
+- `pyn switch <name>` and `pyn checkout <name>` for a name that is not a local branch but is a branch of the server make a
+  local branch that follows it (fetching it first when the store does not have it yet), as git does. They work offline for
+  anything in the store; a file whose content the store lacks is read from the server by id.
+- A switch carries the work tree and the staged changes over, and stops, naming the paths, only where a local change
+  would be overwritten; `--force` discards them. A branch with unpublished commits can be left and comes back as it was.
+- `pyn push` pushes the current branch to the server branch it follows and refuses a branch with no upstream, as git's
+  `push.default=simple` does; `pyn push [-u] origin <local>[:<remote>]` names the branches. `pyn push --delete <branch>` and
+  `pyn push origin :<branch>` delete a branch on the server (whatever its state) and its remote-tracking ref.
+  Publishing a branch the server does not have is not available yet; the push says so and changes nothing.
+- A branch the server does not have (a local-only branch) has no server counterpart, so `pyn update` and `pyn commit <path>`
+  refuse on it, `pyn pull` needs an upstream, and the server's file listing, modes and locks are those of the default branch.
+  `pyn merge <branch>` is still the server's merge of two server branches.
+- In a workspace cloned with `--no-local-store` the branch commands, and the web app, act on the server as before.
 
 ### Fetch, pull and push (provisional)
 

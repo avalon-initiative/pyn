@@ -269,7 +269,7 @@ fn start(
     let Some(tip) = store.tip(&branch)? else {
         bail!("branch '{branch}' has no local commits");
     };
-    let Some(published) = store.published(&branch)? else {
+    let Some(published) = store.published_or_base(&branch)? else {
         bail!("branch '{branch}' has not been fetched yet; run `pyn fetch` first");
     };
     let names = Named {

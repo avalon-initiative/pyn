@@ -233,10 +233,10 @@ In a workspace with local commits, the default ([workspace](workspace.md#the-loc
 (decision #300); in a workspace cloned with `--no-local-store` they are unchanged (`fetch` and `pull` run `pyn update`, `push`
 says there is nothing to push).
 
-- `pyn fetch` sends the remote-tracking tip as the only have and stores the commits and trees of each page. Every commit and
+- `pyn fetch` sends the remote-tracking tips as the haves and stores the commits and trees of each page, for every branch of the server. Every commit and
   tree body is hashed and must equal the id it came with, and a commit's tree and parents must already be stored: on any
   mismatch the whole answer is refused (`... does not match its content`) and the remote-tracking ref does not move. It then
-  moves `refs/remotes/origin/<branch>`; the local branch and the files are left alone. Output is git's:
+  moves `refs/remotes/origin/<branch>` of each branch; the local branches and the files are left alone. Output is git's:
   `From <server>/<repo>` and `   <old>..<new>  main -> origin/main`, nothing when there is nothing new. Pointers are not kept
   yet. A blob the store lacks is read on demand by id (`GET .../objects/{id}`), checked against the id and stored.
 - `pyn pull` is `fetch` and then: nothing when the local branch already holds the fetched tip (`Already up to date.`); a

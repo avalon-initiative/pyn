@@ -22,12 +22,14 @@ mod git_home;
 mod http_transport;
 mod init_pyn;
 mod limits;
+mod local_branches;
 mod local_commit;
 mod local_merge;
 mod local_pick;
 mod local_rebase;
 mod local_reset;
 mod local_store;
+mod local_switch;
 mod local_sync;
 mod local_tags;
 mod local_view;
@@ -1525,7 +1527,7 @@ fn run(cli: Cli) -> Result<()> {
         token,
         user: resolve(cli.user, mine.user.as_ref(), yours.user.as_ref(), None),
         repo,
-        branch: branch::current(ws.as_ref()),
+        branch: branch::api_branch(ws.as_ref()),
         on_git,
     })
     .with_store(store);
@@ -1549,6 +1551,16 @@ fn run(cli: Cli) -> Result<()> {
             "you have not concluded your merge, so paths cannot be committed alone; \
              stage what you resolved with `pyn add` and run `pyn commit`, or give the merge up with `pyn merge --abort`"
         );
+    }
+
+    if let Some(w) = &ws {
+        match &cli.command {
+            Command::Update { .. } => branch::require_published(w, "update")?,
+            Command::Commit { paths, .. } if !paths.is_empty() => {
+                branch::require_published(w, "commit <path>")?
+            }
+            _ => {}
+        }
     }
 
     match cli.command {
@@ -1904,10 +1916,20 @@ fn run(cli: Cli) -> Result<()> {
                 update_as_remote(&backend, w, ws.as_ref())?;
             }
         }
-        Command::Push(args) => {
+        Command::Push(mut args) => {
+            let request = args.take_server();
             require_bare(&args, "push");
             match ws.as_ref().filter(|w| w.settings().local_store_on()) {
-                Some(w) => local_sync::push(&backend, w)?,
+                Some(w) => local_sync::push(&backend, w, request)?,
+                None if request.delete
+                    || request.set_upstream
+                    || request.repository.is_some()
+                    || !request.refspecs.is_empty() =>
+                {
+                    usage_error(
+                        "`pyn push` takes no arguments on a pyn server without the local store",
+                    )
+                }
                 None => println!(
                     "Nothing to push: commits go straight to the server, so `pyn commit` has already published them."
                 ),

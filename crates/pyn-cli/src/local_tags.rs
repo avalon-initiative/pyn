@@ -30,7 +30,11 @@ fn open(ws: Option<&Workspace>) -> Result<LocalStore> {
 }
 
 /// `HEAD` means the workspace branch's local tip here, not whatever the store's own HEAD names.
-fn resolve_target(store: &LocalStore, branch: &str, spec: &str) -> Result<pyn_object::ObjectId> {
+pub(crate) fn resolve_target(
+    store: &LocalStore,
+    branch: &str,
+    spec: &str,
+) -> Result<pyn_object::ObjectId> {
     let split = spec.find(['~', '^']).unwrap_or(spec.len());
     let spec = match &spec[..split] {
         "HEAD" | "@" => format!("refs/heads/{branch}{}", &spec[split..]),

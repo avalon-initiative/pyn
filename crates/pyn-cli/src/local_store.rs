@@ -169,9 +169,11 @@ impl LocalStore {
         if !ws.settings().local_store_on() || !Self::path(ws).join("HEAD").is_file() {
             return None;
         }
-        Repo::open(&Self::path(ws), None, None)
+        let store = Repo::open(&Self::path(ws), None, None)
             .ok()
-            .map(|repo| Self { repo })
+            .map(|repo| Self { repo })?;
+        let _ = store.adopt_upstreams();
+        Some(store)
     }
 
     /// The store, created empty on the branch if the workspace has none yet.
@@ -186,9 +188,11 @@ impl LocalStore {
         let path = Self::path(ws);
         pyn_git::init(&path, true, ALGORITHM, branch)
             .with_context(|| format!("creating {}", path.display()))?;
-        Ok(Self {
+        let store = Self {
             repo: Repo::open(&path, None, None)?,
-        })
+        };
+        store.adopt_upstreams()?;
+        Ok(store)
     }
 
     pub(crate) fn repo(&self) -> &Repo {
@@ -200,14 +204,14 @@ impl LocalStore {
     }
 
     /// Stores every commit of the branch the store lacks, with its trees, and moves the branch's refs to the tip.
-    pub fn sync_history<R: Remote + ?Sized>(&self, remote: &R, branch: &str) -> Result<()> {
+    pub fn sync_history<R: Remote + ?Sized>(&self, remote: &R, branch: (&str, &str)) -> Result<()> {
         self.sync_bounded(remote, branch, (MAX_PAGES, MAX_COMMITS))
     }
 
     fn sync_bounded<R: Remote + ?Sized>(
         &self,
         remote: &R,
-        branch: &str,
+        branch: (&str, &str),
         (max_pages, max_commits): (usize, usize),
     ) -> Result<()> {
         let mut pending: HashMap<ObjectId, api::Commit> = HashMap::new();
@@ -260,17 +264,21 @@ impl LocalStore {
         self.move_refs(branch, &tip)
     }
 
-    fn move_refs(&self, branch: &str, tip: &ObjectId) -> Result<()> {
+    /// Moves the server branch's tracking ref and, while it has no local commits, the local branch following it.
+    fn move_refs(&self, (server, local): (&str, &str), tip: &ObjectId) -> Result<()> {
         let refs = self.repo.refs();
-        let tracking = format!("refs/remotes/{REMOTE}/{branch}");
-        let local = format!("refs/heads/{branch}");
+        let tracking = format!("refs/remotes/{REMOTE}/{server}");
+        let local_ref = format!("refs/heads/{local}");
         let previous = refs.resolve(&tracking)?;
         refs.update(&tracking, tip)?;
-        let current = refs.resolve(&local)?;
-        if current.is_none() || current == previous {
-            refs.update(&local, tip)?;
+        let current = refs.resolve(&local_ref)?;
+        if current.is_none() {
+            refs.update(&local_ref, tip)?;
+            self.set_upstream(local, Some(server))?;
+        } else if current == previous && self.upstream(local)?.as_deref() == Some(server) {
+            refs.update(&local_ref, tip)?;
         }
-        refs.set_symbolic("HEAD", &local)?;
+        refs.set_symbolic("HEAD", &local_ref)?;
         Ok(())
     }
 
@@ -420,7 +428,10 @@ pub fn refresh<R: Remote + ?Sized>(remote: &R, ws: &Workspace) -> Result<()> {
     }
     let branch = branch::name(Some(ws));
     let store = LocalStore::open_or_create(ws, &branch)?;
-    store.sync_history(remote, &branch)?;
+    let fresh = store.tip(&branch)?.is_none().then(|| branch.clone());
+    if let Some(server) = branch::server_branch(Some(ws)).or(fresh) {
+        store.sync_history(remote, (&server, &branch))?;
+    }
     store.store_checked_out(ws, &ws.load_state()?)
 }
 
@@ -602,13 +613,13 @@ mod tests {
         let store = LocalStore::open_or_create(&ws, "main").unwrap();
         let remote = Endless(std::cell::Cell::new(0));
         let err = store
-            .sync_bounded(&remote, "main", (3, 1000))
+            .sync_bounded(&remote, ("main", "main"), (3, 1000))
             .unwrap_err()
             .to_string();
         assert!(err.contains("refusing to store"), "{err}");
         assert_eq!(remote.0.get(), 3 * PAGE as u64);
         let err = store
-            .sync_bounded(&Endless(Default::default()), "main", (1000, 250))
+            .sync_bounded(&Endless(Default::default()), ("main", "main"), (1000, 250))
             .unwrap_err()
             .to_string();
         assert!(err.contains("more than 250 commits"), "{err}");

@@ -823,8 +823,12 @@ fn the_branch_argument_names_the_current_branch_or_switches_first() {
     let out = env.ok(&ws, "alice", &["rebase", "origin/main", "main"]);
     assert!(out.contains("up to date"), "{out}");
     env.ok(&ws, "alice", &["branch", "topic"]);
-    let err = env.fails(&ws, "alice", &["rebase", "origin/main", "topic"]);
-    assert!(err.contains("not yet published"), "{err}");
+    let out = env.ok(&ws, "alice", &["rebase", "origin/main", "topic"]);
+    assert!(out.contains("up to date"), "{out}");
+    assert_eq!(
+        env.ok(&ws, "alice", &["branch", "--show-current"]),
+        "topic\n"
+    );
     assert_eq!(subjects(&ws), "three\ntwo\none\n");
 }
 

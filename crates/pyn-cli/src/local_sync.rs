@@ -15,12 +15,14 @@ use pyn_proto as api;
 use crate::backend::Backend;
 use crate::branch;
 use crate::client::ApiError;
+use crate::git_home::ServerPush;
 use crate::local_commit::signature;
 use crate::local_merge::{self, Control};
 use crate::local_store::{ALGORITHM, Files, LocalStore, build_trees, parse_id};
 use crate::snapshot::{self, short};
 use crate::staging::Index;
 use crate::stranded;
+use crate::transport::Method;
 use crate::workspace::{Workspace, hash_of, set_read_only};
 use crate::{localfile, merging, sync};
 
@@ -108,7 +110,7 @@ impl LocalStore {
         self.reach(from.into_iter().collect())
     }
 
-    fn reach(&self, from: Vec<ObjectId>) -> Result<HashSet<ObjectId>> {
+    pub(crate) fn reach(&self, from: Vec<ObjectId>) -> Result<HashSet<ObjectId>> {
         let mut known = HashSet::new();
         let mut queue = from;
         while let Some(id) = queue.pop() {
@@ -129,7 +131,16 @@ impl LocalStore {
     /// The first-parent chain of local commits the server lacks, `None` if none; a merge may only merge in commits
     /// the server has.
     pub fn outgoing(&self, branch: &str) -> Result<Option<Outgoing>> {
-        let (Some(tip), published) = (self.tip(branch)?, self.published(branch)?) else {
+        self.outgoing_to(self.tip(branch)?, self.published(branch)?)
+    }
+
+    /// Like `outgoing`, for a tip and the server's tip of the branch it goes to.
+    pub fn outgoing_to(
+        &self,
+        tip: Option<ObjectId>,
+        published: Option<ObjectId>,
+    ) -> Result<Option<Outgoing>> {
+        let Some(tip) = tip else {
             return Ok(None);
         };
         let known = self.ancestors(published)?;
@@ -189,20 +200,31 @@ impl LocalStore {
         Ok(())
     }
 
-    /// Brings the server's commits and trees for `branch` into the store and moves the remote-tracking ref.
-    pub fn fetch(&self, remote: &dyn Backend, branch: &str) -> Result<Fetched> {
-        let previous = self.published(branch)?;
-        let haves: Vec<String> = previous.iter().map(ObjectId::to_hex).collect();
-        let (mut cursor, mut head) = (None, None);
+    /// Brings the server's commits and trees for `branches` (every branch if empty) into the store and moves their
+    /// remote-tracking refs; the `current` local branch is created from its server branch if the store has none.
+    pub fn fetch(
+        &self,
+        remote: &dyn Backend,
+        branches: &[String],
+        current: &str,
+    ) -> Result<Vec<(String, Fetched)>> {
+        let haves: Vec<String> = self
+            .repo()
+            .refs()
+            .list("refs/remotes/origin/")?
+            .iter()
+            .map(|(_, id)| id.to_hex())
+            .collect();
+        let (mut cursor, mut heads) = (None, std::collections::BTreeMap::new());
         loop {
             let page = remote.fetch_page(&api::FetchRequest {
-                branches: vec![branch.to_string()],
+                branches: branches.to_vec(),
                 haves: haves.clone(),
                 cursor: cursor.take(),
                 limit: None,
             })?;
-            if let Some(r) = page.refs.iter().find(|r| r.branch == branch) {
-                head = r.head.clone();
+            for r in &page.refs {
+                heads.insert(r.branch.clone(), r.head.clone());
             }
             self.store_page(&page.commits)?;
             match page.next {
@@ -210,19 +232,25 @@ impl LocalStore {
                 None => break,
             }
         }
-        let head = head.map(|h| parse_id(&h)).transpose()?;
-        if let Some(head) = &head {
-            if !self.has(head)? {
-                bail!("the server's head {head} was not among the commits it sent");
+        let refs = self.repo().refs();
+        let mut done = Vec::new();
+        for (branch, head) in heads {
+            let previous = refs.resolve(&tracking_ref(&branch))?;
+            let head = head.map(|h| parse_id(&h)).transpose()?;
+            if let Some(head) = &head {
+                if !self.has(head)? {
+                    bail!("the server's head {head} was not among the commits it sent");
+                }
+                refs.update(&tracking_ref(&branch), head)?;
+                if branch == current && refs.resolve(&local_ref(&branch))?.is_none() {
+                    refs.update(&local_ref(&branch), head)?;
+                    refs.set_symbolic("HEAD", &local_ref(&branch))?;
+                    self.set_upstream(&branch, Some(&branch))?;
+                }
             }
-            let refs = self.repo().refs();
-            refs.update(&tracking_ref(branch), head)?;
-            if refs.resolve(&local_ref(branch))?.is_none() {
-                refs.update(&local_ref(branch), head)?;
-                refs.set_symbolic("HEAD", &local_ref(branch))?;
-            }
+            done.push((branch, Fetched { previous, head }));
         }
-        Ok(Fetched { previous, head })
+        Ok(done)
     }
 
     /// The trees of `id` that `parent` does not hold at the same place, with their bodies.
@@ -598,21 +626,27 @@ fn arrow(previous: Option<ObjectId>, head: ObjectId, branch: &str) -> String {
 }
 
 /// `pyn fetch` with `local_store` on: stores what the server has that the store lacks, and touches no file.
-pub fn fetch(backend: &dyn Backend, ws: &Workspace) -> Result<Fetched> {
+pub fn fetch(backend: &dyn Backend, ws: &Workspace) -> Result<Vec<(String, Fetched)>> {
     merging::refuse_during_merge(ws, "fetch")?;
-    let branch = branch::name(Some(ws));
-    let store = LocalStore::open_or_create(ws, &branch)?;
-    let fetched = store.fetch(backend, &branch)?;
-    if let Some(head) = fetched.head
-        && fetched.previous != Some(head)
-    {
-        let api = backend.pyn_server("fetch")?;
-        println!(
-            "From {}/{}",
-            api.base,
-            api.repo.as_deref().unwrap_or_default()
-        );
-        println!("{}", arrow(fetched.previous, head, &branch));
+    let current = branch::name(Some(ws));
+    let store = LocalStore::open_or_create(ws, &current)?;
+    let fetched = store.fetch(backend, &[], &current)?;
+    let mut shown = false;
+    for (branch, f) in &fetched {
+        let Some(head) = f.head else { continue };
+        if f.previous == Some(head) {
+            continue;
+        }
+        if !shown {
+            let api = backend.pyn_server("fetch")?;
+            println!(
+                "From {}/{}",
+                api.base,
+                api.repo.as_deref().unwrap_or_default()
+            );
+            shown = true;
+        }
+        println!("{}", arrow(f.previous, head, branch));
     }
     Ok(fetched)
 }
@@ -684,6 +718,12 @@ pub fn pull(
     fetch(backend, ws)?;
     let branch = branch::name(Some(ws));
     let store = LocalStore::open_or_create(ws, &branch)?;
+    let Some(up) = store.upstream(&branch)? else {
+        bail!(
+            "There is no tracking information for the current branch.\n\
+             hint: Set it with `pyn branch --set-upstream-to=origin/<branch> {branch}`, or publish the branch with `pyn push -u origin {branch}`"
+        );
+    };
     let (Some(local), Some(theirs)) = (store.tip(&branch)?, store.published(&branch)?) else {
         return sync::update(backend, ws, &[], None);
     };
@@ -727,7 +767,7 @@ pub fn pull(
     }
     let base = bases.first().copied();
     guard_changes(&store, ws, base, theirs)?;
-    let source = format!("origin/{branch}");
+    let source = format!("origin/{up}");
     let joined = store.join_trees(backend, base, local, theirs, ("HEAD", &source))?;
     if !joined.tangled.is_empty() {
         return Err(Rejected(format!(
@@ -743,7 +783,7 @@ pub fn pull(
     } else {
         format!(" into {branch}")
     };
-    let message = format!("Merge branch '{branch}' of {url}{into}\n");
+    let message = format!("Merge branch '{up}' of {url}{into}\n");
     if !joined.conflicts.is_empty() {
         let stop = local_merge::Stop {
             orig: local,
@@ -907,14 +947,113 @@ pub fn explain_push(err: anyhow::Error, branch: &str) -> anyhow::Error {
 }
 
 /// `pyn push` with `local_store` on: uploads the blobs, then sends the local commits and trees in one request.
-pub fn push(backend: &dyn Backend, ws: &Workspace) -> Result<()> {
+pub fn push(backend: &dyn Backend, ws: &Workspace, mut req: ServerPush) -> Result<()> {
+    if req.delete
+        && req.refspecs.is_empty()
+        && let Some(only) = req.repository.take_if(|r| r != "origin")
+    {
+        req.refspecs.push(only);
+    }
     merging::refuse_during_merge(ws, "push")?;
-    let branch = branch::name(Some(ws));
     let Some(store) = LocalStore::open(ws) else {
         bail!("the local store is empty; run `pyn fetch` first");
     };
-    let published = store.published(&branch)?;
-    let Some(outgoing) = store.outgoing(&branch)? else {
+    if let Some(remote) = &req.repository
+        && remote != "origin"
+    {
+        bail!("'{remote}' does not appear to be a remote; the server is `origin`");
+    }
+    if req.delete || req.refspecs.iter().any(|r| r.starts_with(':')) {
+        return delete_remote(backend, &store, &req);
+    }
+    let current = branch::name(Some(ws));
+    let pairs: Vec<(String, String)> = if req.refspecs.is_empty() {
+        let Some(remote) = store.upstream(&current)? else {
+            if store.tip(&current)?.is_none() {
+                bail!("You are not currently on a branch with commits.");
+            }
+            bail!(
+                "The current branch {current} has no upstream branch.\n\
+                 To push the current branch and set the remote as upstream, use\n\n    pyn push --set-upstream origin {current}"
+            );
+        };
+        vec![(current.clone(), remote)]
+    } else {
+        req.refspecs
+            .iter()
+            .map(|r| {
+                if r.starts_with('+') {
+                    bail!("a forced push is not available on a pyn server");
+                }
+                let (src, dst) = r.split_once(':').unwrap_or((r, r));
+                let dst = dst.strip_prefix("refs/heads/").unwrap_or(dst);
+                let src = src.strip_prefix("refs/heads/").unwrap_or(src);
+                Ok((src.to_string(), dst.to_string()))
+            })
+            .collect::<Result<_>>()?
+    };
+    for (local, remote) in &pairs {
+        push_branch(backend, ws, &store, (local, remote))?;
+        if req.set_upstream {
+            store.set_upstream(local, Some(remote))?;
+            println!("branch '{local}' set up to track 'origin/{remote}'.");
+        }
+    }
+    Ok(())
+}
+
+/// `push --delete <branch>` and `push origin :<branch>`: removes branches from the server.
+fn delete_remote(backend: &dyn Backend, store: &LocalStore, req: &ServerPush) -> Result<()> {
+    let api = backend.pyn_server("push")?;
+    if req.refspecs.is_empty() {
+        bail!("--delete doesn't make sense without any refs");
+    }
+    let mut first = true;
+    for spec in &req.refspecs {
+        let name = spec.strip_prefix(':').unwrap_or(spec);
+        let name = name.strip_prefix("refs/heads/").unwrap_or(name);
+        if store.remote_tip(name)?.is_none() {
+            bail!("error: unable to delete '{name}': remote ref does not exist");
+        }
+        let route = api.repo_route(&format!("/branches/{name}"))?;
+        api.send(
+            api.request(Method::DELETE, &route)
+                .query(&[("force", true)]),
+        )?;
+        store
+            .repo()
+            .refs()
+            .delete(&tracking_ref(name), Expect::Any)?;
+        if first {
+            println!(
+                "To {}/{}",
+                api.base,
+                api.repo.as_deref().unwrap_or_default()
+            );
+            first = false;
+        }
+        println!(" - [deleted]         {name}");
+    }
+    Ok(())
+}
+
+/// Sends the commits of the local branch `local` that the server's `remote` lacks.
+fn push_branch(
+    backend: &dyn Backend,
+    ws: &Workspace,
+    store: &LocalStore,
+    (local, branch): (&str, &str),
+) -> Result<()> {
+    let Some(local_tip) = store.tip(local)? else {
+        bail!("src refspec {local} does not match any");
+    };
+    let published = store.remote_tip(branch)?;
+    if published.is_none() {
+        bail!(
+            "cannot publish '{local}' as '{branch}': the server has no branch of that name and a push cannot create one yet (#618)"
+        );
+    }
+    let Some(outgoing) = store.outgoing_to(Some(local_tip), published)? else {
         println!("Everything up-to-date");
         return Ok(());
     };
@@ -933,7 +1072,7 @@ pub fn push(backend: &dyn Backend, ws: &Workspace) -> Result<()> {
                 message: "the local branch does not build on the server's latest commit".into(),
             }
             .into(),
-            &branch,
+            branch,
         ));
     }
     let (blobs, commits, trees) = store.plan(&outgoing)?;
@@ -949,11 +1088,11 @@ pub fn push(backend: &dyn Backend, ws: &Workspace) -> Result<()> {
     }
     let response = backend
         .push_commits(&api::PushRequest {
-            branch: Some(branch.clone()),
+            branch: Some(branch.to_string()),
             commits: commits.iter().map(|(id, body)| encode(id, body)).collect(),
             trees: trees.iter().map(|(id, body)| encode(id, body)).collect(),
         })
-        .map_err(|e| explain_push(e, &branch))?;
+        .map_err(|e| explain_push(e, branch))?;
     let mut head = parse_id(&response.head)?;
     // A policy commit can make the server add conversion commits on top; `fetch` brings them in.
     let policy_pushed = response.revisions.iter().any(|r| r.path == ".pyn/pyn.toml");
@@ -965,7 +1104,10 @@ pub fn push(backend: &dyn Backend, ws: &Workspace) -> Result<()> {
         bail!("the server's head {head} is not the pushed commit {tip}");
     }
     head = tip;
-    store.repo().refs().update(&tracking_ref(&branch), &head)?;
+    store.repo().refs().update(&tracking_ref(branch), &head)?;
+    if local != crate::branch::name(Some(ws)) {
+        return print_pushed(backend, (published, head), (local, branch), &response);
+    }
     let mut last: Vec<&api::Revision> = Vec::new();
     for rev in &response.revisions {
         last.retain(|r| r.path != rev.path);
@@ -986,6 +1128,15 @@ pub fn push(backend: &dyn Backend, ws: &Workspace) -> Result<()> {
         }
         ws.save_state(&state)?;
     }
+    print_pushed(backend, (published, head), (local, branch), &response)
+}
+
+fn print_pushed(
+    backend: &dyn Backend,
+    (published, head): (Option<ObjectId>, ObjectId),
+    (local, branch): (&str, &str),
+    response: &api::PushResponse,
+) -> Result<()> {
     let api = backend.pyn_server("push")?;
     println!(
         "To {}/{}",
@@ -993,7 +1144,7 @@ pub fn push(backend: &dyn Backend, ws: &Workspace) -> Result<()> {
         api.repo.as_deref().unwrap_or_default()
     );
     println!(
-        "   {}..{}  {branch} -> {branch}",
+        "   {}..{}  {local} -> {branch}",
         published.map_or_else(
             || "0".repeat(snapshot::ABBREV),
             |p| short(&p.to_hex()).to_string()

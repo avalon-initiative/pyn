@@ -267,12 +267,29 @@ fn branch_verbose_shows_the_local_tip_of_the_current_branch() {
 }
 
 #[test]
-fn switching_away_from_unpublished_commits_is_refused() {
+fn switching_with_unpublished_commits_keeps_them_on_their_branch() {
     let (env, ws) = seeded();
     env.ok(&ws, "alice", &["branch", "other"]);
     std::fs::write(ws.join("Source/a.cpp"), "two").unwrap();
     env.ok(&ws, "alice", &["add", "Source/a.cpp"]);
     env.ok(&ws, "alice", &["commit", "-m", "local work"]);
-    let err = env.fails(&ws, "alice", &["switch", "other"]);
-    assert!(err.contains("not yet published"), "{err}");
+    env.ok(&ws, "alice", &["switch", "other"]);
+    assert_eq!(
+        std::fs::read_to_string(ws.join("Source/a.cpp")).unwrap(),
+        "one"
+    );
+    assert_eq!(
+        env.ok(&ws, "alice", &["branch", "--show-current"]),
+        "other\n"
+    );
+    env.ok(&ws, "alice", &["switch", "main"]);
+    assert_eq!(
+        std::fs::read_to_string(ws.join("Source/a.cpp")).unwrap(),
+        "two"
+    );
+    let out = env.ok(&ws, "alice", &["branch", "-v"]);
+    assert!(
+        out.contains("local work (local, 1 not yet published)"),
+        "{out}"
+    );
 }

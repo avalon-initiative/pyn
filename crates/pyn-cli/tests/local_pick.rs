@@ -72,9 +72,7 @@ fn seeded() -> (Env, PathBuf) {
 /// `b.cpp`. The workspace ends on `main`, which is untouched.
 fn with_feature() -> (Env, PathBuf) {
     let (env, ws) = seeded();
-    env.ok(&ws, "alice", &["branch", "feature"]);
-    env.ok(&ws, "alice", &["switch", "feature"]);
-    env.ok(&ws, "alice", &["update"]);
+    env.server_branch(&ws, "alice", "feature");
     commit_local(&env, &ws, "Source/a.cpp", "ONE\ntwo\nthree\n", "feature a");
     commit_local(&env, &ws, "Source/c.cpp", "cee", "feature c");
     commit_local(&env, &ws, "Source/b.cpp", "bee2", "feature b");
@@ -246,9 +244,7 @@ fn skip_drops_the_stopped_commit_and_abort_puts_everything_back() {
 #[test]
 fn an_exclusive_path_both_sides_changed_is_a_conflict_that_needs_the_lock() {
     let (env, ws) = seeded();
-    env.ok(&ws, "alice", &["branch", "feature"]);
-    env.ok(&ws, "alice", &["switch", "feature"]);
-    env.ok(&ws, "alice", &["update"]);
+    env.server_branch(&ws, "alice", "feature");
     env.ok(&ws, "alice", &["lock", "Content/m.umap"]);
     commit_local(&env, &ws, "Content/m.umap", "map on feature", "feature map");
     env.ok(&ws, "alice", &["push"]);
@@ -285,9 +281,7 @@ fn an_exclusive_path_both_sides_changed_is_a_conflict_that_needs_the_lock() {
 #[test]
 fn an_exclusive_path_only_the_picked_commit_changed_is_taken() {
     let (env, ws) = seeded();
-    env.ok(&ws, "alice", &["branch", "feature"]);
-    env.ok(&ws, "alice", &["switch", "feature"]);
-    env.ok(&ws, "alice", &["update"]);
+    env.server_branch(&ws, "alice", "feature");
     env.ok(&ws, "alice", &["lock", "Content/m.umap"]);
     commit_local(&env, &ws, "Content/m.umap", "map on feature", "feature map");
     env.ok(&ws, "alice", &["push"]);

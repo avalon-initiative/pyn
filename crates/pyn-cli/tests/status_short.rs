@@ -189,7 +189,7 @@ fn a_clean_workspace_prints_nothing_and_the_branch_line_only_with_b() {
         env.ok(&ws, "alice", &["status", "--porcelain", "--branch"]),
         "## main...origin/main\n"
     );
-    env.ok(&ws, "alice", &["switch", "-c", "feature"]);
+    env.server_branch(&ws, "alice", "feature");
     assert_eq!(
         env.ok(&ws, "alice", &["status", "-s", "-b"]),
         "## feature...origin/feature\n"
@@ -303,7 +303,7 @@ fn an_unmerged_path_is_uu_and_a_both_added_path_is_aa() {
     let env = start();
     env.seed("alice", "Source/a.cpp", "1\n2\n3\n", None);
     let ws = clone(&env, &[]);
-    env.ok(&ws, "alice", &["switch", "-c", "feature"]);
+    env.server_branch(&ws, "alice", "feature");
     write(&ws, "Source/a.cpp", "1\ntheirs\n3\n");
     write(&ws, "Source/both.cpp", "theirs\n");
     env.ok(

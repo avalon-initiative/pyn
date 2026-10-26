@@ -38,7 +38,7 @@ fn branch_commit_and_merge_back_shows_in_the_log() {
     let server = Server::with_game();
     server.seed("Source/a.cpp", "a\n");
     server.seed("Source/b.cpp", "b\n");
-    let ws = clone_ws(&server, "ws", &[]);
+    let ws = clone_ws(&server, "ws", &["--no-local-store"]);
 
     server.ok(&ws, "alice", &["branch", "feature"]);
     assert_eq!(server.ok(&ws, "alice", &["branch"]), "  feature\n* main\n");
