@@ -128,6 +128,7 @@ pub fn render_api(r: &Rendering, c: &api::Commit) -> Result<String> {
         style: r.style,
         now: chrono::Utc::now().timestamp(),
         decorations: &none,
+        commit_color: None,
     };
     Ok(format!(
         "{}{}",
@@ -330,6 +331,8 @@ pub struct Context<'a> {
     pub style: DateStyle,
     pub now: i64,
     pub decorations: &'a Decorations,
+    /// The escape sequence that paints a commit id, when output is colored.
+    pub commit_color: Option<&'a str>,
 }
 
 pub(crate) fn short(id: &ObjectId) -> String {
@@ -408,12 +411,16 @@ fn merge_line(c: &Commit) -> String {
 /// One commit as a format prints it, without the separator or terminator between commits.
 pub fn render(pretty: &Pretty, ctx: &Context<'_>, id: &ObjectId, c: &Commit) -> String {
     let date = |who: &Signature| ctx.style.format(who, ctx.now);
-    let head = format!("commit {id}\n{}", merge_line(c));
+    let paint = |text: String| match ctx.commit_color {
+        Some(color) => format!("{color}{text}{}", crate::diff_color::RESET),
+        None => text,
+    };
+    let head = format!("{}\n{}", paint(format!("commit {id}")), merge_line(c));
     match pretty {
         Pretty::Oneline { abbrev } => {
             let (subject, _) = subject_and_body(&lossy(&c.message));
             let name = if *abbrev { short(id) } else { id.to_hex() };
-            format!("{name} {subject}")
+            format!("{} {subject}", paint(name))
         }
         Pretty::Short => format!(
             "{head}Author: {}\n\n{}",
@@ -441,7 +448,7 @@ pub fn render(pretty: &Pretty, ctx: &Context<'_>, id: &ObjectId, c: &Commit) -> 
             indented(&c.message, false)
         ),
         Pretty::Raw => {
-            let mut out = format!("commit {id}\ntree {}\n", c.tree);
+            let mut out = format!("{}\ntree {}\n", paint(format!("commit {id}")), c.tree);
             for p in &c.parents {
                 out.push_str(&format!("parent {p}\n"));
             }

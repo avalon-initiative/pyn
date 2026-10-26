@@ -56,7 +56,9 @@ impl RepoService {
             self.objects.clone(),
             stored.created.clone(),
         );
-        let recorded = self.record_stored(&stored.id, expect).await;
+        // The reservation rides along so recording can consume it; a failed record leaves it
+        // in place for the guard below (or the drop path) to release.
+        let recorded = self.record_stored(&stored.id, expect, hold).await;
         match recorded {
             Ok(()) => rollback.keep(),
             Err(_) => rollback.run().await,
@@ -65,7 +67,12 @@ impl RepoService {
         recorded.map(|()| stored.id)
     }
 
-    async fn record_stored(&self, id: &ObjectId, expect: u64) -> Result<()> {
+    async fn record_stored(
+        &self,
+        id: &ObjectId,
+        expect: u64,
+        hold: UploadReservation,
+    ) -> Result<()> {
         let size = self.stored_size(id).await?;
         if size > expect {
             return Err(PynError::LengthMismatch {
@@ -74,7 +81,7 @@ impl RepoService {
             });
         }
         self.meta
-            .record_upload(&self.repo, id, size, self.unreferenced_cap)
+            .record_upload(&self.repo, id, size, self.unreferenced_cap, hold)
             .await
     }
 

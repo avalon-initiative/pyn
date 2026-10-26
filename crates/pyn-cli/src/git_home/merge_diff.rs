@@ -214,8 +214,11 @@ impl Want {
             Kind::NameOnly | Kind::NameStatus => want.names = Some(f.kind),
             Kind::Summary => {}
             Kind::Check => crate::usage_error("`--check` does not combine with a combined diff"),
+            Kind::Raw | Kind::Dirstat | Kind::Nothing => {
+                crate::usage_error("this output format does not combine with a combined diff")
+            }
         }
-        if f.ignore_ws {
+        if f.opts.ws.any() {
             crate::usage_error("`-w` does not combine with a combined diff");
         }
         if f.summary || f.kind == Kind::Summary {
@@ -329,7 +332,8 @@ impl Shape<'_> {
             let format = Format {
                 context: want.context,
                 kind,
-                ignore_ws: false,
+                opts: crate::diff_opts::Opts::default(),
+                with_patch: false,
                 renames: want.renames,
                 summary: false,
                 kept: Vec::new(),
@@ -381,8 +385,14 @@ pub(super) fn with_from(mut text: String, pretty: &Pretty, from: Option<&ObjectI
         Pretty::Oneline { abbrev } => (0, *abbrev),
         _ => (7, false),
     };
+    let colour = if text.starts_with("\x1b[") {
+        text.find('m').map_or(0, |i| i + 1)
+    } else {
+        0
+    };
+    let skip = skip + colour;
     let end = text[skip..]
-        .find([' ', '\n'])
+        .find([' ', '\n', '\x1b'])
         .map_or(text.len(), |i| i + skip);
     let name = if short_id { short(p) } else { p.to_hex() };
     text.insert_str(end, &format!(" (from {name})"));

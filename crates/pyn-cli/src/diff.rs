@@ -10,11 +10,16 @@ use pyn_object::FileMode;
 use pyn_proto as api;
 
 use crate::backend::Backend;
+use crate::diff_color::{self, Style};
+use crate::diff_opts::Opts;
+use crate::diff_raw;
 use crate::diffstat::{self, Counts};
+use crate::dirstat;
 use crate::local_store::file_mode;
 use crate::localfile;
 use crate::rename::{self, Moved};
 use crate::time;
+use crate::word_diff;
 use crate::workspace::{FileState, Workspace, hash_of};
 
 /// Bytes read to decide whether a file is binary before fetching the rest.
@@ -35,6 +40,10 @@ pub enum Source {
         id: String,
     },
     Local {
+        file: PathBuf,
+    },
+    /// A work tree file whose id git does not record: the raw format shows it as zeros.
+    Worktree {
         file: PathBuf,
     },
 }
@@ -90,17 +99,44 @@ pub enum Kind {
     Check,
     /// `--summary` alone.
     Summary,
+    /// `--raw`: a line of modes, ids and a status letter per file.
+    Raw,
+    /// `--dirstat`: the share of the change in each folder.
+    Dirstat,
+    /// `-s`: no output, only the exit status.
+    Nothing,
 }
 
+#[derive(Clone)]
 pub struct Format {
     pub context: usize,
     pub kind: Kind,
-    pub ignore_ws: bool,
+    pub opts: Opts,
     pub renames: rename::Request,
     /// `--summary` next to another output kind.
     pub summary: bool,
+    /// The patch after the output of a statistics or raw kind, as `-p --stat` prints.
+    pub with_patch: bool,
     /// Only the pairs whose new path is listed, applied after rename detection (the pickaxe's choice).
     pub kept: Vec<String>,
+}
+
+impl Format {
+    /// This format, or one that prints nothing when `silent`.
+    pub fn silenced(self, silent: bool) -> Self {
+        if !silent {
+            return self;
+        }
+        if self.kind != Kind::Patch || self.with_patch {
+            crate::usage_error("`-s` together with another output format is not built");
+        }
+        Self {
+            kind: Kind::Nothing,
+            summary: false,
+            with_patch: false,
+            ..self
+        }
+    }
 }
 
 /// Revision 0 marks an entry with no per-path revision, as in a git home; it is read by its content id.
@@ -191,8 +227,10 @@ fn bytes(backend: &dyn Backend, path: &str, blob: &Blob, probe: bool) -> Result<
             if *dirty { "-dirty" } else { "" }
         )
         .into_bytes()),
-        Source::Local { file } if localfile::is_symlink(file) => Ok(localfile::read(file)?.1),
-        Source::Local { file } => {
+        Source::Local { file } | Source::Worktree { file } if localfile::is_symlink(file) => {
+            Ok(localfile::read(file)?.1)
+        }
+        Source::Local { file } | Source::Worktree { file } => {
             let mut f = std::fs::File::open(file).with_context(|| format!("reading {path}"))?;
             let mut buf = Vec::new();
             if probe {
@@ -218,6 +256,7 @@ fn contents(
     path: &str,
     old: Option<&Blob>,
     new: Option<&Blob>,
+    text: bool,
 ) -> Result<Contents> {
     let old_probe = old
         .map(|b| bytes(backend, path, b, true))
@@ -227,7 +266,7 @@ fn contents(
         .map(|b| bytes(backend, path, b, true))
         .transpose()?
         .unwrap_or_default();
-    if pyn_diff::is_binary(&old_probe) || pyn_diff::is_binary(&new_probe) {
+    if !text && (pyn_diff::is_binary(&old_probe) || pyn_diff::is_binary(&new_probe)) {
         return Ok(Contents {
             old: Vec::new(),
             new: Vec::new(),
@@ -241,27 +280,48 @@ fn contents(
         }
     };
     let (old, new) = (full(old, old_probe)?, full(new, new_probe)?);
-    let binary = pyn_diff::is_binary(&old) || pyn_diff::is_binary(&new);
+    let binary = !text && (pyn_diff::is_binary(&old) || pyn_diff::is_binary(&new));
     Ok(Contents { old, new, binary })
 }
 
-fn abbrev(blob: Option<&Blob>) -> String {
-    blob.map_or("0000000".to_string(), |b| b.hash[..7].to_string())
+/// A blob's id as `shorten` writes it; the null id of a missing side is as long as the other side's.
+fn id_of(blob: Option<&Blob>, other: Option<&Blob>, shorten: impl Fn(&str) -> String) -> String {
+    match blob {
+        Some(b) => shorten(&b.hash),
+        None => shorten(&"0".repeat(other.map_or(40, |o| o.hash.len()))),
+    }
 }
 
-fn patch(p: &Pair, c: &Contents, format: &Format) -> String {
+fn patch(
+    p: &Pair,
+    c: &Contents,
+    format: &Format,
+    (style, words): (Option<&Style>, Option<&word_diff::Setup>),
+) -> String {
     let (old, new) = (p.old.as_ref(), p.new.as_ref());
-    let mut out = format!("diff --git a/{} b/{}\n", p.old_path, p.new_path);
+    let o = &format.opts;
+    // Outside a repository an absolute path loses its leading slash in the headers.
+    let bare = |path: &str| -> String {
+        match path.strip_prefix('/') {
+            Some(rest) if p.detached => rest.to_string(),
+            _ => path.to_string(),
+        }
+    };
+    let (old_name, new_name) = (bare(&p.old_path), bare(&p.new_path));
+    let mut head = format!(
+        "diff --git {}{old_name} {}{new_name}\n",
+        o.src_prefix, o.dst_prefix
+    );
     let mut tail = String::new();
     match (old, new) {
         (None, Some(b)) => {
-            let _ = writeln!(out, "new file mode {}", b.mode());
+            let _ = writeln!(head, "new file mode {}", b.mode());
         }
         (Some(a), None) => {
-            let _ = writeln!(out, "deleted file mode {}", a.mode());
+            let _ = writeln!(head, "deleted file mode {}", a.mode());
         }
         (Some(a), Some(b)) if a.mode() != b.mode() => {
-            let _ = writeln!(out, "old mode {}\nnew mode {}", a.mode(), b.mode());
+            let _ = writeln!(head, "old mode {}\nnew mode {}", a.mode(), b.mode());
         }
         (Some(a), Some(_)) => tail = format!(" {}", a.mode()),
         (None, None) => {}
@@ -269,7 +329,7 @@ fn patch(p: &Pair, c: &Contents, format: &Format) -> String {
     if let Some(m) = &p.moved {
         let word = if m.copy { "copy" } else { "rename" };
         let _ = writeln!(
-            out,
+            head,
             "similarity index {}%\n{word} from {}\n{word} to {}",
             m.percent(),
             p.old_path,
@@ -278,23 +338,91 @@ fn patch(p: &Pair, c: &Contents, format: &Format) -> String {
     }
     let changed = old.zip(new).is_none_or(|(a, b)| a.hash != b.hash);
     if changed {
-        let _ = writeln!(out, "index {}..{}{tail}", abbrev(old), abbrev(new));
+        let (x, y) = (
+            id_of(old, new, |h| o.index_id(h)),
+            id_of(new, old, |h| o.index_id(h)),
+        );
+        let _ = writeln!(head, "index {x}..{y}{tail}");
     }
     let (from, to) = (
-        old.map_or("/dev/null".to_string(), |_| format!("a/{}", p.old_path)),
-        new.map_or("/dev/null".to_string(), |_| format!("b/{}", p.new_path)),
+        old.map_or("/dev/null".to_string(), |_| {
+            format!("{}{old_name}", o.src_prefix)
+        }),
+        new.map_or("/dev/null".to_string(), |_| {
+            format!("{}{new_name}", o.dst_prefix)
+        }),
     );
+    let finish = |mut head: String, body: String| {
+        paint_header(&mut head, style);
+        head + &body
+    };
     if c.binary {
-        if changed {
-            let _ = writeln!(out, "Binary files {from} and {to} differ");
-        }
-        return out;
+        let body = if changed {
+            format!("Binary files {from} and {to} differ\n")
+        } else {
+            String::new()
+        };
+        return finish(head, body);
     }
-    if let Some(hunks) = pyn_diff::unified_hunks(&c.old, &c.new, format.context, format.ignore_ws) {
-        let _ = writeln!(out, "--- {from}\n+++ {to}");
-        out.push_str(&hunks);
+    let layout = pyn_diff::Layout {
+        context: format.context,
+        inter_hunk: o.inter_hunk,
+        function: o.function,
+    };
+    let hunks = crate::xdiff::unified(&c.old, &c.new, &layout, &o.ws);
+    if hunks.is_empty() {
+        let ignored =
+            changed && old.zip(new).is_some_and(|(a, b)| a.mode() == b.mode()) && p.moved.is_none();
+        // Every change was one the options ignore, so git prints no header.
+        return if ignored {
+            String::new()
+        } else {
+            finish(head, String::new())
+        };
     }
-    out
+    let _ = writeln!(head, "--- {from}\n+++ {to}");
+    let body = if let Some(setup) = words {
+        String::from_utf8_lossy(&word_diff::render(&hunks, setup, style)).into_owned()
+    } else if let Some(st) = style {
+        let eof = diff_color::blank_at_eof(&c.old, &c.new, &st.rule);
+        String::from_utf8_lossy(&st.hunks(&hunks, eof)).into_owned()
+    } else {
+        hunks.iter().map(pyn_diff::Hunk::render).collect()
+    };
+    finish(head, body)
+}
+
+/// The color of the `commit` line when output is colored; colored decorations and graphs are not built.
+pub fn commit_color(
+    backend: &dyn Backend,
+    opts: &Opts,
+    decorating: bool,
+    graph: bool,
+) -> Option<String> {
+    let style = Style::resolve(opts, &|k| backend.diff_setting(k))?;
+    if decorating || graph {
+        crate::usage_error("colored output with decorations or a graph is not built");
+    }
+    Some(style.palette.commit)
+}
+
+/// `--check` for one file: the problems in its added lines, with the colors of `style` when there is one.
+fn check_file(backend: &dyn Backend, path: &str, c: &Contents, style: Option<&Style>) -> String {
+    let rule = diff_color::whitespace_rule(&|k| backend.diff_setting(k));
+    let edits = crate::xdiff::edits(&c.old, &c.new, &pyn_diff::Ws::default());
+    let paint = style.map(|s| pyn_diff::whitespace::Paint {
+        set: &s.palette.new,
+        reset: diff_color::RESET,
+        ws: &s.palette.whitespace,
+    });
+    pyn_diff::check_report(path, (&c.old, &c.new), &edits, &rule, paint.as_ref())
+}
+
+/// Recolors the header lines written so far.
+fn paint_header(out: &mut String, style: Option<&Style>) {
+    if let Some(st) = style {
+        *out = out.lines().map(|l| st.meta(l)).collect();
+    }
 }
 
 fn blob_size(backend: &dyn Backend, path: &str, blob: Option<&Blob>) -> Result<usize> {
@@ -309,12 +437,14 @@ fn totals(rows: &[(String, Counts)]) -> (usize, usize) {
 }
 
 #[derive(Clone)]
-struct Pair {
-    old_path: String,
-    new_path: String,
-    old: Option<Blob>,
-    new: Option<Blob>,
-    moved: Option<Moved>,
+pub(crate) struct Pair {
+    pub(crate) old_path: String,
+    pub(crate) new_path: String,
+    pub(crate) old: Option<Blob>,
+    pub(crate) new: Option<Blob>,
+    pub(crate) moved: Option<Moved>,
+    /// Compared outside a repository: stat and name-status show both names.
+    pub(crate) detached: bool,
 }
 
 /// The content of a blob.
@@ -399,6 +529,7 @@ fn pairs(
                 old: old.get(&m.src).cloned(),
                 new: b.cloned(),
                 moved: Some(m.clone()),
+                detached: false,
             },
             None => Pair {
                 old_path: path.clone(),
@@ -406,6 +537,7 @@ fn pairs(
                 old: a.cloned(),
                 new: b.cloned(),
                 moved: None,
+                detached: false,
             },
         });
     }
@@ -460,28 +592,29 @@ pub fn origins(
 /// The create, delete, rename, copy and mode-change lines of `--summary` for a pair.
 fn summary_line(p: &Pair) -> String {
     let mut out = String::new();
+    let (old_path, new_path) = (&p.old_path, &p.new_path);
     match (&p.old, &p.new) {
         (None, Some(b)) => {
-            let _ = writeln!(out, " create mode {} {}", b.mode(), p.new_path);
+            let _ = writeln!(out, " create mode {} {}", b.mode(), new_path);
         }
         (Some(a), None) => {
-            let _ = writeln!(out, " delete mode {} {}", a.mode(), p.old_path);
+            let _ = writeln!(out, " delete mode {} {}", a.mode(), old_path);
         }
         (Some(a), Some(b)) if a.is_gitlink() != b.is_gitlink() => {
-            let _ = writeln!(out, " delete mode {} {}", a.mode(), p.old_path);
-            let _ = writeln!(out, " create mode {} {}", b.mode(), p.new_path);
+            let _ = writeln!(out, " delete mode {} {}", a.mode(), old_path);
+            let _ = writeln!(out, " create mode {} {}", b.mode(), new_path);
         }
         (Some(a), Some(b)) => {
             if let Some(m) = &p.moved {
                 let word = if m.copy { "copy" } else { "rename" };
-                let name = diffstat::rename_name(&p.old_path, &p.new_path);
+                let name = diffstat::rename_name(old_path, new_path);
                 let _ = writeln!(out, " {word} {name} ({}%)", m.percent());
             }
             if a.mode() != b.mode() {
                 let tail = if p.moved.is_some() {
                     String::new()
                 } else {
-                    format!(" {}", p.new_path)
+                    format!(" {new_path}")
                 };
                 let _ = writeln!(out, " mode change {} => {}{tail}", a.mode(), b.mode());
             }
@@ -512,7 +645,7 @@ pub fn merge_stat(
             .zip(p.new.as_ref())
             .is_some_and(|(a, b)| a.hash == b.hash);
         let counts = {
-            let c = contents(backend, &p.new_path, p.old.as_ref(), p.new.as_ref())?;
+            let c = contents(backend, &p.new_path, p.old.as_ref(), p.new.as_ref(), false)?;
             if c.binary && p.moved.is_some() && same {
                 Counts::Binary(0, 0)
             } else if c.binary {
@@ -521,7 +654,7 @@ pub fn merge_stat(
                     blob_size(backend, &p.new_path, p.new.as_ref())?,
                 )
             } else {
-                let (x, y) = pyn_diff::line_counts(&c.old, &c.new, false);
+                let (x, y) = crate::xdiff::line_counts(&c.old, &c.new, &pyn_diff::Ws::default());
                 Counts::Lines(x, y)
             }
         };
@@ -538,16 +671,26 @@ pub fn merge_stat(
     Ok(out)
 }
 
-/// A text file whose content differs from the other side only in whitespace.
-fn whitespace_only(old: Option<&Blob>, new: Option<&Blob>, c: &Contents) -> bool {
-    old.zip(new)
-        .is_some_and(|(a, b)| a.mode() == b.mode() && !c.binary)
-        && pyn_diff::line_counts(&c.old, &c.new, true) == (0, 0)
+/// A text file whose content differs from the other side only in what `ws` ignores.
+fn whitespace_only(
+    old: Option<&Blob>,
+    new: Option<&Blob>,
+    c: &Contents,
+    ws: &pyn_diff::Ws,
+) -> bool {
+    ws.compares_loosely() && ignored_only(old, new, c, ws)
 }
 
-/// Whether `show` separates the diff from the message: git does for `--check` and `--summary` on any change, even a clean one.
+fn ignored_only(old: Option<&Blob>, new: Option<&Blob>, c: &Contents, ws: &pyn_diff::Ws) -> bool {
+    old.zip(new)
+        .is_some_and(|(a, b)| a.mode() == b.mode() && !c.binary)
+        && crate::xdiff::line_counts(&c.old, &c.new, ws) == (0, 0)
+}
+
+/// Whether `show` separates the diff from the message: git does for `--check`, `--summary` and `--dirstat` on any change, even a clean one.
 pub fn has_body(format: &Format, differs: bool, body: &str) -> bool {
-    !body.is_empty() || (matches!(format.kind, Kind::Check | Kind::Summary) && differs)
+    !body.is_empty()
+        || (matches!(format.kind, Kind::Check | Kind::Summary | Kind::Dirstat) && differs)
 }
 
 /// Exits 2 after `--check` printed problems, as git does.
@@ -581,10 +724,38 @@ pub fn compare(
         .renames
         .resolve(backend.rename_defaults())
         .unwrap_or_else(|message| crate::usage_error(&message));
+    let (old, new) = if format.opts.reverse {
+        (new, old)
+    } else {
+        (old, new)
+    };
     let mut list = pairs(backend, old, new, only, opts.as_ref())?;
     if !format.kept.is_empty() {
         list.retain(|p| format.kept.contains(&p.new_path));
     }
+    if let Some((keep, skip)) = &format.opts.filter {
+        if keep.contains('*') {
+            crate::usage_error("`--diff-filter=*` is not built");
+        }
+        list.retain(|p| {
+            let letter = status_of(p).chars().next().unwrap_or('M');
+            !skip.contains(letter) && (keep.is_empty() || keep.contains(letter))
+        });
+    }
+    emit(backend, &list, format, out)
+}
+
+/// Appends the rendering of the changed `list` to `out`; true if any file differs.
+pub(crate) fn emit(
+    backend: &dyn Backend,
+    list: &[Pair],
+    format: &Format,
+    out: &mut String,
+) -> Result<bool> {
+    let format = &Format {
+        opts: format.opts.with_config(&|k| backend.diff_setting(k)),
+        ..format.clone()
+    };
     let summary: String = if format.summary || format.kind == Kind::Summary {
         list.iter().map(summary_line).collect()
     } else {
@@ -595,7 +766,8 @@ pub fn compare(
         return Ok(!list.is_empty());
     }
     let mut body = String::new();
-    let differs = render(backend, &list, format, &mut body)?;
+    let differs = render(backend, list, format, &mut body)?;
+    let start = out.len();
     if format.kind == Kind::Patch {
         out.push_str(&summary);
         if !summary.is_empty() && !body.is_empty() {
@@ -606,41 +778,179 @@ pub fn compare(
         out.push_str(&body);
         out.push_str(&summary);
     }
+    if format.with_patch {
+        let patch_format = Format {
+            kind: Kind::Patch,
+            summary: false,
+            with_patch: false,
+            ..format.clone()
+        };
+        let mut patch = String::new();
+        render(backend, list, &patch_format, &mut patch)?;
+        // The blank line before the patch is left out after a dirstat by changes or files.
+        let by_line = format
+            .opts
+            .dirstat
+            .is_some_and(|d| d.measure == dirstat::Measure::Lines);
+        let before =
+            ((format.kind != Kind::Dirstat || by_line) && out.len() > start) || !summary.is_empty();
+        if before && !patch.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(&patch);
+    }
     Ok(differs)
 }
 
+/// What `--compact-summary` says about a pair next to its name.
+fn compact_note(p: &Pair) -> Option<String> {
+    let exec = |b: &Blob| b.mode == FileMode::Executable;
+    let link = |b: &Blob| b.mode == FileMode::Symlink;
+    match (&p.old, &p.new) {
+        (None, Some(b)) => Some(format!(
+            "new{}",
+            if link(b) {
+                " +l"
+            } else if exec(b) {
+                " +x"
+            } else {
+                ""
+            }
+        )),
+        (Some(_), None) => Some("gone".into()),
+        (Some(a), Some(b)) if a.mode != b.mode => Some(format!(
+            "mode{}",
+            if link(a) != link(b) {
+                if link(b) { " +l" } else { " -l" }
+            } else if exec(b) {
+                " +x"
+            } else {
+                " -x"
+            }
+        )),
+        _ => None,
+    }
+}
+
+/// What `--dirstat` counts for a pair: bytes changed, lines changed or one per file.
+fn dirstat_damage(
+    backend: &dyn Backend,
+    p: &Pair,
+    measure: dirstat::Measure,
+    opts: &Opts,
+) -> Result<u64> {
+    let ws = &opts.ws;
+    let changed = p.old.as_ref().zip(p.new.as_ref()).is_none_or(|(a, b)| {
+        p.detached || a.hash != b.hash || !diff_raw::id_known(a) || !diff_raw::id_known(b)
+    });
+    if !changed {
+        return Ok(0);
+    }
+    let read = |path: &str, blob: &Option<Blob>| -> Result<Vec<u8>> {
+        blob.as_ref()
+            .map_or(Ok(Vec::new()), |b| blob_bytes(backend, path, b))
+    };
+    let (old, new) = (read(&p.old_path, &p.old)?, read(&p.new_path, &p.new)?);
+    Ok(match measure {
+        dirstat::Measure::Files => 1,
+        dirstat::Measure::Changes => (if p.old.is_none() {
+            new.len() as u64
+        } else if p.new.is_none() {
+            old.len() as u64
+        } else {
+            dirstat::byte_damage(&old, &new)
+        })
+        .max(1),
+        dirstat::Measure::Lines => {
+            if pyn_diff::is_binary(&old) || pyn_diff::is_binary(&new) {
+                ((old.len() + new.len()) as u64).div_ceil(64)
+            } else {
+                let (a, d) = crate::xdiff::line_counts(&old, &new, ws);
+                (a + d) as u64
+            }
+        }
+    })
+}
+
+/// Whether the two sides are not the same kind of thing: a file, a symbolic link or a submodule.
+fn type_changed(a: &Blob, b: &Blob) -> bool {
+    let kind = |m: FileMode| match m {
+        FileMode::Regular | FileMode::Executable => 0,
+        FileMode::Symlink => 1,
+        FileMode::Gitlink => 2,
+        FileMode::Tree => 3,
+    };
+    kind(a.mode) != kind(b.mode)
+}
+
+/// The status letter of a pair, with the similarity of a rename or copy.
+pub(crate) fn status_of(p: &Pair) -> String {
+    if let Some(m) = &p.moved {
+        return format!("{}{:03}", if m.copy { 'C' } else { 'R' }, m.percent());
+    }
+    match (&p.old, &p.new) {
+        (None, _) => "A",
+        (_, None) => "D",
+        (Some(a), Some(b)) if type_changed(a, b) => "T",
+        _ => "M",
+    }
+    .into()
+}
+
 fn render(backend: &dyn Backend, list: &[Pair], format: &Format, out: &mut String) -> Result<bool> {
+    let style = Style::resolve(&format.opts, &|k| backend.diff_setting(k));
+    let style = style.as_ref();
+    let words = word_diff::Setup::of(&format.opts, &|k| backend.diff_setting(k));
     let mut stat_rows: Vec<(String, Counts)> = Vec::new();
+    let mut moved_from: Vec<Option<(String, String)>> = Vec::new();
+    let mut dirstat_rows: Vec<(String, u64)> = Vec::new();
     let mut differs = false;
+    let (sep, end) = if format.opts.nul {
+        ('\0', '\0')
+    } else {
+        ('\t', '\n')
+    };
     for p in list {
         let (a, b) = (p.old.as_ref(), p.new.as_ref());
         let path = &p.new_path;
         match format.kind {
             Kind::NameOnly => {
                 differs = true;
-                let _ = writeln!(out, "{path}");
+                let shown = if p.detached && b.is_none() {
+                    "/dev/null"
+                } else {
+                    path
+                };
+                out.push_str(&format!("{shown}{end}"));
             }
             Kind::NameStatus => {
                 differs = true;
-                if let Some(m) = &p.moved {
-                    let letter = if m.copy { 'C' } else { 'R' };
-                    let _ = writeln!(out, "{letter}{:03}\t{}\t{path}", m.percent(), p.old_path);
-                    continue;
-                }
-                let letter = match (a, b) {
-                    (None, _) => 'A',
-                    (_, None) => 'D',
-                    (Some(a), Some(b)) if a.is_gitlink() != b.is_gitlink() => 'T',
-                    _ => 'M',
+                let names = match &p.moved {
+                    Some(_) => format!("{sep}{}{sep}{path}", p.old_path),
+                    None if p.detached && p.old.is_some() => format!("{sep}{}", p.old_path),
+                    None => format!("{sep}{path}"),
                 };
-                let _ = writeln!(out, "{letter}\t{path}");
+                out.push_str(&format!("{}{names}{end}", status_of(p)));
+            }
+            Kind::Raw => {
+                differs = true;
+                out.push_str(&diff_raw::record(p, &format.opts));
+            }
+            Kind::Dirstat => {
+                differs = true;
+                let spec = format.opts.dirstat.unwrap_or_default();
+                let damage = dirstat_damage(backend, p, spec.measure, &format.opts)?;
+                let name = if p.detached && b.is_none() {
+                    "/dev/null"
+                } else {
+                    path
+                };
+                dirstat_rows.push((name.to_string(), damage));
             }
             Kind::Summary => {}
+            Kind::Nothing => differs = true,
             Kind::Patch | Kind::Check | Kind::Stat | Kind::ShortStat | Kind::NumStat => {
-                if format.kind == Kind::Patch
-                    && a.zip(b)
-                        .is_some_and(|(a, b)| a.is_gitlink() != b.is_gitlink())
-                {
+                if format.kind == Kind::Patch && a.zip(b).is_some_and(|(a, b)| type_changed(a, b)) {
                     differs = true;
                     for (old, new) in [(a, None), (None, b)] {
                         let split = Pair {
@@ -649,27 +959,35 @@ fn render(backend: &dyn Backend, list: &[Pair], format: &Format, out: &mut Strin
                             moved: None,
                             ..(*p).clone()
                         };
-                        let c = contents(backend, path, old, new)?;
-                        out.push_str(&patch(&split, &c, format));
+                        let c = contents(backend, path, old, new, format.opts.text)?;
+                        out.push_str(&patch(&split, &c, format, (style, words.as_ref())));
                     }
                     continue;
                 }
-                let c = contents(backend, path, a, b)?;
-                if format.ignore_ws
+                let c = contents(backend, path, a, b, format.opts.text)?;
+                if format.opts.ws.any()
                     && format.kind != Kind::Check
                     && p.moved.is_none()
-                    && whitespace_only(a, b, &c)
+                    && whitespace_only(a, b, &c, &format.opts.ws)
                 {
                     continue;
                 }
                 differs = true;
+                let stat = matches!(format.kind, Kind::Stat | Kind::ShortStat | Kind::NumStat);
+                if stat
+                    && format.opts.ws.blank_lines
+                    && p.moved.is_none()
+                    && ignored_only(a, b, &c, &format.opts.ws)
+                {
+                    continue;
+                }
                 if format.kind == Kind::Patch {
-                    out.push_str(&patch(p, &c, format));
+                    out.push_str(&patch(p, &c, format, (style, words.as_ref())));
                     continue;
                 }
                 if format.kind == Kind::Check {
                     if !c.binary {
-                        out.push_str(&pyn_diff::whitespace_report(path, &c.old, &c.new));
+                        out.push_str(&check_file(backend, path, &c, style));
                     }
                     continue;
                 }
@@ -687,27 +1005,53 @@ fn render(backend: &dyn Backend, list: &[Pair], format: &Format, out: &mut Strin
                 {
                     Counts::Lines(0, 0)
                 } else {
-                    let (x, y) = pyn_diff::line_counts(&c.old, &c.new, format.ignore_ws);
+                    let (x, y) = crate::xdiff::line_counts(&c.old, &c.new, &format.opts.ws);
                     Counts::Lines(x, y)
                 };
-                let name = if p.moved.is_some() {
-                    diffstat::rename_name(&p.old_path, path)
-                } else {
-                    path.clone()
+                let mut name = match (&p.moved, p.detached) {
+                    (Some(_), _) => diffstat::rename_name(&p.old_path, path),
+                    (None, true) => match (a, b) {
+                        (Some(_), Some(_)) if p.old_path != *path => {
+                            diffstat::rename_name(&p.old_path, path)
+                        }
+                        (Some(_), None) => format!("{} => /dev/null", p.old_path),
+                        (None, Some(_)) => format!("/dev/null => {path}"),
+                        _ => path.clone(),
+                    },
+                    (None, false) => path.clone(),
                 };
+                if let Some(note) = compact_note(p).filter(|_| format.opts.compact_summary) {
+                    let _ = write!(name, " ({note})");
+                }
                 stat_rows.push((name, counts));
+                moved_from.push(
+                    p.moved
+                        .as_ref()
+                        .map(|_| (p.old_path.clone(), p.new_path.clone())),
+                );
             }
         }
     }
+    if format.kind == Kind::Dirstat {
+        let spec = format.opts.dirstat.unwrap_or_default();
+        out.push_str(&dirstat::render(dirstat_rows, spec));
+    }
     if format.kind == Kind::NumStat {
-        for (path, counts) in &stat_rows {
-            let path = backend.quote_diff_path(path.as_bytes());
-            match counts {
-                Counts::Lines(a, d) => {
-                    let _ = writeln!(out, "{a}\t{d}\t{path}");
+        for ((path, counts), from) in stat_rows.iter().zip(&moved_from) {
+            let (x, y) = match counts {
+                Counts::Lines(a, d) => (a.to_string(), d.to_string()),
+                Counts::Binary(..) => ("-".into(), "-".into()),
+            };
+            match (from, format.opts.nul) {
+                (Some((old, new)), true) => {
+                    let _ = write!(out, "{x}\t{y}\t\0{old}\0{new}\0");
                 }
-                Counts::Binary(..) => {
-                    let _ = writeln!(out, "-\t-\t{path}");
+                (_, true) => {
+                    let _ = write!(out, "{x}\t{y}\t{path}\0");
+                }
+                _ => {
+                    let path = backend.quote_diff_path(path.as_bytes());
+                    let _ = writeln!(out, "{x}\t{y}\t{path}");
                 }
             }
         }
@@ -721,7 +1065,22 @@ fn render(backend: &dyn Backend, list: &[Pair], format: &Format, out: &mut Strin
             .into_iter()
             .map(|(name, counts)| diffstat::Row { name, counts })
             .collect();
-        out.push_str(&diffstat::render(&rows, diffstat::DEFAULT_WIDTH, None));
+        let spec = &format.opts.stat;
+        let layout = diffstat::Layout {
+            width: spec
+                .width
+                .filter(|w| *w > 0)
+                .unwrap_or_else(diffstat::terminal_width),
+            name_width: spec.name_width,
+            graph_width: spec.graph_width.or_else(|| {
+                backend
+                    .diff_setting("diff.statgraphwidth")
+                    .and_then(|v| v.parse().ok())
+            }),
+            count: spec.count,
+            colors: style.map(|s| (s.palette.new.clone(), s.palette.old.clone())),
+        };
+        out.push_str(&diffstat::render_with(&rows, &layout));
     }
     Ok(differs)
 }
@@ -733,13 +1092,20 @@ pub struct DiffParts {
     pub names: Option<Kind>,
     pub stat: bool,
     pub shortstat: bool,
+    pub dirstat: bool,
     pub patch: bool,
     pub context: usize,
+    pub opts: Opts,
 }
 
 impl DiffParts {
     pub fn any(&self) -> bool {
-        self.names.is_some() || self.stat || self.shortstat || self.patch || self.summary
+        self.names.is_some()
+            || self.stat
+            || self.shortstat
+            || self.dirstat
+            || self.patch
+            || self.summary
     }
 }
 
@@ -757,9 +1123,10 @@ pub fn sections(
         let format = Format {
             context: parts.context,
             kind,
-            ignore_ws: false,
+            opts: parts.opts.clone(),
             renames: parts.renames,
             summary: false,
+            with_patch: false,
             kept: kept.to_vec(),
         };
         differs |= compare(backend, old, new, only, &format, &mut out)?;
@@ -775,12 +1142,20 @@ pub fn sections(
     if parts.shortstat {
         body.push_str(&section(Kind::ShortStat)?);
     }
+    let mut separated = !body.is_empty();
+    if parts.dirstat {
+        body.push_str(&section(Kind::Dirstat)?);
+        separated |= parts
+            .opts
+            .dirstat
+            .is_some_and(|d| d.measure == dirstat::Measure::Lines && !body.is_empty());
+    }
     if parts.summary {
         body.push_str(&section(Kind::Summary)?);
     }
     if parts.patch {
         let patch = section(Kind::Patch)?;
-        if !body.is_empty() {
+        if separated || parts.summary {
             body.push('\n');
         }
         body.push_str(&patch);

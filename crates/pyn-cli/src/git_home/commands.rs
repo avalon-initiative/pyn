@@ -50,8 +50,11 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
             exit_code,
             quiet,
             cached,
+            no_patch,
+            ..
         } => {
-            let differs = diff(git, cwd, &args, &paths, &format.format(), quiet, cached)?;
+            let format = format.format().silenced(no_patch);
+            let differs = diff(git, cwd, &args, &paths, &format, quiet, cached)?;
             if differs && (exit_code || quiet) {
                 std::process::exit(1);
             }
@@ -96,7 +99,7 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
                 }
                 return super::log::log_table(git, limit.unwrap_or(50));
             }
-            super::log::log(git, cwd, path, limit, args)
+            super::log::log(git, cwd, path, limit, *args)
         }
         Command::Convert(_) => init(git),
         Command::Init(_) => unreachable!("handled before a repository is detected"),
@@ -629,7 +632,7 @@ fn disk_blob(
     Ok(Some(Blob {
         hash: id.to_hex(),
         mode,
-        source: Source::Local { file },
+        source: Source::Worktree { file },
     }))
 }
 
@@ -893,9 +896,13 @@ fn show(
     format: &diff::Format,
 ) -> Result<()> {
     git.repo.validate_diff_ignore_submodules()?;
+    if format.opts.abbrev.is_some() && fmt.first_given().is_some() {
+        crate::usage_error("`--abbrev` together with a commit format is not built");
+    }
     let Rendering { pretty, style } = fmt.rendering()?;
     let decorate = decorate.resolve(git, &pretty)?;
     let plan = merges.plan(git, first_parent, true)?;
+    let commit_color = diff::commit_color(git, &format.opts, decorate.on(), false);
     let separated = !paths.is_empty() || std::env::args_os().any(|a| a == "--");
     let (mut ids, loose) = split_revisions(git, cwd, args, separated, usize::MAX)?;
     check_loose(cwd, &loose, separated)?;
@@ -908,6 +915,7 @@ fn show(
         style,
         now: chrono::Utc::now().timestamp(),
         decorations: &names,
+        commit_color: commit_color.as_deref(),
     };
     let shape = Shape {
         git,
@@ -939,10 +947,8 @@ fn show(
                 }));
             }
             check.push_str(&text);
-            Ok(diff::has_body(format, differs, &text).then_some(Body {
-                text,
-                dashes: false,
-            }))
+            let dashes = format.with_patch && format.kind == diff::Kind::Stat;
+            Ok(diff::has_body(format, differs, &text).then_some(Body { text, dashes }))
         };
         let segments = shape.segments(&plan, &c, &|| Want::of_format(format), &mut against)?;
         for seg in segments {

@@ -276,6 +276,26 @@ fn clean_merges_match_git() {
 }
 
 #[test]
+fn per_parent_headers_are_coloured_as_in_git() {
+    for format in FORMATS {
+        let f = Fixture::new(format);
+        base_files(&f);
+        let base = f.commit("base");
+        f.branch("side", &base);
+        f.write("g", &text(&["x", "Y", "z"]));
+        f.commit("side");
+        f.branch("main", &base);
+        f.write("h", &text(&["one", "two", "THREE", "four"]));
+        f.commit("main");
+        f.git(&["merge", "-q", "--no-edit", "side"]);
+        f.all_same(&[
+            &["show", "-m", "--color=always"],
+            &["log", "-m", "-p", "--color=always"],
+        ]);
+    }
+}
+
+#[test]
 fn a_clean_merge_among_several_commits_is_separated_as_in_git() {
     each_format(|f| {
         f.write("f", &text(&["a", "b", "c"]));

@@ -345,7 +345,8 @@ impl Files<'_> {
 }
 
 /// Git's span hashes: lines of at most 64 bytes, hashed into `HASHBASE` buckets, with the bytes each bucket covers.
-fn span_counts(data: &[u8]) -> BTreeMap<u32, u64> {
+/// A last chunk shorter than a line counts too.
+pub(crate) fn span_counts(data: &[u8]) -> BTreeMap<u32, u64> {
     let text = !pyn_diff::is_binary(data);
     let mut counts = BTreeMap::new();
     let (mut a1, mut a2, mut n) = (0u32, 0u32, 0u64);

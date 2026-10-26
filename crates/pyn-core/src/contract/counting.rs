@@ -312,9 +312,12 @@ impl MetadataStore for CountingStore {
         id: &ObjectId,
         size: u64,
         cap: u64,
+        reservation: crate::UploadReservation,
     ) -> crate::Result<()> {
         self.count();
-        self.inner.record_upload(repo, id, size, cap).await
+        self.inner
+            .record_upload(repo, id, size, cap, reservation)
+            .await
     }
 
     async fn record_assembled(
