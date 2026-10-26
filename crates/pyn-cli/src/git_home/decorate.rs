@@ -106,7 +106,7 @@ impl Decorate {
     }
 }
 
-fn maybe_bool(value: &str) -> Option<bool> {
+pub(super) fn maybe_bool(value: &str) -> Option<bool> {
     match value.to_ascii_lowercase().as_str() {
         "true" | "yes" | "on" => Some(true),
         "false" | "no" | "off" | "" => Some(false),

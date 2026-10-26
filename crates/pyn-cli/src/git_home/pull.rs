@@ -56,10 +56,10 @@ pub struct PullArgs {
     /// Merge but stop before committing.
     #[arg(long, overrides_with = "commit")]
     no_commit: bool,
-    /// Accepted: no editor is ever started.
+    /// Take the merge message without opening the editor.
     #[arg(long, overrides_with = "edit")]
     no_edit: bool,
-    #[arg(short, long, overrides_with = "no_edit")]
+    #[arg(long, overrides_with = "no_edit")]
     edit: bool,
     #[arg(short, long, num_args = 0..=1, require_equals = true, value_name = "false|true|merges|interactive")]
     rebase: Option<Option<String>>,
@@ -183,11 +183,6 @@ impl PullArgs {
                 "--all",
                 self.all,
                 "pull one remote; run `pyn fetch --all` to fetch every remote",
-            ),
-            (
-                "--edit",
-                self.edit,
-                "no editor is started; give the message with `pyn merge -m` or finish with `pyn commit`",
             ),
         ];
         if let Some((flag, _, why)) = given.iter().find(|(_, on, _)| *on) {
@@ -610,6 +605,9 @@ fn pull_inner(git: &GitHome, args: PullArgs) -> Result<()> {
             no_stat: args.no_stat,
             strategy: args.strategy,
             strategy_option: args.strategy_option,
+            edit: args.edit,
+            no_edit: args.no_edit,
+            generated_message: true,
             no_verify: false,
             verify: false,
             sign: args.sign,

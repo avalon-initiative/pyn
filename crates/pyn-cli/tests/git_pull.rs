@@ -15,6 +15,9 @@ use tempfile::{TempDir, tempdir};
 
 const DATE: &str = "2020-01-01T00:00:00Z";
 
+/// Arguments, environment and whether the editor is expected to open.
+type EditCase<'a> = (&'a [&'a str], &'a [(&'a str, &'a str)], bool);
+
 struct Out {
     code: i32,
     stdout: String,
@@ -31,6 +34,7 @@ struct Twin {
     shim: PathBuf,
     url: String,
     via: Via,
+    extra_env: std::cell::RefCell<Vec<(String, String)>>,
     _server: Option<Server>,
 }
 
@@ -55,6 +59,7 @@ impl Twin {
             shim,
             url,
             via,
+            extra_env: Default::default(),
             _server: server,
         };
         for dir in [&t.git, &t.pyn] {
@@ -83,6 +88,7 @@ impl Twin {
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("GIT_EDITOR", "true")
             .env("GIT_COMMITTER_DATE", DATE)
+            .envs(self.extra_env.borrow().iter().cloned())
             .output()
             .unwrap();
         out_of(out)
@@ -104,6 +110,7 @@ impl Twin {
             .env("GIT_COMMITTER_NAME", "t")
             .env("GIT_COMMITTER_EMAIL", "t@example.com")
             .env("GIT_COMMITTER_DATE", DATE)
+            .envs(self.extra_env.borrow().iter().cloned())
             .output()
             .unwrap();
         out_of(out)
@@ -379,6 +386,53 @@ fn a_clean_merge_makes_a_merge_commit_with_git_s_parents_and_tree() {
 }
 
 #[test]
+fn pull_edit_flags_open_the_editor_as_git_does() {
+    let cases: &[EditCase] = &[
+        (&[], &[], false),
+        (&["--no-edit"], &[], false),
+        (&["--edit"], &[], true),
+        (&["--edit", "--no-edit"], &[], false),
+        (&["--no-edit", "--edit"], &[], true),
+        (&[], &[("GIT_MERGE_AUTOEDIT", "yes")], true),
+        (&["--no-edit"], &[("GIT_MERGE_AUTOEDIT", "yes")], false),
+        (&["--edit"], &[("GIT_MERGE_AUTOEDIT", "no")], true),
+    ];
+    for (format, via) in ALL_WAYS {
+        for (flags, env, edits) in cases {
+            let t = Twin::new(format, via);
+            let editor = t.home.join("editor.sh");
+            fs::write(&editor, "#!/bin/sh\necho \"edited by editor\" >> \"$1\"\n").unwrap();
+            fs::set_permissions(&editor, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+                .unwrap();
+            let mut vars = vec![(
+                "GIT_EDITOR".to_owned(),
+                editor.to_string_lossy().into_owned(),
+            )];
+            vars.extend(env.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())));
+            *t.extra_env.borrow_mut() = vars;
+            t.local("l.txt", "local\n", "local");
+            t.remote("n.txt", "new\n", "remote");
+            t.configure("pull.rebase", "false");
+            let mut args = vec!["--no-rebase"];
+            args.extend(flags.iter());
+            let out = t.both_ok(&args);
+            let want = run(&t.git, &["log", "-1", "--format=%B"]);
+            assert_eq!(
+                run(&t.pyn, &["log", "-1", "--format=%B"]),
+                want,
+                "{args:?} {env:?}"
+            );
+            assert_eq!(
+                want.contains("edited by editor"),
+                *edits,
+                "{args:?} {env:?}: {}",
+                out.stderr
+            );
+        }
+    }
+}
+
+#[test]
 fn ff_modes_match_git() {
     let t = Twin::new("sha1", Via::Ssh);
     t.remote("n.txt", "new\n", "remote");
@@ -599,7 +653,6 @@ fn unsupported_flags_are_usage_errors() {
         "--squash",
         "--autostash",
         "--all",
-        "--edit",
         "--signoff",
         "--allow-unrelated-histories",
     ] {

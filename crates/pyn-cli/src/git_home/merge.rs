@@ -155,6 +155,8 @@ pub fn merge(git: &GitHome, mut args: MergeArgs) -> Result<()> {
     let Some(spec) = args.source.clone() else {
         bail!("no merge target given; name a branch or a commit");
     };
+    args.edit = wants_edit(&args);
+    args.no_edit = !args.edit;
     let strategy = Strategy::parse(&args.strategy, &args.strategy_option);
     let opened = git.open_index()?;
     refuse_unfinished(git, &opened);
@@ -193,6 +195,27 @@ pub fn merge(git: &GitHome, mut args: MergeArgs) -> Result<()> {
         &strategy,
     )
 }
+
+/// Whether the merge message opens in the editor: the flags, then an explicit `-m` (no), `GIT_MERGE_AUTOEDIT`, a terminal.
+fn wants_edit(args: &MergeArgs) -> bool {
+    use std::io::IsTerminal;
+    if args.edit || args.no_edit {
+        return args.edit;
+    }
+    if !args.message.is_empty() && !args.generated_message {
+        return false;
+    }
+    if let Ok(value) = std::env::var("GIT_MERGE_AUTOEDIT") {
+        let Some(on) = super::decorate::maybe_bool(&value) else {
+            eprintln!("fatal: Bad value '{value}' in environment 'GIT_MERGE_AUTOEDIT'");
+            std::process::exit(128);
+        };
+        return on;
+    }
+    std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
+}
+
+const EDITOR_COMMENT: &str = "# Please enter a commit message to explain why this merge is necessary,\n# especially if it merges an updated upstream into a topic branch.\n#\n# Lines starting with '#' will be ignored, and an empty message aborts\n# the commit.\n";
 
 /// Git's refusals to start a merge on unmerged paths or over a merge or cherry-pick not yet concluded.
 fn refuse_unfinished(git: &GitHome, opened: &super::stage::OpenIndex) {
@@ -490,7 +513,8 @@ fn true_merge(
         }
     };
     let (index, conflicted) = (applied.index, applied.conflicted);
-    let auto_merge = if kind.writes_auto_merge() && (!conflicted.is_empty() || args.no_commit) {
+    let stops = !conflicted.is_empty() || args.no_commit || finish.message_stage();
+    let auto_merge = if kind.writes_auto_merge() && stops {
         Some(result_tree(git, &merged)?)
     } else {
         None
@@ -505,41 +529,74 @@ enum Concluding {
 }
 
 impl Finish<'_> {
-    /// Runs the merge commit's hooks over `MERGE_MSG`; a veto leaves the merge in progress. Returns the final message.
+    /// Whether the message goes through the editor or a message hook, any of which can stop the merge.
+    fn message_stage(&self) -> bool {
+        let (git, args) = (self.git, self.args);
+        let wanted = |h: &str| git.hook_present(h);
+        args.edit
+            || wanted("prepare-commit-msg")
+            || (!args.no_verify && (wanted("pre-merge-commit") || wanted("commit-msg")))
+    }
+
+    /// Runs the merge commit's hooks and editor over `MERGE_MSG`; a veto or an empty message leaves the merge in progress.
     fn message_hooks(&self, message: &str, mode: &str) -> Result<String> {
         let (git, args) = (self.git, self.args);
         git.warn_if_hooks_off(&MERGE_HOOKS);
         let verify = !args.no_verify;
-        let wanted = |h: &str| git.hook_present(h);
-        if !(wanted("prepare-commit-msg")
-            || (verify && (wanted("pre-merge-commit") || wanted("commit-msg"))))
-        {
+        if !self.message_stage() {
             return Ok(message.to_string());
         }
         write_state(git, "MERGE_HEAD", &format!("{}\n", self.theirs))?;
         write_state(git, "MERGE_MSG", message)?;
         write_state(git, "MERGE_MODE", mode)?;
-        let env = [
-            ("GIT_EDITOR", ":".to_string()),
-            ("GIT_INDEX_FILE", git.hook_index()),
-        ];
-        let file = git.hook_path(&git.repo.git().git_dir().join("MERGE_MSG"));
-        let vetoed = (verify && git.vetoed("pre-merge-commit", &[], &env)?)
-            || git.vetoed(
-                "prepare-commit-msg",
-                &[file.clone(), "merge".to_string()],
-                &env,
-            )?
-            || (verify && git.vetoed("commit-msg", &[file], &env)?);
-        if vetoed {
+        let mut env = vec![("GIT_INDEX_FILE", git.hook_index())];
+        if !args.edit {
+            env.push(("GIT_EDITOR", ":".to_string()));
+        }
+        let path = git.repo.git().git_dir().join("MERGE_MSG");
+        let file = git.hook_path(&path);
+        let abort = |reason: Option<String>| -> ! {
+            // git leaves the message as generated, whatever the hooks and editor did to it
+            let _ = write_state(git, "MERGE_MSG", message);
+            if let Some(reason) = reason {
+                eprintln!("error: {reason}");
+            }
             eprintln!("Not committing merge; use 'pyn commit' to complete the merge.");
             std::process::exit(1);
+        };
+        if verify && git.vetoed("pre-merge-commit", &[], &env)? {
+            abort(None);
         }
-        let text = std::fs::read(git.repo.git().git_dir().join("MERGE_MSG"))?;
-        Ok(String::from_utf8_lossy(&clean_message(&[
-            String::from_utf8_lossy(&text).into_owned()
-        ]))
-        .into_owned())
+        if args.edit {
+            write_state(git, "MERGE_MSG", &format!("{message}{EDITOR_COMMENT}"))?;
+        }
+        if git.vetoed(
+            "prepare-commit-msg",
+            &[file.clone(), "merge".to_string()],
+            &env,
+        )? {
+            abort(None);
+        }
+        if args.edit
+            && let Err(e) = super::editor::run(git, super::editor::Which::Message, &path)
+        {
+            abort(Some(e.to_string()));
+        }
+        if verify && git.vetoed("commit-msg", &[file], &env)? {
+            abort(None);
+        }
+        let text = std::fs::read(&path)?;
+        let cleaned = if args.edit {
+            super::editor::edited_message(&text)
+        } else {
+            Some(clean_message(
+                &[String::from_utf8_lossy(&text).into_owned()],
+            ))
+        };
+        match cleaned {
+            Some(text) => Ok(String::from_utf8_lossy(&text).into_owned()),
+            None => abort(Some("Empty commit message.".into())),
+        }
     }
 }
 

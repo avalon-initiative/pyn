@@ -38,6 +38,20 @@ case " $HOOKFAIL " in *" $n "*) exit 1 ;; esac
 exit 0
 "#;
 
+/// A message editor: records what it was given, then edits (`EDITMODE` unset), empties the file (`empty`) or fails (`fail`).
+const EDITOR: &str = r#"#!/bin/sh
+{
+echo "== editor"
+echo "file: $(basename "$1")"
+cat "$1"
+} | sed "s#$HOOKROOT#<root>#g" >> "$HOOKLOG"
+case "$EDITMODE" in
+  empty) : > "$1" ;;
+  fail) exit 3 ;;
+  *) echo "edited by editor" >> "$1" ;;
+esac
+"#;
+
 const ALL: [&str; 9] = [
     "pre-commit",
     "prepare-commit-msg",
@@ -49,6 +63,9 @@ const ALL: [&str; 9] = [
     "pre-push",
     "post-rewrite",
 ];
+
+/// Arguments, environment and whether the editor is expected to open.
+type EditCase<'a> = (&'a [&'a str], &'a [(&'a str, &'a str)], bool);
 
 struct Side {
     root: PathBuf,
@@ -88,7 +105,13 @@ impl Side {
 
     fn run_in(&self, dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Run {
         let mut c = self.cmd(dir);
-        c.args(args).envs(env.iter().copied());
+        for (key, value) in env {
+            match *value {
+                "<unset>" => c.env_remove(key),
+                _ => c.env(key, value),
+            };
+        }
+        c.args(args);
         let out = c.output().unwrap();
         Run {
             code: out.status.code().unwrap_or(-1),
@@ -107,6 +130,17 @@ impl Side {
 
     fn log(&self) -> String {
         fs::read_to_string(self.root.join("hook.log")).unwrap_or_default()
+    }
+
+    /// The merge state files `MERGE_MSG` leaves behind, which `state` does not show.
+    fn merge_files(&self) -> String {
+        let git_dir = self.repo.join(".git");
+        let mut out = String::new();
+        for name in ["MERGE_HEAD", "MERGE_MSG", "MERGE_MODE", "AUTO_MERGE"] {
+            let text = fs::read_to_string(git_dir.join(name)).ok();
+            out += &format!("== {name}: {text:?}\n");
+        }
+        out
     }
 
     fn state(&self) -> String {
@@ -595,4 +629,182 @@ fn a_clone_gets_no_hooks_from_its_source() {
     for h in ALL {
         assert!(!dest.join(".git/hooks").join(h).exists(), "{h}");
     }
+}
+
+/// Both repositories diverged on `side` and `main`, with hooks installed and an editor script outside them.
+fn divergent(format: &str, hooks: &[&str]) -> (Pair, String) {
+    let pair = Pair::new(format, hooks);
+    pair.both(|s| {
+        s.git(&["switch", "-q", "side"]);
+        fs::write(s.repo.join("c.txt"), "side\n").unwrap();
+        s.git(&["add", "c.txt"]);
+        s.git(&["commit", "-q", "-m", "side work"]);
+        s.git(&["switch", "-q", "main"]);
+        fs::write(s.repo.join("d.txt"), "main\n").unwrap();
+        s.git(&["add", "d.txt"]);
+        s.git(&["commit", "-q", "-m", "main work"]);
+    });
+    let editor = pair._tmp.path().join("editor.sh");
+    fs::write(&editor, EDITOR).unwrap();
+    fs::set_permissions(&editor, fs::Permissions::from_mode(0o755)).unwrap();
+    let editor = editor.to_string_lossy().into_owned();
+    (pair, editor)
+}
+
+/// Like `same`, and the merge state files must agree too.
+fn same_merge(pair: &Pair, args: &[&str], env: &[(&str, &str)]) -> Run {
+    let run = pair.same("", args, env);
+    first_difference(
+        &pair.p.merge_files(),
+        &pair.o.merge_files(),
+        &format!("{args:?} env {env:?}: merge state files"),
+    );
+    run
+}
+
+#[test]
+fn merge_edit_flags_and_defaults_follow_git() {
+    each_format(|format| {
+        let cases: &[EditCase] = &[
+            (&["merge", "side"], &[], false),
+            (&["merge", "side", "-m", "joined"], &[], false),
+            (&["merge", "side", "-e", "-m", "joined"], &[], true),
+            (&["merge", "side", "-e"], &[], true),
+            (&["merge", "side", "--edit"], &[], true),
+            (&["merge", "side", "--no-edit"], &[], false),
+            (&["merge", "side", "--no-edit", "-m", "joined"], &[], false),
+            (&["merge", "side", "-e", "--no-edit"], &[], false),
+            (&["merge", "side", "--no-edit", "-e"], &[], true),
+            (&["merge", "side"], &[("GIT_MERGE_AUTOEDIT", "yes")], true),
+            (&["merge", "side"], &[("GIT_MERGE_AUTOEDIT", "no")], false),
+            (&["merge", "side"], &[("GIT_MERGE_AUTOEDIT", "")], false),
+            (
+                &["merge", "side", "-m", "j"],
+                &[("GIT_MERGE_AUTOEDIT", "yes")],
+                false,
+            ),
+            (
+                &["merge", "side", "-e"],
+                &[("GIT_MERGE_AUTOEDIT", "no")],
+                true,
+            ),
+            (
+                &["merge", "side", "--no-edit"],
+                &[("GIT_MERGE_AUTOEDIT", "yes")],
+                false,
+            ),
+            (
+                &["merge", "side", "--no-ff", "-e", "--no-verify"],
+                &[],
+                true,
+            ),
+        ];
+        for hooks in [&[][..], &ALL[..]] {
+            for (args, env, edits) in cases {
+                let (pair, editor) = divergent(format, hooks);
+                let mut env = env.to_vec();
+                env.push(("GIT_EDITOR", &editor));
+                same_merge(&pair, args, &env);
+                let ran = pair.p.log().contains("== editor");
+                assert_eq!(ran, *edits, "{args:?} {env:?}: editor ran");
+                if *edits {
+                    let text = pair.p.git(&["log", "-1", "--format=%B"]);
+                    assert!(text.contains("edited by editor"), "{text}");
+                }
+            }
+        }
+    });
+}
+
+#[test]
+fn merge_edit_with_a_bad_autoedit_value_is_fatal() {
+    each_format(|format| {
+        let (pair, editor) = divergent(format, &[]);
+        let env = [
+            ("GIT_EDITOR", editor.as_str()),
+            ("GIT_MERGE_AUTOEDIT", "bogus"),
+        ];
+        let run = same_merge(&pair, &["merge", "side"], &env);
+        assert_eq!(run.code, 128);
+        same_merge(&pair, &["merge", "side", "-m", "joined"], &env);
+        same_merge(&pair, &["merge", "side", "--no-edit"], &env);
+    });
+}
+
+#[test]
+fn merge_edit_hooks_see_the_editor_and_its_message() {
+    each_format(|format| {
+        let (pair, editor) = divergent(format, &ALL);
+        let env = [("GIT_EDITOR", editor.as_str()), ("HOOKEDIT", "1")];
+        same_merge(&pair, &["merge", "side", "-e"], &env);
+        let log = pair.p.log();
+        assert!(log.contains("args: .git/MERGE_MSG merge"), "{log}");
+        assert!(
+            log.contains("GIT_EDITOR=<root>") || log.contains("editor.sh"),
+            "{log}"
+        );
+    });
+}
+
+#[test]
+fn merge_edit_aborts_leave_the_merge_in_progress() {
+    each_format(|format| {
+        for (mode, failing) in [
+            ("empty", ""),
+            ("fail", ""),
+            ("", "commit-msg"),
+            ("", "prepare-commit-msg"),
+            ("", "pre-merge-commit"),
+        ] {
+            for hooks in [&[][..], &ALL[..]] {
+                let (pair, editor) = divergent(format, hooks);
+                let env = [
+                    ("GIT_EDITOR", editor.as_str()),
+                    ("EDITMODE", mode),
+                    ("HOOKFAIL", failing),
+                    ("HOOKEDIT", "1"),
+                ];
+                let run = same_merge(&pair, &["merge", "side", "-e"], &env);
+                if hooks.is_empty() {
+                    assert_eq!(run.code, i32::from(!mode.is_empty()), "{mode}");
+                }
+            }
+        }
+    });
+}
+
+#[test]
+fn merge_edit_without_a_commit_or_with_a_fast_forward_opens_no_editor() {
+    each_format(|format| {
+        let (pair, editor) = divergent(format, &ALL);
+        let env = [("GIT_EDITOR", editor.as_str())];
+        same_merge(&pair, &["merge", "side", "-e", "--no-commit"], &env);
+        assert!(!pair.p.log().contains("== editor"));
+        let pair = Pair::new(format, &ALL);
+        pair.both(|s| {
+            s.git(&["switch", "-q", "side"]);
+            fs::write(s.repo.join("c.txt"), "side\n").unwrap();
+            s.git(&["add", "c.txt"]);
+            s.git(&["commit", "-q", "-m", "side work"]);
+            s.git(&["switch", "-q", "main"]);
+        });
+        same_merge(&pair, &["merge", "side", "-e"], &env);
+        assert!(!pair.p.log().contains("== editor"));
+    });
+}
+
+#[test]
+fn merge_editor_is_chosen_like_commits() {
+    each_format(|format| {
+        let (pair, editor) = divergent(format, &[]);
+        pair.both(|s| {
+            s.git(&["config", "core.editor", &editor]);
+        });
+        same_merge(
+            &pair,
+            &["merge", "side", "-e"],
+            &[("GIT_EDITOR", "<unset>")],
+        );
+        assert!(pair.p.log().contains("== editor"));
+    });
 }
