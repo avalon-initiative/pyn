@@ -10,8 +10,7 @@ tested restore. Provisional: the first release has not been published yet.
 - PostgreSQL 16.
 - The `pyn` CLI is a client; install it from the release archives ([releasing](releasing.md)).
 
-The server image is `ghcr.io/avalon-initiative/pyn-core`, tagged with the plain version (`v1.0.0`, always) and, when the release tag has a title, with the full
-tag too (`v1.0.0-first-stable`); pin the plain version. There is no `latest`.
+The server image is `ghcr.io/avalon-initiative/pyn-core`, tagged with the plain version only (`v1.0.0`, also for a release titled `v1.0.0-first-stable`). There is no `latest`.
 The [`Dockerfile`](../Dockerfile) builds it with `--locked` from pinned base images (tag and digest); it runs as the
 non-root user `pyn` (uid 10001) and works with a read-only root filesystem: it writes only to `/data` (a volume) and
 `/tmp`. It has a `HEALTHCHECK` on `GET /healthz`. `make docker-build` builds `pyn-core:local` from a checkout for anyone

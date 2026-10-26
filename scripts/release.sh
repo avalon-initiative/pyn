@@ -30,9 +30,11 @@ preconditions() {
   gh auth status >/dev/null 2>&1 || die "gh is not authenticated (gh auth login)"
 }
 
+# True when a tag v<X.Y.Z> or v<X.Y.Z>-* exists locally or on origin; the image tag is the plain version.
 tag_exists() {
-  git rev-parse -q --verify "refs/tags/$1" >/dev/null && return 0
-  [ -n "$(git ls-remote --tags origin "refs/tags/$1")" ]
+  local v=${1%%-*}
+  [ -n "$(git tag -l "$v" "$v-*")" ] && return 0
+  [ -n "$(git ls-remote --tags origin "refs/tags/$v" "refs/tags/$v-*")" ]
 }
 
 workspace_version() { sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml; }
@@ -61,7 +63,7 @@ release() {
   tag="v$ver"
   [ -z "$slug" ] || tag="$tag-$slug"
   git check-ref-format --allow-onelevel "$tag" || die "invalid tag name '$tag'"
-  tag_exists "$tag" && die "tag '$tag' already exists"
+  tag_exists "$tag" && die "a tag for $ver already exists"
   branch="release-v$ver"
   git rev-parse -q --verify "refs/heads/$branch" >/dev/null && die "branch '$branch' already exists"
   [ -z "$(git ls-remote --heads origin "refs/heads/$branch")" ] || die "branch '$branch' already exists on origin"

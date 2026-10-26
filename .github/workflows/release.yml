@@ -200,15 +200,13 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Publish the multi-arch tags
+      - name: Publish the multi-arch tag
         working-directory: ${{ runner.temp }}/digests
         env:
           VERSION: ${{ needs.verify.outputs.version }}
         run: |
-          tags=(-t "${IMAGE}:v${VERSION}")
-          if [ "$GITHUB_REF_NAME" != "v${VERSION}" ]; then tags+=(-t "${IMAGE}:${GITHUB_REF_NAME}"); fi
           # shellcheck disable=SC2046
-          docker buildx imagetools create "${tags[@]}" \
+          docker buildx imagetools create -t "${IMAGE}:v${VERSION}" \
             $(printf "${IMAGE}@sha256:%s " *)
 
   release:

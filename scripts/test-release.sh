@@ -76,8 +76,12 @@ rm "$r/dirty"
 git -C "$r" tag -a v0.1.0 -m x
 expect_refused "refuses an existing local tag" "already exists" release VER=0.1.0 TITLE= YES=1
 git -C "$r" tag -d v0.1.0 >/dev/null
+git -C "$r" tag -a v0.1.0-other -m x
+expect_refused "refuses another title for a tagged version" "already exists" release VER=0.1.0 TITLE=new YES=1
+git -C "$r" tag -d v0.1.0-other >/dev/null
 git -C "$r" push -q origin HEAD:refs/tags/v0.2.0
 expect_refused "refuses an existing remote tag" "already exists" release VER=0.2.0 TITLE= YES=1
+expect_refused "refuses another title for a version tagged on origin" "already exists" release VER=0.2.0 TITLE=new YES=1
 git -C "$r" push -q origin :refs/tags/v0.2.0
 expect "refusals change nothing" unchanged
 echo more >> "$r/docs/generated/openapi.json"; git -C "$r" commit -qam local-only
