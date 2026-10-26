@@ -1,8 +1,7 @@
 # Webhooks: subscriptions and secrets
 
 A webhook subscription tells the server where to send [lifecycle events](events.md) and which types to send. This page
-covers administering subscriptions and their signing secrets (decision #452). Raising events, signing and delivery are
-separate work: today the server stores subscriptions and secrets and sends nothing.
+covers administering subscriptions and their signing secrets, and how events are signed and delivered (decision #452).
 
 ## Who may manage them
 
@@ -78,6 +77,40 @@ database it protects.
 
 Changing the key does not re-encrypt existing secrets; one stored under a different key cannot be read, so rotate and
 retire secrets after changing it. Secrets created while no key was set stay plaintext.
+
+## Delivery
+
+Each server runs a delivery loop that claims due deliveries from the outbox (row locks and a two-minute lease, so several
+copies never send the same one), signs them and POSTs the event JSON. Set `PYN_WEBHOOK_WORKER=false` on a copy that
+should not deliver. In-memory mode delivers from the same process.
+
+Every request carries `Content-Type: application/json` and:
+
+| Header | Value |
+| --- | --- |
+| `Pyn-Signature` | `t=<unix seconds>,v1=<hex>`, one `v1` per active secret. Each is the HMAC-SHA256 of `<t>.<body>` keyed with the secret text (`whsec_...`). |
+| `Pyn-Delivery` | The delivery id; the same on every retry. |
+| `Pyn-Event` | The event type. |
+| `Pyn-Server` | The server's public URL. |
+
+Verify by recomputing the HMAC over the raw body for any `v1`, comparing in constant time, and rejecting a `t` more than
+5 minutes from your clock. A retry is signed again with a fresh `t`.
+
+A 2xx answer settles the delivery. Anything else (another status, a timeout, a refused connection, a redirect) counts as a
+failed attempt and is retried with jittered exponential backoff: 8 attempts over about 22 hours, then the delivery is marked
+`failed`. A manual redeliver starts again. Rows are kept 30 days.
+
+### What the sender refuses
+
+- Only `https` URLs (`http` when `PYN_WEBHOOKS_ALLOW_HTTP=true`).
+- Hosts that resolve only to loopback, private, link-local (including the cloud metadata address), shared (100.64/10),
+  reserved or multicast addresses. The address is checked when connecting and the connection is pinned to it, so a name
+  that changes its answer between the check and the connection gains nothing.
+- Redirects are never followed; no proxy is used.
+- Connecting takes at most 5 seconds and the whole request 10; at most 16 KiB of the response is read.
+- `PYN_WEBHOOKS_ALLOWED_HOSTS` (comma separated, `example.com` or `*.example.com`), when set, limits deliveries to those
+  hosts. It narrows the targets; it never lifts the address rules above.
+- `PYN_WEBHOOKS_CONCURRENCY` (default 16) caps sends in flight in one process.
 
 ## Audit
 

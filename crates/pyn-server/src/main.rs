@@ -8,8 +8,9 @@ use pyn_core::memory::{
 use pyn_core::merge::default_concurrent_merges;
 use pyn_core::{
     AccessConfig, AccessService, AccessStore, AuditStore, AuthProvider, ChunkedStore,
-    ExternalPolicy, Limits, MetadataStore, ObjectStore, RateLimitStore, RateLimits, Repositories,
-    Rules, SecretKey, SystemClock, WebhookSettings, WebhookStore, generate_setup_token,
+    ExternalPolicy, Limits, MetadataStore, ObjectStore, RandomJitter, RateLimitStore, RateLimits,
+    Repositories, Rules, SecretKey, SystemClock, WebhookSettings, WebhookStore,
+    generate_setup_token,
 };
 use pyn_fs::FsObjectStore;
 use pyn_oidc::{HttpOidcProvider, OidcConfig};
@@ -18,6 +19,7 @@ use pyn_server::auth::{BearerAuth, DevHeaderAuth};
 use pyn_server::email::LogEmailSender;
 use pyn_server::passwords::PooledPasswords;
 use pyn_server::request_limits::RequestLimits;
+use pyn_server::webhook_delivery::{DeliveryWorker, SafeSender, WorkerConfig};
 use pyn_server::{AppState, router_with};
 
 fn flag(name: &str) -> bool {
@@ -154,6 +156,46 @@ fn webhook_settings() -> anyhow::Result<WebhookSettings> {
         secret_key,
         allow_http: strict_flag("PYN_WEBHOOKS_ALLOW_HTTP", false)?,
     })
+}
+
+/// Starts the loop that delivers queued webhook events, unless `PYN_WEBHOOK_WORKER` is `false`. Every copy of the
+/// server may run one: deliveries are claimed with row locks and a lease.
+fn start_webhook_delivery(
+    store: Arc<dyn WebhookStore>,
+    clock: Arc<SystemClock>,
+    settings: &WebhookSettings,
+    public_url: String,
+) -> anyhow::Result<()> {
+    if !strict_flag("PYN_WEBHOOK_WORKER", true)? {
+        tracing::info!("PYN_WEBHOOK_WORKER is false: this copy does not deliver webhooks");
+        return Ok(());
+    }
+    let allowed_hosts: Vec<String> = std::env::var("PYN_WEBHOOKS_ALLOWED_HOSTS")
+        .map(|v| v.split(',').map(str::to_string).collect())
+        .unwrap_or_default();
+    let config = WorkerConfig {
+        concurrency: number(
+            "PYN_WEBHOOKS_CONCURRENCY",
+            WorkerConfig::default().concurrency,
+        )?,
+        ..WorkerConfig::default()
+    };
+    anyhow::ensure!(
+        config.concurrency >= 1,
+        "PYN_WEBHOOKS_CONCURRENCY must be at least 1"
+    );
+    let sender = SafeSender::new(settings.allow_http, allowed_hosts);
+    Arc::new(DeliveryWorker::new(
+        store,
+        clock,
+        Arc::new(sender),
+        Arc::new(RandomJitter),
+        settings.secret_key.clone(),
+        public_url,
+        config,
+    ))
+    .spawn();
+    Ok(())
 }
 
 /// OpenID Connect sign-in, only when the issuer, client id and client secret are all set.
@@ -326,6 +368,7 @@ async fn main() -> anyhow::Result<()> {
         Some(token) => token.clone(),
         None => generate_setup_token()?,
     };
+    let hook_settings = webhook_settings()?;
     let mut service = AccessService::new(
         access_store,
         clock.clone(),
@@ -334,7 +377,7 @@ async fn main() -> anyhow::Result<()> {
             config.public_url.clone(),
         )),
     )
-    .with_webhooks(webhooks, webhook_settings()?);
+    .with_webhooks(webhooks.clone(), hook_settings.clone());
     if let Some(provider) = oidc {
         tracing::info!("sign-in with the OpenID Connect provider is on");
         service = service.with_oidc(provider);
@@ -371,7 +414,14 @@ async fn main() -> anyhow::Result<()> {
     for warning in access.startup_warnings() {
         tracing::warn!("{warning}");
     }
-    let mut repos = Repositories::new(meta, objects.clone(), audit, access.clone(), clock, rules);
+    let mut repos = Repositories::new(
+        meta,
+        objects.clone(),
+        audit,
+        access.clone(),
+        clock.clone(),
+        rules,
+    );
     if let Ok(limit) = std::env::var("PYN_MAX_LOCKS_ALLOWED_PER_USER") {
         repos = repos.with_default_max_locks(limit.parse()?)?;
     }
@@ -393,6 +443,8 @@ async fn main() -> anyhow::Result<()> {
         "cap on unreferenced uploads per repository"
     );
     let repos = Arc::new(repos);
+
+    start_webhook_delivery(webhooks, clock, &hook_settings, access.public_url())?;
 
     let dev_auth: Option<Arc<dyn AuthProvider>> = if flag("PYN_DEV_AUTH") {
         tracing::warn!("PYN_DEV_AUTH is on: anyone who can reach this server can act as any user");

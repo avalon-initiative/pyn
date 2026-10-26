@@ -29,6 +29,9 @@ keep needs at least `PYN_DATABASE_URL` and `PYN_DATA_DIR`.
 | `PYN_REQUIRE_APPROVAL` | `true` holds new open sign-ups until a server administrator approves them |
 | `PYN_SECRET_KEY` | 32 random bytes as 64 hex characters (`openssl rand -hex 32`): encrypts webhook signing secrets at rest with AES-256-GCM. Unset, they are stored as plaintext and the server warns at start; an invalid value stops the server. See [webhooks](concepts/webhooks.md#encryption-at-rest) |
 | `PYN_WEBHOOKS_ALLOW_HTTP` | `true` lets webhook subscription URLs use `http` (development only); default `false`, https only; any other value stops the server |
+| `PYN_WEBHOOK_WORKER` | `false` stops this server copy from delivering queued webhooks; default `true`; any other value stops the server. See [delivery](concepts/webhooks.md#delivery) |
+| `PYN_WEBHOOKS_ALLOWED_HOSTS` | Comma separated hosts (`example.com`, `*.example.com`); when set, webhooks are delivered only to them. It never allows private addresses |
+| `PYN_WEBHOOKS_CONCURRENCY` | Webhook sends in flight at once in one server; default 16, at least 1 |
 | `PYN_PUBLIC_URL` | Where the web app lives, for links in emails and the `Secure` flag of cookies (an `https://` address sets it); default `http://<PYN_ADDR>`; the address given in first-run setup replaces it |
 | `PYN_ALLOWED_ORIGINS` | Comma-separated origins (`scheme://host[:port]`, no path) besides `PYN_PUBLIC_URL`'s that may sign in and send cookie-authenticated writes, such as the Vite dev server (`make dev` allows `http://localhost:5173` and `http://127.0.0.1:5173`); default none; an invalid entry stops the server at start. See [access](concepts/access.md#web-sessions) |
 | `PYN_EMAIL` | How email is sent; only `log` (notes that a message was queued, without its body) exists |

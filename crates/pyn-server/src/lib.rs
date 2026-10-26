@@ -41,6 +41,7 @@ mod session_api;
 mod setup_api;
 mod team_api;
 mod webhook_api;
+pub mod webhook_delivery;
 
 /// The largest object one upload may carry.
 const MAX_OBJECT_BYTES: u64 = 16 << 30;
