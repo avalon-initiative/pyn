@@ -1,0 +1,10 @@
+[test-groups]
+shared-server = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = 'package(pyn-cli) and (binary(e2e) or binary(e2e_second) or binary(admin))'
+test-group = 'shared-server'
+
+[profile.ci]
+fail-fast = false
+retries = 0

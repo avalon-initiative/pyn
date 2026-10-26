@@ -7,7 +7,7 @@ LOG_DIR := $(RUN_DIR)/logs
 PID_FILE := $(PID_DIR)/pyn.pid
 LOG_FILE := $(LOG_DIR)/pyn.log
 
-.PHONY: dev demo docs-check boundary-check openapi help build run start stop restart status test test-live e2e fmt fmt-check lint check release clean
+.PHONY: dev demo docs-check boundary-check openapi help build run start stop restart status test test-live e2e fmt fmt-check clippy lint check release clean
 
 help:
 	@echo "pyn — local dev commands"
@@ -68,11 +68,16 @@ status:
 		echo "not running"; \
 	fi
 
+# nextest runs test binaries in parallel (and skips doctests); plain cargo test is the fallback.
 test:
-	cargo test --workspace
+	@if cargo nextest --version >/dev/null 2>&1; then \
+		cargo nextest run --workspace && cargo test --workspace --doc; \
+	else cargo test --workspace; fi
 
 test-live:
-	cargo test --workspace -- --ignored
+	@if cargo nextest --version >/dev/null 2>&1; then \
+		cargo nextest run --workspace --run-ignored only && cargo test --workspace --doc -- --ignored; \
+	else cargo test --workspace -- --ignored; fi
 
 e2e:
 	cargo test -p pyn-cli --test e2e --test e2e_second
@@ -83,8 +88,10 @@ fmt:
 fmt-check:
 	cargo fmt --all -- --check
 
-lint:
+clippy:
 	cargo clippy --workspace --all-targets -- -D warnings
+
+lint: clippy
 	python3 scripts/check_links.py
 	python3 scripts/check_public_boundary.py
 

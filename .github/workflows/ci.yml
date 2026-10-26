@@ -4,16 +4,36 @@ on:
   pull_request:
     types: [opened, reopened, synchronize]
   workflow_dispatch:
+  schedule:
+    - cron: '17 4 * * 1'
 
 permissions:
   contents: read
+
+env:
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  NEXTEST_PROFILE: ci
 
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  ci:
+  fmt-docs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Format, docs links and public boundary
+        run: make fmt-check docs-check boundary-check
+
+  clippy:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -22,17 +42,48 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
+          components: clippy
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
+        with:
+          shared-key: lint
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: Public boundary
-        run: make boundary-check
+      - name: Clippy
+        run: make clippy
 
-      # fmt, clippy, tests, the docs link check and the public-boundary check.
-      - name: Checks
-        run: make check
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          shared-key: test
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+
+      - name: Tests
+        run: make test
+
+  # The required status check: passes only when every parallel job did.
+  ci:
+    if: always()
+    needs: [fmt-docs, clippy, test]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: All jobs succeeded
+        run: test "${{ needs.fmt-docs.result }}${{ needs.clippy.result }}${{ needs.test.result }}" = successsuccesssuccess
 
   live:
     runs-on: ubuntu-24.04
@@ -61,6 +112,13 @@ jobs:
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
+        with:
+          shared-key: test
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
 
       - name: Tests that need Postgres
-        run: cargo test --workspace -- --ignored
+        run: make test-live
