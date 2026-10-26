@@ -7,7 +7,7 @@ LOG_DIR := $(RUN_DIR)/logs
 PID_FILE := $(PID_DIR)/pyn.pid
 LOG_FILE := $(LOG_DIR)/pyn.log
 
-.PHONY: dev demo docs-check boundary-check openapi help build run start stop restart status test test-live e2e docker-build fmt fmt-check clippy lint check release clean
+.PHONY: dev demo docs-check boundary-check openapi help build run start stop restart status test test-live e2e docker-build docker-build-cli fmt fmt-check clippy lint check release clean
 
 help:
 	@echo "pyn — local dev commands"
@@ -23,7 +23,8 @@ help:
 	@echo "  make test          run the test suite"
 	@echo "  make test-live     also run tests gated on real infra (Postgres)"
 	@echo "  make e2e           end-to-end suite: real pyn and pyn-server binaries on temporary repositories"
-	@echo "  make docker-build  build the server and CLI images locally (nothing is pushed)"
+	@echo "  make docker-build  build the pyn-core server image locally (nothing is pushed)"
+	@echo "  make docker-build-cli  build the CLI image locally"
 	@echo "  make fmt           auto-format"
 	@echo "  make fmt-check     format check, no writes"
 	@echo "  make lint          clippy + docs link check + public-boundary check"
@@ -82,7 +83,9 @@ test-live:
 
 DOCKER_TAG ?= local
 docker-build:
-	docker build --target server --build-arg VERSION=$(DOCKER_TAG) --build-arg REVISION=$$(git rev-parse --short HEAD) -t pyn-server:$(DOCKER_TAG) .
+	docker build --target server --build-arg VERSION=$(DOCKER_TAG) --build-arg REVISION=$$(git rev-parse --short HEAD) -t pyn-core:$(DOCKER_TAG) .
+
+docker-build-cli:
 	docker build --target cli -t pyn-cli:$(DOCKER_TAG) .
 
 e2e:

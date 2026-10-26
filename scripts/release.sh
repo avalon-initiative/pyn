@@ -37,9 +37,9 @@ if ! [[ $label =~ ^[0-9A-Za-z.-]*$ ]]; then
   exit 1
 fi
 
-tag=$version
+tag="v$version"
 if [ -n "$label" ]; then
-  tag="$version-$label"
+  tag="v$version-$label"
 fi
 
 if ! git check-ref-format --allow-onelevel "$tag"; then

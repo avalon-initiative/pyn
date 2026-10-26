@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-# Targets: server (default) and cli. Build with `make docker-build`.
+# Targets: server (default) and cli. `make docker-build` builds the server image, `make docker-build-cli` the CLI.
 ARG RUST_IMAGE=rust:1.98.1-bookworm@sha256:93ce27a88655056a51dbdd8f5f2d7ddc071c7b0070fb288a37b5a285fc83971e
 ARG RUNTIME_IMAGE=debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8
 
@@ -31,7 +31,7 @@ ENTRYPOINT ["pyn"]
 FROM runtime-base AS server
 ARG VERSION=dev
 ARG REVISION=unknown
-LABEL org.opencontainers.image.title="pyn-server" \
+LABEL org.opencontainers.image.title="pyn-core" \
       org.opencontainers.image.source="https://github.com/avalon-initiative/pyn" \
       org.opencontainers.image.licenses="Apache-2.0" \
       org.opencontainers.image.version="${VERSION}" \

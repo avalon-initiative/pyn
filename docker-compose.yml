@@ -21,7 +21,7 @@ services:
     build:
       context: .
       target: server
-    image: pyn-server:local
+    image: ${PYN_IMAGE:-pyn-core:local}
     restart: unless-stopped
     depends_on:
       db:
