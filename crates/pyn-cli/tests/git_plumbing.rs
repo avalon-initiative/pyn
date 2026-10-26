@@ -970,13 +970,10 @@ fn abbreviations_stay_unique_like_git() {
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped());
             let mut child = c.spawn().unwrap();
-            child
-                .stdin
-                .take()
-                .unwrap()
-                .write_all(names.as_bytes())
-                .unwrap();
+            let mut stdin = child.stdin.take().unwrap();
+            let writer = std::thread::spawn(move || stdin.write_all(names.as_bytes()).unwrap());
             let ids = String::from_utf8(child.wait_with_output().unwrap().stdout).unwrap();
+            writer.join().unwrap();
             if packed {
                 f.g(&["gc", "-q"]);
             }
