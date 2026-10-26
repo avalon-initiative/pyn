@@ -1834,9 +1834,28 @@ impl MetadataStore for PgMetadataStore {
         .map_err(db)
     }
 
-    async fn record_upload(&self, repo: &RepoId, id: &ObjectId, size: u64, cap: u64) -> Result<()> {
+    async fn record_upload(
+        &self,
+        repo: &RepoId,
+        id: &ObjectId,
+        size: u64,
+        cap: u64,
+        reservation: UploadReservation,
+    ) -> Result<()> {
         let mut tx = self.pool.begin().await.map_err(db)?;
+        // Keep the transfer between budget terms outside a reservation check's two reads.
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+            .bind(format!("upload-budget:{repo}"))
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
         insert_upload(&mut tx, repo, id, size, cap).await?;
+        sqlx::query("DELETE FROM upload_reservations WHERE id = $1 AND repo = $2")
+            .bind(reservation.0)
+            .bind(repo.as_str())
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
         tx.commit().await.map_err(db)
     }
 

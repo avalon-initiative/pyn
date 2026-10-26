@@ -279,8 +279,17 @@ pub trait MetadataStore: Send + Sync {
     async fn has_content(&self, repo: &RepoId, content: &ObjectId) -> Result<bool>;
 
     /// Records that `repo` may reference the uploaded object `id` of `size` bytes. A new record that takes the
-    /// repository's unreferenced uploads past `cap` bytes is `StorageLimitReached` and is not kept.
-    async fn record_upload(&self, repo: &RepoId, id: &ObjectId, size: u64, cap: u64) -> Result<()>;
+    /// repository's unreferenced uploads past `cap` bytes is `StorageLimitReached` and is not kept. On success the
+    /// upload's `reservation` is consumed and its bytes stop counting as held; any newly counted unreferenced bytes
+    /// are added in the same step. On failure the reservation survives and stays releasable.
+    async fn record_upload(
+        &self,
+        repo: &RepoId,
+        id: &ObjectId,
+        size: u64,
+        cap: u64,
+        reservation: UploadReservation,
+    ) -> Result<()>;
 
     /// Whether any repository, this one included, has recorded the object `id`.
     async fn object_is_recorded(&self, id: &ObjectId) -> Result<bool>;

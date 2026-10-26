@@ -1,6 +1,10 @@
 //! Uploaded objects are scoped to the repository that uploaded them, while the object store stays shared.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
+
+use chrono::Utc;
 
 use super::push::{Files, build, objects, set};
 use super::{RULES, Store, blob, harness, harness_on, other_repo, path, who};
@@ -8,8 +12,8 @@ use crate::AuditStore as _;
 use crate::memory::MemoryObjectStore;
 use crate::merge::{FastForward, MergeRequest, Resolution};
 use crate::{
-    ChunkedStore, FileMode, Keying, ObjectId, ObjectStore, PynError, RepoId, RepoService, Rules,
-    ServiceConfig,
+    ChunkedStore, FileMode, Keying, MetadataStore, ObjectId, ObjectStore, PynError, RepoId,
+    RepoPath, RepoRecord, RepoService, RepoUpdate, RevisionId, Rules, ServiceConfig, UserId,
 };
 
 async fn chunk(svc: &RepoService, bytes: &'static [u8]) -> crate::Result<ObjectId> {
@@ -298,6 +302,10 @@ pub async fn upload_reservations_hold_the_budget_until_released_or_expired(store
 }
 
 pub async fn parallel_uploads_never_pass_the_unreferenced_budget(store: Store) {
+    // Seven of the eight uploads wait for the budget gate, which releases them only once the first
+    // upload's bytes are recorded, before its separate release call; their single reserve attempts
+    // therefore all land inside the window that would double-count an unconsumed reservation.
+    let store: Store = BudgetGateStore::new(store, 7);
     let h = harness(store.clone());
     let svc = capped_service(&h, &store, "parallel", 10);
     let tasks: Vec<_> = (0..8u8)
@@ -459,8 +467,16 @@ pub async fn a_failed_upload_keeps_an_object_another_repository_recorded(store: 
 pub async fn an_object_is_reported_referenced_once_any_repository_recorded_it(store: Store) {
     let id = ObjectId::from_hex(pyn_object::Algorithm::Sha256, &"11".repeat(32)).unwrap();
     assert!(!store.object_is_recorded(&id).await.unwrap());
+    // No reservation backs this synthetic record; 0 is never a live reservation id (both stores
+    // number them from 1), so consuming it removes nothing.
     store
-        .record_upload(&RepoId::new("elsewhere"), &id, 1, 100)
+        .record_upload(
+            &RepoId::new("elsewhere"),
+            &id,
+            1,
+            100,
+            crate::UploadReservation(0),
+        )
         .await
         .unwrap();
     assert!(store.object_is_recorded(&id).await.unwrap());
@@ -531,4 +547,528 @@ pub async fn audit_details_carry_a_bounded_message(store: Store) {
         checkins.iter().all(|e| e.detail.len() < 400),
         "{checkins:?}"
     );
+}
+
+/// Holds the budget race open for `parallel_uploads_never_pass_the_unreferenced_budget`: the first
+/// `record_upload` forwards to the inner store, then keeps the upload parked until every
+/// competitor's single `reserve_upload` attempt has completed. The park makes the race
+/// deterministic: with a budget that counts an upload's bytes in both `unreferenced` and its
+/// still-held reservation, every competitor is refused; with a budget that counts each byte once,
+/// the first competitor still fits.
+struct BudgetGateStore {
+    inner: Store,
+    /// Set by the first reserve; every later reserve belongs to a competitor and is held until the
+    /// first record has landed, so no competitor can reserve before the window opens.
+    first_reserve: AtomicBool,
+    /// Claimed by the first `record_upload` before it forwards, so exactly one upload gates; the
+    /// done flag is set only after the forward, so the held reserves wait for the landing.
+    first_record: AtomicBool,
+    /// Set once the first `record_upload` has reached the inner store.
+    first_record_done: AtomicBool,
+    /// Completed competitor reserve attempts (every reserve but the first).
+    competitors: AtomicUsize,
+    /// How many competitor attempts the gate waits for.
+    want: usize,
+}
+
+impl BudgetGateStore {
+    fn new(inner: Store, want: usize) -> Arc<Self> {
+        Arc::new(Self {
+            inner,
+            first_reserve: AtomicBool::new(false),
+            first_record: AtomicBool::new(false),
+            first_record_done: AtomicBool::new(false),
+            competitors: AtomicUsize::new(0),
+            want,
+        })
+    }
+
+    /// Waits until `ok` holds or 60s pass, then fails loudly instead of hanging. The contract
+    /// feature builds without tokio's time driver, so the deadline uses a monotonic clock and the
+    /// wait yields instead of sleeping.
+    async fn wait_for(&self, ok: impl Fn(&Self) -> bool, what: &str) {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while !ok(self) {
+            if Instant::now() >= deadline {
+                panic!("budget gate ({what}) never opened within 60s");
+            }
+            tokio::task::yield_now().await;
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl MetadataStore for BudgetGateStore {
+    async fn acquire_lock(
+        &self,
+        repo: &RepoId,
+        path: &RepoPath,
+        owner: &UserId,
+        now: chrono::DateTime<Utc>,
+        expires_at: chrono::DateTime<Utc>,
+        max_locks: u32,
+    ) -> crate::Result<crate::Lock> {
+        self.inner
+            .acquire_lock(repo, path, owner, now, expires_at, max_locks)
+            .await
+    }
+
+    async fn release_lock(
+        &self,
+        repo: &RepoId,
+        path: &RepoPath,
+        owner: &UserId,
+        now: chrono::DateTime<Utc>,
+    ) -> crate::Result<()> {
+        self.inner.release_lock(repo, path, owner, now).await
+    }
+
+    async fn force_release_lock(
+        &self,
+        repo: &RepoId,
+        path: &RepoPath,
+        now: chrono::DateTime<Utc>,
+    ) -> crate::Result<Option<crate::Lock>> {
+        self.inner.force_release_lock(repo, path, now).await
+    }
+
+    async fn get_lock(
+        &self,
+        repo: &RepoId,
+        path: &RepoPath,
+        now: chrono::DateTime<Utc>,
+    ) -> crate::Result<Option<crate::Lock>> {
+        self.inner.get_lock(repo, path, now).await
+    }
+
+    async fn list_locks(
+        &self,
+        repo: &RepoId,
+        now: chrono::DateTime<Utc>,
+    ) -> crate::Result<Vec<crate::Lock>> {
+        self.inner.list_locks(repo, now).await
+    }
+
+    async fn list_locks_of(
+        &self,
+        owner: &UserId,
+        now: chrono::DateTime<Utc>,
+    ) -> crate::Result<Vec<(RepoId, crate::Lock)>> {
+        self.inner.list_locks_of(owner, now).await
+    }
+
+    async fn head_revision(
+        &self,
+        repo: &RepoId,
+        path: &RepoPath,
+    ) -> crate::Result<Option<crate::Revision>> {
+        self.inner.head_revision(repo, path).await
+    }
+
+    async fn commit_changeset_on(
+        &self,
+        repo: &RepoId,
+        branch: &str,
+        items: Vec<crate::ChangesetItem>,
+        now: chrono::DateTime<Utc>,
+        cap: Option<crate::StorageCap>,
+    ) -> crate::Result<Vec<crate::Revision>> {
+        self.inner
+            .commit_changeset_on(repo, branch, items, now, cap)
+            .await
+    }
+
+    async fn push_commits_on(
+        &self,
+        repo: &RepoId,
+        branch: &str,
+        commits: Vec<crate::PushedCommit>,
+        pusher: &UserId,
+        now: chrono::DateTime<Utc>,
+        cap: Option<crate::StorageCap>,
+    ) -> crate::Result<Vec<crate::Revision>> {
+        self.inner
+            .push_commits_on(repo, branch, commits, pusher, now, cap)
+            .await
+    }
+
+    async fn commit_merge_on(
+        &self,
+        repo: &RepoId,
+        branch: &str,
+        merge: crate::merge::MergeWrite,
+        now: chrono::DateTime<Utc>,
+        cap: Option<crate::StorageCap>,
+    ) -> crate::Result<crate::merge::MergeWritten> {
+        self.inner
+            .commit_merge_on(repo, branch, merge, now, cap)
+            .await
+    }
+
+    async fn fast_forward_branch(
+        &self,
+        repo: &RepoId,
+        branch: &str,
+        from: Option<&ObjectId>,
+        to: &ObjectId,
+    ) -> crate::Result<()> {
+        self.inner.fast_forward_branch(repo, branch, from, to).await
+    }
+
+    async fn merge_bases(
+        &self,
+        repo: &RepoId,
+        a: &ObjectId,
+        b: &ObjectId,
+    ) -> crate::Result<Vec<ObjectId>> {
+        self.inner.merge_bases(repo, a, b).await
+    }
+
+    async fn list_branches(&self, repo: &RepoId) -> crate::Result<Vec<crate::Branch>> {
+        self.inner.list_branches(repo).await
+    }
+
+    async fn get_branch(&self, repo: &RepoId, name: &str) -> crate::Result<Option<crate::Branch>> {
+        self.inner.get_branch(repo, name).await
+    }
+
+    async fn create_branch(
+        &self,
+        repo: &RepoId,
+        name: &str,
+        at: &ObjectId,
+        by: &UserId,
+        now: chrono::DateTime<Utc>,
+    ) -> crate::Result<crate::Branch> {
+        self.inner.create_branch(repo, name, at, by, now).await
+    }
+
+    async fn delete_branch(
+        &self,
+        repo: &RepoId,
+        name: &str,
+        expected: Option<&ObjectId>,
+    ) -> crate::Result<()> {
+        self.inner.delete_branch(repo, name, expected).await
+    }
+
+    async fn rename_branch(
+        &self,
+        repo: &RepoId,
+        from: &str,
+        to: &str,
+    ) -> crate::Result<crate::Branch> {
+        self.inner.rename_branch(repo, from, to).await
+    }
+
+    async fn get_commit(
+        &self,
+        repo: &RepoId,
+        id: &ObjectId,
+    ) -> crate::Result<Option<crate::Commit>> {
+        self.inner.get_commit(repo, id).await
+    }
+
+    async fn commits_by_prefix(
+        &self,
+        repo: &RepoId,
+        prefix: &str,
+        limit: usize,
+    ) -> crate::Result<Vec<ObjectId>> {
+        self.inner.commits_by_prefix(repo, prefix, limit).await
+    }
+
+    async fn commits(
+        &self,
+        repo: &RepoId,
+        tip: Option<&ObjectId>,
+        before: Option<&ObjectId>,
+        limit: usize,
+    ) -> crate::Result<Vec<crate::Commit>> {
+        self.inner.commits(repo, tip, before, limit).await
+    }
+
+    async fn commits_matching(
+        &self,
+        repo: &RepoId,
+        tip: Option<&ObjectId>,
+        before: Option<&ObjectId>,
+        filter: &crate::CommitFilter,
+        limit: usize,
+    ) -> crate::Result<Vec<crate::Commit>> {
+        self.inner
+            .commits_matching(repo, tip, before, filter, limit)
+            .await
+    }
+
+    async fn missing_commits(
+        &self,
+        repo: &RepoId,
+        tips: &[ObjectId],
+        haves: &[ObjectId],
+        after: Option<&ObjectId>,
+        limit: usize,
+        max_examined: usize,
+    ) -> crate::Result<Vec<crate::Commit>> {
+        self.inner
+            .missing_commits(repo, tips, haves, after, limit, max_examined)
+            .await
+    }
+
+    async fn is_ancestor(
+        &self,
+        repo: &RepoId,
+        ancestor: &ObjectId,
+        descendant: &ObjectId,
+    ) -> crate::Result<bool> {
+        self.inner.is_ancestor(repo, ancestor, descendant).await
+    }
+
+    async fn revision_at(
+        &self,
+        repo: &RepoId,
+        commit: &ObjectId,
+        path: &RepoPath,
+    ) -> crate::Result<Option<crate::Revision>> {
+        self.inner.revision_at(repo, commit, path).await
+    }
+
+    async fn commit_pointers(
+        &self,
+        repo: &RepoId,
+        commit: &ObjectId,
+    ) -> crate::Result<Vec<crate::Revision>> {
+        self.inner.commit_pointers(repo, commit).await
+    }
+
+    async fn has_content(&self, repo: &RepoId, content: &ObjectId) -> crate::Result<bool> {
+        self.inner.has_content(repo, content).await
+    }
+
+    async fn record_upload(
+        &self,
+        repo: &RepoId,
+        id: &ObjectId,
+        size: u64,
+        cap: u64,
+        reservation: crate::UploadReservation,
+    ) -> crate::Result<()> {
+        if self.first_record.swap(true, Ordering::SeqCst) {
+            return self
+                .inner
+                .record_upload(repo, id, size, cap, reservation)
+                .await;
+        }
+        // Forward first: the bytes land in `unreferenced` before the gate opens, so every
+        // competitor's single reserve attempt happens between this record and this upload's
+        // release — the window a double-counting budget gets wrong.
+        let out = self
+            .inner
+            .record_upload(repo, id, size, cap, reservation)
+            .await;
+        self.first_record_done.store(true, Ordering::SeqCst);
+        // Keep the upload parked here until every competitor's single reserve attempt has
+        // completed; a budget that counts bytes once admits one of the seven here and refuses
+        // the rest for real.
+        self.wait_for(
+            |g| g.competitors.load(Ordering::SeqCst) >= g.want,
+            "record gate",
+        )
+        .await;
+        out
+    }
+
+    async fn record_assembled(
+        &self,
+        repo: &RepoId,
+        id: &ObjectId,
+        size: u64,
+        chunks: &[ObjectId],
+        cap: u64,
+    ) -> crate::Result<()> {
+        self.inner
+            .record_assembled(repo, id, size, chunks, cap)
+            .await
+    }
+
+    async fn object_is_recorded(&self, id: &ObjectId) -> crate::Result<bool> {
+        self.inner.object_is_recorded(id).await
+    }
+
+    async fn unknown_objects(
+        &self,
+        repo: &RepoId,
+        ids: &[ObjectId],
+    ) -> crate::Result<Vec<ObjectId>> {
+        self.inner.unknown_objects(repo, ids).await
+    }
+
+    async fn reserve_upload(
+        &self,
+        repo: &RepoId,
+        bytes: u64,
+        cap: u64,
+        now: chrono::DateTime<chrono::Utc>,
+        ttl_secs: i64,
+    ) -> crate::Result<crate::UploadReservation> {
+        let competitor = self.first_reserve.swap(true, Ordering::SeqCst);
+        if competitor && !self.first_record_done.load(Ordering::SeqCst) {
+            self.wait_for(
+                |g| g.first_record_done.load(Ordering::SeqCst),
+                "reserve hold",
+            )
+            .await;
+        }
+        let out = self
+            .inner
+            .reserve_upload(repo, bytes, cap, now, ttl_secs)
+            .await;
+        if competitor {
+            self.competitors.fetch_add(1, Ordering::SeqCst);
+        }
+        out
+    }
+
+    async fn release_upload(
+        &self,
+        repo: &RepoId,
+        reservation: crate::UploadReservation,
+    ) -> crate::Result<()> {
+        self.inner.release_upload(repo, reservation).await
+    }
+
+    async fn unreferenced_bytes(&self, repo: &RepoId) -> crate::Result<u64> {
+        self.inner.unreferenced_bytes(repo).await
+    }
+
+    async fn get_tree(&self, repo: &RepoId, id: &ObjectId) -> crate::Result<Option<Vec<u8>>> {
+        self.inner.get_tree(repo, id).await
+    }
+
+    async fn snapshot(
+        &self,
+        repo: &RepoId,
+        commit: &ObjectId,
+    ) -> crate::Result<Vec<crate::Revision>> {
+        self.inner.snapshot(repo, commit).await
+    }
+
+    async fn get_revision(
+        &self,
+        repo: &RepoId,
+        path: &RepoPath,
+        id: RevisionId,
+    ) -> crate::Result<Option<crate::Revision>> {
+        self.inner.get_revision(repo, path, id).await
+    }
+
+    async fn snapshot_page(
+        &self,
+        repo: &RepoId,
+        commit: &ObjectId,
+        prefix: Option<&str>,
+        after: Option<&RepoPath>,
+        limit: usize,
+    ) -> crate::Result<Vec<crate::Revision>> {
+        self.inner
+            .snapshot_page(repo, commit, prefix, after, limit)
+            .await
+    }
+
+    async fn head_counts(
+        &self,
+        repo: &RepoId,
+        commit: &ObjectId,
+    ) -> crate::Result<crate::HeadCounts> {
+        self.inner.head_counts(repo, commit).await
+    }
+
+    async fn list_head_revisions(
+        &self,
+        repo: &RepoId,
+        after: Option<&RepoPath>,
+        limit: usize,
+    ) -> crate::Result<Vec<crate::Revision>> {
+        self.inner.list_head_revisions(repo, after, limit).await
+    }
+
+    async fn history(
+        &self,
+        repo: &RepoId,
+        path: &RepoPath,
+        within: Option<&ObjectId>,
+    ) -> crate::Result<Vec<crate::Revision>> {
+        self.inner.history(repo, path, within).await
+    }
+
+    async fn history_page(
+        &self,
+        repo: &RepoId,
+        path: &RepoPath,
+        within: Option<&ObjectId>,
+        after: Option<RevisionId>,
+        limit: usize,
+    ) -> crate::Result<Vec<crate::Revision>> {
+        self.inner
+            .history_page(repo, path, within, after, limit)
+            .await
+    }
+
+    async fn repo_history(
+        &self,
+        repo: &RepoId,
+        within: Option<&ObjectId>,
+        filter: Option<&crate::PathFilter>,
+        before: Option<&crate::HistoryCursor>,
+        limit: usize,
+        budget: usize,
+    ) -> crate::Result<crate::HistoryScan> {
+        self.inner
+            .repo_history(repo, within, filter, before, limit, budget)
+            .await
+    }
+
+    async fn create_repo_capped(
+        &self,
+        repo: RepoRecord,
+        max_repos: Option<u64>,
+    ) -> crate::Result<RepoRecord> {
+        self.inner.create_repo_capped(repo, max_repos).await
+    }
+
+    async fn find_repo(&self, owner: &UserId, name: &str) -> crate::Result<Option<RepoRecord>> {
+        self.inner.find_repo(owner, name).await
+    }
+
+    async fn get_repo(&self, id: &RepoId) -> crate::Result<Option<RepoRecord>> {
+        self.inner.get_repo(id).await
+    }
+
+    async fn list_repos(&self, owner: Option<&UserId>) -> crate::Result<Vec<RepoRecord>> {
+        self.inner.list_repos(owner).await
+    }
+
+    async fn list_public_repos(
+        &self,
+        after: Option<(&UserId, &str)>,
+        limit: usize,
+    ) -> crate::Result<Vec<RepoRecord>> {
+        self.inner.list_public_repos(after, limit).await
+    }
+
+    async fn update_repo(&self, id: &RepoId, update: RepoUpdate) -> crate::Result<RepoRecord> {
+        self.inner.update_repo(id, update).await
+    }
+
+    async fn delete_repo(&self, id: &RepoId) -> crate::Result<bool> {
+        self.inner.delete_repo(id).await
+    }
+
+    async fn owner_usage(&self, owner: &UserId) -> crate::Result<crate::Usage> {
+        self.inner.owner_usage(owner).await
+    }
+
+    async fn repo_usage(&self, repo: &RepoId) -> crate::Result<crate::RepoUsage> {
+        self.inner.repo_usage(repo).await
+    }
 }

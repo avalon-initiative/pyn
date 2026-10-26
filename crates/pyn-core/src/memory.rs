@@ -1088,8 +1088,20 @@ impl MetadataStore for MemoryMetadataStore {
             .any(|((r, _), revs)| r == repo && revs.iter().any(|v| &v.content == content)))
     }
 
-    async fn record_upload(&self, repo: &RepoId, id: &ObjectId, size: u64, cap: u64) -> Result<()> {
-        self.state.lock().unwrap().record(repo, id, size, cap)
+    async fn record_upload(
+        &self,
+        repo: &RepoId,
+        id: &ObjectId,
+        size: u64,
+        cap: u64,
+        reservation: UploadReservation,
+    ) -> Result<()> {
+        let mut st = self.state.lock().unwrap();
+        st.record(repo, id, size, cap)?;
+        // One budget count per byte: the hold leaves the reservation set in the same lock hold
+        // that lands the bytes in `unreferenced`; a failed record keeps the hold releasable.
+        st.reservations.remove(&reservation.0);
+        Ok(())
     }
 
     async fn object_is_recorded(&self, id: &ObjectId) -> Result<bool> {
