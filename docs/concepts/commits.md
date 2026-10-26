@@ -163,7 +163,7 @@ repository is readable without credentials). A client that keeps commits and tre
 - It must fast-forward: the first commit's parent is the branch's head or one of its ancestors (a first commit with no parent is
   for an empty branch), and the pushed history must contain the head, which only a [merge commit](#merge-commits-in-a-push-provisional)
   can arrange when the first parent is not the head; otherwise `not_fast_forward`. A commit already in the repository is
-  `push_invalid`. The branch must exist.
+  `push_invalid`. A branch that does not exist is created by the push.
 - Each commit's tree is compared with its parent's: every added or changed file becomes one revision, with the commit's author as its
   person, the pusher as its account, the commit's time and message, and the path's mode under the branch's policy (an unlisted path
   is exclusive by default). The blob of each must already be in the object store (`object_missing`), and a tree the commit needs must
