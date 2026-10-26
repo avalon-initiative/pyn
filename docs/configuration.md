@@ -10,6 +10,7 @@ keep needs at least `PYN_DATABASE_URL` and `PYN_DATA_DIR`.
 | `PYN_DATA_DIR` | Directory for uploaded content; unset means in-memory |
 | `PYN_INSTANCES` | How many server copies share the database, default 1; above 1 the server refuses to start without `PYN_DATABASE_URL` and `PYN_DATA_DIR` (a shared volume), and every copy needs the same `PYN_SETUP_TOKEN` until set up |
 | `PYN_CONFIG` | Fallback policy for repositories that have no `.pyn/pyn.toml` yet; unset means everything is exclusive (`make dev` uses `scripts/demo.pyn.toml`) |
+| `RUST_LOG` | Log filter in `tracing` syntax (`debug`, `pyn_server=debug,info`); default `info`. An unparsable value falls back to the default |
 | `PYN_ADDR` | Listen address, default `127.0.0.1:7878` |
 | `PYN_DEV_AUTH` | `true` accepts the `X-Pyn-User` header with every permission; for server tests only, not used by `make dev` |
 | `PYN_SETUP_TOKEN` | The one-time token that authorises first-run setup, at least 16 characters; unset, the server generates one and prints it on standard error at start. Ignored once the server is set up |
@@ -43,6 +44,8 @@ keep needs at least `PYN_DATABASE_URL` and `PYN_DATA_DIR`.
 | `PYN_CONFIG_DIR` | Where the CLI keeps `credentials.toml`, default `~/.config/pyn`; the directory is made `0700` and the file `0600`, and a file that cannot be parsed is an error, never replaced |
 | `PYN_CLI_CONFIG` | The CLI's user settings file, default `~/.config/pyn/config.toml` (not the server's `PYN_CONFIG`); `pyn config init` creates it, and the first command in a terminal offers to |
 | `PYN_REPO` | The repository (`owner/name`) the CLI acts on, unless a workspace or `--repo` says otherwise |
+
+`pyn-server --healthcheck` does not start a server: it requests `/healthz` on `PYN_ADDR` (an unspecified address such as `0.0.0.0` is probed on loopback) with a 3 second timeout and exits 0 if it answers, non-zero otherwise. It never touches the database, so a container image can use it as its healthcheck without `curl`.
 
 `make test-live` runs the tests that need a database (`PYN_DATABASE_URL`); each uses its own temporary schema.
 

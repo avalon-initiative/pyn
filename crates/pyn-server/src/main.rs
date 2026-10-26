@@ -224,10 +224,44 @@ fn oidc_provider() -> anyhow::Result<Option<Arc<HttpOidcProvider>>> {
     Ok(Some(Arc::new(HttpOidcProvider::new(config)?)))
 }
 
+/// Asks this server's own `/healthz` on the configured address; an unspecified bind address is probed on loopback.
+async fn healthcheck(addr: &str) -> anyhow::Result<()> {
+    let (host, port) = addr
+        .rsplit_once(':')
+        .ok_or_else(|| anyhow::anyhow!("PYN_ADDR must be host:port"))?;
+    let host = match host.trim_matches(['[', ']']) {
+        "0.0.0.0" => "127.0.0.1",
+        "::" => "::1",
+        other => other,
+    };
+    let host = if host.contains(':') {
+        format!("[{host}]")
+    } else {
+        host.to_string()
+    };
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()?;
+    client
+        .get(format!("http://{host}:{port}/healthz"))
+        .send()
+        .await?
+        .error_for_status()?;
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
     let addr = std::env::var("PYN_ADDR").unwrap_or_else(|_| "127.0.0.1:7878".into());
+    if std::env::args().nth(1).as_deref() == Some("--healthcheck") {
+        return healthcheck(&addr).await;
+    }
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
     let rules = match std::env::var("PYN_CONFIG") {
         Ok(path) => {
             let size = std::fs::metadata(&path)?.len();
