@@ -1,6 +1,6 @@
 name: Release
 
-# Pushing a v<MAJOR>.<MINOR>.<PATCH>[-label] tag (created by `make release`) publishes that
+# Pushing a v<MAJOR>.<MINOR>.<PATCH>[-title-slug] tag (created by `make release-publish`) publishes that
 # version: binaries, the pyn-core image on ghcr.io and a GitHub Release. See docs/releasing.md.
 on:
   push:
@@ -21,6 +21,9 @@ jobs:
   verify:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    outputs:
+      version: ${{ steps.tag.outputs.version }}
+      prerelease: ${{ steps.tag.outputs.prerelease }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -36,6 +39,7 @@ jobs:
           fi
 
       - name: Verify the tag matches the workspace version
+        id: tag
         run: scripts/verify-release-version.sh "${GITHUB_REF_NAME}"
 
       - uses: dtolnay/rust-toolchain@stable
@@ -196,11 +200,15 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Publish the multi-arch tag
+      - name: Publish the multi-arch tags
         working-directory: ${{ runner.temp }}/digests
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
         run: |
+          tags=(-t "${IMAGE}:v${VERSION}")
+          if [ "$GITHUB_REF_NAME" != "v${VERSION}" ]; then tags+=(-t "${IMAGE}:${GITHUB_REF_NAME}"); fi
           # shellcheck disable=SC2046
-          docker buildx imagetools create -t "${IMAGE}:${GITHUB_REF_NAME}" \
+          docker buildx imagetools create "${tags[@]}" \
             $(printf "${IMAGE}@sha256:%s " *)
 
   release:
@@ -222,8 +230,9 @@ jobs:
 
       - name: Create GitHub Release
         run: |
-          pre=""
-          case "$GITHUB_REF_NAME" in *-*) pre="--prerelease" ;; esac
-          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes $pre
+          pre=()
+          if [ "$PRERELEASE" = true ]; then pre=(--prerelease); fi
+          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes "${pre[@]}"
         env:
+          PRERELEASE: ${{ needs.verify.outputs.prerelease }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

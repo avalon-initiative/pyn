@@ -7,7 +7,7 @@ LOG_DIR := $(RUN_DIR)/logs
 PID_FILE := $(PID_DIR)/pyn.pid
 LOG_FILE := $(LOG_DIR)/pyn.log
 
-.PHONY: dev demo docs-check boundary-check openapi help build run start stop restart status test test-live e2e docker-build docker-build-cli fmt fmt-check clippy lint check release clean
+.PHONY: dev demo docs-check boundary-check openapi help build run start stop restart status test test-live e2e docker-build docker-build-cli fmt fmt-check clippy lint check release release-skip-tests release-publish release-test clean
 
 help:
 	@echo "pyn — local dev commands"
@@ -31,7 +31,10 @@ help:
 	@echo "  make boundary-check  fail on private references, secrets, or a git spawn in runtime source"
 	@echo "  make openapi       regenerate docs/generated/openapi.json"
 	@echo "  make check         fmt-check + lint + test — what CI runs"
-	@echo "  make release       run the release flow: checks, version prompt, bump, commit and tag"
+	@echo "  make release       run the checks, bump the version on a release branch and open the pull request"
+	@echo "  make release-skip-tests  same as release without the checks"
+	@echo "  make release-publish  tag the merged release commit on main and push the tag"
+	@echo "  make release-test  test the release scripts against a throwaway repository"
 	@echo "  make clean         remove build artifacts and PID/log files"
 
 build:
@@ -132,10 +135,20 @@ boundary-check:
 openapi:
 	PYN_UPDATE_OPENAPI=1 cargo test -p pyn-server --test openapi
 
-check: fmt-check lint test
+check: fmt-check lint test release-test
 
+# VER, TITLE, SKIP_CHECKS and YES reach the script through the environment.
 release:
-	scripts/release.sh
+	@scripts/release.sh
+
+release-skip-tests:
+	@SKIP_CHECKS=1 scripts/release.sh
+
+release-publish:
+	@scripts/release.sh publish
+
+release-test:
+	@scripts/test-release.sh
 
 clean:
 	cargo clean
