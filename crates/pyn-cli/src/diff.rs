@@ -45,6 +45,8 @@ pub enum Source {
     /// A work tree file whose id git does not record: the raw format shows it as zeros.
     Worktree {
         file: PathBuf,
+        /// The repository form of the file when line endings or `ident` convert it.
+        cleaned: Option<std::sync::Arc<Vec<u8>>>,
     },
 }
 
@@ -227,10 +229,17 @@ fn bytes(backend: &dyn Backend, path: &str, blob: &Blob, probe: bool) -> Result<
             if *dirty { "-dirty" } else { "" }
         )
         .into_bytes()),
-        Source::Local { file } | Source::Worktree { file } if localfile::is_symlink(file) => {
+        Source::Worktree {
+            cleaned: Some(data),
+            ..
+        } => Ok(match probe {
+            true => data[..data.len().min(PROBE)].to_vec(),
+            false => data.to_vec(),
+        }),
+        Source::Local { file } | Source::Worktree { file, .. } if localfile::is_symlink(file) => {
             Ok(localfile::read(file)?.1)
         }
-        Source::Local { file } | Source::Worktree { file } => {
+        Source::Local { file } | Source::Worktree { file, .. } => {
             let mut f = std::fs::File::open(file).with_context(|| format!("reading {path}"))?;
             let mut buf = Vec::new();
             if probe {
@@ -266,7 +275,9 @@ fn contents(
         .map(|b| bytes(backend, path, b, true))
         .transpose()?
         .unwrap_or_default();
-    if !text && (pyn_diff::is_binary(&old_probe) || pyn_diff::is_binary(&new_probe)) {
+    let forced = backend.diff_binary(path);
+    let binary_of = |data: &[u8]| forced.unwrap_or_else(|| pyn_diff::is_binary(data));
+    if !text && (binary_of(&old_probe) || binary_of(&new_probe)) {
         return Ok(Contents {
             old: Vec::new(),
             new: Vec::new(),
@@ -280,7 +291,7 @@ fn contents(
         }
     };
     let (old, new) = (full(old, old_probe)?, full(new, new_probe)?);
-    let binary = !text && (pyn_diff::is_binary(&old) || pyn_diff::is_binary(&new));
+    let binary = !text && (binary_of(&old) || binary_of(&new));
     Ok(Contents { old, new, binary })
 }
 

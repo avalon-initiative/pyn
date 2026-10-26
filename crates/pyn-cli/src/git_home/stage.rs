@@ -478,7 +478,13 @@ pub(super) fn stage_file(
     let bytes = if mode == FileMode::Symlink {
         link_target(&file)?
     } else {
-        std::fs::read(&file).with_context(|| format!("reading {}", file.display()))?
+        let clean = git
+            .repo
+            .read_clean(path, &file, existing.map(|e| e.id), true)?;
+        for warning in &clean.warnings {
+            eprintln!("warning: {warning}");
+        }
+        clean.data.into_owned()
     };
     if mode != FileMode::Symlink && !git.repo.bool_setting("core.filemode", true) {
         mode = match existing.map(|e| leaf_mode(e.mode)) {

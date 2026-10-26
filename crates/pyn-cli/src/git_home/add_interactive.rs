@@ -421,7 +421,11 @@ fn worktree_bytes(git: &GitHome, path: &[u8]) -> Vec<u8> {
     let file = fs_path(root, path);
     match std::fs::symlink_metadata(&file) {
         Ok(meta) if meta.is_symlink() => link_target(&file).unwrap_or_default(),
-        Ok(meta) if meta.is_file() => std::fs::read(&file).unwrap_or_default(),
+        Ok(meta) if meta.is_file() => git
+            .repo
+            .read_clean(path, &file, None, false)
+            .map(|c| c.data.into_owned())
+            .unwrap_or_default(),
         _ => Vec::new(),
     }
 }

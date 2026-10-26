@@ -1,205 +1,61 @@
-//! Refuses to write a file that git would convert on the way into the work tree (line endings, filters,
-//! `$Id$`, encodings): pyn writes blob bytes as they are, so it stops rather than write different bytes (#273).
+//! Guards for the conversions pyn does not apply when git would write a work tree file: filter drivers and
+//! `working-tree-encoding` (#273). Line endings and `ident` are converted by `Repo::conversion`.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Result, bail};
-use pyn_gitwork::{Ignore, Level, Pathspec, parse_rules};
+use pyn_gitwork::{Attributes, Pathspec};
 use pyn_object::{FileMode, ObjectId};
 
-use super::{GitHome, path_string, user_dirs};
+use super::{GitHome, path_string};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Attr {
-    Unspecified,
-    Set,
-    Unset,
-    Value(String),
+fn skipped(mode: FileMode) -> bool {
+    matches!(mode, FileMode::Symlink | FileMode::Gitlink | FileMode::Tree)
 }
 
-#[derive(Debug, Clone)]
-struct Conv {
-    text: Attr,
-    eol: Attr,
-    crlf: Attr,
-    filter: Attr,
-    ident: Attr,
-    encoding: Attr,
+/// Fails, naming the first path whose filter or encoding git would apply when writing it; warns once about paths a
+/// Git LFS filter owns.
+pub(super) fn refuse_unsupported<'a>(
+    git: &GitHome,
+    files: impl IntoIterator<Item = (&'a [u8], FileMode)>,
+) -> Result<()> {
+    check(git, files, false)
 }
 
-impl Conv {
-    fn new() -> Self {
-        let none = || Attr::Unspecified;
-        Self {
-            text: none(),
-            eol: none(),
-            crlf: none(),
-            filter: none(),
-            ident: none(),
-            encoding: none(),
-        }
-    }
-
-    fn apply(&mut self, name: &str, value: Attr) {
-        match name {
-            "text" => self.text = value,
-            "eol" => self.eol = value,
-            "crlf" => self.crlf = value,
-            "filter" => self.filter = value,
-            "ident" => self.ident = value,
-            "working-tree-encoding" => self.encoding = value,
-            "binary" if value == Attr::Set => self.text = Attr::Unset,
-            _ => {}
-        }
-    }
-}
-
-fn spec(token: &str) -> (&str, Attr) {
-    if let Some(name) = token.strip_prefix('-') {
-        (name, Attr::Unset)
-    } else if let Some(name) = token.strip_prefix('!') {
-        (name, Attr::Unspecified)
-    } else if let Some((name, value)) = token.split_once('=') {
-        (name, Attr::Value(value.to_string()))
-    } else {
-        (token, Attr::Set)
-    }
-}
-
-/// The conversion attributes that apply to `path` from one attributes file whose folder is `base`.
-fn apply_file(conv: &mut Conv, text: &[u8], base: &[u8], path: &[u8]) {
-    let ignore = Ignore::default();
-    for line in String::from_utf8_lossy(text).lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') || line.starts_with('!') {
-            continue;
-        }
-        let mut tokens = line.split_whitespace();
-        let Some(pattern) = tokens.next() else {
-            continue;
-        };
-        let level = Level::new(base, parse_rules(pattern.as_bytes()));
-        if !path.starts_with(base) || !ignore.is_ignored(&[level], path, false) {
-            continue;
-        }
-        for token in tokens {
-            let (name, value) = spec(token);
-            conv.apply(name, value);
-        }
-    }
-}
-
-fn read(path: &std::path::Path) -> Vec<u8> {
-    std::fs::read(path).unwrap_or_default()
-}
-
-fn global_attributes(git: &GitHome) -> Option<PathBuf> {
-    let (home, xdg) = user_dirs();
-    match git.repo.config().get("core.attributesfile") {
-        Some(p) if !p.is_empty() => Some(match p.strip_prefix("~/") {
-            Some(rest) => home?.join(rest),
-            None => PathBuf::from(p),
-        }),
-        _ => Some(
-            xdg.or_else(|| home.map(|h| h.join(".config")))?
-                .join("git/attributes"),
-        ),
-    }
-}
-
-fn attributes_of(git: &GitHome, path: &[u8]) -> Result<Conv> {
-    let mut conv = Conv::new();
-    let root = git.repo.root()?;
-    if let Some(file) = global_attributes(git) {
-        apply_file(&mut conv, &read(&file), b"", path);
-    }
-    let mut dir_end = 0;
-    let mut dir: Vec<u8> = Vec::new();
-    loop {
-        let base = if dir.is_empty() {
-            Vec::new()
-        } else {
-            [dir.as_slice(), b"/"].concat()
-        };
-        let file = pyn_gitwork::fs_path(root, &dir).join(".gitattributes");
-        apply_file(&mut conv, &read(&file), &base, path);
-        let Some(slash) = path[dir_end..].iter().position(|b| *b == b'/') else {
-            break;
-        };
-        dir_end += slash;
-        dir = path[..dir_end].to_vec();
-        dir_end += 1;
-    }
-    let info = git.repo.git().common_dir().join("info/attributes");
-    apply_file(&mut conv, &read(&info), b"", path);
-    Ok(conv)
-}
-
-/// Why git would convert `path` when writing it, if it would.
-fn why(git: &GitHome, conv: &Conv) -> Option<String> {
-    match &conv.filter {
-        Attr::Value(f) if f == "lfs" => {}
-        Attr::Value(f) => return Some(format!("the '{f}' filter applies")),
-        Attr::Set => return Some("a filter applies".into()),
-        _ => {}
-    }
-    if matches!(conv.ident, Attr::Set | Attr::Value(_)) {
-        return Some("the ident attribute applies".into());
-    }
-    if matches!(conv.encoding, Attr::Value(_)) {
-        return Some("working-tree-encoding applies".into());
-    }
-    let text_off =
-        conv.text == Attr::Unset || (conv.text == Attr::Unspecified && conv.crlf == Attr::Unset);
-    if text_off {
-        return None;
-    }
-    if conv.eol == Attr::Value("crlf".into()) {
-        return Some("eol=crlf applies".into());
-    }
-    if conv.eol == Attr::Value("lf".into()) {
-        return None;
-    }
-    if git.repo.bool_setting("core.autocrlf", false) {
-        return Some("core.autocrlf is set".into());
-    }
-    let text_on =
-        !matches!(conv.text, Attr::Unspecified) || matches!(conv.crlf, Attr::Set | Attr::Value(_));
-    if text_on
-        && git
-            .repo
-            .config()
-            .get("core.eol")
-            .is_some_and(|v| v.eq_ignore_ascii_case("crlf"))
-    {
-        return Some("core.eol=crlf applies".into());
-    }
-    None
-}
-
-/// Fails, naming the first path git would convert; warns once about paths a Git LFS filter owns.
+/// Like [`refuse_unsupported`], and also refuses any path whose line endings or `ident` git would convert, for
+/// writers that copy bytes as they are.
 pub(super) fn refuse_conversions<'a>(
     git: &GitHome,
     files: impl IntoIterator<Item = (&'a [u8], FileMode)>,
 ) -> Result<()> {
-    let mut cache: BTreeMap<Vec<u8>, ()> = BTreeMap::new();
+    check(git, files, true)
+}
+
+fn check<'a>(
+    git: &GitHome,
+    files: impl IntoIterator<Item = (&'a [u8], FileMode)>,
+    raw_writer: bool,
+) -> Result<()> {
+    let mut seen: BTreeMap<Vec<u8>, ()> = BTreeMap::new();
     let mut lfs = false;
     for (path, mode) in files {
-        if matches!(mode, FileMode::Symlink | FileMode::Gitlink | FileMode::Tree)
-            || cache.insert(path.to_vec(), ()).is_some()
-        {
+        if skipped(mode) || seen.insert(path.to_vec(), ()).is_some() {
             continue;
         }
-        let conv = attributes_of(git, path)?;
-        if conv.filter == Attr::Value("lfs".into()) {
-            lfs = true;
-        }
-        if let Some(reason) = why(git, &conv) {
+        let conv = git.repo.conversion(path)?;
+        lfs |= conv.is_lfs();
+        let reason = match conv.unsupported() {
+            Some(u) => Some(u.to_string()),
+            None if raw_writer && !conv.is_identity() => {
+                Some("line endings or ident would be converted".to_string())
+            }
+            None => None,
+        };
+        if let Some(reason) = reason {
             bail!(
-                "git would convert '{}' when writing it ({reason}), and pyn does not convert line endings or \
-                 apply filters yet (#273); nothing was changed",
+                "git would convert '{}' when writing it ({reason}), and pyn cannot do that here yet (#273); \
+                 nothing was changed",
                 path_string(path)
             );
         }
@@ -210,23 +66,14 @@ pub(super) fn refuse_conversions<'a>(
     Ok(())
 }
 
-/// Fails when `-X renormalize` would change how `path` is merged: it normalizes line endings and runs filters on the
-/// way in, which pyn does not do.
+/// Fails when `-X renormalize` is asked for: it normalizes line endings and runs filters on the way into the merge,
+/// which pyn does not do for the paths that have a conversion.
 pub(super) fn refuse_renormalize(git: &GitHome, path: &[u8]) -> Result<()> {
-    let conv = attributes_of(git, path)?;
-    let set = |a: &Attr| !matches!(a, Attr::Unspecified | Attr::Unset);
-    let autocrlf = git
-        .repo
-        .config()
-        .get("core.autocrlf")
-        .is_some_and(|v| !v.eq_ignore_ascii_case("false"));
-    let line_endings = conv.text != Attr::Unset
-        && (set(&conv.text) || set(&conv.eol) || set(&conv.crlf) || autocrlf);
-    let converts = line_endings || set(&conv.filter) || set(&conv.ident) || set(&conv.encoding);
-    if converts {
+    let conv = git.repo.conversion(path)?;
+    if !conv.is_identity() || conv.unsupported().is_some() {
         bail!(
-            "`-X renormalize` would convert '{}' on its way into the merge, and pyn does not convert line endings or \
-             apply filters yet (#273); nothing was changed",
+            "`-X renormalize` would convert '{}' on its way into the merge, and pyn does not do that yet (#273); \
+             nothing was changed",
             path_string(path)
         );
     }
@@ -253,31 +100,28 @@ pub(super) fn warn_lfs_in_commit(git: &GitHome, commit: &ObjectId) -> Result<()>
         return Ok(());
     };
     let files = git.repo.flatten(Some(&commit.tree), &Pathspec::default())?;
-    let mut attribute_files: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+    let mut attribute_files: BTreeMap<Vec<u8>, Vec<u8>> = BTreeMap::new();
     for (path, entry) in &files {
         let name = path.rsplit(|b| *b == b'/').next().unwrap_or(path);
-        if name == b".gitattributes" && !matches!(entry.mode, FileMode::Symlink | FileMode::Gitlink)
-        {
-            let base = path[..path.len() - name.len()].to_vec();
-            attribute_files.push((base, git.repo.blob(&entry.id)?));
+        if name == b".gitattributes" && !skipped(entry.mode) {
+            let dir = path[..path.len().saturating_sub(name.len() + 1)].to_vec();
+            attribute_files.insert(dir, git.repo.blob(&entry.id)?);
         }
     }
     if !attribute_files
-        .iter()
-        .any(|(_, text)| String::from_utf8_lossy(text).contains("filter=lfs"))
+        .values()
+        .any(|text| String::from_utf8_lossy(text).contains("filter=lfs"))
     {
         return Ok(());
     }
-    attribute_files.sort_by_key(|(base, _)| base.len());
+    let attrs = Attributes::new(
+        b"",
+        b"",
+        Box::new(move |dir| attribute_files.get(dir).cloned()),
+        false,
+    );
     for (path, entry) in &files {
-        if matches!(entry.mode, FileMode::Symlink | FileMode::Gitlink) {
-            continue;
-        }
-        let mut conv = Conv::new();
-        for (base, text) in &attribute_files {
-            apply_file(&mut conv, text, base, path);
-        }
-        if conv.filter == Attr::Value("lfs".into()) {
+        if !skipped(entry.mode) && attrs.for_path(path).get("filter").as_str() == Some("lfs") {
             warn_lfs();
             break;
         }

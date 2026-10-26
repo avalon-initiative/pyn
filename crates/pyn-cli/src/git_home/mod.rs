@@ -349,6 +349,15 @@ impl Backend for GitHome {
         crate::short_status::quote_diff(path, self.repo.bool_setting("core.quotePath", true))
     }
 
+    fn diff_binary(&self, path: &str) -> Option<bool> {
+        let attrs = self.repo.attributes().ok()?.for_path(path.as_bytes());
+        match attrs.get("diff") {
+            pyn_gitwork::AttrValue::Unset => Some(true),
+            pyn_gitwork::AttrValue::Set => Some(false),
+            _ => None,
+        }
+    }
+
     fn diff_setting(&self, key: &str) -> Option<String> {
         self.repo.config().get(key).map(str::to_string)
     }

@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, Write};
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use pyn_diff::{Hunk, apply_hunks};
 use pyn_git::IndexEntry;
 use pyn_gitwork::{Entry, Pathspec, fs_path, worktree_mode};
@@ -262,7 +262,10 @@ fn read_worktree(git: &GitHome, path: &[u8], index: Option<&Entry>) -> Result<Op
     let bytes = if mode == FileMode::Symlink {
         link_target(&file)?
     } else {
-        std::fs::read(&file).with_context(|| format!("reading {}", file.display()))?
+        git.repo
+            .read_clean(path, &file, index.map(|e| e.id), false)?
+            .data
+            .into_owned()
     };
     if mode != FileMode::Symlink && !git.repo.bool_setting("core.filemode", true) {
         mode = match index.map(|e| e.mode) {

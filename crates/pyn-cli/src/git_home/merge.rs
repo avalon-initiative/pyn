@@ -405,7 +405,7 @@ fn true_merge(
     let incoming =
         git.repo
             .diff_trees(Some(&base_tree), Some(&theirs_tree), &Pathspec::default())?;
-    convert::refuse_conversions(
+    convert::refuse_unsupported(
         git,
         incoming
             .iter()
@@ -807,7 +807,7 @@ fn abort(git: &GitHome) -> Result<()> {
         );
     }
     check_writes(&redo)?;
-    convert::refuse_conversions(
+    convert::refuse_unsupported(
         git,
         redo.iter()
             .filter_map(|p| committed.get(p).map(|e| (p.as_slice(), e.mode))),

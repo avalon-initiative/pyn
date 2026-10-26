@@ -408,7 +408,7 @@ pub(super) fn merge_pick(
         theirs_tree.as_ref(),
         &Pathspec::default(),
     )?;
-    convert::refuse_conversions(
+    convert::refuse_unsupported(
         git,
         incoming
             .iter()

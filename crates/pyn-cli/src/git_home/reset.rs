@@ -358,7 +358,7 @@ fn reset_logging(git: &GitHome, cwd: &Path, args: &ResetArgs, log: bool) -> Resu
                 Err(blocked) => return Err(refuse(&blocked, &rev)),
             };
             check_writes(to.keys().chain(acts.keys()))?;
-            convert::refuse_conversions(
+            convert::refuse_unsupported(
                 git,
                 acts.iter().filter_map(|(p, a)| match a {
                     Act::Write(e) => Some((p.as_slice(), e.mode)),
