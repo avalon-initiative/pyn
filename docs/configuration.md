@@ -30,6 +30,7 @@ keep needs at least `PYN_DATABASE_URL` and `PYN_DATA_DIR`.
 | `PYN_REQUIRE_APPROVAL` | `true` holds new open sign-ups until a server administrator approves them |
 | `PYN_SECRET_KEY` | 32 random bytes as 64 hex characters (`openssl rand -hex 32`): encrypts webhook signing secrets at rest with AES-256-GCM. Unset, they are stored as plaintext and the server warns at start; an invalid value stops the server. See [webhooks](concepts/webhooks.md#encryption-at-rest) |
 | `PYN_WEBHOOKS_ALLOW_HTTP` | `true` lets webhook subscription URLs use `http` (development only); default `false`, https only; any other value stops the server |
+| `PYN_WEBHOOKS_ALLOW_LOOPBACK` | `true` lets the webhook sender reach loopback receivers (`127.0.0.0/8`, `::1`), for local development and end-to-end tests only; private, link-local and metadata ranges stay refused. The server refuses to start unless `PYN_WEBHOOKS_ALLOW_HTTP=true` is set too, and logs a warning at start. Default `false`; any other value stops the server |
 | `PYN_WEBHOOK_WORKER` | `false` stops this server copy from delivering queued webhooks; default `true`; any other value stops the server. See [delivery](concepts/webhooks.md#delivery) |
 | `PYN_WEBHOOKS_ALLOWED_HOSTS` | Comma separated hosts (`example.com`, `*.example.com`); when set, webhooks are delivered only to them. It never allows private addresses |
 | `PYN_WEBHOOKS_CONCURRENCY` | Webhook sends in flight at once in one server; default 16, at least 1 |

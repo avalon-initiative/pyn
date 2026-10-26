@@ -8,9 +8,10 @@ use pyn_core::{
 };
 use pyn_proto::{
     AccountApprovedData, AccountCreatedData, AccountDisabledData, AccountEnabledData, Event,
-    EventData, LimitKind as WireLimitKind, Limits, OrganizationCreatedData,
-    OrganizationDeletedData, OwnerKind, OwnerLimitReachedData, OwnerLimitsChangedData,
-    RepositoryCreatedData, RepositoryDeletedData, RepositoryRenamedData,
+    EventData, LimitKind as WireLimitKind, Limits, LockAcquiredData, LockExpiredData,
+    LockForcedData, LockReleasedData, OrganizationCreatedData, OrganizationDeletedData, OwnerKind,
+    OwnerLimitReachedData, OwnerLimitsChangedData, RepositoryCreatedData, RepositoryDeletedData,
+    RepositoryRenamedData,
 };
 
 /// Builds webhook envelopes for the domain's limit refusals.
@@ -162,6 +163,58 @@ impl LimitEvents for WebhookLimitEvents {
                     storage_bytes: limits.storage_bytes,
                 },
                 actor: name(actor),
+            }),
+            DomainEvent::LockAcquired {
+                owner,
+                repo,
+                path,
+                holder,
+                expires_at,
+            } => EventData::LockAcquired(LockAcquiredData {
+                owner: name(owner),
+                repo,
+                path: path.to_string(),
+                holder: name(holder),
+                expires_at,
+            }),
+            DomainEvent::LockReleased {
+                owner,
+                repo,
+                path,
+                holder,
+            } => EventData::LockReleased(LockReleasedData {
+                owner: name(owner),
+                repo,
+                path: path.to_string(),
+                holder: name(holder),
+            }),
+            DomainEvent::LockExpired {
+                owner,
+                repo,
+                path,
+                holder,
+                expires_at,
+            } => EventData::LockExpired(LockExpiredData {
+                owner: name(owner),
+                repo,
+                path: path.to_string(),
+                holder: name(holder),
+                expires_at,
+            }),
+            DomainEvent::LockForced {
+                owner,
+                repo,
+                path,
+                holder,
+                actor,
+                reason,
+            } => EventData::LockForced(LockForcedData {
+                owner: name(owner),
+                repo,
+                path: path.to_string(),
+                holder: name(holder),
+                actor: name(actor),
+                reason,
             }),
         };
         self.envelope(data, now)

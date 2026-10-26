@@ -4,6 +4,7 @@ use chrono::{DateTime, Utc};
 use crate::branch::{Branch, DEFAULT_BRANCH};
 use crate::error::Result;
 use crate::history::{HistoryCursor, HistoryScan};
+use crate::limit_events::LockEventBuilder;
 use crate::limits::{RepoUsage, StorageCap, Usage};
 use crate::merge::{MergeWrite, MergeWritten};
 use crate::repo::{RepoRecord, RepoUpdate};
@@ -35,6 +36,23 @@ pub trait MetadataStore: Send + Sync {
         now: DateTime<Utc>,
         expires_at: DateTime<Utc>,
         max_locks: u32,
+    ) -> Result<Lock> {
+        self.acquire_lock_with_events(repo, path, owner, now, expires_at, max_locks, None)
+            .await
+    }
+
+    /// Like `acquire_lock`, queueing in the same transaction `Expired` for a lapsed lease it replaces and `Acquired`
+    /// for a new one; a renewal and a refusal queue nothing.
+    #[allow(clippy::too_many_arguments)]
+    async fn acquire_lock_with_events(
+        &self,
+        repo: &RepoId,
+        path: &RepoPath,
+        owner: &UserId,
+        now: DateTime<Utc>,
+        expires_at: DateTime<Utc>,
+        max_locks: u32,
+        events: Option<LockEventBuilder<'_>>,
     ) -> Result<Lock>;
 
     /// `NotLockHolder` if there is no live lock or another user holds it.
@@ -44,6 +62,19 @@ pub trait MetadataStore: Send + Sync {
         path: &RepoPath,
         owner: &UserId,
         now: DateTime<Utc>,
+    ) -> Result<()> {
+        self.release_lock_with_events(repo, path, owner, now, None)
+            .await
+    }
+
+    /// Like `release_lock`, queueing `Released` in the same transaction.
+    async fn release_lock_with_events(
+        &self,
+        repo: &RepoId,
+        path: &RepoPath,
+        owner: &UserId,
+        now: DateTime<Utc>,
+        events: Option<LockEventBuilder<'_>>,
     ) -> Result<()>;
 
     /// Removes a live lock whatever its owner and returns it; `None` if the path is not locked.
@@ -52,6 +83,18 @@ pub trait MetadataStore: Send + Sync {
         repo: &RepoId,
         path: &RepoPath,
         now: DateTime<Utc>,
+    ) -> Result<Option<Lock>> {
+        self.force_release_lock_with_events(repo, path, now, None)
+            .await
+    }
+
+    /// Like `force_release_lock`, queueing `Forced` in the same transaction when a lock was removed.
+    async fn force_release_lock_with_events(
+        &self,
+        repo: &RepoId,
+        path: &RepoPath,
+        now: DateTime<Utc>,
+        events: Option<LockEventBuilder<'_>>,
     ) -> Result<Option<Lock>>;
 
     async fn get_lock(

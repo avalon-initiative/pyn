@@ -127,6 +127,9 @@ From the CLI: `pyn admin webhook deliveries <id> [--status failed] [--limit N] [
 - Connecting takes at most 5 seconds and the whole request 10; at most 16 KiB of the response is read.
 - `PYN_WEBHOOKS_ALLOWED_HOSTS` (comma separated, `example.com` or `*.example.com`), when set, limits deliveries to those
   hosts. It narrows the targets; it never lifts the address rules above.
+- Development only: `PYN_WEBHOOKS_ALLOW_LOOPBACK=true` lets the sender reach loopback receivers (`127.0.0.0/8`, `::1`) so a
+  local receiver can be tried against a real server. Every other refused range stays refused, the server will not start
+  without `PYN_WEBHOOKS_ALLOW_HTTP=true` as well, and it logs a warning at start. Never set it on a server others use.
 - `PYN_WEBHOOKS_CONCURRENCY` (default 16) caps sends in flight in one process.
 
 ## Audit

@@ -8932,6 +8932,126 @@
           }
         }
       },
+      "LockAcquiredData": {
+        "type": "object",
+        "description": "`lock.acquired`: a path was locked, including when a lapsed lease was taken over. A renewal raises nothing.",
+        "required": [
+          "owner",
+          "repo",
+          "path",
+          "holder",
+          "expires_at"
+        ],
+        "properties": {
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "holder": {
+            "type": "string"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "repo": {
+            "type": "string"
+          }
+        }
+      },
+      "LockExpiredData": {
+        "type": "object",
+        "description": "`lock.expired`: a lease had lapsed when the path was locked again; observed lazily, not at the expiry instant.",
+        "required": [
+          "owner",
+          "repo",
+          "path",
+          "holder",
+          "expires_at"
+        ],
+        "properties": {
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the lease ran out."
+          },
+          "holder": {
+            "type": "string",
+            "description": "Who held the lapsed lease."
+          },
+          "owner": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "repo": {
+            "type": "string"
+          }
+        }
+      },
+      "LockForcedData": {
+        "type": "object",
+        "description": "`lock.forced`: a live lock was removed without its holder, by a forced unlock or a policy change.",
+        "required": [
+          "owner",
+          "repo",
+          "path",
+          "holder",
+          "actor",
+          "reason"
+        ],
+        "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "holder": {
+            "type": "string",
+            "description": "Whose lock was removed."
+          },
+          "owner": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repo": {
+            "type": "string"
+          }
+        }
+      },
+      "LockReleasedData": {
+        "type": "object",
+        "description": "`lock.released`: the holder released the lock.",
+        "required": [
+          "owner",
+          "repo",
+          "path",
+          "holder"
+        ],
+        "properties": {
+          "holder": {
+            "type": "string"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "repo": {
+            "type": "string"
+          }
+        }
+      },
       "LoginRequest": {
         "type": "object",
         "required": [

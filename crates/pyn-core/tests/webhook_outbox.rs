@@ -19,6 +19,12 @@ async fn changes_queue_their_events_in_order() {
 }
 
 #[tokio::test]
+async fn lock_changes_queue_their_events() {
+    let (meta, access, hooks) = memory();
+    pyn_core::contract::lock_changes_queue_their_events(meta, access, hooks).await;
+}
+
+#[tokio::test]
 async fn refused_changes_queue_no_event() {
     let (meta, access, hooks) = memory();
     pyn_core::contract::refused_changes_queue_no_event(meta, access, hooks).await;

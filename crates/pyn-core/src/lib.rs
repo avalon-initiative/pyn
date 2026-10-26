@@ -66,7 +66,8 @@ pub use history::{
 };
 pub use integrity::{BreakKind, Problem, VerifyReport};
 pub use limit_events::{
-    DomainEvent, LimitEvents, LimitKind, LimitReached, LimitsEvent, MemoryLimitEvents,
+    DomainEvent, LimitEvents, LimitKind, LimitReached, LimitsEvent, LockChange, LockEventBuilder,
+    MemoryLimitEvents,
 };
 pub use limits::{
     Limits, LimitsChange, MAX_LIMIT_VALUE, RepoUsage, StorageCap, StorageCaps, Usage,

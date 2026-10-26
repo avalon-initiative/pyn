@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 
 use crate::access::AccountKind;
 use crate::repo::Visibility;
-use crate::{EventDraft, Limits, PynError, Result, UserId};
+use crate::{EventDraft, Limits, Lock, PynError, RepoPath, Result, UserId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LimitKind {
@@ -75,7 +75,48 @@ pub enum DomainEvent {
         limits: Limits,
         actor: UserId,
     },
+    LockAcquired {
+        owner: UserId,
+        repo: String,
+        path: RepoPath,
+        holder: UserId,
+        expires_at: DateTime<Utc>,
+    },
+    LockReleased {
+        owner: UserId,
+        repo: String,
+        path: RepoPath,
+        holder: UserId,
+    },
+    /// A lease that lapsed and was taken over; `expires_at` is when it ran out.
+    LockExpired {
+        owner: UserId,
+        repo: String,
+        path: RepoPath,
+        holder: UserId,
+        expires_at: DateTime<Utc>,
+    },
+    LockForced {
+        owner: UserId,
+        repo: String,
+        path: RepoPath,
+        holder: UserId,
+        actor: UserId,
+        reason: Option<String>,
+    },
 }
+
+/// What a store did to a lock, handed to the builder that turns it into a queued event.
+#[derive(Debug, Clone, Copy)]
+pub enum LockChange<'a> {
+    Acquired(&'a Lock),
+    Released(&'a Lock),
+    Expired(&'a Lock),
+    Forced(&'a Lock),
+}
+
+/// Builds the event for a lock change inside the store's transaction, once the change is known.
+pub type LockEventBuilder<'a> = &'a (dyn Fn(LockChange<'_>) -> Result<EventDraft> + Send + Sync);
 
 impl DomainEvent {
     pub fn event_type(&self) -> &'static str {
@@ -90,6 +131,10 @@ impl DomainEvent {
             Self::RepositoryRenamed { .. } => "repository.renamed",
             Self::RepositoryDeleted { .. } => "repository.deleted",
             Self::OwnerLimitsChanged { .. } => "owner.limits_changed",
+            Self::LockAcquired { .. } => "lock.acquired",
+            Self::LockReleased { .. } => "lock.released",
+            Self::LockExpired { .. } => "lock.expired",
+            Self::LockForced { .. } => "lock.forced",
         }
     }
 }

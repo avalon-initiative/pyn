@@ -20,7 +20,7 @@ Every event is one JSON object:
 
 ## When events are written
 
-Account, organization, repository and `owner.limits_changed` events go into the webhook outbox in the same database
+Account, organization, repository, lock and `owner.limits_changed` events go into the webhook outbox in the same database
 transaction as the change, so a crash never loses one and a refused or rolled-back change leaves none. Each is queued
 once per subscription whose filter matches. `owner.limit_reached` is the exception: it is recorded after the refusal and
 throttled (see below). Events are queued only when the change really happens: a duplicate name, a missing target or a
@@ -318,6 +318,71 @@ a replica running ahead can push `last_event_at` into the future. Postgres uses 
     "owner": "studio",
     "limit": "repositories",
     "value": 10
+  }
+}
+```
+
+### Lock events
+
+Raised in the same transaction as the lock change, so a refused change (a held path, the lock limit, a release by a non-holder) raises nothing. Every lock event names the repository by `owner` and `repo` (its name) and the locked `path`. A renewal (checking out again while holding a live lock) raises no event.
+
+Expiry is observed lazily: pyn has no background reaper, and a lease that runs out just stops counting as a lock. `lock.expired` is raised when the lapsed lease is replaced, by the next checkout of that path (by anyone, the former holder included), immediately before that checkout's `lock.acquired`. A lease nobody takes again never raises it. A check-in that consumes the holder's lock, a policy change that makes a path shared, and a repository deletion raise no `lock.released`; a policy change releases the live locks on newly shared paths as `lock.forced`.
+
+### `lock.acquired`
+
+A path was locked, including by taking over a lapsed lease.
+
+`data`: `owner`, `repo`, `path`, `holder`, `expires_at` (when the lease ends).
+
+```json
+{
+  "id": "evt_01J9ZX3K5V8Q2M7R4T6N0B1C2D",
+  "type": "lock.acquired",
+  "created_at": "2026-03-04T05:06:07Z",
+  "server": "https://pyn.example.com",
+  "version": 1,
+  "data": {
+    "owner": "studio",
+    "repo": "game",
+    "path": "Content/Maps/Main.umap",
+    "holder": "alice",
+    "expires_at": "2026-03-05T05:06:07Z"
+  }
+}
+```
+
+### `lock.released`
+
+The holder released the lock.
+
+`data`: `owner`, `repo`, `path`, `holder`.
+
+### `lock.expired`
+
+A lapsed lease was replaced (see above).
+
+`data`: `owner`, `repo`, `path`, `holder` (who held the lapsed lease), `expires_at` (when it ran out).
+
+### `lock.forced`
+
+A live lock was removed without its holder: a forced unlock, or a policy change that made the path shared.
+
+`data`: `owner`, `repo`, `path`, `holder` (whose lock was removed), `actor` (who removed it), `reason` (the unlock reason; `now shared by policy` for a policy change).
+
+```json
+{
+  "id": "evt_01J9ZX3K5V8Q2M7R4T6N0B1C2D",
+  "type": "lock.forced",
+  "created_at": "2026-03-04T05:06:07Z",
+  "server": "https://pyn.example.com",
+  "version": 1,
+  "data": {
+    "owner": "studio",
+    "repo": "game",
+    "path": "Content/Maps/Main.umap",
+    "holder": "alice",
+    "actor": "bob",
+    "reason": "alice is out sick"
   }
 }
 ```

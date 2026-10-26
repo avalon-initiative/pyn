@@ -70,6 +70,15 @@ async fn changes_queue_their_events_in_order() {
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs PYN_DATABASE_URL"]
+async fn lock_changes_queue_their_events() {
+    let store = pg().await;
+    let (meta, access, hooks): (Store, Access, Webhooks) =
+        (store.clone(), store.clone(), store.clone());
+    pyn_core::contract::lock_changes_queue_their_events(meta, access, hooks).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs PYN_DATABASE_URL"]
 async fn refused_changes_queue_no_event() {
     let store = pg().await;
     let (meta, access, hooks): (Store, Access, Webhooks) =

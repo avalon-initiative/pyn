@@ -3761,6 +3761,46 @@ impl HookedMeta {
 
 #[async_trait::async_trait]
 impl MetadataStore for HookedMeta {
+    async fn acquire_lock_with_events(
+        &self,
+        repo: &RepoId,
+        path: &RepoPath,
+        owner: &UserId,
+        now: chrono::DateTime<Utc>,
+        expires_at: chrono::DateTime<Utc>,
+        max_locks: u32,
+        events: Option<crate::LockEventBuilder<'_>>,
+    ) -> crate::Result<crate::Lock> {
+        self.inner
+            .acquire_lock_with_events(repo, path, owner, now, expires_at, max_locks, events)
+            .await
+    }
+
+    async fn release_lock_with_events(
+        &self,
+        repo: &RepoId,
+        path: &RepoPath,
+        owner: &UserId,
+        now: chrono::DateTime<Utc>,
+        events: Option<crate::LockEventBuilder<'_>>,
+    ) -> crate::Result<()> {
+        self.inner
+            .release_lock_with_events(repo, path, owner, now, events)
+            .await
+    }
+
+    async fn force_release_lock_with_events(
+        &self,
+        repo: &RepoId,
+        path: &RepoPath,
+        now: chrono::DateTime<Utc>,
+        events: Option<crate::LockEventBuilder<'_>>,
+    ) -> crate::Result<Option<crate::Lock>> {
+        self.inner
+            .force_release_lock_with_events(repo, path, now, events)
+            .await
+    }
+
     async fn acquire_lock(
         &self,
         repo: &RepoId,

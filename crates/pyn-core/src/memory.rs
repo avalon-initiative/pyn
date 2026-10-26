@@ -20,7 +20,7 @@ use crate::branch::{Branch, DEFAULT_BRANCH, conflicts};
 use crate::commit_record::{CommitDraft, TreeChange, TreeEdit, draft_commit};
 use crate::error::{PynError, Result};
 use crate::history::{HistoryCursor, HistoryScan};
-use crate::limit_events::LimitsEvent;
+use crate::limit_events::{LimitsEvent, LockChange, LockEventBuilder};
 use crate::limits::{Limits, LimitsChange, RepoUsage, StorageCap, Usage};
 use crate::merge::{MergeWrite, MergeWritten};
 use crate::object::{KeyHasher, Keying, ObjectRead, ObjectReader, ObjectStore};
@@ -601,7 +601,7 @@ fn live(lock: &Lock, now: DateTime<Utc>) -> bool {
 
 #[async_trait]
 impl MetadataStore for MemoryMetadataStore {
-    async fn acquire_lock(
+    async fn acquire_lock_with_events(
         &self,
         repo: &RepoId,
         path: &RepoPath,
@@ -609,6 +609,7 @@ impl MetadataStore for MemoryMetadataStore {
         now: DateTime<Utc>,
         expires_at: DateTime<Utc>,
         max_locks: u32,
+        events: Option<LockEventBuilder<'_>>,
     ) -> Result<Lock> {
         let mut st = self.state.lock().unwrap();
         let key = (repo.clone(), path.clone());
@@ -622,7 +623,7 @@ impl MetadataStore for MemoryMetadataStore {
                 return Err(PynError::LockLimitReached { limit: max_locks });
             }
         }
-        let acquired_at = match st.locks.get(&key) {
+        let (acquired_at, renewal) = match st.locks.get(&key) {
             Some(l) if live(l, now) && &l.owner != owner => {
                 return Err(PynError::LockHeld {
                     path: path.clone(),
@@ -631,8 +632,8 @@ impl MetadataStore for MemoryMetadataStore {
                 });
             }
             // Renewal keeps the original acquisition time.
-            Some(l) if live(l, now) => l.acquired_at,
-            _ => now,
+            Some(l) if live(l, now) => (l.acquired_at, true),
+            _ => (now, false),
         };
         let lock = Lock {
             path: path.clone(),
@@ -640,21 +641,35 @@ impl MetadataStore for MemoryMetadataStore {
             acquired_at,
             expires_at,
         };
+        if let Some(build) = events {
+            let mut drafts = Vec::new();
+            if let Some(lapsed) = st.locks.get(&key).filter(|l| !live(l, now)) {
+                drafts.push(build(LockChange::Expired(lapsed))?);
+            }
+            if !renewal {
+                drafts.push(build(LockChange::Acquired(&lock))?);
+            }
+            self.outbox.queue(&drafts)?;
+        }
         st.locks.insert(key, lock.clone());
         Ok(lock)
     }
 
-    async fn release_lock(
+    async fn release_lock_with_events(
         &self,
         repo: &RepoId,
         path: &RepoPath,
         owner: &UserId,
         now: DateTime<Utc>,
+        events: Option<LockEventBuilder<'_>>,
     ) -> Result<()> {
         let mut st = self.state.lock().unwrap();
         let key = (repo.clone(), path.clone());
         match st.locks.get(&key) {
             Some(l) if live(l, now) && &l.owner == owner => {
+                if let Some(build) = events {
+                    self.outbox.queue(&[build(LockChange::Released(l))?])?;
+                }
                 st.locks.remove(&key);
                 Ok(())
             }
@@ -676,15 +691,19 @@ impl MetadataStore for MemoryMetadataStore {
             .cloned())
     }
 
-    async fn force_release_lock(
+    async fn force_release_lock_with_events(
         &self,
         repo: &RepoId,
         path: &RepoPath,
         now: DateTime<Utc>,
+        events: Option<LockEventBuilder<'_>>,
     ) -> Result<Option<Lock>> {
         let mut st = self.state.lock().unwrap();
         let key = (repo.clone(), path.clone());
-        if st.locks.get(&key).is_some_and(|l| live(l, now)) {
+        if let Some(l) = st.locks.get(&key).filter(|l| live(l, now)) {
+            if let Some(build) = events {
+                self.outbox.queue(&[build(LockChange::Forced(l))?])?;
+            }
             return Ok(st.locks.remove(&key));
         }
         Ok(None)

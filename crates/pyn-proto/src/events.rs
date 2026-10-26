@@ -116,6 +116,50 @@ pub struct OwnerLimitReachedData {
     pub value: u64,
 }
 
+/// `lock.acquired`: a path was locked, including when a lapsed lease was taken over. A renewal raises nothing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct LockAcquiredData {
+    pub owner: String,
+    pub repo: String,
+    pub path: String,
+    pub holder: String,
+    pub expires_at: DateTime<Utc>,
+}
+
+/// `lock.released`: the holder released the lock.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct LockReleasedData {
+    pub owner: String,
+    pub repo: String,
+    pub path: String,
+    pub holder: String,
+}
+
+/// `lock.expired`: a lease had lapsed when the path was locked again; observed lazily, not at the expiry instant.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct LockExpiredData {
+    pub owner: String,
+    pub repo: String,
+    pub path: String,
+    /// Who held the lapsed lease.
+    pub holder: String,
+    /// When the lease ran out.
+    pub expires_at: DateTime<Utc>,
+}
+
+/// `lock.forced`: a live lock was removed without its holder, by a forced unlock or a policy change.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct LockForcedData {
+    pub owner: String,
+    pub repo: String,
+    pub path: String,
+    /// Whose lock was removed.
+    pub holder: String,
+    pub actor: String,
+    #[schema(required = true)]
+    pub reason: Option<String>,
+}
+
 /// The typed `data` of an event, chosen by its `type`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum EventData {
@@ -130,6 +174,10 @@ pub enum EventData {
     RepositoryDeleted(RepositoryDeletedData),
     OwnerLimitsChanged(OwnerLimitsChangedData),
     OwnerLimitReached(OwnerLimitReachedData),
+    LockAcquired(LockAcquiredData),
+    LockReleased(LockReleasedData),
+    LockExpired(LockExpiredData),
+    LockForced(LockForcedData),
     /// A type this build does not know, kept verbatim so it round-trips.
     Other {
         event_type: String,
@@ -138,7 +186,7 @@ pub enum EventData {
 }
 
 /// Every event type this build knows.
-pub const KNOWN_EVENT_TYPES: [&str; 11] = [
+pub const KNOWN_EVENT_TYPES: [&str; 15] = [
     "account.created",
     "account.approved",
     "account.disabled",
@@ -150,6 +198,10 @@ pub const KNOWN_EVENT_TYPES: [&str; 11] = [
     "repository.deleted",
     "owner.limits_changed",
     "owner.limit_reached",
+    "lock.acquired",
+    "lock.released",
+    "lock.expired",
+    "lock.forced",
 ];
 
 impl EventData {
@@ -167,6 +219,10 @@ impl EventData {
             Self::RepositoryDeleted(_) => "repository.deleted",
             Self::OwnerLimitsChanged(_) => "owner.limits_changed",
             Self::OwnerLimitReached(_) => "owner.limit_reached",
+            Self::LockAcquired(_) => "lock.acquired",
+            Self::LockReleased(_) => "lock.released",
+            Self::LockExpired(_) => "lock.expired",
+            Self::LockForced(_) => "lock.forced",
             Self::Other { event_type, .. } => event_type,
         }
     }
@@ -184,6 +240,10 @@ impl EventData {
             Self::RepositoryDeleted(d) => serde_json::to_value(d),
             Self::OwnerLimitsChanged(d) => serde_json::to_value(d),
             Self::OwnerLimitReached(d) => serde_json::to_value(d),
+            Self::LockAcquired(d) => serde_json::to_value(d),
+            Self::LockReleased(d) => serde_json::to_value(d),
+            Self::LockExpired(d) => serde_json::to_value(d),
+            Self::LockForced(d) => serde_json::to_value(d),
             Self::Other { data, .. } => Ok(data.clone()),
         }
     }
@@ -201,6 +261,10 @@ impl EventData {
             "repository.deleted" => Self::RepositoryDeleted(serde_json::from_value(data)?),
             "owner.limits_changed" => Self::OwnerLimitsChanged(serde_json::from_value(data)?),
             "owner.limit_reached" => Self::OwnerLimitReached(serde_json::from_value(data)?),
+            "lock.acquired" => Self::LockAcquired(serde_json::from_value(data)?),
+            "lock.released" => Self::LockReleased(serde_json::from_value(data)?),
+            "lock.expired" => Self::LockExpired(serde_json::from_value(data)?),
+            "lock.forced" => Self::LockForced(serde_json::from_value(data)?),
             other => Self::Other {
                 event_type: other.to_string(),
                 data,

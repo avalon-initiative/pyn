@@ -33,6 +33,8 @@ pub struct SafeSender {
     allowed_hosts: Vec<String>,
     /// Lets tests reach a loopback listener; never set outside them.
     permit_private: bool,
+    /// Development only: loopback receivers may be reached; every other blocked range stays refused.
+    allow_loopback: bool,
 }
 
 impl SafeSender {
@@ -46,7 +48,14 @@ impl SafeSender {
                 .filter(|h| !h.is_empty())
                 .collect(),
             permit_private: false,
+            allow_loopback: false,
         }
+    }
+
+    /// Allows loopback receivers (`127.0.0.0/8`, `::1`) and nothing else that is blocked.
+    pub fn allowing_loopback(mut self) -> Self {
+        self.allow_loopback = true;
+        self
     }
 
     fn host_allowed(&self, host: &str) -> bool {
@@ -77,16 +86,29 @@ impl SafeSender {
         self.public(found).map(|a| (a, Some(host.to_string())))
     }
 
+    fn reachable(&self, ip: IpAddr) -> bool {
+        !is_blocked(ip) || (self.allow_loopback && is_loopback(ip))
+    }
+
     fn public(&self, found: Vec<SocketAddr>) -> Result<Vec<SocketAddr>, String> {
         let allowed: Vec<_> = found
             .iter()
             .copied()
-            .filter(|a| self.permit_private || !is_blocked(a.ip()))
+            .filter(|a| self.permit_private || self.reachable(a.ip()))
             .collect();
         if allowed.is_empty() {
             return Err("the host resolves only to addresses webhooks may not use".into());
         }
         Ok(allowed)
+    }
+}
+
+fn is_loopback(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => v4.is_loopback(),
+        IpAddr::V6(v6) => {
+            v6.is_loopback() || v6.to_ipv4_mapped().is_some_and(|v4| v4.is_loopback())
+        }
     }
 }
 
@@ -172,6 +194,25 @@ mod tests {
         assert!(!s.host_allowed("evilcorp.test"));
         assert!(!s.host_allowed("other.example.com"));
         assert!(SafeSender::default().host_allowed("anything.test"));
+    }
+
+    #[test]
+    fn loopback_mode_admits_loopback_and_no_other_blocked_range() {
+        let s = SafeSender::default().allowing_loopback();
+        for ok in ["127.0.0.1", "127.9.9.9", "::1", "::ffff:127.0.0.1"] {
+            assert!(s.reachable(ok.parse().unwrap()), "{ok}");
+        }
+        for no in [
+            "10.0.0.1",
+            "192.168.1.1",
+            "169.254.169.254",
+            "0.0.0.0",
+            "fe80::1",
+            "fd00::1",
+        ] {
+            assert!(!s.reachable(no.parse().unwrap()), "{no}");
+        }
+        assert!(!SafeSender::default().reachable("127.0.0.1".parse().unwrap()));
     }
 
     #[tokio::test]

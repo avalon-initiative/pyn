@@ -24,6 +24,7 @@ fn who(name: &str) -> Identity {
 }
 
 struct World {
+    clock: Arc<ManualClock>,
     access: Arc<AccessService>,
     repos: Repositories,
     hooks: Webhooks,
@@ -53,7 +54,7 @@ async fn world(meta: Store, access_store: Access, hooks: Webhooks) -> World {
         Arc::new(MemoryObjectStore::new()),
         audit,
         access.clone(),
-        clock,
+        clock.clone(),
         Rules::empty(),
     );
     hooks
@@ -70,6 +71,7 @@ async fn world(meta: Store, access_store: Access, hooks: Webhooks) -> World {
         .await
         .unwrap();
     World {
+        clock,
         access,
         repos,
         hooks,
@@ -84,6 +86,59 @@ async fn queued(hooks: &Webhooks) -> Vec<String> {
     let mut events: Vec<_> = due.into_iter().map(|d| d.event).collect();
     events.sort_by_key(|e| e.id);
     events.into_iter().map(|e| e.event_type).collect()
+}
+
+pub async fn lock_changes_queue_their_events(meta: Store, access_store: Access, hooks: Webhooks) {
+    let w = world(meta, access_store.clone(), hooks).await;
+    let (alice, bob) = (who("alice"), who("bob"));
+    for user in ["alice", "bob"] {
+        access_store
+            .ensure_user(&UserId::new(user), t0())
+            .await
+            .unwrap();
+    }
+    w.repos
+        .create(&alice, &alice.user, "game", None, None)
+        .await
+        .unwrap();
+    let svc = w.repos.open("alice", "game").await.unwrap().service;
+    let path = crate::RepoPath::try_from("Content/a.umap".to_string()).unwrap();
+
+    svc.checkout(&path, &alice.user, None).await.unwrap();
+    svc.checkout(&path, &alice.user, None).await.unwrap();
+    assert!(svc.checkout(&path, &bob.user, None).await.is_err());
+    svc.release(&path, &alice.user).await.unwrap();
+    assert!(svc.release(&path, &alice.user).await.is_err());
+    svc.checkout(&path, &alice.user, None).await.unwrap();
+    svc.force_unlock(&path, &bob.user, "stuck").await.unwrap();
+    svc.checkout(&path, &alice.user, None).await.unwrap();
+    w.clock.advance(Duration::days(30));
+    svc.checkout(&path, &bob.user, None).await.unwrap();
+
+    let due = w
+        .hooks
+        .claim_due(1000, Duration::minutes(1), t0() + Duration::days(31))
+        .await
+        .unwrap();
+    let mut events: Vec<_> = due.into_iter().map(|d| d.event).collect();
+    events.sort_by_key(|e| e.id);
+    let locks: Vec<String> = events
+        .into_iter()
+        .map(|e| e.event_type)
+        .filter(|t| t.starts_with("lock."))
+        .collect();
+    assert_eq!(
+        locks,
+        [
+            "lock.acquired",
+            "lock.released",
+            "lock.acquired",
+            "lock.forced",
+            "lock.acquired",
+            "lock.expired",
+            "lock.acquired",
+        ]
+    );
 }
 
 pub async fn changes_queue_their_events_in_order(

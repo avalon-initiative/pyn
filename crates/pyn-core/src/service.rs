@@ -32,6 +32,7 @@ use crate::history::{
     PathHistoryPage,
 };
 use crate::integrity::{BreakKind, check_events, revision_breaks, verify_revisions};
+use crate::limit_events::{DomainEvent, LockChange};
 use crate::limits::{StorageCap, StorageCaps};
 use crate::object::ObjectStore;
 use crate::repo::DEFAULT_MAX_LOCKS_PER_USER;
@@ -145,6 +146,8 @@ pub struct RepoServiceContext {
     pub clock: Arc<dyn Clock>,
     pub limit_events: Arc<dyn crate::LimitEvents>,
 }
+
+type LockEvents = Box<dyn Fn(LockChange<'_>) -> Result<crate::EventDraft> + Send + Sync>;
 
 /// The per-user lock limit in force and whether the policy file set it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -426,10 +429,16 @@ impl RepoService {
         let actor = &who.user;
         let now = self.clock.now();
         let found = self.conversions(old, new).await?;
+        let events = self
+            .lock_events(Some((
+                actor.clone(),
+                Some("now shared by policy".to_string()),
+            )))
+            .await;
         for lock in &found.released_locks {
             if self
                 .meta
-                .force_release_lock(&self.repo, &lock.path, now)
+                .force_release_lock_with_events(&self.repo, &lock.path, now, events.as_deref())
                 .await?
                 .is_some()
             {
@@ -645,6 +654,50 @@ impl RepoService {
         self.parse_policy(content).await
     }
 
+    /// Builds lock events for this repository, `None` when it is gone. `forced` is the actor and reason of a forced release.
+    async fn lock_events(&self, forced: Option<(UserId, Option<String>)>) -> Option<LockEvents> {
+        let record = self.meta.get_repo(&self.repo).await.ok().flatten()?;
+        let (owner, events) = self.limit_events.clone();
+        let now = self.clock.now();
+        Some(Box::new(move |change| {
+            let (repo, owner) = (record.name.clone(), owner.clone());
+            let event = match change {
+                LockChange::Acquired(l) => DomainEvent::LockAcquired {
+                    owner,
+                    repo,
+                    path: l.path.clone(),
+                    holder: l.owner.clone(),
+                    expires_at: l.expires_at,
+                },
+                LockChange::Released(l) => DomainEvent::LockReleased {
+                    owner,
+                    repo,
+                    path: l.path.clone(),
+                    holder: l.owner.clone(),
+                },
+                LockChange::Expired(l) => DomainEvent::LockExpired {
+                    owner,
+                    repo,
+                    path: l.path.clone(),
+                    holder: l.owner.clone(),
+                    expires_at: l.expires_at,
+                },
+                LockChange::Forced(l) => {
+                    let (actor, reason) = forced.clone().unwrap_or((l.owner.clone(), None));
+                    DomainEvent::LockForced {
+                        owner,
+                        repo,
+                        path: l.path.clone(),
+                        holder: l.owner.clone(),
+                        actor,
+                        reason,
+                    }
+                }
+            };
+            events.draft(event, now)
+        }))
+    }
+
     /// Take the lock on an exclusive path. `base` must equal the default branch's revision of it so nobody edits a
     /// stale copy; the holder renews by checking out again.
     pub async fn checkout(
@@ -680,16 +733,18 @@ impl RepoService {
             });
         }
         let now = self.clock.now();
+        let events = self.lock_events(None).await;
         let lock = self
             .limit_result(
                 self.meta
-                    .acquire_lock(
+                    .acquire_lock_with_events(
                         &self.repo,
                         path,
                         user,
                         now,
                         now + self.config.lease,
                         self.lock_limit().max,
+                        events.as_deref(),
                     )
                     .await,
             )
@@ -705,8 +760,9 @@ impl RepoService {
     }
 
     pub async fn release(&self, path: &RepoPath, user: &UserId) -> Result<()> {
+        let events = self.lock_events(None).await;
         self.meta
-            .release_lock(&self.repo, path, user, self.clock.now())
+            .release_lock_with_events(&self.repo, path, user, self.clock.now(), events.as_deref())
             .await?;
         self.record(user, AuditAction::Release, path, "released".into())
             .await
@@ -735,9 +791,12 @@ impl RepoService {
                 "a reason is required to force an unlock".into(),
             ));
         }
+        let events = self
+            .lock_events(Some((actor.clone(), Some(reason.trim().to_string()))))
+            .await;
         let lock = self
             .meta
-            .force_release_lock(&self.repo, path, self.clock.now())
+            .force_release_lock_with_events(&self.repo, path, self.clock.now(), events.as_deref())
             .await?
             .ok_or_else(|| PynError::NotLocked(path.clone()))?;
         let detail = format!("removed {}'s lock: {}", lock.owner, reason.trim());

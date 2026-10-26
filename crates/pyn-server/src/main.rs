@@ -135,7 +135,24 @@ fn strict_flag(name: &str, default: bool) -> anyhow::Result<bool> {
     }
 }
 
+/// `PYN_WEBHOOKS_ALLOW_LOOPBACK` is refused unless plain-http development mode is on too.
+fn allow_loopback() -> anyhow::Result<bool> {
+    loopback_mode(
+        strict_flag("PYN_WEBHOOKS_ALLOW_LOOPBACK", false)?,
+        strict_flag("PYN_WEBHOOKS_ALLOW_HTTP", false)?,
+    )
+}
+
+fn loopback_mode(on: bool, allow_http: bool) -> anyhow::Result<bool> {
+    anyhow::ensure!(
+        !on || allow_http,
+        "PYN_WEBHOOKS_ALLOW_LOOPBACK is for development and needs PYN_WEBHOOKS_ALLOW_HTTP=true"
+    );
+    Ok(on)
+}
+
 fn webhook_settings() -> anyhow::Result<WebhookSettings> {
+    allow_loopback()?;
     let secret_key = match std::env::var("PYN_SECRET_KEY") {
         Ok(text) => {
             Some(SecretKey::from_hex(&text).map_err(|e| anyhow::anyhow!("PYN_SECRET_KEY: {e}"))?)
@@ -184,7 +201,13 @@ fn start_webhook_delivery(
         config.concurrency >= 1,
         "PYN_WEBHOOKS_CONCURRENCY must be at least 1"
     );
-    let sender = SafeSender::new(settings.allow_http, allowed_hosts);
+    let mut sender = SafeSender::new(settings.allow_http, allowed_hosts);
+    if allow_loopback()? {
+        tracing::warn!(
+            "PYN_WEBHOOKS_ALLOW_LOOPBACK is on: webhooks may be delivered to loopback addresses; development only"
+        );
+        sender = sender.allowing_loopback();
+    }
     Arc::new(DeliveryWorker::new(
         store,
         clock,
@@ -510,7 +533,7 @@ async fn main() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::whole_number;
+    use super::{loopback_mode, whole_number};
 
     #[test]
     fn a_whole_number_parses_including_zero() {
@@ -528,5 +551,12 @@ mod tests {
                 "{bad:?}"
             );
         }
+    }
+
+    #[test]
+    fn loopback_delivery_needs_the_http_development_mode() {
+        assert!(loopback_mode(true, false).is_err());
+        assert!(loopback_mode(true, true).unwrap());
+        assert!(!loopback_mode(false, false).unwrap());
     }
 }
