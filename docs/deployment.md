@@ -67,6 +67,23 @@ warns while it is still set.
 Logs go to standard error as plain text; read them with `docker compose logs`. The port is
 published on loopback by default (`PYN_PUBLISH` in `.env`), so only a reverse proxy on the host reaches it.
 
+### The web app
+
+The web app is its own image, `ghcr.io/avalon-initiative/pyn-web:<tag>`, released with the same tag scheme as `pyn-core`. It serves the
+app and proxies `/v1` and `/healthz` to the server, so people use one address. It is optional in the Compose file (profile `web`):
+
+```
+# in .env
+PYN_WEB_IMAGE=ghcr.io/avalon-initiative/pyn-web:v1.0.0
+PYN_PUBLIC_URL=https://pyn.example.com       # the address people use, in front of the web container
+PYN_TRUST_FORWARDED_FOR=true                 # the web container sets X-Forwarded-For
+docker compose --profile web up -d --wait
+```
+
+The web container listens on `127.0.0.1:8080` by default (`PYN_WEB_PUBLISH` changes it); put the TLS proxy in front of it, not in front of
+the server. `PYN_API_URL` (set to `http://server:7878` in the Compose file) is the only setting the image reads; it must have no path.
+Upgrade both images together to the same tag.
+
 ### Reverse proxy and TLS
 
 The server speaks plain HTTP; terminate TLS in front of it with any proxy (Caddy, nginx, Traefik, a cloud load

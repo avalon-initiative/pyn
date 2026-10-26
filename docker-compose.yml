@@ -42,6 +42,24 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  web:
+    profiles: [web]
+    image: ${PYN_WEB_IMAGE:?set PYN_WEB_IMAGE in .env (ghcr.io/avalon-initiative/pyn-web:<tag>)}
+    restart: unless-stopped
+    depends_on:
+      - server
+    environment:
+      PYN_API_URL: http://server:7878
+    ports:
+      - "${PYN_WEB_PUBLISH:-127.0.0.1:8080}:8080"
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /etc/nginx/conf.d
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+
 volumes:
   pyn-db:
   pyn-objects:
