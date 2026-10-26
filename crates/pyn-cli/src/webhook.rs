@@ -51,6 +51,21 @@ pub enum WebhookCommand {
     Rotate { id: i64 },
     /// Stop signing with one active secret, once receivers use the new one.
     Retire { id: i64, secret_id: i64 },
+    /// List a subscription's deliveries, newest event first.
+    Deliveries {
+        id: i64,
+        /// Only this status: pending, delivered or failed.
+        #[arg(long)]
+        status: Option<String>,
+        /// Page size (server default 50, at most 200).
+        #[arg(long)]
+        limit: Option<u32>,
+        /// Continue after a page: the event id printed at its end.
+        #[arg(long)]
+        before: Option<i64>,
+    },
+    /// Queue a delivery again now. It keeps its delivery id, so receivers can dedupe.
+    Redeliver { id: i64, delivery_id: String },
 }
 
 pub fn run(api: &Api, cmd: WebhookCommand) -> Result<()> {
@@ -169,6 +184,61 @@ pub fn run(api: &Api, cmd: WebhookCommand) -> Result<()> {
             ))?;
             println!("retired secret {secret_id} of webhook {id}");
         }
+        WebhookCommand::Deliveries {
+            id,
+            status,
+            limit,
+            before,
+        } => {
+            let mut req = api.get(&format!("/v1/admin/webhooks/{id}/deliveries"));
+            if let Some(s) = &status {
+                req = req.query(&[("status", s)]);
+            }
+            if let Some(l) = limit {
+                req = req.query(&[("limit", l)]);
+            }
+            if let Some(b) = before {
+                req = req.query(&[("before", b)]);
+            }
+            let page: api::WebhookDeliveryPage = api.send(req)?.json()?;
+            let rows: Vec<Vec<String>> = page
+                .deliveries
+                .into_iter()
+                .map(|d| {
+                    vec![
+                        d.event_id.to_string(),
+                        status_text(d.status).to_string(),
+                        d.attempts.to_string(),
+                        match d.status {
+                            api::WebhookDeliveryStatus::Pending => time::local(d.next_attempt_at),
+                            _ => "-".to_string(),
+                        },
+                        d.last_status_code.map_or("-".into(), |c| c.to_string()),
+                        d.id,
+                        d.last_error.unwrap_or_default(),
+                    ]
+                })
+                .collect();
+            table::show(
+                &[
+                    "EVENT", "STATUS", "ATTEMPTS", "NEXT", "CODE", "DELIVERY", "ERROR",
+                ],
+                &rows,
+                "no deliveries",
+            );
+            if let Some(next) = page.next_before {
+                eprintln!("more: pass --before {next}");
+            }
+        }
+        WebhookCommand::Redeliver { id, delivery_id } => {
+            let d: api::WebhookDelivery = api
+                .send(api.request(
+                    Method::POST,
+                    &format!("/v1/admin/webhooks/{id}/deliveries/{delivery_id}/redeliver"),
+                ))?
+                .json()?;
+            println!("delivery {} of webhook {id} queued again", d.id);
+        }
     }
     Ok(())
 }
@@ -178,5 +248,13 @@ fn events_text(types: &[String]) -> String {
         "all".to_string()
     } else {
         types.join(",")
+    }
+}
+
+fn status_text(s: api::WebhookDeliveryStatus) -> &'static str {
+    match s {
+        api::WebhookDeliveryStatus::Pending => "pending",
+        api::WebhookDeliveryStatus::Delivered => "delivered",
+        api::WebhookDeliveryStatus::Failed => "failed",
     }
 }

@@ -27,7 +27,7 @@ pub enum AdminCommand {
     #[command(subcommand)]
     Limits(crate::limits::LimitsCommand),
     /// Webhook subscriptions for lifecycle events, and their signing secrets.
-    #[command(subcommand)]
+    #[command(subcommand, alias = "webhooks")]
     Webhook(crate::webhook::WebhookCommand),
 }
 

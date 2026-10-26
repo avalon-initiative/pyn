@@ -92,3 +92,40 @@ impl std::fmt::Debug for RotatedWebhookSecret {
             .finish_non_exhaustive()
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WebhookDeliveryStatus {
+    Pending,
+    Delivered,
+    Failed,
+}
+
+/// One event's delivery to one subscription. The `id` is the `Pyn-Delivery` header and stays the same across retries and redeliveries.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct WebhookDelivery {
+    pub id: String,
+    /// The queued event's id; the paging cursor.
+    pub event_id: i64,
+    pub status: WebhookDeliveryStatus,
+    /// Attempts made since the last queueing or redelivery.
+    pub attempts: u32,
+    /// When the next attempt is due; meaningful while pending.
+    pub next_attempt_at: DateTime<Utc>,
+    /// The receiver's status code on the last attempt, if it answered.
+    pub last_status_code: Option<i32>,
+    /// Why the last attempt failed.
+    pub last_error: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub delivered_at: Option<DateTime<Utc>>,
+    pub failed_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct WebhookDeliveryPage {
+    /// Newest event first.
+    pub deliveries: Vec<WebhookDelivery>,
+    /// Pass as `before` to fetch the next, older page; null on the last page.
+    #[schema(required = true)]
+    pub next_before: Option<i64>,
+}

@@ -406,6 +406,7 @@ fn the_new_scope_and_actions_parse_and_display() {
         AuditAction::WebhookDeleted,
         AuditAction::WebhookSecretRotated,
         AuditAction::WebhookSecretRetired,
+        AuditAction::WebhookRedelivered,
     ] {
         assert_eq!(a.as_str().parse::<AuditAction>().unwrap(), a);
         assert!(AuditAction::ALL.contains(&a));

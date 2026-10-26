@@ -121,6 +121,8 @@ struct RepoAddress {
         webhook_api::delete_webhook,
         webhook_api::rotate_webhook_secret,
         webhook_api::retire_webhook_secret,
+        webhook_api::list_webhook_deliveries,
+        webhook_api::redeliver_webhook,
         access_api::create_token,
         access_api::list_tokens,
         access_api::revoke_token,
@@ -339,7 +341,10 @@ struct RepoAddress {
         api::CreateWebhookRequest,
         api::UpdateWebhookRequest,
         api::CreatedWebhook,
-        api::RotatedWebhookSecret
+        api::RotatedWebhookSecret,
+        api::WebhookDelivery,
+        api::WebhookDeliveryStatus,
+        api::WebhookDeliveryPage
     ))
 )]
 pub struct ApiDoc;
@@ -406,6 +411,14 @@ fn routes(state: AppState) -> Router {
         .route(
             "/v1/admin/webhooks/{id}/secrets/{secret_id}",
             delete(webhook_api::retire_webhook_secret),
+        )
+        .route(
+            "/v1/admin/webhooks/{id}/deliveries",
+            get(webhook_api::list_webhook_deliveries),
+        )
+        .route(
+            "/v1/admin/webhooks/{id}/deliveries/{delivery_id}/redeliver",
+            post(webhook_api::redeliver_webhook),
         )
         .route("/v1/owners/{owner}/limits", get(limits_api::owner_limits))
         .route("/v1/owners/{owner}/usage", get(limits_api::owner_usage))
@@ -682,6 +695,7 @@ impl IntoResponse for ApiError {
             | PynError::ServiceCredentialNotFound(_)
             | PynError::WebhookNotFound(_)
             | PynError::WebhookSecretNotFound { .. }
+            | PynError::WebhookDeliveryNotFound { .. }
             | PynError::UserNotFound(_)
             | PynError::KeyNotFound(_)
             | PynError::OidcNotConfigured

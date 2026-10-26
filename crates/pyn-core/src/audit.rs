@@ -81,11 +81,12 @@ pub enum AuditAction {
     WebhookDeleted,
     WebhookSecretRotated,
     WebhookSecretRetired,
+    WebhookRedelivered,
     Delete,
 }
 
 impl AuditAction {
-    pub const ALL: [AuditAction; 55] = [
+    pub const ALL: [AuditAction; 56] = [
         AuditAction::Checkout,
         AuditAction::Release,
         AuditAction::Checkin,
@@ -140,6 +141,7 @@ impl AuditAction {
         AuditAction::WebhookDeleted,
         AuditAction::WebhookSecretRotated,
         AuditAction::WebhookSecretRetired,
+        AuditAction::WebhookRedelivered,
         AuditAction::Delete,
     ];
 
@@ -199,6 +201,7 @@ impl AuditAction {
             Self::WebhookDeleted => "webhook_deleted",
             Self::WebhookSecretRotated => "webhook_secret_rotated",
             Self::WebhookSecretRetired => "webhook_secret_retired",
+            Self::WebhookRedelivered => "webhook_redelivered",
             Self::Delete => "delete",
         }
     }

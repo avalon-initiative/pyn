@@ -2,8 +2,8 @@
 
 use super::*;
 use crate::webhook::{
-    MAX_ACTIVE_SECRETS, NewSubscription, Subscription, SubscriptionUpdate, WebhookSecret,
-    WebhookStore,
+    Delivery, DeliveryQuery, DeliveryStatus, MAX_ACTIVE_SECRETS, NewSubscription, Subscription,
+    SubscriptionUpdate, WebhookSecret, WebhookStore,
 };
 use crate::webhook_secret::{SecretKey, generate_secret, store_secret};
 use crate::webhook_url::{origin_of, validate_event_types, validate_url};
@@ -50,6 +50,18 @@ pub struct CreateWebhook {
     /// Empty means every event type.
     pub event_types: Vec<String>,
     pub enabled: bool,
+}
+
+/// Default and largest page of deliveries.
+pub const DELIVERY_PAGE: u32 = 50;
+pub const MAX_DELIVERY_PAGE: u32 = 200;
+
+/// One page of a subscription's deliveries, newest event first.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeliveryPage {
+    pub deliveries: Vec<Delivery>,
+    /// The event id to pass as `before` for the next, older page; `None` on the last.
+    pub next_before: Option<i64>,
 }
 
 /// A secret just generated: the only time its value is available.
@@ -304,5 +316,74 @@ impl AccessService {
             ),
         )
         .await
+    }
+
+    /// A page of the subscription's deliveries, optionally one status; `limit` defaults to 50 and is capped at 200.
+    pub async fn list_webhook_deliveries(
+        &self,
+        actor: &Identity,
+        id: i64,
+        status: Option<DeliveryStatus>,
+        before: Option<i64>,
+        limit: Option<u32>,
+    ) -> Result<DeliveryPage> {
+        self.require_admin_scope(actor, ServiceScope::ManageWebhooks)
+            .await?;
+        self.require_webhook(id).await?;
+        let limit = limit.unwrap_or(DELIVERY_PAGE).clamp(1, MAX_DELIVERY_PAGE);
+        let mut rows = self
+            .webhooks
+            .list_deliveries(
+                id,
+                &DeliveryQuery {
+                    status,
+                    before_event: before,
+                    limit: limit + 1,
+                },
+            )
+            .await?;
+        let next_before = (rows.len() > limit as usize).then(|| rows[limit as usize - 1].event_id);
+        rows.truncate(limit as usize);
+        Ok(DeliveryPage {
+            deliveries: rows,
+            next_before,
+        })
+    }
+
+    /// Resets one delivery of the subscription to pending, due now, keeping its delivery id.
+    pub async fn redeliver_webhook(
+        &self,
+        actor: &Identity,
+        id: i64,
+        delivery_id: &str,
+    ) -> Result<Delivery> {
+        self.require_admin_scope(actor, ServiceScope::ManageWebhooks)
+            .await?;
+        let sub = self.require_webhook(id).await?;
+        let not_found = || PynError::WebhookDeliveryNotFound {
+            webhook: id,
+            delivery: delivery_id.to_string(),
+        };
+        let current = self
+            .webhooks
+            .get_delivery(delivery_id)
+            .await?
+            .filter(|d| d.subscription_id == id)
+            .ok_or_else(not_found)?;
+        let delivery = self
+            .webhooks
+            .redeliver(&current.id, self.clock.now())
+            .await?
+            .ok_or_else(not_found)?;
+        self.record_server(
+            &actor.user,
+            AuditAction::WebhookRedelivered,
+            format!(
+                "webhook {} ({}): delivery {} redelivered",
+                sub.id, sub.name, delivery.id
+            ),
+        )
+        .await?;
+        Ok(delivery)
     }
 }

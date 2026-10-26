@@ -135,6 +135,8 @@ pub enum PynError {
     ServiceCredentialExists(String),
     #[error("no webhook {0}")]
     WebhookNotFound(i64),
+    #[error("webhook {webhook} has no delivery {delivery}")]
+    WebhookDeliveryNotFound { webhook: i64, delivery: String },
     #[error("webhook {webhook} has no active secret {secret}")]
     WebhookSecretNotFound { webhook: i64, secret: i64 },
     #[error("a webhook has at most {0} active secrets; retire one first")]
@@ -306,6 +308,7 @@ impl PynError {
             Self::ServiceCredentialNotFound(_) => "service_credential_not_found",
             Self::ServiceCredentialExists(_) => "service_credential_exists",
             Self::WebhookNotFound(_) => "webhook_not_found",
+            Self::WebhookDeliveryNotFound { .. } => "webhook_delivery_not_found",
             Self::WebhookSecretNotFound { .. } => "webhook_secret_not_found",
             Self::WebhookSecretLimit(_) => "webhook_secret_limit",
             Self::WebhookLastSecret => "webhook_last_secret",

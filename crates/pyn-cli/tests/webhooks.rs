@@ -190,3 +190,85 @@ fn a_bad_url_and_a_missing_scope_are_refused() {
     let out = env.run_with_token(&home, &scoped, &["admin", "webhook", "list"]);
     assert!(out.status.success(), "{}", text(&out));
 }
+
+#[test]
+fn deliveries_are_listed_filtered_and_redelivered() {
+    let (env, home) = set_up();
+    env.ok(
+        &home,
+        "root",
+        &[
+            "admin",
+            "webhook",
+            "create",
+            "ci",
+            "--url",
+            "https://example.com/hook",
+        ],
+    );
+    for repos in ["5", "6"] {
+        env.ok(
+            &home,
+            "root",
+            &["admin", "limits", "set", "alice", "--repos", repos],
+        );
+    }
+
+    let listed = cell_rows(&env.ok(&home, "root", &["admin", "webhooks", "deliveries", "1"]));
+    assert_eq!(
+        listed[0],
+        [
+            "EVENT", "STATUS", "ATTEMPTS", "NEXT", "CODE", "DELIVERY", "ERROR"
+        ]
+    );
+    assert_eq!(listed.len(), 3, "{listed:?}");
+    assert_eq!(listed[1][1], "pending");
+    let delivery = listed[1][5].clone();
+
+    let out = env.ok(
+        &home,
+        "root",
+        &[
+            "admin",
+            "webhook",
+            "deliveries",
+            "1",
+            "--status",
+            "delivered",
+        ],
+    );
+    assert_eq!(out.trim(), "no deliveries");
+
+    let paged = env.run(
+        &home,
+        "root",
+        &["admin", "webhook", "deliveries", "1", "--limit", "1"],
+    );
+    assert!(paged.status.success(), "{}", text(&paged));
+    assert!(text(&paged).contains("more: pass --before"));
+
+    let out = env.ok(
+        &home,
+        "root",
+        &["admin", "webhook", "redeliver", "1", &delivery],
+    );
+    assert!(out.contains(&format!("delivery {delivery} of webhook 1 queued again")));
+    let err = env.fails(
+        &home,
+        "root",
+        &[
+            "admin",
+            "webhook",
+            "redeliver",
+            "1",
+            "00000000-0000-4000-8000-000000000000",
+        ],
+    );
+    assert!(err.contains("webhook_delivery_not_found"), "{err}");
+    let err = env.fails(
+        &home,
+        "root",
+        &["admin", "webhook", "deliveries", "1", "--status", "x"],
+    );
+    assert!(err.contains("invalid_request"), "{err}");
+}

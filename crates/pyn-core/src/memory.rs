@@ -3388,6 +3388,11 @@ impl WebhookStore for MemoryWebhookStore {
         Ok(rows)
     }
 
+    async fn get_delivery(&self, delivery_id: &str) -> Result<Option<Delivery>> {
+        let s = self.state.lock().unwrap();
+        Ok(s.deliveries.iter().find(|d| d.id == delivery_id).cloned())
+    }
+
     async fn redeliver(&self, delivery_id: &str, now: DateTime<Utc>) -> Result<Option<Delivery>> {
         let mut s = self.state.lock().unwrap();
         let Some(d) = s.deliveries.iter_mut().find(|d| d.id == delivery_id) else {

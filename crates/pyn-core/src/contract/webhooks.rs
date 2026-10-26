@@ -444,6 +444,16 @@ pub async fn redeliver_resets_a_delivery_and_keeps_its_id(store: Webhooks) {
         .unwrap();
     assert_eq!(failed[0].status, DeliveryStatus::Failed);
 
+    assert_eq!(store.get_delivery(&id).await.unwrap().unwrap().id, id);
+    assert!(
+        store
+            .get_delivery("00000000-0000-4000-8000-000000000000")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(store.get_delivery("nope").await.unwrap().is_none());
+
     let later = now + Duration::hours(2);
     let d = store.redeliver(&id, later).await.unwrap().unwrap();
     assert_eq!(d.id, id);

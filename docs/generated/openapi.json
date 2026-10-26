@@ -1058,6 +1058,159 @@
         }
       }
     },
+    "/v1/admin/webhooks/{id}/deliveries": {
+      "get": {
+        "tags": [
+          "webhook_api"
+        ],
+        "operationId": "list_webhook_deliveries",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "the subscription's id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "description": "only deliveries in this status",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/WebhookDeliveryStatus"
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "description": "deliveries of events older than this event id",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "page size, default 50, max 200",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "newest event first; deliveries are kept 30 days",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookDeliveryPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: unknown status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "server_admin_required, or service_scope_required for a service credential without manage_webhooks",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "webhook_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/webhooks/{id}/deliveries/{delivery_id}/redeliver": {
+      "post": {
+        "tags": [
+          "webhook_api"
+        ],
+        "operationId": "redeliver_webhook",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "the subscription's id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "delivery_id",
+            "in": "path",
+            "description": "the delivery's id, as sent in `Pyn-Delivery`",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "back to pending with no attempts and due now; the delivery id is unchanged so receivers can dedupe",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookDelivery"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "server_admin_required, or service_scope_required for a service credential without manage_webhooks",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "webhook_not_found, or webhook_delivery_not_found when it is not a delivery of that subscription",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/admin/webhooks/{id}/secrets": {
       "post": {
         "tags": [
@@ -11230,6 +11383,107 @@
             "type": "string"
           }
         }
+      },
+      "WebhookDelivery": {
+        "type": "object",
+        "description": "One event's delivery to one subscription. The `id` is the `Pyn-Delivery` header and stays the same across retries and redeliveries.",
+        "required": [
+          "id",
+          "event_id",
+          "status",
+          "attempts",
+          "next_attempt_at",
+          "created_at"
+        ],
+        "properties": {
+          "attempts": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Attempts made since the last queueing or redelivery.",
+            "minimum": 0
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "delivered_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "event_id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The queued event's id; the paging cursor."
+          },
+          "failed_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "id": {
+            "type": "string"
+          },
+          "last_error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the last attempt failed."
+          },
+          "last_status_code": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The receiver's status code on the last attempt, if it answered."
+          },
+          "next_attempt_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the next attempt is due; meaningful while pending."
+          },
+          "status": {
+            "$ref": "#/components/schemas/WebhookDeliveryStatus"
+          }
+        }
+      },
+      "WebhookDeliveryPage": {
+        "type": "object",
+        "required": [
+          "deliveries",
+          "next_before"
+        ],
+        "properties": {
+          "deliveries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WebhookDelivery"
+            },
+            "description": "Newest event first."
+          },
+          "next_before": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Pass as `before` to fetch the next, older page; null on the last page."
+          }
+        }
+      },
+      "WebhookDeliveryStatus": {
+        "type": "string",
+        "enum": [
+          "pending",
+          "delivered",
+          "failed"
+        ]
       },
       "WebhookSecretInfo": {
         "type": "object",

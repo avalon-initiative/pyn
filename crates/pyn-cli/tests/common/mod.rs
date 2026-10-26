@@ -100,14 +100,16 @@ fn build_with(
             ..AccessConfig::default()
         }
     };
+    let hooks = Arc::new(pyn_core::memory::MemoryWebhookStore::new());
     let mut service = AccessService::new(
-        Arc::new(MemoryAccessStore::new()),
+        Arc::new(MemoryAccessStore::new().with_outbox(hooks.clone())),
         clock.clone(),
         Arc::new(pyn_core::MemoryLimitEvents::new()),
     )
     .with_config(config)
     .with_registry(meta.clone())
-    .with_audit(audit.clone());
+    .with_audit(audit.clone())
+    .with_webhooks(hooks, pyn_core::WebhookSettings::default());
     if let Some(token) = setup_token {
         service = service.with_setup_token(token).unwrap();
     }

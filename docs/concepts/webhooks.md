@@ -100,6 +100,23 @@ A 2xx answer settles the delivery. Anything else (another status, a timeout, a r
 failed attempt and is retried with jittered exponential backoff: 8 attempts over about 22 hours, then the delivery is marked
 `failed`. A manual redeliver starts again. Rows are kept 30 days.
 
+### Deliveries and redelivery
+
+Each event queued for a subscription is one delivery, identified by the `Pyn-Delivery` id. An administrator (or a
+service credential with `manage_webhooks`) can see how they are going and send one again:
+
+| Route | Does |
+| --- | --- |
+| `GET /v1/admin/webhooks/{id}/deliveries` | Lists the subscription's deliveries, newest event first: `status` (`pending`, `delivered`, `failed`), `attempts`, `next_attempt_at`, `last_status_code`, `last_error`. Filter with `?status=`, page with `?limit=` (default 50, at most 200) and `?before=` (the `next_before` of the previous page, null on the last). |
+| `POST /v1/admin/webhooks/{id}/deliveries/{delivery_id}/redeliver` | Puts the delivery back to `pending` with no attempts, due now. It keeps its delivery id, so a receiver that deduplicates sees a repeat, and it is `404 webhook_delivery_not_found` for an id that is not a delivery of that subscription. |
+
+A redeliver works on a delivery in any status, including `delivered` (to replay it) and `failed` (after the receiver is
+fixed), and is audited as `webhook_redelivered`. `last_error` is a short text such as `the receiver answered 503` or a
+connection error; it never contains the receiver's response body. Deliveries are kept 30 days.
+
+From the CLI: `pyn admin webhook deliveries <id> [--status failed] [--limit N] [--before EVENT]` and
+`pyn admin webhook redeliver <id> <delivery id>`.
+
 ### What the sender refuses
 
 - Only `https` URLs (`http` when `PYN_WEBHOOKS_ALLOW_HTTP=true`).
@@ -115,6 +132,6 @@ failed attempt and is retried with jittered exponential backoff: 8 attempts over
 ## Audit
 
 Every change is recorded in the server audit log (`GET /v1/admin/audit`) with the actor: `webhook_created`,
-`webhook_updated` (naming the fields changed, not their values), `webhook_deleted`, `webhook_secret_rotated` and
-`webhook_secret_retired`. An entry names the subscription's id and name and, for create and delete, the URL's scheme and
+`webhook_updated` (naming the fields changed, not their values), `webhook_deleted`, `webhook_secret_rotated`,
+`webhook_secret_retired` and `webhook_redelivered` (naming the delivery id). An entry names the subscription's id and name and, for create and delete, the URL's scheme and
 host only, because a path or query often carries a token.

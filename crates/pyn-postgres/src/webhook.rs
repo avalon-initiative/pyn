@@ -497,6 +497,13 @@ impl WebhookStore for PgMetadataStore {
         rows.iter().map(delivery_from).collect()
     }
 
+    async fn get_delivery(&self, delivery_id: &str) -> Result<Option<Delivery>> {
+        if !is_uuid(delivery_id) {
+            return Ok(None);
+        }
+        self.delivery_by_id(delivery_id).await
+    }
+
     async fn redeliver(&self, delivery_id: &str, now: DateTime<Utc>) -> Result<Option<Delivery>> {
         if !is_uuid(delivery_id) {
             return Ok(None);

@@ -51,7 +51,7 @@ pub use access_service::{
     SetupRequest, SetupStatus, SignUp, TeamDetail, generate_setup_token,
 };
 pub use access_service::{
-    CreateWebhook, IssuedSecret, WebhookDetail, WebhookSecretInfo, WebhookSettings,
+    CreateWebhook, DeliveryPage, IssuedSecret, WebhookDetail, WebhookSecretInfo, WebhookSettings,
 };
 pub use audit::{AuditAction, AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent};
 pub use auth::AuthProvider;

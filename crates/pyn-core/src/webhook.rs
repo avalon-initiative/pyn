@@ -346,6 +346,8 @@ pub trait WebhookStore: Send + Sync {
         query: &DeliveryQuery,
     ) -> Result<Vec<Delivery>>;
 
+    async fn get_delivery(&self, delivery_id: &str) -> Result<Option<Delivery>>;
+
     /// Resets a delivery to pending with no attempts, due now. `None` when it does not exist.
     async fn redeliver(&self, delivery_id: &str, now: DateTime<Utc>) -> Result<Option<Delivery>>;
 

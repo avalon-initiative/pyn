@@ -130,6 +130,10 @@ impl WebhookStore for FailingWebhooks {
         panic!("unexpected WebhookStore::list_deliveries")
     }
 
+    async fn get_delivery(&self, _delivery_id: &str) -> Result<Option<Delivery>> {
+        panic!("unexpected WebhookStore::get_delivery")
+    }
+
     async fn redeliver(&self, _delivery_id: &str, _now: DateTime<Utc>) -> Result<Option<Delivery>> {
         panic!("unexpected WebhookStore::redeliver")
     }

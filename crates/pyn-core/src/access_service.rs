@@ -48,7 +48,7 @@ pub use limits::OwnerLimits;
 pub use setup::{SetupRequest, SetupStatus, generate_setup_token};
 pub use teams::TeamDetail;
 pub use webhooks::{
-    CreateWebhook, IssuedSecret, WebhookDetail, WebhookSecretInfo, WebhookSettings,
+    CreateWebhook, DeliveryPage, IssuedSecret, WebhookDetail, WebhookSecretInfo, WebhookSettings,
 };
 
 /// The outcome of changing or removing an organization member.
