@@ -32,6 +32,9 @@ pub fn message(name: &str) -> String {
     if name == "grep" {
         "pyn: 'grep' searches a git repository, and this is not one; see docs/concepts/git-compatibility.md."
             .into()
+    } else if name == "worktree" {
+        "pyn: 'worktree' manages a git repository's work trees, and this is not one; see docs/concepts/git-compatibility.md."
+            .into()
     } else if name == "blame" || name == "annotate" {
         format!(
             "pyn: '{name}' reads a git repository's history, and this is not one; see docs/concepts/git-compatibility.md."

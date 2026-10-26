@@ -172,7 +172,7 @@ fn list(git: &GitHome) -> Result<()> {
 }
 
 /// A reflog age limit: lines with an older time are removed. `never` removes nothing, `all` everything.
-fn limit(text: &str) -> Result<i64> {
+pub(super) fn limit(text: &str) -> Result<i64> {
     match text {
         "never" | "false" => Ok(0),
         "all" => Ok(i64::MAX),

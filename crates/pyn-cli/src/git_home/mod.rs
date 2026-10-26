@@ -80,6 +80,7 @@ pub(crate) mod todo;
 mod treemerge;
 mod upstream;
 mod worktree;
+mod worktrees;
 
 use std::path::{Path, PathBuf};
 
@@ -133,6 +134,7 @@ pub(crate) use tags::{
     annotation, check_name, delete as delete_tags, list as list_tags, short, tag_ref,
 };
 pub use to_git::{ConvertArgs, Home, to_git};
+pub use worktrees::WorktreeArgs;
 
 /// A refusal git reports as `error: <message>` with exit status 1, rather than as a fatal error.
 #[derive(Debug)]

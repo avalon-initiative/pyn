@@ -178,8 +178,9 @@ Commands people reach for that are not in the daily set.
 | `git bisect start [--term-(bad\|new)=<term> --term-(good\|old)=<term>] [--no-checkout] [--first-parent] [<bad> [<good>...]] [--] [<pathspec>...]`, `good`\|`old`, `bad`\|`new`, `skip`, `next`, `reset`, `run`, `log`, `replay`, `terms` | `pyn bisect ...` on a git home | git home only | See [Bisect](#bisect). Git's search, output, exit statuses and `.git` state, so git and pyn can continue each other's bisection; `visualize` and `view` are not built (`129`). On a pyn server or local-store workspace it fails with `fatal: not a git repository (or any of the parent directories): .git` (`128`). |
 | `git blame [-L <range>] [-w] [<options>] [<rev>] [--] <file>`, `git annotate` | `pyn blame ...`, `pyn annotate ...` on a git home | git home only | See [Blame](#blame). Git's lines byte for byte: the default, `-e`, `-s`, `-f`, `-n`, `-l`, `-t`, `-b`, `--root`, `--abbrev`, `--date`, `-p`, `--line-porcelain`, `-L` ranges, `<rev>`, `<a>..<b>` and `^<rev>`. `-M`, `-C` and `--incremental` are usage errors (`129`). On a pyn server or local-store workspace it says it needs a git repository (`1`). |
 | `git submodule` | none | unsupported | Submodule lifecycle commands are not built. On a git home, `status` and `diff` inspect recorded gitlinks and initialized submodule checkouts without changing them; see [On a git home](#on-a-git-home). |
+| `git worktree add\|list\|lock\|unlock\|move\|prune\|remove\|repair` | `pyn worktree ...` on a git home | git home only | See [Linked work trees](#linked-work-trees). On a pyn server it prints `pyn: 'worktree' manages a git repository's work trees, and this is not one` (`1`). |
 | `git format-patch`, `git apply`, `git am` | the same names on a git home | git home only | See [Patches](#patches). On a pyn server `format-patch` and `am` fail with `fatal: not a git repository (or any of the parent directories): .git` (`128`), as does `apply`, which git would run outside a repository too. |
-| `git archive`, `git bundle`, `git notes`, `git worktree`, `git gc`, `git fsck` | none | unsupported | `pyn: '<cmd>' is not a pyn command` (`1`). Only the commands in the git-only list print the "git command pyn does not support yet" message, so these read as unknown until that list is widened (#223). |
+| `git archive`, `git bundle`, `git notes`, `git gc`, `git fsck` | none | unsupported | `pyn: '<cmd>' is not a pyn command` (`1`). Only the commands in the git-only list print the "git command pyn does not support yet" message, so these read as unknown until that list is widened (#223). |
 
 ## Branching and merging
 
@@ -721,7 +722,7 @@ schedules them.
 
 | Git | Reason |
 | --- | --- |
-| Commands that maintain git's own storage or run its hooks (`gc`, `fsck`, `bundle`, `submodule`, `worktree`, hooks in `.git/hooks`) | pyn reads a git repository's `.git/` on a git home (decision #245) but does not maintain it or run its hooks. pyn's own hooks are tracked in #216. |
+| Commands that maintain git's own storage or run its hooks (`gc`, `fsck`, `bundle`, `submodule`, hooks in `.git/hooks`) | pyn reads a git repository's `.git/` on a git home (decision #245) but does not maintain it or run its hooks. pyn's own hooks are tracked in #216. |
 
 ## On a git home
 
@@ -1788,6 +1789,26 @@ Differences: colour (`color.interactive`), `interactive.diffFilter`, `interactiv
 paths with unmerged entries are refused for the whole command; the text of the `diff` command comes from `pyn diff --cached`.
 git 2.43 keeps a carriage return at the end of an input line, which later versions strip; pyn strips it. Covered by
 `git_add_interactive.rs`, which gives the same input to git and pyn in SHA-1 and SHA-256 repositories.
+
+### Linked work trees
+
+`pyn worktree` keeps git's own layout, so git and pyn work on the same linked work trees: `.git/worktrees/<name>/` holds `HEAD`,
+`gitdir`, `commondir` and, while locked, `locked` (the reason and a newline, or empty), and the work tree has a `.git` file
+`gitdir: <admin folder>`. `<name>` is the last component of the path, with a number appended when it is taken. Paths are written
+absolute (no `worktree.useRelativePaths`).
+
+| Command | Behaviour |
+| --- | --- |
+| `add [-f] [--detach] [--no-checkout] [--lock [--reason <text>]] [-b <branch>\|-B <branch>] [--orphan] [-q] <path> [<commit-ish>]` | Without `-b`/`-B`/`--detach`: a branch named `commit-ish` is checked out (refused when another work tree has it, unless `-f`), any other commit-ish is detached, and with no commit-ish the branch named like the folder is used or created at `HEAD`. `--orphan` makes an unborn branch with an empty work tree. Prints `Preparing worktree (...)` and `HEAD is now at ...` on stderr. A failure removes what it made. |
+| `list [-v] [--porcelain [-z]] [--expire <time>]` | The main work tree first, then the linked ones by admin folder name; `[branch]`, `(detached HEAD)`, `(bare)`, `locked` and `prunable`. Porcelain output is git's (`worktree`, `HEAD`, `branch`/`detached`/`bare`, `locked [reason]`, `prunable <reason>`). |
+| `lock [--reason <text>] <worktree>`, `unlock <worktree>` | Create and remove `locked`. A work tree is named by its path or by a unique trailing part of it. |
+| `move [-f -f] <worktree> <new-path>` | Renames the folder and rewrites `gitdir`; an existing folder as destination receives it. A locked work tree needs `-f -f`. |
+| `remove [-f [-f]] <worktree>` | Refuses the main work tree, a locked one (`-f -f` overrides), one with changes or untracked files, or with a checked-out submodule (`-f` overrides the last two). |
+| `prune [-n] [-v] [--expire <time>]` | Removes admin folders whose work tree is gone and that are not locked. |
+| `repair [<path>...]` | Rewrites `gitdir` and the `.git` file so each points at the other, for the given work trees and for those whose `.git` file still exists. |
+
+Not built: `add --track`/`--guess-remote` and `worktree.guessRemote`, `--[no-]relative-paths`, sparse and per-worktree config
+(`config.worktree`), the `HEAD` reflog of a new work tree, and `ORIG_HEAD`. `remove` and `move` do not run hooks.
 
 ### Clean
 

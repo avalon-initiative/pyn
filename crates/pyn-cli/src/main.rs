@@ -160,6 +160,8 @@ enum Command {
     Tag(git_home::TagArgs),
     /// Save, list and restore local changes (a git repository only).
     Stash(git_home::StashArgs),
+    /// Manage linked work trees of a repository (a git repository only).
+    Worktree(git_home::WorktreeArgs),
     /// Remove untracked files from the work tree (a git repository only).
     Clean(git_home::CleanArgs),
     /// Search the work tree, the index (--cached) or revisions for a pattern, as `git grep` (a git repository only).
@@ -1954,6 +1956,10 @@ fn run(cli: Cli) -> Result<()> {
         Command::Tag(args) => local_tags::run(&backend, ws.as_ref(), args)?,
         Command::Stash(_) => {
             eprintln!("{}", unsupported::message("stash"));
+            std::process::exit(1);
+        }
+        Command::Worktree(_) => {
+            eprintln!("{}", unsupported::message("worktree"));
             std::process::exit(1);
         }
         Command::Clean(_) => {
