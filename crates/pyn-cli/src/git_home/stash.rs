@@ -114,6 +114,17 @@ fn short(id: &ObjectId) -> String {
 }
 
 pub fn stash(git: &GitHome, cwd: &Path, args: StashArgs) -> Result<()> {
+    if matches!(
+        args.action,
+        None | Some(
+            StashAction::Push(_)
+                | StashAction::Pop { .. }
+                | StashAction::Apply { .. }
+                | StashAction::Branch { .. }
+        )
+    ) {
+        super::sparse::refuse_unsupported(&git.open_index()?.index)?;
+    }
     match args.action {
         None => push(git, cwd, args.push),
         Some(StashAction::Push(p)) => push(git, cwd, p),

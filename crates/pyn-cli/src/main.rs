@@ -248,6 +248,8 @@ enum Command {
     CatFile(git_home::CatFileArgs),
     /// List the refs and the ids they point at (a git repository only).
     ShowRef(git_home::ShowRefArgs),
+    /// Choose which tracked files the work tree holds (a git repository only).
+    SparseCheckout(git_home::SparseCheckoutArgs),
     /// Count loose objects and packs and the space they take (a git repository only).
     CountObjects(git_home::CountObjectsArgs),
     /// Check the connectivity and validity of the objects (a git repository only).
@@ -2020,6 +2022,7 @@ fn run(cli: Cli) -> Result<()> {
         | Command::LsTree(_)
         | Command::CatFile(_)
         | Command::ShowRef(_)
+        | Command::SparseCheckout(_)
         | Command::CountObjects(_)
         | Command::Fsck(_)
         | Command::Prune(_)

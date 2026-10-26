@@ -516,6 +516,7 @@ fn restore_paths(git: &GitHome, cwd: &Path, paths: &[String], r: Restore) -> Res
         bail!("you must specify path(s) to restore");
     }
     let opened = git.open_index()?;
+    super::sparse::refuse_unsupported(&opened.index)?;
     let specs = resolve_specs(git, cwd, paths)?;
     let mut entries: Entries = entries_of(&opened.index);
     let indexed: Vec<Vec<u8>> = entries.keys().map(|(p, _)| p.clone()).collect();

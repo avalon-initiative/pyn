@@ -9,6 +9,7 @@ use pyn_gitwork::{Kind, Pathspec, fs_path};
 
 use super::GitHome;
 use super::plumbing::{emit_bytes, prefix, quote};
+use super::sparse;
 use super::stage::{Ignores, child, dir_entries};
 use crate::short_status::relative;
 
@@ -39,6 +40,15 @@ pub struct LsFilesArgs {
     /// Hide files the standard ignore rules hide (with -o), or select them (with -i).
     #[arg(long)]
     exclude_standard: bool,
+    /// Show a status letter with each file: H tracked, S skipped by sparse checkout, M unmerged, R deleted, C changed, ? other.
+    #[arg(short = 't')]
+    tags: bool,
+    /// Like -t, with a lowercase letter for files marked assume-unchanged.
+    #[arg(short = 'v')]
+    valid_bit: bool,
+    /// Accepted: pyn always has the full index.
+    #[arg(long)]
+    sparse: bool,
     /// Show paths from the repository root, not from the current folder.
     #[arg(long)]
     full_name: bool,
@@ -74,7 +84,11 @@ pub(super) fn ls_files(git: &GitHome, cwd: &Path, args: LsFilesArgs) -> Result<(
         ignore: git.repo.ignore()?,
     };
     let mut out: Vec<u8> = Vec::new();
-    let name = |out: &mut Vec<u8>, path: &[u8], stage: Option<(u32, String, u8)>| {
+    let labelled = args.tags || args.valid_bit;
+    let name = |out: &mut Vec<u8>, path: &[u8], tag: char, stage: Option<(u32, String, u8)>| {
+        if labelled {
+            out.extend_from_slice(format!("{tag} ").as_bytes());
+        }
         let shown = if args.full_name {
             path.to_vec()
         } else {
@@ -96,7 +110,7 @@ pub(super) fn ls_files(git: &GitHome, cwd: &Path, args: LsFilesArgs) -> Result<(
 
     if args.others {
         for path in untracked(git, &root, &index, &spec, &ignores, &args)? {
-            name(&mut out, &path, None);
+            name(&mut out, &path, '?', None);
         }
     }
     let stage_of = |e: &pyn_git::IndexEntry| Some((e.mode, e.id.to_hex(), e.stage));
@@ -123,7 +137,16 @@ pub(super) fn ls_files(git: &GitHome, cwd: &Path, args: LsFilesArgs) -> Result<(
             continue;
         }
         if show_cached {
-            name(&mut out, &e.path, show_stage.then(|| stage_of(e)).flatten());
+            let mut tag = sparse::tag(e);
+            if args.valid_bit && e.assume_valid {
+                tag = tag.to_ascii_lowercase();
+            }
+            name(
+                &mut out,
+                &e.path,
+                tag,
+                show_stage.then(|| stage_of(e)).flatten(),
+            );
         }
         if args.deleted || args.modified {
             let kind = if e.stage > 0 {
@@ -133,12 +156,13 @@ pub(super) fn ls_files(git: &GitHome, cwd: &Path, args: LsFilesArgs) -> Result<(
             };
             let deleted = kind == Some(Kind::Deleted);
             let changed = matches!(kind, Some(Kind::Modified | Kind::TypeChange));
-            for shown in [
-                args.deleted && deleted,
-                args.modified && (changed || deleted),
+            for (shown, tag) in [
+                (args.deleted && deleted, 'R'),
+                (args.modified && (changed || deleted), 'C'),
             ] {
                 if shown {
-                    name(&mut out, &e.path, show_stage.then(|| stage_of(e)).flatten());
+                    let stage = show_stage.then(|| stage_of(e)).flatten();
+                    name(&mut out, &e.path, tag, stage);
                 }
             }
         }

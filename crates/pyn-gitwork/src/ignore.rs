@@ -133,7 +133,8 @@ impl Ignore {
     }
 }
 
-fn verdict(rules: &[Rule], rel: &[u8], is_dir: bool, fold: bool) -> Option<bool> {
+/// The last rule of `rules` that matches `rel`: `Some(true)` for a rule, `Some(false)` for a negation, `None` for none.
+pub fn verdict(rules: &[Rule], rel: &[u8], is_dir: bool, fold: bool) -> Option<bool> {
     rules
         .iter()
         .rev()

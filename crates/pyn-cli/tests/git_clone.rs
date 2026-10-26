@@ -701,7 +701,6 @@ fn unsupported_flags_are_usage_errors_and_leave_nothing_behind() {
     for flag in [
         vec!["--filter", "blob:none"],
         vec!["--recurse-submodules"],
-        vec!["--sparse"],
         vec!["--reference", "/x"],
         vec!["--template", "/x"],
         vec!["--local"],

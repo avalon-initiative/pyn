@@ -537,7 +537,7 @@ fn a_sparse_checkout_is_refused() {
     index.entries[0].skip_worktree = true;
     index.write(&path, Algorithm::Sha1).unwrap();
     let before = snapshot(&repo.main);
-    let (code, err) = repo.fails(&["switch", "clean"]);
+    let (code, err) = repo.fails(&["stash"]);
     assert_eq!(code, 128);
     assert!(err.contains("sparse"), "{err}");
     assert_eq!(snapshot(&repo.main), before);

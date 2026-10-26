@@ -662,6 +662,7 @@ pub(super) fn add_spec(git: &GitHome, spec: &Pathspec) -> Result<()> {
 
 fn patch_spec(git: &GitHome, spec: &Pathspec, mode: &PatchMode) -> Result<()> {
     let opened = git.open_index()?;
+    super::sparse::refuse_unsupported(&opened.index)?;
     let mut entries: Entries = entries_of(&opened.index);
     let mut changed = false;
     choose(git, &opened, mode, spec, &mut |c, io| {

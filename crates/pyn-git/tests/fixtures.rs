@@ -274,3 +274,25 @@ fn unsupported_configurations_are_refused() {
         Err(Error::Unsupported(_))
     ));
 }
+
+#[test]
+fn per_worktree_config_is_read_only_when_the_extension_is_on() {
+    let tmp = tempfile::tempdir().unwrap();
+    let git_dir = copy_git_dir("sha1-loose", tmp.path(), "a/.git");
+    std::fs::write(
+        git_dir.join("config.worktree"),
+        "[core]\n\tsparseCheckout = true\n",
+    )
+    .unwrap();
+    let key = "core.sparsecheckout";
+    let repo = Repository::open(&tmp.path().join("a")).unwrap();
+    assert_eq!(repo.config().get(key), None);
+    let config = std::fs::read_to_string(git_dir.join("config")).unwrap();
+    std::fs::write(
+        git_dir.join("config"),
+        format!("{config}[extensions]\n\tworktreeConfig = true\n"),
+    )
+    .unwrap();
+    let repo = Repository::open(&tmp.path().join("a")).unwrap();
+    assert_eq!(repo.config().get(key), Some("true"));
+}

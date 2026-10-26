@@ -83,7 +83,13 @@ impl Repository {
         };
         let canon = |p: PathBuf| std::fs::canonicalize(&p).map_err(io_at(&p));
         let (git_dir, common_dir) = (canon(git_dir)?, canon(common_dir)?);
-        let config = Config::read(&common_dir.join("config"))?;
+        let mut config = Config::read(&common_dir.join("config"))?;
+        if config.get_bool("extensions.worktreeconfig")? == Some(true) {
+            let per_worktree = git_dir.join("config.worktree");
+            if per_worktree.is_file() {
+                config.extend(Config::read(&per_worktree)?);
+            }
+        }
         let algorithm = config.object_format()?;
         if config
             .get("extensions.refstorage")

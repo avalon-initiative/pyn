@@ -331,8 +331,8 @@ fn reset_logging(git: &GitHome, cwd: &Path, args: &ResetArgs, log: bool) -> Resu
         eprintln!("error: You do not have a valid HEAD.");
         bail!("Could not reset index file to revision '{rev}'.");
     }
-    if kind != ResetKind::Soft && opened.index.entries.iter().any(|e| e.skip_worktree) {
-        bail!("this repository uses sparse checkout, which pyn does not support yet");
+    if matches!(kind, ResetKind::Keep | ResetKind::Merge) {
+        super::sparse::refuse_unsupported(&opened.index)?;
     }
     let all = Pathspec::default();
     let new_tree = match &target {
@@ -343,7 +343,8 @@ fn reset_logging(git: &GitHome, cwd: &Path, args: &ResetArgs, log: bool) -> Resu
     match kind {
         ResetKind::Soft => {}
         ResetKind::Mixed => {
-            let index = index_with(&opened, &all, &to, BTreeMap::new());
+            let mut index = index_with(&opened, &all, &to, BTreeMap::new());
+            super::sparse::carry_over(git, &opened.index, &mut index)?;
             git.save_index(&opened, &index)?;
         }
         ResetKind::Hard => {

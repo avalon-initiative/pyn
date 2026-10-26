@@ -671,6 +671,7 @@ pub(super) fn apply_merge(
     merged: &Merge,
     landing: &Landing,
 ) -> Result<std::result::Result<Applied, Refusal>> {
+    super::sparse::refuse_unsupported(&opened.index)?;
     check_writes(merged.paths.keys())?;
     let head_leaves = git.repo.flatten(ours_tree, &Pathspec::default())?;
 
@@ -821,6 +822,7 @@ fn abort(git: &GitHome) -> Result<()> {
     let committed: BTreeMap<Vec<u8>, Entry> =
         git.repo.flatten(Some(&tree), &Pathspec::default())?;
     let opened = git.open_index()?;
+    super::sparse::refuse_unsupported(&opened.index)?;
     let mut entries: Entries = entries_of(&opened.index);
     let leaves = git.repo.index_leaves(&opened.index);
     let dirty = git.repo.unstaged_changes(&opened.index)?;

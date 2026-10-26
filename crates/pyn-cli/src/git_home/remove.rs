@@ -46,8 +46,23 @@ pub fn rm(git: &GitHome, cwd: &Path, args: &RmArgs) -> Result<()> {
             bail!("not removing '{shown}' recursively without -r");
         }
     }
-    let matched: BTreeSet<Vec<u8>> = picked.into_iter().map(<[u8]>::to_vec).collect();
+    let outside = super::sparse::outside_only(spec, &opened.index, &[]);
+    let skipped: BTreeSet<&[u8]> = opened
+        .index
+        .entries
+        .iter()
+        .filter(|e| e.skip_worktree)
+        .map(|e| e.path.as_slice())
+        .collect();
+    let matched: BTreeSet<Vec<u8>> = picked
+        .into_iter()
+        .filter(|p| !skipped.contains(p))
+        .map(<[u8]>::to_vec)
+        .collect();
     if matched.is_empty() {
+        if super::sparse::refuse_outside(&outside) {
+            std::process::exit(1);
+        }
         return Ok(());
     }
     if !args.cached
@@ -90,7 +105,11 @@ pub fn rm(git: &GitHome, cwd: &Path, args: &RmArgs) -> Result<()> {
             remove_entry_file_keeping(git, path, Some(cwd))?;
         }
     }
-    git.save_index(&opened, &index_of(opened.index.version, entries))
+    git.save_index(&opened, &index_of(opened.index.version, entries))?;
+    if super::sparse::refuse_outside(&outside) {
+        std::process::exit(1);
+    }
+    Ok(())
 }
 
 /// Refuses, as git does, a path whose index entry differs from the work tree file or from `HEAD`.

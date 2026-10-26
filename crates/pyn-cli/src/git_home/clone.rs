@@ -76,7 +76,8 @@ pub struct CloneOptions {
     also_filter_submodules: bool,
     #[arg(long, hide = true, num_args = 0..=1, value_name = "PATH", alias = "recursive")]
     recurse_submodules: Option<Option<String>>,
-    #[arg(long, hide = true)]
+    /// Check out only the files in the root, as `sparse-checkout init --cone` does.
+    #[arg(long)]
     sparse: bool,
     #[arg(long, hide = true, value_name = "REPO")]
     reference: Vec<String>,
@@ -138,7 +139,6 @@ impl CloneOptions {
                 self.recurse_submodules.is_some(),
                 submodules,
             ),
-            ("--sparse", self.sparse, "sparse checkout is not supported"),
             (
                 "--reference",
                 !self.reference.is_empty() || !self.reference_if_able.is_empty(),
@@ -540,6 +540,12 @@ fn finish(
     } else if commit.is_none() && opts.branch.is_none() {
         eprintln!("warning: remote HEAD refers to nonexistent ref, unable to checkout");
     }
+    let git = if opts.sparse && !opts.is_bare() {
+        super::sparse::init_for_clone(&git)?;
+        GitHome::open_at(root)?
+    } else {
+        git
+    };
     if let (false, false, Some(id)) = (opts.is_bare(), opts.no_checkout, commit) {
         let tree = git.repo.commit(&id)?.tree;
         let opened = git.open_index()?;

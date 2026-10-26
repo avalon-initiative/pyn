@@ -20,7 +20,7 @@ pub use attributes::{AttrValue, Attributes, Loader, PathAttributes};
 pub use convert::{Conversion, Converted, SafeCrlf, Settings, ToGit, Unsupported};
 pub use error::{Error, Result};
 pub use history::{Log, LogEntry};
-pub use ignore::{Ignore, Level, parse_rules};
+pub use ignore::{Ignore, Level, Rule, parse_rules, verdict};
 pub use pathspec::{
     MagicSet, Match, Pathspec, PathspecContext, PathspecError, PathspecOptions, Tracker,
 };

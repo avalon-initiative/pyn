@@ -14,7 +14,7 @@ use pyn_object::ObjectId;
 
 use super::decorate::{DecorateArgs, with_decoration};
 use super::merge_diff::{Body, MergeArgs, Shape, Want, with_from};
-use super::{GitHome, path_string, stage};
+use super::{GitHome, path_string, sparse, stage};
 use crate::backend::Backend;
 use crate::commit_format::{Context, FormatArgs, Rendering, render};
 use crate::diff::{self, Blob, Source, Tree};
@@ -138,6 +138,7 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
         Command::LsTree(args) => super::ls_tree::ls_tree(git, cwd, args),
         Command::CatFile(args) => super::cat_file::cat_file(git, cwd, args),
         Command::ShowRef(args) => super::show_ref::show_ref(git, args),
+        Command::SparseCheckout(args) => super::sparse::sparse_checkout(git, args),
         Command::CountObjects(args) => super::count_objects::count_objects(git, args),
         Command::Fsck(args) => super::fsck::fsck(git, args),
         Command::Prune(args) => super::prune::prune(git, args),
@@ -333,6 +334,7 @@ fn needs_work_tree(command: &Command) -> bool {
         | Command::Revert(_)
         | Command::Rebase(_)
         | Command::Pull(_)
+        | Command::SparseCheckout(_)
         | Command::Am(_) => true,
         _ => false,
     }
@@ -391,16 +393,25 @@ pub(super) fn status(git: &GitHome, cwd: &Path, args: &StatusArgs) -> Result<()>
             quote_high,
         );
     }
-    status_table(&status)
+    let sparse = sparse::percentage(git, &git.open_index()?.index)
+        .map(|p| format!("You are in a sparse checkout with {p}% of tracked files present."));
+    status_table_with(&status, sparse.as_deref())
 }
 
 pub(super) fn status_table(status: &pyn_gitwork::Status) -> Result<()> {
+    status_table_with(status, None)
+}
+
+fn status_table_with(status: &pyn_gitwork::Status, note: Option<&str>) -> Result<()> {
     let line = match &status.head {
         Head::Branch { name, id: Some(_) } => format!("On branch {name}"),
         Head::Branch { name, id: None } => format!("On branch {name} (no commits yet)"),
         Head::Detached(id) => format!("HEAD detached at {}", short(id)),
     };
     println!("{line}");
+    if let Some(note) = note {
+        println!("{note}");
+    }
     if status.entries.is_empty() {
         println!("nothing to commit, working tree clean");
         return Ok(());

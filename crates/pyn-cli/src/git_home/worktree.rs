@@ -4,11 +4,12 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use pyn_git::{Index, IndexEntry};
 use pyn_gitwork::{Entry, Kind, Pathspec, fs_path};
 use pyn_object::{FileMode, ObjectId};
 
+use super::sparse::{self, Patterns};
 use super::stage::{
     Entries, Ignores, OpenIndex, entries_of, index_of, put_entry, raw_mode, remove_entry,
     stat_fields,
@@ -211,6 +212,7 @@ fn plan(
     old: &BTreeMap<Vec<u8>, Entry>,
     new: &BTreeMap<Vec<u8>, Entry>,
     mode: Mode,
+    sparse: Option<&Patterns>,
 ) -> Result<std::result::Result<BTreeMap<Vec<u8>, Act>, Blocked>> {
     let repo = &git.repo;
     let mut blocked = Blocked::default();
@@ -287,7 +289,9 @@ fn plan(
             }
             (None, None, Some(m)) => {
                 acts.insert(path.clone(), Act::Write(*m));
-                absent_checks.push(path.clone());
+                if sparse.is_none_or(|p| p.includes(path)) {
+                    absent_checks.push(path.clone());
+                }
             }
         }
     }
@@ -517,14 +521,12 @@ pub(super) fn move_tree(
     new: Option<&ObjectId>,
     mode: Mode,
 ) -> Result<Moved> {
-    if opened.index.entries.iter().any(|e| e.skip_worktree) {
-        bail!("this repository uses sparse checkout, which pyn does not support yet");
-    }
+    let sparse = sparse::load(git)?;
     let spec = Pathspec::default();
     let old = git.repo.flatten(old, &spec)?;
     let new = git.repo.flatten(new, &spec)?;
     check_writes(new.keys())?;
-    let acts = match plan(git, opened, &old, &new, mode)? {
+    let acts = match plan(git, opened, &old, &new, mode, sparse.as_ref())? {
         Ok(acts) => acts,
         Err(blocked) => return Ok(Err(blocked)),
     };
@@ -540,14 +542,32 @@ pub(super) fn move_tree(
     if mode == Mode::Force {
         entries.retain(|(p, _), _| new.contains_key(p));
     }
+    let absent = |entries: &Entries, path: &[u8]| {
+        entries
+            .get(&(path.to_vec(), 0))
+            .is_some_and(|e| e.skip_worktree)
+    };
     for (path, act) in &acts {
         if let Act::Remove = act {
-            remove_entry_file(git, path)?;
+            if !absent(&entries, path) {
+                remove_entry_file(git, path)?;
+            }
             remove_entry(&mut entries, path);
         }
     }
     for (path, act) in attributes_first(acts.iter()) {
         if let Act::Write(entry) = act {
+            let known = entries.get(&(path.clone(), 0));
+            let leave_out = known.map_or_else(
+                || sparse.as_ref().is_some_and(|p| !p.includes(path)),
+                |e| e.skip_worktree,
+            );
+            if leave_out && entry.mode != FileMode::Gitlink {
+                let mut hidden = IndexEntry::new(path.clone(), raw_mode(entry.mode), entry.id);
+                hidden.skip_worktree = true;
+                put_entry(&mut entries, hidden);
+                continue;
+            }
             let written = write_entry(git, path, entry)?;
             put_entry(&mut entries, written);
         }
