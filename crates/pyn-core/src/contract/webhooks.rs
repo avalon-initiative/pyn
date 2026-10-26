@@ -785,6 +785,14 @@ impl crate::LimitEvents for RepositoryLimitEvents {
             .await?;
         Ok(())
     }
+
+    fn draft(
+        &self,
+        event: crate::DomainEvent,
+        now: DateTime<Utc>,
+    ) -> crate::Result<crate::EventDraft> {
+        crate::MemoryLimitEvents::new().draft(event, now)
+    }
 }
 
 pub async fn racing_limit_services_record_one_event(

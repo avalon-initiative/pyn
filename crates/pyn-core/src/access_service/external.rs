@@ -287,7 +287,15 @@ impl AccessService {
                     email: email.clone(),
                     identity,
                 };
-                match self.store.create_external_account(new).await? {
+                let created = self.draft(DomainEvent::AccountCreated {
+                    user: user.clone(),
+                    pending_approval: false,
+                })?;
+                match self
+                    .store
+                    .create_external_account_with_events(new, &[created])
+                    .await?
+                {
                     ExternalCreate::Created => {
                         let detail = format!(
                             "{user} created from {} subject {}",

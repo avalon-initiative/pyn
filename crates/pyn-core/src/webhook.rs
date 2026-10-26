@@ -207,6 +207,15 @@ pub struct OutboxEvent {
     pub created_at: DateTime<Utc>,
 }
 
+/// An event ready to queue: a store writes it to the outbox in the transaction of the change that raised it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EventDraft {
+    pub event_type: String,
+    /// The serialized envelope.
+    pub payload: String,
+    pub at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Delivery {
     /// A UUID, stable across retries.

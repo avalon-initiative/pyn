@@ -12,8 +12,8 @@ use pyn_core::branch::{DEFAULT_BRANCH, conflicts};
 use pyn_core::commit_record::{CommitDraft, TreeChange, TreeEdit, draft_commit};
 use pyn_core::merge::{MergeWrite, MergeWritten};
 use pyn_core::{
-    Branch, ChangesetItem, Commit, CommitFilter, FileMode, HeadCounts, HistoryCursor, HistoryScan,
-    Lock, MetadataStore, Mode, ObjectId, PathFilter, Person, PushedCommit, PynError,
+    Branch, ChangesetItem, Commit, CommitFilter, EventDraft, FileMode, HeadCounts, HistoryCursor,
+    HistoryScan, Lock, MetadataStore, Mode, ObjectId, PathFilter, Person, PushedCommit, PynError,
     REPO_ALGORITHM, RepoId, RepoPath, RepoRecord, RepoSettings, RepoUpdate, RepoUsage, Result,
     Revision, RevisionHash, RevisionId, StorageCap, UploadReservation, Usage, UserId, Visibility,
 };
@@ -2154,10 +2154,11 @@ impl MetadataStore for PgMetadataStore {
         })
     }
 
-    async fn create_repo_capped(
+    async fn create_repo_capped_with_events(
         &self,
         repo: RepoRecord,
         max_repos: Option<u64>,
+        events: &[EventDraft],
     ) -> Result<RepoRecord> {
         let mut tx = self.pool.begin().await.map_err(db)?;
         if let Some(limit) = max_repos {
@@ -2204,6 +2205,7 @@ impl MetadataStore for PgMetadataStore {
         match inserted {
             Ok(_) => {
                 ensure_default_branch(&mut tx, &repo.id, &repo.owner, repo.created_at).await?;
+                self.queue_events(&mut tx, events).await?;
                 tx.commit().await.map_err(db)?;
                 Ok(repo)
             }
@@ -2268,11 +2270,17 @@ impl MetadataStore for PgMetadataStore {
         rows.iter().map(repo_from).collect()
     }
 
-    async fn update_repo(&self, id: &RepoId, update: RepoUpdate) -> Result<RepoRecord> {
+    async fn update_repo_with_events(
+        &self,
+        id: &RepoId,
+        update: RepoUpdate,
+        events: &[EventDraft],
+    ) -> Result<RepoRecord> {
         let current = self
             .get_repo(id)
             .await?
             .ok_or_else(|| PynError::RepoNotFound(id.to_string()))?;
+        let mut tx = self.pool.begin().await.map_err(db)?;
         let updated = sqlx::query(
             "UPDATE repositories SET name = COALESCE($2, name), visibility = COALESCE($3, visibility),
                  lease_hours = COALESCE($4, lease_hours),
@@ -2286,10 +2294,14 @@ impl MetadataStore for PgMetadataStore {
         .bind(update.settings.map(|s| s.lease_hours as i32))
         .bind(update.settings.is_some())
         .bind(update.settings.and_then(|s| s.max_locks).map(|n| n as i32))
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *tx)
         .await;
         match updated {
-            Ok(Some(row)) => repo_from(&row),
+            Ok(Some(row)) => {
+                self.queue_events(&mut tx, events).await?;
+                tx.commit().await.map_err(db)?;
+                repo_from(&row)
+            }
             Ok(None) => Err(PynError::RepoNotFound(id.to_string())),
             Err(e) if is_unique_violation(&e) => Err(PynError::RepoExists(format!(
                 "{}/{}",
@@ -2334,7 +2346,7 @@ impl MetadataStore for PgMetadataStore {
         })
     }
 
-    async fn delete_repo(&self, id: &RepoId) -> Result<bool> {
+    async fn delete_repo_with_events(&self, id: &RepoId, events: &[EventDraft]) -> Result<bool> {
         let mut tx = self.pool.begin().await.map_err(db)?;
         for stmt in [
             "DELETE FROM locks WHERE repo = $1",
@@ -2358,8 +2370,12 @@ impl MetadataStore for PgMetadataStore {
             .execute(&mut *tx)
             .await
             .map_err(db)?;
+        let removed = removed.rows_affected() > 0;
+        if removed {
+            self.queue_events(&mut tx, events).await?;
+        }
         tx.commit().await.map_err(db)?;
-        Ok(removed.rows_affected() > 0)
+        Ok(removed)
     }
 }
 

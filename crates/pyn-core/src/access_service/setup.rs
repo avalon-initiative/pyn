@@ -201,7 +201,15 @@ impl AccessService {
             signup: SignupStage::Complete,
             created_at: settings.initialised_at,
         };
-        if !self.store.complete_setup(admin, settings.clone()).await? {
+        let created = self.draft(DomainEvent::AccountCreated {
+            user: user.clone(),
+            pending_approval: false,
+        })?;
+        if !self
+            .store
+            .complete_setup_with_events(admin, settings.clone(), &[created])
+            .await?
+        {
             return Err(PynError::AlreadyInitialised);
         }
         self.setup.finish(settings, self.clock.now());

@@ -4,9 +4,9 @@ use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use pyn_core::audit::brief;
 use pyn_core::{
-    Delivery, DeliveryQuery, DeliveryStatus, DueDelivery, Jitter, MAX_ACTIVE_SECRETS, NewSecret,
-    NewSubscription, OutboxEvent, PynError, Result, Subscription, SubscriptionUpdate, UserId,
-    WebhookSecret, WebhookStore, retry_delay,
+    Delivery, DeliveryQuery, DeliveryStatus, DueDelivery, EventDraft, Jitter, MAX_ACTIVE_SECRETS,
+    NewSecret, NewSubscription, OutboxEvent, PynError, Result, Subscription, SubscriptionUpdate,
+    UserId, WebhookSecret, WebhookStore, retry_delay,
 };
 use sqlx::Row;
 use sqlx::postgres::PgRow;
@@ -107,6 +107,18 @@ async fn append_event_in(
 }
 
 impl PgMetadataStore {
+    /// Queues `events` in `tx`, so they commit or roll back with the change that raised them.
+    pub(crate) async fn queue_events(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        events: &[EventDraft],
+    ) -> Result<()> {
+        for e in events {
+            append_event_in(tx, &e.event_type, &e.payload, self.bound_now(e.at)).await?;
+        }
+        Ok(())
+    }
+
     async fn delivery_by_id(&self, id: &str) -> Result<Option<Delivery>> {
         sqlx::query(sqlx::AssertSqlSafe(format!(
             "SELECT {DELIVERY} FROM webhook_deliveries WHERE id = $1::uuid"
