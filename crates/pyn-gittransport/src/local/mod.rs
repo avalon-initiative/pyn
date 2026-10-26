@@ -1,6 +1,7 @@
 //! A local repository served in process: the same upload-pack and receive-pack exchanges a remote
 //! speaks, answered from the repository's own object store and refs, with no child process.
 
+mod bundle;
 mod receive;
 mod upload;
 
@@ -69,6 +70,12 @@ impl LocalTransport {
 
 impl Transport for LocalTransport {
     fn open(&mut self, service: Service, _version: ProtocolVersion) -> Result<Box<dyn Session>> {
+        if self.path.is_file() {
+            return match service {
+                Service::UploadPack => bundle::open(&self.path),
+                Service::ReceivePack => Err(Error::Unsupported("pushing to a bundle".into())),
+            };
+        }
         let repo = self.open_repo()?;
         let config = self.config(&repo)?;
         let advertisement = match service {

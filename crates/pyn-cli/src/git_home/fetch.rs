@@ -472,6 +472,7 @@ pub(super) fn fetch_core(
     let mut transport = conn.transport;
     let (adopted, mut up) = open_session(git, &mut *transport)?;
     let git = adopted.as_ref().unwrap_or(git);
+    super::bundle::check_remote(git, &target.url, o.clone)?;
     let remote_refs: Vec<RemoteRef> = up.ls_refs(&LsRefsOptions {
         prefixes: Vec::new(),
         symrefs: true,

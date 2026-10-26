@@ -1,9 +1,10 @@
 //! A reader and writer for git's on-disk formats, implemented in house: loose objects, packs (offset and
 //! reference deltas, pack index v2), refs and `packed-refs`, config (read and edit), refspecs, remotes, the index
 //! (v2 to v4), `.git` files and `init` of an empty repository.
-//! Packs are read, ingested (`index_pack`, thin packs included) and written, and `reachable_objects` walks what a fetch needs, and the `shallow` file marks commits whose parents are absent.
+//! Packs are read, ingested (`index_pack`, thin packs included) and written, and `reachable_objects` walks what a fetch needs, `bundle` reads and writes git bundle headers, and the `shallow` file marks commits whose parents are absent.
 //! No git library or binary is involved. Depends only on `pyn-object` for ids and object encodings.
 
+mod bundle;
 mod config;
 mod config_file;
 mod delta;
@@ -25,6 +26,7 @@ mod storage;
 mod util;
 mod walk;
 
+pub use bundle::{Bundle, Prerequisite, write_header as write_bundle_header};
 pub use config::{Config, Entry as ConfigEntry, Identity};
 pub use config_file::{ConfigFile, quote_value};
 pub use error::{Error, Result};

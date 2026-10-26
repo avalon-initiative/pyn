@@ -261,7 +261,10 @@ pub fn default_dir(source: &str, bare: bool) -> Option<String> {
     } else {
         scheme_less.rsplit(['/', ':']).next().unwrap_or(scheme_less)
     };
-    let name = name.strip_suffix(".git").unwrap_or(name);
+    let name = name
+        .strip_suffix(".git")
+        .or_else(|| name.strip_suffix(".bundle"))
+        .unwrap_or(name);
     if name.is_empty() || name == "." || name == ".." {
         return None;
     }
@@ -554,8 +557,10 @@ fn finish(
 /// A relative local-path source made absolute against `cwd`, as git records it.
 fn absolute_local(source: &str, cwd: &Path) -> Option<String> {
     let path = cwd.join(source);
-    (!source.contains("://") && !Path::new(source).is_absolute() && path.is_dir())
-        .then(|| path.display().to_string())
+    (!source.contains("://")
+        && !Path::new(source).is_absolute()
+        && (path.is_dir() || path.is_file()))
+    .then(|| path.display().to_string())
 }
 
 /// `hint` is added to a failure of the transfer, for when the address might have been a pyn server.
@@ -705,6 +710,7 @@ mod tests {
         );
         assert_eq!(d("https://h/"), Some("h".into()));
         assert_eq!(d("/"), None);
+        assert_eq!(d("dir/x.bundle").as_deref(), Some("x"));
     }
 
     #[test]

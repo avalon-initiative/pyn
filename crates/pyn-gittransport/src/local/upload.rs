@@ -28,12 +28,12 @@ pub(super) fn advertisement(repo: &Repository, config: &Config) -> Result<Vec<u8
     Ok(w.into_inner())
 }
 
-struct Request {
-    command: String,
-    args: Vec<String>,
+pub(super) struct Request {
+    pub(super) command: String,
+    pub(super) args: Vec<String>,
 }
 
-fn read_request(body: &mut dyn Read) -> Result<Request> {
+pub(super) fn read_request(body: &mut dyn Read) -> Result<Request> {
     let mut pkts = PktReader::new(body);
     let mut command = None;
     loop {
@@ -277,7 +277,7 @@ fn resolve_ref(repo: &Repository, name: &str) -> Result<ObjectId> {
     Err(Wire::Remote(format!("git upload-pack: deepen-not is not a ref: {name}")).into())
 }
 
-fn finish(out: BufWriter<std::fs::File>) -> Result<Box<dyn Read>> {
+pub(super) fn finish(out: BufWriter<std::fs::File>) -> Result<Box<dyn Read>> {
     use std::io::{Seek, SeekFrom};
     let mut file = out.into_inner().map_err(|e| e.into_error())?;
     file.flush()?;

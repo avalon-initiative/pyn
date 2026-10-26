@@ -104,6 +104,7 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
             }
             super::log::log(git, cwd, path, limit, *args)
         }
+        Command::Bundle(_) => unreachable!("handled before a repository is detected"),
         Command::Convert(_) => init(git),
         Command::Init(_) => unreachable!("handled before a repository is detected"),
         Command::InitGit(_) => unreachable!("handled before a repository is detected"),

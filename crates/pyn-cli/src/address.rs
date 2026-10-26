@@ -96,7 +96,9 @@ pub fn kind(text: &str) -> Result<Kind> {
 /// A relative path naming a git repository on this machine, which git clones before any name.
 fn is_local_repository(text: &str) -> bool {
     let dir = Path::new(text);
-    dir.join(".git").exists() || (dir.join("HEAD").is_file() && dir.join("objects").is_dir())
+    dir.join(".git").exists()
+        || (dir.join("HEAD").is_file() && dir.join("objects").is_dir())
+        || dir.extension().is_some_and(|e| e == "bundle") && dir.is_file()
 }
 
 #[cfg(test)]

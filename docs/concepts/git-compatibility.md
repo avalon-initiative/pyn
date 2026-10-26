@@ -190,7 +190,7 @@ Commands people reach for that are not in the daily set.
 | `git submodule` | none | unsupported | Submodule lifecycle commands are not built. On a git home, `status` and `diff` inspect recorded gitlinks and initialized submodule checkouts without changing them; see [On a git home](#on-a-git-home). |
 | `git worktree add\|list\|lock\|unlock\|move\|prune\|remove\|repair` | `pyn worktree ...` on a git home | git home only | See [Linked work trees](#linked-work-trees). On a pyn server it prints `pyn: 'worktree' manages a git repository's work trees, and this is not one` (`1`). |
 | `git format-patch`, `git apply`, `git am` | the same names on a git home | git home only | See [Patches](#patches). On a pyn server `format-patch` and `am` fail with `fatal: not a git repository (or any of the parent directories): .git` (`128`), as does `apply`, which git would run outside a repository too. |
-| `git archive`, `git bundle`, `git notes` | none | unsupported | `pyn: '<cmd>' is not a pyn command` (`1`). Only the commands in the git-only list print the "git command pyn does not support yet" message, so these read as unknown until that list is widened (#223). |
+| `git archive`, `git notes` | none | unsupported | `pyn: '<cmd>' is not a pyn command` (`1`). Only the commands in the git-only list print the "git command pyn does not support yet" message, so these read as unknown until that list is widened (#223). |
 
 ## Branching and merging
 
@@ -220,6 +220,7 @@ revisions with a pointer per branch (decision #299).
 | `git pull [<remote> <branch>]` | `pyn pull` | git home: supported | See [Pull on a git home](#pull-on-a-git-home). Pyn server: runs `update`. |
 | `git push [<options>] [<repository> [<refspec>...]]` | `pyn push ...` | git home: supported | Git's behaviour, flags, output and exit statuses; see [Push on a git home](#push-on-a-git-home). Pyn server: says there is nothing to publish, because `pyn commit` already writes to the server; local commits and a real `push` there are decision #300, built in #313. |
 | `git clone` | `pyn clone` | same | See the daily set and [Clone from a git URL](#clone-from-a-git-url). |
+| `git bundle create [--version=<n>] <file> [<rev-list-args>]`, `verify`, `list-heads`, `unbundle` | `pyn bundle ...` | same | See [Bundles](#bundles). Works on a git home; `list-heads` works anywhere. |
 
 ### Remotes on a pyn server
 
@@ -510,6 +511,26 @@ Differences from git, all deliberate or not yet done: no hooks, templates or `de
 `--sparse`, `--reference`, `--reference-if-able`, `--dissociate`, `--template`, `--local`, `--no-local`,
 `--no-hardlinks`, `--shared`, `--upload-pack`, `--server-option`, `--bundle-uri` and `--ref-format` are usage errors.
 
+### Bundles
+
+`pyn bundle` reads and writes git's bundle files, v2 and v3, with pyn's own pack writer and reader (no `git` program).
+
+- `create [--version=2|3] [-q] <file> [<rev-list-args>...]` writes the commits and refs the arguments select; `<file>` of `-` writes to standard output.
+  Arguments are ref names, `--all` (refs, then `HEAD`), `--branches`, `--tags`, `--remotes` (each with an optional `=<glob>`), `^<rev>`, `--not` and `<a>..<b>`. A positive
+  argument that is a ref (`main`, `v1`, `HEAD`) is recorded under its full name; the excluded commits that are parents of included ones become
+  prerequisites (`-<id> <subject>`). A bundle with no ref or no object is refused (`Refusing to create empty bundle.`, `128`). The default version is 2, and 3 for a SHA-256 repository, whose
+  header carries `@object-format=sha256`; version 2 with SHA-256 or a version other than 2 and 3 is `fatal` (`128`). The pack holds whole objects, never deltas.
+  `-<n>`, `--max-count`, date limits and `<a>...<b>` are not built (`1` for an option, `128` for a symmetric range).
+- `verify <file>` checks the header, the prerequisites against this repository and the pack's checksum, then prints git's report on standard output
+  and `<file> is okay` on standard error. A repository lacking prerequisites prints `error: Repository lacks these prerequisite commits:` and exits `1`; outside a repository it is `fatal: Need a repository to verify a bundle.` (`128`).
+- `list-heads <file> [<ref>...]` prints `<id> <name>` per ref, in the bundle's order, and needs no repository.
+- `unbundle <file> [<ref>...]` stores the bundle's objects (a thin pack is completed from this repository) and prints the refs; it changes no ref.
+
+A bundle file is also a remote: `pyn clone <file>`, `pyn fetch <file> <refspec>...`, `pyn pull`, `pyn remote add` with a bundle path, and a `file://` URL to a `.bundle`.
+pyn serves the bundle's refs and its pack through the same upload-pack exchange a local repository does. A bundle with prerequisites the repository lacks fails a
+fetch with the same error and exit status `1` (a clone fails with `128` and leaves nothing behind). Clone and fetch from a SHA-256 bundle adopt its object format as for any remote.
+A bundle carries no `HEAD` symref, so a clone guesses the branch as it does for a dumb remote. Not built: bundles with a `@filter=` capability, shallow requests against a bundle, pushing to one, and `--bundle-uri`.
+
 ### Push on a git home
 
 `pyn push [<options>] [<repository> [<refspec>...]]` sends commits and refs to a git remote over the system `ssh` or smart HTTP,
@@ -762,7 +783,7 @@ schedules them.
 
 | Git | Reason |
 | --- | --- |
-| Commands that run git's hooks or pack history for transport (`bundle`, `submodule`, hooks in `.git/hooks`) | pyn does not run a git repository's hooks. pyn's own hooks are tracked in #216. Maintaining a git home's storage is built; see [Storage maintenance](#storage-maintenance). |
+| Commands that run git's hooks (`submodule`, hooks in `.git/hooks`) | pyn does not run a git repository's hooks. pyn's own hooks are tracked in #216. Maintaining a git home's storage and bundles are built; see [Storage maintenance](#storage-maintenance) and [Bundles](#bundles). |
 
 ## On a git home
 

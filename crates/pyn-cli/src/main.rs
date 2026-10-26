@@ -195,6 +195,8 @@ enum Command {
     Push(git_home::PushArgs),
     /// List the references in a remote git repository (ssh or smart HTTP; works anywhere).
     LsRemote(ls_remote::LsRemoteArgs),
+    /// Create, verify and unpack git bundle files (works anywhere; creating needs a git repository).
+    Bundle(git_home::BundleArgs),
     /// Show what differs between this workspace and the server.
     Status(short_status::StatusArgs),
     /// Start a pyn repository in a folder that is not tracked yet (`pyn convert` adopts a git repository).
@@ -1296,6 +1298,7 @@ fn runs_anywhere(command: &Command) -> bool {
             | Command::Role(_)
             | Command::Invite(_)
             | Command::LsRemote(_)
+            | Command::Bundle(_)
     )
 }
 
@@ -1377,6 +1380,9 @@ fn run(cli: Cli) -> Result<()> {
     };
     if let Command::LsRemote(args) = &cli.command {
         return ls_remote::run(args, git.as_ref());
+    }
+    if let Command::Bundle(args) = cli.command {
+        return git_home::bundle(args, git.as_ref());
     }
     if let Command::Diff {
         args,
@@ -1600,6 +1606,7 @@ fn run(cli: Cli) -> Result<()> {
         Command::InitGit(_) => unreachable!("handled before the server is consulted"),
         Command::Convert(args) => git_home::to_git(&backend, in_workspace("convert")?, &args)?,
         Command::LsRemote(_) => unreachable!("handled before the server is consulted"),
+        Command::Bundle(_) => unreachable!("handled before the server is consulted"),
         Command::Login {
             username,
             password_stdin,
