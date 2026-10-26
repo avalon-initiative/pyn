@@ -245,6 +245,9 @@ impl Fsck<'_> {
         let mut stack: Vec<ObjectId> = Vec::new();
         for (id, origin) in &roots {
             if !self.ensure(id) {
+                if db.is_promised(id) {
+                    continue;
+                }
                 match origin {
                     Origin::Ref(name) => {
                         eprintln!("error: {name}: invalid sha1 pointer {id}");
@@ -291,7 +294,7 @@ impl Fsck<'_> {
                 used.insert(child);
                 if self.ensure(&child) {
                     stack.push(child);
-                } else {
+                } else if !db.is_promised(&child) {
                     broken.push((parent_kind, id, kind, child));
                     missing.insert(child, kind);
                 }
@@ -317,7 +320,7 @@ impl Fsck<'_> {
         if self.infos.contains_key(id) {
             return true;
         }
-        match self.git.repo.objects().read_opt(id) {
+        match self.git.repo.objects().read_local_opt(id) {
             Ok(Some(o)) => {
                 let l = links(self.git.algorithm(), o.kind, &o.data);
                 self.infos.insert(

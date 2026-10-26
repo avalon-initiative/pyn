@@ -137,9 +137,9 @@ pub(super) fn mark(db: &ObjectDb, roots: &[ObjectId], lenient: bool) -> Result<R
         if !reach.seen.insert(id) {
             continue;
         }
-        let object = match db.read_opt(&id) {
+        let object = match db.read_local_opt(&id) {
             Ok(Some(o)) => o,
-            _ if lenient => continue,
+            _ if lenient || db.is_promised(&id) => continue,
             Ok(None) => bail!("bad object {id}"),
             Err(e) => bail!("bad object {id}: {e}"),
         };

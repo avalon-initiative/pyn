@@ -6,8 +6,8 @@ use std::io::{IsTerminal, Write};
 
 use anyhow::{Result, anyhow, bail};
 use clap::{ArgAction, Args};
-use pyn_git::{ConfigFile, Ref, Refspec, Remote, map_ref, tracking};
-use pyn_gittransport::exchange::{fetch_objects, fetch_shallow_with, list_remote_refs};
+use pyn_git::{ConfigFile, ObjectFilter, Ref, Refspec, Remote, map_ref, tracking};
+use pyn_gittransport::exchange::{Partial as WirePartial, fetch_partial_with, list_remote_refs};
 use pyn_gittransport::{Connector, Env};
 use pyn_gitwire::{Deepen, LsRefsOptions, RemoteRef, Transport, UploadPack};
 use pyn_gitwork::Head;
@@ -18,6 +18,7 @@ use super::convert;
 use super::fetch_apply::{Settings, prune, stale_refs, store, tidy_url, truncate_fetch_head};
 pub(super) use super::fetch_map::TagMode;
 use super::fetch_map::{Entry, Inputs, build, follow_tags};
+use super::partial::{FilterFlags, is_promisor, register, stored_filter};
 use super::shallow::FetchShallow;
 
 const DEFAULT_ABBREV: usize = 7;
@@ -85,9 +86,13 @@ pub struct FetchArgs {
     shallow: FetchShallow,
     #[arg(long, hide = true)]
     update_shallow: bool,
-    #[arg(long, hide = true, value_name = "SPEC")]
-    filter: Option<String>,
-    #[arg(long, hide = true)]
+    #[command(flatten)]
+    filter: FilterFlags,
+    /// Fetch without a filter, even in a partial clone.
+    #[arg(long, overrides_with = "filter")]
+    no_filter: bool,
+    /// Fetch everything again as a fresh clone would, applying the filter in effect.
+    #[arg(long)]
     refetch: bool,
     #[arg(long, hide = true)]
     atomic: bool,
@@ -181,11 +186,8 @@ impl Options {
 impl FetchArgs {
     fn refuse_unsupported(&self) {
         let shallow = "it is not built; a shallow fetch does not take it";
-        let partial = "partial fetch is not built; a fetch always brings every object";
         let given = [
             ("--update-shallow", self.update_shallow, shallow),
-            ("--filter", self.filter.is_some(), partial),
-            ("--refetch", self.refetch, partial),
             (
                 "--atomic",
                 self.atomic,
@@ -397,8 +399,38 @@ fn unique_ids(entries: &[Entry]) -> Vec<ObjectId> {
         .collect()
 }
 
+/// The filter this fetch applies and whether the remote is a promisor remote. A filter asked for here is recorded
+/// as the remote's default; without one, a promisor remote's stored filter applies unless `--no-filter`.
+fn effective_filter(
+    git: &GitHome,
+    remote: Option<&str>,
+    plan: &Plan<'_>,
+) -> Result<(Option<ObjectFilter>, bool)> {
+    let Some(name) = remote else {
+        return Ok((plan.filter.cloned(), false));
+    };
+    if plan.no_filter {
+        return Ok((None, is_promisor(git.config(), name)));
+    }
+    if let Some(f) = plan.filter {
+        if !plan.opts.clone && !plan.opts.dry_run {
+            register(git, name, f)?;
+        }
+        return Ok((Some(f.clone()), true));
+    }
+    let promisor = is_promisor(git.config(), name);
+    Ok((
+        promisor
+            .then(|| stored_filter(git.config(), name))
+            .flatten(),
+        promisor,
+    ))
+}
+
 /// Fails unless everything `wants` reach is present, as git's connectivity check does.
-fn check_connected(git: &GitHome, wants: &[ObjectId]) -> Result<()> {
+/// A filtered fetch is checked as far as the filter lets objects be followed.
+fn check_connected(git: &GitHome, wants: &[ObjectId], filter: Option<&ObjectFilter>) -> Result<()> {
+    let filter = filter.map(ObjectFilter::for_connectivity);
     let db = git.repo.objects();
     let mut tips: Vec<ObjectId> = git
         .repo
@@ -409,7 +441,7 @@ fn check_connected(git: &GitHome, wants: &[ObjectId]) -> Result<()> {
         .collect();
     tips.extend(git.repo.refs().resolve("HEAD")?);
     let have = pyn_git::existing(db, &tips)?;
-    pyn_git::reachable_objects(db, wants, &have)
+    pyn_git::reachable_objects_filtered(db, wants, &have, filter.as_ref())
         .map(|_| ())
         .map_err(|e| anyhow!("remote did not send all necessary objects: {e}"))
 }
@@ -438,6 +470,9 @@ pub(super) type Choose<'a> = &'a dyn Fn(&[RemoteRef]) -> Result<Vec<String>>;
 
 pub(super) struct Plan<'a> {
     pub(super) deepen: Option<&'a Deepen>,
+    pub(super) filter: Option<&'a ObjectFilter>,
+    pub(super) no_filter: bool,
+    pub(super) refetch: bool,
     pub(super) opts: &'a Options,
     pub(super) action: &'a str,
     pub(super) choose: Option<Choose<'a>>,
@@ -472,6 +507,14 @@ pub(super) fn fetch_core(
     let mut transport = conn.transport;
     let (adopted, mut up) = open_session(git, &mut *transport)?;
     let git = adopted.as_ref().unwrap_or(git);
+    let (filter, promisor) = effective_filter(git, target.name.as_deref(), plan)?;
+    let wire_filter = match &filter {
+        Some(_) if !up.supports_filter() => {
+            eprintln!("warning: filtering not recognized by server, ignoring");
+            None
+        }
+        other => other.clone(),
+    };
     super::bundle::check_remote(git, &target.url, o.clone)?;
     let remote_refs: Vec<RemoteRef> = up.ls_refs(&LsRefsOptions {
         prefixes: Vec::new(),
@@ -596,17 +639,19 @@ pub(super) fn fetch_core(
     };
     let wants = unique_ids(&entries);
     if !wants.is_empty() {
-        let got = fetch_shallow_with(
-            &mut up,
-            git.repo.git(),
-            &wants,
-            plan.deepen.cloned(),
-            &mut |m| relay.feed(m),
-        )?;
+        let wire = WirePartial {
+            deepen: plan.deepen.cloned(),
+            filter: wire_filter.as_ref().map(ObjectFilter::spec),
+            promisor,
+            refetch: plan.refetch,
+        };
+        let got = fetch_partial_with(&mut up, git.repo.git(), &wants, &wire, &mut |m| {
+            relay.feed(m)
+        })?;
         relay.finish();
         reload_shallow(git)?;
         if got.is_some() {
-            check_connected(git, &wants)?;
+            check_connected(git, &wants, filter.as_ref())?;
         }
     }
     for e in &entries {
@@ -642,11 +687,17 @@ pub(super) fn fetch_core(
                 .filter(|i| !have(i))
                 .collect();
             if !missing.is_empty() {
-                fetch_objects(git.repo.git(), &mut *transport, &missing, &mut |m| {
+                let wire = WirePartial {
+                    filter: wire_filter.as_ref().map(ObjectFilter::spec),
+                    promisor,
+                    ..WirePartial::default()
+                };
+                let mut again = UploadPack::open(&mut *transport, git.algorithm())?;
+                fetch_partial_with(&mut again, git.repo.git(), &missing, &wire, &mut |m| {
                     relay.feed(m)
                 })?;
                 relay.finish();
-                check_connected(git, &missing)?;
+                check_connected(git, &missing, filter.as_ref())?;
             }
             failed |= store(git, &settings, &extra)?;
         }
@@ -761,6 +812,29 @@ pub(super) fn fetch_many(
     o: &Options,
     deepen: Option<&Deepen>,
 ) -> Result<bool> {
+    fetch_many_with(git, names, o, deepen, &Partial::default())
+}
+
+/// The partial-clone options of a fetch: a filter, no filter, or a refetch.
+#[derive(Clone, Copy, Default)]
+struct Partial<'a> {
+    filter: Option<&'a ObjectFilter>,
+    no_filter: bool,
+    refetch: bool,
+}
+
+fn fetch_many_with(
+    git: &GitHome,
+    names: &[String],
+    o: &Options,
+    deepen: Option<&Deepen>,
+    partial: &Partial<'_>,
+) -> Result<bool> {
+    let Partial {
+        filter,
+        no_filter,
+        refetch,
+    } = *partial;
     if !o.dry_run && !o.append {
         truncate_fetch_head(git)?;
     }
@@ -773,6 +847,9 @@ pub(super) fn fetch_many(
         let action = format!("fetch --append --no-auto-gc --no-write-commit-graph {name}");
         let plan = Plan {
             deepen,
+            filter,
+            no_filter,
+            refetch,
             opts: &appending,
             action: &action,
             choose: None,
@@ -797,6 +874,12 @@ pub(super) fn run(git: &GitHome, a: &FetchArgs, action: &str) -> Result<bool> {
     a.refuse_unsupported();
     let opts = Options::of(a);
     let deepen = a.shallow.request(is_shallow(git)?)?;
+    let filter = a.filter.parse()?;
+    let partial = Partial {
+        filter: filter.as_ref(),
+        no_filter: a.no_filter,
+        refetch: a.refetch,
+    };
     let config = git.config();
     if a.all {
         if a.repository.is_some() {
@@ -805,11 +888,17 @@ pub(super) fn run(git: &GitHome, a: &FetchArgs, action: &str) -> Result<bool> {
         if !a.refspecs.is_empty() {
             bail!("fetch --all does not make sense with refspecs");
         }
-        return fetch_many(git, &default_update_set(git), &opts, deepen.as_ref());
+        return fetch_many_with(
+            git,
+            &default_update_set(git),
+            &opts,
+            deepen.as_ref(),
+            &partial,
+        );
     }
     if a.multiple {
         let names: Vec<String> = a.repository.iter().chain(&a.refspecs).cloned().collect();
-        return fetch_many(git, &names, &opts, deepen.as_ref());
+        return fetch_many_with(git, &names, &opts, deepen.as_ref(), &partial);
     }
     if let Some(group) = a.repository.as_deref()
         && Remote::read(config, group).is_none()
@@ -818,10 +907,19 @@ pub(super) fn run(git: &GitHome, a: &FetchArgs, action: &str) -> Result<bool> {
         if !a.refspecs.is_empty() {
             bail!("fetch group and refspecs does not make sense");
         }
-        return fetch_many(git, &group_members(git, group), &opts, deepen.as_ref());
+        return fetch_many_with(
+            git,
+            &group_members(git, group),
+            &opts,
+            deepen.as_ref(),
+            &partial,
+        );
     }
     let plan = Plan {
         deepen: deepen.as_ref(),
+        filter: partial.filter,
+        no_filter: partial.no_filter,
+        refetch: partial.refetch,
         opts: &opts,
         action,
         choose: None,
@@ -853,6 +951,9 @@ pub(super) fn fetch_single(git: &GitHome, name: &str, o: &Options) -> bool {
     let action = format!("fetch {name}");
     let plan = Plan {
         deepen: None,
+        filter: None,
+        no_filter: false,
+        refetch: false,
         opts: o,
         action: &action,
         choose: None,
@@ -875,6 +976,9 @@ pub fn after_add(git: &GitHome, name: &str) -> Result<()> {
     let action = format!("fetch {name}");
     let plan = Plan {
         deepen: None,
+        filter: None,
+        no_filter: false,
+        refetch: false,
         opts: &opts,
         action: &action,
         choose: None,

@@ -150,6 +150,14 @@ pub struct IngestedPack {
     pub thin_bases: usize,
 }
 
+impl IngestedPack {
+    /// Records that the pack came from a promisor remote, by creating its `.promisor` file.
+    pub fn mark_promisor(&self) -> Result<()> {
+        let path = self.pack.pack_path().with_extension("promisor");
+        fs::write(&path, b"").map_err(io_at(&path))
+    }
+}
+
 impl std::fmt::Debug for IngestedPack {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("IngestedPack")

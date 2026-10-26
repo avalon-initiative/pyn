@@ -3,7 +3,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use flate2::Compression;
 use flate2::read::ZlibDecoder;
@@ -14,6 +14,27 @@ use crate::error::{Error, Result, corrupt, io_at};
 use crate::pack::Pack;
 
 const MAX_ALTERNATE_DEPTH: usize = 5;
+
+/// Fetches objects a partial clone lacks from its promisor remote into the repository whose common directory is given.
+pub type PromisorFetch = fn(&Path, &[ObjectId]) -> std::result::Result<(), String>;
+
+static PROMISOR_FETCH: OnceLock<PromisorFetch> = OnceLock::new();
+
+thread_local! {
+    static FETCHING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Installs the function that downloads missing promisor objects; the first call wins.
+pub fn set_promisor_fetch(f: PromisorFetch) {
+    let _ = PROMISOR_FETCH.set(f);
+}
+
+struct Promisor {
+    common_dir: PathBuf,
+    /// Objects a download already failed to bring, so a command does not ask again.
+    failed: Mutex<HashSet<ObjectId>>,
+    objects: OnceLock<HashSet<ObjectId>>,
+}
 
 /// A decoded object: its kind and body, without the loose-object header.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,6 +50,7 @@ pub struct ObjectDb {
     packs: RwLock<Vec<Arc<Pack>>>,
     alternates: Vec<ObjectDb>,
     shallow: RwLock<Arc<HashSet<ObjectId>>>,
+    promisor: Option<Promisor>,
 }
 
 impl ObjectDb {
@@ -57,6 +79,7 @@ impl ObjectDb {
             packs: RwLock::new(Vec::new()),
             alternates,
             shallow: RwLock::default(),
+            promisor: None,
         };
         db.rescan_packs()?;
         Ok(db)
@@ -64,6 +87,82 @@ impl ObjectDb {
 
     pub fn algorithm(&self) -> Algorithm {
         self.algorithm
+    }
+
+    /// Marks this store as a partial clone's: objects it lacks are downloaded on demand by [`read`](Self::read).
+    pub fn with_promisor(mut self, common_dir: &Path) -> Self {
+        self.promisor = Some(Promisor {
+            common_dir: common_dir.to_path_buf(),
+            failed: Mutex::default(),
+            objects: OnceLock::new(),
+        });
+        self
+    }
+
+    pub fn is_promisor(&self) -> bool {
+        self.promisor.is_some()
+    }
+
+    /// Whether a pack here has a `.promisor` file.
+    pub fn is_promisor_pack(&self, pack: &Pack) -> bool {
+        pack.pack_path().with_extension("promisor").is_file()
+    }
+
+    /// Objects held in promisor packs and the ones those objects name: what a partial clone may lack.
+    pub fn is_promised(&self, id: &ObjectId) -> bool {
+        let Some(p) = &self.promisor else {
+            return false;
+        };
+        p.objects.get_or_init(|| self.promised_set()).contains(id)
+    }
+
+    fn promised_set(&self) -> HashSet<ObjectId> {
+        let mut set = HashSet::new();
+        for pack in self.packs().iter().filter(|p| self.is_promisor_pack(p)) {
+            for id in pack.ids() {
+                set.insert(id);
+                if let Ok(Some(o)) = pack.read(&id) {
+                    set.extend(crate::walk::object_links(self.algorithm, &id, &o));
+                }
+            }
+        }
+        set
+    }
+
+    /// Downloads whichever of `ids` are absent; a no-op outside a partial clone.
+    pub fn prefetch(&self, ids: &[ObjectId]) -> Result<()> {
+        let Some(p) = &self.promisor else {
+            return Ok(());
+        };
+        let missing: Vec<ObjectId> = {
+            let failed = p.failed.lock().expect("failed lock");
+            let mut seen = HashSet::new();
+            ids.iter()
+                .filter(|i| seen.insert(**i) && !failed.contains(i))
+                .filter(|i| !self.has_local(i))
+                .copied()
+                .collect()
+        };
+        if missing.is_empty() || FETCHING.with(|f| f.replace(true)) {
+            return Ok(());
+        }
+        let outcome = match PROMISOR_FETCH.get() {
+            Some(fetch) => fetch(&p.common_dir, &missing),
+            None => Err("no way to reach the promisor remote".into()),
+        };
+        FETCHING.with(|f| f.set(false));
+        self.rescan_packs()?;
+        let mut failed = p.failed.lock().expect("failed lock");
+        for id in &missing {
+            if !self.has_local(id) {
+                failed.insert(*id);
+            }
+        }
+        outcome.map_err(|e| Error::Unsupported(format!("promisor fetch: {e}")))
+    }
+
+    fn has_local(&self, id: &ObjectId) -> bool {
+        id.algorithm() == self.algorithm && matches!(self.read_local_opt(id), Ok(Some(_)))
     }
 
     /// Commits whose parents are treated as absent (a shallow repository's boundary).
@@ -128,19 +227,32 @@ impl ObjectDb {
         Ok(())
     }
 
+    /// Whether the object is stored here; never downloads.
     pub fn contains(&self, id: &ObjectId) -> Result<bool> {
         if id.algorithm() != self.algorithm {
             return Ok(false);
         }
-        Ok(self.read_opt(id)?.is_some())
+        Ok(self.read_local_opt(id)?.is_some())
     }
 
     pub fn read(&self, id: &ObjectId) -> Result<Object> {
         self.read_opt(id)?.ok_or(Error::ObjectNotFound(*id))
     }
 
-    /// Reads `id` from packs, then loose, then alternates, verifying its hash; `None` if absent everywhere.
+    /// Like [`read_local_opt`](Self::read_local_opt), but a partial clone downloads an absent object from its promisor remote.
     pub fn read_opt(&self, id: &ObjectId) -> Result<Option<Object>> {
+        if let Some(o) = self.read_local_opt(id)? {
+            return Ok(Some(o));
+        }
+        if self.promisor.is_none() {
+            return Ok(None);
+        }
+        self.prefetch(&[*id])?;
+        self.read_local_opt(id)
+    }
+
+    /// Reads `id` from packs, then loose, then alternates, verifying its hash; `None` if absent everywhere.
+    pub fn read_local_opt(&self, id: &ObjectId) -> Result<Option<Object>> {
         self.check_algorithm(id)?;
         for _ in 0..2 {
             for pack in self.packs() {
@@ -156,7 +268,7 @@ impl ObjectDb {
             }
         }
         for alt in &self.alternates {
-            if let Some(o) = alt.read_opt(id)? {
+            if let Some(o) = alt.read_local_opt(id)? {
                 return Ok(Some(o));
             }
         }

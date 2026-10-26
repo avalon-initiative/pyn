@@ -7,7 +7,7 @@ use pyn_git::{
     write_shallow,
 };
 use pyn_gitwire::{
-    Deepen, FetchRequest, HaveSource, LsRefsOptions, PushOptions, PushReport, ReceivePack,
+    Deepen, FetchRequest, HaveSource, LsRefsOptions, NoHaves, PushOptions, PushReport, ReceivePack,
     RefUpdate, RemoteRef, Transport, UploadPack,
 };
 use pyn_object::{Algorithm, ObjectId};
@@ -108,8 +108,35 @@ pub fn fetch_shallow_with(
     deepen: Option<Deepen>,
     progress: Progress<'_>,
 ) -> Result<Option<IngestedPack>> {
+    let opts = Partial {
+        deepen,
+        ..Partial::default()
+    };
+    fetch_partial_with(up, repo, wants, &opts, progress)
+}
+
+/// What a fetch asks beyond the wants.
+#[derive(Debug, Clone, Default)]
+pub struct Partial {
+    pub deepen: Option<Deepen>,
+    /// A filter spec the server applies (`blob:none`).
+    pub filter: Option<String>,
+    /// The remote is a promisor remote: the pack received is marked so what it leaves out counts as promised.
+    pub promisor: bool,
+    /// Ask for every object as a fresh clone would, without negotiating.
+    pub refetch: bool,
+}
+
+/// Like [`fetch_shallow_with`], with the partial-clone options of `opts`.
+pub fn fetch_partial_with(
+    up: &mut UploadPack,
+    repo: &Repository,
+    wants: &[ObjectId],
+    opts: &Partial,
+    progress: Progress<'_>,
+) -> Result<Option<IngestedPack>> {
     let db = repo.objects()?;
-    let missing = if deepen.is_some() {
+    let missing = if opts.deepen.is_some() || opts.refetch {
         wants.to_vec()
     } else {
         wants
@@ -123,16 +150,18 @@ pub fn fetch_shallow_with(
     }
     let held = read_shallow(repo.common_dir(), repo.algorithm())?;
     let mut req = FetchRequest::new(missing);
-    req.thin_pack = true;
+    req.thin_pack = !opts.refetch && opts.filter.is_none() && !opts.promisor;
     req.ofs_delta = true;
     req.shallow = held.iter().copied().collect();
     req.shallow.sort_by_key(ObjectId::to_hex);
-    req.deepen = deepen;
-    let mut haves = LocalHaves::new(repo, &db)?;
-    let mut pack = up.fetch(&req, &mut haves, Box::new(|m| progress(m)))?;
-    let ingested = index_pack(&db, &mut pack, &IngestLimits::from_config(repo.config())?)?;
-    std::io::copy(&mut pack, &mut std::io::sink())?;
-    drop(pack);
+    req.deepen = opts.deepen.clone();
+    req.filter = opts.filter.clone();
+    let ingested = if opts.refetch {
+        fetch_pack_into(up, repo, &req, &mut NoHaves, opts.promisor, progress)?
+    } else {
+        let mut haves = LocalHaves::new(repo, &db)?;
+        fetch_pack_into(up, repo, &req, &mut haves, opts.promisor, progress)?
+    };
     let info = up.shallow_info();
     if !info.shallow.is_empty() || !info.unshallow.is_empty() {
         let mut now = held;
@@ -143,6 +172,26 @@ pub fn fetch_shallow_with(
         write_shallow(repo.common_dir(), &now)?;
     }
     Ok(Some(ingested))
+}
+
+/// Sends `req` and stores the pack that comes back.
+pub fn fetch_pack_into(
+    up: &mut UploadPack,
+    repo: &Repository,
+    req: &FetchRequest,
+    haves: &mut dyn HaveSource,
+    promisor: bool,
+    progress: Progress<'_>,
+) -> Result<IngestedPack> {
+    let db = repo.objects()?;
+    let mut pack = up.fetch(req, haves, Box::new(|m| progress(m)))?;
+    let ingested = index_pack(&db, &mut pack, &IngestLimits::from_config(repo.config())?)?;
+    std::io::copy(&mut pack, &mut std::io::sink())?;
+    drop(pack);
+    if promisor {
+        ingested.mark_promisor()?;
+    }
+    Ok(ingested)
 }
 
 /// Opens an upload-pack session on `transport` and fetches `wants` into `repo`'s object database.

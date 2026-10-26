@@ -699,7 +699,7 @@ fn every_address_form_reaches_the_same_repository() {
 fn unsupported_flags_are_usage_errors_and_leave_nothing_behind() {
     let t = Rig::new("sha1", Via::Ssh);
     for flag in [
-        vec!["--filter", "blob:none"],
+        vec!["--also-filter-submodules"],
         vec!["--recurse-submodules"],
         vec!["--reference", "/x"],
         vec!["--template", "/x"],

@@ -62,6 +62,23 @@ pub fn remote_names(config: &Config) -> Vec<String> {
     names.into_iter().map(str::to_owned).collect()
 }
 
+/// Remotes objects may be missing for: `extensions.partialClone`, then those with `remote.<name>.promisor`.
+pub fn promisor_remotes(config: &Config) -> Vec<String> {
+    let mut out: Vec<String> = config
+        .get("extensions.partialclone")
+        .filter(|n| !n.is_empty())
+        .map(str::to_owned)
+        .into_iter()
+        .collect();
+    for name in remote_names(config) {
+        let on = config.get_bool(&format!("remote.{name}.promisor"));
+        if matches!(on, Ok(Some(true))) && !out.contains(&name) {
+            out.push(name);
+        }
+    }
+    out
+}
+
 /// Git's rule: the name must work as a ref component under `refs/remotes/`.
 pub fn is_valid_remote_name(name: &str) -> bool {
     !name.is_empty() && check_name(&format!("refs/remotes/{name}/test")).is_ok()

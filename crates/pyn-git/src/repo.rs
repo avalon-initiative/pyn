@@ -7,6 +7,7 @@ use crate::error::{Error, Result, corrupt, io_at};
 use crate::index::Index;
 use crate::odb::ObjectDb;
 use crate::refs::RefStore;
+use crate::remote::promisor_remotes;
 use crate::shallow::read_shallow;
 
 /// An opened git repository: a main repository, a linked worktree or a submodule.
@@ -135,7 +136,10 @@ impl Repository {
     }
 
     pub fn objects(&self) -> Result<ObjectDb> {
-        let db = ObjectDb::open(&self.common_dir.join("objects"), self.algorithm)?;
+        let mut db = ObjectDb::open(&self.common_dir.join("objects"), self.algorithm)?;
+        if !promisor_remotes(&self.config).is_empty() {
+            db = db.with_promisor(&self.common_dir);
+        }
         db.set_shallow(read_shallow(&self.common_dir, self.algorithm)?);
         Ok(db)
     }

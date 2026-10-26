@@ -4,6 +4,7 @@ use std::collections::{BinaryHeap, HashMap, HashSet};
 use pyn_object::{Algorithm, Kind, ObjectId};
 
 use crate::error::{Result, corrupt};
+use crate::filter::ObjectFilter;
 use crate::odb::ObjectDb;
 
 const MAX_TAG_CHAIN: usize = 1000;
@@ -112,6 +113,30 @@ fn tree_children(alg: Algorithm, id: &ObjectId, body: &[u8]) -> Result<Vec<Child
     Ok(out)
 }
 
+/// The objects `object` names: a commit's tree and parents, a tree's entries, a tag's target.
+pub(crate) fn object_links(
+    alg: Algorithm,
+    id: &ObjectId,
+    object: &crate::odb::Object,
+) -> Vec<ObjectId> {
+    match object.kind {
+        Kind::Commit => parse_commit(alg, id, &object.data)
+            .map(|c| std::iter::once(c.tree).chain(c.parents).collect())
+            .unwrap_or_default(),
+        Kind::Tree => tree_children(alg, id, &object.data)
+            .map(|kids| {
+                kids.into_iter()
+                    .map(|k| match k {
+                        Child::Tree(i) | Child::Blob(i) => i,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        Kind::Tag => tag_target(alg, id, &object.data).into_iter().collect(),
+        Kind::Blob => Vec::new(),
+    }
+}
+
 /// Follows tags from `id` to the first non-tag object; returns the tags passed and the target with its kind.
 pub fn peel(db: &ObjectDb, id: ObjectId) -> Result<(Vec<ObjectId>, ObjectId, Kind)> {
     let mut tags = Vec::new();
@@ -139,9 +164,19 @@ pub struct Reachable {
 struct Walker<'a> {
     db: &'a ObjectDb,
     commits: HashMap<ObjectId, CommitInfo>,
+    /// Trees that are absent are skipped instead of downloaded or failing (a partial clone's).
+    tolerant: bool,
 }
 
 impl Walker<'_> {
+    fn read_tree(&self, id: &ObjectId) -> Result<Option<crate::odb::Object>> {
+        if self.tolerant {
+            self.db.read_local_opt(id)
+        } else {
+            self.db.read(id).map(Some)
+        }
+    }
+
     fn commit(&mut self, id: &ObjectId) -> Result<&CommitInfo> {
         if !self.commits.contains_key(id) {
             let o = self.db.read(id)?;
@@ -172,7 +207,9 @@ impl Walker<'_> {
         }
         let mut stack = vec![root];
         while let Some(t) = stack.pop() {
-            let obj = self.db.read(&t)?;
+            let Some(obj) = self.read_tree(&t)? else {
+                continue;
+            };
             if obj.kind != Kind::Tree {
                 return Err(corrupt("tree", format!("{t}: not a tree")));
             }
@@ -203,13 +240,73 @@ impl Walker<'_> {
     }
 }
 
+impl Walker<'_> {
+    /// Like `walk_tree`, leaving out what `filter` omits. The root is kept when `force_root`.
+    fn walk_tree_filtered(
+        &self,
+        root: ObjectId,
+        force_root: bool,
+        seen: &mut HashSet<ObjectId>,
+        out: &mut Vec<ObjectId>,
+        filter: &ObjectFilter,
+        skipped: &mut HashMap<ObjectId, u32>,
+    ) -> Result<()> {
+        let mut stack = vec![(root, Kind::Tree, 0u32)];
+        while let Some((id, kind, depth)) = stack.pop() {
+            if seen.contains(&id) || skipped.get(&id).is_some_and(|d| *d <= depth) {
+                continue;
+            }
+            let forced = force_root && depth == 0;
+            let size = if kind == Kind::Blob && filter.needs_size() && !forced {
+                self.db.read(&id)?.data.len() as u64
+            } else {
+                0
+            };
+            if !forced && filter.omits(kind, depth, size) {
+                skipped.insert(id, depth);
+                continue;
+            }
+            seen.insert(id);
+            out.push(id);
+            if kind != Kind::Tree {
+                continue;
+            }
+            let Some(obj) = self.read_tree(&id)? else {
+                continue;
+            };
+            if obj.kind != Kind::Tree {
+                return Err(corrupt("tree", format!("{id}: not a tree")));
+            }
+            let kids = tree_children(self.db.algorithm(), &id, &obj.data)?;
+            for k in kids.into_iter().rev() {
+                match k {
+                    Child::Blob(b) => stack.push((b, Kind::Blob, depth + 1)),
+                    Child::Tree(t) => stack.push((t, Kind::Tree, depth + 1)),
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Like `git rev-list --objects --objects-edge-aggressive want ^have`.
 ///
 /// Tags are peeled. A `have` this repository does not hold is ignored; any other missing object is an error.
 pub fn reachable_objects(db: &ObjectDb, want: &[ObjectId], have: &[ObjectId]) -> Result<Reachable> {
+    reachable_objects_filtered(db, want, have, None)
+}
+
+/// [`reachable_objects`] leaving out the blobs and trees `filter` omits; objects named in `want` itself are always kept.
+pub fn reachable_objects_filtered(
+    db: &ObjectDb,
+    want: &[ObjectId],
+    have: &[ObjectId],
+    filter: Option<&ObjectFilter>,
+) -> Result<Reachable> {
     let mut w = Walker {
         db,
         commits: HashMap::new(),
+        tolerant: filter.is_some() || db.is_promisor(),
     };
     let mut seen: HashSet<ObjectId> = HashSet::new();
     let mut uninteresting: HashMap<ObjectId, bool> = HashMap::new();
@@ -329,12 +426,19 @@ pub fn reachable_objects(db: &ObjectDb, want: &[ObjectId], have: &[ObjectId]) ->
     for c in &commits {
         out.push(*c);
     }
+    let mut skipped = HashMap::new();
     for c in &commits {
         let t = w.commit(c)?.tree;
-        w.walk_tree(t, &mut seen, Some(&mut out))?;
+        match filter {
+            Some(f) => w.walk_tree_filtered(t, false, &mut seen, &mut out, f, &mut skipped)?,
+            None => w.walk_tree(t, &mut seen, Some(&mut out))?,
+        }
     }
     for t in want_trees {
-        w.walk_tree(t, &mut seen, Some(&mut out))?;
+        match filter {
+            Some(f) => w.walk_tree_filtered(t, true, &mut seen, &mut out, f, &mut skipped)?,
+            None => w.walk_tree(t, &mut seen, Some(&mut out))?,
+        }
     }
     for b in want_blobs {
         if seen.insert(b) {
@@ -356,6 +460,7 @@ pub fn commits_newest_first(
     let mut w = Walker {
         db,
         commits: HashMap::new(),
+        tolerant: false,
     };
     let mut seen = HashSet::new();
     let mut heap = Queue::default();
@@ -409,6 +514,7 @@ pub fn shallow_cut(
     let mut w = Walker {
         db,
         commits: HashMap::new(),
+        tolerant: false,
     };
     let mut starts = Vec::new();
     for x in wants {

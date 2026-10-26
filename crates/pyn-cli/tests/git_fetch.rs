@@ -660,7 +660,6 @@ fn unsupported_and_invalid_options_are_clear_usage_errors() {
     let t = Twin::new("sha1", Via::Ssh);
     for args in [
         vec!["fetch", "--update-shallow"],
-        vec!["fetch", "--filter=blob:none"],
         vec!["fetch", "--atomic"],
         vec!["fetch", "--recurse-submodules"],
     ] {

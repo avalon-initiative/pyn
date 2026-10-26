@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{ArgAction, Args};
-use pyn_git::{ConfigFile, Expect, is_valid_remote_name, set_tracking};
+use pyn_git::{ConfigFile, Expect, ObjectFilter, is_valid_remote_name, set_tracking};
 use pyn_gittransport::{Env, redact_text, user_config};
 use pyn_gitwire::{Deepen, RemoteRef};
 use pyn_object::{Algorithm, ObjectId};
@@ -13,6 +13,7 @@ use pyn_object::{Algorithm, ObjectId};
 use super::GitHome;
 use super::convert;
 use super::fetch::{Options, Plan, TagMode, fetch_core};
+use super::partial::{FilterFlags, register_in};
 use super::shallow::ShallowFlags;
 use super::switch::detach_advice;
 use super::worktree::{Mode, move_tree};
@@ -70,8 +71,8 @@ pub struct CloneOptions {
     shallow_submodules: bool,
     #[arg(long, hide = true)]
     no_shallow_submodules: bool,
-    #[arg(long, hide = true, value_name = "SPEC")]
-    filter: Option<String>,
+    #[command(flatten)]
+    filter: FilterFlags,
     #[arg(long, hide = true)]
     also_filter_submodules: bool,
     #[arg(long, hide = true, num_args = 0..=1, value_name = "PATH", alias = "recursive")]
@@ -117,7 +118,7 @@ impl CloneOptions {
 
     fn refuse_unsupported(&self) {
         let shallow = "submodules are not supported";
-        let partial = "partial clone is not built; a clone always brings every object";
+        let partial = "submodules are not supported";
         let submodules = "submodules are not supported";
         let local =
             "a local clone goes through the transfer protocol; hardlinks and sharing are not built";
@@ -128,7 +129,6 @@ impl CloneOptions {
                 self.no_shallow_submodules,
                 shallow,
             ),
-            ("--filter", self.filter.is_some(), partial),
             (
                 "--also-filter-submodules",
                 self.also_filter_submodules,
@@ -203,6 +203,7 @@ impl CloneOptions {
             ("--tags", self.no_tags || self.tags),
             ("--config", !self.config.is_empty()),
             ("--jobs", self.jobs.is_some()),
+            ("--filter", self.filter.given()),
         ];
         flags.into_iter().find(|(_, on)| *on).map(|(f, _)| f)
     }
@@ -376,9 +377,15 @@ struct Downloaded {
     specs: Vec<String>,
 }
 
+/// What the server is asked to leave out of the clone.
+struct Limits<'a> {
+    deepen: Option<&'a Deepen>,
+    filter: Option<&'a ObjectFilter>,
+}
+
 fn download(
     opts: &CloneOptions,
-    deepen: Option<&Deepen>,
+    limits: &Limits<'_>,
     origin: &str,
     url: &str,
     prefer: &str,
@@ -415,10 +422,13 @@ fn download(
     };
     let o = Options::for_clone(opts.quiet, progress, tags);
     let plan = Plan {
-        deepen,
+        deepen: limits.deepen,
         opts: &o,
         action: "clone",
         choose: Some(&choose),
+        filter: limits.filter,
+        no_filter: false,
+        refetch: false,
     };
     let fetched = fetch_core(&git, Some(origin), &[], &plan)?;
     if fetched.failed {
@@ -466,6 +476,7 @@ fn finish(
     url: &str,
     prefer: &str,
     fetched: Downloaded,
+    filter: Option<&ObjectFilter>,
     root: &Path,
 ) -> Result<()> {
     let git = GitHome::open_at(root)?;
@@ -489,7 +500,11 @@ fn finish(
             set_tracking(&mut file, b, origin, Some(&format!("refs/heads/{b}")))?;
         }
     }
+    if let Some(f) = filter {
+        register_in(&mut file, git.config(), origin, f)?;
+    }
     file.write(&config_path)?;
+    let git = if filter.is_some() { git.reopen()? } else { git };
 
     let remote_id = |branch: &str| {
         refs.iter()
@@ -579,6 +594,7 @@ pub fn clone(
 ) -> Result<()> {
     opts.refuse_unsupported();
     let mut deepen = opts.shallow.request()?;
+    let filter = opts.filter.parse()?;
     if opts.is_bare() && opts.separate_git_dir.is_some() {
         bail!("options '--bare' and '--separate-git-dir' cannot be used together");
     }
@@ -636,6 +652,11 @@ pub fn clone(
         }
         deepen = None;
     }
+    let mut wire_filter = filter.as_ref();
+    if wire_filter.is_some() && Path::new(source).is_dir() {
+        eprintln!("warning: --filter is ignored in local clones; use file:// instead.");
+        wire_filter = None;
+    }
     let separate = opts
         .separate_git_dir
         .as_deref()
@@ -655,7 +676,10 @@ pub fn clone(
     }
     let fetched = download(
         opts,
-        deepen.as_ref(),
+        &Limits {
+            deepen: deepen.as_ref(),
+            filter: wire_filter,
+        },
         origin,
         source,
         &prefer,
@@ -669,7 +693,16 @@ pub fn clone(
             None => e,
         }
     })?;
-    finish(opts, origin, source, &prefer, fetched, &target).inspect_err(|e| {
+    finish(
+        opts,
+        origin,
+        source,
+        &prefer,
+        fetched,
+        filter.as_ref(),
+        &target,
+    )
+    .inspect_err(|e| {
         if e.downcast_ref::<super::worktree::Unsafe>().is_some() {
             clean_up(&target, existed, &git_dir, opts.is_bare());
         }

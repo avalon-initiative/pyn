@@ -9,6 +9,7 @@ mod error;
 pub mod exchange;
 mod http;
 mod local;
+pub mod promisor;
 mod ssh;
 mod url;
 

@@ -55,6 +55,7 @@ mod merge;
 mod merge_diff;
 mod name_rev;
 mod pack_refs;
+mod partial;
 mod patch_file;
 mod patch_mode;
 mod pick;

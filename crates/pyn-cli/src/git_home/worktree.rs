@@ -531,6 +531,14 @@ pub(super) fn move_tree(
         Err(blocked) => return Ok(Err(blocked)),
     };
     check_writes(acts.keys())?;
+    let wanted: Vec<ObjectId> = acts
+        .values()
+        .filter_map(|a| match a {
+            Act::Write(e) if e.mode != FileMode::Gitlink => Some(e.id),
+            _ => None,
+        })
+        .collect();
+    git.repo.objects().prefetch(&wanted)?;
     convert::refuse_unsupported(
         git,
         acts.iter().filter_map(|(p, a)| match a {

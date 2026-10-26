@@ -176,29 +176,47 @@ pub(super) fn run(git: &GitHome, plan: &Repack) -> Result<bool> {
             .filter(|id| reach.seen.contains(id) && !db.is_packed(id))
             .collect()
     };
+    if db.is_promisor() {
+        ids.retain(|id| db.contains(id).unwrap_or(false));
+    }
     ids.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
-    let items: Vec<PackItem> = ids
-        .iter()
-        .map(|id| PackItem {
-            id: *id,
-            hint: reach.hints.get(id).copied().unwrap_or(0),
-        })
-        .collect();
-    let Some(name) = db.write_packfile(&items, &plan.pack)? else {
+    let in_promisor = |id: &ObjectId| {
+        packs
+            .iter()
+            .any(|p| db.is_promisor_pack(p) && p.contains(id))
+    };
+    let (promised, plain): (Vec<ObjectId>, Vec<ObjectId>) =
+        ids.iter().partition(|id| in_promisor(id));
+    let item = |id: &ObjectId| PackItem {
+        id: *id,
+        hint: reach.hints.get(id).copied().unwrap_or(0),
+    };
+    let mut names = Vec::new();
+    for (group, promisor) in [(&plain, false), (&promised, true)] {
+        let items: Vec<PackItem> = group.iter().map(item).collect();
+        if let Some(name) = db.write_packfile(&items, &plan.pack)? {
+            if promisor {
+                let marker = db.dir().join("pack").join(format!("pack-{name}.promisor"));
+                fs::write(&marker, b"")?;
+            }
+            names.push(name);
+        }
+    }
+    if names.is_empty() {
         if !plan.quiet {
             println!("Nothing new to pack.");
         }
         return Ok(false);
-    };
+    }
     if !plan.delete {
         return Ok(true);
     }
 
     let packed: HashSet<ObjectId> = ids.into_iter().collect();
-    let new_stem = format!("pack-{name}");
+    let new_stems: Vec<String> = names.iter().map(|n| format!("pack-{n}")).collect();
     let doomed: Vec<_> = packs
         .iter()
-        .filter(|p| !is_kept(p) && stem(p.pack_path()) != new_stem)
+        .filter(|p| !is_kept(p) && !new_stems.contains(&stem(p.pack_path())))
         .filter(|p| plan.all || p.ids().all(|id| packed.contains(&id)))
         .collect();
     if let (true, Some(threshold)) = (plan.all, plan.loosen) {
@@ -220,7 +238,7 @@ pub(super) fn run(git: &GitHome, plan: &Repack) -> Result<bool> {
     }
     for p in &doomed {
         let base = p.pack_path().with_extension("");
-        for ext in ["idx", "rev", "bitmap", "mtimes", "pack"] {
+        for ext in ["idx", "rev", "bitmap", "mtimes", "promisor", "pack"] {
             let _ = fs::remove_file(base.with_extension(ext));
         }
     }

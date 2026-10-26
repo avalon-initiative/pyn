@@ -93,7 +93,7 @@ fn warn_lfs() {
 
 /// Warns if the `.gitattributes` files in `commit`'s tree apply `filter=lfs` to any of its paths.
 pub(super) fn warn_lfs_in_commit(git: &GitHome, commit: &ObjectId) -> Result<()> {
-    if LFS_WARNED.load(Ordering::Relaxed) {
+    if LFS_WARNED.load(Ordering::Relaxed) || git.repo.objects().is_promisor() {
         return Ok(());
     }
     let Ok(commit) = git.repo.commit(commit) else {

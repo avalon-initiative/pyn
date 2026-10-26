@@ -68,6 +68,8 @@ pub struct FetchRequest {
     pub ofs_delta: bool,
     pub no_progress: bool,
     pub include_tag: bool,
+    /// A partial-clone filter spec (`blob:none`); the server must advertise `filter`.
+    pub filter: Option<String>,
 }
 
 impl FetchRequest {
@@ -80,6 +82,7 @@ impl FetchRequest {
             ofs_delta: true,
             no_progress: false,
             include_tag: false,
+            filter: None,
         }
     }
 }
@@ -150,6 +153,18 @@ impl UploadPack {
     /// The boundary changes the last fetch reported; empty when it was not a shallow request.
     pub fn shallow_info(&self) -> &ShallowInfo {
         &self.shallow_info
+    }
+
+    /// Whether the server takes a `filter` argument on fetch.
+    pub fn supports_filter(&self) -> bool {
+        if self.advert.version == ProtocolVersion::V2 {
+            self.advert
+                .capabilities
+                .features("fetch")
+                .contains(&"filter")
+        } else {
+            self.advert.capabilities.has("filter")
+        }
     }
 
     fn check_shallow(&self, req: &FetchRequest) -> Result<()> {
@@ -305,6 +320,11 @@ impl UploadPack {
             return Err(Error::Usage("fetch needs at least one want".into()));
         }
         self.check_shallow(req)?;
+        if req.filter.is_some() && !self.supports_filter() {
+            return Err(Error::Unsupported(
+                "the server does not support filtering".into(),
+            ));
+        }
         self.shallow_info = ShallowInfo::default();
         if self.advert.version == ProtocolVersion::V2 {
             self.fetch_v2(req, haves, progress)
@@ -352,6 +372,9 @@ impl UploadPack {
             }
             for line in Self::deepen_lines(req, true) {
                 w.write_line(&line)?;
+            }
+            if let Some(f) = &req.filter {
+                w.write_line(&format!("filter {f}"))?;
             }
             for id in common.iter().chain(&fresh) {
                 w.write_line(&format!("have {id}"))?;
@@ -414,6 +437,9 @@ impl UploadPack {
         if caps.has("object-format") {
             tokens.push(format!("object-format={}", self.algorithm.name()));
         }
+        if req.filter.is_some() {
+            tokens.push("filter".to_owned());
+        }
         if let Some(d) = &req.deepen {
             for (on, name) in [
                 (d.since.is_some(), "deepen-since"),
@@ -435,6 +461,9 @@ impl UploadPack {
         }
         for line in Self::deepen_lines(req, false) {
             w.write_line(&line)?;
+        }
+        if let Some(f) = &req.filter {
+            w.write_line(&format!("filter {f}"))?;
         }
         w.write_flush()?;
         let mut sent = 0;

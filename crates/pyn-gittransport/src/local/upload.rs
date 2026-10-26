@@ -4,7 +4,8 @@ use std::collections::HashSet;
 use std::io::{BufWriter, Read, Write};
 
 use pyn_git::{
-    Config, Deepen, Ref, Repository, peel, reachable_objects, real_parents, shallow_cut, write_pack,
+    Config, Deepen, ObjectFilter, Ref, Repository, peel, reachable_objects_filtered, real_parents,
+    shallow_cut, write_pack,
 };
 use pyn_gitwire::Error as Wire;
 use pyn_gitwire::pkt::{Packet, PktReader, PktWriter, text};
@@ -22,7 +23,12 @@ pub(super) fn advertisement(repo: &Repository, config: &Config) -> Result<Vec<u8
     w.write_line("version 2")?;
     w.write_line(pyn_gitwire::caps::AGENT)?;
     w.write_line("ls-refs=unborn")?;
-    w.write_line("fetch=shallow")?;
+    let filter = config.get_bool("uploadpack.allowfilter")?.unwrap_or(false);
+    w.write_line(if filter {
+        "fetch=shallow filter"
+    } else {
+        "fetch=shallow"
+    })?;
     w.write_line(&format!("object-format={}", repo.algorithm().name()))?;
     w.write_flush()?;
     Ok(w.into_inner())
@@ -142,6 +148,7 @@ fn fetch(repo: &Repository, args: &[String]) -> Result<Box<dyn Read>> {
     let (mut wants, mut haves, mut done) = (Vec::new(), Vec::new(), false);
     let mut client_shallow = HashSet::new();
     let (mut depth, mut relative, mut since, mut not) = (None, false, None, Vec::new());
+    let mut filter = None;
     for a in args {
         match a.as_str() {
             "done" => done = true,
@@ -162,6 +169,11 @@ fn fetch(repo: &Repository, args: &[String]) -> Result<Box<dyn Read>> {
                     );
                 } else if let Some(r) = other.strip_prefix("deepen-not ") {
                     not.push(resolve_ref(repo, r)?);
+                } else if let Some(spec) = other.strip_prefix("filter ") {
+                    filter = Some(
+                        ObjectFilter::parse(spec)
+                            .map_err(|_| Wire::Remote(format!("invalid filter-spec '{spec}'")))?,
+                    );
                 } else if let Some(h) = other.strip_prefix("want ") {
                     wants.push(parse_id(alg, h)?);
                 } else if let Some(h) = other.strip_prefix("have ") {
@@ -212,7 +224,7 @@ fn fetch(repo: &Repository, args: &[String]) -> Result<Box<dyn Read>> {
         db.set_shallow(all);
     }
     let objects = if done || !common.is_empty() {
-        reachable_objects(&db, &pack_wants, &common)?.objects
+        reachable_objects_filtered(&db, &pack_wants, &common, filter.as_ref())?.objects
     } else {
         Vec::new()
     };

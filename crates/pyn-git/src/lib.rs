@@ -9,6 +9,7 @@ mod config;
 mod config_file;
 mod delta;
 mod error;
+mod filter;
 mod index;
 mod ingest;
 mod init;
@@ -30,23 +31,24 @@ pub use bundle::{Bundle, Prerequisite, write_header as write_bundle_header};
 pub use config::{Config, Entry as ConfigEntry, Identity};
 pub use config_file::{ConfigFile, quote_value};
 pub use error::{Error, Result};
+pub use filter::ObjectFilter;
 pub use index::{Index, IndexEntry, Timestamp};
 pub use ingest::{IngestLimits, IngestedPack, MAX_DELTA_DEPTH, index_pack};
 pub use init::init;
-pub use odb::{Object, ObjectDb};
+pub use odb::{Object, ObjectDb, PromisorFetch, set_promisor_fetch};
 pub use pack::{EntryKind, Pack};
 pub use pack_write::{PackEntry, PackIndexEntry, PackSummary, PackWriter, write_pack};
 pub use reflog::ReflogEntry;
 pub use refs::{Expect, PackedRef, Ref, RefStore, check_name as check_ref_name};
 pub use refspec::{Refspec, map_ref};
 pub use remote::{
-    Remote, Tracking, add_remote, branches_tracking, is_valid_remote_name, remote_names,
-    remove_remote, rename_remote, set_tracking, tracking, unset_tracking,
+    Remote, Tracking, add_remote, branches_tracking, is_valid_remote_name, promisor_remotes,
+    remote_names, remove_remote, rename_remote, set_tracking, tracking, unset_tracking,
 };
 pub use repo::{Repository, resolve_git_dir};
 pub use shallow::{read_shallow, write_shallow};
 pub use storage::{Garbage, LooseObject, PackItem, PackOptions, name_hash};
 pub use walk::{
     Deepen, INFINITE_DEPTH, Reachable, ShallowCut, commits_newest_first, existing, peel,
-    reachable_objects, real_parents, shallow_cut,
+    reachable_objects, reachable_objects_filtered, real_parents, shallow_cut,
 };
