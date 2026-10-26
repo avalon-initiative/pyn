@@ -87,6 +87,8 @@ pub enum DomainEvent {
         repo: String,
         path: RepoPath,
         holder: UserId,
+        /// `checkin` when a revision consumed the lock; none for an explicit release.
+        reason: Option<String>,
     },
     /// A lease that lapsed and was taken over; `expires_at` is when it ran out.
     LockExpired {
@@ -111,6 +113,8 @@ pub enum DomainEvent {
 pub enum LockChange<'a> {
     Acquired(&'a Lock),
     Released(&'a Lock),
+    /// Consumed by a revision of its path.
+    CheckedIn(&'a Lock),
     Expired(&'a Lock),
     Forced(&'a Lock),
 }

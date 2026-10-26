@@ -24,6 +24,7 @@ fn who(name: &str) -> Identity {
 }
 
 struct Fixture {
+    access: Arc<AccessService>,
     clock: Arc<ManualClock>,
     hooks: Arc<MemoryWebhookStore>,
     repos: Repositories,
@@ -86,11 +87,12 @@ async fn fixture(url: &str, event_types: &[&str]) -> Fixture {
         meta,
         Arc::new(MemoryObjectStore::new()),
         audit,
-        access,
+        access.clone(),
         clock.clone(),
         Rules::empty(),
     );
     Fixture {
+        access,
         clock,
         hooks,
         repos,
@@ -113,9 +115,20 @@ async fn lock_changes_queue_events_with_the_change() {
     svc.release(&path, &alice.user).await.unwrap();
     svc.checkout(&path, &alice.user, None).await.unwrap();
     svc.force_unlock(&path, &bob.user, "stuck").await.unwrap();
-    let first = svc.checkout(&path, &alice.user, None).await.unwrap();
+    svc.checkout(&path, &alice.user, None).await.unwrap();
+    let record = f.repos.open("alice", "game").await.unwrap().record;
+    let principal = f.access.principal(&record.id, &alice.user).await.unwrap();
+    let content = svc.upload_blob(b"v1".to_vec()).await.unwrap();
+    let rev = svc
+        .checkin(&principal, &path, content, None, "v1".into())
+        .await
+        .unwrap();
+    let first = svc
+        .checkout(&path, &alice.user, Some(rev.id))
+        .await
+        .unwrap();
     f.clock.advance(Duration::days(30));
-    svc.checkout(&path, &bob.user, None).await.unwrap();
+    svc.checkout(&path, &bob.user, Some(rev.id)).await.unwrap();
 
     let due = f
         .hooks
@@ -145,6 +158,8 @@ async fn lock_changes_queue_events_with_the_change() {
             "lock.acquired",
             "lock.forced",
             "lock.acquired",
+            "lock.released",
+            "lock.acquired",
             "lock.expired",
             "lock.acquired",
         ]
@@ -153,9 +168,14 @@ async fn lock_changes_queue_events_with_the_change() {
         if d.owner == "alice" && d.repo == "game" && d.path == "Content/a.umap" && d.holder == "alice"));
     assert!(matches!(&data[3], EventData::LockForced(d)
         if d.holder == "alice" && d.actor == "bob" && d.reason.as_deref() == Some("stuck")));
-    assert!(matches!(&data[5], EventData::LockExpired(d)
+    assert!(
+        matches!(&data[1], EventData::LockReleased(d) if d.holder == "alice" && d.reason.is_none())
+    );
+    assert!(matches!(&data[5], EventData::LockReleased(d)
+        if d.holder == "alice" && d.path == "Content/a.umap" && d.reason.as_deref() == Some("checkin")));
+    assert!(matches!(&data[7], EventData::LockExpired(d)
         if d.holder == "alice" && d.expires_at == first.expires_at));
-    assert!(matches!(&data[6], EventData::LockAcquired(d) if d.holder == "bob"));
+    assert!(matches!(&data[8], EventData::LockAcquired(d) if d.holder == "bob"));
 }
 
 #[tokio::test]

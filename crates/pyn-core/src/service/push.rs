@@ -307,10 +307,19 @@ impl RepoService {
         let commits_ids: Vec<ObjectId> = commits.iter().map(|c| c.record.id).collect();
         let now = self.clock.now();
         let cap = self.storage_cap().await?;
+        let events = self.lock_events(None).await;
         let revs = self
             .limit_result(
                 self.meta
-                    .push_commits_on(&self.repo, branch, commits, &who.user, now, cap)
+                    .push_commits_on_with_events(
+                        &self.repo,
+                        branch,
+                        commits,
+                        &who.user,
+                        now,
+                        cap,
+                        events.as_deref(),
+                    )
                     .await,
             )
             .await?;

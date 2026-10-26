@@ -674,6 +674,14 @@ impl RepoService {
                     repo,
                     path: l.path.clone(),
                     holder: l.owner.clone(),
+                    reason: None,
+                },
+                LockChange::CheckedIn(l) => DomainEvent::LockReleased {
+                    owner,
+                    repo,
+                    path: l.path.clone(),
+                    holder: l.owner.clone(),
+                    reason: Some("checkin".into()),
                 },
                 LockChange::Expired(l) => DomainEvent::LockExpired {
                     owner,
@@ -870,10 +878,18 @@ impl RepoService {
             expected_head: base,
             lock_holder: lock_holder.cloned(),
         };
+        let events = self.lock_events(None).await;
         let mut revs = self
             .limit_result(
                 self.meta
-                    .commit_changeset_on(&self.repo, branch, vec![item], now, cap)
+                    .commit_changeset_on_with_events(
+                        &self.repo,
+                        branch,
+                        vec![item],
+                        now,
+                        cap,
+                        events.as_deref(),
+                    )
                     .await,
             )
             .await?;
@@ -1108,10 +1124,18 @@ impl RepoService {
                 lock_holder: (mode == Mode::Exclusive).then(|| who.user.clone()),
             });
         }
+        let events = self.lock_events(None).await;
         let revs = self
             .limit_result(
                 self.meta
-                    .commit_changeset_on(&self.repo, branch, items, now, cap)
+                    .commit_changeset_on_with_events(
+                        &self.repo,
+                        branch,
+                        items,
+                        now,
+                        cap,
+                        events.as_deref(),
+                    )
                     .await,
             )
             .await?;

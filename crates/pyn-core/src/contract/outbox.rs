@@ -112,8 +112,18 @@ pub async fn lock_changes_queue_their_events(meta: Store, access_store: Access, 
     svc.checkout(&path, &alice.user, None).await.unwrap();
     svc.force_unlock(&path, &bob.user, "stuck").await.unwrap();
     svc.checkout(&path, &alice.user, None).await.unwrap();
+    let record = w.repos.open("alice", "game").await.unwrap().record;
+    let principal = w.access.principal(&record.id, &alice.user).await.unwrap();
+    let content = svc.upload_blob(b"v1".to_vec()).await.unwrap();
+    let rev = svc
+        .checkin(&principal, &path, content, None, "v1".into())
+        .await
+        .unwrap();
+    svc.checkout(&path, &alice.user, Some(rev.id))
+        .await
+        .unwrap();
     w.clock.advance(Duration::days(30));
-    svc.checkout(&path, &bob.user, None).await.unwrap();
+    svc.checkout(&path, &bob.user, Some(rev.id)).await.unwrap();
 
     let due = w
         .hooks
@@ -134,6 +144,8 @@ pub async fn lock_changes_queue_their_events(meta: Store, access_store: Access, 
             "lock.released",
             "lock.acquired",
             "lock.forced",
+            "lock.acquired",
+            "lock.released",
             "lock.acquired",
             "lock.expired",
             "lock.acquired",

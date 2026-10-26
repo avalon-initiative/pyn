@@ -326,7 +326,7 @@ a replica running ahead can push `last_event_at` into the future. Postgres uses 
 
 Raised in the same transaction as the lock change, so a refused change (a held path, the lock limit, a release by a non-holder) raises nothing. Every lock event names the repository by `owner` and `repo` (its name) and the locked `path`. A renewal (checking out again while holding a live lock) raises no event.
 
-Expiry is observed lazily: pyn has no background reaper, and a lease that runs out just stops counting as a lock. `lock.expired` is raised when the lapsed lease is replaced, by the next checkout of that path (by anyone, the former holder included), immediately before that checkout's `lock.acquired`. A lease nobody takes again never raises it. A check-in that consumes the holder's lock, a policy change that makes a path shared, and a repository deletion raise no `lock.released`; a policy change releases the live locks on newly shared paths as `lock.forced`.
+Expiry is observed lazily: pyn has no background reaper, and a lease that runs out just stops counting as a lock. `lock.expired` is raised when the lapsed lease is replaced, by the next checkout of that path (by anyone, the former holder included), immediately before that checkout's `lock.acquired`. A lease nobody takes again never raises it. A check-in or push that consumes the holder's lock (the lock is released with the path's revision, in the same transaction) raises `lock.released` with `reason` `checkin`. A policy change that makes a path shared releases the live locks on it as `lock.forced`, not `lock.released`. Deleting a repository raises no lock events: `repository.deleted` covers the locks it removes.
 
 ### `lock.acquired`
 
@@ -353,9 +353,9 @@ A path was locked, including by taking over a lapsed lease.
 
 ### `lock.released`
 
-The holder released the lock.
+The holder released the lock, or a check-in or push consumed it.
 
-`data`: `owner`, `repo`, `path`, `holder`.
+`data`: `owner`, `repo`, `path`, `holder`, `reason` (`checkin` when a revision of the path consumed the lock; null for an explicit release).
 
 ### `lock.expired`
 

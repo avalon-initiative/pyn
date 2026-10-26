@@ -175,6 +175,20 @@ pub trait MetadataStore: Send + Sync {
         items: Vec<ChangesetItem>,
         now: DateTime<Utc>,
         cap: Option<StorageCap>,
+    ) -> Result<Vec<Revision>> {
+        self.commit_changeset_on_with_events(repo, branch, items, now, cap, None)
+            .await
+    }
+
+    /// Like `commit_changeset_on`, queueing `CheckedIn` in the same transaction for each lock the commit consumes.
+    async fn commit_changeset_on_with_events(
+        &self,
+        repo: &RepoId,
+        branch: &str,
+        items: Vec<ChangesetItem>,
+        now: DateTime<Utc>,
+        cap: Option<StorageCap>,
+        events: Option<LockEventBuilder<'_>>,
     ) -> Result<Vec<Revision>>;
 
     /// Appends the commits, oldest first, to `branch` and moves it to the last, or writes nothing. The first commit's
@@ -193,6 +207,22 @@ pub trait MetadataStore: Send + Sync {
         pusher: &UserId,
         now: DateTime<Utc>,
         cap: Option<StorageCap>,
+    ) -> Result<Vec<Revision>> {
+        self.push_commits_on_with_events(repo, branch, commits, pusher, now, cap, None)
+            .await
+    }
+
+    /// Like `push_commits_on`, queueing `CheckedIn` in the same transaction for each lock the push consumes.
+    #[allow(clippy::too_many_arguments)]
+    async fn push_commits_on_with_events(
+        &self,
+        repo: &RepoId,
+        branch: &str,
+        commits: Vec<PushedCommit>,
+        pusher: &UserId,
+        now: DateTime<Utc>,
+        cap: Option<StorageCap>,
+        events: Option<LockEventBuilder<'_>>,
     ) -> Result<Vec<Revision>>;
 
     /// Writes a merge commit on `branch` or nothing: its parents are the head, which must be `expected_head`

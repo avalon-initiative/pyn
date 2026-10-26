@@ -9030,12 +9030,13 @@
       },
       "LockReleasedData": {
         "type": "object",
-        "description": "`lock.released`: the holder released the lock.",
+        "description": "`lock.released`: the holder released the lock, or a check-in consumed it.",
         "required": [
           "owner",
           "repo",
           "path",
-          "holder"
+          "holder",
+          "reason"
         ],
         "properties": {
           "holder": {
@@ -9046,6 +9047,13 @@
           },
           "path": {
             "type": "string"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`checkin` when a revision of the path consumed the lock; null for an explicit release."
           },
           "repo": {
             "type": "string"

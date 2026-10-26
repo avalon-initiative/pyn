@@ -126,13 +126,16 @@ pub struct LockAcquiredData {
     pub expires_at: DateTime<Utc>,
 }
 
-/// `lock.released`: the holder released the lock.
+/// `lock.released`: the holder released the lock, or a check-in consumed it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct LockReleasedData {
     pub owner: String,
     pub repo: String,
     pub path: String,
     pub holder: String,
+    /// `checkin` when a revision of the path consumed the lock; null for an explicit release.
+    #[schema(required = true)]
+    pub reason: Option<String>,
 }
 
 /// `lock.expired`: a lease had lapsed when the path was locked again; observed lazily, not at the expiry instant.

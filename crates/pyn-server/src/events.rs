@@ -182,11 +182,13 @@ impl LimitEvents for WebhookLimitEvents {
                 repo,
                 path,
                 holder,
+                reason,
             } => EventData::LockReleased(LockReleasedData {
                 owner: name(owner),
                 repo,
                 path: path.to_string(),
                 holder: name(holder),
+                reason,
             }),
             DomainEvent::LockExpired {
                 owner,

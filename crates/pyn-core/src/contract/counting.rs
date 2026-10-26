@@ -77,6 +77,37 @@ impl MetadataStore for CountingStore {
             .await
     }
 
+    async fn commit_changeset_on_with_events(
+        &self,
+        repo: &RepoId,
+        branch: &str,
+        items: Vec<crate::ChangesetItem>,
+        now: chrono::DateTime<Utc>,
+        cap: Option<crate::StorageCap>,
+        events: Option<crate::LockEventBuilder<'_>>,
+    ) -> crate::Result<Vec<crate::Revision>> {
+        self.count();
+        self.inner
+            .commit_changeset_on_with_events(repo, branch, items, now, cap, events)
+            .await
+    }
+
+    async fn push_commits_on_with_events(
+        &self,
+        repo: &RepoId,
+        branch: &str,
+        commits: Vec<crate::PushedCommit>,
+        pusher: &UserId,
+        now: chrono::DateTime<Utc>,
+        cap: Option<crate::StorageCap>,
+        events: Option<crate::LockEventBuilder<'_>>,
+    ) -> crate::Result<Vec<crate::Revision>> {
+        self.count();
+        self.inner
+            .push_commits_on_with_events(repo, branch, commits, pusher, now, cap, events)
+            .await
+    }
+
     async fn acquire_lock(
         &self,
         repo: &RepoId,
