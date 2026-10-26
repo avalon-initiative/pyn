@@ -11,6 +11,7 @@ use crate::access_service::{AccessService, OwnerLimits};
 use crate::audit::{AuditAction, AuditScope, AuditStore, NewAuditEvent};
 use crate::clock::Clock;
 use crate::error::{PynError, Result};
+use crate::limit_events::DomainEvent;
 use crate::limits::{RepoUsage, Usage};
 use crate::object::ObjectStore;
 use crate::repo::{
@@ -331,19 +332,28 @@ impl Repositories {
             created_at: self.clock.now(),
         };
         let max_repos = self.access.effective_limits(owner).await?.repositories;
-        let result = self.meta.create_repo_capped(record, max_repos).await;
+        let created = self.access.draft(DomainEvent::RepositoryCreated {
+            owner: owner.clone(),
+            name: record.name.clone(),
+            visibility,
+            actor: actor.user.clone(),
+        })?;
+        let result = self
+            .meta
+            .create_repo_capped_with_events(record, max_repos, &[created])
+            .await;
         let record = self
             .access
             .limit_result(owner, result, self.clock.now())
             .await?;
         if in_org && let Err(e) = self.access.require_org_open(owner).await {
-            let _ = self.meta.delete_repo(&record.id).await;
+            self.undo_create(&record, &actor.user).await;
             return Err(e);
         }
         if org_role != Some(OrgRole::Owner)
             && let Err(e) = self.add_creator(&record, owner, in_org, &actor.user).await
         {
-            let _ = self.meta.delete_repo(&record.id).await;
+            self.undo_create(&record, &actor.user).await;
             let _ = self.access.forget_repo(&record.id).await;
             return Err(e);
         }
@@ -357,6 +367,20 @@ impl Repositories {
         self.record(&record, &actor.user, AuditAction::RepoCreated, detail)
             .await?;
         Ok(record)
+    }
+
+    /// Removes a repository whose creation did not complete, queueing its deletion after the creation event.
+    async fn undo_create(&self, record: &RepoRecord, actor: &UserId) {
+        let events: Vec<_> = self
+            .access
+            .draft(DomainEvent::RepositoryDeleted {
+                owner: record.owner.clone(),
+                name: record.name.clone(),
+                actor: actor.clone(),
+            })
+            .into_iter()
+            .collect();
+        let _ = self.meta.delete_repo_with_events(&record.id, &events).await;
     }
 
     /// Makes the creator admin; in an organization, also re-checks they are still a member.
@@ -496,7 +520,19 @@ impl Repositories {
             }
             update.settings = Some(settings);
         }
-        let updated = self.meta.update_repo(&record.id, update).await?;
+        let mut events = Vec::new();
+        if let Some(name) = update.name.as_ref().filter(|n| **n != record.name) {
+            events.push(self.access.draft(DomainEvent::RepositoryRenamed {
+                owner: record.owner.clone(),
+                name: name.clone(),
+                previous_name: record.name.clone(),
+                actor: actor.user.clone(),
+            })?);
+        }
+        let updated = self
+            .meta
+            .update_repo_with_events(&record.id, update, &events)
+            .await?;
         let visibility = if record.visibility == updated.visibility {
             updated.visibility.to_string()
         } else {
@@ -520,7 +556,14 @@ impl Repositories {
         let detail = format!("deleted {}", record.address());
         self.record(record, &actor.user, AuditAction::RepoDeleted, detail)
             .await?;
-        self.meta.delete_repo(&record.id).await?;
+        let deleted = self.access.draft(DomainEvent::RepositoryDeleted {
+            owner: record.owner.clone(),
+            name: record.name.clone(),
+            actor: actor.user.clone(),
+        })?;
+        self.meta
+            .delete_repo_with_events(&record.id, &[deleted])
+            .await?;
         self.services.lock().unwrap().remove(&record.id);
         self.access.forget_repo(&record.id).await
     }

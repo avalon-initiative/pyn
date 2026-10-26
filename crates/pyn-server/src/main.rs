@@ -63,15 +63,18 @@ async fn stores() -> anyhow::Result<Stores> {
                 kind: "postgres",
             }
         }
-        Err(_) => Stores {
-            meta: Arc::new(MemoryMetadataStore::new()),
-            access: Arc::new(MemoryAccessStore::new()),
-            audit: Arc::new(MemoryAuditStore::new()),
-            limits: Arc::new(MemoryRateLimitStore::new()),
-            webhooks: Arc::new(MemoryWebhookStore::new()),
-            postgres: None,
-            kind: "in-memory",
-        },
+        Err(_) => {
+            let hooks = Arc::new(MemoryWebhookStore::new());
+            Stores {
+                meta: Arc::new(MemoryMetadataStore::new().with_outbox(hooks.clone())),
+                access: Arc::new(MemoryAccessStore::new().with_outbox(hooks.clone())),
+                audit: Arc::new(MemoryAuditStore::new()),
+                limits: Arc::new(MemoryRateLimitStore::new()),
+                webhooks: hooks,
+                postgres: None,
+                kind: "in-memory",
+            }
+        }
     })
 }
 

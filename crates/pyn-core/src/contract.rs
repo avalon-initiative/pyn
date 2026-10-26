@@ -68,6 +68,8 @@ mod uploads;
 pub use uploads::*;
 mod webhooks;
 pub use webhooks::*;
+mod outbox;
+pub use outbox::*;
 
 struct Harness {
     store: Store,
@@ -4151,16 +4153,19 @@ impl MetadataStore for HookedMeta {
             .await
     }
 
-    async fn create_repo_capped(
+    async fn create_repo_capped_with_events(
         &self,
         repo: RepoRecord,
         max_repos: Option<u64>,
+        events: &[crate::EventDraft],
     ) -> crate::Result<RepoRecord> {
         let hook = self.before_create.lock().unwrap().take();
         if let Some(hook) = hook {
             hook().await;
         }
-        self.inner.create_repo_capped(repo, max_repos).await
+        self.inner
+            .create_repo_capped_with_events(repo, max_repos, events)
+            .await
     }
 
     async fn find_repo(&self, owner: &UserId, name: &str) -> crate::Result<Option<RepoRecord>> {
@@ -4183,12 +4188,21 @@ impl MetadataStore for HookedMeta {
         self.inner.list_public_repos(after, limit).await
     }
 
-    async fn update_repo(&self, id: &RepoId, update: RepoUpdate) -> crate::Result<RepoRecord> {
-        self.inner.update_repo(id, update).await
+    async fn update_repo_with_events(
+        &self,
+        id: &RepoId,
+        update: RepoUpdate,
+        events: &[crate::EventDraft],
+    ) -> crate::Result<RepoRecord> {
+        self.inner.update_repo_with_events(id, update, events).await
     }
 
-    async fn delete_repo(&self, id: &RepoId) -> crate::Result<bool> {
-        self.inner.delete_repo(id).await
+    async fn delete_repo_with_events(
+        &self,
+        id: &RepoId,
+        events: &[crate::EventDraft],
+    ) -> crate::Result<bool> {
+        self.inner.delete_repo_with_events(id, events).await
     }
 
     async fn owner_usage(&self, owner: &UserId) -> crate::Result<crate::Usage> {

@@ -5,12 +5,13 @@ use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use pyn_core::{
     AccessStore, AccountDisable, AccountKind, AccountRecord, AccountStatus, AdminRevoke,
-    CreationEffect, CreationRule, CreationScope, CreationSubject, ExternalCreate, ExternalIdentity,
-    IdentityUnlink, InviteId, InviteRecord, Limits, LimitsChange, MemberCreation, NewAccount,
-    NewExternalAccount, OidcFlow, OrgDeleteMark, OrgMemberChange, OrgRole, Permission, PynError,
-    RateLimitStore, RateState, RegistrationMode, RepoId, RepoPolicy, Result, Role, RoleDefinitions,
-    ServerSettings, ServiceCredentialRecord, ServiceScope, SessionRecord, SignupStage,
-    SshKeyRecord, SubjectKind, TeamRecord, TokenId, TokenRecord, UserId, VerificationRecord,
+    CreationEffect, CreationRule, CreationScope, CreationSubject, EventDraft, ExternalCreate,
+    ExternalIdentity, IdentityUnlink, InviteId, InviteRecord, Limits, LimitsChange, LimitsEvent,
+    MemberCreation, NewAccount, NewExternalAccount, OidcFlow, OrgDeleteMark, OrgMemberChange,
+    OrgRole, Permission, PynError, RateLimitStore, RateState, RegistrationMode, RepoId, RepoPolicy,
+    Result, Role, RoleDefinitions, ServerSettings, ServiceCredentialRecord, ServiceScope,
+    SessionRecord, SignupStage, SshKeyRecord, SubjectKind, TeamRecord, TokenId, TokenRecord,
+    UserId, VerificationRecord,
 };
 use sqlx::Row;
 use sqlx::postgres::PgRow;
@@ -185,6 +186,43 @@ fn token_from(row: &PgRow) -> Result<TokenRecord> {
     })
 }
 
+impl PgMetadataStore {
+    async fn update_limits(
+        &self,
+        owner: &UserId,
+        change: LimitsChange,
+        event: Option<LimitsEvent<'_>>,
+    ) -> Result<Limits> {
+        let big = |v: Option<Option<u64>>| v.flatten().map(|n| n as i64);
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        let row = sqlx::query(
+            "INSERT INTO owner_limits (owner, max_repositories, max_members, max_storage_bytes)
+             VALUES ($1, CASE WHEN $2::boolean THEN $3::bigint END, CASE WHEN $4::boolean THEN $5::bigint END, CASE WHEN $6::boolean THEN $7::bigint END)
+             ON CONFLICT (owner) DO UPDATE SET
+                 max_repositories = CASE WHEN $2::boolean THEN $3::bigint ELSE owner_limits.max_repositories END,
+                 max_members = CASE WHEN $4::boolean THEN $5::bigint ELSE owner_limits.max_members END,
+                 max_storage_bytes = CASE WHEN $6::boolean THEN $7::bigint ELSE owner_limits.max_storage_bytes END
+             RETURNING max_repositories, max_members, max_storage_bytes",
+        )
+        .bind(owner.as_str())
+        .bind(change.repositories.is_some())
+        .bind(big(change.repositories))
+        .bind(change.members.is_some())
+        .bind(big(change.members))
+        .bind(change.storage_bytes.is_some())
+        .bind(big(change.storage_bytes))
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(db)?;
+        let limits = limits_from(&row);
+        if let Some(event) = event {
+            self.queue_events(&mut tx, &[event(&limits)?]).await?;
+        }
+        tx.commit().await.map_err(db)?;
+        Ok(limits)
+    }
+}
+
 #[async_trait]
 impl AccessStore for PgMetadataStore {
     async fn ensure_user(&self, user: &UserId, now: DateTime<Utc>) -> Result<()> {
@@ -303,16 +341,27 @@ impl AccessStore for PgMetadataStore {
         Ok(())
     }
 
-    async fn create_user(&self, user: &UserId, now: DateTime<Utc>) -> Result<bool> {
+    async fn create_user_with_events(
+        &self,
+        user: &UserId,
+        now: DateTime<Utc>,
+        events: &[EventDraft],
+    ) -> Result<bool> {
+        let mut tx = self.pool.begin().await.map_err(db)?;
         let done = sqlx::query(
             "INSERT INTO users (id, created_at) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING",
         )
         .bind(user.as_str())
         .bind(now)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(db)?;
-        Ok(done.rows_affected() > 0)
+        if done.rows_affected() == 0 {
+            return Ok(false);
+        }
+        self.queue_events(&mut tx, events).await?;
+        tx.commit().await.map_err(db)?;
+        Ok(true)
     }
 
     async fn user_exists(&self, user: &UserId) -> Result<bool> {
@@ -323,7 +372,13 @@ impl AccessStore for PgMetadataStore {
             .map_err(db)
     }
 
-    async fn create_org(&self, org: &UserId, owner: &UserId, now: DateTime<Utc>) -> Result<bool> {
+    async fn create_org_with_events(
+        &self,
+        org: &UserId,
+        owner: &UserId,
+        now: DateTime<Utc>,
+        events: &[EventDraft],
+    ) -> Result<bool> {
         let mut tx = self.pool.begin().await.map_err(db)?;
         let created = sqlx::query(
             "INSERT INTO users (id, created_at, kind) VALUES ($1, $2, 'org') ON CONFLICT (id) DO NOTHING",
@@ -352,6 +407,7 @@ impl AccessStore for PgMetadataStore {
             .execute(&mut *tx)
             .await
             .map_err(db)?;
+        self.queue_events(&mut tx, events).await?;
         tx.commit().await.map_err(db)?;
         Ok(true)
     }
@@ -383,13 +439,19 @@ impl AccessStore for PgMetadataStore {
             .collect()
     }
 
-    async fn delete_org(&self, org: &UserId) -> Result<bool> {
+    async fn delete_org_with_events(&self, org: &UserId, events: &[EventDraft]) -> Result<bool> {
+        let mut tx = self.pool.begin().await.map_err(db)?;
         let deleted = sqlx::query("DELETE FROM users WHERE id = $1 AND kind = 'org'")
             .bind(org.as_str())
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(db)?;
-        Ok(deleted.rows_affected() == 1)
+        if deleted.rows_affected() != 1 {
+            return Ok(false);
+        }
+        self.queue_events(&mut tx, events).await?;
+        tx.commit().await.map_err(db)?;
+        Ok(true)
     }
 
     async fn mark_org_deleting(
@@ -983,27 +1045,16 @@ impl AccessStore for PgMetadataStore {
     }
 
     async fn update_owner_limits(&self, owner: &UserId, change: LimitsChange) -> Result<Limits> {
-        let big = |v: Option<Option<u64>>| v.flatten().map(|n| n as i64);
-        let row = sqlx::query(
-            "INSERT INTO owner_limits (owner, max_repositories, max_members, max_storage_bytes)
-             VALUES ($1, CASE WHEN $2::boolean THEN $3::bigint END, CASE WHEN $4::boolean THEN $5::bigint END, CASE WHEN $6::boolean THEN $7::bigint END)
-             ON CONFLICT (owner) DO UPDATE SET
-                 max_repositories = CASE WHEN $2::boolean THEN $3::bigint ELSE owner_limits.max_repositories END,
-                 max_members = CASE WHEN $4::boolean THEN $5::bigint ELSE owner_limits.max_members END,
-                 max_storage_bytes = CASE WHEN $6::boolean THEN $7::bigint ELSE owner_limits.max_storage_bytes END
-             RETURNING max_repositories, max_members, max_storage_bytes",
-        )
-        .bind(owner.as_str())
-        .bind(change.repositories.is_some())
-        .bind(big(change.repositories))
-        .bind(change.members.is_some())
-        .bind(big(change.members))
-        .bind(change.storage_bytes.is_some())
-        .bind(big(change.storage_bytes))
-        .fetch_one(&self.pool)
-        .await
-        .map_err(db)?;
-        Ok(limits_from(&row))
+        self.update_limits(owner, change, None).await
+    }
+
+    async fn update_owner_limits_with_events(
+        &self,
+        owner: &UserId,
+        change: LimitsChange,
+        event: LimitsEvent<'_>,
+    ) -> Result<Limits> {
+        self.update_limits(owner, change, Some(event)).await
     }
 
     async fn list_owner_limits(&self) -> Result<Vec<(UserId, Limits)>> {
@@ -1298,7 +1349,12 @@ impl AccessStore for PgMetadataStore {
         Ok(rows.into_iter().map(RepoId::new).collect())
     }
 
-    async fn create_account(&self, new: NewAccount) -> Result<bool> {
+    async fn create_account_with_events(
+        &self,
+        new: NewAccount,
+        events: &[EventDraft],
+    ) -> Result<bool> {
+        let mut tx = self.pool.begin().await.map_err(db)?;
         let done = sqlx::query(
             "INSERT INTO users (id, created_at, email, password_hash, signup) VALUES ($1, $2, $3, $4, $5)
              ON CONFLICT (id) DO NOTHING",
@@ -1308,10 +1364,15 @@ impl AccessStore for PgMetadataStore {
         .bind(new.email)
         .bind(new.password_hash)
         .bind(new.signup.as_str())
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(db)?;
-        Ok(done.rows_affected() > 0)
+        if done.rows_affected() == 0 {
+            return Ok(false);
+        }
+        self.queue_events(&mut tx, events).await?;
+        tx.commit().await.map_err(db)?;
+        Ok(true)
     }
 
     async fn account(&self, user: &UserId) -> Result<Option<AccountRecord>> {
@@ -1343,22 +1404,29 @@ impl AccessStore for PgMetadataStore {
         rows.iter().map(account_from).collect()
     }
 
-    async fn complete_verification(
+    async fn complete_verification_with_events(
         &self,
         user: &UserId,
         signup: SignupStage,
         now: DateTime<Utc>,
+        events: &[EventDraft],
     ) -> Result<bool> {
+        let mut tx = self.pool.begin().await.map_err(db)?;
         let done = sqlx::query(
             "UPDATE users SET email_verified_at = $3, signup = $2 WHERE id = $1 AND email IS NOT NULL",
         )
         .bind(user.as_str())
         .bind(signup.as_str())
         .bind(now)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await;
         match done {
-            Ok(done) => Ok(done.rows_affected() > 0),
+            Ok(done) if done.rows_affected() > 0 => {
+                self.queue_events(&mut tx, events).await?;
+                tx.commit().await.map_err(db)?;
+                Ok(true)
+            }
+            Ok(_) => Ok(false),
             Err(e)
                 if e.as_database_error()
                     .is_some_and(|d| d.is_unique_violation()) =>
@@ -1369,41 +1437,60 @@ impl AccessStore for PgMetadataStore {
         }
     }
 
-    async fn set_signup(&self, user: &UserId, signup: SignupStage) -> Result<bool> {
+    async fn set_signup_with_events(
+        &self,
+        user: &UserId,
+        signup: SignupStage,
+        events: &[EventDraft],
+    ) -> Result<bool> {
+        let mut tx = self.pool.begin().await.map_err(db)?;
         let done = sqlx::query("UPDATE users SET signup = $2 WHERE id = $1")
             .bind(user.as_str())
             .bind(signup.as_str())
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(db)?;
-        Ok(done.rows_affected() > 0)
+        if done.rows_affected() == 0 {
+            return Ok(false);
+        }
+        self.queue_events(&mut tx, events).await?;
+        tx.commit().await.map_err(db)?;
+        Ok(true)
     }
 
-    async fn set_disabled(
+    async fn set_disabled_with_events(
         &self,
         user: &UserId,
         disabled: Option<(DateTime<Utc>, Option<String>)>,
+        events: &[EventDraft],
     ) -> Result<bool> {
         let (at, reason) = match disabled {
             Some((at, reason)) => (Some(at), reason),
             None => (None, None),
         };
+        let mut tx = self.pool.begin().await.map_err(db)?;
         let done =
             sqlx::query("UPDATE users SET disabled_at = $2, disabled_reason = $3 WHERE id = $1")
                 .bind(user.as_str())
                 .bind(at)
                 .bind(reason)
-                .execute(&self.pool)
+                .execute(&mut *tx)
                 .await
                 .map_err(db)?;
-        Ok(done.rows_affected() > 0)
+        if done.rows_affected() == 0 {
+            return Ok(false);
+        }
+        self.queue_events(&mut tx, events).await?;
+        tx.commit().await.map_err(db)?;
+        Ok(true)
     }
 
-    async fn disable_account(
+    async fn disable_account_with_events(
         &self,
         user: &UserId,
         at: DateTime<Utc>,
         reason: Option<String>,
+        events: &[EventDraft],
     ) -> Result<AccountDisable> {
         let mut tx = self.pool.begin().await.map_err(db)?;
         // Same lock order as `revoke_admin`, so the two serialise.
@@ -1436,6 +1523,7 @@ impl AccessStore for PgMetadataStore {
         if done.rows_affected() == 0 {
             return Ok(AccountDisable::NoAccount);
         }
+        self.queue_events(&mut tx, events).await?;
         tx.commit().await.map_err(db)?;
         Ok(AccountDisable::Disabled)
     }
@@ -1572,7 +1660,11 @@ impl AccessStore for PgMetadataStore {
         Ok(())
     }
 
-    async fn create_external_account(&self, new: NewExternalAccount) -> Result<ExternalCreate> {
+    async fn create_external_account_with_events(
+        &self,
+        new: NewExternalAccount,
+        events: &[EventDraft],
+    ) -> Result<ExternalCreate> {
         let mut tx = self.pool.begin().await.map_err(db)?;
         let verified_at = new.email.is_some().then_some(new.identity.created_at);
         let created = sqlx::query(
@@ -1603,6 +1695,7 @@ impl AccessStore for PgMetadataStore {
         if linked.rows_affected() == 0 {
             return Ok(ExternalCreate::IdentityTaken);
         }
+        self.queue_events(&mut tx, events).await?;
         tx.commit().await.map_err(db)?;
         Ok(ExternalCreate::Created)
     }
@@ -1770,7 +1863,12 @@ impl AccessStore for PgMetadataStore {
         .transpose()
     }
 
-    async fn complete_setup(&self, admin: NewAccount, settings: ServerSettings) -> Result<bool> {
+    async fn complete_setup_with_events(
+        &self,
+        admin: NewAccount,
+        settings: ServerSettings,
+        events: &[EventDraft],
+    ) -> Result<bool> {
         let mut tx = self.pool.begin().await.map_err(db)?;
         let claimed = sqlx::query(
             "INSERT INTO server_settings (initialised_at, server_name, public_url, registration)
@@ -1801,6 +1899,7 @@ impl AccessStore for PgMetadataStore {
         if created.rows_affected() == 0 {
             return Err(PynError::UserExists(admin.user));
         }
+        self.queue_events(&mut tx, events).await?;
         tx.commit().await.map_err(db)?;
         Ok(true)
     }

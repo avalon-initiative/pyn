@@ -110,7 +110,17 @@ impl AccessService {
             ));
         }
         let change = change.validate()?;
-        let own = self.store.update_owner_limits(owner, change).await?;
+        let own = self
+            .store
+            .update_owner_limits_with_events(owner, change, &|limits| {
+                self.draft(DomainEvent::OwnerLimitsChanged {
+                    owner: owner.clone(),
+                    kind: account.kind,
+                    limits: *limits,
+                    actor: actor.user.clone(),
+                })
+            })
+            .await?;
         let detail = format!(
             "{owner}: repositories {}, members {}, storage bytes {}",
             show(own.repositories),

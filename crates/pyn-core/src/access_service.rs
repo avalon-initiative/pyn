@@ -15,6 +15,7 @@ use crate::audit::{AuditAction, AuditEvent, AuditQuery, AuditScope, AuditStore, 
 use crate::clock::Clock;
 use crate::email::{EmailMessage, EmailSender, NullEmailSender};
 use crate::error::{PynError, Result};
+use crate::limit_events::{DomainEvent, LimitsEvent};
 use crate::limits::{Limits, LimitsChange, StorageCaps};
 use crate::memory::{MemoryRateLimitStore, MemoryWebhookStore};
 use crate::oidc::{
@@ -28,7 +29,7 @@ use crate::repo_policy::{
 use crate::store::MetadataStore;
 use crate::types::{MAX_LABEL_BYTES, validate_label};
 use crate::types::{RepoId, UserId};
-use crate::webhook::WebhookStore;
+use crate::webhook::{EventDraft, WebhookStore};
 
 /// Server-wide events (account approvals and disables) are recorded in the audit store under this id, which
 /// no repository can have.
@@ -117,13 +118,34 @@ pub trait AccessStore: Send + Sync {
     ) -> Result<()>;
 
     /// Creates the user; false if the name is already taken.
-    async fn create_user(&self, user: &UserId, now: DateTime<Utc>) -> Result<bool>;
+    async fn create_user(&self, user: &UserId, now: DateTime<Utc>) -> Result<bool> {
+        self.create_user_with_events(user, now, &[]).await
+    }
+
+    /// Like `create_user`, queueing `events` in the same transaction when the user was created.
+    async fn create_user_with_events(
+        &self,
+        user: &UserId,
+        now: DateTime<Utc>,
+        events: &[EventDraft],
+    ) -> Result<bool>;
 
     async fn user_exists(&self, user: &UserId) -> Result<bool>;
 
     /// Creates the organization with `owner` as its first owner in one step, adding the owner's account if
     /// needed; false if the name is already taken by any account.
-    async fn create_org(&self, org: &UserId, owner: &UserId, now: DateTime<Utc>) -> Result<bool>;
+    async fn create_org(&self, org: &UserId, owner: &UserId, now: DateTime<Utc>) -> Result<bool> {
+        self.create_org_with_events(org, owner, now, &[]).await
+    }
+
+    /// Like `create_org`, queueing `events` in the same transaction when the organization was created.
+    async fn create_org_with_events(
+        &self,
+        org: &UserId,
+        owner: &UserId,
+        now: DateTime<Utc>,
+        events: &[EventDraft],
+    ) -> Result<bool>;
 
     async fn org_role(&self, org: &UserId, user: &UserId) -> Result<Option<OrgRole>>;
 
@@ -131,7 +153,12 @@ pub trait AccessStore: Send + Sync {
     async fn orgs_of(&self, user: &UserId) -> Result<Vec<(UserId, OrgRole)>>;
 
     /// Removes the organization with its member, team and policy records; false if there is no such organization.
-    async fn delete_org(&self, org: &UserId) -> Result<bool>;
+    async fn delete_org(&self, org: &UserId) -> Result<bool> {
+        self.delete_org_with_events(org, &[]).await
+    }
+
+    /// Like `delete_org`, queueing `events` in the same transaction when the organization was removed.
+    async fn delete_org_with_events(&self, org: &UserId, events: &[EventDraft]) -> Result<bool>;
 
     /// Sets the organization's deleting mark in one step unless a mark newer than `stale_before` is already set.
     async fn mark_org_deleting(
@@ -167,6 +194,14 @@ pub trait AccessStore: Send + Sync {
 
     /// Applies `change` to the owner's own limits atomically and returns the result.
     async fn update_owner_limits(&self, owner: &UserId, change: LimitsChange) -> Result<Limits>;
+
+    /// Like `update_owner_limits`, queueing the event `event` builds from the resulting limits in the same transaction.
+    async fn update_owner_limits_with_events(
+        &self,
+        owner: &UserId,
+        change: LimitsChange,
+        event: LimitsEvent<'_>,
+    ) -> Result<Limits>;
 
     /// Owners with at least one limit of their own, ordered by name.
     async fn list_owner_limits(&self) -> Result<Vec<(UserId, Limits)>>;
@@ -333,7 +368,16 @@ pub trait AccessStore: Send + Sync {
     async fn touch_service_credential(&self, id: &TokenId, now: DateTime<Utc>) -> Result<()>;
 
     /// Creates a self-registered account with its password; false if the name is already taken.
-    async fn create_account(&self, new: NewAccount) -> Result<bool>;
+    async fn create_account(&self, new: NewAccount) -> Result<bool> {
+        self.create_account_with_events(new, &[]).await
+    }
+
+    /// Like `create_account`, queueing `events` in the same transaction when the account was created.
+    async fn create_account_with_events(
+        &self,
+        new: NewAccount,
+        events: &[EventDraft],
+    ) -> Result<bool>;
 
     async fn account(&self, user: &UserId) -> Result<Option<AccountRecord>>;
 
@@ -350,16 +394,48 @@ pub trait AccessStore: Send + Sync {
         user: &UserId,
         signup: SignupStage,
         now: DateTime<Utc>,
+    ) -> Result<bool> {
+        self.complete_verification_with_events(user, signup, now, &[])
+            .await
+    }
+
+    /// Like `complete_verification`, queueing `events` in the same transaction when it succeeded.
+    async fn complete_verification_with_events(
+        &self,
+        user: &UserId,
+        signup: SignupStage,
+        now: DateTime<Utc>,
+        events: &[EventDraft],
     ) -> Result<bool>;
 
     /// Moves the account to `signup`; false if there is no such account.
-    async fn set_signup(&self, user: &UserId, signup: SignupStage) -> Result<bool>;
+    async fn set_signup(&self, user: &UserId, signup: SignupStage) -> Result<bool> {
+        self.set_signup_with_events(user, signup, &[]).await
+    }
+
+    /// Like `set_signup`, queueing `events` in the same transaction when the account exists.
+    async fn set_signup_with_events(
+        &self,
+        user: &UserId,
+        signup: SignupStage,
+        events: &[EventDraft],
+    ) -> Result<bool>;
 
     /// Disables the account with a reason, or enables it with `None`; false if there is no such account.
     async fn set_disabled(
         &self,
         user: &UserId,
         disabled: Option<(DateTime<Utc>, Option<String>)>,
+    ) -> Result<bool> {
+        self.set_disabled_with_events(user, disabled, &[]).await
+    }
+
+    /// Like `set_disabled`, queueing `events` in the same transaction when the account exists.
+    async fn set_disabled_with_events(
+        &self,
+        user: &UserId,
+        disabled: Option<(DateTime<Utc>, Option<String>)>,
+        events: &[EventDraft],
     ) -> Result<bool>;
 
     /// Disables the account unless it is the only active administrator. Atomic against concurrent
@@ -369,6 +445,18 @@ pub trait AccessStore: Send + Sync {
         user: &UserId,
         at: DateTime<Utc>,
         reason: Option<String>,
+    ) -> Result<AccountDisable> {
+        self.disable_account_with_events(user, at, reason, &[])
+            .await
+    }
+
+    /// Like `disable_account`, queueing `events` in the same transaction when the account was disabled.
+    async fn disable_account_with_events(
+        &self,
+        user: &UserId,
+        at: DateTime<Utc>,
+        reason: Option<String>,
+        events: &[EventDraft],
     ) -> Result<AccountDisable>;
 
     async fn set_admin(&self, user: &UserId, admin: bool) -> Result<()>;
@@ -404,7 +492,16 @@ pub trait AccessStore: Send + Sync {
 
     /// Creates an account with no password from an external sign-in, verified by the provider, together with its
     /// link. All or nothing.
-    async fn create_external_account(&self, new: NewExternalAccount) -> Result<ExternalCreate>;
+    async fn create_external_account(&self, new: NewExternalAccount) -> Result<ExternalCreate> {
+        self.create_external_account_with_events(new, &[]).await
+    }
+
+    /// Like `create_external_account`, queueing `events` in the same transaction when the account was created.
+    async fn create_external_account_with_events(
+        &self,
+        new: NewExternalAccount,
+        events: &[EventDraft],
+    ) -> Result<ExternalCreate>;
 
     async fn find_external_identity(
         &self,
@@ -442,7 +539,17 @@ pub trait AccessStore: Send + Sync {
 
     /// Creates `admin` as a server administrator and records `settings` in one step. False if setup already ran;
     /// `UserExists` if the name is taken.
-    async fn complete_setup(&self, admin: NewAccount, settings: ServerSettings) -> Result<bool>;
+    async fn complete_setup(&self, admin: NewAccount, settings: ServerSettings) -> Result<bool> {
+        self.complete_setup_with_events(admin, settings, &[]).await
+    }
+
+    /// Like `complete_setup`, queueing `events` in the same transaction when setup ran.
+    async fn complete_setup_with_events(
+        &self,
+        admin: NewAccount,
+        settings: ServerSettings,
+        events: &[EventDraft],
+    ) -> Result<bool>;
 }
 
 /// How many events one key may cause in a window before further ones are refused.
@@ -739,6 +846,11 @@ impl AccessService {
     pub fn with_audit(mut self, store: Arc<dyn AuditStore>) -> Self {
         self.audit = Some(store);
         self
+    }
+
+    /// The queueable form of a change, to hand to the store that makes it.
+    pub(crate) fn draft(&self, event: DomainEvent) -> Result<EventDraft> {
+        self.limit_events.draft(event, self.clock.now())
     }
 
     async fn record(
@@ -1567,7 +1679,15 @@ impl AccessService {
             signup,
             created_at: now,
         };
-        if !self.store.create_account(new).await? {
+        let created = self.draft(DomainEvent::AccountCreated {
+            user: user.clone(),
+            pending_approval: signup == SignupStage::PendingApproval,
+        })?;
+        if !self
+            .store
+            .create_account_with_events(new, &[created])
+            .await?
+        {
             return Err(PynError::UserExists(user));
         }
         if let Some(invite) = invite {
@@ -1686,9 +1806,13 @@ impl AccessService {
         } else {
             SignupStage::Complete
         };
+        let created = self.draft(DomainEvent::AccountCreated {
+            user: account.user.clone(),
+            pending_approval: next == SignupStage::PendingApproval,
+        })?;
         if !self
             .store
-            .complete_verification(&account.user, next, self.clock.now())
+            .complete_verification_with_events(&account.user, next, self.clock.now(), &[created])
             .await?
         {
             return Err(bad("that address already belongs to another account"));
@@ -1806,7 +1930,15 @@ impl AccessService {
         account::validate_password(password)?;
         self.require_grantable(repo, &user).await?;
         let hash = self.passwords.hash(password).await?;
-        if !self.store.create_user(&user, self.clock.now()).await? {
+        let created = self.draft(DomainEvent::AccountCreated {
+            user: user.clone(),
+            pending_approval: false,
+        })?;
+        if !self
+            .store
+            .create_user_with_events(&user, self.clock.now(), &[created])
+            .await?
+        {
             return Err(PynError::UserExists(user));
         }
         self.store.set_password_hash(&user, &hash).await?;
@@ -2168,7 +2300,13 @@ impl AccessService {
                 "that account is not waiting for approval".into(),
             ));
         }
-        self.store.set_signup(user, SignupStage::Complete).await?;
+        let approved = self.draft(DomainEvent::AccountApproved {
+            user: user.clone(),
+            actor: actor.user.clone(),
+        })?;
+        self.store
+            .set_signup_with_events(user, SignupStage::Complete, &[approved])
+            .await?;
         self.record_server(
             &actor.user,
             AuditAction::AccountApproved,
@@ -2198,9 +2336,14 @@ impl AccessService {
             .map(str::trim)
             .filter(|r| !r.is_empty())
             .map(str::to_string);
+        let disabled = self.draft(DomainEvent::AccountDisabled {
+            user: user.clone(),
+            actor: actor.user.clone(),
+            reason: reason.clone(),
+        })?;
         match self
             .store
-            .disable_account(user, self.clock.now(), reason.clone())
+            .disable_account_with_events(user, self.clock.now(), reason.clone(), &[disabled])
             .await?
         {
             AccountDisable::Disabled => {}
@@ -2227,7 +2370,13 @@ impl AccessService {
                 "that account is not disabled".into(),
             ));
         }
-        self.store.set_disabled(user, None).await?;
+        let enabled = self.draft(DomainEvent::AccountEnabled {
+            user: user.clone(),
+            actor: actor.user.clone(),
+        })?;
+        self.store
+            .set_disabled_with_events(user, None, &[enabled])
+            .await?;
         self.record_server(
             &actor.user,
             AuditAction::AccountEnabled,

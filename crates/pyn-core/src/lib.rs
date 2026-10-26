@@ -65,7 +65,9 @@ pub use history::{
     HistoryScan, PathHistoryPage, decode_path_cursor, encode_path_cursor,
 };
 pub use integrity::{BreakKind, Problem, VerifyReport};
-pub use limit_events::{LimitEvents, LimitKind, LimitReached, MemoryLimitEvents};
+pub use limit_events::{
+    DomainEvent, LimitEvents, LimitKind, LimitReached, LimitsEvent, MemoryLimitEvents,
+};
 pub use limits::{
     Limits, LimitsChange, MAX_LIMIT_VALUE, RepoUsage, StorageCap, StorageCaps, Usage,
 };
@@ -109,8 +111,8 @@ pub use types::{
     Revision, RevisionHash, RevisionId, UserId,
 };
 pub use webhook::{
-    Delivery, DeliveryQuery, DeliveryStatus, DueDelivery, FixedJitter, Jitter, MAX_ACTIVE_SECRETS,
-    MAX_ATTEMPTS, NewSecret, NewSubscription, OutboxEvent, RETENTION_DAYS, RandomJitter,
-    Subscription, SubscriptionUpdate, WebhookSecret, WebhookStore, retry_delay,
+    Delivery, DeliveryQuery, DeliveryStatus, DueDelivery, EventDraft, FixedJitter, Jitter,
+    MAX_ACTIVE_SECRETS, MAX_ATTEMPTS, NewSecret, NewSubscription, OutboxEvent, RETENTION_DAYS,
+    RandomJitter, Subscription, SubscriptionUpdate, WebhookSecret, WebhookStore, retry_delay,
 };
 pub use webhook_secret::{SECRET_PREFIX, SecretKey, generate_secret, reveal_secret};

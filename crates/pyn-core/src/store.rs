@@ -9,6 +9,7 @@ use crate::merge::{MergeWrite, MergeWritten};
 use crate::repo::{RepoRecord, RepoUpdate};
 use crate::rules::PathFilter;
 use crate::tree::HeadCounts;
+use crate::webhook::EventDraft;
 use pyn_object::ObjectId;
 
 use crate::types::{
@@ -398,6 +399,17 @@ pub trait MetadataStore: Send + Sync {
         &self,
         repo: RepoRecord,
         max_repos: Option<u64>,
+    ) -> Result<RepoRecord> {
+        self.create_repo_capped_with_events(repo, max_repos, &[])
+            .await
+    }
+
+    /// Like `create_repo_capped`, queueing `events` in the same transaction; a refused create queues nothing.
+    async fn create_repo_capped_with_events(
+        &self,
+        repo: RepoRecord,
+        max_repos: Option<u64>,
+        events: &[EventDraft],
     ) -> Result<RepoRecord>;
 
     async fn find_repo(&self, owner: &UserId, name: &str) -> Result<Option<RepoRecord>>;
@@ -415,10 +427,25 @@ pub trait MetadataStore: Send + Sync {
     ) -> Result<Vec<RepoRecord>>;
 
     /// `RepoNotFound` for an unknown id, `RepoExists` if the new name is taken; a rejected update changes nothing.
-    async fn update_repo(&self, id: &RepoId, update: RepoUpdate) -> Result<RepoRecord>;
+    async fn update_repo(&self, id: &RepoId, update: RepoUpdate) -> Result<RepoRecord> {
+        self.update_repo_with_events(id, update, &[]).await
+    }
+
+    /// Like `update_repo`, queueing `events` in the same transaction; a rejected update queues nothing.
+    async fn update_repo_with_events(
+        &self,
+        id: &RepoId,
+        update: RepoUpdate,
+        events: &[EventDraft],
+    ) -> Result<RepoRecord>;
 
     /// Removes the repository with its locks and revisions; false if it is not registered.
-    async fn delete_repo(&self, id: &RepoId) -> Result<bool>;
+    async fn delete_repo(&self, id: &RepoId) -> Result<bool> {
+        self.delete_repo_with_events(id, &[]).await
+    }
+
+    /// Like `delete_repo`, queueing `events` in the same transaction when a repository was removed.
+    async fn delete_repo_with_events(&self, id: &RepoId, events: &[EventDraft]) -> Result<bool>;
 
     /// Repositories and stored bytes of everything the owner owns; `members` is left unset. Stored bytes count
     /// each distinct content once per repository.

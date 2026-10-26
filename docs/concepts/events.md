@@ -2,8 +2,7 @@
 
 pyn can tell other systems when something happens on the server: an account is approved, a repository is created, an
 owner reaches a limit. This page is the schema of those events, the JSON body of a webhook delivery. Signing and delivery are separate (decision #452), and
-[subscriptions and their secrets](webhooks.md) are administered through the API. The service layer raises `owner.limit_reached`; the other event types describe
-the contract for future raising sites. The schema lives in `pyn-proto` and is part of the OpenAPI document
+[subscriptions and their secrets](webhooks.md) are administered through the API. The schema lives in `pyn-proto` and is part of the OpenAPI document
 (`docs/generated/openapi.json`, schemas `Event` and `*Data`).
 
 ## Envelope
@@ -18,6 +17,19 @@ Every event is one JSON object:
 | `server` | The server's configured public base URL (`PYN_PUBLIC_URL`). |
 | `version` | The envelope version, `1` today. |
 | `data` | The payload for `type`, described below. |
+
+## When events are written
+
+Account, organization, repository and `owner.limits_changed` events go into the webhook outbox in the same database
+transaction as the change, so a crash never loses one and a refused or rolled-back change leaves none. Each is queued
+once per subscription whose filter matches. `owner.limit_reached` is the exception: it is recorded after the refusal and
+throttled (see below). Events are queued only when the change really happens: a duplicate name, a missing target or a
+refused request raises nothing.
+
+An account created by open sign-up with email verification raises `account.created` when the address is verified, not
+when the unverified name is reserved, so abandoned sign-ups never reach receivers. A repository whose creation is undone
+before it finishes (for example, the creator is no longer an organization member) raises `repository.deleted` after its
+`repository.created`. Ensuring that a user record exists for a development identity or a token is not an account creation.
 
 ## Open types and versioning
 

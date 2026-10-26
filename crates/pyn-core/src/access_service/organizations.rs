@@ -57,7 +57,16 @@ impl AccessService {
         let org = account::validate_org_name(name)?;
         let now = self.clock.now();
         self.store.ensure_user(&actor.user, now).await?;
-        if !self.store.create_org(&org, &actor.user, now).await? {
+        let created = self.draft(DomainEvent::OrganizationCreated {
+            name: org.clone(),
+            owner: actor.user.clone(),
+            actor: actor.user.clone(),
+        })?;
+        if !self
+            .store
+            .create_org_with_events(&org, &actor.user, now, &[created])
+            .await?
+        {
             return Err(PynError::UserExists(org));
         }
         let detail = format!("{org} created, owner {}", actor.user);
@@ -84,7 +93,16 @@ impl AccessService {
         let org = account::validate_org_name(name)?;
         self.existing_account(owner).await?;
         self.require_active(owner).await?;
-        if !self.store.create_org(&org, owner, self.clock.now()).await? {
+        let created = self.draft(DomainEvent::OrganizationCreated {
+            name: org.clone(),
+            owner: owner.clone(),
+            actor: actor.user.clone(),
+        })?;
+        if !self
+            .store
+            .create_org_with_events(&org, owner, self.clock.now(), &[created])
+            .await?
+        {
             return Err(PynError::UserExists(org));
         }
         let detail = format!("{org} created, owner {owner}");
@@ -165,7 +183,11 @@ impl AccessService {
             detail,
         )
         .await?;
-        self.store.delete_org(name).await?;
+        let deleted = self.draft(DomainEvent::OrganizationDeleted {
+            name: name.clone(),
+            actor: actor.user.clone(),
+        })?;
+        self.store.delete_org_with_events(name, &[deleted]).await?;
         Ok(())
     }
 
