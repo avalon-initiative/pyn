@@ -3271,7 +3271,11 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_changeset_mixes_writes_and_deletions_atomically);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_deletion_on_a_branch_leaves_the_other_branches_alone);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_changeset_refuses_a_path_written_and_deleted_or_a_policy_deletion);
-        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_push_needs_the_checkin_permission_and_an_existing_branch);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_push_needs_the_checkin_permission);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_push_to_an_unknown_branch_creates_it_atomically);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_new_branch_must_start_from_a_commit_the_repository_has);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_refused_push_to_an_unknown_branch_leaves_no_branch);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_new_branch_name_cannot_clash_with_an_existing_branch);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_push_past_the_storage_cap_applies_nothing);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; racing_pushes_to_one_branch_have_exactly_one_winner);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_blob_is_read_by_id_only_when_a_revision_of_the_repository_names_it);

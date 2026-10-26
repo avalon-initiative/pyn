@@ -323,6 +323,16 @@ impl State {
         cap: Option<&StorageCap>,
     ) -> Result<Vec<Revision>> {
         self.ensure_default_branch(repo, pusher, now);
+        let created = self.branch(repo, branch).is_err();
+        if created {
+            self.branches.entry(repo.clone()).or_default().push(Branch {
+                name: branch.to_string(),
+                head: None,
+                default: false,
+                created_at: now,
+                created_by: pusher.clone(),
+            });
+        }
         let head = self.branch(repo, branch)?.head;
         let mut tip = head;
         for (i, c) in commits.iter().enumerate() {
@@ -331,11 +341,23 @@ impl State {
                 (0, Some(h)) => {
                     first.is_some_and(|p| p == h || self.ancestors(repo, &h).contains(&p))
                 }
+                (0, None) if created => match first {
+                    Some(p) => self.commit_record(repo, &p).is_some(),
+                    None => self.commits.get(repo).is_none_or(Vec::is_empty),
+                },
                 (0, None) => first.is_none(),
                 _ => first == tip,
             };
             if !linked {
-                return Err(PynError::NotFastForward(branch.to_string()));
+                return Err(if created {
+                    PynError::PushInvalid(
+                        "the first commit of a new branch must be a child of a commit the repository has, \
+                         or the repository must be empty"
+                            .into(),
+                    )
+                } else {
+                    PynError::NotFastForward(branch.to_string())
+                });
             }
             for other in c.record.parents.iter().skip(1) {
                 if self.commit_record(repo, other).is_none() {

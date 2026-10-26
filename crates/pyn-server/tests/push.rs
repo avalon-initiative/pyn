@@ -458,9 +458,56 @@ async fn a_push_must_extend_the_branch_and_a_refusal_leaves_nothing() {
     .await;
     assert_eq!(
         (r.status, r.code().as_str()),
-        (StatusCode::NOT_FOUND, "branch_not_found")
+        (StatusCode::BAD_REQUEST, "push_invalid")
     );
     assert_eq!(commit_count(&w).await, 1);
+}
+
+#[tokio::test]
+async fn a_push_to_an_unknown_branch_creates_it_and_says_so() {
+    let w = world().await;
+    let a = upload(&w, "alpha").await;
+    let b = upload(&w, "beta").await;
+    let first = build(&BTreeMap::from([("Source/a.txt", a)]), None, "first", 1);
+    let second = build(
+        &BTreeMap::from([("Source/a.txt", a), ("Source/b.txt", b)]),
+        Some(first.id),
+        "second",
+        2,
+    );
+    assert_eq!(
+        push(&w, &w.bob, push_body(&[&first])).await.status,
+        StatusCode::OK
+    );
+    let mut body = push_body(&[&second]);
+    body["branch"] = json!("feature");
+    let r = push(&w, &w.bob, body).await;
+    assert_eq!(
+        r.status,
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&r.body)
+    );
+    let raw: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
+    assert_eq!(raw["created"], json!(true));
+    let done: api::PushResponse = r.json();
+    assert_eq!((done.branch.as_str(), done.created), ("feature", true));
+    assert_eq!(done.head, second.id.to_hex());
+
+    let r = push(&w, &w.bob, push_body(&[&first])).await;
+    let raw: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
+    assert!(raw.get("created").is_none(), "{raw}");
+
+    let r = send(
+        &w.app,
+        "GET",
+        "/v1/repos/alice/game/branches",
+        &w.alice,
+        None,
+        None,
+    )
+    .await;
+    assert!(String::from_utf8_lossy(&r.body).contains("feature"));
 }
 
 const A_EXCLUSIVE: &str = "[meta]\ndefault = \"shared\"\n[exclusive]\npaths = [\"Source/a.txt\"]\n";

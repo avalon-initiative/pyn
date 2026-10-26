@@ -5971,7 +5971,7 @@
         "tags": [
           "push_api"
         ],
-        "summary": "Append client-built commits to a branch, all or none.",
+        "summary": "Append client-built commits to a branch, all or none. A branch the server lacks is created by the push.",
         "operationId": "push",
         "parameters": [
           {
@@ -6014,7 +6014,7 @@
             }
           },
           "400": {
-            "description": "push_invalid for an id that does not match its bytes, bytes that are not a git object, a missing tree, a merge of a commit the repository does not have, or a commit already stored; object_missing for a blob that was not uploaded; invalid_request for an empty push or bad base64; invalid_rules for a policy file on the default branch that does not validate",
+            "description": "invalid_request for an invalid new branch name; push_invalid when the first commit of a new branch is not a child of a commit the repository has on a repository with history, for an id that does not match its bytes, bytes that are not a git object, a missing tree, a merge of a commit the repository does not have, or a commit already stored; object_missing for a blob that was not uploaded; invalid_request for an empty push or bad base64; invalid_rules for a policy file on the default branch that does not validate",
             "content": {
               "application/json": {
                 "schema": {
@@ -6034,7 +6034,7 @@
             }
           },
           "404": {
-            "description": "branch_not_found or commit_not_found for an unknown parent",
+            "description": "commit_not_found for an unknown parent",
             "content": {
               "application/json": {
                 "schema": {
@@ -6044,7 +6044,7 @@
             }
           },
           "409": {
-            "description": "not_fast_forward when the pushed history does not contain the branch's head, or its first commit is not on the branch (or a racing push won); merge_conflict when a merge commit leaves a diverged exclusive path unresolved; lock_required or lock_held for an exclusive path the pusher does not hold a live lock on; stale_base; storage_limit_reached",
+            "description": "branch_exists when a new branch name clashes with an existing branch; not_fast_forward when the pushed history does not contain the branch's head, or its first commit is not on the branch (or a racing push won); merge_conflict when a merge commit leaves a diverged exclusive path unresolved; lock_required or lock_held for an exclusive path the pusher does not hold a live lock on; stale_base; storage_limit_reached",
             "content": {
               "application/json": {
                 "schema": {
@@ -9627,7 +9627,7 @@
               "string",
               "null"
             ],
-            "description": "The branch to append to; the default branch if omitted."
+            "description": "The branch to append to; the default branch if omitted. A name the server does not have is created by the push,\nfrom the first commit's parent (any commit the server has, or none on an empty repository)."
           },
           "commits": {
             "type": "array",
@@ -9655,6 +9655,10 @@
         "properties": {
           "branch": {
             "type": "string"
+          },
+          "created": {
+            "type": "boolean",
+            "description": "The push created the branch; omitted when it already existed."
           },
           "head": {
             "type": "string",

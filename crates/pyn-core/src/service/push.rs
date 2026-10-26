@@ -10,6 +10,7 @@ use super::push_merge::Chain;
 use super::{DEFAULT_BRANCH, RepoService, changeset_id};
 use crate::access::{Permission, Principal};
 use crate::audit::{AuditAction, brief};
+use crate::branch::{conflicts, validate_branch_name};
 use crate::commit_record::TreeChange;
 use crate::error::{PynError, Result};
 use crate::object::REPO_ALGORITHM;
@@ -81,6 +82,8 @@ struct Stage {
 /// The revisions a push made and the shared versions its policy commits stranded.
 #[derive(Debug, Clone)]
 pub struct Pushed {
+    /// The push created the branch.
+    pub created: bool,
     pub revisions: Vec<Revision>,
     pub stranded: Vec<StrandedVersion>,
     /// Live locks the policy commits released because their paths became shared.
@@ -137,18 +140,31 @@ impl RepoService {
             }
             pushed_trees.insert(id, body);
         }
-        let mut rules = self.rules_on(branch).await?;
-        let on_default = branch == DEFAULT_BRANCH;
-        let policy_path = RepoPath::new(POLICY_PATH)?;
-        let mut has_policy = on_default && self.pointer_on(branch, &policy_path).await?.is_some();
-        let mut rules_id = match (on_default, self.head_of(branch).await?) {
-            (false, Some(head)) => self.policy_revision_at(&head).await?.map(|r| r.id),
-            _ => None,
-        };
         let mut records = Vec::with_capacity(objects.commits.len());
         for (id, raw) in objects.commits {
             records.push(self.read_pushed_commit(id, raw)?);
         }
+        let on_default = branch == DEFAULT_BRANCH;
+        let created = self.meta.get_branch(&self.repo, branch).await?.is_none() && !on_default;
+        if created {
+            self.require_new_branch_name(branch).await?;
+        }
+        let tip = if created {
+            records[0].parents.first().copied()
+        } else {
+            self.head_of(branch).await?
+        };
+        let mut rules = if on_default {
+            self.rules()
+        } else {
+            self.rules_at(tip.as_ref()).await?
+        };
+        let policy_path = RepoPath::new(POLICY_PATH)?;
+        let mut has_policy = on_default && self.pointer_on(branch, &policy_path).await?.is_some();
+        let mut rules_id = match (on_default, tip) {
+            (false, Some(head)) => self.policy_revision_at(&head).await?.map(|r| r.id),
+            _ => None,
+        };
         let mut chain = records
             .iter()
             .any(|r| r.parents.len() > 1)
@@ -288,6 +304,7 @@ impl RepoService {
                 known,
             });
         }
+        let commits_ids: Vec<ObjectId> = commits.iter().map(|c| c.record.id).collect();
         let now = self.clock.now();
         let cap = self.storage_cap().await?;
         let revs = self
@@ -297,6 +314,15 @@ impl RepoService {
                     .await,
             )
             .await?;
+        if created {
+            let head = commits_ids.last().expect("a push has commits");
+            self.record_repo(
+                &who.user,
+                AuditAction::BranchCreated,
+                format!("{branch} at {head} (push)"),
+            )
+            .await?;
+        }
         let mut applied = policies.into_iter();
         let mut stranded = Vec::new();
         let mut released = Vec::new();
@@ -337,10 +363,25 @@ impl RepoService {
             }
         }
         Ok(Pushed {
+            created,
             revisions: revs,
             stranded,
             released_locks: released,
         })
+    }
+
+    /// A name a new branch may take: valid, and not clashing with an existing branch's path-like name.
+    async fn require_new_branch_name(&self, name: &str) -> Result<()> {
+        validate_branch_name(name)?;
+        if self
+            .branches()
+            .await?
+            .iter()
+            .any(|b| conflicts(&b.name, name))
+        {
+            return Err(PynError::BranchExists(name.to_string()));
+        }
+        Ok(())
     }
 
     /// The record the raw bytes describe, or why the push cannot carry it.

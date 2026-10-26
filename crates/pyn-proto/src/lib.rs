@@ -465,7 +465,8 @@ pub struct PushObject {
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct PushRequest {
-    /// The branch to append to; the default branch if omitted.
+    /// The branch to append to; the default branch if omitted. A name the server does not have is created by the push,
+    /// from the first commit's parent (any commit the server has, or none on an empty repository).
     pub branch: Option<String>,
     /// The commits, oldest first; the first is a child of the branch's head, each next one of the one before.
     pub commits: Vec<PushObject>,
@@ -478,6 +479,9 @@ pub struct PushResponse {
     pub branch: String,
     /// The branch's head commit after the push.
     pub head: String,
+    /// The push created the branch; omitted when it already existed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub created: bool,
     /// The revisions the commits made, in commit order, each commit's by path.
     pub revisions: Vec<Revision>,
     /// Shared versions on other branches that a policy file in the push stranded; omitted when there are none.

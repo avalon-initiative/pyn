@@ -756,7 +756,7 @@ pub async fn an_unlisted_path_is_exclusive_in_a_push(store: Store) {
     assert_eq!(revs[0].mode, Some(Mode::Exclusive));
 }
 
-pub async fn a_push_needs_the_checkin_permission_and_an_existing_branch(store: Store) {
+pub async fn a_push_needs_the_checkin_permission(store: Store) {
     let h = harness(store);
     let c = blob(&h, "x").await;
     let mut files = Files::new();
@@ -776,14 +776,132 @@ pub async fn a_push_needs_the_checkin_permission_and_an_existing_branch(store: S
         matches!(err, PynError::Forbidden(Permission::Checkin)),
         "{err}"
     );
+}
 
+pub async fn a_push_to_an_unknown_branch_creates_it_atomically(store: Store) {
+    let h = harness(store);
+    let (a, b) = (blob(&h, "a1").await, blob(&h, "b1").await);
+    let mut files = Files::new();
+    set(&mut files, "Source/a.cpp", a);
+    let root = build(&files, None, "root", 1);
+
+    let pushed = h
+        .svc
+        .push_commits_recorded(&who("alice"), "feature", objects(&[&root]))
+        .await
+        .unwrap();
+    assert!(pushed.created);
+    assert_eq!(head(&h, "feature").await, Some(root.id));
+    assert_eq!(head(&h, "main").await, None);
+
+    set(&mut files, "Source/b.cpp", b);
+    let next = build(&files, Some(root.id), "next", 2);
+    let pushed = h
+        .svc
+        .push_commits_recorded(&who("alice"), "feature", objects(&[&next]))
+        .await
+        .unwrap();
+    assert!(!pushed.created);
+
+    set(&mut files, "Source/c.cpp", a);
+    let later = build(&files, Some(next.id), "later", 3);
+    let pushed = h
+        .svc
+        .push_commits_recorded(&who("alice"), "topic/x", objects(&[&later]))
+        .await
+        .unwrap();
+    assert!(pushed.created);
+    assert_eq!(head(&h, "topic/x").await, Some(later.id));
+    assert_eq!(head(&h, "feature").await, Some(next.id));
+}
+
+pub async fn a_new_branch_must_start_from_a_commit_the_repository_has(store: Store) {
+    let h = harness(store);
+    let (a, b) = (blob(&h, "a1").await, blob(&h, "b1").await);
+    let mut files = Files::new();
+    set(&mut files, "Source/a.cpp", a);
+    let root = build(&files, None, "root", 1);
+    h.svc
+        .push_commits(&who("alice"), "main", objects(&[&root]))
+        .await
+        .unwrap();
+
+    let mut other = Files::new();
+    set(&mut other, "Source/b.cpp", b);
+    let unrelated = build(&other, None, "unrelated", 2);
+    let err = h
+        .svc
+        .push_commits(&who("alice"), "feature", objects(&[&unrelated]))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::PushInvalid(_)), "{err}");
+    let ghost = build(&other, Some(unrelated.id), "ghost child", 3);
+    let err = h
+        .svc
+        .push_commits(&who("alice"), "feature", objects(&[&ghost]))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::CommitNotFound(_)), "{err}");
+    assert!(
+        h.svc
+            .branches()
+            .await
+            .unwrap()
+            .iter()
+            .all(|b| b.name != "feature")
+    );
+    absent(&h, &[unrelated.id, ghost.id]).await;
+}
+
+pub async fn a_refused_push_to_an_unknown_branch_leaves_no_branch(store: Store) {
+    let h = harness_with(store, "");
+    let c = blob(&h, "x").await;
+    let mut files = Files::new();
+    set(&mut files, "Notes/todo.txt", c);
+    let commit = build(&files, None, "todo", 1);
     let err = h
         .svc
         .push_commits(&who("alice"), "feature", objects(&[&commit]))
         .await
         .unwrap_err();
-    assert!(matches!(err, PynError::BranchNotFound(_)), "{err}");
+    assert!(matches!(err, PynError::LockRequired(_)), "{err}");
+    assert!(
+        h.svc
+            .branches()
+            .await
+            .unwrap()
+            .iter()
+            .all(|b| b.name != "feature")
+    );
     absent(&h, &[commit.id]).await;
+
+    let bad = h
+        .svc
+        .push_commits(&who("alice"), "bad..name", objects(&[&commit]))
+        .await
+        .unwrap_err();
+    assert!(matches!(bad, PynError::InvalidBranchName(_)), "{bad}");
+}
+
+pub async fn a_new_branch_name_cannot_clash_with_an_existing_branch(store: Store) {
+    let h = harness(store);
+    let c = blob(&h, "x").await;
+    let mut files = Files::new();
+    set(&mut files, "Source/a.cpp", c);
+    let root = build(&files, None, "root", 1);
+    h.svc
+        .push_commits(&who("alice"), "release", objects(&[&root]))
+        .await
+        .unwrap();
+    set(&mut files, "Source/b.cpp", c);
+    let next = build(&files, Some(root.id), "next", 2);
+    let err = h
+        .svc
+        .push_commits(&who("alice"), "release/1", objects(&[&next]))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::BranchExists(_)), "{err}");
+    absent(&h, &[next.id]).await;
 }
 
 pub async fn a_push_past_the_storage_cap_applies_nothing(store: Store) {

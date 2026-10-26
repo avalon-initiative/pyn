@@ -44,14 +44,14 @@ fn decode(objects: Vec<api::PushObject>) -> Result<Vec<(ObjectId, Vec<u8>)>, Pyn
         .collect()
 }
 
-/// Append client-built commits to a branch, all or none.
+/// Append client-built commits to a branch, all or none. A branch the server lacks is created by the push.
 #[utoipa::path(post, path = "/v1/repos/{owner}/{name}/push", params(RepoAddress), request_body = api::PushRequest, responses(
     (status = 200, body = api::PushResponse),
-    (status = 409, body = api::ErrorBody, description = "not_fast_forward when the pushed history does not contain the branch's head, or its first commit is not on the branch (or a racing push won); merge_conflict when a merge commit leaves a diverged exclusive path unresolved; lock_required or lock_held for an exclusive path the pusher does not hold a live lock on; stale_base; storage_limit_reached"),
-    (status = 400, body = api::ErrorBody, description = "push_invalid for an id that does not match its bytes, bytes that are not a git object, a missing tree, a merge of a commit the repository does not have, or a commit already stored; object_missing for a blob that was not uploaded; invalid_request for an empty push or bad base64; invalid_rules for a policy file on the default branch that does not validate"),
+    (status = 409, body = api::ErrorBody, description = "branch_exists when a new branch name clashes with an existing branch; not_fast_forward when the pushed history does not contain the branch's head, or its first commit is not on the branch (or a racing push won); merge_conflict when a merge commit leaves a diverged exclusive path unresolved; lock_required or lock_held for an exclusive path the pusher does not hold a live lock on; stale_base; storage_limit_reached"),
+    (status = 400, body = api::ErrorBody, description = "invalid_request for an invalid new branch name; push_invalid when the first commit of a new branch is not a child of a commit the repository has on a repository with history, for an id that does not match its bytes, bytes that are not a git object, a missing tree, a merge of a commit the repository does not have, or a commit already stored; object_missing for a blob that was not uploaded; invalid_request for an empty push or bad base64; invalid_rules for a policy file on the default branch that does not validate"),
     (status = 413, body = api::ErrorBody, description = "push_too_large: a commit changes more than 10000 files, or the commits of the push change more than 50000 in all; object_too_large for a body over 64 MiB"),
     (status = 422, body = api::ErrorBody, description = "push_unsupported: a commit with more than two parents or the same parent twice, a submodule, an empty commit, or the removal of the policy file from the default branch"),
-    (status = 404, body = api::ErrorBody, description = "branch_not_found or commit_not_found for an unknown parent"),
+    (status = 404, body = api::ErrorBody, description = "commit_not_found for an unknown parent"),
     (status = 403, body = api::ErrorBody, description = "forbidden without the checkin permission, or without the policy permission for a commit that changes the policy file on the default branch"),
 ))]
 pub(crate) async fn push(
@@ -80,6 +80,7 @@ pub(crate) async fn push(
     Ok(Json(api::PushResponse {
         branch: branch.to_string(),
         head: head.to_hex(),
+        created: pushed.created,
         revisions: pushed.revisions.into_iter().map(revision_dto).collect(),
         stranded: pushed.stranded.into_iter().map(stranded_dto).collect(),
         released_locks: pushed.released_locks.into_iter().map(lock_dto).collect(),

@@ -1110,8 +1110,28 @@ impl MetadataStore for PgMetadataStore {
                 .fetch_optional(&mut *tx)
                 .await
                 .map_err(db)?;
+        let created = head.is_none();
+        if created {
+            let inserted = sqlx::query(
+                "INSERT INTO branches (repo, name, head, is_default, created_at, created_by)
+                 VALUES ($1, $2, NULL, false, $3, $4)",
+            )
+            .bind(repo.as_str())
+            .bind(branch)
+            .bind(now)
+            .bind(pusher.as_str())
+            .execute(&mut *tx)
+            .await;
+            match inserted {
+                Ok(_) => {}
+                Err(e) if is_unique_violation(&e) => {
+                    return Err(PynError::BranchExists(branch.to_string()));
+                }
+                Err(e) => return Err(db(e)),
+            }
+        }
         let head = head
-            .ok_or_else(|| PynError::BranchNotFound(branch.to_string()))?
+            .flatten()
             .map(|h| object_id(&h, "branch head"))
             .transpose()?;
         let mut tip = head;
@@ -1122,11 +1142,29 @@ impl MetadataStore for PgMetadataStore {
                     Some(p) => p == h || is_ancestor_in(&mut tx, repo, &p, &h).await?,
                     None => false,
                 },
+                (0, None) if created => match first {
+                    Some(p) => commit_known(&mut tx, repo, &p).await?,
+                    None => !sqlx::query_scalar::<_, bool>(
+                        "SELECT EXISTS (SELECT 1 FROM commits WHERE repo = $1)",
+                    )
+                    .bind(repo.as_str())
+                    .fetch_one(&mut *tx)
+                    .await
+                    .map_err(db)?,
+                },
                 (0, None) => first.is_none(),
                 _ => first == tip,
             };
             if !linked {
-                return Err(PynError::NotFastForward(branch.to_string()));
+                return Err(if created {
+                    PynError::PushInvalid(
+                        "the first commit of a new branch must be a child of a commit the repository has, \
+                         or the repository must be empty"
+                            .into(),
+                    )
+                } else {
+                    PynError::NotFastForward(branch.to_string())
+                });
             }
             for other in c.record.parents.iter().skip(1) {
                 if !commit_known(&mut tx, repo, other).await? {
