@@ -652,6 +652,17 @@ fn bad_pathspecs_fail_with_the_same_message_and_status() {
         ":(icase,glob)x",
         ":(exclude,icase,glob)x",
         ":!x",
+        ":(attr:)",
+        ":(attr:a,attr:b)",
+        ":(attr:-a=b)",
+        ":(attr:a=b=c)",
+        ":(attr:v=a.b)",
+        ":(attr:v=a\\)",
+        ":(attr:v=a\\",
+        ":(attr:--x)",
+        ":(attr:!)",
+        ":(attr:foo=a!b)",
+        ":(attr:\u{e4})",
     ];
     let commands: &[&[&str]] = &[
         &["ls-files"],
@@ -705,18 +716,353 @@ fn clean_refuses_a_glob_that_names_folders() {
     }
 }
 
-#[test]
-fn magic_git_accepts_but_pyn_does_not_build_is_a_usage_error() {
-    let fx = build("sha1");
+/// `build` plus attributes: a root file, a nested one, a macro and an unset value.
+fn with_attrs(format: &'static str) -> Fx {
+    let fx = build(format);
+    fx.write(
+        ".gitattributes",
+        "[attr]generated gen -diff\n*.rs lang=rust\n*.txt lang=text -vendor\nsrc/** owner=core\n\
+         docs/*.md owner=docs generated\na* special\n*.log -lang\nUp/* !lang\n",
+    );
+    fx.write("src/.gitattributes", "deep/** owner=deep\nlib.rs special\n");
+    fx
+}
+
+const ATTR_SPECS: &[&str] = &[
+    ":(attr:lang=rust)",
+    ":(attr:lang=text -vendor)",
+    ":(attr:lang=text vendor)",
+    ":(attr:owner=core)",
+    ":(attr:owner=deep)",
+    ":(attr:owner=docs)",
+    ":(attr:special)",
+    ":(attr:-lang)",
+    ":(attr:!lang)",
+    ":(attr:!owner)",
+    ":(attr:gen)",
+    ":(attr:generated)",
+    ":(attr:-diff)",
+    ":(attr:lang=rust owner=core)",
+    ":(attr:lang=rust owner=deep)",
+    ":(attr)",
+    ":(attr:nope)",
+    ":(attr:lang=Rust)",
+    ":(glob,attr:owner=core)src/**",
+    ":(attr:owner=core)src/deep",
+    ":(top,attr:special)",
+    ":(icase,attr:special)A*",
+    ":(exclude,attr:owner=core)",
+    ":(attr:lang=rust)*.rs",
+    ":!(attr:lang=rust)",
+    ":(attr:lang=rust)../docs",
+];
+
+/// Whether the oracle's `add` reads `:(attr:...)` (git before 2.5x refuses it there, and pyn follows the newer one).
+fn add_reads_attr(fx: &Fx) -> bool {
     let got = fx.run(
-        Path::new(env!("CARGO_BIN_EXE_pyn")),
+        Path::new("git"),
         &fx.repo,
         "",
-        &["ls-files", "--", ":(attr:text)*"],
+        &["add", "-n", "--", ":(attr:lang=rust)"],
         &[],
     );
-    assert_eq!(got.0, 129, "{}", String::from_utf8_lossy(&got.2));
-    assert!(String::from_utf8_lossy(&got.2).contains("attr"));
+    got.0 == 0
+}
+
+const ATTR_WALKS: &[&[&str]] = &[
+    &["clean", "-n", "-d"],
+    &["clean", "-n", "-dX"],
+    &["clean", "-n", "-dx"],
+];
+
+#[test]
+fn attr_pathspecs_agree_on_the_read_only_commands() {
+    let fx = with_attrs("sha1");
+    let mut bad = Vec::new();
+    for cwd in ["", "src"] {
+        for spec in ATTR_SPECS {
+            for cmd in READ_ONLY.iter().chain(ATTR_WALKS) {
+                let args: Vec<&str> = cmd.iter().copied().chain(["--", spec]).collect();
+                if args[0] == "show" || (args[0] == "add" && !add_reads_attr(&fx)) {
+                    continue;
+                }
+                let (want, got) = fx.pair((&fx.repo, &fx.repo), cwd, &args, &[]);
+                let lines = |r: &Ran| {
+                    let mut l: Vec<String> = String::from_utf8_lossy(&r.1)
+                        .lines()
+                        .map(str::to_string)
+                        .collect();
+                    l.sort();
+                    l
+                };
+                if lines(&want) != lines(&got) || want.0 != got.0 {
+                    bad.push(format!(
+                        "{cwd}: {args:?}\n  git {:?}\n  pyn {:?}",
+                        lines(&want),
+                        lines(&got)
+                    ));
+                }
+            }
+        }
+    }
+    assert!(bad.is_empty(), "{}", bad.join("\n"));
+}
+
+#[test]
+fn attr_pathspecs_agree_on_the_mutating_commands() {
+    let fx = with_attrs("sha1");
+    let (a, b) = (fx.root.join("git-copy"), fx.root.join("pyn-copy"));
+    for spec in ATTR_SPECS {
+        for cmd in MUTATING {
+            // Before 2.5x git refuses attr magic in `add` and `stash push`; pyn follows the newer one.
+            if (cmd[0] == "add" || cmd[0] == "stash") && !add_reads_attr(&fx) {
+                continue;
+            }
+            let _ = fs::remove_dir_all(&a);
+            let _ = fs::remove_dir_all(&b);
+            copy_repo(&fx.repo, &a);
+            copy_repo(&fx.repo, &b);
+            let args: Vec<&str> = cmd.iter().copied().chain(["--", spec]).collect();
+            let (want, got) = fx.pair((&a, &b), "", &args, &[]);
+            fx.check("", &args, &[], &want, &got, true);
+            assert!(
+                state(&fx, &b) == state(&fx, &a),
+                "state after {args:?} differs from git"
+            );
+        }
+    }
+}
+
+#[test]
+fn attr_pathspecs_in_a_sha256_repository_agree() {
+    let fx = with_attrs("sha256");
+    for spec in [":(attr:lang=rust)", ":(attr:owner=deep)", ":(attr:-lang)"] {
+        for cmd in READ_ONLY
+            .iter()
+            .filter(|c| c[0] != "add" || add_reads_attr(&fx))
+        {
+            let args: Vec<&str> = cmd.iter().copied().chain(["--", spec]).collect();
+            if args[0] != "show" {
+                fx.same("", &args, &[]);
+            }
+        }
+    }
+}
+
+#[test]
+fn a_pathspec_file_selects_like_the_same_arguments() {
+    let fx = build("sha1");
+    let list = fx.root.join("specs");
+    let list = list.to_str().unwrap();
+    let from = format!("--pathspec-from-file={list}");
+    let contents: &[(&[u8], bool)] = &[
+        (b"src\ndocs/a.md\n", false),
+        (b"src/*.rs\r\n:(glob)docs/*\r\n", false),
+        (b"\"with space/f g.txt\"\n\"a\\061\"\n", false),
+        (b"\"with space/f g.txt\"x\n", false),
+        (b"src\0:!src/deep\0*.md\0", true),
+        (b"\"src\"\0", true),
+        (b"a.txt", false),
+        (b"a.txt\n\n", false),
+        (b"", false),
+        (b"\n", false),
+        (b"\"unclosed\n", false),
+        (b"nope\n", false),
+    ];
+    let commands: &[&[&str]] = &[
+        &["add", "-n"],
+        &["add", "-n", "-u"],
+        &["rm", "-n", "-r"],
+        &["rm", "-n", "-r", "--cached"],
+        &["reset", "-q"],
+        &["restore", "--staged"],
+        &["restore"],
+        &["restore", "--source=HEAD", "--worktree", "--staged"],
+        &["checkout", "HEAD"],
+        &["checkout"],
+        &["stash", "push"],
+    ];
+    let (a, b) = (fx.root.join("git-copy"), fx.root.join("pyn-copy"));
+    for (bytes, nul) in contents {
+        fs::write(list, bytes).unwrap();
+        for cmd in commands {
+            // A bare `checkout` lists the changes in git; pyn asks for a branch.
+            if bytes.is_empty() && cmd[0] == "checkout" {
+                continue;
+            }
+            let _ = fs::remove_dir_all(&a);
+            let _ = fs::remove_dir_all(&b);
+            copy_repo(&fx.repo, &a);
+            copy_repo(&fx.repo, &b);
+            let mut args: Vec<&str> = cmd.to_vec();
+            args.push(&from);
+            if *nul {
+                args.push("--pathspec-file-nul");
+            }
+            let (want, got) = fx.pair((&a, &b), "", &args, &[]);
+            fx.check("", &args, &[], &want, &got, true);
+            assert!(
+                state(&fx, &b) == state(&fx, &a),
+                "state after {args:?} with {:?} differs from git",
+                String::from_utf8_lossy(bytes)
+            );
+            if want.0 == 128 {
+                let first = |e: &[u8]| {
+                    String::from_utf8_lossy(e)
+                        .lines()
+                        .next()
+                        .map(str::to_string)
+                };
+                assert_eq!(first(&got.2), first(&want.2), "{args:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn a_pathspec_file_refuses_what_git_refuses() {
+    let fx = build("sha1");
+    let list = fx.root.join("specs");
+    fs::write(&list, "src\n").unwrap();
+    let from = format!("--pathspec-from-file={}", list.display());
+    let cases: &[&[&str]] = &[
+        &["add", "-n", "a.txt"],
+        &["add", "-p"],
+        &["add", "-i"],
+        &["add", "-n", "--pathspec-file-nul"],
+        &["rm", "-n", "a.txt"],
+        &["rm", "-n", "--pathspec-file-nul"],
+        &["reset", "HEAD", "a.txt"],
+        &["reset", "-p"],
+        &["reset", "--hard"],
+        &["restore", "a.txt"],
+        &["restore", "-p"],
+        &["checkout", "HEAD", "--", "a.txt"],
+        &["checkout", "-p"],
+        &["stash", "push", "--", "a.txt"],
+        &["stash", "push", "-p"],
+    ];
+    for case in cases {
+        let with_file = !case.contains(&"--pathspec-file-nul");
+        let mut args: Vec<&str> = case.to_vec();
+        if with_file {
+            let at = args.iter().position(|a| *a == "--").unwrap_or(args.len());
+            args.insert(at, &from);
+        }
+        let (want, got) = fx.pair((&fx.repo, &fx.repo), "", &args, &[]);
+        assert_eq!(
+            got.0,
+            want.0,
+            "{args:?}: {}",
+            String::from_utf8_lossy(&got.2)
+        );
+        let first = |e: &[u8]| {
+            String::from_utf8_lossy(e)
+                .lines()
+                .next()
+                .map(str::to_string)
+        };
+        assert_eq!(first(&got.2), first(&want.2), "{args:?}");
+    }
+}
+
+#[test]
+fn add_refuses_a_pathspec_beyond_a_symbolic_link() {
+    let fx = build("sha1");
+    symlink("src", fx.repo.join("srclink")).unwrap();
+    fx.g(&["add", "-f", "srclink"]);
+    for spec in [
+        "link.txt/x",
+        "link.txt/",
+        "link.txt",
+        "srclink/main.rs",
+        "srclink/",
+        "srclink/*.rs",
+        ":(literal)srclink/main.rs",
+        ":!srclink/x",
+        ":(glob)srclink/**",
+        "./srclink/lib.rs",
+        "src/../srclink/lib.rs",
+    ] {
+        for cmd in [
+            &["add", "-n"][..],
+            &["add", "-n", "-u"],
+            &["add", "-n", "-A"],
+        ] {
+            let args: Vec<&str> = cmd.iter().copied().chain(["--", spec]).collect();
+            let (want, got) = fx.pair((&fx.repo, &fx.repo), "", &args, &[]);
+            fx.check("", &args, &[], &want, &got, true);
+            let first = |e: &[u8]| {
+                String::from_utf8_lossy(e)
+                    .lines()
+                    .next()
+                    .map(str::to_string)
+            };
+            assert_eq!(first(&got.2), first(&want.2), "{args:?}");
+        }
+    }
+}
+
+#[test]
+fn name_formats_quote_non_ascii_names_as_git_does() {
+    let fx = build("sha1");
+    fx.write("\u{e9}.txt", "e\n");
+    fx.write("tab\there.txt", "t\n");
+    fx.g(&["add", "-A"]);
+    fx.g(&["commit", "-q", "-m", "names"]);
+    fx.write("\u{e9}.txt", "e\nmore\n");
+    fx.g(&["mv", "tab\there.txt", "\u{fc} moved.txt"]);
+    for cmd in [
+        &["diff", "--name-only"][..],
+        &["diff", "--name-status", "HEAD"],
+        &["diff", "--stat", "HEAD"],
+        &["diff", "--numstat", "HEAD"],
+        &["diff", "--raw", "HEAD"],
+        &["diff", "--summary", "HEAD"],
+        &["diff", "--cached", "--name-status", "-M"],
+        &["diff", "--cached", "--summary", "-M"],
+        &["diff", "--name-only", "-z"],
+        &["diff", "--raw", "-z", "HEAD"],
+        &["log", "--name-only", "--format=%s", "-3"],
+        &["log", "--name-status", "--format=%s", "-3"],
+        &["log", "--raw", "--format=%s", "-3"],
+        &["show", "--name-status", "--format=%s", "HEAD"],
+    ] {
+        fx.same("", cmd, &[]);
+    }
+    fx.g(&["config", "core.quotePath", "false"]);
+    fx.same("", &["diff", "--name-only"], &[]);
+    fx.same("", &["log", "--name-status", "--format=%s", "-3"], &[]);
+}
+
+#[test]
+fn a_pathspec_file_is_read_from_standard_input() {
+    let fx = build("sha1");
+    let run = |program: &Path| {
+        let mut c = Command::new(program);
+        c.args(["add", "-n", "--pathspec-from-file=-"])
+            .current_dir(&fx.repo)
+            .env_clear()
+            .env("PATH", path_env())
+            .env("HOME", fx.root.join("home"))
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("LC_ALL", "C")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped());
+        let mut child = c.spawn().unwrap();
+        std::io::Write::write_all(&mut child.stdin.take().unwrap(), b"src/*.rs\na.txt\n").unwrap();
+        let out = child.wait_with_output().unwrap();
+        let mut lines: Vec<String> = String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(str::to_string)
+            .collect();
+        lines.sort();
+        lines
+    };
+    assert_eq!(
+        run(Path::new(env!("CARGO_BIN_EXE_pyn"))),
+        run(Path::new("git"))
+    );
 }
 
 /// A small linear congruential generator, so a failure reproduces from the seed.

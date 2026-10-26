@@ -200,6 +200,19 @@ pub struct CheckoutArgs {
     pub(crate) recurse_submodules: bool,
     #[arg(long, overrides_with = "recurse_submodules")]
     pub(crate) no_recurse_submodules: bool,
+    #[command(flatten)]
+    pub(crate) pathspec_file: crate::pathspec::PathspecFile,
+}
+
+impl CheckoutArgs {
+    /// Fills in the pathspecs a `--pathspec-from-file` names; an argument is then only the commit to take them from.
+    pub fn expand_pathspec_file(&mut self) -> Result<()> {
+        let conflict = self.patch.then_some("--patch");
+        if self.pathspec_file.pathspec_from_file.is_some() && self.args.len() > 1 {
+            self.paths.extend(self.args.drain(1..));
+        }
+        self.pathspec_file.expand(&mut self.paths, conflict)
+    }
 }
 
 fn branches(api: &Api) -> Result<Vec<api::Branch>> {
@@ -536,6 +549,7 @@ pub fn checkout_command(
         patch: _,
         recurse_submodules,
         no_recurse_submodules: _,
+        pathspec_file: _,
     } = args;
     if recurse_submodules {
         bail!("`pyn checkout --recurse-submodules` needs a git repository");

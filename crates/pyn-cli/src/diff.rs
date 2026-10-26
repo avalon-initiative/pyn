@@ -601,9 +601,10 @@ pub fn origins(
 }
 
 /// The create, delete, rename, copy and mode-change lines of `--summary` for a pair.
-fn summary_line(p: &Pair) -> String {
+fn summary_line(backend: &dyn Backend, p: &Pair) -> String {
     let mut out = String::new();
-    let (old_path, new_path) = (&p.old_path, &p.new_path);
+    let quote = |s: &str| backend.quote_diff_path(s.as_bytes());
+    let (old_path, new_path) = (&quote(&p.old_path), &quote(&p.new_path));
     match (&p.old, &p.new) {
         (None, Some(b)) => {
             let _ = writeln!(out, " create mode {} {}", b.mode(), new_path);
@@ -669,12 +670,13 @@ pub fn merge_stat(
                 Counts::Lines(x, y)
             }
         };
+        let quote = |s: &str| backend.quote_diff_path(s.as_bytes());
         let name = if p.moved.is_some() {
-            diffstat::rename_name(&p.old_path, &p.new_path)
+            diffstat::rename_name(&quote(&p.old_path), &quote(&p.new_path))
         } else {
-            p.new_path.clone()
+            quote(&p.new_path)
         };
-        summary.push_str(&summary_line(p));
+        summary.push_str(&summary_line(backend, p));
         rows.push(diffstat::Row { name, counts });
     }
     let mut out = diffstat::render(&rows, layout.0, layout.1);
@@ -768,7 +770,7 @@ pub(crate) fn emit(
         ..format.clone()
     };
     let summary: String = if format.summary || format.kind == Kind::Summary {
-        list.iter().map(summary_line).collect()
+        list.iter().map(|p| summary_line(backend, p)).collect()
     } else {
         String::new()
     };
@@ -921,6 +923,13 @@ fn render(backend: &dyn Backend, list: &[Pair], format: &Format, out: &mut Strin
     } else {
         ('\t', '\n')
     };
+    let quote = |s: &str| {
+        if format.opts.nul {
+            s.to_string()
+        } else {
+            backend.quote_diff_path(s.as_bytes())
+        }
+    };
     for p in list {
         let (a, b) = (p.old.as_ref(), p.new.as_ref());
         let path = &p.new_path;
@@ -928,24 +937,24 @@ fn render(backend: &dyn Backend, list: &[Pair], format: &Format, out: &mut Strin
             Kind::NameOnly => {
                 differs = true;
                 let shown = if p.detached && b.is_none() {
-                    "/dev/null"
+                    "/dev/null".to_string()
                 } else {
-                    path
+                    quote(path)
                 };
                 out.push_str(&format!("{shown}{end}"));
             }
             Kind::NameStatus => {
                 differs = true;
                 let names = match &p.moved {
-                    Some(_) => format!("{sep}{}{sep}{path}", p.old_path),
-                    None if p.detached && p.old.is_some() => format!("{sep}{}", p.old_path),
-                    None => format!("{sep}{path}"),
+                    Some(_) => format!("{sep}{}{sep}{}", quote(&p.old_path), quote(path)),
+                    None if p.detached && p.old.is_some() => format!("{sep}{}", quote(&p.old_path)),
+                    None => format!("{sep}{}", quote(path)),
                 };
                 out.push_str(&format!("{}{names}{end}", status_of(p)));
             }
             Kind::Raw => {
                 differs = true;
-                out.push_str(&diff_raw::record(p, &format.opts));
+                out.push_str(&diff_raw::record(p, &format.opts, &quote));
             }
             Kind::Dirstat => {
                 differs = true;
@@ -1020,16 +1029,16 @@ fn render(backend: &dyn Backend, list: &[Pair], format: &Format, out: &mut Strin
                     Counts::Lines(x, y)
                 };
                 let mut name = match (&p.moved, p.detached) {
-                    (Some(_), _) => diffstat::rename_name(&p.old_path, path),
+                    (Some(_), _) => diffstat::rename_name(&quote(&p.old_path), &quote(path)),
                     (None, true) => match (a, b) {
                         (Some(_), Some(_)) if p.old_path != *path => {
-                            diffstat::rename_name(&p.old_path, path)
+                            diffstat::rename_name(&quote(&p.old_path), &quote(path))
                         }
-                        (Some(_), None) => format!("{} => /dev/null", p.old_path),
-                        (None, Some(_)) => format!("/dev/null => {path}"),
-                        _ => path.clone(),
+                        (Some(_), None) => format!("{} => /dev/null", quote(&p.old_path)),
+                        (None, Some(_)) => format!("/dev/null => {}", quote(path)),
+                        _ => quote(path),
                     },
-                    (None, false) => path.clone(),
+                    (None, false) => quote(path),
                 };
                 if let Some(note) = compact_note(p).filter(|_| format.opts.compact_summary) {
                     let _ = write!(name, " ({note})");
@@ -1061,7 +1070,6 @@ fn render(backend: &dyn Backend, list: &[Pair], format: &Format, out: &mut Strin
                     let _ = write!(out, "{x}\t{y}\t{path}\0");
                 }
                 _ => {
-                    let path = backend.quote_diff_path(path.as_bytes());
                     let _ = writeln!(out, "{x}\t{y}\t{path}");
                 }
             }

@@ -53,9 +53,20 @@ pub struct ResetArgs {
     /// Git repository: reset only the index entries of these paths.
     #[arg(last = true)]
     pub(crate) paths: Vec<String>,
+    #[command(flatten)]
+    pathspec_file: crate::pathspec::PathspecFile,
 }
 
 impl ResetArgs {
+    /// Fills in the pathspecs a `--pathspec-from-file` names.
+    pub fn expand_pathspec_file(&mut self) -> anyhow::Result<()> {
+        let conflict = self.patch.then_some("--patch");
+        if self.pathspec_file.pathspec_from_file.is_some() && self.revs.len() > 1 {
+            self.paths.extend(self.revs.drain(1..));
+        }
+        self.pathspec_file.expand(&mut self.paths, conflict)
+    }
+
     /// `reset --merge -q [<rev>]`, which cherry-pick uses to put the index and work tree back.
     pub(crate) fn quiet_merge(rev: Option<&str>) -> Self {
         Self {

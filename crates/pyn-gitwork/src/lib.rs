@@ -23,6 +23,7 @@ pub use history::{Log, LogEntry};
 pub use ignore::{Ignore, Level, Rule, parse_rules, verdict};
 pub use pathspec::{
     MagicSet, Match, Pathspec, PathspecContext, PathspecError, PathspecOptions, Tracker,
+    read_pathspec_file,
 };
 pub use repo::{Head, Repo};
 pub use safepath::{

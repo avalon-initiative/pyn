@@ -72,7 +72,7 @@ fn valid_name(name: &[u8]) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
 }
 
-fn unquote(text: &[u8]) -> Option<(Vec<u8>, &[u8])> {
+pub(crate) fn unquote(text: &[u8]) -> Option<(Vec<u8>, &[u8])> {
     let mut out = Vec::new();
     let mut i = 1;
     while i < text.len() {
@@ -204,6 +204,12 @@ pub struct Attributes {
     loader: Loader,
     fold: bool,
     folders: Mutex<HashMap<Vec<u8>, Arc<File>>>,
+}
+
+impl std::fmt::Debug for Attributes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Attributes").finish_non_exhaustive()
+    }
 }
 
 /// Every attribute set for one path, in the order git reports them.

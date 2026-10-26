@@ -1,3 +1,6 @@
+use std::sync::Arc;
+
+use crate::attributes::{AttrValue, Attributes};
 use crate::wildmatch::matches_fold;
 
 /// Git's pathspecs: literal paths and folders, globs and the `:(...)` magic, matched on repository paths
@@ -19,6 +22,57 @@ struct Item {
     /// Bytes of `text` that come from the working folder.
     prefix: usize,
     magic: MagicSet,
+    attr: Option<AttrSpec>,
+}
+
+/// What one `attr:` entry asks of an attribute.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AttrWant {
+    Set,
+    Unset,
+    Unspecified,
+    Value(Vec<u8>),
+}
+
+/// The `:(attr:...)` requirements of one pathspec, with the attributes they are checked against.
+#[derive(Debug, Clone)]
+struct AttrSpec {
+    wants: Vec<(String, AttrWant)>,
+    source: Arc<Attributes>,
+}
+
+impl PartialEq for AttrSpec {
+    fn eq(&self, other: &Self) -> bool {
+        self.wants == other.wants && Arc::ptr_eq(&self.source, &other.source)
+    }
+}
+
+impl Eq for AttrSpec {}
+
+impl AttrSpec {
+    fn text(&self) -> String {
+        let word = |(name, want): &(String, AttrWant)| match want {
+            AttrWant::Set => name.clone(),
+            AttrWant::Unset => format!("-{name}"),
+            AttrWant::Unspecified => format!("!{name}"),
+            AttrWant::Value(v) => format!("{name}={}", lossy(v)),
+        };
+        self.wants.iter().map(word).collect::<Vec<_>>().join(" ")
+    }
+
+    fn matches(&self, name: &[u8]) -> bool {
+        let name = name.strip_suffix(b"/").unwrap_or(name);
+        let have = self.source.for_path(name);
+        self.wants
+            .iter()
+            .all(|(attr, want)| match (have.get(attr), want) {
+                (AttrValue::Set, AttrWant::Set)
+                | (AttrValue::Unset, AttrWant::Unset)
+                | (AttrValue::Unspecified, AttrWant::Unspecified) => true,
+                (AttrValue::Value(v), AttrWant::Value(w)) => v == *w,
+                _ => false,
+            })
+    }
 }
 
 /// The pathspec magic in effect for one pathspec, or the kinds a command refuses.
@@ -63,6 +117,8 @@ pub enum DirMatch {
 struct Mode {
     directory: bool,
     leading: bool,
+    /// Skip the `attr:` requirements, as git does for a folder it only lists whole.
+    no_attr: bool,
 }
 
 /// How a pathspec selected a path.
@@ -98,6 +154,8 @@ pub struct PathspecContext<'a> {
     pub unsupported: MagicSet,
     /// With no argument, or only excludes, limit to the working folder rather than the whole repository.
     pub prefer_cwd: bool,
+    /// The attributes `:(attr:...)` is checked against; without them that magic is unsupported.
+    pub attributes: Option<&'a Arc<Attributes>>,
 }
 
 /// Why a pathspec failed to parse.
@@ -144,6 +202,7 @@ impl Pathspec {
                 text: p,
                 prefix: 0,
                 magic: MagicSet::default(),
+                attr: None,
             })
             .collect();
         Self { items }
@@ -172,6 +231,7 @@ impl Pathspec {
                     original: Vec::new(),
                     text,
                     magic: MagicSet::default(),
+                    attr: None,
                 });
             }
         }
@@ -245,6 +305,11 @@ impl Pathspec {
         &self.items[n].text
     }
 
+    /// Whether the `n`th pathspec asks for attributes.
+    pub fn item_has_attr(&self, n: usize) -> bool {
+        self.items[n].attr.is_some()
+    }
+
     /// Whether the `n`th pathspec is an exclude.
     pub fn item_is_exclude(&self, n: usize) -> bool {
         self.items[n].magic.exclude
@@ -274,6 +339,9 @@ impl Pathspec {
         .filter(|(on, _)| *on)
         .map(|(_, name)| name.to_string())
         .collect();
+        if let Some(attr) = &i.attr {
+            parts.push(format!("attr:{}", attr.text()));
+        }
         parts.push(format!("prefix:{}", i.prefix));
         format!(":({}){}", parts.join(","), lossy(&i.text))
     }
@@ -303,6 +371,7 @@ impl Pathspec {
         let leading = Mode {
             directory: false,
             leading: true,
+            no_attr: false,
         };
         let positive = self
             .items
@@ -331,11 +400,18 @@ impl Pathspec {
     /// Whether a pattern could match something under the folder, judging only by the literal text before its first
     /// wildcard (so `*.log` leads into every folder, `u*` only into folders starting with `u`).
     pub fn glob_leads_into(&self, dir: &[u8]) -> bool {
+        let slashed = [dir, b"/"].concat();
+        let blind = Mode {
+            leading: true,
+            no_attr: true,
+            ..Mode::default()
+        };
         self.items.iter().any(|i| {
-            !i.magic.exclude && i.nowild < i.text.len() && {
-                let literal = &i.text[..i.nowild];
-                dir.starts_with(literal) || is_under(literal, dir)
-            }
+            !i.magic.exclude
+                && ((i.nowild < i.text.len() && {
+                    let literal = &i.text[..i.nowild];
+                    dir.starts_with(literal) || is_under(literal, dir)
+                }) || (i.attr.is_some() && i.how(&slashed, blind).is_some()))
         })
     }
 
@@ -350,6 +426,7 @@ impl Pathspec {
         let folder = Mode {
             directory: true,
             leading: true,
+            no_attr: false,
         };
         self.items.is_empty()
             || self
@@ -405,6 +482,10 @@ impl Item {
     }
 
     fn how(&self, name: &[u8], mode: Mode) -> Option<Match> {
+        if !(mode.directory || mode.no_attr) && self.attr.as_ref().is_some_and(|a| !a.matches(name))
+        {
+            return None;
+        }
         let m = &self.text[..];
         if self.prefix > 0 && self.magic.icase && !self.in_prefix(name, mode) {
             return None;
@@ -478,10 +559,10 @@ fn parse_item(arg: &[u8], cx: &PathspecContext<'_>) -> Result<Item, PathspecErro
                 .into(),
         ));
     }
-    let (mut magic, rest) = if arg[0] == b':' && !cx.options.literal {
+    let (mut magic, wants, rest) = if arg[0] == b':' && !cx.options.literal {
         parse_magic(arg)?
     } else {
-        (MagicSet::default(), arg)
+        (MagicSet::default(), None, arg)
     };
     let opts = cx.options;
     let mut global = MagicSet {
@@ -524,11 +605,18 @@ fn parse_item(arg: &[u8], cx: &PathspecContext<'_>) -> Result<Item, PathspecErro
             refused.join(", ")
         )));
     }
-    if magic.attr {
-        return Err(PathspecError::Unsupported(
-            "pathspec magic 'attr' is not supported".into(),
-        ));
-    }
+    let attr = match (wants, cx.attributes) {
+        (Some(wants), Some(source)) => Some(AttrSpec {
+            wants,
+            source: source.clone(),
+        }),
+        (_, None) if magic.attr => {
+            return Err(PathspecError::Unsupported(
+                "pathspec magic 'attr' is not supported".into(),
+            ));
+        }
+        _ => None,
+    };
     let nowild = if magic.literal {
         text.len()
     } else {
@@ -540,11 +628,14 @@ fn parse_item(arg: &[u8], cx: &PathspecContext<'_>) -> Result<Item, PathspecErro
         nowild,
         prefix,
         magic,
+        attr,
     })
 }
 
-/// Reads the `:` magic at the start of `arg`; returns it and the path after it.
-fn parse_magic(arg: &[u8]) -> Result<(MagicSet, &[u8]), PathspecError> {
+type Wants = Vec<(String, AttrWant)>;
+
+/// Reads the `:` magic at the start of `arg`; returns it, the `attr:` requirements and the path after it.
+fn parse_magic(arg: &[u8]) -> Result<(MagicSet, Option<Wants>, &[u8]), PathspecError> {
     let fatal = |m: String| PathspecError::Fatal(m);
     let mut magic = MagicSet::default();
     if arg.get(1) != Some(&b'(') {
@@ -564,14 +655,20 @@ fn parse_magic(arg: &[u8]) -> Result<(MagicSet, &[u8]), PathspecError> {
             }
             at += 1;
         }
-        return Ok((magic, &arg[at + usize::from(arg.get(at) == Some(&b':'))..]));
+        let rest = &arg[at + usize::from(arg.get(at) == Some(&b':'))..];
+        return Ok((magic, None, rest));
     }
     let mut at = 2;
+    let mut wants = None;
     while at < arg.len() && arg[at] != b')' {
-        let len = arg[at..]
-            .iter()
-            .position(|b| *b == b',' || *b == b')')
-            .unwrap_or(arg.len() - at);
+        let len = if arg[at..].starts_with(b"attr:") {
+            attr_body_len(&arg[at..])?
+        } else {
+            arg[at..]
+                .iter()
+                .position(|b| *b == b',' || *b == b')')
+                .unwrap_or(arg.len() - at)
+        };
         let name = &arg[at..at + len];
         at += len + usize::from(arg.get(at + len) == Some(&b','));
         match name {
@@ -582,7 +679,13 @@ fn parse_magic(arg: &[u8]) -> Result<(MagicSet, &[u8]), PathspecError> {
             b"icase" => magic.icase = true,
             b"exclude" => magic.exclude = true,
             b"attr" => magic.attr = true,
-            n if n.starts_with(b"attr:") => magic.attr = true,
+            n if n.starts_with(b"attr:") => {
+                if wants.is_some() {
+                    return Err(fatal("Only one 'attr:' specification is allowed.".into()));
+                }
+                magic.attr = true;
+                wants = Some(parse_attr_body(&n[5..])?);
+            }
             n if n.starts_with(b"prefix:") => {
                 return Err(PathspecError::Unsupported(
                     "pathspec magic 'prefix' is not supported".into(),
@@ -603,7 +706,82 @@ fn parse_magic(arg: &[u8]) -> Result<(MagicSet, &[u8]), PathspecError> {
             lossy(arg)
         )));
     }
-    Ok((magic, &arg[at + 1..]))
+    Ok((magic, wants, &arg[at + 1..]))
+}
+
+/// The length of an `attr:` entry, which runs to the next `,` or `)` that is not backslash-escaped.
+fn attr_body_len(from: &[u8]) -> Result<usize, PathspecError> {
+    let mut i = 0;
+    while i < from.len() && from[i] != b',' && from[i] != b')' {
+        if from[i] == b'\\' {
+            if i + 1 == from.len() {
+                return Err(escape_last());
+            }
+            i += 1;
+        }
+        i += 1;
+    }
+    Ok(i)
+}
+
+fn escape_last() -> PathspecError {
+    PathspecError::Fatal("Escape character '\\' not allowed as last character in attr value".into())
+}
+
+fn attr_name_valid(name: &[u8]) -> bool {
+    !name.is_empty()
+        && name[0] != b'-'
+        && name
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || b"-._".contains(b))
+}
+
+fn parse_attr_body(body: &[u8]) -> Result<Wants, PathspecError> {
+    let fatal = |m: String| PathspecError::Fatal(m);
+    let words: Vec<&[u8]> = body
+        .split(|b| *b == b' ')
+        .filter(|w| !w.is_empty())
+        .collect();
+    if words.is_empty() {
+        return Err(fatal("attr spec must not be empty".into()));
+    }
+    let mut wants = Vec::new();
+    for word in words {
+        let (name, want) = match word[0] {
+            b'!' => (&word[1..], AttrWant::Unspecified),
+            b'-' => (&word[1..], AttrWant::Unset),
+            _ => match word.iter().position(|b| *b == b'=') {
+                Some(eq) => (&word[..eq], AttrWant::Value(attr_value(&word[eq + 1..])?)),
+                None => (word, AttrWant::Set),
+            },
+        };
+        if !attr_name_valid(name) {
+            return Err(fatal(format!("invalid attribute name {}", lossy(name))));
+        }
+        wants.push((lossy(name), want));
+    }
+    Ok(wants)
+}
+
+/// Unescapes a matched attribute value; only letters, digits, `,`, `-` and `_` may remain.
+fn attr_value(raw: &[u8]) -> Result<Vec<u8>, PathspecError> {
+    let mut out = Vec::new();
+    let mut bytes = raw.iter();
+    while let Some(&b) = bytes.next() {
+        let b = if b == b'\\' {
+            *bytes.next().ok_or_else(escape_last)?
+        } else {
+            b
+        };
+        if !(b.is_ascii_alphanumeric() || b"-_,".contains(&b)) {
+            return Err(PathspecError::Fatal(format!(
+                "cannot use '{}' for value matching",
+                lossy(&[b])
+            )));
+        }
+        out.push(b);
+    }
+    Ok(out)
 }
 
 /// The path from the root for `rest` as typed in the working folder, and how much of it is that folder.
@@ -663,6 +841,32 @@ fn rooted(
     Ok((text, prefix_len))
 }
 
+/// The pathspecs in a `--pathspec-from-file` file: one per line (a line may be C-quoted, and may end in CR), or with
+/// `nul` separated by NUL and taken as written. Git leaves the empty-string check to the pathspec parser.
+pub fn read_pathspec_file(data: &[u8], nul: bool) -> Result<Vec<Vec<u8>>, PathspecError> {
+    let sep = if nul { 0 } else { b'\n' };
+    let mut lines: Vec<&[u8]> = data.split(|b| *b == sep).collect();
+    if lines.last().is_some_and(|l| l.is_empty()) {
+        lines.pop();
+    }
+    lines
+        .into_iter()
+        .map(|line| {
+            if nul {
+                return Ok(line.to_vec());
+            }
+            if line.first() == Some(&b'"') {
+                return crate::attributes::unquote(line)
+                    .map(|(name, _)| name)
+                    .ok_or_else(|| {
+                        PathspecError::Fatal(format!("line is badly quoted: {}", lossy(line)))
+                    });
+            }
+            Ok(line.strip_suffix(b"\r").unwrap_or(line).to_vec())
+        })
+        .collect()
+}
+
 fn trim_slashes(p: &[u8]) -> &[u8] {
     let mut p = p;
     while let Some(rest) = p.strip_suffix(b"/") {
@@ -686,12 +890,69 @@ mod tests {
             options: PathspecOptions::default(),
             unsupported: MagicSet::default(),
             prefer_cwd: false,
+            attributes: None,
         };
         Pathspec::parse(args, &cx)
     }
 
     fn spec(args: &[&str]) -> Pathspec {
         parse_in(args, "").unwrap()
+    }
+
+    #[test]
+    fn pathspec_files_split_on_lines_or_nul() {
+        let read = |d: &[u8], nul| read_pathspec_file(d, nul).unwrap();
+        assert_eq!(read(b"a\r\nb", false), [b"a".to_vec(), b"b".to_vec()]);
+        assert_eq!(
+            read(b"\"s p\\303\\251\"x\n", false),
+            ["s p\u{e9}".as_bytes()]
+        );
+        assert_eq!(
+            read(b"\"a\"\0b c\0", true),
+            [b"\"a\"".to_vec(), b"b c".to_vec()]
+        );
+        assert_eq!(read(b"a\n\n", false), [b"a".to_vec(), Vec::new()]);
+        assert!(read(b"", false).is_empty());
+        assert!(read_pathspec_file(b"\"a\n", false).is_err());
+    }
+
+    #[test]
+    fn attr_magic_selects_by_attribute_state() {
+        let attrs = Arc::new(Attributes::new(
+            b"",
+            b"",
+            Box::new(|dir: &[u8]| {
+                dir.is_empty()
+                    .then(|| b"*.c foo\n*.h -foo v=a,b\n".to_vec())
+            }),
+            false,
+        ));
+        let with = |arg: &str| {
+            let cx = PathspecContext {
+                root: b"/work",
+                prefix: b"",
+                options: PathspecOptions::default(),
+                unsupported: MagicSet::default(),
+                prefer_cwd: false,
+                attributes: Some(&attrs),
+            };
+            Pathspec::parse(&[arg], &cx)
+        };
+        let m = |arg: &str, path: &[u8]| with(arg).unwrap().matches(path);
+        assert!(m(":(attr:foo)", b"x.c") && !m(":(attr:foo)", b"x.h") && !m(":(attr:foo)", b"x.t"));
+        assert!(m(":(attr:-foo)", b"x.h") && m(":(attr:!foo)", b"x.t"));
+        assert!(m(":(attr:v=a\\,b)", b"x.h") && !m(":(attr:v=a)", b"x.h"));
+        let fatal = |arg: &str| match with(arg) {
+            Err(PathspecError::Fatal(m)) => m,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(fatal(":(attr:)"), "attr spec must not be empty");
+        assert_eq!(
+            fatal(":(attr:a,attr:b)"),
+            "Only one 'attr:' specification is allowed."
+        );
+        assert_eq!(fatal(":(attr:-a=b)"), "invalid attribute name a=b");
+        assert_eq!(fatal(":(attr:v=a.b)"), "cannot use '.' for value matching");
     }
 
     #[test]
@@ -757,6 +1018,7 @@ mod tests {
                 options: PathspecOptions::default(),
                 unsupported: MagicSet::default(),
                 prefer_cwd: true,
+                attributes: None,
             },
         )
         .unwrap();
@@ -828,6 +1090,7 @@ mod tests {
                 options,
                 unsupported: MagicSet::default(),
                 prefer_cwd: false,
+                attributes: None,
             };
             Pathspec::parse(&[arg], &cx)
         };

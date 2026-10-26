@@ -104,7 +104,8 @@ The commands named in decision #218.
 | `git add -p` | `pyn add -p` (`--patch`) | git home only | Asks about each hunk with git's answers, see [Choosing hunks](#choosing-hunks). On a pyn server it is a usage error (`129`): a pyn server stages whole files. |
 | `git add -N`, `--intent-to-add` | `pyn add -N` | git home only | Records a new file in the index with empty content and git's intent-to-add flag, so `status` shows ` A`, `diff` shows the file as new and `commit` leaves it out until it is added for real. A tracked path is left alone (a deletion is still staged by a path that names it, `.`, `-A` or `-u`, as git does). Combines with `-n`, `-v`, `-f`, `-u` and `-A`; not with `-p` (usage error, `129`). On a pyn server it is a usage error (`129`). |
 | `git add -i`, `--interactive` | `pyn add -i` | git home only | The menu of status, update, revert, add untracked, patch, diff and help, see [Interactive add](#interactive-add). On a pyn server it is a usage error (`129`); an index with unmerged paths is refused. |
-| `git add -e`, `--chmod`, `--renormalize`, `--pathspec-from-file` | none | unsupported | Usage error (`129`). A path is a file, a folder or a git pathspec (globs and `:` magic, see [Pathspecs](#pathspecs)), taken relative to where you stand; `:(attr:...)` is refused. |
+| `git add -e`, `--chmod`, `--renormalize` | none | unsupported | Usage error (`129`). A path is a file, a folder or a git pathspec (globs and `:` magic, see [Pathspecs](#pathspecs)), taken relative to where you stand; on a git home `:(attr:...)` selects by attribute, on a pyn server it is refused. |
+| `git add --pathspec-from-file`, `--pathspec-file-nul` | same | same | Also on `rm`, `reset`, `restore`, `checkout` and `stash push`, see [Pathspecs](#pathspecs). |
 | `git commit -m <msg>` | `pyn commit -m <msg>` | different | Commits what is staged as one unit of work. On a pyn server it is one changeset uploaded to the server, so commit and publish are one step (no `push` needed), it releases the locks it held, and the output is `<path> is now at revision N` for each file. On a git home it is a git commit on the current branch (or on a detached `HEAD`, which moves only `HEAD`) and prints `[<branch> <id>] <subject>`, with `detached HEAD` in place of the branch name when detached. `-m` is required (no editor) and repeats for more paragraphs. Nothing staged exits `1` with a message. |
 | `git commit -a`, `-am <msg>` | `pyn commit -a`, `-am <msg>` | same | Stages every changed tracked file, then commits; new files are not included. |
 | `git commit <path>...` | `pyn commit -m <msg> <path>...` | different | On a pyn server: one atomic commit of the named paths as they are on disk, whatever is staged (git's `--only`). Not available on a git home, which says to `add` the paths first. |
@@ -981,7 +982,7 @@ and it is the one a pyn server or local-store workspace uses for `add`, `rm`, `s
   as `:(top,exclude)`. Only excludes means everything else (the working folder alone for `clean`, `grep`, `ls-files` and
   `rm`). A bad magic is `Invalid pathspec magic '<name>' in '<arg>'`, `Missing ')' at the end of pathspec magic in '<arg>'`,
   `Unimplemented pathspec magic '<c>' in '<arg>'`, or `<arg>: 'literal' and 'glob' are incompatible` (`128`).
-  `add` and `ls-tree` refuse the magic git refuses there (`<arg>: pathspec magic not supported by this command: 'attr'`).
+  `ls-tree` refuses the magic git refuses there (`<arg>: pathspec magic not supported by this command: 'attr'`), and so does `add` on a pyn server.
 - **Settings.** `GIT_LITERAL_PATHSPECS`, `GIT_GLOB_PATHSPECS`, `GIT_NOGLOB_PATHSPECS` and `GIT_ICASE_PATHSPECS` are read as
   git reads them (`bad boolean environment value`, and the `incompatible` pair messages, are `128`). On a pyn server they
   are not read.
@@ -989,12 +990,27 @@ and it is the one a pyn server or local-store workspace uses for `add`, `rm`, `s
   `add` and `rm`, `error: pathspec '<arg>' did not match any file(s) known to git` for `restore`, `checkout`, `stash` and
   `ls-files --error-unmatch`); an exclude is never reported. Like git, a command that reports unmatched pathspecs stops
   matching a pathspec that has named a path exactly (`a*c` taken for the file `a*c` leaves out `abc`).
+- **Attributes.** `:(attr:...)` selects by the attributes of the [attributes engine](#attributes-and-line-endings): `name` (set),
+  `-name` (unset), `!name` (unspecified) and `name=value`, several separated by spaces (all must hold). Like git, a value is
+  letters, digits, `,`, `-` and `_` (a backslash quotes any character), and only one `attr:` is allowed. The attributes are
+  those of the work tree, also for `log` and `show` on history. An untracked folder that fails the requirement is not entered
+  (`status`, `clean`, `ls-files -o`), but an ignored one is, as in git. Errors use git's words (`attr spec must not be empty`,
+  `invalid attribute name <name>`, `cannot use '<c>' for value matching`, `Only one 'attr:' specification is allowed.`).
+  `ls-tree` refuses it. `add` and `stash push` read it as git 2.55 does; git 2.43 refuses it there, and pyn follows 2.55.
+  `builtin_objectmode` is not built.
+- **From a file.** `--pathspec-from-file=<file>` (`-` for standard input) with `--pathspec-file-nul` on `add`, `rm`, `reset`,
+  `restore`, `checkout` and `stash push`: one pathspec per line (a line may be C-quoted, and may end in CR), or NUL-separated
+  and unquoted. Pathspec arguments with it, `--pathspec-file-nul` without it, and `--patch` / `--interactive` with it are
+  `fatal` (`128`) with git's words; a blank line is an empty pathspec. Paths in the file are relative to where you stand.
+- **Symbolic links.** `add` refuses a pathspec with a symbolic link on the way (`pathspec '<arg>' is beyond a symbolic link`, `128`).
 
-Not built: `:(attr:...)` (a usage error, `129`, where git reads `.gitattributes`; the attributes engine exists now, see [Attributes and line endings](#attributes-and-line-endings)), `--pathspec-from-file`, the
-`pathspec '<arg>' is beyond a symbolic link` check, and, for `clean`, a `:(glob)` pattern that names folders (it ends in a
-slash: usage error, `129`). On a pyn server `log` sends a literal path to the server, `update`, `lock` and
-`restore <path> <revision>` take exact paths, and `mv` and `commit <paths>` stay literal: they need a server contract change
-to take patterns.
+Not built: `prefix:N` magic (git aborts on it), for `clean` a `:(glob)` pattern that names folders (it ends in a slash:
+usage error, `129`), `commit --pathspec-from-file`, and the `GIT_*_PATHSPECS` settings on a pyn server. On a pyn server `log`
+sends a literal path to the server, `update`, `lock` and `restore <path> <revision>` take exact paths, and `mv` and
+`commit <paths>` stay literal: they need a server contract change to take patterns.
+
+Names in `diff --name-only`, `--name-status`, `--raw`, `--stat`, `--summary` and `log` / `show` with them are quoted as git
+quotes them (`core.quotePath`), and left as they are with `-z`.
 
 ### Commands
 

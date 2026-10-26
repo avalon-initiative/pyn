@@ -354,6 +354,8 @@ enum Command {
     /// Stage changes for the next commit: paths, folders or `.`. Exclusive paths need your lock first.
     Add {
         paths: Vec<String>,
+        #[command(flatten)]
+        pathspec_file: pathspec::PathspecFile,
         /// Stage changes to files that are already tracked, not new files.
         #[arg(short = 'u', long)]
         update: bool,
@@ -418,8 +420,10 @@ enum Command {
     /// with --staged take paths out of the staged changes.
     Restore {
         /// A path and its older revision (or use --source), or with --staged the paths to unstage.
-        #[arg(required_unless_present = "patch")]
+        #[arg(required_unless_present_any = ["patch", "pathspec_from_file"])]
         args: Vec<String>,
+        #[command(flatten)]
+        pathspec_file: pathspec::PathspecFile,
         /// The older revision to restore from, as in `git restore --source`; with --staged on a git repository, a commit.
         #[arg(short = 's', long)]
         source: Option<String>,
@@ -1006,7 +1010,7 @@ fn main() {
         eprintln!("fatal: not a git repository (or any of the parent directories): .git");
         std::process::exit(128);
     }
-    let cli = match Cli::try_parse_from(attached_gpg_keys(attached_pull_rebase(counted_log(
+    let mut cli = match Cli::try_parse_from(attached_gpg_keys(attached_pull_rebase(counted_log(
         numbered_commits(rename::attached(std::env::args_os().collect())),
     )))) {
         Ok(cli) => cli,
@@ -1020,6 +1024,10 @@ fn main() {
             std::process::exit(code);
         }
     };
+    if let Err(e) = expand_pathspec_files(&mut cli.command) {
+        eprintln!("fatal: {e}");
+        std::process::exit(128);
+    }
     if let Command::Add {
         paths,
         update: false,
@@ -1083,6 +1091,38 @@ fn main() {
 }
 
 /// Whether git reports this parser error as fatal (128) rather than as a usage error (129).
+fn expand_pathspec_files(command: &mut Command) -> Result<()> {
+    match command {
+        Command::Add {
+            paths,
+            pathspec_file,
+            patch,
+            interactive,
+            ..
+        } => pathspec_file.expand(
+            paths,
+            (*patch || *interactive).then_some("--interactive/--patch"),
+        ),
+        Command::Restore {
+            args,
+            pathspec_file,
+            patch,
+            ..
+        } => {
+            pathspec_file.expand(args, patch.then_some("--patch"))?;
+            if pathspec_file.pathspec_from_file.is_some() && args.is_empty() {
+                bail!("you must specify path(s) to restore");
+            }
+            Ok(())
+        }
+        Command::Rm(a) => a.pathspec_file.expand(&mut a.paths, None),
+        Command::Reset(a) => a.expand_pathspec_file(),
+        Command::Checkout(a) => a.expand_pathspec_file(),
+        Command::Stash(a) => a.expand_pathspec_file(),
+        _ => Ok(()),
+    }
+}
+
 fn fatal_option_error(e: &clap::Error) -> bool {
     use clap::error::ErrorKind::{
         InvalidSubcommand, InvalidValue, UnknownArgument, ValueValidation,

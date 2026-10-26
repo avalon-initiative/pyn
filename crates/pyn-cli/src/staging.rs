@@ -159,7 +159,7 @@ impl Specs {
             attr: true,
             ..MagicSet::default()
         };
-        let options = (PathspecOptions::default(), refused);
+        let options = (PathspecOptions::default(), refused, None);
         let spec = crate::pathspec::parse(ws, cwd, args, options, false, crate::usage_error)?;
         Ok(Self { spec })
     }

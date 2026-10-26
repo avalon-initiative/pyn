@@ -845,6 +845,7 @@ fn checkout_to(git: &GitHome, cwd: &Path, args: CheckoutArgs) -> Result<()> {
         patch,
         recurse_submodules: _,
         no_recurse_submodules: _,
+        pathspec_file: _,
     } = args;
     if patch {
         let (rev, paths) = patch_target(git, cwd, &names, paths)?;

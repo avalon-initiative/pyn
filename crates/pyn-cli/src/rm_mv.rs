@@ -35,6 +35,8 @@ pub struct RmArgs {
     #[arg(long)]
     pub ignore_unmatch: bool,
     pub paths: Vec<String>,
+    #[command(flatten)]
+    pub pathspec_file: crate::pathspec::PathspecFile,
 }
 
 type State = BTreeMap<String, FileState>;

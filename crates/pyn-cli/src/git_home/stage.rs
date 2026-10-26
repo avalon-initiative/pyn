@@ -12,7 +12,7 @@ use pyn_gitwork::{
 };
 use pyn_object::{FileMode, Kind as ObjectKind, ObjectId, Signature, TreeEntry, encode_tree};
 
-use super::{GitHome, Refused, path_string};
+use super::{Exits, GitHome, Refused, path_string};
 
 pub(super) const GITLINK: u32 = 0o160000;
 const LOCAL_ONLY: &str = ".pyn/local_only";
@@ -117,11 +117,23 @@ impl GitHome {
         prefer_cwd: bool,
         unsupported: MagicSet,
     ) -> Result<Pathspec> {
+        let wants_attrs = args
+            .iter()
+            .any(|a| a.starts_with(':') && a.contains("attr"));
+        let attributes = if wants_attrs {
+            Some(self.repo.attributes()?)
+        } else {
+            None
+        };
         crate::pathspec::parse(
             &self.ws,
             cwd,
             args,
-            (crate::pathspec::options_from_env()?, unsupported),
+            (
+                crate::pathspec::options_from_env()?,
+                unsupported,
+                attributes,
+            ),
             prefer_cwd,
             super::plumbing::usage,
         )
@@ -158,7 +170,7 @@ fn require_seen<'a>(
     for n in 0..spec.len() {
         let text = spec.item_path(n);
         if spec.item_is_exclude(n)
-            || text.is_empty()
+            || (text.is_empty() && !spec.item_has_attr(n))
             || seen.clone().any(|p| spec.item_match(n, p).is_some())
         {
             continue;
@@ -597,21 +609,51 @@ pub(super) fn untracked_files(git: &GitHome, index: &Index) -> Result<Vec<Vec<u8
         .collect())
 }
 
+/// Whether a folder on the way to `text` is a symbolic link in the work tree.
+fn beyond_symlink(git: &GitHome, text: &[u8]) -> Result<bool> {
+    let root = git.repo.root()?;
+    Ok(text
+        .iter()
+        .enumerate()
+        .filter(|(i, b)| **b == b'/' && *i > 0)
+        .any(|(i, _)| {
+            std::fs::symlink_metadata(fs_path(root, &text[..i]))
+                .is_ok_and(|m| m.file_type().is_symlink())
+        }))
+}
+
 /// `pyn add`: returns whether some named path was refused (the exit status is then 1, as in git).
 pub fn add(git: &GitHome, cwd: &Path, options: &AddOptions) -> Result<bool> {
     let opened = git.open_index()?;
     let specs = Specs {
-        spec: git.pathspec_without(
-            cwd,
-            &options.paths,
-            false,
-            MagicSet {
-                attr: true,
-                ..MagicSet::default()
-            },
-        )?,
+        spec: git.pathspec(cwd, &options.paths, false)?,
     };
+    for n in 0..specs.spec.len() {
+        if beyond_symlink(git, specs.spec.item_path(n))? {
+            bail!(
+                "pathspec '{}' is beyond a symbolic link",
+                String::from_utf8_lossy(specs.spec.original(n))
+            );
+        }
+    }
     let plan = plan(git, &opened.index, &specs, options.update, options.force)?;
+    if options.update {
+        let tracked = opened.index.entries.iter().map(|e| e.path.as_slice());
+        // git 2.55 words an attr pathspec that takes nothing from the index differently
+        if let Some(n) = specs
+            .spec
+            .unmatched(tracked)
+            .into_iter()
+            .find(|n| specs.spec.item_has_attr(*n))
+        {
+            let arg = String::from_utf8_lossy(specs.spec.original(n));
+            return Err(Exits(
+                128,
+                format!("pathspec '{arg}' did not match any file(s) known to git"),
+            )
+            .into());
+        }
+    }
     require_seen(
         git,
         &specs.spec,

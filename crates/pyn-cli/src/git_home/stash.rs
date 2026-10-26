@@ -37,6 +37,19 @@ pub struct StashArgs {
     push: PushArgs,
 }
 
+impl StashArgs {
+    /// Fills in the pathspecs a `--pathspec-from-file` names, for `stash push`.
+    pub fn expand_pathspec_file(&mut self) -> anyhow::Result<()> {
+        let push = match &mut self.action {
+            Some(StashAction::Push(push)) => push,
+            None => &mut self.push,
+            Some(_) => return Ok(()),
+        };
+        let conflict = push.patch.then_some("--patch");
+        push.pathspec_file.expand(&mut push.paths, conflict)
+    }
+}
+
 #[derive(Debug, Args, Default)]
 pub(super) struct PushArgs {
     /// Stash untracked files too (they are removed from the work tree).
@@ -57,6 +70,8 @@ pub(super) struct PushArgs {
     /// Stash only these paths (literal, not patterns).
     #[arg(last = true)]
     pub(super) paths: Vec<String>,
+    #[command(flatten)]
+    pub(super) pathspec_file: crate::pathspec::PathspecFile,
 }
 
 #[derive(Debug, Subcommand)]
@@ -311,7 +326,7 @@ impl Scope {
             .chain(extra.iter().map(Vec::as_slice));
         let mut missing = Vec::new();
         for n in self.spec.unmatched(known) {
-            if self.spec.item_path(n).is_empty() {
+            if self.spec.item_path(n).is_empty() && !self.spec.item_has_attr(n) {
                 continue;
             }
             missing.push(self.spec.item_form(n));

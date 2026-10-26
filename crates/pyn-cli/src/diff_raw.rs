@@ -27,7 +27,7 @@ fn plain_change(p: &Pair) -> bool {
     p.detached && p.moved.is_none() && p.old.is_some() && p.new.is_some()
 }
 
-pub(crate) fn record(p: &Pair, o: &Opts) -> String {
+pub(crate) fn record(p: &Pair, o: &Opts, quote: &dyn Fn(&str) -> String) -> String {
     let mode = |b: &Option<Blob>| b.as_ref().map_or("000000", |b| b.mode()).to_string();
     let (a, b) = (p.old.as_ref(), p.new.as_ref());
     let head = format!(
@@ -40,8 +40,12 @@ pub(crate) fn record(p: &Pair, o: &Opts) -> String {
     );
     let (sep, end) = if o.nul { ('\0', '\0') } else { ('\t', '\n') };
     match &p.moved {
-        Some(_) => format!("{head}{sep}{}{sep}{}{end}", p.old_path, p.new_path),
-        None if p.detached && p.old.is_some() => format!("{head}{sep}{}{end}", p.old_path),
-        None => format!("{head}{sep}{}{end}", p.new_path),
+        Some(_) => format!(
+            "{head}{sep}{}{sep}{}{end}",
+            quote(&p.old_path),
+            quote(&p.new_path)
+        ),
+        None if p.detached && p.old.is_some() => format!("{head}{sep}{}{end}", quote(&p.old_path)),
+        None => format!("{head}{sep}{}{end}", quote(&p.new_path)),
     }
 }
