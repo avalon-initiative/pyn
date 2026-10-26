@@ -19,6 +19,7 @@ page records the current state. Provisional: it reflects the code at the time of
 | Repository policy cache | Per process | Revalidated against the head of `.pyn/pyn.toml` on each lookup (#181). |
 | Setup settings | Per process | Re-read from the database every minute (#182). |
 | Lease and rate-limit clock | Database `now()` | With Postgres, expiry is judged by the database clock, so skewed copies agree; the in-memory stores use the process clock. Other expiries (sessions, invites, tokens) still use the process clock, so keep the copies in sync (NTP). |
+| Webhook delivery | `webhook_events` and `webhook_deliveries` tables | Events are queued in the transaction of the change. Each copy's delivery loop claims due rows with row locks and a two-minute lease, so no delivery is sent by two copies at once; a copy that dies mid-send loses its lease and another picks the row up. Due times, leases, retention and the throttle for `owner.limit_reached` use the database `now()`. A crash between a send and its recording can send twice, which is why receivers deduplicate on `Pyn-Delivery` ([events](events.md#receiving-events)). `PYN_WEBHOOK_WORKER=false` keeps a copy out of delivery (for example web-only copies); at least one copy must run it, or events queue and nothing is sent. The loop and its outbound-request cap (`PYN_WEBHOOKS_CONCURRENCY`) are per process, so total concurrency is the cap times the copies delivering. |
 | Password hashing limit | Per process | Holds no correctness state. |
 
 ## Not safe yet

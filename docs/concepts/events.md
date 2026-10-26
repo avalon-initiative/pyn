@@ -31,6 +31,41 @@ when the unverified name is reserved, so abandoned sign-ups never reach receiver
 before it finishes (for example, the creator is no longer an organization member) raises `repository.deleted` after its
 `repository.created`. Ensuring that a user record exists for a development identity or a token is not an account creation.
 
+## Receiving events
+
+A receiver does four things with every request, in this order. [Delivery](webhooks.md#delivery) lists the headers.
+
+1. **Verify the signature** on the raw body, before parsing it. Read `t` and every `v1` from `Pyn-Signature`, compute the
+   HMAC-SHA256 of `<t>.<raw body>` keyed with your secret text (`whsec_...`) and compare it with each `v1` in constant
+   time; one match is enough. During a [rotation](webhooks.md#secrets) there are two `v1` values, so a receiver that
+   knows either secret verifies. Answer `401` and do not process the event when nothing matches.
+2. **Apply the replay window.** Reject a request whose `t` is more than 5 minutes from your clock, in either direction,
+   so a captured request cannot be replayed later. Every retry is signed again with a fresh `t`, so a late retry still
+   passes. Keep your clock synchronised (NTP).
+3. **Deduplicate on the delivery id.** Delivery is at least once: a retry after a timeout, a lost answer, or a manual
+   [redeliver](webhooks.md#deliveries-and-redelivery) sends the same event again with the same `Pyn-Delivery` value.
+   Store the ids you have processed and acknowledge a repeat without acting on it. The delivery id is per subscription;
+   the envelope `id` is per event and identical across subscriptions.
+4. **Acknowledge quickly.** Answer any `2xx` within a few seconds and do the work afterwards; the sender gives up on a
+   request after 10 seconds and counts it as a failed attempt. Acknowledge types you do not know (see below).
+
+Order is not guaranteed: a retried event can arrive after a newer one. Use `created_at` to order what matters.
+
+```python
+import hashlib, hmac, time
+
+def verify(header: str, body: bytes, secrets: list[str], window: int = 300) -> bool:
+    parts = dict(p.split("=", 1) for p in header.split(",") if "=" in p and not p.startswith("v1="))
+    tags = [p[3:] for p in header.split(",") if p.startswith("v1=")]
+    if abs(time.time() - int(parts["t"])) > window:
+        return False
+    for secret in secrets:
+        expected = hmac.new(secret.encode(), f"{parts['t']}.".encode() + body, hashlib.sha256).hexdigest()
+        if any(hmac.compare_digest(expected, tag) for tag in tags):
+            return True
+    return False
+```
+
 ## Open types and versioning
 
 Event types are an open set. A receiver must ignore a type it does not know (acknowledge it and do nothing) instead of
