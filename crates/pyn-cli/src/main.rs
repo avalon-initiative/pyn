@@ -1009,6 +1009,12 @@ fn main() {
         eprintln!("hint: \"git config advice.addEmptyPathspec false\"");
         std::process::exit(0);
     }
+    if let Command::Status(args) = &cli.command
+        && let Err((code, message)) = args.check_porcelain()
+    {
+        eprintln!("{message}");
+        std::process::exit(code);
+    }
     if let Command::Rm(args) = &cli.command
         && args.paths.is_empty()
     {

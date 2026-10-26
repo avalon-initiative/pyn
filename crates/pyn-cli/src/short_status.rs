@@ -20,8 +20,7 @@ pub struct StatusArgs {
         long,
         num_args = 0..=1,
         require_equals = true,
-        default_missing_value = "v1",
-        value_parser = ["v1"]
+        default_missing_value = "v1"
     )]
     pub porcelain: Option<String>,
     /// With `--short` or `--porcelain`, a `## <branch>...<upstream>` line first.
@@ -32,6 +31,17 @@ pub struct StatusArgs {
 }
 
 impl StatusArgs {
+    /// Git's check of the version: `v1` or `1`, an unknown one is fatal (128), `v2` is not built (usage, 129).
+    pub fn check_porcelain(&self) -> Result<(), (i32, String)> {
+        match self.porcelain.as_deref() {
+            None | Some("v1" | "1") => Ok(()),
+            Some(v @ ("v2" | "2")) => {
+                Err((129, format!("error: porcelain version '{v}' is not built")))
+            }
+            Some(v) => Err((128, format!("fatal: unsupported porcelain version '{v}'"))),
+        }
+    }
+
     pub fn format(&self) -> Format {
         match (&self.porcelain, self.short) {
             (Some(_), _) => Format::Porcelain,

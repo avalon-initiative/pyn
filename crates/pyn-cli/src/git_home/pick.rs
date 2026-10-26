@@ -383,6 +383,7 @@ pub(super) fn merge_pick(
     verb: Verb,
     id: &ObjectId,
     mainline: Option<u32>,
+    quiet_when_clean: bool,
 ) -> Result<Merged> {
     let picked = git.repo.commit(id)?;
     let parent = parent_of(git, id, mainline)?;
@@ -430,6 +431,7 @@ pub(super) fn merge_pick(
         theirs: &theirs_label,
         orig_head: None,
         strict_index: false,
+        quiet_when_clean,
     };
     let applied = match apply_merge(git, &opened, Some(&ours_tree), &merged, &landing)? {
         Ok(applied) => applied,
@@ -454,7 +456,7 @@ fn apply(git: &GitHome, opts: &Opts, verb: Verb, id: &ObjectId) -> Result<Outcom
         label,
         ours_tree,
         applied,
-    } = merge_pick(git, verb, id, opts.mainline)?;
+    } = merge_pick(git, verb, id, opts.mainline, false)?;
     let committer = identity(git, "committer")?;
     let mut message = match verb {
         Verb::Pick => picked.message.clone(),

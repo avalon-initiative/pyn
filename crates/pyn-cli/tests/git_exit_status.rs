@@ -158,8 +158,36 @@ const DIVERGENT: &[(&str, &str)] = &[
         "docs: Conventions, `checkout -B` is not built, so the combination is 129 where git says 128",
     ),
     (
-        "Dirty: status --porcelain=v9",
-        "docs: Conventions, `status --porcelain` takes only v1, so any other version is 129 where git says 128 for an unknown one",
+        "Dirty: rev-parse --bogus",
+        "docs: Conventions, `rev-parse` echoes an unknown option as git does not; here it is a usage error (129)",
+    ),
+    (
+        "Outside: shortlog HEAD",
+        "docs: Conventions, `shortlog` outside a repository is a fatal (128) where git prints a usage error (129)",
+    ),
+    (
+        "Dirty: name-rev",
+        "docs: Conventions, `name-rev` with no commit is a usage error (129) where git prints nothing and exits 0",
+    ),
+    (
+        "Clean: merge --squash clean",
+        "docs: Merge on a git home, `--squash` is not built (129)",
+    ),
+    (
+        "Dirty: branch -vv",
+        "docs: Branches on a git home, `-vv` is not built (129)",
+    ),
+    (
+        "Dirty: config user.name",
+        "docs: Daily set `git config`, subcommands instead of flags (129)",
+    ),
+    (
+        "Dirty: config --list",
+        "docs: Daily set `git config`, subcommands instead of flags (129)",
+    ),
+    (
+        "Dirty: config a.b c",
+        "docs: Daily set `git config`, subcommands instead of flags (129)",
     ),
     (
         "Outside: diff",
@@ -195,6 +223,8 @@ struct Run {
     code: i32,
     stdout: bool,
     stderr: bool,
+    /// The first lines of both streams, for the failure message only.
+    shown: String,
 }
 
 fn run(bin: &str, args: &[&str], cwd: &Path, home: &Path, ceiling: &Path) -> Run {
@@ -227,7 +257,22 @@ fn run(bin: &str, args: &[&str], cwd: &Path, home: &Path, ceiling: &Path) -> Run
         code: out.status.code().unwrap_or(-1),
         stdout: !out.stdout.is_empty(),
         stderr: !out.stderr.is_empty(),
+        shown: format!(
+            "stdout {:?} stderr {:?}",
+            first_line(&out.stdout),
+            first_line(&out.stderr)
+        ),
     }
+}
+
+fn first_line(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes)
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .chars()
+        .take(80)
+        .collect()
 }
 
 /// What differs between git and pyn for this case, if anything.
@@ -280,7 +325,14 @@ fn compare(c: &Case) -> Option<String> {
             git.stderr, ours.stderr
         ));
     }
-    (!diffs.is_empty()).then(|| diffs.join(", "))
+    (!diffs.is_empty()).then(|| {
+        format!(
+            "{} [git: {}; pyn: {}]",
+            diffs.join(", "),
+            git.shown,
+            ours.shown
+        )
+    })
 }
 
 fn check(group: Vec<Case>) {
@@ -309,6 +361,8 @@ fn groups() -> Vec<(&'static str, Vec<Case>)> {
             vec![
                 case(Dirty, "status --bogus"),
                 case(Dirty, "status --porcelain=v9"),
+                case(Dirty, "status --porcelain=1"),
+                case(Dirty, "status --porcelain=v1"),
                 case(Dirty, "status -s --bogus"),
                 case(Outside, "status"),
             ],
@@ -858,6 +912,177 @@ fn groups() -> Vec<(&'static str, Vec<Case>)> {
             ],
         ),
         (
+            "plumbing",
+            vec![
+                case(Dirty, "rev-parse"),
+                case(Dirty, "rev-parse HEAD"),
+                case(Dirty, "rev-parse nosuchrev"),
+                case(Dirty, "rev-parse --verify nosuchrev"),
+                case(Dirty, "rev-parse --verify --quiet nosuchrev"),
+                case(Dirty, "rev-parse --verify HEAD HEAD~1"),
+                case(Dirty, "rev-parse --bogus"),
+                case(Dirty, "rev-parse --show-toplevel"),
+                case(Dirty, "rev-parse --git-dir"),
+                case(Dirty, "rev-parse --is-inside-work-tree"),
+                case(Dirty, "rev-parse --abbrev-ref HEAD"),
+                case(Outside, "rev-parse HEAD"),
+                case(Outside, "rev-parse --show-toplevel"),
+                case(Dirty, "ls-files"),
+                case(Dirty, "ls-files --bogus"),
+                case(Dirty, "ls-files nosuchpath"),
+                case(Dirty, "ls-files --error-unmatch nosuchpath"),
+                case(Dirty, "ls-files -o"),
+                case(Outside, "ls-files"),
+                case(Dirty, "ls-tree HEAD"),
+                case(Dirty, "ls-tree"),
+                case(Dirty, "ls-tree nosuchrev"),
+                case(Dirty, "ls-tree --bogus HEAD"),
+                case(Dirty, "ls-tree HEAD nosuchpath"),
+                case(Dirty, "ls-tree README.md"),
+                case(Outside, "ls-tree HEAD"),
+                case(Dirty, "cat-file"),
+                case(Dirty, "cat-file -t HEAD"),
+                case(Dirty, "cat-file -p HEAD"),
+                case(Dirty, "cat-file -t nosuchrev"),
+                case(Dirty, "cat-file -e nosuchrev"),
+                case(Dirty, "cat-file -e HEAD"),
+                case(Dirty, "cat-file --bogus HEAD"),
+                case(Dirty, "cat-file blob HEAD"),
+                case(Dirty, "cat-file bogus HEAD"),
+                case(Dirty, "cat-file -s HEAD:README.md"),
+                case(Outside, "cat-file -t HEAD"),
+                case(Dirty, "show-ref"),
+                case(Dirty, "show-ref --bogus"),
+                case(Dirty, "show-ref nosuchref"),
+                case(Dirty, "show-ref --verify nosuchref"),
+                case(Dirty, "show-ref --verify --quiet refs/heads/nosuch"),
+                case(Dirty, "show-ref --exists refs/heads/nosuch"),
+                case(Dirty, "show-ref --heads"),
+                case(Outside, "show-ref"),
+                case(Dirty, "shortlog"),
+                case(Dirty, "shortlog -s HEAD"),
+                case(Dirty, "shortlog nosuchrev"),
+                case(Dirty, "shortlog --bogus"),
+                case(Outside, "shortlog HEAD"),
+                case(Dirty, "describe"),
+                case(Dirty, "describe --always"),
+                case(Dirty, "describe nosuchrev"),
+                case(Dirty, "describe --bogus"),
+                case(Outside, "describe"),
+                case(Dirty, "name-rev"),
+                case(Dirty, "name-rev HEAD"),
+                case(Dirty, "name-rev nosuchrev"),
+                case(Dirty, "name-rev --bogus HEAD"),
+                case(Outside, "name-rev HEAD"),
+            ],
+        ),
+        (
+            "ls-remote",
+            vec![
+                case(Dirty, "ls-remote"),
+                case(Dirty, "ls-remote --bogus"),
+                case(Dirty, "ls-remote nosuchremote"),
+                case(Dirty, "ls-remote /nonexistent/pyn-oracle.git"),
+                case(Outside, "ls-remote"),
+                case(Outside, "ls-remote /nonexistent/pyn-oracle.git"),
+            ],
+        ),
+        (
+            "success-streams",
+            vec![
+                case(Clean, "branch newb"),
+                case(Clean, "branch -d clean"),
+                case(Clean, "branch -D clean"),
+                case(Clean, "branch -m clean renamed"),
+                case(Clean, "switch clean"),
+                case(Clean, "switch -c newb"),
+                case(Clean, "checkout clean"),
+                case(Clean, "checkout -b newb"),
+                case(Clean, "checkout --detach"),
+                case(Clean, "checkout HEAD -- clean"),
+                case(Clean, "tag t1"),
+                case(Clean, "tag -a -m msg t1"),
+                case(Clean, "tag -d nosuch"),
+                with(Clean, &[&["tag,t1"]], "tag -d t1"),
+                with(Clean, &[&["tag,t1"]], "tag"),
+                case(Clean, "merge clean"),
+                case(Clean, "merge --no-ff -m msg clean"),
+                case(Clean, "merge --abort"),
+                case(Clean, "merge --squash clean"),
+                case(Clean, "reset"),
+                case(Clean, "reset --hard"),
+                case(Clean, "reset --soft HEAD~1"),
+                case(Clean, "reset --mixed HEAD~1"),
+                case(Dirty, "reset"),
+                case(Dirty, "reset --hard"),
+                case(Dirty, "reset HEAD README.md"),
+                case(Dirty, "add README.md"),
+                case(Dirty, "add -A"),
+                case(Dirty, "add -n ."),
+                case(Dirty, "add -v ."),
+                case(Dirty, "rm --cached README.md"),
+                case(Dirty, "rm -f README.md"),
+                case(Dirty, "rm -n README.md"),
+                case(Dirty, "mv README.md moved.md"),
+                case(Dirty, "mv -v README.md moved.md"),
+                case(Dirty, "restore README.md"),
+                case(Dirty, "restore --staged staged.txt"),
+                case(Dirty, "commit -m msg"),
+                case(Dirty, "commit -q -m msg"),
+                case(Dirty, "commit -a -m msg"),
+                case(Dirty, "commit --amend -m msg"),
+                case(Clean, "commit --allow-empty -m msg"),
+                case(Dirty, "stash"),
+                case(Dirty, "stash push -u"),
+                case(Dirty, "stash list"),
+                case(Dirty, "stash clear"),
+                with(Dirty, &[&["stash"]], "stash pop"),
+                with(Dirty, &[&["stash"]], "stash apply"),
+                with(Dirty, &[&["stash"]], "stash drop"),
+                with(Dirty, &[&["stash"]], "stash show"),
+                with(Dirty, &[&["stash"]], "stash list"),
+                case(Dirty, "clean -n"),
+                case(Dirty, "clean -f"),
+                case(Dirty, "clean -fd"),
+                case(Clean, "cherry-pick clean"),
+                case(Clean, "revert HEAD"),
+                case(Clean, "rebase clean"),
+                case(Clean, "rebase --abort"),
+                case(Clean, "cherry-pick --abort"),
+                case(Clean, "revert --abort"),
+                case(Dirty, "status"),
+                case(Dirty, "status -s"),
+                case(Dirty, "status --porcelain"),
+                case(Dirty, "status -sb"),
+                case(Clean, "status"),
+                case(Dirty, "log -1"),
+                case(Dirty, "log --oneline"),
+                case(Dirty, "show HEAD"),
+                case(Dirty, "diff"),
+                case(Dirty, "diff --stat"),
+                case(Dirty, "diff --cached"),
+                case(Dirty, "reflog"),
+                case(Dirty, "reflog expire --all"),
+                case(Dirty, "branch"),
+                case(Dirty, "branch -vv"),
+                case(Dirty, "branch --show-current"),
+                case(Dirty, "remote"),
+                case(Dirty, "remote add origin /nonexistent/pyn-oracle.git"),
+                with(
+                    Dirty,
+                    &[&["remote,add,origin,/nonexistent/pyn-oracle.git"]],
+                    "remote remove origin",
+                ),
+                case(Dirty, "config user.name"),
+                case(Dirty, "config --list"),
+                case(Dirty, "config a.b c"),
+                case(Dirty, "grep README"),
+                case(Dirty, "grep nosuchpattern"),
+                case(Dirty, "grep -q README"),
+                case(Dirty, "grep -c README"),
+            ],
+        ),
+        (
             "blame",
             vec![
                 case(Dirty, "blame"),
@@ -930,7 +1155,10 @@ group_tests!(
     grep,
     blame,
     bisect,
-    patch_exchange
+    patch_exchange,
+    plumbing,
+    ls_remote,
+    success_streams
 );
 
 #[test]

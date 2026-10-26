@@ -366,9 +366,13 @@ fn the_branch_line_without_an_upstream_or_a_branch_matches_git() {
 #[test]
 fn unsupported_variants_are_usage_errors() {
     let f = changed("sha1");
-    for args in [&["-z"][..], &["--porcelain=v2"], &["--porcelain=v3"]] {
+    for (args, status) in [
+        (&["-z"][..], 129),
+        (&["--porcelain=v2"], 129),
+        (&["--porcelain=v3"], 128),
+    ] {
         let (code, out, err) = f.pyn(&f.repo, args);
-        assert_eq!(code, 129, "{args:?}: {out}{err}");
+        assert_eq!(code, status, "{args:?}: {out}{err}");
         assert!(out.is_empty(), "{args:?}: {out}");
     }
 }

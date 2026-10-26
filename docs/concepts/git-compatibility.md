@@ -40,7 +40,11 @@ an unknown flag on a supported command (raised by the argument parser, which nam
 Messages that git writes to standard output (for example the nothing-to-commit notice and the unmerged-path listing of a
 conflicted commit) go to standard output, and errors to standard error. `fetch`, `pull` and `push` outside any repository fail
 with `fatal: not a git repository (or any of the parent directories): .git` (`128`). The statuses are checked against git by
-`crates/pyn-cli/tests/git_exit_status.rs`, whose allow-list names the differences that remain. Where git exits `128` for a bad
+`crates/pyn-cli/tests/git_exit_status.rs`, which runs the same command on twin repositories under git and pyn, for error
+paths and for successful runs of the supported commands, and compares the exit status and whether standard output and
+standard error carry anything (not the text); its allow-list names the differences that remain. During a rebase, a replayed
+commit that merges cleanly prints no `Auto-merging` line, as git (a merge commit recreated by `--rebase-merges` does); a
+conflicted one prints it with the `CONFLICT` lines on standard output. Where git exits `128` for a bad
 value of an option of `log` or `show` (a missing `--since` value), and `255` for a failed
 `reflog expire` or `reflog delete`, pyn does the same.
 
@@ -50,8 +54,13 @@ Deliberate status differences that remain:
   used together (`128`).
 - **An unknown option of `log`, `show` or `reflog`** is a usage error (`129`); git exits `128`. The parser cannot tell an
   option git lacks from one pyn does not build, and the unbuilt ones are `129` by design.
-- **`status --porcelain=<version>`** takes only `v1`; `v2` is unbuilt and an unknown version such as `v9` (git: `128`) is
-  the same parser rejection, a usage error (`129`).
+- **`status --porcelain=<version>`** takes `v1` (or `1`); an unknown version such as `v9` is `fatal: unsupported porcelain
+  version` (`128`), as git, and `v2` is not built, a usage error (`129`).
+- **Inspection commands**: `rev-parse` with an option it does not know is a usage error (`129`), where git echoes the option
+  and exits `0`; `name-rev` with no commit is `129`, where git prints nothing and exits `0`; `shortlog` outside a repository
+  is `fatal` (`128`), where git prints a usage error (`129`).
+- **Unbuilt flags** (`merge --squash`, `branch -vv`) and the flag forms of `config` (`--list`, `<key>`, `<key> <value>`; use the
+  `list`, `get` and `set` subcommands) are usage errors (`129`) where git succeeds.
 - **`pyn diff` outside a repository** compares two existing paths as `--no-index` does, as git does; anything else asks for a
   server (`128`), where git prints its `--no-index` usage (`129`).
 

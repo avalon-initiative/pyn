@@ -1513,7 +1513,7 @@ fn replay(git: &GitHome, state: &State, item: &Item) -> Result<()> {
         ours_tree,
         applied,
         ..
-    } = merge_pick(git, Verb::Pick, id, None)?;
+    } = merge_pick(git, Verb::Pick, id, None, true)?;
     let subject = subject_of(&picked.message);
     let conflicted = &applied.conflicted;
     if item.cmd.melds() {
@@ -1786,6 +1786,7 @@ fn do_merge(git: &GitHome, state: &State, item: &Item) -> Result<()> {
         theirs: theirs_name,
         orig_head: None,
         strict_index: false,
+        quiet_when_clean: false,
     };
     let applied = match apply_merge(git, &opened, Some(&ours_tree), &merged, &landing)? {
         Ok(applied) => applied,

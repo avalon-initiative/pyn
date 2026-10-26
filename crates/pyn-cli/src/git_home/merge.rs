@@ -455,6 +455,7 @@ fn true_merge(
         theirs: spec,
         orig_head: Some(ours),
         strict_index: true,
+        quiet_when_clean: false,
     };
     let applied = match apply_merge(git, opened, Some(&ours_tree), &merged, &landing)? {
         Ok(applied) => applied,
@@ -602,6 +603,8 @@ pub(super) struct Landing<'a> {
     pub orig_head: Option<ObjectId>,
     /// A merge needs the whole index to equal `HEAD`; a pick only the paths it touches.
     pub strict_index: bool,
+    /// A clean merge prints nothing (a rebase); a conflicted one lists the line-merged paths.
+    pub quiet_when_clean: bool,
 }
 
 pub(super) struct Applied {
@@ -691,8 +694,13 @@ pub(super) fn apply_merge(
     }
     let mut entries: Entries = entries_of(&opened.index);
     let mut conflicted: Vec<Vec<u8>> = Vec::new();
+    let notes = !landing.quiet_when_clean
+        || merged
+            .paths
+            .values()
+            .any(|r| matches!(r, Resolved::Conflict(_)));
     for (path, resolved) in &merged.paths {
-        if merged.line_merged.contains(path) {
+        if notes && merged.line_merged.contains(path) {
             say(&format!("Auto-merging {}", path_string(path)));
         }
         match resolved {
