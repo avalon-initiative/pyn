@@ -252,6 +252,10 @@ enum Command {
     Fsck(git_home::FsckArgs),
     /// Remove unreachable loose objects (a git repository only).
     Prune(git_home::PruneArgs),
+    /// Clean up and optimize the repository's storage (a git repository only).
+    Gc(git_home::GcArgs),
+    /// Pack loose refs into one file (a git repository only).
+    PackRefs(git_home::PackRefsArgs),
     /// Pack objects into packs and drop what they replace (a git repository only).
     Repack(git_home::RepackArgs),
     /// Summarize the history by author (a git repository only).
@@ -2012,6 +2016,8 @@ fn run(cli: Cli) -> Result<()> {
         | Command::CountObjects(_)
         | Command::Fsck(_)
         | Command::Prune(_)
+        | Command::Gc(_)
+        | Command::PackRefs(_)
         | Command::Repack(_)
         | Command::Shortlog(_)
         | Command::Describe(_)

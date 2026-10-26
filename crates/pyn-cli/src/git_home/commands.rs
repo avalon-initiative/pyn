@@ -140,6 +140,8 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
         Command::CountObjects(args) => super::count_objects::count_objects(git, args),
         Command::Fsck(args) => super::fsck::fsck(git, args),
         Command::Prune(args) => super::prune::prune(git, args),
+        Command::Gc(args) => super::gc::gc(git, args),
+        Command::PackRefs(args) => super::pack_refs::pack_refs(git, args),
         Command::Repack(args) => super::repack::repack(git, args),
         Command::Shortlog(args) => super::shortlog::shortlog(git, cwd, args),
         Command::Describe(args) => super::describe::describe(git, cwd, args),
@@ -219,7 +221,9 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
                     file,
                     flags,
                 },
-            )
+            )?;
+            super::gc::auto(git);
+            Ok(())
         }
         Command::Restore {
             args,

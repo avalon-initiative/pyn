@@ -181,15 +181,16 @@ Commands people reach for that are not in the daily set.
 | `git rev-parse`, `git show-ref`, `git shortlog`, `git describe`, `git name-rev` | the same names on a git home | git home only | See [Inspection commands](#inspection-commands). On a pyn server they fail with `fatal: not a git repository (or any of the parent directories): .git` (`128`). |
 | `git config --list`, `--get <key>`, `<key> <value>` | `pyn config list`, `get`, `set` | different | Subcommands instead of flags. `--global` and `--local` are accepted where they apply (`set` takes `--global` only; the default is the workspace). Keys are pyn's own. `pyn config init` is pyn only: it prompts for the user settings. |
 | `git config --unset`, `-e`, `--system`, `--file` | none | unsupported | Usage error (`129`). |
-| `git fsck` | `pyn verify [<path>]` | different | Checks every revision's hash and its link to the one before, and the audit log's chain. Silent and exit 0 when intact, as git; otherwise a `PROBLEM`, `WHAT`, `PATH` table and exit 1. `-v` / `--verbose` also prints what was checked. See [integrity](integrity.md). |
+| `git fsck` | `pyn verify [<path>]` | different | Checks every revision's hash and its link to the one before, and the audit log's chain. Silent and exit 0 when intact, as git; otherwise a `PROBLEM`, `WHAT`, `PATH` table and exit 1. `-v` / `--verbose` also prints what was checked. See [integrity](integrity.md). On a git home `pyn fsck` is git's command; see [Storage maintenance](#storage-maintenance). |
 | `git reflog [show\|list\|exists\|expire\|delete]` | `pyn reflog ...` on a git home | git home only | See [Reflogs](#reflogs). On a pyn server it prints the git-command message; the closest analogue there is `pyn audit`, an append-only log of lock, revision and access events, filtered with `--path`, `--actor`, `--action`, `--before`, `--limit` and permission-gated (`view_audit`). |
+| `git count-objects`, `git fsck`, `git prune`, `git repack`, `git gc`, `git pack-refs` | the same names on a git home | git home only | See [Storage maintenance](#storage-maintenance). On a pyn server they fail with `fatal: not a git repository (or any of the parent directories): .git` (`128`). |
 | `git grep [<options>] [-e] <pattern> [<rev>...] [[--] <path>...]` | `pyn grep ...` on a git home | git home only | See [Grep](#grep). Searches the tracked files of the work tree, the index (`--cached`) or the commits named; `-n -i -w -l -c -v -q -h -H -a -I -E -G -F`, `-e` (repeatable), `--and`, `--or`, `--not` and parentheses, pathspecs after the revisions or `--`. On a pyn server or local-store workspace it says it needs a git repository (`1`). |
 | `git bisect start [--term-(bad\|new)=<term> --term-(good\|old)=<term>] [--no-checkout] [--first-parent] [<bad> [<good>...]] [--] [<pathspec>...]`, `good`\|`old`, `bad`\|`new`, `skip`, `next`, `reset`, `run`, `log`, `replay`, `terms` | `pyn bisect ...` on a git home | git home only | See [Bisect](#bisect). Git's search, output, exit statuses and `.git` state, so git and pyn can continue each other's bisection; `visualize` and `view` are not built (`129`). On a pyn server or local-store workspace it fails with `fatal: not a git repository (or any of the parent directories): .git` (`128`). |
 | `git blame [-L <range>] [-w] [<options>] [<rev>] [--] <file>`, `git annotate` | `pyn blame ...`, `pyn annotate ...` on a git home | git home only | See [Blame](#blame). Git's lines byte for byte: the default, `-e`, `-s`, `-f`, `-n`, `-l`, `-t`, `-b`, `--root`, `--abbrev`, `--date`, `-p`, `--line-porcelain`, `-L` ranges, `<rev>`, `<a>..<b>` and `^<rev>`. `-M`, `-C` and `--incremental` are usage errors (`129`). On a pyn server or local-store workspace it says it needs a git repository (`1`). |
 | `git submodule` | none | unsupported | Submodule lifecycle commands are not built. On a git home, `status` and `diff` inspect recorded gitlinks and initialized submodule checkouts without changing them; see [On a git home](#on-a-git-home). |
 | `git worktree add\|list\|lock\|unlock\|move\|prune\|remove\|repair` | `pyn worktree ...` on a git home | git home only | See [Linked work trees](#linked-work-trees). On a pyn server it prints `pyn: 'worktree' manages a git repository's work trees, and this is not one` (`1`). |
 | `git format-patch`, `git apply`, `git am` | the same names on a git home | git home only | See [Patches](#patches). On a pyn server `format-patch` and `am` fail with `fatal: not a git repository (or any of the parent directories): .git` (`128`), as does `apply`, which git would run outside a repository too. |
-| `git archive`, `git bundle`, `git notes`, `git gc`, `git fsck` | none | unsupported | `pyn: '<cmd>' is not a pyn command` (`1`). Only the commands in the git-only list print the "git command pyn does not support yet" message, so these read as unknown until that list is widened (#223). |
+| `git archive`, `git bundle`, `git notes` | none | unsupported | `pyn: '<cmd>' is not a pyn command` (`1`). Only the commands in the git-only list print the "git command pyn does not support yet" message, so these read as unknown until that list is widened (#223). |
 
 ## Branching and merging
 
@@ -294,7 +295,8 @@ applied.
 | `-v`, `-q` | `-v` also prints `= [up to date]` lines; `-q` prints nothing (the status is the same). |
 | `--progress`, `--no-progress` | The server's progress text, as `remote: <text>` lines. By default it is shown only when standard error is a terminal. |
 | `-j`, `--jobs` | Accepted; remotes are fetched one after the other. `fetch.parallel` is ignored. |
-| `--auto-gc`, `--write-commit-graph` and their `--no-` forms, `--no-recurse-submodules` | Accepted and ignored. |
+| `--auto-gc`, `--no-auto-gc` | After fetching, run `gc --auto` unless `--no-auto-gc` or `--dry-run` is given, as git does; see [Auto gc](#auto-gc). |
+| `--write-commit-graph`, `--no-write-commit-graph`, `--no-recurse-submodules` | Accepted and ignored. |
 | `--depth`, `--deepen`, `--shallow-since`, `--shallow-exclude`, `--unshallow` | Git's shallow fetch, see [Shallow repositories](#shallow-repositories). |
 | `--update-shallow` | Usage error (`129`): not built. |
 | `--filter`, `--refetch` | Usage error (`129`): partial fetch is not built. |
@@ -760,7 +762,7 @@ schedules them.
 
 | Git | Reason |
 | --- | --- |
-| Commands that maintain git's own storage or run its hooks (`gc`, `fsck`, `bundle`, `submodule`, hooks in `.git/hooks`) | pyn reads a git repository's `.git/` on a git home (decision #245) but does not maintain it or run its hooks. pyn's own hooks are tracked in #216. |
+| Commands that run git's hooks or pack history for transport (`bundle`, `submodule`, hooks in `.git/hooks`) | pyn does not run a git repository's hooks. pyn's own hooks are tracked in #216. Maintaining a git home's storage is built; see [Storage maintenance](#storage-maintenance). |
 
 ## On a git home
 
@@ -2151,6 +2153,39 @@ Abbreviations (`--short`, `--abbrev`, `describe`) start at `core.abbrev` or 7 di
 objects. git also grows the default length with the size of the repository (8 digits from about 16,000 objects); pyn does not,
 so past that size a default abbreviation can be one digit shorter than git's.
 
+### Storage maintenance
+
+`count-objects`, `fsck`, `prune`, `repack`, `gc` and `pack-refs` keep a git home's `.git` healthy, so a repository used only
+through pyn does not accumulate loose objects. What they write is git's format: `git fsck --full --strict` and
+`git verify-pack` read the packs and indexes without complaint, and `crates/pyn-cli/tests/git_storage.rs` compares every
+command with the real git on a twin of the same repository (SHA-1 and SHA-256; git 2.43 and 2.55). Nothing here runs git
+or links a git library. Options not listed are a usage error (`129`).
+
+| Command | Supported |
+| --- | --- |
+| `count-objects` | `-v`, `-H`: the loose count and size (from disk blocks, as git), `in-pack`, `packs`, `size-pack`, `prune-packable`, `garbage` (with `warning: garbage found:` lines), `size-garbage`, and `alternate:` lines. Sizes in `-H` round as git's do. |
+| `fsck` | Reads every loose and packed object (`--no-full` skips packs, `--connectivity-only` skips content checks) and walks from the refs, `HEAD`, the reflogs (`--no-reflogs` leaves them out), the index and its cache-tree, and linked work trees. Prints `dangling`, or with `--unreachable` `unreachable`, lines (`--no-dangling` hides them), `missing` and `broken link from` lines, `root` (`--root`), `tagged` (`--tags`), and writes `lost-found/` (`--lost-found`). Object findings use git's ids and wording (`treeNotSorted`, `duplicateEntries`, `zeroPaddedFilemode`, `hasDotgit`, `badFilemode`, `missingAuthor`, `badTimezone`, `missingTaggerEntry`, ...); `--strict` turns warnings into errors and reports `100664` modes. Exit status is git's bit set: `1` bad object, `2` missing or unreachable pointer, `4` bad pack, `8` bad cache-tree. Output order follows the sorted object ids, not git's hash order, and the parent named in a `broken link` may differ when several objects link to the same missing one. A pack that fails its checksum or index check is reported as one error. |
+| `prune` | `-n`, `-v`, `--expire <time>` (`now`, `never`, a date, `2.weeks.ago`; the default removes every unreachable loose object) and `<head>...` to keep more alive. Keeps whatever objects newer than `--expire` refer to. Also removes stale `tmp_obj_*` and `tmp_pack_*` files. Lists `<id> <type>` for `-n` and `-v`. |
+| `repack` | Without `-a`/`-A`, packs the reachable loose objects that no pack holds. `-a` packs everything reachable into one pack (objects in `.keep` packs excluded); `-A` also turns unreachable objects of packs it deletes into loose objects (`--unpack-unreachable=<time>` limits that to recent ones, as `gc` uses it, honouring the per-object times of a cruft pack's `.mtimes`). `-d` removes packs the new one replaces and loose objects that are now packed; `-l` leaves out and ignores objects borrowed from alternates; `-f`, `-F`, `-q`, `-n`, `--threads` are accepted; `--window` and `--depth` (default `pack.window` 10, `pack.depth` 50) set the delta search. Prints `Nothing new to pack.` as git does. |
+| `gc` | `pack-refs --all --prune`, `reflog expire --all`, `repack -d -l` (`-A` with `--unpack-unreachable=<gc.pruneExpire>`, or `-a` for `--prune=now`), `prune --expire <gc.pruneExpire>` (default 2 weeks; `--prune=<date>`, `--no-prune`) and `worktree prune --expire <gc.worktreePruneExpire>` (default 3 months). `--aggressive` uses `gc.aggressiveWindow` (250) and `gc.aggressiveDepth` (50). `gc.packRefs=false` skips packing refs. `--quiet`, `--force`, `--keep-largest-pack`, `--detach`, `--cruft` and their `--no-` forms are accepted. `gc --auto`: see [Auto gc](#auto-gc). |
+| `pack-refs` | `--all` (otherwise tags and already packed refs), `--no-prune`. Writes `packed-refs` with git's `peeled fully-peeled sorted` header, byte for byte, and removes the loose files it packed. `--include` and `--exclude` are not built. |
+
+Packs are written with offset deltas: trees and blobs of one kind are ordered by size and path-name hash and each is tried
+against the previous `window` objects (`pack.window`), so a repacked history is close to git's in size. Existing deltas are
+not reused; every pack is rebuilt from the objects themselves.
+
+#### Auto gc
+
+`gc --auto` does nothing unless `gc.auto` (default 6700; `0` turns it off) is exceeded, estimated as git does by counting the
+loose objects in `objects/17` against `ceil(gc.auto / 256)`, or `gc.autoPackLimit` (default 50) is exceeded by the packs
+without a `.keep`. Too many packs repacks everything (`-A`); too many loose objects packs only the loose ones. It runs in the
+foreground and prints `Auto packing the repository for optimum performance.` unless `--quiet`. `pyn commit` and `pyn fetch`
+(unless `--no-auto-gc` or `--dry-run`) run it afterwards, and a failure is a warning, never the command's status.
+
+Not built: cruft packs (unreachable objects stay loose; a cruft pack git wrote is read and its times honoured), commit-graph,
+multi-pack-index, bitmap and reverse-index files (git ignores their absence), `--geometric`, `--max-pack-size`, `gc.log`
+and the `gc.pid` lock, `maintenance`, and `prune-packed`/`unpack-objects`/`pack-objects` as commands of their own.
+
 ### Patches
 
 `format-patch`, `apply` and `am` write and read the same text as git, and `crates/pyn-cli/tests/git_format_patch.rs`,
@@ -2261,7 +2296,9 @@ Commands a git home will gain fail with exit `1`, as the other git-only commands
   result is self-contained. The pack and its version 2 index are written to `objects/pack` through temporary files and renames,
   and nothing is left behind on error. Limits cover the object count, object size, delta chain depth and pack size.
 - **Write.** `write_pack` writes the given objects as an undeltified version 2 pack and can produce the matching index.
-  `PackWriter` takes one entry at a time; new storage forms, such as deltas, are added as entry variants.
+  `PackWriter` takes one entry at a time, whole or as an offset delta; `ObjectDb::write_packfile` orders objects, searches
+  for deltas in a window and installs the pack and index. `ObjectDb::loose_objects` and `pack_garbage` enumerate the store,
+  and `RefStore::pack_refs` writes `packed-refs`.
 - **Walk.** `reachable_objects` lists what `want` needs that `have` does not already imply (tags, commits newest first, then
   trees and blobs), as `git rev-list --objects --objects-edge-aggressive want ^have` does, with the boundary commits.
   A `have` this repository does not hold is ignored; any other missing object is an error. `commits_newest_first` and

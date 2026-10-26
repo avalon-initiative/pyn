@@ -311,6 +311,25 @@ fn expire(git: &GitHome, args: ExpireArgs) -> Result<()> {
     Ok(())
 }
 
+/// `reflog expire --all` with the configured limits, as `gc` runs it.
+pub(super) fn expire_all(git: &GitHome) -> Result<()> {
+    expire(
+        git,
+        ExpireArgs {
+            expire: None,
+            expire_unreachable: None,
+            all: true,
+            prune: Prune {
+                dry_run: false,
+                verbose: false,
+                rewrite: false,
+                updateref: false,
+            },
+            refs: Vec::new(),
+        },
+    )
+}
+
 fn delete(git: &GitHome, args: DeleteArgs) -> Result<()> {
     let mut picked = Vec::new();
     for selector in &args.selectors {

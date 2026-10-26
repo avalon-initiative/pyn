@@ -837,8 +837,12 @@ pub fn fetch(git: &GitHome, args: FetchArgs) -> Result<()> {
         .chain(typed)
         .collect::<Vec<_>>()
         .join(" ");
+    let auto_gc = !args.no_auto_gc && !args.dry_run;
     if run(git, &args, &action)? {
         std::process::exit(1);
+    }
+    if auto_gc {
+        super::gc::auto(git);
     }
     Ok(())
 }

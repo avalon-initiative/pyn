@@ -754,6 +754,18 @@ fn prune(git: &GitHome, args: PruneArgs) -> Result<()> {
     Ok(())
 }
 
+/// Drops the admin folders of work trees that have been gone since before `expire`, as `gc` does.
+pub(super) fn prune_expired(git: &GitHome, expire: &str) -> Result<()> {
+    prune(
+        git,
+        PruneArgs {
+            dry_run: false,
+            verbose: false,
+            expire: Some(expire.to_string()),
+        },
+    )
+}
+
 fn remove(git: &GitHome, cwd: &Path, args: RemoveArgs) -> Result<()> {
     let all = trees(git, i64::MAX)?;
     let t = find(&all, cwd, &args.worktree)?;

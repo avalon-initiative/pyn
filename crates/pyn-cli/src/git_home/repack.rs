@@ -113,6 +113,27 @@ fn mtime(path: &Path) -> i64 {
         .map_or(0, |d| d.as_secs() as i64)
 }
 
+/// Per-object times from a cruft pack's `.mtimes`, in index order.
+fn cruft_times(pack: &Path, count: usize) -> Option<Vec<i64>> {
+    let bytes = fs::read(pack.with_extension("mtimes")).ok()?;
+    if bytes.len() < 12 + 4 * count || &bytes[..4] != b"MTME" {
+        return None;
+    }
+    Some(
+        (0..count)
+            .map(|i| {
+                let at = 12 + 4 * i;
+                i64::from(u32::from_be_bytes([
+                    bytes[at],
+                    bytes[at + 1],
+                    bytes[at + 2],
+                    bytes[at + 3],
+                ]))
+            })
+            .collect(),
+    )
+}
+
 fn stem(path: &Path) -> String {
     path.file_stem()
         .map(|s| s.to_string_lossy().into_owned())
@@ -183,12 +204,11 @@ pub(super) fn run(git: &GitHome, plan: &Repack) -> Result<bool> {
     if let (true, Some(threshold)) = (plan.all, plan.loosen) {
         let fresh = git.repo.git().objects()?;
         for p in &doomed {
-            let stamp = mtime(p.pack_path());
-            if stamp <= threshold {
-                continue;
-            }
-            for id in p.ids().filter(|id| !reach.seen.contains(id)) {
-                if in_kept(&id) {
+            let pack_stamp = mtime(p.pack_path());
+            let times = cruft_times(p.pack_path(), p.len());
+            for (n, id) in p.ids().enumerate() {
+                let stamp = times.as_ref().map_or(pack_stamp, |t| t[n]);
+                if stamp <= threshold || reach.seen.contains(&id) || in_kept(&id) {
                     continue;
                 }
                 if let Some(o) = p.read(&id)? {
