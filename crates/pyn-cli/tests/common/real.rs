@@ -37,6 +37,11 @@ pub struct Server {
 
 impl Server {
     pub fn start() -> Self {
+        Self::start_with_env(&[])
+    }
+
+    /// Like `start`, with extra environment variables for the server process.
+    pub fn start_with_env(vars: &[(&str, &str)]) -> Self {
         let port = std::net::TcpListener::bind("127.0.0.1:0")
             .unwrap()
             .local_addr()
@@ -51,6 +56,7 @@ impl Server {
             .env_remove("PYN_DATABASE_URL")
             .env_remove("PYN_DATA_DIR")
             .env_remove("PYN_CONFIG")
+            .envs(vars.iter().copied())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
@@ -139,7 +145,11 @@ impl Server {
 
     /// Sets the server up, registers and signs in `alice`, and creates `alice/game` with the test policy.
     pub fn with_game() -> Self {
-        let server = Self::start();
+        Self::with_game_env(&[])
+    }
+
+    pub fn with_game_env(vars: &[(&str, &str)]) -> Self {
+        let server = Self::start_with_env(vars);
         let cwd = server.dir("admin");
         let input = format!("{PASSWORD}\n");
         for (user, args) in [

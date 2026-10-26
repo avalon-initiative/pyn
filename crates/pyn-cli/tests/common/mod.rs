@@ -58,6 +58,11 @@ pub fn start_with_clock(clock: Arc<ManualClock>) -> Env {
     build_with(true, &[], None, clock)
 }
 
+/// A server with no repositories whose lease clock only moves when `clock` is advanced.
+pub fn start_empty_with_clock(clock: Arc<ManualClock>) -> Env {
+    build_with(false, &[], None, clock)
+}
+
 fn start_with(with_repo: bool) -> Env {
     build(with_repo, &[], None)
 }

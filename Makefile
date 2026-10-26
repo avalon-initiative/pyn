@@ -89,7 +89,7 @@ docker-build-cli:
 	docker build --target cli -t pyn-cli:$(DOCKER_TAG) .
 
 e2e:
-	cargo test -p pyn-cli --test e2e --test e2e_second
+	cargo test -p pyn-cli --test e2e --test e2e_second --test e2e_day_one
 
 fmt:
 	cargo fmt --all
