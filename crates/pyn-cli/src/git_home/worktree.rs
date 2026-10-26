@@ -230,7 +230,13 @@ fn plan(
     }
     let leaves = repo.index_leaves(&opened.index);
     let dirty = repo.unstaged_changes(&opened.index)?;
-    let clean = |p: &Vec<u8>| !matches!(dirty.get(p), Some(Kind::Modified | Kind::TypeChange));
+    let is_gitlink = |p: &Vec<u8>| leaves.get(p).is_some_and(|e| e.mode == FileMode::Gitlink);
+    // A submodule at another commit than the index records is not a local change to a checkout.
+    let clean = |p: &Vec<u8>| match dirty.get(p) {
+        Some(Kind::Modified) => is_gitlink(p),
+        Some(Kind::TypeChange) => false,
+        _ => true,
+    };
     let mut acts: BTreeMap<Vec<u8>, Act> = BTreeMap::new();
     let mut absent_checks: Vec<Vec<u8>> = Vec::new();
     let paths: BTreeSet<&Vec<u8>> = old.keys().chain(new.keys()).chain(leaves.keys()).collect();
@@ -303,14 +309,23 @@ fn plan(
     let ignores = Ignores {
         ignore: repo.ignore()?,
     };
+    let root = repo.root()?;
+    let submodule_there = |path: &Vec<u8>, entry: Option<&Entry>| {
+        entry.is_some_and(|e| e.mode == FileMode::Gitlink)
+            && fs_path(root, path).join(".git").exists()
+    };
     for path in &absent_checks {
+        if submodule_there(path, new.get(path)) {
+            continue;
+        }
         if let Some(way) = blocking_path(git, &ignores, path, &removed)? {
             blocked.add_way(repo.root()?, way);
         }
     }
     for (path, act) in &acts {
-        if let Act::Write(_) = act
+        if let Act::Write(entry) = act
             && !absent_checks.contains(path)
+            && !submodule_there(path, Some(entry))
         {
             let root = repo.root()?;
             if lexists(&fs_path(root, path)).is_some_and(|m| m.is_dir()) {
@@ -451,6 +466,9 @@ fn write_converted(
                 std::fs::create_dir(&dir).with_context(|| format!("creating {}", dir.display()))?
             }
         }
+    }
+    if mode == FileMode::Gitlink && lexists(&file).is_some_and(|m| m.is_dir()) {
+        return Ok(std::fs::symlink_metadata(&file)?);
     }
     clear(&file).with_context(|| format!("replacing {}", file.display()))?;
     match mode {

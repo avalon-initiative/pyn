@@ -38,6 +38,7 @@ pub struct Repo {
     home: Option<PathBuf>,
     xdg: Option<PathBuf>,
     attributes: Mutex<Option<Arc<Attributes>>>,
+    pub(crate) ignore_override: Mutex<Option<crate::SubmoduleIgnore>>,
 }
 
 impl Repo {
@@ -64,6 +65,7 @@ impl Repo {
             home: home.map(Path::to_path_buf),
             xdg: xdg.map(Path::to_path_buf),
             attributes: Mutex::new(None),
+            ignore_override: Mutex::new(None),
             git,
         })
     }

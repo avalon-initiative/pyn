@@ -118,6 +118,40 @@ pub(super) fn describe(git: &GitHome, cwd: &Path, args: DescribeArgs) -> Result<
     Ok(())
 }
 
+/// How `git submodule status` names a commit: an annotated tag, else any tag, else any ref, else the abbreviated id.
+pub(super) fn submodule_name(git: &GitHome, commit: &ObjectId) -> Result<String> {
+    let digits = default_abbrev(git);
+    for (tags, all) in [(false, false), (true, false), (false, true)] {
+        let args = DescribeArgs {
+            tags,
+            all,
+            always: all,
+            ..plain()
+        };
+        let names = known_names(git, &args)?;
+        if let Ok(text) = describe_one(git, &args, &names, commit, digits, 10) {
+            return Ok(text);
+        }
+    }
+    Ok(abbrev(git, commit, digits.max(4)))
+}
+
+fn plain() -> DescribeArgs {
+    DescribeArgs {
+        tags: false,
+        all: false,
+        always: false,
+        long: false,
+        abbrev: None,
+        dirty: None,
+        matches: Vec::new(),
+        exclude: Vec::new(),
+        exact_match: false,
+        candidates: None,
+        commit_ish: Vec::new(),
+    }
+}
+
 fn dirty(git: &GitHome) -> Result<bool> {
     Ok(git.repo.status()?.entries.iter().any(|e| {
         e.staged.is_some()

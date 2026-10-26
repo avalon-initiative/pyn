@@ -158,6 +158,11 @@ pub struct SwitchArgs {
     /// Check out a commit with a detached HEAD (a git repository only).
     #[arg(short = 'd', long)]
     pub(crate) detach: bool,
+    /// Update the checked-out submodules to the commits the result records (a git repository only).
+    #[arg(long, overrides_with = "no_recurse_submodules")]
+    pub(crate) recurse_submodules: bool,
+    #[arg(long, overrides_with = "recurse_submodules")]
+    pub(crate) no_recurse_submodules: bool,
 }
 
 /// Switch branches, or restore files from the workspace's revisions or from another commit.
@@ -190,6 +195,11 @@ pub struct CheckoutArgs {
     /// Choose the hunks to take from the index or the named commit, one at a time (a git repository only).
     #[arg(short, long, conflicts_with_all = ["create", "force", "detach", "ours", "theirs", "yes"])]
     pub(crate) patch: bool,
+    /// Update the checked-out submodules to the commits the result records (a git repository only).
+    #[arg(long, overrides_with = "no_recurse_submodules")]
+    pub(crate) recurse_submodules: bool,
+    #[arg(long, overrides_with = "recurse_submodules")]
+    pub(crate) no_recurse_submodules: bool,
 }
 
 fn branches(api: &Api) -> Result<Vec<api::Branch>> {
@@ -524,7 +534,12 @@ pub fn checkout_command(
         theirs,
         yes,
         patch: _,
+        recurse_submodules,
+        no_recurse_submodules: _,
     } = args;
+    if recurse_submodules {
+        bail!("`pyn checkout --recurse-submodules` needs a git repository");
+    }
     if ours || theirs {
         if paths.is_empty() || new.is_some() {
             bail!("`pyn checkout --ours` and `--theirs` take paths after `--`");

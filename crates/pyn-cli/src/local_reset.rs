@@ -41,6 +41,12 @@ pub struct ResetArgs {
     /// Workspace: skip the typed confirmation of --hard.
     #[arg(long)]
     pub(crate) yes: bool,
+    /// Update the checked-out submodules to the commits the result records (a git repository only).
+    #[arg(long, overrides_with = "no_recurse_submodules")]
+    pub(crate) recurse_submodules: bool,
+    #[arg(long, overrides_with = "recurse_submodules")]
+    pub(crate) no_recurse_submodules: bool,
+
     /// A revision (a workspace: HEAD, HEAD~N or a hash of an unpublished local commit, or of the last published
     /// one); default HEAD. On a git repository, paths may follow it.
     pub(crate) revs: Vec<String>,
@@ -96,6 +102,7 @@ impl ResetArgs {
             || self.keep
             || self.merge
             || self.quiet
+            || self.recurse_submodules
             || !self.paths.is_empty()
             || self.revs.len() > 1
         {

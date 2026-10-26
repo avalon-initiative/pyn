@@ -162,6 +162,8 @@ enum Command {
     Stash(git_home::StashArgs),
     /// Manage linked work trees of a repository (a git repository only).
     Worktree(git_home::WorktreeArgs),
+    /// Initialize, update and inspect nested repositories recorded as gitlinks (a git repository only).
+    Submodule(git_home::SubmoduleArgs),
     /// Remove untracked files from the work tree (a git repository only).
     Clean(git_home::CleanArgs),
     /// Search the work tree, the index (--cached) or revisions for a pattern, as `git grep` (a git repository only).
@@ -237,6 +239,15 @@ enum Command {
         /// Print nothing; only the exit status says anything.
         #[arg(short = 's', long = "no-patch")]
         no_patch: bool,
+        /// Ignore changes in submodules: `none`, `untracked`, `dirty` or `all` (a git repository only).
+        #[arg(
+            long,
+            num_args = 0..=1,
+            require_equals = true,
+            default_missing_value = "all",
+            value_name = "WHEN"
+        )]
+        ignore_submodules: Option<String>,
     },
     /// Print the object ids revisions name, and facts about the repository (a git repository only).
     RevParse(git_home::RevParseArgs),
@@ -2003,6 +2014,10 @@ fn run(cli: Cli) -> Result<()> {
             eprintln!("{}", unsupported::message("worktree"));
             std::process::exit(1);
         }
+        Command::Submodule(_) => {
+            eprintln!("{}", unsupported::message("submodule"));
+            std::process::exit(1);
+        }
         Command::Clean(_) => {
             eprintln!("{}", unsupported::message("clean"));
             std::process::exit(1);
@@ -2063,6 +2078,9 @@ fn run(cli: Cli) -> Result<()> {
             branch::checkout_command(&backend, ws.as_ref(), &cwd, args, &rp)?
         }
         Command::Status(args) => {
+            if args.ignore_submodules.is_some() {
+                usage_error("`pyn status --ignore-submodules` needs a git repository");
+            }
             let w = in_workspace("status")?;
             let format = args.format();
             let only =
@@ -2107,8 +2125,12 @@ fn run(cli: Cli) -> Result<()> {
             quiet,
             cached,
             no_patch,
+            ignore_submodules,
             ..
         } => {
+            if ignore_submodules.is_some() {
+                usage_error("`pyn diff --ignore-submodules` needs a git repository");
+            }
             let named = DiffArgs {
                 args: &args,
                 paths: &paths,

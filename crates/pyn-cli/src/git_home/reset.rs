@@ -269,7 +269,15 @@ fn reset_paths(
 }
 
 pub fn reset(git: &GitHome, cwd: &Path, args: &ResetArgs) -> Result<()> {
-    reset_logging(git, cwd, args, true)
+    let recurse = super::submodule::wants_recursion(
+        git,
+        (args.recurse_submodules, args.no_recurse_submodules),
+    );
+    reset_logging(git, cwd, args, true)?;
+    if recurse && args.kind() == ResetKind::Hard {
+        super::submodule::follow_head(git, true)?;
+    }
+    Ok(())
 }
 
 /// A reset that moves `HEAD` without a reflog line, for a caller that logs the move in its own words.

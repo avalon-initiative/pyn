@@ -1857,3 +1857,50 @@ fn merge_global_config_boundary() {
         }
     }
 }
+
+#[test]
+fn ignore_submodules_flag() {
+    for state in ["forward", "tracked", "untracked", "staged", "backward"] {
+        for when in ["none", "untracked", "dirty", "all"] {
+            each(|f| {
+                f.state(state);
+                let flag = format!("--ignore-submodules={when}");
+                f.same(&["status", "--short", &flag]);
+                f.same(&["status", "--porcelain", &flag, "--", "sub"]);
+                f.same(&["diff", &flag]);
+                f.same(&["diff", "--cached", &flag]);
+            });
+        }
+    }
+    each(|f| {
+        f.state("tracked");
+        f.same(&["status", "--short", "--ignore-submodules"]);
+        f.same(&["diff", "--ignore-submodules"]);
+    });
+}
+
+#[test]
+fn ignore_submodules_flag_overrides_configuration() {
+    each(|f| {
+        f.state("tracked");
+        f.configure(None, Some("all"), Some("all"));
+        f.same(&["status", "--short", "--ignore-submodules=none"]);
+        f.same(&["diff", "--ignore-submodules=none"]);
+    });
+}
+
+#[test]
+fn bad_ignore_submodules_value_is_fatal() {
+    each(|f| {
+        let want = git(&f.repo)
+            .args(["status", "--ignore-submodules=bogus"])
+            .output()
+            .unwrap();
+        let got = f.pyn(&["status", "--ignore-submodules=bogus"]);
+        assert_eq!(got.status.code(), want.status.code());
+        assert!(
+            String::from_utf8_lossy(&got.stderr)
+                .contains("bad --ignore-submodules argument: bogus")
+        );
+    });
+}

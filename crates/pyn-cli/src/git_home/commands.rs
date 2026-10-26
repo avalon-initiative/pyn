@@ -54,8 +54,12 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
             quiet,
             cached,
             no_patch,
+            ignore_submodules,
             ..
         } => {
+            if let Some(when) = &ignore_submodules {
+                git.repo.force_submodule_ignore(when)?;
+            }
             let format = format.format().silenced(no_patch);
             let differs = diff(git, cwd, &args, &paths, &format, quiet, cached)?;
             if differs && (exit_code || quiet) {
@@ -117,6 +121,7 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
         Command::Tag(args) => super::tags::tag(git, args),
         Command::Stash(args) => super::stash::stash(git, cwd, args),
         Command::Worktree(args) => super::worktrees::worktree(git, cwd, args),
+        Command::Submodule(args) => super::submodule::submodule(git, cwd, args),
         Command::Clean(args) => {
             if super::clean::clean(git, cwd, &args)? {
                 std::process::exit(1);
@@ -325,6 +330,7 @@ fn needs_work_tree(command: &Command) -> bool {
         | Command::Switch(_)
         | Command::Checkout(_)
         | Command::Stash(_)
+        | Command::Submodule(_)
         | Command::Clean(_)
         | Command::Add { .. }
         | Command::Mv(_)
@@ -371,6 +377,9 @@ fn short(id: &ObjectId) -> String {
 }
 
 pub(super) fn status(git: &GitHome, cwd: &Path, args: &StatusArgs) -> Result<()> {
+    if let Some(when) = &args.ignore_submodules {
+        git.repo.force_submodule_ignore(when)?;
+    }
     git.repo.validate_diff_ignore_submodules()?;
     let specs = stage::resolve_specs(git, cwd, &args.paths)?;
     let mut status = git.repo.status_in(&specs.spec)?;

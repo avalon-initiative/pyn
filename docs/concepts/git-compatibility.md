@@ -89,7 +89,8 @@ The commands named in decision #218.
 | | `pyn convert [--home git\|pyn] [-y] [--exclusive <glob>]...` | pyn only | Without `--home`, adopts an existing git repository (hides `.pyn/` in `.git/info/exclude`, creates `.pyn/local_only/`, records `repo_tool = "git"`; safe to run again); outside a git repository, or in a pyn server workspace, it fails with `fatal: ...` (status 128). `--home git` in a pyn server workspace moves it to a git home keeping its history, see [Leaving a pyn server](#leaving-a-pyn-server). `--home pyn` in a git repository moves it to a repository on a pyn server (`--server` and `--repo owner/name`) keeping its history, see [Moving to a pyn server](#moving-to-a-pyn-server); `--exclusive` (repeatable, `--home pyn` only) makes the paths matching a glob exclusive in the starter policy. |
 | `git clone <repo> [<dir>]` | `pyn clone <source> [<dir>]` | same | A source that is `<server>/owner/name` or `owner/name` on the configured server is cloned from a pyn server, and prints one summary line, not progress. A git URL (`https://`, `ssh://`, `user@host:path`) is cloned into a git repository with git's behaviour, flags and output; see [Clone from a git URL](#clone-from-a-git-url), which also says how an `http(s)` address is told apart. |
 | `git clone -b`, `--bare`, `--mirror`, `--separate-git-dir`, `-o`, `-n`, `--single-branch`, `--no-tags`, `-c`, `-q`, `--progress`, `--depth`, `--shallow-since`, `--shallow-exclude`, `--filter`, `--sparse` | `pyn clone ...` | git URL: supported | Git's behaviour. On a pyn server clone they are a usage error (`129`): that clone takes everything the server has, on its default branch. |
-| `git clone --shallow-submodules`, `--also-filter-submodules`, `--recurse-submodules`, `--reference`, `--template`, `--local`, `--no-hardlinks` | none | unsupported | Usage error (`129`) naming the flag: submodule clones are not built, and `--local`, `--no-local`, `--no-hardlinks` and `--shared` are not taken: a local-path source is cloned through the transfer protocol, see [Local paths](#local-paths-and-file-urls). |
+| `git clone --recurse-submodules[=<pathspec>]`, `--recursive`, `--shallow-submodules`, `-j` | `pyn clone ...` | git URL: supported | After the clone, registers and checks out the submodules `submodule.active` selects (all for a bare flag, the pathspecs given otherwise; they are written to `submodule.active` first, as git does), and theirs, with git's messages. `--shallow-submodules` clones each at depth 1. `-j` is accepted. See [Submodules](#submodules). |
+| `git clone --also-filter-submodules`, `--reference`, `--template`, `--local`, `--no-hardlinks` | none | unsupported | Usage error (`129`) naming the flag: submodules are not cloned partially yet, and `--local`, `--no-local`, `--no-hardlinks` and `--shared` are not taken: a local-path source is cloned through the transfer protocol, see [Local paths](#local-paths-and-file-urls). |
 | `pyn clone --revision <commit>` | | pyn only | Clone as of a commit (a hash, `HEAD~N`). Git does this with `clone` then `checkout`. |
 | `pyn clone --no-local-store` | | pyn only | A pyn server clone keeps a partial local store of the history under `.pyn/local_only/store/` and commits locally by default (`--local-store` says the same); this opts out and commits straight to the server. See [the local store](workspace.md#the-local-store). A usage error for a git URL. |
 | `pyn migrate` | | pyn only | Converts a workspace made before local commits; see [migrating](workspace.md#migrating-a-workspace). |
@@ -187,7 +188,7 @@ Commands people reach for that are not in the daily set.
 | `git grep [<options>] [-e] <pattern> [<rev>...] [[--] <path>...]` | `pyn grep ...` on a git home | git home only | See [Grep](#grep). Searches the tracked files of the work tree, the index (`--cached`) or the commits named; `-n -i -w -l -c -v -q -h -H -a -I -E -G -F`, `-e` (repeatable), `--and`, `--or`, `--not` and parentheses, pathspecs after the revisions or `--`. On a pyn server or local-store workspace it says it needs a git repository (`1`). |
 | `git bisect start [--term-(bad\|new)=<term> --term-(good\|old)=<term>] [--no-checkout] [--first-parent] [<bad> [<good>...]] [--] [<pathspec>...]`, `good`\|`old`, `bad`\|`new`, `skip`, `next`, `reset`, `run`, `log`, `replay`, `terms` | `pyn bisect ...` on a git home | git home only | See [Bisect](#bisect). Git's search, output, exit statuses and `.git` state, so git and pyn can continue each other's bisection; `visualize` and `view` are not built (`129`). On a pyn server or local-store workspace it fails with `fatal: not a git repository (or any of the parent directories): .git` (`128`). |
 | `git blame [-L <range>] [-w] [<options>] [<rev>] [--] <file>`, `git annotate` | `pyn blame ...`, `pyn annotate ...` on a git home | git home only | See [Blame](#blame). Git's lines byte for byte: the default, `-e`, `-s`, `-f`, `-n`, `-l`, `-t`, `-b`, `--root`, `--abbrev`, `--date`, `-p`, `--line-porcelain`, `-L` ranges, `<rev>`, `<a>..<b>` and `^<rev>`. `-M`, `-C` and `--incremental` are usage errors (`129`). On a pyn server or local-store workspace it says it needs a git repository (`1`). |
-| `git submodule` | none | unsupported | Submodule lifecycle commands are not built. On a git home, `status` and `diff` inspect recorded gitlinks and initialized submodule checkouts without changing them; see [On a git home](#on-a-git-home). |
+| `git submodule add\|status\|init\|deinit\|update\|set-branch\|set-url\|summary\|foreach\|sync\|absorbgitdirs` | `pyn submodule ...` on a git home | git home only | See [Submodules](#submodules). On a pyn server it prints `pyn: 'submodule' manages a git repository's nested repositories, and this is not one` (`1`). `status` and `diff` also inspect recorded gitlinks and checked-out submodules without changing them; see [On a git home](#on-a-git-home). |
 | `git worktree add\|list\|lock\|unlock\|move\|prune\|remove\|repair` | `pyn worktree ...` on a git home | git home only | See [Linked work trees](#linked-work-trees). On a pyn server it prints `pyn: 'worktree' manages a git repository's work trees, and this is not one` (`1`). |
 | `git format-patch`, `git apply`, `git am` | the same names on a git home | git home only | See [Patches](#patches). On a pyn server `format-patch` and `am` fail with `fatal: not a git repository (or any of the parent directories): .git` (`128`), as does `apply`, which git would run outside a repository too. |
 | `git archive`, `git notes` | none | unsupported | `pyn: '<cmd>' is not a pyn command` (`1`). Only the commands in the git-only list print the "git command pyn does not support yet" message, so these read as unknown until that list is widened (#223). |
@@ -297,11 +298,12 @@ applied.
 | `--progress`, `--no-progress` | The server's progress text, as `remote: <text>` lines. By default it is shown only when standard error is a terminal. |
 | `-j`, `--jobs` | Accepted; remotes are fetched one after the other. `fetch.parallel` is ignored. |
 | `--auto-gc`, `--no-auto-gc` | After fetching, run `gc --auto` unless `--no-auto-gc` or `--dry-run` is given, as git does; see [Auto gc](#auto-gc). |
-| `--write-commit-graph`, `--no-write-commit-graph`, `--no-recurse-submodules` | Accepted and ignored. |
+| `--write-commit-graph`, `--no-write-commit-graph` | Accepted and ignored. |
+| `--recurse-submodules[=yes\|on-demand\|no]`, `--no-recurse-submodules` | After the fetch, fetches in the checked-out, active submodules; see [Submodules](#submodules). Without a flag `fetch.recurseSubmodules`, then `submodule.recurse`, then `on-demand`. |
 | `--depth`, `--deepen`, `--shallow-since`, `--shallow-exclude`, `--unshallow` | Git's shallow fetch, see [Shallow repositories](#shallow-repositories). |
 | `--update-shallow` | Usage error (`129`): not built. |
 | `--filter=<spec>`, `--no-filter`, `--refetch` | Git's partial fetch, see [Partial clones](#partial-clones). |
-| `--atomic`, `--set-upstream`, `--recurse-submodules` | Usage error (`129`): not built. Any other unknown flag is a usage error as everywhere. |
+| `--atomic`, `--set-upstream` | Usage error (`129`): not built. Any other unknown flag is a usage error as everywhere. |
 
 What a fetch does, in git's order:
 
@@ -355,7 +357,7 @@ server sha256` (`128`). A repository with no objects, refs or index takes the re
 Differences from git, all deliberate or not yet done: `--dry-run` downloads objects like git does, but git lists auto-followed tags twice on a dry run and pyn once;
 ids are not lengthened to stay unique and do not scale with the repository's size; there is no per-object "Receiving objects" progress,
 only what the server sends;
-`fetch.output`, `fetch.showForcedUpdates`, `fetch.recurseSubmodules`, `fetch.writeCommitGraph`, `--refmap`, `--negotiation-tip`, `--server-option`, `--stdin` and `-4`/`-6` are not read or taken; `--all` runs
+`fetch.output`, `fetch.showForcedUpdates`, `fetch.writeCommitGraph`, `--refmap`, `--negotiation-tip`, `--server-option`, `--stdin` and `-4`/`-6` are not read or taken; `--all` runs
 the remotes one at a time whatever `-j` or `fetch.parallel` say, so `FETCH_HEAD` lists them in configuration order; the stale-ref hint after a ref could
 not be written names `pyn remote prune`.
 
@@ -382,7 +384,7 @@ boundary commit per line, removed when the history is complete). A shallow flag 
   `shallow` and `deepen*` lines. The in-process upload-pack for local remotes answers all of them, with `--shallow-since` and
   `--shallow-exclude` not combinable there (git allows both together).
 
-Not done: `--update-shallow` and `--shallow-submodules`.
+Not done: `--update-shallow`.
 
 ### Partial clones
 
@@ -477,7 +479,8 @@ that cannot fast-forward is `fatal: Not possible to fast-forward, aborting.` (`1
 | `--no-rebase`, `--rebase`, `-r`, `--autostash` | `--no-rebase` merges; `--rebase` fast-forwards or replays as above; `--autostash` stashes before a rebase and applies after (a usage error unless the pull rebases). |
 | `-s`, `--strategy`, `-X`, `--strategy-option` | Passed to the merge as for `pyn merge`, see [Strategies and options](#strategies-and-options). A strategy name git does not define is `Could not find merge strategy '<name>'.` (`1`); more than one `-s`, and `-X` options pyn cannot honor, are usage errors (`129`), as are `-s` and `-X` with a pull that rebases (git hands them to its rebase; pyn's rebase has no strategies yet). |
 | `-S[<keyid>]`, `--gpg-sign[=<keyid>]`, `--no-gpg-sign` | Passed on: the merge commit of a merge pull, or each commit a rebasing pull makes, is signed as for `pyn merge` and `pyn rebase`, see [Signing](#signing). |
-| `--edit`, `-e`, `--squash`, `--signoff`, `--cleanup`, `--recurse-submodules`, `--allow-unrelated-histories`, `--all` | Usage error (`129`): not built (`--all`: use `pyn fetch --all`). |
+| `--recurse-submodules[=yes\|on-demand\|no]`, `--no-recurse-submodules` | Fetches in submodules as `fetch` does; with `yes` (or `submodule.recurse`) the checked-out submodules are then updated to the merged result. |
+| `--edit`, `-e`, `--squash`, `--signoff`, `--cleanup`, `--allow-unrelated-histories`, `--all` | Usage error (`129`): not built (`--all`: use `pyn fetch --all`). |
 
 Config read: `pull.ff`, `pull.rebase`, `branch.<name>.rebase`, `branch.<name>.merge`, `branch.<name>.remote`, `merge.ff`, plus what
 `pyn fetch` reads, plus `merge.stat`. `pull.twohead`, `pull.octopus` and `branch.<name>.mergeOptions` are not read. The message of an annotated tag
@@ -544,7 +547,7 @@ branches exist, keeps that unborn `HEAD`, fetches the rest and warns `remote HEA
 removed: the new directory, or only `.git` (or the contents of a bare target) when the directory already existed and was empty. A
 failure while checking out leaves the repository in place, as git does.
 
-Differences from git, all deliberate or not yet done: no hooks, templates or `description` file are created; there is no "Updating files" progress; `--shallow-submodules`, `--also-filter-submodules`, `--recurse-submodules`,
+Differences from git, all deliberate or not yet done: no hooks, templates or `description` file are created; there is no "Updating files" progress; `--also-filter-submodules`,
 `--reference`, `--reference-if-able`, `--dissociate`, `--template`, `--local`, `--no-local`,
 `--no-hardlinks`, `--shared`, `--upload-pack`, `--server-option`, `--bundle-uri` and `--ref-format` are usage errors. `--sparse`
 is supported; see [Sparse checkout](#sparse-checkout).
@@ -821,7 +824,7 @@ schedules them.
 
 | Git | Reason |
 | --- | --- |
-| Commands that run git's hooks (`submodule`, hooks in `.git/hooks`) | A git home's client hooks run as git runs them (see [Client hooks](#client-hooks)); the ones not built are warned about. Submodules are not built. pyn's own hooks are tracked in #216. Maintaining a git home's storage and bundles are built; see [Storage maintenance](#storage-maintenance) and [Bundles](#bundles). |
+| Hooks in `.git/hooks` beyond the ones built | A git home's client hooks run as git runs them (see [Client hooks](#client-hooks)); the ones not built are warned about. pyn's own hooks are tracked in #216. Maintaining a git home's storage and bundles are built; see [Storage maintenance](#storage-maintenance) and [Bundles](#bundles). |
 
 ## On a git home
 
@@ -1014,6 +1017,7 @@ to take patterns.
 | `tag` | See [Tags](#tags). |
 | `stash` | See [Stashing](#stashing). |
 | `clean` | See [Clean](#clean). |
+| `submodule` | See [Submodules](#submodules). |
 | `reflog` | See [Reflogs](#reflogs). |
 | `rev-parse`, `ls-files`, `ls-tree`, `cat-file`, `show-ref`, `shortlog`, `describe`, `name-rev` | See [Inspection commands](#inspection-commands). |
 | `sparse-checkout` | See [Sparse checkout](#sparse-checkout). |
@@ -1040,7 +1044,7 @@ On a git home, gitlink diffs use full-hex `Subproject commit <id>` lines, with `
 worktree's `.gitmodules` (falling back to the index, then `HEAD`, when that file is absent), then
 `diff.ignoreSubmodules`, then the command default (status includes untracked
 content; diff ignores untracked-only content, including in nested submodules). `none`, `untracked`, `dirty` and `all`
-select what is ignored; staged gitlinks remain visible in status even under `all`. Submodule initialization and updates are not built.
+select what is ignored; staged gitlinks remain visible in status even under `all`. `status` and `diff` take `--ignore-submodules[=<when>]` (a bare flag is `all`), which beats every configured setting and, under `all`, also hides staged gitlinks, as in git; a bad value is `fatal: bad --ignore-submodules argument: <value>` (`128`). Creating and updating submodules is `pyn submodule`, see [Submodules](#submodules). `diff --submodule` is not built.
 With no worktree `.gitmodules`, an unmerged index entry for that file disables the recorded configuration fallback.
 
 Differences from git, all deliberate or not yet done:
@@ -1359,7 +1363,7 @@ of `add` (`<path> is exclusive and you do not hold its lock`, `128`); a new excl
 ### Branches, switching and the work tree
 
 `branch`, `switch`, `checkout` and `restore` write refs, the index and the work tree as git does, through the same lock files and
-with the same reflog lines.
+with the same reflog lines. `switch` and `checkout` take `--recurse-submodules` for the checked-out submodules, see [Submodules](#submodules).
 
 **`branch`.** Lists (`*` marks the current branch, `+` a branch checked out in another work tree, `(HEAD detached at <id>)` first),
 `-v` adds the abbreviated commit and subject, `--list <pattern>` filters with shell patterns, `--show-current` prints the name.
@@ -1475,7 +1479,7 @@ reset with paths.` (`128`). On an unborn branch `HEAD` is the empty tree: `reset
 
 `ORIG_HEAD`, `MERGE_HEAD` and `CHERRY_PICK_HEAD` are accepted wherever a revision is, and so are the reflog revisions
 (`HEAD@{1}`, `@{-1}`; see [Reflogs](#reflogs)). Unlike git, a sparse checkout refuses `--keep` and `--merge`; `--soft`, `--mixed` and `--hard` keep the skip-worktree flags. A running rebase or cherry-pick's own
-state folder (`rebase-merge/`, `sequencer/`) is not removed. Covered against the real git by `crates/pyn-cli/tests/git_reset.rs`.
+state folder (`rebase-merge/`, `sequencer/`) is not removed. `--hard --recurse-submodules` also moves the checked-out submodules, see [Submodules](#submodules). Covered against the real git by `crates/pyn-cli/tests/git_reset.rs`.
 
 ### Merging
 
@@ -2005,6 +2009,42 @@ absolute (no `worktree.useRelativePaths`).
 Not built: `add --track`/`--guess-remote` and `worktree.guessRemote`, `--[no-]relative-paths`, carrying sparse and per-worktree config over to a new work tree
 (`config.worktree`), the `HEAD` reflog of a new work tree, and `ORIG_HEAD`. `remove` and `move` do not run hooks.
 
+### Submodules
+
+`pyn submodule` keeps git's layout so git and pyn can continue each other's work: `.gitmodules` in the work tree
+(`submodule.<name>.path`, `url`, `branch`, `update`, `shallow`, `ignore`, `fetchRecurseSubmodules` are read; `add`, `set-branch` and
+`set-url` write `path`, `url` and `branch`), `submodule.<name>.url`, `active` and `update` in `.git/config`, the submodule's git
+directory in `.git/modules/<name>` with `core.worktree` pointing back, and a `.git` file `gitdir: <relative path>` in its work tree.
+A repository pyn builds passes `git submodule status`, `git fsck` and a clean `git status`, and the other way round; the tests check
+both against git 2.43 and 2.55 (`crates/pyn-cli/tests/git_submodule_lifecycle.rs`). Nested repositories are cloned and fetched
+through the same code as `pyn clone` and `pyn fetch`; no git program runs. `-q`/`--quiet` goes before or after the subcommand.
+
+| Command | Behaviour |
+| --- | --- |
+| `add [-b <branch>] [-f] [--name <name>] [--depth <n>] [--] <repository> [<path>]` | Clones into `.git/modules/<name>`, writes `.gitmodules` and the config, and stages `.gitmodules` and the gitlink. A relative repository (`./`, `../`) is recorded as given and resolved against the current branch's remote (else `origin`, else the work tree) for the clone. An existing repository at the path is adopted (`Adding existing repo at ...`). A path already in the index is `fatal` (`128`); a kept git directory is reused only with `-f`. Not built: `--reference`, `--dissociate` (usage error), and refusing an ignored path. |
+| `status [--cached] [--recursive] [<path>...]` | ` ` current, `-` not checked out, `+` at another commit than recorded, `U` merge conflict, then the id and the path, and for a checked-out submodule its name in git's order (`describe`, `--tags`, `--all`; git's `--contains` step is not tried). No command defaults to `status`. |
+| `init [<path>...]` | Registers `submodule.<name>.url` (a relative url resolved), `update` (not `!command`) and `active`, and prints `Submodule '<name>' (<url>) registered for path '<path>'`. Without paths it follows `submodule.active`. |
+| `update [--init] [--recursive] [--remote] [--checkout\|--merge\|--rebase] [-f] [-N] [--depth <n>] [<path>...]` | Clones a submodule that is not checked out (or reconnects its kept git directory), fetches when the recorded commit is missing (then that commit by id), and moves it by `submodule.<name>.update` or the flag: detached checkout, merge or rebase, with git's `Submodule path '<path>': checked out '<id>'` lines; `!command` runs the command with the id appended. `--remote` follows `origin/<branch>` (`submodule.<name>.branch`, `.` for the superproject's branch, else the remote `HEAD`) instead of the recorded commit. `update = none` skips. `shallow = true` in `.gitmodules` clones at depth 1. |
+| `deinit [-f] (--all \| [--] <path>...)` | Refuses local changes without `-f` and a `.git` directory (not a gitdir file), empties the folder, removes `submodule.<name>` from `.git/config`; the git directory stays. |
+| `sync [--recursive] [<path>...]` | Copies the resolved `.gitmodules` url to `.git/config` and to the submodule's remote. |
+| `set-branch (-b <branch> \| -d) <path>`, `set-url <path> <url>` | Edit `.gitmodules`; `set-url` then syncs. |
+| `foreach [--recursive] <command>` | Runs `sh -c` in each checked-out submodule with `name`, `sm_path`, `path`, `displaypath`, `sha1` and `toplevel` set; a failure is `fatal: run_command returned non-zero status for <path>` (`128`). |
+| `summary [--cached \| --files] [-n <n>] [<commit>] [--] [<path>...]` | git's `* <path> <a>...<b> (<n>):` blocks with `>` and `<` first-parent commit subjects. Type changes between a file and a submodule are not summarized. |
+| `absorbgitdirs [<path>...]` | Moves a `.git` directory inside a submodule to `.git/modules/<name>` and links both ways, recursively. |
+
+**Recursion.** `fetch --recurse-submodules` fetches in every checked-out active submodule, and `=on-demand` (the default) only where the
+index or a ref records a commit the submodule lacks (git decides by the commits it just fetched); `fetch.recurseSubmodules`,
+`submodule.<name>.fetchRecurseSubmodules` and `submodule.recurse` are read. `switch`, `checkout` and `reset --hard` take
+`--recurse-submodules` (and `--no-recurse-submodules`; `submodule.recurse` turns it on): afterwards each checked-out submodule is moved to the commit
+now recorded, without cloning or fetching, and a missing commit is `fatal`. Without it a changed gitlink is left alone in the work tree and
+shows as modified; a populated submodule never counts as an untracked directory in the way. `pull --recurse-submodules=yes` fetches and then updates. Committing a changed gitlink is an ordinary
+`add <path>` and `commit`.
+
+Not built: `diff --submodule`, `--also-filter-submodules`, `submodule.<name>.update` set to `!command` from `.gitmodules` (it is
+not copied by `init`), `submodule.fetchJobs` and `-j` (one at a time), `--reference`, `fetch.recurseSubmodules` on `remote update`,
+`merge`, `rebase` and `cherry-pick --recurse-submodules`, `mv` and `rm` of a submodule keeping `.gitmodules` in step, and `push
+--recurse-submodules`. Messages for some failures (a clone that fails, a bad `--branch`) carry pyn's wording after the same `fatal:` line.
+
 ### Bare repositories
 
 A folder that is itself a git directory (`HEAD`, `objects/` and `refs/`, and `core.bare = true` or no work tree) is a git home, found from
@@ -2363,7 +2403,7 @@ Any command that would write a work tree file through a `filter` driver other th
 patch-mode commands that write the work tree (`checkout -p`, `restore -p`) also stop for a path whose line endings or `ident` git would convert,
 since they copy bytes as they are. A Git LFS filter writes the pointer file as it is, with a warning (decision #245; see [Git LFS](#git-lfs)).
 The hooks pyn does not run yet (see [Client hooks](#client-hooks)) draw one warning naming the ones that exist
-for the command. Submodule updates, the split index, a sparse index and `GIT_DIR` are not supported, and `--squash` and anything that talks to a remote other than `ls-remote`, `fetch`, `pull`, `push` and `clone` are not built yet (epic #301; see [Transports and credentials](#transports-and-credentials)).
+for the command. The split index, a sparse index and `GIT_DIR` are not supported, and `--squash` and anything that talks to a remote other than `ls-remote`, `fetch`, `pull`, `push` and `clone` are not built yet (epic #301; see [Transports and credentials](#transports-and-credentials)).
 
 ### Client hooks
 

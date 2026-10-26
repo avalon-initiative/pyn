@@ -234,7 +234,28 @@ impl Repo {
         let index = self.read_index()?;
         let modules = self.submodules();
         let mut rows: BTreeMap<Vec<u8>, StatusEntry> = BTreeMap::new();
+        let forced_all = *self.ignore_override.lock().expect("ignore override lock")
+            == Some(SubmoduleIgnore::All);
+        let committed = match head.id() {
+            Some(id) if forced_all => Some(self.commit(&id)?.tree),
+            _ => None,
+        };
         for (path, kind) in self.staged_changes(&head, &index)? {
+            if forced_all {
+                let staged = index
+                    .entries
+                    .iter()
+                    .any(|e| e.path == path && e.mode == GITLINK);
+                let recorded = match &committed {
+                    Some(tree) => self
+                        .entry_at(tree, &path)?
+                        .is_some_and(|e| e.mode == pyn_object::FileMode::Gitlink),
+                    None => false,
+                };
+                if staged || recorded {
+                    continue;
+                }
+            }
             row(&mut rows, path).staged = Some(kind);
         }
         for (path, kind) in self.unstaged_changes_with_submodules(&index, &modules)? {

@@ -97,8 +97,11 @@ pub struct PullArgs {
     stat: bool,
     #[arg(short = 'n', long, overrides_with = "stat")]
     no_stat: bool,
-    #[arg(long, hide = true, num_args = 0..=1, value_name = "MODE")]
+    /// Fetch in the checked-out submodules (`yes`, `on-demand` or `no`), and with `yes` update them to the merged result.
+    #[arg(long, num_args = 0..=1, require_equals = true, value_name = "MODE", overrides_with = "no_recurse_submodules")]
     recurse_submodules: Option<Option<String>>,
+    #[arg(long, overrides_with = "recurse_submodules")]
+    no_recurse_submodules: bool,
     #[arg(long, hide = true)]
     allow_unrelated_histories: bool,
     /// A remote name or a URL; the default is the current branch's remote, else `origin`.
@@ -170,13 +173,6 @@ impl PullArgs {
                 "--cleanup",
                 self.cleanup.is_some(),
                 "the message is always cleaned up",
-            ),
-            (
-                "--recurse-submodules",
-                self.recurse_submodules
-                    .as_ref()
-                    .is_some_and(|m| m.as_deref().is_none_or(|v| v != "no")),
-                "submodules are not supported",
             ),
             (
                 "--allow-unrelated-histories",
@@ -473,6 +469,23 @@ fn say_divergent() -> ! {
 }
 
 pub fn pull(git: &GitHome, args: PullArgs) -> Result<()> {
+    use super::submodule::{Fetching, fetch_submodules, follow_head};
+    let flag = args.recurse_submodules.as_ref().map(Option::as_deref);
+    let mode = Fetching::resolve(git, flag, args.no_recurse_submodules)?;
+    let (quiet, dry_run) = (args.quiet > 0, args.dry_run);
+    pull_inner(git, args)?;
+    if dry_run {
+        return Ok(());
+    }
+    let git = &git.reopen()?;
+    fetch_submodules(git, mode, quiet)?;
+    if mode == Fetching::Yes {
+        follow_head(git, false)?;
+    }
+    Ok(())
+}
+
+fn pull_inner(git: &GitHome, args: PullArgs) -> Result<()> {
     args.refuse_unsupported();
     BLOCKED_STATUS.store(1, Ordering::Relaxed);
     let head = git.repo.head()?;

@@ -99,7 +99,7 @@ impl Repository {
             return Err(Error::Unsupported("reftable ref storage".into()));
         }
         let work_tree = match config.path_in("core.worktree", &common_dir) {
-            Some(w) => Some(w),
+            Some(w) => Some(std::fs::canonicalize(&w).unwrap_or(w)),
             None if config.get_bool("core.bare")? == Some(true) => None,
             None => work_tree,
         };

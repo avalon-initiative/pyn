@@ -101,6 +101,12 @@ impl Repo {
         Ok(())
     }
 
+    /// Makes `--ignore-submodules=<when>` win over every configured setting for this repository's inspections.
+    pub fn force_submodule_ignore(&self, when: &str) -> Result<()> {
+        *self.ignore_override.lock().expect("ignore override lock") = Some(parse_ignore(when)?);
+        Ok(())
+    }
+
     /// Submodule settings shared by one inspection of this repository.
     pub fn submodules(&self) -> Submodules<'_> {
         Submodules {
@@ -201,6 +207,14 @@ impl Submodules<'_> {
     }
 
     pub fn ignore(&self, path: &[u8], default: SubmoduleIgnore) -> Result<SubmoduleIgnore> {
+        if let Some(forced) = *self
+            .repo
+            .ignore_override
+            .lock()
+            .expect("ignore override lock")
+        {
+            return Ok(forced);
+        }
         let config = self.config()?;
         let default = config
             .default

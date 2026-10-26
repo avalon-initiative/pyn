@@ -384,6 +384,7 @@ impl<'a> Bisect<'a> {
             quiet,
             any_worktree,
             returned: true,
+            ..Via::default()
         };
         match checkout_revision(self.git, target, via) {
             Ok(()) => true,

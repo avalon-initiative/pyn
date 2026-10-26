@@ -56,7 +56,7 @@ pub struct CloneOptions {
     /// Set a configuration variable in the new repository before the fetch.
     #[arg(short = 'c', long = "config", value_name = "KEY=VALUE")]
     config: Vec<String>,
-    /// Accepted; there are no submodules to fetch in parallel.
+    /// Accepted; submodules are cloned one after the other.
     #[arg(short, long, value_name = "N")]
     jobs: Option<usize>,
     /// Make a bare repository that mirrors every ref, fetched with `+refs/*:refs/*`.
@@ -67,16 +67,18 @@ pub struct CloneOptions {
     /// Keep the git directory here and leave a `.git` file pointing at it in the work tree.
     #[arg(long, value_name = "DIR")]
     separate_git_dir: Option<PathBuf>,
-    #[arg(long, hide = true)]
-    shallow_submodules: bool,
-    #[arg(long, hide = true)]
-    no_shallow_submodules: bool,
     #[command(flatten)]
     filter: FilterFlags,
     #[arg(long, hide = true)]
     also_filter_submodules: bool,
-    #[arg(long, hide = true, num_args = 0..=1, value_name = "PATH", alias = "recursive")]
-    recurse_submodules: Option<Option<String>>,
+    /// Clone the submodules too, or those matching the pathspec.
+    #[arg(long, num_args = 0..=1, value_name = "PATHSPEC", alias = "recursive", default_missing_value = ".", require_equals = true)]
+    recurse_submodules: Vec<String>,
+    /// Clone submodules with a history truncated to depth 1.
+    #[arg(long, overrides_with = "no_shallow_submodules")]
+    shallow_submodules: bool,
+    #[arg(long, overrides_with = "shallow_submodules")]
+    no_shallow_submodules: bool,
     /// Check out only the files in the root, as `sparse-checkout init --cone` does.
     #[arg(long)]
     sparse: bool,
@@ -117,27 +119,14 @@ impl CloneOptions {
     }
 
     fn refuse_unsupported(&self) {
-        let shallow = "submodules are not supported";
-        let partial = "submodules are not supported";
-        let submodules = "submodules are not supported";
+        let partial = "submodules are not cloned partially yet";
         let local =
             "a local clone goes through the transfer protocol; hardlinks and sharing are not built";
         let given = [
-            ("--shallow-submodules", self.shallow_submodules, shallow),
-            (
-                "--no-shallow-submodules",
-                self.no_shallow_submodules,
-                shallow,
-            ),
             (
                 "--also-filter-submodules",
                 self.also_filter_submodules,
                 partial,
-            ),
-            (
-                "--recurse-submodules",
-                self.recurse_submodules.is_some(),
-                submodules,
             ),
             (
                 "--reference",
@@ -204,6 +193,9 @@ impl CloneOptions {
             ("--config", !self.config.is_empty()),
             ("--jobs", self.jobs.is_some()),
             ("--filter", self.filter.given()),
+            ("--recurse-submodules", !self.recurse_submodules.is_empty()),
+            ("--shallow-submodules", self.shallow_submodules),
+            ("--no-shallow-submodules", self.no_shallow_submodules),
         ];
         flags.into_iter().find(|(_, on)| *on).map(|(f, _)| f)
     }
@@ -396,6 +388,9 @@ fn download(
     let config_path = git_dir.join("config");
     let mut file = ConfigFile::read(&config_path)?;
     apply_settings(&mut file, &opts.config)?;
+    for spec in &opts.recurse_submodules {
+        file.add("submodule", None, "active", spec)?;
+    }
     file.add("remote", Some(origin), "url", url)?;
     if opts.no_tags {
         file.add("remote", Some(origin), "tagopt", "--no-tags")?;
@@ -575,6 +570,63 @@ fn finish(
     Ok(())
 }
 
+/// What a submodule clone needs beyond its url: where the work tree and the git directory go.
+pub(super) struct Nested<'a> {
+    pub url: &'a str,
+    pub work: &'a Path,
+    pub git_dir: &'a Path,
+    pub branch: Option<&'a str>,
+    pub depth: Option<u32>,
+    pub quiet: bool,
+}
+
+/// Clones into `git_dir` with a `.git` file in `work` pointing at it, and `core.worktree` pointing back.
+pub(super) fn clone_nested(n: &Nested) -> Result<()> {
+    let mut argv = vec!["clone".to_owned()];
+    let worktree = super::submodule::relative(n.git_dir, n.work);
+    argv.extend(["-c".into(), format!("core.worktree={}", worktree.display())]);
+    if n.quiet {
+        argv.push("--quiet".into());
+    }
+    if let Some(b) = n.branch {
+        argv.extend(["--branch".into(), b.to_owned()]);
+    }
+    if let Some(d) = n.depth {
+        argv.extend(["--depth".into(), d.to_string()]);
+    }
+    let opts: CloneOptions = super::submodule::parsed(&argv);
+    let deepen = opts.shallow.request()?;
+    let user = user_config(&Env::process())?;
+    let prefer = default_branch(&user);
+    let existed = n.work.exists();
+    std::fs::create_dir_all(n.work)?;
+    let link = n.work.join(".git");
+    let target = super::submodule::relative(n.work, n.git_dir);
+    std::fs::write(&link, format!("gitdir: {}\n", target.display()))?;
+    let run = || -> Result<()> {
+        let fetched = download(
+            &opts,
+            &Limits {
+                deepen: deepen.as_ref(),
+                filter: None,
+            },
+            "origin",
+            n.url,
+            &prefer,
+            n.git_dir,
+            n.work,
+        )?;
+        finish(&opts, "origin", n.url, &prefer, fetched, None, n.work)
+    };
+    run().inspect_err(|_| {
+        let _ = std::fs::remove_dir_all(n.git_dir);
+        let _ = std::fs::remove_file(&link);
+        if !existed {
+            let _ = std::fs::remove_dir(n.work);
+        }
+    })
+}
+
 /// A relative local-path source made absolute against `cwd`, as git records it.
 fn absolute_local(source: &str, cwd: &Path) -> Option<String> {
     let path = cwd.join(source);
@@ -706,7 +758,11 @@ pub fn clone(
         if e.downcast_ref::<super::worktree::Unsafe>().is_some() {
             clean_up(&target, existed, &git_dir, opts.is_bare());
         }
-    })
+    })?;
+    if !opts.recurse_submodules.is_empty() && !opts.is_bare() && !opts.no_checkout {
+        super::submodule::after_clone(&target, opts.shallow_submodules, opts.quiet)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

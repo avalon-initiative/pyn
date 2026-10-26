@@ -35,6 +35,9 @@ pub fn message(name: &str) -> String {
     } else if name == "worktree" {
         "pyn: 'worktree' manages a git repository's work trees, and this is not one; see docs/concepts/git-compatibility.md."
             .into()
+    } else if name == "submodule" {
+        "pyn: 'submodule' manages a git repository's nested repositories, and this is not one; see docs/concepts/git-compatibility.md."
+            .into()
     } else if name == "blame" || name == "annotate" {
         format!(
             "pyn: '{name}' reads a git repository's history, and this is not one; see docs/concepts/git-compatibility.md."

@@ -262,6 +262,8 @@ fn start(
             orphan: None,
             force: false,
             detach: false,
+            recurse_submodules: false,
+            no_recurse_submodules: false,
         };
         branch::switch_command(backend, Some(ws), switch)?;
     }

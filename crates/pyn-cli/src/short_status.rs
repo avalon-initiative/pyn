@@ -26,6 +26,15 @@ pub struct StatusArgs {
     /// With `--short` or `--porcelain`, a `## <branch>...<upstream>` line first.
     #[arg(short = 'b', long)]
     pub branch: bool,
+    /// Ignore changes in submodules: `none`, `untracked`, `dirty` or `all` (the default for a bare flag).
+    #[arg(
+        long,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "all",
+        value_name = "WHEN"
+    )]
+    pub ignore_submodules: Option<String>,
     /// Only these files and folders, taken relative to where you stand.
     pub paths: Vec<String>,
 }

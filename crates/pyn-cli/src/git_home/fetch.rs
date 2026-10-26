@@ -80,7 +80,8 @@ pub struct FetchArgs {
     write_commit_graph: bool,
     #[arg(long, hide = true)]
     no_write_commit_graph: bool,
-    #[arg(long, hide = true)]
+    /// Do not fetch in submodules.
+    #[arg(long, overrides_with = "recurse_submodules")]
     no_recurse_submodules: bool,
     #[command(flatten)]
     shallow: FetchShallow,
@@ -98,7 +99,8 @@ pub struct FetchArgs {
     atomic: bool,
     #[arg(long, hide = true)]
     set_upstream: bool,
-    #[arg(long, hide = true, num_args = 0..=1, value_name = "MODE")]
+    /// Fetch in the checked-out submodules: `yes`, `on-demand` (the default) or `no`.
+    #[arg(long, num_args = 0..=1, require_equals = true, value_name = "MODE", overrides_with = "no_recurse_submodules")]
     recurse_submodules: Option<Option<String>>,
     /// A remote name or a URL; the default is the current branch's remote, else `origin`.
     repository: Option<String>,
@@ -197,13 +199,6 @@ impl FetchArgs {
                 "--set-upstream",
                 self.set_upstream,
                 "it is not built; use `pyn branch --set-upstream-to`",
-            ),
-            (
-                "--recurse-submodules",
-                self.recurse_submodules
-                    .as_ref()
-                    .is_some_and(|m| m.as_deref().is_none_or(|v| v != "no")),
-                "submodules are not supported",
             ),
         ];
         if let Some((flag, _, why)) = given.iter().find(|(_, on, _)| *on) {
@@ -939,6 +934,11 @@ pub fn fetch(git: &GitHome, args: FetchArgs) -> Result<()> {
     let auto_gc = !args.no_auto_gc && !args.dry_run;
     if run(git, &args, &action)? {
         std::process::exit(1);
+    }
+    if !args.dry_run {
+        let flag = args.recurse_submodules.as_ref().map(Option::as_deref);
+        let mode = super::submodule::Fetching::resolve(git, flag, args.no_recurse_submodules)?;
+        super::submodule::fetch_submodules(git, mode, args.quiet > 0)?;
     }
     if auto_gc {
         super::gc::auto(git);

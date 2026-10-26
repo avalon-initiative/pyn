@@ -602,7 +602,6 @@ fn unsupported_flags_are_usage_errors() {
         "--edit",
         "--signoff",
         "--allow-unrelated-histories",
-        "--recurse-submodules",
     ] {
         let p = t.pyn_cmd(&t.pyn, &["pull", flag]);
         assert_eq!(p.code, 129, "{flag}: {}", p.stderr);

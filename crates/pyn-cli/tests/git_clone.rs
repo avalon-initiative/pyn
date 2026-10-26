@@ -700,7 +700,6 @@ fn unsupported_flags_are_usage_errors_and_leave_nothing_behind() {
     let t = Rig::new("sha1", Via::Ssh);
     for flag in [
         vec!["--also-filter-submodules"],
-        vec!["--recurse-submodules"],
         vec!["--reference", "/x"],
         vec!["--template", "/x"],
         vec!["--local"],

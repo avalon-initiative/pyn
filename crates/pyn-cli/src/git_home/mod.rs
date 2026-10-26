@@ -87,6 +87,9 @@ mod stash_show;
 mod storage_links;
 mod storage_roots;
 mod strategy;
+mod submodule;
+mod submodule_cfg;
+mod submodule_summary;
 mod switch;
 mod tags;
 mod to_git;
@@ -152,6 +155,7 @@ pub use signing::SignFlag;
 pub use sparse::SparseCheckoutArgs;
 pub(crate) use stage::clean_message;
 pub use stash::StashArgs;
+pub use submodule::SubmoduleArgs;
 pub use tags::TagArgs;
 pub(crate) use tags::{
     annotation, check_name, delete as delete_tags, list as list_tags, short, tag_ref,

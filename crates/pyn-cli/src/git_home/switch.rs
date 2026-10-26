@@ -228,6 +228,7 @@ pub(super) struct Via {
     pub quiet: bool,
     pub any_worktree: bool,
     pub returned: bool,
+    pub force: bool,
 }
 
 /// Checks out a branch, else the commit `target` names (detached), as `git checkout [-q] <target> --`.
@@ -246,7 +247,7 @@ pub(super) fn checkout_revision(git: &GitHome, target: &str, via: Via) -> Result
         git,
         Go {
             landing,
-            force: false,
+            force: via.force,
         },
         via,
     )
@@ -257,6 +258,7 @@ fn go_quietly(git: &GitHome, go: Go, via: Via) -> Result<()> {
         quiet,
         any_worktree: ignore_other_worktrees,
         returned,
+        force: _,
     } = via;
     refuse_in_progress(git)?;
     let head = git.repo.head()?;
@@ -427,6 +429,18 @@ fn go_quietly(git: &GitHome, go: Go, via: Via) -> Result<()> {
 }
 
 pub fn switch(git: &GitHome, args: SwitchArgs) -> Result<()> {
+    let recurse = super::submodule::wants_recursion(
+        git,
+        (args.recurse_submodules, args.no_recurse_submodules),
+    );
+    switch_to(git, args)?;
+    if recurse {
+        super::submodule::follow_head(git, false)?;
+    }
+    Ok(())
+}
+
+fn switch_to(git: &GitHome, args: SwitchArgs) -> Result<()> {
     let makers = [&args.create, &args.force_create, &args.orphan];
     if makers.iter().filter(|m| m.is_some()).count() > 1 {
         bail!("options '-c', '-C', and '--orphan' cannot be used together");
@@ -805,6 +819,20 @@ fn patch_target(
 }
 
 pub fn checkout(git: &GitHome, cwd: &Path, args: CheckoutArgs) -> Result<()> {
+    let recurse = super::submodule::wants_recursion(
+        git,
+        (args.recurse_submodules, args.no_recurse_submodules),
+    );
+    let switching =
+        args.paths.is_empty() && !args.patch && !args.ours && !args.theirs && args.args.len() <= 1;
+    checkout_to(git, cwd, args)?;
+    if recurse && switching {
+        super::submodule::follow_head(git, false)?;
+    }
+    Ok(())
+}
+
+fn checkout_to(git: &GitHome, cwd: &Path, args: CheckoutArgs) -> Result<()> {
     let CheckoutArgs {
         args: names,
         paths,
@@ -815,6 +843,8 @@ pub fn checkout(git: &GitHome, cwd: &Path, args: CheckoutArgs) -> Result<()> {
         theirs,
         yes: _,
         patch,
+        recurse_submodules: _,
+        no_recurse_submodules: _,
     } = args;
     if patch {
         let (rev, paths) = patch_target(git, cwd, &names, paths)?;
