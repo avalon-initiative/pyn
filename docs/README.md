@@ -20,6 +20,7 @@ Markdown, plus the generated OpenAPI document; `make docs-check` verifies relati
 - [Merging: merge base, merge commits, conflicts and resolution](concepts/merging.md)
 - [Tamper-evident history: the frozen hash encoding, chained audit log, `pyn verify`](concepts/integrity.md)
 - [Configuration: every environment variable](configuration.md)
+- [Deployment and backups: Docker Compose, TLS, upgrades, backup and restore](deployment.md)
 - [Phase 1 scope](phase-1.md)
 
 ## API contract
