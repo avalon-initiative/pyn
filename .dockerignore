@@ -1,0 +1,11 @@
+.git
+.github
+target
+_running
+.pyn-data
+.env
+.env.*
+!.env.example
+docs
+*.md
+!crates/**/*.md

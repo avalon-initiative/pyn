@@ -126,3 +126,15 @@ jobs:
 
       - name: Tests that need Postgres
         run: make test-live
+
+  docker:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build the server and CLI images
+        run: make docker-build

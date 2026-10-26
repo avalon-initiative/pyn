@@ -1,0 +1,47 @@
+# Single-node pyn: server, PostgreSQL 16 and a volume for objects. See docs/deployment.md.
+name: pyn
+
+services:
+  db:
+    image: postgres:16-bookworm@sha256:d81f7b51697014367236d07ec58b54153fc28f828b72bf247fe5c7487520bcb0
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: pyn
+      POSTGRES_DB: pyn
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pyn-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pyn -d pyn"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  server:
+    build:
+      context: .
+      target: server
+    image: pyn-server:local
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      PYN_DATABASE_URL: postgres://pyn:${POSTGRES_PASSWORD}@db:5432/pyn
+      PYN_SECRET_KEY: ${PYN_SECRET_KEY:?set PYN_SECRET_KEY in .env (openssl rand -hex 32)}
+      PYN_DATA_DIR: /data
+    ports:
+      - "${PYN_PUBLISH:-127.0.0.1:7878}:7878"
+    volumes:
+      - pyn-objects:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  pyn-db:
+  pyn-objects:

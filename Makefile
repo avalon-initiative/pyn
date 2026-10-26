@@ -7,7 +7,7 @@ LOG_DIR := $(RUN_DIR)/logs
 PID_FILE := $(PID_DIR)/pyn.pid
 LOG_FILE := $(LOG_DIR)/pyn.log
 
-.PHONY: dev demo docs-check boundary-check openapi help build run start stop restart status test test-live e2e fmt fmt-check clippy lint check release clean
+.PHONY: dev demo docs-check boundary-check openapi help build run start stop restart status test test-live e2e docker-build fmt fmt-check clippy lint check release clean
 
 help:
 	@echo "pyn — local dev commands"
@@ -23,6 +23,7 @@ help:
 	@echo "  make test          run the test suite"
 	@echo "  make test-live     also run tests gated on real infra (Postgres)"
 	@echo "  make e2e           end-to-end suite: real pyn and pyn-server binaries on temporary repositories"
+	@echo "  make docker-build  build the server and CLI images locally (nothing is pushed)"
 	@echo "  make fmt           auto-format"
 	@echo "  make fmt-check     format check, no writes"
 	@echo "  make lint          clippy + docs link check + public-boundary check"
@@ -78,6 +79,11 @@ test-live:
 	@if cargo nextest --version >/dev/null 2>&1; then \
 		cargo nextest run --workspace --run-ignored only && cargo test --workspace --doc -- --ignored; \
 	else cargo test --workspace -- --ignored; fi
+
+DOCKER_TAG ?= local
+docker-build:
+	docker build --target server --build-arg VERSION=$(DOCKER_TAG) --build-arg REVISION=$$(git rev-parse --short HEAD) -t pyn-server:$(DOCKER_TAG) .
+	docker build --target cli -t pyn-cli:$(DOCKER_TAG) .
 
 e2e:
 	cargo test -p pyn-cli --test e2e --test e2e_second
