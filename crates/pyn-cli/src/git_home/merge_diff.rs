@@ -385,8 +385,14 @@ pub(super) fn with_from(mut text: String, pretty: &Pretty, from: Option<&ObjectI
         Pretty::Oneline { abbrev } => (0, *abbrev),
         _ => (7, false),
     };
+    let colour = if text.starts_with("\x1b[") {
+        text.find('m').map_or(0, |i| i + 1)
+    } else {
+        0
+    };
+    let skip = skip + colour;
     let end = text[skip..]
-        .find([' ', '\n'])
+        .find([' ', '\n', '\x1b'])
         .map_or(text.len(), |i| i + skip);
     let name = if short_id { short(p) } else { p.to_hex() };
     text.insert_str(end, &format!(" (from {name})"));
