@@ -12,7 +12,7 @@ use pyn_object::{Commit, Kind as ObjectKind, ObjectId};
 use super::commands::add_changes;
 use super::stage::{
     Entries, clean_message, clear_merge_state, entries_of, identity, index_of, merge_heads,
-    put_entry, raw_mode, refuse_in_progress, remove_entry, warn_about_hooks_for, write_tree,
+    put_entry, raw_mode, refuse_in_progress, remove_entry, write_tree,
 };
 use super::strategy::{BadOption, Strategy, Which, shift_tree};
 use super::treemerge::{Conflicting, Labels, Merge, Resolved, Worktree, merge_trees, result_tree};
@@ -53,12 +53,11 @@ fn say(text: &str) {
         println!("{text}");
     }
 }
-const MERGE_HOOKS: [&str; 5] = [
+const MERGE_HOOKS: [&str; 4] = [
     "pre-merge-commit",
     "prepare-commit-msg",
     "commit-msg",
     "post-merge",
-    "post-commit",
 ];
 
 fn short(id: &ObjectId) -> String {
@@ -299,7 +298,8 @@ fn fast_forward(
     if ours.is_some() {
         show_stat(git, args, old_tree.as_ref(), &new_tree)?;
     }
-    warn_about_hooks_for(git, &MERGE_HOOKS);
+    git.warn_if_hooks_off(&MERGE_HOOKS);
+    git.run_hook("post-merge", &["0".to_string()], None, &[])?;
     Ok(())
 }
 
@@ -504,6 +504,45 @@ enum Concluding {
     InIndex,
 }
 
+impl Finish<'_> {
+    /// Runs the merge commit's hooks over `MERGE_MSG`; a veto leaves the merge in progress. Returns the final message.
+    fn message_hooks(&self, message: &str, mode: &str) -> Result<String> {
+        let (git, args) = (self.git, self.args);
+        git.warn_if_hooks_off(&MERGE_HOOKS);
+        let verify = !args.no_verify;
+        let wanted = |h: &str| git.hook_present(h);
+        if !(wanted("prepare-commit-msg")
+            || (verify && (wanted("pre-merge-commit") || wanted("commit-msg"))))
+        {
+            return Ok(message.to_string());
+        }
+        write_state(git, "MERGE_HEAD", &format!("{}\n", self.theirs))?;
+        write_state(git, "MERGE_MSG", message)?;
+        write_state(git, "MERGE_MODE", mode)?;
+        let env = [
+            ("GIT_EDITOR", ":".to_string()),
+            ("GIT_INDEX_FILE", git.hook_index()),
+        ];
+        let file = git.hook_path(&git.repo.git().git_dir().join("MERGE_MSG"));
+        let vetoed = (verify && git.vetoed("pre-merge-commit", &[], &env)?)
+            || git.vetoed(
+                "prepare-commit-msg",
+                &[file.clone(), "merge".to_string()],
+                &env,
+            )?
+            || (verify && git.vetoed("commit-msg", &[file], &env)?);
+        if vetoed {
+            eprintln!("Not committing merge; use 'pyn commit' to complete the merge.");
+            std::process::exit(1);
+        }
+        let text = std::fs::read(git.repo.git().git_dir().join("MERGE_MSG"))?;
+        Ok(String::from_utf8_lossy(&clean_message(&[
+            String::from_utf8_lossy(&text).into_owned()
+        ]))
+        .into_owned())
+    }
+}
+
 /// What a merge needs to end: stop for conflicts or `--no-commit`, or make the merge commit.
 struct Finish<'a> {
     git: &'a GitHome,
@@ -563,6 +602,7 @@ impl Finish<'_> {
             println!("Automatic merge went well; stopped before committing as requested");
             return Ok(());
         }
+        let message = self.message_hooks(&message, mode)?;
         let tree = tree()?;
         let mut record = Commit {
             tree,
@@ -588,9 +628,11 @@ impl Finish<'_> {
             Concluding::InIndex => "In-index merge".to_string(),
         };
         git.move_head(&id, &format!("{}: {summary}", action(spec)))?;
+        clear_merge_state(git);
         say(&summary);
         show_stat(git, args, Some(ours_tree), &tree)?;
-        warn_about_hooks_for(git, &MERGE_HOOKS);
+        git.warn_if_hooks_off(&MERGE_HOOKS);
+        git.run_hook("post-merge", &["0".to_string()], None, &[])?;
         Ok(())
     }
 }

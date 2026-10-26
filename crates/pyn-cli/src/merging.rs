@@ -66,6 +66,12 @@ pub struct MergeArgs {
     /// An option for the strategy, such as `ours` or `theirs` (a git repository only).
     #[arg(short = 'X', long = "strategy-option", value_name = "OPTION", conflicts_with_all = ["abort", "continue_merge"])]
     pub(crate) strategy_option: Vec<String>,
+    /// Skip the `pre-merge-commit` and `commit-msg` hooks (a git repository only).
+    #[arg(long, overrides_with = "verify")]
+    pub(crate) no_verify: bool,
+    /// Run those hooks (the default).
+    #[arg(long, overrides_with = "no_verify")]
+    pub(crate) verify: bool,
     #[command(flatten)]
     pub(crate) sign: crate::git_home::SignFlag,
 }

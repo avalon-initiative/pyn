@@ -9,11 +9,11 @@ use pyn_gitwork::{Head, Pathspec};
 use pyn_object::{Commit, Kind as ObjectKind, ObjectId, Signature, hash_object};
 
 use super::GitHome;
+use super::hooks::author_env;
 use super::signing::{SignFlag, sign_commit};
 use super::stage::{
     clean_bytes, clean_ident, clear_merge_state, entries_of, env, identity, index_of, merge_heads,
-    merge_message, parse_date, refuse_states, stage_tracked, warn_about_hooks,
-    warn_about_hooks_for, write_tree,
+    merge_message, parse_date, refuse_states, stage_tracked, write_tree,
 };
 
 /// The git flags of `pyn commit`; a pyn server takes only `-F` and refuses the rest.
@@ -48,7 +48,7 @@ pub struct GitCommitArgs {
     /// Accepted for scripts (pyn never opens an editor, so there is no diff to show).
     #[arg(short = 'v', long, action = clap::ArgAction::Count)]
     verbose: u8,
-    /// Accepted for scripts: pyn runs no `pre-commit` or `commit-msg` hook either way.
+    /// Skip the `pre-commit` (`pre-merge-commit`) and `commit-msg` hooks.
     #[arg(short = 'n', long, overrides_with = "verify")]
     no_verify: bool,
     /// Opposite of `--no-verify`.
@@ -385,6 +385,7 @@ pub fn commit(git: &GitHome, opts: &CommitOptions) -> Result<()> {
         (None, None) => (!opts.messages.is_empty()).then(|| joined_messages(&opts.messages)),
     };
     let explicit = raw.map(|r| cleaned(&r, mode));
+    let explicit_given = explicit.is_some();
     if explicit.as_ref().is_some_and(|m| m.is_empty()) && !opts.flags.allow_empty_message {
         eprintln!("Aborting commit due to empty commit message.");
         std::process::exit(1);
@@ -456,6 +457,32 @@ pub fn commit(git: &GitHome, opts: &CommitOptions) -> Result<()> {
     }
     let index = index_of(opened.index.version, entries);
     let tree = write_tree(git, &index)?;
+    let verify = !opts.flags.no_verify;
+    let commit_hook = if merged.is_empty() {
+        "pre-commit"
+    } else {
+        "pre-merge-commit"
+    };
+    let wants_index = opts.all
+        && [commit_hook, "prepare-commit-msg", "commit-msg"]
+            .iter()
+            .any(|h| git.hook_present(h));
+    let lock = if wants_index {
+        Some(IndexLock::create(git, &index)?)
+    } else {
+        None
+    };
+    let mut hook_env = author_env(&author);
+    hook_env.push(("GIT_EDITOR", ":".to_string()));
+    hook_env.push((
+        "GIT_INDEX_FILE",
+        lock.as_ref()
+            .map_or_else(|| git.hook_index(), |l| l.0.display().to_string()),
+    ));
+    if verify && git.vetoed(commit_hook, &[], &hook_env)? {
+        drop(lock);
+        std::process::exit(1);
+    }
     let empty_tree = hash_object(git.repo.algorithm(), ObjectKind::Tree, b"")?;
     let base = match (&tip, parent) {
         (Some(t), _) => match t.parents.first() {
@@ -477,11 +504,47 @@ pub fn commit(git: &GitHome, opts: &CommitOptions) -> Result<()> {
         }
         std::process::exit(1);
     }
-    if opts.flags.no_verify {
-        warn_about_hooks_for(git, &["prepare-commit-msg", "post-commit"]);
-    } else {
-        warn_about_hooks(git);
+    git.warn_if_hooks_off(&[
+        "pre-commit",
+        "pre-merge-commit",
+        "prepare-commit-msg",
+        "commit-msg",
+        "post-commit",
+    ]);
+    if git.hook_present("prepare-commit-msg") || (verify && git.hook_present("commit-msg")) {
+        let edit_msg = git.repo.git().git_dir().join("COMMIT_EDITMSG");
+        let shown = git.hook_path(&edit_msg);
+        std::fs::write(&edit_msg, &message)?;
+        let source = match (
+            &opts.flags.reuse_message,
+            explicit_given,
+            amend,
+            merged.is_empty(),
+        ) {
+            (Some(spec), ..) => vec!["commit".to_string(), spec.clone()],
+            (None, true, ..) => vec!["message".to_string()],
+            (None, false, true, _) => vec!["commit".to_string(), "HEAD".to_string()],
+            (None, false, false, false) => vec!["merge".to_string()],
+            _ => Vec::new(),
+        };
+        let mut args = vec![shown.clone()];
+        args.extend(source);
+        let mut vetoed = git.vetoed("prepare-commit-msg", &args, &hook_env)?;
+        if !vetoed && verify {
+            vetoed = git.vetoed("commit-msg", &[shown], &hook_env)?;
+        }
+        if vetoed {
+            drop(lock);
+            std::process::exit(1);
+        }
+        message = cleaned(&std::fs::read(&edit_msg)?, mode);
+        if message.is_empty() && !opts.flags.allow_empty_message {
+            eprintln!("Aborting commit due to empty commit message.");
+            drop(lock);
+            std::process::exit(1);
+        }
     }
+    drop(lock);
     let (parents, extra_headers) = match &tip {
         Some(t) => (
             t.parents.clone(),
@@ -541,21 +604,56 @@ pub fn commit(git: &GitHome, opts: &CommitOptions) -> Result<()> {
             &Pathspec::default(),
         )?
         .len();
-    if opts.flags.quiet {
-        return Ok(());
+    if !opts.flags.quiet {
+        println!("[{name}{root} {}] {first}", &id.to_hex()[..7]);
+        if (author.name.as_slice(), author.email.as_slice())
+            != (committer.name.as_slice(), committer.email.as_slice())
+        {
+            println!(
+                " Author: {} <{}>",
+                String::from_utf8_lossy(&author.name),
+                String::from_utf8_lossy(&author.email)
+            );
+        }
+        println!("{changed} file(s) changed");
     }
-    println!("[{name}{root} {}] {first}", &id.to_hex()[..7]);
-    if (author.name.as_slice(), author.email.as_slice())
-        != (committer.name.as_slice(), committer.email.as_slice())
-    {
-        println!(
-            " Author: {} <{}>",
-            String::from_utf8_lossy(&author.name),
-            String::from_utf8_lossy(&author.email)
-        );
+    hook_env.retain(|(k, _)| *k != "GIT_INDEX_FILE");
+    hook_env.push(("GIT_INDEX_FILE", git.hook_index()));
+    git.run_hook("post-commit", &[], None, &hook_env)?;
+    if let (true, Some(old)) = (amend, parent) {
+        let pairs = format!("{old} {id}\n");
+        let env = author_env(&author);
+        git.run_hook(
+            "post-rewrite",
+            &["amend".to_string()],
+            Some(pairs.as_bytes()),
+            &env,
+        )?;
     }
-    println!("{changed} file(s) changed");
     Ok(())
+}
+
+/// `index.lock` holding the staged index for the hooks of `commit -a`, as git does; removed on drop.
+struct IndexLock(PathBuf);
+
+impl IndexLock {
+    fn create(git: &GitHome, index: &pyn_git::Index) -> Result<Self> {
+        let path = git.repo.git().git_dir().join("index.lock");
+        let bytes = index.encode(git.algorithm())?;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .with_context(|| format!("Unable to create '{}'", path.display()))?;
+        std::io::Write::write_all(&mut file, &bytes)?;
+        Ok(Self(path))
+    }
+}
+
+impl Drop for IndexLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
 }
 
 #[cfg(test)]

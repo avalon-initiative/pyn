@@ -597,6 +597,8 @@ pub fn pull(git: &GitHome, args: PullArgs) -> Result<()> {
             no_stat: args.no_stat,
             strategy: args.strategy,
             strategy_option: args.strategy_option,
+            no_verify: false,
+            verify: false,
             sign: args.sign,
         },
     )

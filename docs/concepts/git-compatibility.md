@@ -109,7 +109,7 @@ The commands named in decision #218.
 | `git commit <path>...` | `pyn commit -m <msg> <path>...` | different | On a pyn server: one atomic commit of the named paths as they are on disk, whatever is staged (git's `--only`). Not available on a git home, which says to `add` the paths first. |
 | `git commit -F <file>` (`-` is standard input) | same | git home: supported; pyn server: supported | The same message reading and cleanup on both homes, with and without the local store; `-m` and `-F` together are refused. On a pyn server `--file` stays the content file (it has no short form, so `-F` does not clash). See [Commit flags on a git home](#commit-flags-on-a-git-home). |
 | `git commit --file=<file>`, `--allow-empty`, `--author=<name <email>>`, `--date=<date>`, `-s`, `--signoff`, `--amend`, `-S[<keyid>]`, `--gpg-sign[=<keyid>]`, `--no-gpg-sign`, `--allow-empty-message`, `--cleanup=<mode>`, `--reset-author`, `--trailer <trailer>`, `-C <commit>`, `--reuse-message=<commit>` | same | git home: supported | Git's behaviour on a git home; on a pyn server a usage error (`129`) naming the flag, because commits there are immutable (no `--amend`) and `--file` is the content file. `--allow-empty` is refused there because the server rejects a pushed commit that changes no file. `--author` and `--date` are the exception: a pyn server workspace with the local store takes them on a commit of staged changes (author and author date only; the committer stays the signed-in account, the audit actor the pusher, and they survive a push), and refuses them without the local store, on a path commit and on a merge conclusion. `-s` waits until accounts carry emails. See [Commit flags on a git home](#commit-flags-on-a-git-home). |
-| `git commit -q`, `--quiet`, `-n`, `--no-verify`, `--verify`, `-v`, `--verbose`, `--status`, `--no-status`, `--no-edit` | same | supported | Both homes. `-q` prints no summary (errors and warnings stay); the rest are accepted and ignored because pyn runs no hooks and opens no editor. On a git home `--no-verify` also leaves out the warning about the `pre-commit` and `commit-msg` hooks. |
+| `git commit -q`, `--quiet`, `-n`, `--no-verify`, `--verify`, `-v`, `--verbose`, `--status`, `--no-status`, `--no-edit` | same | supported | Both homes. `-q` prints no summary (errors and warnings stay); `--no-verify` skips `pre-commit` and `commit-msg` on a git home (see [Client hooks](#client-hooks)) and is ignored on a pyn server; the rest are accepted and ignored because pyn opens no editor. |
 | `git commit -c <commit>`, `--reedit-message`, `-e`, `--edit`, `-t <file>`, `--template`, `--fixup`, `--squash`, `--dry-run`, `--short`, `--branch`, `--long`, `--porcelain`, `-z`, `--ahead-behind`, `-u`, `--untracked-files`, `-i`, `--include`, `-o`, `--only`, `-p`, `--patch`, `--interactive`, `-U`, `--unified`, `--inter-hunk-context`, `--pathspec-from-file`, `--pathspec-file-nul`, `--no-post-rewrite`, `--post-rewrite`, `--no-quiet`, `--no-verbose` and the other `--no-` forms git generates for its options | none | unsupported | Usage error (`129`). Each needs an editor, a status report, or a path selection `commit` does not have: use `add` to choose paths and `-m`/`-F` for the message. |
 | `pyn commit --file <local>` | | pyn only | Content file for a single path. In a workspace the file at the path is the default. |
 | `pyn commit --base <rev>` | | pyn only | The revision the edit started from; the server rejects the commit if the branch has moved on from it on an exclusive path. |
@@ -575,7 +575,7 @@ goes with these fatal errors names `pyn`. Refspecs that cannot be parsed are `fa
 | `--atomic` | All refs or none: a ref that fails the checks here makes the others `[rejected] (atomic push failed)` and nothing is sent; a server without the capability is `fatal`. |
 | `--porcelain` | `<flag> <tab> <from>:<to> <tab> <summary> (<reason>)` lines and a final `Done`, on standard output. |
 | `-q`, `-v` | `-q` prints errors only; `-v` also prints `Pushing to <url>`, `= [up to date]` lines and the tracking refs it updates. |
-| `--progress`, `--no-progress`, `--verify`, `--no-verify`, `--thin`, `--no-thin`, `-4`, `-6`, `--recurse-submodules=no` | Accepted and ignored. No hooks run; the server's own messages (`remote: ...`, including its hooks' output) are always shown. |
+| `--progress`, `--no-progress`, `--verify`, `--no-verify`, `--thin`, `--no-thin`, `-4`, `-6`, `--recurse-submodules=no` | `--no-verify` skips the `pre-push` hook on a git home (see [Client hooks](#client-hooks)); `--verify` is the default. The others are accepted and ignored. The server's own messages (`remote: ...`, including its hooks' output) are always shown. |
 | `--mirror` | Sends every ref under `refs/` (branches, tags, notes, remote-tracking refs, anything else) as `+refs/*:refs/*` and deletes the remote refs this repository does not have. Not with refspecs, `--all`, `--tags` or `--delete` (`fatal`, `128`). A remote with `remote.<name>.mirror = true` (`remote add --mirror=push`) does this on a plain `pyn push <name>` and refuses refspecs. |
 | `--prune`, `--signed`, `-o`, `--push-option`, `--recurse-submodules` (other than `no`), `--receive-pack`, `--exec`, `--repo`, `--force-if-includes` | Usage error (`129`) naming the flag. `--force-if-includes` is refused because ignoring it would push less safely than asked. |
 
@@ -601,7 +601,7 @@ What a push does, in git's order:
 
 Differences from git, all deliberate or not yet done: no per-object "Enumerating objects" or "Writing objects" progress, only what the
 server sends; ids are not lengthened to stay unique; `push.autoSetupRemote`, `push.negotiate`, `push.gpgSign`, `push.recurseSubmodules`,
-`push.useForceIfIncludes` and `remote.<name>.receivepack` are not read; pre-push hooks are never run; `--dry-run` with `-u` prints `Would set upstream of ...`
+`push.useForceIfIncludes` and `remote.<name>.receivepack` are not read; `--dry-run` with `-u` prints `Would set upstream of ...`
 instead of setting anything.
 A push to a pyn server is not this command: see the push row above.
 
@@ -783,7 +783,7 @@ schedules them.
 
 | Git | Reason |
 | --- | --- |
-| Commands that run git's hooks (`submodule`, hooks in `.git/hooks`) | pyn does not run a git repository's hooks. pyn's own hooks are tracked in #216. Maintaining a git home's storage and bundles are built; see [Storage maintenance](#storage-maintenance) and [Bundles](#bundles). |
+| Commands that run git's hooks (`submodule`, hooks in `.git/hooks`) | A git home's client hooks run as git runs them (see [Client hooks](#client-hooks)); the ones not built are warned about. Submodules are not built. pyn's own hooks are tracked in #216. Maintaining a git home's storage and bundles are built; see [Storage maintenance](#storage-maintenance) and [Bundles](#bundles). |
 
 ## On a git home
 
@@ -1183,7 +1183,7 @@ path is staged as the file is, which resolves it.
 5. The index is written (only with `-a`), then the branch ref is moved through its `.lock` file after checking `HEAD` did not move,
    and the reflog lines are appended (see [Reflogs](#reflogs)).
 
-No hook runs (a warning names hooks that exist), and no `COMMIT_EDITMSG` is written. A commit made this way has the object id
+Client hooks run as in [Client hooks](#client-hooks); `COMMIT_EDITMSG` is written only when a message hook runs. A commit made this way has the object id
 git would give the same tree, parent, identity, dates and message. `commit <path>` is refused; `add` the paths and run
 `commit`.
 
@@ -2262,9 +2262,39 @@ Any command that would write a work tree file through a `filter` driver other th
 (other than UTF-8), stops first and changes nothing (exit `128`, naming the path), because pyn applies neither. `apply` and the
 patch-mode commands that write the work tree (`checkout -p`, `restore -p`) also stop for a path whose line endings or `ident` git would convert,
 since they copy bytes as they are. A Git LFS filter writes the pointer file as it is, with a warning (decision #245; see [Git LFS](#git-lfs)).
-Hooks are never run; one warning names the hooks that exist
-for the command (`post-checkout`, `pre-merge-commit`, `commit-msg` and the like). Sparse checkouts, submodule updates, the split
+The hooks pyn does not run yet (see [Client hooks](#client-hooks)) draw one warning naming the ones that exist
+for the command. Sparse checkouts, submodule updates, the split
 index and `GIT_DIR` are not supported, and `--squash` and anything that talks to a remote other than `ls-remote`, `fetch`, `pull`, `push` and `clone` are not built yet (epic #301; see [Transports and credentials](#transports-and-credentials)).
+
+### Client hooks
+
+A git home runs the repository's client hooks as git does, as the user's own processes: no sandbox, in the work tree root, with
+standard output sent to standard error and no standard input except where git gives one. A hook is found in `core.hooksPath`
+(relative to the work tree root, `~/` expanded) or `<common git dir>/hooks`; only a file with an executable bit counts, so `*.sample` files
+are ignored and a non-executable hook earns git's `The '<name>' hook was ignored` hint (silenced by `advice.ignoredHook=false`). pyn
+never copies hooks: `clone` creates none, as git's templates give none, so a freshly cloned repository runs no hook until the user installs one.
+`pyn.hooks=false` in the git configuration turns every hook off, and the warning naming the hooks that exist returns (provisional: the setting and its
+default are open in #496).
+
+| Hook | Arguments and input | Effect of a nonzero status |
+| --- | --- | --- |
+| `pre-commit` | none; `GIT_INDEX_FILE`, `GIT_AUTHOR_*`, `GIT_EDITOR=:` | `commit` stops, exit `1`; skipped by `--no-verify`. Runs before the "nothing to commit" check, as in git. With `commit -a` the index is `<git dir>/index.lock`. |
+| `pre-merge-commit` | none | `commit` concluding a merge runs it instead of `pre-commit`; a clean `merge` runs it before committing and a veto leaves the merge in progress (exit `1`). Skipped by `--no-verify`. |
+| `prepare-commit-msg` | `.git/COMMIT_EDITMSG` (`.git/MERGE_MSG` for a merge) and the source: `message` (`-m`, `-F`), `commit <rev>` (`-C <rev>`, or `HEAD` for `--amend`), `merge`; the hook may rewrite the file | Stops the commit, exit `1`. Not skipped by `--no-verify`. |
+| `commit-msg` | the message file; may rewrite it | Stops the commit, exit `1`; skipped by `--no-verify`. |
+| `post-commit` | none | Ignored. Runs after the ref moves. |
+| `post-rewrite` | `amend`; `<old> <new>` on standard input | Ignored. Only for `commit --amend`; `rebase` and `cherry-pick` do not run it yet. |
+| `post-merge` | `0` | Ignored. After a merge that fast-forwards or commits, not after `commit` concluding one. `--squash` is not built. |
+| `post-checkout` | `<old HEAD> <new HEAD> <flag>`: `1` for `switch` and `checkout` of a branch or commit, `0` for `checkout -- <paths>` and `restore`; the all-zero id stands for no commit | The command exits `1` after finishing its work, as git's does. |
+| `pre-push` | `<remote name or URL> <url>`; one line `<local ref> <local id> <remote ref> <remote id>` per ref about to be sent on standard input (`(delete)` and the zero id for a deletion; refs that are up to date or rejected are left out); also run by `--dry-run` | `push` sends nothing and exits `1`; skipped by `--no-verify`. |
+
+The environment also carries `GIT_PREFIX` (the directory the command was run from, relative to the work tree root, with a trailing `/`, or empty) and
+whatever the caller had. `GIT_DIR` and `GIT_WORK_TREE` are not set. Oracle tests run one recording script under git and under pyn on git 2.43 and 2.55 and compare
+arguments, standard input, working directory, environment and the resulting exit status and repository state.
+
+Not built yet, and warned about when they exist: `pre-rebase`, the `rebase`/`cherry-pick`/`revert`/`am` commit hooks (`prepare-commit-msg`, `commit-msg`,
+`post-commit`, `post-rewrite`, `post-checkout` during a rebase), `applypatch-msg`, `pre-applypatch`, `post-applypatch`, `reference-transaction`, `pre-auto-gc`, `post-checkout` after `clone` and
+`worktree add`, and `--squash` merges. `post-update`, `pre-receive`, `update` and `push-to-checkout` are server side and never run by a client.
 
 ### Git LFS
 

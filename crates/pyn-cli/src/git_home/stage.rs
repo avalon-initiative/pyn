@@ -25,12 +25,6 @@ pub(super) const IN_PROGRESS: [&str; 6] = [
     "rebase-apply",
     "sequencer",
 ];
-const HOOKS: [&str; 4] = [
-    "pre-commit",
-    "prepare-commit-msg",
-    "commit-msg",
-    "post-commit",
-];
 
 pub struct AddOptions {
     pub paths: Vec<String>,
@@ -934,17 +928,9 @@ pub(super) fn refuse_states(git: &GitHome, states: &[&str]) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn warn_about_hooks(git: &GitHome) {
-    warn_about_hooks_for(git, &HOOKS);
-}
-
 /// Warns once that git hooks exist and were not run.
 pub(super) fn warn_about_hooks_for(git: &GitHome, names: &[&str]) {
-    let common = git.repo.git().common_dir();
-    let hooks = match git.repo.config().get("core.hookspath") {
-        Some(p) => common.join(p),
-        None => common.join("hooks"),
-    };
+    let hooks = git.hooks_dir();
     if names.iter().any(|h| hooks.join(h).is_file()) {
         eprintln!(
             "warning: pyn does not run git hooks; the ones in {} were skipped",

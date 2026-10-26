@@ -265,7 +265,10 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
             staged: true,
             worktree: false,
             ..
-        } => stage::restore_staged(git, cwd, &args, source.as_deref()),
+        } => {
+            stage::restore_staged(git, cwd, &args, source.as_deref())?;
+            super::switch::post_checkout_files(git)
+        }
         Command::Restore {
             args,
             source,

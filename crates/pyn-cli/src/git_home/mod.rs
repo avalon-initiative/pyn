@@ -41,6 +41,7 @@ mod fsck_check;
 mod gc;
 mod grep;
 pub(crate) mod grep_regex;
+mod hooks;
 mod hunk_pick;
 mod init_git;
 mod log;

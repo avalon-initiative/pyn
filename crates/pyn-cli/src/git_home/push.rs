@@ -69,9 +69,10 @@ pub struct PushArgs {
     /// Machine-readable output on standard output.
     #[arg(long)]
     porcelain: bool,
-    /// Accepted; no hooks run.
+    /// Run the `pre-push` hook (the default).
     #[arg(long, overrides_with = "no_verify")]
     verify: bool,
+    /// Skip the `pre-push` hook.
     #[arg(long, overrides_with = "verify")]
     no_verify: bool,
     #[arg(short = '4', long = "ipv4", hide = true)]
@@ -901,6 +902,12 @@ fn push_one(
         }
     }
 
+    git.warn_if_hooks_off(&["pre-push"]);
+    if !args.no_verify && pre_push_vetoed(git, &round, url, &entries)? {
+        fail(&[]);
+        return Ok(true);
+    }
+
     let updates: Vec<RefUpdate> = entries
         .iter()
         .filter(|e| e.status == Status::Pending)
@@ -976,6 +983,26 @@ fn push_one(
         eprintln!("Everything up-to-date");
     }
     Ok(failed)
+}
+
+/// Runs `pre-push` with one line per ref about to be sent; true when it exited nonzero.
+fn pre_push_vetoed(git: &GitHome, round: &Round, url: &str, entries: &[Entry]) -> Result<bool> {
+    let zero = "0".repeat(git.algorithm().digest_len() * 2);
+    let hex = |id: &Option<ObjectId>| id.as_ref().map_or_else(|| zero.clone(), ObjectId::to_hex);
+    let mut lines = String::new();
+    for e in entries.iter().filter(|e| e.status == Status::Pending) {
+        let local = e.src.as_deref().unwrap_or("(delete)");
+        lines.push_str(&format!(
+            "{local} {} {} {}\n",
+            hex(&e.new),
+            e.name,
+            hex(&e.old)
+        ));
+    }
+    let args = [round.target.shown.clone(), url.to_string()];
+    Ok(git
+        .run_hook("pre-push", &args, Some(lines.as_bytes()), &[])?
+        .is_some_and(|s| s != 0))
 }
 
 fn run(git: &GitHome, a: &PushArgs) -> Result<bool> {

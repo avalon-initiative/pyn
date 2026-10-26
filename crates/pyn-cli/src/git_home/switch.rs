@@ -12,7 +12,7 @@ use pyn_object::ObjectId;
 use super::refwrite::BRANCHES;
 use super::stage::{
     Entries, entries_of, index_of, put_entry, raw_mode, refuse_in_progress, remove_entry,
-    resolve_specs, under, warn_about_hooks_for,
+    resolve_specs, under,
 };
 use super::worktree::{Mode, check_writes, move_tree, remove_entry_file, write_bytes, write_entry};
 use super::{GitHome, Refused, convert, path_string};
@@ -379,9 +379,15 @@ fn go_quietly(git: &GitHome, go: Go, via: Via) -> Result<()> {
             println!("{letter}\t{}", path_string(&path));
         }
     }
-    warn_about_hooks_for(git, &CHECKOUT_HOOKS);
+    git.warn_if_hooks_off(&CHECKOUT_HOOKS);
+    let hook_new = target.or(old_commit);
+    let hook_status = git.post_checkout(old_commit.as_ref(), hook_new.as_ref(), true)?;
+    let done = || match hook_status {
+        0 => Ok(()),
+        _ => std::process::exit(1),
+    };
     if quiet {
-        return Ok(());
+        return done();
     }
     if let (
         true,
@@ -417,7 +423,7 @@ fn go_quietly(git: &GitHome, go: Go, via: Via) -> Result<()> {
             eprintln!("HEAD is now at {} {}", abbrev(&id), subject(git, &id)?);
         }
     }
-    Ok(())
+    done()
 }
 
 pub fn switch(git: &GitHome, args: SwitchArgs) -> Result<()> {
@@ -660,10 +666,18 @@ fn restore_paths(git: &GitHome, cwd: &Path, paths: &[String], r: Restore) -> Res
     if r.to_index {
         git.save_index(&opened, &index_of(opened.index.version, entries))?;
     }
-    if r.to_index && r.to_worktree {
-        warn_about_hooks_for(git, &CHECKOUT_HOOKS);
-    }
+    post_checkout_files(git)?;
     Ok(sources.len() + remerged.len() + doomed.len())
+}
+
+/// Runs `post-checkout` for a checkout of paths; a failing hook ends the command with status 1.
+pub(super) fn post_checkout_files(git: &GitHome) -> Result<()> {
+    git.warn_if_hooks_off(&CHECKOUT_HOOKS);
+    let head = git.repo.head()?.id();
+    if git.post_checkout(head.as_ref(), head.as_ref(), false)? != 0 {
+        std::process::exit(1);
+    }
+    Ok(())
 }
 
 fn commit_of(git: &GitHome, spec: &str) -> Result<ObjectId> {
