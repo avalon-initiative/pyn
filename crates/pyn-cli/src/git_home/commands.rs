@@ -8,7 +8,7 @@ use anyhow::{Result, bail};
 use pyn_git::Refspec;
 use pyn_gitwork::{
     Change, Conflict, Entry, Head, Kind, Pathspec, StatusEntry, SubmoduleIgnore, Submodules,
-    fs_path, hash_worktree_file,
+    fs_path,
 };
 use pyn_object::ObjectId;
 
@@ -112,6 +112,7 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
         Command::Checkout(args) => super::switch::checkout(git, cwd, args),
         Command::Tag(args) => super::tags::tag(git, args),
         Command::Stash(args) => super::stash::stash(git, cwd, args),
+        Command::Worktree(args) => super::worktrees::worktree(git, cwd, args),
         Command::Clean(args) => {
             if super::clean::clean(git, cwd, &args)? {
                 std::process::exit(1);
@@ -628,11 +629,20 @@ fn disk_blob(
     if !meta.is_file() && !meta.file_type().is_symlink() {
         return Ok(None);
     }
-    let (mode, id) = hash_worktree_file(git.repo.algorithm(), &file)?;
+    let recorded_id = recorded.map(|e| e.id);
+    let (mode, id, cleaned) = if meta.is_file() && !git.repo.conversion(path)?.is_identity() {
+        let data = git.repo.read_clean(path, &file, recorded_id, false)?.data;
+        let id = pyn_object::hash_object(git.repo.algorithm(), pyn_object::Kind::Blob, &data)?;
+        let mode = pyn_gitwork::worktree_mode(&meta).unwrap_or(pyn_object::FileMode::Regular);
+        (mode, id, Some(std::sync::Arc::new(data.into_owned())))
+    } else {
+        let (mode, id) = git.repo.hash_worktree_entry(path, &file, recorded_id)?;
+        (mode, id, None)
+    };
     Ok(Some(Blob {
         hash: id.to_hex(),
         mode,
-        source: Source::Worktree { file },
+        source: Source::Worktree { file, cleaned },
     }))
 }
 

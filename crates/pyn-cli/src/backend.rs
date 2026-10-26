@@ -79,6 +79,12 @@ pub trait Backend {
     /// Every path as of `commit` (an id or abbreviation; the newest if `None`), and the full id used.
     fn snapshot(&self, commit: Option<&str>) -> Result<(Option<String>, Vec<api::SnapshotEntry>)>;
 
+    /// The `diff` attribute of a path: `Some(true)` when it makes the path binary (`-diff`), `Some(false)` when it
+    /// forces text (`diff`).
+    fn diff_binary(&self, _path: &str) -> Option<bool> {
+        None
+    }
+
     /// A stored object's content by its id (a git blob); `probe` asks for only the first bytes when the home can.
     fn blob(&self, _id: &str, _probe: Option<usize>) -> Result<Vec<u8>> {
         anyhow::bail!("this home does not serve objects by id")

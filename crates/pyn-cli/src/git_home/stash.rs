@@ -7,7 +7,7 @@ use std::path::Path;
 use anyhow::{Result, bail};
 use clap::{Args, Subcommand};
 use pyn_git::{Expect, Index, IndexEntry, ReflogEntry};
-use pyn_gitwork::{Entry, Head, Kind, Pathspec, fs_path, hash_worktree_file};
+use pyn_gitwork::{Entry, Head, Kind, Pathspec, fs_path};
 use pyn_object::{Commit, FileMode, Kind as ObjectKind, ObjectId};
 
 use super::patch_mode::{self, StashPatch};
@@ -800,7 +800,7 @@ fn apply_stash(git: &GitHome, id: &ObjectId, index: bool) -> Result<Applying> {
     let incoming =
         git.repo
             .diff_trees(Some(&base_tree), Some(&stash.tree), &Pathspec::default())?;
-    convert::refuse_conversions(
+    convert::refuse_unsupported(
         git,
         incoming
             .iter()
@@ -985,7 +985,7 @@ fn staged_index(git: &GitHome, version: u32, merged: &Merge) -> Result<Index> {
         if let Ok(meta) = std::fs::symlink_metadata(&file)
             && e.mode != FileMode::Gitlink
             && (meta.is_file() || meta.file_type().is_symlink())
-            && hash_worktree_file(git.repo.algorithm(), &file)? == (e.mode, e.id)
+            && git.repo.hash_worktree_entry(path, &file, Some(e.id))? == (e.mode, e.id)
         {
             stat_fields(&mut entry, &meta);
         }

@@ -127,6 +127,52 @@ pub fn hash_worktree_file(algorithm: Algorithm, path: &Path) -> Result<(FileMode
     Ok((mode, hasher.finish()?))
 }
 
+impl Repo {
+    /// Like [`hash_worktree_file`], but of the repository form of the file: line endings and `ident` converted as
+    /// `add` would, and nothing warned about. `index_id` is the path's index blob, which auto conversion consults.
+    pub fn hash_worktree_entry(
+        &self,
+        path: &[u8],
+        file: &Path,
+        index_id: Option<ObjectId>,
+    ) -> Result<(FileMode, ObjectId)> {
+        let meta = std::fs::symlink_metadata(file).map_err(io_at(file))?;
+        if worktree_mode(&meta).is_none_or(|m| m == FileMode::Symlink)
+            || self.conversion(path)?.is_identity()
+        {
+            return hash_worktree_file(self.algorithm(), file);
+        }
+        let mode = worktree_mode(&meta).unwrap_or(FileMode::Regular);
+        let clean = self.read_clean(path, file, index_id, false)?;
+        let id = pyn_object::hash_object(self.algorithm(), ObjectKind::Blob, &clean.data)?;
+        Ok((mode, id))
+    }
+
+    /// The repository form of the regular file at `file`; with `check_roundtrip`, `core.safecrlf` is enforced and
+    /// its warnings returned.
+    pub fn read_clean(
+        &self,
+        path: &[u8],
+        file: &Path,
+        index_id: Option<ObjectId>,
+        check_roundtrip: bool,
+    ) -> Result<crate::Converted<'static>> {
+        let bytes = std::fs::read(file).map_err(io_at(file))?;
+        let conv = self.conversion(path)?;
+        let blob = || index_id.and_then(|id| self.blob(&id).ok());
+        let opts = crate::ToGit {
+            check_roundtrip,
+            renormalize: false,
+            index_blob: &blob,
+        };
+        let out = conv.to_git(path, &bytes, &opts)?;
+        Ok(crate::Converted {
+            data: std::borrow::Cow::Owned(out.data.into_owned()),
+            warnings: out.warnings,
+        })
+    }
+}
+
 fn read_link_bytes(path: &Path) -> Result<Vec<u8>> {
     let target = std::fs::read_link(path).map_err(io_at(path))?;
     #[cfg(unix)]
@@ -378,7 +424,7 @@ impl Repo {
         if !mode_differs && !racy && stat_matches(&meta, e) {
             return Ok(None);
         }
-        let (_, id) = hash_worktree_file(self.algorithm(), &path)?;
+        let (_, id) = self.hash_worktree_entry(&e.path, &path, Some(e.id))?;
         Ok((id != e.id || mode_differs).then_some(Kind::Modified))
     }
 

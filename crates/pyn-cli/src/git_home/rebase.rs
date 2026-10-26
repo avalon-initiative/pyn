@@ -1763,7 +1763,7 @@ fn do_merge(git: &GitHome, state: &State, item: &Item) -> Result<()> {
     let incoming =
         git.repo
             .diff_trees(base_tree.as_ref(), Some(&theirs_tree), &Pathspec::default())?;
-    super::convert::refuse_conversions(
+    super::convert::refuse_unsupported(
         git,
         incoming
             .iter()

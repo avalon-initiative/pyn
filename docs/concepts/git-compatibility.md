@@ -178,8 +178,9 @@ Commands people reach for that are not in the daily set.
 | `git bisect start [--term-(bad\|new)=<term> --term-(good\|old)=<term>] [--no-checkout] [--first-parent] [<bad> [<good>...]] [--] [<pathspec>...]`, `good`\|`old`, `bad`\|`new`, `skip`, `next`, `reset`, `run`, `log`, `replay`, `terms` | `pyn bisect ...` on a git home | git home only | See [Bisect](#bisect). Git's search, output, exit statuses and `.git` state, so git and pyn can continue each other's bisection; `visualize` and `view` are not built (`129`). On a pyn server or local-store workspace it fails with `fatal: not a git repository (or any of the parent directories): .git` (`128`). |
 | `git blame [-L <range>] [-w] [<options>] [<rev>] [--] <file>`, `git annotate` | `pyn blame ...`, `pyn annotate ...` on a git home | git home only | See [Blame](#blame). Git's lines byte for byte: the default, `-e`, `-s`, `-f`, `-n`, `-l`, `-t`, `-b`, `--root`, `--abbrev`, `--date`, `-p`, `--line-porcelain`, `-L` ranges, `<rev>`, `<a>..<b>` and `^<rev>`. `-M`, `-C` and `--incremental` are usage errors (`129`). On a pyn server or local-store workspace it says it needs a git repository (`1`). |
 | `git submodule` | none | unsupported | Submodule lifecycle commands are not built. On a git home, `status` and `diff` inspect recorded gitlinks and initialized submodule checkouts without changing them; see [On a git home](#on-a-git-home). |
+| `git worktree add\|list\|lock\|unlock\|move\|prune\|remove\|repair` | `pyn worktree ...` on a git home | git home only | See [Linked work trees](#linked-work-trees). On a pyn server it prints `pyn: 'worktree' manages a git repository's work trees, and this is not one` (`1`). |
 | `git format-patch`, `git apply`, `git am` | the same names on a git home | git home only | See [Patches](#patches). On a pyn server `format-patch` and `am` fail with `fatal: not a git repository (or any of the parent directories): .git` (`128`), as does `apply`, which git would run outside a repository too. |
-| `git archive`, `git bundle`, `git notes`, `git worktree`, `git gc`, `git fsck` | none | unsupported | `pyn: '<cmd>' is not a pyn command` (`1`). Only the commands in the git-only list print the "git command pyn does not support yet" message, so these read as unknown until that list is widened (#223). |
+| `git archive`, `git bundle`, `git notes`, `git gc`, `git fsck` | none | unsupported | `pyn: '<cmd>' is not a pyn command` (`1`). Only the commands in the git-only list print the "git command pyn does not support yet" message, so these read as unknown until that list is widened (#223). |
 
 ## Branching and merging
 
@@ -721,7 +722,7 @@ schedules them.
 
 | Git | Reason |
 | --- | --- |
-| Commands that maintain git's own storage or run its hooks (`gc`, `fsck`, `bundle`, `submodule`, `worktree`, hooks in `.git/hooks`) | pyn reads a git repository's `.git/` on a git home (decision #245) but does not maintain it or run its hooks. pyn's own hooks are tracked in #216. |
+| Commands that maintain git's own storage or run its hooks (`gc`, `fsck`, `bundle`, `submodule`, hooks in `.git/hooks`) | pyn reads a git repository's `.git/` on a git home (decision #245) but does not maintain it or run its hooks. pyn's own hooks are tracked in #216. |
 
 ## On a git home
 
@@ -786,6 +787,40 @@ and asks `Continue? [y/N]`; `-y` or `--yes` skips the question, and without a te
 escapes and `core.ignoreCase`. A file inside an ignored folder cannot be re-included, and a tracked file stays tracked
 whatever the rules say.
 
+### Attributes and line endings
+
+`pyn-gitwork` has one attributes engine, shared by every command that needs it. It reads the global attributes file
+(`core.attributesFile`, else `$XDG_CONFIG_HOME/git/attributes`, else `~/.config/git/attributes`), every `.gitattributes` from the
+work tree root down to the path's folder (a deeper file wins, and a later line wins within a file) and `.git/info/attributes`
+(which wins over all of them). Patterns follow git: a pattern without a slash matches names at any depth below its file,
+others are anchored to it, `**` and character classes work, `core.ignoreCase` folds case, negative (`!`) and folder-only
+(`dir/`) patterns are ignored, and a symbolic link named `.gitattributes` is not read. Attribute states are set, unset
+(`-name`), reset (`!name`) and valued (`name=value`); `[attr]` macros are defined in the top-level `.gitattributes`,
+`info/attributes` and the global file only, and the built-in `binary` macro is `-diff -merge -text`. The system-wide
+attributes file is not read (its place depends on how git was built).
+
+Conversion follows git's `convert.c`. `text`, `text=auto`, `eol`, the legacy `crlf`, `core.autocrlf` (`true`, `input`),
+`core.eol` and `core.safecrlf` (`true`, `warn` by default, `false`) decide what `add` stores and what a checkout writes:
+CRLF becomes LF on the way in, LF becomes CRLF on the way out when the effective end of line is CRLF, `auto` leaves binary
+files (a NUL, a lone CR or mostly non-printable bytes) and files that already mix endings alone, and an index blob that
+already holds carriage returns is not converted when an auto path is added again. `ident` expands `$Id$` to
+`$Id: <blob id> $` on checkout and collapses it on `add`. With `core.safecrlf` set to `true`, `add` of a file whose line
+endings would not survive a round trip fails with `fatal: LF would be replaced by CRLF in <path>` (or the CRLF form) and
+exit `128`; with `warn` it prints `warning: in the working copy of '<path>', ... will be replaced by ... the next time Git
+touches it`. Warnings are only printed when something is written to the object store.
+
+These apply to `add`, `commit -a`, `stash`, `status`, `diff`, `ls-files -m`, `add -p`, `rm` and `mv` (through the index
+comparison), and to every command that writes work tree files (`switch`, `checkout`, `restore`, `reset --hard`, `merge`,
+`cherry-pick`, `revert`, `rebase`, `stash apply`, `clone`, `pull`), including conflict files. A `.gitattributes` that a checkout
+brings in applies to the files written after it, and to itself. `status` and `diff` compare the converted work tree file with the
+index, so a repository that relies on conversions shows no phantom changes. `-diff` makes a file binary in `diff` and `diff` forces text.
+
+Not built: filter drivers (`filter=<name>`, clean and smudge), `working-tree-encoding`, `-X renormalize` and `add --renormalize`,
+`export-ignore`/`export-subst`, the `merge` and `whitespace` attributes, `diff=<driver>` and `textconv`, and `.gitattributes` read
+from a tree rather than the work tree (bare repositories, `--source`). `core.autocrlf` and the attributes are not applied to
+`diff --no-index`. Covered by `crates/pyn-cli/tests/git_attributes.rs`, which compares blob ids, work tree bytes and `status`
+and `diff` output with git (#273).
+
 ### Pathspecs
 
 One matcher serves every command that takes paths (`add`, `rm`, `restore`, `checkout`, `reset`, `stash push`, `clean`,
@@ -814,7 +849,7 @@ and it is the one a pyn server or local-store workspace uses for `add`, `rm`, `s
   `ls-files --error-unmatch`); an exclude is never reported. Like git, a command that reports unmatched pathspecs stops
   matching a pathspec that has named a path exactly (`a*c` taken for the file `a*c` leaves out `abc`).
 
-Not built: `:(attr:...)` (a usage error, `129`, where git reads `.gitattributes`), `--pathspec-from-file`, the
+Not built: `:(attr:...)` (a usage error, `129`, where git reads `.gitattributes`; the attributes engine exists now, see [Attributes and line endings](#attributes-and-line-endings)), `--pathspec-from-file`, the
 `pathspec '<arg>' is beyond a symbolic link` check, and, for `clean`, a `:(glob)` pattern that names folders (it ends in a
 slash: usage error, `129`). On a pyn server `log` sends a literal path to the server, `update`, `lock` and
 `restore <path> <revision>` take exact paths, and `mv` and `commit <paths>` stay literal: they need a server contract change
@@ -871,8 +906,8 @@ With no worktree `.gitmodules`, an unmerged index entry for that file disables t
 
 Differences from git, all deliberate or not yet done:
 
-- Files are read as they are on disk: `core.autocrlf`, `.gitattributes` filters and `core.eol` are not applied, so a
-  repository that depends on them can show files as modified that git does not.
+- Line endings and `ident` are converted as git does (see [Attributes and line endings](#attributes-and-line-endings));
+  filter drivers and `working-tree-encoding` are not applied.
 - Commit abbreviations are 7 digits and are not lengthened to stay unique; `log` and `show` print no color on a terminal.
 - A nested repository that the index does not track is one untracked `dir/`.
 - `merge` and `stash apply` detect no renames, write diff3 conflict markers whatever `merge.conflictStyle` says and merge only when
@@ -1380,7 +1415,7 @@ fast-forward or an up-to-date merge. The options of the tree strategies (`ort`, 
 | `ignore-space-change`, `ignore-all-space`, `ignore-space-at-eol`, `ignore-cr-at-eol` | Lines that differ only in that whitespace count as equal when finding changes. A side whose only changes are such differences changed nothing, so the other side's file is the result, as in git. |
 | `subtree[=<path>]` | Shifts as `-s subtree` does; with a path, only that folder is tried, in either direction. |
 | `no-renames`, `diff-algorithm=myers\|default\|minimal`, `no-renormalize` | Accepted; pyn detects no renames and has one diff. |
-| `renormalize` | Accepted when no path being merged has a `text`, `eol`, `crlf`, `filter`, `ident` or `working-tree-encoding` attribute and `core.autocrlf` is unset, since then it changes nothing; otherwise the merge is refused with nothing changed (`128`) because pyn converts no line endings (#273). |
+| `renormalize` | Accepted when no path being merged has a conversion (line endings, `ident`, a filter or `working-tree-encoding`), since then it changes nothing; otherwise the merge is refused with nothing changed (`128`) because pyn does not renormalize the sides (#273). |
 | `patience`, `histogram`, `diff-algorithm=patience\|histogram` | Usage error (`129`): only the Myers diff is built. |
 | `find-renames[=<n>]`, `rename-threshold=<n>` | Usage error (`129`): rename detection is not built. |
 
@@ -1789,6 +1824,26 @@ paths with unmerged entries are refused for the whole command; the text of the `
 git 2.43 keeps a carriage return at the end of an input line, which later versions strip; pyn strips it. Covered by
 `git_add_interactive.rs`, which gives the same input to git and pyn in SHA-1 and SHA-256 repositories.
 
+### Linked work trees
+
+`pyn worktree` keeps git's own layout, so git and pyn work on the same linked work trees: `.git/worktrees/<name>/` holds `HEAD`,
+`gitdir`, `commondir` and, while locked, `locked` (the reason and a newline, or empty), and the work tree has a `.git` file
+`gitdir: <admin folder>`. `<name>` is the last component of the path, with a number appended when it is taken. Paths are written
+absolute (no `worktree.useRelativePaths`).
+
+| Command | Behaviour |
+| --- | --- |
+| `add [-f] [--detach] [--no-checkout] [--lock [--reason <text>]] [-b <branch>\|-B <branch>] [--orphan] [-q] <path> [<commit-ish>]` | Without `-b`/`-B`/`--detach`: a branch named `commit-ish` is checked out (refused when another work tree has it, unless `-f`), any other commit-ish is detached, and with no commit-ish the branch named like the folder is used or created at `HEAD`. `--orphan` makes an unborn branch with an empty work tree. Prints `Preparing worktree (...)` and `HEAD is now at ...` on stderr. A failure removes what it made. |
+| `list [-v] [--porcelain [-z]] [--expire <time>]` | The main work tree first, then the linked ones by admin folder name; `[branch]`, `(detached HEAD)`, `(bare)`, `locked` and `prunable`. Porcelain output is git's (`worktree`, `HEAD`, `branch`/`detached`/`bare`, `locked [reason]`, `prunable <reason>`). |
+| `lock [--reason <text>] <worktree>`, `unlock <worktree>` | Create and remove `locked`. A work tree is named by its path or by a unique trailing part of it. |
+| `move [-f -f] <worktree> <new-path>` | Renames the folder and rewrites `gitdir`; an existing folder as destination receives it. A locked work tree needs `-f -f`. |
+| `remove [-f [-f]] <worktree>` | Refuses the main work tree, a locked one (`-f -f` overrides), one with changes or untracked files, or with a checked-out submodule (`-f` overrides the last two). |
+| `prune [-n] [-v] [--expire <time>]` | Removes admin folders whose work tree is gone and that are not locked. |
+| `repair [<path>...]` | Rewrites `gitdir` and the `.git` file so each points at the other, for the given work trees and for those whose `.git` file still exists. |
+
+Not built: `add --track`/`--guess-remote` and `worktree.guessRemote`, `--[no-]relative-paths`, sparse and per-worktree config
+(`config.worktree`), the `HEAD` reflog of a new work tree, and `ORIG_HEAD`. `remove` and `move` do not run hooks.
+
 ### Clean
 
 `clean` removes the files git does not track from the work tree, and prints git's lines: `Would remove <path>` with `-n`,
@@ -1874,7 +1929,7 @@ What differs, all of it refused or documented rather than silently different:
 | Alternation with `-w` | The regex engine takes the first branch that matches, where the GNU library takes the longest: `grep -Ew 'a\|ab'` can miss a word git finds. Without `-w` a line matches either way. |
 | ``\` ``, `\'` | Refused (`128`): git's result depends on how it reads the file, not on the line. With `-i`, a backslash before a lowercase letter that is not an operator (`\a`) is refused: git matches nothing there. |
 | Locale | Matching is by characters in UTF-8, as in a UTF-8 locale; `[[:alpha:]]` and similar classes are ASCII only. A pattern that is not valid UTF-8 is refused. |
-| Binary attributes | `.gitattributes` (`binary`, `-diff`, `diff`) and `textconv` are not consulted; a file is binary by its content only. |
+| Binary attributes | `-diff` (and `binary`) makes a file binary and `diff` forces text, as in git; `textconv` and `diff=<driver>` settings are not consulted. |
 | Revisions | Commits and tags that peel to one (`HEAD~2`, a branch, a hash); a tree such as `HEAD:sub` is not a revision here, so it is read as a path and fails with git's `ambiguous argument`. |
 | Not built (usage error `129`) | `--untracked`, `--no-index` (so also searching outside a repository), `--recurse-submodules`, `--exclude-standard`, `-o`, `-L`, `-z`, `-f`, `-m`, `-P`, `-A`, `-B`, `-C`, `-p`, `-W`, `--column`, `--heading`, `--break`, `--color`, `--all-match`, `--max-depth` and abbreviated long options. |
 
@@ -1957,7 +2012,7 @@ What differs, all of it refused or documented rather than silently different:
 | Not built (usage error `129`) | `-M`, `-C`, `--incremental`, `-L :<funcname>`, `--ignore-rev`, `--ignore-revs-file`, `--reverse`, `--first-parent`, `--show-stats`, `--progress`, `--score-debug`, `--color-lines`, `--color-by-age`, `--minimal`, `--diff-algorithm`, `-S`, abbreviated long options, `<a>...<b>`, the other revision-list options, and `--date=human`, `local`, `format:...` and `auto:...`. |
 | Refused (`128`) | A `.mailmap`, `mailmap.file` or `mailmap.blob` (names are not mapped), and `diff.algorithm` other than `myers`. |
 | Abbreviation length | `core.abbrev`, else 7 digits, grown until the abbreviation of every blamed commit is unique, plus one for the boundary mark. Git also lengthens its default for repositories with tens of thousands of objects; pyn does not. |
-| Content filters | `textconv`, `core.autocrlf` and `.gitattributes` conversions are not applied to committed blobs or to the work tree file. |
+| Content filters | `textconv` is not applied. The line-ending conversion of the work tree file is not applied to the lines `blame` reads from it. |
 | Commit encodings | Author names and subjects are printed as stored, without re-encoding from an `encoding` header. |
 | Renames | The single added path is matched as git's rename detection would, but `diff.renameLimit` is not applied. |
 
@@ -2086,11 +2141,11 @@ patch to it, and merges the result with the current tree as `cherry-pick` merges
 
 ### What pyn will not write
 
-Any command that would write a work tree file stops first, and changes nothing, when git would convert what it writes: `core.autocrlf`
-set to true, `core.eol=crlf` with a `text` attribute, `eol=crlf`, a `filter` other than Git LFS, `ident` or `working-tree-encoding`
-(`.gitattributes` in the work tree, `.git/info/attributes` and the global attributes file are read; `-text`, `binary`, `eol=lf`,
-symlinks and submodules are never converted). A Git LFS filter writes the pointer file as it is, with a warning (decision #245; see [Git LFS](#git-lfs)).
-The same limit applies to `status`, which compares raw bytes (#273). Hooks are never run; one warning names the hooks that exist
+Any command that would write a work tree file through a `filter` driver other than Git LFS, or with `working-tree-encoding`
+(other than UTF-8), stops first and changes nothing (exit `128`, naming the path), because pyn applies neither. `apply` and the
+patch-mode commands that write the work tree (`checkout -p`, `restore -p`) also stop for a path whose line endings or `ident` git would convert,
+since they copy bytes as they are. A Git LFS filter writes the pointer file as it is, with a warning (decision #245; see [Git LFS](#git-lfs)).
+Hooks are never run; one warning names the hooks that exist
 for the command (`post-checkout`, `pre-merge-commit`, `commit-msg` and the like). Sparse checkouts, submodule updates, the split
 index and `GIT_DIR` are not supported, and `--squash` and anything that talks to a remote other than `ls-remote`, `fetch`, `pull`, `push` and `clone` are not built yet (epic #301; see [Transports and credentials](#transports-and-credentials)).
 
@@ -2101,7 +2156,7 @@ commands that write the work tree keep pointer files byte for byte: nothing is s
 sees them as ordinary files. When `filter=lfs` applies to a path, the command prints one warning on standard error, once
 per invocation (so `pull` and `clone` warn once, not once per step). `fetch` and `pull` read the `.gitattributes` files in
 the tip of each ref that moved, `clone` in the commit it checks out (none for `--bare` or `-n`), and the work tree commands
-read the attributes as for [What pyn will not write](#what-pyn-will-not-write). Only `.gitattributes` files in the tree are
+read the attributes as for [Attributes and line endings](#attributes-and-line-endings). Only `.gitattributes` files in the tree are
 read for `fetch` and `clone`, not `.git/info/attributes` or the global file. The warning wording is not part of the
 contract. Covered by `crates/pyn-cli/tests/git_lfs.rs` (#311).
 

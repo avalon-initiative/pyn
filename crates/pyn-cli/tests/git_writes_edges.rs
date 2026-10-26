@@ -476,36 +476,9 @@ fn the_executable_bit_and_symlinks_are_written_and_core_filemode_is_honored() {
 }
 
 #[test]
-fn line_ending_conversions_stop_every_write_before_anything_changes() {
-    for (setting, why) in [
-        ("[core]\n\tautocrlf = true\n", "core.autocrlf"),
-        ("[core]\n\teol = crlf\n", "no attribute"),
-    ] {
-        let repo = Repo::merge("sha1");
-        config_append(&repo, setting);
-        let before = snapshot(&repo.main);
-        let out = repo.run_in(&repo.main, &["switch", "clean"]);
-        if why == "no attribute" {
-            assert!(out.status.success(), "core.eol alone converts nothing");
-            continue;
-        }
-        assert_eq!(out.status.code(), Some(128), "{why}");
-        let err = String::from_utf8_lossy(&out.stderr);
-        assert!(
-            err.contains("git would convert") && err.contains("#273"),
-            "{err}"
-        );
-        assert_eq!(
-            changed(&before, &repo),
-            Vec::<String>::new(),
-            "{why}: nothing changed"
-        );
-    }
+fn filters_and_encodings_stop_every_write_before_anything_changes() {
     for attributes in [
-        "*.txt eol=crlf\n",
-        "* text eol=crlf\n",
         "a.txt filter=custom\n",
-        "a.txt ident\n",
         "a.txt working-tree-encoding=UTF-16\n",
     ] {
         let repo = Repo::merge("sha1");

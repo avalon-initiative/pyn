@@ -5,7 +5,7 @@ use std::path::Path;
 
 use anyhow::{Result, bail};
 use clap::Args;
-use pyn_gitwork::{Kind, Pathspec, fs_path, hash_worktree_file};
+use pyn_gitwork::{Kind, Pathspec, fs_path};
 
 use super::GitHome;
 use super::plumbing::{emit_bytes, prefix, quote};
@@ -161,7 +161,7 @@ fn stage_state(root: &Path, e: &pyn_git::IndexEntry, git: &GitHome) -> Result<Op
     if std::fs::symlink_metadata(&path).is_err() {
         return Ok(Some(Kind::Deleted));
     }
-    let (_, id) = hash_worktree_file(git.algorithm(), &path)?;
+    let (_, id) = git.repo.hash_worktree_entry(&e.path, &path, Some(e.id))?;
     Ok((id != e.id).then_some(Kind::Modified))
 }
 

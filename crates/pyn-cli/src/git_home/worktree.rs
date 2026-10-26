@@ -376,8 +376,45 @@ fn prune_empty_parents(root: &Path, path: &[u8], keep: Option<&Path>) {
     }
 }
 
-/// Writes `bytes` as the file, link or (for a submodule) folder at `path`, replacing what is there.
+/// Drops the cached attributes when `path` is an attributes file, which a write or removal changes.
+fn touches_attributes(git: &GitHome, path: &[u8]) {
+    if path.ends_with(b".gitattributes") {
+        git.repo.reset_attributes();
+    }
+}
+
+/// Orders paths so that `.gitattributes` files come first, since the files after them are converted by their rules.
+pub(super) fn attributes_first<'a, T>(
+    items: impl Iterator<Item = (&'a Vec<u8>, T)>,
+) -> Vec<(&'a Vec<u8>, T)> {
+    let mut items: Vec<_> = items.collect();
+    items.sort_by_key(|(p, _)| !p.ends_with(b".gitattributes"));
+    items
+}
+
+/// Writes `bytes` as the file, link or (for a submodule) folder at `path`, replacing what is there; regular files
+/// are converted to their work tree form.
 pub(super) fn write_bytes(
+    git: &GitHome,
+    path: &[u8],
+    mode: FileMode,
+    bytes: &[u8],
+) -> Result<std::fs::Metadata> {
+    let meta = write_converted(git, path, mode, bytes)?;
+    // An attributes file is converted by its own rules, which only exist once it is written.
+    if path.ends_with(b".gitattributes") && matches!(mode, FileMode::Regular | FileMode::Executable)
+    {
+        let algorithm = git.repo.algorithm();
+        let before = std::fs::read(fs_path(git.repo.root()?, path))?;
+        let after = git.repo.conversion(path)?.to_worktree(algorithm, bytes);
+        if before != *after {
+            return write_converted(git, path, mode, bytes);
+        }
+    }
+    Ok(meta)
+}
+
+fn write_converted(
     git: &GitHome,
     path: &[u8],
     mode: FileMode,
@@ -386,6 +423,17 @@ pub(super) fn write_bytes(
     check_writes([path])?;
     let root = git.repo.root()?;
     let file = fs_path(root, path);
+    let converted;
+    let bytes = if matches!(mode, FileMode::Regular | FileMode::Executable) {
+        converted = git
+            .repo
+            .conversion(path)?
+            .to_worktree(git.repo.algorithm(), bytes);
+        &*converted
+    } else {
+        bytes
+    };
+    touches_attributes(git, path);
     for a in ancestors(path) {
         let dir = fs_path(root, a);
         match lexists(&dir) {
@@ -438,6 +486,7 @@ pub(super) fn remove_entry_file_keeping(
     keep: Option<&Path>,
 ) -> Result<()> {
     check_writes([path])?;
+    touches_attributes(git, path);
     let root = git.repo.root()?;
     let file = fs_path(root, path);
     if ancestors(path)
@@ -480,7 +529,7 @@ pub(super) fn move_tree(
         Err(blocked) => return Ok(Err(blocked)),
     };
     check_writes(acts.keys())?;
-    convert::refuse_conversions(
+    convert::refuse_unsupported(
         git,
         acts.iter().filter_map(|(p, a)| match a {
             Act::Write(e) => Some((p.as_slice(), e.mode)),
@@ -497,7 +546,7 @@ pub(super) fn move_tree(
             remove_entry(&mut entries, path);
         }
     }
-    for (path, act) in &acts {
+    for (path, act) in attributes_first(acts.iter()) {
         if let Act::Write(entry) = act {
             let written = write_entry(git, path, entry)?;
             put_entry(&mut entries, written);

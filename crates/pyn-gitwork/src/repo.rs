@@ -1,8 +1,11 @@
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use pyn_git::{Config, ObjectDb, Ref, RefStore, Repository};
 use pyn_object::{Algorithm, Commit, Kind, ObjectId, TreeEntry, parse_tree};
 
+use crate::attributes::Attributes;
+use crate::convert::{Conversion, Settings};
 use crate::error::{Error, Result, io_at};
 use crate::ignore::{Ignore, parse_rules};
 
@@ -34,6 +37,7 @@ pub struct Repo {
     config: Config,
     home: Option<PathBuf>,
     xdg: Option<PathBuf>,
+    attributes: Mutex<Option<Arc<Attributes>>>,
 }
 
 impl Repo {
@@ -59,6 +63,7 @@ impl Repo {
             config,
             home: home.map(Path::to_path_buf),
             xdg: xdg.map(Path::to_path_buf),
+            attributes: Mutex::new(None),
             git,
         })
     }
@@ -157,6 +162,69 @@ impl Repo {
             global,
             self.bool_setting("core.ignorecase", false),
         ))
+    }
+
+    /// The attributes in effect: the global file, `.gitattributes` files in the work tree and `info/attributes`. The
+    /// folders read are cached until [`Self::reset_attributes`].
+    pub fn attributes(&self) -> Result<Arc<Attributes>> {
+        let mut cached = self.attributes.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(a) = &*cached {
+            return Ok(a.clone());
+        }
+        let read = |path: Option<PathBuf>| match path.map(std::fs::read) {
+            Some(Ok(bytes)) => Ok(bytes),
+            Some(Err(e)) if e.kind() != std::io::ErrorKind::NotFound => Err(Error::Io {
+                path: "attributes".into(),
+                source: e,
+            }),
+            _ => Ok(Vec::new()),
+        };
+        let global = read(self.global_attributes_path())?;
+        let info = read(Some(self.git.common_dir().join("info/attributes")))?;
+        let root = self.git.work_tree().map(Path::to_path_buf);
+        let loader = Box::new(move |dir: &[u8]| {
+            let file = crate::status::fs_path(root.as_deref()?, dir).join(".gitattributes");
+            let meta = std::fs::symlink_metadata(&file).ok()?;
+            meta.is_file().then(|| std::fs::read(&file).ok())?
+        });
+        let attrs = Arc::new(Attributes::new(
+            &global,
+            &info,
+            loader,
+            self.bool_setting("core.ignorecase", false),
+        ));
+        *cached = Some(attrs.clone());
+        Ok(attrs)
+    }
+
+    /// Forgets the cached attribute files; call after writing or removing a `.gitattributes`.
+    pub fn reset_attributes(&self) {
+        *self.attributes.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
+    /// The line-ending and `ident` conversion that applies to `path`.
+    pub fn conversion(&self, path: &[u8]) -> Result<Conversion> {
+        Ok(Conversion::new(
+            Settings::from_config(&self.config),
+            &self.attributes()?.for_path(path),
+        ))
+    }
+
+    fn global_attributes_path(&self) -> Option<PathBuf> {
+        let home = self.home.as_deref();
+        match self.config.get("core.attributesfile") {
+            Some(p) if !p.is_empty() => Some(match p.strip_prefix("~/") {
+                Some(rest) => home?.join(rest),
+                None => PathBuf::from(p),
+            }),
+            _ => {
+                let xdg = self
+                    .xdg
+                    .clone()
+                    .or_else(|| home.map(|h| h.join(".config")))?;
+                Some(xdg.join("git/attributes"))
+            }
+        }
     }
 
     fn global_excludes_path(&self) -> Option<PathBuf> {

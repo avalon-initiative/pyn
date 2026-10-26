@@ -624,7 +624,7 @@ fn restore_paths(git: &GitHome, cwd: &Path, paths: &[String], r: Restore) -> Res
                 .chain(remerged.keys())
                 .chain(doomed.iter()),
         )?;
-        convert::refuse_conversions(
+        convert::refuse_unsupported(
             git,
             sources
                 .iter()

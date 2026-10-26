@@ -80,6 +80,7 @@ pub(crate) mod todo;
 mod treemerge;
 mod upstream;
 mod worktree;
+mod worktrees;
 
 use std::path::{Path, PathBuf};
 
@@ -133,6 +134,7 @@ pub(crate) use tags::{
     annotation, check_name, delete as delete_tags, list as list_tags, short, tag_ref,
 };
 pub use to_git::{ConvertArgs, Home, to_git};
+pub use worktrees::WorktreeArgs;
 
 /// A refusal git reports as `error: <message>` with exit status 1, rather than as a fatal error.
 #[derive(Debug)]
@@ -345,6 +347,15 @@ impl Backend for GitHome {
 
     fn quote_diff_path(&self, path: &[u8]) -> String {
         crate::short_status::quote_diff(path, self.repo.bool_setting("core.quotePath", true))
+    }
+
+    fn diff_binary(&self, path: &str) -> Option<bool> {
+        let attrs = self.repo.attributes().ok()?.for_path(path.as_bytes());
+        match attrs.get("diff") {
+            pyn_gitwork::AttrValue::Unset => Some(true),
+            pyn_gitwork::AttrValue::Set => Some(false),
+            _ => None,
+        }
     }
 
     fn diff_setting(&self, key: &str) -> Option<String> {
