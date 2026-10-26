@@ -55,8 +55,46 @@ jobs:
       - name: Checks
         run: make check
 
+  live:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: pyn
+          POSTGRES_PASSWORD: pyn
+          POSTGRES_DB: pyn
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U pyn"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PYN_DATABASE_URL: postgres://pyn:pyn@localhost:5432/pyn
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          shared-key: release-live
+          save-if: false
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+
+      - name: Tests that need Postgres
+        run: make test-live
+
   binaries:
-    needs: verify
+    needs: [verify, live]
     strategy:
       fail-fast: true
       matrix:
@@ -90,7 +128,7 @@ jobs:
           if-no-files-found: error
 
   image:
-    needs: verify
+    needs: [verify, live]
     strategy:
       matrix:
         include:
@@ -137,7 +175,7 @@ jobs:
           if-no-files-found: error
 
   manifest:
-    needs: image
+    needs: [verify, live, image]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -166,7 +204,7 @@ jobs:
             $(printf "${IMAGE}@sha256:%s " *)
 
   release:
-    needs: [binaries, manifest]
+    needs: [verify, live, binaries, manifest]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:

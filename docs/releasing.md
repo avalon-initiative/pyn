@@ -15,7 +15,8 @@ and tags it. Push the commit through a pull request as usual, then push the tag 
 
 1. Refuses a tag whose commit is not on `main`.
 2. Checks the tag against the workspace version ([`scripts/verify-release-version.sh`](../scripts/verify-release-version.sh)).
-3. Runs `make check`, the same checks CI runs (fmt, clippy, docs links, public boundary, tests).
+3. Runs the same checks CI runs: `make check` (fmt, clippy, docs links, public boundary, tests) and, against a Postgres 16
+   service, `make test-live`. Nothing below is built or pushed unless both pass.
 4. Builds release binaries and packs `pyn-<tag>-<target>.tar.gz` (binaries plus `LICENSE`):
 
    | Target | Contents |
@@ -30,8 +31,11 @@ and tags it. Push the commit through a pull request as usual, then push the tag 
 6. Creates the GitHub Release with the archives, a `SHA256SUMS` file and generated notes; a tag with a label is marked
    as a pre-release.
 
-The image and archives are built from the same tagged commit. A failed run publishes no release; the image push in step 5
-may already have happened, in which case fix forward with a new patch version rather than re-tagging.
+The image and archives are built from the same tagged commit. A failed run publishes no release. If it fails after the
+image push in step 5, fix forward with a new patch version rather than re-tagging.
+
+After the first push, the org owner must set the `pyn-core` package on ghcr.io to public (GitHub Packages settings);
+it starts private, and pulls need a login until then.
 
 ## Using a release
 
