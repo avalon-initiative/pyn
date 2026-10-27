@@ -149,7 +149,7 @@ fn global_files() -> Vec<PathBuf> {
 }
 
 /// Where a write to the user's file goes: the first that exists, else `~/.gitconfig`.
-fn global_target() -> PathBuf {
+pub(super) fn global_target() -> PathBuf {
     if let Some(p) = env_path("GIT_CONFIG_GLOBAL") {
         return p;
     }

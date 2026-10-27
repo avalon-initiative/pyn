@@ -272,6 +272,14 @@ enum Command {
     Gc(git_home::GcArgs),
     /// Pack loose refs into one file (a git repository only).
     PackRefs(git_home::PackRefsArgs),
+    /// Remove loose objects that a pack also holds (a git repository only).
+    PrunePacked(git_home::PrunePackedArgs),
+    /// Write a pack of the listed objects (a git repository only).
+    PackObjects(git_home::PackObjectsArgs),
+    /// Unpack a pack read from standard input into loose objects (a git repository only).
+    UnpackObjects(git_home::UnpackObjectsArgs),
+    /// Run housekeeping tasks and register the repository for them (a git repository only).
+    Maintenance(git_home::MaintenanceArgs),
     /// Pack objects into packs and drop what they replace (a git repository only).
     Repack(git_home::RepackArgs),
     /// Summarize the history by author (a git repository only).
@@ -2142,6 +2150,10 @@ fn run(cli: Cli) -> Result<()> {
         | Command::Prune(_)
         | Command::Gc(_)
         | Command::PackRefs(_)
+        | Command::PrunePacked(_)
+        | Command::PackObjects(_)
+        | Command::UnpackObjects(_)
+        | Command::Maintenance(_)
         | Command::Repack(_)
         | Command::Shortlog(_)
         | Command::Describe(_)

@@ -114,7 +114,11 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
         Command::InitGit(_) => unreachable!("handled before a repository is detected"),
         Command::Files => crate::files_command(git),
         Command::Ls { path } => crate::ls_command(git, path.as_deref()),
-        Command::Merge(args) => super::merge::merge(git, args),
+        Command::Merge(args) => {
+            super::merge::merge(git, args)?;
+            super::gc::auto(git);
+            Ok(())
+        }
         Command::Branch(args) => super::branches::branch(git, args),
         Command::Switch(args) => super::switch::switch(git, args),
         Command::Checkout(args) => super::switch::checkout(git, cwd, args),
@@ -149,17 +153,33 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
         Command::Prune(args) => super::prune::prune(git, args),
         Command::Gc(args) => super::gc::gc(git, args),
         Command::PackRefs(args) => super::pack_refs::pack_refs(git, args),
+        Command::PrunePacked(args) => super::pack_plumbing::prune_packed(git, args),
+        Command::PackObjects(args) => super::pack_plumbing::pack_objects(git, args),
+        Command::UnpackObjects(args) => super::pack_plumbing::unpack_objects(git, args),
+        Command::Maintenance(args) => super::maintenance::maintenance(git, args),
         Command::Repack(args) => super::repack::repack(git, args),
         Command::Shortlog(args) => super::shortlog::shortlog(git, cwd, args),
         Command::Describe(args) => super::describe::describe(git, cwd, args),
         Command::NameRev(args) => super::name_rev::name_rev(git, cwd, args),
-        Command::Am(args) => super::am::am(git, cwd, args),
+        Command::Am(args) => {
+            super::am::am(git, cwd, args)?;
+            super::gc::auto(git);
+            Ok(())
+        }
         Command::Apply(args) => super::apply::apply(git, cwd, args),
         Command::FormatPatch(args) => super::format_patch::format_patch(git, cwd, args),
-        Command::Rebase(args) => super::rebase::rebase(git, &args),
+        Command::Rebase(args) => {
+            super::rebase::rebase(git, &args)?;
+            super::gc::auto(git);
+            Ok(())
+        }
         Command::Remote(args) => super::remote::remote(git, args),
         Command::Fetch(args) => super::fetch::fetch(git, args),
-        Command::Pull(args) => super::pull::pull(git, args),
+        Command::Pull(args) => {
+            super::pull::pull(git, args)?;
+            super::gc::auto(git);
+            Ok(())
+        }
         Command::Push(args) => super::push::push(git, args),
         Command::Add {
             dry_run: true,

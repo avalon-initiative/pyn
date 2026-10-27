@@ -1168,3 +1168,421 @@ fn maintenance_works_on_a_bare_repository() {
     assert_eq!(full.code, 0, "{}{}", full.out, full.err);
     assert!(bare.join("packed-refs").exists());
 }
+
+fn fill_17(f: &Fx) {
+    let mut found = 0;
+    for n in 0..8000 {
+        let id = f.hash_object("blob", format!("filler {n}\n").as_bytes());
+        found += usize::from(id.starts_with("17"));
+        if found == 2 {
+            return;
+        }
+    }
+    panic!("no objects hashed into 17");
+}
+
+#[test]
+fn prune_packed_removes_what_git_removes() {
+    for format in FORMATS {
+        let base = build(format);
+        base.g(&["repack", "-q"]);
+        base.write("late.txt", "late\n");
+        base.commit("late");
+        base.g(&["repack", "-q", "-a"]);
+        base.hash_object("blob", b"loose only\n");
+        let g = base.twin("git-side");
+        let p = base.twin("pyn-side");
+        let want = g.oracle(&["prune-packed", "-n"]);
+        let got = p.pyn(&["prune-packed", "-n"]);
+        assert_eq!(sorted(&got.out), sorted(&want.out), "{format}");
+        assert_eq!(got.code, want.code);
+        assert_eq!(p.loose_ids(), base.loose_ids(), "dry run removed objects");
+        g.oracle(&["prune-packed", "-q"]);
+        let got = p.pyn(&["prune-packed", "-q"]);
+        assert_eq!(got.code, 0, "{}", got.err);
+        assert_eq!(p.loose_ids(), g.loose_ids(), "{format}");
+        p.assert_git_ok();
+        assert_eq!(p.pyn(&["prune-packed", "--bogus"]).code, 129);
+    }
+}
+
+#[test]
+fn pack_refs_include_and_exclude_match_git() {
+    let base = build("sha1");
+    base.g(&["tag", "t1"]);
+    base.g(&["tag", "t2"]);
+    base.g(&["tag", "u1"]);
+    base.g(&["branch", "topic"]);
+    base.g(&["branch", "other/deep"]);
+    for args in [
+        &[
+            "pack-refs",
+            "--include",
+            "refs/tags/t*",
+            "--exclude",
+            "refs/tags/t2",
+        ][..],
+        &["pack-refs", "--all", "--exclude", "refs/heads/other/*"],
+        &["pack-refs", "--include", "refs/heads/*"],
+        &["pack-refs", "--exclude", "refs/tags/*"],
+        &[
+            "pack-refs",
+            "--all",
+            "--no-prune",
+            "--exclude",
+            "refs/tags/u?",
+        ],
+        &[
+            "pack-refs",
+            "--include",
+            "refs/heads/[tm]*",
+            "--include",
+            "refs/tags/u*",
+        ],
+    ] {
+        let g = base.twin("git-side");
+        let p = base.twin("pyn-side");
+        let want = g.oracle(args);
+        let got = p.pyn(args);
+        assert_eq!(got.code, want.code, "{args:?}: {}", got.err);
+        assert_eq!(
+            fs::read_to_string(p.repo.join(".git/packed-refs")).unwrap_or_default(),
+            fs::read_to_string(g.repo.join(".git/packed-refs")).unwrap_or_default(),
+            "{args:?}"
+        );
+        assert_eq!(loose_refs(&p), loose_refs(&g), "{args:?}");
+        fs::remove_dir_all(&g.repo).unwrap();
+        fs::remove_dir_all(&p.repo).unwrap();
+    }
+}
+
+#[test]
+fn gc_refuses_to_run_twice_at_once() {
+    let f = build("sha1");
+    let lock = f.repo.join(".git/gc.pid");
+    fs::write(&lock, "12345 elsewhere\n").unwrap();
+    let want = f.oracle(&["gc"]);
+    let got = f.pyn(&["gc"]);
+    assert_eq!(want.code, 128);
+    assert_eq!((got.code, got.err.as_str()), (128, want.err.as_str()));
+    assert!(lock.exists(), "the other gc's lock was removed");
+    let got = f.pyn(&["gc", "--force"]);
+    assert_eq!(got.code, 0, "{}", got.err);
+    assert!(!lock.exists(), "gc left its lock behind");
+    // a lock from this machine whose process is gone does not block
+    let host = fs::read_to_string("/proc/sys/kernel/hostname").unwrap_or_default();
+    if !host.is_empty() {
+        fs::write(&lock, format!("2000000000 {}\n", host.trim())).unwrap();
+        let got = f.pyn(&["gc", "-q"]);
+        assert_eq!(got.code, 0, "{}", got.err);
+    }
+}
+
+#[test]
+fn gc_auto_stops_at_a_recent_gc_log() {
+    let f = build("sha1");
+    f.g(&["config", "gc.auto", "1"]);
+    fill_17(&f);
+    let log = f.repo.join(".git/gc.log");
+    fs::write(&log, "earlier failure\n").unwrap();
+    let before = f.loose_ids();
+    let got = f.pyn(&["gc", "--auto"]);
+    assert_eq!(got.code, 0);
+    assert!(
+        got.err.contains("The last gc run reported the following"),
+        "{}",
+        got.err
+    );
+    assert!(got.err.contains("earlier failure"), "{}", got.err);
+    assert_eq!(f.loose_ids(), before);
+    let old = Command::new("touch")
+        .args(["-d", "3 days ago"])
+        .arg(&log)
+        .status()
+        .unwrap();
+    assert!(old.success());
+    let got = f.pyn(&["gc", "--auto"]);
+    assert_eq!(got.code, 0, "{}", got.err);
+    assert!(!log.exists());
+    assert_ne!(f.loose_ids(), before);
+    fs::write(&log, "again\n").unwrap();
+    assert_eq!(f.pyn(&["gc", "-q"]).code, 0);
+    assert!(!log.exists(), "a manual gc keeps the log");
+}
+
+#[test]
+fn gc_keep_largest_pack_leaves_that_pack() {
+    for format in FORMATS {
+        let f = build(format);
+        f.g(&["repack", "-q", "-a", "-d"]);
+        let big = f.packs()[0].clone();
+        f.write("more.txt", "more\n");
+        f.commit("more");
+        f.g(&["repack", "-q"]);
+        assert_eq!(f.packs().len(), 2);
+        let g = f.twin("git-side");
+        let p = f.twin("pyn-side");
+        g.oracle(&["gc", "-q", "--keep-largest-pack"]);
+        let got = p.pyn(&["gc", "-q", "--keep-largest-pack"]);
+        assert_eq!(got.code, 0, "{format}: {}", got.err);
+        let name = big.file_name().unwrap().to_owned();
+        assert!(
+            p.repo.join(".git/objects/pack").join(&name).exists(),
+            "{format}"
+        );
+        assert_eq!(p.packs().len(), g.packs().len(), "{format}");
+        assert_eq!(p.all_objects(), g.all_objects());
+        p.assert_git_ok();
+    }
+}
+
+#[test]
+fn pack_objects_and_unpack_objects_interoperate_with_git() {
+    for format in FORMATS {
+        let f = build(format);
+        let listing = f.g_ro(&["rev-list", "--objects", "--all"]);
+        let pack_with = |c: Command, input: &str, args: &[&str]| {
+            let mut c = c;
+            c.args(args)
+                .current_dir(&f.repo)
+                .env_clear()
+                .env("PATH", path_env())
+                .env("HOME", f.root.join("home"))
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            let mut child = c.spawn().unwrap();
+            let mut stdin = child.stdin.take().unwrap();
+            let input = input.to_owned();
+            let t =
+                std::thread::spawn(move || std::io::Write::write_all(&mut stdin, input.as_bytes()));
+            let out = child.wait_with_output().unwrap();
+            let _ = t.join();
+            out
+        };
+        // pyn's pack read by git
+        let out = pack_with(
+            Command::new(env!("CARGO_BIN_EXE_pyn")),
+            &listing,
+            &["pack-objects", "--stdout"],
+        );
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let target = f.twin("target");
+        let fed = {
+            let mut c = Command::new("git");
+            c.args(["unpack-objects", "-q"]).current_dir(&target.repo);
+            c.env_clear().env("PATH", path_env()).stdin(Stdio::piped());
+            let mut child = c.spawn().unwrap();
+            std::io::Write::write_all(&mut child.stdin.take().unwrap(), &out.stdout).unwrap();
+            child.wait().unwrap()
+        };
+        assert!(fed.success(), "{format}: git could not unpack pyn's pack");
+        // revs on stdin, base-name output verified by git
+        let rev = pack_with(
+            Command::new(env!("CARGO_BIN_EXE_pyn")),
+            "HEAD\n^HEAD~1\n",
+            &["pack-objects", "--revs", ".git/objects/pack/extra"],
+        );
+        assert!(
+            rev.status.success(),
+            "{}",
+            String::from_utf8_lossy(&rev.stderr)
+        );
+        let hash = String::from_utf8_lossy(&rev.stdout).trim().to_string();
+        let packed = f.repo.join(format!(".git/objects/pack/extra-{hash}.pack"));
+        assert!(packed.exists(), "{format}: no pack named {hash}");
+        let v = f.oracle(&[
+            "verify-pack",
+            packed.with_extension("idx").to_str().unwrap(),
+        ]);
+        assert_eq!(v.code, 0, "{format}: {}", v.err);
+        let want = f.oracle(&["rev-list", "--objects", "HEAD", "^HEAD~1"]);
+        let want_ids: BTreeSet<String> = want
+            .out
+            .lines()
+            .map(|l| l.split_whitespace().next().unwrap().to_owned())
+            .collect();
+        let listed = f.oracle(&[
+            "verify-pack",
+            "-v",
+            packed.with_extension("idx").to_str().unwrap(),
+        ]);
+        let hex_len = want_ids.iter().next().unwrap().len();
+        let got_set: BTreeSet<String> = listed
+            .out
+            .lines()
+            .filter_map(|l| l.split_whitespace().next())
+            .filter(|t| t.len() == hex_len && t.bytes().all(|b| b.is_ascii_hexdigit()))
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(got_set, want_ids, "{format}");
+        // git's pack read by pyn unpack-objects
+        let git_pack = {
+            let o = pack_with(
+                Command::new("git"),
+                "",
+                &["pack-objects", "--stdout", "--revs", "--all"],
+            );
+            assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+            o.stdout
+        };
+        let empty = Fx::new(format);
+        let mut c = Command::new(env!("CARGO_BIN_EXE_pyn"));
+        c.arg("unpack-objects")
+            .current_dir(&empty.repo)
+            .env_clear()
+            .env("PATH", path_env())
+            .env("HOME", empty.root.join("home"))
+            .stdin(Stdio::piped());
+        let mut child = c.spawn().unwrap();
+        std::io::Write::write_all(&mut child.stdin.take().unwrap(), &git_pack).unwrap();
+        assert!(child.wait().unwrap().success(), "{format}");
+        assert_eq!(empty.loose_ids().len(), f.all_objects().len(), "{format}");
+        assert!(empty.packs().is_empty());
+        let fsck = empty.oracle(&["fsck", "--no-dangling"]);
+        assert_eq!(fsck.code, 0, "{format}: {}{}", fsck.out, fsck.err);
+    }
+}
+
+#[test]
+fn maintenance_registers_like_git() {
+    let f = build("sha1");
+    let global = f.root.join("home/.gitconfig");
+    let local = f.repo.join(".git/config");
+    let tail = |p: &Path| fs::read_to_string(p).unwrap_or_default();
+    let with_global = |bin: Option<&str>, args: &[&str]| {
+        let mut c = match bin {
+            Some(_) => Command::new("git"),
+            None => Command::new(env!("CARGO_BIN_EXE_pyn")),
+        };
+        c.args(args)
+            .current_dir(&f.repo)
+            .env_clear()
+            .env("PATH", path_env())
+            .env("HOME", f.root.join("home"))
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("LC_ALL", "C");
+        let out = c.output().unwrap();
+        Run {
+            code: out.status.code().unwrap(),
+            out: String::from_utf8_lossy(&out.stdout).into_owned(),
+            err: String::from_utf8_lossy(&out.stderr).into_owned(),
+        }
+    };
+    let oracle = |args: &[&str]| with_global(Some("git"), args);
+    let pyn = |args: &[&str]| with_global(None, args);
+    let want = oracle(&["maintenance", "register"]);
+    assert_eq!(want.code, 0, "{}", want.err);
+    let (want_global, want_local) = (tail(&global), tail(&local));
+    assert!(want_global.contains("repo = "), "{want_global}");
+    assert_eq!(oracle(&["maintenance", "unregister"]).code, 0);
+    fs::write(
+        &local,
+        tail(&local).replace(
+            "[maintenance]\n\tauto = false\n\tstrategy = incremental\n",
+            "",
+        ),
+    )
+    .unwrap();
+    let got = pyn(&["maintenance", "register"]);
+    assert_eq!(got.code, 0, "{}", got.err);
+    assert_eq!(tail(&global), want_global);
+    assert_eq!(tail(&local), want_local);
+    assert_eq!(pyn(&["maintenance", "register"]).code, 0);
+    assert_eq!(
+        tail(&global),
+        want_global,
+        "registering twice duplicated the entry"
+    );
+    assert_eq!(pyn(&["maintenance", "unregister"]).code, 0);
+    assert!(!tail(&global).contains("repo = "));
+    let want = oracle(&["maintenance", "unregister"]);
+    let got = pyn(&["maintenance", "unregister"]);
+    assert_eq!((got.code, got.err), (want.code, want.err));
+    assert_eq!(pyn(&["maintenance", "unregister", "--force"]).code, 0);
+    assert_eq!(pyn(&["maintenance", "run", "--task=bogus"]).code, 129);
+}
+
+#[test]
+fn maintenance_runs_the_tasks_git_runs() {
+    for format in FORMATS {
+        let base = build(format);
+        leftovers(&base);
+        base.g(&["tag", "t1"]);
+        for task in ["gc", "loose-objects", "pack-refs"] {
+            let g = base.twin("git-side");
+            let p = base.twin("pyn-side");
+            let arg = format!("--task={task}");
+            let want = g.oracle(&["maintenance", "run", &arg]);
+            let got = p.pyn(&["maintenance", "run", &arg]);
+            assert_eq!(
+                got.code, want.code,
+                "{format} {task}: {} / {}",
+                got.out, got.err
+            );
+            assert_eq!(p.all_objects(), g.all_objects(), "{format} {task}");
+            if task != "gc" {
+                assert_eq!(p.loose_ids().len(), g.loose_ids().len(), "{format} {task}");
+            }
+            assert_eq!(loose_refs(&p), loose_refs(&g), "{format} {task}");
+            if task == "loose-objects" {
+                assert!(
+                    p.packs().iter().any(|x| x
+                        .file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .starts_with("loose-")),
+                    "{format}: no loose- pack"
+                );
+            }
+            p.assert_git_ok();
+            fs::remove_dir_all(&g.repo).unwrap();
+            fs::remove_dir_all(&p.repo).unwrap();
+        }
+    }
+}
+
+#[test]
+fn merge_rebase_and_am_run_auto_gc() {
+    let f = build("sha1");
+    f.g(&["config", "user.name", "T"]);
+    f.g(&["config", "user.email", "t@example.com"]);
+    f.g(&["switch", "-q", "-c", "work", "main"]);
+    f.write("work.txt", "work\n");
+    f.commit("work");
+    let patch = f.g(&["format-patch", "--stdout", "-1"]);
+    f.g(&["switch", "-q", "main"]);
+    f.g(&["config", "gc.auto", "1"]);
+    let base = f.rev("main");
+    for (n, args) in [vec!["merge", "work"], vec!["rebase", "work"], vec!["am"]]
+        .into_iter()
+        .enumerate()
+    {
+        f.g(&["switch", "-q", "main"]);
+        f.g(&["reset", "-q", "--hard", &base]);
+        f.oracle(&["branch", "-q", "-D", "side"]);
+        f.g(&["gc", "-q", "--prune=now"]);
+        if n == 1 {
+            f.g(&["switch", "-q", "-c", "side", "main"]);
+            f.write("side.txt", "side\n");
+            f.commit("side");
+        }
+        if n == 2 {
+            fs::write(f.root.join("p.mbox"), &patch).unwrap();
+        }
+        fill_17(&f);
+        let mut full = args.clone();
+        let mbox = f.root.join("p.mbox");
+        if n == 2 {
+            full.push(mbox.to_str().unwrap());
+        }
+        let got = f.pyn(&full);
+        assert_eq!(got.code, 0, "{args:?}: {}", got.err);
+        assert!(got.err.contains("Auto packing"), "{args:?}: {}", got.err);
+        f.assert_git_ok();
+    }
+}

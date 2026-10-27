@@ -2,7 +2,7 @@
 
 use std::fs;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use clap::Args;
 use pyn_git::PackOptions;
 
@@ -32,10 +32,10 @@ pub struct GcArgs {
     /// Do not prune loose objects.
     #[arg(long, overrides_with = "prune")]
     no_prune: bool,
-    /// Accepted; there is no other `gc` to wait for.
+    /// Run even when `gc.pid` names a running `gc`.
     #[arg(long)]
     force: bool,
-    /// Accepted; every pack is rewritten.
+    /// Leave the largest pack alone.
     #[arg(long)]
     keep_largest_pack: bool,
     /// Accepted; `gc` runs in the foreground and writes no cruft packs.
@@ -101,6 +101,87 @@ struct Gc {
     all: bool,
     aggressive: bool,
     prune_expire: Option<String>,
+    keep_largest: bool,
+}
+
+const STALE_LOCK_SECS: u64 = 12 * 3600;
+
+fn hostname() -> String {
+    fs::read_to_string("/proc/sys/kernel/hostname")
+        .map(|h| h.trim().to_string())
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .unwrap_or_else(|_| "localhost".into())
+}
+
+fn process_alive(pid: u32) -> bool {
+    let proc = std::path::Path::new("/proc");
+    !proc.exists() || proc.join(pid.to_string()).exists()
+}
+
+/// `gc.pid` in the common directory, removed when dropped.
+struct GcLock(std::path::PathBuf);
+
+impl Drop for GcLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
+/// Takes the `gc.pid` lock; a lock of a running `gc` (or one on another machine) is refused unless `force`.
+fn lock(git: &GitHome, force: bool) -> Result<GcLock> {
+    let path = git.repo.git().common_dir().join("gc.pid");
+    if let Ok(text) = fs::read_to_string(&path) {
+        let age = fs::metadata(&path)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .map_or(0, |d| d.as_secs());
+        let mut parts = text.split_whitespace();
+        let pid = parts.next().and_then(|p| p.parse::<u32>().ok());
+        let host = parts.next().unwrap_or("").to_string();
+        if let Some(pid) = pid
+            && !force
+            && age < STALE_LOCK_SECS
+            && (host != hostname() || process_alive(pid))
+        {
+            bail!("gc is already running on machine '{host}' pid {pid} (use --force if not)");
+        }
+    }
+    fs::write(&path, format!("{} {}\n", std::process::id(), hostname()))?;
+    Ok(GcLock(path))
+}
+
+/// Packs `--keep-largest-pack` and `gc.bigPackThreshold` leave alone.
+fn big_packs(git: &GitHome, largest: bool, all: bool) -> Result<Vec<String>> {
+    let db = git.repo.git().objects()?;
+    let mut sized: Vec<(u64, String)> = db
+        .packs()
+        .iter()
+        .map(|p| {
+            let size = fs::metadata(p.pack_path()).map_or(0, |m| m.len());
+            let name = p.pack_path().to_string_lossy().into_owned();
+            (size, name)
+        })
+        .collect();
+    sized.sort();
+    let mut keep = Vec::new();
+    if largest {
+        keep.extend(sized.pop().map(|(_, n)| n));
+        return Ok(keep);
+    }
+    let threshold = config_int(git, "gc.bigpackthreshold", 0);
+    if all && threshold > 0 {
+        keep = sized
+            .into_iter()
+            .filter(|(size, _)| *size as i64 >= threshold)
+            .map(|(_, n)| n)
+            .collect();
+        let limit = config_int(git, "gc.autopacklimit", DEFAULT_AUTO_PACK_LIMIT as i64);
+        if limit > 0 && keep.len() as i64 >= limit {
+            keep.clear();
+        }
+    }
+    Ok(keep)
 }
 
 fn run(git: &GitHome, gc: &Gc) -> Result<()> {
@@ -141,7 +222,11 @@ fn run(git: &GitHome, gc: &Gc) -> Result<()> {
             delete: true,
             local: true,
             quiet: true,
-            keep_packs: Vec::new(),
+            keep_packs: if gc.all {
+                big_packs(git, gc.keep_largest, true)?
+            } else {
+                Vec::new()
+            },
             pack: PackOptions {
                 deltas: true,
                 window,
@@ -190,23 +275,78 @@ pub(super) fn gc(git: &GitHome, args: GcArgs) -> Result<()> {
             eprintln!("Auto packing the repository for optimum performance.");
             eprintln!("See \"git help gc\" for manual housekeeping.");
         }
+        if report_last_error(git) {
+            return Ok(());
+        }
     }
-    run(
+    let _lock = lock(git, args.force)?;
+    let result = run(
         git,
         &Gc {
             all,
             aggressive: args.aggressive,
             prune_expire,
+            keep_largest: args.keep_largest_pack,
         },
-    )
+    );
+    let log = git.repo.git().common_dir().join("gc.log");
+    match &result {
+        Err(e) if args.auto => {
+            let _ = fs::write(&log, format!("error: {e}\n"));
+        }
+        Ok(()) => {
+            let _ = fs::remove_file(&log);
+        }
+        _ => {}
+    }
+    result
+}
+
+/// An earlier `gc --auto` left `gc.log`: prints it and stops, unless it is older than `gc.logExpiry`.
+fn report_last_error(git: &GitHome) -> bool {
+    let log = git.repo.git().common_dir().join("gc.log");
+    let Ok(text) = fs::read_to_string(&log) else {
+        return false;
+    };
+    let expiry = git.config().get("gc.logexpiry").unwrap_or("1.day.ago");
+    let cutoff = prune::expiry(expiry).unwrap_or(i64::MIN);
+    let modified = fs::metadata(&log)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(i64::MAX, |d| d.as_secs() as i64);
+    if modified <= cutoff {
+        let _ = fs::remove_file(&log);
+        return false;
+    }
+    eprintln!(
+        "warning: The last gc run reported the following. Please correct the root cause\n\
+         and remove {}\nAutomatic cleanup will not be performed until the file is removed.\n\n{text}",
+        log.display()
+    );
+    true
+}
+
+/// `gc --quiet`, with `--auto` when `auto`, as `maintenance` runs it.
+pub(super) fn quiet(git: &GitHome, auto: bool) -> Result<()> {
+    gc(git, plain_args(auto, true))
 }
 
 /// Runs `gc --auto` the way git does after commands that add objects; failures are reported, never fatal.
 pub(super) fn auto(git: &GitHome) {
-    let args = GcArgs {
+    if git.config().get_bool("maintenance.auto").ok().flatten() == Some(false) {
+        return;
+    }
+    if let Err(e) = gc(git, plain_args(true, false)) {
+        eprintln!("warning: auto gc failed: {e}");
+    }
+}
+
+fn plain_args(auto: bool, quiet: bool) -> GcArgs {
+    GcArgs {
         aggressive: false,
-        auto: true,
-        quiet: false,
+        auto,
+        quiet,
         prune: None,
         no_prune: false,
         force: false,
@@ -215,8 +355,5 @@ pub(super) fn auto(git: &GitHome) {
         no_detach: false,
         cruft: false,
         no_cruft: false,
-    };
-    if let Err(e) = gc(git, args) {
-        eprintln!("warning: auto gc failed: {e}");
     }
 }
