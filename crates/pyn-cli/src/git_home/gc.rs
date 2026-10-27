@@ -38,14 +38,15 @@ pub struct GcArgs {
     /// Leave the largest pack alone.
     #[arg(long)]
     keep_largest_pack: bool,
-    /// Accepted; `gc` runs in the foreground and writes no cruft packs.
+    /// Accepted; `gc` runs in the foreground.
     #[arg(long, overrides_with = "no_detach")]
     detach: bool,
     #[arg(long, overrides_with = "detach")]
     no_detach: bool,
-    #[arg(long)]
+    /// Write unreachable objects into a cruft pack (the default, `gc.cruftPacks`).
+    #[arg(long, overrides_with = "no_cruft")]
     cruft: bool,
-    #[arg(long)]
+    #[arg(long, overrides_with = "cruft")]
     no_cruft: bool,
 }
 
@@ -102,6 +103,7 @@ struct Gc {
     aggressive: bool,
     prune_expire: Option<String>,
     keep_largest: bool,
+    cruft: Option<Option<i64>>,
 }
 
 const STALE_LOCK_SECS: u64 = 12 * 3600;
@@ -227,8 +229,11 @@ fn run(git: &GitHome, gc: &Gc) -> Result<()> {
             } else {
                 Vec::new()
             },
+            cruft: gc.cruft,
+            keep_unreachable: false,
             pack: PackOptions {
                 deltas: true,
+                reuse: !gc.aggressive,
                 window,
                 depth,
             },
@@ -279,6 +284,19 @@ pub(super) fn gc(git: &GitHome, args: GcArgs) -> Result<()> {
             return Ok(());
         }
     }
+    let cruft_wanted = !args.no_cruft
+        && (args.cruft
+            || git
+                .config()
+                .get_bool("gc.cruftpacks")
+                .ok()
+                .flatten()
+                .unwrap_or(true));
+    let cruft = match (&prune_expire, cruft_wanted && all) {
+        (Some(when), true) if when != "now" => Some(Some(prune::expiry(when)?)),
+        (None, true) => Some(None),
+        _ => None,
+    };
     let _lock = lock(git, args.force)?;
     let result = run(
         git,
@@ -287,6 +305,7 @@ pub(super) fn gc(git: &GitHome, args: GcArgs) -> Result<()> {
             aggressive: args.aggressive,
             prune_expire,
             keep_largest: args.keep_largest_pack,
+            cruft,
         },
     );
     let log = git.repo.git().common_dir().join("gc.log");

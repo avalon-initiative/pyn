@@ -178,6 +178,7 @@ pub(super) fn pack_objects(git: &GitHome, args: PackObjectsArgs) -> Result<()> {
         deltas: true,
         window: args.window.unwrap_or(defaults.window),
         depth: args.depth.unwrap_or(defaults.depth),
+        reuse: !(args.no_reuse_delta || args.no_reuse_object),
     };
     let Some(name) = db.write_packfile(&items, &options)? else {
         return Ok(());

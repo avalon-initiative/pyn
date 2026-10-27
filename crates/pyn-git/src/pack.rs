@@ -35,6 +35,7 @@ pub struct Pack {
     idx: Vec<u8>,
     count: usize,
     pack_len: u64,
+    by_offset: std::sync::OnceLock<std::collections::HashMap<u64, usize>>,
 }
 
 pub(crate) struct PosReader<'a> {
@@ -130,6 +131,7 @@ impl Pack {
             idx,
             count,
             pack_len,
+            by_offset: std::sync::OnceLock::new(),
         })
     }
 
@@ -213,6 +215,76 @@ impl Pack {
     pub fn ids(&self) -> impl Iterator<Item = ObjectId> + '_ {
         (0..self.count)
             .map(|i| ObjectId::from_bytes(self.algorithm, self.id_at(i)).expect("length checked"))
+    }
+
+    /// The base and the inflated delta of `id` when it is stored as a delta against an object of this pack.
+    pub fn stored_delta(&self, id: &ObjectId) -> Result<Option<(ObjectId, Vec<u8>)>> {
+        let Some(i) = self.find(id) else {
+            return Ok(None);
+        };
+        let (raw, body) = self.read_raw(self.offset_at(i)?)?;
+        let base = match raw {
+            Raw::Base(_) => return Ok(None),
+            Raw::Ref(base) => base,
+            Raw::Ofs(offset) => {
+                let map = self.by_offset.get_or_init(|| {
+                    (0..self.count)
+                        .filter_map(|j| self.offset_at(j).ok().map(|o| (o, j)))
+                        .collect()
+                });
+                let found = *map
+                    .get(&offset)
+                    .ok_or_else(|| corrupt("pack", "delta base is not an entry"))?;
+                ObjectId::from_bytes(self.algorithm, self.id_at(found))?
+            }
+        };
+        Ok(Some((base, body)))
+    }
+
+    fn hash_code(&self) -> [u8; 4] {
+        match self.algorithm {
+            Algorithm::Sha1 => 1u32,
+            _ => 2u32,
+        }
+        .to_be_bytes()
+    }
+
+    fn pack_checksum(&self) -> &[u8] {
+        let hl = self.hl();
+        &self.idx[self.idx.len() - 2 * hl..self.idx.len() - hl]
+    }
+
+    /// The `.rev` file: for each pack position in file order, the index position of its object.
+    pub fn reverse_index(&self) -> Result<Vec<u8>> {
+        let mut order: Vec<(u64, u32)> = Vec::with_capacity(self.count);
+        for i in 0..self.count {
+            order.push((self.offset_at(i)?, i as u32));
+        }
+        order.sort_unstable();
+        let mut out = b"RIDX".to_vec();
+        out.extend(1u32.to_be_bytes());
+        out.extend(self.hash_code());
+        for (_, i) in order {
+            out.extend(i.to_be_bytes());
+        }
+        out.extend(self.pack_checksum());
+        let sum = checksum(self.algorithm, &out);
+        out.extend(sum);
+        Ok(out)
+    }
+
+    /// The `.mtimes` file of a cruft pack: one time per object, in index order.
+    pub fn mtimes_file(&self, times: &[u32]) -> Vec<u8> {
+        let mut out = b"MTME".to_vec();
+        out.extend(1u32.to_be_bytes());
+        out.extend(self.hash_code());
+        for t in times {
+            out.extend(t.to_be_bytes());
+        }
+        out.extend(self.pack_checksum());
+        let sum = checksum(self.algorithm, &out);
+        out.extend(sum);
+        out
     }
 
     /// How `id` is stored, without resolving deltas.

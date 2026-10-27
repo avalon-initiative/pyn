@@ -808,10 +808,121 @@ fn repack_writes_deltas_git_can_read() {
     assert_eq!(p.all_objects(), g.all_objects());
     let loose = p.pyn(&["count-objects", "-v"]).out;
     assert!(loose.contains("count: 0"), "{loose}");
-    let packed = p.pyn(&["repack", "-a", "-d", "--window=0"]);
-    assert_eq!(packed.code, 0);
-    assert_eq!(p.deltas(), 0);
+    let deltas = p.deltas();
+    let reused = p.pyn(&["repack", "-a", "-d", "--window=0"]);
+    assert_eq!(reused.code, 0);
+    assert_eq!(p.deltas(), deltas, "existing deltas were not reused");
+    let fresh = p.pyn(&["repack", "-a", "-d", "-f", "--window=0"]);
+    assert_eq!(fresh.code, 0);
+    assert_eq!(p.deltas(), 0, "-f kept old deltas");
     p.assert_git_ok();
+}
+
+#[test]
+fn repack_keeps_the_deltas_git_wrote() {
+    for format in FORMATS {
+        let f = build(format);
+        let big: String = (0..4000)
+            .map(|i| format!("row {i} of a long table\n"))
+            .collect();
+        for n in 0..8 {
+            f.write("table.txt", &format!("{big}revision {n}\n"));
+            f.commit(&format!("table {n}"));
+        }
+        f.g(&["repack", "-q", "-a", "-d", "-f", "--window=50"]);
+        let g = f.twin("git-side");
+        let p = f.twin("pyn-side");
+        g.g(&["repack", "-q", "-a", "-d", "--window=0"]);
+        let got = p.pyn(&["repack", "-a", "-d", "--window=0"]);
+        assert_eq!(got.code, 0, "{}", got.err);
+        assert!(g.deltas() > 0);
+        assert_eq!(p.deltas(), g.deltas(), "{format}");
+        p.assert_git_ok();
+        let sizes = p.oracle(&[
+            "cat-file",
+            "--batch-all-objects",
+            "--batch-check=%(objectname) %(objectsize:disk)",
+        ]);
+        assert_eq!(sizes.code, 0, "{format}: {}", sizes.err);
+        assert_eq!(sizes.out.lines().count(), p.all_objects().len());
+    }
+}
+
+#[test]
+fn repack_writes_the_cruft_pack_git_reads() {
+    for format in FORMATS {
+        let base = build(format);
+        leftovers(&base);
+        let old = base.hash_object("blob", b"ancient orphan\n");
+        age(&base, &old, 30);
+        base.g(&["repack", "-q", "-a", "-d"]);
+        let recent = base.hash_object("blob", b"recent orphan\n");
+        for args in [
+            &["repack", "-a", "-d", "--cruft", "-q"][..],
+            &[
+                "repack",
+                "-a",
+                "-d",
+                "--cruft",
+                "--cruft-expiration=2.weeks.ago",
+                "-q",
+            ],
+            &["repack", "-a", "-d", "-k", "-q"],
+        ] {
+            let g = base.twin("git-side");
+            let p = base.twin("pyn-side");
+            g.oracle(args);
+            let got = p.pyn(args);
+            assert_eq!(got.code, 0, "{format} {args:?}: {}", got.err);
+            assert_eq!(p.all_objects(), g.all_objects(), "{format} {args:?}");
+            assert_eq!(p.packs().len(), g.packs().len(), "{format} {args:?}");
+            assert_eq!(
+                p.loose_ids().is_empty(),
+                g.loose_ids().is_empty(),
+                "{format} {args:?}"
+            );
+            let mtimes = |x: &Fx| {
+                x.packs()
+                    .iter()
+                    .filter(|i| i.with_extension("mtimes").exists())
+                    .count()
+            };
+            assert_eq!(mtimes(&p), mtimes(&g), "{format} {args:?}");
+            p.assert_git_ok();
+            fs::remove_dir_all(&g.repo).unwrap();
+            fs::remove_dir_all(&p.repo).unwrap();
+        }
+        assert!(base.loose_path(&recent).exists());
+    }
+}
+
+#[test]
+fn gc_packs_unreachable_objects_into_a_cruft_pack_by_default() {
+    for format in FORMATS {
+        let base = build(format);
+        leftovers(&base);
+        for args in [
+            &["gc", "-q"][..],
+            &["gc", "-q", "--no-cruft"],
+            &["gc", "-q", "--prune=now"],
+        ] {
+            let g = base.twin("git-side");
+            let p = base.twin("pyn-side");
+            g.oracle(args);
+            let got = p.pyn(args);
+            assert_eq!(got.code, 0, "{format} {args:?}: {}", got.err);
+            assert_eq!(p.all_objects(), g.all_objects(), "{format} {args:?}");
+            assert_eq!(
+                p.loose_ids().len(),
+                g.loose_ids().len(),
+                "{format} {args:?}"
+            );
+            assert_eq!(p.packs().len(), g.packs().len(), "{format} {args:?}");
+            p.assert_git_ok();
+            fs::remove_dir_all(&g.repo).unwrap();
+            fs::remove_dir_all(&p.repo).unwrap();
+        }
+    }
 }
 
 #[test]

@@ -30,11 +30,23 @@ pub struct RepackArgs {
     /// Leave out objects borrowed from alternates.
     #[arg(short = 'l', long)]
     local: bool,
-    /// Do not reuse existing deltas (every pack here is built afresh).
+    /// Compute every delta afresh instead of reusing the ones packs already hold.
     #[arg(short = 'f')]
     no_reuse_delta: bool,
+    /// Like -f, and also store every object afresh.
     #[arg(short = 'F')]
     no_reuse_object: bool,
+    /// With -a or -A, write the unreachable objects into a cruft pack.
+    #[arg(long, overrides_with = "no_cruft")]
+    cruft: bool,
+    #[arg(long, overrides_with = "cruft")]
+    no_cruft: bool,
+    /// Drop cruft objects older than this (`now`, a date, `2.weeks.ago`).
+    #[arg(long)]
+    cruft_expiration: Option<String>,
+    /// With -a, keep unreachable objects of the packs that go away, in the new pack.
+    #[arg(short = 'k', long)]
+    keep_unreachable: bool,
     #[arg(short = 'q', long)]
     quiet: bool,
     /// Accepted; there is no server info to update.
@@ -66,6 +78,9 @@ pub(super) struct Repack {
     pub quiet: bool,
     pub keep_packs: Vec<String>,
     pub pack: PackOptions,
+    /// Write unreachable objects younger than the limit (all when `None`) into a cruft pack.
+    pub cruft: Option<Option<i64>>,
+    pub keep_unreachable: bool,
 }
 
 fn number(git: &GitHome, key: &str, default: usize) -> usize {
@@ -91,8 +106,15 @@ pub(super) fn repack(git: &GitHome, args: RepackArgs) -> Result<()> {
             local: args.local,
             quiet: args.quiet,
             keep_packs: args.keep_pack,
+            cruft: match (args.cruft, &args.cruft_expiration) {
+                (true, Some(when)) => Some(Some(expiry(when)?)),
+                (true, None) => Some(None),
+                _ => None,
+            },
+            keep_unreachable: args.keep_unreachable,
             pack: PackOptions {
                 deltas: true,
+                reuse: !(args.no_reuse_delta || args.no_reuse_object),
                 window: args
                     .window
                     .unwrap_or_else(|| number(git, "pack.window", defaults.window)),
@@ -134,6 +156,44 @@ fn cruft_times(pack: &Path, count: usize) -> Option<Vec<i64>> {
     )
 }
 
+/// Unreachable objects of this store (loose, and in the packs that are not kept) with their last-modified time.
+fn unreachable_objects(
+    db: &pyn_git::ObjectDb,
+    packs: &[std::sync::Arc<pyn_git::Pack>],
+    reachable: &HashSet<ObjectId>,
+    is_kept: &dyn Fn(&pyn_git::Pack) -> bool,
+    plan: &Repack,
+) -> Result<Vec<(ObjectId, i64)>> {
+    let mut newest: std::collections::HashMap<ObjectId, i64> = std::collections::HashMap::new();
+    let mut note = |id: ObjectId, stamp: i64| {
+        let slot = newest.entry(id).or_insert(stamp);
+        *slot = (*slot).max(stamp);
+    };
+    let (loose, _) = db.loose_objects()?;
+    for l in &loose {
+        if !reachable.contains(&l.id) {
+            note(l.id, l.mtime);
+        }
+    }
+    let kept: Vec<_> = packs.iter().filter(|p| is_kept(p)).collect();
+    for p in packs.iter().filter(|p| !is_kept(p)) {
+        let stamp = mtime(p.pack_path());
+        let times = cruft_times(p.pack_path(), p.len());
+        for (n, id) in p.ids().enumerate() {
+            if reachable.contains(&id) || kept.iter().any(|k| k.contains(&id)) {
+                continue;
+            }
+            if plan.local && !db.is_local(&id) {
+                continue;
+            }
+            note(id, times.as_ref().map_or(stamp, |t| t[n]));
+        }
+    }
+    let mut out: Vec<_> = newest.into_iter().collect();
+    out.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
+    Ok(out)
+}
+
 fn stem(path: &Path) -> String {
     path.file_stem()
         .map(|s| s.to_string_lossy().into_owned())
@@ -160,6 +220,11 @@ pub(super) fn run(git: &GitHome, plan: &Repack) -> Result<bool> {
     let kept: Vec<_> = packs.iter().filter(|p| is_kept(p)).collect();
     let in_kept = |id: &ObjectId| kept.iter().any(|p| p.contains(id));
 
+    let unreachable = if plan.all && (plan.cruft.is_some() || plan.keep_unreachable) {
+        unreachable_objects(&db, &packs, &reach.seen, &is_kept, plan)?
+    } else {
+        Vec::new()
+    };
     let mut ids: Vec<ObjectId> = if plan.all {
         reach
             .seen
@@ -176,6 +241,9 @@ pub(super) fn run(git: &GitHome, plan: &Repack) -> Result<bool> {
             .filter(|id| reach.seen.contains(id) && !db.is_packed(id))
             .collect()
     };
+    if plan.keep_unreachable {
+        ids.extend(unreachable.iter().map(|(id, _)| *id));
+    }
     if db.is_promisor() {
         ids.retain(|id| db.contains(id).unwrap_or(false));
     }
@@ -202,7 +270,23 @@ pub(super) fn run(git: &GitHome, plan: &Repack) -> Result<bool> {
             names.push(name);
         }
     }
-    if names.is_empty() {
+    let mut cruft_name = None;
+    if let (Some(expire), false) = (plan.cruft, plan.keep_unreachable) {
+        let stamps: std::collections::HashMap<ObjectId, i64> = unreachable
+            .iter()
+            .filter(|(_, t)| expire.is_none_or(|e| *t > e))
+            .copied()
+            .collect();
+        let items: Vec<PackItem> = stamps
+            .keys()
+            .map(|id| PackItem { id: *id, hint: 0 })
+            .collect();
+        if let Some(name) = db.write_packfile(&items, &plan.pack)? {
+            db.write_mtimes(&name, |id| stamps[id].clamp(0, i64::from(u32::MAX)) as u32)?;
+            cruft_name = Some(name);
+        }
+    }
+    if names.is_empty() && cruft_name.is_none() {
         if !plan.quiet {
             println!("Nothing new to pack.");
         }
@@ -213,13 +297,19 @@ pub(super) fn run(git: &GitHome, plan: &Repack) -> Result<bool> {
     }
 
     let packed: HashSet<ObjectId> = ids.into_iter().collect();
-    let new_stems: Vec<String> = names.iter().map(|n| format!("pack-{n}")).collect();
+    let new_stems: Vec<String> = names
+        .iter()
+        .chain(&cruft_name)
+        .map(|n| format!("pack-{n}"))
+        .collect();
     let doomed: Vec<_> = packs
         .iter()
         .filter(|p| !is_kept(p) && !new_stems.contains(&stem(p.pack_path())))
         .filter(|p| plan.all || p.ids().all(|id| packed.contains(&id)))
         .collect();
-    if let (true, Some(threshold)) = (plan.all, plan.loosen) {
+    if let (true, Some(threshold), None, false) =
+        (plan.all, plan.loosen, plan.cruft, plan.keep_unreachable)
+    {
         let fresh = git.repo.git().objects()?;
         for p in &doomed {
             let pack_stamp = mtime(p.pack_path());

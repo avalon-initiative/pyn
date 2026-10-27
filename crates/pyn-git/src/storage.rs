@@ -1,4 +1,4 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, File};
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
@@ -42,6 +42,8 @@ pub struct PackOptions {
     pub deltas: bool,
     pub window: usize,
     pub depth: usize,
+    /// Keep the deltas objects already have in existing packs (git's default; `repack -f` turns it off).
+    pub reuse: bool,
 }
 
 impl Default for PackOptions {
@@ -50,6 +52,7 @@ impl Default for PackOptions {
             deltas: true,
             window: 10,
             depth: 50,
+            reuse: true,
         }
     }
 }
@@ -267,6 +270,9 @@ impl ObjectDb {
             return Err(io_at(&pack)(e));
         }
         self.rescan_packs()?;
+        if let Some(pack) = self.packs().into_iter().find(|p| p.idx_path() == idx) {
+            replace_readonly(&idx.with_extension("rev"), &pack.reverse_index()?)?;
+        }
         Ok(Some(name))
     }
 
@@ -280,7 +286,23 @@ impl ObjectDb {
         let file = File::create(path).map_err(io_at(path))?;
         let mut w = PackWriter::new(BufWriter::new(file), self.algorithm(), count)?;
         let mut window: VecDeque<Candidate> = VecDeque::new();
-        for &(_, _, _, id) in order {
+        let (order, mut reusable) = self.reuse_plan(order, options)?;
+        let mut written: HashMap<ObjectId, (u64, usize)> = HashMap::new();
+        for id in order {
+            if let Some((base, delta)) = reusable.remove(&id)
+                && let Some(&(base_offset, depth)) = written.get(&base)
+                && depth < options.depth
+            {
+                let at = w.add(
+                    id,
+                    PackEntry::OfsDelta {
+                        base_offset,
+                        delta: &delta,
+                    },
+                )?;
+                written.insert(id, (at, depth + 1));
+                continue;
+            }
             let o = self.read(&id)?;
             let mut best: Option<(usize, Vec<u8>)> = None;
             let try_delta = options.deltas
@@ -324,6 +346,7 @@ impl ObjectDb {
                     0,
                 ),
             };
+            written.insert(id, (offset, depth));
             if options.deltas && matches!(o.kind, Kind::Tree | Kind::Blob) {
                 window.push_front(Candidate {
                     kind: o.kind,
@@ -335,6 +358,64 @@ impl ObjectDb {
             }
         }
         w.finish()
+    }
+}
+
+impl ObjectDb {
+    /// Orders `order` so a delta follows its base, and returns the existing deltas that can be kept.
+    #[allow(clippy::type_complexity)]
+    fn reuse_plan(
+        &self,
+        order: &[(u8, u32, usize, ObjectId)],
+        options: &PackOptions,
+    ) -> Result<(Vec<ObjectId>, HashMap<ObjectId, (ObjectId, Vec<u8>)>)> {
+        let ids: Vec<ObjectId> = order.iter().map(|o| o.3).collect();
+        let mut reusable = HashMap::new();
+        if options.reuse {
+            let members: HashSet<ObjectId> = ids.iter().copied().collect();
+            let packs = self.packs();
+            for id in &ids {
+                for pack in &packs {
+                    if let Some((base, delta)) = pack.stored_delta(id)? {
+                        if members.contains(&base) {
+                            reusable.insert(*id, (base, delta));
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+        let mut placed: HashSet<ObjectId> = HashSet::new();
+        let mut out = Vec::with_capacity(ids.len());
+        for id in ids {
+            let mut chain = Vec::new();
+            let mut cur = id;
+            while !placed.contains(&cur) {
+                chain.push(cur);
+                match reusable.get(&cur) {
+                    Some((base, _)) => cur = *base,
+                    None => break,
+                }
+            }
+            for c in chain.into_iter().rev() {
+                placed.insert(c);
+                out.push(c);
+            }
+        }
+        Ok((out, reusable))
+    }
+
+    /// Writes `.mtimes` for the pack named `name`, giving each object in index order the time `mtime` returns.
+    pub fn write_mtimes(&self, name: &str, mtime: impl Fn(&ObjectId) -> u32) -> Result<()> {
+        self.rescan_packs()?;
+        let idx = self.dir().join("pack").join(format!("pack-{name}.idx"));
+        let pack = self
+            .packs()
+            .into_iter()
+            .find(|p| p.idx_path() == idx)
+            .ok_or_else(|| crate::error::invalid("pack", format!("{name} is not in the store")))?;
+        let times: Vec<u32> = pack.ids().map(|id| mtime(&id)).collect();
+        replace_readonly(&idx.with_extension("mtimes"), &pack.mtimes_file(&times))
     }
 }
 
@@ -352,6 +433,14 @@ fn rank(kind: Kind) -> u8 {
         Kind::Tree => 2,
         Kind::Blob => 3,
     }
+}
+
+/// Writes `bytes` to `path` through a temporary file, read-only, replacing what is there.
+fn replace_readonly(path: &Path, bytes: &[u8]) -> Result<()> {
+    let tmp = path.with_extension("tmp_meta");
+    fs::write(&tmp, bytes).map_err(io_at(&tmp))?;
+    make_readonly(&tmp).map_err(io_at(&tmp))?;
+    fs::rename(&tmp, path).map_err(io_at(path))
 }
 
 fn make_readonly(path: &Path) -> std::io::Result<()> {
