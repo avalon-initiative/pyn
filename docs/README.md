@@ -22,6 +22,7 @@ Markdown, plus the generated OpenAPI document; `make docs-check` verifies relati
 - [Configuration: every environment variable](configuration.md)
 - [Deployment and backups: Docker Compose, TLS, upgrades, backup and restore](deployment.md)
 - [Releasing: from `make release` to the published image and binaries](releasing.md)
+- [CI and the pinned git: how the oracle git version is built, cached and moved](ci.md)
 - [Phase 1 scope](phase-1.md)
 
 ## API contract

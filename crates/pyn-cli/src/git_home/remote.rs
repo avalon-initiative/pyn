@@ -32,6 +32,12 @@ enum RemoteCommand {
         /// Mirror the remote: `fetch` stores every ref, `push` makes `pyn push` send every ref.
         #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "", value_name = "fetch|push")]
         mirror: Option<String>,
+        /// Fetch only this branch; repeatable.
+        #[arg(short = 't', long = "track", value_name = "branch")]
+        track: Vec<String>,
+        /// Make `refs/remotes/<name>/HEAD` point at this branch.
+        #[arg(short = 'm', long = "master", value_name = "master")]
+        master: Option<String>,
         name: String,
         url: String,
     },
@@ -167,7 +173,24 @@ fn list(git: &GitHome, verbose: bool) {
     }
 }
 
-fn add(git: &GitHome, fetch: bool, mirror: Option<&str>, name: &str, url: &str) -> Result<()> {
+struct AddArgs<'a> {
+    fetch: bool,
+    mirror: Option<&'a str>,
+    track: &'a [String],
+    master: Option<&'a str>,
+    name: &'a str,
+    url: &'a str,
+}
+
+fn add(git: &GitHome, a: AddArgs) -> Result<()> {
+    let AddArgs {
+        fetch,
+        mirror,
+        track,
+        master,
+        name,
+        url,
+    } = a;
     let (mirror_fetch, mirror_push) = match mirror {
         None => (false, false),
         Some("") => {
@@ -180,6 +203,18 @@ fn add(git: &GitHome, fetch: bool, mirror: Option<&str>, name: &str, url: &str) 
         Some("push") => (false, true),
         Some(other) => fail(129, format!("error: unknown mirror argument: {other}")),
     };
+    if mirror.is_some() && master.is_some() {
+        fail(
+            128,
+            "fatal: specifying a master branch makes no sense with --mirror".into(),
+        );
+    }
+    if mirror_push && !mirror_fetch && !track.is_empty() {
+        fail(
+            128,
+            "fatal: specifying branches to track makes sense only with fetch mirrors".into(),
+        );
+    }
     if !is_valid_remote_name(name) {
         fail(128, format!("fatal: '{name}' is not a valid remote name"));
     }
@@ -187,11 +222,19 @@ fn add(git: &GitHome, fetch: bool, mirror: Option<&str>, name: &str, url: &str) 
         fail(3, format!("error: remote {name} already exists."));
     }
     edit(git, |file| {
-        if mirror.is_none() {
+        if mirror.is_none() && track.is_empty() {
             return add_remote(file, name, url);
         }
         file.add("remote", Some(name), "url", url)?;
-        if mirror_fetch {
+        for b in track {
+            let spec = if mirror.is_some() {
+                format!("+refs/{b}:refs/{b}")
+            } else {
+                format!("+refs/heads/{b}:refs/remotes/{name}/{b}")
+            };
+            file.add("remote", Some(name), "fetch", &spec)?;
+        }
+        if mirror_fetch && track.is_empty() {
             file.add("remote", Some(name), "fetch", "+refs/*:refs/*")?;
         }
         if mirror_push {
@@ -199,6 +242,15 @@ fn add(git: &GitHome, fetch: bool, mirror: Option<&str>, name: &str, url: &str) 
         }
         Ok(())
     })?;
+    if let Some(branch) = master {
+        let head = format!("refs/remotes/{name}/HEAD");
+        let target = format!("refs/remotes/{name}/{branch}");
+        let refs = git.repo.refs();
+        refs.set_symbolic(&head, &target)?;
+        if let Some(id) = refs.resolve(&target)? {
+            git.log_ref(&head, None, &id, "remote add", false)?;
+        }
+    }
     if fetch {
         super::fetch::after_add(git, name)?;
     }
@@ -379,9 +431,21 @@ pub fn remote(git: &GitHome, args: RemoteArgs) -> Result<()> {
         Some(RemoteCommand::Add {
             fetch,
             mirror,
+            track,
+            master,
             name,
             url,
-        }) => add(git, fetch, mirror.as_deref(), &name, &url),
+        }) => add(
+            git,
+            AddArgs {
+                fetch,
+                mirror: mirror.as_deref(),
+                track: &track,
+                master: master.as_deref(),
+                name: &name,
+                url: &url,
+            },
+        ),
         Some(RemoteCommand::Remove { name }) => remove(git, &name),
         Some(RemoteCommand::Rename { old, new }) => rename(git, &old, &new),
         Some(RemoteCommand::SetUrl {
