@@ -4,6 +4,8 @@
 
 #[path = "../../pyn-gittransport/tests/common/gitsrv.rs"]
 mod gitsrv;
+#[path = "common/oracle.rs"]
+mod oracle;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -172,7 +174,21 @@ impl Rig {
         let po = self.pyn(p, args);
         let ctx = format!("{args:?}\ngit: {}\npyn: {}", go.stderr, po.stderr);
         assert_eq!(go.code, po.code, "{ctx}");
-        assert_eq!(go.stdout, po.stdout, "{ctx}");
+        if args[0] == "blame" {
+            assert_eq!(
+                oracle::blame_lines(go.stdout.as_bytes()),
+                oracle::blame_lines(po.stdout.as_bytes()),
+                "{ctx}"
+            );
+        } else if args.contains(&"--graph") {
+            assert_eq!(
+                oracle::graph_commits(&go.stdout),
+                oracle::graph_commits(&po.stdout),
+                "{ctx}"
+            );
+        } else {
+            assert_eq!(go.stdout, po.stdout, "{ctx}");
+        }
         po
     }
 

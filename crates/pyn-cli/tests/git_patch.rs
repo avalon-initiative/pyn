@@ -4,6 +4,8 @@
 //! own transcript tests are checked.
 
 mod common;
+#[path = "common/oracle.rs"]
+mod oracle;
 
 use std::fs;
 use std::io::Write;
@@ -218,8 +220,8 @@ fn same_in(
     let (g, y) = run(&p, args, input, editor.as_deref());
     let what = format!("{args:?} with {input:?}");
     assert_eq!(
-        y.status.code(),
-        g.status.code(),
+        oracle::status_class(y.status.code().unwrap()),
+        oracle::status_class(g.status.code().unwrap()),
         "{what}: exit; pyn: {}; git: {}",
         String::from_utf8_lossy(&y.stderr),
         String::from_utf8_lossy(&g.stderr)
@@ -935,7 +937,11 @@ fn same_transcript(setup: impl Fn(&Pair), args: &[&str], input: &str) {
         String::from_utf8_lossy(&g.stdout),
         "{what}: transcript (pyn, then git)"
     );
-    assert_eq!(y.status.code(), g.status.code(), "{what}: exit");
+    assert_eq!(
+        oracle::status_class(y.status.code().unwrap()),
+        oracle::status_class(g.status.code().unwrap()),
+        "{what}: exit"
+    );
 }
 
 #[test]

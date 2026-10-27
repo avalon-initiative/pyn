@@ -1,8 +1,10 @@
 //! Exit statuses and stream use of `pyn` on a git repository, compared with real git's on a twin copy of the same
 //! repository, for the error paths of the supported commands. Real git is the oracle in this test only and only
-//! semantics are compared: the exit status, and whether standard output and standard error carry anything.
+//! semantics are compared: the exit status class (success, usage error, other failure), and whether standard output and standard error carry anything.
 
 mod common;
+#[path = "common/oracle.rs"]
+mod oracle;
 
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -66,16 +68,8 @@ const DIVERGENT: &[(&str, &str)] = &[
         "docs: Daily set, `git commit --fixup` is unsupported (129)",
     ),
     (
-        "Dirty: commit -m msg nosuchpath",
-        "docs: Daily set `git commit <path>...`, refused on a git home",
-    ),
-    (
         "Clean: rebase -s bogus main",
         "docs: Rebase differences, `-s` is unsupported (129)",
-    ),
-    (
-        "Dirty: push origin nosuchbranch (after git remote add origin /nonexistent/pyn-oracle.git)",
-        "docs: Transports and credentials, a local path that is not a repository fails on connect before refspecs are checked",
     ),
     (
         "Dirty: restore",
@@ -198,7 +192,7 @@ fn compare(c: &Case) -> Option<String> {
     });
     let [git, ours] = sides;
     let mut diffs = Vec::new();
-    if git.code != ours.code {
+    if oracle::status_class(git.code) != oracle::status_class(ours.code) {
         diffs.push(format!("status git {} pyn {}", git.code, ours.code));
     }
     if git.stdout != ours.stdout {

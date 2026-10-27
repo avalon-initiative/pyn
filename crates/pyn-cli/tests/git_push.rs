@@ -719,7 +719,6 @@ fn a_history_with_merges_and_annotated_tags_arrives_whole() {
 fn usage_and_fatal_errors_have_gits_exit_codes() {
     let t = Twin::new(SSH, false);
     for flag in [
-        vec!["--prune", "origin"],
         vec!["--signed"],
         vec!["-o", "x", "origin", "main"],
         vec!["--recurse-submodules=check"],
@@ -797,4 +796,51 @@ fn quiet_porcelain_and_tracking_ref_updates() {
             .code()
             == Some(1)
     );
+}
+
+#[test]
+fn prune_deletes_remote_refs_whose_local_source_is_gone() {
+    for way in ALL_WAYS {
+        let t = Twin::new(way, true);
+        for b in &t.bare {
+            run(b, &["update-ref", "refs/heads/other/x", "refs/heads/main"]);
+            run(b, &["update-ref", "refs/pull/1", "refs/heads/main"]);
+        }
+        t.seed(&["branch", "-D", "feature"]);
+        t.seed(&["tag", "-d", "v1"]);
+        t.sync();
+        for side in &t.side {
+            run(side, &["branch", "-D", "feature"]);
+            run(side, &["tag", "-d", "v1"]);
+        }
+        t.cmp(&["--prune", "-n", "origin", "refs/heads/*:refs/heads/*"]);
+        let out = t.cmp(&["--prune", "origin", "refs/heads/*:refs/heads/*"]).1;
+        assert!(out.stderr.contains("[deleted]"), "{}", out.stderr);
+        assert!(!t.remote_refs().contains("refs/heads/feature"));
+        assert!(!t.remote_refs().contains("refs/heads/other/x"));
+        assert!(t.remote_refs().contains("refs/pull/1"));
+        assert!(t.remote_refs().contains("refs/tags/v1"));
+        t.cmp(&["--prune", "origin", "refs/heads/*:refs/heads/*"]);
+        t.cmp(&["--prune", "origin", "main:main"]);
+        t.cmp(&["--prune", "--tags", "origin"]);
+        assert!(!t.remote_refs().contains("refs/tags/v1"));
+    }
+}
+
+#[test]
+fn prune_with_all_a_renamed_namespace_and_other_options() {
+    let t = Twin::new(SSH, true);
+    for b in &t.bare {
+        run(b, &["update-ref", "refs/heads/old", "refs/heads/main"]);
+        run(b, &["update-ref", "refs/mine/old", "refs/heads/main"]);
+    }
+    t.cmp(&["--prune", "--all", "origin"]);
+    assert!(!t.remote_refs().contains("refs/heads/old"));
+    t.cmp(&["--prune", "origin", "refs/heads/*:refs/mine/*"]);
+    assert!(!t.remote_refs().contains("refs/mine/old"));
+    assert!(t.remote_refs().contains("refs/mine/main"));
+    t.cmp(&["--prune", "--mirror", "origin"]);
+    t.cmp(&["--prune", "--delete", "origin", "feature"]);
+    t.cmp(&["--prune", "--delete", "origin", "refs/heads/*:refs/heads/*"]);
+    t.cmp(&["--prune", "origin", "refs/nothing/*:refs/nothing/*"]);
 }

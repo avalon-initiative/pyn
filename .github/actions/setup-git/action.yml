@@ -1,0 +1,45 @@
+name: Set up git
+description: Builds the pinned git from the kernel.org tarball (cached by version) and puts it first on PATH.
+
+inputs:
+  version:
+    description: Git version the oracle tests compare against. Change it here only; see docs/ci.md.
+    default: '2.55.0'
+
+runs:
+  using: composite
+  steps:
+    - name: Restore pinned git
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/pyn-git/${{ inputs.version }}
+        key: pyn-git-${{ runner.os }}-${{ runner.arch }}-${{ inputs.version }}
+
+    - name: Build git ${{ inputs.version }}
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        GIT_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq libcurl4-openssl-dev libssl-dev zlib1g-dev
+        src="$(mktemp -d)"
+        curl -fsSL --retry 3 -o "$src/git.tar.xz" "https://www.kernel.org/pub/software/scm/git/git-${GIT_VERSION}.tar.xz"
+        tar -xJf "$src/git.tar.xz" -C "$src"
+        # libcurl stays: the HTTP transport tests need git-remote-http
+        make -C "$src/git-${GIT_VERSION}" -j"$(nproc)" prefix="$HOME/.cache/pyn-git/${GIT_VERSION}" \
+          NO_GETTEXT=1 NO_TCLTK=1 NO_PERL=1 NO_PYTHON=1 NO_EXPAT=1 install
+
+    - name: Put pinned git first on PATH
+      shell: bash
+      env:
+        GIT_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        echo "$HOME/.cache/pyn-git/${GIT_VERSION}/bin" >> "$GITHUB_PATH"
+        got="$("$HOME/.cache/pyn-git/${GIT_VERSION}/bin/git" --version)"
+        echo "$got"
+        test "$got" = "git version ${GIT_VERSION}"
+        test -x "$HOME/.cache/pyn-git/${GIT_VERSION}/libexec/git-core/git-remote-http"
