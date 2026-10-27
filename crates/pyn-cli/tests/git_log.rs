@@ -4,6 +4,8 @@
 
 #[path = "../../pyn-gittransport/tests/common/gitsrv.rs"]
 mod gitsrv;
+#[path = "common/oracle.rs"]
+mod oracle;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -284,6 +286,21 @@ impl Fixture {
     /// Both tools must exit alike and print the same text.
     fn same(&self, args: &[&str]) {
         self.same_in(&self.repo, args);
+    }
+
+    /// Like [`Fixture::same`], but git 2.56 may draw extra connector rows: then only the commit rows must agree.
+    fn same_graph(&self, args: &[&str]) {
+        let (want_code, want) = self.oracle(&self.repo, args);
+        let (code, got, err) = self.pyn(&self.repo, args);
+        assert_eq!(code, want_code, "{} log {args:?}: {err}", self.format);
+        if got != want {
+            assert_eq!(
+                oracle::graph_commits(&got),
+                oracle::graph_commits(&want),
+                "{} log {args:?}",
+                self.format
+            );
+        }
     }
 
     fn same_in(&self, cwd: &Path, args: &[&str]) {
@@ -1079,7 +1096,7 @@ fn graph_matches_git() {
             &["--graph", "--oneline", "v1..HEAD"],
             &["--graph", "--oneline", "side", "feature"],
         ] {
-            f.same(args);
+            f.same_graph(args);
         }
     });
     for format in FORMATS {
@@ -1093,7 +1110,7 @@ fn graph_matches_git() {
                 &["--graph", "--oneline", "--first-parent"],
                 &["--graph", "--oneline", "-5"],
             ] {
-                f.same(args);
+                f.same_graph(args);
             }
         }
     }
@@ -1188,27 +1205,8 @@ fn show_formats_match_git() {
     });
 }
 
-/// git 2.55 prints a named commit even when it changes none of the paths; 2.43 leaves it out.
-fn git_prints_unchanged_commits() -> bool {
-    let out = git(Path::new(".")).arg("--version").output().unwrap();
-    let text = String::from_utf8_lossy(&out.stdout).into_owned();
-    let mut parts = text.trim().trim_start_matches("git version ").split('.');
-    let (major, minor) = (
-        parts
-            .next()
-            .and_then(|n| n.parse::<u32>().ok())
-            .unwrap_or(0),
-        parts
-            .next()
-            .and_then(|n| n.parse::<u32>().ok())
-            .unwrap_or(0),
-    );
-    (major, minor) >= (2, 55)
-}
-
 #[test]
 fn show_limits_to_paths_and_takes_several_commits_like_git() {
-    let newer = git_prints_unchanged_commits();
     each_format(|f| {
         for args in [
             &["HEAD~3", "--", "b.txt"][..],
@@ -1231,12 +1229,23 @@ fn show_limits_to_paths_and_takes_several_commits_like_git() {
             &["HEAD~1", "--", "b.txt"],
             &["HEAD~1", "--", "a.txt", "f.txt"],
         ] {
-            if newer {
-                f.same_show(args);
-            } else {
-                let (code, out, err) = f.pyn_cmd("show", &f.repo, args);
-                assert_eq!(code, 0, "{} show {args:?}: {err}", f.format);
-                assert!(out.starts_with("commit "), "{} show {args:?}", f.format);
+            // git 2.55 prints a commit that changes none of the paths; 2.43 and 2.56 leave it out
+            let (want_code, want) = f.oracle_cmd("show", &f.repo, args);
+            let (code, out, err) = f.pyn_cmd("show", &f.repo, args);
+            assert_eq!(code, want_code, "{} show {args:?}: {err}", f.format);
+            if out != want {
+                let diffed: String = format!("\n{out}")
+                    .split("\ncommit ")
+                    .skip(1)
+                    .filter(|b| b.contains("\ndiff --git"))
+                    .map(|b| format!("commit {b}"))
+                    .collect();
+                assert_eq!(
+                    diffed.trim_end(),
+                    want.trim_end(),
+                    "{} show {args:?}",
+                    f.format
+                );
             }
         }
     });

@@ -405,27 +405,52 @@ fn the_patch_command_asks_hunks_like_git() {
     }
 }
 
+/// `g` conflicts (both modified), `f` is deleted on one side and changed on the other.
+fn conflicted(p: &Pair) {
+    p.both(&["checkout", "-q", "-b", "other"]);
+    p.write("g", "other\n");
+    p.write("f", &numbered(&[(2, "two")]));
+    p.both(&["commit", "-q", "-am", "other"]);
+    p.both(&["checkout", "-q", "main"]);
+    p.write("g", "main\n");
+    p.both(&["rm", "-q", "f"]);
+    p.both(&["commit", "-q", "-am", "main"]);
+    for root in [&p.git, &p.pyn] {
+        let _ = p.git_in(root, &["merge", "other"]);
+    }
+    p.write("far", "far\nfar2\n");
+    p.write("u1", "new\n");
+}
+
 #[test]
-fn unmerged_paths_are_refused() {
-    let p = pair("sha1", |p| {
-        p.both(&["checkout", "-q", "-b", "other"]);
-        p.write("g", "other\n");
-        p.both(&["commit", "-q", "-am", "other"]);
-        p.both(&["checkout", "-q", "main"]);
-        p.write("g", "main\n");
-        p.both(&["commit", "-q", "-am", "main"]);
-        for root in [&p.git, &p.pyn] {
-            let _ = p.git_in(root, &["merge", "other"]);
+fn unmerged_paths_are_listed_and_handled_like_git() {
+    for format in FORMATS {
+        for input in [
+            "s\nq\n",
+            "u\n*\n\ns\nq\n",
+            "u\n1\n\ns\nq\n",
+            "r\n*\n\ns\nq\n",
+            "r\n1\n\ns\nq\n",
+            "d\n*\nq\n",
+            "d\n1\n\nq\n",
+            "a\n*\n\ns\nq\n",
+            "u\n*\n\nr\n*\n\nd\n*\nq\n",
+        ] {
+            same(format, conflicted, "", &[], input);
         }
-    });
-    let out = feed(
-        {
-            let mut c = p.command(env!("CARGO_BIN_EXE_pyn"), &p.pyn);
-            c.args(["add", "-i"]);
-            c
-        },
-        "q\n",
-    );
-    assert!(!out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("unmerged"));
+        same(format, conflicted, "", &["g"], "s\nu\n*\n\nq\n");
+        same(format, conflicted, "", &["far"], "s\nq\n");
+    }
+}
+
+#[test]
+fn the_patch_command_skips_unmerged_paths_like_git() {
+    if !git_prints_the_current_prompt() {
+        return;
+    }
+    for format in FORMATS {
+        for input in ["p\n*\n\ny\nq\n", "p\n1\n\nn\nq\n", "p\n\nq\n"] {
+            same(format, conflicted, "", &[], input);
+        }
+    }
 }

@@ -862,7 +862,22 @@ fn checkout_to(git: &GitHome, cwd: &Path, args: CheckoutArgs) -> Result<()> {
         pathspec_file: _,
     } = args;
     if patch {
+        if create.is_some() && reset.is_some() {
+            bail!("options '-b', '-B', and '--orphan' cannot be used together");
+        }
+        if force {
+            bail!("'--force' cannot be used with updating paths");
+        }
+        if detach {
+            bail!("'--detach' cannot be used with updating paths");
+        }
+        if let Some(name) = create.as_ref().or(reset.as_ref()) {
+            bail!("Cannot update paths and switch to branch '{name}' at the same time.");
+        }
         let (rev, paths) = patch_target(git, cwd, &names, paths)?;
+        if (ours || theirs) && rev.is_some() {
+            bail!("'--merge', '--ours', or '--theirs' cannot be used when checking out of a tree");
+        }
         return super::patch_mode::checkout(git, cwd, rev.as_deref(), &paths);
     }
     if create.is_some() && reset.is_some() {

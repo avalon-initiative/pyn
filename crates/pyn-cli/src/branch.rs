@@ -196,7 +196,7 @@ pub struct CheckoutArgs {
     #[arg(long)]
     pub(crate) yes: bool,
     /// Choose the hunks to take from the index or the named commit, one at a time (a git repository only).
-    #[arg(short, long, conflicts_with_all = ["create", "force", "detach", "ours", "theirs", "yes"])]
+    #[arg(short, long, conflicts_with = "yes")]
     pub(crate) patch: bool,
     /// Update the checked-out submodules to the commits the result records (a git repository only).
     #[arg(long, overrides_with = "no_recurse_submodules")]

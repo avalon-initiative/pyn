@@ -213,6 +213,11 @@ impl Pair {
 
     /// Runs `args` in `cwd` (relative to the work tree) on both and requires equal status, hook records and state.
     fn same(&self, cwd: &str, args: &[&str], env: &[(&str, &str)]) -> Run {
+        self.same_with(cwd, args, env, true)
+    }
+
+    /// [`Pair::same`]; with `tracking` false the remote-tracking refs are left out of the state.
+    fn same_with(&self, cwd: &str, args: &[&str], env: &[(&str, &str)], tracking: bool) -> Run {
         let want = self.o.run_in(&self.o.repo.join(cwd), args, env);
         let got = self.p.run_in(&self.p.repo.join(cwd), args, env);
         let ctx = format!("{args:?} in {cwd:?} env {env:?}");
@@ -226,9 +231,18 @@ impl Pair {
             &self.o.log(),
             &format!("{ctx}: what the hooks saw"),
         );
+        let keep = |state: String| {
+            let kept: Vec<_> = state
+                .lines()
+                .filter(|l| {
+                    tracking || !l.contains(" refs/remotes/") && !l.starts_with("refs/remotes/")
+                })
+                .collect();
+            kept.join("\n")
+        };
         first_difference(
-            &self.p.state(),
-            &self.o.state(),
+            &keep(self.p.state()),
+            &keep(self.o.state()),
             &format!("{ctx}: repository state"),
         );
         got
@@ -477,7 +491,8 @@ fn pre_push_gets_the_remote_and_one_line_per_ref() {
         pair.same("", &["push", "o", "main"], &[]);
         pair.same("", &["push", "o", "--delete", "other"], &[]);
         pair.same("", &["push", "--dry-run", "o", "main:dry"], &[]);
-        pair.same("", &["push", "../remote.git", "main:direct"], &[]);
+        // git 2.56 also updates the tracking refs of a remote whose URL is pushed to directly
+        pair.same_with("", &["push", "../remote.git", "main:direct"], &[], false);
         let log = pair.p.log();
         assert!(log.contains("args: o ../remote.git"), "{log}");
         assert!(log.contains("(delete) "), "{log}");
