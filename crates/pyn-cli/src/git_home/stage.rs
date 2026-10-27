@@ -560,7 +560,12 @@ fn apply(
     ops: &BTreeMap<Vec<u8>, Op>,
     (dry_run, verbose, intent): (bool, bool, bool),
 ) -> Result<()> {
-    for (path, op) in ops {
+    let is_tracked = |entries: &Entries, path: &Vec<u8>| {
+        (0..=3).any(|s| entries.contains_key(&(path.clone(), s)))
+    };
+    let mut order: Vec<(&Vec<u8>, &Op)> = ops.iter().collect();
+    order.sort_by_key(|(path, _)| !is_tracked(entries, path));
+    for (path, op) in order {
         let name = path_string(path);
         match op {
             Op::Remove => {
@@ -575,7 +580,7 @@ fn apply(
                 if dry_run || verbose {
                     println!("add '{name}'");
                 }
-                let tracked = (0..=3).any(|stage| entries.contains_key(&(path.clone(), stage)));
+                let tracked = is_tracked(entries, path);
                 if !dry_run && !(intent && tracked) {
                     let existing = entries.get(&(path.clone(), 0)).or_else(|| {
                         (1..=3)

@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::io::{BufRead, Write};
 use std::path::Path;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use pyn_diff::{is_binary, line_counts};
 use pyn_git::IndexEntry;
 use pyn_gitwork::{Entry, Pathspec, fs_path};
@@ -43,6 +43,7 @@ impl AddDel {
 struct Row {
     name: Vec<u8>,
     prefix: usize,
+    unmerged: bool,
     index: AddDel,
     worktree: AddDel,
 }
@@ -52,6 +53,7 @@ impl Row {
         Self {
             name,
             prefix: 0,
+            unmerged: false,
             index: AddDel::default(),
             worktree: AddDel::default(),
         }
@@ -443,6 +445,15 @@ fn modified_files(
         None => None,
     };
     let committed = git.repo.flatten(tree.as_ref(), spec)?;
+    let mut unmerged: BTreeMap<&[u8], Option<&IndexEntry>> = BTreeMap::new();
+    for e in index.entries.iter().filter(|e| e.stage > 0) {
+        if spec.matches(&e.path) {
+            let ours = unmerged.entry(e.path.as_slice()).or_insert(None);
+            if e.stage == 2 {
+                *ours = Some(e);
+            }
+        }
+    }
     let mut staged: BTreeMap<Vec<u8>, AddDel> = BTreeMap::new();
     let stage0: BTreeMap<&[u8], &IndexEntry> = index
         .entries
@@ -454,7 +465,7 @@ fn modified_files(
         .keys()
         .map(Vec::as_slice)
         .chain(stage0.keys().copied())
-        .filter(|p| spec.matches(p));
+        .filter(|p| spec.matches(p) && !unmerged.contains_key(*p));
     for path in paths {
         let old = committed.get(path);
         let (new, intent) = match stage0.get(path) {
@@ -477,10 +488,41 @@ fn modified_files(
         };
         staged.insert(path.to_vec(), count(&old_bytes, &new_bytes));
     }
+    for path in unmerged.keys() {
+        staged.insert(
+            path.to_vec(),
+            AddDel {
+                seen: true,
+                ..AddDel::default()
+            },
+        );
+    }
     let leaves = git.repo.index_leaves(index);
     let mut unstaged: BTreeMap<Vec<u8>, AddDel> = BTreeMap::new();
     for (path, _) in git.repo.unstaged_changes(index)? {
         if !spec.matches(&path) {
+            continue;
+        }
+        if let Some(ours) = unmerged.get(path.as_slice()) {
+            if let Some(e) = ours {
+                let entry = Entry {
+                    mode: super::stage::leaf_mode(e.mode),
+                    id: e.id,
+                };
+                let old = blob_bytes(git, &entry)?;
+                let new = worktree_bytes(git, &path);
+                if old != new {
+                    unstaged.insert(path, count(&old, &new));
+                }
+            } else {
+                unstaged.insert(
+                    path,
+                    AddDel {
+                        seen: true,
+                        ..AddDel::default()
+                    },
+                );
+            }
             continue;
         }
         let intent = stage0.get(path.as_slice()).is_some_and(|e| e.intent_to_add);
@@ -504,6 +546,11 @@ fn modified_files(
         rows.entry(path.clone())
             .or_insert_with(|| Row::named(path))
             .worktree = stat;
+    }
+    for path in unmerged.keys() {
+        if let Some(r) = rows.get_mut(*path) {
+            r.unmerged = true;
+        }
     }
     rows.retain(|_, r| match filter {
         Filter::All => true,
@@ -619,9 +666,14 @@ impl Session<'_> {
                 }
             }
         }
-        self.git
-            .save_index(&opened, &index_of(opened.index.version, entries))?;
-        say(&format!("{}\n\n", paths_text("reverted", chosen)));
+        let reverted = index_of(opened.index.version, entries);
+        self.git.save_index(&opened, &reverted)?;
+        let remaining = patch_mode::needs_merge(&reverted);
+        if remaining.is_empty() {
+            say(&format!("{}\n\n", paths_text("reverted", chosen)));
+        } else {
+            say(&format!("{remaining}\n"));
+        }
         Ok(())
     }
 
@@ -666,10 +718,13 @@ impl Session<'_> {
     fn patch(&self) -> Result<()> {
         let opened = self.git.open_index()?;
         let found = modified_files(self.git, &opened, Filter::Worktree, &self.spec)?;
+        for row in found.rows.iter().filter(|r| r.unmerged) {
+            eprintln!("ignoring unmerged: {}", path_string(&row.name));
+        }
         let rows: Vec<Row> = found
             .rows
             .into_iter()
-            .filter(|r| !r.index.binary && !r.worktree.binary)
+            .filter(|r| !r.unmerged && !r.index.binary && !r.worktree.binary)
             .collect();
         if rows.is_empty() {
             eprintln!(
@@ -708,28 +763,51 @@ impl Session<'_> {
         let mut items = Items::new(found.rows);
         let style = self.style("Review diff", Mode::Immediate, Some(HEADER));
         if list_and_choose(&mut items, &style) > 0 {
-            let mut args = vec!["diff".to_string(), "--cached".to_string()];
-            if self.git.repo.head_commit()?.is_some() {
-                args.push("HEAD".into());
-            }
-            args.push("--".into());
-            args.extend(
-                items
-                    .rows
+            let chosen: Vec<&Row> = items
+                .rows
+                .iter()
+                .zip(&items.selected)
+                .filter(|(_, s)| **s)
+                .map(|(r, _)| r)
+                .collect();
+            let mut at = 0;
+            while at < chosen.len() {
+                if chosen[at].unmerged {
+                    say(&format!(
+                        "* Unmerged path {}\n",
+                        path_string(&chosen[at].name)
+                    ));
+                    at += 1;
+                    continue;
+                }
+                let end = chosen[at..]
                     .iter()
-                    .zip(&items.selected)
-                    .filter(|(_, s)| **s)
-                    .map(|(r, _)| path_string(&r.name)),
-            );
-            let status = std::process::Command::new(std::env::current_exe()?)
-                .args(&args)
-                .current_dir(self.git.repo.root()?)
-                .status();
-            if !status.is_ok_and(|s| s.success()) {
-                eprintln!("error: could not run the diff");
+                    .position(|r| r.unmerged)
+                    .map_or(chosen.len(), |n| at + n);
+                self.show_diff(&chosen[at..end])?;
+                at = end;
             }
         }
         say("\n");
+        Ok(())
+    }
+}
+
+impl Session<'_> {
+    fn show_diff(&self, rows: &[&Row]) -> Result<()> {
+        let mut args = vec!["diff".to_string(), "--cached".to_string()];
+        if self.git.repo.head_commit()?.is_some() {
+            args.push("HEAD".into());
+        }
+        args.push("--".into());
+        args.extend(rows.iter().map(|r| path_string(&r.name)));
+        let status = std::process::Command::new(std::env::current_exe()?)
+            .args(&args)
+            .current_dir(self.git.repo.root()?)
+            .status();
+        if !status.is_ok_and(|s| s.success()) {
+            eprintln!("error: could not run the diff");
+        }
         Ok(())
     }
 }
@@ -763,13 +841,11 @@ const COMMANDS: [&str; 8] = [
 /// `pyn add -i [<paths>]`.
 pub fn add_interactive(git: &GitHome, cwd: &Path, paths: &[String]) -> Result<()> {
     let opened = git.open_index()?;
-    if opened.index.entries.iter().any(|e| e.stage > 0) {
-        bail!("`pyn add -i` does not handle unmerged paths yet; resolve them first");
-    }
     let session = Session {
         git,
         spec: resolve_specs(git, cwd, paths)?.spec,
     };
+    print!("{}", patch_mode::needs_merge(&opened.index));
     session.status()?;
     let mut menu = Items::new(
         COMMANDS

@@ -974,3 +974,180 @@ fn transcripts_match_git_when_it_prints_the_current_prompt() {
     same_transcript(|_| {}, &["add", "-p"], "y\n");
     same_transcript(|_| {}, &["reset", "-p"], "y\n");
 }
+
+/// `g` conflicts, and `f` carries three separate edits.
+fn conflicted(p: &Pair) {
+    let both = |args: &[&str]| {
+        for root in [&p.git, &p.pyn] {
+            assert!(p.git_in(root, args).status.success(), "git {args:?}");
+        }
+    };
+    both(&["checkout", "-q", "-b", "other"]);
+    p.write("g", "other\n");
+    both(&["commit", "-q", "-am", "other"]);
+    both(&["checkout", "-q", "main"]);
+    p.write("g", "main\n");
+    both(&["commit", "-q", "-am", "main"]);
+    for root in [&p.git, &p.pyn] {
+        let _ = p.git_in(root, &["merge", "other"]);
+    }
+    edit_f(p);
+}
+
+#[test]
+fn patch_modes_report_unmerged_paths_and_skip_them_like_git() {
+    if !git_prints_the_current_prompt() {
+        return;
+    }
+    let inputs = ["y\nn\ny\n", "n\nn\nn\n", "q\n", "y\ny\ny\ny\n"];
+    for input in inputs {
+        for args in [
+            &["add", "-p"][..],
+            &["add", "-p", "f"],
+            &["restore", "-p"],
+            &["restore", "-p", "-S"],
+            &["restore", "-p", "-S", "g"],
+            &["reset", "-p"],
+            &["checkout", "-p"],
+        ] {
+            same_transcript(conflicted, args, input);
+            same(conflicted, args, input);
+        }
+    }
+}
+
+#[test]
+fn only_unmerged_paths_leave_nothing_to_ask_like_git() {
+    let only = |p: &Pair| {
+        conflicted(p);
+        for root in [&p.git, &p.pyn] {
+            fs::write(root.join("f"), numbered(&[])).unwrap();
+        }
+    };
+    for args in [&["add", "-p"][..], &["restore", "-p"], &["reset", "-p"]] {
+        same_transcript(only, args, "y\n");
+    }
+}
+
+#[test]
+fn checkout_patch_with_switching_options_is_fatal_like_git() {
+    for args in [
+        &["checkout", "-p", "-b", "x"][..],
+        &["checkout", "-p", "-B", "x"],
+        &["checkout", "-p", "-f"],
+        &["checkout", "-p", "--detach"],
+        &["checkout", "-p", "-b", "x", "-B", "y"],
+        &["checkout", "-p", "-B", "y", "-f"],
+        &["checkout", "-p", "--detach", "-b", "x"],
+    ] {
+        let p = pair(edit_all);
+        let (g, y) = run(&p, args, "y\ny\ny\ny\ny\ny\n", None);
+        assert_eq!(g.status.code(), Some(128), "git {args:?}");
+        assert_eq!(y.status.code(), Some(128), "pyn {args:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&y.stderr),
+            String::from_utf8_lossy(&g.stderr),
+            "{args:?}"
+        );
+        assert_eq!(p.state(&p.pyn), p.state(&p.git), "{args:?}");
+    }
+}
+
+#[test]
+fn checkout_patch_ignores_ours_and_theirs_like_git() {
+    for args in [
+        &["checkout", "-p", "--ours"][..],
+        &["checkout", "-p", "--theirs"],
+        &["checkout", "-p", "--theirs", "main"],
+    ] {
+        same(edit_all, args, "y\nn\ny\ny\ny\n");
+        same(conflicted, args, "y\nn\ny\ny\ny\n");
+    }
+}
+
+/// Sets `diff.context` and `diff.interHunkContext` in both copies.
+fn with_diff_settings(context: &'static str, inter_hunk: &'static str) -> impl Fn(&Pair) {
+    move |p: &Pair| {
+        split_me(p);
+        p.write("g", "x\nmore\n");
+        for root in [&p.git, &p.pyn] {
+            for (key, value) in [
+                ("diff.context", context),
+                ("diff.interHunkContext", inter_hunk),
+            ] {
+                assert!(p.git_in(root, &["config", key, value]).status.success());
+            }
+        }
+    }
+}
+
+#[test]
+fn diff_context_and_inter_hunk_context_shape_the_hunks_like_git() {
+    if !git_prints_the_current_prompt() {
+        return;
+    }
+    for (context, inter_hunk) in [("1", "0"), ("5", "0"), ("1", "3"), ("3", "20"), ("10", "0")] {
+        for args in [
+            &["add", "-p"][..],
+            &["restore", "-p"],
+            &["stash", "push", "-p"],
+        ] {
+            for input in ["n\nn\nn\nn\n", "y\nn\ny\nn\n", "s\ny\nn\ny\ny\n", "a\n"] {
+                same_transcript(with_diff_settings(context, inter_hunk), args, input);
+                same(with_diff_settings(context, inter_hunk), args, input);
+            }
+        }
+    }
+}
+
+#[test]
+fn a_bad_diff_context_is_fatal_like_git() {
+    if !git_prints_the_current_prompt() {
+        return;
+    }
+    let p = pair(|p| {
+        edit_f(p);
+        for root in [&p.git, &p.pyn] {
+            assert!(
+                p.git_in(root, &["config", "diff.context", "many"])
+                    .status
+                    .success()
+            );
+        }
+    });
+    let (g, y) = run(&p, &["add", "-p"], "y\n", None);
+    assert_eq!(g.status.code(), Some(128));
+    assert_eq!(y.status.code(), Some(128));
+    assert!(
+        String::from_utf8_lossy(&y.stderr)
+            .contains("bad numeric config value 'many' for 'diff.context'")
+    );
+}
+
+#[test]
+fn verbose_add_lists_tracked_paths_before_new_ones_like_git() {
+    let changed = |p: &Pair| {
+        p.write("a0", "new\n");
+        p.write("d/b0", "new\n");
+        p.write("e/n", "new\n");
+        p.write("g", "x\nmore\n");
+        p.write("d/n", "n1\nN2\n");
+        fs::remove_file(p.git.join("h")).unwrap();
+        fs::remove_file(p.pyn.join("h")).unwrap();
+    };
+    for args in [
+        &["add", "-v", "."][..],
+        &["add", "-v", "-A"],
+        &["add", "-n", "-v", "."],
+        &["add", "-v", "-u"],
+    ] {
+        let p = pair(changed);
+        let (g, y) = run(&p, args, "", None);
+        assert_eq!(
+            String::from_utf8_lossy(&y.stdout),
+            String::from_utf8_lossy(&g.stdout),
+            "{args:?}"
+        );
+        assert_eq!(p.state(&p.pyn), p.state(&p.git), "{args:?}");
+    }
+}

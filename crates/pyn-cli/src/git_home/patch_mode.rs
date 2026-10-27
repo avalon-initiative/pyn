@@ -21,6 +21,24 @@ use super::{GitHome, convert, path_string};
 
 const CONTEXT: usize = 3;
 
+/// `diff.context` and `diff.interHunkContext`, which git's diff reads for the hunks it shows.
+fn layout(git: &GitHome) -> Result<pyn_diff::Layout> {
+    let read = |key: &str, default: usize| -> Result<usize> {
+        match git.repo.config().get(key) {
+            None => Ok(default),
+            Some(v) => v
+                .trim()
+                .parse::<usize>()
+                .map_err(|_| anyhow::anyhow!("bad numeric config value '{v}' for '{key}'")),
+        }
+    };
+    Ok(pyn_diff::Layout {
+        context: read("diff.context", CONTEXT)?,
+        inter_hunk: read("diff.interhunkcontext", 0)?,
+        function: false,
+    })
+}
+
 /// A file's mode and content after a choice is applied; `None` when the file is gone.
 type Applied = Option<(FileMode, Vec<u8>)>;
 
@@ -314,6 +332,7 @@ fn header(path: &str, old: Option<&Side>, new: Option<&Side>, flipped: bool) -> 
 struct Found {
     files: Vec<(FileDiff, Chosen)>,
     binary: usize,
+    unmerged: usize,
 }
 
 fn gather(git: &GitHome, opened: &OpenIndex, mode: &PatchMode, spec: &Pathspec) -> Result<Found> {
@@ -355,13 +374,14 @@ fn gather(git: &GitHome, opened: &OpenIndex, mode: &PatchMode, spec: &Pathspec) 
                 .map(|e| e.path.as_slice()),
         );
     }
+    let layout = layout(git)?;
     let mut found = Found {
         files: Vec::new(),
         binary: 0,
+        unmerged: unmerged.iter().filter(|p| spec.matches(p)).count(),
     };
     for path in paths.into_iter().filter(|p| spec.matches(p)) {
         if unmerged.contains(path) {
-            eprintln!("ignoring unmerged: {}", path_string(path));
             continue;
         }
         let known = |source: &Source| match source {
@@ -407,7 +427,7 @@ fn gather(git: &GitHome, opened: &OpenIndex, mode: &PatchMode, spec: &Pathspec) 
             }
             continue;
         }
-        let hunks = pyn_diff::hunks(&old_bytes, &new_bytes, CONTEXT, false);
+        let hunks = pyn_diff::hunks_with(&old_bytes, &new_bytes, &layout, &pyn_diff::Ws::default());
         let mode_change = kinds.filter(|(o, n)| o.mode != n.mode);
         let mut items: Vec<Item> = Vec::new();
         if let Some((o, n)) = mode_change {
@@ -505,6 +525,9 @@ fn choose(
 ) -> Result<Option<Vec<Chosen>>> {
     let found = gather(git, opened, mode, spec)?;
     if found.files.is_empty() {
+        if found.unmerged > 0 {
+            return Ok(None);
+        }
         println!(
             "{}",
             if found.binary > 0 {
@@ -660,13 +683,34 @@ pub(super) fn add_spec(git: &GitHome, spec: &Pathspec) -> Result<()> {
     patch_spec(git, spec, &PatchMode::add())
 }
 
+/// git's index refresh reports each unmerged path on standard output.
+pub(super) fn needs_merge(index: &pyn_git::Index) -> String {
+    let mut text = String::new();
+    let mut last: Option<&[u8]> = None;
+    for e in index.entries.iter().filter(|e| e.stage > 0) {
+        if last != Some(e.path.as_slice()) {
+            text.push_str(&format!("{}: needs merge\n", path_string(&e.path)));
+            last = Some(e.path.as_slice());
+        }
+    }
+    text
+}
+
 fn patch_spec(git: &GitHome, spec: &Pathspec, mode: &PatchMode) -> Result<()> {
     let opened = git.open_index()?;
     super::sparse::refuse_unsupported(&opened.index)?;
     let mut entries: Entries = entries_of(&opened.index);
     let mut changed = false;
+    let refreshes = mode.worktree || !mode.reverse;
+    let notice = needs_merge(&opened.index);
+    if refreshes {
+        print!("{notice}");
+    }
     choose(git, &opened, mode, spec, &mut |c, io| {
         changed |= write_file(git, mode, &mut entries, c, io)?;
+        if refreshes {
+            io.out(&notice);
+        }
         Ok(())
     })?;
     if changed {
@@ -693,6 +737,7 @@ pub(super) fn stash(
     spec: &Pathspec,
 ) -> Result<Option<StashPatch>> {
     let mode = PatchMode::stash(head);
+    print!("{}", needs_merge(&opened.index));
     let Some(chosen) = choose(git, opened, &mode, spec, &mut |_, _| Ok(()))? else {
         return Ok(None);
     };
