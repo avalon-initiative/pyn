@@ -65,7 +65,7 @@ fn run(git: &GitHome, cwd: &Path, args: &[String], st: &mut State) -> Result<()>
     let pre = prefix(git, cwd).unwrap_or_default();
     for arg in args {
         if st.as_files {
-            file(git, cwd, arg, st)?;
+            file(cwd, arg, st)?;
             continue;
         }
         if arg.starts_with('-') && arg.len() > 1 {
@@ -213,12 +213,12 @@ fn absolute(path: &Path) -> String {
 }
 
 /// A name that is no revision is printed as given and must be a file in the work tree.
-fn file(git: &GitHome, cwd: &Path, arg: &str, st: &mut State) -> Result<()> {
+fn file(cwd: &Path, arg: &str, st: &mut State) -> Result<()> {
     if st.verify {
         bail!("Needed a single revision");
     }
     line(st, arg);
-    if std::fs::symlink_metadata(cwd.join(arg)).is_err() && git.repo.root().is_ok() {
+    if std::fs::symlink_metadata(cwd.join(arg)).is_err() {
         bail!(
             "ambiguous argument '{arg}': unknown revision or path not in the working tree.\n\
              Use '--' to separate paths from revisions, like this:\n\
@@ -288,7 +288,7 @@ fn revision(git: &GitHome, cwd: &Path, pre: &[u8], arg: &str, st: &mut State) ->
         }
         bail!("Needed a single revision");
     }
-    file(git, cwd, arg, st)
+    file(cwd, arg, st)
 }
 
 fn side(resolver: &Resolver, git: &GitHome, text: &str) -> Result<Option<ObjectId>> {
