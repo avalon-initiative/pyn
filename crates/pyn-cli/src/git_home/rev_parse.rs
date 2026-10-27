@@ -8,7 +8,7 @@ use pyn_object::{Kind, ObjectId};
 
 use super::GitHome;
 use super::plumbing::{
-    Resolver, abbrev, default_abbrev, dwim, emit_bytes, kind_of, peel, prefix, shorten_ref, usage,
+    Resolver, abbrev, default_abbrev, dwim, emit_bytes, kind_of, peel, prefix, shorten_ref,
 };
 
 /// Print the object ids revisions name, and facts about the repository, in the order given.
@@ -186,7 +186,7 @@ fn option(git: &GitHome, cwd: &Path, pre: &[u8], arg: &str, st: &mut State) -> R
             {
                 st.short = Some(Some(n));
             } else {
-                usage(&format!("unsupported option `{arg}` for rev-parse"));
+                line(st, arg);
             }
         }
     }

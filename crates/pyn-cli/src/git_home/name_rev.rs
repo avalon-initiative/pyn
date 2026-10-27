@@ -31,7 +31,6 @@ pub struct NameRevArgs {
     #[arg(long)]
     always: bool,
     /// Commits to name.
-    #[arg(required = true)]
     commits: Vec<String>,
 }
 
