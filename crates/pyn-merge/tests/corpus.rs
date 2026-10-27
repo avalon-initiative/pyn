@@ -1,4 +1,4 @@
-use pyn_merge::{Chunk, Conflict, Outcome, merge, merge_text, render_markers};
+use pyn_merge::{Chunk, Conflict, Outcome, merge, merge_text, render_markers, render_two_way};
 
 fn clean(base: &str, ours: &str, theirs: &str) -> String {
     match merge_text(base.as_bytes(), ours.as_bytes(), theirs.as_bytes()) {
@@ -253,6 +253,18 @@ fn markers_render_diff3_style() {
     assert_eq!(
         String::from_utf8(got).unwrap(),
         "a\n<<<<<<< ours\nX\n||||||| base\nb\n=======\nY\n>>>>>>> theirs\nc\n"
+    );
+}
+
+#[test]
+fn two_way_markers_leave_out_the_base() {
+    let out = merge_text(b"a\nb\nc", b"a\nX\nc", b"a\nY\nc");
+    let Outcome::Conflicted(chunks) = out else {
+        panic!("expected conflict")
+    };
+    assert_eq!(
+        String::from_utf8(render_two_way(&chunks, "ours", "theirs")).unwrap(),
+        "a\n<<<<<<< ours\nX\n=======\nY\n>>>>>>> theirs\nc"
     );
 }
 

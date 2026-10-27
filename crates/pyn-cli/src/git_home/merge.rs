@@ -215,6 +215,8 @@ fn squash_message(git: &GitHome, ours: &ObjectId, theirs: &ObjectId) -> Result<S
         now: 0,
         decorations: &Default::default(),
         commit_color: None,
+        tabs: 8,
+        abbrev_commit: false,
     };
     let mut walk = git
         .repo

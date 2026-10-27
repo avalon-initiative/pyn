@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Result, bail};
 use pyn_gitwork::{Entry, Pathspec};
-use pyn_merge::{Favor, Outcome as Text, merge_text_with, render_markers};
+use pyn_merge::{Favor, Outcome as Text, merge_text_with, render_markers, render_two_way};
 use pyn_object::{FileMode, Kind, ObjectId};
 
 use super::GitHome;
@@ -137,7 +137,11 @@ fn both_present(
             Ok(Resolved::Take(Some(Entry { mode, id })))
         }
         Text::Conflicted(chunks) => {
-            let bytes = render_markers(&chunks, labels.ours, labels.base, labels.theirs);
+            let bytes = if settings.plain_markers {
+                render_two_way(&chunks, labels.ours, labels.theirs)
+            } else {
+                render_markers(&chunks, labels.ours, labels.base, labels.theirs)
+            };
             conflict(kind, Worktree::Write { mode, bytes })
         }
         Text::BinaryConflict => match settings.text.favor {

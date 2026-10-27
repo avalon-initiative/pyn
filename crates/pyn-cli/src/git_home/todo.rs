@@ -43,6 +43,8 @@ impl Commits for GitHome {
             now: chrono::Utc::now().timestamp(),
             decorations: &decorations,
             commit_color: None,
+            tabs: 8,
+            abbrev_commit: false,
         };
         let text = render(&pretty, &ctx, id, &self.repo.commit(id)?);
         Ok(text.replace('\n', " "))

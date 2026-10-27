@@ -28,10 +28,10 @@ pub struct MergeArgs {
     /// Show no diff for merges.
     #[arg(long = "no-diff-merges", overrides_with_all = ["separate", "combined", "dense", "dd", "remerge", "diff_merges"])]
     none: bool,
-    /// Diff a merge against a fresh merge of its parents (not built).
+    /// Diff a merge against a fresh merge of its parents (implies `-p`).
     #[arg(long = "remerge-diff", overrides_with_all = ["separate", "combined", "dense", "dd", "none", "diff_merges"])]
     remerge: bool,
-    /// How to show a merge's diff: off, none, on, m, first-parent, 1, separate, combined, c, dense-combined or cc.
+    /// How to show a merge's diff: off, none, on, m, first-parent, 1, separate, combined, c, dense-combined, cc or remerge.
     #[arg(long = "diff-merges", value_name = "MODE", overrides_with_all = ["separate", "combined", "dense", "dd", "none", "remerge"])]
     diff_merges: Option<String>,
 }
@@ -59,6 +59,7 @@ pub(super) enum Mode {
     None,
     Separate { first_parent: bool },
     Combined { dense: bool },
+    Remerge,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -72,25 +73,21 @@ pub(super) struct Plan {
     pub explicit: bool,
 }
 
-/// What a `--diff-merges` value or `log.diffMerges` names; `None` for remerge, which is not built.
-fn named(value: &str, default: Mode) -> Option<Result<(Mode, bool), ()>> {
+/// What a `--diff-merges` value or `log.diffMerges` names.
+fn named(value: &str, default: Mode) -> Result<(Mode, bool), ()> {
     let sep = Mode::Separate {
         first_parent: false,
     };
-    Some(match value {
+    match value {
         "off" | "none" => Ok((Mode::None, false)),
         "1" | "first-parent" => Ok((Mode::Separate { first_parent: true }, true)),
         "separate" => Ok((sep, true)),
         "c" | "combined" => Ok((Mode::Combined { dense: false }, true)),
         "cc" | "dense-combined" => Ok((Mode::Combined { dense: true }, true)),
         "m" | "on" => Ok((default, true)),
-        "r" | "remerge" => return None,
+        "r" | "remerge" => Ok((Mode::Remerge, true)),
         _ => Err(()),
-    })
-}
-
-fn no_remerge() -> ! {
-    crate::usage_error("`--remerge-diff` and `--diff-merges=remerge` are not available")
+    }
 }
 
 impl MergeArgs {
@@ -103,9 +100,8 @@ impl MergeArgs {
             match git.repo.config().get("log.diffmerges") {
                 None => Ok(sep),
                 Some(v) => match named(v, sep) {
-                    Some(Ok((mode, _))) => Ok(mode),
-                    Some(Err(())) => anyhow::bail!("bad config value '{v}' for 'log.diffmerges'"),
-                    None => no_remerge(),
+                    Ok((mode, _)) => Ok(mode),
+                    Err(()) => anyhow::bail!("bad config value '{v}' for 'log.diffmerges'"),
                 },
             }
         };
@@ -120,7 +116,7 @@ impl MergeArgs {
         } else if self.none {
             (Mode::None, false, false, true)
         } else if self.remerge {
-            no_remerge()
+            (Mode::Remerge, true, true, true)
         } else if let Some(value) = &self.diff_merges {
             match named(
                 value,
@@ -130,9 +126,8 @@ impl MergeArgs {
                     sep
                 },
             ) {
-                Some(Ok((mode, need))) => (mode, need, false, true),
-                Some(Err(())) => anyhow::bail!("invalid value for '--diff-merges': '{value}'"),
-                None => no_remerge(),
+                Ok((mode, need)) => (mode, need, false, true),
+                Err(()) => anyhow::bail!("invalid value for '--diff-merges': '{value}'"),
             }
         } else if show {
             (Mode::Combined { dense: true }, true, false, false)
@@ -234,6 +229,12 @@ pub(super) struct Body {
     pub dashes: bool,
 }
 
+/// What a diff is taken against.
+pub(super) enum Against {
+    Parent(Option<ObjectId>),
+    Tree(ObjectId),
+}
+
 /// One header of a commit and what follows it.
 pub(super) struct Segment {
     pub from: Option<ObjectId>,
@@ -273,11 +274,11 @@ impl Shape<'_> {
         plan: &Plan,
         c: &Commit,
         want: &dyn Fn() -> Want,
-        against: &mut dyn FnMut(Option<ObjectId>) -> Result<Option<Body>>,
+        against: &mut dyn FnMut(Against) -> Result<Option<Body>>,
     ) -> Result<Vec<Segment>> {
         let plain = |tail| vec![Segment { from: None, tail }];
         if c.parents.len() <= 1 {
-            let body = against(c.parents.first().copied())?;
+            let body = against(Against::Parent(c.parents.first().copied()))?;
             return Ok(plain(self.tail(body)));
         }
         match plan.mode {
@@ -285,7 +286,7 @@ impl Shape<'_> {
             Mode::Separate { first_parent } => {
                 let mut out = Vec::new();
                 for p in &c.parents {
-                    if let Some(body) = against(Some(*p))? {
+                    if let Some(body) = against(Against::Parent(Some(*p)))? {
                         out.push(Segment {
                             from: (!first_parent).then_some(*p),
                             tail: self.tail(Some(body)),
@@ -301,6 +302,28 @@ impl Shape<'_> {
                 Ok(out)
             }
             Mode::Combined { dense } => Ok(plain(self.combined(c, dense, &want())?)),
+            Mode::Remerge if c.parents.len() > 2 => Ok(plain(String::from(
+                "diff: warning: Skipping remerge-diff for octopus merges.\n",
+            ))),
+            Mode::Remerge => {
+                let mut re = super::remerge_diff::recreate(self.git, c)?;
+                re.notes
+                    .retain(|path, _| self.spec.matches(path.as_bytes()));
+                let body = against(Against::Tree(re.tree))?;
+                let patch = want().patch;
+                let body = match body {
+                    Some(b) => Some(Body {
+                        text: super::remerge_diff::annotate(&b.text, &re.notes, patch),
+                        ..b
+                    }),
+                    None if patch && !re.notes.is_empty() => Some(Body {
+                        text: super::remerge_diff::annotate("", &re.notes, true),
+                        dashes: false,
+                    }),
+                    None => None,
+                };
+                Ok(plain(self.tail(body)))
+            }
         }
     }
 

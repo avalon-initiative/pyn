@@ -789,10 +789,7 @@ fn unfinished_forms_are_usage_errors() {
     base_files(&f);
     f.commit("base");
     for args in [
-        &["show", "--remerge-diff"][..],
-        &["show", "--diff-merges=remerge"],
-        &["log", "--remerge-diff"],
-        &["log", "--graph", "-c"],
+        &["log", "--graph", "-c"][..],
         &["log", "-c", "--follow", "f"],
         &["log", "-c", "-S", "x"],
         &["log", "-m", "-p", "--", "f"],
@@ -1065,6 +1062,170 @@ fn random_merge_histories_match_git() {
                     &["log", "--oneline", "-c", "--stat"],
                 ]);
             }
+        }
+    }
+}
+
+const REMERGE: &[&[&str]] = &[
+    &["show", "--remerge-diff"],
+    &["show", "--diff-merges=remerge"],
+    &["show", "--diff-merges=r", "--stat"],
+    &["show", "--remerge-diff", "--name-status"],
+    &["show", "--remerge-diff", "-s"],
+    &["show", "--remerge-diff", "-U1"],
+    &["show", "--remerge-diff", "--", "g"],
+    &["log", "--remerge-diff"],
+    &["log", "--remerge-diff", "--oneline", "--first-parent"],
+    &["log", "--diff-merges=remerge", "-p", "--format=%h"],
+    &["log", "--remerge-diff", "--stat", "--format=%h"],
+];
+
+/// Every remerge form with git's default conflict markers and with `merge.conflictStyle=diff3`.
+fn remerged(f: &Fixture) {
+    for style in [None, Some("diff3"), Some("merge")] {
+        match style {
+            Some(v) => f.git(&["config", "merge.conflictStyle", v]),
+            None => String::new(),
+        };
+        f.all_same(REMERGE);
+    }
+}
+
+fn conflicted_merge(f: &Fixture, resolve: impl Fn(&Fixture)) {
+    base_files(f);
+    f.write("keep", &text(&["k"]));
+    f.write("bin", b"\0\x01\x02");
+    let base = f.commit("base");
+    f.branch("side", &base);
+    f.write(
+        "f",
+        &text(&["a", "b", "side", "d", "e", "f", "g", "h", "i", "j"]),
+    );
+    f.write("g", &text(&["x", "side", "z"]));
+    f.write("h", &text(&["one", "two", "three", "four", "side"]));
+    f.write("bin", b"\0side");
+    f.write("added", &text(&["side"]));
+    f.git(&["rm", "-q", "keep"]);
+    f.commit("side\tsubject");
+    f.branch("main", &base);
+    f.write(
+        "f",
+        &text(&["a", "b", "main", "d", "e", "f", "g", "h", "i", "j"]),
+    );
+    f.write("g", &text(&["x", "main", "z"]));
+    f.write("h", &text(&["zero", "one", "two", "three", "four"]));
+    f.write("bin", b"\0main");
+    f.write("added", &text(&["main"]));
+    f.write("keep", &text(&["k", "main"]));
+    f.commit("main");
+    let out = f.git_ok(&["merge", "side", "--no-edit"]);
+    assert!(!out.status.success());
+    resolve(f);
+    f.git(&["add", "-A"]);
+    f.git(&["commit", "-q", "-m", "merge"]);
+}
+
+#[test]
+fn remerge_diffs_of_conflicts_match_git() {
+    for format in FORMATS {
+        let f = Fixture::new(format);
+        conflicted_merge(&f, |f| {
+            f.write(
+                "f",
+                &text(&["a", "b", "both", "d", "e", "f", "g", "h", "i", "j"]),
+            );
+            f.git(&["checkout", "--theirs", "g"]);
+            f.git(&["checkout", "--ours", "bin"]);
+            f.write("added", &text(&["resolved"]));
+            f.write("keep", &text(&["kept"]));
+        });
+        remerged(&f);
+    }
+}
+
+#[test]
+fn remerge_diffs_of_clean_and_evil_merges_match_git() {
+    for format in FORMATS {
+        let f = Fixture::new(format);
+        base_files(&f);
+        let base = f.commit("base");
+        f.branch("side", &base);
+        f.write("g", &text(&["x", "y", "side"]));
+        f.commit("side");
+        f.branch("main", &base);
+        f.write("h", &text(&["one", "main", "three", "four"]));
+        f.commit("main");
+        f.git(&["merge", "-q", "--no-commit", "--no-ff", "side"]);
+        f.git(&["add", "-A"]);
+        f.git(&["commit", "-q", "-m", "clean merge"]);
+        remerged(&f);
+        f.git(&["reset", "-q", "--hard", "main"]);
+        f.git(&["merge", "-q", "--no-commit", "--no-ff", "side"]);
+        f.write("evil.txt", &text(&["added", "by", "the", "merge"]));
+        f.write("g", &text(&["x", "y", "evil"]));
+        f.git(&["add", "-A"]);
+        f.git(&["commit", "-q", "-m", "evil merge"]);
+        remerged(&f);
+    }
+}
+
+#[test]
+fn remerge_diffs_skip_octopus_merges_and_refuse_zdiff3_like_git() {
+    let f = Fixture::new("sha1");
+    base_files(&f);
+    let base = f.commit("base");
+    let mut tips = Vec::new();
+    for i in 0..3 {
+        f.branch(&format!("t{i}"), &base);
+        f.write(&format!("only{i}"), &text(&["x"]));
+        tips.push(f.commit(&format!("t{i}")));
+    }
+    f.branch("main", &tips[0]);
+    f.git(&["merge", "-q", "--no-commit", &tips[1], &tips[2]]);
+    f.git(&["commit", "-q", "-m", "octopus"]);
+    f.all_same(&[
+        &["show", "--remerge-diff"],
+        &["log", "--remerge-diff", "--oneline"],
+    ]);
+    let (want, got) = (
+        f.oracle(&["show", "--remerge-diff"]),
+        f.pyn(&["show", "--remerge-diff"]),
+    );
+    assert_eq!(got.stderr, want.stderr);
+}
+
+#[test]
+fn tabs_in_messages_are_expanded_and_ids_abbreviated_like_git() {
+    let f = Fixture::new("sha1");
+    base_files(&f);
+    f.commit("subject\n\n# Conflicts:\n\tg\n\tindented\ttab\n\t\ttwo");
+    f.write("g", &text(&["changed"]));
+    f.git(&[
+        "commit",
+        "-q",
+        "-a",
+        "--cleanup=verbatim",
+        "-m",
+        "second\n\n\ta\tb",
+    ]);
+    for format in ["medium", "short", "full", "fuller", "raw", "oneline"] {
+        for extra in [
+            &[][..],
+            &["--expand-tabs"],
+            &["--expand-tabs=3"],
+            &["--expand-tabs=0"],
+            &["--no-expand-tabs"],
+            &["--abbrev-commit"],
+            &["--no-abbrev-commit"],
+            &["--abbrev-commit", "--no-expand-tabs"],
+        ] {
+            let pretty = format!("--pretty={format}");
+            let mut log = vec!["log", pretty.as_str()];
+            log.extend(extra);
+            f.same(&log);
+            let mut show = vec!["show", "-s", pretty.as_str()];
+            show.extend(extra);
+            f.same(&show);
         }
     }
 }

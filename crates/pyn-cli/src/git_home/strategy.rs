@@ -63,6 +63,8 @@ impl Which {
 #[derive(Clone, Debug, Default)]
 pub(super) struct Settings {
     pub text: Options,
+    /// Conflicts get git's two-sided markers instead of diff3 ones.
+    pub plain_markers: bool,
     pub renormalize: bool,
     /// `-X subtree[=<path>]` or `-s subtree`: the prefix, empty to find it.
     pub shift: Option<String>,

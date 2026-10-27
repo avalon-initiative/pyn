@@ -34,6 +34,23 @@ pub struct FormatArgs {
     /// `default`, `iso`, `iso-strict`, `rfc`, `short`, `relative`, `unix` or `raw`.
     #[arg(long, value_name = "STYLE")]
     date: Option<String>,
+    /// Show full ids in the `commit` line, or with `--abbrev-commit` the abbreviated one.
+    #[arg(long, overrides_with = "no_abbrev_commit")]
+    abbrev_commit: bool,
+    #[arg(long, overrides_with = "abbrev_commit")]
+    no_abbrev_commit: bool,
+    /// Expand tabs in the message to multiples of N columns (8 without a value); the default for `medium`, `full` and `fuller`.
+    #[arg(
+        long,
+        value_name = "N",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "8",
+        overrides_with = "no_expand_tabs"
+    )]
+    expand_tabs: Option<usize>,
+    #[arg(long, overrides_with = "expand_tabs")]
+    no_expand_tabs: bool,
 }
 
 impl FormatArgs {
@@ -44,6 +61,9 @@ impl FormatArgs {
             ("--format", self.format.is_some()),
             ("--pretty", self.pretty.is_some()),
             ("--date", self.date.is_some()),
+            ("--abbrev-commit", self.abbrev_commit),
+            ("--expand-tabs", self.expand_tabs.is_some()),
+            ("--no-expand-tabs", self.no_expand_tabs),
         ]
         .into_iter()
         .find(|(_, on)| *on)
@@ -84,9 +104,15 @@ impl FormatArgs {
         {
             *abbrev = true;
         }
+        let tabs = match (self.expand_tabs, self.no_expand_tabs) {
+            (_, true) => Some(0),
+            (n, false) => n,
+        };
         Ok(Rendering {
             pretty,
             style: self.style()?,
+            tabs,
+            abbrev_commit: self.abbrev_commit,
         })
     }
 }
@@ -95,6 +121,19 @@ impl FormatArgs {
 pub struct Rendering {
     pub pretty: Pretty,
     pub style: DateStyle,
+    /// The tab width asked for; `None` leaves the format's default.
+    pub tabs: Option<usize>,
+    pub abbrev_commit: bool,
+}
+
+impl Rendering {
+    /// The tab width that applies: 8 where the format indents the message by four spaces.
+    pub fn tab_width(&self) -> usize {
+        self.tabs.unwrap_or(match self.pretty {
+            Pretty::Medium | Pretty::Full | Pretty::Fuller => 8,
+            _ => 0,
+        })
+    }
 }
 
 fn person(p: &api::Person, time: i64) -> Signature {
@@ -129,6 +168,8 @@ pub fn render_api(r: &Rendering, c: &api::Commit) -> Result<String> {
         now: chrono::Utc::now().timestamp(),
         decorations: &none,
         commit_color: None,
+        tabs: r.tab_width(),
+        abbrev_commit: r.abbrev_commit,
     };
     Ok(format!(
         "{}{}",
@@ -333,6 +374,9 @@ pub struct Context<'a> {
     pub decorations: &'a Decorations,
     /// The escape sequence that paints a commit id, when output is colored.
     pub commit_color: Option<&'a str>,
+    /// Tab width for the message; 0 keeps tabs.
+    pub tabs: usize,
+    pub abbrev_commit: bool,
 }
 
 pub(crate) fn short(id: &ObjectId) -> String {
@@ -381,7 +425,26 @@ pub(crate) fn subject_and_body(message: &str) -> (String, &str) {
 }
 
 /// The message indented by four spaces, as `medium` prints it; `first_paragraph` stops at the first blank line.
-fn indented(message: &[u8], first_paragraph: bool) -> String {
+fn expand_tabs(line: &str, width: usize) -> String {
+    if width == 0 || !line.contains('\t') {
+        return line.to_string();
+    }
+    let mut out = String::new();
+    let mut column = 0;
+    for ch in line.chars() {
+        if ch == '\t' {
+            let fill = width - column % width;
+            out.push_str(&" ".repeat(fill));
+            column += fill;
+        } else {
+            out.push(ch);
+            column += 1;
+        }
+    }
+    out
+}
+
+fn indented(message: &[u8], first_paragraph: bool, tabs: usize) -> String {
     let text = lossy(message);
     let mut lines: Vec<&str> = text.split('\n').collect();
     while lines.last().is_some_and(|l| is_blank(l)) {
@@ -394,7 +457,7 @@ fn indented(message: &[u8], first_paragraph: bool) -> String {
             break;
         }
         out.push_str("    ");
-        out.push_str(line.trim_end());
+        out.push_str(expand_tabs(line.trim_end(), tabs).as_str());
         out.push('\n');
     }
     out
@@ -415,29 +478,38 @@ pub fn render(pretty: &Pretty, ctx: &Context<'_>, id: &ObjectId, c: &Commit) -> 
         Some(color) => format!("{color}{text}{}", crate::diff_color::RESET),
         None => text,
     };
-    let head = format!("{}\n{}", paint(format!("commit {id}")), merge_line(c));
+    let shown = if ctx.abbrev_commit {
+        short(id)
+    } else {
+        id.to_hex()
+    };
+    let head = format!("{}\n{}", paint(format!("commit {shown}")), merge_line(c));
     match pretty {
         Pretty::Oneline { abbrev } => {
             let (subject, _) = subject_and_body(&lossy(&c.message));
-            let name = if *abbrev { short(id) } else { id.to_hex() };
+            let name = if *abbrev || ctx.abbrev_commit {
+                short(id)
+            } else {
+                id.to_hex()
+            };
             format!("{} {subject}", paint(name))
         }
         Pretty::Short => format!(
             "{head}Author: {}\n\n{}",
             ident(&c.author),
-            indented(&c.message, true)
+            indented(&c.message, true, ctx.tabs)
         ),
         Pretty::Medium => format!(
             "{head}Author: {}\nDate:   {}\n\n{}",
             ident(&c.author),
             date(&c.author),
-            indented(&c.message, false)
+            indented(&c.message, false, ctx.tabs)
         ),
         Pretty::Full => format!(
             "{head}Author: {}\nCommit: {}\n\n{}",
             ident(&c.author),
             ident(&c.committer),
-            indented(&c.message, false)
+            indented(&c.message, false, ctx.tabs)
         ),
         Pretty::Fuller => format!(
             "{head}Author:     {}\nAuthorDate: {}\nCommit:     {}\nCommitDate: {}\n\n{}",
@@ -445,10 +517,10 @@ pub fn render(pretty: &Pretty, ctx: &Context<'_>, id: &ObjectId, c: &Commit) -> 
             date(&c.author),
             ident(&c.committer),
             date(&c.committer),
-            indented(&c.message, false)
+            indented(&c.message, false, ctx.tabs)
         ),
         Pretty::Raw => {
-            let mut out = format!("{}\ntree {}\n", paint(format!("commit {id}")), c.tree);
+            let mut out = format!("{}\ntree {}\n", paint(format!("commit {shown}")), c.tree);
             for p in &c.parents {
                 out.push_str(&format!("parent {p}\n"));
             }
@@ -464,7 +536,7 @@ pub fn render(pretty: &Pretty, ctx: &Context<'_>, id: &ObjectId, c: &Commit) -> 
                 "author {}\ncommitter {}\n\n{}",
                 raw(&c.author),
                 raw(&c.committer),
-                indented(&c.message, false)
+                indented(&c.message, false, ctx.tabs)
             ));
             out
         }
@@ -588,8 +660,12 @@ mod tests {
     #[test]
     fn message_indents_and_stops_at_a_paragraph_for_short() {
         let m = b"a\n\nb  \n\n";
-        assert_eq!(indented(m, false), "    a\n    \n    b\n");
-        assert_eq!(indented(m, true), "    a\n");
+        assert_eq!(indented(m, false, 0), "    a\n    \n    b\n");
+        assert_eq!(indented(m, true, 0), "    a\n");
+        assert_eq!(
+            indented(b"a\n\tb\nxy\tz\n", false, 8),
+            "    a\n            b\n    xy      z\n"
+        );
     }
 
     #[test]

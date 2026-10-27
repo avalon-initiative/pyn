@@ -1078,13 +1078,15 @@ impl<'a> Bisect<'a> {
         let git = self.git;
         let rendered = (|| -> Result<String> {
             let c = git.repo.commit(id)?;
-            let Rendering { pretty, style } = FormatArgs::default().rendering()?;
+            let Rendering { pretty, style, .. } = FormatArgs::default().rendering()?;
             let names = Decorations::new();
             let ctx = Context {
                 style,
                 now: chrono::Utc::now().timestamp(),
                 decorations: &names,
                 commit_color: None,
+                tabs: 8,
+                abbrev_commit: false,
             };
             let mut out = render(&pretty, &ctx, id, &c);
             out.push_str(pretty.terminator());

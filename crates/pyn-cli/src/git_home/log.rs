@@ -15,7 +15,7 @@ use super::decorate::{DecorateArgs, with_decoration};
 use super::log_gate::{Gate, Pickaxe};
 use super::log_graph::{Graph, topo_order};
 use super::log_match::{Dialect, compile_as, compile_ere, parse_date};
-use super::merge_diff::{Body, MergeArgs, Plan, Shape, Want, with_from};
+use super::merge_diff::{Against, Body, MergeArgs, Plan, Shape, Want, with_from};
 use crate::commit_format::{Context, FormatArgs, Pretty, Rendering, render};
 use crate::diff::{self, DiffParts, Kind, Tree};
 use crate::{table, time};
@@ -592,7 +592,9 @@ pub(super) fn log(
     git.repo.validate_diff_ignore_submodules()?;
     // A bare repository has no prefix: paths are relative to the git directory wherever it is run.
     let cwd = if git.is_bare() { &git.ws.root } else { cwd };
-    let Rendering { pretty, style } = args.fmt.rendering()?;
+    let rendering = args.fmt.rendering()?;
+    let (tabs, abbrev_commit) = (rendering.tab_width(), rendering.abbrev_commit);
+    let Rendering { pretty, style, .. } = rendering;
     let filters = Filters::new(&args)?;
     let parts = args.diff_parts();
     let patch_parts = DiffParts {
@@ -611,6 +613,8 @@ pub(super) fn log(
         now: chrono::Utc::now().timestamp(),
         decorations: &decorated,
         commit_color: commit_color.as_deref(),
+        tabs,
+        abbrev_commit,
     };
 
     if plan.needs_full_history() && !selection.paths.is_empty() {
@@ -841,10 +845,11 @@ impl Printer<'_> {
                 only: &[],
                 quiet: false,
             };
-            let mut against = |parent: Option<ObjectId>| -> Result<Option<Body>> {
-                let parent_tree = match parent {
-                    Some(p) => Some(git.repo.commit(&p)?.tree),
-                    None => None,
+            let mut against = |source: Against| -> Result<Option<Body>> {
+                let parent_tree = match source {
+                    Against::Parent(Some(p)) => Some(git.repo.commit(&p)?.tree),
+                    Against::Parent(None) => None,
+                    Against::Tree(t) => Some(t),
                 };
                 let (mut old, mut new) = (Tree::new(), Tree::new());
                 let changes = git

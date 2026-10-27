@@ -328,6 +328,24 @@ fn push_side(out: &mut Vec<u8>, lines: &[&[u8]]) {
     }
 }
 
+/// Renders chunks with git's default two-sided conflict markers, without the base.
+pub fn render_two_way(chunks: &[Chunk<&[u8]>], ours: &str, theirs: &str) -> Vec<u8> {
+    let mut out = Vec::new();
+    for chunk in chunks {
+        match chunk {
+            Chunk::Resolved(lines) => lines.iter().for_each(|l| out.extend_from_slice(l)),
+            Chunk::Conflict(c) => {
+                out.extend_from_slice(format!("<<<<<<< {ours}\n").as_bytes());
+                push_side(&mut out, &c.ours);
+                out.extend_from_slice(b"=======\n");
+                push_side(&mut out, &c.theirs);
+                out.extend_from_slice(format!(">>>>>>> {theirs}\n").as_bytes());
+            }
+        }
+    }
+    out
+}
+
 /// Renders chunks with diff3-style conflict markers, labelled with the given names.
 pub fn render_markers(chunks: &[Chunk<&[u8]>], ours: &str, base: &str, theirs: &str) -> Vec<u8> {
     let mut out = Vec::new();

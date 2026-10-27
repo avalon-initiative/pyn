@@ -72,6 +72,7 @@ mod rebase_merges;
 mod reflog;
 mod refwrite;
 mod remerge;
+mod remerge_diff;
 mod remote;
 mod remote_query;
 mod remove;

@@ -13,7 +13,7 @@ use pyn_gitwork::{
 use pyn_object::ObjectId;
 
 use super::decorate::{DecorateArgs, with_decoration};
-use super::merge_diff::{Body, MergeArgs, Shape, Want, with_from};
+use super::merge_diff::{Against, Body, MergeArgs, Shape, Want, with_from};
 use super::{GitHome, path_string, sparse, stage};
 use crate::backend::Backend;
 use crate::commit_format::{Context, FormatArgs, Rendering, render};
@@ -1023,7 +1023,9 @@ fn show(
     if format.opts.abbrev.is_some() && fmt.first_given().is_some() {
         crate::usage_error("`--abbrev` together with a commit format is not built");
     }
-    let Rendering { pretty, style } = fmt.rendering()?;
+    let rendering = fmt.rendering()?;
+    let (tabs, abbrev_commit) = (rendering.tab_width(), rendering.abbrev_commit);
+    let Rendering { pretty, style, .. } = rendering;
     let decorate = decorate.resolve(git, &pretty)?;
     let plan = merges.plan(git, first_parent, true)?;
     let commit_color = diff::commit_color(git, &format.opts, decorate.on(), false);
@@ -1040,6 +1042,8 @@ fn show(
         now: chrono::Utc::now().timestamp(),
         decorations: &names,
         commit_color: commit_color.as_deref(),
+        tabs,
+        abbrev_commit,
     };
     let shape = Shape {
         git,
@@ -1052,10 +1056,11 @@ fn show(
     let mut check = String::new();
     for id in &ids {
         let c = git.repo.commit(id)?;
-        let mut against = |parent: Option<ObjectId>| -> Result<Option<Body>> {
-            let old_tree = match parent {
-                Some(p) => Some(git.repo.commit(&p)?.tree),
-                None => None,
+        let mut against = |source: Against| -> Result<Option<Body>> {
+            let old_tree = match source {
+                Against::Parent(Some(p)) => Some(git.repo.commit(&p)?.tree),
+                Against::Parent(None) => None,
+                Against::Tree(t) => Some(t),
             };
             let (mut old, mut new) = (Tree::new(), Tree::new());
             let changes = git

@@ -142,7 +142,7 @@ The commands named in decision #218.
 | `git diff --stat=<width>[,<name-width>[,<count>]]`, `--stat-width`, `--stat-name-width`, `--stat-graph-width`, `--stat-count`, `--compact-summary`, `--dirstat[=<params>]`, `--dirstat-by-file`, `--cumulative` | same | git home: supported | Git's diffstat layout (the terminal width is `COLUMNS`, else 80; `diff.statGraphWidth` is read), `...` for files left out by the count, `(new)`, `(gone)`, `(mode +x)` and the like with `--compact-summary` (which implies `--stat`), and the share of the change per folder for `--dirstat` (`changes`, `lines` and `files` measures, `cumulative`, a cut-off). `--dirstat` by changes counts bytes by git's line chunks: the last chunk of a file with no final newline is counted by git 2.55 and not by 2.43. Also in `show`, `log` and `stash show` (not `log --patch-with-stat`). A `--stat` option does not combine with `--numstat`, `--shortstat`, `--name-only`, `--name-status`, `--check` or `--raw` (usage error, `129`). |
 | `git diff -M[<n>]`, `--find-renames[=<n>]`, `-C[<n>]`, `--find-copies[=<n>]`, `--no-renames`, `-l<n>`, `--summary` | same | git home: supported | Rename and copy detection and the `--summary` lines, as git does them; also in `show`, `log` and `stash show`. See [Rename and copy detection](#rename-and-copy-detection). `-C -C` and `--find-copies-harder` are a usage error (`129`). |
 | `git show [<commit>...] [-- <path>...]` | `pyn show [<commit>...] [-- <path>...]` | different | Commit header (`commit`, `Author:`, `Date:`), message, then the commit's diff. The newest commit if none is named. The author line carries the email. On a git home the output is git's, with a merge commit shown as a combined diff (see [Merge commits in `show` and `log`](#merge-commits-in-show-and-log)): it takes several commits, and paths (after `--`, or existing ones) limit each diff. A commit that changes none of the paths still prints its header, as git 2.55 does (older git leaves it out). A pyn server takes one commit and no paths (usage error, `129`). |
-| `git show`, `git log` with `-m`, `-c`, `--cc`, `--dd`, `--first-parent`, `--diff-merges=<mode>`, `--no-diff-merges`, and `log.diffMerges` | same | git home: supported | A merge's combined (`-c`), dense combined (`--cc`, the default of `show`), per-parent (`-m`) and first-parent diffs, byte for byte as git prints them. `--remerge-diff` and `--combined-all-paths` are not built. See [Merge commits in `show` and `log`](#merge-commits-in-show-and-log). A pyn server refuses them (`129`). |
+| `git show`, `git log` with `-m`, `-c`, `--cc`, `--dd`, `--first-parent`, `--diff-merges=<mode>`, `--remerge-diff`, `--no-diff-merges`, and `log.diffMerges` | same | git home: supported | A merge's combined (`-c`), dense combined (`--cc`, the default of `show`), per-parent (`-m`), first-parent and remerge diffs, byte for byte as git prints them. `--combined-all-paths` is not built. See [Merge commits in `show` and `log`](#merge-commits-in-show-and-log). A pyn server refuses them (`129`). |
 | `git show -U<n>`, `--stat`, `--shortstat`, `-w`, `--check`, `--name-only`, `--name-status` | same | same | The diff flags behave as on `diff` (whitespace modes, `-W`, `--raw`, `--word-diff`, `--color`, `--stat` widths, `--dirstat`, `-R`, ...), and `--stat` is laid out as git lays it out (long names cut with `...`, graph scaled to `COLUMNS` or 80); `--check` exits `2` when it reports a problem; `--stat` with `-p` puts `---` between the message and the stat. |
 | `git show --numstat` | same | different | The numeric rows and format-combination limits are the same as `diff --numstat`. |
 | `git show <rev>:<path>` | `pyn get <path> [--rev N] [-o <file>]` | different | `show` takes commits only (`HEAD:foo` fails with `fatal: ... is not a commit`, `128`). File content at a revision is `pyn get`, to stdout or a file. `--rev` is a per-path revision, not a commit. |
@@ -1178,6 +1178,7 @@ A merge commit's diff follows git's merge-diff options. The last one given wins:
 | `-c`, `--diff-merges=c` (also `combined`) | The same without the omissions (`diff --combined <path>`). `-c` implies `-p` in `log`. |
 | `-m`, `--diff-merges=m` (`on`, `separate`) | One ordinary diff per parent, each under its own copy of the header, `commit <id> (from <parent>)` (`<abbrev> (from <abbrev>) <subject>` with `--oneline`; none with a `--format` template). `-m` and `on` use `log.diffMerges` (`separate` when unset). `-m` alone prints no diff in `log`. |
 | `--first-parent`, `--diff-merges=first-parent` (`1`, `--dd`) | A diff against the first parent only. `--first-parent` chooses this unless one of the options above is given, in `show` and in `log -p`. |
+| `--remerge-diff`, `--diff-merges=remerge` (`r`) | The merge's result against a fresh merge of its two parents, conflict markers included, so only what the committer changed while resolving shows. `--remerge-diff` implies `-p` in `log`. See below. |
 | `--no-diff-merges`, `--diff-merges=off` (`none`) | Nothing: the default of `log`. |
 
 `log` shows a merge's diff only when asked, and `--diff-merges=<mode>` alone shows merges (and no other commit) with the patch;
@@ -1190,12 +1191,24 @@ and `-l` apply per parent); `-U<n>` sets the context. `--stat`, `--shortstat`, `
 result against the first parent, and `--name-only` and `--name-status` list the combined paths (`--name-status` with a
 letter per parent, `MM`); with a patch, a blank line separates them from it. `--stat -p` in `log` has no `---`.
 
-Not built, each a usage error (`129`): `--remerge-diff` and `--diff-merges=remerge` (also as the `log.diffMerges` value used
-by `-m`); `-w` and `--check` with a combined diff; a combined diff of a submodule; a merge of more than 62 parents; `-c`, `-m`
+A remerge diff merges the two parents again with the tree merge of `pyn merge` (markers labelled `<abbrev> (<subject>)`, git's
+two-sided style unless `merge.conflictStyle` is `diff3`; `zdiff3` is a usage error) and diffs the result against the merge commit as
+any other diff; each conflicted path gets `remerge CONFLICT (...)` (and `remerge warning:` for a binary file) lines after its
+`diff --git` line, and a path whose resolution equals the fresh merge still gets the header and those lines. An octopus merge prints
+`diff: warning: Skipping remerge-diff for octopus merges.` in place of its diff. Differences: renames are not followed when merging
+(so a merge git resolves through a rename shows a conflict), a merge with several merge bases is a usage error (`129`) where git
+builds a virtual base, and the blobs of the fresh merge are written to the object store (unreferenced).
+
+Not built, each a usage error (`129`): `-w` and `--check` with a combined diff; a combined diff of a submodule; a merge of more than 62 parents; `-c`, `-m`
 and the other merge options with `log --graph`, `--follow`, `-S` or `-G`; `log -m`, `--diff-merges=separate` or
 `--diff-merges=first-parent` with a path, which also turns history simplification off. `--combined-all-paths` is an unknown
 option. An invalid `--diff-merges` value fails (`128`) as in git. `-m` and `--first-parent` diffs are `pyn diff`'s per parent,
-so they carry its line alignment, which can differ from git's on repetitive text.
+so they carry its alignment, which is the xdiff port's and matches git's.
+
+A commit message is printed with tabs expanded to multiples of eight columns in the `medium`, `full` and `fuller` formats (the text is
+expanded before the four-space indent, as git does); `--expand-tabs[=<n>]` sets the width for any format and `--no-expand-tabs`
+(or `--expand-tabs=0`) keeps tabs. `--abbrev-commit` abbreviates the id on the `commit` line (and in `--pretty=oneline`);
+`log.abbrevCommit` is not read.
 
 ### Rename and copy detection
 
