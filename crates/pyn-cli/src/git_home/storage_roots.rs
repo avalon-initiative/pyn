@@ -14,6 +14,8 @@ use super::GitHome;
 pub(super) struct Root {
     pub id: ObjectId,
     pub origin: Origin,
+    /// The name `fsck --name-objects` gives it: a ref, `ref@{time}`, `:path`, or `:` for a cache-tree node.
+    pub name: Option<String>,
 }
 
 #[derive(Clone)]
@@ -31,6 +33,10 @@ pub(super) struct Roots {
     pub bad_refs: Vec<(String, String)>,
     /// `HEAD` names a branch that does not exist yet.
     pub unborn_head: Option<String>,
+    /// Each work tree's `HEAD` as `fsck -v` names it.
+    pub head_links: Vec<String>,
+    /// Every reflog line's old and new ids, null ids included.
+    pub reflog_lines: Vec<(ObjectId, ObjectId)>,
 }
 
 impl Roots {
@@ -78,6 +84,7 @@ fn collect_refs(git: &GitHome, store: &RefStore, common: &Path, roots: &mut Root
             match store.resolve(target.trim()) {
                 Ok(Some(id)) => roots.roots.push(Root {
                     id,
+                    name: Some(name.clone()),
                     origin: Origin::Ref(name),
                 }),
                 _ => roots.bad_refs.push((name, zero(git).to_hex())),
@@ -85,6 +92,7 @@ fn collect_refs(git: &GitHome, store: &RefStore, common: &Path, roots: &mut Root
         } else if let Ok(id) = ObjectId::from_hex(alg, &text) {
             roots.roots.push(Root {
                 id,
+                name: Some(name.clone()),
                 origin: Origin::Ref(name),
             });
         } else {
@@ -99,6 +107,7 @@ fn collect_refs(git: &GitHome, store: &RefStore, common: &Path, roots: &mut Root
         {
             roots.roots.push(Root {
                 id: p.id,
+                name: Some(p.name.clone()),
                 origin: Origin::Ref(p.name),
             });
         }
@@ -120,10 +129,12 @@ fn collect_reflogs(
     }
     for name in names {
         for entry in store.read_reflog(&name).unwrap_or_default() {
+            roots.reflog_lines.push((entry.old, entry.new));
             for id in [entry.old, entry.new] {
                 if id != zero {
                     roots.roots.push(Root {
                         id,
+                        name: Some(format!("{name}@{{{}}}", entry.who.time)),
                         origin: Origin::Reflog(name.clone()),
                     });
                 }
@@ -142,6 +153,7 @@ fn collect_index(git: &GitHome, path: &Path, roots: &mut Roots) {
     for id in trees {
         roots.roots.push(Root {
             id,
+            name: Some(":".into()),
             origin: Origin::CacheTree(path.to_path_buf()),
         });
     }
@@ -149,6 +161,7 @@ fn collect_index(git: &GitHome, path: &Path, roots: &mut Roots) {
         if e.mode & 0o170000 != 0o160000 {
             roots.roots.push(Root {
                 id: e.id,
+                name: Some(format!(":{}", String::from_utf8_lossy(&e.path))),
                 origin: Origin::Index,
             });
         }
@@ -172,14 +185,26 @@ pub(super) fn collect(git: &GitHome, reflogs: bool, index: bool) -> Result<Roots
     trees.dedup();
     for dir in trees {
         let store = RefStore::new(dir.clone(), common.clone(), alg);
+        roots.head_links.push(if dir == repo.git_dir() {
+            "HEAD".into()
+        } else if dir == common {
+            "main-worktree/HEAD".into()
+        } else {
+            format!(
+                "worktrees/{}/HEAD",
+                dir.file_name().unwrap_or_default().to_string_lossy()
+            )
+        });
         match store.head() {
             Ok(Ref::Direct(id)) => roots.roots.push(Root {
                 id,
+                name: Some("HEAD".into()),
                 origin: Origin::Ref("HEAD".into()),
             }),
             Ok(Ref::Symbolic(target)) => match store.resolve(&target) {
                 Ok(Some(id)) => roots.roots.push(Root {
                     id,
+                    name: Some("HEAD".into()),
                     origin: Origin::Ref("HEAD".into()),
                 }),
                 _ if dir == repo.git_dir() => {
@@ -205,10 +230,12 @@ pub(super) fn collect(git: &GitHome, reflogs: bool, index: bool) -> Result<Roots
         collect_reflogs(&main, &common.join("logs"), false, &mut roots, zero(git));
         let head = repo.refs();
         for entry in head.read_reflog("HEAD").unwrap_or_default() {
+            roots.reflog_lines.push((entry.old, entry.new));
             for id in [entry.old, entry.new] {
                 if id != zero(git) {
                     roots.roots.push(Root {
                         id,
+                        name: Some(format!("HEAD@{{{}}}", entry.who.time)),
                         origin: Origin::Reflog("HEAD".into()),
                     });
                 }
