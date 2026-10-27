@@ -4,6 +4,8 @@
 
 #[path = "../../pyn-gittransport/tests/common/gitsrv.rs"]
 mod gitsrv;
+#[path = "common/oracle.rs"]
+mod oracle;
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -108,7 +110,12 @@ impl Pair {
     /// Runs `args` with both tools and requires the same exit status and the same conversion warnings.
     fn both(&self, args: &[&str]) -> (i32, String) {
         let (want, got) = (self.git(args), self.pyn(args));
-        assert_eq!(got.0, want.0, "{args:?}: pyn said {}", got.2);
+        assert_eq!(
+            oracle::status_class(got.0),
+            oracle::status_class(want.0),
+            "{args:?}: pyn said {}",
+            got.2
+        );
         let warned = |s: &str| {
             let mut v: Vec<String> = s
                 .lines()

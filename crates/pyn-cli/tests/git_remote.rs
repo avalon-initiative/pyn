@@ -192,6 +192,34 @@ fn listing_and_adding_match_git() {
 }
 
 #[test]
+fn add_track_and_master_match_git() {
+    let pair = Pair::new("", &[]);
+    for args in [
+        vec!["add", "-t", "a", "-t", "b", "o1", "u"],
+        vec!["add", "-m", "trunk", "o2", "u"],
+        vec!["add", "-t", "a", "-m", "b", "o3", "u"],
+        vec!["add", "--track", "x*", "--master", "main", "o4", "u"],
+        vec!["add", "-t", "a", "--mirror=fetch", "o5", "u"],
+        vec!["add", "-t", "a", "--mirror=push", "o6", "u"],
+        vec!["add", "-m", "a", "--mirror=fetch", "o7", "u"],
+        vec!["add", "-m", "a", "--mirror=push", "o8", "u"],
+        vec!["add", "-t", "a", "-m", "a", "--mirror", "o9", "u"],
+        vec!["add", "-t", "a", "-m", "a", "o1", "u"],
+        vec!["add", "-t", "a", "bad name", "u"],
+        vec!["-v"],
+    ] {
+        pair.same(&args, true);
+    }
+    pair.same(&["add", "-t"], false);
+}
+
+#[test]
+fn add_master_logs_the_head_when_its_branch_exists() {
+    let pair = Pair::new("", &[&["update-ref", "refs/remotes/o/trunk", "HEAD"]]);
+    pair.same(&["add", "-m", "trunk", "o", "u"], true);
+}
+
+#[test]
 fn add_keeps_the_rest_of_the_config() {
     let pair = Pair::new(
         "# my notes\n[user]\n\tname = Me ; trailing\n\n[core]\n\teditor = \"vi # x\"\n[branch \"main\"]\n\tmerge = refs/heads/main",

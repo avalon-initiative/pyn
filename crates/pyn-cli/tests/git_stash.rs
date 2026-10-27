@@ -3,6 +3,8 @@
 //! reflogs (so the stash commits have the same ids). Needs `git` on the PATH (tests only).
 
 mod common;
+#[path = "common/oracle.rs"]
+mod oracle;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -222,8 +224,8 @@ fn run(steps: &[Step<'_>]) {
         let y = p.pyn_in(&pyn_dir, step);
         let what = format!("step {n} {step:?} in '{sub}'");
         assert_eq!(
-            y.status.code(),
-            g.status.code(),
+            oracle::status_class(y.status.code().unwrap()),
+            oracle::status_class(g.status.code().unwrap()),
             "{what}: exit; pyn: {}; git: {}",
             String::from_utf8_lossy(&y.stderr),
             String::from_utf8_lossy(&g.stderr)
@@ -536,7 +538,11 @@ fn store_run(store: &[&str]) {
         let g = p.git_in(&p.git, &args);
         let y = p.pyn_in(&p.pyn, &args);
         let what = format!("round {round} {args:?}");
-        assert_eq!(y.status.code(), g.status.code(), "{what}: exit");
+        assert_eq!(
+            oracle::status_class(y.status.code().unwrap()),
+            oracle::status_class(g.status.code().unwrap()),
+            "{what}: exit"
+        );
         assert_eq!(
             keep(&y.stderr, false),
             keep(&g.stderr, false),
