@@ -622,3 +622,149 @@ fn a_shallow_bare_clone_can_be_deepened() {
     );
     assert!(!s.join("shallow").exists());
 }
+
+/// A work repository cloned from `src` with a linked work tree `lw`, under `root/<name>`.
+fn twin(rig: &Rig, src: &Path, name: &str) -> PathBuf {
+    let dir = rig.root.join(name);
+    fs::create_dir_all(&dir).unwrap();
+    let work = dir.join("work");
+    rig.git_ok(
+        &dir,
+        &["clone", "-q", src.to_str().unwrap(), work.to_str().unwrap()],
+    );
+    rig.git_ok(&work, &["worktree", "add", "-q", "../lw", "-b", "lw"]);
+    work
+}
+
+fn mentions(text: &str, root: &Path) -> String {
+    text.replace(root.to_str().unwrap(), "<root>")
+}
+
+#[test]
+fn init_separate_git_dir_moves_an_existing_git_directory_as_git_does() {
+    let rig = Rig::new();
+    let src = rig.source();
+    for (dest, setup) in [("sep", ""), ("deep/er/sep", "mkdir"), ("empty", "empty")] {
+        let (g, p) = (twin(&rig, &src, "g"), twin(&rig, &src, "p"));
+        let (groot, proot) = (
+            g.parent().unwrap().to_owned(),
+            p.parent().unwrap().to_owned(),
+        );
+        for root in [&groot, &proot] {
+            match setup {
+                "mkdir" => fs::create_dir_all(root.join("deep/er")).unwrap(),
+                "empty" => fs::create_dir_all(root.join(dest)).unwrap(),
+                _ => {}
+            }
+        }
+        let target = format!("../{dest}");
+        let go = rig.git(&g, &["init", "--separate-git-dir", &target]);
+        let po = rig.pyn(&p, &["init-git", "--separate-git-dir", &target]);
+        assert_eq!((po.code, go.code), (0, 0), "{dest}: {}", po.stderr);
+        assert_eq!(
+            mentions(&po.stdout, &proot),
+            mentions(&go.stdout, &groot),
+            "{dest}"
+        );
+        for (root, work) in [(&groot, &g), (&proot, &p)] {
+            let gitdir = root.join(dest);
+            assert_eq!(
+                fs::read_to_string(work.join(".git")).unwrap(),
+                format!("gitdir: {}\n", gitdir.display())
+            );
+            assert!(gitdir.join("HEAD").is_file() && gitdir.join("worktrees/lw").is_dir());
+            assert_eq!(
+                fs::read_to_string(root.join("lw/.git")).unwrap(),
+                format!("gitdir: {}\n", gitdir.join("worktrees/lw").display())
+            );
+            assert_eq!(rig.git_ok(work, &["status", "--short"]), "");
+            assert_eq!(rig.git_ok(&root.join("lw"), &["status", "--short"]), "");
+        }
+        let listed = rig.pyn_ok(&p, &["worktree", "list"]);
+        assert!(
+            listed.contains("[main]") && listed.contains("[lw]"),
+            "{listed}"
+        );
+        assert_eq!(
+            fs::read_to_string(groot.join(dest).join("config")).unwrap(),
+            fs::read_to_string(proot.join(dest).join("config")).unwrap()
+        );
+        fs::remove_dir_all(&groot).unwrap();
+        fs::remove_dir_all(&proot).unwrap();
+    }
+}
+
+#[test]
+fn init_separate_git_dir_on_a_repository_refuses_as_git_does() {
+    let rig = Rig::new();
+    let src = rig.source();
+    for args in [
+        vec!["--separate-git-dir", "../full"],
+        vec!["--separate-git-dir", "../missing/sep"],
+        vec!["--separate-git-dir", "../file"],
+        vec!["--object-format", "sha256", "--separate-git-dir", "../sep"],
+        vec!["--separate-git-dir", ".git/inside"],
+    ] {
+        let (g, p) = (twin(&rig, &src, "g"), twin(&rig, &src, "p"));
+        for work in [&g, &p] {
+            let root = work.parent().unwrap();
+            fs::create_dir_all(root.join("full")).unwrap();
+            fs::write(root.join("full/x"), "x").unwrap();
+            fs::write(root.join("file"), "x").unwrap();
+        }
+        let mut pa = vec!["init-git"];
+        pa.extend(&args);
+        let mut ga = vec!["init"];
+        ga.extend(&args);
+        let (po, go) = (rig.pyn(&p, &pa), rig.git(&g, &ga));
+        assert_eq!((po.code, go.code), (128, 128), "{args:?}: {}", po.stderr);
+        fs::remove_dir_all(g.parent().unwrap()).unwrap();
+        fs::remove_dir_all(p.parent().unwrap()).unwrap();
+    }
+}
+
+#[test]
+fn init_separate_git_dir_again_is_quiet_about_branches_and_keeps_core_worktree() {
+    let rig = Rig::new();
+    let src = rig.source();
+    let (g, p) = (twin(&rig, &src, "g"), twin(&rig, &src, "p"));
+    for (tool, work) in [("git", &g), ("pyn", &p)] {
+        rig.git_ok(work, &["config", "core.worktree", work.to_str().unwrap()]);
+        let args: Vec<&str> = if tool == "git" {
+            vec!["init", "-q", "-b", "other", "--separate-git-dir", "../s"]
+        } else {
+            vec![
+                "init-git",
+                "-q",
+                "-b",
+                "other",
+                "--separate-git-dir",
+                "../s",
+            ]
+        };
+        let o = if tool == "git" {
+            rig.git(work, &args)
+        } else {
+            rig.pyn(work, &args)
+        };
+        assert_eq!(o.code, 0, "{tool}: {}", o.stderr);
+        assert!(o.stdout.is_empty(), "{tool}: {}", o.stdout);
+        assert!(
+            o.stderr.contains("re-init: ignored --initial-branch=other"),
+            "{tool}: {}",
+            o.stderr
+        );
+        let s = work.parent().unwrap().join("s");
+        assert_eq!(
+            rig.config(&s, "core.worktree"),
+            [work.to_str().unwrap().to_owned()]
+        );
+        assert_eq!(rig.git_ok(work, &["branch", "--show-current"]), "main\n");
+        let again = if tool == "git" {
+            rig.git(work, &["init", "-q", "--separate-git-dir", "../s"])
+        } else {
+            rig.pyn(work, &["init-git", "-q", "--separate-git-dir", "../s"])
+        };
+        assert_eq!(again.code, 0, "{tool}: {}", again.stderr);
+    }
+}
