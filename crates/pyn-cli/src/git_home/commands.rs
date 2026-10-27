@@ -603,20 +603,17 @@ fn short_rows(entries: &[StatusEntry], format: Format, moves: &Moves) -> Vec<Row
     rows
 }
 
-/// `<branch>...<upstream> [ahead N, behind M]`, as the branch line of the short formats.
-fn branch_line(git: &GitHome, head: &Head) -> Result<String> {
-    let (name, local) = match head {
-        Head::Detached(_) => return Ok("HEAD (no branch)".into()),
-        Head::Branch { name, id } => (name, *id),
-    };
-    let mut line = match local {
-        Some(_) => name.clone(),
-        None => format!("No commits yet on {name}"),
-    };
+/// The ref a branch follows, shortened, and the commit it is at (`None` when the ref is gone).
+pub(super) struct Upstream {
+    pub shown: String,
+    pub id: Option<ObjectId>,
+}
+
+pub(super) fn upstream_of(git: &GitHome, name: &str) -> Result<Option<Upstream>> {
     let config = git.config();
     let tracking = pyn_git::tracking(config, name);
     let (Some(remote), Some(merge)) = (tracking.remote, tracking.merge.first()) else {
-        return Ok(line);
+        return Ok(None);
     };
     let upstream = if remote == "." {
         Some(merge.clone())
@@ -628,26 +625,62 @@ fn branch_line(git: &GitHome, head: &Head) -> Result<String> {
             .find_map(|s| s.map(merge))
     };
     let Some(upstream) = upstream else {
-        return Ok(line);
+        return Ok(None);
     };
     let shown = upstream
         .strip_prefix("refs/remotes/")
         .or_else(|| upstream.strip_prefix("refs/heads/"))
-        .unwrap_or(&upstream);
-    line.push_str(&format!("...{shown}"));
-    let Some(up_id) = git.repo.refs().resolve(&upstream)? else {
+        .unwrap_or(&upstream)
+        .to_string();
+    let id = git.repo.refs().resolve(&upstream)?;
+    Ok(Some(Upstream { shown, id }))
+}
+
+/// The commits only `local` has and only `upstream` has.
+pub(super) fn divergence(
+    git: &GitHome,
+    local: &ObjectId,
+    upstream: &ObjectId,
+) -> Result<(usize, usize)> {
+    let (mine, theirs) = (git.reachable(local)?, git.reachable(upstream)?);
+    Ok((
+        mine.difference(&theirs).count(),
+        theirs.difference(&mine).count(),
+    ))
+}
+
+/// `ahead N`, `behind M`, both, or nothing when in step.
+pub(super) fn track_words(ahead: usize, behind: usize) -> Option<String> {
+    match (ahead, behind) {
+        (0, 0) => None,
+        (a, 0) => Some(format!("ahead {a}")),
+        (0, b) => Some(format!("behind {b}")),
+        (a, b) => Some(format!("ahead {a}, behind {b}")),
+    }
+}
+
+/// `<branch>...<upstream> [ahead N, behind M]`, as the branch line of the short formats.
+fn branch_line(git: &GitHome, head: &Head) -> Result<String> {
+    let (name, local) = match head {
+        Head::Detached(_) => return Ok("HEAD (no branch)".into()),
+        Head::Branch { name, id } => (name, *id),
+    };
+    let mut line = match local {
+        Some(_) => name.clone(),
+        None => format!("No commits yet on {name}"),
+    };
+    let Some(up) = upstream_of(git, name)? else {
+        return Ok(line);
+    };
+    line.push_str(&format!("...{}", up.shown));
+    let Some(up_id) = up.id else {
         line.push_str(" [gone]");
         return Ok(line);
     };
     if let Some(local) = local {
-        let (mine, theirs) = (git.reachable(&local)?, git.reachable(&up_id)?);
-        let ahead = mine.difference(&theirs).count();
-        let behind = theirs.difference(&mine).count();
-        match (ahead, behind) {
-            (0, 0) => {}
-            (a, 0) => line.push_str(&format!(" [ahead {a}]")),
-            (0, b) => line.push_str(&format!(" [behind {b}]")),
-            (a, b) => line.push_str(&format!(" [ahead {a}, behind {b}]")),
+        let (ahead, behind) = divergence(git, &local, &up_id)?;
+        if let Some(words) = track_words(ahead, behind) {
+            line.push_str(&format!(" [{words}]"));
         }
     }
     Ok(line)

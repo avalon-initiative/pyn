@@ -124,9 +124,9 @@ pub struct BranchArgs {
     /// List branches (the default with no arguments).
     #[arg(short = 'l', long)]
     pub(crate) list: bool,
-    /// With the list, show each branch's commit and message.
-    #[arg(short = 'v', long)]
-    pub(crate) verbose: bool,
+    /// With the list, show each branch's commit and message; twice, the upstream and checked-out work tree too.
+    #[arg(short = 'v', long, action = clap::ArgAction::Count)]
+    pub(crate) verbose: u8,
     /// Print the current branch's name.
     #[arg(long)]
     pub(crate) show_current: bool,
@@ -177,6 +177,9 @@ pub struct CheckoutArgs {
     /// Create the branch and switch to it.
     #[arg(short = 'b')]
     pub(crate) create: Option<String>,
+    /// Create the branch, or reset it if it exists, and switch to it (a git repository only).
+    #[arg(short = 'B')]
+    pub(crate) reset: Option<String>,
     /// Discard local changes that the switch would overwrite.
     #[arg(short = 'f', long)]
     pub(crate) force: bool,
@@ -336,7 +339,7 @@ pub fn branch_command(
         return Ok(());
     }
     match names.as_slice() {
-        [] => list_branches(backend, api, ws, verbose, Scope::of(all, remotes)),
+        [] => list_branches(backend, api, ws, verbose > 0, Scope::of(all, remotes)),
         _ if list => bail!("`pyn branch --list` takes no branch names"),
         [new] => create(backend, api, ws, new, None).map(drop),
         [new, start] => create(backend, api, ws, new, Some(start)).map(drop),
@@ -541,6 +544,7 @@ pub fn checkout_command(
         args: before,
         paths,
         create: new,
+        reset,
         force,
         detach: _,
         ours,
@@ -553,6 +557,9 @@ pub fn checkout_command(
     } = args;
     if recurse_submodules {
         bail!("`pyn checkout --recurse-submodules` needs a git repository");
+    }
+    if reset.is_some() {
+        bail!("`pyn checkout -B` needs a git repository");
     }
     if ours || theirs {
         if paths.is_empty() || new.is_some() {

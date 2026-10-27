@@ -8,6 +8,7 @@ use pyn_gitwork::Head;
 use pyn_object::ObjectId;
 
 use super::GitHome;
+use super::commands::{divergence, track_words, upstream_of};
 use super::refwrite::BRANCHES;
 use super::switch::subject;
 use crate::branch::BranchArgs;
@@ -24,6 +25,9 @@ struct Row {
     id: Option<ObjectId>,
     /// What a symbolic remote-tracking ref points at.
     arrow: Option<String>,
+    /// The `[upstream: ahead 1]` part, and the work tree that has the branch, which `-v` and `-vv` show.
+    tracking: String,
+    tree: Option<std::path::PathBuf>,
 }
 
 const REMOTES: &str = "refs/remotes/";
@@ -49,6 +53,26 @@ fn edit_config_section(git: &GitHome, name: &str, how: Section<'_>) -> Result<()
     Ok(())
 }
 
+/// `[origin/main: ahead 1] ` for `-vv`, `[ahead 1] ` for `-v`, empty without an upstream.
+fn tracking_text(git: &GitHome, name: &str, id: &ObjectId, named: bool) -> Result<String> {
+    let Some(up) = upstream_of(git, name)? else {
+        return Ok(String::new());
+    };
+    let words = match &up.id {
+        None => Some("gone".to_string()),
+        Some(up_id) => {
+            let (ahead, behind) = divergence(git, id, up_id)?;
+            track_words(ahead, behind)
+        }
+    };
+    Ok(match (named, words) {
+        (true, Some(w)) => format!("[{}: {w}] ", up.shown),
+        (true, None) => format!("[{}] ", up.shown),
+        (false, Some(w)) => format!("[{w}] "),
+        (false, None) => String::new(),
+    })
+}
+
 fn list(git: &GitHome, args: &BranchArgs) -> Result<()> {
     let head = git.repo.head()?;
     let patterns: Vec<_> = args
@@ -68,6 +92,8 @@ fn list(git: &GitHome, args: &BranchArgs) -> Result<()> {
             name: format!("(HEAD detached at {})", short(id)),
             id: Some(*id),
             arrow: None,
+            tracking: String::new(),
+            tree: None,
         });
     }
     if !remotes_only {
@@ -76,16 +102,27 @@ fn list(git: &GitHome, args: &BranchArgs) -> Result<()> {
             if !wanted(&name) {
                 continue;
             }
+            let elsewhere = match &head {
+                Head::Branch { name: n, .. } if *n == name => None,
+                _ => git.used_elsewhere(&name)?,
+            };
             let marker = match &head {
                 Head::Branch { name: n, .. } if *n == name => '*',
-                _ if git.used_elsewhere(&name)?.is_some() => '+',
+                _ if elsewhere.is_some() => '+',
                 _ => ' ',
+            };
+            let tracking = if args.verbose > 0 {
+                tracking_text(git, &name, &id, args.verbose > 1)?
+            } else {
+                String::new()
             };
             rows.push(Row {
                 marker,
                 name,
                 id: Some(id),
                 arrow: None,
+                tracking,
+                tree: elsewhere.filter(|_| args.verbose > 1),
             });
         }
     }
@@ -109,6 +146,8 @@ fn list(git: &GitHome, args: &BranchArgs) -> Result<()> {
                 name,
                 id: Some(id),
                 arrow,
+                tracking: String::new(),
+                tree: None,
             });
         }
     }
@@ -119,16 +158,21 @@ fn list(git: &GitHome, args: &BranchArgs) -> Result<()> {
         .unwrap_or(0);
     for row in rows {
         if let Some(target) = &row.arrow {
-            let pad = if args.verbose { width } else { 0 };
+            let pad = if args.verbose > 0 { width } else { 0 };
             println!("{} {:<pad$} -> {target}", row.marker, row.name);
-        } else if args.verbose
+        } else if args.verbose > 0
             && let Some(id) = &row.id
         {
+            let tree = row
+                .tree
+                .as_ref()
+                .map_or(String::new(), |t| format!("({}) ", t.display()));
             println!(
-                "{} {:<width$} {} {}",
+                "{} {:<width$} {} {tree}{}{}",
                 row.marker,
                 row.name,
                 short(id),
+                row.tracking,
                 subject(git, id)?
             );
         } else {

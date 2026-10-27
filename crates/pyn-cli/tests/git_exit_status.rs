@@ -126,10 +126,6 @@ const DIVERGENT: &[(&str, &str)] = &[
         "docs: Extras `git config`, pyn config has list/get/set only; other forms are 129",
     ),
     (
-        "Dirty: checkout -b newb -B other",
-        "docs: Conventions, `checkout -B` is not built, so the combination is 129 where git says 128",
-    ),
-    (
         "Dirty: rev-parse --bogus",
         "docs: Conventions, `rev-parse` echoes an unknown option as git does not; here it is a usage error (129)",
     ),
@@ -140,14 +136,6 @@ const DIVERGENT: &[(&str, &str)] = &[
     (
         "Dirty: name-rev",
         "docs: Conventions, `name-rev` with no commit is a usage error (129) where git prints nothing and exits 0",
-    ),
-    (
-        "Clean: merge --squash clean",
-        "docs: Merge on a git home, `--squash` is not built (129)",
-    ),
-    (
-        "Dirty: branch -vv",
-        "docs: Branches on a git home, `-vv` is not built (129)",
     ),
     (
         "Dirty: config user.name",

@@ -832,11 +832,25 @@ pub fn checkout(git: &GitHome, cwd: &Path, args: CheckoutArgs) -> Result<()> {
     Ok(())
 }
 
+/// `checkout -b` and `-B` word a start point that names no commit differently from `switch`.
+fn check_start(git: &GitHome, name: &str, names: usize, start: Option<&str>) -> Result<()> {
+    if names > 1 {
+        bail!("Cannot update paths and switch to branch '{name}' at the same time.");
+    }
+    if let Some(s) = start
+        && git.repo.resolve(s).is_err()
+    {
+        bail!("'{s}' is not a commit and a branch '{name}' cannot be created from it");
+    }
+    Ok(())
+}
+
 fn checkout_to(git: &GitHome, cwd: &Path, args: CheckoutArgs) -> Result<()> {
     let CheckoutArgs {
         args: names,
         paths,
         create,
+        reset,
         force,
         detach,
         ours,
@@ -851,6 +865,9 @@ fn checkout_to(git: &GitHome, cwd: &Path, args: CheckoutArgs) -> Result<()> {
         let (rev, paths) = patch_target(git, cwd, &names, paths)?;
         return super::patch_mode::checkout(git, cwd, rev.as_deref(), &paths);
     }
+    if create.is_some() && reset.is_some() {
+        bail!("options '-b', '-B', and '--orphan' cannot be used together");
+    }
     let stage = match (ours, theirs) {
         (true, _) => Some(2),
         (_, true) => Some(3),
@@ -858,7 +875,7 @@ fn checkout_to(git: &GitHome, cwd: &Path, args: CheckoutArgs) -> Result<()> {
     };
     let dashes_paths = !paths.is_empty();
     if dashes_paths || stage.is_some() {
-        if create.is_some() || detach {
+        if create.is_some() || reset.is_some() || detach {
             bail!("'pyn checkout -- <paths>' cannot be used with switching branches");
         }
         let (tree_ish, paths) = match (names.as_slice(), dashes_paths) {
@@ -900,10 +917,25 @@ fn checkout_to(git: &GitHome, cwd: &Path, args: CheckoutArgs) -> Result<()> {
             bail!("options '-b' and '--detach' cannot be used together");
         }
         let start = names.first().cloned();
+        check_start(git, &name, names.len(), start.as_deref())?;
         return go(
             git,
             Go {
                 landing: Landing::NewBranch { name, start },
+                force,
+            },
+        );
+    }
+    if let Some(name) = reset {
+        if detach {
+            bail!("'--detach' cannot be used with '-b/-B/--orphan'");
+        }
+        let start = names.first().cloned();
+        check_start(git, &name, names.len(), start.as_deref())?;
+        return go(
+            git,
+            Go {
+                landing: Landing::ResetBranch { name, start },
                 force,
             },
         );

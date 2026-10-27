@@ -45,6 +45,12 @@ pub struct MergeArgs {
     /// Perform the merge but stop before committing it.
     #[arg(long)]
     pub(crate) no_commit: bool,
+    /// Put the merged changes in the index and work tree without a commit or a merge record (a git repository only).
+    #[arg(long, overrides_with = "no_squash")]
+    pub(crate) squash: bool,
+    /// Make the usual merge (the default).
+    #[arg(long, overrides_with = "squash")]
+    pub(crate) no_squash: bool,
     /// Give up a merge in progress and put the files back.
     #[arg(long, conflicts_with_all = ["source", "no_ff", "ff_only", "no_commit", "message", "preview", "continue_merge"])]
     pub(crate) abort: bool,
@@ -385,6 +391,9 @@ pub fn merge_command(backend: &dyn Backend, ws: Option<&Workspace>, args: MergeA
         crate::usage_error(
             "`pyn merge -s` and `-X` need a git repository; a pyn server merges by its own rules",
         );
+    }
+    if args.squash {
+        crate::usage_error("`pyn merge --squash` needs a git repository");
     }
     if args.edit {
         crate::usage_error(
