@@ -59,8 +59,7 @@ Deliberate status differences that remain:
 - **Inspection commands**: `rev-parse` with an option it does not know is a usage error (`129`), where git echoes the option
   and exits `0`; `name-rev` with no commit is `129`, where git prints nothing and exits `0`; `shortlog` outside a repository
   is `fatal` (`128`), where git prints a usage error (`129`).
-- **Unbuilt flags** (`merge --squash`, `branch -vv`) and the flag forms of `config` (`--list`, `<key>`, `<key> <value>`; use the
-  `list`, `get` and `set` subcommands) are usage errors (`129`) where git succeeds.
+- **Unbuilt flags** (`merge --squash`, `branch -vv`) are usage errors (`129`) where git succeeds.
 - **`pyn diff` outside a repository** compares two existing paths as `--no-index` does, as git does; anything else asks for a
   server (`128`), where git prints its `--no-index` usage (`129`).
 
@@ -181,8 +180,9 @@ Commands people reach for that are not in the daily set.
 | `git ls-tree [<rev>] [<path>]` | `pyn ls [<path>]` | different | One folder with each entry's mode, last change and lock. Head only; no revision argument. On a git home `pyn ls` lists `HEAD`'s tree, with no last change, and `pyn ls-tree` is git's command; see [Inspection commands](#inspection-commands). |
 | `git cat-file`, `git show <rev>:<path>` | `pyn get <path>` | different | See `show` above. On a git home `pyn cat-file` is git's command; see [Inspection commands](#inspection-commands). |
 | `git rev-parse`, `git show-ref`, `git shortlog`, `git describe`, `git name-rev` | the same names on a git home | git home only | See [Inspection commands](#inspection-commands). On a pyn server they fail with `fatal: not a git repository (or any of the parent directories): .git` (`128`). |
-| `git config --list`, `--get <key>`, `<key> <value>` | `pyn config list`, `get`, `set` | different | Subcommands instead of flags. `--global` and `--local` are accepted where they apply (`set` takes `--global` only; the default is the workspace). Keys are pyn's own. `pyn config init` is pyn only: it prompts for the user settings. |
-| `git config --unset`, `-e`, `--system`, `--file` | none | unsupported | Usage error (`129`). |
+| `git config --list`, `--get <key>`, `<key> <value>` | `pyn config --list`, `--get`, `<key> <value>` | git home: supported | Git's flag forms, on git's own config files, with git's output and exit statuses. See [Config flag forms](#config-flag-forms). |
+| `pyn config list`, `get`, `set`, `init` | the same | pyn only | The subcommands read and write pyn's own settings (`server`, `repo`, `user`), a different store from git config. `--global` and `--local` are accepted where they apply (`set` takes `--global` only; the default is the workspace). `pyn config init` prompts for the user settings. |
+| `git config --remove-section`, `--rename-section`, `-e`, `--blob`, `--type`, `--bool`, `--get-regexp`, `--show-origin`, `-z` and value patterns | none | unsupported | Usage error (`129`). |
 | `git fsck` | `pyn verify [<path>]` | different | Checks every revision's hash and its link to the one before, and the audit log's chain. Silent and exit 0 when intact, as git; otherwise a `PROBLEM`, `WHAT`, `PATH` table and exit 1. `-v` / `--verbose` also prints what was checked. See [integrity](integrity.md). On a git home `pyn fsck` is git's command; see [Storage maintenance](#storage-maintenance). |
 | `git reflog [show\|list\|exists\|expire\|delete]` | `pyn reflog ...` on a git home | git home only | See [Reflogs](#reflogs). On a pyn server it prints the git-command message; the closest analogue there is `pyn audit`, an append-only log of lock, revision and access events, filtered with `--path`, `--actor`, `--action`, `--before`, `--limit` and permission-gated (`view_audit`). |
 | `git count-objects`, `git fsck`, `git prune`, `git repack`, `git gc`, `git pack-refs` | the same names on a git home | git home only | See [Storage maintenance](#storage-maintenance). On a pyn server they fail with `fatal: not a git repository (or any of the parent directories): .git` (`128`). |
@@ -2324,6 +2324,23 @@ as the earlier one left it). `--rewrite` makes each kept line start where the on
 non-symbolic ref at the newest kept line when the newest was removed. `--verbose` prints `keep`, `prune` or `would prune` and
 the message per line to standard error. Not built: `show --all`, other `log` options (`--format`, `--date`), and the per-ref
 `gc.<pattern>.reflogExpire` settings.
+
+### Config flag forms
+
+`pyn config` with a git flag or a key (`--list`, `-l`, `--get`, `--get-all`, `--add`, `--unset`, `--unset-all`, `<key>`,
+`<key> <value>`, with `--global`, `--system`, `--local` or `-f <file>`) reads and writes git's config files, not pyn's
+settings: the system file (`/etc/gitconfig`, or `GIT_CONFIG_SYSTEM`; none with `GIT_CONFIG_NOSYSTEM`), the user's
+(`GIT_CONFIG_GLOBAL`, else `$XDG_CONFIG_HOME/git/config` or `~/.gitconfig`) and the repository's `.git/config`. The
+subcommands `list`, `get`, `set` and `init` keep addressing pyn's own store (the two stores stay apart, so a
+subcommand never touches git config and a flag form never touches `config.toml`).
+
+Without a scope flag, reads layer system, user and repository (the last value wins) and writes go to the repository's file;
+outside a repository reads use the first two and a write is `fatal: not in a git directory` (`128`). Output, exit statuses
+(`1` for a missing key or an invalid key, `5` for an `--unset` that finds nothing or several values, `255` for a file that
+cannot be written) and the resulting files match git; edits keep every other line, comment and the order of the file.
+`include` directives are not followed. Not built (usage error, `129`): `--replace-all`, `--get-regexp`, `--get-urlmatch`,
+`--remove-section`, `--rename-section`, `--edit`, `--type` and its shorthands, `--show-origin`, `--show-scope`, `-z`,
+`--name-only`, `--default` and value patterns. `crates/pyn-cli/tests/git_config_flags.rs` compares each form with real git.
 
 ### Inspection commands
 

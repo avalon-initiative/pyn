@@ -307,9 +307,8 @@ enum Command {
         #[command(flatten)]
         format: Box<DiffFormat>,
     },
-    /// Read and write settings, per workspace or for your user.
-    #[command(subcommand)]
-    Config(ConfigCommand),
+    /// Read and write settings, per workspace or for your user; on a git repository also git's `config` flag forms.
+    Config(ConfigArgs),
     #[command(external_subcommand)]
     External(Vec<OsString>),
     /// Show who you are signed in as and, in a repository, what you may do there.
@@ -845,6 +844,15 @@ enum TeamMemberCommand {
     Remove { team: String, user: String },
 }
 
+#[derive(clap::Args)]
+#[command(args_conflicts_with_subcommands = true)]
+struct ConfigArgs {
+    #[command(subcommand)]
+    cmd: Option<ConfigCommand>,
+    #[command(flatten)]
+    git: git_home::ConfigFlags,
+}
+
 #[derive(Subcommand)]
 enum ConfigCommand {
     /// Ask for the user settings and write them to the user configuration file.
@@ -1045,6 +1053,19 @@ fn main() {
         eprintln!("hint: Turn this message off by running");
         eprintln!("hint: \"git config advice.addEmptyPathspec false\"");
         std::process::exit(0);
+    }
+    if let Command::Config(args) = &cli.command
+        && args.cmd.is_none()
+        && !args.git.is_empty()
+    {
+        let result = std::env::current_dir()
+            .map_err(Into::into)
+            .and_then(|cwd| git_home::config_flags(&cwd, &args.git));
+        if let Err(e) = result {
+            eprintln!("fatal: {}", sanitize::text(&fatal_message(&e)));
+            std::process::exit(128);
+        }
+        return;
     }
     if let Command::Status(args) = &cli.command
         && let Err((code, message)) = args.check_porcelain()
@@ -2254,7 +2275,12 @@ fn run(cli: Cli) -> Result<()> {
                 &found.stranded,
             );
         }
-        Command::Config(cmd) => config_command(cmd, ws.as_ref(), &mine, &yours, &user_config)?,
+        Command::Config(args) => match args.cmd {
+            Some(cmd) => config_command(cmd, ws.as_ref(), &mine, &yours, &user_config)?,
+            None => {
+                usage_error("`pyn config` needs a subcommand (list, get, set, init) or a git flag")
+            }
+        },
         Command::Lock { path, base } => {
             let api = backend.pyn_server("lock")?;
             let path = rp(&path)?;

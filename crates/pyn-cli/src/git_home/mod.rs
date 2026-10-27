@@ -27,6 +27,7 @@ mod clone;
 mod combined_diff;
 mod commands;
 mod commit;
+mod config_flags;
 mod convert;
 mod count_objects;
 mod decorate;
@@ -123,6 +124,7 @@ pub use clone::{CloneOptions, clone};
 pub use commands::run;
 pub use commit::GitCommitArgs;
 pub(crate) use commit::append_trailer;
+pub use config_flags::{ConfigFlags, run as config_flags};
 pub use count_objects::CountObjectsArgs;
 pub use decorate::DecorateArgs;
 pub use describe::DescribeArgs;
@@ -322,6 +324,10 @@ impl GitHome {
     pub(super) fn reopen(&self) -> Result<GitHome> {
         let git = self.repo.git();
         Self::open_at(git.work_tree().unwrap_or(git.git_dir()))
+    }
+
+    pub(super) fn local_config_path(&self) -> PathBuf {
+        self.repo.git().common_dir().join("config")
     }
 
     /// The git configuration a transport reads: the repository's, over the user's.

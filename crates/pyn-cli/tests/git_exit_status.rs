@@ -82,50 +82,6 @@ const DIVERGENT: &[(&str, &str)] = &[
         "docs: Branches, switching and the work tree, `restore` with no path is 129 not 128",
     ),
     (
-        "Dirty: config bad..key value",
-        "docs: Extras `git config`, pyn config has list/get/set only; other forms are 129",
-    ),
-    (
-        "Dirty: config -f /nonexistent/file --list",
-        "docs: Extras `git config`, pyn config has list/get/set only; other forms are 129",
-    ),
-    (
-        "Dirty: config --get nosuch.key",
-        "docs: Extras `git config`, pyn config has list/get/set only; other forms are 129",
-    ),
-    (
-        "Dirty: config nokey",
-        "docs: Extras `git config`, pyn config has list/get/set only; other forms are 129",
-    ),
-    (
-        "Dirty: config nosuch.key",
-        "docs: Extras `git config`, pyn config has list/get/set only; other forms are 129",
-    ),
-    (
-        "Dirty: config --remove-section nosuchsection",
-        "docs: Extras `git config`, pyn config has list/get/set only; other forms are 129",
-    ),
-    (
-        "Dirty: config --rename-section nosuchsection other",
-        "docs: Extras `git config`, pyn config has list/get/set only; other forms are 129",
-    ),
-    (
-        "Dirty: config --unset nosuch.key",
-        "docs: Extras `git config`, pyn config has list/get/set only; other forms are 129",
-    ),
-    (
-        "Outside: config --list --local",
-        "docs: Extras `git config`, pyn config has list/get/set only; other forms are 129",
-    ),
-    (
-        "Outside: config --local a.b c",
-        "docs: Extras `git config`, pyn config has list/get/set only; other forms are 129",
-    ),
-    (
-        "Outside: config --local a.b",
-        "docs: Extras `git config`, pyn config has list/get/set only; other forms are 129",
-    ),
-    (
         "Dirty: checkout -b newb -B other",
         "docs: Conventions, `checkout -B` is not built, so the combination is 129 where git says 128",
     ),
@@ -142,24 +98,20 @@ const DIVERGENT: &[(&str, &str)] = &[
         "docs: Conventions, `name-rev` with no commit is a usage error (129) where git prints nothing and exits 0",
     ),
     (
+        "Dirty: config --remove-section nosuchsection",
+        "docs: Extras `git config`, section edits (`--remove-section`, `--rename-section`) are not built (129)",
+    ),
+    (
+        "Dirty: config --rename-section nosuchsection other",
+        "docs: Extras `git config`, section edits (`--remove-section`, `--rename-section`) are not built (129)",
+    ),
+    (
         "Clean: merge --squash clean",
         "docs: Merge on a git home, `--squash` is not built (129)",
     ),
     (
         "Dirty: branch -vv",
         "docs: Branches on a git home, `-vv` is not built (129)",
-    ),
-    (
-        "Dirty: config user.name",
-        "docs: Daily set `git config`, subcommands instead of flags (129)",
-    ),
-    (
-        "Dirty: config --list",
-        "docs: Daily set `git config`, subcommands instead of flags (129)",
-    ),
-    (
-        "Dirty: config a.b c",
-        "docs: Daily set `git config`, subcommands instead of flags (129)",
     ),
     (
         "Outside: diff",
