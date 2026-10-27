@@ -21,6 +21,7 @@ use super::worktree::{
     write_entry,
 };
 use super::{GitHome, Refused, convert, path_string};
+use crate::commit_format::{Context, DateStyle, Pretty, render};
 use crate::diff::{self, Tree};
 use crate::diffstat;
 use crate::merging::MergeArgs;
@@ -155,6 +156,9 @@ pub fn merge(git: &GitHome, mut args: MergeArgs) -> Result<()> {
     let Some(spec) = args.source.clone() else {
         bail!("no merge target given; name a branch or a commit");
     };
+    if args.squash && args.no_ff {
+        bail!("options '--squash' and '--no-ff.' cannot be used together");
+    }
     args.edit = wants_edit(&args);
     args.no_edit = !args.edit;
     let strategy = Strategy::parse(&args.strategy, &args.strategy_option);
@@ -168,11 +172,18 @@ pub fn merge(git: &GitHome, mut args: MergeArgs) -> Result<()> {
         .map_err(|_| Refused(format!("{spec} - not something we can merge")))?;
     let what = describe(git, &spec);
     let Some(ours) = head.id() else {
+        if args.squash {
+            bail!("Squash commit into empty head not supported yet");
+        }
         return fast_forward(git, &opened, None, &theirs, &spec, &args);
     };
     if git.is_ancestor(&theirs, &ours)? {
         write_orig_head(git, &ours)?;
-        say("Already up to date.");
+        say(if args.squash {
+            "Already up to date. (nothing to squash)"
+        } else {
+            "Already up to date."
+        });
         return Ok(());
     }
     if strategy.kind.no_fast_forward() {
@@ -194,6 +205,25 @@ pub fn merge(git: &GitHome, mut args: MergeArgs) -> Result<()> {
         (&spec, &what),
         &strategy,
     )
+}
+
+/// `SQUASH_MSG`: the commits `theirs` brings in, newest first, as `log` prints them.
+fn squash_message(git: &GitHome, ours: &ObjectId, theirs: &ObjectId) -> Result<String> {
+    let mut text = String::from("Squashed commit of the following:\n");
+    let ctx = Context {
+        style: DateStyle::Default,
+        now: 0,
+        decorations: &Default::default(),
+        commit_color: None,
+    };
+    let mut walk = git
+        .repo
+        .log_hiding(&[*theirs], git.reachable(ours)?, Pathspec::default())?;
+    while let Some(entry) = walk.next_entry()? {
+        text.push('\n');
+        text.push_str(&render(&Pretty::Medium, &ctx, &entry.id, &entry.commit));
+    }
+    Ok(text)
 }
 
 /// Whether the merge message opens in the editor: the flags, then an explicit `-m` (no), `GIT_MERGE_AUTOEDIT`, a terminal.
@@ -315,6 +345,16 @@ fn fast_forward(
     }
     if let Some(ours) = &ours {
         write_orig_head(git, ours)?;
+    }
+    if args.squash {
+        let ours = ours.expect("a squash needs a commit to merge into");
+        say("Fast-forward");
+        write_state(git, "SQUASH_MSG", &squash_message(git, &ours, theirs)?)?;
+        say("Squash commit -- not updating HEAD");
+        show_stat(git, args, old_tree.as_ref(), &new_tree)?;
+        git.warn_if_hooks_off(&MERGE_HOOKS);
+        git.run_hook("post-merge", &["1".to_string()], None, &[])?;
+        return Ok(());
     }
     git.move_head(theirs, &format!("{}: Fast-forward", action(spec)))?;
     say("Fast-forward");
@@ -513,7 +553,7 @@ fn true_merge(
         }
     };
     let (index, conflicted) = (applied.index, applied.conflicted);
-    let stops = !conflicted.is_empty() || args.no_commit || finish.message_stage();
+    let stops = !conflicted.is_empty() || args.no_commit || args.squash || finish.message_stage();
     let auto_merge = if kind.writes_auto_merge() && stops {
         Some(result_tree(git, &merged)?)
     } else {
@@ -640,6 +680,24 @@ impl Finish<'_> {
         let mode = if args.no_ff { "no-ff" } else { "" };
         if let Some(id) = auto_merge {
             write_state(git, "AUTO_MERGE", &format!("{id}\n"))?;
+        }
+        if args.squash {
+            write_state(git, "SQUASH_MSG", &squash_message(git, ours, theirs)?)?;
+            if !conflicted.is_empty() {
+                let mut text = String::from("\n# Conflicts:\n");
+                for p in &conflicted {
+                    text.push_str(&format!("#\t{}\n", path_string(p)));
+                }
+                write_state(git, "MERGE_MSG", &text)?;
+                println!("Squash commit -- not updating HEAD");
+                println!("Automatic merge failed; fix conflicts and then commit the result.");
+                std::process::exit(1);
+            }
+            eprintln!("Automatic merge went well; stopped before committing as requested");
+            println!("Squash commit -- not updating HEAD");
+            git.warn_if_hooks_off(&MERGE_HOOKS);
+            git.run_hook("post-merge", &["1".to_string()], None, &[])?;
+            return Ok(());
         }
         if !conflicted.is_empty() {
             let mut text = format!("{message}\n# Conflicts:\n");

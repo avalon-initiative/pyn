@@ -102,7 +102,7 @@ pub(crate) fn branch_command(store: &LocalStore, ws: &Workspace, args: BranchArg
         return Ok(());
     }
     match names.as_slice() {
-        [] => list_branches(store, &here, verbose, scope(all, remotes)),
+        [] => list_branches(store, &here, verbose > 0, scope(all, remotes)),
         _ if list => bail!("`pyn branch --list` takes no branch names"),
         [new] => create(store, ws, new, None),
         [new, start] => create(store, ws, new, Some(start)),

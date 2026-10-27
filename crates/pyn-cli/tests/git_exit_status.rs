@@ -126,18 +126,6 @@ const DIVERGENT: &[(&str, &str)] = &[
         "docs: Extras `git config`, pyn config has list/get/set only; other forms are 129",
     ),
     (
-        "Dirty: checkout -b newb -B other",
-        "docs: Conventions, `checkout -B` is not built, so the combination is 129 where git says 128",
-    ),
-    (
-        "Clean: merge --squash clean",
-        "docs: Merge on a git home, `--squash` is not built (129)",
-    ),
-    (
-        "Dirty: branch -vv",
-        "docs: Branches on a git home, `-vv` is not built (129)",
-    ),
-    (
         "Dirty: config user.name",
         "docs: Daily set `git config`, subcommands instead of flags (129)",
     ),

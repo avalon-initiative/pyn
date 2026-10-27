@@ -561,3 +561,105 @@ fn orphan_from_a_detached_head() {
         ],
     );
 }
+
+#[test]
+fn verbose_listing_shows_upstreams() {
+    for format in ["sha1", "sha256"] {
+        let mut pair = Pair::build(format);
+        pair.both_config(&["branch.main.remote", "origin"]);
+        pair.both_config(&["branch.main.merge", "refs/heads/main"]);
+        pair.both_config(&["branch.side.remote", "origin"]);
+        pair.both_config(&["branch.side.merge", "refs/heads/main"]);
+        pair.both_config(&["branch.loose.remote", "."]);
+        pair.both_config(&["branch.loose.merge", "refs/heads/side"]);
+        pair.both_config(&["branch.lost.remote", "origin"]);
+        pair.both_config(&["branch.lost.merge", "refs/heads/nosuch"]);
+        pair.same(&["branch", "loose", "main"]);
+        pair.same(&["branch", "lost", "main"]);
+        pair.same(&["branch", "plain", "side"]);
+        for step in [
+            &["branch", "-v"][..],
+            &["branch", "-vv"],
+            &["branch", "-v", "-v"],
+            &["branch", "-vvv"],
+            &["branch", "-vv", "--list", "s*"],
+            &["branch", "-a", "-vv"],
+            &["branch", "-r", "-vv"],
+        ] {
+            pair.same(step);
+        }
+        pair.same(&["switch", "--detach", "HEAD~1"]);
+        pair.same(&["branch", "-vv"]);
+        pair.same(&["switch", "-C", "ahead", "side"]);
+        pair.both_config(&["branch.ahead.remote", "origin"]);
+        pair.both_config(&["branch.ahead.merge", "refs/heads/main"]);
+        for (dir, n) in [(pair.git.clone(), "a"), (pair.pyn.clone(), "a")] {
+            commit_file(&pair.env, &dir, n, "x\n", "ahead one");
+        }
+        pair.same(&["branch", "-vv"]);
+        pair.same(&["branch", "-v"]);
+    }
+}
+
+#[test]
+fn verbose_listing_names_the_work_tree_that_has_a_branch() {
+    let pair = Pair::build("sha1");
+    let mut shown = Vec::new();
+    for (dir, wt) in [(&pair.git, "wt-git"), (&pair.pyn, "wt-pyn")] {
+        let tree = dir.parent().unwrap().join(wt);
+        pair.env.ok(
+            dir,
+            &["worktree", "add", "-q", tree.to_str().unwrap(), "side"],
+        );
+        for args in [&["branch", "-vv"][..], &["branch", "-v"]] {
+            let text = if dir == &pair.git {
+                text(&pair.env.git_at(dir, args, BASE_DATE).stdout)
+            } else {
+                text(&pair.env.pyn_at(dir, args, BASE_DATE).stdout)
+            };
+            shown.push(text.replace(tree.to_str().unwrap(), "<wt>"));
+        }
+    }
+    assert_eq!(shown[0], shown[2]);
+    assert_eq!(shown[1], shown[3]);
+    assert!(shown[0].contains("(<wt>)"), "{}", shown[0]);
+}
+
+#[test]
+fn checkout_force_create() {
+    for format in ["sha1", "sha256"] {
+        both(
+            format,
+            &[
+                &["checkout", "-B", "side"],
+                &["checkout", "-B", "side", "main~1"],
+                &["checkout", "-B", "fresh"],
+                &["checkout", "-B", "fresh", "main~2"],
+                &["checkout", "-B", "fresh", "main"],
+                &["checkout", "-B", "main", "main"],
+                &["checkout", "-B", "main", "main~1"],
+                &["checkout", "-B", "other", "HEAD~9"],
+                &["checkout", "-B", "bad..name"],
+                &["checkout", "-f", "-B", "x", "main"],
+                &["checkout", "-b", "x", "-B", "y"],
+                &["checkout", "-B", "x", "--detach"],
+                &["checkout", "-B", "x", "main", "a"],
+                &["checkout", "-B"],
+                &["checkout", "-"],
+                &["checkout", "-B", "side", "x"],
+            ],
+        );
+    }
+}
+
+#[test]
+fn checkout_force_create_carries_changes_and_refuses_conflicts() {
+    let mut pair = Pair::build("sha1");
+    for dir in [&pair.git, &pair.pyn] {
+        fs::write(dir.join("b"), "local\n").unwrap();
+    }
+    pair.same(&["checkout", "-B", "carry", "main~1"]);
+    pair.same(&["checkout", "-B", "side", "main"]);
+    pair.same(&["checkout", "-f", "-B", "side", "main~1"]);
+    pair.same(&["checkout", "-B", "side", "main"]);
+}
