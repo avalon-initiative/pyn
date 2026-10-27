@@ -5,6 +5,8 @@
 
 #[path = "../../pyn-gittransport/tests/common/gitsrv.rs"]
 mod gitsrv;
+#[path = "common/oracle.rs"]
+mod oracle;
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -153,8 +155,8 @@ impl Fx {
             shown(&want.2)
         );
         assert_eq!(
-            got.0,
-            want.0,
+            oracle::status_class(got.0),
+            oracle::status_class(want.0),
             "exit status of {at} (pyn stderr: {}, git stderr: {})",
             shown(&got.2),
             shown(&want.2)

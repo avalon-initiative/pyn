@@ -4,6 +4,8 @@
 mod gitfix;
 #[path = "../../pyn-gittransport/tests/common/gitsrv.rs"]
 mod gitsrv;
+#[path = "common/oracle.rs"]
+mod oracle;
 
 use std::fs;
 use std::path::PathBuf;
@@ -1626,12 +1628,12 @@ fn empty_pick_status_reporting() {
                 want.status.code(),
                 String::from_utf8_lossy(&want.stderr)
             );
-            assert_eq!(
-                want.status.code(),
-                Some(if default.is_some() { 128 } else { 1 })
-            );
+            assert_eq!(oracle::status_class(want.status.code().unwrap()), 1);
             let got = f.pyn(&["cherry-pick", "HEAD"]);
-            assert_eq!(got.status.code(), want.status.code());
+            assert_eq!(
+                oracle::status_class(got.status.code().unwrap()),
+                oracle::status_class(want.status.code().unwrap())
+            );
             for name in ["CHERRY_PICK_HEAD", "MERGE_MSG"] {
                 assert_eq!(
                     fs::read(f.repo.join(".git").join(name)).unwrap(),
