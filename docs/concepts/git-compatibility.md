@@ -50,13 +50,17 @@ value of an option of `log` or `show` (a missing `--since` value), and `255` for
 
 Deliberate status differences that remain:
 
-- **An unknown option of `log`, `show` or `reflog`** is a usage error (`129`); git exits `128`. The parser cannot tell an
-  option git lacks from one pyn does not build, and the unbuilt ones are `129` by design.
+- **Options of `log`, `show` and `reflog`**: a long option git does not have is `fatal: unrecognized argument` (`128`), as in
+  git. pyn checks the name against a list of git's long options taken from its manual (`git_log_options.rs`), so a real git
+  option that is not built stays a usage error (`129`). Short options and `reflog expire` or `delete` options are not checked
+  against a list: an unknown short one is `128`.
 - **`status --porcelain=<version>`** takes `v1` (or `1`); an unknown version such as `v9` is `fatal: unsupported porcelain
   version` (`128`), as git, and `v2` is not built, a usage error (`129`).
-- **Inspection commands**: `rev-parse` with an option it does not know is a usage error (`129`), where git echoes the option
-  and exits `0`; `name-rev` with no commit is `129`, where git prints nothing and exits `0`; `shortlog` outside a repository
-  is `fatal` (`128`), where git prints a usage error (`129`).
+- **`rev-parse` with an option it does not know** echoes the option and exits `0`, as git does; `name-rev` with no commit
+  prints nothing and exits `0`; `shortlog` outside a repository reads a log from standard input, and with a terminal or a
+  revision is a usage error (`129`).
+- **The flag forms of `config`** (`--list`, `<key>`, `<key> <value>`; use the
+  `list`, `get` and `set` subcommands) are usage errors (`129`) where git succeeds.
 - **`pyn diff` outside a repository** compares two existing paths as `--no-index` does, as git does; anything else asks for a
   server (`128`), where git prints its `--no-index` usage (`129`).
 
