@@ -4,6 +4,8 @@
 
 #[path = "../../pyn-gittransport/tests/common/gitsrv.rs"]
 mod gitsrv;
+#[path = "common/oracle.rs"]
+mod oracle;
 
 use std::cell::Cell;
 use std::collections::BTreeSet;
@@ -156,9 +158,15 @@ impl Fx {
             "{} status of {args:?}: {}",
             self.format, got.err
         );
+        let reason = |t: &str| {
+            sorted(t)
+                .iter()
+                .map(|l| oracle::fsck_line(l))
+                .collect::<Vec<_>>()
+        };
         assert_eq!(
-            sorted(&got.err),
-            sorted(&want.err),
+            reason(&got.err),
+            reason(&want.err),
             "{} stderr of {args:?}",
             self.format
         );

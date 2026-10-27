@@ -672,6 +672,12 @@ the shared fixtures (bare repositories, the `GIT_SSH_COMMAND` shim, `git http-ba
 credentials, a local path and a `file://` URL, each for SHA-1 and SHA-256 repositories. The per-command suites (`git_clone.rs`, `git_fetch.rs`, `git_pull.rs`, `git_push.rs`) go deeper on one command and also run against a local path and a `file://` URL, so
 those are compared with real git without a server or an ssh shim; `git_local_remote.rs` covers what only a local repository can do.
 
+Oracle tests assert semantics, not git's exact output (decision #718): the exit status class (success, usage error 129, other
+failure), the facts a result must carry, and the resulting files and refs, using containment and structured checks. Whole-output
+equality with git is kept only where the bytes are the contract (plumbing output other tools parse, file formats, on-disk state).
+Git releases reword messages, change abbreviation widths and move failure statuses between 1 and 128, so the suite passes on
+git 2.55 and 2.56 without branching on the version. The comparators are in `crates/pyn-cli/tests/common/oracle.rs`.
+
 ### URLs
 
 | Form | Transport |
