@@ -172,6 +172,41 @@ impl Fx {
         );
     }
 
+    /// For verbose fsck: standard output sorted, the exit status class, and the `Checking <id> (<name>)` lines
+    /// (the other progress lines differ between git releases).
+    fn same_named(&self, args: &[&str]) {
+        let want = self.oracle(args);
+        let got = self.pyn(args);
+        assert_eq!(
+            sorted(&got.out),
+            sorted(&want.out),
+            "{} stdout of {args:?}",
+            self.format
+        );
+        assert_eq!(
+            oracle::status_class(got.code),
+            oracle::status_class(want.code),
+            "{} status of {args:?}: {}",
+            self.format,
+            got.err
+        );
+        let checks = |t: &str| {
+            sorted(t)
+                .into_iter()
+                .filter(|l| {
+                    l.strip_prefix("Checking ")
+                        .is_some_and(|r| r.bytes().take_while(u8::is_ascii_hexdigit).count() >= 40)
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            checks(&got.err),
+            checks(&want.err),
+            "{} named checks of {args:?}",
+            self.format
+        );
+    }
+
     /// Status, the `missing` lines and the number of broken links must agree; which tree is named as the
     /// parent of a broken link depends on git's traversal order, and notices differ between git versions.
     fn same_connectivity(&self, args: &[&str]) {
@@ -550,6 +585,32 @@ fn fsck_checks_object_contents_like_git() {
 }
 
 #[test]
+fn fsck_reports_findings_in_packed_objects_as_a_pack_error() {
+    for format in FORMATS {
+        let f = build(format);
+        let blob = f.rev("HEAD:a.txt");
+        let bin: Vec<u8> = (0..blob.len() / 2)
+            .map(|i| u8::from_str_radix(&blob[2 * i..2 * i + 2], 16).unwrap())
+            .collect();
+        let mut body = b"100644 b\0".to_vec();
+        body.extend(&bin);
+        body.extend(b"100644 a\0");
+        body.extend(&bin);
+        let tree = f.hash_object("tree", &body);
+        let commit = f.g(&["commit-tree", &tree, "-m", "bad"]).trim().to_string();
+        f.g(&["update-ref", "refs/heads/bad", &commit]);
+        f.same_sorted(&["fsck", "--no-reflogs"]);
+        f.g(&["repack", "-q", "-a", "-d"]);
+        assert!(f.loose_ids().is_empty());
+        let got = f.pyn(&["fsck", "--no-reflogs"]);
+        let want = f.oracle(&["fsck", "--no-reflogs"]);
+        assert_ne!(got.code, 0, "{format}: {}", got.err);
+        assert_ne!(want.code, 0, "{format}");
+        assert_eq!(sorted(&got.err), sorted(&want.err), "{format}");
+    }
+}
+
+#[test]
 fn fsck_checks_commits_and_tags_like_git() {
     let f = build("sha1");
     let tree = f.rev("HEAD^{tree}");
@@ -647,6 +708,188 @@ fn fsck_flags_a_damaged_pack() {
         "status {}",
         got.code
     );
+}
+
+/// The history of [`build`] plus an octopus merge, a tag chain, a detached `HEAD` and a stash-like dangling commit.
+fn named_fixture(format: &'static str) -> Fx {
+    let f = build(format);
+    f.g(&["switch", "-q", "-c", "left", "main~1"]);
+    f.write("left.txt", "left\n");
+    f.commit("left");
+    f.g(&["switch", "-q", "-c", "right", "main~1"]);
+    f.write("right.txt", "right\n");
+    f.commit("right");
+    f.g(&["switch", "-q", "main"]);
+    f.g(&["merge", "-q", "--no-edit", "left", "right"]);
+    f.g(&["tag", "-a", "-m", "outer", "outer", "v1"]);
+    f.g(&["switch", "-q", "--detach", "main~2"]);
+    f.g(&["branch", "-q", "-D", "left", "right"]);
+    f
+}
+
+#[test]
+fn fsck_names_objects_like_git() {
+    for format in FORMATS {
+        let f = named_fixture(format);
+        for args in [
+            &["fsck", "--name-objects"][..],
+            &["fsck", "--name-objects", "-v"],
+            &["fsck", "--name-objects", "-v", "--no-reflogs"],
+            &["fsck", "--name-objects", "-v", "--connectivity-only"],
+            &["fsck", "--name-objects", "--no-reflogs", "--root", "--tags"],
+            &["fsck", "-v", "--no-name-objects"],
+            &["fsck", "-v", "HEAD", "main~1"],
+        ] {
+            f.same_named(args);
+        }
+        f.g(&["gc", "-q", "--prune=now"]);
+        f.same_named(&["fsck", "--name-objects", "-v", "--no-reflogs"]);
+    }
+}
+
+#[test]
+fn fsck_names_the_objects_it_reports_missing() {
+    for format in FORMATS {
+        let f = named_fixture(format);
+        f.g(&["reflog", "expire", "--expire=all", "--all"]);
+        let blob = f.rev("main:d/e.txt");
+        force_remove(&f.loose_path(&blob));
+        f.same_connectivity(&["fsck", "--name-objects", "--no-reflogs"]);
+        let got = f.pyn(&["fsck", "--name-objects", "--no-reflogs"]);
+        let want = f.oracle(&["fsck", "--name-objects", "--no-reflogs"]);
+        let missing = |t: &str| {
+            sorted(t)
+                .into_iter()
+                .filter(|l| l.starts_with("missing"))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(missing(&got.out), missing(&want.out), "{format}");
+        assert!(
+            got.out.contains(&format!("missing blob {blob} (")),
+            "{}",
+            got.out
+        );
+    }
+}
+
+#[test]
+fn fsck_progress_reports_what_git_reports() {
+    let f = build("sha1");
+    let done = |r: &Run| {
+        r.err
+            .split(['\r', '\n'])
+            .filter(|l| l.ends_with(", done."))
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+    };
+    let (got, want) = (
+        f.pyn(&["fsck", "--progress"]),
+        f.oracle(&["fsck", "--progress"]),
+    );
+    let (g, w) = (done(&got), done(&want));
+    assert!(
+        !g.is_empty() && g.iter().all(|l| w.contains(l)),
+        "{g:?} / {w:?}"
+    );
+    f.g(&["repack", "-q", "-a", "-d"]);
+    let (got, want) = (
+        f.pyn(&["fsck", "--progress"]),
+        f.oracle(&["fsck", "--progress"]),
+    );
+    let (g, w) = (done(&got), done(&want));
+    assert!(
+        !g.is_empty() && g.iter().all(|l| w.contains(l)),
+        "{g:?} / {w:?}"
+    );
+    let quiet = f.pyn(&["fsck"]);
+    assert!(quiet.err.is_empty(), "{}", quiet.err);
+    let verbose = f.pyn(&["fsck", "--progress", "-v"]);
+    assert!(done(&verbose).is_empty(), "{}", verbose.err);
+}
+
+/// A shallow clone of [`build`], so some commits have parents the repository does not hold.
+fn shallow_fixture(format: &'static str, depth: &str) -> Fx {
+    let source = build(format);
+    let f = Fx::new(format);
+    fs::remove_dir_all(&f.repo).unwrap();
+    let url = format!("file://{}", source.repo.display());
+    let out = git(&f.root)
+        .args([
+            "clone",
+            "-q",
+            "--depth",
+            depth,
+            "--no-single-branch",
+            &url,
+            "repo",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    f.g(&["config", "user.name", "T"]);
+    f.g(&["config", "user.email", "t@example.com"]);
+    f
+}
+
+#[test]
+fn storage_commands_work_in_a_shallow_repository() {
+    for format in FORMATS {
+        for depth in ["1", "2"] {
+            let f = shallow_fixture(format, depth);
+            assert!(f.repo.join(".git/shallow").exists());
+            f.same_sorted(&["fsck", "--no-reflogs"]);
+            f.same_named(&["fsck", "--name-objects", "-v"]);
+            f.same(&["count-objects", "-v"]);
+            let g = f.twin("git-side");
+            let p = f.twin("pyn-side");
+            for args in [
+                &["repack", "-a", "-d", "-q"][..],
+                &["gc", "--prune=now", "-q"],
+            ] {
+                g.oracle(args);
+                let got = p.pyn(args);
+                assert_eq!(got.code, 0, "{format} {args:?}: {}", got.err);
+                assert_eq!(p.all_objects(), g.all_objects(), "{format} {args:?}");
+                p.assert_git_ok();
+                assert_eq!(
+                    fs::read(p.repo.join(".git/shallow")).unwrap(),
+                    fs::read(g.repo.join(".git/shallow")).unwrap()
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn storage_commands_cope_with_many_objects() {
+    for format in FORMATS {
+        let f = Fx::new(format);
+        for i in 0..60 {
+            for j in 0..8 {
+                f.write(
+                    &format!("dir{}/f{j}.txt", i % 7),
+                    &format!("file {i} {j}\n{}", "x".repeat(i * 3)),
+                );
+            }
+            f.commit(&format!("commit {i}"));
+        }
+        f.g(&["tag", "-a", "-m", "t", "last"]);
+        f.same_sorted(&["fsck"]);
+        f.same_named(&["fsck", "--name-objects", "-v", "--no-reflogs"]);
+        let g = f.twin("git-side");
+        let p = f.twin("pyn-side");
+        g.oracle(&["gc", "--aggressive", "--prune=now", "-q"]);
+        let got = p.pyn(&["gc", "--aggressive", "--prune=now", "-q"]);
+        assert_eq!(got.code, 0, "{format}: {}", got.err);
+        assert_eq!(p.all_objects(), g.all_objects(), "{format}");
+        p.assert_git_ok();
+        assert!(p.loose_ids().is_empty());
+        p.same_sorted(&["fsck"]);
+    }
 }
 
 /// Makes the leftovers every maintenance command works on: a dangling commit, an orphan blob and stale reflogs.

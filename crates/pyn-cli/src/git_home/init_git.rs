@@ -19,8 +19,8 @@ pub struct InitGitArgs {
     #[arg(short = 'b', long, value_name = "NAME")]
     initial_branch: Option<String>,
     /// Hash for object ids: sha1 or sha256.
-    #[arg(long, value_name = "FORMAT", default_value = "sha1", value_parser = ["sha1", "sha256"])]
-    object_format: String,
+    #[arg(long, value_name = "FORMAT", value_parser = ["sha1", "sha256"])]
+    object_format: Option<String>,
     /// Print nothing but errors.
     #[arg(short, long)]
     quiet: bool,
@@ -79,6 +79,13 @@ pub fn init_git(args: &InitGitArgs, cwd: &Path) -> Result<()> {
         Some(d) => cwd.join(d),
         None => cwd.to_path_buf(),
     };
+    if let (Some(dir), false, true) = (
+        &args.separate_git_dir,
+        args.bare,
+        target.join(".git").exists(),
+    ) {
+        return move_git_dir(args, &target.canonicalize()?, cwd, dir);
+    }
     refuse_tracked(&target)?;
     let branch = match &args.initial_branch {
         Some(b) => b.clone(),
@@ -89,8 +96,8 @@ pub fn init_git(args: &InitGitArgs, cwd: &Path) -> Result<()> {
             .to_owned(),
     };
     GitHome::check_branch_name(&branch)?;
-    let algorithm = match args.object_format.as_str() {
-        "sha256" => Algorithm::Sha256,
+    let algorithm = match args.object_format.as_deref() {
+        Some("sha256") => Algorithm::Sha256,
         _ => Algorithm::Sha1,
     };
     if args.bare && args.separate_git_dir.is_some() {
@@ -140,4 +147,83 @@ pub(super) fn separate_dir(cwd: &Path, dir: &Path) -> Result<PathBuf> {
         bail!("{} already exists and is not empty", full.display());
     }
     Ok(full)
+}
+
+/// `init --separate-git-dir` on a repository: moves its git directory and points `.git` at the new place.
+fn move_git_dir(args: &InitGitArgs, root: &Path, cwd: &Path, dir: &Path) -> Result<()> {
+    let link = root.join(".git");
+    let home = GitHome::open_at(root)?;
+    let src = home.repo.git().git_dir().canonicalize()?;
+    if src
+        .parent()
+        .and_then(Path::file_name)
+        .is_some_and(|n| n == "worktrees")
+    {
+        bail!("a linked work tree cannot move its git directory");
+    }
+    let joined = cwd.join(dir);
+    let name = joined.file_name().map(PathBuf::from).unwrap_or_default();
+    let parent = joined.parent().unwrap_or(Path::new("/"));
+    let Ok(parent) = parent.canonicalize() else {
+        bail!(
+            "Invalid path '{}': No such file or directory",
+            parent.display()
+        );
+    };
+    let dest = parent.join(name);
+    if dest.is_file() {
+        bail!("invalid gitfile format: {}", dest.display());
+    }
+    if let Some(format) = &args.object_format {
+        let current = if home.algorithm() == Algorithm::Sha256 {
+            "sha256"
+        } else {
+            "sha1"
+        };
+        if format != current {
+            bail!("attempt to reinitialize repository with different hash");
+        }
+    }
+    if src != dest {
+        std::fs::rename(&src, &dest).map_err(|e| {
+            let why = e.to_string();
+            let why = why.split(" (os error").next().unwrap_or(&why).to_owned();
+            anyhow::anyhow!(
+                "unable to move {} to {}: {why}",
+                src.display(),
+                dest.display()
+            )
+        })?;
+        repair_linked_trees(&dest)?;
+    }
+    std::fs::write(&link, format!("gitdir: {}\n", dest.display()))
+        .with_context(|| format!("cannot write {}", link.display()))?;
+    if let Some(branch) = &args.initial_branch {
+        eprintln!("warning: re-init: ignored --initial-branch={branch}");
+    }
+    if !args.quiet {
+        println!(
+            "Reinitialized existing Git repository in {}/",
+            dest.display()
+        );
+    }
+    Ok(())
+}
+
+/// Points each linked work tree's `.git` file at its administrative folder in the moved git directory.
+fn repair_linked_trees(git_dir: &Path) -> Result<()> {
+    let Ok(entries) = std::fs::read_dir(git_dir.join("worktrees")) else {
+        return Ok(());
+    };
+    for admin in entries.flatten().map(|e| e.path()).filter(|p| p.is_dir()) {
+        let Ok(text) = std::fs::read_to_string(admin.join("gitdir")) else {
+            continue;
+        };
+        let dot_git = PathBuf::from(text.trim_end());
+        let is_gitfile = std::fs::read_to_string(&dot_git).is_ok_and(|t| t.starts_with("gitdir:"));
+        if is_gitfile {
+            std::fs::write(&dot_git, format!("gitdir: {}\n", admin.display()))?;
+        }
+    }
+    Ok(())
 }
