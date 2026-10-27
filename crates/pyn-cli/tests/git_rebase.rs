@@ -383,7 +383,10 @@ impl Pair {
         );
         let (gs, ps) = (state(&self.env, &self.git), state(&self.env, &self.pyn));
         for (i, (a, b)) in ps.iter().zip(&gs).enumerate() {
-            if a != b && (i != 34 || self.reflog.get()) {
+            // git 2.56 records `fixup -c <id>` where earlier versions wrote `fixup <id>`
+            let same_fixups =
+                i == 22 && a.replace("fixup -c ", "fixup ") == b.replace("fixup -c ", "fixup ");
+            if a != b && !same_fixups && (i != 34 || self.reflog.get()) {
                 panic!(
                     "{what}: state part {i} ({}) differs\npyn: {a:?}\ngit: {b:?}\npyn said {}",
                     part_name(i),
