@@ -13,7 +13,7 @@ use super::hooks::author_env;
 use super::signing::{SignFlag, sign_commit};
 use super::stage::{
     clean_bytes, clean_ident, clear_merge_state, entries_of, env, identity, index_of, merge_heads,
-    merge_message, parse_date, refuse_states, stage_tracked, write_tree,
+    parse_date, pending_message, refuse_states, stage_tracked, write_tree,
 };
 
 /// The git flags of `pyn commit`; a pyn server takes only `-F` and refuses the rest.
@@ -390,10 +390,15 @@ pub fn commit(git: &GitHome, opts: &CommitOptions) -> Result<()> {
         eprintln!("Aborting commit due to empty commit message.");
         std::process::exit(1);
     }
-    let mut message = match (explicit, &tip, merge_message(git, opts.flags.no_edit)?) {
+    let squash_pending = git.repo.git().git_dir().join("SQUASH_MSG").exists();
+    let mut message = match (
+        explicit,
+        &tip,
+        pending_message(git, opts.flags.no_edit, true)?,
+    ) {
         (Some(m), ..) => m,
         (None, Some(t), _) => clean_bytes(&t.message),
-        (None, None, Some(m)) if !merged.is_empty() => m,
+        (None, None, Some(m)) if !merged.is_empty() || squash_pending => m,
         _ => crate::usage_error(
             "the following required arguments were not provided:\n  --message <MESSAGE>",
         ),

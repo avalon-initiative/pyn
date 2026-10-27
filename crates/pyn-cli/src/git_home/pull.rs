@@ -598,6 +598,8 @@ fn pull_inner(git: &GitHome, args: PullArgs) -> Result<()> {
             no_ff: how.no_ff && !rebase_on,
             ff_only: how.ff_only || rebase_on,
             no_commit: args.no_commit,
+            squash: false,
+            no_squash: false,
             abort: false,
             continue_merge: false,
             preview: false,

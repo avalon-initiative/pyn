@@ -19,6 +19,7 @@ mod diff_raw;
 mod diffstat;
 mod dirstat;
 mod git_home;
+mod git_log_options;
 mod http_transport;
 mod init_pyn;
 mod limits;
@@ -1028,6 +1029,10 @@ fn main() {
                 (true, true) => 128,
                 (true, false) => 129,
             };
+            if let Some(arg) = unrecognized_log_option(&e) {
+                eprintln!("fatal: unrecognized argument: {arg}");
+                std::process::exit(128);
+            }
             let _ = e.print();
             std::process::exit(code);
         }
@@ -1062,6 +1067,16 @@ fn main() {
             .map_err(Into::into)
             .and_then(|cwd| git_home::config_flags(&cwd, &args.git));
         if let Err(e) = result {
+            eprintln!("fatal: {}", sanitize::text(&fatal_message(&e)));
+            std::process::exit(128);
+        }
+        return;
+    }
+    if let Command::Shortlog(args) = &cli.command
+        && !in_git_home()
+        && !in_pyn_workspace()
+    {
+        if let Err(e) = git_home::shortlog_outside_repo(args) {
             eprintln!("fatal: {}", sanitize::text(&fatal_message(&e)));
             std::process::exit(128);
         }
@@ -1111,7 +1126,6 @@ fn main() {
     }
 }
 
-/// Whether git reports this parser error as fatal (128) rather than as a usage error (129).
 fn expand_pathspec_files(command: &mut Command) -> Result<()> {
     match command {
         Command::Add {
@@ -1144,6 +1158,24 @@ fn expand_pathspec_files(command: &mut Command) -> Result<()> {
     }
 }
 
+/// The option git's revision parser rejects with `fatal: unrecognized argument` (128) in `log`, `show` and `reflog`.
+fn unrecognized_log_option(e: &clap::Error) -> Option<String> {
+    if e.kind() != clap::error::ErrorKind::UnknownArgument
+        || !matches!(
+            first_subcommand().as_deref(),
+            Some("log" | "show" | "reflog")
+        )
+    {
+        return None;
+    }
+    if std::env::args().any(|a| matches!(a.as_str(), "expire" | "delete" | "exists")) {
+        return None;
+    }
+    let arg = e.get(clap::error::ContextKind::InvalidArg)?.to_string();
+    (arg.starts_with('-') && !git_log_options::is_git_option(&arg)).then_some(arg)
+}
+
+/// Whether git reports this parser error as fatal (128) rather than as a usage error (129).
 fn fatal_option_error(e: &clap::Error) -> bool {
     use clap::error::ErrorKind::{
         InvalidSubcommand, InvalidValue, UnknownArgument, ValueValidation,

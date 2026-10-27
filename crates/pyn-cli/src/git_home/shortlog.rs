@@ -53,6 +53,19 @@ pub(super) fn shortlog(git: &GitHome, cwd: &Path, args: ShortlogArgs) -> Result<
     Ok(())
 }
 
+/// Outside a repository only a log on standard input can be summarized; anything else is a usage error.
+pub(crate) fn shortlog_outside_repo(args: &ShortlogArgs) -> Result<()> {
+    if !args.revs.is_empty() || !args.paths.is_empty() || std::io::stdin().is_terminal() {
+        eprintln!("usage: git shortlog [<options>] [<revision-range>] [[--] <path>...]");
+        eprintln!("   or: git log --pretty=short | git shortlog [<options>]");
+        std::process::exit(129);
+    }
+    let mut groups = Groups::new();
+    from_stdin(&mut groups, args)?;
+    emit_bytes(&render(groups, args));
+    Ok(())
+}
+
 fn from_history(git: &GitHome, cwd: &Path, args: &ShortlogArgs, groups: &mut Groups) -> Result<()> {
     let pre = prefix(git, cwd).unwrap_or_default();
     let resolver = Resolver { git, prefix: &pre };

@@ -1007,17 +1007,42 @@ pub(super) fn merge_heads(git: &GitHome) -> Result<Vec<ObjectId>> {
 /// Removes the files that mark a merge in progress.
 pub(super) fn clear_merge_state(git: &GitHome) {
     let dir = git.repo.git().git_dir();
-    for name in ["MERGE_HEAD", "MERGE_MSG", "MERGE_MODE", "AUTO_MERGE"] {
+    for name in [
+        "MERGE_HEAD",
+        "MERGE_MSG",
+        "MERGE_MODE",
+        "AUTO_MERGE",
+        "SQUASH_MSG",
+    ] {
         let _ = std::fs::remove_file(dir.join(name));
     }
 }
 
 /// `MERGE_MSG` with its comment lines dropped, as `git commit` uses it; `--no-edit` keeps them.
 pub(super) fn merge_message(git: &GitHome, keep_comments: bool) -> Result<Option<Vec<u8>>> {
-    let Some(bytes) = read_raw(&git.repo.git().git_dir().join("MERGE_MSG"))? else {
-        return Ok(None);
+    pending_message(git, keep_comments, false)
+}
+
+/// The message a commit starts from: `MERGE_MSG`, and `SQUASH_MSG` ahead of it when `squash` is set.
+pub(super) fn pending_message(
+    git: &GitHome,
+    keep_comments: bool,
+    squash: bool,
+) -> Result<Option<Vec<u8>>> {
+    let dir = git.repo.git().git_dir();
+    let squashed = if squash {
+        read_raw(&dir.join("SQUASH_MSG"))?
+    } else {
+        None
     };
-    let text = String::from_utf8_lossy(&bytes);
+    let merged = read_raw(&dir.join("MERGE_MSG"))?;
+    if squashed.is_none() && merged.is_none() {
+        return Ok(None);
+    }
+    let mut text = String::new();
+    for bytes in [squashed, merged].into_iter().flatten() {
+        text.push_str(&String::from_utf8_lossy(&bytes));
+    }
     let kept: Vec<&str> = text
         .lines()
         .filter(|l| keep_comments || !l.starts_with('#'))

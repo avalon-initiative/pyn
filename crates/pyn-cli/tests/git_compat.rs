@@ -139,6 +139,10 @@ fn failures_exit_128_and_usage_errors_129() {
     assert!(String::from_utf8_lossy(&out.stderr).starts_with("fatal: "));
 
     let out = env.run(&home, "alice", &["log", "--no-such-flag"]);
+    assert_eq!(out.status.code(), Some(128));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("unrecognized argument: --no-such-flag"));
+
+    let out = env.run(&home, "alice", &["branch", "--no-such-flag"]);
     assert_eq!(out.status.code(), Some(129));
 
     let out = env.run(&home, "alice", &["--version"]);

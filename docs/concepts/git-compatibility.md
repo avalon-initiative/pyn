@@ -50,16 +50,17 @@ value of an option of `log` or `show` (a missing `--since` value), and `255` for
 
 Deliberate status differences that remain:
 
-- **`checkout -B` is not built**, so `checkout -b <a> -B <b>` is a usage error (`129`) where git says the options cannot be
-  used together (`128`).
-- **An unknown option of `log`, `show` or `reflog`** is a usage error (`129`); git exits `128`. The parser cannot tell an
-  option git lacks from one pyn does not build, and the unbuilt ones are `129` by design.
+- **Options of `log`, `show` and `reflog`**: a long option git does not have is `fatal: unrecognized argument` (`128`), as in
+  git. pyn checks the name against a list of git's long options taken from its manual (`git_log_options.rs`), so a real git
+  option that is not built stays a usage error (`129`). Short options and `reflog expire` or `delete` options are not checked
+  against a list: an unknown short one is `128`.
 - **`status --porcelain=<version>`** takes `v1` (or `1`); an unknown version such as `v9` is `fatal: unsupported porcelain
   version` (`128`), as git, and `v2` is not built, a usage error (`129`).
-- **Inspection commands**: `rev-parse` with an option it does not know is a usage error (`129`), where git echoes the option
-  and exits `0`; `name-rev` with no commit is `129`, where git prints nothing and exits `0`; `shortlog` outside a repository
-  is `fatal` (`128`), where git prints a usage error (`129`).
-- **Unbuilt flags** (`merge --squash`, `branch -vv`) are usage errors (`129`) where git succeeds.
+- **`rev-parse` with an option it does not know** echoes the option and exits `0`, as git does; `name-rev` with no commit
+  prints nothing and exits `0`; `shortlog` outside a repository reads a log from standard input, and with a terminal or a
+  revision is a usage error (`129`).
+- **`config --remove-section` and `--rename-section`** are not built, a usage error (`129`) where git succeeds or says `fatal: no such
+  section` (`128`).
 - **`pyn diff` outside a repository** compares two existing paths as `--no-index` does, as git does; anything else asks for a
   server (`128`), where git prints its `--no-index` usage (`129`).
 
@@ -205,7 +206,7 @@ revisions with a pointer per branch (decision #299).
 | `git branch [<name> [<start>]]`, `-d`, `-D`, `-m`, `-l`, `-v`, `--show-current` | `pyn branch ...` | supported | Without the local store `-d` refuses a branch that is not on the default branch (git: not merged into `HEAD`). With it (the default for a clone) branches are the store's own, as git's: `-d` refuses one that is in neither its upstream nor `HEAD`, `-a` and `-r` list the remote-tracking branches `fetch` stored, `-u <upstream>` and `--unset-upstream` work, and nothing reaches the server (see [local branches](workspace.md#local-branches)). Without the store `-a` and `-r` list the server as the remote `origin` (see [Remotes on a pyn server](#remotes-on-a-pyn-server)); `-M`, `-c`, `-C`, `-f` and patterns (and `-u` and `--unset-upstream` without the store) are not built on a pyn server (usage errors); a git home has them (see below). The workspace's branch cannot be deleted. |
 | `git switch <branch>`, `-c <new> [<start>]`, `-f` | `pyn switch ...` | supported | Local changes carry over where the target branch has the same file, and stop the switch (nothing changed, the paths listed) where it does not; `-f` discards them. On a pyn server `-`, `--detach` and `-C` are not built; a git home has `-`, `--detach`, `-C` and `--orphan` (see below). Prints `Switched to branch '<name>'` on standard error, as git. With the local store a name that is only a server branch makes a local branch following it (`branch '<name>' set up to track 'origin/<name>'.`, fetched first if the store lacks it), and a switch leaves unpublished commits on their branch ([local branches](workspace.md#local-branches)). |
 | `git checkout <branch>`, `-b <new> [<start>]`, `-f`, `[<tree-ish>] -- <path>...` | `pyn checkout ...` | supported | Reserved for git's meaning. `-- <path>` restores from the revision the workspace has (git: the index; a staged path must be unstaged first), `<branch\|commit> -- <path>` from that branch or commit. On a pyn server a path that is `exclusive` and has a local edit (locked by you or not) is not discarded silently: the files are named and the discard needs the path typed back or `--yes`, and a run without a terminal refuses (`128`, nothing changed); `shared` paths discard silently as in git. On a pyn server there is no detached HEAD: `checkout <commit>` is refused with what to use instead. Taking a lock is `pyn lock`. |
-| `git merge <branch\|commit>`, `-m`, `--no-ff`, `--ff-only`, `--no-commit`, `--abort`, `--continue`, `--stat`, `-n`/`--no-stat`, `-e`/`--edit`, `--no-edit` | `pyn merge ...` | supported | Shared files merge three-way with diff3 conflict markers; a binary conflicts as a whole file. Exclusive files take the pointer that descends from the other, and conflict where both branches changed one or a path became exclusive while a branch edited it (a person chooses a side, taking the lock). A conflicted merge leaves the workspace as git does and is concluded with `pyn add` and `pyn commit` (no `-m` needed), or given up with `--abort`. Differences: `--preview` (pyn's own) reports what would merge and conflict and changes nothing; a merge needs a clean index and no local edits to the files it touches; `--squash`, `--no-verify`, `--signoff` and `--ff` are usage errors, and so are `-s`, `-X`, `-S` and `--no-gpg-sign` (they need a git repository; see [Merging](#merging) and [Signing](#signing)). `git checkout --ours` and `--theirs` are `pyn checkout --ours\|--theirs -- <path>`. `pyn status` marks unmerged paths in its `STATE` column. Recursive merge of criss-cross histories as git does, with the base of a conflict shown as `merged common ancestors`. |
+| `git merge <branch\|commit>`, `-m`, `--no-ff`, `--ff-only`, `--no-commit`, `--abort`, `--continue`, `--stat`, `-n`/`--no-stat`, `-e`/`--edit`, `--no-edit` | `pyn merge ...` | supported | Shared files merge three-way with diff3 conflict markers; a binary conflicts as a whole file. Exclusive files take the pointer that descends from the other, and conflict where both branches changed one or a path became exclusive while a branch edited it (a person chooses a side, taking the lock). A conflicted merge leaves the workspace as git does and is concluded with `pyn add` and `pyn commit` (no `-m` needed), or given up with `--abort`. Differences: `--preview` (pyn's own) reports what would merge and conflict and changes nothing; a merge needs a clean index and no local edits to the files it touches; `--no-verify`, `--signoff` and `--ff` are usage errors, and so are `-s`, `-X`, `-S` and `--no-gpg-sign` (they need a git repository; see [Merging](#merging) and [Signing](#signing)). `git checkout --ours` and `--theirs` are `pyn checkout --ours\|--theirs -- <path>`. `pyn status` marks unmerged paths in its `STATE` column. Recursive merge of criss-cross histories as git does, with the base of a conflict shown as `merged common ancestors`. |
 | `git cherry-pick <commit>...`, ranges, `-n`, `-x`, `-s`, `-S[<keyid>]`, `--no-gpg-sign`, `-m <n>`, `--continue`, `--skip`, `--abort`, `--quit` | `pyn cherry-pick ...` | supported | Each commit's change becomes a new commit, with its author and message. On a git home see [Cherry-pick](#cherry-pick). On a pyn server workspace with local commits the commits, ranges and `-x` work, and `-n`, `-s`, `-S`, `--no-gpg-sign`, `-m` and `--quit` are refused; see [cherry-pick in commits](commits.md#cherry-pick). A pyn server workspace without local commits refuses the command. |
 | `git revert <commit>...`, ranges, `-n`, `-s`, `-S[<keyid>]`, `--no-gpg-sign`, `-m <n>`, `--no-edit`, `--continue`, `--skip`, `--abort`, `--quit` | `pyn revert ...` | supported | Each commit's change is undone by a new commit (`Revert "<subject>"`). On a git home see [Revert](#revert). On a pyn server workspace with local commits the commits and ranges work, and `-n`, `-s`, `-S`, `--no-gpg-sign`, `-m` and `--quit` are refused; see [revert in commits](commits.md#revert). A pyn server workspace without local commits refuses the command. |
 | `git rebase [--onto <newbase>] [<upstream> [<branch>]]`, `--continue`, `--skip`, `--abort`, `--quit`, `--autostash`, `--no-ff`, `-S[<keyid>]`, `--no-gpg-sign` | `pyn rebase ...` | supported (git home) | Replays the commits after the upstream one by one onto the new base, with the same ids as git. See [Rebase](#rebase), including `--rebase-merges`, `--root`, `--update-refs` and the fork point. A pyn server workspace with a local store rebases only its unpublished local commits, interactively too (`edit`, `exec`, `break`, `--exec`, `--edit-todo`, `--autostash`, `--no-ff`, `--quit` and `<branch>` work), and refuses a range with a published one, `--rebase-merges`, `--root`, `--fork-point` and `--update-refs` ([commits](commits.md#rebase)); without a local store it refuses the command. |
@@ -1397,7 +1398,9 @@ existing branch (`branch: Reset to <start>`, nothing when it is already there); 
 `-r` and `-a` list the remote-tracking branches under `refs/remotes/` (`-r` as `origin/main`, `-a` as the local branches then `remotes/origin/main`,
 and the detached `HEAD` line only with `-a`); a symbolic ref prints as `origin/HEAD -> origin/main`, and with `-v` the arrow is aligned
 with the other names. Patterns (`--list <pattern>`) match the name without `remotes/`; a bare name with `-a` or `-r` is `fatal: the -a, and
--r, options to 'git branch' do not take a branch name.` (`128`). `-r -d`, `-vv` (the upstream column) and `--contains` are not built.
+-r, options to 'git branch' do not take a branch name.` (`128`). `-r -d` and `--contains` are not built.
+
+`-v` adds `[ahead 1, behind 2]` (or `[gone]`) for a branch with an upstream, and `-vv` the upstream's name before it (`[origin/main: ahead 1]`, `[origin/main]` when level) and, for a branch checked out in another work tree, that tree's path in parentheses.
 
 `-u <upstream> [<branch>]` (`--set-upstream-to`) writes `branch.<name>.remote` and `merge` and prints `branch '<name>' set up to track '<upstream>'.`
 on standard output. A local branch as upstream is remote `.` with `merge = refs/heads/<name>`; a remote-tracking branch needs a
@@ -1424,7 +1427,7 @@ Covered against the real git (2.43 and 2.55) by `crates/pyn-cli/tests/git_branch
   `Reset branch` (already on it) or `Switched to a new branch`. `switch --orphan <new>` points `HEAD` at an unborn branch and empties the index and the
   tracked files of the work tree (untracked files stay; local changes stop it unless `-f`), logs nothing in the `HEAD` reflog and prints
   `Switched to a new branch '<new>'`; it refuses a start point, an existing name, and being combined with `-c`, `-C` or `--detach`.
-  `checkout --orphan` and `-B` are not built. On a pyn server `-C` and `--orphan` are usage errors.
+  `checkout -B <new> [<start>]` does what `switch -C` does, with checkout's wording for a bad start point (`'<x>' is not a commit and a branch '<new>' cannot be created from it`) and `Cannot update paths and switch to branch` for extra arguments; `-b` with `-B` is `fatal` (`128`). `checkout --orphan` is not built. On a pyn server `-C`, `-B` and `--orphan` are refused.
 - `switch -c <new> [<start>]` and `checkout -b` create the branch first (an unborn branch just points `HEAD` at the name),
   `switch -` and `checkout -` (also `@{-N}`) return to the previous branch (read from the `HEAD` reflog), `--detach` and `checkout <commit>` (or a
   tag) detach `HEAD`; `checkout --detach` alone detaches at the current commit. Entering from a branch prints git's advice
@@ -1543,7 +1546,9 @@ state folder (`rebase-merge/`, `sequencer/`) is not removed. `--hard --recurse-s
 
 `merge --abort` is `reset --merge`: it puts back the index and the files the merge changed (and any path you staged since) and
 keeps unrelated local changes, but stops (`not uptodate`) if a path you staged has been edited again. `merge --continue` is
-`commit`. `merge --preview` needs a pyn server. `--squash` is not built.
+`commit`. `merge --preview` needs a pyn server.
+
+`merge --squash` merges as usual but records nothing: no commit, no `MERGE_HEAD`, no `HEAD` or reflog change. The index and work tree take the result, `ORIG_HEAD` is written, and `SQUASH_MSG` holds `Squashed commit of the following:` and each commit brought in, as `log` prints it. It prints `Squash commit -- not updating HEAD` (and `Fast-forward` when the branch could fast-forward, `Already up to date. (nothing to squash)` when there is nothing to bring). A conflict stops with `SQUASH_MSG` and a `MERGE_MSG` listing the conflicts, and is exit `1`; `--no-ff` with `--squash` is `fatal` (`128`); `-m` is ignored. `pyn commit` then starts from `SQUASH_MSG` (and `MERGE_MSG`) when there is no `-m`, and removes both; `reset --hard` removes them too. Squashing into an unborn branch is `fatal`. `pull --squash` is still not built.
 
 `AUTO_MERGE` is written, as git does, when a merge stops with conflicts or at `--no-commit`: a pseudo-ref (a file in the git
 directory holding a tree id) for the tree of the merge as it stands in the work tree, every path included, with a conflicted
@@ -2454,7 +2459,7 @@ Any command that would write a work tree file through a `filter` driver other th
 patch-mode commands that write the work tree (`checkout -p`, `restore -p`) also stop for a path whose line endings or `ident` git would convert,
 since they copy bytes as they are. A Git LFS filter writes the pointer file as it is, with a warning (decision #245; see [Git LFS](#git-lfs)).
 The hooks pyn does not run yet (see [Client hooks](#client-hooks)) draw one warning naming the ones that exist
-for the command. The split index, a sparse index and `GIT_DIR` are not supported, and `--squash` and anything that talks to a remote other than `ls-remote`, `fetch`, `pull`, `push` and `clone` are not built yet (epic #301; see [Transports and credentials](#transports-and-credentials)).
+for the command. The split index, a sparse index and `GIT_DIR` are not supported, and anything that talks to a remote other than `ls-remote`, `fetch`, `pull`, `push` and `clone` are not built yet (epic #301; see [Transports and credentials](#transports-and-credentials)).
 
 ### Client hooks
 
@@ -2474,7 +2479,7 @@ default are open in #496).
 | `commit-msg` | the message file; may rewrite it | Stops the commit, exit `1`; skipped by `--no-verify`. |
 | `post-commit` | none | Ignored. Runs after the ref moves. |
 | `post-rewrite` | `amend`; `<old> <new>` on standard input | Ignored. Only for `commit --amend`; `rebase` and `cherry-pick` do not run it yet. |
-| `post-merge` | `0` | Ignored. After a merge that fast-forwards or commits, not after `commit` concluding one. `--squash` is not built. |
+| `post-merge` | `0` | Ignored. After a merge that fast-forwards or commits, not after `commit` concluding one. A `--squash` merge runs it with `1`. |
 | `post-checkout` | `<old HEAD> <new HEAD> <flag>`: `1` for `switch` and `checkout` of a branch or commit, `0` for `checkout -- <paths>` and `restore`; the all-zero id stands for no commit | The command exits `1` after finishing its work, as git's does. |
 | `pre-push` | `<remote name or URL> <url>`; one line `<local ref> <local id> <remote ref> <remote id>` per ref about to be sent on standard input (`(delete)` and the zero id for a deletion; refs that are up to date or rejected are left out); also run by `--dry-run` | `push` sends nothing and exits `1`; skipped by `--no-verify`. |
 
@@ -2484,7 +2489,7 @@ arguments, standard input, working directory, environment and the resulting exit
 
 Not built yet, and warned about when they exist: `pre-rebase`, the `rebase`/`cherry-pick`/`revert`/`am` commit hooks (`prepare-commit-msg`, `commit-msg`,
 `post-commit`, `post-rewrite`, `post-checkout` during a rebase), `applypatch-msg`, `pre-applypatch`, `post-applypatch`, `reference-transaction`, `pre-auto-gc`, `post-checkout` after `clone` and
-`worktree add`, and `--squash` merges. `post-update`, `pre-receive`, `update` and `push-to-checkout` are server side and never run by a client.
+`worktree add`. `post-update`, `pre-receive`, `update` and `push-to-checkout` are server side and never run by a client.
 
 ### Git LFS
 

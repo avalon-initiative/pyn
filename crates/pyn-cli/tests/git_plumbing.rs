@@ -360,6 +360,60 @@ fn rev_parse_matches_git() {
 }
 
 #[test]
+fn rev_parse_past_the_root_fails_like_git() {
+    each(|f| {
+        let bare = f.root.join("bare.git");
+        let out = Command::new("git")
+            .args(["-c", "gc.auto=0", "-c", "maintenance.auto=false"])
+            .args(["clone", "-q", "--bare"])
+            .arg(&f.repo)
+            .arg(&bare)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        for cwd in [f.repo.clone(), bare] {
+            for case in [
+                vec!["HEAD~99"],
+                vec!["main~99"],
+                vec!["HEAD^2"],
+                vec!["nosuch"],
+                vec!["HEAD"],
+                vec!["--verify", "HEAD~99"],
+            ] {
+                f.same(&cwd, &case);
+            }
+        }
+    });
+}
+
+#[test]
+fn option_errors_exit_like_git() {
+    each(|f| {
+        for case in [
+            vec!["log", "--bogus"],
+            vec!["log", "-Z"],
+            vec!["log", "--bogus=1"],
+            vec!["show", "--bogus"],
+            vec!["show", "-Z", "HEAD"],
+            vec!["reflog", "--bogus"],
+            vec!["reflog", "show", "--bogus"],
+            vec!["rev-parse", "--bogus"],
+            vec!["rev-parse", "--bogus", "HEAD"],
+            vec!["rev-parse", "-Z", "HEAD", "--nosuch=1"],
+            vec!["name-rev"],
+            vec!["name-rev", "--tags"],
+            vec!["name-rev", "--bogus"],
+            vec!["shortlog", "--bogus"],
+        ] {
+            f.same(&f.repo, &case);
+        }
+        f.same_in(&f.root, &["shortlog"], b"");
+        f.same_in(&f.root, &["shortlog", "-s"], b"");
+        f.same_in(&f.root, &["shortlog", "HEAD"], b"");
+    });
+}
+
+#[test]
 fn ls_files_matches_git() {
     each(|f| {
         f.all(&[
