@@ -4,7 +4,7 @@ description: Builds the pinned git from the kernel.org tarball (cached by versio
 inputs:
   version:
     description: Git version the oracle tests compare against. Change it here only; see docs/ci.md.
-    default: '2.55.0'
+    default: '2.56.0'
 
 runs:
   using: composite
