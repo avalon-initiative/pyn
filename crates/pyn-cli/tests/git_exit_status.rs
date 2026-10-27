@@ -130,18 +130,6 @@ const DIVERGENT: &[(&str, &str)] = &[
         "docs: Conventions, `checkout -B` is not built, so the combination is 129 where git says 128",
     ),
     (
-        "Dirty: rev-parse --bogus",
-        "docs: Conventions, `rev-parse` echoes an unknown option as git does not; here it is a usage error (129)",
-    ),
-    (
-        "Outside: shortlog HEAD",
-        "docs: Conventions, `shortlog` outside a repository is a fatal (128) where git prints a usage error (129)",
-    ),
-    (
-        "Dirty: name-rev",
-        "docs: Conventions, `name-rev` with no commit is a usage error (129) where git prints nothing and exits 0",
-    ),
-    (
         "Clean: merge --squash clean",
         "docs: Merge on a git home, `--squash` is not built (129)",
     ),
@@ -176,18 +164,6 @@ const DIVERGENT: &[(&str, &str)] = &[
     (
         "Clean: bisect skip a...b (after git bisect start HEAD HEAD~3)",
         "docs: Bisect, a symmetric range `a...b` to `skip` is not built (129)",
-    ),
-    (
-        "Dirty: log --bogus",
-        "docs: Conventions, an option git lacks and one pyn does not build both exit 129, where git exits 128",
-    ),
-    (
-        "Dirty: show --bogus",
-        "docs: Conventions, an option git lacks and one pyn does not build both exit 129, where git exits 128",
-    ),
-    (
-        "Dirty: reflog --bogus",
-        "docs: Conventions, an option git lacks and one pyn does not build both exit 129, where git exits 128",
     ),
 ];
 

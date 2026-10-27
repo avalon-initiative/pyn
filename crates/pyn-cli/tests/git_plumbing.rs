@@ -360,6 +360,33 @@ fn rev_parse_matches_git() {
 }
 
 #[test]
+fn option_errors_exit_like_git() {
+    each(|f| {
+        for case in [
+            vec!["log", "--bogus"],
+            vec!["log", "-Z"],
+            vec!["log", "--bogus=1"],
+            vec!["show", "--bogus"],
+            vec!["show", "-Z", "HEAD"],
+            vec!["reflog", "--bogus"],
+            vec!["reflog", "show", "--bogus"],
+            vec!["rev-parse", "--bogus"],
+            vec!["rev-parse", "--bogus", "HEAD"],
+            vec!["rev-parse", "-Z", "HEAD", "--nosuch=1"],
+            vec!["name-rev"],
+            vec!["name-rev", "--tags"],
+            vec!["name-rev", "--bogus"],
+            vec!["shortlog", "--bogus"],
+        ] {
+            f.same(&f.repo, &case);
+        }
+        f.same_in(&f.root, &["shortlog"], b"");
+        f.same_in(&f.root, &["shortlog", "-s"], b"");
+        f.same_in(&f.root, &["shortlog", "HEAD"], b"");
+    });
+}
+
+#[test]
 fn ls_files_matches_git() {
     each(|f| {
         f.all(&[

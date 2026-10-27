@@ -150,6 +150,7 @@ pub use repack::RepackArgs;
 pub use reset::ResetKind;
 pub use rev_parse::RevParseArgs;
 pub use shortlog::ShortlogArgs;
+pub(crate) use shortlog::shortlog_outside_repo;
 pub use show_ref::ShowRefArgs;
 pub use signing::SignFlag;
 pub use sparse::SparseCheckoutArgs;
