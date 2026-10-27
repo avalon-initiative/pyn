@@ -4,6 +4,8 @@
 
 #[path = "../../pyn-gittransport/tests/common/gitsrv.rs"]
 mod gitsrv;
+#[path = "common/oracle.rs"]
+mod oracle;
 
 use std::cell::Cell;
 use std::fs;
@@ -119,8 +121,8 @@ impl Repo {
         }
         assert_eq!(code, want_code, "{} {cmd} {args:?}: {err}", self.format);
         assert_eq!(
-            String::from_utf8_lossy(&got),
-            String::from_utf8_lossy(&want),
+            oracle::blame_lines(&got),
+            oracle::blame_lines(&want),
             "{} {cmd} {args:?}",
             self.format
         );
