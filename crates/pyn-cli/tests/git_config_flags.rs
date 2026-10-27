@@ -12,6 +12,7 @@ struct Side {
     root: PathBuf,
     repo: PathBuf,
     home: PathBuf,
+    system: PathBuf,
 }
 
 fn side(tmp: &TempDir, name: &str) -> Side {
@@ -20,7 +21,13 @@ fn side(tmp: &TempDir, name: &str) -> Side {
     let home = root.join("home");
     fs::create_dir_all(&repo).unwrap();
     fs::create_dir_all(&home).unwrap();
-    let s = Side { root, repo, home };
+    let system = root.join("system.cfg");
+    let s = Side {
+        root,
+        repo,
+        home,
+        system,
+    };
     let out = s.run(Command::new("git"), &s.repo, &["init", "-q"]);
     assert_eq!(out.0, 0);
     s
@@ -35,6 +42,7 @@ impl Side {
             .env("PATH", std::env::var_os("PATH").unwrap())
             .env("HOME", &self.home)
             .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_SYSTEM", &self.system)
             .env("LC_ALL", "C")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -105,6 +113,7 @@ fn config_flag_forms_match_git() {
     let tmp = tempdir().unwrap();
     let (git, pyn) = (side(&tmp, "git"), side(&tmp, "pyn"));
     for s in [&git, &pyn] {
+        fs::write(&s.system, "[safe]\n\tdirectory = *\n[sys]\n\tk = v\n").unwrap();
         fs::create_dir_all(s.repo.join("d")).unwrap();
     }
     let steps: Vec<(&str, Vec<&str>)> = vec![
@@ -141,6 +150,8 @@ fn config_flag_forms_match_git() {
         (".", vec!["--file", "nosuch.cfg", "--list"]),
         (".", vec!["--file", "nosuch.cfg", "a.b"]),
         (".", vec!["--system", "--list"]),
+        (".", vec!["--system", "sys.k"]),
+        (".", vec!["sys.k"]),
         (".", vec!["--file", "../f.cfg", "a.b", "c"]),
         (".", vec!["-f", "../f.cfg", "--list"]),
         (".", vec!["foo"]),

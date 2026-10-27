@@ -122,13 +122,15 @@ fn env_path(name: &str) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+fn system_path() -> PathBuf {
+    env_path("GIT_CONFIG_SYSTEM").unwrap_or_else(|| PathBuf::from("/etc/gitconfig"))
+}
+
+/// Implicit reads honor GIT_CONFIG_NOSYSTEM; an explicit `--system` does not, as in git.
 fn system_file() -> Option<PathBuf> {
-    if let Some(p) = env_path("GIT_CONFIG_SYSTEM") {
-        return Some(p);
-    }
     let off = std::env::var("GIT_CONFIG_NOSYSTEM")
         .is_ok_and(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"));
-    (!off).then(|| PathBuf::from("/etc/gitconfig"))
+    (!off).then(system_path)
 }
 
 /// The user-level files git reads, in precedence order, lowest first.
@@ -203,10 +205,7 @@ pub fn run(cwd: &Path, f: &ConfigFlags) -> Result<()> {
     let explicit = if f.global {
         Some(global_target())
     } else if f.system {
-        match system_file() {
-            Some(p) => Some(p),
-            None => bail!("unable to read the system config file"),
-        }
+        Some(system_path())
     } else if f.local {
         local.clone()
     } else {
