@@ -138,7 +138,7 @@ fn matching<'a>(pattern: &str, names: impl Iterator<Item = &'a str>) -> Vec<&'a 
     if strong.is_empty() { weak } else { strong }
 }
 
-fn glob_map(src_pat: &str, dst_pat: &str, name: &str) -> Option<String> {
+pub fn glob_map(src_pat: &str, dst_pat: &str, name: &str) -> Option<String> {
     let (pre, post) = src_pat.split_once('*')?;
     if name.len() < pre.len() + post.len() || !name.starts_with(pre) || !name.ends_with(post) {
         return None;

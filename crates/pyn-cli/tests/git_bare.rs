@@ -622,3 +622,32 @@ fn a_shallow_bare_clone_can_be_deepened() {
     );
     assert!(!s.join("shallow").exists());
 }
+
+#[test]
+fn log_paths_in_a_bare_repository_ignore_the_folder_it_runs_in() {
+    let rig = Rig::new();
+    let src = rig.source();
+    let bare = rig.root.join("b.git");
+    rig.git_ok(
+        &rig.root,
+        &["clone", "-q", "--bare", src.to_str().unwrap(), "b.git"],
+    );
+    for cwd in [bare.clone(), bare.join("refs"), bare.join("refs/heads")] {
+        for args in [
+            vec!["log", "--oneline", "--", "a.txt"],
+            vec!["log", "--oneline", "-p", "--", "a.txt"],
+            vec!["log", "--oneline", "--", "nonexistent"],
+            vec!["log", "--oneline", "a.txt"],
+            vec!["log", "-p", "a.txt"],
+            vec!["log", "--oneline", "main", "--", "a.txt"],
+            vec!["log", "--oneline", "--", "../a.txt"],
+            vec!["log", "--oneline", "--", "../../a.txt"],
+            vec!["log", "--oneline", "--", "/elsewhere/a.txt"],
+        ] {
+            let (p, g) = (rig.pyn(&cwd, &args), rig.git(&cwd, &args));
+            let ctx = format!("{args:?} in {}", cwd.display());
+            assert_eq!(p.code, g.code, "{ctx}: {}", p.stderr);
+            assert_eq!(p.stdout, g.stdout, "{ctx}");
+        }
+    }
+}
