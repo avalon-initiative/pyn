@@ -348,7 +348,7 @@ fn select(
             None => {
                 if !super::stage::looks_like_pathspec(&arg) {
                     let rel = git.ws.repo_prefix(cwd, &arg)?;
-                    if !on_disk(git, &rel) && !in_head(git, &rel)? {
+                    if !on_disk(git, &rel) && (git.is_bare() || !in_head(git, &rel)?) {
                         bail!(
                             "ambiguous argument '{arg}': unknown revision or path not in the working tree.\n\
                              Use '--' to separate paths from revisions"
@@ -590,6 +590,8 @@ pub(super) fn log(
     args: GitLogArgs,
 ) -> Result<()> {
     git.repo.validate_diff_ignore_submodules()?;
+    // A bare repository has no prefix: paths are relative to the git directory wherever it is run.
+    let cwd = if git.is_bare() { &git.ws.root } else { cwd };
     let Rendering { pretty, style } = args.fmt.rendering()?;
     let filters = Filters::new(&args)?;
     let parts = args.diff_parts();

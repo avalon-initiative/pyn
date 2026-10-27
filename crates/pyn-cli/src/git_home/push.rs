@@ -14,7 +14,8 @@ use pyn_object::{Kind, ObjectId};
 
 use super::GitHome;
 use super::push_plan::{
-    Entry, Judge, LocalView, PlanError, Reason, Spec, Status, build, judge, ref_name_matches,
+    Entry, Judge, LocalView, PlanError, Reason, Spec, Status, build, glob_map, judge,
+    ref_name_matches,
 };
 
 const DEFAULT_ABBREV: usize = 7;
@@ -86,7 +87,8 @@ pub struct PushArgs {
     /// Send every ref and delete the remote refs that are gone here.
     #[arg(long)]
     mirror: bool,
-    #[arg(long, hide = true)]
+    /// Delete remote refs the refspecs map from a local ref that is gone.
+    #[arg(long)]
     prune: bool,
     #[arg(long, hide = true, num_args = 0..=1, require_equals = true, default_missing_value = "yes")]
     signed: Option<String>,
@@ -126,7 +128,6 @@ impl PushArgs {
 
     fn refuse_unsupported(&self) {
         let given = [
-            ("--prune", self.prune, "pruning remote refs is not built"),
             (
                 "--signed",
                 self.signed.is_some(),
@@ -830,6 +831,9 @@ fn push_one(
                 }),
         );
     }
+    if args.prune && !(args.mirror || target.mirror) {
+        specs.extend(pruned(&specs, &local, &remote));
+    }
     let specs = specs.as_slice();
     let planned = |specs: &[Spec]| match build(specs, &view, &remote) {
         Ok(v) => Ok(v),
@@ -1003,6 +1007,29 @@ fn pre_push_vetoed(git: &GitHome, round: &Round, url: &str, entries: &[Entry]) -
     Ok(git
         .run_hook("pre-push", &args, Some(lines.as_bytes()), &[])?
         .is_some_and(|s| s != 0))
+}
+
+/// Deletions for the remote refs that a glob refspec maps from a local ref that does not exist.
+fn pruned(
+    specs: &[Spec],
+    local: &[(String, ObjectId)],
+    remote: &[(String, ObjectId)],
+) -> Vec<Spec> {
+    let mut out = Vec::new();
+    for (name, _) in remote {
+        let source = specs.iter().filter(|s| s.src.contains('*')).find_map(|s| {
+            let dst = s.dst.as_deref().filter(|d| !d.is_empty()).unwrap_or(&s.src);
+            glob_map(dst, &s.src, name)
+        });
+        if source.is_some_and(|src| !local.iter().any(|(l, _)| *l == src)) {
+            out.push(Spec {
+                force: false,
+                src: String::new(),
+                dst: Some(name.clone()),
+            });
+        }
+    }
+    out
 }
 
 fn run(git: &GitHome, a: &PushArgs) -> Result<bool> {
