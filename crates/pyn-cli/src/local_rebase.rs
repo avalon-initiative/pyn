@@ -267,6 +267,8 @@ fn start(
             detach: false,
             recurse_submodules: false,
             no_recurse_submodules: false,
+            guess: false,
+            no_guess: false,
         };
         branch::switch_command(backend, Some(ws), switch)?;
     }

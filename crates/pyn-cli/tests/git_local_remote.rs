@@ -120,8 +120,13 @@ impl Twin {
 
     /// `args` with git and with pyn: the same status, the same refs on the remote, the same refusals.
     fn cmp(&self, args: &[&str]) -> (Out, Out) {
-        let g = self.git_cmd(&self.side[0], args);
-        let p = self.pyn_cmd(&self.side[1], args);
+        self.cmp_in("", args)
+    }
+
+    /// `cmp` run from the folder `sub` of each work tree.
+    fn cmp_in(&self, sub: &str, args: &[&str]) -> (Out, Out) {
+        let g = self.git_cmd(&self.side[0].join(sub), args);
+        let p = self.pyn_cmd(&self.side[1].join(sub), args);
         let ctx = format!("{args:?}\ngit: {}\npyn: {}", g.stderr, p.stderr);
         assert_eq!(g.code, p.code, "{ctx}");
         assert_eq!(refs(&self.remote[0]), refs(&self.remote[1]), "{ctx}");
@@ -476,5 +481,31 @@ fn a_push_of_objects_the_remote_lacks_into_a_sha256_remote_with_a_mismatch_is_re
         out.stderr.contains("mismatched algorithms"),
         "{}",
         out.stderr
+    );
+}
+
+#[test]
+fn a_relative_remote_url_resolves_from_the_work_tree_root_in_a_subfolder() {
+    let t = Twin::new("sha1", true);
+    for i in 0..2 {
+        let rel = format!("../{}", t.remote[i].file_name().unwrap().to_str().unwrap());
+        run(&t.side[i], &["config", "remote.origin.url", &rel]);
+        fs::create_dir_all(t.side[i].join("sub")).unwrap();
+    }
+    let (_, p) = t.cmp_in("sub", &["push", "origin", "main:fresh"]);
+    assert_eq!(p.code, 0, "{}", p.stderr);
+    t.cmp_in("sub", &["ls-remote", "origin"]);
+    t.cmp_in("sub", &["fetch", "origin"]);
+    t.commit_both("more.txt");
+    let (_, p) = t.cmp_in("sub", &["push"]);
+    assert_eq!(p.code, 0, "{}", p.stderr);
+    for i in 0..2 {
+        run(&t.remote[i], &["update-ref", "refs/heads/extra", "main"]);
+    }
+    let (_, p) = t.cmp_in("sub", &["pull", "origin", "extra"]);
+    assert_eq!(p.code, 0, "{}", p.stderr);
+    assert_eq!(
+        run(&t.side[0], &["rev-parse", "HEAD"]),
+        run(&t.side[1], &["rev-parse", "HEAD"])
     );
 }

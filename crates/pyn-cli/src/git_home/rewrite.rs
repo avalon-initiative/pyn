@@ -49,7 +49,7 @@ pub(super) fn flush(dir: &Path, head: &ObjectId) -> Result<()> {
     Ok(())
 }
 
-fn pairs(git: &GitHome, dir: &Path) -> Vec<(ObjectId, ObjectId)> {
+pub(super) fn pairs(git: &GitHome, dir: &Path) -> Vec<(ObjectId, ObjectId)> {
     let Some(text) = read_text(&dir.join(LIST)) else {
         return Vec::new();
     };

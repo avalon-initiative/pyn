@@ -90,6 +90,16 @@ pub(crate) fn edit_message(
     message: &[u8],
     comment: &str,
 ) -> Result<Option<Vec<u8>>> {
+    edit_message_with(git, message, comment, |_| Ok(()))
+}
+
+/// [`edit_message`] with `before` run on the message file between writing it and opening the editor.
+pub(crate) fn edit_message_with(
+    git: &GitHome,
+    message: &[u8],
+    comment: &str,
+    before: impl FnOnce(&Path) -> Result<()>,
+) -> Result<Option<Vec<u8>>> {
     let path = git.repo.git().git_dir().join("COMMIT_EDITMSG");
     let mut text = message.to_vec();
     if !text.ends_with(b"\n") {
@@ -100,6 +110,7 @@ pub(crate) fn edit_message(
     );
     text.extend_from_slice(comment.as_bytes());
     std::fs::write(&path, &text)?;
+    before(&path)?;
     run(git, Which::Message, &path)?;
     Ok(edited_message(&std::fs::read(&path)?))
 }

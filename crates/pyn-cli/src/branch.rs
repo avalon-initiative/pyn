@@ -174,6 +174,14 @@ pub struct BranchArgs {
     pub(crate) remotes: bool,
 }
 
+pub(crate) fn flag(on: bool, off: bool) -> Option<bool> {
+    match (on, off) {
+        (true, _) => Some(true),
+        (_, true) => Some(false),
+        _ => None,
+    }
+}
+
 /// Switch the workspace to another branch.
 #[derive(Debug, Args)]
 pub struct SwitchArgs {
@@ -199,6 +207,11 @@ pub struct SwitchArgs {
     pub(crate) recurse_submodules: bool,
     #[arg(long, overrides_with = "recurse_submodules")]
     pub(crate) no_recurse_submodules: bool,
+    /// Create a branch tracking the one remote-tracking branch of that name when the branch is missing (the default).
+    #[arg(long, overrides_with = "no_guess")]
+    pub(crate) guess: bool,
+    #[arg(long, overrides_with = "guess")]
+    pub(crate) no_guess: bool,
 }
 
 /// Switch branches, or restore files from the workspace's revisions or from another commit.
@@ -239,6 +252,11 @@ pub struct CheckoutArgs {
     pub(crate) recurse_submodules: bool,
     #[arg(long, overrides_with = "recurse_submodules")]
     pub(crate) no_recurse_submodules: bool,
+    /// Create a branch tracking the one remote-tracking branch of that name when the branch is missing (the default).
+    #[arg(long, overrides_with = "no_guess")]
+    pub(crate) guess: bool,
+    #[arg(long, overrides_with = "guess")]
+    pub(crate) no_guess: bool,
     #[command(flatten)]
     pub(crate) pathspec_file: crate::pathspec::PathspecFile,
 }
@@ -595,6 +613,8 @@ pub fn checkout_command(
         patch: _,
         recurse_submodules,
         no_recurse_submodules: _,
+        guess: _,
+        no_guess: _,
         pathspec_file: _,
     } = args;
     if recurse_submodules {

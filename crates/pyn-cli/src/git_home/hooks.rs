@@ -188,6 +188,135 @@ fn stdout_as_stderr() -> Stdio {
         .map_or_else(|_| Stdio::inherit(), Stdio::from)
 }
 
+/// A hook that stopped the command it ran for.
+#[derive(Debug)]
+pub(super) struct HookRefused(pub(super) String);
+
+impl std::fmt::Display for HookRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "'{}' hook failed", self.0)
+    }
+}
+
+impl std::error::Error for HookRefused {}
+
+/// The hooks around a commit made by a replaying command and the environment they see.
+#[derive(Clone)]
+pub(super) struct CommitHooks {
+    env: Vec<(&'static str, String)>,
+    /// `prepare-commit-msg` already ran, over the message the editor opened.
+    message_done: bool,
+    /// The replacing `post-rewrite amend` also sees the author, as the `git commit` that makes it does.
+    amend_env: Vec<(&'static str, String)>,
+}
+
+impl CommitHooks {
+    /// The commit is made directly: no editor, so `GIT_EDITOR=:`.
+    pub(super) fn direct(git: &GitHome) -> Self {
+        Self {
+            env: vec![
+                ("GIT_INDEX_FILE", git.hook_index()),
+                ("GIT_EDITOR", ":".to_string()),
+            ],
+            message_done: false,
+            amend_env: Vec::new(),
+        }
+    }
+
+    /// The message went through the editor; the caller ran `prepare-commit-msg` before it.
+    pub(super) fn edited(git: &GitHome, author: &Signature) -> Self {
+        let mut env = author_env(author);
+        env.push(("GIT_INDEX_FILE", git.hook_index()));
+        Self {
+            env,
+            message_done: true,
+            amend_env: author_env(author),
+        }
+    }
+
+    pub(super) fn message_done(&self) -> bool {
+        self.message_done
+    }
+
+    pub(super) fn env(&self) -> &[(&'static str, String)] {
+        &self.env
+    }
+}
+
+impl GitHome {
+    /// Runs `prepare-commit-msg` on `COMMIT_EDITMSG` holding `message` and returns what the file holds afterwards.
+    pub(super) fn prepare_message(
+        &self,
+        message: &[u8],
+        source: &[&str],
+        env: &[(&str, String)],
+    ) -> Result<Vec<u8>> {
+        if !self.hook_present("prepare-commit-msg") {
+            return Ok(message.to_vec());
+        }
+        let file = self.repo.git().git_dir().join("COMMIT_EDITMSG");
+        std::fs::write(&file, message)?;
+        let mut args = vec![self.hook_path(&file)];
+        args.extend(source.iter().map(|s| (*s).to_string()));
+        if self.vetoed("prepare-commit-msg", &args, env)? {
+            return Err(HookRefused("prepare-commit-msg".into()).into());
+        }
+        Ok(std::fs::read(&file)?)
+    }
+
+    /// Runs `pre-commit`, `prepare-commit-msg` and `commit-msg` as `git commit` does and returns the message they leave.
+    pub(super) fn verify_message(
+        &self,
+        message: &[u8],
+        source: &str,
+        env: &[(&str, String)],
+    ) -> Result<Vec<u8>> {
+        if self.vetoed("pre-commit", &[], env)? {
+            return Err(HookRefused("pre-commit".into()).into());
+        }
+        let message = self.prepare_message(message, &[source], env)?;
+        if self.hook_present("commit-msg") {
+            let file = self.repo.git().git_dir().join("COMMIT_EDITMSG");
+            std::fs::write(&file, &message)?;
+            if self.vetoed("commit-msg", &[self.hook_path(&file)], env)? {
+                return Err(HookRefused("commit-msg".into()).into());
+            }
+            return Ok(std::fs::read(&file)?);
+        }
+        Ok(message)
+    }
+
+    /// `post-commit`, then `post-rewrite amend` when the new commit replaced `replaced`; neither can stop anything.
+    pub(super) fn after_commit(
+        &self,
+        hooks: &CommitHooks,
+        replaced: Option<(&ObjectId, &ObjectId)>,
+    ) -> Result<()> {
+        self.run_hook("post-commit", &[], None, hooks.env())?;
+        if let Some((old, new)) = replaced {
+            self.post_rewrite("amend", &[(*old, *new)], &hooks.amend_env)?;
+        }
+        Ok(())
+    }
+
+    /// Runs `post-rewrite` with `kind` and one `<old> <new>` line per pair on standard input.
+    pub(super) fn post_rewrite(
+        &self,
+        kind: &str,
+        pairs: &[(ObjectId, ObjectId)],
+        env: &[(&str, String)],
+    ) -> Result<()> {
+        let text: String = pairs.iter().map(|(o, n)| format!("{o} {n}\n")).collect();
+        self.run_hook(
+            "post-rewrite",
+            &[kind.to_string()],
+            Some(text.as_bytes()),
+            env,
+        )?;
+        Ok(())
+    }
+}
+
 /// `GIT_AUTHOR_*` as git exports them to the commit hooks.
 pub(super) fn author_env(author: &Signature) -> Vec<(&'static str, String)> {
     let sign = if author.offset_minutes < 0 { '-' } else { '+' };
