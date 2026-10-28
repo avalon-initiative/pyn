@@ -1081,7 +1081,7 @@ Differences from git, all deliberate or not yet done:
   filter drivers and `working-tree-encoding` are not applied.
 - Commit abbreviations are 7 digits and are not lengthened to stay unique; `log` and `show` print no color on a terminal.
 - A nested repository that the index does not track is one untracked `dir/`.
-- `stash apply` detects no renames, `merge` and `stash apply` write diff3 conflict markers whatever `merge.conflictStyle` says and `stash apply` merges only when
+- `merge` and `stash apply` write diff3 conflict markers whatever `merge.conflictStyle` says and `stash apply` merges only when
   there is one merge base; `stash apply` does not write `AUTO_MERGE`; `switch` and `checkout` print their own wording where git's differs (`Fast-forward` without a diffstat, the status
   after `stash pop` in pyn's table).
 
@@ -1572,8 +1572,10 @@ state folder (`rebase-merge/`, `sequencer/`) is not removed. `--hard --recurse-s
    `<path>~HEAD` or `<path>~<name>` (`/` in the name becomes `_`, and `_0`, `_1`... is added while the name is taken) and
    stays unmerged at its own stage, with `CONFLICT (file/directory)` (and the modify/delete conflict when the file was
    edited where the other side replaced it with a folder). A submodule meeting a folder is refused. This holds for
-   `ort`, `recursive` and `subtree`; `rebase`, `cherry-pick`, `revert`, `am`, `stash` and remerge diffs still refuse such a
-   path, and a rebase, a cherry-pick and a remerge diff still refuse several merge bases.
+   `ort`, `recursive` and `subtree`, and for `rebase`, `cherry-pick`, `revert`, `am --3way` and `stash apply`; remerge diffs
+   still refuse such a path and several merge bases. Those replays have one base (the commit's parent, the patch's
+   rebuilt base or the stash's base), so only a recreated merge in `rebase --rebase-merges` can have several, and it merges
+   them into a virtual base as above.
 5. As in git's `ort` the index must equal `HEAD`: a difference stops the merge with `error: Your local changes to the following
    files would be overwritten by merge:` and the differing paths on one line, two spaces in, then `Merge with strategy ort failed.`
    (exit `2`). Then the files the merge changes must be clean in the work tree: a modified one, an untracked file in the way, or
@@ -1673,8 +1675,12 @@ renamed to two places whose edits conflict, a renamed link, submodule or other n
 renamed file edited with only its mode changed against a delete, a folder renamed to several places with a file added to
 it, a rename into a folder the other side renamed, an added file whose moved path is taken, a path that is not UTF-8 among the
 added or removed, and, inside a virtual base, any rename conflict or folder rename conflict.
-`rebase`, `cherry-pick`, `revert`, `am`, `stash` and remerge diffs still follow no renames (so a merge git resolves through a
-rename shows a conflict there), and refuse `-X find-renames` and `rename-threshold` with a usage error (`129`).
+The replays follow renames the same way: `rebase` (and the merges it recreates), `cherry-pick`, `revert`, `am --3way` and
+`stash apply`, `pop` and `branch` (also `--index`). Their base is the commit's parent (for `revert` the commit), the base
+rebuilt from the patch's `index` lines, or the stash's base, and `-X no-renames`, `find-renames[=<n>]` and
+`rename-threshold=<n>` apply to `rebase`, `cherry-pick` and `revert`; `am` and `stash` read `merge.renames`,
+`merge.renameLimit` and `merge.directoryRenames`. The refusals above hold for them too. Remerge diffs follow no renames (so a merge
+git resolves through a rename shows a conflict there).
 
 
 #### Strategies in a replay
@@ -1689,7 +1695,7 @@ The strategy is kept in `rebase-merge/strategy` and `strategy_opts` (a rebase) a
 
 Refused with a usage error (`129`) before anything changes: strategies other than `ort` and `recursive` (`ours`, `resolve`,
 `octopus`, `subtree`; git runs them as separate programs for each pick), `-X subtree`, and the options the merge refuses
-(`patience`, `histogram`, `find-renames`, `rename-threshold`, ...). A strategy git does not define is `Could not find merge strategy` (`1`), and an
+(`patience`, `histogram`, ...). Renames are followed (see [Renames in a merge](#renames-in-a-merge)). A strategy git does not define is `Could not find merge strategy` (`1`), and an
 option it does not define `fatal: unknown strategy option` (`128`), both before the first commit, where git notices only when a
 merge needs them. A workspace on a pyn server refuses them. git reads no strategy setting for a replay (`rebase.*` has none, and
 `pull.twohead` is for merges), so none is read.
@@ -1718,7 +1724,7 @@ editor, and `tag -e`.
 `cherry-pick <commit>...` merges each commit's change onto the index and makes a commit with that commit's author and message,
 the committer from the identity rules of `commit`, and a tree and id that match git's (the tests compare ids). The result is
 the same as `merge` of the commit onto `HEAD` with the commit's parent as the merge base (`(empty tree)` for a root commit), so
-the merge rules above apply but for renames, which are not followed, `ort`-style results for everything else, diff3 markers labelled `HEAD` and
+the merge rules above apply, renames and files meeting folders included, with `ort`-style results, diff3 markers labelled `HEAD` and
 `<abbreviation> (<subject>)` with the base `parent of <abbreviation> (<subject>)`. A commit is anything `resolve` takes, `A..B`
 and `A...B` name ranges (applied oldest first, parents before children), and several arguments are applied in the order given.
 
@@ -1949,7 +1955,7 @@ the branch, as git does.
 Differences from git: `--signoff`, `--keep-base`, `--reapply-cherry-picks`, `--apply` and `--empty` other than `drop`
 are usage errors (`129`); `-s` and `-X` are described in [Strategies in a replay](#strategies-in-a-replay). A `merge` of several labels (an octopus merge) stops with `octopus merges are not built` and
 leaves the command first in the sheet; git continues it (`git rebase --continue`) and a merge whose branches have more than one
-merge base stops the same way. pyn writes `AUTO_MERGE` only for a merge that stopped on conflicts; git writes it for every pick. A workspace's own
+merge base is merged into a virtual base as `merge` does. pyn writes `AUTO_MERGE` only for a merge that stopped on conflicts; git writes it for every pick. A workspace's own
 rebase refuses `fixup -C`/`-c` and `--rebase-merges`, `--root`, `--fork-point` and `--update-refs` (and the sheet commands `label`,
 `reset`, `merge` and `update-ref`), and leaves `amend!` commits where they are. There is no `post-rewrite` hook. `-m`, `-v`, `-n`, `--keep-empty` and the `--no-` forms of the refused flags are accepted and ignored. Commits whose timestamps tie are ordered by the walk of the graph, as git's, not by
 date. After an interactive rebase git leaves `REBASE_HEAD` behind in some cases; pyn removes it. Covered against the real git

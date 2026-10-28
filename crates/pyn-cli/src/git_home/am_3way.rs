@@ -12,7 +12,7 @@ use super::apply::{Slot, parse_patches, patched};
 use super::merge::{Landing, apply_merge};
 use super::stage::{leaf_mode, raw_mode, write_leaves, write_tree};
 use super::strategy::Settings;
-use super::treemerge::{Labels, merge_trees};
+use super::treemerge::{Labels, merge_trees_with};
 
 pub(super) enum Outcome {
     Clean,
@@ -123,17 +123,16 @@ pub(super) fn fall_back(git: &GitHome, patch: &[u8], subject: &str) -> Result<Ou
     let (base_tree, theirs_tree) = (write_leaves(git, &base)?, write_leaves(git, &theirs)?);
     let opened = git.open_index()?;
     let ours_tree = write_tree(git, &opened.index)?;
-    let merged = merge_trees(
+    let merged = merge_trees_with(
         git,
-        Some(&base_tree),
-        Some(&ours_tree),
-        Some(&theirs_tree),
+        [Some(&base_tree), Some(&ours_tree), Some(&theirs_tree)],
         &Labels {
             ours: "HEAD",
             theirs: subject,
             base: "constructed merge base",
         },
-        &Settings::default(),
+        &Settings::configured(git),
+        true,
     )?;
     let landing = Landing {
         theirs: subject,
