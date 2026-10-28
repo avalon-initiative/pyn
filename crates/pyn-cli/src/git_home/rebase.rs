@@ -17,12 +17,13 @@ use pyn_object::{Commit, ObjectId, Signature};
 
 use super::GitHome;
 use super::editor::{self, Which};
+use super::hooks::{CommitHooks, HookRefused};
 use super::meld;
 use super::merge::{Landing, apply_merge, write_orig_head_as, write_state};
 use super::patch_file;
 use super::pick::{
-    Failed, Merged, Pending, Verb, git_dir, make_commit_on, merge_pick, read_id, read_text, short,
-    subject_of,
+    Failed, Merged, Pending, Verb, git_dir, make_commit_hooked, make_commit_on, merge_pick,
+    read_id, read_text, short, subject_of,
 };
 use super::rebase_merges::{self as merges, Mode as MergeMode, Range};
 use super::rewrite;
@@ -154,6 +155,11 @@ pub struct RebaseArgs {
     pub(crate) reapply_cherry_picks: bool,
     #[arg(long, hide = true)]
     pub(crate) apply: bool,
+    /// Do not run the `pre-rebase` hook.
+    #[arg(long, overrides_with = "verify")]
+    pub(crate) no_verify: bool,
+    #[arg(long, overrides_with = "no_verify")]
+    pub(crate) verify: bool,
     #[arg(long, hide = true)]
     pub(crate) empty: Option<String>,
     #[command(flatten)]
@@ -212,6 +218,8 @@ pub(super) struct Plan {
     pub update_refs: bool,
     pub sign: SignFlag,
     pub replay: Replay,
+    /// The arguments of the `pre-rebase` hook; `None` skips it.
+    pub pre_rebase: Option<Vec<String>>,
 }
 
 impl Plan {
@@ -472,6 +480,20 @@ fn plan_of(git: &GitHome, args: &RebaseArgs) -> Result<Plan> {
     };
     let merges = merges_mode(git, args);
     let replay = Replay::parse("rebase", args.strategy.as_deref(), &args.strategy_option);
+    let pre_rebase = (!args.no_verify).then(|| {
+        let first = if args.root {
+            "--root".to_string()
+        } else {
+            upstream_name.clone().unwrap_or_default()
+        };
+        let mut given = vec![first];
+        given.extend(if args.root {
+            args.upstream.clone()
+        } else {
+            args.branch.clone()
+        });
+        given
+    });
     Ok(Plan {
         upstream,
         restrict,
@@ -499,6 +521,7 @@ fn plan_of(git: &GitHome, args: &RebaseArgs) -> Result<Plan> {
         update_refs,
         sign: args.sign.clone(),
         replay,
+        pre_rebase,
     })
 }
 
@@ -557,6 +580,7 @@ pub(super) fn pull_rebase(
         update_refs: git.repo.bool_setting("rebase.updaterefs", false),
         sign,
         replay,
+        pre_rebase: Some(vec![fork.unwrap_or(*theirs).to_hex()]),
     };
     begin(git, &plan).map_err(|e| {
         if e.is::<Failed>() {
@@ -864,6 +888,11 @@ fn begin(git: &GitHome, plan: &Plan) -> Result<()> {
             None => println!("HEAD is up to date, rebase forced."),
         }
     }
+    if let Some(given) = &plan.pre_rebase
+        && git.vetoed("pre-rebase", given, &[])?
+    {
+        die("The pre-rebase hook refused to rebase.");
+    }
     let base = plan.range_base();
     let mut items = match plan.merges {
         Some(cousins) => merge_items(git, plan, &orig_head, cousins)?,
@@ -925,6 +954,7 @@ fn begin(git: &GitHome, plan: &Plan) -> Result<()> {
         };
         bad_sheet = edit_sheet(git, &mut state, &range)?;
     }
+    warn_unrun_hooks(git, &state.todo);
     let skipped = if plan.no_ff {
         0
     } else {
@@ -959,6 +989,38 @@ fn begin(git: &GitHome, plan: &Plan) -> Result<()> {
         std::process::exit(1);
     }
     run(git, state, skipped)
+}
+
+/// Warns about the hooks of commands the rebase makes without them: `post-checkout` always, and the full commit
+/// hooks for `reword` and `merge`.
+fn warn_unrun_hooks(git: &GitHome, todo: &[Item]) {
+    let mut names = vec!["post-checkout"];
+    if todo
+        .iter()
+        .any(|i| matches!(i.cmd, Cmd::Reword | Cmd::Merge))
+    {
+        names.extend([
+            "pre-commit",
+            "pre-merge-commit",
+            "prepare-commit-msg",
+            "commit-msg",
+            "post-commit",
+        ]);
+    }
+    if git.hooks_enabled() {
+        super::stage::warn_about_hooks_for(git, &names);
+    } else {
+        git.warn_if_hooks_off(&[
+            "pre-rebase",
+            "post-rewrite",
+            "post-checkout",
+            "pre-commit",
+            "pre-merge-commit",
+            "prepare-commit-msg",
+            "commit-msg",
+            "post-commit",
+        ]);
+    }
 }
 
 /// How many commands at the start are picks whose commits already sit on the base in order; git does not run them.
@@ -1598,6 +1660,7 @@ fn replay(git: &GitHome, state: &State, item: &Item) -> Result<()> {
                         reflog,
                         sign: state.sign.clone(),
                     },
+                    None,
                 )?;
                 stop_with(git, state, id, &picked, &[], &subject, None, Why::Message)?;
                 unreachable!("stop exits")
@@ -1609,18 +1672,22 @@ fn replay(git: &GitHome, state: &State, item: &Item) -> Result<()> {
     if fast && item.cmd != Cmd::Reword {
         move_forward(git, id)?;
     } else {
-        commit_here(
-            state,
-            git,
-            &Pending {
-                tree,
-                ours_tree,
-                author: picked.author.clone(),
-                message,
-                reflog,
-                sign: state.sign.clone(),
-            },
-        )?;
+        let pending = Pending {
+            tree,
+            ours_tree,
+            author: picked.author.clone(),
+            message,
+            reflog,
+            sign: state.sign.clone(),
+        };
+        let hooks = (item.cmd != Cmd::Reword).then(|| CommitHooks::direct(git));
+        if let Err(e) = commit_here(state, git, &pending, hooks.as_ref()) {
+            if !e.is::<HookRefused>() {
+                return Err(e);
+            }
+            eprintln!("error: {e}");
+            stop_with(git, state, id, &picked, &[], &subject, None, Why::Message)?;
+        }
     }
     if item.cmd == Cmd::Edit {
         stop_to_edit(git, id, &picked, false)?;
@@ -1939,12 +2006,20 @@ fn lands_on_head(picked: &Commit, head: Option<ObjectId>, at_new_root: bool) -> 
 }
 
 /// Commits on top of `HEAD`; on the empty commit of a new root the commit has no parent.
-fn commit_here(state: &State, git: &GitHome, pending: &Pending) -> Result<ObjectId> {
+fn commit_here(
+    state: &State,
+    git: &GitHome,
+    pending: &Pending,
+    hooks: Option<&CommitHooks>,
+) -> Result<ObjectId> {
     let parents = match git.repo.head_commit()? {
         Some(h) if state.squash_onto.get() != Some(h) => vec![h],
         _ => Vec::new(),
     };
-    let id = make_commit_on(git, pending, parents)?;
+    let id = match hooks {
+        Some(h) => make_commit_hooked(git, pending, parents, None, h)?,
+        None => make_commit_on(git, pending, parents)?,
+    };
     let _ = std::fs::remove_file(git_dir(git).join("MERGE_MSG"));
     Ok(id)
 }
@@ -2028,7 +2103,8 @@ fn meld_in(
         stop(git, state, id, picked, conflicted, &subject, kept)?;
     }
     let tree = write_tree(git, index)?;
-    let message = match combined_message(git, state, &text, false) {
+    let hooked = Some(&head.author);
+    let (message, edited) = match combined_message(git, state, &text, false, hooked) {
         Ok(m) => m,
         Err(e) => {
             eprintln!("error: {e}");
@@ -2036,7 +2112,13 @@ fn meld_in(
             unreachable!("stop exits")
         }
     };
-    commit_over(git, state, &head, tree, ours_tree, message, item.cmd.word())?;
+    let hooks = if edited {
+        CommitHooks::edited(git, &head.author)
+    } else {
+        CommitHooks::direct(git)
+    };
+    let over = (tree, ours_tree, message);
+    commit_over(git, state, &head, over, item.cmd.word(), Some(&hooks))?;
     if !more_melds(state) {
         meld::clear(&dir_of(git));
     }
@@ -2049,40 +2131,73 @@ fn more_melds(state: &State) -> bool {
 
 /// The message of the commit a chain makes now: the collected text while more members follow, then the first
 /// commit's own message when only `fixup` joined it, else what the user makes of the collected text. `resumed`
-/// (after a stop) always opens the editor, as git does.
-fn combined_message(git: &GitHome, state: &State, text: &str, resumed: bool) -> Result<Vec<u8>> {
+/// (after a stop) always opens the editor, as git does. With an `author` the editor is preceded by
+/// `prepare-commit-msg`. The flag is whether the editor opened.
+fn combined_message(
+    git: &GitHome,
+    state: &State,
+    text: &str,
+    resumed: bool,
+    author: Option<&Signature>,
+) -> Result<(Vec<u8>, bool)> {
     if more_melds(state) {
-        return Ok(text.as_bytes().to_vec());
+        return Ok((text.as_bytes().to_vec(), false));
     }
     if !resumed && let Ok(only) = std::fs::read(dir_of(git).join(meld::FIXUP)) {
-        return Ok(only);
+        return Ok((only, false));
     }
-    editor::edit_message(git, text.as_bytes(), &rebase_comment(git, state))?
-        .ok_or_else(|| anyhow!("Aborting commit due to empty commit message."))
+    let hooks = author.map(|a| CommitHooks::edited(git, a));
+    let before = message_hook(git, hooks.as_ref());
+    let edited =
+        editor::edit_message_with(git, text.as_bytes(), &rebase_comment(git, state), before)?
+            .ok_or_else(|| anyhow!("Aborting commit due to empty commit message."))?;
+    Ok((edited, true))
 }
 
-/// Replaces the commit `HEAD` is on by one with `tree` and `message`, keeping its parents and author.
+/// Runs `prepare-commit-msg` on the message file the editor is about to open, when there are `hooks`.
+fn message_hook<'a>(
+    git: &'a GitHome,
+    hooks: Option<&'a CommitHooks>,
+) -> impl FnOnce(&std::path::Path) -> Result<()> + 'a {
+    move |path| {
+        if let Some(h) = hooks {
+            let args = [git.hook_path(path), "message".to_string()];
+            if git.vetoed("prepare-commit-msg", &args, h.env())? {
+                return Err(HookRefused("prepare-commit-msg".into()).into());
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Replaces the commit `HEAD` is on by one with the tree, `HEAD`'s tree and message in `over`, keeping its parents
+/// and author; with `hooks` the replacement is reported to `post-rewrite` as an amend.
 fn commit_over(
     git: &GitHome,
     state: &State,
     head: &Commit,
-    tree: ObjectId,
-    ours_tree: ObjectId,
-    message: Vec<u8>,
+    over: (ObjectId, ObjectId, Vec<u8>),
     word: &str,
+    hooks: Option<&CommitHooks>,
 ) -> Result<()> {
-    make_commit_on(
-        git,
-        &Pending {
-            tree,
-            ours_tree,
-            author: head.author.clone(),
-            message,
-            reflog: format!("{} ({word})", state.action),
-            sign: state.sign.clone(),
-        },
-        head.parents.clone(),
-    )?;
+    let (tree, ours_tree, message) = over;
+    let pending = Pending {
+        tree,
+        ours_tree,
+        author: head.author.clone(),
+        message,
+        reflog: format!("{} ({word})", state.action),
+        sign: state.sign.clone(),
+    };
+    match hooks {
+        Some(h) => {
+            let old = git.repo.head_commit()?;
+            make_commit_hooked(git, &pending, head.parents.clone(), old, h)?;
+        }
+        None => {
+            make_commit_on(git, &pending, head.parents.clone())?;
+        }
+    }
     Ok(())
 }
 
@@ -2279,6 +2394,10 @@ fn finish(git: &GitHome, state: &State) -> Result<()> {
     }
     write_orig_head_as(git, &state.orig_head, Some("rebase"))?;
     let _ = rewrite::flush(&dir_of(git), &end);
+    let rewritten = rewrite::pairs(git, &dir_of(git));
+    if !rewritten.is_empty() {
+        git.post_rewrite("rebase", &rewritten, &[])?;
+    }
     let ref_report = merges::update_refs(git, &dir_of(git), state.quiet);
     let _ = rewrite::copy_notes(git, &dir_of(git));
     clear_state(git);
@@ -2346,8 +2465,9 @@ fn cont(git: &GitHome) -> Result<()> {
     if amending && chain {
         if tree != head.tree || !more_melds(&state) {
             let text = read_text(&dir.join(meld::SQUASH)).unwrap_or_default();
-            let message = combined_message(git, &state, &text, true)?;
-            commit_over(git, &state, &head, tree, head.tree, message, "continue")?;
+            let (message, _) = combined_message(git, &state, &text, true, None)?;
+            let over = (tree, head.tree, message);
+            commit_over(git, &state, &head, over, "continue", None)?;
         }
         if !more_melds(&state) {
             meld::clear(&dir);
@@ -2358,7 +2478,8 @@ fn cont(git: &GitHome) -> Result<()> {
             let Some(message) = editor::edit_message(git, &head.message, &comment)? else {
                 bail!("Aborting commit due to empty commit message.");
             };
-            commit_over(git, &state, &head, tree, head.tree, message, "continue")?;
+            let over = (tree, head.tree, message);
+            commit_over(git, &state, &head, over, "continue", None)?;
         }
     } else if stopped.is_some() || merging {
         if tree != head.tree {
@@ -2374,9 +2495,6 @@ fn cont(git: &GitHome) -> Result<()> {
                 (None, Some(p)) => p.message.clone(),
                 (None, None) => Vec::new(),
             };
-            let comment = rebase_comment(git, &state);
-            message = editor::edit_message(git, &message, &comment)?
-                .ok_or_else(|| anyhow!("Aborting commit due to empty commit message."))?;
             let author =
                 match read_text(&dir.join("author-script")).and_then(|t| parse_author_script(&t)) {
                     Some(a) => a,
@@ -2385,6 +2503,11 @@ fn cont(git: &GitHome) -> Result<()> {
                         None => super::stage::identity(git, "author")?,
                     },
                 };
+            let hooks = (!merging).then(|| CommitHooks::edited(git, &author));
+            let before = message_hook(git, hooks.as_ref());
+            let comment = rebase_comment(git, &state);
+            message = editor::edit_message_with(git, &message, &comment, before)?
+                .ok_or_else(|| anyhow!("Aborting commit due to empty commit message."))?;
             let parents = if merging {
                 let mut all = vec![head_id];
                 all.extend(merge_heads(git)?);
@@ -2394,18 +2517,18 @@ fn cont(git: &GitHome) -> Result<()> {
             } else {
                 vec![head_id]
             };
-            make_commit_on(
-                git,
-                &Pending {
-                    tree,
-                    ours_tree: head.tree,
-                    author,
-                    message,
-                    reflog: "rebase (continue)".into(),
-                    sign: state.sign.clone(),
-                },
-                parents,
-            )?;
+            let pending = Pending {
+                tree,
+                ours_tree: head.tree,
+                author,
+                message,
+                reflog: "rebase (continue)".into(),
+                sign: state.sign.clone(),
+            };
+            match &hooks {
+                Some(h) => make_commit_hooked(git, &pending, parents, None, h)?,
+                None => make_commit_on(git, &pending, parents)?,
+            };
             if merging {
                 let _ = std::fs::remove_file(git_dir(git).join("MERGE_MODE"));
             }
@@ -2463,10 +2586,9 @@ fn skip(git: &GitHome) -> Result<()> {
                 .ok_or_else(|| anyhow!("the rebase has no HEAD"))?;
             let head = git.repo.commit(&head_id)?;
             let text = read_text(&dir.join(meld::SQUASH)).unwrap_or_default();
-            let message = combined_message(git, &state, &text, false)?;
-            commit_over(
-                git, &state, &head, head.tree, head.tree, message, "continue",
-            )?;
+            let (message, _) = combined_message(git, &state, &text, false, None)?;
+            let over = (head.tree, head.tree, message);
+            commit_over(git, &state, &head, over, "continue", None)?;
             meld::clear(&dir);
         }
     }

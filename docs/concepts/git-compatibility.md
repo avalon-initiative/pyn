@@ -212,7 +212,7 @@ revisions with a pointer per branch (decision #299).
 | `git merge <branch\|commit>`, `-m`, `--no-ff`, `--ff-only`, `--no-commit`, `--abort`, `--continue`, `--stat`, `-n`/`--no-stat`, `-e`/`--edit`, `--no-edit` | `pyn merge ...` | supported | Shared files merge three-way with diff3 conflict markers; a binary conflicts as a whole file. Exclusive files take the pointer that descends from the other, and conflict where both branches changed one or a path became exclusive while a branch edited it (a person chooses a side, taking the lock). A conflicted merge leaves the workspace as git does and is concluded with `pyn add` and `pyn commit` (no `-m` needed), or given up with `--abort`. Differences: `--preview` (pyn's own) reports what would merge and conflict and changes nothing; a merge needs a clean index and no local edits to the files it touches; `--no-verify`, `--signoff` and `--ff` are usage errors, and so are `-s`, `-X`, `-S` and `--no-gpg-sign` (they need a git repository; see [Merging](#merging) and [Signing](#signing)). `git checkout --ours` and `--theirs` are `pyn checkout --ours\|--theirs -- <path>`. `pyn status` marks unmerged paths in its `STATE` column. Recursive merge of criss-cross histories as git does, with the base of a conflict shown as `merged common ancestors`. |
 | `git cherry-pick <commit>...`, ranges, `-n`, `-x`, `-s`, `-S[<keyid>]`, `--no-gpg-sign`, `-m <n>`, `--continue`, `--skip`, `--abort`, `--quit` | `pyn cherry-pick ...` | supported | Each commit's change becomes a new commit, with its author and message. On a git home see [Cherry-pick](#cherry-pick). On a pyn server workspace with local commits the commits, ranges and `-x` work, and `-n`, `-s`, `-S`, `--no-gpg-sign`, `-m` and `--quit` are refused; see [cherry-pick in commits](commits.md#cherry-pick). A pyn server workspace without local commits refuses the command. |
 | `git revert <commit>...`, ranges, `-n`, `-s`, `-S[<keyid>]`, `--no-gpg-sign`, `-m <n>`, `--no-edit`, `--continue`, `--skip`, `--abort`, `--quit` | `pyn revert ...` | supported | Each commit's change is undone by a new commit (`Revert "<subject>"`). On a git home see [Revert](#revert). On a pyn server workspace with local commits the commits and ranges work, and `-n`, `-s`, `-S`, `--no-gpg-sign`, `-m` and `--quit` are refused; see [revert in commits](commits.md#revert). A pyn server workspace without local commits refuses the command. |
-| `git rebase [--onto <newbase>] [<upstream> [<branch>]]`, `--continue`, `--skip`, `--abort`, `--quit`, `--autostash`, `--no-ff`, `-S[<keyid>]`, `--no-gpg-sign` | `pyn rebase ...` | supported (git home) | Replays the commits after the upstream one by one onto the new base, with the same ids as git. See [Rebase](#rebase), including `--rebase-merges`, `--root`, `--update-refs` and the fork point. A pyn server workspace with a local store rebases only its unpublished local commits, interactively too (`edit`, `exec`, `break`, `--exec`, `--edit-todo`, `--autostash`, `--no-ff`, `--quit` and `<branch>` work), and refuses a range with a published one, `--rebase-merges`, `--root`, `--fork-point` and `--update-refs` ([commits](commits.md#rebase)); without a local store it refuses the command. |
+| `git rebase [--onto <newbase>] [<upstream> [<branch>]]`, `--continue`, `--skip`, `--abort`, `--quit`, `--autostash`, `--no-ff`, `--no-verify`, `--verify`, `-S[<keyid>]`, `--no-gpg-sign` | `pyn rebase ...` | supported (git home) | Replays the commits after the upstream one by one onto the new base, with the same ids as git. See [Rebase](#rebase), including `--rebase-merges`, `--root`, `--update-refs` and the fork point. A pyn server workspace with a local store rebases only its unpublished local commits, interactively too (`edit`, `exec`, `break`, `--exec`, `--edit-todo`, `--autostash`, `--no-ff`, `--quit` and `<branch>` work), and refuses a range with a published one, `--rebase-merges`, `--root`, `--fork-point` and `--update-refs` ([commits](commits.md#rebase)); without a local store it refuses the command. |
 
 ## Remotes
 
@@ -1852,7 +1852,7 @@ for a pull, and `rebase: fast-forward` for a fast-forward in either).
      rebase goes on; leading picks that already sit on the new base are not recorded. When the rebase ends the list is used
      to copy notes (`notes.rewrite.rebase`, default on; `notes.rewriteRef` or `GIT_NOTES_REWRITE_REF`, globs allowed;
      `notes.rewriteMode` `concatenate`, `overwrite`, `ignore` or `cat_sort_uniq`) in one commit per notes ref, `Notes added by
-     'git notes copy'`. A notes tree gets 0, 1 or 2 levels of two-digit directories by size. The `post-rewrite` hook is not run.
+     'git notes copy'`. A notes tree gets 0, 1 or 2 levels of two-digit directories by size. The `post-rewrite` hook gets the same list (see [Client hooks](#client-hooks)).
    - `rebase-merge/` is git's: `git-rebase-todo`, `git-rebase-todo.backup`, `done`, `msgnum`, `end`, `stopped-sha`, `amend`,
      `message`, `author-script`, `interactive`, `patch`, `rewritten-pending`, `rewritten-list`, `refs-to-delete`, `update-refs`,
      `squash-onto`; git continues what pyn stopped and the reverse (the tests do both).
@@ -2554,8 +2554,8 @@ goes on, `--abort` restores `ORIG_HEAD`. `--3way` rebuilds a base from the blobs
 patch to it, and merges the result with the current tree as `cherry-pick` merges: conflict markers are diff3 style whatever
 `merge.conflictStyle` says, and no `Removing <path>` lines are printed (older git, which merges with merge-recursive, prints them). Maildirs, StGit and Mercurial formats, `-k`, `-b`, `-c`/scissors, `--ignore-date`, `--committer-date-is-author-date`,
 `-i`, `--rerere-autoupdate`, `--allow-empty` and `-C`/`-p` are not built (a patch with no changes stops the session with
-`Patch is empty.` and the hint to record an empty commit is left out). Hooks (`applypatch-msg`, `pre-applypatch`,
-`post-applypatch`) are not run, with the usual warning when one exists.
+`Patch is empty.` and the hint to record an empty commit is left out). The apply hooks run as in [Client hooks](#client-hooks);
+`-n`/`--no-verify` skips `applypatch-msg` and `pre-applypatch` for the invocation that gives it.
 
 ### What pyn will not write
 
@@ -2583,7 +2583,11 @@ default are open in #496).
 | `prepare-commit-msg` | `.git/COMMIT_EDITMSG` (`.git/MERGE_MSG` for a merge) and the source: `message` (`-m`, `-F`), `commit <rev>` (`-C <rev>`, or `HEAD` for `--amend`), `merge`; the hook may rewrite the file | Stops the commit, exit `1`. Not skipped by `--no-verify`. |
 | `commit-msg` | the message file; may rewrite it | Stops the commit, exit `1`; skipped by `--no-verify`. |
 | `post-commit` | none | Ignored. Runs after the ref moves. |
-| `post-rewrite` | `amend`; `<old> <new>` on standard input | Ignored. Only for `commit --amend`; `rebase` and `cherry-pick` do not run it yet. |
+| `post-rewrite` | `amend` or `rebase`; `<old> <new>` per line on standard input | Ignored. `amend` after `commit --amend` and after each commit a rebase's `squash` or `fixup` replaces; `rebase` once when a rebase ends, with the pairs of its `rewritten-list` (none, no run). `cherry-pick` and `am` do not run it, as in git. |
+| `pre-rebase` | the upstream as typed (the configured upstream's ref when none; `--root` for `--root`; the commit id for `pull --rebase`) and the branch when one is given | `rebase` stops, exit `128`; skipped by `--no-verify`. Not run when the branch is already up to date and not forced (`-f`), nor when `--continue`, `--skip` or `--abort` resume. Runs after the check for local changes. |
+| `applypatch-msg` | `.git/rebase-apply/final-commit`, which it may rewrite; no `GIT_INDEX_FILE` | `am` stops with the session kept, exit `1`; skipped by `-n`/`--no-verify`. Runs once per patch, before it is applied, not again by `--continue`. |
+| `pre-applypatch` | none | `am` stops with the patch applied to the index and the session kept, exit `1`; skipped by `-n`/`--no-verify`. Runs before the commit, also for `--continue`. |
+| `post-applypatch` | none | Ignored. After the commit. |
 | `post-merge` | `0` | Ignored. After a merge that fast-forwards or commits, not after `commit` concluding one. A `--squash` merge runs it with `1`. |
 | `post-checkout` | `<old HEAD> <new HEAD> <flag>`: `1` for `switch` and `checkout` of a branch or commit, `0` for `checkout -- <paths>` and `restore`; the all-zero id stands for no commit | The command exits `1` after finishing its work, as git's does. |
 | `pre-push` | `<remote name or URL> <url>`; one line `<local ref> <local id> <remote ref> <remote id>` per ref about to be sent on standard input (`(delete)` and the zero id for a deletion; refs that are up to date or rejected are left out); also run by `--dry-run` | `push` sends nothing and exits `1`; skipped by `--no-verify`. |
@@ -2592,9 +2596,24 @@ The environment also carries `GIT_PREFIX` (the directory the command was run fro
 whatever the caller had. `GIT_DIR` and `GIT_WORK_TREE` are not set. Oracle tests run one recording script under git and under pyn on git 2.43 and 2.55 and compare
 arguments, standard input, working directory, environment and the resulting exit status and repository state.
 
-Not built yet, and warned about when they exist: `pre-rebase`, the `rebase`/`cherry-pick`/`revert`/`am` commit hooks (`prepare-commit-msg`, `commit-msg`,
-`post-commit`, `post-rewrite`, `post-checkout` during a rebase), `applypatch-msg`, `pre-applypatch`, `post-applypatch`, `reference-transaction`, `pre-auto-gc`, `post-checkout` after `clone` and
-`worktree add`. `post-update`, `pre-receive`, `update` and `push-to-checkout` are server side and never run by a client.
+Replaying commands run the hooks git runs for them. `cherry-pick` and `revert` (and the picks of `rebase`) make each commit
+with `prepare-commit-msg` (`.git/COMMIT_EDITMSG` and `message`; `GIT_INDEX_FILE=.git/index`, `GIT_EDITOR=:`, no `GIT_AUTHOR_*`)
+and then `post-commit`; no `pre-commit` or `commit-msg` runs, and `-n` runs nothing. A refusal by `prepare-commit-msg`
+leaves the pick stopped (`CHERRY_PICK_HEAD`, `MERGE_MSG`, and the `sequencer` directory for several commits; a `revert` leaves no
+`REVERT_HEAD`) and ends with `128`. `--continue` commits the resolved index as `git commit` does: `pre-commit`,
+`prepare-commit-msg` (source `merge`), `commit-msg`, `post-commit`, with `GIT_AUTHOR_*` and a refusal ending with `1`. In a
+rebase a refused pick stops it for `--continue` (exit `1`); `--continue` after a conflict opens the editor after
+`prepare-commit-msg` (source `message`) and runs `post-commit`. A `squash` or `fixup` replaces the commit `HEAD` is on: the
+message hook, `post-commit` and `post-rewrite amend` run per step, the last of a chain with the editor opened after
+`prepare-commit-msg`. Oracle tests run one recording script under git and under pyn and compare arguments, order, standard
+input, environment, exit status and repository state; a rebase's `post-checkout` hook and the messages the editor shows are
+not compared.
+
+Not built, and warned about when they exist: the commit hooks (`pre-commit`, `prepare-commit-msg` with source `commit HEAD`,
+`commit-msg`, `post-commit`, `post-rewrite amend`) for a `reword`, for the merge commits of `--rebase-merges`, and for the
+commit a rebase makes when `--continue` finishes an `edit` or a `squash` chain; `post-checkout` during a rebase;
+`reference-transaction`, `pre-auto-gc`, `post-checkout` after `clone` and `worktree add`. `post-update`, `pre-receive`,
+`update` and `push-to-checkout` are server side and never run by a client.
 
 ### Git LFS
 

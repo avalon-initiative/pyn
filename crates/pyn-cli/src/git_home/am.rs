@@ -20,7 +20,7 @@ use super::merge::write_orig_head;
 use super::pick::{Pending, make_commit};
 use super::plumbing::usage;
 use super::signing::SignFlag;
-use super::stage::{clean_bytes, identity, parse_date, warn_about_hooks_for, write_tree};
+use super::stage::{clean_bytes, identity, parse_date, write_tree};
 use crate::local_reset::ResetArgs;
 
 const DIR: &str = "rebase-apply";
@@ -56,6 +56,9 @@ pub struct AmArgs {
     /// Print less.
     #[arg(short = 'q', long)]
     quiet: bool,
+    /// Skip the `applypatch-msg` and `pre-applypatch` hooks.
+    #[arg(short = 'n', long = "no-verify")]
+    no_verify: bool,
     /// Whitespace errors in added lines: `warn` (the default) or `nowarn`.
     #[arg(long, value_name = "ACTION")]
     whitespace: Option<String>,
@@ -74,6 +77,8 @@ struct State {
     quiet: bool,
     warn_ws: bool,
     sign: SignFlag,
+    /// Run `applypatch-msg` and `pre-applypatch`; not kept in the session, as git's `-n` is not.
+    verify: bool,
 }
 
 fn dir_of(git: &GitHome) -> PathBuf {
@@ -115,6 +120,7 @@ pub(super) fn am(git: &GitHome, cwd: &Path, args: AmArgs) -> Result<()> {
     if in_progress {
         let mut state = load(&dir)?;
         state.sign = args.sign.clone();
+        state.verify = !args.no_verify;
         if args.abort {
             return abort(git, &state);
         }
@@ -158,6 +164,7 @@ fn load(dir: &Path) -> Result<State> {
         quiet: flag(dir, "quiet"),
         warn_ws: !get(dir, "apply-opt").is_some_and(|t| t.contains("--whitespace=nowarn")),
         sign: SignFlag::default(),
+        verify: true,
     })
 }
 
@@ -273,6 +280,7 @@ fn start(git: &GitHome, _cwd: &Path, args: AmArgs) -> Result<()> {
         quiet: args.quiet,
         warn_ws: args.whitespace.as_deref() != Some("nowarn"),
         sign: args.sign.clone(),
+        verify: !args.no_verify,
     };
     put(&dir, "applying", "")?;
     put(
@@ -301,7 +309,7 @@ fn start(git: &GitHome, _cwd: &Path, args: AmArgs) -> Result<()> {
         put(&dir, "abort-safety", "")?;
         eprintln!("applying to an empty history");
     }
-    warn_about_hooks_for(git, &HOOKS);
+    git.warn_if_hooks_off(&HOOKS);
     let dirty = dirty_paths(git)?;
     if !dirty.is_empty() {
         put(&dir, "dirtyindex", "")?;
@@ -402,7 +410,8 @@ fn subject_line(state: &State) -> String {
 fn run(git: &GitHome, mut state: State) -> Result<()> {
     while state.next <= state.last {
         let patch_file = state.dir.join("patch");
-        if !patch_file.exists() && !load_patch(git, &state)? {
+        let fresh = !patch_file.exists();
+        if fresh && !load_patch(git, &state)? {
             println!("Patch is empty.");
             stop();
         }
@@ -411,6 +420,12 @@ fn run(git: &GitHome, mut state: State) -> Result<()> {
             println!("Applying: {line}");
         }
         flush();
+        if fresh && state.verify {
+            let msg = git.hook_path(&state.dir.join("final-commit"));
+            if git.vetoed("applypatch-msg", &[msg], &[])? {
+                std::process::exit(1);
+            }
+        }
         let patch = std::fs::read(&patch_file)?;
         let applied = apply_patch(git, &patch, state.warn_ws, state.three_way);
         if applied.is_err() {
@@ -527,6 +542,9 @@ fn commit(git: &GitHome, state: &State) -> Result<()> {
         Some(t) => t,
         None => write_tree(git, &pyn_git::Index::new(2))?,
     };
+    if state.verify && git.vetoed("pre-applypatch", &[], &[])? {
+        std::process::exit(1);
+    }
     let message = std::fs::read(state.dir.join("final-commit"))?;
     make_commit(
         git,
@@ -539,6 +557,7 @@ fn commit(git: &GitHome, state: &State) -> Result<()> {
             sign: state.sign.clone(),
         },
     )?;
+    git.run_hook("post-applypatch", &[], None, &[])?;
     Ok(())
 }
 

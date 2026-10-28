@@ -26,13 +26,13 @@ for v in GIT_INDEX_FILE GIT_PREFIX GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_AUTHOR_D
 done
 case "$n" in
   pre-push|post-rewrite) echo "stdin:"; cat ;;
-  prepare-commit-msg|commit-msg) echo "msg: $(cat "$1")" ;;
+  prepare-commit-msg|commit-msg|applypatch-msg) [ -n "$NOMSG" ] || echo "msg: $(cat "$1")" ;;
 esac
 echo "out-of-band"
 } | sed "s#$HOOKROOT#<root>#g" >> "$HOOKLOG"
 echo "stdout of $n"
 case "$n" in
-  prepare-commit-msg|commit-msg) [ -n "$HOOKEDIT" ] && echo "edited by $n" >> "$1" ;;
+  prepare-commit-msg|commit-msg|applypatch-msg) [ -n "$HOOKEDIT" ] && echo "edited by $n" >> "$1" ;;
 esac
 case " $HOOKFAIL " in *" $n "*) exit 1 ;; esac
 exit 0
@@ -51,6 +51,18 @@ case "$EDITMODE" in
   *) echo "edited by editor" >> "$1" ;;
 esac
 "#;
+
+const REPLAY: [&str; 9] = [
+    "pre-commit",
+    "prepare-commit-msg",
+    "commit-msg",
+    "post-commit",
+    "pre-rebase",
+    "post-rewrite",
+    "applypatch-msg",
+    "pre-applypatch",
+    "post-applypatch",
+];
 
 const ALL: [&str; 9] = [
     "pre-commit",
@@ -157,6 +169,18 @@ impl Side {
         }
         let stray = |name: &str| self.repo.join(".git").join(name).exists();
         out += &format!("index.lock: {}\n", stray("index.lock"));
+        let rebasing = stray("rebase-merge");
+        for name in [
+            "rebase-merge",
+            "rebase-apply",
+            "sequencer",
+            "CHERRY_PICK_HEAD",
+            "REVERT_HEAD",
+        ] {
+            if !rebasing || !name.ends_with("_HEAD") {
+                out += &format!("{name}: {}\n", stray(name));
+            }
+        }
         out
     }
 }
@@ -821,5 +845,368 @@ fn merge_editor_is_chosen_like_commits() {
             &[("GIT_EDITOR", "<unset>")],
         );
         assert!(pair.p.log().contains("== editor"));
+    });
+}
+
+/// `side` has `s1.txt` and `s2.txt` on top of `two`; `main` has `m.txt` on top of it. With `conflict`, `side`'s last
+/// commit and `main`'s both change `a.txt`.
+fn forked(format: &str, conflict: bool) -> Pair {
+    let pair = Pair::new(format, &REPLAY);
+    let commit = |s: &Side, file: &str, text: &str| {
+        fs::write(s.repo.join(file), text).unwrap();
+        s.git(&["add", file]);
+        s.git(&["commit", "-q", "-m", &format!("{file} work")]);
+    };
+    pair.both(|s| {
+        s.git(&["switch", "-q", "side"]);
+        commit(s, "s1.txt", "s1\n");
+        commit(s, if conflict { "a.txt" } else { "s2.txt" }, "side\n");
+        s.git(&["switch", "-q", "main"]);
+        commit(s, if conflict { "a.txt" } else { "m.txt" }, "main\n");
+    });
+    pair
+}
+
+/// The names of the hooks that ran, in order, with their first argument where it tells them apart.
+fn ran(log: &str) -> Vec<String> {
+    log.lines()
+        .filter_map(|l| l.strip_prefix("== "))
+        .map(str::to_string)
+        .collect()
+}
+
+fn sequence_editor(pair: &Pair) -> String {
+    let path = pair._tmp.path().join("seq.sh");
+    fs::write(&path, "#!/bin/sh\nsed -i \"$SEQEXPR\" \"$1\"\n").unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    path.to_string_lossy().into_owned()
+}
+
+#[test]
+fn rebase_runs_pre_rebase_commit_hooks_and_post_rewrite() {
+    each_format(|format| {
+        let cases: &[&[&str]] = &[
+            &["rebase", "main", "side"],
+            &["rebase", "--onto", "main", "main~1", "side"],
+            &["rebase", "-f", "main", "side"],
+            &["rebase", "--root", "--onto", "main", "side"],
+        ];
+        for args in cases {
+            let pair = forked(format, false);
+            pair.same("", args, &[]);
+            let log = pair.p.log();
+            let order = ran(&log);
+            assert_eq!(
+                order.first().map(String::as_str),
+                Some("pre-rebase"),
+                "{args:?}"
+            );
+            assert_eq!(
+                order.last().map(String::as_str),
+                Some("post-rewrite"),
+                "{args:?}"
+            );
+            assert!(
+                log.contains("args: .git/COMMIT_EDITMSG message"),
+                "{args:?}"
+            );
+        }
+    });
+}
+
+#[test]
+fn rebase_of_the_current_branch_and_the_up_to_date_cases() {
+    each_format(|format| {
+        let pair = forked(format, false);
+        pair.both(|s| {
+            s.git(&["switch", "-q", "side"]);
+        });
+        pair.same("", &["rebase", "main"], &[]);
+        assert!(pair.p.log().contains("args: main\n"), "{}", pair.p.log());
+        let pair = forked(format, false);
+        pair.both(|s| {
+            s.git(&["switch", "-q", "side"]);
+        });
+        pair.same("", &["rebase", "main~1"], &[]);
+        assert!(pair.p.log().is_empty(), "{}", pair.p.log());
+        pair.same("", &["rebase", "-f", "main~1"], &[]);
+        assert!(ran(&pair.p.log()).contains(&"pre-rebase".to_string()));
+    });
+}
+
+#[test]
+fn rebase_pre_rebase_veto_and_no_verify() {
+    each_format(|format| {
+        let pair = forked(format, false);
+        let run = pair.same(
+            "",
+            &["rebase", "main", "side"],
+            &[("HOOKFAIL", "pre-rebase")],
+        );
+        assert_ne!(run.code, 0);
+        assert_eq!(ran(&pair.p.log()), ["pre-rebase"]);
+        let pair = forked(format, false);
+        let run = pair.same(
+            "",
+            &["rebase", "--no-verify", "main", "side"],
+            &[("HOOKFAIL", "pre-rebase")],
+        );
+        assert_eq!(run.code, 0, "{}", run.stderr);
+        assert!(!ran(&pair.p.log()).contains(&"pre-rebase".to_string()));
+    });
+}
+
+#[test]
+fn rebase_hooks_edit_and_veto_the_replayed_message() {
+    each_format(|format| {
+        let pair = forked(format, false);
+        pair.same("", &["rebase", "main", "side"], &[("HOOKEDIT", "1")]);
+        let message = pair.p.git(&["log", "-1", "--format=%B"]);
+        assert!(
+            message.contains("edited by prepare-commit-msg"),
+            "{message}"
+        );
+        assert!(!pair.p.log().contains("== commit-msg"));
+        for failing in ["prepare-commit-msg", "post-commit", "post-rewrite"] {
+            let pair = forked(format, false);
+            pair.same("", &["rebase", "main", "side"], &[("HOOKFAIL", failing)]);
+        }
+    });
+}
+
+#[test]
+fn rebase_squash_and_fixup_report_amends() {
+    each_format(|format| {
+        for expr in ["2s/^pick/fixup/", "2s/^pick/squash/"] {
+            let pair = forked(format, false);
+            let editor = sequence_editor(&pair);
+            let run = pair.same(
+                "",
+                &["rebase", "-i", "main", "side"],
+                &[
+                    ("GIT_SEQUENCE_EDITOR", &editor),
+                    ("SEQEXPR", expr),
+                    ("NOMSG", "1"),
+                ],
+            );
+            assert_eq!(run.code, 0, "{}", run.stderr);
+            assert!(pair.p.log().contains("args: amend"), "{}", pair.p.log());
+        }
+    });
+}
+
+#[test]
+fn rebase_continue_after_a_conflict_runs_the_message_hook() {
+    each_format(|format| {
+        let pair = forked(format, true);
+        let stop = pair.same("", &["rebase", "main", "side"], &[]);
+        assert_eq!(stop.code, 1);
+        pair.both(|s| {
+            fs::write(s.repo.join("a.txt"), "resolved\n").unwrap();
+            s.git(&["add", "a.txt"]);
+        });
+        let run = pair.same("", &["rebase", "--continue"], &[("NOMSG", "1")]);
+        assert_eq!(run.code, 0, "{}", run.stderr);
+        assert!(ran(&pair.p.log()).contains(&"post-rewrite".to_string()));
+    });
+}
+
+#[test]
+fn cherry_pick_and_revert_run_the_message_hook_and_post_commit_only() {
+    each_format(|format| {
+        let cases: &[&[&str]] = &[
+            &["cherry-pick", "side"],
+            &["cherry-pick", "-x", "-s", "side"],
+            &["cherry-pick", "main..side"],
+            &["revert", "--no-edit", "HEAD"],
+            &["cherry-pick", "-n", "side"],
+        ];
+        for args in cases {
+            let pair = forked(format, false);
+            pair.same("", args, &[]);
+            let order = ran(&pair.p.log());
+            assert!(
+                order
+                    .iter()
+                    .all(|h| h == "prepare-commit-msg" || h == "post-commit"),
+                "{args:?} {order:?}"
+            );
+            assert_eq!(order.is_empty(), args.contains(&"-n"), "{args:?}");
+        }
+    });
+}
+
+#[test]
+fn cherry_pick_hook_failures_and_edits() {
+    each_format(|format| {
+        for (cmd, failing) in [
+            (&["cherry-pick", "main..side"][..], "prepare-commit-msg"),
+            (&["revert", "--no-edit", "HEAD"], "prepare-commit-msg"),
+            (&["cherry-pick", "side"], "post-commit"),
+        ] {
+            let pair = forked(format, false);
+            let run = pair.same("", cmd, &[("HOOKFAIL", failing)]);
+            assert_eq!(
+                run.code,
+                i32::from(failing != "post-commit") * run.code,
+                "{cmd:?}"
+            );
+        }
+        let pair = forked(format, false);
+        pair.same("", &["cherry-pick", "side"], &[("HOOKEDIT", "1")]);
+        assert!(
+            pair.p
+                .git(&["log", "-1", "--format=%B"])
+                .contains("edited by prepare-commit-msg")
+        );
+    });
+}
+
+#[test]
+fn cherry_pick_continue_verifies_like_commit() {
+    each_format(|format| {
+        let pair = forked(format, true);
+        let stop = pair.same("", &["cherry-pick", "side"], &[]);
+        assert_eq!(stop.code, 1);
+        pair.both(|s| {
+            fs::write(s.repo.join("a.txt"), "resolved\n").unwrap();
+            s.git(&["add", "a.txt"]);
+        });
+        let run = pair.same("", &["cherry-pick", "--continue"], &[("NOMSG", "1")]);
+        assert_eq!(run.code, 0, "{}", run.stderr);
+        assert_eq!(
+            ran(&pair.p.log()),
+            [
+                "pre-commit",
+                "prepare-commit-msg",
+                "commit-msg",
+                "post-commit"
+            ]
+        );
+        assert!(pair.p.log().contains("args: .git/COMMIT_EDITMSG merge"));
+    });
+}
+
+fn mailbox(pair: &Pair) -> String {
+    pair.both(|s| {
+        let out = git(&s.repo)
+            .args(["format-patch", "-2", "side", "--stdout"])
+            .output()
+            .unwrap();
+        fs::write(s.root.join("series.mbox"), out.stdout).unwrap();
+    });
+    "series.mbox".to_string()
+}
+
+#[test]
+fn am_runs_the_apply_hooks() {
+    each_format(|format| {
+        let pair = forked(format, false);
+        let mbox = mailbox(&pair);
+        let path_o = pair.o.root.join(&mbox);
+        let path_p = pair.p.root.join(&mbox);
+        let run_o = pair
+            .o
+            .run_in(&pair.o.repo, &["am", path_o.to_str().unwrap()], &[]);
+        let run_p = pair
+            .p
+            .run_in(&pair.p.repo, &["am", path_p.to_str().unwrap()], &[]);
+        assert_eq!(run_o.code, run_p.code, "{}", run_p.stderr);
+        first_difference(&pair.p.log(), &pair.o.log(), "am hooks");
+        first_difference(&pair.p.state(), &pair.o.state(), "am state");
+        assert_eq!(
+            ran(&pair.p.log()),
+            ["applypatch-msg", "pre-applypatch", "post-applypatch"].repeat(2)
+        );
+    });
+}
+
+/// Runs `am` with `args` plus the mailbox on both sides; status, hook records and state must agree.
+fn same_am(pair: &Pair, args: &[&str], mbox: Option<&str>, env: &[(&str, &str)]) -> Run {
+    let run_on = |s: &Side| {
+        let file = mbox.map(|m| s.root.join(m).to_string_lossy().into_owned());
+        let mut all = vec!["am"];
+        all.extend_from_slice(args);
+        all.extend(file.as_deref());
+        s.run_in(&s.repo, &all, env)
+    };
+    let want = run_on(&pair.o);
+    let got = run_on(&pair.p);
+    let ctx = format!("am {args:?} env {env:?}");
+    assert_eq!(
+        got.code, want.code,
+        "{ctx}: exit status\npyn: {}",
+        got.stderr
+    );
+    first_difference(&pair.p.log(), &pair.o.log(), &format!("{ctx}: hooks"));
+    first_difference(&pair.p.state(), &pair.o.state(), &format!("{ctx}: state"));
+    got
+}
+
+#[test]
+fn am_hooks_veto_skip_and_resume_like_git() {
+    each_format(|format| {
+        let pair = forked(format, false);
+        let mbox = mailbox(&pair);
+        let run = same_am(&pair, &["-n"], Some(&mbox), &[]);
+        assert_eq!(run.code, 0, "{}", run.stderr);
+        assert_eq!(ran(&pair.p.log()), ["post-applypatch"; 2]);
+        for failing in ["applypatch-msg", "pre-applypatch", "post-applypatch"] {
+            let pair = forked(format, false);
+            let mbox = mailbox(&pair);
+            let run = same_am(&pair, &[], Some(&mbox), &[("HOOKFAIL", failing)]);
+            assert_eq!(
+                run.code,
+                i32::from(failing != "post-applypatch"),
+                "{failing}"
+            );
+        }
+        let pair = forked(format, false);
+        let mbox = mailbox(&pair);
+        same_am(&pair, &[], Some(&mbox), &[("HOOKFAIL", "pre-applypatch")]);
+        same_am(&pair, &["--continue"], None, &[]);
+        let pair = forked(format, false);
+        let mbox = mailbox(&pair);
+        same_am(&pair, &[], Some(&mbox), &[("HOOKFAIL", "pre-applypatch")]);
+        same_am(&pair, &["--skip"], None, &[]);
+        let pair = forked(format, false);
+        let mbox = mailbox(&pair);
+        same_am(&pair, &[], Some(&mbox), &[("HOOKEDIT", "1")]);
+        assert!(
+            pair.p
+                .git(&["log", "-1", "--format=%B"])
+                .contains("edited by applypatch-msg")
+        );
+    });
+}
+
+#[test]
+fn revert_and_cherry_pick_stops_and_resumes_run_the_hooks_git_runs() {
+    each_format(|format| {
+        let pair = forked(format, true);
+        pair.both(|s| {
+            fs::write(s.repo.join("a.txt"), "later\n").unwrap();
+            s.git(&["commit", "-q", "-am", "later"]);
+        });
+        let stop = pair.same("", &["revert", "--no-edit", "main~1"], &[]);
+        assert_eq!(stop.code, 1);
+        pair.both(|s| {
+            fs::write(s.repo.join("a.txt"), "resolved\n").unwrap();
+            s.git(&["add", "a.txt"]);
+        });
+        let run = pair.same("", &["revert", "--continue"], &[("NOMSG", "1")]);
+        assert_eq!(run.code, 0, "{}", run.stderr);
+        let pair = forked(format, true);
+        pair.same("", &["cherry-pick", "side~1", "side"], &[]);
+        pair.both(|s| {
+            fs::write(s.repo.join("a.txt"), "resolved\n").unwrap();
+            s.git(&["add", "a.txt"]);
+        });
+        pair.same(
+            "",
+            &["cherry-pick", "--continue"],
+            &[("NOMSG", "1"), ("HOOKFAIL", "commit-msg")],
+        );
+        pair.same("", &["cherry-pick", "--continue"], &[("NOMSG", "1")]);
     });
 }

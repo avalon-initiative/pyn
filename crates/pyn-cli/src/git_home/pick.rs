@@ -10,11 +10,11 @@ use pyn_object::{Commit, Kind as ObjectKind, ObjectId};
 
 use super::GitHome;
 use super::commit::append_signoff;
+use super::hooks::{CommitHooks, HookRefused, author_env};
 use super::merge::{Applied, Landing, apply_merge, write_state};
 use super::signing::{SignFlag, sign_commit};
 use super::stage::{
-    clean_message, clear_merge_state, identity, merge_message, refuse_states, warn_about_hooks_for,
-    write_tree,
+    clean_message, clear_merge_state, identity, merge_message, refuse_states, write_tree,
 };
 use super::strategy::{Replay, Settings};
 use super::treemerge::{Labels, merge_trees};
@@ -22,7 +22,6 @@ use super::{convert, path_string, reset};
 use crate::local_pick::{PickArgs, revert_message, select, with_origin};
 
 const ABBREV: usize = 7;
-const HOOKS: [&str; 3] = ["prepare-commit-msg", "commit-msg", "post-commit"];
 const PICK_HEAD: &str = "CHERRY_PICK_HEAD";
 const REVERT_HEAD: &str = "REVERT_HEAD";
 const SEQUENCER: &str = "sequencer";
@@ -303,7 +302,6 @@ fn start(git: &GitHome, verb: Verb, args: &PickArgs) -> Result<()> {
     if !single && head.id().is_none() {
         bail!("an unborn branch takes one commit at a time; pick the first, then the rest");
     }
-    warn_about_hooks_for(git, &HOOKS);
     if !single {
         let seq = git_dir(git).join(SEQUENCER);
         std::fs::create_dir_all(&seq)?;
@@ -360,7 +358,7 @@ fn run(git: &GitHome, opts: &Opts, picks: &[(Verb, ObjectId)], sequenced: bool) 
         let outcome = match apply(git, opts, *verb, id) {
             Ok(outcome) => outcome,
             Err(e) => {
-                if sequenced && i == 0 {
+                if sequenced && i == 0 && !e.is::<HookRefused>() {
                     let _ = std::fs::remove_dir_all(git_dir(git).join(SEQUENCER));
                 }
                 return Err(e);
@@ -542,9 +540,12 @@ fn apply(git: &GitHome, opts: &Opts, verb: Verb, id: &ObjectId) -> Result<Outcom
         reflog: verb.command().to_string(),
         sign: opts.sign.clone(),
     };
-    let made = commit_pick(git, &pending).inspect_err(|_| {
-        // Like git, a commit that cannot be made leaves the pick stopped, so `--continue` can retry it.
-        let _ = write_state(git, verb.head_file(), &format!("{id}\n"));
+    let made = commit_pick(git, &pending, false).inspect_err(|e| {
+        // Like git, a commit that cannot be made leaves the pick stopped, so `--continue` can retry it; a revert
+        // stopped by a hook leaves no `REVERT_HEAD`.
+        if verb == Verb::Pick || !e.is::<HookRefused>() {
+            let _ = write_state(git, verb.head_file(), &format!("{id}\n"));
+        }
         let _ = write_state(git, "MERGE_MSG", &String::from_utf8_lossy(&pending.message));
     })?;
     Ok(Outcome::Committed(made))
@@ -559,6 +560,7 @@ fn say_empty(git: &GitHome, verb: Verb) -> Result<()> {
     Ok(())
 }
 
+#[derive(Clone)]
 pub(super) struct Pending {
     pub(super) tree: ObjectId,
     /// The tree of `HEAD`, which the new commit's changes are counted against.
@@ -602,11 +604,41 @@ pub(super) fn make_commit_on(
     Ok(id)
 }
 
-/// Makes the commit and reports it as `git commit` does.
-fn commit_pick(git: &GitHome, pending: &Pending) -> Result<ObjectId> {
+/// Like [`make_commit_on`] with `hooks` around it: `prepare-commit-msg` over the message unless the editor stage ran
+/// it, then `post-commit`, and `post-rewrite amend` when the commit replaces `replaces`.
+pub(super) fn make_commit_hooked(
+    git: &GitHome,
+    pending: &Pending,
+    parents: Vec<ObjectId>,
+    replaces: Option<ObjectId>,
+    hooks: &CommitHooks,
+) -> Result<ObjectId> {
+    let mut pending = pending.clone();
+    if !hooks.message_done() {
+        pending.message = git.prepare_message(&pending.message, &["message"], hooks.env())?;
+    }
+    let id = make_commit_on(git, &pending, parents)?;
+    git.after_commit(hooks, replaces.as_ref().map(|old| (old, &id)))?;
+    Ok(id)
+}
+
+/// Makes the commit and reports it as `git commit` does; `resumed` is a commit made by `--continue`, which verifies.
+fn commit_pick(git: &GitHome, pending: &Pending, resumed: bool) -> Result<ObjectId> {
     let head = git.repo.head()?;
     let committer = identity(git, "committer")?;
-    let id = make_commit(git, pending)?;
+    let id = if resumed {
+        let mut env = author_env(&pending.author);
+        env.extend(CommitHooks::direct(git).env().iter().cloned());
+        let mut made = pending.clone();
+        made.message = git.verify_message(&pending.message, "merge", &env)?;
+        let parents = git.repo.head()?.id().into_iter().collect();
+        let id = make_commit_on(git, &made, parents)?;
+        git.run_hook("post-commit", &[], None, &env)?;
+        id
+    } else {
+        let parents = git.repo.head()?.id().into_iter().collect();
+        make_commit_hooked(git, pending, parents, None, &CommitHooks::direct(git))?
+    };
     let first = subject_of(&pending.message);
     let place = match &head {
         Head::Branch { name, id: None } => format!("{name} (root-commit)"),
@@ -724,7 +756,15 @@ fn continue_pick(git: &GitHome) -> Result<()> {
                     .to_string(),
                     sign: opts.sign.clone(),
                 },
-            )?;
+                true,
+            )
+            .inspect_err(|e| {
+                // `git commit` ends a refused commit with status 1.
+                if e.is::<HookRefused>() {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+            })?;
             let _ = std::fs::remove_file(dir.join(verb.head_file()));
             clear_merge_state(git);
         }
