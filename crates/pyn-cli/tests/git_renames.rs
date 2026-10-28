@@ -763,6 +763,13 @@ fn unsupported_and_invalid_switches_are_usage_errors() {
         &["diff", "-Mnot-a-number"][..],
         &["diff", "-Cx"],
         &["diff", "-C", "-C", "-Mx"],
+        &["diff", "HEAD~1", "HEAD", "-Bx"],
+        &["diff", "HEAD~1", "HEAD", "-B/x"],
+        &["diff", "HEAD~1", "HEAD", "-B", "-w"],
+        &["diff", "HEAD~1", "HEAD", "-B", "--color=always"],
+        &["diff", "HEAD~1", "HEAD", "-B", "--word-diff"],
+        &["diff", "HEAD~1", "HEAD", "-B", "--check"],
+        &["diff", "HEAD~1", "HEAD", "-B", "--dirstat"],
     ] {
         let out = r.pyn(args);
         assert_eq!(out.status.code(), Some(129), "{args:?}");
@@ -934,6 +941,115 @@ fn stash_show_pairs_renames() {
     }
 }
 
+/// `n` 40-byte lines that differ from other tags in their last bytes, which is all git's line hash sees.
+fn rows(tag: &str, n: usize) -> Vec<u8> {
+    (0..n)
+        .map(|i| format!("{:-<27}{i:04}{tag:_<4}\n", "row "))
+        .collect::<String>()
+        .into_bytes()
+}
+
+/// A file of `n` rows with the first `keep` from `base` and the rest from `fresh`.
+fn part(base: &str, fresh: &str, n: usize, keep: usize) -> Vec<u8> {
+    let mut out: Vec<u8> = rows(base, n)
+        .split_inclusive(|b| *b == b'\n')
+        .take(keep)
+        .flatten()
+        .copied()
+        .collect();
+    out.extend(rows(fresh, n)[keep * 36..].to_vec());
+    out
+}
+
+/// `rows` with the first `k` replaced.
+fn edited_rows(tag: &str, n: usize, k: usize) -> Vec<u8> {
+    [&rows("ZZ", n)[..k * 36], &rows(tag, n)[k * 36..]].concat()
+}
+
+#[test]
+fn break_rewrites_split_and_merge_pairs_as_git_does() {
+    each_format(|r| {
+        r.two_commits(
+            |r| {
+                r.write("whole.txt", &rows("w", 40));
+                r.write("half.txt", &rows("h", 40));
+                r.write("mostly.txt", &rows("m", 40));
+                r.write("tiny.txt", &rows("t", 5));
+                r.write("src/moves.txt", &rows("mv", 40));
+                r.write("src/dies.txt", &rows("dies", 40));
+                r.write("nonl.txt", &[&rows("n", 30)[..], b"tail"].concat());
+                r.write("dir/gone.bin", &[&b"\0"[..], &rows("b", 30)].concat());
+            },
+            |r| {
+                r.write("whole.txt", &rows("W", 40));
+                r.write("half.txt", &part("h", "H", 40, 20));
+                r.write("mostly.txt", &part("m", "M", 40, 36));
+                r.write("tiny.txt", &rows("T", 5));
+                r.remove("src/moves.txt");
+                r.write("dst/moves.txt", &edited_rows("mv", 40, 3));
+                r.remove("src/dies.txt");
+                r.write("whole_copy.txt", &rows("w", 40));
+                r.write("half_copy.txt", &rows("h", 40));
+                r.write("nonl.txt", b"short\nrewrite without newline");
+                r.write("dir/gone.bin", &[&b"\0"[..], &rows("B", 30)].concat());
+            },
+        );
+        for flags in [
+            &["-B"][..],
+            &["-B", "-M"],
+            &["-B", "-C"],
+            &["-B", "-C", "-C"],
+            &["-B", "--no-renames"],
+            &["-B20%"],
+            &["-B20%/30%"],
+            &["-B20%/30%", "-M"],
+            &["-B20%/55%", "-C"],
+            &["-B90%"],
+            &["-B/10%"],
+            &["-B/90%"],
+            &["-B1%/1%", "-C"],
+            &["-B100%"],
+            &["--break-rewrites"],
+            &["--break-rewrites=40%/20%", "-M40%"],
+            &["-B", "-M95%"],
+            &["-B30%/50%", "-C", "-M70%"],
+        ] {
+            r.views(flags);
+            for extra in [
+                &["--raw"][..],
+                &["--diff-filter=B", "--name-status"],
+                &["--diff-filter=M", "--name-status"],
+                &["--diff-filter=b", "--name-status"],
+                &["--diff-filter=BR", "--name-status"],
+                &["--name-status", "-R"],
+                &["-p", "-R"],
+                &["--stat", "-R"],
+                &["--numstat", "--summary", "-z"],
+                &["--name-status", "-z"],
+                &["-U0"],
+                &["--compact-summary"],
+            ] {
+                let mut args = vec!["diff", "HEAD~1", "HEAD"];
+                args.extend_from_slice(extra);
+                args.extend_from_slice(flags);
+                r.same(&args);
+            }
+        }
+        let out = r.same(&["diff", "HEAD~1", "HEAD", "-B", "--name-status"]);
+        assert!(out.contains("M100\twhole.txt\n"), "{out}");
+        r.same(&["log", "--format=%s", "-B", "-S", "mv-003"]);
+        r.same(&[
+            "log",
+            "--format=%s",
+            "-B",
+            "-C",
+            "-G",
+            "H-0",
+            "--name-status",
+        ]);
+    });
+}
+
 /// A small deterministic generator, so a failing seed can be replayed.
 struct Rng(u64);
 
@@ -1043,9 +1159,114 @@ fn random_repo(r: &Repo, seed: u64) {
     r.commit("two");
 }
 
+fn random_break_repo(r: &Repo, seed: u64) {
+    let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
+    let names = ["a", "b", "c", "d", "e", "f", "g", "h"];
+    let dirs = ["", "x/", "y/"];
+    let tags = ["t1", "t2", "t3", "t4", "t5", "t6"];
+    let mut files: Vec<(String, Vec<u8>, usize, String)> = Vec::new();
+    for _ in 0..(4 + rng.next(5)) {
+        let path = format!("{}{}.txt", dirs[rng.next(3)], names[rng.next(8)]);
+        if files.iter().any(|f| f.0 == path) {
+            continue;
+        }
+        let n = 11 + rng.next(30);
+        let tag = tags[rng.next(6)].to_string();
+        files.push((path, rows(&tag, n), n, tag));
+    }
+    for (p, c, ..) in &files {
+        r.write(p, c);
+    }
+    r.commit("one");
+    let mut next: Vec<(String, Vec<u8>)> = Vec::new();
+    let taken = |next: &[(String, Vec<u8>)], q: &str| {
+        next.iter().any(|(n, _)| n == q) || files.iter().any(|f| f.0 == q)
+    };
+    for (i, (p, c, n, tag)) in files.iter().enumerate() {
+        r.remove(p);
+        let fresh = tags[rng.next(6)];
+        let rewritten = |rng: &mut Rng| -> Vec<u8> {
+            let keep = rng.next(*n + 1);
+            part(tag, fresh, *n, keep)
+        };
+        match rng.next(12) {
+            0 => {}
+            1 | 2 => next.push((p.clone(), rewritten(&mut rng))),
+            3 => {
+                next.push((p.clone(), rewritten(&mut rng)));
+                let q = format!("copy{i}.txt");
+                next.push((q, c.clone()));
+            }
+            4 => {
+                let q = format!("moved{i}/m.txt");
+                next.push((q, rewritten(&mut rng)));
+            }
+            5 => {
+                let q = format!("{}{}{i}.txt", dirs[rng.next(3)], names[rng.next(8)]);
+                if !taken(&next, &q) {
+                    next.push((q, rewritten(&mut rng)));
+                }
+                if rng.next(2) == 0 {
+                    next.push((p.clone(), rewritten(&mut rng)));
+                }
+            }
+            6 => {
+                let other = &files[rng.next(files.len())];
+                next.push((p.clone(), other.1.clone()));
+            }
+            7 => {
+                let mut out = c.clone();
+                out.extend_from_slice(&rows("add", 2));
+                next.push((p.clone(), out));
+                next.push((format!("twin{i}.txt"), rewritten(&mut rng)));
+            }
+            8 => next.push((p.clone(), part(tag, fresh, *n, *n / 2))),
+            _ => next.push((p.clone(), c.clone())),
+        }
+    }
+    for (p, c) in &next {
+        r.write(p, c);
+    }
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-q", "--allow-empty", "-m", "two"]);
+}
+
+#[test]
+fn seeded_random_rewrites_match_git() {
+    for seed in 1..=40u64 {
+        let r = Repo::new(FORMATS[(seed % 2) as usize]);
+        random_break_repo(&r, seed);
+        for flags in [
+            &["-B"][..],
+            &["-B", "-M"],
+            &["-B", "-C"],
+            &["-B", "-C", "-C"],
+            &["-B20%/30%", "-M"],
+            &["-B20%/10%", "-C"],
+            &["-B/40%", "-M30%"],
+            &["-B", "--no-renames"],
+            &["-B70%/30%", "-C"],
+            &["-B", "-M", "-l2"],
+            &["-B", "-C", "-C", "-l3"],
+        ] {
+            for args in [
+                &["diff", "HEAD~1", "HEAD", "--name-status"][..],
+                &["diff", "HEAD~1", "HEAD", "--stat", "--summary"],
+                &["diff", "HEAD~1", "HEAD", "--numstat"],
+                &["diff", "HEAD~1", "HEAD"],
+                &["diff", "HEAD~1", "HEAD", "--raw", "--diff-filter=B"],
+            ] {
+                let mut all = args.to_vec();
+                all.extend_from_slice(flags);
+                r.same(&all);
+            }
+        }
+    }
+}
+
 #[test]
 fn seeded_random_histories_match_git() {
-    for seed in 1..=14u64 {
+    for seed in 1..=30u64 {
         let format = FORMATS[(seed % 2) as usize];
         let r = Repo::new(format);
         random_repo(&r, seed);

@@ -165,6 +165,7 @@ fn changed(pa: &Path, na: &str, pb: &Path, nb: &str, algorithm: Algorithm) -> Re
         old: Some(old),
         new: Some(new),
         moved: None,
+        rewrite: None,
         detached: true,
     }))
 }
@@ -300,6 +301,9 @@ pub fn run(
             Entry::Changed(_) => {}
         }
     }
+    if opts.as_ref().is_some_and(|o| o.brk.is_some()) {
+        crate::usage_error("`-B` with `--no-index` is not built");
+    }
     let moves = match &opts {
         Some(o) if o.mode == rename::Mode::Copies => {
             crate::usage_error("`-C` with `--no-index` is not built")
@@ -326,6 +330,7 @@ pub fn run(
                 old: Some(b),
                 new: None,
                 moved: None,
+                rewrite: None,
                 detached: true,
             }),
             Entry::Added(n, b) => {
@@ -337,6 +342,7 @@ pub fn run(
                         old: gone.get(&m.src).cloned(),
                         new: Some(b),
                         moved: Some(m),
+                        rewrite: None,
                         detached: true,
                     },
                     None => Pair {
@@ -345,6 +351,7 @@ pub fn run(
                         old: None,
                         new: Some(b),
                         moved: None,
+                        rewrite: None,
                         detached: true,
                     },
                 });
