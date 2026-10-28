@@ -89,7 +89,8 @@ impl AccessService {
         result: Result<T>,
         now: DateTime<Utc>,
     ) -> Result<T> {
-        crate::limit_events::limit_result(self.limit_events.as_ref(), owner, result, now).await
+        let id = self.account_id(owner);
+        crate::limit_events::limit_result(self.limit_events.as_ref(), owner, id, result, now).await
     }
 
     pub fn webhook_secret_key(&self) -> Option<&SecretKey> {

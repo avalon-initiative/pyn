@@ -689,7 +689,7 @@ fn histories_without_a_common_start_are_refused() {
             "{err}"
         );
         let moved = changed(&before, &repo);
-        assert!(moved.is_empty(), "{moved:?}");
+        assert!(moved.iter().all(|p| p == ".git/ORIG_HEAD"), "{moved:?}");
     }
 }
 

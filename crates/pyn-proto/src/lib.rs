@@ -635,6 +635,8 @@ pub struct RepoSummary {
 /// The signed-in account, independent of any repository.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct Account {
+    /// Stable, never reused: the name can be recycled after a delete, the id cannot.
+    pub id: String,
     pub user: String,
     /// Runs the server: may approve and disable accounts under `/v1/admin`.
     #[serde(default)]
@@ -644,6 +646,8 @@ pub struct Account {
 /// An organization: a namespace that owns repositories.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct OrgInfo {
+    /// Stable and never reused: an organization recreated under a deleted name gets a new id.
+    pub id: String,
     pub name: String,
     pub created_at: DateTime<Utc>,
     /// The caller's standing in it (`owner` or `member`); absent when they have none.
@@ -792,6 +796,8 @@ pub struct SetOrgRoleRequest {
 /// The caller and what they may do in one repository.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct Me {
+    /// The id of `user`.
+    pub user_id: String,
     pub user: String,
     pub permissions: Vec<String>,
 }
@@ -806,6 +812,10 @@ pub enum Visibility {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct RepoInfo {
+    /// Stable, never reused and unchanged by a rename; a deleted repository's id is never issued again.
+    pub id: String,
+    /// The id of `owner`, a user or an organization.
+    pub owner_id: String,
     pub owner: String,
     pub name: String,
     pub visibility: Visibility,
@@ -1182,6 +1192,8 @@ pub struct ResendVerificationRequest {
 /// An account as an administrator sees it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct AccountInfo {
+    /// Stable, never reused.
+    pub id: String,
     pub user: String,
     pub email: Option<String>,
     pub email_verified: bool,
@@ -1355,8 +1367,10 @@ pub struct Limits {
 }
 
 /// An owner's limits. Nothing is limited unless an operator sets a limit or a server default.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct OwnerLimits {
+    /// The id of the user or organization these limits belong to.
+    pub owner_id: String,
     pub kind: OwnerKind,
     /// The limits in force: the owner's own where set, else the server default, else null (unlimited).
     pub effective: Limits,
@@ -1420,6 +1434,8 @@ pub struct Usage {
 pub struct RepoUsage {
     /// `owner/name`.
     pub repository: String,
+    /// The repository's id.
+    pub repo_id: String,
     pub stored_bytes: u64,
     /// Paths with a head revision.
     pub files: u64,
@@ -1430,6 +1446,8 @@ pub struct RepoUsage {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct OwnerUsage {
     pub owner: String,
+    /// The id of `owner`.
+    pub owner_id: String,
     pub limits: OwnerLimits,
     pub usage: Usage,
     /// Ordered by name.

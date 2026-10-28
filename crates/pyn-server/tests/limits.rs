@@ -495,3 +495,86 @@ async fn limit_changes_reach_the_server_audit_log() {
         "alice: repositories 4, members default, storage bytes default"
     );
 }
+
+#[tokio::test]
+async fn ids_are_exposed_consistently_and_never_reused() {
+    let app = server(Limits::default()).await;
+    let alice = token_for(&app, "alice").await;
+
+    let me = send(&app, &alice, "GET", "/v1/me", None)
+        .await
+        .json::<api::Account>();
+    let created = make_repo(&app, &alice, "game")
+        .await
+        .json::<api::RepoInfo>();
+    assert_eq!(created.owner_id, me.id);
+    assert!(created.id.starts_with('r'));
+
+    let repo_me = send(&app, &alice, "GET", "/v1/repos/alice/game/me", None).await;
+    assert_eq!(repo_me.json::<api::Me>().user_id, me.id);
+
+    let limits = send(&app, &alice, "GET", "/v1/owners/alice/limits", None).await;
+    assert_eq!(limits.json::<api::OwnerLimits>().owner_id, me.id);
+    let usage = send(&app, &alice, "GET", "/v1/owners/alice/usage", None)
+        .await
+        .json::<api::OwnerUsage>();
+    assert_eq!(usage.owner_id, me.id);
+    assert_eq!(usage.limits.owner_id, me.id);
+    assert_eq!(usage.repositories[0].repo_id, created.id);
+    let one = send(&app, &alice, "GET", "/v1/repos/alice/game/usage", None).await;
+    assert_eq!(one.json::<api::RepoUsage>().repo_id, created.id);
+
+    let listed = send(&app, &alice, "GET", "/v1/repos", None).await;
+    assert_eq!(listed.json::<Vec<api::RepoInfo>>()[0].id, created.id);
+
+    let renamed = send(
+        &app,
+        &alice,
+        "PATCH",
+        "/v1/repos/alice/game",
+        Some(json!({"name": "game2"})),
+    )
+    .await
+    .json::<api::RepoInfo>();
+    assert_eq!(
+        (renamed.id.as_str(), renamed.name.as_str()),
+        (created.id.as_str(), "game2")
+    );
+    let gone = send(&app, &alice, "DELETE", "/v1/repos/alice/game2", None).await;
+    assert_eq!(gone.status, StatusCode::NO_CONTENT);
+    let again = make_repo(&app, &alice, "game2")
+        .await
+        .json::<api::RepoInfo>();
+    assert_ne!(again.id, created.id);
+
+    let org = send(
+        &app,
+        &alice,
+        "POST",
+        "/v1/orgs",
+        Some(json!({"name": "acme"})),
+    )
+    .await
+    .json::<api::OrgInfo>();
+    assert!(org.id.starts_with('o'));
+    let org_limits = send(&app, "root", "GET", "/v1/owners/acme/limits", None).await;
+    assert_eq!(org_limits.json::<api::OwnerLimits>().owner_id, org.id);
+    let listing = send(&app, "root", "GET", "/v1/admin/users", None).await;
+    let accounts = listing.json::<Vec<api::AccountInfo>>();
+    assert_eq!(
+        accounts.iter().find(|a| a.user == "alice").unwrap().id,
+        me.id
+    );
+    let gone = send(&app, &alice, "DELETE", "/v1/orgs/acme", None).await;
+    assert_eq!(gone.status, StatusCode::NO_CONTENT);
+    let org2 = send(
+        &app,
+        &alice,
+        "POST",
+        "/v1/orgs",
+        Some(json!({"name": "acme"})),
+    )
+    .await
+    .json::<api::OrgInfo>();
+    assert_ne!(org2.id, org.id);
+}

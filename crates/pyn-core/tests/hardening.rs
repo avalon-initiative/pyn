@@ -86,6 +86,7 @@ fn service(objects: Arc<dyn ObjectStore>) -> Arc<RepoService> {
         Arc::new(MemoryAuditStore::new()),
         pyn_core::RepoServiceContext {
             owner: pyn_core::UserId::new("owner"),
+            owner_id: pyn_core::AccountId::new("uowner"),
             clock,
             limit_events: Arc::new(pyn_core::MemoryLimitEvents::new()),
         },
@@ -141,6 +142,7 @@ async fn text_merges_wait_for_a_free_slot() {
             Arc::new(MemoryAuditStore::new()),
             pyn_core::RepoServiceContext {
                 owner: pyn_core::UserId::new("owner"),
+                owner_id: pyn_core::AccountId::new("uowner"),
                 clock,
                 limit_events: Arc::new(pyn_core::MemoryLimitEvents::new()),
             },

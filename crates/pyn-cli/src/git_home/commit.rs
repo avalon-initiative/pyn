@@ -600,6 +600,7 @@ pub fn commit(git: &GitHome, opts: &CommitOptions) -> Result<()> {
     }
     .context("HEAD moved while committing; run the command again")?;
     clear_merge_state(git);
+    super::merge_options::apply_held_autostash(git);
     let root = if rooted { " (root-commit)" } else { "" };
     let changed = git
         .repo

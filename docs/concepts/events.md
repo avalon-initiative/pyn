@@ -78,13 +78,32 @@ changed in meaning). Adding a type or a field does not change it. An event carri
 Payloads name accounts, organizations and repositories by the names the API already shows, and never carry secrets,
 password data, tokens or email addresses.
 
+## Stable ids
+
+Names are addresses: a repository can be renamed, and a deleted organization's name can be taken again by someone else.
+A receiver that keeps its own data about a tenant must therefore key it by id, never by name. Every payload that names a
+user, organization or repository also carries its id, in a field named after the name field with `_id` added
+(`user`/`user_id`, `owner`/`owner_id`, `org_id`, `repo_id`).
+
+- A repository id is `r` and 24 lowercase hex digits (96 random bits); a user id is `u` and an organization id is `o`, each
+  followed by 24 hex digits. The id of a repository created before ids were exposed is the one it already had, so one
+  legacy repository may carry the id `default`. Treat ids as opaque strings.
+- The server generates an id when the thing is created and stores it. It is never derived from the name, never changes (a
+  rename keeps it), and is never issued again after a delete, so an organization or repository recreated under a deleted name has a new
+  id. `repository.renamed` carries the unchanged `repo_id` so a consumer re-keys by name only; `repository.deleted` and
+  `organization.deleted` carry the id of what is gone, so a consumer can drop its data.
+- The same ids appear in the API: `id` on `RepoInfo`, `OrgInfo`, `AccountInfo` and `GET /v1/me`, `owner_id` on `RepoInfo`,
+  the limits routes and the usage routes, `repo_id` on repository usage, and `user_id` on the repository `me` route.
+- Actors (`actor`) and lock holders (`holder`) are still named only by name: an actor can be a service credential, which
+  has no account.
+
 ## Events
 
 ### `account.created`
 
 A new account exists: sign-up, first sign-in with an external provider, or an administrator creating it.
 
-`data`: `user`; `pending_approval` is true when an administrator must approve it before it can sign in. No email or credential is ever included.
+`data`: `user`, `user_id`; `pending_approval` is true when an administrator must approve it before it can sign in. No email or credential is ever included.
 
 ```json
 {
@@ -95,6 +114,7 @@ A new account exists: sign-up, first sign-in with an external provider, or an ad
   "version": 1,
   "data": {
     "user": "alice",
+    "user_id": "u3f9c1a7e5b2d4086a1c7e902",
     "pending_approval": true
   }
 }
@@ -104,7 +124,7 @@ A new account exists: sign-up, first sign-in with an external provider, or an ad
 
 An administrator approved an account that was waiting.
 
-`data`: `user`; `actor`, the administrator or service credential.
+`data`: `user`, `user_id`; `actor`, the administrator or service credential.
 
 ```json
 {
@@ -115,6 +135,7 @@ An administrator approved an account that was waiting.
   "version": 1,
   "data": {
     "user": "alice",
+    "user_id": "u3f9c1a7e5b2d4086a1c7e902",
     "actor": "root"
   }
 }
@@ -124,7 +145,7 @@ An administrator approved an account that was waiting.
 
 An administrator disabled an account.
 
-`data`: `user`, `actor`, and `reason` (null when none was given).
+`data`: `user`, `user_id`, `actor`, and `reason` (null when none was given).
 
 ```json
 {
@@ -135,6 +156,7 @@ An administrator disabled an account.
   "version": 1,
   "data": {
     "user": "alice",
+    "user_id": "u3f9c1a7e5b2d4086a1c7e902",
     "actor": "root",
     "reason": "spam"
   }
@@ -145,7 +167,7 @@ An administrator disabled an account.
 
 An administrator lifted a disable.
 
-`data`: `user`, `actor`.
+`data`: `user`, `user_id`, `actor`.
 
 ```json
 {
@@ -156,6 +178,7 @@ An administrator lifted a disable.
   "version": 1,
   "data": {
     "user": "alice",
+    "user_id": "u3f9c1a7e5b2d4086a1c7e902",
     "actor": "root"
   }
 }
@@ -165,7 +188,7 @@ An administrator lifted a disable.
 
 An organization was created, by a user or on behalf of one by an administrator or service credential.
 
-`data`: `name`; `owner`, its first owner; `actor`, who made the request.
+`data`: `name`, `org_id`; `owner`, its first owner, and `owner_id`; `actor`, who made the request.
 
 ```json
 {
@@ -176,7 +199,9 @@ An organization was created, by a user or on behalf of one by an administrator o
   "version": 1,
   "data": {
     "name": "studio",
+    "org_id": "o7d2e41b90c3a58f6e1d4b7a3",
     "owner": "alice",
+    "owner_id": "u3f9c1a7e5b2d4086a1c7e902",
     "actor": "root"
   }
 }
@@ -186,7 +211,7 @@ An organization was created, by a user or on behalf of one by an administrator o
 
 An empty organization was deleted.
 
-`data`: `name`, `actor`.
+`data`: `name`, `org_id` (never issued again), `actor`.
 
 ```json
 {
@@ -197,6 +222,7 @@ An empty organization was deleted.
   "version": 1,
   "data": {
     "name": "studio",
+    "org_id": "o7d2e41b90c3a58f6e1d4b7a3",
     "actor": "alice"
   }
 }
@@ -206,7 +232,7 @@ An empty organization was deleted.
 
 A repository was created.
 
-`data`: `owner`, `name`, `visibility` (`public` or `private`), `actor`.
+`data`: `repo_id`, `owner`, `owner_id`, `name`, `visibility` (`public` or `private`), `actor`.
 
 ```json
 {
@@ -216,7 +242,9 @@ A repository was created.
   "server": "https://pyn.example.com",
   "version": 1,
   "data": {
+    "repo_id": "r5e8a0c3f1b7d92460a4c8e15",
     "owner": "studio",
+    "owner_id": "o7d2e41b90c3a58f6e1d4b7a3",
     "name": "game",
     "visibility": "private",
     "actor": "alice"
@@ -228,7 +256,7 @@ A repository was created.
 
 A repository's name changed (the owner never does). Raised only for a name change, not for other setting changes.
 
-`data`: `owner`, the new `name`, `previous_name`, `actor`.
+`data`: `repo_id` (unchanged), `owner`, `owner_id`, the new `name`, `previous_name`, `actor`.
 
 ```json
 {
@@ -238,7 +266,9 @@ A repository's name changed (the owner never does). Raised only for a name chang
   "server": "https://pyn.example.com",
   "version": 1,
   "data": {
+    "repo_id": "r5e8a0c3f1b7d92460a4c8e15",
     "owner": "studio",
+    "owner_id": "o7d2e41b90c3a58f6e1d4b7a3",
     "name": "game-2",
     "previous_name": "game",
     "actor": "alice"
@@ -250,7 +280,7 @@ A repository's name changed (the owner never does). Raised only for a name chang
 
 A repository was deleted.
 
-`data`: `owner`, `name`, `actor`.
+`data`: `repo_id` (never issued again), `owner`, `owner_id`, `name`, `actor`.
 
 ```json
 {
@@ -260,7 +290,9 @@ A repository was deleted.
   "server": "https://pyn.example.com",
   "version": 1,
   "data": {
+    "repo_id": "r5e8a0c3f1b7d92460a4c8e15",
     "owner": "studio",
+    "owner_id": "o7d2e41b90c3a58f6e1d4b7a3",
     "name": "game-2",
     "actor": "alice"
   }
@@ -271,7 +303,7 @@ A repository was deleted.
 
 An administrator or service credential set an owner's own [limits](limits.md).
 
-`data`: `owner`, `kind` (`user` or `org`), `limits` (the owner's own values after the change; null means the server default applies), `actor`.
+`data`: `owner`, `owner_id`, `kind` (`user` or `org`), `limits` (the owner's own values after the change; null means the server default applies), `actor`.
 
 ```json
 {
@@ -282,6 +314,7 @@ An administrator or service credential set an owner's own [limits](limits.md).
   "version": 1,
   "data": {
     "owner": "studio",
+    "owner_id": "o7d2e41b90c3a58f6e1d4b7a3",
     "kind": "org",
     "limits": {
       "repositories": 10,
@@ -305,7 +338,7 @@ repository's lock cap, not an owner limit, and the admission hour is shared acro
 When the store uses the caller's clock, a replica running behind is suppressed until it catches up to the admission window;
 a replica running ahead can push `last_event_at` into the future. Postgres uses the database clock by default.
 
-`data`: `owner`, `limit` (`repositories`, `members`, `storage_bytes` or `locks`), `value` (the limit in force; for locks, the repository's lock cap). It names no actor: the refused caller is not part of the event.
+`data`: `owner`, `owner_id`, `limit` (`repositories`, `members`, `storage_bytes` or `locks`), `value` (the limit in force; for locks, the repository's lock cap). It names no actor: the refused caller is not part of the event.
 
 ```json
 {
@@ -316,6 +349,7 @@ a replica running ahead can push `last_event_at` into the future. Postgres uses 
   "version": 1,
   "data": {
     "owner": "studio",
+    "owner_id": "o7d2e41b90c3a58f6e1d4b7a3",
     "limit": "repositories",
     "value": 10
   }
@@ -324,7 +358,7 @@ a replica running ahead can push `last_event_at` into the future. Postgres uses 
 
 ### Lock events
 
-Raised in the same transaction as the lock change, so a refused change (a held path, the lock limit, a release by a non-holder) raises nothing. Every lock event names the repository by `owner` and `repo` (its name) and the locked `path`. A renewal (checking out again while holding a live lock) raises no event.
+Raised in the same transaction as the lock change, so a refused change (a held path, the lock limit, a release by a non-holder) raises nothing. Every lock event names the repository by `owner` and `repo` (its name), with `owner_id` and `repo_id`, and the locked `path`. A renewal (checking out again while holding a live lock) raises no event.
 
 Expiry is observed lazily: pyn has no background reaper, and a lease that runs out just stops counting as a lock. `lock.expired` is raised when the lapsed lease is replaced, by the next checkout of that path (by anyone, the former holder included), immediately before that checkout's `lock.acquired`. A lease nobody takes again never raises it. A check-in or push that consumes the holder's lock (the lock is released with the path's revision, in the same transaction) raises `lock.released` with `reason` `checkin`. A policy change that makes a path shared releases the live locks on it as `lock.forced`, not `lock.released`. Deleting a repository raises no lock events: `repository.deleted` covers the locks it removes.
 
@@ -332,7 +366,7 @@ Expiry is observed lazily: pyn has no background reaper, and a lease that runs o
 
 A path was locked, including by taking over a lapsed lease.
 
-`data`: `owner`, `repo`, `path`, `holder`, `expires_at` (when the lease ends).
+`data`: `owner`, `owner_id`, `repo`, `repo_id`, `path`, `holder`, `expires_at` (when the lease ends).
 
 ```json
 {
@@ -343,7 +377,9 @@ A path was locked, including by taking over a lapsed lease.
   "version": 1,
   "data": {
     "owner": "studio",
+    "owner_id": "o7d2e41b90c3a58f6e1d4b7a3",
     "repo": "game",
+    "repo_id": "r5e8a0c3f1b7d92460a4c8e15",
     "path": "Content/Maps/Main.umap",
     "holder": "alice",
     "expires_at": "2026-03-05T05:06:07Z"
@@ -355,19 +391,19 @@ A path was locked, including by taking over a lapsed lease.
 
 The holder released the lock, or a check-in or push consumed it.
 
-`data`: `owner`, `repo`, `path`, `holder`, `reason` (`checkin` when a revision of the path consumed the lock; null for an explicit release).
+`data`: `owner`, `owner_id`, `repo`, `repo_id`, `path`, `holder`, `reason` (`checkin` when a revision of the path consumed the lock; null for an explicit release).
 
 ### `lock.expired`
 
 A lapsed lease was replaced (see above).
 
-`data`: `owner`, `repo`, `path`, `holder` (who held the lapsed lease), `expires_at` (when it ran out).
+`data`: `owner`, `owner_id`, `repo`, `repo_id`, `path`, `holder` (who held the lapsed lease), `expires_at` (when it ran out).
 
 ### `lock.forced`
 
 A live lock was removed without its holder: a forced unlock, or a policy change that made the path shared.
 
-`data`: `owner`, `repo`, `path`, `holder` (whose lock was removed), `actor` (who removed it), `reason` (the unlock reason; `now shared by policy` for a policy change).
+`data`: `owner`, `owner_id`, `repo`, `repo_id`, `path`, `holder` (whose lock was removed), `actor` (who removed it), `reason` (the unlock reason; `now shared by policy` for a policy change).
 
 ```json
 {
@@ -378,7 +414,9 @@ A live lock was removed without its holder: a forced unlock, or a policy change 
   "version": 1,
   "data": {
     "owner": "studio",
+    "owner_id": "o7d2e41b90c3a58f6e1d4b7a3",
     "repo": "game",
+    "repo_id": "r5e8a0c3f1b7d92460a4c8e15",
     "path": "Content/Maps/Main.umap",
     "holder": "alice",
     "actor": "bob",

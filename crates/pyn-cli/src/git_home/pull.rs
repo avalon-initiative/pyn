@@ -600,14 +600,10 @@ fn pull_inner(git: &GitHome, args: PullArgs) -> Result<()> {
         MergeArgs {
             source: Some(theirs.to_hex()),
             message: vec![message],
+            ff: !how.no_ff && !how.ff_only && !rebase_on,
             no_ff: how.no_ff && !rebase_on,
             ff_only: how.ff_only || rebase_on,
             no_commit: args.no_commit,
-            squash: false,
-            no_squash: false,
-            abort: false,
-            continue_merge: false,
-            preview: false,
             stat: args.stat,
             no_stat: args.no_stat,
             strategy: args.strategy,
@@ -615,9 +611,8 @@ fn pull_inner(git: &GitHome, args: PullArgs) -> Result<()> {
             edit: args.edit,
             no_edit: args.no_edit,
             generated_message: true,
-            no_verify: false,
-            verify: false,
             sign: args.sign,
+            ..Default::default()
         },
     )
 }
