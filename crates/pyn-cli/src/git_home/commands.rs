@@ -766,6 +766,37 @@ pub(super) fn add_changes(
     add_changes_with_submodules(&git.repo.submodules(), old, new, changes)
 }
 
+/// Adds the files two trees share unchanged to both sides: `-C -C` takes them as copy sources.
+pub(super) fn add_unchanged(
+    git: &GitHome,
+    (old, new): (&mut Tree, &mut Tree),
+    (old_tree, new_tree): (Option<&ObjectId>, Option<&ObjectId>),
+    spec: &Pathspec,
+) -> Result<()> {
+    let (a, b) = (
+        git.repo.flatten(old_tree, spec)?,
+        git.repo.flatten(new_tree, spec)?,
+    );
+    for (path, x) in &a {
+        let name = path_string(path);
+        if b.get(path)
+            .is_some_and(|y| x.id == y.id && x.mode == y.mode)
+            && !old.contains_key(&name)
+            && !new.contains_key(&name)
+            && let Some(blob) = entry_blob(x)
+        {
+            old.insert(name.clone(), blob.clone());
+            new.insert(name, blob);
+        }
+    }
+    Ok(())
+}
+
+/// Whether the command line asks for `-C -C`.
+pub(super) fn wants_harder(git: &GitHome, format: &diff::Format) -> bool {
+    format.renames.is_harder(git.rename_defaults())
+}
+
 fn add_changes_with_submodules(
     modules: &Submodules<'_>,
     old: &mut Tree,
@@ -934,6 +965,25 @@ fn diff(
                     new.insert(name, b);
                 }
             }
+            if wants_harder(git, format) {
+                let skipped: BTreeSet<&Vec<u8>> = index
+                    .entries
+                    .iter()
+                    .filter(|e| e.skip_worktree)
+                    .map(|e| &e.path)
+                    .collect();
+                for (path, e) in leaves.iter().filter(|(p, _)| spec.matches(p)) {
+                    let name = path_string(path);
+                    if let (false, false, Some(b)) = (
+                        skipped.contains(path) || old.contains_key(&name),
+                        new.contains_key(&name),
+                        entry_blob(e),
+                    ) {
+                        old.insert(name.clone(), b.clone());
+                        new.insert(name, b);
+                    }
+                }
+            }
         }
         [one] => {
             let tree = repo.commit(one)?.tree;
@@ -974,6 +1024,9 @@ fn diff(
                 &mut new,
                 &repo.diff_trees(Some(&ta), Some(&tb), &spec)?,
             )?;
+            if wants_harder(git, format) {
+                add_unchanged(git, (&mut old, &mut new), (Some(&ta), Some(&tb)), &spec)?;
+            }
         }
         _ => unreachable!("at most two revisions are taken"),
     }
@@ -1067,6 +1120,14 @@ fn show(
                 .repo
                 .diff_trees(old_tree.as_ref(), Some(&c.tree), &spec)?;
             add_changes(git, &mut old, &mut new, &changes)?;
+            if wants_harder(git, format) {
+                add_unchanged(
+                    git,
+                    (&mut old, &mut new),
+                    (old_tree.as_ref(), Some(&c.tree)),
+                    &spec,
+                )?;
+            }
             let mut text = String::new();
             let differs = diff::compare(git, &old, &new, &[], format, &mut text)?;
             if no_patch {

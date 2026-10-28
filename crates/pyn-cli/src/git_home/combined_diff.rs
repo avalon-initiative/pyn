@@ -8,7 +8,7 @@ use anyhow::Result;
 use pyn_gitwork::Pathspec;
 
 use super::GitHome;
-use super::commands::add_changes;
+use super::commands::{add_changes, add_unchanged};
 use crate::backend::Backend;
 use crate::diff::{self, Blob, Tree};
 use crate::rename;
@@ -33,6 +33,14 @@ pub(super) fn elements(
         let (mut old, mut new) = (Tree::new(), Tree::new());
         let changes = git.repo.diff_trees(Some(parent), Some(result_tree), spec)?;
         add_changes(git, &mut old, &mut new, &changes)?;
+        if renames.is_harder(git.rename_defaults()) {
+            add_unchanged(
+                git,
+                (&mut old, &mut new),
+                (Some(parent), Some(result_tree)),
+                spec,
+            )?;
+        }
         let mut found: BTreeMap<String, diff::Origin> =
             diff::origins(git, &old, &new, only, renames)?
                 .into_iter()

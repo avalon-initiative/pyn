@@ -403,6 +403,10 @@ impl GitHome {
 }
 
 impl Backend for GitHome {
+    fn whole_trees(&self) -> bool {
+        true
+    }
+
     fn rename_defaults(&self) -> crate::rename::Defaults {
         self.rename_settings("diff")
     }

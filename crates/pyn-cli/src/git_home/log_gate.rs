@@ -7,8 +7,10 @@ use pyn_object::ObjectId;
 use regex::Regex;
 
 use super::GitHome;
-use super::commands::add_changes;
+use super::commands::{add_changes, add_unchanged};
 use crate::diff::{self, Tree};
+
+type Trees = (Option<ObjectId>, ObjectId);
 
 pub(super) enum Pickaxe {
     /// `-S`: the number of occurrences of the text differs between the two sides.
@@ -22,6 +24,7 @@ pub(super) struct Gate {
     pub pick: Option<Pickaxe>,
     pub first_parent: bool,
     pub spec: Pathspec,
+    pub renames: crate::rename::Request,
 }
 
 fn count(hay: &[u8], needle: &[u8], fold: bool) -> usize {
@@ -67,7 +70,7 @@ impl Gate {
         git: &GitHome,
         id: &ObjectId,
         spec: &Pathspec,
-    ) -> Result<Option<(Vec<Change>, bool)>> {
+    ) -> Result<Option<(Vec<Change>, Trees)>> {
         let c = git.repo.commit(id)?;
         if c.parents.len() > 1 && !self.first_parent {
             return Ok(None);
@@ -79,7 +82,7 @@ impl Gate {
         let changes = git
             .repo
             .diff_trees(parent_tree.as_ref(), Some(&c.tree), spec)?;
-        Ok(Some((changes, parent_tree.is_some())))
+        Ok(Some((changes, (parent_tree, c.tree))))
     }
 
     fn follow(&mut self, git: &GitHome, id: &ObjectId) -> Result<bool> {
@@ -87,15 +90,17 @@ impl Gate {
             return Ok(true);
         };
         let spec = Pathspec::new([path.as_bytes().to_vec()]);
-        let Some((changes, has_parent)) = self.changes(git, id, &spec)? else {
+        let Some((changes, (parent_tree, _))) = self.changes(git, id, &spec)? else {
             return Ok(false);
         };
+        let has_parent = parent_tree.is_some();
         if changes.is_empty() {
             return Ok(false);
         }
         if has_parent && changes.len() == 1 && changes[0].old.is_none() {
-            let (all, _) = self
+            let all = self
                 .changes(git, id, &Pathspec::default())?
+                .map(|(all, _)| all)
                 .unwrap_or_default();
             let (mut old, mut new) = (Tree::new(), Tree::new());
             add_changes(git, &mut old, &mut new, &all)?;
@@ -106,32 +111,31 @@ impl Gate {
         Ok(true)
     }
 
-    /// The paths a pickaxe kept, or `None` when the commit has none.
+    /// The paths a pickaxe kept after the rename detection the command line asks for, or `None` when the commit has none.
     fn picked(&self, git: &GitHome, id: &ObjectId, pick: &Pickaxe) -> Result<Option<Vec<String>>> {
-        let Some((changes, _)) = self.changes(git, id, &self.spec)? else {
+        let Some((changes, (parent, tree))) = self.changes(git, id, &self.spec)? else {
             return Ok(None);
         };
         let (mut old, mut new) = (Tree::new(), Tree::new());
         add_changes(git, &mut old, &mut new, &changes)?;
-        let moved = diff::detect_renames(git, &old, &new)?;
-        let sources: Vec<&str> = moved.values().map(|(src, _)| *src).collect();
+        if self.renames.is_harder(git.rename_settings("diff")) {
+            add_unchanged(
+                git,
+                (&mut old, &mut new),
+                (parent.as_ref(), Some(&tree)),
+                &self.spec,
+            )?;
+        }
+        let opts = diff::resolved(git, &self.renames);
+        let side = |path: &str, blob: &Option<diff::Blob>| -> Result<Vec<u8>> {
+            blob.as_ref()
+                .map_or(Ok(Vec::new()), |b| diff::blob_bytes(git, path, b))
+        };
         let mut kept = Vec::new();
-        for path in old
-            .keys()
-            .chain(new.keys())
-            .collect::<std::collections::BTreeSet<_>>()
-        {
-            let (src, dst) = match moved.get(path.as_str()) {
-                Some((src, _)) => (*src, path),
-                None if sources.contains(&path.as_str()) => continue,
-                None => (path.as_str(), path),
-            };
-            let side = |tree: &Tree, name: &str| -> Result<Vec<u8>> {
-                tree.get(name)
-                    .map_or(Ok(Vec::new()), |b| diff::blob_bytes(git, name, b))
-            };
-            if pick.differs(&side(&old, src)?, &side(&new, dst)?) {
-                kept.push(dst.clone());
+        for p in diff::pairs(git, &old, &new, &[], opts.as_ref())? {
+            let (before, after) = (side(&p.old_path, &p.old)?, side(&p.new_path, &p.new)?);
+            if pick.differs(&before, &after) {
+                kept.push(p.new_path);
             }
         }
         Ok((!kept.is_empty()).then_some(kept))

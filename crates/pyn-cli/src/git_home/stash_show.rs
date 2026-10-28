@@ -5,7 +5,7 @@ use clap::Args;
 use pyn_gitwork::Pathspec;
 
 use super::GitHome;
-use super::commands::{add_changes, emit};
+use super::commands::{add_changes, add_unchanged, emit, wants_harder};
 use super::stash::{commit_tree, locate};
 use crate::diff::{self, Tree};
 
@@ -42,6 +42,14 @@ pub(super) fn show(git: &GitHome, args: ShowArgs) -> Result<()> {
         let base = commit_tree(git, &stash.parents[0])?;
         let changes = git.repo.diff_trees(Some(&base), Some(&stash.tree), &all)?;
         add_changes(git, &mut old, &mut new, &changes)?;
+        if wants_harder(git, &args.format.build()) {
+            add_unchanged(
+                git,
+                (&mut old, &mut new),
+                (Some(&base), Some(&stash.tree)),
+                &all,
+            )?;
+        }
     }
     if untracked && let Some(u) = stash.parents.get(2) {
         let tree = commit_tree(git, u)?;

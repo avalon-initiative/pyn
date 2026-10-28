@@ -479,26 +479,8 @@ pub fn renamed_from(
     Ok(found.moved.get(target).map(|m| m.src.clone()))
 }
 
-/// Renames git detects between `old` and `new`, as `dst -> (src, percent)`.
-pub fn detect_renames<'a>(
-    backend: &dyn Backend,
-    old: &'a Tree,
-    new: &'a Tree,
-) -> Result<BTreeMap<&'a str, (&'a str, u64)>> {
-    let found = rename::detect(backend, old, new, &rename::Options::renames())?;
-    Ok(found
-        .moved
-        .iter()
-        .filter_map(|(dst, m)| {
-            let (dst, _) = new.get_key_value(dst)?;
-            let (src, _) = old.get_key_value(&m.src)?;
-            Some((dst.as_str(), (src.as_str(), m.percent())))
-        })
-        .collect())
-}
-
 /// The changed pairs of `old` against `new` limited to `only`, with the renames and copies `opts` finds folded in.
-fn pairs(
+pub(crate) fn pairs(
     backend: &dyn Backend,
     old: &Tree,
     new: &Tree,
@@ -555,6 +537,22 @@ fn pairs(
     Ok(out)
 }
 
+/// The detection `request` asks for; `-C -C` is refused where callers pass only the changed paths.
+pub(crate) fn resolved(
+    backend: &dyn Backend,
+    request: &rename::Request,
+) -> Option<rename::Options> {
+    let opts = request
+        .resolve(backend.rename_defaults())
+        .unwrap_or_else(|message| crate::usage_error(&message));
+    if opts.as_ref().is_some_and(|o| o.harder) && !backend.whole_trees() {
+        crate::usage_error(
+            "`-C -C` (copies from unmodified files) is not built for this repository",
+        );
+    }
+    opts
+}
+
 /// A path of `new` that differs from `old`: the blob it came from (following a rename), the blob it is, and git's status letter.
 pub struct Origin {
     pub path: String,
@@ -571,9 +569,7 @@ pub fn origins(
     only: &[String],
     renames: rename::Request,
 ) -> Result<Vec<Origin>> {
-    let opts = renames
-        .resolve(backend.rename_defaults())
-        .unwrap_or_else(|message| crate::usage_error(&message));
+    let opts = resolved(backend, &renames);
     let class = |b: &Blob| match b.mode {
         FileMode::Symlink => 1,
         FileMode::Gitlink => 2,
@@ -733,10 +729,7 @@ pub fn compare(
     format: &Format,
     out: &mut String,
 ) -> Result<bool> {
-    let opts = format
-        .renames
-        .resolve(backend.rename_defaults())
-        .unwrap_or_else(|message| crate::usage_error(&message));
+    let opts = resolved(backend, &format.renames);
     let (old, new) = if format.opts.reverse {
         (new, old)
     } else {

@@ -10,7 +10,7 @@ use pyn_object::{Commit, ObjectId};
 use regex::Regex;
 
 use super::GitHome;
-use super::commands::{add_changes, emit, head_or_refuse, message_lines};
+use super::commands::{add_changes, add_unchanged, emit, head_or_refuse, message_lines};
 use super::decorate::{DecorateArgs, with_decoration};
 use super::log_gate::{Gate, Pickaxe};
 use super::log_graph::{Graph, topo_order};
@@ -578,6 +578,7 @@ impl GitLogArgs {
             pick,
             first_parent: self.first_parent,
             spec: spec.clone(),
+            renames: self.renames.request(),
         }))
     }
 }
@@ -856,6 +857,10 @@ impl Printer<'_> {
                     .repo
                     .diff_trees(parent_tree.as_ref(), Some(&c.tree), spec)?;
                 add_changes(git, &mut old, &mut new, &changes)?;
+                if parts.renames.is_harder(git.rename_settings("diff")) {
+                    let trees = (parent_tree.as_ref(), Some(&c.tree));
+                    add_unchanged(git, (&mut old, &mut new), trees, spec)?;
+                }
                 Ok(diff::sections(git, &old, &new, (&[], &only), parts)?
                     .map(|(text, dashes)| Body { text, dashes }))
             };

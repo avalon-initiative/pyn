@@ -26,6 +26,8 @@ pub struct Options {
     pub score: u64,
     /// `diff.renameLimit`; 0 or less means unlimited.
     pub limit: i64,
+    /// `-C -C`: unmodified files are copy sources too, so callers pass whole trees.
+    pub harder: bool,
 }
 
 impl Options {
@@ -34,6 +36,7 @@ impl Options {
             mode: Mode::Renames,
             score: DEFAULT_SCORE,
             limit: DEFAULT_LIMIT as i64,
+            harder: false,
         }
     }
 }
@@ -68,16 +71,24 @@ pub struct Request {
     pub choice: Choice,
     pub score: Option<u64>,
     pub limit: Option<i64>,
+    /// `--find-copies-harder`, or a second `-C`.
+    pub harder: bool,
+    /// A `-C` given while `diff.renames` alone decided the mode: `-C -C` if that was `copies`.
+    over_config: bool,
 }
 
 impl Request {
-    /// The options in force; `-C` over `diff.renames=copies` is git's `-C -C`, which is not built.
+    /// Whether unmodified files are copy sources too.
+    pub fn is_harder(&self, defaults: Defaults) -> bool {
+        self.harder || (self.over_config && defaults.mode == Some(Mode::Copies))
+    }
+
+    /// The options in force; git reads `--find-copies-harder` as copy detection whatever else is given.
     pub fn resolve(&self, defaults: Defaults) -> Result<Option<Options>, String> {
+        let harder = self.is_harder(defaults);
         let mode = match self.choice {
+            _ if harder => Mode::Copies,
             Choice::Off => return Ok(None),
-            Choice::On(Mode::Copies) if defaults.mode == Some(Mode::Copies) => {
-                return Err("`-C` with `diff.renames=copies` finds copies from unmodified files, which is not built".into());
-            }
             Choice::On(m) => m,
             Choice::Config => match defaults.mode {
                 Some(m) => m,
@@ -88,6 +99,7 @@ impl Request {
             mode,
             score: self.score.unwrap_or(DEFAULT_SCORE),
             limit: self.limit.unwrap_or(defaults.limit),
+            harder,
         }))
     }
 
@@ -108,7 +120,8 @@ impl Request {
             } else if arg == "--find-copies" {
                 ('C', None)
             } else if arg == "--find-copies-harder" {
-                return Err("`--find-copies-harder` is not built".into());
+                r.harder = true;
+                continue;
             } else if arg == "--no-renames" {
                 r.choice = Choice::Off;
                 continue;
@@ -140,8 +153,12 @@ impl Request {
                 })?),
                 None => None,
             };
-            if kind == 'C' && r.choice == Choice::On(Mode::Copies) {
-                return Err("`-C -C` (finding copies from unmodified files) is not built".into());
+            if kind == 'C' {
+                match r.choice {
+                    Choice::On(Mode::Copies) => r.harder = true,
+                    Choice::Config => r.over_config = true,
+                    _ => {}
+                }
             }
             r.choice = Choice::On(if kind == 'M' {
                 Mode::Renames
@@ -205,17 +222,20 @@ impl std::str::FromStr for Checked {
 #[derive(clap::Args, Debug, Default)]
 pub struct Flags {
     /// Detect renames, optionally with a similarity threshold (`-M90%`); on by default in a git repository.
-    #[arg(short = 'M', long = "find-renames", value_name = "N", num_args = 0..=1, require_equals = true, default_missing_value = "")]
-    find_renames: Option<Checked>,
+    #[arg(short = 'M', long = "find-renames", value_name = "N", num_args = 0..=1, require_equals = true, default_missing_value = "", action = clap::ArgAction::Append)]
+    find_renames: Vec<Checked>,
     /// Detect copies as well as renames, optionally with a threshold.
-    #[arg(short = 'C', long = "find-copies", value_name = "N", num_args = 0..=1, require_equals = true, default_missing_value = "")]
-    find_copies: Option<Checked>,
+    #[arg(short = 'C', long = "find-copies", value_name = "N", num_args = 0..=1, require_equals = true, default_missing_value = "", action = clap::ArgAction::Append)]
+    find_copies: Vec<Checked>,
     /// Turn rename detection off.
-    #[arg(long = "no-renames")]
-    no_renames: bool,
+    #[arg(long = "no-renames", action = clap::ArgAction::Count)]
+    no_renames: u8,
+    /// Also take unmodified files as copy sources (`-C -C`).
+    #[arg(long = "find-copies-harder", action = clap::ArgAction::Count)]
+    find_copies_harder: u8,
     /// Give up exhaustive rename detection beyond this many files on a side (`diff.renameLimit`).
-    #[arg(short = 'l', value_name = "N")]
-    rename_limit: Option<Checked>,
+    #[arg(short = 'l', value_name = "N", action = clap::ArgAction::Append)]
+    rename_limit: Vec<Checked>,
 }
 
 impl Flags {
@@ -290,6 +310,7 @@ struct Src<'a> {
     blob: &'a Blob,
     used: u32,
     deleted: bool,
+    unmodified: bool,
 }
 
 struct Dst<'a> {
@@ -511,17 +532,19 @@ pub fn detect(backend: &dyn Backend, old: &Tree, new: &Tree, opts: &Options) -> 
                 blob,
                 used: 0,
                 deleted: true,
+                unmodified: false,
             }),
             (Some(a), Some(b))
                 if copies
                     && a.is_gitlink() == b.is_gitlink()
-                    && !(a.hash == b.hash && a.mode == b.mode) =>
+                    && (opts.harder || !(a.hash == b.hash && a.mode == b.mode)) =>
             {
                 srcs.push(Src {
                     path,
                     blob: a,
                     used: 1,
                     deleted: false,
+                    unmodified: a.hash == b.hash && a.mode == b.mode,
                 });
             }
             _ => {}
@@ -612,8 +635,14 @@ fn pair(backend: &dyn Backend, srcs: &mut [Src], dsts: &mut [Dst], opts: &Option
         live.retain(|&i| srcs[i].used == 0);
     }
     let remaining = dsts.iter().filter(|d| d.from.is_none()).count();
-    if remaining == 0 || live.is_empty() || too_many(remaining, live.len(), opts.limit) {
+    if remaining == 0 || live.is_empty() {
         return Ok(());
+    }
+    let modified = live.iter().filter(|&&i| !srcs[i].unmodified).count();
+    match too_many(remaining, (live.len(), modified), opts) {
+        Crowd::Fine => {}
+        Crowd::Refused => return Ok(()),
+        Crowd::Degraded => live.retain(|&i| !srcs[i].unmodified),
     }
     let mut matrix: Vec<Score> = Vec::new();
     for (d, dst) in dsts.iter().enumerate().filter(|(_, d)| d.from.is_none()) {
@@ -662,23 +691,40 @@ fn pair(backend: &dyn Backend, srcs: &mut [Src], dsts: &mut [Dst], opts: &Option
     Ok(())
 }
 
-fn too_many(dsts: usize, srcs: usize, limit: i64) -> bool {
-    if limit <= 0 {
-        return false;
+enum Crowd {
+    Fine,
+    Refused,
+    /// Too many with the unmodified files as sources, not without them.
+    Degraded,
+}
+
+fn too_many(dsts: usize, (srcs, modified): (usize, usize), opts: &Options) -> Crowd {
+    if opts.limit <= 0 {
+        return Crowd::Fine;
     }
-    let limit = limit as u128;
-    if (dsts as u128) * (srcs as u128) <= limit * limit {
-        return false;
+    let limit = opts.limit as u128;
+    let fits = |n: usize| (dsts as u128) * (n as u128) <= limit * limit;
+    if fits(srcs) {
+        return Crowd::Fine;
     }
+    let degraded = opts.harder && fits(modified);
     static WARNED: std::sync::Once = std::sync::Once::new();
     WARNED.call_once(|| {
-        eprintln!("warning: exhaustive rename detection was skipped due to too many files.");
+        if degraded {
+            eprintln!("warning: only found copies from modified paths due to too many files.");
+        } else {
+            eprintln!("warning: exhaustive rename detection was skipped due to too many files.");
+        }
         eprintln!(
             "warning: you may want to set your diff.renameLimit variable to at least {} and retry the command.",
             srcs.max(dsts)
         );
     });
-    true
+    if degraded {
+        Crowd::Degraded
+    } else {
+        Crowd::Refused
+    }
 }
 
 #[cfg(test)]
@@ -710,6 +756,28 @@ mod tests {
         let r = request(&["diff", "--no-renames", "-C75%"]);
         assert_eq!(r.choice, Choice::On(Mode::Copies));
         assert_eq!(r.score, Some(45_000));
-        assert!(Request::from_args(["-C".to_string(), "-C".to_string()]).is_err());
+        assert!(request(&["diff", "-C", "-C"]).harder);
+        assert!(!request(&["diff", "-C", "-M", "-C"]).harder);
+        assert!(!request(&["diff", "--no-renames", "-C"]).harder);
+        let r = request(&["diff", "--no-renames", "--find-copies-harder"]);
+        assert!(r.resolve(Defaults::default()).unwrap().unwrap().harder);
+        let copies = Defaults {
+            mode: Some(Mode::Copies),
+            ..Defaults::default()
+        };
+        assert!(
+            request(&["diff", "-C"])
+                .resolve(copies)
+                .unwrap()
+                .unwrap()
+                .harder
+        );
+        assert!(
+            !request(&["diff", "-M", "-C"])
+                .resolve(copies)
+                .unwrap()
+                .unwrap()
+                .harder
+        );
     }
 }

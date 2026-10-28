@@ -352,6 +352,10 @@ impl Shape<'_> {
                 .repo
                 .diff_trees(Some(&trees[0]), Some(&c.tree), self.spec)?;
             super::commands::add_changes(git, &mut old, &mut new, &changes)?;
+            if want.renames.is_harder(git.rename_settings("diff")) {
+                let both = (Some(&trees[0]), Some(&c.tree));
+                super::commands::add_unchanged(git, (&mut old, &mut new), both, self.spec)?;
+            }
             let format = Format {
                 context: want.context,
                 kind,
