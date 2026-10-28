@@ -111,7 +111,26 @@ fn describe(git: &GitHome, spec: &str) -> String {
             return format!("{what} '{spec}'");
         }
     }
-    format!("commit '{spec}'")
+    match early_part(spec) {
+        Some(branch) if exists(&format!("refs/heads/{branch}")) => {
+            let same = git.repo.resolve(spec).ok() == git.repo.resolve(branch).ok();
+            format!(
+                "branch '{branch}'{}",
+                if same { "" } else { " (early part)" }
+            )
+        }
+        _ => format!("commit '{spec}'"),
+    }
+}
+
+/// `side` of `side^^` or `side~3`.
+fn early_part(spec: &str) -> Option<&str> {
+    let carets = spec.len() - spec.trim_end_matches('^').len();
+    if carets > 0 {
+        return Some(&spec[..spec.len() - carets]);
+    }
+    let (head, n) = spec.rsplit_once('~')?;
+    n.bytes().all(|b| b.is_ascii_digit()).then_some(head)
 }
 
 /// The message of the annotated tag a merge names, which git appends to the merge message.
@@ -711,6 +730,9 @@ impl Finish<'_> {
         let cleanup = options::cleanup_mode(args);
         if args.edit && cleanup == Cleanup::Strip {
             write_state(git, "MERGE_MSG", &format!("{message}{EDITOR_COMMENT}"))?;
+        } else if args.edit && cleanup == Cleanup::Scissors {
+            let cut = format!("{}\n{}", options::CUT_LINE, options::CUT_NOTE);
+            write_state(git, "MERGE_MSG", &format!("{message}\n{cut}"))?;
         }
         if git.vetoed(
             "prepare-commit-msg",
@@ -775,8 +797,15 @@ impl Finish<'_> {
         let limit = options::log_limit(git, args);
         if limit > 0 {
             let label = match self.what {
+                _ if args.log_label.is_some() => args.log_label.clone().unwrap_or_default(),
+                w if w.ends_with("(early part)") => w.trim_start_matches("branch ").to_string(),
                 w if w.starts_with("branch '") || w.starts_with("remote-tracking branch '") => {
-                    self.spec.to_string()
+                    let named = w.split('\'').nth(1).unwrap_or(self.spec);
+                    if self.spec.starts_with("refs/") {
+                        self.spec.to_string()
+                    } else {
+                        named.to_string()
+                    }
                 }
                 w => w.to_string(),
             };
