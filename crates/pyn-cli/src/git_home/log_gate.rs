@@ -25,6 +25,8 @@ pub(super) struct Gate {
     pub first_parent: bool,
     pub spec: Pathspec,
     pub renames: crate::rename::Request,
+    /// The followed path of the commit last kept, and the path it was renamed from.
+    pub step: Option<(String, Option<String>)>,
 }
 
 fn count(hay: &[u8], needle: &[u8], fold: bool) -> usize {
@@ -85,6 +87,10 @@ impl Gate {
         Ok(Some((changes, (parent_tree, c.tree))))
     }
 
+    pub fn follow_request(&self) -> crate::rename::Request {
+        self.renames.forced()
+    }
+
     fn follow(&mut self, git: &GitHome, id: &ObjectId) -> Result<bool> {
         let Some(path) = self.follow.clone() else {
             return Ok(true);
@@ -94,6 +100,7 @@ impl Gate {
             return Ok(false);
         };
         let has_parent = parent_tree.is_some();
+        self.step = Some((path.clone(), None));
         if changes.is_empty() {
             return Ok(false);
         }
@@ -104,7 +111,18 @@ impl Gate {
                 .unwrap_or_default();
             let (mut old, mut new) = (Tree::new(), Tree::new());
             add_changes(git, &mut old, &mut new, &all)?;
-            if let Some(from) = diff::renamed_from(git, &old, &new, &path)? {
+            let defaults = git.rename_settings("diff");
+            let opts = crate::rename::Options {
+                score: self
+                    .renames
+                    .score
+                    .filter(|s| *s > 0)
+                    .unwrap_or(crate::rename::DEFAULT_SCORE),
+                limit: self.renames.limit.unwrap_or(defaults.limit),
+                ..crate::rename::Options::renames()
+            };
+            if let Some(from) = diff::renamed_from(git, &old, &new, &path, &opts)? {
+                self.step = Some((path, Some(from.clone())));
                 self.follow = Some(from);
             }
         }
