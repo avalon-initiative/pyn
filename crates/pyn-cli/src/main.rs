@@ -3060,19 +3060,20 @@ fn commit_sections(
     parts: &diff::DiffParts,
 ) -> Result<Option<(String, bool)>> {
     let (old, new, only) = match store.filter(|_| unpublished) {
-        Some(store) => local_view::commit_trees(store, c)?,
-        None => server_trees(backend, c)?,
+        Some(store) => local_view::commit_trees(store, c, 0)?,
+        None => server_trees(backend, c, 0)?,
     };
     diff::sections(backend, &old, &new, (&only, &[]), parts)
 }
 
-/// The trees before and after a published commit (against its first parent) and the paths it changed.
+/// The trees before and after a published commit (against its `parent`th parent) and the paths it changed.
 fn server_trees(
     backend: &dyn Backend,
     c: &api::Commit,
+    parent: usize,
 ) -> Result<(diff::Tree, diff::Tree, Vec<String>)> {
     let new = diff::tree_of_snapshot(&backend.snapshot(Some(&c.id))?.1);
-    let old = match c.parents.first() {
+    let old = match c.parents.get(parent) {
         Some(parent) => diff::tree_of_snapshot(&backend.snapshot(Some(parent))?.1),
         None => diff::Tree::new(),
     };
@@ -3133,9 +3134,20 @@ fn show_command(
         return Ok(());
     }
     let format = &opts.diff;
-    let (old, new, only) = server_trees(backend, &found)?;
     let mut body = String::new();
-    let differs = diff::compare(backend, &old, &new, &only, format, &mut body)?;
+    let mut differs = false;
+    for n in 0..found.parents.len().max(1) {
+        let (old, new, only) = server_trees(backend, &found, n)?;
+        let only = if found.parents.len() > 1 {
+            vec![]
+        } else {
+            only
+        };
+        let mut part = String::new();
+        differs |= diff::compare(backend, &old, &new, &only, format, &mut part)?;
+        diff::parent_heading(&found, n, &part, &mut body);
+        body.push_str(&part);
+    }
     let (head, blank) = opts.head(&found)?;
     print!("{head}");
     if diff::has_body(format, differs, &body) {

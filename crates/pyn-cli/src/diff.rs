@@ -780,6 +780,17 @@ pub fn has_body(format: &Format, differs: bool, body: &str) -> bool {
         || (matches!(format.kind, Kind::Check | Kind::Summary | Kind::Dirstat) && differs)
 }
 
+/// Appends the line that sets off the diff against parent `n` of a merge `c` (nothing for other commits or an empty diff).
+pub fn parent_heading(c: &api::Commit, n: usize, part: &str, out: &mut String) {
+    if c.parents.len() > 1 && !part.is_empty() {
+        out.push_str(&format!(
+            "diff against parent {} ({})\n",
+            n + 1,
+            crate::snapshot::short(&c.parents[n])
+        ));
+    }
+}
+
 /// Exits 2 after `--check` printed problems, as git does.
 pub fn exit_if_check_failed(format: &Format, out: &str) {
     if format.kind == Kind::Check && !out.is_empty() {

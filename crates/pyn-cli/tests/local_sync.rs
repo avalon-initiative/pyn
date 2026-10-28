@@ -807,6 +807,36 @@ fn a_non_fast_forward_pull_makes_a_merge_commit_and_push_sends_it() {
 }
 
 #[test]
+fn show_picks_a_parent_of_a_merge_and_diffs_against_each() {
+    let (env, ws) = seeded();
+    diverge(&env, &ws);
+    env.ok(&ws, "alice", &["pull"]);
+    let local = git(&ws, &["rev-parse", "main^1"]);
+    let theirs = git(&ws, &["rev-parse", "main^2"]);
+    let check = |env: &Env| {
+        let first = env.ok(&ws, "alice", &["show", "HEAD^1"]);
+        assert!(first.contains(local.trim()), "{first}");
+        let second = env.ok(&ws, "alice", &["show", "HEAD^2"]);
+        assert!(second.contains(theirs.trim()), "{second}");
+        let err = env.fails(&ws, "alice", &["show", "HEAD^3"]);
+        assert!(err.contains("no parent 3"), "{err}");
+        let merge = env.ok(&ws, "alice", &["show"]);
+        let (p1, p2) = (
+            merge.find("diff against parent 1 (").expect(&merge),
+            merge.find("diff against parent 2 (").expect(&merge),
+        );
+        assert!(p1 < p2, "{merge}");
+        assert!(
+            merge[p2..].contains("-bee") && merge[p2..].contains("+bee2"),
+            "{merge}"
+        );
+    };
+    check(&env);
+    env.ok(&ws, "alice", &["push"]);
+    check(&env);
+}
+
+#[test]
 fn a_pulled_merge_adopts_an_exclusive_path_only_the_server_changed() {
     let (env, ws) = seeded();
     let other = clone_with(&env, "other", &["--local-store"]);

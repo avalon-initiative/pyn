@@ -161,7 +161,7 @@ fn pick(store: &LocalStore, text: &str, tip: ObjectId, chain: &[ObjectId]) -> Re
     let Some(found) = snapshot::parse_commit(text) else {
         bail!("{text} is not a commit; use HEAD, HEAD~N, HEAD^ or a commit hash");
     };
-    let mut id = match &found.base {
+    let start = match &found.base {
         Base::Head => tip,
         Base::Hash(h) => {
             let hits: Vec<&ObjectId> = chain
@@ -174,12 +174,7 @@ fn pick(store: &LocalStore, text: &str, tip: ObjectId, chain: &[ObjectId]) -> Re
             }
         }
     };
-    for _ in 0..found.back {
-        match store.repo().commit(&id)?.parents.first() {
-            Some(p) => id = *p,
-            None => bail!("{text} is before the first commit"),
-        }
-    }
+    let id = found.follow(text, start, |id| Ok(store.repo().commit(id)?.parents))?;
     if !chain.contains(&id) {
         bail!(
             "{text} is older than the last published commit; only unpublished local commits can be reset"

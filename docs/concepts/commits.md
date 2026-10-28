@@ -402,8 +402,8 @@ The CLI follows git where it has an equivalent; the differences are listed below
 
 - `pyn log --commits [--limit n]` lists commits (`COMMIT`, `AUTHOR`, `WHEN`, `FILES`, `MESSAGE`); `COMMIT` is the abbreviated hash. `pyn log` keeps listing revisions.
 - A commit is written as its hash or an abbreviation of at least 4 hex digits (`pyn log --commits` shows 10), `HEAD` (the
-  head of the workspace's [branch](branches.md)), or either followed by `~N` (N commits back along the first parent) or `^` (the
-  parent; `^^` is two back). Only the first parent is followed, so `^2` names no commit. `cN` numbers no longer exist. An argument that is also the name of something in the current
+  head of the workspace's [branch](branches.md)), or either followed by `~N` (N commits back along the first parent), `^` (the
+  parent; `^^` is two back) or `^N` (the Nth parent of a merge; `^0` is the commit itself). `pyn show` on a merge prints the diff against each parent in turn, headed `diff against parent N`. `cN` numbers no longer exist. An argument that is also the name of something in the current
   directory is read as a path by `pyn diff`.
 - `pyn clone --revision <commit> <source> [dir]` creates a workspace with every file as of that commit.
 - `pyn status --revision <commit>` compares the workspace with that commit instead of the newest: `behind (<commit> has rM)` for a

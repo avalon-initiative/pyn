@@ -181,9 +181,13 @@ fn tree_of(store: &LocalStore, tree: Option<ObjectId>) -> Result<Tree> {
     Ok(out)
 }
 
-/// The trees before and after an unpublished commit (against its first parent) and the paths it changed.
-pub fn commit_trees(store: &LocalStore, commit: &api::Commit) -> Result<(Tree, Tree, Vec<String>)> {
-    let old = match commit.parents.first() {
+/// The trees before and after an unpublished commit (against its `parent`th parent) and the paths it changed against the first.
+pub fn commit_trees(
+    store: &LocalStore,
+    commit: &api::Commit,
+    parent: usize,
+) -> Result<(Tree, Tree, Vec<String>)> {
+    let old = match commit.parents.get(parent) {
         Some(p) => tree_of(
             store,
             store.tree_of(Some(crate::local_store::parse_id(p)?))?,
@@ -207,31 +211,37 @@ pub fn show(
     let Some(found) = snapshot::parse_commit(text) else {
         return Ok(false);
     };
-    let mut id = match &found.base {
+    let id = match &found.base {
         Base::Head => chain.first().copied(),
         Base::Hash(h) => chain
             .iter()
             .find(|c| c.to_hex().starts_with(h.as_str()))
             .copied(),
     };
-    let Some(mut cur) = id.take() else {
+    let Some(start) = id else {
         return Ok(false);
     };
-    for _ in 0..found.back {
-        match store.repo().commit(&cur)?.parents.first() {
-            Some(p) => cur = *p,
-            None => anyhow::bail!("{text} is before the first commit"),
-        }
-    }
+    let cur = found.follow(text, start, |id| Ok(store.repo().commit(id)?.parents))?;
     let commit = api_commit(store, &cur)?;
     if opts.no_patch {
         print!("{}", opts.head(&commit)?.0);
         return Ok(true);
     }
     let format = &opts.diff;
-    let (old, new, only) = commit_trees(store, &commit)?;
     let mut body = String::new();
-    let differs = diff::compare(backend, &old, &new, &only, format, &mut body)?;
+    let mut differs = false;
+    for n in 0..commit.parents.len().max(1) {
+        let (old, new, only) = commit_trees(store, &commit, n)?;
+        let only = if commit.parents.len() > 1 {
+            vec![]
+        } else {
+            only
+        };
+        let mut part = String::new();
+        differs |= diff::compare(backend, &old, &new, &only, format, &mut part)?;
+        diff::parent_heading(&commit, n, &part, &mut body);
+        body.push_str(&part);
+    }
     let (head, blank) = opts.head(&commit)?;
     print!("{head}");
     if diff::has_body(format, differs, &body) {
