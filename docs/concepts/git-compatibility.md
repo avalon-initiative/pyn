@@ -1081,7 +1081,7 @@ Differences from git, all deliberate or not yet done:
   filter drivers and `working-tree-encoding` are not applied.
 - Commit abbreviations are 7 digits and are not lengthened to stay unique; `log` and `show` print no color on a terminal.
 - A nested repository that the index does not track is one untracked `dir/`.
-- `merge` and `stash apply` detect no renames, write diff3 conflict markers whatever `merge.conflictStyle` says and merge only when
+- `stash apply` detects no renames, `merge` and `stash apply` write diff3 conflict markers whatever `merge.conflictStyle` says and merge only when
   there is one merge base (`merge -s ours` needs none); `stash apply` does not write `AUTO_MERGE`; `switch` and `checkout` print their own wording where git's differs (`Fast-forward` without a diffstat, the status
   after `stash pop` in pyn's table).
 
@@ -1559,8 +1559,7 @@ state folder (`rebase-merge/`, `sequencer/`) is not removed. `--hard --recurse-s
    more than sixteen deep.
 4. The trees are merged path by path: a side that changed alone wins, a path both changed is merged line by line with the
    three-way merge of `pyn-merge`, a file mode changed on one side is taken, and a binary or symlink changed on both is a
-   conflict. Renames are not detected, so a rename on one side and an edit on the other is a modify/delete conflict where git
-   would merge cleanly. A path that is a file on one side and a folder on the other is resolved as `ort` does: a file
+   conflict. Renames are followed as `ort` does (see [Renames in a merge](#renames-in-a-merge)). A path that is a file on one side and a folder on the other is resolved as `ort` does: a file
    the other side left alone or deleted gives way to the folder without a conflict; otherwise the file is moved to
    `<path>~HEAD` or `<path>~<name>` (`/` in the name becomes `_`, and `_0`, `_1`... is added while the name is taken) and
    stays unmerged at its own stage, with `CONFLICT (file/directory)` (and the modify/delete conflict when the file was
@@ -1630,15 +1629,44 @@ fast-forward or an up-to-date merge. The options of the tree strategies (`ort`, 
 | `ours`, `theirs` | A conflicting hunk of a file both sides changed takes that side's lines; the rest of the file still merges. A binary file, a link and an add/add take that side whole. Modify/delete and mode conflicts still conflict. The last of the two wins. |
 | `ignore-space-change`, `ignore-all-space`, `ignore-space-at-eol`, `ignore-cr-at-eol` | Lines that differ only in that whitespace count as equal when finding changes. A side whose only changes are such differences changed nothing, so the other side's file is the result, as in git. |
 | `subtree[=<path>]` | Shifts as `-s subtree` does; with a path, only that folder is tried, in either direction. |
-| `no-renames`, `diff-algorithm=myers\|default\|minimal`, `no-renormalize` | Accepted; pyn detects no renames and has one diff. |
+| `diff-algorithm=myers\|default\|minimal`, `no-renormalize` | Accepted; pyn has one diff. |
+| `no-renames`, `find-renames[=<n>]`, `rename-threshold=<n>` | Turn rename detection off or on, and set its similarity threshold (`50%` by default, written as for `diff -M`); see [Renames in a merge](#renames-in-a-merge). |
 | `renormalize` | Accepted when no path being merged has a conversion (line endings, `ident`, a filter or `working-tree-encoding`), since then it changes nothing; otherwise the merge is refused with nothing changed (`128`) because pyn does not renormalize the sides (#273). |
 | `patience`, `histogram`, `diff-algorithm=patience\|histogram` | Usage error (`129`): only the Myers diff is built. |
-| `find-renames[=<n>]`, `rename-threshold=<n>` | Usage error (`129`): rename detection is not built. |
 
 `pull.twohead` names the strategy when no `-s` is given (git reads it for `merge` too); several names in it are refused like several `-s`.
 Not built: several `-s` in one command, `-X` for `resolve`, `pull.octopus`, `merge.<name>.mergeoptions` and `branch.<name>.mergeOptions`.
-Because renames are never followed, the results differ from git's where one side renamed a file the other changed, with any
-strategy or option.
+#### Renames in a merge
+
+`merge` (with `ort`, `recursive` and `subtree`) finds the files each side moved since the merge base with the same detection
+as `pyn diff -M` (identical content, then at least the threshold similar; no copies), and resolves them as `ort` does:
+
+- An edit on one side follows a rename on the other: the result is at the new path, merged line by line against the old
+  path's base, with `Auto-merging` for the new path and conflict markers labelled `HEAD:<path>` and `<name>:<path>`
+  (and `<abbreviation>:<path>` for the base) when the two paths differ. A mode change follows too.
+- A rename against a delete is `CONFLICT (rename/delete)` at the new path with the base and the renaming side's version
+  unmerged (and `CONFLICT (modify/delete)` too when the renamed file was edited).
+- A file renamed to two places is `CONFLICT (rename/rename)`: the old path unmerged at its base, each new path at its own
+  side's stage, both holding the merged content. Renamed to the same place by both sides it merges there.
+- Two different files renamed to one path are an add/add conflict, and a path added where the other side renamed to (with
+  the old path untouched) is too, as without renames.
+- A file added to a folder the other side renamed (every file of the folder gone, most of them to one new folder) moves
+  with the folder. `merge.directoryRenames` is `conflict` (default: `CONFLICT (file location)`, the moved file unmerged
+  at the side that added it), `true` (`Path updated`, no conflict) or `false` (the file stays).
+
+`-X no-renames`, `-X find-renames[=<n>]`, `-X rename-threshold=<n>`, `merge.renames` (default `diff.renames`, default on),
+`merge.renameLimit` (default `diff.renameLimit`, then 7000) and `merge.directoryRenames` apply, and a criss-cross merge
+follows renames inside its virtual base. Older git releases' `ort` ignore `-X no-renames` and `merge.renames=false` (`recursive`
+honors them); pyn always honors them.
+
+Refused with nothing changed, where git has a result pyn does not reproduce: a rename onto a path the other side added
+while it also edited or deleted the source, two renames to one path with either source edited on the other side, a file
+renamed to two places whose edits conflict, a renamed link, submodule or other non-plain file edited on the other side, a
+renamed file edited with only its mode changed against a delete, a folder renamed to several places with a file added to
+it, a rename into a folder the other side renamed, an added file whose moved path is taken, a path that is not UTF-8 among the
+added or removed, and, inside a virtual base, any rename conflict or folder rename conflict.
+`rebase`, `cherry-pick`, `revert`, `am`, `stash` and remerge diffs still follow no renames (so a merge git resolves through a
+rename shows a conflict there), and refuse `-X find-renames` and `rename-threshold` with a usage error (`129`).
 
 
 #### Strategies in a replay
@@ -1653,7 +1681,7 @@ The strategy is kept in `rebase-merge/strategy` and `strategy_opts` (a rebase) a
 
 Refused with a usage error (`129`) before anything changes: strategies other than `ort` and `recursive` (`ours`, `resolve`,
 `octopus`, `subtree`; git runs them as separate programs for each pick), `-X subtree`, and the options the merge refuses
-(`patience`, `histogram`, `find-renames`, ...). A strategy git does not define is `Could not find merge strategy` (`1`), and an
+(`patience`, `histogram`, `find-renames`, `rename-threshold`, ...). A strategy git does not define is `Could not find merge strategy` (`1`), and an
 option it does not define `fatal: unknown strategy option` (`128`), both before the first commit, where git notices only when a
 merge needs them. A workspace on a pyn server refuses them. git reads no strategy setting for a replay (`rebase.*` has none, and
 `pull.twohead` is for merges), so none is read.
@@ -1682,7 +1710,7 @@ editor, and `tag -e`.
 `cherry-pick <commit>...` merges each commit's change onto the index and makes a commit with that commit's author and message,
 the committer from the identity rules of `commit`, and a tree and id that match git's (the tests compare ids). The result is
 the same as `merge` of the commit onto `HEAD` with the commit's parent as the merge base (`(empty tree)` for a root commit), so
-the merge rules above apply: no renames, `ort`-style results for everything else, diff3 markers labelled `HEAD` and
+the merge rules above apply but for renames, which are not followed, `ort`-style results for everything else, diff3 markers labelled `HEAD` and
 `<abbreviation> (<subject>)` with the base `parent of <abbreviation> (<subject>)`. A commit is anything `resolve` takes, `A..B`
 and `A...B` name ranges (applied oldest first, parents before children), and several arguments are applied in the order given.
 

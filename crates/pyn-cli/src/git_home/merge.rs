@@ -454,7 +454,10 @@ fn true_merge(
     let mut theirs_tree = tree_of(&theirs)?;
     let settings = if kind.is_tree_merge() {
         match strategy.settings() {
-            Ok(settings) => settings,
+            Ok(mut settings) => {
+                settings.resolve_renames(git);
+                settings
+            }
             Err(BadOption::Unknown(opt) | BadOption::Unsupported(opt, _)) => {
                 write_orig_head(git, &ours)?;
                 eprintln!("fatal: unknown strategy option: -X{opt}");
@@ -890,6 +893,9 @@ pub(super) fn apply_merge(
         if notes && merged.line_merged.contains(path) {
             say(&format!("Auto-merging {}", path_string(path)));
         }
+        for line in merged.updates.get(path).into_iter().flatten() {
+            println!("{line}");
+        }
         match resolved {
             Resolved::Take(Some(entry)) => {
                 if head_leaves.get(path) != Some(entry) {
@@ -904,6 +910,9 @@ pub(super) fn apply_merge(
             }
             Resolved::Conflict(c) => {
                 conflicted.push(path.clone());
+                for line in &c.notes {
+                    println!("{line}");
+                }
                 if let Some(from) = &c.moved_from {
                     let (label, side) = (
                         path_string(from),
@@ -963,7 +972,7 @@ fn report_conflict(path: &[u8], kind: Conflicting, theirs: &str, both: bool) -> 
                 "CONFLICT (modify/delete): {name} deleted in {deleted} and modified in {kept}.  Version {kept} of {name} left in tree."
             );
         }
-        Conflicting::FileDirectory => {}
+        Conflicting::FileDirectory | Conflicting::Renamed => {}
         _ => println!("CONFLICT (content): Merge conflict in {name}"),
     }
     Ok(())

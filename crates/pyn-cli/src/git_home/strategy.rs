@@ -70,6 +70,71 @@ pub(super) struct Settings {
     pub marker_extra: usize,
     /// `-X subtree[=<path>]` or `-s subtree`: the prefix, empty to find it.
     pub shift: Option<String>,
+    /// What `-X no-renames`, `find-renames[=<n>]` and `rename-threshold=<n>` asked for.
+    pub rename_opts: RenameOpts,
+    /// Rename detection in force; absent when off, and for the replays that do not follow renames.
+    pub renames: Option<Renames>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct RenameOpts {
+    pub detect: Option<bool>,
+    pub score: Option<u64>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum DirectoryRenames {
+    Off,
+    Conflict,
+    On,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Renames {
+    pub score: u64,
+    pub limit: i64,
+    pub directories: DirectoryRenames,
+}
+
+const MERGE_RENAME_LIMIT: i64 = 7000;
+
+impl Settings {
+    /// Settles rename detection from `-X`, then `merge.renames` (default `diff.renames`, default on).
+    pub(super) fn resolve_renames(&mut self, git: &GitHome) {
+        let config = git.repo.config();
+        let flag = |key: &str| match config.get(key).map(str::to_ascii_lowercase).as_deref() {
+            Some("copies" | "copy") => Some(true),
+            Some(_) => config.get_bool(key).ok().flatten(),
+            None => None,
+        };
+        let detect = self
+            .rename_opts
+            .detect
+            .or_else(|| flag("merge.renames"))
+            .or_else(|| flag("diff.renames"))
+            .unwrap_or(true);
+        let limit = ["merge.renamelimit", "diff.renamelimit"]
+            .iter()
+            .find_map(|k| config.get(k)?.parse().ok())
+            .unwrap_or(MERGE_RENAME_LIMIT);
+        let directories = match config.get("merge.directoryrenames") {
+            None => DirectoryRenames::Conflict,
+            Some(v) if v.eq_ignore_ascii_case("conflict") => DirectoryRenames::Conflict,
+            Some(_) => match config.get_bool("merge.directoryrenames") {
+                Ok(Some(true)) => DirectoryRenames::On,
+                Ok(Some(false)) => DirectoryRenames::Off,
+                _ => DirectoryRenames::Conflict,
+            },
+        };
+        self.renames = detect.then_some(Renames {
+            score: self
+                .rename_opts
+                .score
+                .unwrap_or(crate::rename::DEFAULT_SCORE),
+            limit: if limit <= 0 { 0 } else { limit },
+            directories,
+        });
+    }
 }
 
 #[derive(Debug)]
@@ -160,6 +225,10 @@ impl Replay {
             Ok(s) if s.shift.is_some() => crate::usage_error(&format!(
                 "`pyn {command} -Xsubtree`: the subtree shift is not built for a replay"
             )),
+            Ok(s) if s.rename_opts.detect == Some(true) || s.rename_opts.score.is_some() => {
+                let why = NO_RENAMES;
+                crate::usage_error(&format!("`pyn {command} -X`: {why}"))
+            }
             Ok(_) => {}
             Err(BadOption::Unknown(opt) | BadOption::Unsupported(opt, _)) => {
                 eprintln!("fatal: unknown strategy option: -X{opt}");
@@ -181,17 +250,21 @@ impl Replay {
     }
 }
 
+#[derive(Debug)]
 pub(super) enum BadOption {
     Unknown(String),
     Unsupported(String, &'static str),
 }
 
-const NO_RENAMES: &str = "rename detection is not built, so merges never follow renames";
+const NO_RENAMES: &str = "a replay does not follow renames yet";
 const NO_ALGORITHM: &str = "only the Myers diff is built";
 
-fn rename_score(arg: &str) -> bool {
+fn rename_score(arg: &str) -> Option<u64> {
     let digits = arg.strip_suffix('%').unwrap_or(arg);
-    !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit() || b == b'.')
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit() || b == b'.') {
+        return None;
+    }
+    crate::rename::parse_score(arg)
 }
 
 fn apply(s: &mut Settings, opt: &str) -> Result<(), BadOption> {
@@ -207,11 +280,11 @@ fn apply(s: &mut Settings, opt: &str) -> Result<(), BadOption> {
         "ignore-cr-at-eol" => space.cr_at_eol = true,
         "renormalize" => s.renormalize = true,
         "no-renormalize" => s.renormalize = false,
-        "no-renames" => {}
+        "no-renames" => s.rename_opts.detect = Some(false),
         "patience" | "histogram" => {
             return Err(BadOption::Unsupported(opt.to_string(), NO_ALGORITHM));
         }
-        "find-renames" => return Err(BadOption::Unsupported(opt.to_string(), NO_RENAMES)),
+        "find-renames" => s.rename_opts.detect = Some(true),
         _ => {
             if let Some(path) = opt.strip_prefix("subtree=") {
                 s.shift = Some(path.to_string());
@@ -223,14 +296,11 @@ fn apply(s: &mut Settings, opt: &str) -> Result<(), BadOption> {
                     }
                     _ => return Err(unknown()),
                 }
-            } else if let Some(score) = opt
-                .strip_prefix("find-renames=")
-                .or_else(|| opt.strip_prefix("rename-threshold="))
-            {
-                if !rename_score(score) {
-                    return Err(unknown());
-                }
-                return Err(BadOption::Unsupported(opt.to_string(), NO_RENAMES));
+            } else if let Some(score) = opt.strip_prefix("find-renames=") {
+                s.rename_opts.score = Some(rename_score(score).ok_or_else(unknown)?);
+                s.rename_opts.detect = Some(true);
+            } else if let Some(score) = opt.strip_prefix("rename-threshold=") {
+                s.rename_opts.score = Some(rename_score(score).ok_or_else(unknown)?);
             } else {
                 return Err(unknown());
             }
@@ -463,10 +533,7 @@ mod tests {
             xopts(&["patience"]).settings(),
             Err(BadOption::Unsupported(..))
         ));
-        assert!(matches!(
-            xopts(&["rename-threshold=40%"]).settings(),
-            Err(BadOption::Unsupported(..))
-        ));
+        assert!(xopts(&["rename-threshold=40%"]).settings().is_ok());
         assert!(matches!(
             xopts(&["rename-threshold=x"]).settings(),
             Err(BadOption::Unknown(_))
@@ -476,6 +543,20 @@ mod tests {
                 .settings()
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn rename_options_are_recorded_and_the_last_detection_flag_wins() {
+        let s = xopts(&["no-renames", "find-renames=70%", "rename-threshold=40%"])
+            .settings()
+            .unwrap();
+        assert_eq!(s.rename_opts.detect, Some(true));
+        assert_eq!(
+            s.rename_opts.score,
+            Some(crate::rename::MAX_SCORE * 40 / 100)
+        );
+        let s = xopts(&["find-renames", "no-renames"]).settings().unwrap();
+        assert_eq!(s.rename_opts.detect, Some(false));
     }
 
     #[test]

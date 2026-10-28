@@ -100,6 +100,7 @@ mod to_git;
 mod to_pyn;
 pub(crate) mod todo;
 mod treemerge;
+mod treerename;
 mod upstream;
 mod verify_sig;
 mod virtual_base;

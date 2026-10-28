@@ -1,6 +1,6 @@
 //! A three-way merge of whole trees: each path is taken from the side that changed it, merged line by line when both
-//! did (`pyn-merge`), or left as a conflict. Renames are not detected, so a rename on one side and an edit on the
-//! other is a conflict where git would merge cleanly. A file against a folder is moved aside as git does when asked to.
+//! did (`pyn-merge`), or left as a conflict. With renames on (`treerename`) an edit follows a rename on the other side.
+//! A file against a folder is moved aside as git does when asked to.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -33,6 +33,8 @@ pub(super) enum Conflicting {
     },
     /// A file moved aside because a folder took its path.
     FileDirectory,
+    /// A rename conflict whose report is in `Conflict::notes`.
+    Renamed,
 }
 
 pub(super) enum Worktree {
@@ -52,6 +54,8 @@ pub(super) struct Conflict {
     pub kind: Conflicting,
     /// The path a file was moved from because a folder took it.
     pub moved_from: Option<Vec<u8>>,
+    /// Report lines printed before the conflict's own.
+    pub notes: Vec<String>,
 }
 
 pub(super) enum Resolved {
@@ -64,6 +68,8 @@ pub(super) struct Merge {
     pub paths: BTreeMap<Vec<u8>, Resolved>,
     /// Paths both sides changed, which needed a line merge (`Auto-merging` lines).
     pub line_merged: BTreeSet<Vec<u8>>,
+    /// Report lines for paths that merged cleanly after a move (`Path updated`).
+    pub updates: BTreeMap<Vec<u8>, Vec<String>>,
     /// Every path is taken whole from one side, which read-tree's plain three-way merge also resolves.
     pub trivial: bool,
 }
@@ -79,17 +85,17 @@ fn mode_of(b: Option<&Entry>, o: &Entry, t: &Entry) -> Option<FileMode> {
     }
 }
 
-fn regular(mode: FileMode) -> bool {
+pub(super) fn regular(mode: FileMode) -> bool {
     matches!(mode, FileMode::Regular | FileMode::Executable)
 }
 
-struct Both<'a> {
-    path: &'a [u8],
-    labels: &'a Labels<'a>,
-    settings: &'a Settings,
+pub(super) struct Both<'a> {
+    pub path: &'a [u8],
+    pub labels: &'a Labels<'a>,
+    pub settings: &'a Settings,
 }
 
-fn both_present(
+pub(super) fn both_present(
     git: &GitHome,
     b: Option<&Entry>,
     o: &Entry,
@@ -106,6 +112,7 @@ fn both_present(
             worktree,
             kind,
             moved_from: None,
+            notes: Vec::new(),
         }))
     };
     let kind = if b.is_none() {
@@ -195,9 +202,22 @@ pub(super) fn merge_trees_with(
     let mut out = Merge {
         paths: BTreeMap::new(),
         line_merged: BTreeSet::new(),
+        updates: BTreeMap::new(),
         trivial: true,
     };
+    if let Some(cfg) = &settings.renames {
+        let plan = super::treerename::plan(git, [&b, &o, &t], labels, settings, cfg)?;
+        if !plan.paths.is_empty() {
+            out.trivial = false;
+        }
+        out.paths = plan.paths;
+        out.line_merged = plan.line_merged;
+        out.updates = plan.updates;
+    }
     for path in paths {
+        if out.paths.contains_key(path) {
+            continue;
+        }
         let (pb, po, pt) = (b.get(path), o.get(path), t.get(path));
         out.trivial &=
             (po == pt && po.is_some()) || (po == pb && pt.is_some()) || (pt == pb && po.is_some());
@@ -231,6 +251,7 @@ pub(super) fn merge_trees_with(
                         ours_deleted: false,
                     },
                     moved_from: None,
+                    notes: Vec::new(),
                 }),
                 (None, Some(t)) => Resolved::Conflict(Conflict {
                     base: pb.copied(),
@@ -242,6 +263,7 @@ pub(super) fn merge_trees_with(
                     },
                     kind: Conflicting::ModifyDelete { ours_deleted: true },
                     moved_from: None,
+                    notes: Vec::new(),
                 }),
                 (None, None) => unreachable!("equal sides were taken above"),
             }
@@ -311,7 +333,7 @@ fn refuse_file_folder_clashes(merge: &Merge) -> Result<()> {
     Ok(())
 }
 
-type Leaves = BTreeMap<Vec<u8>, Entry>;
+pub(super) type Leaves = BTreeMap<Vec<u8>, Entry>;
 
 /// Moves each file that a folder shares its path with to `<path>~<side>` (`_<n>` while taken), as `ort` does.
 fn move_files_aside(
@@ -368,6 +390,7 @@ fn move_files_aside(
             },
             kind,
             moved_from: Some(path.clone()),
+            notes: Vec::new(),
         };
         out.paths.insert(path, Resolved::Take(None));
         out.paths.insert(moved, Resolved::Conflict(conflict));
