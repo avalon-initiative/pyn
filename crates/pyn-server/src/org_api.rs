@@ -13,6 +13,7 @@ use crate::{ApiResult, AppState, identify};
 
 fn org_info(org: AccountRecord, role: Option<OrgRole>) -> api::OrgInfo {
     api::OrgInfo {
+        id: org.id.to_string(),
         name: org.user.to_string(),
         created_at: org.created_at,
         role: role.map(|r| r.to_string()),

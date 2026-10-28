@@ -34,8 +34,8 @@ use crate::rules::{Mode, PathFilter};
 use crate::store::{MetadataStore, UploadReservation};
 use crate::tree::HeadCounts;
 use crate::types::{
-    ChangesetItem, Commit, CommitFilter, Lock, Person, PushedCommit, RepoId, RepoPath, Revision,
-    RevisionId, UserId,
+    AccountId, ChangesetItem, Commit, CommitFilter, Lock, Person, PushedCommit, RepoId, RepoPath,
+    Revision, RevisionId, UserId,
 };
 use crate::webhook::{
     Delivery, DeliveryQuery, DeliveryStatus, DueDelivery, EventDraft, Jitter, MAX_ACTIVE_SECRETS,
@@ -1745,7 +1745,9 @@ impl AccessState {
 }
 
 fn plain_account(user: &UserId, now: DateTime<Utc>) -> AccountRecord {
+    let id = AccountId::generate(AccountKind::User).expect("system randomness");
     AccountRecord {
+        id,
         user: user.clone(),
         kind: AccountKind::User,
         email: None,
@@ -1867,6 +1869,7 @@ impl AccessStore for MemoryAccessStore {
     async fn create_user_with_events(
         &self,
         user: &UserId,
+        id: &AccountId,
         now: DateTime<Utc>,
         events: &[EventDraft],
     ) -> Result<bool> {
@@ -1875,7 +1878,11 @@ impl AccessStore for MemoryAccessStore {
             return Ok(false);
         }
         self.outbox.queue(events)?;
-        st.accounts.insert(user.clone(), plain_account(user, now));
+        let record = AccountRecord {
+            id: id.clone(),
+            ..plain_account(user, now)
+        };
+        st.accounts.insert(user.clone(), record);
         Ok(true)
     }
 
@@ -1886,6 +1893,7 @@ impl AccessStore for MemoryAccessStore {
     async fn create_org_with_events(
         &self,
         org: &UserId,
+        id: &AccountId,
         owner: &UserId,
         now: DateTime<Utc>,
         events: &[EventDraft],
@@ -1899,6 +1907,7 @@ impl AccessStore for MemoryAccessStore {
             .entry(owner.clone())
             .or_insert_with(|| plain_account(owner, now));
         let record = AccountRecord {
+            id: id.clone(),
             kind: AccountKind::Org,
             ..plain_account(org, now)
         };
@@ -2333,6 +2342,7 @@ impl AccessStore for MemoryAccessStore {
         self.outbox.queue(events)?;
         st.passwords.insert(new.user.clone(), new.password_hash);
         let account = AccountRecord {
+            id: new.id,
             email: new.email,
             signup: new.signup,
             ..plain_account(&new.user, new.created_at)
@@ -2576,6 +2586,7 @@ impl AccessStore for MemoryAccessStore {
         self.outbox.queue(events)?;
         let verified_at = new.email.is_some().then_some(new.identity.created_at);
         let account = AccountRecord {
+            id: new.id,
             email: new.email,
             email_verified_at: verified_at,
             ..plain_account(&new.user, new.identity.created_at)
@@ -2698,6 +2709,7 @@ impl AccessStore for MemoryAccessStore {
         self.outbox.queue(events)?;
         st.passwords.insert(admin.user.clone(), admin.password_hash);
         let account = AccountRecord {
+            id: admin.id,
             email: admin.email,
             signup: admin.signup,
             is_admin: true,

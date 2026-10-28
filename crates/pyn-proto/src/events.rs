@@ -27,6 +27,8 @@ pub enum LimitKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct AccountCreatedData {
     pub user: String,
+    /// The account's stable id.
+    pub user_id: String,
     /// True when an administrator must approve the account before it can sign in.
     pub pending_approval: bool,
 }
@@ -35,6 +37,7 @@ pub struct AccountCreatedData {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct AccountApprovedData {
     pub user: String,
+    pub user_id: String,
     /// The administrator or service credential that approved it.
     pub actor: String,
 }
@@ -43,6 +46,7 @@ pub struct AccountApprovedData {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct AccountDisabledData {
     pub user: String,
+    pub user_id: String,
     pub actor: String,
     /// The reason given when it was disabled, if any.
     #[schema(required = true)]
@@ -53,6 +57,7 @@ pub struct AccountDisabledData {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct AccountEnabledData {
     pub user: String,
+    pub user_id: String,
     pub actor: String,
 }
 
@@ -60,8 +65,11 @@ pub struct AccountEnabledData {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct OrganizationCreatedData {
     pub name: String,
+    /// The organization's stable id.
+    pub org_id: String,
     /// The organization's first owner.
     pub owner: String,
+    pub owner_id: String,
     pub actor: String,
 }
 
@@ -69,13 +77,18 @@ pub struct OrganizationCreatedData {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct OrganizationDeletedData {
     pub name: String,
+    /// The deleted organization's id, never issued again.
+    pub org_id: String,
     pub actor: String,
 }
 
 /// `repository.created`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct RepositoryCreatedData {
+    /// The repository's stable id.
+    pub repo_id: String,
     pub owner: String,
+    pub owner_id: String,
     pub name: String,
     pub visibility: crate::Visibility,
     pub actor: String,
@@ -84,7 +97,10 @@ pub struct RepositoryCreatedData {
 /// `repository.renamed`: the name changed; the owner never does.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct RepositoryRenamedData {
+    /// Unchanged by the rename: re-key on it.
+    pub repo_id: String,
     pub owner: String,
+    pub owner_id: String,
     pub name: String,
     pub previous_name: String,
     pub actor: String,
@@ -93,7 +109,10 @@ pub struct RepositoryRenamedData {
 /// `repository.deleted`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct RepositoryDeletedData {
+    /// The deleted repository's id, never issued again.
+    pub repo_id: String,
     pub owner: String,
+    pub owner_id: String,
     pub name: String,
     pub actor: String,
 }
@@ -102,6 +121,7 @@ pub struct RepositoryDeletedData {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct OwnerLimitsChangedData {
     pub owner: String,
+    pub owner_id: String,
     pub kind: OwnerKind,
     pub limits: Limits,
     pub actor: String,
@@ -111,6 +131,7 @@ pub struct OwnerLimitsChangedData {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct OwnerLimitReachedData {
     pub owner: String,
+    pub owner_id: String,
     pub limit: LimitKind,
     /// The limit in force when the operation was refused.
     pub value: u64,
@@ -120,7 +141,9 @@ pub struct OwnerLimitReachedData {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct LockAcquiredData {
     pub owner: String,
+    pub owner_id: String,
     pub repo: String,
+    pub repo_id: String,
     pub path: String,
     pub holder: String,
     pub expires_at: DateTime<Utc>,
@@ -130,7 +153,9 @@ pub struct LockAcquiredData {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct LockReleasedData {
     pub owner: String,
+    pub owner_id: String,
     pub repo: String,
+    pub repo_id: String,
     pub path: String,
     pub holder: String,
     /// `checkin` when a revision of the path consumed the lock; null for an explicit release.
@@ -142,7 +167,9 @@ pub struct LockReleasedData {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct LockExpiredData {
     pub owner: String,
+    pub owner_id: String,
     pub repo: String,
+    pub repo_id: String,
     pub path: String,
     /// Who held the lapsed lease.
     pub holder: String,
@@ -154,7 +181,9 @@ pub struct LockExpiredData {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct LockForcedData {
     pub owner: String,
+    pub owner_id: String,
     pub repo: String,
+    pub repo_id: String,
     pub path: String,
     /// Whose lock was removed.
     pub holder: String,

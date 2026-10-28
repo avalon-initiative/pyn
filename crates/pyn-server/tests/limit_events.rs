@@ -252,9 +252,11 @@ async fn members_storage_and_non_owner_locks_keep_their_errors_and_attribute_the
         assert_eq!(event.version, 1);
         assert!(!event.id.is_empty());
         assert!(ids.insert(event.id));
-        data.push(
-            serde_json::from_str::<serde_json::Value>(&item.event.payload).unwrap()["data"].clone(),
-        );
+        let mut body =
+            serde_json::from_str::<serde_json::Value>(&item.event.payload).unwrap()["data"].clone();
+        let owner_id = body.as_object_mut().unwrap().remove("owner_id").unwrap();
+        assert!(owner_id.as_str().unwrap().len() == 25);
+        data.push(body);
     }
     for (owner, limit, value) in [
         ("studio", "members", 1),
@@ -309,8 +311,19 @@ async fn assert_one_storage_event(w: &World, subscription: i64, limit: u64) {
     assert_eq!(due[0].event.event_type, "owner.limit_reached");
     let payload: serde_json::Value = serde_json::from_str(&due[0].event.payload).unwrap();
     assert_eq!(payload["type"], "owner.limit_reached");
+    let mut data = payload["data"].clone();
     assert_eq!(
-        payload["data"],
+        data.as_object_mut()
+            .unwrap()
+            .remove("owner_id")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .len(),
+        25
+    );
+    assert_eq!(
+        data,
         serde_json::json!({"owner": "alice", "limit": "storage_bytes", "value": limit})
     );
 }
@@ -823,6 +836,7 @@ async fn domain_kinds_use_the_matching_wire_kind_and_admission_key() {
         let recorder = WebhookLimitEvents::new(hooks.clone(), "https://pyn.example".into());
         let fact = LimitReached {
             owner: owner.clone(),
+            owner_id: pyn_core::AccountId::new("ualice"),
             kind: domain,
             value: 7,
         };
@@ -860,6 +874,7 @@ async fn domain_kinds_use_the_matching_wire_kind_and_admission_key() {
             event.data,
             EventData::OwnerLimitReached(OwnerLimitReachedData {
                 owner: "alice".into(),
+                owner_id: "ualice".into(),
                 limit: wire,
                 value: 7,
             })

@@ -56,6 +56,7 @@ impl LimitEvents for WebhookLimitEvents {
         let draft = self.envelope(
             EventData::OwnerLimitReached(OwnerLimitReachedData {
                 owner: fact.owner.to_string(),
+                owner_id: fact.owner_id.to_string(),
                 limit: kind,
                 value: fact.value,
             }),
@@ -71,54 +72,75 @@ impl LimitEvents for WebhookLimitEvents {
         let data = match event {
             DomainEvent::AccountCreated {
                 user,
+                user_id,
                 pending_approval,
             } => EventData::AccountCreated(AccountCreatedData {
                 user: name(user),
+                user_id: user_id.to_string(),
                 pending_approval,
             }),
-            DomainEvent::AccountApproved { user, actor } => {
-                EventData::AccountApproved(AccountApprovedData {
-                    user: name(user),
-                    actor: name(actor),
-                })
-            }
+            DomainEvent::AccountApproved {
+                user,
+                user_id,
+                actor,
+            } => EventData::AccountApproved(AccountApprovedData {
+                user: name(user),
+                user_id: user_id.to_string(),
+                actor: name(actor),
+            }),
             DomainEvent::AccountDisabled {
                 user,
+                user_id,
                 actor,
                 reason,
             } => EventData::AccountDisabled(AccountDisabledData {
                 user: name(user),
+                user_id: user_id.to_string(),
                 actor: name(actor),
                 reason,
             }),
-            DomainEvent::AccountEnabled { user, actor } => {
-                EventData::AccountEnabled(AccountEnabledData {
-                    user: name(user),
-                    actor: name(actor),
-                })
-            }
+            DomainEvent::AccountEnabled {
+                user,
+                user_id,
+                actor,
+            } => EventData::AccountEnabled(AccountEnabledData {
+                user: name(user),
+                user_id: user_id.to_string(),
+                actor: name(actor),
+            }),
             DomainEvent::OrganizationCreated {
                 name: org,
+                org_id,
                 owner,
+                owner_id,
                 actor,
             } => EventData::OrganizationCreated(OrganizationCreatedData {
                 name: name(org),
+                org_id: org_id.to_string(),
                 owner: name(owner),
+                owner_id: owner_id.to_string(),
                 actor: name(actor),
             }),
-            DomainEvent::OrganizationDeleted { name: org, actor } => {
-                EventData::OrganizationDeleted(OrganizationDeletedData {
-                    name: name(org),
-                    actor: name(actor),
-                })
-            }
+            DomainEvent::OrganizationDeleted {
+                name: org,
+                org_id,
+                actor,
+            } => EventData::OrganizationDeleted(OrganizationDeletedData {
+                name: name(org),
+                org_id: org_id.to_string(),
+                actor: name(actor),
+            }),
             DomainEvent::RepositoryCreated {
+                repo_id,
                 owner,
+                owner_id,
                 name: repo,
                 visibility,
                 actor,
             } => EventData::RepositoryCreated(RepositoryCreatedData {
+                repo_id: repo_id.to_string(),
                 owner: name(owner),
+                owner_id: owner_id.to_string(),
                 name: repo,
                 visibility: match visibility {
                     Visibility::Public => pyn_proto::Visibility::Public,
@@ -127,32 +149,42 @@ impl LimitEvents for WebhookLimitEvents {
                 actor: name(actor),
             }),
             DomainEvent::RepositoryRenamed {
+                repo_id,
                 owner,
+                owner_id,
                 name: repo,
                 previous_name,
                 actor,
             } => EventData::RepositoryRenamed(RepositoryRenamedData {
+                repo_id: repo_id.to_string(),
                 owner: name(owner),
+                owner_id: owner_id.to_string(),
                 name: repo,
                 previous_name,
                 actor: name(actor),
             }),
             DomainEvent::RepositoryDeleted {
+                repo_id,
                 owner,
+                owner_id,
                 name: repo,
                 actor,
             } => EventData::RepositoryDeleted(RepositoryDeletedData {
+                repo_id: repo_id.to_string(),
                 owner: name(owner),
+                owner_id: owner_id.to_string(),
                 name: repo,
                 actor: name(actor),
             }),
             DomainEvent::OwnerLimitsChanged {
                 owner,
+                owner_id,
                 kind,
                 limits,
                 actor,
             } => EventData::OwnerLimitsChanged(OwnerLimitsChangedData {
                 owner: name(owner),
+                owner_id: owner_id.to_string(),
                 kind: match kind {
                     AccountKind::User => OwnerKind::User,
                     AccountKind::Org => OwnerKind::Org,
@@ -166,53 +198,69 @@ impl LimitEvents for WebhookLimitEvents {
             }),
             DomainEvent::LockAcquired {
                 owner,
+                owner_id,
                 repo,
+                repo_id,
                 path,
                 holder,
                 expires_at,
             } => EventData::LockAcquired(LockAcquiredData {
                 owner: name(owner),
+                owner_id: owner_id.to_string(),
                 repo,
+                repo_id: repo_id.to_string(),
                 path: path.to_string(),
                 holder: name(holder),
                 expires_at,
             }),
             DomainEvent::LockReleased {
                 owner,
+                owner_id,
                 repo,
+                repo_id,
                 path,
                 holder,
                 reason,
             } => EventData::LockReleased(LockReleasedData {
                 owner: name(owner),
+                owner_id: owner_id.to_string(),
                 repo,
+                repo_id: repo_id.to_string(),
                 path: path.to_string(),
                 holder: name(holder),
                 reason,
             }),
             DomainEvent::LockExpired {
                 owner,
+                owner_id,
                 repo,
+                repo_id,
                 path,
                 holder,
                 expires_at,
             } => EventData::LockExpired(LockExpiredData {
                 owner: name(owner),
+                owner_id: owner_id.to_string(),
                 repo,
+                repo_id: repo_id.to_string(),
                 path: path.to_string(),
                 holder: name(holder),
                 expires_at,
             }),
             DomainEvent::LockForced {
                 owner,
+                owner_id,
                 repo,
+                repo_id,
                 path,
                 holder,
                 actor,
                 reason,
             } => EventData::LockForced(LockForcedData {
                 owner: name(owner),
+                owner_id: owner_id.to_string(),
                 repo,
+                repo_id: repo_id.to_string(),
                 path: path.to_string(),
                 holder: name(holder),
                 actor: name(actor),

@@ -3,8 +3,9 @@
 use super::*;
 
 /// An owner's own limits and the ones in force once the server default fills the gaps.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OwnerLimits {
+    pub id: AccountId,
     pub kind: AccountKind,
     pub own: Limits,
     pub effective: Limits,
@@ -40,10 +41,20 @@ impl AccessService {
             effective.members = None;
         }
         Ok(OwnerLimits {
+            id: account.id.clone(),
             kind: account.kind,
             own,
             effective,
         })
+    }
+
+    /// The stable id of `user`, adding the account first if it was never seen.
+    pub async fn account_id(&self, user: &UserId) -> Result<AccountId> {
+        if let Some(account) = self.store.account(user).await? {
+            return Ok(account.id);
+        }
+        self.store.ensure_user(user, self.clock.now()).await?;
+        self.limits_account(user).await.map(|a| a.id)
     }
 
     async fn limits_account(&self, owner: &UserId) -> Result<AccountRecord> {
@@ -115,6 +126,7 @@ impl AccessService {
             .update_owner_limits_with_events(owner, change, &|limits| {
                 self.draft(DomainEvent::OwnerLimitsChanged {
                     owner: owner.clone(),
+                    owner_id: account.id.clone(),
                     kind: account.kind,
                     limits: *limits,
                     actor: actor.user.clone(),

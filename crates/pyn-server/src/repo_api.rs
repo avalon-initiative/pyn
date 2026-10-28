@@ -32,8 +32,16 @@ fn visibility_from(v: api::Visibility) -> pyn_core::Visibility {
     }
 }
 
-fn repo_info(r: RepoRecord, role: Option<Role>, limit: LockLimit) -> api::RepoInfo {
-    api::RepoInfo {
+async fn repo_info(
+    s: &AppState,
+    r: RepoRecord,
+    role: Option<Role>,
+    limit: LockLimit,
+) -> ApiResult<api::RepoInfo> {
+    let owner_id = s.access.account_id(&r.owner).await?.to_string();
+    Ok(api::RepoInfo {
+        id: r.id.to_string(),
+        owner_id,
         owner: r.owner.to_string(),
         name: r.name,
         visibility: visibility_dto(r.visibility),
@@ -43,7 +51,7 @@ fn repo_info(r: RepoRecord, role: Option<Role>, limit: LockLimit) -> api::RepoIn
         max_locks_set_by_policy: limit.from_policy,
         created_at: r.created_at,
         role: role.map(|r| r.to_string()),
-    }
+    })
 }
 
 #[derive(Deserialize)]
@@ -66,7 +74,7 @@ pub(crate) async fn list_repos(
     let mut infos = Vec::with_capacity(repos.len());
     for (record, role) in repos {
         let limit = s.repos.lock_limit(&record).await?;
-        infos.push(repo_info(record, role, limit));
+        infos.push(repo_info(&s, record, role, limit).await?);
     }
     Ok(Json(infos))
 }
@@ -98,7 +106,7 @@ pub(crate) async fn explore_repos(
     let mut repos = Vec::with_capacity(found.len());
     for (record, role) in found {
         let limit = s.repos.lock_limit(&record).await?;
-        repos.push(repo_info(record, role, limit));
+        repos.push(repo_info(&s, record, role, limit).await?);
     }
     Ok(Json(api::RepoPage { repos, next_after }))
 }
@@ -159,7 +167,7 @@ pub(crate) async fn create_repo(
     let limit = s.repos.lock_limit(&record).await?;
     Ok((
         StatusCode::CREATED,
-        Json(repo_info(record, Some(Role::Admin), limit)),
+        Json(repo_info(&s, record, Some(Role::Admin), limit).await?),
     ))
 }
 
@@ -180,7 +188,7 @@ pub(crate) async fn get_repo(
         None => None,
     };
     let limit = open.service.lock_limit();
-    Ok(Json(repo_info(open.record, role, limit)))
+    Ok(Json(repo_info(&s, open.record, role, limit).await?))
 }
 
 #[utoipa::path(patch, path = "/v1/repos/{owner}/{name}", params(RepoAddress), request_body = api::UpdateRepoRequest, responses(
@@ -212,7 +220,7 @@ pub(crate) async fn update_repo(
     let record = s.repos.update(&who, &open.record, update).await?;
     let role = s.access.role_in(&record.id, &who.user).await?;
     let limit = s.repos.lock_limit(&record).await?;
-    Ok(Json(repo_info(record, role, limit)))
+    Ok(Json(repo_info(&s, record, role, limit).await?))
 }
 
 #[utoipa::path(delete, path = "/v1/repos/{owner}/{name}", params(RepoAddress), responses(
@@ -242,6 +250,7 @@ pub(crate) async fn repo_me(
 ) -> ApiResult<Json<api::Me>> {
     let (_, who) = authorize_repo(&s, &headers, &owner, &name, None).await?;
     Ok(Json(api::Me {
+        user_id: s.access.account_id(&who.user).await?.to_string(),
         user: who.user.to_string(),
         permissions: names(&who.permissions),
     }))

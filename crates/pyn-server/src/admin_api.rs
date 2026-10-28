@@ -16,6 +16,7 @@ use crate::{ApiResult, AppState, identify_admin};
 
 fn info(a: AccountRecord) -> api::AccountInfo {
     api::AccountInfo {
+        id: a.id.to_string(),
         status: a.status().to_string(),
         user: a.user.to_string(),
         email: a.email,
@@ -207,6 +208,7 @@ pub(crate) async fn create_org(
     Ok((
         StatusCode::CREATED,
         Json(api::OrgInfo {
+            id: org.id.to_string(),
             name: org.user.to_string(),
             created_at: org.created_at,
             role: Some(OrgRole::Owner.to_string()),

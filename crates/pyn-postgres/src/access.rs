@@ -4,7 +4,7 @@ use std::str::FromStr;
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use pyn_core::{
-    AccessStore, AccountDisable, AccountKind, AccountRecord, AccountStatus, AdminRevoke,
+    AccessStore, AccountDisable, AccountId, AccountKind, AccountRecord, AccountStatus, AdminRevoke,
     CreationEffect, CreationRule, CreationScope, CreationSubject, EventDraft, ExternalCreate,
     ExternalIdentity, IdentityUnlink, InviteId, InviteRecord, Limits, LimitsChange, LimitsEvent,
     MemberCreation, NewAccount, NewExternalAccount, OidcFlow, OrgDeleteMark, OrgMemberChange,
@@ -153,6 +153,7 @@ fn session_from(row: &PgRow) -> SessionRecord {
 
 fn account_from(row: &PgRow) -> Result<AccountRecord> {
     Ok(AccountRecord {
+        id: AccountId::new(row.get::<String, _>("account_id")),
         user: UserId::new(row.get::<String, _>("id")),
         kind: AccountKind::from_str(row.get("kind"))?,
         email: row.get("email"),
@@ -344,14 +345,16 @@ impl AccessStore for PgMetadataStore {
     async fn create_user_with_events(
         &self,
         user: &UserId,
+        id: &AccountId,
         now: DateTime<Utc>,
         events: &[EventDraft],
     ) -> Result<bool> {
         let mut tx = self.pool.begin().await.map_err(db)?;
         let done = sqlx::query(
-            "INSERT INTO users (id, created_at) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING",
+            "INSERT INTO users (id, account_id, created_at) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING",
         )
         .bind(user.as_str())
+        .bind(id.as_str())
         .bind(now)
         .execute(&mut *tx)
         .await
@@ -375,15 +378,17 @@ impl AccessStore for PgMetadataStore {
     async fn create_org_with_events(
         &self,
         org: &UserId,
+        id: &AccountId,
         owner: &UserId,
         now: DateTime<Utc>,
         events: &[EventDraft],
     ) -> Result<bool> {
         let mut tx = self.pool.begin().await.map_err(db)?;
         let created = sqlx::query(
-            "INSERT INTO users (id, created_at, kind) VALUES ($1, $2, 'org') ON CONFLICT (id) DO NOTHING",
+            "INSERT INTO users (id, account_id, created_at, kind) VALUES ($1, $2, $3, 'org') ON CONFLICT (id) DO NOTHING",
         )
         .bind(org.as_str())
+        .bind(id.as_str())
         .bind(now)
         .execute(&mut *tx)
         .await
@@ -1356,10 +1361,11 @@ impl AccessStore for PgMetadataStore {
     ) -> Result<bool> {
         let mut tx = self.pool.begin().await.map_err(db)?;
         let done = sqlx::query(
-            "INSERT INTO users (id, created_at, email, password_hash, signup) VALUES ($1, $2, $3, $4, $5)
+            "INSERT INTO users (id, account_id, created_at, email, password_hash, signup) VALUES ($1, $2, $3, $4, $5, $6)
              ON CONFLICT (id) DO NOTHING",
         )
         .bind(new.user.as_str())
+        .bind(new.id.as_str())
         .bind(new.created_at)
         .bind(new.email)
         .bind(new.password_hash)
@@ -1376,7 +1382,7 @@ impl AccessStore for PgMetadataStore {
     }
 
     async fn account(&self, user: &UserId) -> Result<Option<AccountRecord>> {
-        let row = sqlx::query("SELECT id, kind, email, email_verified_at, signup, disabled_at, disabled_reason, is_admin, created_at, deleting_since FROM users WHERE id = $1")
+        let row = sqlx::query("SELECT id, account_id, kind, email, email_verified_at, signup, disabled_at, disabled_reason, is_admin, created_at, deleting_since FROM users WHERE id = $1")
         .bind(user.as_str())
         .fetch_optional(&self.pool)
         .await
@@ -1396,7 +1402,7 @@ impl AccessStore for PgMetadataStore {
     }
 
     async fn pending_by_email(&self, email: &str) -> Result<Vec<AccountRecord>> {
-        let rows = sqlx::query("SELECT id, kind, email, email_verified_at, signup, disabled_at, disabled_reason, is_admin, created_at, deleting_since FROM users WHERE email = $1 AND signup = 'pending_verification' ORDER BY created_at, id")
+        let rows = sqlx::query("SELECT id, account_id, kind, email, email_verified_at, signup, disabled_at, disabled_reason, is_admin, created_at, deleting_since FROM users WHERE email = $1 AND signup = 'pending_verification' ORDER BY created_at, id")
         .bind(email)
         .fetch_all(&self.pool)
         .await
@@ -1572,7 +1578,7 @@ impl AccessStore for PgMetadataStore {
         status: Option<AccountStatus>,
         limit: usize,
     ) -> Result<Vec<AccountRecord>> {
-        let rows = sqlx::query("SELECT id, kind, email, email_verified_at, signup, disabled_at, disabled_reason, is_admin, created_at, deleting_since FROM users
+        let rows = sqlx::query("SELECT id, account_id, kind, email, email_verified_at, signup, disabled_at, disabled_reason, is_admin, created_at, deleting_since FROM users
              WHERE kind = 'user'
                AND ($1::text IS NULL
                 OR CASE WHEN $1 = 'disabled' THEN disabled_at IS NOT NULL
@@ -1668,10 +1674,11 @@ impl AccessStore for PgMetadataStore {
         let mut tx = self.pool.begin().await.map_err(db)?;
         let verified_at = new.email.is_some().then_some(new.identity.created_at);
         let created = sqlx::query(
-            "INSERT INTO users (id, created_at, email, email_verified_at) VALUES ($1, $2, $3, $4)
+            "INSERT INTO users (id, account_id, created_at, email, email_verified_at) VALUES ($1, $2, $3, $4, $5)
              ON CONFLICT (id) DO NOTHING",
         )
         .bind(new.user.as_str())
+        .bind(new.id.as_str())
         .bind(new.identity.created_at)
         .bind(&new.email)
         .bind(verified_at)
@@ -1885,10 +1892,11 @@ impl AccessStore for PgMetadataStore {
             return Ok(false);
         }
         let created = sqlx::query(
-            "INSERT INTO users (id, created_at, email, password_hash, signup, is_admin)
-             VALUES ($1, $2, $3, $4, $5, true) ON CONFLICT (id) DO NOTHING",
+            "INSERT INTO users (id, account_id, created_at, email, password_hash, signup, is_admin)
+             VALUES ($1, $2, $3, $4, $5, $6, true) ON CONFLICT (id) DO NOTHING",
         )
         .bind(admin.user.as_str())
+        .bind(admin.id.as_str())
         .bind(admin.created_at)
         .bind(admin.email)
         .bind(admin.password_hash)
