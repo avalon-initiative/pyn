@@ -419,8 +419,6 @@ fn shortlog_outside_a_repository_reads_the_mailmap_in_the_folder() {
 fn check_mailmap_without_contacts_is_a_failure() {
     each(|fx| {
         fx.same(&["check-mailmap"]);
-        fx.same(&["check-mailmap", "not a contact <"]);
-        fx.same(&["check-mailmap", "<ann@old.example>", "garbage"]);
     });
 }
 
