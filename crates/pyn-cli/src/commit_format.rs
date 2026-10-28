@@ -413,6 +413,16 @@ pub struct Context<'a> {
     pub map_headers: bool,
 }
 
+impl Context<'_> {
+    /// `text` in the commit-line color, when output is colored.
+    pub fn paint(&self, text: &str) -> String {
+        match self.commit_color {
+            Some(color) => format!("{color}{text}{}", crate::diff_color::RESET),
+            None => text.to_string(),
+        }
+    }
+}
+
 pub(crate) fn short(id: &ObjectId) -> String {
     id.to_hex()[..ABBREV].to_string()
 }

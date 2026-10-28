@@ -29,6 +29,9 @@ fn dwim(git: &GitHome, spec: &str) -> Result<Option<String>> {
     if spec == "HEAD" || spec == "@" {
         return git.head_target();
     }
+    if spec.contains("@{") {
+        return super::plumbing::dwim(git, spec);
+    }
     for form in [
         spec.to_string(),
         format!("refs/{spec}"),
@@ -97,7 +100,7 @@ pub(super) fn replace(file: &mut ConfigFile, branch: &str, key: &str, value: &st
     Ok(())
 }
 
-pub fn set_upstream(git: &GitHome, upstream: &str, names: &[String]) -> Result<()> {
+pub fn set_upstream(git: &GitHome, upstream: &str, names: &[String], quiet: bool) -> Result<()> {
     if names.len() > 1 {
         bail!("too many arguments to set new upstream");
     }
@@ -138,7 +141,9 @@ pub fn set_upstream(git: &GitHome, upstream: &str, names: &[String]) -> Result<(
     replace(&mut file, &branch, "remote", &remote)?;
     replace(&mut file, &branch, "merge", &merge)?;
     file.write(&path)?;
-    println!("branch '{branch}' set up to track '{shown}'.");
+    if !quiet {
+        println!("branch '{branch}' set up to track '{shown}'.");
+    }
     Ok(())
 }
 

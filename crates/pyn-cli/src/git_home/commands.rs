@@ -14,9 +14,10 @@ use pyn_object::ObjectId;
 
 use super::decorate::{DecorateArgs, with_decoration};
 use super::merge_diff::{Against, Body, MergeArgs, Shape, Want, with_from};
+use super::show_object::Item;
 use super::{GitHome, path_string, sparse, stage};
 use crate::backend::Backend;
-use crate::commit_format::{Context, FormatArgs, Rendering, render};
+use crate::commit_format::{Context, FormatArgs, Pretty, Rendering, render};
 use crate::diff::{self, Blob, Source, Tree};
 use crate::rename;
 use crate::short_status::{self, Format, Row, StatusArgs};
@@ -1067,6 +1068,29 @@ pub(super) fn head_or_refuse(git: &GitHome) -> Result<ObjectId> {
     }
 }
 
+/// The `tag`, tagger and message lines `show` prints for an annotated tag, by format.
+fn tag_header(pretty: &Pretty, ctx: &Context<'_>, tag: &pyn_object::Tag) -> String {
+    let mut out = ctx.paint(&format!("tag {}", String::from_utf8_lossy(&tag.name)));
+    out.push('\n');
+    if let Some(who) = &tag.tagger {
+        let name = format!(
+            "{} <{}>",
+            String::from_utf8_lossy(&who.name),
+            String::from_utf8_lossy(&who.email)
+        );
+        let date = ctx.style.format(who, ctx.now);
+        match pretty {
+            Pretty::Oneline { .. } => {}
+            Pretty::Medium => out.push_str(&format!("Tagger: {name}\nDate:   {date}\n")),
+            Pretty::Fuller => out.push_str(&format!("Tagger:     {name}\nTaggerDate: {date}\n")),
+            _ => out.push_str(&format!("Tagger: {name}\n")),
+        }
+    }
+    out.push('\n');
+    out.push_str(&String::from_utf8_lossy(&tag.message));
+    out
+}
+
 fn show(
     git: &GitHome,
     cwd: &Path,
@@ -1076,7 +1100,27 @@ fn show(
     format: &diff::Format,
 ) -> Result<()> {
     git.repo.validate_diff_ignore_submodules()?;
-    if paths.is_empty() && super::show_object::show_objects(git, cwd, args)? {
+    let separated = !paths.is_empty() || std::env::args_os().any(|a| a == "--");
+    let items = if paths.is_empty() {
+        super::show_object::items(git, cwd, args, separated)?
+    } else {
+        None
+    };
+    if let Some(items) = &items
+        && items
+            .iter()
+            .all(|i| !matches!(i, Item::Tag(_) | Item::Commit(_)))
+    {
+        for item in items {
+            match item {
+                Item::Blob(data) => super::plumbing::emit_bytes(data),
+                Item::Tree { name, id } => {
+                    let entries = super::show_object::tree_entries(git, id)?;
+                    emit(&format!("tree {name}\n\n{entries}"));
+                }
+                Item::Tag(_) | Item::Commit(_) => unreachable!("filtered above"),
+            }
+        }
         return Ok(());
     }
     if format.opts.abbrev.is_some() && fmt.first_given().is_some() {
@@ -1091,12 +1135,24 @@ fn show(
     let decorate = decorate.resolve(git, &pretty)?;
     let plan = merges.plan(git, first_parent, true)?;
     let commit_color = diff::commit_color(git, &format.opts, decorate.on(), false);
-    let separated = !paths.is_empty() || std::env::args_os().any(|a| a == "--");
-    let (mut ids, loose) = split_revisions(git, cwd, args, separated, usize::MAX)?;
-    check_loose(git, cwd, &loose, separated)?;
-    if ids.is_empty() {
-        ids.push(head_or_refuse(git)?);
+    if signatures
+        && items
+            .as_ref()
+            .is_some_and(|v| v.iter().any(|i| matches!(i, Item::Tag(_))))
+    {
+        bail!("`pyn show --show-signature` on a tag is not built");
     }
+    let (seq, loose) = match items {
+        Some(items) => (items, Vec::new()),
+        None => {
+            let (mut ids, loose) = split_revisions(git, cwd, args, separated, usize::MAX)?;
+            check_loose(git, cwd, &loose, separated)?;
+            if ids.is_empty() {
+                ids.push(head_or_refuse(git)?);
+            }
+            (ids.into_iter().map(Item::Commit).collect(), loose)
+        }
+    };
     let spec = git.pathspec(cwd, &[loose.as_slice(), paths].concat(), false)?;
     let names = decorate.names(git, pretty.uses_decorations())?;
     let mailmap = git.mailmap()?;
@@ -1119,7 +1175,36 @@ fn show(
     };
     let mut out = String::new();
     let mut check = String::new();
-    for id in &ids {
+    let mut shown = false;
+    let mut seen = std::collections::HashSet::new();
+    for item in &seq {
+        let id = match item {
+            Item::Commit(id) if !seen.insert(*id) => continue,
+            Item::Commit(id) => id,
+            Item::Blob(data) => {
+                emit(&std::mem::take(&mut out));
+                super::plumbing::emit_bytes(data);
+                continue;
+            }
+            Item::Tree { name, id } => {
+                if shown {
+                    out.push('\n');
+                }
+                shown = true;
+                out.push_str(&ctx.paint(&format!("tree {name}")));
+                out.push_str("\n\n");
+                out.push_str(&super::show_object::tree_entries(git, id)?);
+                continue;
+            }
+            Item::Tag(tag) => {
+                if shown {
+                    out.push('\n');
+                }
+                shown = true;
+                out.push_str(&tag_header(&pretty, &ctx, tag));
+                continue;
+            }
+        };
         let c = git.repo.commit(id)?;
         let mut against = |source: Against| -> Result<Option<Body>> {
             let old_tree = match source {
@@ -1159,9 +1244,10 @@ fn show(
             None
         };
         for seg in segments {
-            if !out.is_empty() && !pretty.terminated() {
+            if shown && !pretty.terminated() {
                 out.push('\n');
             }
+            shown = true;
             let text = render(&pretty, &ctx, id, &c);
             let text = if decorate.on() {
                 with_decoration(text, &pretty, names.get(id))

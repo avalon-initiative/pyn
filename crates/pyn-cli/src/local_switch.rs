@@ -54,6 +54,7 @@ pub(crate) fn branch_command(store: &LocalStore, ws: &Workspace, args: BranchArg
         force,
         set_upstream_to,
         unset_upstream,
+        quiet: _,
         track: _,
     } = args;
     if copy || force_copy || force {

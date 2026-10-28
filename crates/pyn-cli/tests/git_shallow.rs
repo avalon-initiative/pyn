@@ -59,7 +59,8 @@ fn dated_commit(dir: &Path, file: &str, content: &str, msg: &str, at: i64) {
 }
 
 impl Rig {
-    /// Six commits on `main` (one a day, each adding a file and a line of `log.txt`, `v1` on the third) and two on `feature`.
+    /// Six commits on `main` (one a day, each adding a file and a line of `log.txt`, `v1` on the third), two on `feature`,
+    /// and `joined`, which merges two more (`topic`, from the second commit) into `feature`.
     fn new(format: &str, via: Via) -> Self {
         let tmp = tempdir().unwrap();
         let root = tmp.path().canonicalize().unwrap();
@@ -86,6 +87,18 @@ impl Rig {
         run(&work, &["switch", "-q", "feature"]);
         dated_commit(&work, "g1.txt", "g1\n", "g1", BASE + 7 * DAY);
         dated_commit(&work, "g2.txt", "g2\n", "g2", BASE + 8 * DAY);
+        run(&work, &["switch", "-q", "-c", "topic", "main~4"]);
+        dated_commit(&work, "t1.txt", "t1\n", "t1", BASE + 9 * DAY);
+        dated_commit(&work, "t2.txt", "t2\n", "t2", BASE + 10 * DAY);
+        run(&work, &["switch", "-q", "-c", "joined", "feature"]);
+        let date = format!("{} +0000", BASE + 11 * DAY);
+        let merged = git(&work)
+            .args(["merge", "-q", "--no-ff", "-m", "join", "topic"])
+            .env("GIT_COMMITTER_DATE", &date)
+            .env("GIT_AUTHOR_DATE", &date)
+            .output()
+            .unwrap();
+        assert!(merged.status.success());
         run(&work, &["switch", "-q", "main"]);
         let bare = root.join("served.git");
         init(&bare, format, true);
@@ -206,6 +219,21 @@ impl Rig {
         po
     }
 
+    /// [`Rig::fetch_both`] checking only the exit status and that the result is a valid repository: git versions
+    /// deepen differently around merges, so the commits kept are not compared.
+    fn fetch_both_valid(&self, g: &Path, p: &Path, flags: &[&str]) -> Out {
+        let mut args = vec!["fetch"];
+        args.extend_from_slice(flags);
+        let go = self.git(g, &args);
+        let po = self.pyn(p, &args);
+        let ctx = format!("{args:?}\ngit: {}\npyn: {}", go.stderr, po.stderr);
+        assert_eq!(go.code, po.code, "{ctx}");
+        if po.code == 0 {
+            fsck(p);
+        }
+        po
+    }
+
     fn same(&self, g: &Path, p: &Path, ctx: &str) {
         let shallow = |d: &Path| {
             let mut ids: Vec<String> = fs::read_to_string(d.join(".git/shallow"))
@@ -274,14 +302,24 @@ fn clone_by_date_and_revision_matches_git() {
     for (format, via) in ways() {
         let rig = Rig::new(format, via);
         let since = format!("--shallow-since={}", BASE + 4 * DAY);
+        let early = format!("--shallow-since={}", BASE + DAY);
         for flags in [
             vec![since.as_str()],
             vec!["--shallow-exclude=v1"],
             vec!["--shallow-exclude=refs/tags/v1", "--no-single-branch"],
+            vec![since.as_str(), "--shallow-exclude=v1"],
+            vec![early.as_str(), "--shallow-exclude=v1"],
+            vec![since.as_str(), "--shallow-exclude=v1", "--no-single-branch"],
+            vec![
+                "--shallow-exclude=v1",
+                "--shallow-exclude=topic",
+                "--no-single-branch",
+            ],
         ] {
             let _ = fs::remove_dir_all(rig.root.join("git-side"));
             let _ = fs::remove_dir_all(rig.root.join("pyn-side"));
-            rig.clone_both(&flags);
+            let (_, p) = rig.clone_both(&flags);
+            assert!(p.exists(), "{flags:?}");
         }
     }
 }
@@ -308,6 +346,29 @@ fn fetch_moves_the_boundary_like_git() {
 }
 
 #[test]
+fn deepening_across_branches_and_merges_matches_git() {
+    for (format, via) in ways() {
+        let rig = Rig::new(format, via);
+        let (g, p) = rig.clone_both(&["--depth", "1", "--no-single-branch"]);
+        for flags in [
+            &["--deepen", "1"][..],
+            &["--deepen", "2"],
+            &["--depth", "2"],
+            &["--deepen", "1"],
+            &["--depth", "1"],
+            &["--deepen", "5"],
+            &["--unshallow"],
+        ] {
+            rig.fetch_both_valid(&g, &p, flags);
+        }
+        let (g, p) = rig.clone_from(&rig.url, &["--depth", "2", "--branch", "joined"]);
+        rig.fetch_both_valid(&g, &p, &["--deepen", "1"]);
+        rig.fetch_both_valid(&g, &p, &["--depth", "3", "origin", "feature:feature"]);
+        rig.fetch_both_valid(&g, &p, &["--deepen", "4"]);
+    }
+}
+
+#[test]
 fn fetch_by_date_and_revision_matches_git() {
     for (format, via) in ways() {
         let rig = Rig::new(format, via);
@@ -315,6 +376,15 @@ fn fetch_by_date_and_revision_matches_git() {
         let since = format!("--shallow-since={}", BASE + 2 * DAY);
         rig.fetch_both(&g, &p, &[&since]);
         rig.fetch_both(&g, &p, &["--shallow-exclude=v1"]);
+        let (g, p) = rig.clone_both(&["--depth", "1"]);
+        assert_eq!(
+            rig.fetch_both(&g, &p, &[&since, "--shallow-exclude=v1"])
+                .code,
+            0
+        );
+        let (g, p) = rig.clone_both(&["--depth", "1", "--no-single-branch"]);
+        let late = format!("--shallow-since={}", BASE + 5 * DAY);
+        rig.fetch_both(&g, &p, &[&late, "--shallow-exclude=v1"]);
     }
 }
 
@@ -464,6 +534,55 @@ fn a_shallow_repository_can_be_cloned() {
             let _ = fs::remove_dir_all(rig.root.join("git-side"));
             let _ = fs::remove_dir_all(rig.root.join("pyn-side"));
             rig.clone_from(&url, flags);
+        }
+    }
+}
+
+#[test]
+fn update_shallow_accepts_refs_that_need_new_roots_like_git() {
+    for url_of in [
+        |p: &Path| format!("file://{}", p.display()),
+        |p: &Path| format!("ssh://git@example.invalid{}", p.display()),
+    ] {
+        let rig = Rig::new("sha1", Via::FileUrl);
+        let made = rig.git(
+            &rig.side("mid"),
+            &[
+                "clone",
+                "-q",
+                "--depth=2",
+                "--no-single-branch",
+                "--",
+                &rig.url,
+                "m",
+            ],
+        );
+        assert_eq!(made.code, 0, "{}", made.stderr);
+        let url = url_of(&rig.root.join("mid/m"));
+        let main = "refs/remotes/origin/main:refs/heads/m";
+        let feature = "refs/remotes/origin/feature:refs/heads/f";
+        let sequences: [&[&[&str]]; 5] = [
+            &[&["fetch", &url, main]],
+            &[&["fetch", "--update-shallow", &url, main]],
+            &[&["fetch", &url, main, feature]],
+            &[&["fetch", "--update-shallow", &url, main, feature]],
+            &[
+                &["fetch", &url, feature],
+                &["fetch", &url, main],
+                &["fetch", "--update-shallow", &url, main],
+                &["fetch", "--update-shallow", &url, "--depth=1"],
+            ],
+        ];
+        for steps in sequences {
+            let _ = fs::remove_dir_all(rig.root.join("git-side"));
+            let _ = fs::remove_dir_all(rig.root.join("pyn-side"));
+            let (g, p) = (rig.side("git-side"), rig.side("pyn-side"));
+            for dir in [&g, &p] {
+                assert_eq!(rig.git(dir, &["init", "-q"]).code, 0);
+            }
+            for step in steps {
+                rig.fetch_both(&g, &p, &step[1..]);
+            }
         }
     }
 }

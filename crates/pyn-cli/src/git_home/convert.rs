@@ -1,8 +1,8 @@
-//! Guards for the conversions pyn does not apply when git would write a work tree file: filter drivers and
-//! `working-tree-encoding` (#273). Line endings and `ident` are converted by `Repo::conversion`.
+//! Guards for the conversions pyn does not apply when git would write a work tree file: `working-tree-encoding`
+//! (#273), and raw writers that cannot run a filter. Line endings, `ident` and filters are converted by
+//! `Repo::conversion`.
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Result, bail};
 use pyn_gitwork::{Attributes, Pathspec};
@@ -14,8 +14,7 @@ fn skipped(mode: FileMode) -> bool {
     matches!(mode, FileMode::Symlink | FileMode::Gitlink | FileMode::Tree)
 }
 
-/// Fails, naming the first path whose filter or encoding git would apply when writing it; warns once about paths a
-/// Git LFS filter owns.
+/// Fails, naming the first path whose encoding git would apply when writing it.
 pub(super) fn refuse_unsupported<'a>(
     git: &GitHome,
     files: impl IntoIterator<Item = (&'a [u8], FileMode)>,
@@ -23,8 +22,8 @@ pub(super) fn refuse_unsupported<'a>(
     check(git, files, false)
 }
 
-/// Like [`refuse_unsupported`], and also refuses any path whose line endings or `ident` git would convert, for
-/// writers that copy bytes as they are.
+/// Like [`refuse_unsupported`], and also refuses any path whose line endings, `ident` or filter git would convert,
+/// for writers that copy bytes as they are.
 pub(super) fn refuse_conversions<'a>(
     git: &GitHome,
     files: impl IntoIterator<Item = (&'a [u8], FileMode)>,
@@ -38,17 +37,15 @@ fn check<'a>(
     raw_writer: bool,
 ) -> Result<()> {
     let mut seen: BTreeMap<Vec<u8>, ()> = BTreeMap::new();
-    let mut lfs = false;
     for (path, mode) in files {
         if skipped(mode) || seen.insert(path.to_vec(), ()).is_some() {
             continue;
         }
         let conv = git.repo.conversion(path)?;
-        lfs |= conv.is_lfs();
         let reason = match conv.unsupported() {
             Some(u) => Some(u.to_string()),
             None if raw_writer && !conv.is_identity() => {
-                Some("line endings or ident would be converted".to_string())
+                Some("line endings, ident or a filter would be converted".to_string())
             }
             None => None,
         };
@@ -59,9 +56,6 @@ fn check<'a>(
                 path_string(path)
             );
         }
-    }
-    if lfs {
-        warn_lfs();
     }
     Ok(())
 }
@@ -80,20 +74,9 @@ pub(super) fn refuse_renormalize(git: &GitHome, path: &[u8]) -> Result<()> {
     Ok(())
 }
 
-static LFS_WARNED: AtomicBool = AtomicBool::new(false);
-
-/// Prints the Git LFS warning the first time it is asked for in this process.
-fn warn_lfs() {
-    if !LFS_WARNED.swap(true, Ordering::Relaxed) {
-        eprintln!(
-            "warning: some paths use the Git LFS filter; pyn has no LFS client, so pointer files are kept as they are"
-        );
-    }
-}
-
-/// Warns if the `.gitattributes` files in `commit`'s tree apply `filter=lfs` to any of its paths.
+/// Warns if `filter=lfs` applies to a path of `commit`'s tree whose pointer names an object that is not stored.
 pub(super) fn warn_lfs_in_commit(git: &GitHome, commit: &ObjectId) -> Result<()> {
-    if LFS_WARNED.load(Ordering::Relaxed) || git.repo.objects().is_promisor() {
+    if pyn_gitwork::lfs::pointers_warned() || git.repo.objects().is_promisor() {
         return Ok(());
     }
     let Ok(commit) = git.repo.commit(commit) else {
@@ -121,8 +104,13 @@ pub(super) fn warn_lfs_in_commit(git: &GitHome, commit: &ObjectId) -> Result<()>
         false,
     );
     for (path, entry) in &files {
-        if !skipped(entry.mode) && attrs.for_path(path).get("filter").as_str() == Some("lfs") {
-            warn_lfs();
+        if skipped(entry.mode) || attrs.for_path(path).get("filter").as_str() != Some("lfs") {
+            continue;
+        }
+        let missing = pyn_gitwork::lfs::Pointer::parse(&git.repo.blob(&entry.id)?)
+            .is_some_and(|p| !git.repo.filters().lfs().object_path(&p.oid).exists());
+        if missing {
+            pyn_gitwork::lfs::warn_pointers_kept();
             break;
         }
     }

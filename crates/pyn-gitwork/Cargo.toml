@@ -11,6 +11,7 @@ test-support = []
 [dependencies]
 pyn-git = { version = "0.0.1", path = "../pyn-git" }
 pyn-object = { version = "0.0.1", path = "../pyn-object" }
+sha2 = "0.11.0"
 thiserror = "2.0.21"
 
 [dev-dependencies]
