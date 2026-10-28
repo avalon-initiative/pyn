@@ -182,7 +182,13 @@ fn list(git: &GitHome, args: &BranchArgs) -> Result<()> {
     Ok(())
 }
 
-fn create(git: &GitHome, name: &str, start: Option<&str>, force: bool) -> Result<()> {
+fn create(
+    git: &GitHome,
+    name: &str,
+    start: Option<&str>,
+    force: bool,
+    want: super::track::Want,
+) -> Result<()> {
     GitHome::check_branch_name(name)?;
     let existing = git.branch_commit(name)?;
     match existing {
@@ -218,11 +224,16 @@ fn create(git: &GitHome, name: &str, start: Option<&str>, force: bool) -> Result
         (None, Head::Branch { name, .. }) => name,
         (None, Head::Detached(_)) => "HEAD".into(),
     };
+    let plan = super::track::plan(git, want, start, name)?;
     let full = GitHome::branch_ref(name);
     match existing {
-        Some(old) if old == id => Ok(()),
-        Some(old) => git.move_ref(&full, Some(&old), &id, &format!("branch: Reset to {label}")),
-        None => git.create_ref(&full, &id, &format!("branch: Created from {label}")),
+        Some(old) if old == id => {}
+        Some(old) => git.move_ref(&full, Some(&old), &id, &format!("branch: Reset to {label}"))?,
+        None => git.create_ref(&full, &id, &format!("branch: Created from {label}"))?,
+    }
+    match plan {
+        Some(p) => super::track::apply(git, name, &p),
+        None => Ok(()),
     }
 }
 
@@ -387,6 +398,10 @@ pub fn branch(git: &GitHome, args: BranchArgs) -> Result<()> {
         }
         crate::usage_error("`pyn branch -a` and `-r` only list on a git repository");
     }
+    let creating = !(modes.iter().any(|m| *m) || listing || args.names.is_empty());
+    if !creating && super::track::Want::of(&args.track) != super::track::Want::Config {
+        bail!("the --track and --no-track options need a branch to create");
+    }
     if args.show_current {
         if let Head::Branch { name, .. } = git.repo.head()? {
             println!("{name}");
@@ -416,9 +431,10 @@ pub fn branch(git: &GitHome, args: BranchArgs) -> Result<()> {
     if args.list || listing || args.names.is_empty() {
         return list(git, &args);
     }
+    let want = super::track::Want::of(&args.track);
     match args.names.as_slice() {
-        [name] => create(git, name, None, args.force),
-        [name, start] => create(git, name, Some(start), args.force),
+        [name] => create(git, name, None, args.force, want),
+        [name, start] => create(git, name, Some(start), args.force, want),
         _ => crate::usage_error(
             "too many arguments to create a branch; the usage is `pyn branch <name> [<start>]`",
         ),

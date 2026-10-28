@@ -72,7 +72,7 @@ pub(super) struct Settings {
     pub shift: Option<String>,
     /// What `-X no-renames`, `find-renames[=<n>]` and `rename-threshold=<n>` asked for.
     pub rename_opts: RenameOpts,
-    /// Rename detection in force; absent when off, and for the replays that do not follow renames.
+    /// Rename detection in force; absent when off.
     pub renames: Option<Renames>,
 }
 
@@ -99,6 +99,13 @@ pub(super) struct Renames {
 const MERGE_RENAME_LIMIT: i64 = 7000;
 
 impl Settings {
+    /// The defaults with rename detection from the repository's configuration.
+    pub(super) fn configured(git: &GitHome) -> Self {
+        let mut s = Self::default();
+        s.resolve_renames(git);
+        s
+    }
+
     /// Settles rename detection from `-X`, then `merge.renames` (default `diff.renames`, default on).
     pub(super) fn resolve_renames(&mut self, git: &GitHome) {
         let config = git.repo.config();
@@ -225,10 +232,6 @@ impl Replay {
             Ok(s) if s.shift.is_some() => crate::usage_error(&format!(
                 "`pyn {command} -Xsubtree`: the subtree shift is not built for a replay"
             )),
-            Ok(s) if s.rename_opts.detect == Some(true) || s.rename_opts.score.is_some() => {
-                let why = NO_RENAMES;
-                crate::usage_error(&format!("`pyn {command} -X`: {why}"))
-            }
             Ok(_) => {}
             Err(BadOption::Unknown(opt) | BadOption::Unsupported(opt, _)) => {
                 eprintln!("fatal: unknown strategy option: -X{opt}");
@@ -241,12 +244,14 @@ impl Replay {
         }
     }
 
-    pub(super) fn settings(&self) -> Settings {
+    pub(super) fn settings(&self, git: &GitHome) -> Settings {
         let strategy = Strategy {
             kind: Which::Ort,
             xopts: self.xopts.clone(),
         };
-        strategy.settings().unwrap_or_default()
+        let mut settings = strategy.settings().unwrap_or_default();
+        settings.resolve_renames(git);
+        settings
     }
 }
 
@@ -256,7 +261,6 @@ pub(super) enum BadOption {
     Unsupported(String, &'static str),
 }
 
-const NO_RENAMES: &str = "a replay does not follow renames yet";
 const NO_ALGORITHM: &str = "only the Myers diff is built";
 
 fn rename_score(arg: &str) -> Option<u64> {

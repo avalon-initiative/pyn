@@ -227,9 +227,6 @@ fn rebase_strategies_pyn_does_not_build_are_usage_errors() {
         &["-X", "patience"],
         &["-X", "histogram"],
         &["-X", "diff-algorithm=patience"],
-        &["-X", "find-renames"],
-        &["-X", "find-renames=80"],
-        &["-X", "rename-threshold=80"],
     ] {
         let mut args = vec!["rebase"];
         args.extend(opts);
@@ -297,7 +294,6 @@ fn cherry_pick_strategies_pyn_does_not_build_are_usage_errors() {
         &["--strategy=resolve"],
         &["-X", "subtree"],
         &["-X", "patience"],
-        &["-X", "find-renames=50"],
     ] {
         let mut args = vec!["cherry-pick"];
         args.extend(opts);
