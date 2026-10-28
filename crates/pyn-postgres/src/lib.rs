@@ -2977,6 +2977,7 @@ mod tests {
             Arc::new(MemoryAuditStore::new()),
             pyn_core::RepoServiceContext {
                 owner: pyn_core::UserId::new("owner"),
+                owner_id: pyn_core::AccountId::new("uowner"),
                 clock: Arc::new(ManualClock::new(Utc::now())),
                 limit_events: Arc::new(pyn_core::MemoryLimitEvents::new()),
             },
@@ -3039,6 +3040,7 @@ mod tests {
             Arc::new(MemoryAuditStore::new()),
             pyn_core::RepoServiceContext {
                 owner: pyn_core::UserId::new("owner"),
+                owner_id: pyn_core::AccountId::new("uowner"),
                 clock: Arc::new(ManualClock::new(Utc::now())),
                 limit_events: Arc::new(pyn_core::MemoryLimitEvents::new()),
             },

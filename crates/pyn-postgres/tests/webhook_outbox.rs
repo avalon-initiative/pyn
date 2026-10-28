@@ -3,9 +3,9 @@ use std::sync::Arc;
 use chrono::{DateTime, TimeZone, Utc};
 use pyn_core::contract::{Access, Store, Webhooks};
 use pyn_core::{
-    AccessStore, DeliveryQuery, EventDraft, Limits, LimitsChange, MetadataStore, NewAccount,
-    NewSubscription, PynError, RepoId, RepoRecord, RepoSettings, RepoUpdate, ServerSettings,
-    SignupStage, UserId, Visibility, WebhookStore,
+    AccessStore, AccountId, AccountKind, DeliveryQuery, EventDraft, Limits, LimitsChange,
+    MetadataStore, NewAccount, NewSubscription, PynError, RepoId, RepoRecord, RepoSettings,
+    RepoUpdate, ServerSettings, SignupStage, UserId, Visibility, WebhookStore,
 };
 use pyn_postgres::PgMetadataStore;
 
@@ -40,6 +40,7 @@ fn bad() -> EventDraft {
 
 fn account(name: &str) -> NewAccount {
     NewAccount {
+        id: AccountId::generate(AccountKind::User).unwrap(),
         user: UserId::new(name),
         email: None,
         password_hash: "hash".into(),
@@ -113,7 +114,7 @@ async fn a_failed_event_append_rolls_the_change_back() {
     );
     assert!(s.account(&alice).await.unwrap().is_none());
     failed(
-        s.create_user_with_events(&alice, t0(), &[bad()])
+        s.create_user_with_events(&alice, &AccountId::new("uaa"), t0(), &[bad()])
             .await
             .map(|_| ()),
     );
@@ -134,9 +135,15 @@ async fn a_failed_event_append_rolls_the_change_back() {
     );
     assert!(s.server_settings().await.unwrap().is_none());
     failed(
-        s.create_org_with_events(&UserId::new("acme"), &alice, t0(), &[bad()])
-            .await
-            .map(|_| ()),
+        s.create_org_with_events(
+            &UserId::new("acme"),
+            &AccountId::new("oaa"),
+            &alice,
+            t0(),
+            &[bad()],
+        )
+        .await
+        .map(|_| ()),
     );
     assert!(!s.user_exists(&UserId::new("acme")).await.unwrap());
     assert!(!s.user_exists(&alice).await.unwrap());

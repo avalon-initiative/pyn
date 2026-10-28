@@ -31,6 +31,7 @@ fn world() -> World {
         audit.clone(),
         pyn_core::RepoServiceContext {
             owner: pyn_core::UserId::new("owner"),
+            owner_id: pyn_core::AccountId::new("uowner"),
             clock,
             limit_events: Arc::new(pyn_core::MemoryLimitEvents::new()),
         },

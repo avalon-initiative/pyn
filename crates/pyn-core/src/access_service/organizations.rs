@@ -56,15 +56,18 @@ impl AccessService {
         }
         let org = account::validate_org_name(name)?;
         let now = self.clock.now();
-        self.store.ensure_user(&actor.user, now).await?;
+        let owner_id = self.account_id(&actor.user).await?;
+        let id = AccountId::generate(AccountKind::Org)?;
         let created = self.draft(DomainEvent::OrganizationCreated {
             name: org.clone(),
+            org_id: id.clone(),
             owner: actor.user.clone(),
+            owner_id,
             actor: actor.user.clone(),
         })?;
         if !self
             .store
-            .create_org_with_events(&org, &actor.user, now, &[created])
+            .create_org_with_events(&org, &id, &actor.user, now, &[created])
             .await?
         {
             return Err(PynError::UserExists(org));
@@ -93,14 +96,18 @@ impl AccessService {
         let org = account::validate_org_name(name)?;
         self.existing_account(owner).await?;
         self.require_active(owner).await?;
+        let owner_id = self.account_id(owner).await?;
+        let id = AccountId::generate(AccountKind::Org)?;
         let created = self.draft(DomainEvent::OrganizationCreated {
             name: org.clone(),
+            org_id: id.clone(),
             owner: owner.clone(),
+            owner_id,
             actor: actor.user.clone(),
         })?;
         if !self
             .store
-            .create_org_with_events(&org, owner, self.clock.now(), &[created])
+            .create_org_with_events(&org, &id, owner, self.clock.now(), &[created])
             .await?
         {
             return Err(PynError::UserExists(org));
@@ -170,6 +177,7 @@ impl AccessService {
     }
 
     async fn delete_marked_org(&self, actor: &Identity, name: &UserId) -> Result<()> {
+        let org_id = self.org(name).await?.id;
         if let Some(registry) = &self.registry
             && !registry.list_repos(Some(name)).await?.is_empty()
         {
@@ -185,6 +193,7 @@ impl AccessService {
         .await?;
         let deleted = self.draft(DomainEvent::OrganizationDeleted {
             name: name.clone(),
+            org_id,
             actor: actor.user.clone(),
         })?;
         self.store.delete_org_with_events(name, &[deleted]).await?;

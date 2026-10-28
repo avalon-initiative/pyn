@@ -43,8 +43,8 @@ use crate::tree::{
     ACTIVITY_ACTIONS, EntryKind, HeadCounts, RepoSummary, TREE_MAX_PATHS, TreeEntry,
 };
 use crate::types::{
-    ChangesetItem, Commit, CommitFilter, Lock, MAX_CHANGESET_ITEMS, NewRevision, RepoId, RepoPath,
-    Revision, RevisionId, UserId, validate_message,
+    AccountId, ChangesetItem, Commit, CommitFilter, Lock, MAX_CHANGESET_ITEMS, NewRevision, RepoId,
+    RepoPath, Revision, RevisionId, UserId, validate_message,
 };
 use pyn_object::{FileMode, ObjectId};
 
@@ -143,6 +143,7 @@ impl Default for ServiceConfig {
 /// The owner and event dependencies shared by a repository's operations.
 pub struct RepoServiceContext {
     pub owner: UserId,
+    pub owner_id: AccountId,
     pub clock: Arc<dyn Clock>,
     pub limit_events: Arc<dyn crate::LimitEvents>,
 }
@@ -207,7 +208,7 @@ pub struct RepoService {
     clock: Arc<dyn Clock>,
     config: ServiceConfig,
     storage: Option<(UserId, Arc<dyn StorageCaps>)>,
-    limit_events: (UserId, Arc<dyn crate::LimitEvents>),
+    limit_events: (UserId, AccountId, Arc<dyn crate::LimitEvents>),
     unreferenced_cap: u64,
     merge_slots: Arc<tokio::sync::Semaphore>,
 }
@@ -238,7 +239,7 @@ impl RepoService {
             clock: context.clock,
             config,
             storage: None,
-            limit_events: (context.owner, context.limit_events),
+            limit_events: (context.owner, context.owner_id, context.limit_events),
             unreferenced_cap: DEFAULT_UNREFERENCED_UPLOAD_BYTES,
             merge_slots: Arc::new(tokio::sync::Semaphore::new(
                 crate::merge::default_concurrent_merges(),
@@ -259,8 +260,10 @@ impl RepoService {
     }
 
     async fn limit_result<T>(&self, result: Result<T>) -> Result<T> {
-        let (owner, events) = &self.limit_events;
-        crate::limit_events::limit_result(events.as_ref(), owner, result, self.clock.now()).await
+        let (owner, owner_id, events) = &self.limit_events;
+        let id = std::future::ready(Ok(owner_id.clone()));
+        crate::limit_events::limit_result(events.as_ref(), owner, id, result, self.clock.now())
+            .await
     }
 
     async fn record(
@@ -657,35 +660,44 @@ impl RepoService {
     /// Builds lock events for this repository, `None` when it is gone. `forced` is the actor and reason of a forced release.
     async fn lock_events(&self, forced: Option<(UserId, Option<String>)>) -> Option<LockEvents> {
         let record = self.meta.get_repo(&self.repo).await.ok().flatten()?;
-        let (owner, events) = self.limit_events.clone();
+        let (owner, owner_id, events) = self.limit_events.clone();
         let now = self.clock.now();
         Some(Box::new(move |change| {
             let (repo, owner) = (record.name.clone(), owner.clone());
+            let (repo_id, owner_id) = (record.id.clone(), owner_id.clone());
             let event = match change {
                 LockChange::Acquired(l) => DomainEvent::LockAcquired {
                     owner,
+                    owner_id,
                     repo,
+                    repo_id,
                     path: l.path.clone(),
                     holder: l.owner.clone(),
                     expires_at: l.expires_at,
                 },
                 LockChange::Released(l) => DomainEvent::LockReleased {
                     owner,
+                    owner_id,
                     repo,
+                    repo_id,
                     path: l.path.clone(),
                     holder: l.owner.clone(),
                     reason: None,
                 },
                 LockChange::CheckedIn(l) => DomainEvent::LockReleased {
                     owner,
+                    owner_id,
                     repo,
+                    repo_id,
                     path: l.path.clone(),
                     holder: l.owner.clone(),
                     reason: Some("checkin".into()),
                 },
                 LockChange::Expired(l) => DomainEvent::LockExpired {
                     owner,
+                    owner_id,
                     repo,
+                    repo_id,
                     path: l.path.clone(),
                     holder: l.owner.clone(),
                     expires_at: l.expires_at,
@@ -694,7 +706,9 @@ impl RepoService {
                     let (actor, reason) = forced.clone().unwrap_or((l.owner.clone(), None));
                     DomainEvent::LockForced {
                         owner,
+                        owner_id,
                         repo,
+                        repo_id,
                         path: l.path.clone(),
                         holder: l.owner.clone(),
                         actor,

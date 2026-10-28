@@ -160,6 +160,7 @@ impl Repositories {
             svc.load_policy().await?;
             return Ok(svc);
         }
+        let owner_id = self.access.account_id(&record.owner).await?;
         let svc = RepoService::new(
             record.id.clone(),
             self.rules.clone(),
@@ -168,6 +169,7 @@ impl Repositories {
             self.audit.clone(),
             crate::RepoServiceContext {
                 owner: record.owner.clone(),
+                owner_id,
                 clock: self.clock.clone(),
                 limit_events: self.access.limit_events.clone(),
             },
@@ -332,8 +334,11 @@ impl Repositories {
             created_at: self.clock.now(),
         };
         let max_repos = self.access.effective_limits(owner).await?.repositories;
+        let owner_id = self.access.account_id(owner).await?;
         let created = self.access.draft(DomainEvent::RepositoryCreated {
+            repo_id: record.id.clone(),
             owner: owner.clone(),
+            owner_id,
             name: record.name.clone(),
             visibility,
             actor: actor.user.clone(),
@@ -371,10 +376,15 @@ impl Repositories {
 
     /// Removes a repository whose creation did not complete, queueing its deletion after the creation event.
     async fn undo_create(&self, record: &RepoRecord, actor: &UserId) {
+        let Ok(owner_id) = self.access.account_id(&record.owner).await else {
+            return;
+        };
         let events: Vec<_> = self
             .access
             .draft(DomainEvent::RepositoryDeleted {
+                repo_id: record.id.clone(),
                 owner: record.owner.clone(),
+                owner_id,
                 name: record.name.clone(),
                 actor: actor.clone(),
             })
@@ -522,8 +532,11 @@ impl Repositories {
         }
         let mut events = Vec::new();
         if let Some(name) = update.name.as_ref().filter(|n| **n != record.name) {
+            let owner_id = self.access.account_id(&record.owner).await?;
             events.push(self.access.draft(DomainEvent::RepositoryRenamed {
+                repo_id: record.id.clone(),
                 owner: record.owner.clone(),
+                owner_id,
                 name: name.clone(),
                 previous_name: record.name.clone(),
                 actor: actor.user.clone(),
@@ -556,8 +569,11 @@ impl Repositories {
         let detail = format!("deleted {}", record.address());
         self.record(record, &actor.user, AuditAction::RepoDeleted, detail)
             .await?;
+        let owner_id = self.access.account_id(&record.owner).await?;
         let deleted = self.access.draft(DomainEvent::RepositoryDeleted {
+            repo_id: record.id.clone(),
             owner: record.owner.clone(),
+            owner_id,
             name: record.name.clone(),
             actor: actor.user.clone(),
         })?;

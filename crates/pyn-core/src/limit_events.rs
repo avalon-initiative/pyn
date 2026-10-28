@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 
 use crate::access::AccountKind;
 use crate::repo::Visibility;
-use crate::{EventDraft, Limits, Lock, PynError, RepoPath, Result, UserId};
+use crate::{AccountId, EventDraft, Limits, Lock, PynError, RepoId, RepoPath, Result, UserId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LimitKind {
@@ -19,6 +19,7 @@ pub enum LimitKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LimitReached {
     pub owner: UserId,
+    pub owner_id: AccountId,
     pub kind: LimitKind,
     pub value: u64,
 }
@@ -28,63 +29,81 @@ pub struct LimitReached {
 pub enum DomainEvent {
     AccountCreated {
         user: UserId,
+        user_id: AccountId,
         pending_approval: bool,
     },
     AccountApproved {
         user: UserId,
+        user_id: AccountId,
         actor: UserId,
     },
     AccountDisabled {
         user: UserId,
+        user_id: AccountId,
         actor: UserId,
         reason: Option<String>,
     },
     AccountEnabled {
         user: UserId,
+        user_id: AccountId,
         actor: UserId,
     },
     OrganizationCreated {
         name: UserId,
+        org_id: AccountId,
         owner: UserId,
+        owner_id: AccountId,
         actor: UserId,
     },
     OrganizationDeleted {
         name: UserId,
+        org_id: AccountId,
         actor: UserId,
     },
     RepositoryCreated {
+        repo_id: RepoId,
         owner: UserId,
+        owner_id: AccountId,
         name: String,
         visibility: Visibility,
         actor: UserId,
     },
     RepositoryRenamed {
+        repo_id: RepoId,
         owner: UserId,
+        owner_id: AccountId,
         name: String,
         previous_name: String,
         actor: UserId,
     },
     RepositoryDeleted {
+        repo_id: RepoId,
         owner: UserId,
+        owner_id: AccountId,
         name: String,
         actor: UserId,
     },
     OwnerLimitsChanged {
         owner: UserId,
+        owner_id: AccountId,
         kind: AccountKind,
         limits: Limits,
         actor: UserId,
     },
     LockAcquired {
         owner: UserId,
+        owner_id: AccountId,
         repo: String,
+        repo_id: RepoId,
         path: RepoPath,
         holder: UserId,
         expires_at: DateTime<Utc>,
     },
     LockReleased {
         owner: UserId,
+        owner_id: AccountId,
         repo: String,
+        repo_id: RepoId,
         path: RepoPath,
         holder: UserId,
         /// `checkin` when a revision consumed the lock; none for an explicit release.
@@ -93,14 +112,18 @@ pub enum DomainEvent {
     /// A lease that lapsed and was taken over; `expires_at` is when it ran out.
     LockExpired {
         owner: UserId,
+        owner_id: AccountId,
         repo: String,
+        repo_id: RepoId,
         path: RepoPath,
         holder: UserId,
         expires_at: DateTime<Utc>,
     },
     LockForced {
         owner: UserId,
+        owner_id: AccountId,
         repo: String,
+        repo_id: RepoId,
         path: RepoPath,
         holder: UserId,
         actor: UserId,
@@ -190,6 +213,7 @@ impl LimitEvents for MemoryLimitEvents {
 pub(crate) async fn limit_result<T>(
     events: &dyn LimitEvents,
     owner: &UserId,
+    owner_id: impl std::future::Future<Output = Result<AccountId>>,
     result: Result<T>,
     now: DateTime<Utc>,
 ) -> Result<T> {
@@ -200,17 +224,23 @@ pub(crate) async fn limit_result<T>(
         Err(PynError::LockLimitReached { limit }) => (LimitKind::Locks, u64::from(*limit)),
         _ => return result,
     };
-    if let Err(error) = events
-        .record(
-            LimitReached {
-                owner: owner.clone(),
-                kind,
-                value,
-            },
-            now,
-        )
-        .await
-    {
+    let recorded = match owner_id.await {
+        Ok(owner_id) => {
+            events
+                .record(
+                    LimitReached {
+                        owner: owner.clone(),
+                        owner_id,
+                        kind,
+                        value,
+                    },
+                    now,
+                )
+                .await
+        }
+        Err(error) => Err(error),
+    };
+    if let Err(error) = recorded {
         tracing::warn!(%owner, ?kind, %error, "failed to record limit reached event");
     }
     result

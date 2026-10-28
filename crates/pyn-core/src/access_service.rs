@@ -27,7 +27,7 @@ use crate::repo_policy::{
     CreationEffect, CreationRule, CreationScope, CreationSubject, MemberCreation, RepoPolicy,
 };
 use crate::store::MetadataStore;
-use crate::types::{MAX_LABEL_BYTES, validate_label};
+use crate::types::{AccountId, MAX_LABEL_BYTES, validate_label};
 use crate::types::{RepoId, UserId};
 use crate::webhook::{EventDraft, WebhookStore};
 
@@ -119,13 +119,15 @@ pub trait AccessStore: Send + Sync {
 
     /// Creates the user; false if the name is already taken.
     async fn create_user(&self, user: &UserId, now: DateTime<Utc>) -> Result<bool> {
-        self.create_user_with_events(user, now, &[]).await
+        let id = AccountId::generate(AccountKind::User)?;
+        self.create_user_with_events(user, &id, now, &[]).await
     }
 
-    /// Like `create_user`, queueing `events` in the same transaction when the user was created.
+    /// Like `create_user`, with the id the account keeps, queueing `events` in the same transaction when it was created.
     async fn create_user_with_events(
         &self,
         user: &UserId,
+        id: &AccountId,
         now: DateTime<Utc>,
         events: &[EventDraft],
     ) -> Result<bool>;
@@ -135,13 +137,15 @@ pub trait AccessStore: Send + Sync {
     /// Creates the organization with `owner` as its first owner in one step, adding the owner's account if
     /// needed; false if the name is already taken by any account.
     async fn create_org(&self, org: &UserId, owner: &UserId, now: DateTime<Utc>) -> Result<bool> {
-        self.create_org_with_events(org, owner, now, &[]).await
+        let id = AccountId::generate(AccountKind::Org)?;
+        self.create_org_with_events(org, &id, owner, now, &[]).await
     }
 
-    /// Like `create_org`, queueing `events` in the same transaction when the organization was created.
+    /// Like `create_org`, with the id the organization keeps, queueing `events` in the same transaction when it was created.
     async fn create_org_with_events(
         &self,
         org: &UserId,
+        id: &AccountId,
         owner: &UserId,
         now: DateTime<Utc>,
         events: &[EventDraft],
@@ -1673,6 +1677,7 @@ impl AccessService {
             SignupStage::Complete
         };
         let new = NewAccount {
+            id: AccountId::generate(AccountKind::User)?,
             user: user.clone(),
             email,
             password_hash,
@@ -1681,6 +1686,7 @@ impl AccessService {
         };
         let created = self.draft(DomainEvent::AccountCreated {
             user: user.clone(),
+            user_id: new.id.clone(),
             pending_approval: signup == SignupStage::PendingApproval,
         })?;
         if !self
@@ -1741,6 +1747,7 @@ impl AccessService {
             return Ok(signup);
         }
         let new = NewAccount {
+            id: AccountId::generate(AccountKind::User)?,
             user: user.clone(),
             email: Some(email.clone()),
             password_hash,
@@ -1808,6 +1815,7 @@ impl AccessService {
         };
         let created = self.draft(DomainEvent::AccountCreated {
             user: account.user.clone(),
+            user_id: account.id.clone(),
             pending_approval: next == SignupStage::PendingApproval,
         })?;
         if !self
@@ -1930,13 +1938,15 @@ impl AccessService {
         account::validate_password(password)?;
         self.require_grantable(repo, &user).await?;
         let hash = self.passwords.hash(password).await?;
+        let id = AccountId::generate(AccountKind::User)?;
         let created = self.draft(DomainEvent::AccountCreated {
             user: user.clone(),
+            user_id: id.clone(),
             pending_approval: false,
         })?;
         if !self
             .store
-            .create_user_with_events(&user, self.clock.now(), &[created])
+            .create_user_with_events(&user, &id, self.clock.now(), &[created])
             .await?
         {
             return Err(PynError::UserExists(user));
@@ -2302,6 +2312,7 @@ impl AccessService {
         }
         let approved = self.draft(DomainEvent::AccountApproved {
             user: user.clone(),
+            user_id: account.id,
             actor: actor.user.clone(),
         })?;
         self.store
@@ -2331,13 +2342,14 @@ impl AccessService {
                 "you cannot disable your own account".into(),
             ));
         }
-        self.existing_account(user).await?;
+        let account = self.existing_account(user).await?;
         let reason = reason
             .map(str::trim)
             .filter(|r| !r.is_empty())
             .map(str::to_string);
         let disabled = self.draft(DomainEvent::AccountDisabled {
             user: user.clone(),
+            user_id: account.id,
             actor: actor.user.clone(),
             reason: reason.clone(),
         })?;
@@ -2372,6 +2384,7 @@ impl AccessService {
         }
         let enabled = self.draft(DomainEvent::AccountEnabled {
             user: user.clone(),
+            user_id: account.id,
             actor: actor.user.clone(),
         })?;
         self.store

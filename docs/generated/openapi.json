@@ -7448,12 +7448,17 @@
         "type": "object",
         "description": "The signed-in account, independent of any repository.",
         "required": [
+          "id",
           "user"
         ],
         "properties": {
           "admin": {
             "type": "boolean",
             "description": "Runs the server: may approve and disable accounts under `/v1/admin`."
+          },
+          "id": {
+            "type": "string",
+            "description": "Stable, never reused: the name can be recycled after a delete, the id cannot."
           },
           "user": {
             "type": "string"
@@ -7465,6 +7470,7 @@
         "description": "`account.approved`.",
         "required": [
           "user",
+          "user_id",
           "actor"
         ],
         "properties": {
@@ -7474,6 +7480,9 @@
           },
           "user": {
             "type": "string"
+          },
+          "user_id": {
+            "type": "string"
           }
         }
       },
@@ -7482,6 +7491,7 @@
         "description": "`account.created`: a new account exists (sign-up, external sign-in or an administrator).",
         "required": [
           "user",
+          "user_id",
           "pending_approval"
         ],
         "properties": {
@@ -7491,6 +7501,10 @@
           },
           "user": {
             "type": "string"
+          },
+          "user_id": {
+            "type": "string",
+            "description": "The account's stable id."
           }
         }
       },
@@ -7499,6 +7513,7 @@
         "description": "`account.disabled`.",
         "required": [
           "user",
+          "user_id",
           "actor",
           "reason"
         ],
@@ -7515,6 +7530,9 @@
           },
           "user": {
             "type": "string"
+          },
+          "user_id": {
+            "type": "string"
           }
         }
       },
@@ -7523,6 +7541,7 @@
         "description": "`account.enabled`.",
         "required": [
           "user",
+          "user_id",
           "actor"
         ],
         "properties": {
@@ -7531,6 +7550,9 @@
           },
           "user": {
             "type": "string"
+          },
+          "user_id": {
+            "type": "string"
           }
         }
       },
@@ -7538,6 +7560,7 @@
         "type": "object",
         "description": "An account as an administrator sees it.",
         "required": [
+          "id",
           "user",
           "email_verified",
           "status",
@@ -7573,6 +7596,10 @@
           },
           "email_verified": {
             "type": "boolean"
+          },
+          "id": {
+            "type": "string",
+            "description": "Stable, never reused."
           },
           "status": {
             "$ref": "#/components/schemas/AccountStatus"
@@ -8937,7 +8964,9 @@
         "description": "`lock.acquired`: a path was locked, including when a lapsed lease was taken over. A renewal raises nothing.",
         "required": [
           "owner",
+          "owner_id",
           "repo",
+          "repo_id",
           "path",
           "holder",
           "expires_at"
@@ -8953,10 +8982,16 @@
           "owner": {
             "type": "string"
           },
+          "owner_id": {
+            "type": "string"
+          },
           "path": {
             "type": "string"
           },
           "repo": {
+            "type": "string"
+          },
+          "repo_id": {
             "type": "string"
           }
         }
@@ -8966,7 +9001,9 @@
         "description": "`lock.expired`: a lease had lapsed when the path was locked again; observed lazily, not at the expiry instant.",
         "required": [
           "owner",
+          "owner_id",
           "repo",
+          "repo_id",
           "path",
           "holder",
           "expires_at"
@@ -8984,10 +9021,16 @@
           "owner": {
             "type": "string"
           },
+          "owner_id": {
+            "type": "string"
+          },
           "path": {
             "type": "string"
           },
           "repo": {
+            "type": "string"
+          },
+          "repo_id": {
             "type": "string"
           }
         }
@@ -8997,7 +9040,9 @@
         "description": "`lock.forced`: a live lock was removed without its holder, by a forced unlock or a policy change.",
         "required": [
           "owner",
+          "owner_id",
           "repo",
+          "repo_id",
           "path",
           "holder",
           "actor",
@@ -9014,6 +9059,9 @@
           "owner": {
             "type": "string"
           },
+          "owner_id": {
+            "type": "string"
+          },
           "path": {
             "type": "string"
           },
@@ -9025,6 +9073,9 @@
           },
           "repo": {
             "type": "string"
+          },
+          "repo_id": {
+            "type": "string"
           }
         }
       },
@@ -9033,7 +9084,9 @@
         "description": "`lock.released`: the holder released the lock, or a check-in consumed it.",
         "required": [
           "owner",
+          "owner_id",
           "repo",
+          "repo_id",
           "path",
           "holder",
           "reason"
@@ -9043,6 +9096,9 @@
             "type": "string"
           },
           "owner": {
+            "type": "string"
+          },
+          "owner_id": {
             "type": "string"
           },
           "path": {
@@ -9056,6 +9112,9 @@
             "description": "`checkin` when a revision of the path consumed the lock; null for an explicit release."
           },
           "repo": {
+            "type": "string"
+          },
+          "repo_id": {
             "type": "string"
           }
         }
@@ -9079,6 +9138,7 @@
         "type": "object",
         "description": "The caller and what they may do in one repository.",
         "required": [
+          "user_id",
           "user",
           "permissions"
         ],
@@ -9091,6 +9151,10 @@
           },
           "user": {
             "type": "string"
+          },
+          "user_id": {
+            "type": "string",
+            "description": "The id of `user`."
           }
         }
       },
@@ -9601,6 +9665,7 @@
         "type": "object",
         "description": "An organization: a namespace that owns repositories.",
         "required": [
+          "id",
           "name",
           "created_at"
         ],
@@ -9608,6 +9673,10 @@
           "created_at": {
             "type": "string",
             "format": "date-time"
+          },
+          "id": {
+            "type": "string",
+            "description": "Stable and never reused: an organization recreated under a deleted name gets a new id."
           },
           "name": {
             "type": "string"
@@ -9654,7 +9723,9 @@
         "description": "`organization.created`.",
         "required": [
           "name",
+          "org_id",
           "owner",
+          "owner_id",
           "actor"
         ],
         "properties": {
@@ -9664,9 +9735,16 @@
           "name": {
             "type": "string"
           },
+          "org_id": {
+            "type": "string",
+            "description": "The organization's stable id."
+          },
           "owner": {
             "type": "string",
             "description": "The organization's first owner."
+          },
+          "owner_id": {
+            "type": "string"
           }
         }
       },
@@ -9675,6 +9753,7 @@
         "description": "`organization.deleted`.",
         "required": [
           "name",
+          "org_id",
           "actor"
         ],
         "properties": {
@@ -9683,6 +9762,10 @@
           },
           "name": {
             "type": "string"
+          },
+          "org_id": {
+            "type": "string",
+            "description": "The deleted organization's id, never issued again."
           }
         }
       },
@@ -9699,6 +9782,7 @@
         "description": "`owner.limit_reached`: an operation was refused because the owner is at a limit. It names no actor.",
         "required": [
           "owner",
+          "owner_id",
           "limit",
           "value"
         ],
@@ -9707,6 +9791,9 @@
             "$ref": "#/components/schemas/LimitKind"
           },
           "owner": {
+            "type": "string"
+          },
+          "owner_id": {
             "type": "string"
           },
           "value": {
@@ -9721,6 +9808,7 @@
         "type": "object",
         "description": "An owner's limits. Nothing is limited unless an operator sets a limit or a server default.",
         "required": [
+          "owner_id",
           "kind",
           "effective",
           "own"
@@ -9736,6 +9824,10 @@
           "own": {
             "$ref": "#/components/schemas/Limits",
             "description": "Limits set for this owner alone; a null field follows the server default."
+          },
+          "owner_id": {
+            "type": "string",
+            "description": "The id of the user or organization these limits belong to."
           }
         }
       },
@@ -9744,6 +9836,7 @@
         "description": "`owner.limits_changed`: an owner's own limits were set; `limits` is the result, null meaning the server default.",
         "required": [
           "owner",
+          "owner_id",
           "kind",
           "limits",
           "actor"
@@ -9759,6 +9852,9 @@
             "$ref": "#/components/schemas/Limits"
           },
           "owner": {
+            "type": "string"
+          },
+          "owner_id": {
             "type": "string"
           }
         }
@@ -9783,6 +9879,7 @@
         "description": "What an owner uses against its limits.",
         "required": [
           "owner",
+          "owner_id",
           "limits",
           "usage",
           "repositories"
@@ -9793,6 +9890,10 @@
           },
           "owner": {
             "type": "string"
+          },
+          "owner_id": {
+            "type": "string",
+            "description": "The id of `owner`."
           },
           "repositories": {
             "type": "array",
@@ -10078,6 +10179,8 @@
       "RepoInfo": {
         "type": "object",
         "required": [
+          "id",
+          "owner_id",
           "owner",
           "name",
           "visibility",
@@ -10090,6 +10193,10 @@
           "created_at": {
             "type": "string",
             "format": "date-time"
+          },
+          "id": {
+            "type": "string",
+            "description": "Stable, never reused and unchanged by a rename; a deleted repository's id is never issued again."
           },
           "lease_hours": {
             "type": "integer",
@@ -10121,6 +10228,10 @@
           },
           "owner": {
             "type": "string"
+          },
+          "owner_id": {
+            "type": "string",
+            "description": "The id of `owner`, a user or an organization."
           },
           "role": {
             "type": [
@@ -10266,6 +10377,7 @@
         "type": "object",
         "required": [
           "repository",
+          "repo_id",
           "stored_bytes",
           "files",
           "revisions"
@@ -10276,6 +10388,10 @@
             "format": "int64",
             "description": "Paths with a head revision.",
             "minimum": 0
+          },
+          "repo_id": {
+            "type": "string",
+            "description": "The repository's id."
           },
           "repository": {
             "type": "string",
@@ -10297,7 +10413,9 @@
         "type": "object",
         "description": "`repository.created`.",
         "required": [
+          "repo_id",
           "owner",
+          "owner_id",
           "name",
           "visibility",
           "actor"
@@ -10312,6 +10430,13 @@
           "owner": {
             "type": "string"
           },
+          "owner_id": {
+            "type": "string"
+          },
+          "repo_id": {
+            "type": "string",
+            "description": "The repository's stable id."
+          },
           "visibility": {
             "$ref": "#/components/schemas/Visibility"
           }
@@ -10321,7 +10446,9 @@
         "type": "object",
         "description": "`repository.deleted`.",
         "required": [
+          "repo_id",
           "owner",
+          "owner_id",
           "name",
           "actor"
         ],
@@ -10334,6 +10461,13 @@
           },
           "owner": {
             "type": "string"
+          },
+          "owner_id": {
+            "type": "string"
+          },
+          "repo_id": {
+            "type": "string",
+            "description": "The deleted repository's id, never issued again."
           }
         }
       },
@@ -10341,7 +10475,9 @@
         "type": "object",
         "description": "`repository.renamed`: the name changed; the owner never does.",
         "required": [
+          "repo_id",
           "owner",
+          "owner_id",
           "name",
           "previous_name",
           "actor"
@@ -10356,8 +10492,15 @@
           "owner": {
             "type": "string"
           },
+          "owner_id": {
+            "type": "string"
+          },
           "previous_name": {
             "type": "string"
+          },
+          "repo_id": {
+            "type": "string",
+            "description": "Unchanged by the rename: re-key on it."
           }
         }
       },

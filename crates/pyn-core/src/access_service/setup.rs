@@ -195,6 +195,7 @@ impl AccessService {
         };
         let password_hash = self.passwords.hash(request.password).await?;
         let admin = NewAccount {
+            id: AccountId::generate(AccountKind::User)?,
             user: user.clone(),
             email,
             password_hash,
@@ -203,6 +204,7 @@ impl AccessService {
         };
         let created = self.draft(DomainEvent::AccountCreated {
             user: user.clone(),
+            user_id: admin.id.clone(),
             pending_approval: false,
         })?;
         if !self

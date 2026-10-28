@@ -73,6 +73,7 @@ async fn rig(cap: u64, chunked: bool) -> Rig {
             Arc::new(MemoryAuditStore::new()),
             pyn_core::RepoServiceContext {
                 owner: pyn_core::UserId::new("owner"),
+                owner_id: pyn_core::AccountId::new("uowner"),
                 clock: Arc::new(SystemClock),
                 limit_events: Arc::new(pyn_core::MemoryLimitEvents::new()),
             },

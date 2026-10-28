@@ -48,6 +48,7 @@ pub(crate) async fn me(
 ) -> ApiResult<Json<api::Account>> {
     let who = identify(&s, &headers).await?;
     Ok(Json(api::Account {
+        id: s.access.account_id(&who.user).await?.to_string(),
         user: who.user.to_string(),
         admin: s.access.is_server_admin(&who).await?,
     }))

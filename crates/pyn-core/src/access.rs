@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::error::{PynError, Result};
-use crate::types::{RepoId, UserId};
+use crate::types::{AccountId, RepoId, UserId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -761,6 +761,17 @@ impl AccountKind {
     }
 }
 
+impl AccountId {
+    /// A fresh random id: `u` or `o` for the kind, then 96 random bits in hex.
+    pub fn generate(kind: AccountKind) -> Result<Self> {
+        let prefix = match kind {
+            AccountKind::User => 'u',
+            AccountKind::Org => 'o',
+        };
+        Ok(Self::new(format!("{prefix}{}", token::random_hex(12)?)))
+    }
+}
+
 impl fmt::Display for AccountKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
@@ -902,6 +913,7 @@ pub mod team {
 /// An account as the sign-up and administration rules see it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccountRecord {
+    pub id: AccountId,
     pub user: UserId,
     pub kind: AccountKind,
     /// Lowercase.
@@ -942,6 +954,7 @@ impl AccountRecord {
 /// A self-registered account to store, with its password already hashed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewAccount {
+    pub id: AccountId,
     pub user: UserId,
     pub email: Option<String>,
     pub password_hash: String,

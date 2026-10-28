@@ -25,6 +25,7 @@ fn kind_dto(kind: AccountKind) -> api::OwnerKind {
 
 fn owner_limits_dto(l: pyn_core::OwnerLimits) -> api::OwnerLimits {
     api::OwnerLimits {
+        owner_id: l.id.to_string(),
         kind: kind_dto(l.kind),
         effective: limits_dto(l.effective),
         own: limits_dto(l.own),
@@ -111,6 +112,7 @@ pub(crate) async fn owner_usage(
         .await?;
     Ok(Json(api::OwnerUsage {
         owner,
+        owner_id: report.limits.id.to_string(),
         limits: owner_limits_dto(report.limits),
         usage: api::Usage {
             repositories: report.usage.repositories,
@@ -120,14 +122,19 @@ pub(crate) async fn owner_usage(
         repositories: report
             .repositories
             .into_iter()
-            .map(|(record, used)| repo_usage_dto(record.address(), used))
+            .map(|(record, used)| repo_usage_dto(record.address(), record.id.to_string(), used))
             .collect(),
     }))
 }
 
-fn repo_usage_dto(repository: String, used: pyn_core::RepoUsage) -> api::RepoUsage {
+fn repo_usage_dto(
+    repository: String,
+    repo_id: String,
+    used: pyn_core::RepoUsage,
+) -> api::RepoUsage {
     api::RepoUsage {
         repository,
+        repo_id,
         stored_bytes: used.stored_bytes,
         files: used.files,
         revisions: used.revisions,
@@ -143,5 +150,9 @@ pub(crate) async fn repo_usage(
 ) -> ApiResult<Json<api::RepoUsage>> {
     let open = authorize_read(&s, &headers, &owner, &name).await?;
     let used = s.repos.repo_usage(&open.record).await?;
-    Ok(Json(repo_usage_dto(open.record.address(), used)))
+    Ok(Json(repo_usage_dto(
+        open.record.address(),
+        open.record.id.to_string(),
+        used,
+    )))
 }

@@ -543,9 +543,12 @@ async fn disabling_an_account_ends_its_access_and_enabling_restores_it() {
             .unwrap()
     };
     let me = send(&s.app, bearer(&token)).await;
+    let account = me.json::<api::Account>();
+    assert!(account.id.starts_with('u') && account.id.len() == 25);
     assert_eq!(
-        me.json::<api::Account>(),
+        account,
         api::Account {
+            id: account.id.clone(),
             user: "alice".into(),
             admin: false
         }

@@ -283,12 +283,14 @@ impl AccessService {
                 identity.last_sign_in_at = Some(identity.created_at);
                 identity.email = email.clone();
                 let new = NewExternalAccount {
+                    id: AccountId::generate(AccountKind::User)?,
                     user: user.clone(),
                     email: email.clone(),
                     identity,
                 };
                 let created = self.draft(DomainEvent::AccountCreated {
                     user: user.clone(),
+                    user_id: new.id.clone(),
                     pending_approval: false,
                 })?;
                 match self
