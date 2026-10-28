@@ -66,6 +66,8 @@ pub(super) struct Settings {
     /// Conflicts get git's two-sided markers instead of diff3 ones.
     pub plain_markers: bool,
     pub renormalize: bool,
+    /// Extra marker width, two per level of a virtual merge base.
+    pub marker_extra: usize,
     /// `-X subtree[=<path>]` or `-s subtree`: the prefix, empty to find it.
     pub shift: Option<String>,
 }

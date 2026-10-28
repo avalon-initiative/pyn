@@ -676,7 +676,7 @@ fn orphan_commit(repo: &Repo) -> ObjectId {
 }
 
 #[test]
-fn histories_without_a_common_start_or_with_several_are_refused() {
+fn histories_without_a_common_start_are_refused() {
     for format in FORMATS {
         let repo = Repo::merge(format);
         let id = orphan_commit(&repo);
@@ -691,57 +691,6 @@ fn histories_without_a_common_start_or_with_several_are_refused() {
         let moved = changed(&before, &repo);
         assert!(moved.is_empty(), "{moved:?}");
     }
-
-    let repo = Repo::merge("sha1");
-    repo.ok(&["branch", "x1", "old"]);
-    repo.ok(&["branch", "y1", "old"]);
-    repo.ok(&["switch", "x1"]);
-    write(&repo, "x.txt", "x\n");
-    repo.ok(&["add", "x.txt"]);
-    repo.ok(&["commit", "-m", "x1"]);
-    repo.ok(&["tag", "x1-tip"]);
-    repo.ok(&["switch", "y1"]);
-    write(&repo, "y.txt", "y\n");
-    repo.ok(&["add", "y.txt"]);
-    repo.ok(&["commit", "-m", "y1"]);
-    repo.ok(&["tag", "y1-tip"]);
-    repo.ok(&["merge", "x1-tip", "-m", "y2"]);
-    repo.ok(&["switch", "x1"]);
-    repo.ok(&["merge", "y1-tip", "-m", "x2"]);
-    let before = snapshot(&repo.main);
-    let (code, err) = repo.fails(&["merge", "y1"]);
-    assert_eq!(code, 128);
-    assert!(err.contains("more than one merge base"), "{err}");
-    assert!(
-        changed(&before, &repo)
-            .iter()
-            .all(|k| k == ".git/ORIG_HEAD")
-    );
-}
-
-#[test]
-fn a_file_on_one_side_and_a_folder_on_the_other_is_refused_before_anything_changes() {
-    let repo = Repo::merge("sha1");
-    repo.ok(&["switch", "-c", "p", "old"]);
-    write(&repo, "thing", "a file\n");
-    repo.ok(&["add", "thing"]);
-    repo.ok(&["commit", "-m", "file"]);
-    repo.ok(&["switch", "-c", "q", "old"]);
-    write(&repo, "thing/inside.txt", "a folder\n");
-    repo.ok(&["add", "thing"]);
-    repo.ok(&["commit", "-m", "folder"]);
-    let before = snapshot(&repo.main);
-    let (code, err) = repo.fails(&["merge", "p"]);
-    assert_eq!(code, 128);
-    assert!(
-        err.contains("a file on one side and a folder on the other"),
-        "{err}"
-    );
-    assert!(
-        changed(&before, &repo)
-            .iter()
-            .all(|k| k == ".git/ORIG_HEAD")
-    );
 }
 
 #[test]

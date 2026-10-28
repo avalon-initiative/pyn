@@ -328,18 +328,32 @@ fn push_side(out: &mut Vec<u8>, lines: &[&[u8]]) {
     }
 }
 
+/// The width of a conflict marker: seven characters, or more inside a virtual merge base.
+pub const MARKER_SIZE: usize = 7;
+
 /// Renders chunks with git's default two-sided conflict markers, without the base.
 pub fn render_two_way(chunks: &[Chunk<&[u8]>], ours: &str, theirs: &str) -> Vec<u8> {
+    render_two_way_sized(chunks, MARKER_SIZE, ours, theirs)
+}
+
+/// As `render_two_way`, with markers `size` characters wide.
+pub fn render_two_way_sized(
+    chunks: &[Chunk<&[u8]>],
+    size: usize,
+    ours: &str,
+    theirs: &str,
+) -> Vec<u8> {
+    let marker = |c: &str| c.repeat(size);
     let mut out = Vec::new();
     for chunk in chunks {
         match chunk {
             Chunk::Resolved(lines) => lines.iter().for_each(|l| out.extend_from_slice(l)),
             Chunk::Conflict(c) => {
-                out.extend_from_slice(format!("<<<<<<< {ours}\n").as_bytes());
+                out.extend_from_slice(format!("{} {ours}\n", marker("<")).as_bytes());
                 push_side(&mut out, &c.ours);
-                out.extend_from_slice(b"=======\n");
+                out.extend_from_slice(format!("{}\n", marker("=")).as_bytes());
                 push_side(&mut out, &c.theirs);
-                out.extend_from_slice(format!(">>>>>>> {theirs}\n").as_bytes());
+                out.extend_from_slice(format!("{} {theirs}\n", marker(">")).as_bytes());
             }
         }
     }
@@ -348,18 +362,28 @@ pub fn render_two_way(chunks: &[Chunk<&[u8]>], ours: &str, theirs: &str) -> Vec<
 
 /// Renders chunks with diff3-style conflict markers, labelled with the given names.
 pub fn render_markers(chunks: &[Chunk<&[u8]>], ours: &str, base: &str, theirs: &str) -> Vec<u8> {
+    render_markers_sized(chunks, MARKER_SIZE, (ours, base, theirs))
+}
+
+/// As `render_markers`, with markers `size` characters wide.
+pub fn render_markers_sized(
+    chunks: &[Chunk<&[u8]>],
+    size: usize,
+    (ours, base, theirs): (&str, &str, &str),
+) -> Vec<u8> {
+    let marker = |c: &str| c.repeat(size);
     let mut out = Vec::new();
     for chunk in chunks {
         match chunk {
             Chunk::Resolved(lines) => lines.iter().for_each(|l| out.extend_from_slice(l)),
             Chunk::Conflict(c) => {
-                out.extend_from_slice(format!("<<<<<<< {ours}\n").as_bytes());
+                out.extend_from_slice(format!("{} {ours}\n", marker("<")).as_bytes());
                 push_side(&mut out, &c.ours);
-                out.extend_from_slice(format!("||||||| {base}\n").as_bytes());
+                out.extend_from_slice(format!("{} {base}\n", marker("|")).as_bytes());
                 push_side(&mut out, &c.base);
-                out.extend_from_slice(b"=======\n");
+                out.extend_from_slice(format!("{}\n", marker("=")).as_bytes());
                 push_side(&mut out, &c.theirs);
-                out.extend_from_slice(format!(">>>>>>> {theirs}\n").as_bytes());
+                out.extend_from_slice(format!("{} {theirs}\n", marker(">")).as_bytes());
             }
         }
     }

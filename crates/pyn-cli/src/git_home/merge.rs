@@ -15,7 +15,10 @@ use super::stage::{
     put_entry, raw_mode, refuse_in_progress, remove_entry, write_tree,
 };
 use super::strategy::{BadOption, Strategy, Which, shift_tree};
-use super::treemerge::{Conflicting, Labels, Merge, Resolved, Worktree, merge_trees, result_tree};
+use super::treemerge::{
+    Conflicting, Labels, Merge, Resolved, Worktree, merge_trees_with, result_tree,
+};
+use super::virtual_base::{VIRTUAL_LABEL, virtual_tree};
 use super::worktree::{
     Blocked, Mode, blocking_path, check_writes, move_tree, remove_entry_file, within, write_bytes,
     write_entry,
@@ -61,7 +64,7 @@ const MERGE_HOOKS: [&str; 4] = [
     "post-merge",
 ];
 
-fn short(id: &ObjectId) -> String {
+pub(super) fn short(id: &ObjectId) -> String {
     id.to_hex()[..ABBREV].to_string()
 }
 
@@ -425,15 +428,9 @@ fn true_merge(
 ) -> Result<()> {
     let kind = strategy.kind;
     let bases = git.merge_bases(&ours, &theirs)?;
-    let base = match bases.as_slice() {
-        [] => bail!("refusing to merge unrelated histories"),
-        [one] => Some(*one),
-        _ if kind == Which::Ours => None,
-        _ => bail!(
-            "the two histories have more than one merge base (a criss-cross merge); pyn cannot merge them yet, \
-             and nothing was changed"
-        ),
-    };
+    if bases.is_empty() {
+        bail!("refusing to merge unrelated histories");
+    }
     let tree_of = |c: &ObjectId| -> Result<ObjectId> { Ok(git.repo.commit(c)?.tree) };
     let ours_tree = tree_of(&ours)?;
     let finish = Finish {
@@ -454,8 +451,7 @@ fn true_merge(
             Ok(ours_tree)
         });
     }
-    let base = base.expect("a single merge base was checked above");
-    let (mut base_tree, mut theirs_tree) = (tree_of(&base)?, tree_of(&theirs)?);
+    let mut theirs_tree = tree_of(&theirs)?;
     let settings = if kind.is_tree_merge() {
         match strategy.settings() {
             Ok(settings) => settings,
@@ -470,9 +466,30 @@ fn true_merge(
     };
     if let Some(prefix) = &settings.shift {
         theirs_tree = shift_tree(git, &ours_tree, &theirs_tree, prefix)?;
+    }
+    let (mut base_tree, base_label) = match bases.as_slice() {
+        [one] => (tree_of(one)?, short(one)),
+        many => {
+            if !kind.is_tree_merge() {
+                bail!(
+                    "the strategy '{}' with more than one merge base is not built, and nothing was changed",
+                    kind.name()
+                );
+            }
+            if settings.shift.is_some() {
+                bail!(
+                    "a subtree merge of histories with more than one merge base is not built, and nothing was changed"
+                );
+            }
+            (
+                virtual_tree(git, many, &settings, 0)?,
+                VIRTUAL_LABEL.to_string(),
+            )
+        }
+    };
+    if let Some(prefix) = &settings.shift {
         base_tree = shift_tree(git, &ours_tree, &base_tree, prefix)?;
     }
-    let base_label = short(&base);
     let incoming =
         git.repo
             .diff_trees(Some(&base_tree), Some(&theirs_tree), &Pathspec::default())?;
@@ -482,17 +499,16 @@ fn true_merge(
             .iter()
             .filter_map(|c| c.new.map(|e| (c.path.as_slice(), e.mode))),
     )?;
-    let merged = merge_trees(
+    let merged = merge_trees_with(
         git,
-        Some(&base_tree),
-        Some(&ours_tree),
-        Some(&theirs_tree),
+        [Some(&base_tree), Some(&ours_tree), Some(&theirs_tree)],
         &Labels {
             ours: "HEAD",
             theirs: spec,
             base: &base_label,
         },
         &settings,
+        kind.is_tree_merge(),
     )?;
     let mut how = Concluding::Strategy(kind);
     if kind.tries_trivial() && !args.no_commit {
@@ -814,7 +830,12 @@ pub(super) fn apply_merge(
     let ignores = super::stage::Ignores {
         ignore: git.repo.ignore()?,
     };
-    let none = std::collections::HashSet::new();
+    let removed: std::collections::HashSet<&[u8]> = merged
+        .paths
+        .iter()
+        .filter(|(p, r)| matches!(r, Resolved::Take(None)) && head_leaves.contains_key(*p))
+        .map(|(p, _)| p.as_slice())
+        .collect();
     for (path, resolved) in &merged.paths {
         let here = head_leaves.get(path);
         let touches_tree = match resolved {
@@ -833,7 +854,7 @@ pub(super) fn apply_merge(
                 blocked.local.push(path.clone());
             }
             None => {
-                if let Some(way) = blocking_path(git, &ignores, path, &none)? {
+                if let Some(way) = blocking_path(git, &ignores, path, &removed)? {
                     blocked.add_way(git.repo.root()?, way);
                 }
             }
@@ -883,6 +904,20 @@ pub(super) fn apply_merge(
             }
             Resolved::Conflict(c) => {
                 conflicted.push(path.clone());
+                if let Some(from) = &c.moved_from {
+                    let (label, side) = (
+                        path_string(from),
+                        if c.ours.is_some() {
+                            "HEAD"
+                        } else {
+                            landing.theirs
+                        },
+                    );
+                    println!(
+                        "CONFLICT (file/directory): directory in the way of {label} from {side}; moving it to {} instead.",
+                        path_string(path)
+                    );
+                }
                 report_conflict(
                     path,
                     c.kind,
@@ -928,6 +963,7 @@ fn report_conflict(path: &[u8], kind: Conflicting, theirs: &str, both: bool) -> 
                 "CONFLICT (modify/delete): {name} deleted in {deleted} and modified in {kept}.  Version {kept} of {name} left in tree."
             );
         }
+        Conflicting::FileDirectory => {}
         _ => println!("CONFLICT (content): Merge conflict in {name}"),
     }
     Ok(())
@@ -987,6 +1023,8 @@ fn abort(git: &GitHome) -> Result<()> {
         redo.iter()
             .filter_map(|p| committed.get(p).map(|e| (p.as_slice(), e.mode))),
     )?;
+    // Removals first, so a folder is gone before the file that replaces it is written.
+    redo.sort_by_key(|p| committed.contains_key(p));
     for path in &redo {
         remove_entry(&mut entries, path);
         match committed.get(path) {

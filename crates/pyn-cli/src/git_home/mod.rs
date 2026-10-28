@@ -102,6 +102,7 @@ pub(crate) mod todo;
 mod treemerge;
 mod upstream;
 mod verify_sig;
+mod virtual_base;
 mod worktree;
 mod worktrees;
 
