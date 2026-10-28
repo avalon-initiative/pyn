@@ -172,6 +172,45 @@ pub struct BranchArgs {
     /// List remote-tracking branches (a pyn server only).
     #[arg(short = 'r', long)]
     pub(crate) remotes: bool,
+    #[command(flatten)]
+    pub(crate) track: TrackArgs,
+}
+
+/// How `--track` sets the upstream of a new branch.
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+pub enum TrackMode {
+    Direct,
+    Inherit,
+}
+
+/// `-t`/`--track[=direct|inherit]` and `--no-track` for a branch that is created (a git repository only).
+#[derive(Debug, Default, Args)]
+pub struct TrackArgs {
+    /// Set the new branch's upstream to its start point, or with `=inherit` to the start point's own upstream.
+    #[arg(
+        short = 't',
+        long,
+        value_name = "direct|inherit",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "direct",
+        overrides_with_all = ["track", "no_track"]
+    )]
+    pub(crate) track: Option<TrackMode>,
+    /// Do not set an upstream, whatever `branch.autoSetupMerge` says.
+    #[arg(long, overrides_with_all = ["track", "no_track"])]
+    pub(crate) no_track: bool,
+}
+
+impl TrackArgs {
+    /// Refuses the flags where there is no git repository to hold the configuration.
+    pub(crate) fn refuse_off_git(&self, command: &str) {
+        if self.track.is_some() || self.no_track {
+            crate::usage_error(&format!(
+                "`pyn {command} --track` and `--no-track` need a git repository"
+            ));
+        }
+    }
 }
 
 pub(crate) fn flag(on: bool, off: bool) -> Option<bool> {
@@ -212,6 +251,8 @@ pub struct SwitchArgs {
     pub(crate) guess: bool,
     #[arg(long, overrides_with = "guess")]
     pub(crate) no_guess: bool,
+    #[command(flatten)]
+    pub(crate) track: TrackArgs,
 }
 
 /// Switch branches, or restore files from the workspace's revisions or from another commit.
@@ -257,6 +298,8 @@ pub struct CheckoutArgs {
     pub(crate) guess: bool,
     #[arg(long, overrides_with = "guess")]
     pub(crate) no_guess: bool,
+    #[command(flatten)]
+    pub(crate) track: TrackArgs,
     #[command(flatten)]
     pub(crate) pathspec_file: crate::pathspec::PathspecFile,
 }
@@ -330,6 +373,7 @@ pub fn branch_command(
     args: BranchArgs,
 ) -> Result<()> {
     let api = backend.pyn_server("branch")?;
+    args.track.refuse_off_git("branch");
     if let Some(w) = ws
         && let Some(store) = LocalStore::open(w)
     {
@@ -351,6 +395,7 @@ pub fn branch_command(
         force,
         set_upstream_to,
         unset_upstream,
+        track: _,
     } = args;
     if force_rename || copy || force_copy || force || set_upstream_to.is_some() || unset_upstream {
         crate::usage_error(
@@ -531,6 +576,7 @@ pub fn switch_command(
     mut args: SwitchArgs,
 ) -> Result<()> {
     let api = backend.pyn_server("switch")?;
+    args.track.refuse_off_git("switch");
     if args.force_create.is_some() || args.orphan.is_some() {
         crate::usage_error("`pyn switch` -C and --orphan need a git repository");
     }
@@ -593,6 +639,7 @@ pub fn checkout_command(
     rp: &dyn Fn(&str) -> Result<String>,
 ) -> Result<()> {
     let api = backend.pyn_server("checkout")?;
+    args.track.refuse_off_git("checkout");
     if args.patch {
         bail!("`pyn checkout --patch` needs a git repository; a pyn server restores whole files");
     }
@@ -615,6 +662,7 @@ pub fn checkout_command(
         no_recurse_submodules: _,
         guess: _,
         no_guess: _,
+        track: _,
         pathspec_file: _,
     } = args;
     if recurse_submodules {
