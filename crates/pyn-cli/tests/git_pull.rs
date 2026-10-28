@@ -665,7 +665,7 @@ fn unsupported_flags_are_usage_errors() {
         vec!["-X", "patience"],
         vec!["-s", "ort", "-s", "ours"],
         vec!["--rebase", "-s", "ours"],
-        vec!["--rebase", "-X", "theirs"],
+        vec!["--rebase", "-X", "patience"],
     ] {
         let mut full = vec!["pull"];
         full.extend(&args);
@@ -693,6 +693,43 @@ fn merge_strategies_and_options_reach_the_merge() {
             assert_eq!(g.code, p.code, "{args:?}: {}", p.stderr);
         }
     }
+}
+
+#[test]
+fn strategies_and_options_reach_the_rebase_of_a_rebasing_pull() {
+    for (format, via) in [("sha1", Via::Ssh), ("sha256", Via::Http)] {
+        for args in [
+            vec!["-X", "theirs"],
+            vec!["-X", "ours"],
+            vec!["-Xtheirs"],
+            vec!["-s", "ort", "--strategy-option=theirs"],
+            vec!["--strategy=recursive"],
+        ] {
+            let t = Twin::new(format, via);
+            t.local("a.txt", "local\n", "local a");
+            t.remote("a.txt", "remote\n", "remote a");
+            let mut full = vec!["--rebase"];
+            full.extend(&args);
+            let (g, p) = t.both(&full);
+            assert_eq!(g.code, p.code, "{args:?}: {}", p.stderr);
+            let tree = |dir: &Path| run(dir, &["rev-parse", "HEAD^{tree}"]);
+            assert_eq!(tree(&t.git), tree(&t.pyn), "{args:?}");
+        }
+    }
+}
+
+#[test]
+fn pull_twohead_names_the_default_merge_strategy() {
+    let t = Twin::new("sha1", Via::Ssh);
+    t.local("a.txt", "local\n", "local a");
+    t.remote("a.txt", "remote\n", "remote a");
+    for dir in [&t.git, &t.pyn] {
+        run(dir, &["config", "pull.twohead", "ours"]);
+    }
+    let (g, p) = t.both(&["--no-rebase", "--no-edit"]);
+    assert_eq!((g.code, p.code), (0, 0), "{}", p.stderr);
+    let tree = |dir: &Path| run(dir, &["rev-parse", "HEAD^{tree}"]);
+    assert_eq!(tree(&t.git), tree(&t.pyn));
 }
 
 #[test]

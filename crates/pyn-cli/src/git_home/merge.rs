@@ -161,7 +161,13 @@ pub fn merge(git: &GitHome, mut args: MergeArgs) -> Result<()> {
     }
     args.edit = wants_edit(&args);
     args.no_edit = !args.edit;
-    let strategy = Strategy::parse(&args.strategy, &args.strategy_option);
+    let configured: Vec<String> = match git.repo.config().get("pull.twohead") {
+        Some(names) if args.strategy.is_empty() => {
+            names.split_whitespace().map(str::to_string).collect()
+        }
+        _ => args.strategy.clone(),
+    };
+    let strategy = Strategy::parse(&configured, &args.strategy_option);
     let opened = git.open_index()?;
     refuse_unfinished(git, &opened);
     refuse_in_progress(git)?;

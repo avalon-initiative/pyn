@@ -40,6 +40,12 @@ pub struct PickArgs {
     /// Keep the message (accepted for scripts; pyn never opens an editor).
     #[arg(long, conflicts_with = "control")]
     pub(crate) no_edit: bool,
+    /// Git repository: the merge strategy, `ort` or `recursive`.
+    #[arg(long, value_name = "STRATEGY", conflicts_with = "control")]
+    pub(crate) strategy: Option<String>,
+    /// Git repository: an option for the merge, such as `ours` or `theirs`.
+    #[arg(short = 'X', long, value_name = "OPTION", conflicts_with = "control")]
+    pub(crate) strategy_option: Vec<String>,
     #[command(flatten)]
     pub(crate) sign: crate::git_home::SignFlag,
     /// Commit what was resolved and go on with the remaining commits.
@@ -76,6 +82,12 @@ pub struct RevertArgs {
     /// Keep the generated message (accepted for scripts; pyn never opens an editor).
     #[arg(long, conflicts_with = "control")]
     pub(crate) no_edit: bool,
+    /// Git repository: the merge strategy, `ort` or `recursive`.
+    #[arg(long, value_name = "STRATEGY", conflicts_with = "control")]
+    pub(crate) strategy: Option<String>,
+    /// Git repository: an option for the merge, such as `ours` or `theirs`.
+    #[arg(short = 'X', long, value_name = "OPTION", conflicts_with = "control")]
+    pub(crate) strategy_option: Vec<String>,
     #[command(flatten)]
     pub(crate) sign: crate::git_home::SignFlag,
     /// Commit what was resolved and go on with the remaining commits.
@@ -101,6 +113,8 @@ impl From<RevertArgs> for PickArgs {
             signoff: a.signoff,
             mainline: a.mainline,
             no_edit: a.no_edit,
+            strategy: a.strategy,
+            strategy_option: a.strategy_option,
             sign: a.sign,
             continue_pick: a.continue_pick,
             abort: a.abort,
@@ -242,6 +256,8 @@ fn refuse_git_only(args: &PickArgs, command: &str) -> Result<()> {
         ("-n", args.no_commit),
         ("-s", args.signoff),
         ("-m", args.mainline.is_some()),
+        ("--strategy", args.strategy.is_some()),
+        ("-X", !args.strategy_option.is_empty()),
         ("--quit", args.quit),
     ];
     let flag = (given.into_iter().find_map(|(f, on)| on.then_some(f))).or(args.sign.first_given());

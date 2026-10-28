@@ -29,7 +29,7 @@ use super::rewrite;
 use super::signing::SignFlag;
 use super::stage::{clean_message, merge_heads, parse_date, raw_mode, write_tree};
 use super::stash::{Applying, PushArgs, apply_commit, save, store_stash};
-use super::strategy::Settings;
+use super::strategy::Replay;
 use super::todo::{self, Cmd, Flag, Item};
 use super::treemerge::{Labels, merge_trees, result_tree};
 use super::worktree::{Mode, move_tree};
@@ -125,10 +125,18 @@ pub struct RebaseArgs {
     /// Run this command after every commit that is made (repeatable).
     #[arg(short = 'x', long, value_name = "CMD", action = clap::ArgAction::Append, conflicts_with = "control")]
     pub(crate) exec: Vec<String>,
-    #[arg(short = 's', long, hide = true)]
+    /// The merge strategy for the replayed commits (a git repository only): `ort` or `recursive`.
+    #[arg(
+        short = 's',
+        long,
+        value_name = "STRATEGY",
+        overrides_with = "strategy",
+        conflicts_with = "control"
+    )]
     pub(crate) strategy: Option<String>,
-    #[arg(short = 'X', long, hide = true)]
-    pub(crate) strategy_option: Option<String>,
+    /// An option for the merge, such as `ours` or `theirs` (a git repository only).
+    #[arg(short = 'X', long, value_name = "OPTION", conflicts_with = "control")]
+    pub(crate) strategy_option: Vec<String>,
     /// With `-i`, move `fixup!` and `squash!` commits under the commit they name.
     #[arg(long, overrides_with = "no_autosquash")]
     pub(crate) autosquash: bool,
@@ -155,16 +163,6 @@ pub struct RebaseArgs {
 impl RebaseArgs {
     pub(crate) fn refuse_unsupported(&self) {
         let given = [
-            (
-                "--strategy",
-                self.strategy.is_some(),
-                "merge strategies are not built",
-            ),
-            (
-                "--strategy-option",
-                self.strategy_option.is_some(),
-                "merge strategies are not built",
-            ),
             ("--signoff", self.signoff, "trailers are not added"),
             ("--keep-base", self.keep_base, "the merge base is not kept"),
             (
@@ -213,6 +211,7 @@ pub(super) struct Plan {
     pub squash_onto: Option<ObjectId>,
     pub update_refs: bool,
     pub sign: SignFlag,
+    pub replay: Replay,
 }
 
 impl Plan {
@@ -472,6 +471,7 @@ fn plan_of(git: &GitHome, args: &RebaseArgs) -> Result<Plan> {
         git.repo.bool_setting("rebase.updaterefs", false)
     };
     let merges = merges_mode(git, args);
+    let replay = Replay::parse("rebase", args.strategy.as_deref(), &args.strategy_option);
     Ok(Plan {
         upstream,
         restrict,
@@ -498,6 +498,7 @@ fn plan_of(git: &GitHome, args: &RebaseArgs) -> Result<Plan> {
         squash_onto,
         update_refs,
         sign: args.sign.clone(),
+        replay,
     })
 }
 
@@ -514,6 +515,7 @@ pub(super) struct PullOpts {
     pub autostash: Option<bool>,
     pub quiet: bool,
     pub sign: SignFlag,
+    pub replay: Replay,
 }
 
 /// Replays the local commits onto `theirs` (from `fork`, else `theirs`), as `pull --rebase` does after fetching.
@@ -529,6 +531,7 @@ pub(super) fn pull_rebase(
         autostash,
         quiet,
         sign,
+        replay,
     } = opts;
     let interactive = mode == PullMode::Interactive;
     let merges_args = RebaseArgs {
@@ -553,6 +556,7 @@ pub(super) fn pull_rebase(
         squash_onto: None,
         update_refs: git.repo.bool_setting("rebase.updaterefs", false),
         sign,
+        replay,
     };
     begin(git, &plan).map_err(|e| {
         if e.is::<Failed>() {
@@ -584,6 +588,7 @@ struct State {
     /// What git leaves in `GIT_REFLOG_ACTION` for the commits it makes through `git commit`.
     reflog_env: RefCell<String>,
     sign: SignFlag,
+    replay: Replay,
 }
 
 fn dir_of(git: &GitHome) -> PathBuf {
@@ -639,6 +644,18 @@ impl State {
         if self.sign.no_gpg_sign {
             self.put(git, "no_gpg_sign", "")?;
         }
+        if let Some(name) = &self.replay.name {
+            self.put(git, "strategy", &format!("{name}\n"))?;
+        }
+        if !self.replay.xopts.is_empty() {
+            let quoted: Vec<String> = self
+                .replay
+                .xopts
+                .iter()
+                .map(|o| format!("\"{o}\""))
+                .collect();
+            self.put(git, "strategy_opts", &format!("{}\n", quoted.join(" ")))?;
+        }
         self.save_progress(git)
     }
 }
@@ -689,7 +706,20 @@ fn load(git: &GitHome) -> Result<State> {
             no_gpg_sign: dir.join("no_gpg_sign").exists(),
             ..text("gpg_sign_opt").map_or_else(SignFlag::default, |t| SignFlag::load(&t))
         },
+        replay: Replay {
+            name: text("strategy").map(|t| t.trim().to_string()),
+            xopts: text("strategy_opts").map_or_else(Vec::new, |t| saved_xopts(&t)),
+        },
     })
+}
+
+/// The `-X` values git saves: each quoted, with `--` in front when an older git wrote them as options.
+fn saved_xopts(text: &str) -> Vec<String> {
+    text.split('"')
+        .skip(1)
+        .step_by(2)
+        .map(|o| o.trim_start_matches("--").to_string())
+        .collect()
 }
 
 /// Stops with git's report when the sheet cannot be read.
@@ -882,6 +912,7 @@ fn begin(git: &GitHome, plan: &Plan) -> Result<()> {
         squash_onto: Cell::new(plan.squash_onto),
         reflog_env: RefCell::new(plan.action.clone()),
         sign: plan.sign.clone(),
+        replay: plan.replay.clone(),
     };
     let mut state = state;
     let mut bad_sheet = None;
@@ -1513,7 +1544,7 @@ fn replay(git: &GitHome, state: &State, item: &Item) -> Result<()> {
         ours_tree,
         applied,
         ..
-    } = merge_pick(git, Verb::Pick, id, None, true)?;
+    } = merge_pick(git, Verb::Pick, id, None, &state.replay.settings(), true)?;
     let subject = subject_of(&picked.message);
     let conflicted = &applied.conflicted;
     if item.cmd.melds() {
@@ -1780,7 +1811,7 @@ fn do_merge(git: &GitHome, state: &State, item: &Item) -> Result<()> {
             theirs: theirs_name,
             base: &base_label,
         },
-        &Settings::default(),
+        &state.replay.settings(),
     )?;
     let landing = Landing {
         theirs: theirs_name,

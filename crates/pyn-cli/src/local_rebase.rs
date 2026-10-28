@@ -115,6 +115,9 @@ fn refuse_unbuilt(args: &RebaseArgs) -> Result<()> {
     if let Some((flag, _, why)) = given.iter().find(|(_, on, _)| *on) {
         bail!("`pyn rebase {flag}` is not available in a workspace: {why}");
     }
+    if args.strategy.is_some() || !args.strategy_option.is_empty() {
+        bail!("`pyn rebase -s` and `-X` are not available in a workspace: it merges one way");
+    }
     if let Some(flag) = args.sign.first_given() {
         bail!("`pyn rebase {flag}` is not available in a workspace: its commits are not signed");
     }

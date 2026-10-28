@@ -136,6 +136,49 @@ impl Strategy {
     }
 }
 
+/// `-s` and `-X` as a replay (rebase, cherry-pick, revert) keeps and saves them: the tree merge only.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct Replay {
+    pub name: Option<String>,
+    pub xopts: Vec<String>,
+}
+
+impl Replay {
+    /// Reads and checks the options for `command`, ending it with git's or a usage error before anything changes.
+    pub(super) fn parse(command: &str, name: Option<&str>, xopts: &[String]) -> Self {
+        let names: Vec<String> = name.map(str::to_string).into_iter().collect();
+        let strategy = Strategy::parse(&names, xopts);
+        if !matches!(strategy.kind, Which::Ort | Which::Recursive) {
+            crate::usage_error(&format!(
+                "`pyn {command} --strategy={}`: a replay merges with ort or recursive only",
+                strategy.kind.name()
+            ));
+        }
+        match strategy.settings() {
+            Ok(s) if s.shift.is_some() => crate::usage_error(&format!(
+                "`pyn {command} -Xsubtree`: the subtree shift is not built for a replay"
+            )),
+            Ok(_) => {}
+            Err(BadOption::Unknown(opt) | BadOption::Unsupported(opt, _)) => {
+                eprintln!("fatal: unknown strategy option: -X{opt}");
+                std::process::exit(128);
+            }
+        }
+        Self {
+            name: name.map(str::to_string),
+            xopts: xopts.to_vec(),
+        }
+    }
+
+    pub(super) fn settings(&self) -> Settings {
+        let strategy = Strategy {
+            kind: Which::Ort,
+            xopts: self.xopts.clone(),
+        };
+        strategy.settings().unwrap_or_default()
+    }
+}
+
 pub(super) enum BadOption {
     Unknown(String),
     Unsupported(String, &'static str),
