@@ -927,6 +927,10 @@ pub fn explain_push(err: anyhow::Error, branch: &str) -> anyhow::Error {
             format!(" ! [rejected]        {branch} -> {branch} (storage limit)"),
             "The repository has reached its storage limit.",
         ),
+        "owner_frozen" => (
+            format!(" ! [rejected]        {branch} -> {branch} (owner frozen)"),
+            "The owner of this repository is frozen: reads continue, but every write is refused until an administrator unfreezes it.",
+        ),
         "forbidden" => (
             format!(" ! [rejected]        {branch} -> {branch} (forbidden)"),
             "You need the checkin permission on this repository, and the `edit_policy` permission to change `.pyn/pyn.toml` on the default branch.",

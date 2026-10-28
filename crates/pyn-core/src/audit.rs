@@ -66,6 +66,8 @@ pub enum AuditAction {
     AdminGranted,
     AdminRevoked,
     OwnerLimitsChanged,
+    OwnerFrozen,
+    OwnerUnfrozen,
     ExternalAccountCreated,
     ExternalIdentityLinked,
     ExternalIdentityUnlinked,
@@ -86,7 +88,7 @@ pub enum AuditAction {
 }
 
 impl AuditAction {
-    pub const ALL: [AuditAction; 56] = [
+    pub const ALL: [AuditAction; 58] = [
         AuditAction::Checkout,
         AuditAction::Release,
         AuditAction::Checkin,
@@ -126,6 +128,8 @@ impl AuditAction {
         AuditAction::AdminGranted,
         AuditAction::AdminRevoked,
         AuditAction::OwnerLimitsChanged,
+        AuditAction::OwnerFrozen,
+        AuditAction::OwnerUnfrozen,
         AuditAction::ExternalAccountCreated,
         AuditAction::ExternalIdentityLinked,
         AuditAction::ExternalIdentityUnlinked,
@@ -186,6 +190,8 @@ impl AuditAction {
             Self::AdminGranted => "admin_granted",
             Self::AdminRevoked => "admin_revoked",
             Self::OwnerLimitsChanged => "owner_limits_changed",
+            Self::OwnerFrozen => "owner_frozen",
+            Self::OwnerUnfrozen => "owner_unfrozen",
             Self::ExternalAccountCreated => "external_account_created",
             Self::ExternalIdentityLinked => "external_identity_linked",
             Self::ExternalIdentityUnlinked => "external_identity_unlinked",

@@ -83,7 +83,8 @@ impl AccessService {
     async fn require_team_admin(&self, actor: &Identity, org: &UserId) -> Result<()> {
         actor.require_namespace_management()?;
         self.org(org).await?;
-        self.require_org_owner(org, &actor.user).await
+        self.require_org_owner(org, &actor.user).await?;
+        self.ensure_owner_writable(org).await
     }
 
     /// Creates a team; the name defaults to the slug. Organization owners only.
@@ -311,6 +312,7 @@ impl AccessService {
         actor.require(Permission::ManageUsers)?;
         let (org, address) = self.repo_org(repo).await?;
         self.require_team_standing(actor, &org).await?;
+        self.ensure_owner_writable(&org).await?;
         self.require_team(&org, slug).await?;
         self.require_can_grant(actor, repo, role).await?;
         if let Some(current) = self
@@ -358,6 +360,7 @@ impl AccessService {
         actor.require(Permission::ManageUsers)?;
         let (org, address) = self.repo_org(repo).await?;
         self.require_team_standing(actor, &org).await?;
+        self.ensure_owner_writable(&org).await?;
         self.require_team(&org, slug).await?;
         if let Some(old) = self
             .store

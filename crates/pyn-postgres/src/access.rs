@@ -164,6 +164,8 @@ fn account_from(row: &PgRow) -> Result<AccountRecord> {
         is_admin: row.get("is_admin"),
         created_at: row.get("created_at"),
         deleting_since: row.get("deleting_since"),
+        frozen_at: row.get("frozen_at"),
+        frozen_reason: row.get("frozen_reason"),
     })
 }
 
@@ -1382,7 +1384,7 @@ impl AccessStore for PgMetadataStore {
     }
 
     async fn account(&self, user: &UserId) -> Result<Option<AccountRecord>> {
-        let row = sqlx::query("SELECT id, account_id, kind, email, email_verified_at, signup, disabled_at, disabled_reason, is_admin, created_at, deleting_since FROM users WHERE id = $1")
+        let row = sqlx::query("SELECT id, account_id, kind, email, email_verified_at, signup, disabled_at, disabled_reason, is_admin, created_at, deleting_since, frozen_at, frozen_reason FROM users WHERE id = $1")
         .bind(user.as_str())
         .fetch_optional(&self.pool)
         .await
@@ -1402,7 +1404,7 @@ impl AccessStore for PgMetadataStore {
     }
 
     async fn pending_by_email(&self, email: &str) -> Result<Vec<AccountRecord>> {
-        let rows = sqlx::query("SELECT id, account_id, kind, email, email_verified_at, signup, disabled_at, disabled_reason, is_admin, created_at, deleting_since FROM users WHERE email = $1 AND signup = 'pending_verification' ORDER BY created_at, id")
+        let rows = sqlx::query("SELECT id, account_id, kind, email, email_verified_at, signup, disabled_at, disabled_reason, is_admin, created_at, deleting_since, frozen_at, frozen_reason FROM users WHERE email = $1 AND signup = 'pending_verification' ORDER BY created_at, id")
         .bind(email)
         .fetch_all(&self.pool)
         .await
@@ -1483,6 +1485,32 @@ impl AccessStore for PgMetadataStore {
                 .execute(&mut *tx)
                 .await
                 .map_err(db)?;
+        if done.rows_affected() == 0 {
+            return Ok(false);
+        }
+        self.queue_events(&mut tx, events).await?;
+        tx.commit().await.map_err(db)?;
+        Ok(true)
+    }
+
+    async fn set_frozen_with_events(
+        &self,
+        owner: &UserId,
+        frozen: Option<(DateTime<Utc>, String)>,
+        events: &[EventDraft],
+    ) -> Result<bool> {
+        let (at, reason) = match frozen {
+            Some((at, reason)) => (Some(at), Some(reason)),
+            None => (None, None),
+        };
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        let done = sqlx::query("UPDATE users SET frozen_at = $2, frozen_reason = $3 WHERE id = $1")
+            .bind(owner.as_str())
+            .bind(at)
+            .bind(reason)
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
         if done.rows_affected() == 0 {
             return Ok(false);
         }
@@ -1578,7 +1606,7 @@ impl AccessStore for PgMetadataStore {
         status: Option<AccountStatus>,
         limit: usize,
     ) -> Result<Vec<AccountRecord>> {
-        let rows = sqlx::query("SELECT id, account_id, kind, email, email_verified_at, signup, disabled_at, disabled_reason, is_admin, created_at, deleting_since FROM users
+        let rows = sqlx::query("SELECT id, account_id, kind, email, email_verified_at, signup, disabled_at, disabled_reason, is_admin, created_at, deleting_since, frozen_at, frozen_reason FROM users
              WHERE kind = 'user'
                AND ($1::text IS NULL
                 OR CASE WHEN $1 = 'disabled' THEN disabled_at IS NOT NULL

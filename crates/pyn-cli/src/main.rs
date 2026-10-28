@@ -18,6 +18,7 @@ mod diff_opts;
 mod diff_raw;
 mod diffstat;
 mod dirstat;
+mod freeze;
 mod git_home;
 mod git_log_options;
 mod http_transport;

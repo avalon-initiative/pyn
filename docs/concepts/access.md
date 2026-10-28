@@ -219,7 +219,7 @@ is off, or on but nothing is delivered.
 | `POST /v1/admin/users/{user}/enable` | the updated account |
 | `PUT /v1/admin/users/{user}/admin` | grants the flag; the updated account. `400 invalid_request` if the account is not active; granting again changes nothing |
 | `DELETE /v1/admin/users/{user}/admin` | revokes the flag; the updated account. `409 last_server_admin` if no other active administrator would remain; revoking from a non-administrator changes nothing |
-| `GET /v1/admin/audit?before=&limit=` | `account_approved`, `account_disabled`, `account_enabled`, `admin_granted`, `admin_revoked`, `owner_limits_changed`, `server_setup_completed`, `external_account_created`, `external_identity_linked`, `external_identity_unlinked` and the `webhook_*` [webhook](webhooks.md) events, same page shape as a repository's |
+| `GET /v1/admin/audit?before=&limit=` | `account_approved`, `account_disabled`, `account_enabled`, `admin_granted`, `admin_revoked`, `owner_limits_changed`, `owner_frozen`, `owner_unfrozen`, `server_setup_completed`, `external_account_created`, `external_identity_linked`, `external_identity_unlinked` and the `webhook_*` [webhook](webhooks.md) events, same page shape as a repository's |
 
 On the command line (server administrators; each listing is an aligned table with the name last):
 
@@ -228,9 +228,10 @@ On the command line (server administrators; each listing is an aligned table wit
 | `pyn admin user list [--status S] [--limit N]` | columns `STATUS ROLE CREATED EMAIL USER` |
 | `pyn admin user approve <user>`, `disable <user> [--reason R]`, `enable <user>` | the account routes above |
 | `pyn admin grant <user>`, `pyn admin revoke <user>` | grant or revoke the administrator flag |
-| `pyn admin service-credential create <name> --scopes manage_accounts,manage_organizations,manage_limits,manage_webhooks` | prints the secret alone on stdout; it is shown once |
+| `pyn admin service-credential create <name> --scopes manage_accounts,manage_organizations,manage_limits,manage_webhooks,manage_freeze` | prints the secret alone on stdout; it is shown once |
 | `pyn admin service-credential list`, `revoke <name>` | columns `STATE CREATED LAST USED BY SCOPES NAME`; revoked ones are listed |
 | `pyn admin limits list`, `show <owner>`, `set <owner> [--repos N] [--members N] [--storage SIZE]` | optional [limits](limits.md); `default` drops an owner's own value |
+| `pyn admin freeze <owner> --reason R`, `unfreeze <owner>`, `frozen <owner>` | [freeze](limits.md#freezing-an-owner) a user or organization read-only, lift it, or show it |
 | `pyn admin webhook create`, `list`, `show`, `update`, `delete`, `rotate`, `retire` | [webhook subscriptions](webhooks.md) and their secrets |
 | `pyn admin org create <name> --owner <user>`, `pyn admin org delete <name> [--yes]` | on behalf of an owner; delete asks to type the name |
 
@@ -289,10 +290,11 @@ stays listed and its name is never reused.
 | `manage_accounts` | list, approve, disable and enable accounts (`/v1/admin/users*`) |
 | `manage_organizations` | create an organization for an existing user and delete an empty one (`/v1/admin/orgs*`) |
 | `manage_limits` | set per-owner [limits](limits.md) and read any owner's limits and usage (`/v1/admin/limits`, `/v1/admin/owners/{owner}/limits`, `/v1/owners/{owner}/limits`, `/v1/owners/{owner}/usage`) |
+| `manage_freeze` | [freeze](limits.md#freezing-an-owner) and unfreeze an owner, and read any owner's frozen state (`/v1/admin/owners/{owner}/freeze`, `/v1/owners/{owner}/freeze`) |
 | `manage_webhooks` | create, change and delete [webhook subscriptions](webhooks.md) and rotate their secrets (`/v1/admin/webhooks*`) |
 
 Scopes are only ever added, and a credential holds exactly the scopes it was given. Server administrators pass every
-scope check. A credential is accepted only on the routes its scopes cover (`/v1/admin/*`, and the owner limits and usage reads); elsewhere it gets
+scope check. A credential is accepted only on the routes its scopes cover (`/v1/admin/*`, and the owner limits, usage and freeze reads); elsewhere it gets
 `403 service_credential_not_allowed`. It can neither manage service credentials nor read the server log
 (`403 server_admin_required`).
 

@@ -9,9 +9,9 @@ use pyn_core::{
 use pyn_proto::{
     AccountApprovedData, AccountCreatedData, AccountDisabledData, AccountEnabledData, Event,
     EventData, LimitKind as WireLimitKind, Limits, LockAcquiredData, LockExpiredData,
-    LockForcedData, LockReleasedData, OrganizationCreatedData, OrganizationDeletedData, OwnerKind,
-    OwnerLimitReachedData, OwnerLimitsChangedData, RepositoryCreatedData, RepositoryDeletedData,
-    RepositoryRenamedData,
+    LockForcedData, LockReleasedData, OrganizationCreatedData, OrganizationDeletedData,
+    OwnerFrozenData, OwnerKind, OwnerLimitReachedData, OwnerLimitsChangedData, OwnerUnfrozenData,
+    RepositoryCreatedData, RepositoryDeletedData, RepositoryRenamedData,
 };
 
 /// Builds webhook envelopes for the domain's limit refusals.
@@ -37,6 +37,13 @@ impl WebhookLimitEvents {
             payload,
             at: now,
         })
+    }
+}
+
+fn owner_kind(kind: AccountKind) -> OwnerKind {
+    match kind {
+        AccountKind::User => OwnerKind::User,
+        AccountKind::Org => OwnerKind::Org,
     }
 }
 
@@ -185,15 +192,36 @@ impl LimitEvents for WebhookLimitEvents {
             } => EventData::OwnerLimitsChanged(OwnerLimitsChangedData {
                 owner: name(owner),
                 owner_id: owner_id.to_string(),
-                kind: match kind {
-                    AccountKind::User => OwnerKind::User,
-                    AccountKind::Org => OwnerKind::Org,
-                },
+                kind: owner_kind(kind),
                 limits: Limits {
                     repositories: limits.repositories,
                     members: limits.members,
                     storage_bytes: limits.storage_bytes,
                 },
+                actor: name(actor),
+            }),
+            DomainEvent::OwnerFrozen {
+                owner,
+                owner_id,
+                kind,
+                reason,
+                actor,
+            } => EventData::OwnerFrozen(OwnerFrozenData {
+                owner: name(owner),
+                owner_id: owner_id.to_string(),
+                kind: owner_kind(kind),
+                reason,
+                actor: name(actor),
+            }),
+            DomainEvent::OwnerUnfrozen {
+                owner,
+                owner_id,
+                kind,
+                actor,
+            } => EventData::OwnerUnfrozen(OwnerUnfrozenData {
+                owner: name(owner),
+                owner_id: owner_id.to_string(),
+                kind: owner_kind(kind),
                 actor: name(actor),
             }),
             DomainEvent::LockAcquired {

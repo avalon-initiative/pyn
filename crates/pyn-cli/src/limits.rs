@@ -141,6 +141,7 @@ pub fn run(api: &Api, cmd: LimitsCommand) -> Result<()> {
                 .send(api.get(&format!("/v1/owners/{owner}/limits")))?
                 .json()?;
             println!("{owner} ({})", kind(limits.kind));
+            crate::freeze::note(api, &owner);
             print_limits(&limits);
         }
         LimitsCommand::Set {
@@ -203,6 +204,7 @@ pub fn usage(api: &Api, owner: Option<String>) -> Result<()> {
         .json()?;
     let (u, l) = (report.usage, report.limits.effective);
     println!("{owner} ({})", kind(report.limits.kind));
+    crate::freeze::note(api, &owner);
     let mut rows = vec![vec![
         u.repositories.to_string(),
         cell(l.repositories),

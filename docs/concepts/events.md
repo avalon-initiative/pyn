@@ -20,7 +20,7 @@ Every event is one JSON object:
 
 ## When events are written
 
-Account, organization, repository, lock and `owner.limits_changed` events go into the webhook outbox in the same database
+Account, organization, repository, lock, `owner.limits_changed`, `owner.frozen` and `owner.unfrozen` events go into the webhook outbox in the same database
 transaction as the change, so a crash never loses one and a refused or rolled-back change leaves none. Each is queued
 once per subscription whose filter matches. `owner.limit_reached` is the exception: it is recorded after the refusal and
 throttled (see below). Events are queued only when the change really happens: a duplicate name, a missing target or a
@@ -69,7 +69,7 @@ def verify(header: str, body: bytes, secrets: list[str], window: int = 300) -> b
 ## Open types and versioning
 
 Event types are an open set. A receiver must ignore a type it does not know (acknowledge it and do nothing) instead of
-failing, so new types, such as an owner freeze, can be added without breaking anyone. In the same way, new optional
+failing, so new types can be added without breaking anyone. In the same way, new optional
 fields may appear in `data`; receivers ignore fields they do not know.
 
 `version` changes only for a breaking change to the envelope or to an existing payload (a field removed, renamed or
@@ -322,6 +322,52 @@ An administrator or service credential set an owner's own [limits](limits.md).
       "storage_bytes": 1073741824
     },
     "actor": "root"
+  }
+}
+```
+
+### `owner.frozen`
+
+An administrator or service credential froze an owner: every write under it is refused until it is unfrozen
+([freezing an owner](limits.md#freezing-an-owner)). Freezing an owner that is already frozen raises it again with the new reason.
+
+`data`: `owner`, `owner_id`, `kind` (`user` or `org`), `reason`, `actor`.
+
+```json
+{
+  "id": "evt_01J9ZX3K5V8Q2M7R4T6N0B1C2D",
+  "type": "owner.frozen",
+  "created_at": "2026-03-04T05:06:07Z",
+  "server": "https://pyn.example.com",
+  "version": 1,
+  "data": {
+    "owner": "studio",
+    "owner_id": "o7d2e41b90c3a58f6e1d4b7a3",
+    "kind": "org",
+    "reason": "plan lapsed",
+    "actor": "billing"
+  }
+}
+```
+
+### `owner.unfrozen`
+
+A freeze was lifted. Unfreezing an owner that is not frozen raises nothing.
+
+`data`: `owner`, `owner_id`, `kind`, `actor`.
+
+```json
+{
+  "id": "evt_01J9ZX3K5V8Q2M7R4T6N0B1C2D",
+  "type": "owner.unfrozen",
+  "created_at": "2026-03-04T05:06:07Z",
+  "server": "https://pyn.example.com",
+  "version": 1,
+  "data": {
+    "owner": "studio",
+    "owner_id": "o7d2e41b90c3a58f6e1d4b7a3",
+    "kind": "org",
+    "actor": "billing"
   }
 }
 ```

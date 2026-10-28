@@ -333,14 +333,17 @@ pub enum ServiceScope {
     ManageLimits,
     /// Create, change and delete webhook subscriptions and rotate their secrets.
     ManageWebhooks,
+    /// Freeze and unfreeze owners and read any owner's frozen state.
+    ManageFreeze,
 }
 
 impl ServiceScope {
-    pub const ALL: [ServiceScope; 4] = [
+    pub const ALL: [ServiceScope; 5] = [
         ServiceScope::ManageAccounts,
         ServiceScope::ManageOrganizations,
         ServiceScope::ManageLimits,
         ServiceScope::ManageWebhooks,
+        ServiceScope::ManageFreeze,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -349,6 +352,7 @@ impl ServiceScope {
             Self::ManageOrganizations => "manage_organizations",
             Self::ManageLimits => "manage_limits",
             Self::ManageWebhooks => "manage_webhooks",
+            Self::ManageFreeze => "manage_freeze",
         }
     }
 }
@@ -927,6 +931,9 @@ pub struct AccountRecord {
     pub created_at: DateTime<Utc>,
     /// Set on an organization while a delete is in flight.
     pub deleting_since: Option<DateTime<Utc>>,
+    /// Set while the owner is frozen: every write under it is refused.
+    pub frozen_at: Option<DateTime<Utc>>,
+    pub frozen_reason: Option<String>,
 }
 
 /// How long an organization's deleting mark blocks repository creation before it counts as left by a crash.
@@ -937,6 +944,10 @@ impl AccountRecord {
     pub fn is_deleting(&self, now: DateTime<Utc>) -> bool {
         self.deleting_since
             .is_some_and(|since| since > now - chrono::Duration::seconds(ORG_DELETE_MARK_SECONDS))
+    }
+
+    pub fn is_frozen(&self) -> bool {
+        self.frozen_at.is_some()
     }
 
     pub fn status(&self) -> AccountStatus {

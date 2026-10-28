@@ -674,7 +674,7 @@ pub struct AdminCreateOrgRequest {
 pub struct CreateServiceCredentialRequest {
     /// 1 to 64 lowercase letters, digits, `-` or `_`; unique, and never reused after revocation.
     pub name: String,
-    /// At least one of `manage_accounts`, `manage_organizations`, `manage_limits`, `manage_webhooks`.
+    /// At least one of `manage_accounts`, `manage_organizations`, `manage_limits`, `manage_webhooks`, `manage_freeze`.
     pub scopes: Vec<String>,
 }
 
@@ -1391,6 +1391,29 @@ pub struct LimitsListing {
     pub defaults: Limits,
     /// Ordered by name.
     pub owners: Vec<OwnerLimitsEntry>,
+}
+
+/// Whether an owner is frozen: every write under it is refused with `owner_frozen` while reads continue.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct OwnerFreeze {
+    pub owner: String,
+    /// The stable id of the user or organization.
+    pub owner_id: String,
+    pub kind: OwnerKind,
+    pub frozen: bool,
+    /// When it was frozen; null while it is not.
+    #[schema(required = true)]
+    pub frozen_at: Option<DateTime<Utc>>,
+    /// Why it was frozen; null while it is not.
+    #[schema(required = true)]
+    pub reason: Option<String>,
+}
+
+/// Freezes an owner, or replaces the reason and time of a freeze already in force.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct FreezeRequest {
+    /// Shown to the owner's members: 1 to 512 bytes.
+    pub reason: String,
 }
 
 /// Fields left out stay as they are; a number sets the limit and `null` returns the field to the server default.

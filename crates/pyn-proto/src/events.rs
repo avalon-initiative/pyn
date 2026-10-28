@@ -127,6 +127,25 @@ pub struct OwnerLimitsChangedData {
     pub actor: String,
 }
 
+/// `owner.frozen`: every write under the owner is refused until it is unfrozen. Refreezing an owner raises it again.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct OwnerFrozenData {
+    pub owner: String,
+    pub owner_id: String,
+    pub kind: OwnerKind,
+    pub reason: String,
+    pub actor: String,
+}
+
+/// `owner.unfrozen`: writes under the owner work again.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct OwnerUnfrozenData {
+    pub owner: String,
+    pub owner_id: String,
+    pub kind: OwnerKind,
+    pub actor: String,
+}
+
 /// `owner.limit_reached`: an operation was refused because the owner is at a limit. It names no actor.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct OwnerLimitReachedData {
@@ -205,6 +224,8 @@ pub enum EventData {
     RepositoryRenamed(RepositoryRenamedData),
     RepositoryDeleted(RepositoryDeletedData),
     OwnerLimitsChanged(OwnerLimitsChangedData),
+    OwnerFrozen(OwnerFrozenData),
+    OwnerUnfrozen(OwnerUnfrozenData),
     OwnerLimitReached(OwnerLimitReachedData),
     LockAcquired(LockAcquiredData),
     LockReleased(LockReleasedData),
@@ -218,7 +239,7 @@ pub enum EventData {
 }
 
 /// Every event type this build knows.
-pub const KNOWN_EVENT_TYPES: [&str; 15] = [
+pub const KNOWN_EVENT_TYPES: [&str; 17] = [
     "account.created",
     "account.approved",
     "account.disabled",
@@ -229,6 +250,8 @@ pub const KNOWN_EVENT_TYPES: [&str; 15] = [
     "repository.renamed",
     "repository.deleted",
     "owner.limits_changed",
+    "owner.frozen",
+    "owner.unfrozen",
     "owner.limit_reached",
     "lock.acquired",
     "lock.released",
@@ -250,6 +273,8 @@ impl EventData {
             Self::RepositoryRenamed(_) => "repository.renamed",
             Self::RepositoryDeleted(_) => "repository.deleted",
             Self::OwnerLimitsChanged(_) => "owner.limits_changed",
+            Self::OwnerFrozen(_) => "owner.frozen",
+            Self::OwnerUnfrozen(_) => "owner.unfrozen",
             Self::OwnerLimitReached(_) => "owner.limit_reached",
             Self::LockAcquired(_) => "lock.acquired",
             Self::LockReleased(_) => "lock.released",
@@ -271,6 +296,8 @@ impl EventData {
             Self::RepositoryRenamed(d) => serde_json::to_value(d),
             Self::RepositoryDeleted(d) => serde_json::to_value(d),
             Self::OwnerLimitsChanged(d) => serde_json::to_value(d),
+            Self::OwnerFrozen(d) => serde_json::to_value(d),
+            Self::OwnerUnfrozen(d) => serde_json::to_value(d),
             Self::OwnerLimitReached(d) => serde_json::to_value(d),
             Self::LockAcquired(d) => serde_json::to_value(d),
             Self::LockReleased(d) => serde_json::to_value(d),
@@ -292,6 +319,8 @@ impl EventData {
             "repository.renamed" => Self::RepositoryRenamed(serde_json::from_value(data)?),
             "repository.deleted" => Self::RepositoryDeleted(serde_json::from_value(data)?),
             "owner.limits_changed" => Self::OwnerLimitsChanged(serde_json::from_value(data)?),
+            "owner.frozen" => Self::OwnerFrozen(serde_json::from_value(data)?),
+            "owner.unfrozen" => Self::OwnerUnfrozen(serde_json::from_value(data)?),
             "owner.limit_reached" => Self::OwnerLimitReached(serde_json::from_value(data)?),
             "lock.acquired" => Self::LockAcquired(serde_json::from_value(data)?),
             "lock.released" => Self::LockReleased(serde_json::from_value(data)?),

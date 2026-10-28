@@ -90,6 +90,19 @@ pub enum DomainEvent {
         limits: Limits,
         actor: UserId,
     },
+    OwnerFrozen {
+        owner: UserId,
+        owner_id: AccountId,
+        kind: AccountKind,
+        reason: String,
+        actor: UserId,
+    },
+    OwnerUnfrozen {
+        owner: UserId,
+        owner_id: AccountId,
+        kind: AccountKind,
+        actor: UserId,
+    },
     LockAcquired {
         owner: UserId,
         owner_id: AccountId,
@@ -158,6 +171,8 @@ impl DomainEvent {
             Self::RepositoryRenamed { .. } => "repository.renamed",
             Self::RepositoryDeleted { .. } => "repository.deleted",
             Self::OwnerLimitsChanged { .. } => "owner.limits_changed",
+            Self::OwnerFrozen { .. } => "owner.frozen",
+            Self::OwnerUnfrozen { .. } => "owner.unfrozen",
             Self::LockAcquired { .. } => "lock.acquired",
             Self::LockReleased { .. } => "lock.released",
             Self::LockExpired { .. } => "lock.expired",

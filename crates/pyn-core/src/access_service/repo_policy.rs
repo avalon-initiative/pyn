@@ -42,7 +42,8 @@ impl AccessService {
     async fn require_policy_admin(&self, actor: &Identity, org: &UserId) -> Result<()> {
         actor.require_namespace_management()?;
         self.org(org).await?;
-        self.require_org_owner(org, &actor.user).await
+        self.require_org_owner(org, &actor.user).await?;
+        self.ensure_owner_writable(org).await
     }
 
     /// The organization's repository-creation policy. Owners only.

@@ -112,6 +112,15 @@ async fn events_carry_ids_that_survive_a_rename_and_are_never_reused() {
     let org_again = access.create_org(&alice, "acme").await.unwrap();
     assert_ne!(org_again.id.to_string(), org_id);
     access
+        .freeze_owner(&root, &org_again.user, "plan lapsed")
+        .await
+        .unwrap();
+    access.unfreeze_owner(&root, &org_again.user).await.unwrap();
+    access
+        .freeze_owner(&root, &alice.user, "abuse report")
+        .await
+        .unwrap();
+    access
         .disable_account(&root, &alice.user, None)
         .await
         .unwrap();
@@ -157,4 +166,16 @@ async fn events_carry_ids_that_survive_a_rename_and_are_never_reused() {
         EventData::OrganizationCreated(d) if d.org_id == org_again.id.as_str())));
     assert!(events.iter().any(|e| matches!(e,
         EventData::AccountDisabled(d) if d.user_id == alice_id)));
+    assert!(events.iter().any(|e| matches!(e,
+        EventData::OwnerFrozen(d)
+            if d.owner_id == org_again.id.as_str()
+                && d.owner == "acme"
+                && d.kind == pyn_proto::OwnerKind::Org
+                && d.reason == "plan lapsed"
+                && d.actor == "root")));
+    assert!(events.iter().any(|e| matches!(e,
+        EventData::OwnerUnfrozen(d) if d.owner_id == org_again.id.as_str() && d.actor == "root")));
+    assert!(events.iter().any(|e| matches!(e,
+        EventData::OwnerFrozen(d)
+            if d.owner_id == alice_id && d.kind == pyn_proto::OwnerKind::User)));
 }

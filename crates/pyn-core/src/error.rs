@@ -9,6 +9,10 @@ fn revision_text(r: &Option<RevisionId>) -> String {
     r.map_or("none".into(), |r| format!("r{r}"))
 }
 
+fn reason_suffix(reason: &Option<String>) -> String {
+    reason.as_ref().map_or(String::new(), |r| format!(" ({r})"))
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum PynError {
     #[error("invalid path: {0:?}")]
@@ -44,6 +48,11 @@ pub enum PynError {
         owner: String,
         limit: u64,
         used: u64,
+    },
+    #[error("{owner} is frozen{}: reads continue, but writes are refused until an administrator unfreezes it", reason_suffix(.reason))]
+    OwnerFrozen {
+        owner: String,
+        reason: Option<String>,
     },
     #[error("too many uploads are in progress for {scope}; retry shortly")]
     UploadsBusy { scope: &'static str },
@@ -263,6 +272,7 @@ impl PynError {
             Self::RepoLimitReached { .. } => "repo_limit_reached",
             Self::MemberLimitReached { .. } => "member_limit_reached",
             Self::StorageLimitReached { .. } => "storage_limit_reached",
+            Self::OwnerFrozen { .. } => "owner_frozen",
             Self::UploadsBusy { .. } => "uploads_busy",
             Self::ObjectTooLarge { .. } => "object_too_large",
             Self::LengthMismatch { .. } => "length_mismatch",

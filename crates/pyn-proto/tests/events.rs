@@ -34,9 +34,9 @@ fn envelope_serializes_in_documented_order() {
 
 #[test]
 fn unknown_type_round_trips() {
-    let text = fixture("owner.frozen");
+    let text = fixture("owner.archived");
     let event: Event = serde_json::from_str(&text).unwrap();
-    assert_eq!(event.event_type, "owner.frozen");
+    assert_eq!(event.event_type, "owner.archived");
     assert!(matches!(event.data, EventData::Other { .. }));
     let again: Value = serde_json::to_value(&event).unwrap();
     assert_eq!(again, serde_json::from_str::<Value>(&text).unwrap());

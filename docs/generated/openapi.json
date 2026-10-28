@@ -233,6 +233,126 @@
         }
       }
     },
+    "/v1/admin/owners/{owner}/freeze": {
+      "put": {
+        "tags": [
+          "freeze_api"
+        ],
+        "operationId": "freeze_owner",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "a user or organization name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FreezeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "every write under the owner is now refused with owner_frozen; freezing a frozen owner replaces the reason and time",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OwnerFreeze"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: the reason is empty or over 512 bytes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "server_admin_required, or service_scope_required for a service credential without manage_freeze",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "user_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "freeze_api"
+        ],
+        "operationId": "unfreeze_owner",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "a user or organization name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "writes work again; unfreezing an owner that is not frozen changes nothing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OwnerFreeze"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "server_admin_required, or service_scope_required for a service credential without manage_freeze",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "user_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/admin/owners/{owner}/limits": {
       "patch": {
         "tags": [
@@ -3269,6 +3389,57 @@
           },
           "404": {
             "description": "org_not_found, team_not_found or team_member_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/owners/{owner}/freeze": {
+      "get": {
+        "tags": [
+          "freeze_api"
+        ],
+        "operationId": "owner_freeze",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "a user or organization name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "frozen is false, with a null time and reason, while the owner is not frozen",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OwnerFreeze"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "not_namespace_owner (also for a name that does not exist): only the user themself, a member of the organization, an administrator or a service credential with manage_freeze may look; service_scope_required for a service credential without it",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "user_not_found, for an administrator or a service credential only",
             "content": {
               "application/json": {
                 "schema": {
@@ -8260,7 +8431,7 @@
             "items": {
               "type": "string"
             },
-            "description": "At least one of `manage_accounts`, `manage_organizations`, `manage_limits`, `manage_webhooks`."
+            "description": "At least one of `manage_accounts`, `manage_organizations`, `manage_limits`, `manage_webhooks`, `manage_freeze`."
           }
         }
       },
@@ -8790,6 +8961,19 @@
           "reason": {
             "type": "string",
             "description": "Why the lock is being removed; required and recorded in the audit log."
+          }
+        }
+      },
+      "FreezeRequest": {
+        "type": "object",
+        "description": "Freezes an owner, or replaces the reason and time of a freeze already in force.",
+        "required": [
+          "reason"
+        ],
+        "properties": {
+          "reason": {
+            "type": "string",
+            "description": "Shown to the owner's members: 1 to 512 bytes."
           }
         }
       },
@@ -9769,6 +9953,76 @@
           }
         }
       },
+      "OwnerFreeze": {
+        "type": "object",
+        "description": "Whether an owner is frozen: every write under it is refused with `owner_frozen` while reads continue.",
+        "required": [
+          "owner",
+          "owner_id",
+          "kind",
+          "frozen",
+          "frozen_at",
+          "reason"
+        ],
+        "properties": {
+          "frozen": {
+            "type": "boolean"
+          },
+          "frozen_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When it was frozen; null while it is not."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/OwnerKind"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "owner_id": {
+            "type": "string",
+            "description": "The stable id of the user or organization."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why it was frozen; null while it is not."
+          }
+        }
+      },
+      "OwnerFrozenData": {
+        "type": "object",
+        "description": "`owner.frozen`: every write under the owner is refused until it is unfrozen. Refreezing an owner raises it again.",
+        "required": [
+          "owner",
+          "owner_id",
+          "kind",
+          "reason",
+          "actor"
+        ],
+        "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/OwnerKind"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "owner_id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      },
       "OwnerKind": {
         "type": "string",
         "description": "What an owner (a user or an organization) is.",
@@ -9870,6 +10124,30 @@
             "$ref": "#/components/schemas/OwnerLimits"
           },
           "owner": {
+            "type": "string"
+          }
+        }
+      },
+      "OwnerUnfrozenData": {
+        "type": "object",
+        "description": "`owner.unfrozen`: writes under the owner work again.",
+        "required": [
+          "owner",
+          "owner_id",
+          "kind",
+          "actor"
+        ],
+        "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/OwnerKind"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "owner_id": {
             "type": "string"
           }
         }

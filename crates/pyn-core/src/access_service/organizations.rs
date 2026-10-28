@@ -154,6 +154,7 @@ impl AccessService {
         actor.require_namespace_management()?;
         self.org(name).await?;
         self.require_org_owner(name, &actor.user).await?;
+        self.ensure_owner_writable(name).await?;
         self.delete_org_unchecked(actor, name).await
     }
 
@@ -244,6 +245,7 @@ impl AccessService {
         actor.require_namespace_management()?;
         self.org(org).await?;
         self.require_org_owner(org, &actor.user).await?;
+        self.ensure_owner_writable(org).await?;
         match self.store.account(user).await? {
             None => return Err(PynError::UserNotFound(user.to_string())),
             Some(a) if a.kind == AccountKind::Org => {
@@ -285,6 +287,7 @@ impl AccessService {
         actor.require_namespace_management()?;
         self.org(org).await?;
         self.require_org_owner(org, &actor.user).await?;
+        self.ensure_owner_writable(org).await?;
         let old = self.member_change(org, user, self.store.set_org_role(org, user, role).await?)?;
         if old != role {
             let detail = format!("{user}: {old} -> {role}");
@@ -312,6 +315,7 @@ impl AccessService {
         if actor.user != *user {
             self.require_org_owner(org, &actor.user).await?;
         }
+        self.ensure_owner_writable(org).await?;
         let mut granted = Vec::new();
         if let Some(registry) = &self.registry {
             for repo in registry.list_repos(Some(org)).await? {

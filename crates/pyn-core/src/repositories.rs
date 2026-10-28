@@ -180,6 +180,7 @@ impl Repositories {
         );
         let svc = Arc::new(
             svc.with_storage_caps(record.owner.clone(), self.access.clone())
+                .with_owner_writes(self.access.clone())
                 .with_unreferenced_cap(self.unreferenced_cap)
                 .with_merge_slots(self.merge_slots.clone()),
         );
@@ -325,6 +326,7 @@ impl Repositories {
         } else if owner != &actor.user {
             return Err(PynError::NotNamespaceOwner(owner.to_string()));
         }
+        self.access.ensure_owner_writable(owner).await?;
         let record = RepoRecord {
             id: repo::generate_id()?,
             owner: owner.clone(),
@@ -351,7 +353,12 @@ impl Repositories {
             .access
             .limit_result(owner, result, self.clock.now())
             .await?;
-        if in_org && let Err(e) = self.access.require_org_open(owner).await {
+        let settled = if in_org {
+            self.access.require_org_open(owner).await
+        } else {
+            Ok(())
+        };
+        if let Err(e) = settled.and(self.access.ensure_owner_writable(owner).await) {
             self.undo_create(&record, &actor.user).await;
             return Err(e);
         }
@@ -516,6 +523,7 @@ impl Repositories {
         mut update: RepoUpdate,
     ) -> Result<RepoRecord> {
         self.require_owner_admin(actor, record).await?;
+        self.access.ensure_owner_writable(&record.owner).await?;
         if let Some(name) = &update.name {
             update.name = Some(repo::validate_name(name)?);
         }
@@ -566,6 +574,7 @@ impl Repositories {
     /// Removes the repository, its locks, revisions and access. Its audit log and stored content stay.
     pub async fn delete(&self, actor: &Identity, record: &RepoRecord) -> Result<()> {
         self.require_owner_admin(actor, record).await?;
+        self.access.ensure_owner_writable(&record.owner).await?;
         let detail = format!("deleted {}", record.address());
         self.record(record, &actor.user, AuditAction::RepoDeleted, detail)
             .await?;

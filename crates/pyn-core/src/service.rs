@@ -27,6 +27,7 @@ use crate::audit::{
 use crate::branch::{Branch, DEFAULT_BRANCH, conflicts, validate_branch_name};
 use crate::clock::Clock;
 use crate::error::{PynError, Result};
+use crate::freeze::OwnerWrites;
 use crate::history::{
     HISTORY_DEFAULT_LIMIT, HISTORY_MAX_LIMIT, HISTORY_SCAN_BUDGET, HistoryCursor, HistoryPage,
     PathHistoryPage,
@@ -208,6 +209,7 @@ pub struct RepoService {
     clock: Arc<dyn Clock>,
     config: ServiceConfig,
     storage: Option<(UserId, Arc<dyn StorageCaps>)>,
+    writes: Option<Arc<dyn OwnerWrites>>,
     limit_events: (UserId, AccountId, Arc<dyn crate::LimitEvents>),
     unreferenced_cap: u64,
     merge_slots: Arc<tokio::sync::Semaphore>,
@@ -239,6 +241,7 @@ impl RepoService {
             clock: context.clock,
             config,
             storage: None,
+            writes: None,
             limit_events: (context.owner, context.owner_id, context.limit_events),
             unreferenced_cap: DEFAULT_UNREFERENCED_UPLOAD_BYTES,
             merge_slots: Arc::new(tokio::sync::Semaphore::new(
@@ -257,6 +260,19 @@ impl RepoService {
     pub fn with_storage_caps(mut self, owner: UserId, caps: Arc<dyn StorageCaps>) -> Self {
         self.storage = Some((owner, caps));
         self
+    }
+
+    /// Refuses every write once `writes` reports the repository's owner frozen.
+    pub fn with_owner_writes(mut self, writes: Arc<dyn OwnerWrites>) -> Self {
+        self.writes = Some(writes);
+        self
+    }
+
+    pub(crate) async fn ensure_writable(&self) -> Result<()> {
+        match &self.writes {
+            Some(writes) => writes.ensure_writable(&self.limit_events.0).await,
+            None => Ok(()),
+        }
     }
 
     async fn limit_result<T>(&self, result: Result<T>) -> Result<T> {
@@ -740,6 +756,7 @@ impl RepoService {
         user: &UserId,
         base: Option<RevisionId>,
     ) -> Result<Lock> {
+        self.ensure_writable().await?;
         if self.rules_on(branch).await?.mode_for(path) != Mode::Exclusive
             && self.mode_for(path) != Mode::Exclusive
         {
@@ -979,6 +996,7 @@ impl RepoService {
         base: Option<RevisionId>,
         message: String,
     ) -> Result<Recorded> {
+        self.ensure_writable().await?;
         check_file_mode(file_mode)?;
         self.referenced_size(&content).await?;
         let recorded = self
@@ -1040,6 +1058,7 @@ impl RepoService {
         deletions: Vec<Deletion>,
         message: String,
     ) -> Result<Vec<Revision>> {
+        self.ensure_writable().await?;
         if entries.is_empty() && deletions.is_empty() {
             return Err(PynError::InvalidRequest(
                 "a changeset needs at least one path".into(),
@@ -1229,6 +1248,7 @@ impl RepoService {
         confirm: &str,
         message: Option<String>,
     ) -> Result<Recorded> {
+        self.ensure_writable().await?;
         if let Some(message) = &message {
             validate_message(message)?;
         }
@@ -1860,6 +1880,7 @@ impl RepoService {
         start: Option<&str>,
     ) -> Result<Branch> {
         who.require(Permission::Checkin)?;
+        self.ensure_writable().await?;
         validate_branch_name(name)?;
         if self
             .branches()
@@ -1897,6 +1918,7 @@ impl RepoService {
     /// from view; the default branch is never deleted.
     pub async fn delete_branch(&self, who: &Principal, name: &str, force: bool) -> Result<()> {
         who.require(Permission::Checkin)?;
+        self.ensure_writable().await?;
         let branch = self.branch(name).await?;
         if branch.default {
             return Err(PynError::InvalidRequest(
@@ -1920,6 +1942,7 @@ impl RepoService {
     /// Renames a branch other than the default one.
     pub async fn rename_branch(&self, who: &Principal, from: &str, to: &str) -> Result<Branch> {
         who.require(Permission::Checkin)?;
+        self.ensure_writable().await?;
         validate_branch_name(to)?;
         let branch = self.meta.rename_branch(&self.repo, from, to).await?;
         self.record_repo(

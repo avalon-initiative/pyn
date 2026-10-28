@@ -71,6 +71,8 @@ mod webhooks;
 pub use webhooks::*;
 mod outbox;
 pub use outbox::*;
+mod frozen;
+pub use frozen::*;
 
 struct Harness {
     store: Store,
@@ -78,6 +80,7 @@ struct Harness {
     objects: Arc<MemoryObjectStore>,
     audit: Arc<MemoryAuditStore>,
     clock: Arc<ManualClock>,
+    writes: Arc<crate::MemoryOwnerWrites>,
 }
 
 fn harness(store: Store) -> Harness {
@@ -98,26 +101,31 @@ fn harness_on(store: Store, objects: Arc<MemoryObjectStore>, repo: RepoId, rules
     let clock = Arc::new(ManualClock::new(
         Utc.with_ymd_and_hms(2026, 10, 8, 9, 0, 0).unwrap(),
     ));
-    let svc = Arc::new(RepoService::new(
-        repo,
-        Rules::from_toml(rules).unwrap(),
-        store.clone(),
-        objects.clone(),
-        audit.clone(),
-        crate::RepoServiceContext {
-            owner: crate::UserId::new("owner"),
-            owner_id: crate::AccountId::new("uowner"),
-            clock: clock.clone(),
-            limit_events: Arc::new(crate::MemoryLimitEvents::new()),
-        },
-        ServiceConfig::default(),
-    ));
+    let writes = Arc::new(crate::MemoryOwnerWrites::new());
+    let svc = Arc::new(
+        RepoService::new(
+            repo,
+            Rules::from_toml(rules).unwrap(),
+            store.clone(),
+            objects.clone(),
+            audit.clone(),
+            crate::RepoServiceContext {
+                owner: crate::UserId::new("owner"),
+                owner_id: crate::AccountId::new("uowner"),
+                clock: clock.clone(),
+                limit_events: Arc::new(crate::MemoryLimitEvents::new()),
+            },
+            ServiceConfig::default(),
+        )
+        .with_owner_writes(writes.clone()),
+    );
     Harness {
         store,
         svc,
         objects,
         audit,
         clock,
+        writes,
     }
 }
 
@@ -3145,6 +3153,10 @@ pub async fn verify_checks_every_branch_and_a_commit_names_its_parent(store: Sto
 macro_rules! contract_tests {
     ($factory:expr $(, #[$attr:meta])*) => {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; second_user_cannot_take_a_held_lock);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_frozen_owner_cannot_take_or_renew_a_lock_but_can_release_one);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_frozen_owner_refuses_every_write_and_leaves_nothing_behind);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_frozen_owner_stays_readable_and_unfreezing_restores_writes);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_freeze_that_lands_during_an_upload_refuses_it_and_keeps_no_object);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; revisions_keep_the_mode_they_were_made_under);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; racing_checkouts_have_exactly_one_winner);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; holder_can_renew_and_the_lease_moves_forward);
@@ -5800,6 +5812,54 @@ pub async fn accounts_can_be_approved_disabled_enabled_and_listed(store: Access)
     assert!(carol.disabled_at.is_none() && carol.disabled_reason.is_none());
 }
 
+pub async fn an_owner_freezes_with_a_reason_and_time_and_unfreezes(store: Access) {
+    let (alice, acme) = (user("alice"), user("acme"));
+    assert!(store.create_org(&acme, &alice, at(0)).await.unwrap());
+    for owner in [&alice, &acme] {
+        let account = store.account(owner).await.unwrap().unwrap();
+        assert!(!account.is_frozen() && account.frozen_reason.is_none());
+        assert!(
+            store
+                .set_frozen_with_events(owner, Some((at(5), "plan lapsed".into())), &[])
+                .await
+                .unwrap()
+        );
+        let account = store.account(owner).await.unwrap().unwrap();
+        assert_eq!(account.frozen_at, Some(at(5)));
+        assert_eq!(account.frozen_reason.as_deref(), Some("plan lapsed"));
+        assert_eq!(
+            account.status(),
+            AccountStatus::Active,
+            "sign-in is untouched"
+        );
+
+        assert!(
+            store
+                .set_frozen_with_events(owner, Some((at(6), "abuse".into())), &[])
+                .await
+                .unwrap()
+        );
+        let account = store.account(owner).await.unwrap().unwrap();
+        assert_eq!(account.frozen_at, Some(at(6)));
+        assert_eq!(account.frozen_reason.as_deref(), Some("abuse"));
+
+        assert!(
+            store
+                .set_frozen_with_events(owner, None, &[])
+                .await
+                .unwrap()
+        );
+        let account = store.account(owner).await.unwrap().unwrap();
+        assert!(!account.is_frozen() && account.frozen_reason.is_none());
+    }
+    assert!(
+        !store
+            .set_frozen_with_events(&user("nobody"), Some((at(1), "x".into())), &[])
+            .await
+            .unwrap()
+    );
+}
+
 pub async fn revoking_admin_always_leaves_another_active_administrator(store: Access) {
     use crate::AdminRevoke;
 
@@ -7629,6 +7689,7 @@ pub async fn a_manager_sees_and_revokes_only_tokens_within_the_repositories_they
 macro_rules! access_contract_tests {
     ($factory:expr $(, #[$attr:meta])*) => {
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; tokens_round_trip_and_list_newest_first);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; an_owner_freezes_with_a_reason_and_time_and_unfreezes);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; revoking_is_recorded_and_harmless_twice);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; sign_in_tokens_are_revoked_apart_from_created_ones);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; account_routes_need_a_full_scope_credential);

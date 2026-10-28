@@ -36,6 +36,7 @@ use crate::webhook::{EventDraft, WebhookStore};
 pub const SERVER_AUDIT_ID: &str = "@server";
 
 mod external;
+mod freeze;
 mod limits;
 mod organizations;
 mod repo_policy;
@@ -44,6 +45,7 @@ mod teams;
 mod webhooks;
 
 pub use external::{ExternalSignIn, OidcBegin, OidcFinish, OidcStart};
+pub use freeze::OwnerFreezeState;
 pub use limits::OwnerLimits;
 pub use setup::{SetupRequest, SetupStatus, generate_setup_token};
 pub use teams::TeamDetail;
@@ -462,6 +464,15 @@ pub trait AccessStore: Send + Sync {
         reason: Option<String>,
         events: &[EventDraft],
     ) -> Result<AccountDisable>;
+
+    /// Freezes the owner with the time and reason, or unfreezes it with `None`; false if there is no such account.
+    /// Queues `events` in the same transaction when the account exists.
+    async fn set_frozen_with_events(
+        &self,
+        owner: &UserId,
+        frozen: Option<(DateTime<Utc>, String)>,
+        events: &[EventDraft],
+    ) -> Result<bool>;
 
     async fn set_admin(&self, user: &UserId, admin: bool) -> Result<()>;
 
@@ -1333,6 +1344,7 @@ impl AccessService {
         role: Role,
     ) -> Result<()> {
         actor.require(Permission::ManageUsers)?;
+        self.ensure_repo_writable(repo).await?;
         self.require_can_grant(actor, repo, role).await?;
         self.require_can_change(actor, repo, user).await?;
         self.require_grantable(repo, user).await?;
@@ -1424,6 +1436,7 @@ impl AccessService {
         permissions: BTreeSet<Permission>,
     ) -> Result<()> {
         actor.require(Permission::ManageRoles)?;
+        self.ensure_repo_writable(repo).await?;
         if role == Role::Admin
             && !(permissions.contains(&Permission::ManageUsers)
                 && permissions.contains(&Permission::ManageRoles))
@@ -1897,6 +1910,7 @@ impl AccessService {
         if record.expires_at <= now {
             return Err(bad("it has expired"));
         }
+        self.ensure_repo_writable(&record.repo).await?;
         Ok(record)
     }
 
@@ -1911,6 +1925,7 @@ impl AccessService {
         role: Role,
     ) -> Result<UserId> {
         actor.require(Permission::ManageUsers)?;
+        self.ensure_repo_writable(repo).await?;
         self.require_can_grant(actor, repo, role).await?;
         let by_admin = self
             .store
@@ -2016,6 +2031,7 @@ impl AccessService {
         valid_for: Duration,
     ) -> Result<(InviteRecord, String)> {
         actor.require(Permission::ManageUsers)?;
+        self.ensure_repo_writable(repo).await?;
         self.require_can_grant(actor, repo, role).await?;
         if self.is_org_repo(repo).await? {
             return Err(PynError::InvalidInvite(
@@ -2073,6 +2089,7 @@ impl AccessService {
         id: &InviteId,
     ) -> Result<()> {
         actor.require(Permission::ManageUsers)?;
+        self.ensure_repo_writable(repo).await?;
         let no_such = || PynError::InvalidInvite("there is no such invitation".into());
         match self.store.get_invite(id).await? {
             Some(invite) if &invite.repo == repo => {}

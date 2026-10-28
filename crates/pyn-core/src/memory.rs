@@ -1758,6 +1758,8 @@ fn plain_account(user: &UserId, now: DateTime<Utc>) -> AccountRecord {
         is_admin: false,
         created_at: now,
         deleting_since: None,
+        frozen_at: None,
+        frozen_reason: None,
     }
 }
 
@@ -2430,6 +2432,24 @@ impl AccessStore for MemoryAccessStore {
         self.outbox.queue(events)?;
         (account.disabled_at, account.disabled_reason) = match disabled {
             Some((at, reason)) => (Some(at), reason),
+            None => (None, None),
+        };
+        Ok(true)
+    }
+
+    async fn set_frozen_with_events(
+        &self,
+        owner: &UserId,
+        frozen: Option<(DateTime<Utc>, String)>,
+        events: &[EventDraft],
+    ) -> Result<bool> {
+        let mut st = self.state.lock().unwrap();
+        let Some(account) = st.accounts.get_mut(owner) else {
+            return Ok(false);
+        };
+        self.outbox.queue(events)?;
+        (account.frozen_at, account.frozen_reason) = match frozen {
+            Some((at, reason)) => (Some(at), Some(reason)),
             None => (None, None),
         };
         Ok(true)

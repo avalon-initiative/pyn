@@ -12,6 +12,7 @@ pub mod commit_record;
 pub mod contract;
 pub mod email;
 pub mod error;
+pub mod freeze;
 pub mod gate;
 pub mod history;
 pub mod integrity;
@@ -47,8 +48,8 @@ pub use access::{
 pub use access_service::{
     AccessConfig, AccessService, AccessStore, AccountDisable, AdminRevoke, ExternalPolicy,
     ExternalSignIn, MAX_INVITE_HOURS, OidcBegin, OidcFinish, OidcStart, OrgDeleteMark,
-    OrgMemberChange, OwnerLimits, RateLimits, Registration, RepoMember, SERVER_AUDIT_ID,
-    SetupRequest, SetupStatus, SignUp, TeamDetail, generate_setup_token,
+    OrgMemberChange, OwnerFreezeState, OwnerLimits, RateLimits, Registration, RepoMember,
+    SERVER_AUDIT_ID, SetupRequest, SetupStatus, SignUp, TeamDetail, generate_setup_token,
 };
 pub use access_service::{
     CreateWebhook, DeliveryPage, IssuedSecret, WebhookDetail, WebhookSecretInfo, WebhookSettings,
@@ -60,6 +61,7 @@ pub use chunking::ChunkedStore;
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use email::{EmailMessage, EmailSender, MemoryEmailSender, NullEmailSender};
 pub use error::{PynError, Result};
+pub use freeze::{FREEZE_REASON_BYTES, MemoryOwnerWrites, OwnerWrites};
 pub use history::{
     HISTORY_DEFAULT_LIMIT, HISTORY_MAX_LIMIT, HISTORY_SCAN_BUDGET, HistoryCursor, HistoryPage,
     HistoryScan, PathHistoryPage, decode_path_cursor, encode_path_cursor,

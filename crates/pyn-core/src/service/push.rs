@@ -121,6 +121,7 @@ impl RepoService {
         objects: PushObjects,
     ) -> Result<Pushed> {
         who.require(Permission::Checkin)?;
+        self.ensure_writable().await?;
         if objects.commits.is_empty() {
             return Err(PynError::InvalidRequest(
                 "a push needs at least one commit".into(),
@@ -307,6 +308,7 @@ impl RepoService {
         let commits_ids: Vec<ObjectId> = commits.iter().map(|c| c.record.id).collect();
         let now = self.clock.now();
         let cap = self.storage_cap().await?;
+        self.ensure_writable().await?;
         let events = self.lock_events(None).await;
         let revs = self
             .limit_result(

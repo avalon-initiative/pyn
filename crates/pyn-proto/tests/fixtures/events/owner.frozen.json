@@ -6,6 +6,9 @@
   "version": 1,
   "data": {
     "owner": "studio",
-    "future_field": [1, 2]
+    "owner_id": "o7d2e41b90c3a58f6e1d4b7a3",
+    "kind": "org",
+    "reason": "plan lapsed",
+    "actor": "billing"
   }
 }

@@ -69,6 +69,8 @@ overshoot. Each limit has its own error code and answers `409`:
 | `member_limit_reached` | adding a member to an organization at its limit |
 | `storage_limit_reached` | a check-in or restore that would add content past the limit, or an upload past the repository's unreferenced-upload ceiling |
 
+A frozen owner (below) is refused every write with `403 owner_frozen`, whatever its limits are.
+
 `uploads_busy` is `429`, not `409`: it is not a limit on what is stored but on uploads at the same time.
 
 ## Request size bounds
@@ -165,3 +167,51 @@ pyn usage              # you
 pyn usage acme         # an organization you own
 pyn repo usage alice/game
 ```
+
+## Freezing an owner
+
+A server administrator, or a service credential with the `manage_freeze` scope, can freeze a user or an organization: a
+read-only state that keeps every byte. It is generic, with no plan or payment concept in the server: a lapsed account, an
+abuse report or a migration all use the same switch (decision #429). A freeze has a reason and a time, both shown to the
+owner's members.
+
+While an owner is frozen, **every write under it** is refused with `403 owner_frozen`, whoever asks (the owner, a member,
+a token, a session) and by whatever route:
+
+- check-in, changesets, restore, push and merge, and the branches they create, rename or delete, which include a change to
+  `.pyn/pyn.toml`;
+- uploads (objects, chunks and assembly), and taking or renewing a lock;
+- creating, renaming, changing the visibility or settings of, and deleting a repository under the owner;
+- member and role changes: repository members, roles and their permissions, invitations (an invitation to a frozen
+  owner's repository cannot be redeemed), organization members and their roles, teams, a team's repository access, and
+  the organization's repository-creation policy and rules, and deleting the organization.
+
+Everything else continues: reading, cloning, fetching, history, browsing, and **releasing or force-unlocking a lock**; a
+lease still lapses on its own. Sign-in is unchanged, and a frozen user can still sign in and read. Account credentials
+stay manageable (tokens, SSH keys, password), because a frozen owner must be able to revoke a leaked one. Writes under
+other owners are unaffected: a frozen user can still work in an organization that is not frozen, and creating an
+organization makes a new owner. Operator actions on a frozen owner (limits, disable, an administrator deleting an empty
+organization) are not writes under the owner and keep working.
+
+A freeze deletes nothing and a rejected write leaves no state behind. The check runs in the core service on every write
+path, right before the write, so a freeze applies to requests already in flight at their next write; an upload that was
+streaming when the freeze landed is refused and its bytes are removed.
+
+| Route | Notes |
+| --- | --- |
+| `PUT /v1/admin/owners/{owner}/freeze` | `{reason}` (1 to 512 bytes); freezes, or replaces the reason and time of a freeze in force. `400 invalid_request`, `404 user_not_found`, `403 server_admin_required` or `service_scope_required` |
+| `DELETE /v1/admin/owners/{owner}/freeze` | unfreezes; an owner that is not frozen is left as it is, with no audit entry or event |
+| `GET /v1/owners/{owner}/freeze` | `{owner, owner_id, kind, frozen, frozen_at, reason}` (`frozen_at` and `reason` are null while not frozen); readable by the user themself, any member of the organization, an administrator and a `manage_freeze` credential. Anyone else gets `403 not_namespace_owner`, whether or not the name exists |
+
+Freezing and unfreezing are recorded as `owner_frozen` and `owner_unfrozen` in the server audit log (and in the
+organization's log for an organization) and raise the [`owner.frozen` and `owner.unfrozen`](events.md#ownerfrozen)
+events, which carry the owner's stable id.
+
+```bash
+pyn admin freeze acme --reason "plan lapsed"
+pyn admin frozen acme       # anyone who may look
+pyn admin unfreeze acme
+```
+
+`pyn usage` and `pyn admin limits show` print a `frozen since ...` line under a frozen owner, and a refused push names
+the freeze.

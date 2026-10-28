@@ -154,6 +154,7 @@ impl RepoService {
     /// need a resolution each, or nothing is written and the answer is `MergeConflict`.
     pub async fn merge(&self, who: &Principal, request: MergeRequest) -> Result<MergeReport> {
         who.require(Permission::Checkin)?;
+        self.ensure_writable().await?;
         let (target, source, label) = self.merge_ends(&request).await?;
         if let Some(expected) = request.expect_target
             && target.head != Some(expected)

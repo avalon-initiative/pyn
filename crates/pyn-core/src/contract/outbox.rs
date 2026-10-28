@@ -220,6 +220,14 @@ pub async fn changes_queue_their_events_in_order(
         )
         .await
         .unwrap();
+    w.access
+        .freeze_owner(&root, &UserId::new("acme"), "plan lapsed")
+        .await
+        .unwrap();
+    w.access
+        .unfreeze_owner(&root, &UserId::new("acme"))
+        .await
+        .unwrap();
     w.repos.delete(&alice, &repo).await.unwrap();
     w.access
         .disable_account(&root, &UserId::new("alice"), Some("spam"))
@@ -243,6 +251,8 @@ pub async fn changes_queue_their_events_in_order(
             "repository.created",
             "repository.renamed",
             "owner.limits_changed",
+            "owner.frozen",
+            "owner.unfrozen",
             "repository.deleted",
             "account.disabled",
             "account.enabled",
@@ -318,6 +328,38 @@ pub async fn refused_changes_queue_no_event(meta: Store, access_store: Access, h
             .await
             .is_err()
     );
+    assert_eq!(count(&w.hooks).await, before);
+
+    w.access
+        .freeze_owner(&root, &alice.user, "plan lapsed")
+        .await
+        .unwrap();
+    let frozen = count(&w.hooks).await;
+    assert_eq!(frozen, before + 1);
+    let is_frozen = |e: PynError| matches!(e, PynError::OwnerFrozen { .. });
+    assert!(is_frozen(
+        w.repos
+            .create(&alice, &alice.user, "fresh", None, None)
+            .await
+            .unwrap_err()
+    ));
+    assert!(is_frozen(
+        w.repos
+            .update(
+                &alice,
+                &game,
+                RepoUpdate {
+                    name: Some("renamed".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err()
+    ));
+    assert!(is_frozen(w.repos.delete(&alice, &game).await.unwrap_err()));
+    assert_eq!(count(&w.hooks).await, frozen);
+    w.access.unfreeze_owner(&root, &alice.user).await.unwrap();
+    let before = frozen + 1;
     assert_eq!(count(&w.hooks).await, before);
     assert!(
         access_store

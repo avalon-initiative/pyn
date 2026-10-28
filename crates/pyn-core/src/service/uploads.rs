@@ -32,6 +32,7 @@ impl RepoService {
         max: Option<u64>,
         expect: u64,
     ) -> Result<ObjectId> {
+        self.ensure_writable().await?;
         let hold = self
             .meta
             .reserve_upload(
@@ -73,6 +74,7 @@ impl RepoService {
         expect: u64,
         hold: UploadReservation,
     ) -> Result<()> {
+        self.ensure_writable().await?;
         let size = self.stored_size(id).await?;
         if size > expect {
             return Err(PynError::LengthMismatch {
@@ -87,6 +89,7 @@ impl RepoService {
 
     /// Joins chunks this repository knows into one object and records it; an unknown chunk is `ObjectMissing`.
     pub async fn assemble(&self, chunks: &[ObjectId], max: Option<u64>) -> Result<ObjectId> {
+        self.ensure_writable().await?;
         if let Some(c) = self.meta.unknown_objects(&self.repo, chunks).await?.first() {
             return Err(PynError::ObjectMissing(c.to_string()));
         }

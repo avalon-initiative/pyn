@@ -27,6 +27,7 @@ mod branch_api;
 mod client;
 pub mod email;
 pub mod events;
+mod freeze_api;
 mod limits_api;
 mod merge_api;
 mod oidc_api;
@@ -114,6 +115,9 @@ struct RepoAddress {
         limits_api::set_owner_limits,
         limits_api::owner_usage,
         limits_api::repo_usage,
+        freeze_api::owner_freeze,
+        freeze_api::freeze_owner,
+        freeze_api::unfreeze_owner,
         webhook_api::create_webhook,
         webhook_api::list_webhooks,
         webhook_api::get_webhook,
@@ -318,6 +322,8 @@ struct RepoAddress {
         api::Limits,
         api::OwnerLimits,
         api::OwnerLimitsEntry,
+        api::OwnerFreeze,
+        api::FreezeRequest,
         api::LimitsListing,
         api::SetLimitsRequest,
         api::Usage,
@@ -335,6 +341,8 @@ struct RepoAddress {
         api::RepositoryRenamedData,
         api::RepositoryDeletedData,
         api::OwnerLimitsChangedData,
+        api::OwnerFrozenData,
+        api::OwnerUnfrozenData,
         api::OwnerLimitReachedData,
         api::LockAcquiredData,
         api::LockReleasedData,
@@ -424,6 +432,11 @@ fn routes(state: AppState) -> Router {
             "/v1/admin/webhooks/{id}/deliveries/{delivery_id}/redeliver",
             post(webhook_api::redeliver_webhook),
         )
+        .route(
+            "/v1/admin/owners/{owner}/freeze",
+            put(freeze_api::freeze_owner).delete(freeze_api::unfreeze_owner),
+        )
+        .route("/v1/owners/{owner}/freeze", get(freeze_api::owner_freeze))
         .route("/v1/owners/{owner}/limits", get(limits_api::owner_limits))
         .route("/v1/owners/{owner}/usage", get(limits_api::owner_usage))
         .route(
@@ -667,6 +680,7 @@ impl IntoResponse for ApiError {
             | PynError::NotFastForward(_)
             | PynError::ConfirmationRequired { .. } => StatusCode::CONFLICT,
             PynError::NotLockHolder(_)
+            | PynError::OwnerFrozen { .. }
             | PynError::Forbidden(_)
             | PynError::RegistrationClosed
             | PynError::InvalidSetupToken

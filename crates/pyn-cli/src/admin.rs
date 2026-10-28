@@ -23,6 +23,17 @@ pub enum AdminCommand {
     /// Create and delete organizations on behalf of an owner.
     #[command(subcommand)]
     Org(AdminOrgCommand),
+    /// Freeze a user or organization: it keeps every byte and stays readable, but every write under it is refused.
+    Freeze {
+        owner: String,
+        /// Shown to the owner's members.
+        #[arg(long)]
+        reason: String,
+    },
+    /// Lift a freeze.
+    Unfreeze { owner: String },
+    /// Show whether a user or organization is frozen.
+    Frozen { owner: String },
     /// Optional per-owner limits on repositories, members and stored content.
     #[command(subcommand)]
     Limits(crate::limits::LimitsCommand),
@@ -59,7 +70,7 @@ pub enum ServiceCredentialCommand {
     /// Create a credential. Its secret is shown once.
     Create {
         name: String,
-        /// Comma-separated scopes: manage_accounts, manage_organizations, manage_limits, manage_webhooks.
+        /// Comma-separated scopes: manage_accounts, manage_organizations, manage_limits, manage_webhooks, manage_freeze.
         #[arg(long, value_delimiter = ',', required = true)]
         scopes: Vec<String>,
     },
@@ -148,6 +159,9 @@ pub fn run(api: &Api, cmd: AdminCommand) -> Result<()> {
         }
         AdminCommand::ServiceCredential(cmd) => service_credential(api, cmd),
         AdminCommand::Org(cmd) => org(api, cmd),
+        AdminCommand::Freeze { owner, reason } => crate::freeze::freeze(api, &owner, reason),
+        AdminCommand::Unfreeze { owner } => crate::freeze::unfreeze(api, &owner),
+        AdminCommand::Frozen { owner } => crate::freeze::show(api, &owner),
         AdminCommand::Limits(cmd) => crate::limits::run(api, cmd),
         AdminCommand::Webhook(cmd) => crate::webhook::run(api, cmd),
     }
