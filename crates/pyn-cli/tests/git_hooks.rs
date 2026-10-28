@@ -306,8 +306,28 @@ impl Pair {
     }
 }
 
+/// A hook log without the `reference-transaction` runs in the `preparing` state, which only newer git sends.
+fn without_preparing(log: &str) -> String {
+    let mut blocks: Vec<String> = Vec::new();
+    for line in log.lines() {
+        if line.starts_with("== ") || blocks.is_empty() {
+            blocks.push(String::new());
+        }
+        let last = blocks.last_mut().expect("a block was just pushed");
+        last.push_str(line);
+        last.push('\n');
+    }
+    blocks
+        .iter()
+        .filter(|b| !b.contains("\nargs: preparing\n"))
+        .map(String::as_str)
+        .collect()
+}
+
 /// Fails naming the first line where pyn's text departs from git's.
 fn first_difference(got: &str, want: &str, what: &str) {
+    let (got, want) = (without_preparing(got), without_preparing(want));
+    let (got, want) = (got.as_str(), want.as_str());
     if got == want {
         return;
     }
