@@ -2,7 +2,7 @@
 //! when a path limit is given. Commits reachable from a hidden set are skipped, as in `git log ^x y`.
 
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashSet};
+use std::collections::{BinaryHeap, HashMap, HashSet};
 
 use pyn_object::{Commit, ObjectId};
 
@@ -51,6 +51,7 @@ pub struct Log<'a> {
     hidden: HashSet<ObjectId>,
     next_seq: u64,
     first_parent: bool,
+    skipped_to: HashMap<ObjectId, ObjectId>,
 }
 
 impl Repo {
@@ -73,6 +74,7 @@ impl Repo {
             hidden,
             next_seq: 0,
             first_parent: false,
+            skipped_to: HashMap::new(),
         };
         for id in start {
             log.push(*id)?;
@@ -85,6 +87,14 @@ impl Log<'_> {
     /// Follows only the first parent of each commit, as `--first-parent`.
     pub fn first_parent_only(&mut self) {
         self.first_parent = true;
+    }
+
+    /// The commit a parent link stands for once path simplification has skipped the commits that changed nothing.
+    pub fn rewritten(&self, mut id: ObjectId) -> ObjectId {
+        while let Some(next) = self.skipped_to.get(&id) {
+            id = *next;
+        }
+        id
     }
 
     fn push(&mut self, id: ObjectId) -> Result<()> {
@@ -114,51 +124,81 @@ impl Log<'_> {
     }
 
     pub fn next_entry(&mut self) -> Result<Option<LogEntry>> {
-        while let Some(q) = self.queue.pop() {
-            let mut parents = q.commit.parents.clone();
-            if self.first_parent {
-                parents.truncate(1);
-            }
-            if self.spec.is_empty() {
-                for p in parents {
-                    self.push(p)?;
-                }
-                return Ok(Some(LogEntry {
-                    id: q.id,
-                    commit: q.commit,
-                }));
-            }
-            let mut same_as = None;
-            let mut all_same = true;
-            for p in &parents {
-                if self.touches(&q.commit.tree, Some(p))? {
-                    all_same = false;
-                } else if !self.hidden.contains(p) {
-                    same_as = Some(*p);
-                    break;
-                }
-            }
-            if let Some(p) = same_as {
-                self.push(p)?;
-                continue;
-            }
-            if all_same && !parents.is_empty() && parents.iter().all(|p| self.hidden.contains(p)) {
-                continue;
-            }
-            let show =
-                parents.is_empty() && self.touches(&q.commit.tree, None)? || !parents.is_empty();
-            for p in parents {
-                self.push(p)?;
-            }
-            if show {
-                return Ok(Some(LogEntry {
-                    id: q.id,
-                    commit: q.commit,
-                }));
+        while let Some(w) = self.next_walked()? {
+            if w.shown {
+                return Ok(Some(w.entry));
             }
         }
         Ok(None)
     }
+
+    /// The next commit the walk visits, shown or skipped by path simplification, with the parents the walk follows.
+    pub fn next_walked(&mut self) -> Result<Option<Walked>> {
+        let Some(q) = self.queue.pop() else {
+            return Ok(None);
+        };
+        let mut parents = q.commit.parents.clone();
+        if self.first_parent {
+            parents.truncate(1);
+        }
+        let entry = LogEntry {
+            id: q.id,
+            commit: q.commit,
+        };
+        if self.spec.is_empty() {
+            for p in &parents {
+                self.push(*p)?;
+            }
+            return Ok(Some(Walked {
+                entry,
+                shown: true,
+                parents,
+            }));
+        }
+        let mut same_as = None;
+        let mut all_same = true;
+        for p in &parents {
+            if self.touches(&entry.commit.tree, Some(p))? {
+                all_same = false;
+            } else if !self.hidden.contains(p) {
+                same_as = Some(*p);
+                break;
+            }
+        }
+        if let Some(p) = same_as {
+            self.skipped_to.insert(entry.id, p);
+            self.push(p)?;
+            return Ok(Some(Walked {
+                entry,
+                shown: false,
+                parents: vec![p],
+            }));
+        }
+        if all_same && !parents.is_empty() && parents.iter().all(|p| self.hidden.contains(p)) {
+            return Ok(Some(Walked {
+                entry,
+                shown: false,
+                parents,
+            }));
+        }
+        let show =
+            parents.is_empty() && self.touches(&entry.commit.tree, None)? || !parents.is_empty();
+        for p in &parents {
+            self.push(*p)?;
+        }
+        Ok(Some(Walked {
+            entry,
+            shown: show,
+            parents,
+        }))
+    }
+}
+
+/// A commit the walk visited.
+pub struct Walked {
+    pub entry: LogEntry,
+    pub shown: bool,
+    pub parents: Vec<ObjectId>,
 }
 
 impl Iterator for Log<'_> {
