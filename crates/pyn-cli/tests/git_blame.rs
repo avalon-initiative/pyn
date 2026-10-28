@@ -520,6 +520,64 @@ fn merges_pass_blame_to_the_right_parent() {
 }
 
 #[test]
+fn first_parent_follows_only_the_first_parent_of_merges() {
+    each_format(|r| {
+        merged(r);
+        for args in [
+            &["--first-parent", "m.txt"][..],
+            &["--first-parent", "-p", "m.txt"],
+            &["--first-parent", "--line-porcelain", "m.txt"],
+            &["--first-parent", "-f", "-n", "m.txt"],
+            &["--first-parent", "-w", "m.txt"],
+            &["--first-parent", "--root", "m.txt"],
+            &["--first-parent", "HEAD^2", "m.txt"],
+            &["--first-parent", "HEAD~1", "m.txt"],
+            &["--first-parent", "side", "m.txt"],
+            &["--first-parent", "HEAD~2..", "m.txt"],
+            &["--first-parent", "side..", "m.txt"],
+            &["--first-parent", "^side", "HEAD", "m.txt"],
+            &["--first-parent", "^HEAD^2", "HEAD", "m.txt"],
+            &["--first-parent", "HEAD^2..HEAD", "m.txt"],
+        ] {
+            r.same(args);
+        }
+        r.same_annotate(&["--first-parent", "m.txt"]);
+        r.git_ok(CY, &["switch", "-q", "-c", "x", "side"]);
+        r.git_ok(
+            CY,
+            &["merge", "-q", "--no-ff", "-X", "ours", "-m", "x", "main"],
+        );
+        r.git_ok(CY, &["switch", "-q", "main"]);
+        for args in [
+            &["--first-parent", "^x", "main", "m.txt"][..],
+            &["--first-parent", "main~1..main", "m.txt"],
+            &["--first-parent", "x..main", "m.txt"],
+            &["--first-parent", "main..x", "m.txt"],
+            &["^x", "main", "m.txt"],
+        ] {
+            r.same(args);
+        }
+    });
+}
+
+#[test]
+fn first_parent_on_random_histories_matches_git() {
+    for format in FORMATS {
+        for seed in 1..=6u64 {
+            let r = Repo::new(format);
+            let cur = random_history(&r, seed);
+            for args in [
+                vec!["--first-parent", cur.as_str()],
+                vec!["--first-parent", "--line-porcelain", &cur],
+                vec!["--first-parent", "HEAD~4..", "--", &cur],
+            ] {
+                r.same(&args);
+            }
+        }
+    }
+}
+
+#[test]
 fn ranges_of_revisions_mark_boundaries() {
     each_format(|r| {
         merged(r);
@@ -793,7 +851,6 @@ fn what_is_not_built_is_a_usage_error() {
             &["--ignore-rev", "HEAD", "a.txt"],
             &["--ignore-revs-file", "x", "a.txt"],
             &["--reverse", "a.txt"],
-            &["--first-parent", "a.txt"],
             &["--show-stats", "a.txt"],
             &["--score-debug", "a.txt"],
             &["--color-lines", "a.txt"],

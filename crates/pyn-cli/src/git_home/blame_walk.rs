@@ -37,6 +37,7 @@ pub(super) struct Fake {
 pub(super) struct Settings {
     pub ignore_whitespace: bool,
     pub indent_heuristic: bool,
+    pub first_parent: bool,
 }
 
 struct Queued {
@@ -122,9 +123,17 @@ impl<'a> Board<'a> {
         if let Some((f, fake)) = &self.fake
             && f == id
         {
-            return Ok(fake.parents.clone());
+            return Ok(self.limit(fake.parents.clone()));
         }
-        Ok(self.commit(id)?.parents.clone())
+        let parents = self.commit(id)?.parents.clone();
+        Ok(self.limit(parents))
+    }
+
+    fn limit(&self, mut parents: Vec<ObjectId>) -> Vec<ObjectId> {
+        if self.settings.first_parent {
+            parents.truncate(1);
+        }
+        parents
     }
 
     fn time_of(&mut self, id: &ObjectId) -> Result<i64> {

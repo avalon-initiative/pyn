@@ -25,6 +25,7 @@ const HELP: &str = "\
 Options (a git repository only; output and exit status are git blame's):
   -L <range>            only these lines: <start>,<end>, +<n> and -<n> offsets, /<regex>/ anchors; repeatable
   -w                    ignore whitespace when finding the lines a commit changed
+  --first-parent        follow only the first parent of a merge
   -s  -e  -f  -n        no author and date, author email, original file name, original line number
   -l  -t  -b            long ids, raw timestamps, blank ids of boundary commits
   --root                do not treat root commits as boundaries
@@ -58,6 +59,7 @@ struct Parsed {
     contents: Option<String>,
     root: Option<bool>,
     ignore_whitespace: bool,
+    first_parent: bool,
     positional: Vec<String>,
     after_dashdash: Option<Vec<String>>,
 }
@@ -118,6 +120,7 @@ fn parse_args(args: Vec<OsString>, annotate: bool) -> Parsed {
                         &format!("option `abbrev' expects a numerical value, not `{v}'"),
                     ),
                 },
+                ("first-parent", None) => p.first_parent = true,
                 ("date", Some(v)) => p.date = Some(v),
                 ("contents", Some(v)) => p.contents = Some(v),
                 ("contents", None) => match it.next() {
@@ -127,7 +130,7 @@ fn parse_args(args: Vec<OsString>, annotate: bool) -> Parsed {
                 (
                     "incremental" | "show-stats" | "progress" | "score-debug" | "color-lines"
                     | "color-by-age" | "minimal" | "ignore-rev" | "ignore-revs-file" | "reverse"
-                    | "first-parent" | "diff-algorithm",
+                    | "diff-algorithm",
                     _,
                 ) => not_built(annotate, &format!("--{name}")),
                 _ => fail(annotate, &format!("unknown option `{arg}'")),
@@ -347,6 +350,7 @@ pub(super) fn blame(git: &GitHome, cwd: &Path, args: BlameArgs, annotate: bool) 
     let settings = Settings {
         ignore_whitespace: p.ignore_whitespace,
         indent_heuristic,
+        first_parent: p.first_parent,
     };
     let selected_lines: Vec<usize> = (0..lines.len()).filter(|l| selected[*l]).collect();
     let mut board = Board::new(git, &hidden, settings, fake.map(|f| (zero, f)), lines.len());
