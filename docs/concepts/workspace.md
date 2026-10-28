@@ -333,7 +333,7 @@ some branches exist only here, some only on the server, and the remote-tracking 
 `push` (and `update`, for the branch the workspace is on).
 
 - `pyn fetch` stores every branch of the server and creates no local branch. `pyn branch -r` and `-a` list them.
-- `pyn branch <name> [<start>]`, `-d`, `-D` and `-m` act on local branches only, and never on the server. A start point is
+- `pyn branch <name> [<start>]`, `-d`, `-D`, `-m` and `-M` act on local branches only, and never on the server. A start point is
   a branch, `origin/<branch>`, a tag, a hash or `HEAD~N`; starting from a remote-tracking branch makes the new one follow it.
   `-d` refuses a branch that is in neither its upstream nor the current branch. `-u origin/<branch>` and `--unset-upstream`
   change what a branch follows (`branch.<name>.remote` and `.merge` in the store's config, as git writes them).

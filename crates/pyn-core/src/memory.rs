@@ -612,6 +612,17 @@ impl MemoryMetadataStore {
             .expect("commit to tamper with");
         f(commit);
     }
+
+    /// Rewrites a commit's pointer cache in place.
+    pub fn tamper_pointers(
+        &self,
+        repo: &RepoId,
+        id: &ObjectId,
+        f: impl FnOnce(&mut Vec<(RepoPath, RevisionId)>),
+    ) {
+        let mut st = self.state.lock().unwrap();
+        f(st.pointers.entry((repo.clone(), *id)).or_default());
+    }
 }
 
 fn history_key(r: &Revision) -> (DateTime<Utc>, &str, RevisionId) {

@@ -340,6 +340,44 @@ async fn a_tampered_commit_or_tree_is_reported_by_verify() {
 }
 
 #[tokio::test]
+async fn a_commit_pointer_cache_that_differs_from_what_the_commit_made_is_reported() {
+    let w = world();
+    let (a, b) = (path("Source/a.cpp"), path("Source/b.cpp"));
+    commit(&w, &a, "one").await;
+    commit(&w, &b, "two").await;
+    let second = w.svc.head_commit().await.unwrap().unwrap();
+    let report = w.svc.verify(None, false).await.unwrap();
+    assert!(report.problems.is_empty(), "{report:?}");
+
+    let kinds = |r: &pyn_core::VerifyReport| {
+        r.problems
+            .iter()
+            .map(|p| (p.kind, p.commit))
+            .collect::<Vec<_>>()
+    };
+    let expected = (BreakKind::Pointer, Some(second));
+    // a pointer the commit did not make, one missing, and one twice
+    for case in 0..3 {
+        let mut original = Vec::new();
+        w.meta
+            .tamper_pointers(&w.repo, &second, |v| original = v.clone());
+        w.meta.tamper_pointers(&w.repo, &second, |v| match case {
+            0 => v.push((path("Source/a.cpp"), RevisionId(1))),
+            1 => v.clear(),
+            _ => v.push(v[0].clone()),
+        });
+        let report = w.svc.verify(None, false).await.unwrap();
+        assert!(
+            kinds(&report).contains(&expected),
+            "case {case}: {report:?}"
+        );
+        w.meta.tamper_pointers(&w.repo, &second, |v| *v = original);
+    }
+    let report = w.svc.verify(None, false).await.unwrap();
+    assert!(report.problems.is_empty(), "{report:?}");
+}
+
+#[tokio::test]
 async fn a_v2_revision_covers_its_file_mode_and_commit() {
     let w = world();
     let a = path("Source/a.cpp");

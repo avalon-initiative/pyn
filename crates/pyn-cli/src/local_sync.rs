@@ -718,6 +718,9 @@ pub fn pull(
     fetch(backend, ws)?;
     let branch = branch::name(Some(ws));
     let store = LocalStore::open_or_create(ws, &branch)?;
+    if branch::is_detached(Some(ws)) {
+        bail!("You are not currently on a branch; switch to one to pull into it");
+    }
     let Some(up) = store.upstream(&branch)? else {
         bail!(
             "There is no tracking information for the current branch.\n\
@@ -968,6 +971,9 @@ pub fn push(backend: &dyn Backend, ws: &Workspace, mut req: ServerPush) -> Resul
     }
     let current = branch::name(Some(ws));
     let pairs: Vec<(String, String)> = if req.refspecs.is_empty() {
+        if branch::is_detached(Some(ws)) {
+            bail!("You are not currently on a branch; name the branch to push, or switch to one");
+        }
         let Some(remote) = store.upstream(&current)? else {
             if store.tip(&current)?.is_none() {
                 bail!("You are not currently on a branch with commits.");

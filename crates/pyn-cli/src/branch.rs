@@ -51,10 +51,27 @@ pub fn api_branch(ws: Option<&Workspace>) -> Option<String> {
     }
 }
 
+fn previous_path(ws: &Workspace) -> PathBuf {
+    ws.dir
+        .join("local_only")
+        .join("state")
+        .join("previous_branch")
+}
+
+/// The branch the workspace was on before the current one, for `switch -`.
+fn previous(ws: &Workspace) -> Option<String> {
+    let text = std::fs::read_to_string(previous_path(ws)).ok()?;
+    Some(text.trim().to_string()).filter(|b| !b.is_empty())
+}
+
 pub(crate) fn set_current(ws: &Workspace, branch: &str) -> Result<()> {
     let path = state_path(ws);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
+    }
+    let here = name(Some(ws));
+    if here != branch && !is_detached(Some(ws)) {
+        std::fs::write(previous_path(ws), format!("{here}\n"))?;
     }
     std::fs::write(&path, format!("{branch}\n"))
         .with_context(|| format!("writing {}", path.display()))
@@ -63,6 +80,11 @@ pub(crate) fn set_current(ws: &Workspace, branch: &str) -> Result<()> {
 /// Refuses a command that reads or writes the server's branch when the workspace is on a local-only branch.
 pub fn require_published(ws: &Workspace, what: &str) -> Result<()> {
     let here = name(Some(ws));
+    if is_detached(Some(ws)) {
+        bail!(
+            "HEAD is detached, so `pyn {what}` has no branch to work with; switch to a branch first"
+        );
+    }
     if let Some(store) = LocalStore::open(ws)
         && store.tip(&here)?.is_some()
         && store.upstream(&here)?.is_none()
@@ -75,17 +97,31 @@ pub fn require_published(ws: &Workspace, what: &str) -> Result<()> {
     Ok(())
 }
 
+/// Whether the workspace's HEAD is on a commit rather than a branch.
+pub fn is_detached(ws: Option<&Workspace>) -> bool {
+    current(ws).as_deref() == Some(crate::local_branches::DETACHED)
+}
+
+/// "On branch x", or "HEAD detached at <commit>".
+fn where_line(ws: &Workspace) -> String {
+    let at = LocalStore::open(ws).and_then(|s| s.tip(&name(Some(ws))).ok().flatten());
+    match at {
+        Some(id) if is_detached(Some(ws)) => format!("HEAD detached at {}", short(&id.to_hex())),
+        _ => format!("On branch {}", name(Some(ws))),
+    }
+}
+
 /// Prints which branch a workspace command is about, on standard output.
 pub fn print_header(ws: Option<&Workspace>) {
-    if ws.is_some() {
-        println!("On branch {}", name(ws));
+    if let Some(ws) = ws {
+        println!("{}", where_line(ws));
     }
 }
 
 /// Like `print_header`, on standard error, for output that scripts read.
 pub fn note_branch(ws: Option<&Workspace>) {
-    if ws.is_some() {
-        eprintln!("On branch {}", name(ws));
+    if let Some(ws) = ws {
+        eprintln!("{}", where_line(ws));
     }
 }
 
@@ -103,7 +139,7 @@ pub struct BranchArgs {
     /// Rename a branch (the current one if only the new name is given).
     #[arg(short = 'm', long = "move")]
     pub(crate) rename: bool,
-    /// Rename a branch even if the new name exists (a git repository only).
+    /// Rename a branch even if the new name exists (needs the local store).
     #[arg(short = 'M')]
     pub(crate) force_rename: bool,
     /// Copy a branch, its reflog and its `branch.<name>.*` settings (a git repository only).
@@ -155,7 +191,7 @@ pub struct SwitchArgs {
     /// Discard local changes that the switch would overwrite.
     #[arg(short = 'f', long, alias = "discard-changes")]
     pub(crate) force: bool,
-    /// Check out a commit with a detached HEAD (a git repository only).
+    /// Check out a commit with a detached HEAD (needs the local store).
     #[arg(short = 'd', long)]
     pub(crate) detach: bool,
     /// Update the checked-out submodules to the commits the result records (a git repository only).
@@ -183,7 +219,7 @@ pub struct CheckoutArgs {
     /// Discard local changes that the switch would overwrite.
     #[arg(short = 'f', long)]
     pub(crate) force: bool,
-    /// Check out a commit with a detached HEAD (a git repository only).
+    /// Check out a commit with a detached HEAD (needs the local store).
     #[arg(long)]
     pub(crate) detach: bool,
     /// During a merge, take the current branch's version of the conflicted files.
@@ -300,7 +336,7 @@ pub fn branch_command(
     } = args;
     if force_rename || copy || force_copy || force || set_upstream_to.is_some() || unset_upstream {
         crate::usage_error(
-            "`pyn branch` -M, -c, -C, -f, -u and --unset-upstream need a git repository",
+            "`pyn branch` -M, -c, -C, -f, -u and --unset-upstream need a git repository or the local store",
         );
     }
     if (all || remotes) && (delete || force_delete || rename || show_current || !names.is_empty()) {
@@ -474,19 +510,30 @@ fn not_merged_hint(err: anyhow::Error, branch: &str) -> anyhow::Error {
 pub fn switch_command(
     backend: &dyn Backend,
     ws: Option<&Workspace>,
-    args: SwitchArgs,
+    mut args: SwitchArgs,
 ) -> Result<()> {
     let api = backend.pyn_server("switch")?;
     if args.force_create.is_some() || args.orphan.is_some() {
         crate::usage_error("`pyn switch` -C and --orphan need a git repository");
     }
-    if args.detach {
-        bail!(
-            "`pyn switch --detach` needs a git repository; a pyn server's branches always have a head"
-        );
-    }
     let ws = ws.context("`pyn switch` works inside a workspace; run `pyn clone` first")?;
-    if let Some(store) = LocalStore::open(ws) {
+    if args.start.as_deref() == Some("-") && args.create.is_none() {
+        args.start = Some(previous(ws).context("no previous branch to switch to")?);
+    }
+    let store = LocalStore::open(ws);
+    if args.detach {
+        let Some(store) = &store else {
+            bail!(
+                "`pyn switch --detach` needs the local store; a pyn server's branches always have a head"
+            );
+        };
+        if args.create.is_some() {
+            bail!("`pyn switch` takes either --detach or -c, not both");
+        }
+        let spec = args.start.as_deref().unwrap_or("HEAD");
+        return crate::local_switch::detach(backend, ws, store, spec, args.force);
+    }
+    if let Some(store) = store {
         use crate::local_switch::{create_and_go, find_target, go as go_local};
         return match (args.create, args.start) {
             (Some(new), start) => {
@@ -531,11 +578,6 @@ pub fn checkout_command(
     if args.patch {
         bail!("`pyn checkout --patch` needs a git repository; a pyn server restores whole files");
     }
-    if args.detach {
-        bail!(
-            "`pyn checkout --detach` needs a git repository; a pyn server's branches always have a head"
-        );
-    }
     let ws = ws.context(
         "`pyn checkout` switches branches and restores files inside a workspace; run `pyn clone` first. \
          To take an exclusive lock use `pyn lock <path>`",
@@ -546,7 +588,7 @@ pub fn checkout_command(
         create: new,
         reset,
         force,
-        detach: _,
+        detach,
         ours,
         theirs,
         yes,
@@ -580,6 +622,21 @@ pub fn checkout_command(
         return restore_paths(backend, ws, cwd, source, &paths, yes, rp);
     }
     let store = LocalStore::open(ws);
+    if detach {
+        let Some(store) = &store else {
+            bail!(
+                "`pyn checkout --detach` needs the local store; a pyn server's branches always have a head"
+            );
+        };
+        if new.is_some() {
+            bail!("`pyn checkout` takes either --detach or -b, not both");
+        }
+        return match before.as_slice() {
+            [] => crate::local_switch::detach(backend, ws, store, "HEAD", force),
+            [spec] => crate::local_switch::detach(backend, ws, store, spec, force),
+            _ => bail!("`pyn checkout --detach` takes one commit"),
+        };
+    }
     if let Some(new) = new {
         if before.len() > 1 {
             bail!("`pyn checkout -b <name>` takes at most one start point");
@@ -621,8 +678,17 @@ pub fn checkout_command(
         [target] if Path::new(target).exists() || ws.root.join(target).exists() => {
             restore_paths(backend, ws, cwd, None, &before, yes, rp)
         }
+        [target] if matches!(target.as_str(), "HEAD" | "@") && store.is_some() => Ok(()),
+        [target]
+            if store
+                .as_ref()
+                .is_some_and(|s| crate::local_switch::resolve(s, ws, target).is_ok()) =>
+        {
+            let store = store.as_ref().expect("checked");
+            crate::local_switch::detach(backend, ws, store, target, force)
+        }
         [target] if snapshot::parse_commit(target).is_some() => bail!(
-            "'{target}' is a commit, not a branch; pyn has no detached HEAD. \
+            "'{target}' is a commit, not a branch; without the local store pyn has no detached HEAD. \
              Create a branch there with `pyn checkout -b <name> {target}`, or bring the files to it with \
              `pyn update --revision {target}`"
         ),

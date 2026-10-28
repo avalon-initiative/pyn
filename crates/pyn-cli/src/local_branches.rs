@@ -10,6 +10,8 @@ use crate::local_store::LocalStore;
 
 const REMOTE: &str = "origin";
 const HEADS: &str = "refs/heads/";
+/// The local ref that holds a detached HEAD's commit; it is not a branch and no user branch may take the name.
+pub(crate) const DETACHED: &str = "HEAD";
 const REMOTES: &str = "refs/remotes/origin/";
 
 impl LocalStore {
@@ -67,6 +69,7 @@ impl LocalStore {
             .list(HEADS)?
             .into_iter()
             .map(|(n, id)| (n[HEADS.len()..].to_owned(), id))
+            .filter(|(n, _)| n != DETACHED)
             .collect())
     }
 
@@ -89,12 +92,31 @@ impl LocalStore {
         let full = format!("{HEADS}{name}");
         pyn_git::check_ref_name(&full)
             .map_err(|_| anyhow::anyhow!("'{name}' is not a valid branch name"))?;
+        if name == DETACHED {
+            bail!("'{name}' is not a valid branch name");
+        }
         if self.repo().refs().resolve(&full)?.is_some() {
             bail!("a branch named '{name}' already exists");
         }
         self.repo()
             .refs()
             .update_checked(&full, Expect::Absent, at)?;
+        Ok(())
+    }
+
+    /// Points the detached HEAD at `at`.
+    pub(crate) fn set_detached(&self, at: &ObjectId) -> Result<()> {
+        self.repo()
+            .refs()
+            .update(&format!("{HEADS}{DETACHED}"), at)?;
+        Ok(())
+    }
+
+    /// Drops the detached HEAD's ref once the workspace is on a branch again.
+    pub(crate) fn clear_detached(&self) -> Result<()> {
+        self.repo()
+            .refs()
+            .delete(&format!("{HEADS}{DETACHED}"), Expect::Any)?;
         Ok(())
     }
 

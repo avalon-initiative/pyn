@@ -55,7 +55,8 @@ paths where the other parent's revision is higher, so a merge that takes the des
 first-parent chain and taking, per path, the pointer nearest the commit. Writing a commit costs one row per revision it
 made, not one per file in the repository, and the cache is never rewritten: it is part of what `pyn verify` can recompute
 from the revisions and their commits. Verify recomputes each exclusive revision's pointer at its commit's first parent, on every
-branch, and reports `base_mismatch` where the stored base differs.
+branch, and reports `base_mismatch` where the stored base differs; it also checks each commit's cache against the revisions the
+commit made and the merge adopted, and reports `pointer_mismatch`.
 
 A snapshot, a folder listing, a file's content at the branch head and the base check of a shared commit all read through it.
 
@@ -155,8 +156,10 @@ Everything the workspace does, listing, `update`, `diff`, `log`, `commit`, `rest
 | `pyn branch` | list the branches, `*` marks the workspace's; `-v` adds each branch's commit and subject; `--show-current` prints the name |
 | `pyn branch <name> [<start>]` | create a branch at the workspace's branch (or at `<start>`: a branch, `HEAD~N`, a commit hash) |
 | `pyn branch -d <name>...`, `-D` | delete branches merged into the default branch, or any with `-D`; the workspace's own branch is refused |
-| `pyn branch -m [<old>] <new>` | rename (the workspace's branch by default) |
+| `pyn branch -m [<old>] <new>`, `-M` | rename (the workspace's branch by default); `-M` replaces an existing `<new>` that is not the workspace's branch (local store only) |
 | `pyn switch <branch>`, `-c <new> [<start>]`, `-f` | bring the workspace to a branch's files |
+| `pyn switch -` | back to the branch the workspace was on before this one |
+| `pyn switch --detach [<commit>]`, `pyn checkout <commit>` | put HEAD on a commit with no branch (local store only, see below) |
 | `pyn checkout <branch>`, `-b <new> [<start>]`, `-f` | the same, as in git |
 | `pyn checkout -- <path>...` | put files back to the revision the workspace has; `.` is the folder you are in |
 | `pyn checkout <branch\|commit> -- <path>...` | take the files as that branch or commit has them; they then show as modified |
@@ -165,5 +168,15 @@ A switch plans every path before touching one. A file the target branch has with
 that has local changes, and an untracked file in the way, stop the switch with a list of the paths and nothing changed;
 files that are the same on both branches keep their local changes, as in git, and so do changes staged for them (they are
 staged on the new branch's revision); `-f` discards what is in the way, staged changes included. After a
-switch the workspace is clean. `pyn checkout <commit>` is refused: pyn has no detached HEAD, use `pyn checkout -b <name>
-<commit>` or `pyn update --revision <commit>`.
+switch the workspace is clean.
+
+### Detached HEAD
+
+In a workspace with the [local store](workspace.md#the-local-store), `pyn switch --detach [<commit>]`, `pyn checkout --detach
+[<commit>]` and `pyn checkout <commit>` (a hash, a tag, `origin/<branch>`, `HEAD~N`) bring the files to that commit and leave HEAD on it
+with no branch, as in git. `pyn status` says `HEAD detached at <id>` and `pyn branch` lists `* (HEAD detached at <id>)`;
+`--show-current` prints nothing. `pyn commit`, `reset`, `merge`, `cherry-pick` and `rebase` move only HEAD. The commit is kept
+in the store under the reserved name `HEAD`, so no branch can be called that. `pyn push` without a branch, `pull` and `update`
+refuse while detached. Leaving by a switch to a branch drops the detached commits and warns, naming the first one, when they
+are on no branch; `pyn switch -c <name>` first keeps them. A workspace without the local store has no detached HEAD:
+`pyn checkout <commit>` is refused; use `pyn checkout -b <name> <commit>` or `pyn update --revision <commit>`.

@@ -125,7 +125,9 @@ events leaves a valid chain. A client that remembers a head hash can detect that
   problems with the `commit` id. A revision whose `hash_version` disagrees with its stored fields is reported as
   `version_mismatch`. A revision whose `base` is not an older revision of the same path, or, for an exclusive revision on any
   branch, is not the path's pointer at the first parent of its commit ([branches](branches.md)), is `base_mismatch`. The base is
-  stored beside the revision and is not covered by the hash, so existing hashes stay valid.
+  stored beside the revision and is not covered by the hash, so existing hashes stay valid. A commit whose pointer cache lacks a
+  revision it made, repeats a path, or holds a revision that is neither its own nor, for a merge, a newer one from the other
+  parents' history, is `pointer_mismatch`, reported with the `commit` id.
 - Audit events are checked when they are read, and the whole chain when verified.
 - `GET /v1/repos/{owner}/{name}/verify?path=` (the form without `path` needs a signed-in caller) checks a path, or every path and the repository's audit log, and reports every
   break instead of stopping at the first. It needs `read`; the audit log is checked only for callers with `view_audit`.

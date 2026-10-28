@@ -152,6 +152,8 @@ pub enum BreakKind {
     Version,
     /// A revision's base is not an older revision of the same path.
     Base,
+    /// A commit's pointer cache differs from the revisions the commit made and the merge adopted.
+    Pointer,
 }
 
 impl BreakKind {
@@ -162,6 +164,7 @@ impl BreakKind {
             Self::Tree => "tree_mismatch",
             Self::Version => "version_mismatch",
             Self::Base => "base_mismatch",
+            Self::Pointer => "pointer_mismatch",
         }
     }
 }

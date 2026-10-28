@@ -11,6 +11,7 @@ use pyn_proto as api;
 use crate::backend::Backend;
 use crate::branch::{self, BranchArgs, Step};
 use crate::client::Api;
+use crate::local_branches::DETACHED;
 use crate::local_store::LocalStore;
 use crate::snapshot::short;
 use crate::staging::Index;
@@ -54,8 +55,8 @@ pub(crate) fn branch_command(store: &LocalStore, ws: &Workspace, args: BranchArg
         set_upstream_to,
         unset_upstream,
     } = args;
-    if force_rename || copy || force_copy || force {
-        crate::usage_error("`pyn branch` -M, -c, -C and -f need a git repository");
+    if copy || force_copy || force {
+        crate::usage_error("`pyn branch` -c, -C and -f need a git repository");
     }
     if (all || remotes)
         && (delete
@@ -69,12 +70,15 @@ pub(crate) fn branch_command(store: &LocalStore, ws: &Workspace, args: BranchArg
     }
     let here = branch::name(Some(ws));
     if show_current {
-        println!("{here}");
+        if here != DETACHED {
+            println!("{here}");
+        }
         return Ok(());
     }
     if set_upstream_to.is_some() || unset_upstream {
         return upstream(store, &here, &names, set_upstream_to.as_deref());
     }
+    let rename = rename || force_rename;
     let modes = [delete || force_delete, rename, list].map(usize::from);
     if modes.iter().sum::<usize>() > 1 {
         bail!("choose one of --delete, --move and --list");
@@ -91,6 +95,20 @@ pub(crate) fn branch_command(store: &LocalStore, ws: &Workspace, args: BranchArg
             [old, new] => (old.clone(), new.clone()),
             _ => bail!("`pyn branch -m` takes `[<old>] <new>`"),
         };
+        if old == DETACHED {
+            bail!("cannot rename the detached HEAD; create a branch with `pyn switch -c <name>`");
+        }
+        if force_rename && new != old {
+            if store.tip(&old)?.is_none() || new == DETACHED {
+                bail!("no branch named '{old}', or '{new}' is not a valid branch name");
+            }
+            if new == here {
+                bail!("cannot force-rename over the branch this workspace is on");
+            }
+            if store.tip(&new)?.is_some() {
+                store.delete_branch(&new)?;
+            }
+        }
         store.rename_branch(&old, &new)?;
         if old == here {
             branch::set_current(ws, &new)?;
@@ -121,6 +139,14 @@ fn scope(all: bool, remotes: bool) -> Scope {
 fn list_branches(store: &LocalStore, here: &str, verbose: bool, scope: Scope) -> Result<()> {
     let mut rows: Vec<(char, String, ObjectId, Option<usize>)> = Vec::new();
     if scope != Scope::Remote {
+        if let Some(tip) = store.tip(DETACHED)?.filter(|_| here == DETACHED) {
+            rows.push((
+                '*',
+                format!("(HEAD detached at {})", short(&tip.to_hex())),
+                tip,
+                None,
+            ));
+        }
         for (name, tip) in store.heads()? {
             let ahead = match store.upstream(&name)? {
                 Some(_) => Some(store.unpublished(&name)?.ahead),
@@ -202,7 +228,7 @@ fn delete_branches(store: &LocalStore, here: &str, names: &[String], force: bool
                 "cannot delete branch '{n}': this workspace is on it; switch to another branch first"
             );
         }
-        let Some(tip) = store.tip(n)? else {
+        let Some(tip) = store.tip(n)?.filter(|_| n != DETACHED) else {
             bail!("branch '{n}' not found");
         };
         if !force && !merged(store, n, &tip, here)? {
@@ -264,6 +290,8 @@ pub(crate) enum Target {
     Local(ObjectId),
     /// A remote-tracking branch that a new local branch will follow.
     Remote(ObjectId),
+    /// A commit to leave HEAD on, with no branch.
+    Detached(ObjectId),
 }
 
 /// The local branch `name`, else the one remote-tracking branch of that name (fetched first if the store lacks it).
@@ -274,6 +302,9 @@ pub(crate) fn find_target(
     store: &LocalStore,
     name: &str,
 ) -> Result<Option<Target>> {
+    if name == DETACHED {
+        return Ok(None);
+    }
     if let Some(tip) = store.tip(name)? {
         return Ok(Some(Target::Local(tip)));
     }
@@ -357,7 +388,12 @@ pub(crate) fn go(
     let (name, found) = target;
     merging::refuse_during_merge(ws, "switch")?;
     let already = branch::name(Some(ws)) == name && matches!(found, Target::Local(_));
-    let (Target::Local(tip) | Target::Remote(tip)) = found;
+    let (Target::Local(tip) | Target::Remote(tip) | Target::Detached(tip)) = found;
+    let left = if branch::name(Some(ws)) == DETACHED && !matches!(found, Target::Detached(_)) {
+        store.tip(DETACHED)?
+    } else {
+        None
+    };
     let snap = entries_at(backend, store, tip)?;
     let mut state = ws.load_state()?;
     let mut index = Index::load(ws)?;
@@ -387,17 +423,51 @@ pub(crate) fn go(
     ws.save_state(&state)?;
     applied?;
     index.save(ws)?;
+    if let Target::Detached(_) = found {
+        store.set_detached(tip)?;
+    }
     branch::set_current(ws, name)?;
     store
         .repo()
         .refs()
         .set_symbolic("HEAD", &format!("refs/heads/{name}"))?;
-    if already {
+    if let Some(old) = left {
+        warn_left_behind(store, &old)?;
+        store.clear_detached()?;
+    }
+    if let Target::Detached(_) = found {
+        eprintln!(
+            "HEAD is now at {} {}\nYou are in 'detached HEAD' state; commits made here belong to no branch. \
+             Keep them with `pyn switch -c <new-branch>`.",
+            short(&tip.to_hex()),
+            subject(store, tip)?
+        );
+    } else if already {
         eprintln!("Already on '{name}'");
     } else if created || matches!(found, Target::Remote(_)) {
         eprintln!("Switched to a new branch '{name}'");
     } else {
         eprintln!("Switched to branch '{name}'");
+    }
+    Ok(())
+}
+
+/// Says so when the commits of a detached HEAD being left are on no branch.
+fn warn_left_behind(store: &LocalStore, old: &ObjectId) -> Result<()> {
+    let tips = store
+        .heads()?
+        .into_iter()
+        .chain(store.remote_heads()?)
+        .map(|(_, id)| id)
+        .collect();
+    let kept = store.reach(tips)?;
+    let behind = store.ancestors(Some(*old))?.difference(&kept).count();
+    if behind > 0 {
+        eprintln!(
+            "Warning: you are leaving {behind} commit(s) behind, not connected to any of your branches.\n\
+             To keep them, create a branch: pyn branch <new-branch> {}",
+            short(&old.to_hex())
+        );
     }
     Ok(())
 }
@@ -444,6 +514,24 @@ fn apply(
         }
     }
     Ok(())
+}
+
+/// `pyn switch --detach` and `pyn checkout <commit>`: HEAD moves to the commit `spec` names, on no branch.
+pub(crate) fn detach(
+    backend: &dyn Backend,
+    ws: &Workspace,
+    store: &LocalStore,
+    spec: &str,
+    force: bool,
+) -> Result<()> {
+    let tip = resolve(store, ws, spec)?;
+    go(
+        backend,
+        ws,
+        store,
+        (DETACHED, &Target::Detached(tip)),
+        (force, false),
+    )
 }
 
 /// `pyn switch` and `pyn checkout <branch>`: `create` makes the branch first, at `start`.

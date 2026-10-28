@@ -1437,7 +1437,7 @@ pub struct OwnerUsage {
 }
 
 /// One break found by verification: `hash_mismatch` (a record's fields do not give its hash), `version_mismatch` (a revision's `hash_version` disagrees with its stored fields), `broken_link` (it does
-/// not follow the record before it) or `base_mismatch` (a revision's base is not an older revision of its path). Revision breaks carry `path` and `revision`; audit breaks carry `event`.
+/// not follow the record before it) `base_mismatch` (a revision's base is not an older revision of its path) or `pointer_mismatch` (a commit's pointer cache differs from the revisions it made and adopted). Revision breaks carry `path` and `revision`; audit breaks carry `event`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct VerifyProblem {
     pub kind: String,

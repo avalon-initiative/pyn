@@ -444,3 +444,100 @@ fn a_workspace_without_a_store_deletes_server_branches_through_push() {
     env.ok(&plain, "alice", &["push", "origin", ":two"]);
     assert_eq!(env.ok(&plain, "alice", &["branch"]), "* main\n");
 }
+
+#[test]
+fn a_commit_checks_out_with_a_detached_head_and_commits_there_belong_to_no_branch() {
+    let (env, ws) = seeded();
+    commit(&env, &ws, "Source/a.cpp", "two", "second");
+    let first = git(&ws, &["rev-parse", "main~1"]).trim().to_string();
+    let main = git(&ws, &["rev-parse", "main"]);
+
+    env.ok(&ws, "alice", &["checkout", &first]);
+    assert_eq!(read(&ws, "Source/a.cpp"), "one");
+    let status = env.ok(&ws, "alice", &["status"]);
+    assert!(
+        status.contains(&format!("HEAD detached at {}", &first[..10])),
+        "{status}"
+    );
+    let listed = env.ok(&ws, "alice", &["branch"]);
+    assert!(
+        listed.contains(&format!("* (HEAD detached at {})", &first[..10])),
+        "{listed}"
+    );
+    assert!(listed.contains("  main"), "{listed}");
+    assert_eq!(env.ok(&ws, "alice", &["branch", "--show-current"]), "");
+    let err = env.fails(&ws, "alice", &["branch", "HEAD"]);
+    assert!(err.contains("not a valid branch name"), "{err}");
+
+    commit(&env, &ws, "Source/b.cpp", "detached work", "on nothing");
+    assert_eq!(git(&ws, &["rev-parse", "main"]), main);
+    let err = env.fails(&ws, "alice", &["push"]);
+    assert!(err.contains("not currently on a branch"), "{err}");
+
+    let out = env.run(&ws, "alice", &["switch", "main"]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{err}");
+    assert!(err.contains("leaving 1 commit(s) behind"), "{err}");
+    assert_eq!(read(&ws, "Source/a.cpp"), "two");
+    assert_eq!(read(&ws, "Source/b.cpp"), "bee");
+    assert_eq!(env.ok(&ws, "alice", &["branch"]), "* main\n");
+}
+
+#[test]
+fn switch_detach_takes_a_commit_or_stays_and_a_branch_made_there_keeps_the_work() {
+    let (env, ws) = seeded();
+    commit(&env, &ws, "Source/a.cpp", "two", "second");
+
+    env.ok(&ws, "alice", &["switch", "--detach"]);
+    assert!(
+        env.ok(&ws, "alice", &["status"])
+            .contains("HEAD detached at")
+    );
+    env.ok(&ws, "alice", &["switch", "--detach", "HEAD~1"]);
+    assert_eq!(read(&ws, "Source/a.cpp"), "one");
+    let err = env.fails(&ws, "alice", &["switch", "--detach", "-c", "x"]);
+    assert!(err.contains("not both"), "{err}");
+    let err = env.fails(&ws, "alice", &["switch", "nowhere"]);
+    assert!(err.contains("invalid reference"), "{err}");
+
+    commit(&env, &ws, "Source/b.cpp", "kept", "kept work");
+    env.ok(&ws, "alice", &["switch", "-c", "saved"]);
+    assert_eq!(env.ok(&ws, "alice", &["branch"]), "  main\n* saved\n");
+    assert_eq!(read(&ws, "Source/b.cpp"), "kept");
+    env.ok(&ws, "alice", &["switch", "main"]);
+    assert_eq!(read(&ws, "Source/b.cpp"), "bee");
+}
+
+#[test]
+fn switch_dash_returns_to_the_previous_branch() {
+    let (env, ws) = seeded();
+    let err = env.fails(&ws, "alice", &["switch", "-"]);
+    assert!(err.contains("no previous branch"), "{err}");
+    env.ok(&ws, "alice", &["switch", "-c", "other"]);
+    env.ok(&ws, "alice", &["switch", "-"]);
+    assert_eq!(
+        env.ok(&ws, "alice", &["branch", "--show-current"]),
+        "main\n"
+    );
+    env.ok(&ws, "alice", &["switch", "-"]);
+    assert_eq!(
+        env.ok(&ws, "alice", &["branch", "--show-current"]),
+        "other\n"
+    );
+}
+
+#[test]
+fn a_forced_rename_replaces_an_existing_branch_but_not_the_current_one() {
+    let (env, ws) = seeded();
+    env.ok(&ws, "alice", &["branch", "old"]);
+    env.ok(&ws, "alice", &["branch", "taken"]);
+    let err = env.fails(&ws, "alice", &["branch", "-m", "old", "taken"]);
+    assert!(err.contains("already exists"), "{err}");
+    env.ok(&ws, "alice", &["branch", "-M", "old", "taken"]);
+    assert_eq!(env.ok(&ws, "alice", &["branch"]), "* main\n  taken\n");
+    let err = env.fails(&ws, "alice", &["branch", "-M", "taken", "main"]);
+    assert!(err.contains("this workspace is on"), "{err}");
+    let err = env.fails(&ws, "alice", &["branch", "-M", "missing", "taken"]);
+    assert!(err.contains("no branch named"), "{err}");
+    assert_eq!(env.ok(&ws, "alice", &["branch"]), "* main\n  taken\n");
+}

@@ -336,6 +336,12 @@ impl RepoService {
                         ..problem(c)
                     });
                 }
+                if !self.pointers_match(c).await? {
+                    report.problems.push(Problem {
+                        kind: BreakKind::Pointer,
+                        ..problem(c)
+                    });
+                }
             }
             if !more {
                 return Ok(Some(Position::Trees(0)));
@@ -345,6 +351,33 @@ impl RepoService {
                 return Ok(Some(Position::Commits(before)));
             }
         }
+    }
+
+    /// Whether the commit's pointer cache holds each revision it made and nothing else but, for a merge, newer
+    /// revisions of the other parents' history that differ from the first parent's pointer.
+    async fn pointers_match(&self, c: &Commit) -> Result<bool> {
+        let pointers = self.meta.commit_pointers(&self.repo, &c.id).await?;
+        let paths: HashSet<&RepoPath> = pointers.iter().map(|p| &p.path).collect();
+        let made: HashSet<(&RepoPath, RevisionId)> =
+            c.revisions.iter().map(|r| (&r.path, r.id)).collect();
+        let has = |r: &Revision| pointers.iter().any(|p| p.path == r.path && p.id == r.id);
+        if paths.len() != pointers.len() || !c.revisions.iter().all(has) {
+            return Ok(false);
+        }
+        for p in pointers.iter().filter(|p| !made.contains(&(&p.path, p.id))) {
+            let mut adopted = false;
+            for other in c.parents.iter().skip(1) {
+                adopted |= self.meta.is_ancestor(&self.repo, &p.commit, other).await?;
+            }
+            let first = match c.parents.first() {
+                Some(parent) => self.meta.revision_at(&self.repo, parent, &p.path).await?,
+                None => None,
+            };
+            if !adopted || first.is_some_and(|f| f.id == p.id) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     /// Checks each branch head's tree against the snapshot at that head, starting at branch number `index`.
