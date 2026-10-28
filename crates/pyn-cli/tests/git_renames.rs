@@ -553,6 +553,52 @@ fn pickaxe_pairs_with_the_detection_the_command_line_asks_for() {
 }
 
 #[test]
+fn unusual_path_characters_are_quoted_in_rename_and_copy_lines() {
+    each_format(|r| {
+        let names = [
+            ("plain old.txt", "tab\there.txt"),
+            ("quote\"d.txt", "back\\slash.txt"),
+            ("caf\u{e9}.txt", "na\u{ef}ve dir/\u{fc}ber.txt"),
+            ("a\nb.txt", "c\u{1}d.txt"),
+            ("del\u{7f}.txt", "plain new.txt"),
+        ];
+        r.two_commits(
+            |r| {
+                for (i, (from, _)) in names.iter().enumerate() {
+                    r.write(from, &lines(&format!("n{i}"), 12));
+                }
+                r.write("stay \u{e9}.txt", &lines("stay", 12));
+                r.write("bin \u{e9}.bin", b"\0binary content");
+                r.write("bin2 \"x\".bin", b"\0other binary content here");
+            },
+            |r| {
+                for (i, (from, to)) in names.iter().enumerate() {
+                    r.remove(from);
+                    r.write(to, &edited(&format!("n{i}"), 12, i));
+                }
+                r.write("copy \"q\".txt", &lines("stay", 12));
+                r.write("bin \u{e9}.bin", b"\0binary changed content");
+                r.write("bin2 \"x\".bin", b"\0other binary content here too");
+            },
+        );
+        for quote in [None, Some("false")] {
+            if let Some(value) = quote {
+                r.git(&["config", "core.quotePath", value]);
+            }
+            for flags in [&[][..], &["-C", "-C"], &["-M60%"], &["--no-renames"]] {
+                r.views(flags);
+                let mut raw = vec!["diff", "HEAD~1", "HEAD", "--raw", "-z"];
+                raw.extend_from_slice(flags);
+                r.same(&raw);
+                let mut dirstat = vec!["diff", "HEAD~1", "HEAD", "--numstat"];
+                dirstat.extend_from_slice(flags);
+                r.same(&dirstat);
+            }
+        }
+    });
+}
+
+#[test]
 fn several_candidates_are_paired_in_gits_order() {
     each_format(|r| {
         r.two_commits(

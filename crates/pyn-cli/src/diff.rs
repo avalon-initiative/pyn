@@ -304,6 +304,7 @@ fn id_of(blob: Option<&Blob>, other: Option<&Blob>, shorten: impl Fn(&str) -> St
 }
 
 fn patch(
+    backend: &dyn Backend,
     p: &Pair,
     c: &Contents,
     format: &Format,
@@ -318,11 +319,14 @@ fn patch(
             _ => path.to_string(),
         }
     };
-    let (old_name, new_name) = (bare(&p.old_path), bare(&p.new_path));
-    let mut head = format!(
-        "diff --git {}{old_name} {}{new_name}\n",
-        o.src_prefix, o.dst_prefix
+    let labelled = |prefix: &str, path: &str| {
+        backend.quote_diff_path(format!("{prefix}{}", bare(path)).as_bytes())
+    };
+    let (old_label, new_label) = (
+        labelled(&o.src_prefix, &p.old_path),
+        labelled(&o.dst_prefix, &p.new_path),
     );
+    let mut head = format!("diff --git {old_label} {new_label}\n");
     let mut tail = String::new();
     match (old, new) {
         (None, Some(b)) => {
@@ -343,8 +347,8 @@ fn patch(
             head,
             "similarity index {}%\n{word} from {}\n{word} to {}",
             m.percent(),
-            p.old_path,
-            p.new_path
+            backend.quote_diff_path(p.old_path.as_bytes()),
+            backend.quote_diff_path(p.new_path.as_bytes())
         );
     }
     let changed = old.zip(new).is_none_or(|(a, b)| a.hash != b.hash);
@@ -356,13 +360,17 @@ fn patch(
         let _ = writeln!(head, "index {x}..{y}{tail}");
     }
     let (from, to) = (
-        old.map_or("/dev/null".to_string(), |_| {
-            format!("{}{old_name}", o.src_prefix)
-        }),
-        new.map_or("/dev/null".to_string(), |_| {
-            format!("{}{new_name}", o.dst_prefix)
-        }),
+        old.map_or("/dev/null".to_string(), |_| old_label.clone()),
+        new.map_or("/dev/null".to_string(), |_| new_label.clone()),
     );
+    // A name with a space is followed by a tab so that patch(1) finds where it ends.
+    let spaced = |label: &str, shown: &str| {
+        if shown != "/dev/null" && label.contains(' ') {
+            format!("{shown}\t")
+        } else {
+            shown.to_string()
+        }
+    };
     let finish = |mut head: String, body: String| {
         paint_header(&mut head, style);
         head + &body
@@ -391,7 +399,12 @@ fn patch(
             finish(head, String::new())
         };
     }
-    let _ = writeln!(head, "--- {from}\n+++ {to}");
+    let _ = writeln!(
+        head,
+        "--- {}\n+++ {}",
+        spaced(&old_label, &from),
+        spaced(&new_label, &to)
+    );
     let body = if let Some(setup) = words {
         String::from_utf8_lossy(&word_diff::render(&hunks, setup, style)).into_owned()
     } else if let Some(st) = style {
@@ -973,7 +986,7 @@ fn render(backend: &dyn Backend, list: &[Pair], format: &Format, out: &mut Strin
                             ..(*p).clone()
                         };
                         let c = contents(backend, path, old, new, format.opts.text)?;
-                        out.push_str(&patch(&split, &c, format, (style, words.as_ref())));
+                        out.push_str(&patch(backend, &split, &c, format, (style, words.as_ref())));
                     }
                     continue;
                 }
@@ -995,7 +1008,7 @@ fn render(backend: &dyn Backend, list: &[Pair], format: &Format, out: &mut Strin
                     continue;
                 }
                 if format.kind == Kind::Patch {
-                    out.push_str(&patch(p, &c, format, (style, words.as_ref())));
+                    out.push_str(&patch(backend, p, &c, format, (style, words.as_ref())));
                     continue;
                 }
                 if format.kind == Kind::Check {
