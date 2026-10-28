@@ -29,7 +29,7 @@ use crate::workspace::{FileState, Workspace, hash_of, set_read_only};
 pub(crate) const STATE_VERSION: u32 = 1;
 
 /// Merge a branch (or commit) into the workspace's branch.
-#[derive(Debug, Args)]
+#[derive(Debug, Args, Default)]
 pub struct MergeArgs {
     /// The branch, or commit, to merge into the current branch.
     pub(crate) source: Option<String>,
@@ -37,14 +37,20 @@ pub struct MergeArgs {
     #[arg(short = 'm', long = "message")]
     pub(crate) message: Vec<String>,
     /// Make a merge commit even when the branch could fast-forward.
-    #[arg(long, overrides_with = "ff_only")]
+    #[arg(long, overrides_with_all = ["ff_only", "ff"])]
     pub(crate) no_ff: bool,
     /// Refuse to merge unless the branch can fast-forward.
-    #[arg(long, overrides_with = "no_ff")]
+    #[arg(long, overrides_with_all = ["no_ff", "ff"])]
     pub(crate) ff_only: bool,
+    /// Fast-forward when possible, whatever `merge.ff` says (a git repository only).
+    #[arg(long, overrides_with_all = ["no_ff", "ff_only"])]
+    pub(crate) ff: bool,
     /// Perform the merge but stop before committing it.
-    #[arg(long)]
+    #[arg(long, overrides_with = "commit")]
     pub(crate) no_commit: bool,
+    /// Commit the merge (the default; a git repository only).
+    #[arg(long, overrides_with = "no_commit")]
+    pub(crate) commit: bool,
     /// Put the merged changes in the index and work tree without a commit or a merge record (a git repository only).
     #[arg(long, overrides_with = "no_squash")]
     pub(crate) squash: bool,
@@ -89,6 +95,96 @@ pub struct MergeArgs {
     pub(crate) verify: bool,
     #[command(flatten)]
     pub(crate) sign: crate::git_home::SignFlag,
+    /// Add a `Signed-off-by` trailer to the merge commit (a git repository only).
+    #[arg(long, overrides_with = "no_signoff")]
+    pub(crate) signoff: bool,
+    /// Add no trailer (the default).
+    #[arg(long, overrides_with = "signoff")]
+    pub(crate) no_signoff: bool,
+    /// Add at most `<n>` shortlog entries of the merged commits to the message (a git repository only).
+    #[arg(long, value_name = "N", num_args = 0..=1, require_equals = true, default_missing_value = "", overrides_with = "no_log")]
+    pub(crate) log: Option<String>,
+    /// Add no shortlog.
+    #[arg(long, overrides_with = "log")]
+    pub(crate) no_log: bool,
+    /// Read the merge message from a file, or `-` for standard input (a git repository only).
+    #[arg(short = 'F', long, value_name = "FILE")]
+    pub(crate) file: Option<String>,
+    /// How the message is cleaned up: strip, whitespace, verbatim, scissors or default (a git repository only).
+    #[arg(long, value_name = "MODE")]
+    pub(crate) cleanup: Option<String>,
+    /// Name the branch merged into in the message instead of the real one (a git repository only).
+    #[arg(long, value_name = "NAME")]
+    pub(crate) into_name: Option<String>,
+    /// Merge histories that share no commit (a git repository only).
+    #[arg(long, overrides_with = "no_allow_unrelated_histories")]
+    pub(crate) allow_unrelated_histories: bool,
+    /// Refuse unrelated histories (the default).
+    #[arg(long, overrides_with = "allow_unrelated_histories")]
+    pub(crate) no_allow_unrelated_histories: bool,
+    /// Stash local changes before the merge and apply them after (a git repository only).
+    #[arg(long, overrides_with = "no_autostash")]
+    pub(crate) autostash: bool,
+    /// Do not stash (the default, unless `merge.autoStash` says so).
+    #[arg(long, overrides_with = "autostash")]
+    pub(crate) no_autostash: bool,
+    /// Require a valid signature on the merged commit (a git repository only).
+    #[arg(long, overrides_with = "no_verify_signatures")]
+    pub(crate) verify_signatures: bool,
+    /// Do not check signatures (the default, unless `merge.verifySignatures` says so).
+    #[arg(long, overrides_with = "verify_signatures")]
+    pub(crate) no_verify_signatures: bool,
+    /// Forget a merge in progress without touching the index or work tree (a git repository only).
+    #[arg(long, conflicts_with_all = ["source", "no_ff", "ff_only", "ff", "no_commit", "message", "preview", "abort", "continue_merge"])]
+    pub(crate) quit: bool,
+    /// Print fewer messages (a git repository only).
+    #[arg(short = 'q', long, overrides_with = "verbose")]
+    pub(crate) quiet: bool,
+    /// Print more messages; accepted, there are none more (a git repository only).
+    #[arg(short = 'v', long, overrides_with = "quiet")]
+    pub(crate) verbose: bool,
+    /// Accepted for compatibility; pyn prints no progress meter.
+    #[arg(long, overrides_with = "no_progress")]
+    pub(crate) progress: bool,
+    /// Accepted for compatibility.
+    #[arg(long, overrides_with = "progress")]
+    pub(crate) no_progress: bool,
+}
+
+impl MergeArgs {
+    /// The first option only a git repository takes, for the refusal on a pyn server.
+    fn git_only(&self) -> Option<&'static str> {
+        [
+            ("--ff", self.ff),
+            ("--commit", self.commit),
+            ("--signoff", self.signoff),
+            ("--no-signoff", self.no_signoff),
+            ("--log", self.log.is_some()),
+            ("--no-log", self.no_log),
+            ("--file", self.file.is_some()),
+            ("--cleanup", self.cleanup.is_some()),
+            ("--into-name", self.into_name.is_some()),
+            (
+                "--allow-unrelated-histories",
+                self.allow_unrelated_histories,
+            ),
+            (
+                "--no-allow-unrelated-histories",
+                self.no_allow_unrelated_histories,
+            ),
+            ("--autostash", self.autostash),
+            ("--no-autostash", self.no_autostash),
+            ("--verify-signatures", self.verify_signatures),
+            ("--no-verify-signatures", self.no_verify_signatures),
+            ("--quit", self.quit),
+            ("--quiet", self.quiet),
+            ("--verbose", self.verbose),
+            ("--progress", self.progress),
+            ("--no-progress", self.no_progress),
+        ]
+        .into_iter()
+        .find_map(|(flag, on)| on.then_some(flag))
+    }
 }
 
 /// One side of a conflicted path, as the workspace needs it to take that side later.
@@ -394,6 +490,9 @@ pub fn merge_command(backend: &dyn Backend, ws: Option<&Workspace>, args: MergeA
     }
     if args.squash {
         crate::usage_error("`pyn merge --squash` needs a git repository");
+    }
+    if let Some(flag) = args.git_only() {
+        crate::usage_error(&format!("`pyn merge {flag}` needs a git repository"));
     }
     if args.edit {
         crate::usage_error(

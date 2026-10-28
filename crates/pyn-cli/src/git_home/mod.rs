@@ -56,6 +56,7 @@ mod maintenance;
 pub(crate) mod meld;
 mod merge;
 mod merge_diff;
+mod merge_options;
 mod name_rev;
 mod pack_plumbing;
 mod pack_refs;

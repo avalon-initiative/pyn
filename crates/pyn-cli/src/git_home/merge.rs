@@ -10,9 +10,10 @@ use pyn_gitwork::{Entry, Head, Kind, Pathspec};
 use pyn_object::{Commit, Kind as ObjectKind, ObjectId};
 
 use super::commands::add_changes;
+use super::merge_options::{self as options, Cleanup};
 use super::stage::{
-    Entries, clean_message, clear_merge_state, entries_of, identity, index_of, merge_heads,
-    put_entry, raw_mode, refuse_in_progress, remove_entry, write_tree,
+    Entries, clear_merge_state, entries_of, identity, index_of, merge_heads, put_entry, raw_mode,
+    refuse_in_progress, remove_entry, write_tree,
 };
 use super::strategy::{BadOption, Strategy, Which, shift_tree};
 use super::treemerge::{
@@ -50,6 +51,28 @@ pub(super) static BLOCKED_STATUS: std::sync::atomic::AtomicI32 =
 
 fn blocked_status() -> i32 {
     BLOCKED_STATUS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The stash `--autostash` made, until the merge ends or stops.
+static AUTOSTASH: std::sync::Mutex<Option<ObjectId>> = std::sync::Mutex::new(None);
+
+/// Puts the autostash back when the merge is over, or holds it while a merge or squash waits to be concluded.
+fn settle(git: &GitHome) {
+    let Some(stash) = AUTOSTASH.lock().ok().and_then(|mut s| s.take()) else {
+        return;
+    };
+    let dir = git.repo.git().git_dir();
+    if dir.join("MERGE_HEAD").exists() || dir.join("SQUASH_MSG").exists() {
+        options::hold_autostash(git, &stash);
+    } else {
+        options::restore_autostash(git, &stash);
+    }
+}
+
+/// Ends the command with `status` after settling the autostash.
+fn leave(git: &GitHome, status: i32) -> ! {
+    settle(git);
+    std::process::exit(status);
 }
 
 fn say(text: &str) {
@@ -107,11 +130,15 @@ fn tag_message(git: &GitHome, spec: &str) -> Option<String> {
 }
 
 pub(super) fn default_message(git: &GitHome, what: &str) -> Result<String> {
-    let into = match git.repo.head()? {
-        Head::Branch { name, .. } if name == "main" || name == "master" => String::new(),
-        Head::Branch { name, .. } => format!(" into {name}"),
-        Head::Detached(_) => " into HEAD".into(),
+    default_message_as(git, what, None)
+}
+
+fn default_message_as(git: &GitHome, what: &str, into_name: Option<&str>) -> Result<String> {
+    let branch = match git.repo.head()? {
+        Head::Branch { name, .. } => Some(name),
+        Head::Detached(_) => None,
     };
+    let into = options::destination(git, into_name, branch.as_deref());
     Ok(format!("Merge {what}{into}"))
 }
 
@@ -136,13 +163,22 @@ pub(super) fn write_orig_head_as(git: &GitHome, id: &ObjectId, action: Option<&s
     git.log_ref("ORIG_HEAD", old.as_ref(), id, &message, false)
 }
 
-pub fn merge(git: &GitHome, mut args: MergeArgs) -> Result<()> {
+pub fn merge(git: &GitHome, args: MergeArgs) -> Result<()> {
+    let result = start(git, args);
+    settle(git);
+    result
+}
+
+fn start(git: &GitHome, mut args: MergeArgs) -> Result<()> {
     git.repo.validate_diff_ignore_submodules()?;
     if args.preview {
         bail!("`pyn merge --preview` needs a pyn server; a git repository has no merge preview");
     }
     if args.abort {
         return abort(git);
+    }
+    if args.quit {
+        return options::quit(git);
     }
     if args.continue_merge {
         if merge_heads(git)?.is_empty() {
@@ -162,8 +198,13 @@ pub fn merge(git: &GitHome, mut args: MergeArgs) -> Result<()> {
     if args.squash && args.no_ff {
         bail!("options '--squash' and '--no-ff.' cannot be used together");
     }
+    options::apply_ff_setting(git, &mut args);
     args.edit = wants_edit(&args);
     args.no_edit = !args.edit;
+    options::check_flags(git, &args);
+    if args.quiet {
+        QUIET.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
     let configured: Vec<String> = match git.repo.config().get("pull.twohead") {
         Some(names) if args.strategy.is_empty() => {
             names.split_whitespace().map(str::to_string).collect()
@@ -179,6 +220,9 @@ pub fn merge(git: &GitHome, mut args: MergeArgs) -> Result<()> {
         .repo
         .resolve(&spec)
         .map_err(|_| Refused(format!("{spec} - not something we can merge")))?;
+    if options::wants_signature_check(git, &args) {
+        options::verify_signature(git, &theirs);
+    }
     let what = describe(git, &spec);
     let Some(ours) = head.id() else {
         if args.squash {
@@ -199,6 +243,15 @@ pub fn merge(git: &GitHome, mut args: MergeArgs) -> Result<()> {
         (args.no_ff, args.ff_only) = (true, false);
     }
     let can_ff = git.is_ancestor(&ours, &theirs)?;
+    let opened = if options::wants_autostash(git, &args) {
+        let made = options::create_autostash(git)?;
+        if let Ok(mut held) = AUTOSTASH.lock() {
+            *held = made;
+        }
+        git.open_index()?
+    } else {
+        opened
+    };
     if can_ff && !args.no_ff {
         return fast_forward(git, &opened, Some(ours), &theirs, &spec, &args);
     }
@@ -352,7 +405,9 @@ fn fast_forward(
         if let Some(ours) = &ours {
             write_orig_head(git, ours)?;
         }
-        blocked.report("merge", "merge", 1);
+        blocked.print("merge", "merge");
+        eprintln!("Aborting");
+        leave(git, 1);
     }
     if let Some(ours) = &ours {
         write_orig_head(git, ours)?;
@@ -415,7 +470,7 @@ fn fail_start(
         )?;
     }
     eprintln!("Merge with strategy {} failed.", kind.name());
-    std::process::exit(2);
+    leave(git, 2);
 }
 
 fn true_merge(
@@ -428,7 +483,9 @@ fn true_merge(
 ) -> Result<()> {
     let kind = strategy.kind;
     let bases = git.merge_bases(&ours, &theirs)?;
-    if bases.is_empty() {
+    let unrelated = bases.is_empty();
+    if unrelated && !args.allow_unrelated_histories {
+        write_orig_head(git, &ours)?;
         bail!("refusing to merge unrelated histories");
     }
     let tree_of = |c: &ObjectId| -> Result<ObjectId> { Ok(git.repo.commit(c)?.tree) };
@@ -461,7 +518,7 @@ fn true_merge(
             Err(BadOption::Unknown(opt) | BadOption::Unsupported(opt, _)) => {
                 write_orig_head(git, &ours)?;
                 eprintln!("fatal: unknown strategy option: -X{opt}");
-                std::process::exit(128);
+                leave(git, 128);
             }
         }
     } else {
@@ -471,7 +528,16 @@ fn true_merge(
         theirs_tree = shift_tree(git, &ours_tree, &theirs_tree, prefix)?;
     }
     let (mut base_tree, base_label) = match bases.as_slice() {
-        [one] => (tree_of(one)?, short(one)),
+        [] => {
+            if !kind.is_tree_merge() || settings.shift.is_some() {
+                bail!(
+                    "the strategy '{}' with unrelated histories is not built, and nothing was changed",
+                    kind.name()
+                );
+            }
+            (None, "empty tree".to_string())
+        }
+        [one] => (Some(tree_of(one)?), short(one)),
         many => {
             if !kind.is_tree_merge() {
                 bail!(
@@ -485,17 +551,17 @@ fn true_merge(
                 );
             }
             (
-                virtual_tree(git, many, &settings, 0)?,
+                Some(virtual_tree(git, many, &settings, 0)?),
                 VIRTUAL_LABEL.to_string(),
             )
         }
     };
-    if let Some(prefix) = &settings.shift {
-        base_tree = shift_tree(git, &ours_tree, &base_tree, prefix)?;
+    if let (Some(prefix), Some(base)) = (&settings.shift, &base_tree) {
+        base_tree = Some(shift_tree(git, &ours_tree, base, prefix)?);
     }
     let incoming =
         git.repo
-            .diff_trees(Some(&base_tree), Some(&theirs_tree), &Pathspec::default())?;
+            .diff_trees(base_tree.as_ref(), Some(&theirs_tree), &Pathspec::default())?;
     convert::refuse_unsupported(
         git,
         incoming
@@ -504,7 +570,7 @@ fn true_merge(
     )?;
     let merged = merge_trees_with(
         git,
-        [Some(&base_tree), Some(&ours_tree), Some(&theirs_tree)],
+        [base_tree.as_ref(), Some(&ours_tree), Some(&theirs_tree)],
         &Labels {
             ours: "HEAD",
             theirs: spec,
@@ -523,7 +589,7 @@ fn true_merge(
                 "error: Your local changes to the following files would be overwritten by merge:\n  {}",
                 names.join(" ")
             );
-            std::process::exit(2);
+            leave(git, 2);
         }
         println!("Trying really trivial in-index merge...");
         if merged.trivial {
@@ -576,7 +642,7 @@ fn true_merge(
                 eprintln!("Aborting");
             }
             eprintln!("Merge with strategy {} failed.", kind.name());
-            std::process::exit(2);
+            leave(git, 2);
         }
     };
     let (index, conflicted) = (applied.index, applied.conflicted);
@@ -629,12 +695,13 @@ impl Finish<'_> {
                 eprintln!("error: {reason}");
             }
             eprintln!("Not committing merge; use 'pyn commit' to complete the merge.");
-            std::process::exit(1);
+            leave(git, 1);
         };
         if verify && git.vetoed("pre-merge-commit", &[], &env)? {
             abort(None);
         }
-        if args.edit {
+        let cleanup = options::cleanup_mode(args);
+        if args.edit && cleanup == Cleanup::Strip {
             write_state(git, "MERGE_MSG", &format!("{message}{EDITOR_COMMENT}"))?;
         }
         if git.vetoed(
@@ -653,12 +720,13 @@ impl Finish<'_> {
             abort(None);
         }
         let text = std::fs::read(&path)?;
-        let cleaned = if args.edit {
-            super::editor::edited_message(&text)
-        } else {
-            Some(clean_message(
-                &[String::from_utf8_lossy(&text).into_owned()],
-            ))
+        let cleaned = match (args.edit, cleanup) {
+            (true, Cleanup::Strip) => super::editor::edited_message(&text),
+            (true, _) => {
+                let kept = options::cleaned(text, cleanup);
+                (kept.iter().any(|b| !b.is_ascii_whitespace())).then_some(kept)
+            }
+            (false, _) => Some(options::cleaned(text, cleanup)),
         };
         match cleaned {
             Some(text) => Ok(String::from_utf8_lossy(&text).into_owned()),
@@ -679,6 +747,50 @@ struct Finish<'a> {
 }
 
 impl Finish<'_> {
+    /// The message before hooks and the editor: `-m` or `-F`, else the generated title, then the `--log` shortlog.
+    fn initial_message(&self) -> Result<String> {
+        let (git, args) = (self.git, self.args);
+        let mut text = match options::given_message(args)? {
+            Some(raw) => raw,
+            None => {
+                let title = default_message_as(git, self.what, args.into_name.as_deref())?;
+                let made = match tag_message(git, self.spec) {
+                    Some(tag) if self.what.starts_with("tag ") => format!("{title}\n\n{tag}\n"),
+                    _ => format!("{title}\n"),
+                };
+                match options::cleanup_mode(args) {
+                    Cleanup::Verbatim => made.trim_end_matches('\n').as_bytes().to_vec(),
+                    _ => made.into_bytes(),
+                }
+            }
+        };
+        let limit = options::log_limit(git, args);
+        if limit > 0 {
+            let label = match self.what {
+                w if w.starts_with("branch '") || w.starts_with("remote-tracking branch '") => {
+                    self.spec.to_string()
+                }
+                w => w.to_string(),
+            };
+            let log = options::shortlog(git, &self.ours, &self.theirs, &label, limit)?;
+            if !log.is_empty() {
+                if text.last() != Some(&b'\n') {
+                    text.push(b'\n');
+                }
+                text.push(b'\n');
+                text.extend_from_slice(log.as_bytes());
+            }
+        }
+        let mode = options::cleanup_mode(args);
+        let editing = args.edit && mode == Cleanup::Strip;
+        let text = if editing {
+            options::cleaned(text, Cleanup::Whitespace)
+        } else {
+            options::cleaned(text, mode)
+        };
+        Ok(String::from_utf8_lossy(&text).into_owned())
+    }
+
     fn conclude(
         &self,
         conflicted: Vec<Vec<u8>>,
@@ -692,18 +804,10 @@ impl Finish<'_> {
             ours,
             theirs,
             spec,
-            what,
             ours_tree,
+            ..
         } = self;
-        let message = match args.message.is_empty() {
-            true => match tag_message(git, spec) {
-                Some(tag) if what.starts_with("tag ") => {
-                    format!("{}\n\n{tag}\n", default_message(git, what)?)
-                }
-                _ => format!("{}\n", default_message(git, what)?),
-            },
-            false => String::from_utf8_lossy(&clean_message(&args.message)).into_owned(),
-        };
+        let message = self.initial_message()?;
         let mode = if args.no_ff { "no-ff" } else { "" };
         if let Some(id) = auto_merge {
             write_state(git, "AUTO_MERGE", &format!("{id}\n"))?;
@@ -718,7 +822,7 @@ impl Finish<'_> {
                 write_state(git, "MERGE_MSG", &text)?;
                 println!("Squash commit -- not updating HEAD");
                 println!("Automatic merge failed; fix conflicts and then commit the result.");
-                std::process::exit(1);
+                leave(git, 1);
             }
             eprintln!("Automatic merge went well; stopped before committing as requested");
             println!("Squash commit -- not updating HEAD");
@@ -735,7 +839,7 @@ impl Finish<'_> {
             write_state(git, "MERGE_MSG", &text)?;
             write_state(git, "MERGE_MODE", mode)?;
             println!("Automatic merge failed; fix conflicts and then commit the result.");
-            std::process::exit(1);
+            leave(git, 1);
         }
         if args.no_commit {
             write_state(git, "MERGE_HEAD", &format!("{theirs}\n"))?;
@@ -744,6 +848,13 @@ impl Finish<'_> {
             println!("Automatic merge went well; stopped before committing as requested");
             return Ok(());
         }
+        let message = if args.signoff {
+            let me = identity(git, "committer")?;
+            let signed = super::commit::append_signoff(message.into_bytes(), &me.name, &me.email);
+            String::from_utf8_lossy(&signed).into_owned()
+        } else {
+            message
+        };
         let message = self.message_hooks(&message, mode)?;
         let tree = tree()?;
         let mut record = Commit {
@@ -1044,5 +1155,6 @@ fn abort(git: &GitHome) -> Result<()> {
     git.save_index(&opened, &index_of(opened.index.version, entries))?;
     clear_merge_state(git);
     git.log_ref("HEAD", Some(&head), &head, "reset: moving to HEAD", false)?;
+    options::apply_held_autostash(git);
     Ok(())
 }
