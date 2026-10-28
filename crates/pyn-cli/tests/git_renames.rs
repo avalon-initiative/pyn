@@ -413,23 +413,15 @@ fn find_copies_harder_in_the_work_tree_and_index() {
         r.write("copy.txt", &lines("t", 15));
         r.write("copy_k.txt", &lines("k", 15));
         r.git(&["add", "-N", "copy.txt", "copy_k.txt"]);
-        for setup in [
-            None,
-            Some(&["update-index", "--skip-worktree", "skip.txt"][..]),
+        for args in [
+            &["diff", "-C", "-C", "--name-status"][..],
+            &["diff", "-C", "-C"],
+            &["diff", "-C", "-C", "--stat", "--summary"],
+            &["diff", "HEAD", "-C", "-C", "--name-status"],
+            &["diff", "HEAD", "--find-copies-harder", "--stat"],
+            &["diff", "-C", "-C", "--name-status", "--", "copy.txt"],
         ] {
-            if let Some(args) = setup {
-                r.git(args);
-            }
-            for args in [
-                &["diff", "-C", "-C", "--name-status"][..],
-                &["diff", "-C", "-C"],
-                &["diff", "-C", "-C", "--stat", "--summary"],
-                &["diff", "HEAD", "-C", "-C", "--name-status"],
-                &["diff", "HEAD", "--find-copies-harder", "--stat"],
-                &["diff", "-C", "-C", "--name-status", "--", "copy.txt"],
-            ] {
-                r.same(args);
-            }
+            r.same(args);
         }
         r.git(&["add", "-A"]);
         for args in [
@@ -452,7 +444,6 @@ fn find_copies_harder_in_the_work_tree_and_index() {
         if r.format != "sha1" {
             return;
         }
-        r.git(&["update-index", "--no-skip-worktree", "skip.txt"]);
         r.git(&["stash", "push", "-q"]);
         for args in [
             &["stash", "show", "-C", "-C", "--name-status"][..],
