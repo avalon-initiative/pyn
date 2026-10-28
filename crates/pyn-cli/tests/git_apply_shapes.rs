@@ -33,13 +33,17 @@ fn twin(format: &'static str) -> Twin {
     Twin::new(format, history)
 }
 
-/// A state with the unmerged stage of a moved-aside file read at its original path: git versions differ on where
-/// `am --3way` leaves it (`d` or `d~HEAD`).
+/// A state with each unmerged index entry read at its original path: git versions differ on whether `am --3way`
+/// leaves the stage at `d` or at the moved-aside name (`d~HEAD`, `dd~<subject>`).
 fn stages_at_origin(state: &str) -> Vec<String> {
     let mut lines: Vec<String> = state
-        .replace("\td~HEAD\n", "\td\n")
         .lines()
-        .map(str::to_string)
+        .map(|line| match line.split_once('\t') {
+            Some((head, path)) if matches!(head.chars().last(), Some('1'..='3')) => {
+                format!("{head}\t{}", path.split('~').next().unwrap_or(path))
+            }
+            _ => line.to_string(),
+        })
         .collect();
     lines.sort();
     lines
