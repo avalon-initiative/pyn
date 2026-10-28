@@ -479,13 +479,13 @@ that cannot fast-forward is `fatal: Not possible to fast-forward, aborting.` (`1
 | `--ff`, `--no-ff`, `--ff-only`, `--commit`, `--no-commit`, `--stat`, `-n`, `--no-stat` | As for `pyn merge`; `--no-commit` stops before the commit with `MERGE_HEAD` set, and the diffstat follows `--stat`, `-n` and `merge.stat`. |
 | `--edit`, `--no-edit` | Passed to the merge, see [Merge message editor](#merge-message-editor); there is no short `-e` (git has none for `pull`). Ignored when the pull rebases or fast-forwards. |
 | `--no-rebase`, `--rebase`, `-r`, `--autostash` | `--no-rebase` merges; `--rebase` fast-forwards or replays as above; `--autostash` stashes before a rebase and applies after (a usage error unless the pull rebases). |
-| `-s`, `--strategy`, `-X`, `--strategy-option` | Passed to the merge as for `pyn merge`, see [Strategies and options](#strategies-and-options). A strategy name git does not define is `Could not find merge strategy '<name>'.` (`1`); more than one `-s`, and `-X` options pyn cannot honor, are usage errors (`129`), as are `-s` and `-X` with a pull that rebases (git hands them to its rebase; pyn's rebase has no strategies yet). |
+| `-s`, `--strategy`, `-X`, `--strategy-option` | Passed to the merge as for `pyn merge`, see [Strategies and options](#strategies-and-options). A strategy name git does not define is `Could not find merge strategy '<name>'.` (`1`); more than one `-s`, and `-X` options pyn cannot honor, are usage errors (`129`). With a pull that rebases they go to the rebase as for `pyn rebase`, see [Strategies in a replay](#strategies-in-a-replay). |
 | `-S[<keyid>]`, `--gpg-sign[=<keyid>]`, `--no-gpg-sign` | Passed on: the merge commit of a merge pull, or each commit a rebasing pull makes, is signed as for `pyn merge` and `pyn rebase`, see [Signing](#signing). |
 | `--recurse-submodules[=yes\|on-demand\|no]`, `--no-recurse-submodules` | Fetches in submodules as `fetch` does; with `yes` (or `submodule.recurse`) the checked-out submodules are then updated to the merged result. |
 | `--squash`, `--signoff`, `--cleanup`, `--allow-unrelated-histories`, `--all` | Usage error (`129`): not built (`--all`: use `pyn fetch --all`). |
 
 Config read: `pull.ff`, `pull.rebase`, `branch.<name>.rebase`, `branch.<name>.merge`, `branch.<name>.remote`, `merge.ff`, plus what
-`pyn fetch` reads, plus `merge.stat`. `pull.twohead`, `pull.octopus` and `branch.<name>.mergeOptions` are not read. The message of an annotated tag
+`pyn fetch` reads, plus `merge.stat` and `pull.twohead` (the default strategy of a merge, as for `pyn merge`). `pull.octopus` and `branch.<name>.mergeOptions` are not read. The message of an annotated tag
 is not appended to a tag merge's message. Pulling on a pyn server is #310 and still prints the git-command message.
 
 ### Clone from a git URL
@@ -1603,10 +1603,30 @@ fast-forward or an up-to-date merge. The options of the tree strategies (`ort`, 
 | `patience`, `histogram`, `diff-algorithm=patience\|histogram` | Usage error (`129`): only the Myers diff is built. |
 | `find-renames[=<n>]`, `rename-threshold=<n>` | Usage error (`129`): rename detection is not built. |
 
-Not built: several `-s` in one command, `-X` for `resolve`, `merge.<name>.mergeoptions` and `branch.<name>.mergeOptions`.
+`pull.twohead` names the strategy when no `-s` is given (git reads it for `merge` too); several names in it are refused like several `-s`.
+Not built: several `-s` in one command, `-X` for `resolve`, `pull.octopus`, `merge.<name>.mergeoptions` and `branch.<name>.mergeOptions`.
 Because renames are never followed, the results differ from git's where one side renamed a file the other changed, with any
 strategy or option.
 
+
+#### Strategies in a replay
+
+`rebase`, `cherry-pick` and `revert` take `-X <option>` (`--strategy-option`, repeatable) and `--strategy=<name>` (`rebase` also `-s`;
+`-s` of `cherry-pick` and `revert` is `--signoff`, as in git). `pull --rebase` hands its `-s` and `-X` to the rebase, and the last
+`-s` wins as in git. Each commit is merged with the tree merge, so `ort`, `recursive` and the options in the table above apply with
+the same sides as in git: `ours` is the side being built on (`HEAD`), `theirs` the commit being replayed (for `revert`, the
+commit's parent). A pick that becomes empty under `-X ours` is dropped by `rebase` and stops `cherry-pick` as an empty pick does.
+The strategy is kept in `rebase-merge/strategy` and `strategy_opts` (a rebase) and `sequencer/opts` (a sequence of picks), so
+`--continue` and `--skip` go on with it, and git can continue a stop of pyn's and the reverse.
+
+Refused with a usage error (`129`) before anything changes: strategies other than `ort` and `recursive` (`ours`, `resolve`,
+`octopus`, `subtree`; git runs them as separate programs for each pick), `-X subtree`, and the options the merge refuses
+(`patience`, `histogram`, `find-renames`, ...). A strategy git does not define is `Could not find merge strategy` (`1`), and an
+option it does not define `fatal: unknown strategy option` (`128`), both before the first commit, where git notices only when a
+merge needs them. A workspace on a pyn server refuses them. git reads no strategy setting for a replay (`rebase.*` has none, and
+`pull.twohead` is for merges), so none is read.
+
+Covered against the real git by `crates/pyn-cli/tests/git_replay_strategies.rs` and `git_pull.rs`.
 
 ### Merge message editor
 
@@ -1669,8 +1689,8 @@ state and leaves the index and files. With nothing in progress `--continue`, `--
 `commit` and `merge` still refuse while a cherry-pick is in progress.
 
 Differences from git: a range or list with a merge commit and no `-m` is refused before any commit is made (git applies the
-ones before it); `-e`, `--edit`, `--ff`, `--cleanup`, `-X`, `--strategy`, `--rerere-autoupdate`, `--allow-empty` and
-`--keep-redundant-commits` are usage errors; `--no-edit` is accepted. Covered against the real git by
+ones before it); `-e`, `--edit`, `--ff`, `--cleanup`, `--rerere-autoupdate`, `--allow-empty` and
+`--keep-redundant-commits` are usage errors; `--no-edit` is accepted; `-X` and `--strategy` are described in [Strategies in a replay](#strategies-in-a-replay). Covered against the real git by
 `crates/pyn-cli/tests/git_cherry_pick.rs`.
 
 ### Revert
@@ -1685,7 +1705,7 @@ Diff3 markers are labelled `HEAD` and `parent of <abbreviation> (<subject>)`, wi
 the files, the state files and the reflogs with the real git (`crates/pyn-cli/tests/git_revert.rs`).
 
 1. `-n` leaves the result staged and in the files and writes `MERGE_MSG` and `REVERT_HEAD`; `-s` adds `Signed-off-by:`;
-   `--no-edit` is accepted. `-x`, `-e`, `--edit`, `--cleanup`, `-X`, `--strategy`, `--rerere-autoupdate`,
+   `--no-edit` is accepted. `-X` and `--strategy` are described in [Strategies in a replay](#strategies-in-a-replay). `-x`, `-e`, `--edit`, `--cleanup`, `--rerere-autoupdate`,
    `--allow-empty` and `--keep-redundant-commits` are usage errors.
 2. The reflog line is `revert: <subject>`, and `commit: <subject>` for a commit made by `--continue`.
 3. A conflict exits `1` with `error: could not revert <abbreviation> (<subject>)`, the hints, the unmerged entries, markers,
@@ -1858,8 +1878,8 @@ The upstream stays the new base (`--onto` aside), the comment line still says `<
 point is not the new base is not fast-forwarded. In `no-rebase-cousins` mode the sheet then keeps the fork point as the base of
 the branch, as git does.
 
-Differences from git: `-s`, `-X`, `--signoff`, `--keep-base`, `--reapply-cherry-picks`, `--apply` and `--empty` other than `drop`
-are usage errors (`129`). A `merge` of several labels (an octopus merge) stops with `octopus merges are not built` and
+Differences from git: `--signoff`, `--keep-base`, `--reapply-cherry-picks`, `--apply` and `--empty` other than `drop`
+are usage errors (`129`); `-s` and `-X` are described in [Strategies in a replay](#strategies-in-a-replay). A `merge` of several labels (an octopus merge) stops with `octopus merges are not built` and
 leaves the command first in the sheet; git continues it (`git rebase --continue`) and a merge whose branches have more than one
 merge base stops the same way. pyn writes `AUTO_MERGE` only for a merge that stopped on conflicts; git writes it for every pick. A workspace's own
 rebase refuses `fixup -C`/`-c` and `--rebase-merges`, `--root`, `--fork-point` and `--update-refs` (and the sheet commands `label`,

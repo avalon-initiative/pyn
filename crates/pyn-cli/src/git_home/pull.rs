@@ -496,12 +496,16 @@ fn pull_inner(git: &GitHome, args: PullArgs) -> Result<()> {
             "`pyn pull --autostash`: only a rebase stashes first; run `pyn stash`, or pull with --rebase",
         );
     }
-    if rebase_on && (!args.strategy.is_empty() || !args.strategy_option.is_empty()) {
-        crate::usage_error("`pyn pull --rebase -s` and `-X`: rebase strategies are not built");
-    }
-    if !rebase_on {
+    let replay = if rebase_on {
+        super::strategy::Replay::parse(
+            "pull --rebase",
+            args.strategy.last().map(String::as_str),
+            &args.strategy_option,
+        )
+    } else {
         super::strategy::Strategy::parse(&args.strategy, &args.strategy_option);
-    }
+        Default::default()
+    };
     let how = integration(git, &args)?;
     if !args.dry_run {
         refuse_unfinished(git)?;
@@ -574,6 +578,7 @@ fn pull_inner(git: &GitHome, args: PullArgs) -> Result<()> {
                     autostash: args.autostash.then_some(true),
                     quiet: args.quiet > 0,
                     sign: args.sign.clone(),
+                    replay: replay.clone(),
                 },
             );
         }

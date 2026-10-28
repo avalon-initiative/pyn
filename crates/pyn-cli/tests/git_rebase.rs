@@ -3001,16 +3001,16 @@ fn bad_rebase_values_are_refused_before_anything_changes() {
 }
 
 #[test]
-fn strategies_with_a_rebasing_pull_are_a_usage_error() {
-    // git hands -s and -X to its rebase; pyn's rebase has no strategies yet.
+fn strategies_a_replay_does_not_build_are_a_usage_error_with_a_rebasing_pull() {
     let p = merge_history("sha1");
     p.with_origin();
     p.advance_origin(false);
     p.on("side");
     for args in [
         &["--rebase", "-s", "ours"][..],
-        &["--rebase=merges", "-X", "theirs"],
-        &["--rebase=interactive", "-s", "ort"],
+        &["--rebase=merges", "-s", "resolve"],
+        &["--rebase=interactive", "-X", "patience"],
+        &["--rebase", "-X", "subtree"],
     ] {
         let out = p.env.pyn(&p.pyn, &[&["pull"], args].concat());
         assert_eq!(out.status.code(), Some(129), "{args:?}");

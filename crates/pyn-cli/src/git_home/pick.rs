@@ -16,7 +16,7 @@ use super::stage::{
     clean_message, clear_merge_state, identity, merge_message, refuse_states, warn_about_hooks_for,
     write_tree,
 };
-use super::strategy::Settings;
+use super::strategy::{Replay, Settings};
 use super::treemerge::{Labels, merge_trees};
 use super::{convert, path_string, reset};
 use crate::local_pick::{PickArgs, revert_message, select, with_origin};
@@ -73,11 +73,13 @@ struct Opts {
     signoff: bool,
     mainline: Option<u32>,
     sign: SignFlag,
+    replay: Replay,
 }
 
 impl Opts {
-    fn of(args: &PickArgs) -> Self {
+    fn of(args: &PickArgs, replay: Replay) -> Self {
         Self {
+            replay,
             no_commit: args.no_commit,
             record_origin: args.record_origin,
             signoff: args.signoff,
@@ -109,6 +111,12 @@ impl Opts {
         if self.sign.no_gpg_sign {
             text.push_str("\tno-gpg-sign = true\n");
         }
+        if let Some(name) = &self.replay.name {
+            text.push_str(&format!("\tstrategy = {name}\n"));
+        }
+        for opt in &self.replay.xopts {
+            text.push_str(&format!("\tstrategy-option = {opt}\n"));
+        }
         (!text.is_empty()).then(|| format!("[options]\n{text}"))
     }
 
@@ -128,6 +136,8 @@ impl Opts {
                     opts.sign.gpg_sign = Some((!value.is_empty()).then(|| value.to_string()))
                 }
                 "no-gpg-sign" => opts.sign.no_gpg_sign = value == "true",
+                "strategy" => opts.replay.name = Some(value.to_string()),
+                "strategy-option" => opts.replay.xopts.push(value.to_string()),
                 _ => {}
             }
         }
@@ -229,8 +239,9 @@ fn in_progress(git: &GitHome) -> bool {
 }
 
 fn start(git: &GitHome, verb: Verb, args: &PickArgs) -> Result<()> {
-    let opts = Opts::of(args);
     let cmd = verb.command();
+    let replay = Replay::parse(cmd, args.strategy.as_deref(), &args.strategy_option);
+    let opts = Opts::of(args, replay);
     refuse_states(git, &["MERGE_HEAD", "rebase-merge", "rebase-apply"])?;
     let opened = git.open_index()?;
     if opened.index.entries.iter().any(|e| e.skip_worktree) {
@@ -383,6 +394,7 @@ pub(super) fn merge_pick(
     verb: Verb,
     id: &ObjectId,
     mainline: Option<u32>,
+    settings: &Settings,
     quiet_when_clean: bool,
 ) -> Result<Merged> {
     let picked = git.repo.commit(id)?;
@@ -425,7 +437,7 @@ pub(super) fn merge_pick(
             theirs: &theirs_label,
             base: &base_label,
         },
-        &Settings::default(),
+        settings,
     )?;
     let landing = Landing {
         theirs: &theirs_label,
@@ -456,7 +468,7 @@ fn apply(git: &GitHome, opts: &Opts, verb: Verb, id: &ObjectId) -> Result<Outcom
         label,
         ours_tree,
         applied,
-    } = merge_pick(git, verb, id, opts.mainline, false)?;
+    } = merge_pick(git, verb, id, opts.mainline, &opts.replay.settings(), false)?;
     let committer = identity(git, "committer")?;
     let mut message = match verb {
         Verb::Pick => picked.message.clone(),
