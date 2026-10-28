@@ -15,7 +15,7 @@ use std::process::Command;
 use gitsrv::*;
 use tempfile::{TempDir, tempdir};
 
-/// Records what the hook saw; `HOOKFAIL` names the hooks that exit 1, `HOOKEDIT` makes the message hooks edit the message.
+/// Records what the hook saw; `HOOKFAIL` names the hooks (or `reference-transaction:<state>`) that exit 1, `HOOKEDIT` makes the message hooks edit the message.
 const HOOK: &str = r#"#!/bin/sh
 n=$(basename "$0")
 {
@@ -27,7 +27,7 @@ for v in GIT_INDEX_FILE GIT_PREFIX GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_AUTHOR_D
   eval "echo $v=\${$v-unset}"
 done
 case "$n" in
-  pre-push|post-rewrite) echo "stdin:"; cat ;;
+  pre-push|post-rewrite|reference-transaction) echo "stdin:"; cat ;;
   prepare-commit-msg|commit-msg|applypatch-msg) [ -n "$NOMSG" ] || echo "msg: $(cat "$1")" ;;
 esac
 echo "out-of-band"
@@ -36,7 +36,7 @@ echo "stdout of $n"
 case "$n" in
   prepare-commit-msg|commit-msg|applypatch-msg) [ -n "$HOOKEDIT" ] && echo "edited by $n" >> "$1" ;;
 esac
-case " $HOOKFAIL " in *" $n "*) exit 1 ;; esac
+case " $HOOKFAIL " in *" $n "*|*" $n:$1 "*) exit 1 ;; esac
 exit 0
 "#;
 
@@ -85,6 +85,8 @@ struct Side {
     root: PathBuf,
     repo: PathBuf,
     pyn: bool,
+    /// Lets git's `gc.auto` come from the repository rather than the harness's `-c gc.auto=0`.
+    own_gc: bool,
 }
 
 struct Run {
@@ -99,7 +101,11 @@ impl Side {
             c.env_clear().env("PATH", path_env()).current_dir(dir);
             c
         } else {
-            git(dir)
+            let mut c = git(dir);
+            if self.own_gc {
+                c.args(["-c", "gc.auto=1", "-c", "gc.autoDetach=false"]);
+            }
+            c
         };
         c.env("HOME", self.root.join("home"))
             .env("TZ", "UTC")
@@ -211,7 +217,12 @@ impl Pair {
             fs::create_dir_all(root.join("home")).unwrap();
             init(&repo, format, false);
             init(&root.join("remote.git"), format, true);
-            Side { root, repo, pyn }
+            Side {
+                root,
+                repo,
+                pyn,
+                own_gc: false,
+            }
         };
         let (o, p) = (mk("o", false), mk("p", true));
         for s in [&o, &p] {
@@ -690,6 +701,250 @@ fn a_clone_gets_no_hooks_from_its_source() {
     for h in ALL {
         assert!(!dest.join(".git/hooks").join(h).exists(), "{h}");
     }
+}
+
+const REF_TX: [&str; 1] = ["reference-transaction"];
+
+/// The refs the hook was told about; git's old id for a deletion differs by version, so only the names are compared.
+fn touched(log: &str) -> std::collections::BTreeSet<String> {
+    let mut out = std::collections::BTreeSet::new();
+    let mut in_stdin = false;
+    for line in log.lines() {
+        if line.starts_with("== ") {
+            in_stdin = false;
+        } else if line == "stdin:" {
+            in_stdin = true;
+        } else if in_stdin
+            && let Some(name) = line.rsplit(' ').next().filter(|_| line.contains(' '))
+        {
+            out.insert(name.to_string());
+        }
+    }
+    out
+}
+
+#[test]
+fn reference_transaction_sees_the_ref_updates_git_makes() {
+    each_format(|format| {
+        let pair = Pair::new(format, &REF_TX);
+        stage_change(&pair);
+        pair.same("sub", &["commit", "-m", "subject"], &[]);
+        pair.same("", &["commit", "--amend", "-m", "amended"], &[]);
+        pair.same("", &["branch", "fresh"], &[]);
+        pair.same("", &["tag", "light"], &[]);
+        pair.same("", &["tag", "-a", "-m", "note", "heavy"], &[]);
+        pair.same("", &["switch", "-c", "moved"], &[]);
+        pair.same("", &["switch", "--detach", "main"], &[]);
+        pair.same("", &["switch", "main"], &[]);
+        pair.same("", &["reset", "--hard", "HEAD~1"], &[]);
+        pair.same("", &["merge", "side"], &[]);
+        pair.same("", &["push", "o", "main", "side"], &[]);
+        let log = pair.p.log();
+        assert!(log.contains("args: prepared"), "{log}");
+        assert!(log.contains("args: committed"), "{log}");
+    });
+}
+
+#[test]
+fn reference_transaction_sees_fetch_pull_and_forced_resets() {
+    each_format(|format| {
+        let pair = Pair::new(format, &REF_TX);
+        publish(&pair);
+        pair.both(|s| {
+            s.git(&["update-ref", "refs/remotes/o/main", "HEAD~1"]);
+            s.git(&["update-ref", "-d", "refs/remotes/o/side"]);
+        });
+        pair.same_with("", &["fetch", "o"], &[], false);
+        pair.both(|s| {
+            s.git(&["update-ref", "refs/remotes/o/main", "HEAD~1"]);
+        });
+        pair.same_with("", &["pull", "o", "main"], &[], false);
+        pair.same_with("", &["branch", "-f", "side", "HEAD~1"], &[], false);
+        pair.same_with("", &["switch", "-C", "side"], &[], false);
+        pair.same_with("", &["tag", "-f", "-a", "-m", "again", "heavy"], &[], false);
+        pair.same_with("", &["merge", "--no-ff", "main"], &[], false);
+        pair.same_with("", &["checkout", "-b", "viacheckout"], &[], false);
+        let log = pair.p.log();
+        assert!(log.contains("refs/remotes/o/main"), "{log}");
+    });
+}
+
+#[test]
+fn reference_transaction_for_deletions_ends_in_the_same_state() {
+    each_format(|format| {
+        let pair = Pair::new(format, &REF_TX);
+        pair.both(|s| {
+            s.git(&["tag", "gone"]);
+        });
+        let want = pair.o.run_in(&pair.o.repo, &["branch", "-D", "side"], &[]);
+        let got = pair.p.run_in(&pair.p.repo, &["branch", "-D", "side"], &[]);
+        assert_eq!((want.code, got.code), (0, 0), "{}", got.stderr);
+        for args in [&["tag", "-d", "gone"][..], &["push", "o", "main"]] {
+            pair.o.run_in(&pair.o.repo, args, &[]);
+            pair.p.run_in(&pair.p.repo, args, &[]);
+        }
+        first_difference(
+            &format!("{:?}", touched(&pair.p.log())),
+            &format!("{:?}", touched(&pair.o.log())),
+            "refs the hook saw",
+        );
+        assert!(pair.p.log().contains("args: committed"));
+        first_difference(&pair.p.state(), &pair.o.state(), "repository state");
+    });
+}
+
+#[test]
+fn a_refusing_reference_transaction_aborts_the_update() {
+    each_format(|format| {
+        let pair = Pair::new(format, &REF_TX);
+        stage_change(&pair);
+        let veto = [("HOOKFAIL", "reference-transaction:prepared")];
+        pair.same("", &["branch", "refused"], &veto);
+        pair.same("", &["tag", "refused"], &veto);
+        pair.same("", &["commit", "-m", "refused"], &veto);
+        pair.same("", &["reset", "--hard", "HEAD~1"], &veto);
+        let aborted = pair.p.log().matches("args: aborted").count();
+        assert!(aborted >= 4, "{aborted}");
+        assert!(pair.p.git(&["branch", "--list", "refused"]).is_empty());
+        let late = [("HOOKFAIL", "reference-transaction:committed")];
+        let run = pair.same("", &["branch", "late"], &late);
+        assert_eq!(run.code, 0, "{}", run.stderr);
+    });
+}
+
+#[test]
+fn reference_transaction_is_not_run_for_a_changed_expectation_or_a_failed_command() {
+    each_format(|format| {
+        let pair = Pair::new(format, &REF_TX);
+        let run = pair.same("", &["branch", "side"], &[]);
+        assert_ne!(run.code, 0);
+        assert!(pair.p.log().is_empty(), "{}", pair.p.log());
+    });
+}
+
+/// Pushes `main` to the bare remote of both sides so a clone has a commit to check out.
+fn publish(pair: &Pair) {
+    pair.both(|s| {
+        s.git(&["push", "-q", "o", "main"]);
+    });
+}
+
+fn clone_with_hooks(pair: &Pair, extra: &[&str], env: &[(&str, &str)]) -> (Run, Run) {
+    let one = |s: &Side| {
+        let hooks = format!("core.hooksPath={}", s.repo.join(".git/hooks").display());
+        let mut args = vec!["clone", "-c", &hooks];
+        args.extend_from_slice(extra);
+        args.extend(["../remote.git", "../copy"]);
+        s.run_in(&s.repo, &args, env)
+    };
+    (one(&pair.o), one(&pair.p))
+}
+
+#[test]
+fn clone_runs_post_checkout_with_the_null_id_and_the_new_head() {
+    each_format(|format| {
+        for (extra, ran) in [
+            (&[][..], true),
+            (&["--no-checkout"], false),
+            (&["--bare"], false),
+        ] {
+            let pair = Pair::new(format, &["post-checkout"]);
+            publish(&pair);
+            let (want, got) = clone_with_hooks(&pair, extra, &[]);
+            assert_eq!(want.code, got.code, "{extra:?}: {}", got.stderr);
+            first_difference(&pair.p.log(), &pair.o.log(), &format!("{extra:?}: hooks"));
+            assert_eq!(pair.p.log().contains("== post-checkout"), ran, "{extra:?}");
+        }
+    });
+}
+
+#[test]
+fn a_failing_post_checkout_fails_the_clone_after_it_finished() {
+    let pair = Pair::new("sha1", &["post-checkout"]);
+    publish(&pair);
+    let (want, got) = clone_with_hooks(&pair, &[], &[("HOOKFAIL", "post-checkout")]);
+    assert_eq!(
+        oracle::status_class(got.code),
+        oracle::status_class(want.code),
+        "{}",
+        got.stderr
+    );
+    assert_ne!(got.code, 0);
+    assert!(pair.p.root.join("copy/a.txt").exists());
+}
+
+#[test]
+fn worktree_add_runs_post_checkout_in_the_new_work_tree() {
+    each_format(|format| {
+        let cases: [&[&str]; 5] = [
+            &["worktree", "add", "../wt1"],
+            &["worktree", "add", "-b", "grown", "../wt2"],
+            &["worktree", "add", "--detach", "../wt3", "side"],
+            &["worktree", "add", "--no-checkout", "../wt4", "-b", "bare"],
+            &["worktree", "add", "--orphan", "-b", "empty", "../wt5"],
+        ];
+        for args in cases {
+            let pair = Pair::new(format, &["post-checkout"]);
+            let run = pair.same("sub", args, &[]);
+            assert_eq!(run.code, 0, "{args:?}: {}", run.stderr);
+            let ran = pair.p.log().contains("== post-checkout");
+            assert_eq!(
+                ran,
+                !args.contains(&"--no-checkout") && !args.contains(&"--orphan")
+            );
+        }
+        let pair = Pair::new(format, &["post-checkout"]);
+        let run = pair.same(
+            "",
+            &["worktree", "add", "../wt"],
+            &[("HOOKFAIL", "post-checkout")],
+        );
+        assert_ne!(run.code, 0);
+        assert!(pair.p.root.join("wt/a.txt").exists());
+    });
+}
+
+/// Enough loose objects that `gc --auto` at a threshold of 1 has work to do.
+fn bulk(pair: &Pair) {
+    pair.both(|s| {
+        for i in 0..1500 {
+            fs::write(s.repo.join(format!("bulk{i}.txt")), format!("{i}\n")).unwrap();
+        }
+        s.git(&["add", "."]);
+        s.git(&["config", "gc.auto", "1"]);
+        s.git(&["config", "gc.autoDetach", "false"]);
+    });
+}
+
+fn loose(s: &Side) -> String {
+    let out = s.git(&["count-objects"]);
+    out.split(' ').next().unwrap_or("").to_string()
+}
+
+#[test]
+fn pre_auto_gc_runs_before_an_automatic_gc_and_can_skip_it() {
+    let mut pair = Pair::new("sha1", &["pre-auto-gc"]);
+    pair.o.own_gc = true;
+    bulk(&pair);
+    pair.same(
+        "sub",
+        &["gc", "--auto", "--quiet"],
+        &[("HOOKFAIL", "pre-auto-gc")],
+    );
+    assert!(pair.p.log().contains("== pre-auto-gc"));
+    assert_eq!(loose(&pair.p), loose(&pair.o));
+    assert_ne!(loose(&pair.p), "0");
+    pair.same("", &["gc", "--auto"], &[]);
+    assert_eq!(loose(&pair.p), loose(&pair.o));
+    assert_eq!(loose(&pair.p), "0");
+    pair.same("", &["gc", "--auto"], &[]);
+    pair.same("", &["gc", "--quiet"], &[]);
+    assert_eq!(
+        pair.p.log().matches("== pre-auto-gc").count(),
+        2,
+        "{}",
+        pair.p.log()
+    );
 }
 
 /// Both repositories diverged on `side` and `main`, with hooks installed and an editor script outside them.

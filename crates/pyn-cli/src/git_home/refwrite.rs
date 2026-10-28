@@ -114,6 +114,29 @@ impl GitHome {
         Ok(())
     }
 
+    /// `move_ref` for an overwrite that expects no old value, as git's `branch -f` does: the hooks are told the old id is absent.
+    pub(super) fn reset_ref(
+        &self,
+        name: &str,
+        old: Option<&ObjectId>,
+        new: &ObjectId,
+        message: &str,
+    ) -> Result<()> {
+        let follows = self.head_target()?.as_deref() == Some(name);
+        let line = |n: &str| pyn_git::RefUpdate {
+            name: n.to_string(),
+            old: None,
+            new: Some(*new),
+        };
+        let mut updates = vec![line(name)];
+        if follows {
+            updates.insert(0, line("HEAD"));
+        }
+        self.repo
+            .refs()
+            .transaction(&updates, || self.move_ref(name, old, new, message))
+    }
+
     /// Moves the branch `HEAD` is on, or a detached `HEAD`, to `new`.
     pub(super) fn move_head(&self, new: &ObjectId, message: &str) -> Result<()> {
         let old = self.repo.head_commit()?;

@@ -2,6 +2,8 @@ use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use pyn_object::{Algorithm, ObjectId};
 
@@ -24,11 +26,35 @@ pub struct PackedRef {
     pub peeled: Option<ObjectId>,
 }
 
+/// Where a ref transaction stands when its observer is told.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TxState {
+    Prepared,
+    Committed,
+    Aborted,
+}
+
+/// One ref in a transaction; an absent side is `None`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefUpdate {
+    pub name: String,
+    pub old: Option<ObjectId>,
+    pub new: Option<ObjectId>,
+}
+
+/// Told of every ref transaction; refusing `Prepared` aborts it.
+pub trait RefObserver: Send + Sync {
+    /// Returns false to refuse a `Prepared` transaction; the answer to the other states is ignored.
+    fn transaction(&self, state: TxState, updates: &[RefUpdate]) -> bool;
+}
+
 /// Loose refs, `packed-refs` and `HEAD` for one repository (and one worktree).
 pub struct RefStore {
     git_dir: PathBuf,
     pub(crate) common_dir: PathBuf,
     pub(crate) algorithm: Algorithm,
+    observer: Option<Arc<dyn RefObserver>>,
+    in_transaction: AtomicBool,
 }
 
 impl RefStore {
@@ -37,6 +63,71 @@ impl RefStore {
             git_dir,
             common_dir,
             algorithm,
+            observer: None,
+            in_transaction: AtomicBool::new(false),
+        }
+    }
+
+    pub fn set_observer(&mut self, observer: Arc<dyn RefObserver>) {
+        self.observer = Some(observer);
+    }
+
+    /// Runs `write` as one transaction over `updates`, telling the observer before and after; one inside another is not reported.
+    pub fn transaction<T, E: From<Error>>(
+        &self,
+        updates: &[RefUpdate],
+        write: impl FnOnce() -> std::result::Result<T, E>,
+    ) -> std::result::Result<T, E> {
+        let Some(observer) = &self.observer else {
+            return write();
+        };
+        if self.in_transaction.swap(true, Ordering::SeqCst) {
+            return write();
+        }
+        let result = self.observed(observer.as_ref(), updates, write);
+        self.in_transaction.store(false, Ordering::SeqCst);
+        result
+    }
+
+    fn observed<T, E: From<Error>>(
+        &self,
+        observer: &dyn RefObserver,
+        updates: &[RefUpdate],
+        write: impl FnOnce() -> std::result::Result<T, E>,
+    ) -> std::result::Result<T, E> {
+        if !observer.transaction(TxState::Prepared, updates) {
+            observer.transaction(TxState::Aborted, updates);
+            return Err(Error::Vetoed.into());
+        }
+        let result = write();
+        let state = if result.is_ok() {
+            TxState::Committed
+        } else {
+            TxState::Aborted
+        };
+        observer.transaction(state, updates);
+        result
+    }
+
+    /// The updates a write of `name` to `new` makes, with `HEAD` first when it follows the branch.
+    fn updates_for(&self, name: &str, new: Option<ObjectId>) -> Vec<RefUpdate> {
+        let attached = name == "HEAD" && matches!(self.read("HEAD"), Ok(Some(Ref::Symbolic(_))));
+        let old = if attached {
+            None
+        } else {
+            self.resolve(name).ok().flatten()
+        };
+        let one = |n: &str| RefUpdate {
+            name: n.to_owned(),
+            old,
+            new,
+        };
+        let follows =
+            new.is_some() && matches!(self.read("HEAD"), Ok(Some(Ref::Symbolic(t))) if t == name);
+        if follows {
+            vec![one("HEAD"), one(name)]
+        } else {
+            vec![one(name)]
         }
     }
 
@@ -163,10 +254,20 @@ impl RefStore {
             .open(&lock)
             .map_err(io_at(&lock))?;
         let result = self.check_expect(name, expect).and_then(|()| {
-            file.write_all(content.as_bytes())
-                .and_then(|()| file.sync_all())
-                .and_then(|()| fs::rename(&lock, &path))
-                .map_err(io_at(&path))
+            let new = content.strip_prefix("ref: ").map_or_else(
+                || ObjectId::from_hex(self.algorithm, content.trim()).ok(),
+                |_| None,
+            );
+            let mut publish = || {
+                file.write_all(content.as_bytes())
+                    .and_then(|()| file.sync_all())
+                    .and_then(|()| fs::rename(&lock, &path))
+                    .map_err(io_at(&path))
+            };
+            match new {
+                Some(id) => self.transaction(&self.updates_for(name, Some(id)), publish),
+                None => publish(),
+            }
         });
         if result.is_err() {
             let _ = fs::remove_file(&lock);
@@ -204,12 +305,14 @@ impl RefStore {
             .open(&lock)
             .map_err(io_at(&lock))?;
         let result = self.check_expect(name, expect).and_then(|()| {
-            match fs::remove_file(&path) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(io_at(&path)(e)),
-            }
-            self.remove_packed(name)
+            self.transaction(&self.updates_for(name, None), || {
+                match fs::remove_file(&path) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(io_at(&path)(e)),
+                }
+                self.remove_packed(name)
+            })
         });
         let _ = fs::remove_file(&lock);
         if result.is_ok() {

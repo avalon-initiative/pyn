@@ -2680,12 +2680,27 @@ default are open in #496).
 | `pre-applypatch` | none | `am` stops with the patch applied to the index and the session kept, exit `1`; skipped by `-n`/`--no-verify`. Runs before the commit, also for `--continue`. |
 | `post-applypatch` | none | Ignored. After the commit. |
 | `post-merge` | `0` | Ignored. After a merge that fast-forwards or commits, not after `commit` concluding one. A `--squash` merge runs it with `1`. |
-| `post-checkout` | `<old HEAD> <new HEAD> <flag>`: `1` for `switch` and `checkout` of a branch or commit, `0` for `checkout -- <paths>` and `restore`; the all-zero id stands for no commit | The command exits `1` after finishing its work, as git's does. |
+| `post-checkout` | `<old HEAD> <new HEAD> <flag>`: `1` for `switch` and `checkout` of a branch or commit, `0` for `checkout -- <paths>` and `restore`; the all-zero id stands for no commit. `clone` (not `--bare`, `--no-checkout` or an empty remote) runs it with the zero id, the new `HEAD` and `1`, with `GIT_DIR` set and no `GIT_PREFIX`; `worktree add` (not `--no-checkout` or `--orphan`) runs it the same way from inside the new work tree, with `GIT_PREFIX` as the command's directory | The command exits `1` after finishing its work, as git's does. |
+| `reference-transaction` | `prepared`, `committed` or `aborted`; `<old> <new> <ref>` per ref on standard input (see below) | `prepared` refused: the update is not made, `aborted` is reported, and the command fails (`128`). `committed` and `aborted` are ignored. |
+| `pre-auto-gc` | none | `gc --auto` (and the automatic `gc` after a command) does nothing and exits `0`. Runs once the repository needs a `gc` and before the "Auto packing" message; `gc` without `--auto` does not run it. |
 | `pre-push` | `<remote name or URL> <url>`; one line `<local ref> <local id> <remote ref> <remote id>` per ref about to be sent on standard input (`(delete)` and the zero id for a deletion; refs that are up to date or rejected are left out); also run by `--dry-run` | `push` sends nothing and exits `1`; skipped by `--no-verify`. |
 
 The environment also carries `GIT_PREFIX` (the directory the command was run from, relative to the work tree root, with a trailing `/`, or empty) and
 whatever the caller had. `GIT_DIR` and `GIT_WORK_TREE` are not set. Oracle tests run one recording script under git and under pyn on git 2.43 and 2.55 and compare
 arguments, standard input, working directory, environment and the resulting exit status and repository state.
+
+`reference-transaction` runs around every ref update pyn makes on a git home, one transaction per update: a branch or tag created, moved or
+deleted, the remote-tracking refs `fetch`, `pull` and `push` update, `ORIG_HEAD`, and the commit, merge, reset, `switch`/`checkout` and
+`cherry-pick` moves of a branch. A move of the branch `HEAD` is on lists `HEAD` first, then the branch, as git does; a detached `HEAD`
+moves as `HEAD` alone. The old id is the ref's current id, or the zero id for a new ref, for `ORIG_HEAD` and for the forced resets of
+`branch -f`, `switch -C`, `checkout -B` and `worktree add -B` (git passes no old id there). A ref that changed under pyn before the
+update fails without running the hook. A commit's hooks see `GIT_AUTHOR_*` as git exports them. Differences, none of them compared
+by the tests beyond the set of refs: switching `HEAD` to another branch (a symbolic ref update) runs nothing, as in git 2.43 (newer git
+may report it); a deletion reports the old id and the zero id, where git 2.43 reports the zero id twice and adds `aborted` and repeated
+`prepared`/`committed` runs for its `packed-refs` pass; a `clone` or `worktree add` reports its ref
+creations only when a hook is installed by `core.hooksPath` (never by a template, which pyn does not copy), one transaction per ref and not in git's grouping; `rebase`, `cherry-pick`,
+`revert`, `stash` and `am` do not report their pseudo refs (`CHERRY_PICK_HEAD`, `REBASE_HEAD`, `MERGE_HEAD`, `AUTO_MERGE`), `rebase`'s
+`HEAD` detach and the `reset --hard` a `stash` makes; `git update-ref` and `symbolic-ref` have no pyn command.
 
 Replaying commands run the hooks git runs for them. `cherry-pick` and `revert` (and the picks of `rebase`) make each commit
 with `prepare-commit-msg` (`.git/COMMIT_EDITMSG` and `message`; `GIT_INDEX_FILE=.git/index`, `GIT_EDITOR=:`, no `GIT_AUTHOR_*`)
@@ -2703,7 +2718,7 @@ not compared.
 Not built, and warned about when they exist: the commit hooks (`pre-commit`, `prepare-commit-msg` with source `commit HEAD`,
 `commit-msg`, `post-commit`, `post-rewrite amend`) for a `reword`, for the merge commits of `--rebase-merges`, and for the
 commit a rebase makes when `--continue` finishes an `edit` or a `squash` chain; `post-checkout` during a rebase;
-`reference-transaction`, `pre-auto-gc`, `post-checkout` after `clone` and `worktree add`. `post-update`, `pre-receive`,
+`reference-transaction` for the pseudo refs and the rebase and stash moves listed above. `post-update`, `pre-receive`,
 `update` and `push-to-checkout` are server side and never run by a client.
 
 ### Git LFS

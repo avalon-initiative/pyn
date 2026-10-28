@@ -365,7 +365,7 @@ fn go_quietly(git: &GitHome, go: Go, via: Via) -> Result<()> {
                 let old = git.branch_commit(&label)?;
                 let reset = format!("branch: Reset to {start_label}");
                 if old != Some(*id) {
-                    git.move_ref(r, old.as_ref(), id, &reset)?;
+                    git.reset_ref(r, old.as_ref(), id, &reset)?;
                 } else if same_branch {
                     git.log_ref("HEAD", Some(id), id, &reset, false)?;
                 }

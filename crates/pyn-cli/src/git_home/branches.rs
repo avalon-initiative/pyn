@@ -228,7 +228,7 @@ fn create(
     let full = GitHome::branch_ref(name);
     match existing {
         Some(old) if old == id => {}
-        Some(old) => git.move_ref(&full, Some(&old), &id, &format!("branch: Reset to {label}"))?,
+        Some(old) => git.reset_ref(&full, Some(&old), &id, &format!("branch: Reset to {label}"))?,
         None => git.create_ref(&full, &id, &format!("branch: Created from {label}"))?,
     }
     match plan {

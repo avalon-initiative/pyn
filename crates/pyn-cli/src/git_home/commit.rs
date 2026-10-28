@@ -594,10 +594,10 @@ pub fn commit(git: &GitHome, opts: &CommitOptions) -> Result<()> {
         _ => "",
     };
     let note = format!("commit{kind}: {first}");
-    match &branch_ref {
+    git.with_ref_env(author_env(&author), || match &branch_ref {
         Some(target) => git.move_ref(target, parent.as_ref(), &id, &note),
         None => git.move_head(&id, &note),
-    }
+    })
     .context("HEAD moved while committing; run the command again")?;
     clear_merge_state(git);
     super::merge_options::apply_held_autostash(git);

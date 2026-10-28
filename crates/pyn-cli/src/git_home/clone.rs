@@ -473,7 +473,7 @@ fn finish(
     fetched: Downloaded,
     filter: Option<&ObjectFilter>,
     root: &Path,
-) -> Result<()> {
+) -> Result<Option<ObjectId>> {
     let git = GitHome::open_at(root)?;
     let refs = &fetched.remote_refs;
     let empty = refs.iter().all(|r| r.id.is_none());
@@ -566,8 +566,9 @@ fn finish(
         if let (Landing::Detached(_), false) = (&landing, opts.quiet) {
             detach_advice(&git, &id.to_hex(), &id)?;
         }
+        return Ok(Some(id));
     }
-    Ok(())
+    Ok(None)
 }
 
 /// What a submodule clone needs beyond its url: where the work tree and the git directory go.
@@ -616,7 +617,7 @@ pub(super) fn clone_nested(n: &Nested) -> Result<()> {
             n.git_dir,
             n.work,
         )?;
-        finish(&opts, "origin", n.url, &prefer, fetched, None, n.work)
+        finish(&opts, "origin", n.url, &prefer, fetched, None, n.work).map(|_| ())
     };
     run().inspect_err(|_| {
         let _ = std::fs::remove_dir_all(n.git_dir);
@@ -745,7 +746,7 @@ pub fn clone(
             None => e,
         }
     })?;
-    finish(
+    let checked_out = finish(
         opts,
         origin,
         source,
@@ -759,6 +760,13 @@ pub fn clone(
             clean_up(&target, existed, &git_dir, opts.is_bare());
         }
     })?;
+    if let Some(id) = checked_out {
+        let git = GitHome::open_at(&target)?;
+        git.warn_if_hooks_off(&["post-checkout"]);
+        if git.post_checkout_in(&target, &id, false)? != 0 {
+            std::process::exit(1);
+        }
+    }
     if !opts.recurse_submodules.is_empty() && !opts.is_bare() && !opts.no_checkout {
         super::submodule::after_clone(&target, opts.shallow_submodules, opts.quiet)?;
     }

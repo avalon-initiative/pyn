@@ -96,48 +96,16 @@ impl GitHome {
         let Some(path) = self.find_hook(name) else {
             return Ok(None);
         };
-        let root = self.repo.git().work_tree();
-        let prefix = match (root, std::env::current_dir()) {
-            (Some(r), Ok(cwd)) => cwd
-                .strip_prefix(r)
-                .ok()
-                .filter(|p| !p.as_os_str().is_empty())
-                .map_or_else(String::new, |p| format!("{}/", p.display())),
-            _ => String::new(),
-        };
-        let mut cmd = Command::new(self.hook_path(&path));
-        cmd.args(args.iter().map(OsString::from))
-            .env("GIT_PREFIX", prefix)
-            .stdin(if stdin.is_some() {
-                Stdio::piped()
-            } else {
-                Stdio::null()
-            })
-            .stdout(stdout_as_stderr());
-        if let Some(r) = root.or(Some(self.repo.git().git_dir())) {
-            cmd.current_dir(r);
-        }
-        for (k, v) in env {
-            cmd.env(k, v);
-        }
-        let mut child = match cmd.spawn() {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("error: cannot exec '{}': {e}", self.hook_path(&path));
-                return Ok(Some(1));
-            }
-        };
-        let feeder = stdin.zip(child.stdin.take()).map(|(bytes, mut pipe)| {
-            let bytes = bytes.to_vec();
-            std::thread::spawn(move || {
-                let _ = pipe.write_all(&bytes);
-            })
-        });
-        let status = child.wait()?;
-        if let Some(f) = feeder {
-            let _ = f.join();
-        }
-        Ok(Some(status.code().unwrap_or(128)))
+        let spawned = spawn_hook(
+            &self.hook_path(&path),
+            self.repo.git().work_tree(),
+            self.repo.git().git_dir(),
+            args,
+            stdin,
+            env,
+            Some(prefix_in(self.repo.git().work_tree())),
+        )?;
+        Ok(Some(spawned))
     }
 
     /// Runs `post-checkout`; the status git's command ends with: 1 when the hook failed, else 0.
@@ -160,6 +128,38 @@ impl GitHome {
         ))
     }
 
+    /// Runs `post-checkout` from the new work tree `dir`, null id to `new`: as `worktree add` (`added`) or `clone` does.
+    pub(super) fn post_checkout_in(&self, dir: &Path, new: &ObjectId, added: bool) -> Result<i32> {
+        let Some(path) = self.find_hook("post-checkout") else {
+            return Ok(0);
+        };
+        let abs = if path.is_relative() {
+            self.ws.root.join(&path)
+        } else {
+            path
+        };
+        let args = [
+            "0".repeat(self.algorithm().digest_len() * 2),
+            new.to_hex(),
+            "1".to_string(),
+        ];
+        let env = if added {
+            Vec::new()
+        } else {
+            vec![("GIT_DIR", self.repo.git().git_dir().display().to_string())]
+        };
+        let status = spawn_hook(
+            &abs.display().to_string(),
+            Some(dir),
+            self.repo.git().git_dir(),
+            &args,
+            None,
+            &env,
+            added.then(|| prefix_in(self.repo.git().work_tree())),
+        )?;
+        Ok(i32::from(status != 0))
+    }
+
     /// Whether a hook called `name` is there to run, without the hint for a non-executable one.
     pub(super) fn hook_present(&self, name: &str) -> bool {
         self.hooks_enabled()
@@ -177,6 +177,146 @@ impl GitHome {
         Ok(self
             .run_hook(name, args, None, env)?
             .is_some_and(|s| s != 0))
+    }
+}
+
+/// The directory the command runs in, relative to `root` with a trailing slash; empty at the root or outside it.
+fn prefix_in(root: Option<&Path>) -> String {
+    match (root, std::env::current_dir()) {
+        (Some(r), Ok(cwd)) => cwd
+            .strip_prefix(r)
+            .ok()
+            .filter(|p| !p.as_os_str().is_empty())
+            .map_or_else(String::new, |p| format!("{}/", p.display())),
+        _ => String::new(),
+    }
+}
+
+/// Runs the hook at `program` in the work tree root (the git dir for a bare repository); a hook that cannot start counts as status 1.
+fn spawn_hook(
+    program: &str,
+    root: Option<&Path>,
+    git_dir: &Path,
+    args: &[String],
+    stdin: Option<&[u8]>,
+    env: &[(&str, String)],
+    prefix: Option<String>,
+) -> Result<i32> {
+    let mut cmd = Command::new(program);
+    cmd.args(args.iter().map(OsString::from))
+        .stdin(if stdin.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(stdout_as_stderr())
+        .current_dir(root.unwrap_or(git_dir));
+    match prefix {
+        Some(p) => cmd.env("GIT_PREFIX", p),
+        None => cmd.env_remove("GIT_PREFIX"),
+    };
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error: cannot exec '{program}': {e}");
+            return Ok(1);
+        }
+    };
+    let feeder = stdin.zip(child.stdin.take()).map(|(bytes, mut pipe)| {
+        let bytes = bytes.to_vec();
+        std::thread::spawn(move || {
+            let _ = pipe.write_all(&bytes);
+        })
+    });
+    let status = child.wait()?;
+    if let Some(f) = feeder {
+        let _ = f.join();
+    }
+    Ok(status.code().unwrap_or(128))
+}
+
+/// Runs `reference-transaction` for every ref transaction the repository makes.
+pub(super) struct RefHook {
+    dir: PathBuf,
+    ws_root: PathBuf,
+    work_tree: Option<PathBuf>,
+    git_dir: PathBuf,
+    zero: String,
+    env: RefEnv,
+}
+
+/// Environment added for the hook while a command makes its ref updates.
+pub(super) type RefEnv = std::sync::Arc<std::sync::Mutex<Vec<(&'static str, String)>>>;
+
+impl GitHome {
+    /// Runs `f` with `env` added to the environment `reference-transaction` sees.
+    pub(super) fn with_ref_env<T>(
+        &self,
+        env: Vec<(&'static str, String)>,
+        f: impl FnOnce() -> T,
+    ) -> T {
+        if let Ok(mut held) = self.ref_env.lock() {
+            *held = env;
+        }
+        let out = f();
+        if let Ok(mut held) = self.ref_env.lock() {
+            held.clear();
+        }
+        out
+    }
+}
+
+impl RefHook {
+    pub(super) fn new(git: &GitHome) -> Option<Self> {
+        let hook = Self {
+            env: git.ref_env.clone(),
+            dir: git.hooks_dir(),
+            ws_root: git.ws.root.clone(),
+            work_tree: git.repo.git().work_tree().map(Path::to_path_buf),
+            git_dir: git.repo.git().git_dir().to_path_buf(),
+            zero: "0".repeat(git.algorithm().digest_len() * 2),
+        };
+        (git.hooks_enabled() && hook.program().is_some()).then_some(hook)
+    }
+
+    fn program(&self) -> Option<PathBuf> {
+        let path = self.dir.join("reference-transaction");
+        let meta = std::fs::metadata(&path).ok()?;
+        (meta.is_file() && meta.permissions().mode() & 0o111 != 0).then_some(path)
+    }
+}
+
+impl pyn_git::RefObserver for RefHook {
+    fn transaction(&self, state: pyn_git::TxState, updates: &[pyn_git::RefUpdate]) -> bool {
+        use pyn_git::TxState;
+        let Some(path) = self.program() else {
+            return true;
+        };
+        let id = |o: &Option<ObjectId>| o.map_or_else(|| self.zero.clone(), |i| i.to_hex());
+        let text: String = updates
+            .iter()
+            .map(|u| format!("{} {} {}\n", id(&u.old), id(&u.new), u.name))
+            .collect();
+        let name = match state {
+            TxState::Prepared => "prepared",
+            TxState::Committed => "committed",
+            TxState::Aborted => "aborted",
+        };
+        let env = self.env.lock().map(|e| e.clone()).unwrap_or_default();
+        let shown = path.strip_prefix(&self.ws_root).unwrap_or(&path);
+        let status = spawn_hook(
+            &shown.display().to_string(),
+            self.work_tree.as_deref(),
+            &self.git_dir,
+            &[name.to_string()],
+            Some(text.as_bytes()),
+            &env,
+            Some(prefix_in(self.work_tree.as_deref())),
+        );
+        state != TxState::Prepared || status.is_ok_and(|s| s == 0)
     }
 }
 

@@ -90,6 +90,10 @@ impl Repo {
         &self.refs
     }
 
+    pub fn observe_refs(&mut self, observer: Arc<dyn pyn_git::RefObserver>) {
+        self.refs.set_observer(observer);
+    }
+
     pub fn config(&self) -> &Config {
         &self.config
     }

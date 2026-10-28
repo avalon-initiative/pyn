@@ -155,7 +155,14 @@ pub(super) fn write_orig_head(git: &GitHome, id: &ObjectId) -> Result<()> {
 /// Writes `ORIG_HEAD`, logging it as git does when it already has a reflog or `core.logAllRefUpdates` is `always`.
 pub(super) fn write_orig_head_as(git: &GitHome, id: &ObjectId, action: Option<&str>) -> Result<()> {
     let old = git.repo.refs().resolve("ORIG_HEAD")?;
-    write_state(git, "ORIG_HEAD", &format!("{id}\n"))?;
+    let update = pyn_git::RefUpdate {
+        name: "ORIG_HEAD".into(),
+        old: None,
+        new: Some(*id),
+    };
+    git.repo.refs().transaction(&[update], || {
+        write_state(git, "ORIG_HEAD", &format!("{id}\n"))
+    })?;
     let message = match action {
         Some(a) => format!("{a}: updating ORIG_HEAD"),
         None => "updating ORIG_HEAD".to_string(),

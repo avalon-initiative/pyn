@@ -17,6 +17,8 @@ pub enum Error {
     RefNotFound(String),
     #[error("reference {0} changed while it was being updated")]
     RefChanged(String),
+    #[error("ref updates aborted by hook")]
+    Vetoed,
     #[error("corrupt {what}: {detail}")]
     Corrupt { what: &'static str, detail: String },
     #[error("{what} checksum mismatch")]

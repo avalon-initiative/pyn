@@ -608,7 +608,7 @@ fn add(git: &GitHome, cwd: &Path, args: AddArgs) -> Result<()> {
         match (&old, is_reset) {
             (None, _) => git.create_ref(&full, id, &format!("branch: Created from {from}"))?,
             (Some(o), true) if o != id => {
-                git.move_ref(&full, Some(o), id, &format!("branch: Reset to {from}"))?
+                git.reset_ref(&full, Some(o), id, &format!("branch: Reset to {from}"))?
             }
             _ => {}
         }
@@ -626,6 +626,12 @@ fn add(git: &GitHome, cwd: &Path, args: AddArgs) -> Result<()> {
             abbrev(git, id, 7),
             subject(git, id)?
         );
+    }
+    if let (false, false, Some(id)) = (args.no_checkout, args.orphan, &commit) {
+        git.warn_if_hooks_off(&["post-checkout"]);
+        if git.post_checkout_in(&path, id, true)? != 0 {
+            std::process::exit(1);
+        }
     }
     Ok(())
 }

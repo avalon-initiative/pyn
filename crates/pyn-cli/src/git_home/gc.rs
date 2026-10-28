@@ -276,6 +276,9 @@ pub(super) fn gc(git: &GitHome, args: GcArgs) -> Result<()> {
             return Ok(());
         };
         all = too_many_packs;
+        if git.vetoed("pre-auto-gc", &[], &[])? {
+            return Ok(());
+        }
         if !args.quiet {
             eprintln!("Auto packing the repository for optimum performance.");
             eprintln!("See \"git help gc\" for manual housekeeping.");

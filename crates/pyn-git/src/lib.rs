@@ -39,7 +39,9 @@ pub use odb::{Object, ObjectDb, PromisorFetch, set_promisor_fetch};
 pub use pack::{EntryKind, Pack};
 pub use pack_write::{PackEntry, PackIndexEntry, PackSummary, PackWriter, write_pack};
 pub use reflog::ReflogEntry;
-pub use refs::{Expect, PackedRef, Ref, RefStore, check_name as check_ref_name};
+pub use refs::{
+    Expect, PackedRef, Ref, RefObserver, RefStore, RefUpdate, TxState, check_name as check_ref_name,
+};
 pub use refspec::{Refspec, map_ref};
 pub use remote::{
     Remote, Tracking, add_remote, branches_tracking, is_valid_remote_name, promisor_remotes,
