@@ -624,8 +624,6 @@ fn autostash_goes_with_a_rebase_only() {
     );
     t.both_ok(&["--rebase", "--autostash"]);
     assert_eq!(fs::read_to_string(t.pyn.join("l.txt")).unwrap(), "edited\n");
-    let p = t.pyn_cmd(&t.pyn, &["pull", "--autostash", "--no-rebase"]);
-    assert_eq!(p.code, 129, "{}", p.stderr);
 }
 
 #[test]
@@ -649,19 +647,13 @@ fn rebase_merges_and_interactive_replay_the_local_commits() {
 fn unsupported_flags_are_usage_errors() {
     let t = Twin::new("sha1", Via::Ssh);
     let before = state(&t.pyn);
-    for flag in [
-        "--squash",
-        "--autostash",
-        "--all",
-        "--signoff",
-        "--allow-unrelated-histories",
-    ] {
+    for flag in ["--all", "--no-strategy"] {
         let p = t.pyn_cmd(&t.pyn, &["pull", flag]);
         assert_eq!(p.code, 129, "{flag}: {}", p.stderr);
         assert!(p.stderr.contains("pyn pull"), "{flag}: {}", p.stderr);
     }
     for args in [
-        vec!["--cleanup", "strip"],
+        vec!["-F", "msg"],
         vec!["-X", "patience"],
         vec!["-s", "ort", "-s", "ours"],
         vec!["--rebase", "-s", "ours"],
@@ -1013,4 +1005,212 @@ fn unmerged_files_refuse_a_pull() {
     let (g, p) = t.both(&["--no-rebase"]);
     assert_eq!((g.code, p.code), (128, 128));
     assert!(p.stderr.contains("unmerged files"), "{}", p.stderr);
+}
+
+/// Marker files a merge or squash leaves, with their text.
+fn merge_files(dir: &Path) -> String {
+    ["MERGE_MSG", "SQUASH_MSG", "MERGE_MODE", "MERGE_AUTOSTASH"]
+        .iter()
+        .map(|n| {
+            let text = fs::read_to_string(dir.join(".git").join(n));
+            let text = text.ok().map(|t| {
+                if *n == "MERGE_AUTOSTASH" {
+                    String::new()
+                } else {
+                    t
+                }
+            });
+            format!("{n}={text:?}\n")
+        })
+        .collect()
+}
+
+fn full_state(dir: &Path) -> String {
+    let body = git(dir)
+        .args(["log", "-1", "--format=%B"])
+        .output()
+        .unwrap();
+    format!(
+        "{}\n--\n{}\n--\n{}\n--\n{}",
+        state(dir),
+        String::from_utf8_lossy(&body.stdout),
+        merge_files(dir),
+        run(dir, &["stash", "list", "--format=%gs"])
+    )
+}
+
+/// Diverged twins: two local commits and two remote ones, so that `--log` has entries to list.
+fn diverged(format: &str, via: Via) -> Twin {
+    let t = Twin::new(format, via);
+    t.local("l.txt", "local\n", "local");
+    t.remote("n.txt", "new\n", "remote one");
+    t.remote("m.txt", "more\n", "remote two");
+    t.configure("pull.rebase", "false");
+    t
+}
+
+fn both_alike(t: &Twin, args: &[&str]) {
+    let (g, p) = t.both(args);
+    assert_eq!(g.code == 0, p.code == 0, "{args:?}: {}", p.stderr);
+    assert_eq!(full_state(&t.git), full_state(&t.pyn), "{args:?}");
+}
+
+#[test]
+fn pull_passes_the_merge_message_options_on() {
+    let cases: &[&[&str]] = &[
+        &["--signoff"],
+        &["--no-signoff"],
+        &["--signoff", "--no-signoff"],
+        &["--no-signoff", "--signoff"],
+        &["--log"],
+        &["--log=1"],
+        &["--log=0"],
+        &["--no-log"],
+        &["--log", "--no-log"],
+        &["--no-log", "--log=1"],
+        &["--log", "--signoff"],
+        &["--cleanup=verbatim"],
+        &["--cleanup=strip"],
+        &["--cleanup=whitespace"],
+        &["--cleanup=scissors"],
+        &["--cleanup=default"],
+        &["--cleanup=bogus"],
+        &["--cleanup=verbatim", "--no-cleanup"],
+        &["--no-cleanup", "--cleanup=strip"],
+        &["--no-commit"],
+        &["--no-commit", "--signoff"],
+        &["--verify-signatures"],
+        &["--verify-signatures", "--no-verify-signatures"],
+        &["--no-verify"],
+        &["--verify"],
+    ];
+    for (format, via) in [("sha1", Via::Ssh), ("sha256", Via::Http)] {
+        for flags in cases {
+            let t = diverged(format, via);
+            let mut args = vec!["--no-edit"];
+            args.extend(flags.iter());
+            both_alike(&t, &args);
+        }
+    }
+}
+
+#[test]
+fn pull_squash_matches_git() {
+    let cases: &[&[&str]] = &[
+        &["--squash"],
+        &["--squash", "--no-squash"],
+        &["--no-squash", "--squash"],
+        &["--squash", "--no-commit"],
+        &["--squash", "--ff"],
+        &["--squash", "--ff-only"],
+        &["--squash", "--no-ff"],
+        &["--squash", "--rebase"],
+    ];
+    for flags in cases {
+        let t = diverged("sha1", Via::Ssh);
+        both_alike(&t, flags);
+    }
+    for flags in [&["--squash"][..], &["--squash", "--ff-only"][..]] {
+        let t = Twin::new("sha1", Via::Ssh);
+        t.remote("n.txt", "new\n", "remote one");
+        t.configure("pull.rebase", "false");
+        both_alike(&t, flags);
+    }
+    let t = Twin::new("sha1", Via::Ssh);
+    t.local("a.txt", "local\n", "local a");
+    t.remote("a.txt", "remote\n", "remote a");
+    t.configure("pull.rebase", "false");
+    both_alike(&t, &["--squash"]);
+    let t = Twin::new("sha1", Via::Ssh);
+    both_alike(&t, &["--squash"]);
+}
+
+#[test]
+fn pull_merge_config_reaches_the_merge() {
+    for (key, value) in [
+        ("merge.log", "true"),
+        ("merge.log", "1"),
+        ("merge.verifySignatures", "true"),
+        ("merge.autoStash", "true"),
+        ("merge.ff", "false"),
+    ] {
+        let t = diverged("sha1", Via::Ssh);
+        t.configure(key, value);
+        both_alike(&t, &["--no-edit"]);
+    }
+}
+
+#[test]
+fn pull_autostash_wraps_a_merge() {
+    for flags in [
+        &["--autostash"][..],
+        &["--autostash", "--no-commit"][..],
+        &["--no-autostash"][..],
+        &["--autostash", "--no-autostash"][..],
+        &["--autostash", "--squash"][..],
+        &["--autostash", "--rebase"][..],
+        &["--no-autostash", "--rebase"][..],
+    ] {
+        let t = diverged("sha1", Via::Ssh);
+        for dir in [&t.git, &t.pyn] {
+            fs::write(dir.join("l.txt"), "edited\n").unwrap();
+        }
+        let mut args = vec!["--no-edit"];
+        args.extend(flags);
+        both_alike(&t, &args);
+    }
+    let t = diverged("sha1", Via::Ssh);
+    t.configure("rebase.autoStash", "true");
+    for dir in [&t.git, &t.pyn] {
+        fs::write(dir.join("l.txt"), "edited\n").unwrap();
+    }
+    both_alike(&t, &["--rebase", "--no-autostash"]);
+}
+
+#[test]
+fn pull_merge_hooks_follow_verify() {
+    for flags in [
+        &[][..],
+        &["--no-verify"][..],
+        &["--no-verify", "--verify"][..],
+    ] {
+        let t = diverged("sha1", Via::Ssh);
+        for dir in [&t.git, &t.pyn] {
+            let hook = dir.join(".git/hooks/pre-merge-commit");
+            fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+            fs::set_permissions(&hook, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+                .unwrap();
+        }
+        let mut args = vec!["--no-edit"];
+        args.extend(flags);
+        both_alike(&t, &args);
+    }
+}
+
+#[test]
+fn pull_allow_unrelated_histories() {
+    for flags in [
+        &[][..],
+        &["--allow-unrelated-histories"][..],
+        &[
+            "--allow-unrelated-histories",
+            "--no-allow-unrelated-histories",
+        ][..],
+        &[
+            "--no-allow-unrelated-histories",
+            "--allow-unrelated-histories",
+        ][..],
+        &["--allow-unrelated-histories", "--squash"][..],
+    ] {
+        let t = Twin::new("sha1", Via::Ssh);
+        t.local("l.txt", "local\n", "local");
+        run(&t.seed, &["switch", "-q", "--orphan", "other"]);
+        commit(&t.seed, "o.txt", b"other\n", "other root");
+        run(&t.seed, &["push", "-q", t.bare.to_str().unwrap(), "other"]);
+        t.configure("pull.rebase", "false");
+        let mut args = vec!["--no-edit"];
+        args.extend(flags);
+        args.extend(["origin", "other"]);
+        both_alike(&t, &args);
+    }
 }
