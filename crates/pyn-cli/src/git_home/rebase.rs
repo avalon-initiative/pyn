@@ -32,7 +32,8 @@ use super::stage::{clean_message, merge_heads, parse_date, raw_mode, write_tree}
 use super::stash::{Applying, PushArgs, apply_commit, save, store_stash};
 use super::strategy::Replay;
 use super::todo::{self, Cmd, Flag, Item};
-use super::treemerge::{Labels, merge_trees, result_tree};
+use super::treemerge::{Labels, merge_trees_with, result_tree};
+use super::virtual_base::{VIRTUAL_LABEL, virtual_tree};
 use super::worktree::{Mode, move_tree};
 use super::{path_string, reset};
 use crate::local_reset::ResetArgs;
@@ -1606,7 +1607,7 @@ fn replay(git: &GitHome, state: &State, item: &Item) -> Result<()> {
         ours_tree,
         applied,
         ..
-    } = merge_pick(git, Verb::Pick, id, None, &state.replay.settings(), true)?;
+    } = merge_pick(git, Verb::Pick, id, None, &state.replay.settings(git), true)?;
     let subject = subject_of(&picked.message);
     let conflicted = &applied.conflicted;
     if item.cmd.melds() {
@@ -1843,18 +1844,18 @@ fn do_merge(git: &GitHome, state: &State, item: &Item) -> Result<()> {
     if bases.first() == Some(theirs) {
         return record(git);
     }
+    let settings = state.replay.settings(git);
+    let tree_of = |c: &ObjectId| -> Result<ObjectId> { Ok(git.repo.commit(c)?.tree) };
+    let (base_tree, base_label) = match bases.as_slice() {
+        [] => (None, String::new()),
+        [one] => (Some(tree_of(one)?), short(one)),
+        many => (
+            Some(virtual_tree(git, many, &settings, 0)?),
+            VIRTUAL_LABEL.to_string(),
+        ),
+    };
     write_state(git, "MERGE_HEAD", &theirs.to_hex())?;
     write_state(git, "MERGE_MODE", "no-ff")?;
-    if bases.len() > 1 {
-        return Err(fail(
-            "the histories have more than one merge base (a criss-cross merge); pyn cannot merge them yet".into(),
-        ));
-    }
-    let tree_of = |c: &ObjectId| -> Result<ObjectId> { Ok(git.repo.commit(c)?.tree) };
-    let base_tree = match bases.first() {
-        Some(b) => Some(tree_of(b)?),
-        None => None,
-    };
     let opened = git.open_index()?;
     let ours_tree = write_tree(git, &opened.index)?;
     let theirs_tree = tree_of(theirs)?;
@@ -1867,18 +1868,16 @@ fn do_merge(git: &GitHome, state: &State, item: &Item) -> Result<()> {
             .iter()
             .filter_map(|c| c.new.map(|e| (c.path.as_slice(), e.mode))),
     )?;
-    let base_label = bases.first().map_or_else(String::new, short);
-    let merged = merge_trees(
+    let merged = merge_trees_with(
         git,
-        base_tree.as_ref(),
-        Some(&ours_tree),
-        Some(&theirs_tree),
+        [base_tree.as_ref(), Some(&ours_tree), Some(&theirs_tree)],
         &Labels {
             ours: "HEAD",
             theirs: theirs_name,
             base: &base_label,
         },
-        &state.replay.settings(),
+        &settings,
+        true,
     )?;
     let landing = Landing {
         theirs: theirs_name,

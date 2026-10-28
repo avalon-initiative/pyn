@@ -17,7 +17,7 @@ use super::stage::{
     clean_message, clear_merge_state, identity, merge_message, refuse_states, write_tree,
 };
 use super::strategy::{Replay, Settings};
-use super::treemerge::{Labels, merge_trees};
+use super::treemerge::{Labels, merge_trees_with};
 use super::{convert, path_string, reset};
 use crate::local_pick::{PickArgs, revert_message, select, with_origin};
 
@@ -425,17 +425,16 @@ pub(super) fn merge_pick(
             .iter()
             .filter_map(|c| c.new.map(|e| (c.path.as_slice(), e.mode))),
     )?;
-    let merged = merge_trees(
+    let merged = merge_trees_with(
         git,
-        base_tree.as_ref(),
-        Some(&ours_tree),
-        theirs_tree.as_ref(),
+        [base_tree.as_ref(), Some(&ours_tree), theirs_tree.as_ref()],
         &Labels {
             ours: "HEAD",
             theirs: &theirs_label,
             base: &base_label,
         },
         settings,
+        true,
     )?;
     let landing = Landing {
         theirs: &theirs_label,
@@ -466,7 +465,14 @@ fn apply(git: &GitHome, opts: &Opts, verb: Verb, id: &ObjectId) -> Result<Outcom
         label,
         ours_tree,
         applied,
-    } = merge_pick(git, verb, id, opts.mainline, &opts.replay.settings(), false)?;
+    } = merge_pick(
+        git,
+        verb,
+        id,
+        opts.mainline,
+        &opts.replay.settings(git),
+        false,
+    )?;
     let committer = identity(git, "committer")?;
     let mut message = match verb {
         Verb::Pick => picked.message.clone(),

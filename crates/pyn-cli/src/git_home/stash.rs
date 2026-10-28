@@ -17,7 +17,7 @@ use super::stage::{
 };
 use super::strategy::Settings;
 use super::switch::{subject, switch_to_new};
-use super::treemerge::{Labels, Merge, Resolved, Worktree, merge_trees};
+use super::treemerge::{Labels, Merge, Resolved, Worktree, merge_trees_with};
 use super::worktree::{
     Blocked, Mode, check_writes, in_the_way, move_tree, remove_entry_file, write_bytes, write_entry,
 };
@@ -837,17 +837,16 @@ fn apply_stash(git: &GitHome, id: &ObjectId, index: bool) -> Result<Applying> {
                     .map(|(p, e)| (p.as_slice(), e.mode)),
             ),
     )?;
-    let merged = merge_trees(
+    let merged = merge_trees_with(
         git,
-        Some(&base_tree),
-        Some(&current_tree),
-        Some(&stash.tree),
+        [Some(&base_tree), Some(&current_tree), Some(&stash.tree)],
         &Labels {
             ours: "Updated upstream",
             theirs: "Stashed changes",
             base: "Stash base",
         },
-        &Settings::default(),
+        &Settings::configured(git),
+        true,
     )?;
     check_writes(merged.paths.keys().chain(restore_untracked.keys()))?;
     let ours = git.repo.index_leaves(&opened.index);
@@ -855,7 +854,12 @@ fn apply_stash(git: &GitHome, id: &ObjectId, index: bool) -> Result<Applying> {
     let ignores = super::stage::Ignores {
         ignore: git.repo.ignore()?,
     };
-    let none = HashSet::new();
+    let removed: HashSet<&[u8]> = merged
+        .paths
+        .iter()
+        .filter(|(p, r)| matches!(r, Resolved::Take(None)) && ours.contains_key(*p))
+        .map(|(p, _)| p.as_slice())
+        .collect();
     let mut blocked = Blocked::default();
     for (path, resolved) in &merged.paths {
         let here = ours.get(path);
@@ -870,7 +874,9 @@ fn apply_stash(git: &GitHome, id: &ObjectId, index: bool) -> Result<Applying> {
             Some(_) if matches!(dirty.get(path), Some(Kind::Modified | Kind::TypeChange)) => {
                 blocked.local.push(path.clone());
             }
-            None if in_the_way(git, &ignores, path, &none)? => blocked.untracked.push(path.clone()),
+            None if in_the_way(git, &ignores, path, &removed)? => {
+                blocked.untracked.push(path.clone())
+            }
             _ => {}
         }
     }
@@ -981,13 +987,12 @@ fn staged_state(
         theirs: "Stashed changes",
         base: "Stash base",
     };
-    let merged = merge_trees(
+    let merged = merge_trees_with(
         git,
-        Some(base),
-        Some(current),
-        Some(&saved),
+        [Some(base), Some(current), Some(&saved)],
         &labels,
-        &Settings::default(),
+        &Settings::configured(git),
+        true,
     )?;
     if merged
         .paths

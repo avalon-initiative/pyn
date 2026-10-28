@@ -89,7 +89,7 @@ fn fail_missing(spec: &str, hints: bool) -> ! {
     std::process::exit(128);
 }
 
-fn replace(file: &mut ConfigFile, branch: &str, key: &str, value: &str) -> Result<()> {
+pub(super) fn replace(file: &mut ConfigFile, branch: &str, key: &str, value: &str) -> Result<()> {
     if file.set("branch", Some(branch), key, value).is_err() {
         file.unset_all("branch", Some(branch), key);
         file.add("branch", Some(branch), key, value)?;

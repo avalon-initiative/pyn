@@ -14,6 +14,7 @@ use super::stage::{
     Entries, entries_of, index_of, put_entry, raw_mode, refuse_in_progress, remove_entry,
     resolve_specs, under,
 };
+use super::track::{self, Plan, Want};
 use super::worktree::{Mode, check_writes, move_tree, remove_entry_file, write_bytes, write_entry};
 use super::{GitHome, Refused, convert, path_string};
 use crate::branch::{CheckoutArgs, SwitchArgs};
@@ -440,7 +441,48 @@ pub fn switch(git: &GitHome, args: SwitchArgs) -> Result<()> {
     Ok(())
 }
 
-fn switch_to(git: &GitHome, args: SwitchArgs) -> Result<()> {
+/// The branch `checkout --track <start>` creates: the part of a remote-tracking name after the remote.
+fn tracked_name(start: &str) -> Result<String> {
+    let rest = start.strip_prefix("refs/").unwrap_or(start);
+    let rest = rest.strip_prefix("remotes/").unwrap_or(rest);
+    match rest.split_once('/') {
+        Some((_, name)) if !name.is_empty() => Ok(name.to_owned()),
+        _ => bail!("missing branch name; try -b"),
+    }
+}
+
+/// Creates the branch with `landing` and then sets up the tracking `plan` says.
+fn go_tracking(git: &GitHome, go_to: Go, plan: Option<(String, Plan)>) -> Result<()> {
+    go(git, go_to)?;
+    match plan {
+        Some((name, p)) => track::apply(git, &name, &p),
+        None => Ok(()),
+    }
+}
+
+fn switch_to(git: &GitHome, mut args: SwitchArgs) -> Result<()> {
+    let want = Want::of(&args.track);
+    if want != Want::Config
+        && args.create.is_none()
+        && args.force_create.is_none()
+        && args.orphan.is_none()
+    {
+        if args.detach {
+            bail!("'--detach' cannot be used with '-t/--track'");
+        }
+        let Some(spec) = args.start.take() else {
+            bail!("--track needs a branch name");
+        };
+        args.create = Some(tracked_name(&spec)?);
+        args.start = Some(spec);
+    }
+    let made = args.create.clone().or_else(|| args.force_create.clone());
+    let plan = match &made {
+        Some(name) if args.orphan.is_none() => {
+            track::plan(git, want, args.start.as_deref(), name)?.map(|p| (name.clone(), p))
+        }
+        _ => None,
+    };
     let makers = [&args.create, &args.force_create, &args.orphan];
     if makers.iter().filter(|m| m.is_some()).count() > 1 {
         bail!("options '-c', '-C', and '--orphan' cannot be used together");
@@ -491,23 +533,24 @@ fn switch_to(git: &GitHome, args: SwitchArgs) -> Result<()> {
             (None, None, false) => bail!("missing branch or commit argument"),
         }
     };
-    go(
+    go_tracking(
         git,
         Go {
             landing,
             force: args.force,
         },
+        plan,
     )
 }
 
 /// Creates the branch `name` from a guessed remote-tracking branch and makes it track that branch.
 fn create_guessed(git: &GitHome, name: String, g: &super::dwim::Guess, force: bool) -> Result<()> {
+    let plan = track::plan(git, Want::Config, Some(&g.tracking), &name)?.map(|p| (name.clone(), p));
     let landing = Landing::NewBranch {
-        name: name.clone(),
+        name,
         start: Some(g.tracking.clone()),
     };
-    go(git, Go { landing, force })?;
-    super::dwim::track(git, &name, g)
+    go_tracking(git, Go { landing, force }, plan)
 }
 
 /// Creates the branch `name` at the commit `start` and switches to it, as `checkout -b name start`.
@@ -875,6 +918,7 @@ fn checkout_to(git: &GitHome, cwd: &Path, args: CheckoutArgs) -> Result<()> {
         patch,
         recurse_submodules: _,
         no_recurse_submodules: _,
+        track: track_args,
         guess,
         no_guess,
         pathspec_file: _,
@@ -945,18 +989,32 @@ fn checkout_to(git: &GitHome, cwd: &Path, args: CheckoutArgs) -> Result<()> {
         );
         return Ok(());
     }
+    let want = Want::of(&track_args);
+    let create = if want != Want::Config && create.is_none() && reset.is_none() {
+        if detach {
+            bail!("'--detach' cannot be used with '-t/--track'");
+        }
+        let [spec] = names.as_slice() else {
+            bail!("--track needs a branch name");
+        };
+        Some(tracked_name(spec)?)
+    } else {
+        create
+    };
     if let Some(name) = create {
         if detach {
             bail!("options '-b' and '--detach' cannot be used together");
         }
         let start = names.first().cloned();
         check_start(git, &name, names.len(), start.as_deref())?;
-        return go(
+        let plan = track::plan(git, want, start.as_deref(), &name)?.map(|p| (name.clone(), p));
+        return go_tracking(
             git,
             Go {
                 landing: Landing::NewBranch { name, start },
                 force,
             },
+            plan,
         );
     }
     if let Some(name) = reset {
@@ -965,12 +1023,14 @@ fn checkout_to(git: &GitHome, cwd: &Path, args: CheckoutArgs) -> Result<()> {
         }
         let start = names.first().cloned();
         check_start(git, &name, names.len(), start.as_deref())?;
-        return go(
+        let plan = track::plan(git, want, start.as_deref(), &name)?.map(|p| (name.clone(), p));
+        return go_tracking(
             git,
             Go {
                 landing: Landing::ResetBranch { name, start },
                 force,
             },
+            plan,
         );
     }
     if detach && names.is_empty() {
