@@ -441,6 +441,7 @@ pub(super) fn merge_pick(
         orig_head: None,
         strict_index: false,
         quiet_when_clean,
+        stages_at_origin: false,
     };
     let applied = match apply_merge(git, &opened, Some(&ours_tree), &merged, &landing)? {
         Ok(applied) => applied,

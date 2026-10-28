@@ -130,7 +130,7 @@ fn lexists(path: &Path) -> Option<std::fs::Metadata> {
 }
 
 /// Every file and link below `dir` (relative paths from the root), without following links.
-fn files_under(root: &Path, dir: &[u8], out: &mut Vec<Vec<u8>>) -> Result<()> {
+pub(super) fn files_under(root: &Path, dir: &[u8], out: &mut Vec<Vec<u8>>) -> Result<()> {
     for entry in std::fs::read_dir(fs_path(root, dir))? {
         let entry = entry?;
         #[cfg(unix)]
