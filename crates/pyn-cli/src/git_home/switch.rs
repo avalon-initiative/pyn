@@ -56,6 +56,7 @@ enum Landing {
 struct Go {
     landing: Landing,
     force: bool,
+    quiet: bool,
 }
 
 /// What `-` and `@{-N}` stand for: the branch (or commit) checked out N moves ago, read from the `HEAD` reflog.
@@ -220,7 +221,11 @@ fn start_commit(git: &GitHome, spec: &str) -> Result<ObjectId> {
 }
 
 fn go(git: &GitHome, go: Go) -> Result<()> {
-    go_quietly(git, go, Via::default())
+    let via = Via {
+        quiet: go.quiet,
+        ..Via::default()
+    };
+    go_quietly(git, go, via)
 }
 
 /// How a caller drives a checkout: without chatter, onto a branch another work tree has, with a refusal returned.
@@ -249,6 +254,7 @@ pub(super) fn checkout_revision(git: &GitHome, target: &str, via: Via) -> Result
         Go {
             landing,
             force: via.force,
+            quiet: via.quiet,
         },
         via,
     )
@@ -453,9 +459,10 @@ fn tracked_name(start: &str) -> Result<String> {
 
 /// Creates the branch with `landing` and then sets up the tracking `plan` says.
 fn go_tracking(git: &GitHome, go_to: Go, plan: Option<(String, Plan)>) -> Result<()> {
+    let quiet = go_to.quiet;
     go(git, go_to)?;
     match plan {
-        Some((name, p)) => track::apply(git, &name, &p),
+        Some((name, p)) => track::apply(git, &name, &p, quiet),
         None => Ok(()),
     }
 }
@@ -519,7 +526,7 @@ fn switch_to(git: &GitHome, mut args: SwitchArgs) -> Result<()> {
                         && super::dwim::enabled(git, crate::branch::flag(args.guess, args.no_guess))
                         && let Some(g) = super::dwim::guess(git, &name)?
                     {
-                        return create_guessed(git, name, &g, args.force);
+                        return create_guessed(git, name, &g, args.force, args.quiet);
                     }
                     if git.repo.resolve(&name).is_ok() {
                         bail!(
@@ -538,19 +545,34 @@ fn switch_to(git: &GitHome, mut args: SwitchArgs) -> Result<()> {
         Go {
             landing,
             force: args.force,
+            quiet: args.quiet,
         },
         plan,
     )
 }
 
 /// Creates the branch `name` from a guessed remote-tracking branch and makes it track that branch.
-fn create_guessed(git: &GitHome, name: String, g: &super::dwim::Guess, force: bool) -> Result<()> {
+fn create_guessed(
+    git: &GitHome,
+    name: String,
+    g: &super::dwim::Guess,
+    force: bool,
+    quiet: bool,
+) -> Result<()> {
     let plan = track::plan(git, Want::Config, Some(&g.tracking), &name)?.map(|p| (name.clone(), p));
     let landing = Landing::NewBranch {
         name,
         start: Some(g.tracking.clone()),
     };
-    go_tracking(git, Go { landing, force }, plan)
+    go_tracking(
+        git,
+        Go {
+            landing,
+            force,
+            quiet,
+        },
+        plan,
+    )
 }
 
 /// Creates the branch `name` at the commit `start` and switches to it, as `checkout -b name start`.
@@ -563,6 +585,7 @@ pub(super) fn switch_to_new(git: &GitHome, name: &str, start: &ObjectId) -> Resu
                 start: Some(start.to_hex()),
             },
             force: false,
+            quiet: false,
         },
     )
 }
@@ -921,6 +944,7 @@ fn checkout_to(git: &GitHome, cwd: &Path, args: CheckoutArgs) -> Result<()> {
         track: track_args,
         guess,
         no_guess,
+        quiet,
         pathspec_file: _,
     } = args;
     if patch {
@@ -951,6 +975,9 @@ fn checkout_to(git: &GitHome, cwd: &Path, args: CheckoutArgs) -> Result<()> {
         _ => None,
     };
     let dashes_paths = !paths.is_empty();
+    if (dashes_paths || stage.is_some()) && Want::of(&track_args) != Want::Config {
+        bail!("'--track' cannot be used with updating paths");
+    }
     if dashes_paths || stage.is_some() {
         if create.is_some() || reset.is_some() || detach {
             bail!("'pyn checkout -- <paths>' cannot be used with switching branches");
@@ -983,10 +1010,12 @@ fn checkout_to(git: &GitHome, cwd: &Path, args: CheckoutArgs) -> Result<()> {
             Source::Index => "the index".into(),
         };
         let n = restore_paths(git, cwd, &paths, r)?;
-        eprintln!(
-            "Updated {n} path{} from {label}",
-            if n == 1 { "" } else { "s" }
-        );
+        if !quiet {
+            eprintln!(
+                "Updated {n} path{} from {label}",
+                if n == 1 { "" } else { "s" }
+            );
+        }
         return Ok(());
     }
     let want = Want::of(&track_args);
@@ -1013,6 +1042,7 @@ fn checkout_to(git: &GitHome, cwd: &Path, args: CheckoutArgs) -> Result<()> {
             Go {
                 landing: Landing::NewBranch { name, start },
                 force,
+                quiet,
             },
             plan,
         );
@@ -1029,6 +1059,7 @@ fn checkout_to(git: &GitHome, cwd: &Path, args: CheckoutArgs) -> Result<()> {
             Go {
                 landing: Landing::ResetBranch { name, start },
                 force,
+                quiet,
             },
             plan,
         );
@@ -1042,6 +1073,7 @@ fn checkout_to(git: &GitHome, cwd: &Path, args: CheckoutArgs) -> Result<()> {
                     explicit: true,
                 },
                 force,
+                quiet,
             },
         );
     }
@@ -1068,10 +1100,12 @@ fn checkout_to(git: &GitHome, cwd: &Path, args: CheckoutArgs) -> Result<()> {
                 merge: false,
             },
         )?;
-        eprintln!(
-            "Updated {n} path{} from {label}",
-            if n == 1 { "" } else { "s" }
-        );
+        if !quiet {
+            eprintln!(
+                "Updated {n} path{} from {label}",
+                if n == 1 { "" } else { "s" }
+            );
+        }
         return Ok(());
     }
     let name = expand_branch_name(git, first.clone()).unwrap_or_else(|_| first.clone());
@@ -1081,6 +1115,7 @@ fn checkout_to(git: &GitHome, cwd: &Path, args: CheckoutArgs) -> Result<()> {
             Go {
                 landing: Landing::Branch(name),
                 force,
+                quiet,
             },
         );
     }
@@ -1093,6 +1128,7 @@ fn checkout_to(git: &GitHome, cwd: &Path, args: CheckoutArgs) -> Result<()> {
                     explicit: detach,
                 },
                 force,
+                quiet,
             },
         );
     }
@@ -1106,7 +1142,7 @@ fn checkout_to(git: &GitHome, cwd: &Path, args: CheckoutArgs) -> Result<()> {
                 ))
                 .into());
             }
-            Ok(Some(g)) => return create_guessed(git, name, &g, force),
+            Ok(Some(g)) => return create_guessed(git, name, &g, force, quiet),
             Ok(None) => {}
             Err(_) if file => {}
             Err(e) => return Err(e),
@@ -1129,10 +1165,12 @@ fn checkout_to(git: &GitHome, cwd: &Path, args: CheckoutArgs) -> Result<()> {
                 merge: false,
             },
         )?;
-        eprintln!(
-            "Updated {n} path{} from the index",
-            if n == 1 { "" } else { "s" }
-        );
+        if !quiet {
+            eprintln!(
+                "Updated {n} path{} from the index",
+                if n == 1 { "" } else { "s" }
+            );
+        }
         return Ok(());
     }
     Err(Refused(format!(

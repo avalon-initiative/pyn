@@ -792,8 +792,8 @@ fn unclean(git: &GitHome) -> Result<Option<&'static str>> {
 }
 
 /// `pull --rebase` refuses a dirty tree before it fetches, as git does.
-pub(super) fn require_clean_for_pull(git: &GitHome, autostash: bool) -> Result<()> {
-    if autostash || git.repo.bool_setting("rebase.autostash", false) {
+pub(super) fn require_clean_for_pull(git: &GitHome, autostash: Option<bool>) -> Result<()> {
+    if autostash.unwrap_or_else(|| git.repo.bool_setting("rebase.autostash", false)) {
         return Ok(());
     }
     if git.repo.head_commit()?.is_some()

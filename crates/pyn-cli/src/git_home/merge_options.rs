@@ -24,14 +24,20 @@ fn fatal(text: &str) -> ! {
 pub(super) enum Cleanup {
     Strip,
     Whitespace,
+    Scissors,
     Verbatim,
 }
+
+pub(super) const CUT_LINE: &str = "# ------------------------ >8 ------------------------";
+pub(super) const CUT_NOTE: &str =
+    "# Do not modify or remove the line above.\n# Everything below it will be ignored.\n";
 
 pub(super) fn cleanup_mode(args: &MergeArgs) -> Cleanup {
     match args.cleanup.as_deref() {
         Some("strip") => Cleanup::Strip,
         Some("verbatim") => Cleanup::Verbatim,
         Some("whitespace") => Cleanup::Whitespace,
+        Some("scissors") if args.edit => Cleanup::Scissors,
         Some("scissors") => Cleanup::Whitespace,
         _ if args.edit => Cleanup::Strip,
         _ => Cleanup::Whitespace,
@@ -49,11 +55,17 @@ pub(super) fn check_flags(git: &GitHome, args: &MergeArgs) {
     {
         fatal(&format!("Invalid cleanup mode {mode}"));
     }
+    if args.no_cleanup {
+        crate::usage_error("`pyn merge --no-cleanup` is not built");
+    }
+    if args.no_strategy {
+        crate::usage_error("`pyn merge --no-strategy` is not built");
+    }
+    if args.no_message {
+        crate::usage_error("`pyn merge --no-message` is not built");
+    }
     if args.file.is_some() && !args.message.is_empty() {
         crate::usage_error("`pyn merge -F` with `-m` is not built");
-    }
-    if args.cleanup.as_deref() == Some("scissors") && args.edit {
-        crate::usage_error("`pyn merge --cleanup=scissors` with the editor is not built");
     }
     if let Some(file) = &args.file
         && std::fs::read(file).is_err()
@@ -84,12 +96,25 @@ pub(super) fn stripped(text: &[u8]) -> Vec<u8> {
     clean_bytes(&kept.join(&b'\n'))
 }
 
+/// The text before the first scissors line.
+fn above_cut_line(text: &[u8]) -> &[u8] {
+    let mut start = 0;
+    for line in text.split_inclusive(|b| *b == b'\n') {
+        if line.strip_suffix(b"\n").unwrap_or(line) == CUT_LINE.as_bytes() {
+            return &text[..start];
+        }
+        start += line.len();
+    }
+    text
+}
+
 /// Applies a cleanup mode to a message that did not go through the editor.
 pub(super) fn cleaned(text: Vec<u8>, mode: Cleanup) -> Vec<u8> {
     match mode {
         Cleanup::Verbatim => text,
         Cleanup::Strip => stripped(&text),
         Cleanup::Whitespace => clean_bytes(&text),
+        Cleanup::Scissors => clean_bytes(above_cut_line(&text)),
     }
 }
 

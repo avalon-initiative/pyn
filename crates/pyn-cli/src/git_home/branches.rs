@@ -188,6 +188,7 @@ fn create(
     start: Option<&str>,
     force: bool,
     want: super::track::Want,
+    quiet: bool,
 ) -> Result<()> {
     GitHome::check_branch_name(name)?;
     let existing = git.branch_commit(name)?;
@@ -232,12 +233,12 @@ fn create(
         None => git.create_ref(&full, &id, &format!("branch: Created from {label}"))?,
     }
     match plan {
-        Some(p) => super::track::apply(git, name, &p),
+        Some(p) => super::track::apply(git, name, &p, quiet),
         None => Ok(()),
     }
 }
 
-fn delete(git: &GitHome, names: &[String], force: bool) -> Result<()> {
+fn delete(git: &GitHome, names: &[String], force: bool, quiet: bool) -> Result<()> {
     if names.is_empty() {
         bail!("branch name required");
     }
@@ -275,7 +276,9 @@ fn delete(git: &GitHome, names: &[String], force: bool) -> Result<()> {
         git.repo.refs().delete(&full, pyn_git::Expect::Id(id))?;
         git.repo.refs().write_reflog(&full, &[])?;
         edit_config_section(git, name, Section::Drop)?;
-        println!("Deleted branch {name} (was {}).", short(&id));
+        if !quiet {
+            println!("Deleted branch {name} (was {}).", short(&id));
+        }
     }
     if failed {
         std::process::exit(1);
@@ -398,10 +401,6 @@ pub fn branch(git: &GitHome, args: BranchArgs) -> Result<()> {
         }
         crate::usage_error("`pyn branch -a` and `-r` only list on a git repository");
     }
-    let creating = !(modes.iter().any(|m| *m) || listing || args.names.is_empty());
-    if !creating && super::track::Want::of(&args.track) != super::track::Want::Config {
-        bail!("the --track and --no-track options need a branch to create");
-    }
     if args.show_current {
         if let Head::Branch { name, .. } = git.repo.head()? {
             println!("{name}");
@@ -409,7 +408,12 @@ pub fn branch(git: &GitHome, args: BranchArgs) -> Result<()> {
         return Ok(());
     }
     if delete {
-        return self::delete(git, &args.names, args.force_delete || args.force);
+        return self::delete(
+            git,
+            &args.names,
+            args.force_delete || args.force,
+            args.quiet,
+        );
     }
     if rename {
         return relocate(git, &args.names, false, args.force_rename || args.force);
@@ -418,7 +422,7 @@ pub fn branch(git: &GitHome, args: BranchArgs) -> Result<()> {
         return relocate(git, &args.names, true, args.force_copy || args.force);
     }
     if let Some(up) = &args.set_upstream_to {
-        return super::upstream::set_upstream(git, up, &args.names);
+        return super::upstream::set_upstream(git, up, &args.names, args.quiet);
     }
     if args.unset_upstream {
         return super::upstream::unset_upstream(git, &args.names);
@@ -433,8 +437,8 @@ pub fn branch(git: &GitHome, args: BranchArgs) -> Result<()> {
     }
     let want = super::track::Want::of(&args.track);
     match args.names.as_slice() {
-        [name] => create(git, name, None, args.force, want),
-        [name, start] => create(git, name, Some(start), args.force, want),
+        [name] => create(git, name, None, args.force, want, args.quiet),
+        [name, start] => create(git, name, Some(start), args.force, want, args.quiet),
         _ => crate::usage_error(
             "too many arguments to create a branch; the usage is `pyn branch <name> [<start>]`",
         ),
