@@ -425,7 +425,10 @@ pub(super) fn write_bytes(
     {
         let algorithm = git.repo.algorithm();
         let before = std::fs::read(fs_path(git.repo.root()?, path))?;
-        let after = git.repo.conversion(path)?.to_worktree(algorithm, bytes);
+        let after = git
+            .repo
+            .conversion(path)?
+            .to_worktree(algorithm, path, bytes)?;
         if before != *after {
             return write_converted(git, path, mode, bytes);
         }
@@ -447,7 +450,7 @@ fn write_converted(
         converted = git
             .repo
             .conversion(path)?
-            .to_worktree(git.repo.algorithm(), bytes);
+            .to_worktree(git.repo.algorithm(), path, bytes)?;
         &*converted
     } else {
         bytes

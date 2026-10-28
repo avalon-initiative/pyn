@@ -188,12 +188,11 @@ fn fetch(repo: &Repository, args: &[String]) -> Result<Box<dyn Read>> {
         return Err(Wire::Remote(format!("upload-pack: not our ref {missing}")).into());
     }
     client_shallow.retain(|c| db.contains(c).unwrap_or(false));
-    let deepen = match (depth, since, not.is_empty()) {
-        (Some(n), None, true) => Some(Deepen::Depth { n, relative }),
-        (None, Some(t), true) => Some(Deepen::Since(t)),
-        (None, None, false) => Some(Deepen::Not(not)),
-        (None, None, true) => None,
-        _ => {
+    let deepen = match (depth, since.is_some() || !not.is_empty()) {
+        (Some(n), false) => Some(Deepen::Depth { n, relative }),
+        (None, true) => Some(Deepen::Range { since, not }),
+        (None, false) => None,
+        (Some(_), true) => {
             return Err(Wire::Remote(
                 "deepen and deepen-since (or deepen-not) cannot be used together".into(),
             )
@@ -228,11 +227,17 @@ fn fetch(repo: &Repository, args: &[String]) -> Result<Box<dyn Read>> {
     } else {
         Vec::new()
     };
-    let inherited: Vec<ObjectId> = objects
+    let stop: HashSet<ObjectId> = client_shallow
         .iter()
-        .filter(|o| own.contains(o) && !client_shallow.contains(o) && !cut.shallow.contains(o))
+        .filter(|c| !cut.unshallow.contains(c))
+        .chain(&cut.shallow)
         .copied()
         .collect();
+    let mut inherited: Vec<ObjectId> = reachable_roots(&db, &pack_wants, &own, &stop)?
+        .into_iter()
+        .filter(|o| !client_shallow.contains(o) && !cut.shallow.contains(o))
+        .collect();
+    inherited.sort_by_key(ObjectId::to_hex);
     let mut out = BufWriter::new(scratch()?);
     {
         let mut w = PktWriter::new(&mut out);
@@ -268,6 +273,41 @@ fn fetch(repo: &Repository, args: &[String]) -> Result<Box<dyn Read>> {
     band.finish()?;
     PktWriter::new(&mut out).write_flush()?;
     finish(out)
+}
+
+/// The commits of `roots` that history from `from` reaches, not looking past `stop`.
+fn reachable_roots(
+    db: &pyn_git::ObjectDb,
+    from: &[ObjectId],
+    roots: &HashSet<ObjectId>,
+    stop: &HashSet<ObjectId>,
+) -> Result<Vec<ObjectId>> {
+    if roots.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut seen = HashSet::new();
+    let mut found = Vec::new();
+    let mut todo = Vec::new();
+    for id in from {
+        let (_, commit, kind) = peel(db, *id)?;
+        if kind == pyn_object::Kind::Commit && seen.insert(commit) {
+            todo.push(commit);
+        }
+    }
+    while let Some(c) = todo.pop() {
+        if roots.contains(&c) {
+            found.push(c);
+        }
+        if roots.contains(&c) || stop.contains(&c) {
+            continue;
+        }
+        for p in real_parents(db, &c)? {
+            if seen.insert(p) {
+                todo.push(p);
+            }
+        }
+    }
+    Ok(found)
 }
 
 fn db_shallow(repo: &Repository) -> Result<HashSet<ObjectId>> {

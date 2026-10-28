@@ -163,6 +163,7 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
         Command::Maintenance(args) => super::maintenance::maintenance(git, args),
         Command::Repack(args) => super::repack::repack(git, args),
         Command::Shortlog(args) => super::shortlog::shortlog(git, cwd, args),
+        Command::CheckMailmap(args) => super::mailmap::check_mailmap(git, args),
         Command::Describe(args) => super::describe::describe(git, cwd, args),
         Command::NameRev(args) => super::name_rev::name_rev(git, cwd, args),
         Command::Am(args) => {
@@ -1165,6 +1166,7 @@ fn show(
     };
     let spec = git.pathspec(cwd, &[loose.as_slice(), paths].concat(), false)?;
     let names = decorate.names(git, pretty.uses_decorations())?;
+    let mailmap = git.mailmap()?;
     let ctx = Context {
         style,
         now: chrono::Utc::now().timestamp(),
@@ -1172,6 +1174,8 @@ fn show(
         commit_color: commit_color.as_deref(),
         tabs,
         abbrev_commit,
+        mailmap: Some(&mailmap),
+        map_headers: fmt.mapped_headers(git.repo.bool_setting("log.mailmap", true)),
     };
     let shape = Shape {
         git,

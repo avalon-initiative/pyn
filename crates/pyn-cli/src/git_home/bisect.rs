@@ -1087,6 +1087,8 @@ impl<'a> Bisect<'a> {
                 commit_color: None,
                 tabs: 8,
                 abbrev_commit: false,
+                mailmap: None,
+                map_headers: false,
             };
             let mut out = render(&pretty, &ctx, id, &c);
             out.push_str(pretty.terminator());

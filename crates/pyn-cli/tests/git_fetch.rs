@@ -658,15 +658,9 @@ fn remote_add_f_fetches_after_adding() {
 #[test]
 fn unsupported_and_invalid_options_are_clear_usage_errors() {
     let t = Twin::new("sha1", Via::Ssh);
-    for args in [vec!["fetch", "--update-shallow"], vec!["fetch", "--atomic"]] {
-        let p = t.pyn_cmd(&t.pyn, &args);
-        assert_eq!(p.code, 129, "{args:?}: {}", p.stderr);
-        assert!(
-            p.stderr.contains("not built") || p.stderr.contains("not supported"),
-            "{args:?}: {}",
-            p.stderr
-        );
-    }
+    let p = t.pyn_cmd(&t.pyn, &["fetch", "--atomic"]);
+    assert_eq!(p.code, 129, "{}", p.stderr);
+    assert!(p.stderr.contains("not built"), "{}", p.stderr);
     assert!(run(&t.pyn, &["for-each-ref"]).is_empty());
     let p = t.pyn_cmd(&t.pyn, &["fetch", "--bogus"]);
     assert_eq!(p.code, 129);
