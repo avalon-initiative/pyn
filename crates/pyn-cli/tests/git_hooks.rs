@@ -306,7 +306,8 @@ impl Pair {
     }
 }
 
-/// A hook log without the `reference-transaction` runs in the `preparing` state, which only newer git sends.
+/// A hook log with the `reference-transaction` runs reduced to the set of `<state> <old> <new> <ref>` facts: git
+/// versions differ in the `preparing` state, in how updates are grouped and ordered, and in reporting `HEAD`.
 fn without_preparing(log: &str) -> String {
     let mut blocks: Vec<String> = Vec::new();
     for line in log.lines() {
@@ -317,11 +318,28 @@ fn without_preparing(log: &str) -> String {
         last.push_str(line);
         last.push('\n');
     }
-    blocks
-        .iter()
-        .filter(|b| !b.contains("\nargs: preparing\n"))
-        .map(String::as_str)
-        .collect()
+    let mut facts = std::collections::BTreeSet::new();
+    let mut rest = String::new();
+    for block in &blocks {
+        if !block.starts_with("== reference-transaction\n") {
+            rest.push_str(block);
+            continue;
+        }
+        let state = block
+            .lines()
+            .find_map(|l| l.strip_prefix("args: "))
+            .unwrap_or_default();
+        if state == "preparing" {
+            continue;
+        }
+        let updates = block.split("stdin:\n").nth(1).unwrap_or_default();
+        for update in updates.lines().take_while(|l| *l != "out-of-band") {
+            if !update.ends_with(" HEAD") {
+                facts.insert(format!("ref-transaction {state} {update}\n"));
+            }
+        }
+    }
+    rest + &facts.into_iter().collect::<String>()
 }
 
 /// Fails naming the first line where pyn's text departs from git's.
