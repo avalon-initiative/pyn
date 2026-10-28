@@ -1,11 +1,14 @@
 //! Read-only views of a git work tree, built on `pyn-git`: ignore rules, revisions, history, tree diffs and
-//! status. Nothing here writes to the repository or the work tree, and git is never invoked.
+//! status. Apart from the filter drivers (which run the user's own commands) and the local LFS object store
+//! written by `filter=lfs`, nothing here writes to the repository or the work tree, and git is never invoked.
 
 mod attributes;
 mod convert;
 mod error;
+mod filter;
 mod history;
 mod ignore;
+pub mod lfs;
 mod pathspec;
 mod repo;
 mod rev;
@@ -19,6 +22,7 @@ mod wildmatch;
 pub use attributes::{AttrValue, Attributes, Loader, PathAttributes};
 pub use convert::{Conversion, Converted, SafeCrlf, Settings, ToGit, Unsupported};
 pub use error::{Error, Result};
+pub use filter::{Driver, External, Filters, Op};
 pub use history::{Log, LogEntry, Walked};
 pub use ignore::{Ignore, Level, Rule, parse_rules, verdict};
 pub use pathspec::{

@@ -152,6 +152,9 @@ impl Repo {
         if name.is_empty() {
             return Ok(None);
         }
+        if let Some(mark) = split_mark(name) {
+            return self.expand_mark_ref(&mark);
+        }
         let name = if name == "@" { "HEAD" } else { name };
         let candidates = [
             name.to_string(),
@@ -173,6 +176,33 @@ impl Repo {
             }
         }
         Ok(None)
+    }
+
+    /// The existing ref `@{u}`, `@{push}` or `@{-N}` (after `base`) stands for; none for other suffixes.
+    fn expand_mark_ref(&self, mark: &Mark<'_>) -> Result<Option<String>> {
+        if !mark.rest.is_empty() {
+            return Ok(None);
+        }
+        let lower = mark.inner.to_ascii_lowercase();
+        let target = if let Some(n) = mark.inner.strip_prefix('-') {
+            let Ok(n) = n.parse::<usize>() else {
+                return Ok(None);
+            };
+            if !mark.base.is_empty() || n == 0 {
+                return Ok(None);
+            }
+            return match self.previous_checkout(n)? {
+                Some(name) => self.expand_ref_name(&name),
+                None => Ok(None),
+            };
+        } else if lower == "u" || lower == "upstream" {
+            self.upstream_ref(&self.mark_branch(mark.base)?)?
+        } else if lower == "push" {
+            self.push_ref(&self.mark_branch(mark.base)?)?
+        } else {
+            return Ok(None);
+        };
+        Ok(self.refs().resolve(&target)?.map(|_| target))
     }
 
     /// The remote-tracking (or local) ref `branch` is set to follow, as `@{upstream}` reads it.

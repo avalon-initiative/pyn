@@ -77,22 +77,58 @@ pub struct PullArgs {
     /// Drop the commit a rebase stopped on.
     #[arg(long, conflicts_with_all = ["abort", "continue_pull"])]
     skip: bool,
-    #[arg(long, hide = true)]
+    /// Merge the result into the index and work tree without a commit.
+    #[arg(long, overrides_with = "no_squash")]
     squash: bool,
+    #[arg(long, overrides_with = "squash")]
+    no_squash: bool,
     /// The merge strategy: ort, recursive, resolve, octopus, ours or subtree.
     #[arg(short = 's', long, value_name = "STRATEGY")]
     strategy: Vec<String>,
-    /// An option for the merge strategy, such as `ours` or `theirs`.
-    #[arg(short = 'X', long, value_name = "OPTION")]
-    strategy_option: Vec<String>,
     #[arg(long, hide = true)]
+    no_strategy: bool,
+    /// An option for the merge strategy, such as `ours` or `theirs`.
+    #[arg(
+        short = 'X',
+        long,
+        value_name = "OPTION",
+        overrides_with = "no_strategy_option"
+    )]
+    strategy_option: Vec<String>,
+    #[arg(long, overrides_with = "strategy_option")]
+    no_strategy_option: bool,
+    /// Stash local changes before the merge or rebase and apply them after.
+    #[arg(long, overrides_with = "no_autostash")]
     autostash: bool,
+    #[arg(long, overrides_with = "autostash")]
+    no_autostash: bool,
     #[command(flatten)]
     sign: SignFlag,
-    #[arg(long, hide = true)]
+    /// Add a `Signed-off-by` trailer to the merge commit.
+    #[arg(long, overrides_with = "no_signoff")]
     signoff: bool,
-    #[arg(long, hide = true, value_name = "MODE")]
+    #[arg(long, overrides_with = "signoff")]
+    no_signoff: bool,
+    /// Add at most N shortlog entries of the merged commits to the message.
+    #[arg(long, value_name = "N", num_args = 0..=1, require_equals = true, default_missing_value = "", overrides_with = "no_log")]
+    log: Option<String>,
+    #[arg(long, overrides_with = "log")]
+    no_log: bool,
+    /// How the message is cleaned up: strip, whitespace, verbatim, scissors or default.
+    #[arg(long, value_name = "MODE", overrides_with = "no_cleanup")]
     cleanup: Option<String>,
+    #[arg(long, overrides_with = "cleanup")]
+    no_cleanup: bool,
+    /// Require a valid signature on the merged commit.
+    #[arg(long, overrides_with = "no_verify_signatures")]
+    verify_signatures: bool,
+    #[arg(long, overrides_with = "verify_signatures")]
+    no_verify_signatures: bool,
+    /// Skip the `pre-merge-commit` and `commit-msg` hooks of the merge.
+    #[arg(long, overrides_with = "verify")]
+    no_verify: bool,
+    #[arg(long, overrides_with = "no_verify")]
+    verify: bool,
     #[arg(long, overrides_with = "no_stat")]
     stat: bool,
     #[arg(short = 'n', long, overrides_with = "stat")]
@@ -102,8 +138,11 @@ pub struct PullArgs {
     recurse_submodules: Option<Option<String>>,
     #[arg(long, overrides_with = "recurse_submodules")]
     no_recurse_submodules: bool,
-    #[arg(long, hide = true)]
+    /// Merge histories that share no commit.
+    #[arg(long, overrides_with = "no_allow_unrelated_histories")]
     allow_unrelated_histories: bool,
+    #[arg(long, overrides_with = "allow_unrelated_histories")]
+    no_allow_unrelated_histories: bool,
     /// A remote name or a URL; the default is the current branch's remote, else `origin`.
     repository: Option<String>,
     /// What to fetch, as `pyn fetch` takes it; the merged refs are the ones fetched for merging.
@@ -150,6 +189,14 @@ impl PullArgs {
         .find_map(|(on, c)| on.then_some(c))
     }
 
+    fn autostash_flag(&self) -> Option<bool> {
+        match (self.autostash, self.no_autostash) {
+            (true, _) => Some(true),
+            (_, true) => Some(false),
+            _ => None,
+        }
+    }
+
     fn refuse_unsupported(&self) {
         let given = [
             (
@@ -167,17 +214,10 @@ impl PullArgs {
                 self.skip,
                 "a git rebase is skipped with `pyn rebase --skip`",
             ),
-            ("--squash", self.squash, "a squash merge is not built"),
-            ("--signoff", self.signoff, "trailers are not added"),
             (
-                "--cleanup",
-                self.cleanup.is_some(),
-                "the message is always cleaned up",
-            ),
-            (
-                "--allow-unrelated-histories",
-                self.allow_unrelated_histories,
-                "unrelated histories are refused",
+                "--no-strategy",
+                self.no_strategy,
+                "git keeps the strategies named before it",
             ),
             (
                 "--all",
@@ -269,6 +309,15 @@ impl Candidate {
             Some(what) => format!("commit '{what}'{of}"),
             None => self.url.clone(),
         }
+    }
+
+    /// The shortlog heading: the branch as fetched, `'x' of <url>`.
+    fn log_label(&self) -> Option<String> {
+        let what = self.what.as_ref().filter(|_| self.kind == "branch")?;
+        Some(match self.url.as_str() {
+            "." => what.clone(),
+            url => format!("'{what}' of {url}"),
+        })
     }
 }
 
@@ -482,6 +531,14 @@ pub fn pull(git: &GitHome, args: PullArgs) -> Result<()> {
 
 fn pull_inner(git: &GitHome, args: PullArgs) -> Result<()> {
     args.refuse_unsupported();
+    if let Some(mode) = args.cleanup.as_deref()
+        && !matches!(
+            mode,
+            "default" | "strip" | "whitespace" | "verbatim" | "scissors"
+        )
+    {
+        die(&format!("Invalid cleanup mode {mode}"));
+    }
     BLOCKED_STATUS.store(1, Ordering::Relaxed);
     let head = git.repo.head()?;
     let branch = match &head {
@@ -491,11 +548,6 @@ fn pull_inner(git: &GitHome, args: PullArgs) -> Result<()> {
     let rebase = rebase_setting(git, &args, branch)?;
     let rebase_on = rebase.on();
     let rebase_unset = matches!(rebase, Rebase::Unset);
-    if args.autostash && !rebase_on {
-        crate::usage_error(
-            "`pyn pull --autostash`: only a rebase stashes first; run `pyn stash`, or pull with --rebase",
-        );
-    }
     let replay = if rebase_on {
         super::strategy::Replay::parse(
             "pull --rebase",
@@ -510,7 +562,7 @@ fn pull_inner(git: &GitHome, args: PullArgs) -> Result<()> {
     if !args.dry_run {
         refuse_unfinished(git)?;
         if rebase_on {
-            super::rebase::require_clean_for_pull(git, args.autostash)?;
+            super::rebase::require_clean_for_pull(git, args.autostash_flag())?;
         }
     }
 
@@ -575,7 +627,7 @@ fn pull_inner(git: &GitHome, args: PullArgs) -> Result<()> {
                 mode,
                 action,
                 super::rebase::PullOpts {
-                    autostash: args.autostash.then_some(true),
+                    autostash: args.autostash_flag(),
                     quiet: args.quiet > 0,
                     sign: args.sign.clone(),
                     replay: replay.clone(),
@@ -604,6 +656,21 @@ fn pull_inner(git: &GitHome, args: PullArgs) -> Result<()> {
             no_ff: how.no_ff && !rebase_on,
             ff_only: how.ff_only || rebase_on,
             no_commit: args.no_commit,
+            squash: args.squash,
+            no_squash: args.no_squash,
+            signoff: args.signoff,
+            no_signoff: args.no_signoff,
+            log: args.log,
+            no_log: args.no_log,
+            cleanup: args.cleanup,
+            verify_signatures: args.verify_signatures,
+            no_verify_signatures: args.no_verify_signatures,
+            no_verify: args.no_verify,
+            verify: args.verify,
+            allow_unrelated_histories: args.allow_unrelated_histories,
+            no_allow_unrelated_histories: args.no_allow_unrelated_histories,
+            autostash: args.autostash,
+            no_autostash: args.no_autostash,
             stat: args.stat,
             no_stat: args.no_stat,
             strategy: args.strategy,
@@ -611,6 +678,7 @@ fn pull_inner(git: &GitHome, args: PullArgs) -> Result<()> {
             edit: args.edit,
             no_edit: args.no_edit,
             generated_message: true,
+            log_label: candidate.log_label(),
             sign: args.sign,
             ..Default::default()
         },
