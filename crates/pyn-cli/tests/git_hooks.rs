@@ -336,7 +336,7 @@ fn without_preparing(log: &str) -> String {
         let updates = block.split("stdin:\n").nth(1).unwrap_or_default();
         for update in updates.lines().take_while(|l| *l != "out-of-band") {
             let mut fields = update.split(' ');
-            let (_old, new, name) = (fields.next(), fields.next(), fields.last());
+            let (_old, new, name) = (fields.next(), fields.next(), fields.next_back());
             let plain = new.is_some_and(|n| !n.starts_with("ref:"))
                 && name.is_some_and(|r| {
                     ["refs/heads/", "refs/tags/", "refs/remotes/"]
