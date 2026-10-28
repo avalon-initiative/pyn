@@ -1,6 +1,6 @@
 //! From a remote URL string to a [`Transport`].
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use pyn_git::Config;
 use pyn_gitwire::Transport;
@@ -23,6 +23,7 @@ pub struct Connector {
     config: Config,
     env: Env,
     prompt: Option<Box<dyn Prompt>>,
+    base: Option<PathBuf>,
 }
 
 impl Connector {
@@ -31,7 +32,14 @@ impl Connector {
             config,
             env,
             prompt: None,
+            base: None,
         }
+    }
+
+    /// Resolves a relative local path against `dir` instead of the process directory.
+    pub fn with_base(mut self, dir: &Path) -> Self {
+        self.base = Some(dir.to_owned());
+        self
     }
 
     /// Answers credential questions with `prompt` instead of askpass and the terminal.
@@ -48,6 +56,10 @@ impl Connector {
         let transport: Box<dyn Transport> = match parsed {
             RemoteUrl::Ssh(u) => Box::new(SshTransport::new(u, &self.config, &self.env)),
             RemoteUrl::Local { path, shown } => {
+                let path = match &self.base {
+                    Some(base) if path.is_relative() => base.join(path),
+                    _ => path,
+                };
                 Box::new(LocalTransport::new(path, shown, &self.env))
             }
             RemoteUrl::Http(u) => {

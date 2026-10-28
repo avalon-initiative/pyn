@@ -307,7 +307,7 @@ fn split_base(spec: &str) -> (&str, &str) {
 }
 
 /// The position of the `:` that separates `<tree-ish>` from a path, outside an `@{...}`.
-fn tree_colon(spec: &str) -> Option<usize> {
+pub(super) fn tree_colon(spec: &str) -> Option<usize> {
     let bytes = spec.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
