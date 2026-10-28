@@ -1081,8 +1081,8 @@ Differences from git, all deliberate or not yet done:
   filter drivers and `working-tree-encoding` are not applied.
 - Commit abbreviations are 7 digits and are not lengthened to stay unique; `log` and `show` print no color on a terminal.
 - A nested repository that the index does not track is one untracked `dir/`.
-- `stash apply` detects no renames, `merge` and `stash apply` write diff3 conflict markers whatever `merge.conflictStyle` says and merge only when
-  there is one merge base (`merge -s ours` needs none); `stash apply` does not write `AUTO_MERGE`; `switch` and `checkout` print their own wording where git's differs (`Fast-forward` without a diffstat, the status
+- `stash apply` detects no renames, `merge` and `stash apply` write diff3 conflict markers whatever `merge.conflictStyle` says and `stash apply` merges only when
+  there is one merge base; `stash apply` does not write `AUTO_MERGE`; `switch` and `checkout` print their own wording where git's differs (`Fast-forward` without a diffstat, the status
   after `stash pop` in pyn's table).
 
 ### Log on a git home
