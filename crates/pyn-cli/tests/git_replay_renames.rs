@@ -39,6 +39,19 @@ fn text(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
+/// A snapshot entry (`<mode> [bytes]`) with git's two spellings of the `am -3` base label made one.
+fn same_base_label(entry: &str) -> String {
+    let Some((mode, rest)) = entry.split_once(' ') else {
+        return entry.to_string();
+    };
+    let Some(list) = rest.strip_prefix('[').and_then(|r| r.strip_suffix(']')) else {
+        return entry.to_string();
+    };
+    let bytes: Vec<u8> = list.split(", ").filter_map(|n| n.parse().ok()).collect();
+    let fixed = text(&bytes).replace("constructed fake ancestor", "constructed merge base");
+    format!("{mode} {:?}", fixed.as_bytes())
+}
+
 impl Pair {
     fn new(format: &str, script: &str) -> Self {
         let tmp = tempfile::tempdir().unwrap();
@@ -113,7 +126,7 @@ impl Pair {
         }
         for (path, content) in snapshot(dir) {
             if path != ".git" && !path.starts_with(".git/") && !path.starts_with(".pyn") {
-                out.push(format!("{path} {content}"));
+                out.push(format!("{path} {}", same_base_label(&content)));
             }
         }
         out
