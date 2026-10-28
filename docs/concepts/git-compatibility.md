@@ -1496,7 +1496,7 @@ Covered against the real git by `crates/pyn-cli/tests/git_branch_track.rs`.
 - Files are written with the executable bit of the tree entry; symlinks become links (files holding the target when
   `core.symlinks=false`); `core.filemode=false` is honored when deciding what is a local change. Folders emptied by a removal are
   removed.
-- Unmerged index entries, a merge, cherry-pick, revert or rebase in progress, and a sparse checkout refuse the command.
+- Unmerged index entries, and a merge, cherry-pick, revert or rebase in progress, refuse the command.
 - `switch -C <branch> [<start>]` (`--force-create`) creates the branch or resets an existing one to the start point (default `HEAD`), logs
   `branch: Reset to <start>` (on `HEAD` alone when the branch is already there and current), and prints `Switched to and reset branch`,
   `Reset branch` (already on it) or `Switched to a new branch`. `switch --orphan <new>` points `HEAD` at an unborn branch and empties the index and the
@@ -1578,7 +1578,7 @@ reset with paths.` (`128`). On an unborn branch `HEAD` is the empty tree: `reset
 (and `--hard` and `--merge` remove the files), `--soft` does nothing, no ref or `ORIG_HEAD` is written, and `--keep` fails.
 
 `ORIG_HEAD`, `MERGE_HEAD` and `CHERRY_PICK_HEAD` are accepted wherever a revision is, and so are the reflog revisions
-(`HEAD@{1}`, `@{-1}`; see [Reflogs](#reflogs)). Unlike git, a sparse checkout refuses `--keep` and `--merge`; `--soft`, `--mixed` and `--hard` keep the skip-worktree flags. A running rebase or cherry-pick's own
+(`HEAD@{1}`, `@{-1}`; see [Reflogs](#reflogs)). `--soft`, `--mixed`, `--hard`, `--keep` and `--merge` keep the skip-worktree flags (see [Sparse checkout](#sparse-checkout)). A running rebase or cherry-pick's own
 state folder (`rebase-merge/`, `sequencer/`) is not removed. `--hard --recurse-submodules` also moves the checked-out submodules, see [Submodules](#submodules). Covered against the real git by `crates/pyn-cli/tests/git_reset.rs`.
 
 ### Merging
@@ -1788,7 +1788,7 @@ and `A...B` name ranges (applied oldest first, parents before children), and sev
 1. Before anything changes it refuses, with git's wording and exit `128` (`fatal: cherry-pick failed` after `error:` lines): a
    sequence while a cherry-pick or revert is already in progress, unmerged entries, an unknown revision, an empty range (`empty commit set passed`),
    a merge commit without `-m <n>` (or `-m` past its parents), and a staged change (`your local changes would be overwritten by
-   cherry-pick`; `-n` allows it). A merge in progress, a rebase, a sparse checkout and several commits onto an unborn branch are
+   cherry-pick`; `-n` allows it). A merge in progress, a rebase and several commits onto an unborn branch are
    refused by pyn. `-m 1` on a commit that is not a merge is accepted, and `-m 0` is a usage error (`129`).
 2. A path the commit changes whose file has unstaged changes, or has an untracked file in the way, stops the command with git's
    `Your local changes to the following files would be overwritten by merge` and nothing written; edits to other files stay.
@@ -1869,7 +1869,7 @@ no rename detection. The replay runs on a detached `HEAD`; the branch moves when
    `<branch>` is switched to first, and a detached `HEAD` is rebased and stays detached.
 3. Before anything changes it refuses with `error: cannot rebase: You have unstaged changes.` or `Your index contains uncommitted
    changes.` (exit `1`, untracked files do not count), an invalid upstream, `--onto` or branch (`fatal:`, `128`), a rebase,
-   merge, cherry-pick or revert already in progress, a sparse checkout, and an unborn branch. `--autostash` (or
+   merge, cherry-pick or revert already in progress, and an unborn branch. `--autostash` (or
    `rebase.autoStash`; `--no-autostash` overrides it) stashes the changes first (`Created autostash: <id>`, the commit id in
    `rebase-merge/autostash`) and applies them at the end (`Applied autostash.`); changes that do not apply cleanly are put on
    `refs/stash` with `Applying autostash resulted in conflicts.`.
@@ -2214,10 +2214,28 @@ the skip-worktree flag. `status` ignores skipped entries and adds the line `You 
 present.` after the branch line; `add` and `rm` refuse a path that only names skipped entries, with git's message and status `1`.
 `ls-files -t` and `-v` show `S` for them.
 
-Not built yet, and refused with an error that changes nothing when the index has skip-worktree entries: a merge that is not a
-fast-forward, `merge --abort`, `stash` (push, pop, apply, branch), `restore` and `checkout` of paths, the patch modes,
-`reset --keep` and `--merge`, `cherry-pick`, `revert`, `rebase` and `apply`. `add --sparse` and `rm --sparse` are not built. Covered by `git_sparse.rs`, which runs each scenario on two copies of a repository, pyn on one and git on
-the other, and compares the patterns file, the `ls-files -t` tags, the files and `status` in SHA-1 and SHA-256 repositories.
+Also sparse-aware, with git's rules: files outside the patterns stay out of the work tree and keep their skip-worktree
+flag, and results are computed in the index and trees.
+
+- A merge that is not a fast-forward, `cherry-pick`, `revert`, `rebase` (all backends pyn has) and `am` update the index for
+  skipped paths without writing them. A conflict on a path outside the patterns is written to the work tree with its unmerged
+  entries (the flag is dropped), is reported, and `merge --abort`, `reset --merge` and `reset --hard` put the file back as
+  git does.
+- `stash` (push, pop, apply, branch) leaves skipped files out; applying a stash that changes paths outside the patterns writes
+  them to the work tree and drops their flag, as git does.
+- `restore` and `checkout` of paths from the index leave skipped entries alone (a pathspec that names only skipped entries is an
+  error); `--ignore-skip-worktree-bits` restores them and drops the flag. `restore -p` and `checkout -p` from the index, `reset -p`
+  and `add -p` skip them.
+- `reset --keep` and `--merge` update skipped entries in the index only. `apply --index`, `--cached` and `--3way` treat a skipped
+  path the patch names as an ordinary one.
+
+Still refused with an error that changes nothing, because git's result there is not worth copying yet: `restore` or `checkout`
+from a tree when the tree has a different version of a skipped path or a path outside the patterns that the index lacks;
+`--ignore-skip-worktree-bits` together with a tree; `restore -p`, `checkout -p`, `reset -p` from a tree that differs in a skipped
+file; `stash -p`; applying a stash with `--index`, or one that conflicts, when it changes paths outside the patterns.
+`add --sparse` and `rm --sparse` are not built. Covered by `git_sparse.rs` and `git_sparse_replay.rs`, which run each scenario on
+two copies of a repository, pyn on one and git on the other, and compare the patterns file, the `ls-files -t` tags, the files,
+`HEAD` and the in-progress state, for cone and non-cone patterns.
 
 ### Linked work trees
 

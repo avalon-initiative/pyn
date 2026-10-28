@@ -458,6 +458,9 @@ enum Command {
         /// Recreate the conflicted merge of unmerged paths (a git repository only).
         #[arg(long)]
         merge: bool,
+        /// Restore paths outside the sparse-checkout patterns too (a git repository only).
+        #[arg(long)]
+        ignore_skip_worktree_bits: bool,
         /// Choose the hunks to restore, one at a time (a git repository only).
         #[arg(short, long, conflicts_with_all = ["ours", "theirs", "merge", "message", "yes"])]
         patch: bool,

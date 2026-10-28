@@ -956,7 +956,7 @@ pub(super) fn apply_merge(
     merged: &Merge,
     landing: &Landing,
 ) -> Result<std::result::Result<Applied, Refusal>> {
-    super::sparse::refuse_unsupported(&opened.index)?;
+    let cone = super::sparse::Cone::of(git, &opened.index)?;
     check_writes(merged.paths.keys())?;
     let head_leaves = git.repo.flatten(ours_tree, &Pathspec::default())?;
 
@@ -1042,12 +1042,20 @@ pub(super) fn apply_merge(
         match resolved {
             Resolved::Take(Some(entry)) => {
                 if head_leaves.get(path) != Some(entry) {
-                    put_entry(&mut entries, write_entry(git, path, entry)?);
+                    if cone.out(path) {
+                        let mut e = IndexEntry::new(path.clone(), raw_mode(entry.mode), entry.id);
+                        e.skip_worktree = true;
+                        put_entry(&mut entries, e);
+                    } else {
+                        put_entry(&mut entries, write_entry(git, path, entry)?);
+                    }
                 }
             }
             Resolved::Take(None) => {
                 if head_leaves.contains_key(path) {
-                    remove_entry_file(git, path)?;
+                    if !cone.out(path) {
+                        remove_entry_file(git, path)?;
+                    }
                     remove_entry(&mut entries, path);
                 }
             }
@@ -1078,6 +1086,10 @@ pub(super) fn apply_merge(
                 )?;
                 if let Worktree::Write { mode, bytes } = &c.worktree {
                     write_bytes(git, path, *mode, bytes)?;
+                } else if cone.out(path)
+                    && let Some(ours) = &c.ours
+                {
+                    write_entry(git, path, ours)?;
                 }
                 let at = match &c.moved_from {
                     Some(from) if landing.stages_at_origin => from,
@@ -1137,7 +1149,7 @@ fn abort(git: &GitHome) -> Result<()> {
     let committed: BTreeMap<Vec<u8>, Entry> =
         git.repo.flatten(Some(&tree), &Pathspec::default())?;
     let opened = git.open_index()?;
-    super::sparse::refuse_unsupported(&opened.index)?;
+    let cone = super::sparse::Cone::of(git, &opened.index)?;
     let mut entries: Entries = entries_of(&opened.index);
     let leaves = git.repo.index_leaves(&opened.index);
     let dirty = git.repo.unstaged_changes(&opened.index)?;
@@ -1183,8 +1195,15 @@ fn abort(git: &GitHome) -> Result<()> {
     redo.sort_by_key(|p| committed.contains_key(p));
     for path in &redo {
         remove_entry(&mut entries, path);
+        let out = cone.out(path);
         match committed.get(path) {
+            Some(entry) if out => {
+                let mut e = IndexEntry::new(path.clone(), raw_mode(entry.mode), entry.id);
+                e.skip_worktree = true;
+                put_entry(&mut entries, e);
+            }
             Some(entry) => put_entry(&mut entries, write_entry(git, path, entry)?),
+            None if out => {}
             None => remove_entry_file(git, path)?,
         }
     }

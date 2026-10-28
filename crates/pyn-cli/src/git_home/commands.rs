@@ -271,6 +271,7 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
             ours,
             theirs,
             merge,
+            ignore_skip_worktree_bits,
             ..
         } if ours || theirs || merge => super::switch::restore_sides(
             git,
@@ -287,6 +288,7 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
                     None
                 },
                 merge,
+                ignore_skip: ignore_skip_worktree_bits,
             },
         ),
         Command::Restore {
@@ -304,8 +306,17 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
             source,
             staged,
             worktree,
+            ignore_skip_worktree_bits,
             ..
-        } => super::switch::restore(git, cwd, &args, source.as_deref(), staged, worktree),
+        } => super::switch::restore(
+            git,
+            cwd,
+            &args,
+            source.as_deref(),
+            staged,
+            worktree,
+            ignore_skip_worktree_bits,
+        ),
         Command::Reset(args) => super::reset::reset(git, cwd, &args),
         Command::CherryPick(args) => super::pick::cherry_pick(git, &args),
         Command::Revert(args) => super::pick::revert(git, &args.into()),

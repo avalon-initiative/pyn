@@ -584,8 +584,9 @@ pub(super) fn move_tree(
     for (path, act) in attributes_first(acts.iter()) {
         if let Act::Write(entry) = act {
             let known = entries.get(&(path.clone(), 0));
+            let unmerged = (1..=3u8).any(|s| entries.contains_key(&(path.clone(), s)));
             let leave_out = known.map_or_else(
-                || sparse.as_ref().is_some_and(|p| !p.includes(path)),
+                || !unmerged && sparse.as_ref().is_some_and(|p| !p.includes(path)),
                 |e| e.skip_worktree,
             );
             if leave_out && entry.mode != FileMode::Gitlink {
