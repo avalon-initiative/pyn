@@ -16,6 +16,7 @@ use super::log_gate::{Gate, Pickaxe};
 use super::log_graph::{Graph, topo_order};
 use super::log_match::{Dialect, compile_as, compile_ere, parse_date};
 use super::merge_diff::{Against, Body, MergeArgs, Plan, Shape, Want, with_from};
+use super::verify_sig::{commit_report, with_report};
 use crate::commit_format::{Context, FormatArgs, Pretty, Rendering, render};
 use crate::diff::{self, DiffParts, Kind, Tree};
 use crate::{table, time};
@@ -99,6 +100,9 @@ pub struct GitLogArgs {
     /// Follow only the first parent of each commit.
     #[arg(long)]
     first_parent: bool,
+    /// Check and print each signed commit's signature.
+    #[arg(long)]
+    show_signature: bool,
     #[command(flatten)]
     decorate: Box<DecorateArgs>,
     #[command(flatten)]
@@ -159,6 +163,7 @@ impl GitLogArgs {
             ("-F", self.fixed_strings),
             ("--basic-regexp", self.basic_regexp),
             ("-P", self.perl_regexp),
+            ("--show-signature", self.show_signature),
             ("--raw", self.raw),
             ("-w", self.patch_flags.all_space()),
         ];
@@ -195,6 +200,7 @@ impl GitLogArgs {
             ("-F", self.fixed_strings),
             ("--basic-regexp", self.basic_regexp),
             ("-P", self.perl_regexp),
+            ("--show-signature", self.show_signature),
             ("--author given more than once", self.author.len() > 1),
             ("--grep given more than once", self.grep.len() > 1),
             ("--author with a regular expression", literal(&self.author)),
@@ -531,6 +537,9 @@ impl GitLogArgs {
         {
             return Some(format!("{flag}` does not combine with -S or -G"));
         }
+        if self.show_signature && self.graph {
+            return Some("--graph` does not combine with --show-signature".into());
+        }
         if self.graph {
             let combined = [
                 ("diff output", self.diff_given()),
@@ -595,6 +604,9 @@ pub(super) fn log(
     let rendering = args.fmt.rendering()?;
     let (tabs, abbrev_commit) = (rendering.tab_width(), rendering.abbrev_commit);
     let Rendering { pretty, style, .. } = rendering;
+    if args.show_signature {
+        super::verify_sig::check_format(&pretty);
+    }
     let filters = Filters::new(&args)?;
     let parts = args.diff_parts();
     let patch_parts = DiffParts {
@@ -653,6 +665,7 @@ pub(super) fn log(
         plan,
         headers: 0,
         decorate: decorate.on(),
+        signatures: args.show_signature,
         gate,
         graph: None,
         missing_newline: false,
@@ -720,6 +733,7 @@ struct Printer<'a> {
     plan: Plan,
     headers: usize,
     decorate: bool,
+    signatures: bool,
     gate: Option<Gate>,
     graph: Option<Graph>,
     missing_newline: bool,
@@ -866,6 +880,11 @@ impl Printer<'_> {
                 tail: String::new(),
             }]
         };
+        let report = if self.signatures {
+            commit_report(self.git, &entry.id)?
+        } else {
+            None
+        };
         for seg in segments {
             if self.headers > 0 && !self.pretty.terminated() {
                 self.out.push('\n');
@@ -875,6 +894,10 @@ impl Printer<'_> {
                 with_decoration(text, self.pretty, self.ctx.decorations.get(&entry.id))
             } else {
                 text
+            };
+            let text = match &report {
+                Some(r) => with_report(text, r),
+                None => text,
             };
             self.out
                 .push_str(&with_from(text, self.pretty, seg.from.as_ref()));

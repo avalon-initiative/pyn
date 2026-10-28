@@ -99,9 +99,7 @@ pub(super) fn signer_for(
     .to_string();
     let key = match (key, format) {
         (Some(k), _) => k,
-        (None, Format::Ssh) => bail!(
-            "user.signingkey needs to be set for ssh signing (gpg.ssh.defaultKeyCommand is not built)"
-        ),
+        (None, Format::Ssh) => default_ssh_key(config.get("gpg.ssh.defaultkeycommand"))?,
         (None, _) => {
             let who = who.ok_or_else(|| anyhow!("unable to determine who you are to sign as"))?;
             format!(
@@ -116,6 +114,32 @@ pub(super) fn signer_for(
         program,
         key,
     }))
+}
+
+/// The first line the `gpg.ssh.defaultKeyCommand` prints, as git takes the key to sign with.
+fn default_ssh_key(command: Option<&str>) -> Result<String> {
+    let Some(command) = command.filter(|c| !c.is_empty()) else {
+        bail!("user.signingkey needs to be set for ssh signing");
+    };
+    let out = Command::new("sh")
+        .args(["-c", command])
+        .stdin(Stdio::null())
+        .output()
+        .with_context(|| format!("gpg.ssh.defaultKeyCommand failed: {command}"))?;
+    let err = String::from_utf8_lossy(&out.stderr);
+    if !out.status.success() {
+        bail!("gpg.ssh.defaultKeyCommand failed: {command} {err}");
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    match stdout
+        .lines()
+        .next()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+    {
+        Some(key) => Ok(key.to_string()),
+        None => bail!("gpg.ssh.defaultKeyCommand succeeded but returned no keys: {command} {err}"),
+    }
 }
 
 /// Adds the signature header to `record` when `flag` or `commit.gpgsign` asks for one.
@@ -195,7 +219,7 @@ impl Signer {
     }
 }
 
-fn expand_home(path: &str) -> std::path::PathBuf {
+pub(super) fn expand_home(path: &str) -> std::path::PathBuf {
     match (path.strip_prefix("~/"), std::env::var_os("HOME")) {
         (Some(rest), Some(home)) => std::path::Path::new(&home).join(rest),
         _ => path.into(),

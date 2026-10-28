@@ -125,7 +125,8 @@ The commands named in decision #218.
 | `git log -E`, `-F`, `--basic-regexp` | same | git home: supported | The pattern syntax of `--grep`, `--author` and `--committer`; the last of the switches wins. On a pyn server a usage error (`129`). |
 | `git log -P` | none | unsupported | Usage error (`129`): pyn has no Perl-compatible regular expression engine, and `-E` covers extended expressions. |
 | `git log --graph` | same | git home: supported | Git's output on a git home, in git's topological order (see [Log on a git home](#log-on-a-git-home)); no path, diff output or commit filters. On a pyn server a usage error (`129`). |
-| `git log --show-signature`, `--notes` | none | unsupported | Usage error (`129`). `pyn log` is of the workspace's branch; another branch's log needs a switch (`pyn log <branch>` is not built). |
+| `git log --show-signature` | same | git home: supported | Prints each signed commit's verification report after its `commit` line (see [Signing](#signing)). With `--oneline`, a `--format=` template or `--graph` a usage error (`129`); on a pyn server a usage error. |
+| `git log --notes` | none | unsupported | Usage error (`129`). `pyn log` is of the workspace's branch; another branch's log needs a switch (`pyn log <branch>` is not built). |
 | `pyn log --commits` | | pyn only | List commits (`COMMIT`, `AUTHOR`, `WHEN`, `FILES`, `MESSAGE`) instead of revisions. |
 | `pyn log --filter <glob>` | | pyn only | Only paths matching the glob. |
 | `git diff [<c1> [<c2>]] [-- <path>...]` | `pyn diff [<c1> [<c2>]] [-- <path>...]` | different | Unified output as git, computed in the CLI. Commits are hashes (or abbreviations of 4 or more digits), `HEAD`, `~N`, `^`, or `a..b`; two commits work outside a workspace. With no commit it compares the work tree with the index: the staged content, or the last update for what is not staged. File modes print as in git, including `old mode` and `new mode`. On a git home an argument that is neither a revision nor an existing path (a deleted file needs `--`) fails with `fatal: ambiguous argument '<arg>'` (or `bad revision` before `--`), exit `128`, as git does; `a...b` is not supported and fails the same way. |
@@ -147,6 +148,7 @@ The commands named in decision #218.
 | `git show --numstat` | same | different | The numeric rows and format-combination limits are the same as `diff --numstat`. |
 | `git show <rev>:<path>` | `pyn get <path> [--rev N] [-o <file>]` | different | `show` takes commits only (`HEAD:foo` fails with `fatal: ... is not a commit`, `128`). File content at a revision is `pyn get`, to stdout or a file. `--rev` is a per-path revision, not a commit. |
 | `git show --oneline`, `-s` (`--no-patch`), `--format=`, `--pretty=`, `--date=` | same | supported | Both homes, with the formats of `log`. `-s` prints the commit only; `--oneline` and the formats print their line, then the diff (blank line between for a template or a named format, none for `--oneline`). Without them a pyn server prints its own header (see above). |
+| `git show --show-signature` | same | git home: supported | As for `log`: the report follows each signed commit's `commit` line. A tag's own signature is not checked, as in git 2.43. A usage error on a pyn server. |
 | `git show <tag>` | `pyn show <tag>` | different | On a pyn server with the local store, an annotated tag prints `tag <name>`, `Tagger:`, `Date:` and its message, then the commit; a lightweight tag, or a tag with `~N`/`^` steps, shows the commit. A git home shows the commit only. |
 | `git show <object>` | none | unsupported | `fatal: ... is not a commit`. |
 | `git restore --source=<rev> <path>` | `pyn restore --source <rev> <path>` (or `pyn restore <path> <rev>`) | different | pyn's restore appends a new revision on the server: it needs the lock, the `restore` permission and a typed confirmation (`--yes` skips it); `-m` sets the message. The revision is required (git defaults to the index or HEAD) and `-s` is the short form of `--source`. Git's restore only edits the working tree. |
@@ -179,6 +181,7 @@ Commands people reach for that are not in the daily set.
 | --- | --- | --- | --- |
 | `git ls-files` | `pyn files` | different | Table of every file with mode, head revision and lock holder. No flags. On a git home `pyn files` lists the index, every file `shared`, with no revision or lock, and `pyn ls-files` is git's command; see [Inspection commands](#inspection-commands). |
 | `git ls-tree [<rev>] [<path>]` | `pyn ls [<path>]` | different | One folder with each entry's mode, last change and lock. Head only; no revision argument. On a git home `pyn ls` lists `HEAD`'s tree, with no last change, and `pyn ls-tree` is git's command; see [Inspection commands](#inspection-commands). |
+| `git verify-commit [-v] [--raw] <commit>...`, `git verify-tag [-v] [--raw] <tag>...` | same | git home: supported | Check the signature with the configured program and exit `1` when any is missing or not good (see [Signing](#signing)); `verify-tag --format` is not built. They need a git repository. |
 | `git cat-file`, `git show <rev>:<path>` | `pyn get <path>` | different | See `show` above. On a git home `pyn cat-file` is git's command; see [Inspection commands](#inspection-commands). |
 | `git rev-parse`, `git show-ref`, `git shortlog`, `git describe`, `git name-rev` | the same names on a git home | git home only | See [Inspection commands](#inspection-commands). On a pyn server they fail with `fatal: not a git repository (or any of the parent directories): .git` (`128`). |
 | `git config --list`, `--get <key>`, `<key> <value>` | `pyn config --list`, `--get`, `<key> <value>` | git home: supported | Git's flag forms, on git's own config files, with git's output and exit statuses. See [Config flag forms](#config-flag-forms). |
@@ -1044,6 +1047,7 @@ quotes them (`core.quotePath`), and left as they are with `-z`.
 | `submodule` | See [Submodules](#submodules). |
 | `reflog` | See [Reflogs](#reflogs). |
 | `rev-parse`, `ls-files`, `ls-tree`, `cat-file`, `show-ref`, `shortlog`, `describe`, `name-rev` | See [Inspection commands](#inspection-commands). |
+| `verify-commit`, `verify-tag` | See [Signing](#signing). |
 | `sparse-checkout` | See [Sparse checkout](#sparse-checkout). |
 | `format-patch`, `apply`, `am` | See [Patches](#patches). |
 | `init` | See above. `pyn init` starts a pyn repository; `pyn init-git` starts a git one. |
@@ -1915,7 +1919,8 @@ need git installed. It writes the signature as git encodes it, so the object ids
   and the run counts only if it exits `0` and reports `[GNUPG:] SIG_CREATED` on standard error.
 - ssh runs `<program> -Y sign -n git -f <keyfile> <buffer>` and reads `<buffer>.sig`. `user.signingkey` is a private key file
   (`~/` is expanded) or a literal public key (`ssh-...` or `key::...`), signed through ssh-agent with `-U`. Without
-  `user.signingkey`, `gpg.ssh.defaultKeyCommand` is not built and signing stops.
+  `user.signingkey`, the first line `gpg.ssh.defaultKeyCommand` prints (run with `sh -c`) is the key, as git takes it; a
+  command that fails or prints nothing stops signing.
 - A commit carries the signature as a `gpgsig` header (`gpgsig-sha256` in a SHA-256 repository) after the other headers, folded
   with a leading space on each continuation line; it signs the commit as it would be without that header. `--amend` signs anew
   (or not) and drops the old signature. A tag carries its signature appended to the message.
@@ -1937,8 +1942,26 @@ The other commands that create commits sign them the same way and through the sa
   `REVERT_HEAD`, or the failed pick first in the rebase sheet, as git does. Fix the signer and run `pyn commit`,
   `--continue` or the command again.
 
-`log --show-signature` and `verify-commit` / `verify-tag` equivalents are not built: pyn does not verify signatures, and `log
---show-signature` stays a usage error.
+#### Verifying
+
+`verify-commit`, `verify-tag`, `log --show-signature` and `show --show-signature` check a signature by running the same
+program as git does, so pyn still links no crypto library. The signature's own text picks the format.
+
+- openpgp and x509 run `<program> --keyid-format=long --status-fd=1 --verify <sigfile> -` with the signed object on standard
+  input. A signature is good when the program exits `0` and reports `GOODSIG`, and the `TRUST_` level it reports reaches
+  `gpg.minTrustLevel` (default `undefined`, so any). `BADSIG`, `ERRSIG`, `EXPSIG`, `EXPKEYSIG` and `REVKEYSIG` are not good.
+- ssh needs `gpg.ssh.allowedSignersFile`; without it the check reports the error and fails. pyn runs `ssh-keygen -Y
+  find-principals`, then `-Y verify -n git -I <principal>` (with `gpg.ssh.revocationFile` as `-r`) for each principal until one
+  holds, passing the commit or tag time as `-Overify-time`, so a signer's `valid-after` and `valid-before` apply at that
+  time. With no principal the key is checked by `-Y check-novalidate` and the signature is reported but not good.
+- `verify-commit` and `verify-tag` print the program's report on standard error (`--raw` prints the gpg status lines
+  instead, `-v` prints the signed object on standard output first) and exit `1` if any named object is unsigned, not good,
+  missing, or of the wrong type (`verify-commit v1` on an annotated tag fails, as in git); no name is a usage error (`129`).
+  A verifier that cannot be run counts as not good.
+- `log` and `show` print the report on standard output right after the `commit` line, nothing for an unsigned commit, and
+  `No signature` when an ssh check could not be made. A bad signature does not change their exit status.
+- The program's own wording is passed through, so reports differ from git's wherever the installed gpg or ssh-keygen does;
+  the tests compare exit status and what the report says, not its bytes. The report is not colored.
 
 ### Stashing
 

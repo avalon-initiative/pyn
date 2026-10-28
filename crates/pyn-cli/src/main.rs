@@ -258,6 +258,10 @@ enum Command {
     LsTree(git_home::LsTreeArgs),
     /// Show an object's type, size or content (a git repository only).
     CatFile(git_home::CatFileArgs),
+    /// Check the signature of commits (a git repository only).
+    VerifyCommit(git_home::VerifyCommitArgs),
+    /// Check the signature of tags (a git repository only).
+    VerifyTag(git_home::VerifyTagArgs),
     /// List the refs and the ids they point at (a git repository only).
     ShowRef(git_home::ShowRefArgs),
     /// Choose which tracked files the work tree holds (a git repository only).
@@ -313,6 +317,9 @@ enum Command {
         fmt: commit_format::FormatArgs,
         #[command(flatten)]
         decorate: Box<git_home::DecorateArgs>,
+        /// Check and print each signed commit's signature (git repository only).
+        #[arg(long)]
+        show_signature: bool,
         #[command(flatten)]
         format: Box<DiffFormat>,
     },
@@ -2143,6 +2150,8 @@ fn run(cli: Cli) -> Result<()> {
         | Command::LsFiles(_)
         | Command::LsTree(_)
         | Command::CatFile(_)
+        | Command::VerifyCommit(_)
+        | Command::VerifyTag(_)
         | Command::ShowRef(_)
         | Command::SparseCheckout(_)
         | Command::CountObjects(_)
@@ -2262,10 +2271,14 @@ fn run(cli: Cli) -> Result<()> {
             no_patch,
             fmt,
             decorate,
+            show_signature,
             format,
             first_parent,
             merges,
         } => {
+            if show_signature {
+                usage_error("`pyn show --show-signature` needs a git repository");
+            }
             if args.len() > 1 || !paths.is_empty() {
                 usage_error("`pyn show` takes one commit and no paths on a pyn server");
             }

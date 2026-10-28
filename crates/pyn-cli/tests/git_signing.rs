@@ -769,3 +769,96 @@ fn commits_made_by_every_command_verify_with_ssh_keygen() {
         }
     }
 }
+
+/// An ssh signer that logs its arguments (a key file shown by its content) and writes a fixed signature.
+const FAKE_SSH: &str = r#"#!/bin/sh
+prev=
+for a in "$@"; do
+  if [ "$prev" = -f ]; then
+    printf 'key:%s\n' "$(cat "$a")" >> "$SIGNER_LOG"
+  else
+    case "$a" in *buffer*) echo buffer >> "$SIGNER_LOG" ;; *) echo "$a" >> "$SIGNER_LOG" ;; esac
+  fi
+  prev=$a
+done
+for last; do :; done
+printf -- '-----BEGIN SSH SIGNATURE-----\nfake\n-----END SSH SIGNATURE-----\n' > "$last.sig"
+"#;
+
+fn ssh_command_pair(format: &str, command: &str, extra: &[(&str, &str)]) -> Pair {
+    let pair = Pair::new(format, FAKE_SIGNER, &[]);
+    let program = script(&pair.root, "fake-ssh", FAKE_SSH);
+    let program = program.to_str().unwrap();
+    let mut steps: Vec<Vec<&str>> = vec![
+        vec!["config", "gpg.format", "ssh"],
+        vec!["config", "gpg.ssh.program", program],
+        vec!["config", "gpg.ssh.defaultKeyCommand", command],
+    ];
+    steps.extend(extra.iter().map(|(k, v)| vec!["config", *k, *v]));
+    let steps: Vec<&[&str]> = steps.iter().map(Vec::as_slice).collect();
+    pair.setup(&steps);
+    pair
+}
+
+#[test]
+fn the_default_key_command_supplies_the_ssh_signing_key_like_git() {
+    for format in FORMATS {
+        for (name, command) in [
+            ("one key", "echo 'ssh-ed25519 AAAAFAKEKEY one'"),
+            ("literal prefix", "echo 'key::ssh-ed25519 AAAAFAKEKEY one'"),
+            (
+                "first line only",
+                "printf 'ssh-ed25519 AAAAFIRST\\nssh-ed25519 AAAASECOND\\n'",
+            ),
+        ] {
+            let label = format!("{format} {name}");
+            let pair = ssh_command_pair(format, command, &[]);
+            assert_eq!(
+                pair.same("commit", &["-S", "-m", "x"], SHOW_HEAD, &label),
+                0,
+                "{label}: commit"
+            );
+            let log = fs::read_to_string(pair.log(true)).unwrap();
+            assert!(log.contains("key:ssh-ed25519 AAAAF"), "{label}: {log}");
+            assert!(!log.contains("SECOND"), "{label}: {log}");
+            let pair = ssh_command_pair(format, command, &[]);
+            assert_eq!(
+                pair.same("tag", &["-s", "-m", "t", "v1"], SHOW_TAG, &label),
+                0,
+                "{label}: tag"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_failing_or_silent_default_key_command_signs_nothing() {
+    for (name, command) in [("fails", "echo oops >&2; exit 3"), ("silent", "true")] {
+        let pair = ssh_command_pair("sha1", command, &[]);
+        let code = pair.same("commit", &["-S", "-m", "x"], SHOW_HEAD, name);
+        assert_ne!(code, 0, "{name}");
+        assert_eq!(
+            pair.git_out(&pair.ours, &["rev-list", "--count", "HEAD"]),
+            "1\n",
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn a_signing_key_or_flag_key_wins_over_the_default_key_command() {
+    let marker = "echo ran >> \"$SIGNER_LOG\"; echo 'ssh-ed25519 AAAAFAKEKEY'";
+    for (name, args, extra) in [
+        (
+            "setting",
+            &["-S", "-m", "x"][..],
+            &[("user.signingkey", "key::ssh-ed25519 AAAASET")][..],
+        ),
+        ("flag", &["-Sssh-ed25519 AAAAFLAG", "-m", "x"][..], &[][..]),
+    ] {
+        let pair = ssh_command_pair("sha1", marker, extra);
+        assert_eq!(pair.same("commit", args, SHOW_HEAD, name), 0, "{name}");
+        let log = fs::read_to_string(pair.log(true)).unwrap();
+        assert!(!log.contains("ran"), "{name}: {log}");
+    }
+}

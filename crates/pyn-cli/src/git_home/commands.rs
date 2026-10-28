@@ -73,6 +73,7 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
             no_patch,
             fmt,
             decorate,
+            show_signature,
             format,
             first_parent,
             merges,
@@ -80,7 +81,7 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
             git,
             cwd,
             (&args, &paths),
-            (no_patch, first_parent, &merges),
+            (no_patch, first_parent, &merges, show_signature),
             (&fmt, &decorate),
             &format.format(),
         ),
@@ -146,6 +147,8 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
         Command::LsFiles(args) => super::ls_files::ls_files(git, cwd, args),
         Command::LsTree(args) => super::ls_tree::ls_tree(git, cwd, args),
         Command::CatFile(args) => super::cat_file::cat_file(git, cwd, args),
+        Command::VerifyCommit(args) => super::verify_sig::verify_commit(git, cwd, args),
+        Command::VerifyTag(args) => super::verify_sig::verify_tag(git, cwd, args),
         Command::ShowRef(args) => super::show_ref::show_ref(git, args),
         Command::SparseCheckout(args) => super::sparse::sparse_checkout(git, args),
         Command::CountObjects(args) => super::count_objects::count_objects(git, args),
@@ -1015,7 +1018,7 @@ fn show(
     git: &GitHome,
     cwd: &Path,
     (args, paths): (&[String], &[String]),
-    (no_patch, first_parent, merges): (bool, bool, &MergeArgs),
+    (no_patch, first_parent, merges, signatures): (bool, bool, &MergeArgs, bool),
     (fmt, decorate): (&FormatArgs, &DecorateArgs),
     format: &diff::Format,
 ) -> Result<()> {
@@ -1026,6 +1029,9 @@ fn show(
     let rendering = fmt.rendering()?;
     let (tabs, abbrev_commit) = (rendering.tab_width(), rendering.abbrev_commit);
     let Rendering { pretty, style, .. } = rendering;
+    if signatures {
+        super::verify_sig::check_format(&pretty);
+    }
     let decorate = decorate.resolve(git, &pretty)?;
     let plan = merges.plan(git, first_parent, true)?;
     let commit_color = diff::commit_color(git, &format.opts, decorate.on(), false);
@@ -1080,6 +1086,11 @@ fn show(
             Ok(diff::has_body(format, differs, &text).then_some(Body { text, dashes }))
         };
         let segments = shape.segments(&plan, &c, &|| Want::of_format(format), &mut against)?;
+        let report = if signatures {
+            super::verify_sig::commit_report(git, id)?
+        } else {
+            None
+        };
         for seg in segments {
             if !out.is_empty() && !pretty.terminated() {
                 out.push('\n');
@@ -1089,6 +1100,10 @@ fn show(
                 with_decoration(text, &pretty, names.get(id))
             } else {
                 text
+            };
+            let text = match &report {
+                Some(r) => super::verify_sig::with_report(text, r),
+                None => text,
             };
             out.push_str(&with_from(text, &pretty, seg.from.as_ref()));
             out.push_str(pretty.terminator());

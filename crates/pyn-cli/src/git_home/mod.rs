@@ -101,6 +101,7 @@ mod to_pyn;
 pub(crate) mod todo;
 mod treemerge;
 mod upstream;
+mod verify_sig;
 mod worktree;
 mod worktrees;
 
@@ -170,6 +171,7 @@ pub(crate) use tags::{
 };
 pub use to_git::{ConvertArgs, Home, to_git};
 pub use to_pyn::to_pyn;
+pub use verify_sig::{VerifyCommitArgs, VerifyTagArgs};
 pub use worktrees::WorktreeArgs;
 
 /// A refusal git reports as `error: <message>` with exit status 1, rather than as a fatal error.

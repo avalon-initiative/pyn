@@ -1153,7 +1153,6 @@ fn unsupported_variants_are_usage_errors() {
         &["--follow", "--stat", "--", "b.txt"],
         &["--follow", "--name-only", "--", "b.txt"],
         &["--follow", "-S", "x", "--", "b.txt"],
-        &["--show-signature"],
         &["--notes"],
         &["--format"],
         &["--stat", "--shortstat"],
