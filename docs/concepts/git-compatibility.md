@@ -42,7 +42,8 @@ conflicted commit) go to standard output, and errors to standard error. `fetch`,
 with `fatal: not a git repository (or any of the parent directories): .git` (`128`). The statuses are checked against git by
 `crates/pyn-cli/tests/git_exit_status.rs`, which runs the same command on twin repositories under git and pyn, for error
 paths and for successful runs of the supported commands, and compares the exit status and whether standard output and
-standard error carry anything (not the text); its allow-list names the differences that remain. During a rebase, a replayed
+standard error carry anything, and that a line both print (paths and ids normalised) is on the same stream; a line only
+one of them prints is not compared; its allow-list names the differences that remain. During a rebase, a replayed
 commit that merges cleanly prints no `Auto-merging` line, as git (a merge commit recreated by `--rebase-merges` does); a
 conflicted one prints it with the `CONFLICT` lines on standard output. Where git exits `128` for a bad
 value of an option of `log` or `show` (a missing `--since` value), and `255` for a failed
