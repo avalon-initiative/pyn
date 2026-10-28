@@ -38,7 +38,7 @@ pub struct LsRefsOptions {
     pub unborn: bool,
 }
 
-/// How a shallow fetch limits history. Servers take only one kind at a time (git also lets a date and exclusions combine).
+/// How a shallow fetch limits history. A depth cannot combine with a date or exclusions; a date and exclusions can.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Deepen {
     /// Commits from each tip, or from the current shallow boundary when `relative`.

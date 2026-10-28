@@ -488,10 +488,11 @@ pub fn commits_newest_first(
 pub enum Deepen {
     /// `n` commits from each want, or from each current shallow commit when `relative`.
     Depth { n: u32, relative: bool },
-    /// Commits with a committer time at or after this.
-    Since(i64),
-    /// Commits not reachable from these.
-    Not(Vec<ObjectId>),
+    /// Commits with a committer time at or after `since` and not reachable from any of `not`.
+    Range {
+        since: Option<i64>,
+        not: Vec<ObjectId>,
+    },
 }
 
 /// What a shallow request changes: new boundary commits and former boundary commits that now have parents.
@@ -523,11 +524,11 @@ pub fn shallow_cut(
             starts.push(target);
         }
     }
-    let excluded = match deepen {
-        Deepen::Not(refs) => {
+    let (since, excluded) = match deepen {
+        Deepen::Range { since, not } if !not.is_empty() => {
             let mut set = HashSet::new();
             let mut stack = Vec::new();
-            for r in refs {
+            for r in not {
                 let (_, t, k) = peel(db, *r)?;
                 if k == Kind::Commit && set.insert(t) {
                     stack.push(t);
@@ -540,9 +541,10 @@ pub fn shallow_cut(
                     }
                 }
             }
-            set
+            (*since, set)
         }
-        _ => HashSet::new(),
+        Deepen::Range { since, .. } => (*since, HashSet::new()),
+        Deepen::Depth { .. } => (None, HashSet::new()),
     };
     let (limit, relative) = match deepen {
         Deepen::Depth { n, relative } => (u64::from(*n), *relative),
@@ -561,11 +563,11 @@ pub fn shallow_cut(
     let mut depth: HashMap<ObjectId, u64> = HashMap::new();
     let mut queue = std::collections::VecDeque::new();
     for s in starts {
-        let keep = match deepen {
-            Deepen::Since(t) => w.commit(&s)?.time >= *t,
-            Deepen::Not(_) => !excluded.contains(&s),
-            Deepen::Depth { .. } => true,
+        let newer = match since {
+            Some(t) => w.commit(&s)?.time >= t,
+            None => true,
         };
+        let keep = newer && !excluded.contains(&s);
         if keep && depth.insert(s, 1).is_none() {
             queue.push_back(s);
         }
@@ -581,14 +583,16 @@ pub fn shallow_cut(
         }
         let cut = match deepen {
             Deepen::Depth { .. } => d >= limit,
-            Deepen::Since(t) => {
-                let mut older = false;
+            Deepen::Range { .. } => {
+                let mut cut = parents.iter().any(|p| excluded.contains(p));
                 for p in &parents {
-                    older |= w.commit(p)?.time < *t;
+                    cut |= match since {
+                        Some(t) => w.commit(p)?.time < t,
+                        None => false,
+                    };
                 }
-                older
+                cut
             }
-            Deepen::Not(_) => parents.iter().any(|p| excluded.contains(p)),
         };
         if cut {
             shallow.push(c);
@@ -762,11 +766,38 @@ mod tests {
     #[test]
     fn since_cuts_where_a_parent_is_older() {
         let d = dag();
-        let got = cut(&d, &[], Deepen::Since(4));
+        let got = cut(
+            &d,
+            &[],
+            Deepen::Range {
+                since: Some(4),
+                not: vec![],
+            },
+        );
         assert_eq!(got.shallow, sorted(vec![d.c[3], d.s]));
-        assert!(cut(&d, &[], Deepen::Since(0)).shallow.is_empty());
         assert!(
-            shallow_cut(&d.db, &[d.m], &HashSet::new(), &Deepen::Since(99)).is_err(),
+            cut(
+                &d,
+                &[],
+                Deepen::Range {
+                    since: Some(0),
+                    not: vec![]
+                }
+            )
+            .shallow
+            .is_empty()
+        );
+        assert!(
+            shallow_cut(
+                &d.db,
+                &[d.m],
+                &HashSet::new(),
+                &Deepen::Range {
+                    since: Some(99),
+                    not: vec![]
+                }
+            )
+            .is_err(),
             "nothing newer than the date"
         );
     }

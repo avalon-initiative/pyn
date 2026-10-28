@@ -307,7 +307,7 @@ applied.
 | `--write-commit-graph`, `--no-write-commit-graph` | Accepted and ignored. |
 | `--recurse-submodules[=yes\|on-demand\|no]`, `--no-recurse-submodules` | After the fetch, fetches in the checked-out, active submodules; see [Submodules](#submodules). Without a flag `fetch.recurseSubmodules`, then `submodule.recurse`, then `on-demand`. |
 | `--depth`, `--deepen`, `--shallow-since`, `--shallow-exclude`, `--unshallow` | Git's shallow fetch, see [Shallow repositories](#shallow-repositories). |
-| `--update-shallow` | Usage error (`129`): not built. |
+| `--update-shallow` | Git's meaning, see [Shallow repositories](#shallow-repositories). |
 | `--filter=<spec>`, `--no-filter`, `--refetch` | Git's partial fetch, see [Partial clones](#partial-clones). |
 | `--atomic`, `--set-upstream` | Usage error (`129`): not built. Any other unknown flag is a usage error as everywhere. |
 
@@ -385,12 +385,16 @@ boundary commit per line, removed when the history is complete). A shallow flag 
 - A boundary commit has no parents for every command: `log`, `show`, `describe`, `blame`, `merge` (a merge whose base lies beyond
   the boundary is `refusing to merge unrelated histories`), `rebase`, `bisect`, fetch negotiation and the objects a push sends. A
   push from a shallow clone works when the remote holds the boundary's ancestry. `pyn rev-parse --is-shallow-repository` says which.
-- Cloning or fetching from a shallow repository inherits its boundary, over a path, `file://`, ssh and HTTP.
+- Cloning from a shallow repository inherits its boundary (a fetch does with `--update-shallow`), over a path, `file://`, ssh and HTTP.
 - Wire: protocol v2 `shallow`, `deepen`, `deepen-relative`, `deepen-since`, `deepen-not` and the `shallow-info` section, and the v0/v1
-  `shallow` and `deepen*` lines. The in-process upload-pack for local remotes answers all of them, with `--shallow-since` and
-  `--shallow-exclude` not combinable there (git allows both together).
-
-Not done: `--update-shallow`.
+  `shallow` and `deepen*` lines. The in-process upload-pack for local remotes answers all of them, `--shallow-since` and
+  `--shallow-exclude` together included (a depth does not combine with either, as in git).
+- Fetching from a shallow repository: the roots it announces that this repository lacks the parents of are recorded only
+  with `--update-shallow` (a clone always does); without it, a ref whose history reaches such a root is rejected with
+  `warning: rejected <ref> because shallow roots are not allowed to be updated` (exit status `0`, not in `FETCH_HEAD`), as
+  git does. A root whose history is complete here is ignored. `--shallow-submodules` is a `clone` option and is supported
+  there.
+- A failed connectivity check after a shallow fetch puts the previous `.git/shallow` back.
 
 ### Partial clones
 

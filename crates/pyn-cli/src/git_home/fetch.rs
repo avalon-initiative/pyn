@@ -84,7 +84,8 @@ pub struct FetchArgs {
     no_recurse_submodules: bool,
     #[command(flatten)]
     shallow: FetchShallow,
-    #[arg(long, hide = true)]
+    /// Accept refs that need new shallow roots from a shallow remote.
+    #[arg(long)]
     update_shallow: bool,
     #[command(flatten)]
     filter: FilterFlags,
@@ -120,6 +121,7 @@ pub(super) struct Options {
     progress: Option<bool>,
     /// A clone's fetch: no `FETCH_HEAD`, no reflog lines, no summary, and the remote's unborn `HEAD` is asked for.
     clone: bool,
+    update_shallow: bool,
 }
 
 impl Options {
@@ -143,6 +145,7 @@ impl Options {
             prune_tags: on_off(a.prune_tags, a.no_prune_tags),
             progress: on_off(a.progress, a.no_progress),
             clone: false,
+            update_shallow: a.update_shallow,
         }
     }
 
@@ -155,6 +158,7 @@ impl Options {
             tags,
             progress,
             clone: true,
+            update_shallow: true,
             ..Self::plain()
         }
     }
@@ -180,15 +184,14 @@ impl Options {
             prune_tags: None,
             progress: None,
             clone: false,
+            update_shallow: false,
         }
     }
 }
 
 impl FetchArgs {
     fn refuse_unsupported(&self) {
-        let shallow = "it is not built; a shallow fetch does not take it";
         let given = [
-            ("--update-shallow", self.update_shallow, shallow),
             (
                 "--atomic",
                 self.atomic,
@@ -586,7 +589,7 @@ pub(super) fn fetch_core(
         tags: tag_mode,
         follow: &follow,
     })?;
-    let entries = map.entries;
+    let mut entries = map.entries;
 
     if !o.update_head_ok {
         for e in &entries {
@@ -638,16 +641,26 @@ pub(super) fn fetch_core(
             filter: wire_filter.as_ref().map(ObjectFilter::spec),
             promisor,
             refetch: plan.refetch,
+            update_shallow: o.update_shallow,
         };
         let before = read_shallow(git)?;
         let got = fetch_partial_with(&mut up, git.repo.git(), &wants, &wire, &mut |m| {
             relay.feed(m)
         })?;
         relay.finish();
-        verify_shallow(git, before, || match got.is_some() {
-            true => check_connected(git, &wants, filter.as_ref()),
-            false => Ok(()),
+        verify_shallow(git, before, || {
+            if got.pack.is_none() {
+                return Ok(());
+            }
+            let mut graft = pyn_git::read_shallow(git.repo.git().common_dir(), git.algorithm())?;
+            graft.extend(got.held_back.iter().copied());
+            git.repo.objects().set_shallow(graft);
+            check_connected(git, &wants, filter.as_ref())
         })?;
+        reload_shallow(git)?;
+        if !got.held_back.is_empty() {
+            entries = drop_shallow_refs(git, entries, &got.held_back)?;
+        }
     }
     for e in &entries {
         if !have(&e.id) {
@@ -722,6 +735,62 @@ fn verify_shallow(
     pyn_git::write_shallow(git.repo.git().common_dir(), &before)?;
     reload_shallow(git)?;
     Err(e)
+}
+
+/// Warns about and drops the entries whose history reaches a shallow root that was not recorded.
+fn drop_shallow_refs(
+    git: &GitHome,
+    entries: Vec<Entry>,
+    roots: &HashSet<ObjectId>,
+) -> Result<Vec<Entry>> {
+    let stop: HashSet<ObjectId> = git
+        .repo
+        .refs()
+        .list("refs/")?
+        .into_iter()
+        .map(|(_, i)| i)
+        .collect();
+    let mut kept = Vec::new();
+    for e in entries {
+        if reaches_root(git, &e.id, roots, &stop)? {
+            eprintln!(
+                "warning: rejected {} because shallow roots are not allowed to be updated",
+                e.local.as_deref().unwrap_or(&e.name)
+            );
+        } else {
+            kept.push(e);
+        }
+    }
+    Ok(kept)
+}
+
+fn reaches_root(
+    git: &GitHome,
+    tip: &ObjectId,
+    roots: &HashSet<ObjectId>,
+    stop: &HashSet<ObjectId>,
+) -> Result<bool> {
+    let db = git.repo.objects();
+    let (_, start, kind) = pyn_git::peel(db, *tip)?;
+    if kind != pyn_object::Kind::Commit {
+        return Ok(false);
+    }
+    let mut seen = HashSet::from([start]);
+    let mut todo = vec![start];
+    while let Some(c) = todo.pop() {
+        if roots.contains(&c) {
+            return Ok(true);
+        }
+        if stop.contains(&c) || db.is_shallow(&c) {
+            continue;
+        }
+        for p in pyn_git::real_parents(db, &c)? {
+            if seen.insert(p) {
+                todo.push(p);
+            }
+        }
+    }
+    Ok(false)
 }
 
 /// Re-reads `shallow` into the open object database after a fetch changed it.
