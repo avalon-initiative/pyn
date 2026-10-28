@@ -77,7 +77,7 @@ fn commits_are_named_by_abbreviated_hash_head_steps_and_caret() {
     let err = env.fails(&home, "alice", &["show", "HEAD~9"]);
     assert!(err.contains("before the first commit"), "{err}");
     let err = env.fails(&home, "alice", &["show", "HEAD^2"]);
-    assert!(err.contains("not a commit"), "{err}");
+    assert!(err.contains("no parent 2"), "{err}");
 }
 
 #[test]
