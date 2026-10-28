@@ -33,6 +33,18 @@ fn twin(format: &'static str) -> Twin {
     Twin::new(format, history)
 }
 
+/// A state with the unmerged stage of a moved-aside file read at its original path: git versions differ on where
+/// `am --3way` leaves it (`d` or `d~HEAD`).
+fn stages_at_origin(state: &str) -> Vec<String> {
+    let mut lines: Vec<String> = state
+        .replace("\td~HEAD\n", "\td\n")
+        .lines()
+        .map(str::to_string)
+        .collect();
+    lines.sort();
+    lines
+}
+
 /// Both tools refuse or both succeed, and the repositories end up the same.
 fn alike(t: &Twin, args: &[&str], stdin: &[u8]) {
     let want = t.run_git("", args, stdin);
@@ -45,8 +57,8 @@ fn alike(t: &Twin, args: &[&str], stdin: &[u8]) {
         got.err()
     );
     assert_eq!(
-        snapshot(&t.pyn),
-        snapshot(&t.git),
+        stages_at_origin(&snapshot(&t.pyn)),
+        stages_at_origin(&snapshot(&t.git)),
         "{} {args:?}: state",
         t.format
     );
