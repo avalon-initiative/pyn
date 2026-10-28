@@ -307,7 +307,8 @@ impl Pair {
 }
 
 /// A hook log with the `reference-transaction` runs reduced to the set of `<state> <old> <new> <ref>` facts: git
-/// versions differ in the `preparing` state, in how updates are grouped and ordered, and in reporting `HEAD`.
+/// versions differ in the `preparing` state, in grouping and order, and in the extra symref and pseudo-ref updates
+/// they report, so only updates of branches, tags and remote-tracking refs are compared.
 fn without_preparing(log: &str) -> String {
     let mut blocks: Vec<String> = Vec::new();
     for line in log.lines() {
@@ -334,7 +335,16 @@ fn without_preparing(log: &str) -> String {
         }
         let updates = block.split("stdin:\n").nth(1).unwrap_or_default();
         for update in updates.lines().take_while(|l| *l != "out-of-band") {
-            if !update.ends_with(" HEAD") {
+            let mut fields = update.split(' ');
+            let (_old, new, name) = (fields.next(), fields.next(), fields.last());
+            let plain = new.is_some_and(|n| !n.starts_with("ref:"))
+                && name.is_some_and(|r| {
+                    ["refs/heads/", "refs/tags/", "refs/remotes/"]
+                        .iter()
+                        .any(|p| r.starts_with(p))
+                        && !r.ends_with("/HEAD")
+                });
+            if plain {
                 facts.insert(format!("ref-transaction {state} {update}\n"));
             }
         }
