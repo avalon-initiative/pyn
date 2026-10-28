@@ -1,7 +1,7 @@
 //! `checkout <name>` and `switch <name>` creating a branch that tracks the one remote-tracking branch of that name.
 
 use anyhow::{Result, bail};
-use pyn_git::{ConfigFile, Remote};
+use pyn_git::Remote;
 
 use super::GitHome;
 use super::fetch::remotes_in_order;
@@ -10,7 +10,6 @@ use super::fetch::remotes_in_order;
 pub(super) struct Guess {
     pub remote: String,
     pub tracking: String,
-    pub source: String,
 }
 
 /// The remote-tracking ref a fetch refspec maps `src` onto.
@@ -48,11 +47,7 @@ pub(super) fn guess(git: &GitHome, name: &str) -> Result<Option<Guess>> {
         if let Some(tracking) = hit
             && git.repo.refs().resolve(&tracking)?.is_some()
         {
-            found.push(Guess {
-                remote,
-                tracking,
-                source: source.clone(),
-            });
+            found.push(Guess { remote, tracking });
         }
     }
     let preferred = git.config().get("checkout.defaultremote");
@@ -67,18 +62,4 @@ pub(super) fn guess(git: &GitHome, name: &str) -> Result<Option<Guess>> {
         1 => Ok(found.pop()),
         n => bail!("'{name}' matched multiple ({n}) remote tracking branches"),
     }
-}
-
-/// Records `branch` as tracking the guessed branch and says so.
-pub(super) fn track(git: &GitHome, branch: &str, g: &Guess) -> Result<()> {
-    let path = git.local_config_path();
-    let mut file = ConfigFile::read(&path)?;
-    pyn_git::set_tracking(&mut file, branch, &g.remote, Some(&g.source))?;
-    file.write(&path)?;
-    let short = g
-        .tracking
-        .strip_prefix("refs/remotes/")
-        .unwrap_or(&g.tracking);
-    eprintln!("branch '{branch}' set up to track '{short}'.");
-    Ok(())
 }

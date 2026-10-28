@@ -269,6 +269,7 @@ fn start(
             no_recurse_submodules: false,
             guess: false,
             no_guess: false,
+            track: branch::TrackArgs::default(),
         };
         branch::switch_command(backend, Some(ws), switch)?;
     }
