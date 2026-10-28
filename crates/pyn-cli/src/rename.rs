@@ -94,6 +94,21 @@ pub struct Request {
 }
 
 impl Request {
+    /// Renames always on, keeping only the threshold and limit: how `log --follow` reads the flags.
+    pub fn forced(&self) -> Self {
+        Self {
+            choice: Choice::On(Mode::Renames),
+            score: self.score,
+            limit: self.limit,
+            ..Self::default()
+        }
+    }
+
+    /// Whether the flags ask for copy detection or a rewrite break, which `log --follow` does not take.
+    pub fn is_copying(&self) -> bool {
+        self.choice == Choice::On(Mode::Copies) || self.harder || self.brk.is_some()
+    }
+
     /// Whether unmodified files are copy sources too.
     pub fn is_harder(&self, defaults: Defaults) -> bool {
         self.harder || (self.over_config && defaults.mode == Some(Mode::Copies))
