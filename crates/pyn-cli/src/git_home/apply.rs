@@ -593,6 +593,7 @@ impl<'g> Session<'g> {
     }
 
     fn check_to_create(&self, name: &[u8]) -> Result<(), Fail> {
+        self.check_parents(name)?;
         match self.overlay.get(name) {
             Some(None) => return Ok(()),
             Some(Some(_)) => {
@@ -613,12 +614,51 @@ impl<'g> Session<'g> {
             return Err(Fail(1));
         }
         if self.opts.cached {
-            return Ok(());
+            return self.check_no_children(name);
         }
         let file = pyn_gitwork::fs_path(self.git.repo.root().map_err(internal)?, name);
-        if std::fs::symlink_metadata(&file).is_ok() {
+        if std::fs::symlink_metadata(&file).is_ok_and(|m| !m.is_dir()) {
             diag!("error: {}: already exists in working directory", show(name));
             return Err(Fail(1));
+        }
+        Ok(())
+    }
+
+    /// A leading directory of `name` that is currently a file or a link cannot hold it.
+    fn check_parents(&self, name: &[u8]) -> Result<(), Fail> {
+        for (at, _) in name.iter().enumerate().filter(|(_, b)| **b == b'/') {
+            let Some(slot) = self.current(&name[..at])? else {
+                continue;
+            };
+            if slot.mode == 0o040000 {
+                continue;
+            }
+            if slot.mode == 0o120000 {
+                diag!(
+                    "error: affected file '{}' is beyond a symbolic link",
+                    show(name)
+                );
+                return Err(Fail(1));
+            }
+            diag!(
+                "error: unable to write file '{}': Not a directory",
+                show(name)
+            );
+            return Err(Fail(128));
+        }
+        Ok(())
+    }
+
+    /// In the index alone a folder shows only as paths below `name`.
+    fn check_no_children(&self, name: &[u8]) -> Result<(), Fail> {
+        let below = |p: &[u8]| p.len() > name.len() && p.starts_with(name) && p[name.len()] == b'/';
+        let kept = self
+            .index_slots
+            .keys()
+            .any(|p| below(p) && !matches!(self.overlay.get(p.as_slice()), Some(None)));
+        if kept || self.overlay.iter().any(|(p, s)| s.is_some() && below(p)) {
+            diag!("error: unable to add cache entry for {}", show(name));
+            return Err(Fail(128));
         }
         Ok(())
     }
@@ -640,10 +680,30 @@ impl<'g> Session<'g> {
         })
     }
 
+    /// A new file cannot take the place of a folder that keeps files the patches do not remove.
+    fn check_folders_free(&self) -> Result<()> {
+        let root = self.git.repo.root()?;
+        for (name, _) in self.overlay.iter().filter(|(_, s)| s.is_some()) {
+            let mut below = Vec::new();
+            if std::fs::symlink_metadata(pyn_gitwork::fs_path(root, name)).is_ok_and(|m| m.is_dir())
+            {
+                super::worktree::files_under(root, name, &mut below)?;
+            }
+            if below
+                .iter()
+                .any(|p| !matches!(self.overlay.get(p), Some(None)))
+            {
+                bail!("unable to write file '{}': Directory not empty", show(name));
+            }
+        }
+        Ok(())
+    }
+
     fn write_all(&mut self) -> Result<()> {
         let git = self.git;
         check_writes(self.overlay.keys())?;
         if !self.opts.cached {
+            self.check_folders_free()?;
             convert::refuse_conversions(
                 git,
                 self.overlay.iter().filter_map(|(p, s)| {

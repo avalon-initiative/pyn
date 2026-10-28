@@ -2621,7 +2621,7 @@ with a long first paragraph is joined and wrapped at 78 columns as git does.
 
 `apply` takes hunks exactly where git does: the context must match without fuzz, searched outwards from the line the hunk
 names, and a hunk without leading or trailing context is held to the start or end of the file. Everything is checked before
-anything is written, so a failure changes nothing (`1`; a malformed patch is `128`). It handles creations, deletions, renames,
+anything is written, so a failure changes nothing (`1`; a malformed patch is `128`), including a patch that needs a folder where a file or a symbolic link is, or a file where a folder keeps files the patches do not remove. It handles creations, deletions, renames,
 copies, mode changes, symlinks and several patches (or several files) in one input, applies to the work tree alone, to the work
 tree and index (`--index`, which requires the work tree to match the index by content, where git compares file stat data) or to
 the index alone, and reports whitespace errors in added lines (trailing whitespace, a space before a tab, blank lines at the end
@@ -2643,7 +2643,7 @@ file names. Commits are signed when `commit.gpgsign` is set or `-S` is given (`-
 lines telling how to go on (naming `pyn am`), and exits `128`; `--continue` commits the index, `--skip` resets to `HEAD` and
 goes on, `--abort` restores `ORIG_HEAD`. `--3way` rebuilds a base from the blobs in the patch's `index` lines, applies the
 patch to it, and merges the result with the current tree as `cherry-pick` merges: conflict markers are diff3 style whatever
-`merge.conflictStyle` says, and no `Removing <path>` lines are printed (older git, which merges with merge-recursive, prints them). Maildirs, StGit and Mercurial formats, `-k`, `-b`, `-c`/scissors, `--ignore-date`, `--committer-date-is-author-date`,
+`merge.conflictStyle` says, and no `Removing <path>` lines are printed (older git, which merges with merge-recursive, prints them). A file meeting a folder is moved to `<path>~HEAD` (or `<path>~<subject>`) while its unmerged entries stay at `<path>`, as git leaves them. Maildirs, StGit and Mercurial formats, `-k`, `-b`, `-c`/scissors, `--ignore-date`, `--committer-date-is-author-date`,
 `-i`, `--rerere-autoupdate`, `--allow-empty` and `-C`/`-p` are not built (a patch with no changes stops the session with
 `Patch is empty.` and the hint to record an empty commit is left out). The apply hooks run as in [Client hooks](#client-hooks);
 `-n`/`--no-verify` skips `applypatch-msg` and `pre-applypatch` for the invocation that gives it.

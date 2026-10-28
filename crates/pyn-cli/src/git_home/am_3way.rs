@@ -139,6 +139,7 @@ pub(super) fn fall_back(git: &GitHome, patch: &[u8], subject: &str) -> Result<Ou
         orig_head: None,
         strict_index: false,
         quiet_when_clean: false,
+        stages_at_origin: true,
     };
     let landed = apply_merge(git, &opened, Some(&ours_tree), &merged, &landing)?;
     match landed {

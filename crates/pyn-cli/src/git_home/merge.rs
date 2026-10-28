@@ -612,6 +612,7 @@ fn true_merge(
         orig_head: Some(ours),
         strict_index: true,
         quiet_when_clean: false,
+        stages_at_origin: false,
     };
     let applied = match apply_merge(git, opened, Some(&ours_tree), &merged, &landing)? {
         Ok(applied) => applied,
@@ -900,6 +901,8 @@ pub(super) struct Landing<'a> {
     pub strict_index: bool,
     /// A clean merge prints nothing (a rebase); a conflicted one lists the line-merged paths.
     pub quiet_when_clean: bool,
+    /// A file moved aside for a folder keeps its unmerged stages at its own path, as `am --3way` leaves it.
+    pub stages_at_origin: bool,
 }
 
 pub(super) struct Applied {
@@ -1047,12 +1050,16 @@ pub(super) fn apply_merge(
                 if let Worktree::Write { mode, bytes } = &c.worktree {
                     write_bytes(git, path, *mode, bytes)?;
                 }
+                let at = match &c.moved_from {
+                    Some(from) if landing.stages_at_origin => from,
+                    _ => path,
+                };
                 remove_entry(&mut entries, path);
                 for (stage, side) in [(1u8, &c.base), (2, &c.ours), (3, &c.theirs)] {
                     if let Some(e) = side {
-                        let mut entry = IndexEntry::new(path.clone(), raw_mode(e.mode), e.id);
+                        let mut entry = IndexEntry::new(at.clone(), raw_mode(e.mode), e.id);
                         entry.stage = stage;
-                        entries.insert((path.clone(), stage), entry);
+                        entries.insert((at.clone(), stage), entry);
                     }
                 }
             }
