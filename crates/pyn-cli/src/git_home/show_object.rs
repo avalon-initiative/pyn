@@ -1,48 +1,76 @@
-//! `pyn show <rev>:<path>` on a git repository: a blob's content or a tree's listing.
+//! `pyn show` arguments that are not plain commits: blobs and trees (`<rev>:<path>`), tags and the objects they
+//! point at, in the order given.
 
 use std::path::Path;
 
-use anyhow::Result;
-use pyn_object::{FileMode, Kind, ObjectId};
+use anyhow::{Result, bail};
+use pyn_object::{FileMode, Kind, ObjectId, Tag};
 
 use super::GitHome;
-use super::plumbing::{Resolver, emit_bytes, prefix, quote, tree_colon};
+use super::plumbing::{Resolver, prefix, quote, tree_colon};
 
-/// Shows every argument when all of them name a blob or tree by `<rev>:<path>` or `:<path>`; false otherwise.
-pub(super) fn show_objects(git: &GitHome, cwd: &Path, args: &[String]) -> Result<bool> {
-    if args.is_empty()
-        || !args
-            .iter()
-            .all(|a| a.starts_with(':') || tree_colon(a).is_some())
-    {
-        return Ok(false);
+pub(super) enum Item {
+    Blob(Vec<u8>),
+    Tree { name: String, id: ObjectId },
+    Tag(Tag),
+    Commit(ObjectId),
+}
+
+/// The items every argument names, or `None` when one is not a single object or all of them are commits.
+pub(super) fn items(
+    git: &GitHome,
+    cwd: &Path,
+    args: &[String],
+    separated: bool,
+) -> Result<Option<Vec<Item>>> {
+    if args.is_empty() {
+        return Ok(None);
     }
     let pre = prefix(git, cwd).unwrap_or_default();
     let resolver = Resolver { git, prefix: &pre };
-    let mut found: Vec<(&String, ObjectId)> = Vec::new();
-    for a in args {
-        match resolver.object(a)? {
-            Some(id) => found.push((a, id)),
-            None => return Ok(false),
-        }
-    }
     let mut out = Vec::new();
-    for (name, id) in &found {
-        let Some(object) = git.repo.objects().read_opt(id)? else {
-            return Ok(false);
+    for a in args {
+        let colon = a.starts_with(':') || tree_colon(a).is_some();
+        let Some(mut id) = resolver.object(a)? else {
+            return Ok(None);
         };
-        match object.kind {
-            Kind::Blob => out.extend_from_slice(&object.data),
-            Kind::Tree => {
-                out.extend_from_slice(format!("tree {name}\n\n").as_bytes());
-                for e in git.repo.tree(id)? {
-                    let dir = if e.mode == FileMode::Tree { "/" } else { "" };
-                    out.extend_from_slice(format!("{}{dir}\n", quote(git, &e.name)).as_bytes());
+        if !colon && !separated && git.cwd_has(cwd, a) {
+            bail!(
+                "ambiguous argument '{a}': both revision and filename; \
+                 use '--' to separate paths from revisions"
+            );
+        }
+        loop {
+            let Some(object) = git.repo.objects().read_opt(&id)? else {
+                return Ok(None);
+            };
+            match object.kind {
+                Kind::Blob => out.push(Item::Blob(object.data)),
+                Kind::Tree => out.push(Item::Tree {
+                    name: a.clone(),
+                    id,
+                }),
+                Kind::Commit => out.push(Item::Commit(id)),
+                Kind::Tag => {
+                    let tag = Tag::parse(git.algorithm(), &object.data)?;
+                    id = tag.object;
+                    out.push(Item::Tag(tag));
+                    continue;
                 }
             }
-            _ => return Ok(false),
+            break;
         }
     }
-    emit_bytes(&out);
-    Ok(true)
+    let commits_only = out.iter().all(|i| matches!(i, Item::Commit(_)));
+    Ok((!commits_only).then_some(out))
+}
+
+/// The entries of a tree as `show` lists them, one per line, directories with a trailing `/`.
+pub(super) fn tree_entries(git: &GitHome, id: &ObjectId) -> Result<String> {
+    let mut out = String::new();
+    for e in git.repo.tree(id)? {
+        let dir = if e.mode == FileMode::Tree { "/" } else { "" };
+        out.push_str(&format!("{}{dir}\n", quote(git, &e.name)));
+    }
+    Ok(out)
 }

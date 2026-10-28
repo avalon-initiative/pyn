@@ -105,9 +105,6 @@ pub(super) fn plan(
         return Ok(None);
     }
     let name = start.unwrap_or("HEAD");
-    if name.contains("@{") {
-        bail!("tracking from the start point '{name}' is not built; name the branch");
-    }
     let real = super::plumbing::dwim(git, name)?
         .filter(|r| r.starts_with(BRANCHES) || r.starts_with(REMOTES));
     let Some(real) = real else {
@@ -186,7 +183,7 @@ fn inherit(git: &GitHome, real: &str, rebase: Rebase) -> Option<Plan> {
 }
 
 /// Writes the plan into `branch.<new>.*` and says so.
-pub(super) fn apply(git: &GitHome, new: &str, plan: &Plan) -> Result<()> {
+pub(super) fn apply(git: &GitHome, new: &str, plan: &Plan, quiet: bool) -> Result<()> {
     let path = git.local_config_path();
     let mut file = ConfigFile::read(&path)?;
     let remote = plan.origin.as_deref().unwrap_or(".");
@@ -199,6 +196,9 @@ pub(super) fn apply(git: &GitHome, new: &str, plan: &Plan) -> Result<()> {
         super::upstream::replace(&mut file, new, "rebase", "true")?;
     }
     file.write(&path)?;
+    if quiet {
+        return Ok(());
+    }
     let shown: Vec<String> = plan
         .merges
         .iter()

@@ -172,6 +172,9 @@ pub struct BranchArgs {
     /// List remote-tracking branches (a pyn server only).
     #[arg(short = 'r', long)]
     pub(crate) remotes: bool,
+    /// Suppress informational messages (a git repository only).
+    #[arg(short = 'q', long)]
+    pub(crate) quiet: bool,
     #[command(flatten)]
     pub(crate) track: TrackArgs,
 }
@@ -251,6 +254,9 @@ pub struct SwitchArgs {
     pub(crate) guess: bool,
     #[arg(long, overrides_with = "guess")]
     pub(crate) no_guess: bool,
+    /// Suppress informational messages (a git repository only).
+    #[arg(short = 'q', long)]
+    pub(crate) quiet: bool,
     #[command(flatten)]
     pub(crate) track: TrackArgs,
 }
@@ -298,6 +304,9 @@ pub struct CheckoutArgs {
     pub(crate) guess: bool,
     #[arg(long, overrides_with = "guess")]
     pub(crate) no_guess: bool,
+    /// Suppress informational messages (a git repository only).
+    #[arg(short = 'q', long)]
+    pub(crate) quiet: bool,
     #[command(flatten)]
     pub(crate) track: TrackArgs,
     #[command(flatten)]
@@ -395,11 +404,19 @@ pub fn branch_command(
         force,
         set_upstream_to,
         unset_upstream,
+        quiet,
         track: _,
     } = args;
-    if force_rename || copy || force_copy || force || set_upstream_to.is_some() || unset_upstream {
+    if force_rename
+        || copy
+        || force_copy
+        || force
+        || quiet
+        || set_upstream_to.is_some()
+        || unset_upstream
+    {
         crate::usage_error(
-            "`pyn branch` -M, -c, -C, -f, -u and --unset-upstream need a git repository or the local store",
+            "`pyn branch` -M, -c, -C, -f, -q, -u and --unset-upstream need a git repository or the local store",
         );
     }
     if (all || remotes) && (delete || force_delete || rename || show_current || !names.is_empty()) {
@@ -577,8 +594,8 @@ pub fn switch_command(
 ) -> Result<()> {
     let api = backend.pyn_server("switch")?;
     args.track.refuse_off_git("switch");
-    if args.force_create.is_some() || args.orphan.is_some() {
-        crate::usage_error("`pyn switch` -C and --orphan need a git repository");
+    if args.force_create.is_some() || args.orphan.is_some() || args.quiet {
+        crate::usage_error("`pyn switch` -C, --orphan and -q need a git repository");
     }
     let ws = ws.context("`pyn switch` works inside a workspace; run `pyn clone` first")?;
     if args.start.as_deref() == Some("-") && args.create.is_none() {
@@ -662,9 +679,13 @@ pub fn checkout_command(
         no_recurse_submodules: _,
         guess: _,
         no_guess: _,
+        quiet,
         track: _,
         pathspec_file: _,
     } = args;
+    if quiet {
+        bail!("`pyn checkout -q` needs a git repository");
+    }
     if recurse_submodules {
         bail!("`pyn checkout --recurse-submodules` needs a git repository");
     }
