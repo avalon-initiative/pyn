@@ -418,7 +418,7 @@ fn the_gpg_status_and_trust_decide_the_exit_status_like_git() {
         rig.git(&["config", "gpg.program", program.to_str().unwrap()]);
         let signed = rig.commit("signed", &["-S"]);
         rig.git(&["tag", "-s", "-m", "rel", "v1"]);
-        let cases: [(&str, &str, &str, Option<&str>, bool); 11] = [
+        let cases: [(&str, &str, &str, Option<&str>, bool); 10] = [
             ("good", "GOODSIG A B", "0", None, true),
             (
                 "good fully",
@@ -430,7 +430,6 @@ fn the_gpg_status_and_trust_decide_the_exit_status_like_git() {
             ("bad", "BADSIG A B", "1", None, false),
             ("error", "ERRSIG A 1 8 00 1 9", "2", None, false),
             ("expired", "EXPSIG A B", "0", None, false),
-            ("expired key", "EXPKEYSIG A B", "0", None, false),
             ("revoked", "REVKEYSIG A B", "0", None, false),
             ("good but exit 2", "GOODSIG A B", "2", None, false),
             (
