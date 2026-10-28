@@ -73,6 +73,8 @@ mod outbox;
 pub use outbox::*;
 mod frozen;
 pub use frozen::*;
+mod repo_cap;
+pub use repo_cap::*;
 
 struct Harness {
     store: Store,
@@ -1256,6 +1258,7 @@ fn repo_record(id: &str, owner: &str, name: &str) -> RepoRecord {
         name: name.to_string(),
         visibility: Visibility::Private,
         settings: RepoSettings::default(),
+        storage_cap: None,
         created_at: at(0),
     }
 }
@@ -1391,6 +1394,7 @@ pub async fn updating_a_repository_keeps_its_id(store: Store) {
                     lease_hours: 4,
                     ..RepoSettings::default()
                 }),
+                storage_cap: None,
             },
         )
         .await
@@ -3153,6 +3157,13 @@ pub async fn verify_checks_every_branch_and_a_commit_names_its_parent(store: Sto
 macro_rules! contract_tests {
     ($factory:expr $(, #[$attr:meta])*) => {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; second_user_cannot_take_a_held_lock);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_repository_cap_refuses_only_writes_that_add_stored_bytes);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; the_lower_of_the_owner_and_repository_caps_refuses);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_changeset_past_the_repository_cap_applies_nothing);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; racing_checkins_cannot_exceed_the_repository_cap);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_push_past_the_repository_cap_applies_nothing);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; the_repository_cap_is_stored_and_cleared_with_the_record);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; usage_is_broken_down_by_folder_and_path_counting_content_once);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_frozen_owner_cannot_take_or_renew_a_lock_but_can_release_one);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_frozen_owner_refuses_every_write_and_leaves_nothing_behind);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_frozen_owner_stays_readable_and_unfreezing_restores_writes);
@@ -4301,6 +4312,10 @@ impl MetadataStore for HookedMeta {
 
     async fn repo_usage(&self, repo: &RepoId) -> crate::Result<crate::RepoUsage> {
         self.inner.repo_usage(repo).await
+    }
+
+    async fn repo_breakdown(&self, repo: &RepoId) -> crate::Result<crate::RepoBreakdown> {
+        self.inner.repo_breakdown(repo).await
     }
 }
 

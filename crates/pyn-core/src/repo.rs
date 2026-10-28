@@ -96,6 +96,8 @@ pub struct RepoRecord {
     pub name: String,
     pub visibility: Visibility,
     pub settings: RepoSettings,
+    /// Bytes of distinct content this repository may store; `None` is no cap of its own.
+    pub storage_cap: Option<u64>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -111,6 +113,8 @@ pub struct RepoUpdate {
     pub name: Option<String>,
     pub visibility: Option<Visibility>,
     pub settings: Option<RepoSettings>,
+    /// `Some(None)` removes the repository's storage cap.
+    pub storage_cap: Option<Option<u64>>,
 }
 
 pub const MAX_NAME_LEN: usize = 100;

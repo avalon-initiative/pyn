@@ -12,11 +12,12 @@ use pyn_core::branch::{DEFAULT_BRANCH, conflicts};
 use pyn_core::commit_record::{CommitDraft, TreeChange, TreeEdit, draft_commit};
 use pyn_core::merge::{MergeWrite, MergeWritten};
 use pyn_core::{
-    Branch, ChangesetItem, Commit, CommitFilter, EventDraft, FileMode, HeadCounts, HistoryCursor,
-    HistoryScan, Lock, LockChange, LockEventBuilder, MetadataStore, Mode, ObjectId, PathFilter,
-    Person, PushedCommit, PynError, REPO_ALGORITHM, RepoId, RepoPath, RepoRecord, RepoSettings,
-    RepoUpdate, RepoUsage, Result, Revision, RevisionHash, RevisionId, StorageCap,
-    UploadReservation, Usage, UserId, Visibility,
+    BREAKDOWN_PATHS, Branch, ChangesetItem, Commit, CommitFilter, EventDraft, FileMode,
+    FolderUsage, HeadCounts, HistoryCursor, HistoryScan, Lock, LockChange, LockEventBuilder,
+    MetadataStore, Mode, ObjectId, PathFilter, PathUsage, Person, PushedCommit, PynError,
+    REPO_ALGORITHM, RepoBreakdown, RepoId, RepoPath, RepoRecord, RepoSettings, RepoUpdate,
+    RepoUsage, Result, Revision, RevisionHash, RevisionId, StorageCap, UploadReservation, Usage,
+    UserId, Visibility,
 };
 use sqlx::migrate::MigrateDatabase;
 use sqlx::postgres::{PgPoolOptions, PgRow};
@@ -170,6 +171,9 @@ fn repo_from(row: &PgRow) -> Result<RepoRecord> {
             lease_hours: row.get::<i32, _>("lease_hours") as u32,
             max_locks: row.get::<Option<i32>, _>("max_locks").map(|n| n as u32),
         },
+        storage_cap: row
+            .get::<Option<i64>, _>("max_storage_bytes")
+            .map(|n| n as u64),
         created_at: row.get("created_at"),
     })
 }
@@ -356,13 +360,25 @@ async fn append_revision(
         .await
         .map_err(db)?;
         if !known {
-            let total = owner_stored(tx, &cap.owner).await?;
-            if total as u64 > cap.max_bytes {
-                return Err(PynError::StorageLimitReached {
-                    owner: cap.owner.to_string(),
-                    limit: cap.max_bytes,
-                    used: total as u64 - size,
-                });
+            if let Some(max) = cap.max_bytes {
+                let total = owner_stored(tx, &cap.owner).await?;
+                if total as u64 > max {
+                    return Err(PynError::StorageLimitReached {
+                        owner: cap.owner.to_string(),
+                        limit: max,
+                        used: total as u64 - size,
+                    });
+                }
+            }
+            if let Some(max) = cap.repo_max_bytes {
+                let total = repo_stored(tx, repo).await?;
+                if total as u64 > max {
+                    return Err(PynError::RepoStorageLimitReached {
+                        repository: cap.repository.clone(),
+                        limit: max,
+                        used: total as u64 - size,
+                    });
+                }
             }
         }
     }
@@ -600,6 +616,17 @@ async fn insert_upload(
         }
     }
     Ok(())
+}
+
+async fn repo_stored(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, repo: &RepoId) -> Result<i64> {
+    sqlx::query_scalar(
+        "SELECT COALESCE(SUM(size), 0)::bigint FROM (
+             SELECT DISTINCT content, size FROM revisions WHERE repo = $1) t",
+    )
+    .bind(repo.as_str())
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(db)
 }
 
 async fn owner_stored(
@@ -2315,8 +2342,8 @@ impl MetadataStore for PgMetadataStore {
             }
         }
         let inserted = sqlx::query(
-            "INSERT INTO repositories (id, owner, name, visibility, lease_hours, max_locks, created_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            "INSERT INTO repositories (id, owner, name, visibility, lease_hours, max_locks, max_storage_bytes, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
         )
         .bind(repo.id.as_str())
         .bind(repo.owner.as_str())
@@ -2324,6 +2351,7 @@ impl MetadataStore for PgMetadataStore {
         .bind(repo.visibility.as_str())
         .bind(repo.settings.lease_hours as i32)
         .bind(repo.settings.max_locks.map(|n| n as i32))
+        .bind(repo.storage_cap.map(|n| n as i64))
         .bind(repo.created_at)
         .execute(&mut *tx)
         .await;
@@ -2341,7 +2369,7 @@ impl MetadataStore for PgMetadataStore {
 
     async fn find_repo(&self, owner: &UserId, name: &str) -> Result<Option<RepoRecord>> {
         let row = sqlx::query(
-            "SELECT id, owner, name, visibility, lease_hours, max_locks, created_at FROM repositories
+            "SELECT id, owner, name, visibility, lease_hours, max_locks, max_storage_bytes, created_at FROM repositories
              WHERE owner = $1 AND name = $2",
         )
         .bind(owner.as_str())
@@ -2354,7 +2382,7 @@ impl MetadataStore for PgMetadataStore {
 
     async fn get_repo(&self, id: &RepoId) -> Result<Option<RepoRecord>> {
         let row = sqlx::query(
-            "SELECT id, owner, name, visibility, lease_hours, max_locks, created_at FROM repositories
+            "SELECT id, owner, name, visibility, lease_hours, max_locks, max_storage_bytes, created_at FROM repositories
              WHERE id = $1",
         )
         .bind(id.as_str())
@@ -2366,7 +2394,7 @@ impl MetadataStore for PgMetadataStore {
 
     async fn list_repos(&self, owner: Option<&UserId>) -> Result<Vec<RepoRecord>> {
         let rows = sqlx::query(
-            "SELECT id, owner, name, visibility, lease_hours, max_locks, created_at FROM repositories
+            "SELECT id, owner, name, visibility, lease_hours, max_locks, max_storage_bytes, created_at FROM repositories
              WHERE ($1::text IS NULL OR owner = $1) ORDER BY owner, name",
         )
         .bind(owner.map(UserId::as_str))
@@ -2382,7 +2410,7 @@ impl MetadataStore for PgMetadataStore {
         limit: usize,
     ) -> Result<Vec<RepoRecord>> {
         let rows = sqlx::query(
-            "SELECT id, owner, name, visibility, lease_hours, max_locks, created_at FROM repositories
+            "SELECT id, owner, name, visibility, lease_hours, max_locks, max_storage_bytes, created_at FROM repositories
              WHERE visibility = 'public' AND ($1::text IS NULL OR (owner COLLATE \"C\", name COLLATE \"C\") > ($1, $2))
              ORDER BY owner COLLATE \"C\", name COLLATE \"C\" LIMIT $3",
         )
@@ -2409,9 +2437,10 @@ impl MetadataStore for PgMetadataStore {
         let updated = sqlx::query(
             "UPDATE repositories SET name = COALESCE($2, name), visibility = COALESCE($3, visibility),
                  lease_hours = COALESCE($4, lease_hours),
-                 max_locks = CASE WHEN $5 THEN $6 ELSE max_locks END
+                 max_locks = CASE WHEN $5 THEN $6 ELSE max_locks END,
+                 max_storage_bytes = CASE WHEN $7 THEN $8 ELSE max_storage_bytes END
              WHERE id = $1
-             RETURNING id, owner, name, visibility, lease_hours, max_locks, created_at",
+             RETURNING id, owner, name, visibility, lease_hours, max_locks, max_storage_bytes, created_at",
         )
         .bind(id.as_str())
         .bind(update.name.as_deref())
@@ -2419,6 +2448,8 @@ impl MetadataStore for PgMetadataStore {
         .bind(update.settings.map(|s| s.lease_hours as i32))
         .bind(update.settings.is_some())
         .bind(update.settings.and_then(|s| s.max_locks).map(|n| n as i32))
+        .bind(update.storage_cap.is_some())
+        .bind(update.storage_cap.flatten().map(|n| n as i64))
         .fetch_optional(&mut *tx)
         .await;
         match updated {
@@ -2469,6 +2500,55 @@ impl MetadataStore for PgMetadataStore {
             files: row.get::<i64, _>("files") as u64,
             revisions: row.get::<i64, _>("revisions") as u64,
         })
+    }
+
+    async fn repo_breakdown(&self, repo: &RepoId) -> Result<RepoBreakdown> {
+        let folders = sqlx::query(
+            "SELECT f.folder, count(DISTINCT f.path) AS files,
+                    (SELECT COALESCE(SUM(size), 0)::bigint FROM (
+                         SELECT DISTINCT r.content, r.size FROM revisions r
+                         WHERE r.repo = $1 AND CASE WHEN position('/' in r.path) > 0
+                               THEN split_part(r.path, '/', 1) ELSE '' END = f.folder) d) AS bytes
+             FROM (SELECT path, CASE WHEN position('/' in path) > 0
+                                THEN split_part(path, '/', 1) ELSE '' END AS folder
+                   FROM revisions WHERE repo = $1) f
+             GROUP BY f.folder",
+        )
+        .bind(repo.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        let paths = sqlx::query(
+            "SELECT p.path, p.revs,
+                    (SELECT COALESCE(SUM(size), 0)::bigint FROM (
+                         SELECT DISTINCT r.content, r.size FROM revisions r
+                         WHERE r.repo = $1 AND r.path = p.path) d) AS bytes
+             FROM (SELECT path, count(*) AS revs FROM revisions WHERE repo = $1 GROUP BY path) p
+             ORDER BY bytes DESC, p.path COLLATE \"C\" LIMIT $2",
+        )
+        .bind(repo.as_str())
+        .bind(BREAKDOWN_PATHS as i64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(RepoBreakdown::new(
+            folders
+                .iter()
+                .map(|r| FolderUsage {
+                    folder: r.get("folder"),
+                    stored_bytes: r.get::<i64, _>("bytes") as u64,
+                    files: r.get::<i64, _>("files") as u64,
+                })
+                .collect(),
+            paths
+                .iter()
+                .map(|r| PathUsage {
+                    path: r.get("path"),
+                    stored_bytes: r.get::<i64, _>("bytes") as u64,
+                    revisions: r.get::<i64, _>("revs") as u64,
+                })
+                .collect(),
+        ))
     }
 
     async fn delete_repo_with_events(&self, id: &RepoId, events: &[EventDraft]) -> Result<bool> {

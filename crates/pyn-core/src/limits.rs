@@ -98,7 +98,56 @@ pub struct RepoUsage {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StorageCap {
     pub owner: UserId,
-    pub max_bytes: u64,
+    /// The owner's ceiling across its repositories.
+    pub max_bytes: Option<u64>,
+    /// The ceiling on the one repository written to.
+    pub repo_max_bytes: Option<u64>,
+    /// `owner/name` of that repository, for the refusal message.
+    pub repository: String,
+}
+
+/// Stored bytes of one top-level folder (`""` is the files at the root), counting distinct content once.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FolderUsage {
+    pub folder: String,
+    pub stored_bytes: u64,
+    pub files: u64,
+}
+
+/// Distinct content stored for one path across its revisions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PathUsage {
+    pub path: String,
+    pub stored_bytes: u64,
+    pub revisions: u64,
+}
+
+/// Where a repository's stored bytes sit. Folders and paths may share content, so their sums can pass the total.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RepoBreakdown {
+    pub folders: Vec<FolderUsage>,
+    pub largest_paths: Vec<PathUsage>,
+}
+
+impl RepoBreakdown {
+    /// Folders by size then name, and the `BREAKDOWN_PATHS` largest paths by size then name.
+    pub fn new(mut folders: Vec<FolderUsage>, mut paths: Vec<PathUsage>) -> Self {
+        folders.sort_by(|a, b| (b.stored_bytes, &a.folder).cmp(&(a.stored_bytes, &b.folder)));
+        paths.sort_by(|a, b| (b.stored_bytes, &a.path).cmp(&(a.stored_bytes, &b.path)));
+        paths.truncate(BREAKDOWN_PATHS);
+        Self {
+            folders,
+            largest_paths: paths,
+        }
+    }
+}
+
+/// Paths a breakdown lists.
+pub const BREAKDOWN_PATHS: usize = 20;
+
+/// The top-level folder of `path`, `""` for a file at the root.
+pub fn top_folder(path: &str) -> &str {
+    path.split_once('/').map_or("", |(dir, _)| dir)
 }
 
 /// Where a repository's service finds the storage ceiling of its owner.

@@ -21,7 +21,10 @@ use crate::commit_record::{CommitDraft, TreeChange, TreeEdit, draft_commit};
 use crate::error::{PynError, Result};
 use crate::history::{HistoryCursor, HistoryScan};
 use crate::limit_events::{LimitsEvent, LockChange, LockEventBuilder};
-use crate::limits::{Limits, LimitsChange, RepoUsage, StorageCap, Usage};
+use crate::limits::{
+    FolderUsage, Limits, LimitsChange, PathUsage, RepoBreakdown, RepoUsage, StorageCap, Usage,
+    top_folder,
+};
 use crate::merge::{MergeWrite, MergeWritten};
 use crate::object::{KeyHasher, Keying, ObjectRead, ObjectReader, ObjectStore};
 use crate::oidc::{ExternalCreate, ExternalIdentity, IdentityUnlink, NewExternalAccount, OidcFlow};
@@ -70,6 +73,14 @@ impl State {
         self.sizes
             .iter()
             .filter(|((r, _), _)| self.repos.get(r).is_some_and(|rec| &rec.owner == owner))
+            .map(|(_, size)| size)
+            .sum()
+    }
+
+    fn stored_in(&self, repo: &RepoId) -> u64 {
+        self.sizes
+            .iter()
+            .filter(|((r, _), _)| r == repo)
             .map(|(_, size)| size)
             .sum()
     }
@@ -519,13 +530,25 @@ impl State {
         if let Some(cap) = cap
             && !st.sizes.contains_key(&size_key)
         {
-            let used = st.stored_by(&cap.owner);
-            if used + revision.size > cap.max_bytes {
-                return Err(PynError::StorageLimitReached {
-                    owner: cap.owner.to_string(),
-                    limit: cap.max_bytes,
-                    used,
-                });
+            if let Some(max) = cap.max_bytes {
+                let used = st.stored_by(&cap.owner);
+                if used + revision.size > max {
+                    return Err(PynError::StorageLimitReached {
+                        owner: cap.owner.to_string(),
+                        limit: max,
+                        used,
+                    });
+                }
+            }
+            if let Some(max) = cap.repo_max_bytes {
+                let used = st.stored_in(repo);
+                if used + revision.size > max {
+                    return Err(PynError::RepoStorageLimitReached {
+                        repository: cap.repository.clone(),
+                        limit: max,
+                        used,
+                    });
+                }
             }
         }
         st.sizes.insert(size_key, revision.size);
@@ -1568,6 +1591,9 @@ impl MetadataStore for MemoryMetadataStore {
         if let Some(settings) = update.settings {
             repo.settings = settings;
         }
+        if let Some(cap) = update.storage_cap {
+            repo.storage_cap = cap;
+        }
         if st
             .repos
             .values()
@@ -1605,6 +1631,41 @@ impl MetadataStore for MemoryMetadataStore {
             members: None,
             stored_bytes: st.stored_by(owner),
         })
+    }
+
+    async fn repo_breakdown(&self, repo: &RepoId) -> Result<RepoBreakdown> {
+        let st = self.state.lock().unwrap();
+        let mut folders: HashMap<String, (HashMap<ObjectId, u64>, u64)> = HashMap::new();
+        let mut paths = Vec::new();
+        for (_, revs) in st.revisions.iter().filter(|((r, _), _)| r == repo) {
+            let Some(first) = revs.first() else { continue };
+            let distinct: HashMap<ObjectId, u64> = revs
+                .iter()
+                .map(|v| {
+                    let size = st.sizes.get(&(repo.clone(), v.content));
+                    (v.content, size.copied().unwrap_or(0))
+                })
+                .collect();
+            let entry = folders
+                .entry(top_folder(first.path.as_str()).to_string())
+                .or_default();
+            entry.0.extend(distinct.iter().map(|(c, s)| (*c, *s)));
+            entry.1 += 1;
+            paths.push(PathUsage {
+                path: first.path.to_string(),
+                stored_bytes: distinct.values().sum(),
+                revisions: revs.len() as u64,
+            });
+        }
+        let folders = folders
+            .into_iter()
+            .map(|(folder, (content, files))| FolderUsage {
+                folder,
+                stored_bytes: content.values().sum(),
+                files,
+            })
+            .collect();
+        Ok(RepoBreakdown::new(folders, paths))
     }
 
     async fn repo_usage(&self, repo: &RepoId) -> Result<RepoUsage> {

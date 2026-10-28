@@ -92,6 +92,7 @@ fn build_with(
                 name: "game".into(),
                 visibility: Visibility::Private,
                 settings: RepoSettings::default(),
+                storage_cap: None,
                 created_at: chrono::Utc::now(),
             }))
             .unwrap();

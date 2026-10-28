@@ -115,6 +115,8 @@ struct RepoAddress {
         limits_api::set_owner_limits,
         limits_api::owner_usage,
         limits_api::repo_usage,
+        limits_api::repo_usage_breakdown,
+        limits_api::set_repo_storage_cap,
         freeze_api::owner_freeze,
         freeze_api::freeze_owner,
         freeze_api::unfreeze_owner,
@@ -328,6 +330,11 @@ struct RepoAddress {
         api::SetLimitsRequest,
         api::Usage,
         api::RepoUsage,
+        api::FolderUsage,
+        api::PathUsage,
+        api::RepoUsageBreakdown,
+        api::SetRepoStorageCapRequest,
+        api::RepoStorageCap,
         api::OwnerUsage,
         api::Event,
         api::LimitKind,
@@ -341,6 +348,7 @@ struct RepoAddress {
         api::RepositoryRenamedData,
         api::RepositoryDeletedData,
         api::OwnerLimitsChangedData,
+        api::RepositoryStorageCapChangedData,
         api::OwnerFrozenData,
         api::OwnerUnfrozenData,
         api::OwnerLimitReachedData,
@@ -442,6 +450,14 @@ fn routes(state: AppState) -> Router {
         .route(
             "/v1/repos/{owner}/{name}/usage",
             get(limits_api::repo_usage),
+        )
+        .route(
+            "/v1/repos/{owner}/{name}/usage/breakdown",
+            get(limits_api::repo_usage_breakdown),
+        )
+        .route(
+            "/v1/repos/{owner}/{name}/storage-cap",
+            put(limits_api::set_repo_storage_cap),
         )
         .route("/v1/login", post(access_api::login))
         .route(
@@ -654,6 +670,7 @@ impl IntoResponse for ApiError {
             | PynError::RepoLimitReached { .. }
             | PynError::MemberLimitReached { .. }
             | PynError::StorageLimitReached { .. }
+            | PynError::RepoStorageLimitReached { .. }
             | PynError::StaleBase { .. }
             | PynError::LockRequired(_)
             | PynError::NotLocked(_)
@@ -2000,7 +2017,7 @@ struct AuditQueryParams {
 #[utoipa::path(get, path = "/v1/repos/{owner}/{name}/audit", operation_id = "repo_audit",
     params(RepoAddress, ("path" = Option<String>, Query, description = "only events for this path"),
            ("actor" = Option<String>, Query, description = "only events by this user"),
-           ("action" = Option<String>, Query, description = "checkout, release, checkin, delete, restore, force_unlock, member_added, role_changed, role_permissions_changed, team_access_set, team_access_removed, token_created, token_revoked, repo_created, repo_updated, repo_deleted, invite_created, invite_revoked, policy_changed, mode_converted or version_stranded"),
+           ("action" = Option<String>, Query, description = "checkout, release, checkin, delete, restore, force_unlock, member_added, role_changed, role_permissions_changed, team_access_set, team_access_removed, token_created, token_revoked, repo_created, repo_updated, repo_storage_cap_changed, repo_deleted, invite_created, invite_revoked, policy_changed, mode_converted or version_stranded"),
            ("before" = Option<i64>, Query, description = "events older than this id"),
            ("limit" = Option<usize>, Query, description = "page size, default 50, max 500")),
     responses((status = 200, body = api::AuditPage), (status = 403, body = api::ErrorBody, description = "needs view_audit")))]

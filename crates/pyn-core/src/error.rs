@@ -49,6 +49,14 @@ pub enum PynError {
         limit: u64,
         used: u64,
     },
+    #[error(
+        "repository storage limit reached: {repository} may store at most {limit} bytes and uses {used}"
+    )]
+    RepoStorageLimitReached {
+        repository: String,
+        limit: u64,
+        used: u64,
+    },
     #[error("{owner} is frozen{}: reads continue, but writes are refused until an administrator unfreezes it", reason_suffix(.reason))]
     OwnerFrozen {
         owner: String,
@@ -272,6 +280,7 @@ impl PynError {
             Self::RepoLimitReached { .. } => "repo_limit_reached",
             Self::MemberLimitReached { .. } => "member_limit_reached",
             Self::StorageLimitReached { .. } => "storage_limit_reached",
+            Self::RepoStorageLimitReached { .. } => "repo_storage_limit_reached",
             Self::OwnerFrozen { .. } => "owner_frozen",
             Self::UploadsBusy { .. } => "uploads_busy",
             Self::ObjectTooLarge { .. } => "object_too_large",

@@ -85,6 +85,18 @@ impl AccessService {
         self.limits_account(owner).await
     }
 
+    /// Whether `actor` may set the storage cap of a repository under `owner`: the owner (an owner of the
+    /// organization), a server administrator or a `manage_limits` credential. True when they act as an operator.
+    pub async fn require_repo_cap_setter(&self, actor: &Identity, owner: &UserId) -> Result<bool> {
+        self.require_limits_view(actor, owner).await?;
+        let operator = matches!(actor.credential, Credential::Service(_))
+            || self.is_server_admin(actor).await?;
+        if !operator {
+            actor.require_namespace_management()?;
+        }
+        Ok(operator)
+    }
+
     /// The owner's limits, for the owner or an administrator.
     pub async fn owner_limits(&self, actor: &Identity, owner: &UserId) -> Result<OwnerLimits> {
         let account = self.require_limits_view(actor, owner).await?;

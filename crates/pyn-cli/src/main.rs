@@ -701,10 +701,20 @@ enum RepoCommand {
         /// `public` or `private`.
         visibility: String,
     },
-    /// Show the stored bytes, files and revisions of a repository.
+    /// Show the stored bytes, cap, files and revisions of a repository.
     Usage {
         /// `owner/name`.
         name: String,
+        /// Also list stored bytes by top-level folder and the largest paths (repository admins).
+        #[arg(long)]
+        breakdown: bool,
+    },
+    /// Set the most distinct content a repository may store: bytes, or a size like 50G; `default` removes the cap.
+    /// Owner, server administrator or a service credential with manage_limits.
+    StorageCap {
+        /// `owner/name`.
+        name: String,
+        size: limits::LimitValue,
     },
     /// Delete a repository with its files, history, locks and access. Its audit log is kept.
     Delete {
@@ -3413,9 +3423,13 @@ fn repo_command(api: &Api, cmd: RepoCommand) -> Result<()> {
             )?;
             println!("{name} is now {visibility}");
         }
-        RepoCommand::Usage { name } => {
+        RepoCommand::Usage { name, breakdown } => {
             let (owner, short) = address::split_repo(&name)?;
-            limits::repo_usage(api, owner, short)?;
+            limits::repo_usage(api, owner, short, breakdown)?;
+        }
+        RepoCommand::StorageCap { name, size } => {
+            let (owner, short) = address::split_repo(&name)?;
+            limits::set_repo_storage_cap(api, owner, short, size)?;
         }
         RepoCommand::Delete { name, yes } => {
             let (owner, short) = address::split_repo(&name)?;

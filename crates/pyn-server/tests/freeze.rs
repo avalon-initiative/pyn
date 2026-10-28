@@ -390,6 +390,10 @@ const EXEMPT: &[(&str, &str)] = &[
     ("admin_create_org", "an operator action"),
     ("admin_delete_org", "an operator action"),
     ("set_owner_limits", "an operator action"),
+    (
+        "set_repo_storage_cap",
+        "refused for the owner's own request, open to an operator (tests/repo_storage_cap.rs)",
+    ),
     ("create_service_credential", "an operator action"),
     ("revoke_service_credential", "an operator action"),
     ("grant_admin", "an operator action"),

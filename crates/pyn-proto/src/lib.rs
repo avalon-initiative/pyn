@@ -1463,6 +1463,63 @@ pub struct RepoUsage {
     /// Paths with a head revision.
     pub files: u64,
     pub revisions: u64,
+    /// The repository's own storage cap in bytes; null when it has none.
+    #[serde(default)]
+    #[schema(required = true)]
+    pub storage_cap: Option<u64>,
+}
+
+/// Distinct stored bytes of one top-level folder.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct FolderUsage {
+    /// The top-level folder; empty for the files at the root.
+    pub folder: String,
+    pub stored_bytes: u64,
+    /// Paths with a revision under the folder.
+    pub files: u64,
+}
+
+/// Distinct stored bytes of one path across its revisions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct PathUsage {
+    pub path: String,
+    pub stored_bytes: u64,
+    pub revisions: u64,
+}
+
+/// Where a repository's stored bytes sit. Content shared by several folders or paths counts in each, so their sums
+/// can pass `stored_bytes`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct RepoUsageBreakdown {
+    /// `owner/name`.
+    pub repository: String,
+    pub repo_id: String,
+    /// Distinct bytes in the whole repository, each content once.
+    pub stored_bytes: u64,
+    #[schema(required = true)]
+    pub storage_cap: Option<u64>,
+    /// Largest first.
+    pub folders: Vec<FolderUsage>,
+    /// The 20 largest, largest first.
+    pub largest_paths: Vec<PathUsage>,
+}
+
+/// The new storage cap of a repository; `null` removes it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct SetRepoStorageCapRequest {
+    #[serde(default)]
+    #[schema(required = true)]
+    pub storage_bytes: Option<u64>,
+}
+
+/// A repository's own storage cap.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct RepoStorageCap {
+    /// `owner/name`.
+    pub repository: String,
+    pub repo_id: String,
+    #[schema(required = true)]
+    pub storage_bytes: Option<u64>,
 }
 
 /// What an owner uses against its limits.

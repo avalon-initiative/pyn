@@ -117,6 +117,19 @@ pub struct RepositoryDeletedData {
     pub actor: String,
 }
 
+/// `repository.storage_cap_changed`: a repository's own storage cap was set or removed; `storage_cap` is the result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct RepositoryStorageCapChangedData {
+    pub repo_id: String,
+    pub owner: String,
+    pub owner_id: String,
+    pub name: String,
+    /// Bytes the repository may store; null when it has no cap of its own.
+    #[schema(required = true)]
+    pub storage_cap: Option<u64>,
+    pub actor: String,
+}
+
 /// `owner.limits_changed`: an owner's own limits were set; `limits` is the result, null meaning the server default.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct OwnerLimitsChangedData {
@@ -223,6 +236,7 @@ pub enum EventData {
     RepositoryCreated(RepositoryCreatedData),
     RepositoryRenamed(RepositoryRenamedData),
     RepositoryDeleted(RepositoryDeletedData),
+    RepositoryStorageCapChanged(RepositoryStorageCapChangedData),
     OwnerLimitsChanged(OwnerLimitsChangedData),
     OwnerFrozen(OwnerFrozenData),
     OwnerUnfrozen(OwnerUnfrozenData),
@@ -239,7 +253,7 @@ pub enum EventData {
 }
 
 /// Every event type this build knows.
-pub const KNOWN_EVENT_TYPES: [&str; 17] = [
+pub const KNOWN_EVENT_TYPES: [&str; 18] = [
     "account.created",
     "account.approved",
     "account.disabled",
@@ -249,6 +263,7 @@ pub const KNOWN_EVENT_TYPES: [&str; 17] = [
     "repository.created",
     "repository.renamed",
     "repository.deleted",
+    "repository.storage_cap_changed",
     "owner.limits_changed",
     "owner.frozen",
     "owner.unfrozen",
@@ -272,6 +287,7 @@ impl EventData {
             Self::RepositoryCreated(_) => "repository.created",
             Self::RepositoryRenamed(_) => "repository.renamed",
             Self::RepositoryDeleted(_) => "repository.deleted",
+            Self::RepositoryStorageCapChanged(_) => "repository.storage_cap_changed",
             Self::OwnerLimitsChanged(_) => "owner.limits_changed",
             Self::OwnerFrozen(_) => "owner.frozen",
             Self::OwnerUnfrozen(_) => "owner.unfrozen",
@@ -295,6 +311,7 @@ impl EventData {
             Self::RepositoryCreated(d) => serde_json::to_value(d),
             Self::RepositoryRenamed(d) => serde_json::to_value(d),
             Self::RepositoryDeleted(d) => serde_json::to_value(d),
+            Self::RepositoryStorageCapChanged(d) => serde_json::to_value(d),
             Self::OwnerLimitsChanged(d) => serde_json::to_value(d),
             Self::OwnerFrozen(d) => serde_json::to_value(d),
             Self::OwnerUnfrozen(d) => serde_json::to_value(d),
@@ -318,6 +335,9 @@ impl EventData {
             "repository.created" => Self::RepositoryCreated(serde_json::from_value(data)?),
             "repository.renamed" => Self::RepositoryRenamed(serde_json::from_value(data)?),
             "repository.deleted" => Self::RepositoryDeleted(serde_json::from_value(data)?),
+            "repository.storage_cap_changed" => {
+                Self::RepositoryStorageCapChanged(serde_json::from_value(data)?)
+            }
             "owner.limits_changed" => Self::OwnerLimitsChanged(serde_json::from_value(data)?),
             "owner.frozen" => Self::OwnerFrozen(serde_json::from_value(data)?),
             "owner.unfrozen" => Self::OwnerUnfrozen(serde_json::from_value(data)?),

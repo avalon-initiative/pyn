@@ -67,6 +67,7 @@ overshoot. Each limit has its own error code and answers `409`:
 | --- | --- |
 | `repo_limit_reached` | creating a repository when the owner already has the limit |
 | `member_limit_reached` | adding a member to an organization at its limit |
+| `repo_storage_limit_reached` | a check-in, restore, push or merge that would add content past the repository's own [storage cap](#per-repository-storage-cap) |
 | `storage_limit_reached` | a check-in or restore that would add content past the limit, or an upload past the repository's unreferenced-upload ceiling |
 
 A frozen owner (below) is refused every write with `403 owner_frozen`, whatever its limits are.
@@ -160,12 +161,48 @@ not an owner gets `403 not_org_owner`. Only an administrator or a `manage_limits
 | --- | --- |
 | `GET /v1/owners/{owner}/limits` | `{kind, effective, own}`: the limits in force, and the owner's own; a null field is unlimited |
 | `GET /v1/owners/{owner}/usage` | `{owner, limits, usage: {repositories, members, stored_bytes}, repositories: [...]}` with each repository's usage |
-| `GET /v1/repos/{owner}/{name}/usage` | `{repository, stored_bytes, files, revisions}` |
+| `GET /v1/repos/{owner}/{name}/usage` | `{repository, stored_bytes, files, revisions, storage_cap}` |
 
 ```bash
 pyn usage              # you
 pyn usage acme         # an organization you own
 pyn repo usage alice/game
+```
+
+## Per-repository storage cap
+
+`storage_bytes` limits an owner across all its repositories. A repository may also have a cap of its own, so one
+asset-heavy repository cannot consume the whole allowance. The cap counts what the owner limit counts: bytes of distinct
+content, each counted once in the repository. No repository has a cap until the owner, a server administrator or a
+service credential with `manage_limits` sets one; both caps apply, and whichever a write passes first refuses it (the
+owner's with `storage_limit_reached`, the repository's with `repo_storage_limit_reached`, which names the repository,
+the cap and the bytes in use).
+
+At the cap only writes that add stored bytes are refused. Reading, cloning, locking, releasing, deleting paths and any
+write whose content the repository already holds keep working. Setting a cap below current use deletes nothing; growth
+stays refused until use falls under it. A refused write leaves no state behind, and the check is made in the same
+atomic step as the write, so concurrent writes cannot pass the cap together.
+
+| Route | Notes |
+| --- | --- |
+| `PUT /v1/repos/{owner}/{name}/storage-cap` | `{storage_bytes}`, a number or `null` to remove the cap; returns `{repository, repo_id, storage_bytes}`. `400 invalid_request`, `404 repo_not_found`, `403 not_namespace_owner` (also for a repository that does not exist, when the caller may not set it), `not_org_owner`, `server_admin_required` or `service_scope_required` |
+| `GET /v1/repos/{owner}/{name}/usage` | `{repository, repo_id, stored_bytes, files, revisions, storage_cap}`; readable by anyone who can read the repository |
+| `GET /v1/repos/{owner}/{name}/usage/breakdown` | `{repository, repo_id, stored_bytes, storage_cap, folders, largest_paths}`; repository admins only (`403 forbidden` otherwise) |
+
+The breakdown lists each top-level folder (`""` is the files at the repository root) with its distinct stored bytes and
+file count, largest first, and the 20 paths holding the most distinct bytes across their revisions. Content shared by
+several folders or paths counts in each, so their sums can pass `stored_bytes`. `GET /v1/owners/{owner}/usage` lists the
+owner's repositories largest first, each with its cap; a service credential with `manage_limits` reads it for any owner.
+
+A change of cap is recorded as `repo_storage_cap_changed` in the repository's audit log and raises the
+[`repository.storage_cap_changed`](events.md#repositorystoragecapchanged) event, which carries the owner's and the
+repository's stable ids. The owner's own request is refused with `403 owner_frozen` while the owner is frozen; an
+administrator's or a `manage_limits` credential's request is not a write under the owner and keeps working.
+
+```bash
+pyn repo storage-cap alice/game 200G     # or `default` to remove it
+pyn repo usage alice/game --breakdown    # repository admins
+pyn usage alice                          # each repository with its cap
 ```
 
 ## Freezing an owner
