@@ -216,6 +216,8 @@ fn renames_around_the_similarity_threshold_score_as_git_does() {
             &["-M99%"],
             &["-M100%"],
             &["-M5"],
+            &["-M0"],
+            &["-C0%"],
             &["--find-renames=60%"],
             &["--no-renames"],
         ] {
@@ -305,6 +307,288 @@ fn a_copy_and_a_rename_of_one_source_follow_gits_pairing() {
     });
 }
 
+/// Copies of unchanged files, of modified ones and a rename, with whole and edited content.
+fn harder_repo(r: &Repo) {
+    r.two_commits(
+        |r| {
+            r.write("stay.txt", &lines("t", 15));
+            r.write("dir/stay2.txt", &lines("u", 15));
+            r.write("src.txt", &lines("s", 15));
+            r.write("gone.txt", &lines("g", 15));
+        },
+        |r| {
+            r.write("copy_of_stay.txt", &lines("t", 15));
+            r.write("near/stay_edit.txt", &edited("t", 15, 2));
+            r.write("dir/stay2_copy.txt", &lines("u", 15));
+            r.write("src.txt", &edited("s", 15, 2));
+            r.write("copy_of_src.txt", &lines("s", 15));
+            r.remove("gone.txt");
+            r.write("gone_a.txt", &lines("g", 15));
+            r.write("gone_b.txt", &edited("g", 15, 1));
+        },
+    );
+}
+
+#[test]
+fn find_copies_harder_takes_unmodified_files_as_sources() {
+    each_format(|r| {
+        harder_repo(r);
+        let out = r.same(&["diff", "HEAD~1", "HEAD", "-C", "-C", "--name-status"]);
+        assert!(out.contains("C100\tstay.txt\tcopy_of_stay.txt\n"), "{out}");
+        for flags in [
+            &["-C", "-C"][..],
+            &["--find-copies-harder"],
+            &["-C", "--find-copies-harder"],
+            &["--find-copies-harder", "--no-renames"],
+            &["--no-renames", "--find-copies-harder", "-M90%"],
+            &["-C", "-C", "-M90%"],
+            &["-C90%", "-C"],
+            &["-C", "-C60%"],
+            &["--find-copies=70%", "--find-copies"],
+            &["-C", "-M", "-C"],
+            &["-M", "-C", "-C"],
+            &["--no-renames", "-C", "-C"],
+            &["-C", "-C", "--no-renames"],
+            &["-C", "-C", "-l1"],
+            &["-C", "-C", "-l3"],
+            &["-C", "-C", "-l0"],
+        ] {
+            r.views(flags);
+        }
+        for path in ["copy_of_stay.txt", "near", "dir"] {
+            r.same(&[
+                "diff",
+                "HEAD~1",
+                "HEAD",
+                "-C",
+                "-C",
+                "--name-status",
+                "--",
+                path,
+            ]);
+        }
+        r.same(&["log", "-p", "--format=%s", "-C", "-C", "--", "near"]);
+        r.same(&["show", "--name-status", "--format=", "--find-copies-harder"]);
+        r.same(&["diff", "HEAD~1", "HEAD", "-C", "-C", "--raw"]);
+        r.same(&["diff", "HEAD~1", "HEAD", "-C", "-C", "--dirstat=files"]);
+        r.same(&[
+            "log",
+            "--name-status",
+            "--format=%s",
+            "-C",
+            "-C",
+            "-S",
+            "t-001",
+        ]);
+    });
+}
+
+#[test]
+fn a_bare_c_over_copies_config_is_find_copies_harder() {
+    each_format(|r| {
+        harder_repo(r);
+        r.git(&["config", "diff.renames", "copies"]);
+        for flags in [
+            &[][..],
+            &["-C"],
+            &["-C", "-C"],
+            &["-M", "-C"],
+            &["--no-renames", "-C"],
+            &["--find-copies"],
+            &["-C", "-M"],
+        ] {
+            r.views(flags);
+        }
+    });
+}
+
+#[test]
+fn find_copies_harder_in_the_work_tree_and_index() {
+    each_format(|r| {
+        r.write("stay.txt", &lines("t", 15));
+        r.write("src.txt", &lines("s", 15));
+        r.write("skip.txt", &lines("k", 15));
+        r.commit("one");
+        r.write("src.txt", &edited("s", 15, 2));
+        r.write("copy.txt", &lines("t", 15));
+        r.write("copy_k.txt", &lines("k", 15));
+        r.git(&["add", "-N", "copy.txt", "copy_k.txt"]);
+        for args in [
+            &["diff", "-C", "-C", "--name-status"][..],
+            &["diff", "-C", "-C"],
+            &["diff", "-C", "-C", "--stat", "--summary"],
+            &["diff", "HEAD", "-C", "-C", "--name-status"],
+            &["diff", "HEAD", "--find-copies-harder", "--stat"],
+            &["diff", "-C", "-C", "--name-status", "--", "copy.txt"],
+        ] {
+            r.same(args);
+        }
+        r.git(&["add", "-A"]);
+        for args in [
+            &["diff", "--cached", "-C", "-C", "--name-status"][..],
+            &["diff", "--cached", "-C", "-C"],
+            &["diff", "--cached", "--find-copies-harder", "--summary"],
+            &[
+                "diff",
+                "--cached",
+                "-C",
+                "-C",
+                "--name-status",
+                "--",
+                "copy.txt",
+            ],
+        ] {
+            r.same(args);
+        }
+        // Git's stash cannot push in a sha256 repository.
+        if r.format != "sha1" {
+            return;
+        }
+        r.git(&["stash", "push", "-q"]);
+        for args in [
+            &["stash", "show", "-C", "-C", "--name-status"][..],
+            &["stash", "show", "--find-copies-harder", "-p"],
+        ] {
+            r.same(args);
+        }
+    });
+}
+
+#[test]
+fn find_copies_harder_in_merge_views() {
+    let r = Repo::new("sha1");
+    r.write("stay.txt", &lines("t", 15));
+    r.write("src.txt", &lines("s", 15));
+    r.commit("base");
+    r.git(&["checkout", "-q", "-b", "side"]);
+    r.write("copy.txt", &lines("t", 15));
+    r.write("src.txt", &edited("s", 15, 2));
+    r.commit("side");
+    r.git(&["checkout", "-q", "main"]);
+    r.write("stay.txt", &edited("t", 15, 1));
+    r.commit("main");
+    r.git(&["merge", "-q", "side", "-m", "merge"]);
+    for flags in [&["-C", "-C"][..], &["--find-copies-harder", "-M"]] {
+        for base in [
+            &["show", "-m", "--name-status", "--format=%s"][..],
+            &["show", "-c", "--format=%s"],
+            &["show", "--cc", "--format=%s"],
+            &["show", "--first-parent", "--stat", "--format=%s"],
+            &["show", "--remerge-diff", "--format=%s"],
+            &["log", "-m", "-p", "--format=%s"],
+        ] {
+            let mut args = base.to_vec();
+            args.extend_from_slice(flags);
+            r.same(&args);
+        }
+    }
+}
+
+#[test]
+fn pickaxe_pairs_with_the_detection_the_command_line_asks_for() {
+    each_format(|r| {
+        r.two_commits(
+            |r| {
+                r.write("stay.txt", &lines("t", 15));
+                r.write("src.txt", &lines("s", 15));
+                r.write("gone.txt", &lines("g", 15));
+                r.write("old/mv.txt", &lines("m", 15));
+            },
+            |r| {
+                r.write("copy_of_stay.txt", &lines("t", 15));
+                r.write("src.txt", &edited("s", 15, 2));
+                r.write("copy_of_src.txt", &edited("s", 15, 1));
+                r.remove("gone.txt");
+                r.write("gone_edit.txt", &edited("g", 15, 3));
+                r.mv("old/mv.txt", "new/mv.txt");
+            },
+        );
+        for config in [None, Some("false"), Some("copies")] {
+            if let Some(value) = config {
+                r.git(&["config", "diff.renames", value]);
+            }
+            for flags in [
+                &[][..],
+                &["-M"],
+                &["-M90%"],
+                &["-C"],
+                &["-C", "-C"],
+                &["--find-copies-harder"],
+                &["--no-renames"],
+                &["--no-renames", "-C", "-C"],
+                &["-l1"],
+            ] {
+                for pick in [
+                    &["-S", "t-001"][..],
+                    &["-S", "CHANGED"],
+                    &["-S", "g-005"],
+                    &["-G", "s-00"],
+                    &["-G", "CHANGED"],
+                    &["-S", "m-003"],
+                ] {
+                    let mut args = vec!["log", "--format=%s", "--name-status"];
+                    args.extend_from_slice(pick);
+                    args.extend_from_slice(flags);
+                    r.same(&args);
+                    r.same(
+                        &["log", "--format=%s", "-p", pick[0], pick[1]]
+                            .iter()
+                            .chain(flags)
+                            .copied()
+                            .collect::<Vec<_>>(),
+                    );
+                }
+            }
+        }
+    });
+}
+
+#[test]
+fn unusual_path_characters_are_quoted_in_rename_and_copy_lines() {
+    each_format(|r| {
+        let names = [
+            ("plain old.txt", "tab\there.txt"),
+            ("quote\"d.txt", "back\\slash.txt"),
+            ("caf\u{e9}.txt", "na\u{ef}ve dir/\u{fc}ber.txt"),
+            ("a\nb.txt", "c\u{1}d.txt"),
+            ("del\u{7f}.txt", "plain new.txt"),
+        ];
+        r.two_commits(
+            |r| {
+                for (i, (from, _)) in names.iter().enumerate() {
+                    r.write(from, &lines(&format!("n{i}"), 12));
+                }
+                r.write("stay \u{e9}.txt", &lines("stay", 12));
+                r.write("bin \u{e9}.bin", b"\0binary content");
+                r.write("bin2 \"x\".bin", b"\0other binary content here");
+            },
+            |r| {
+                for (i, (from, to)) in names.iter().enumerate() {
+                    r.remove(from);
+                    r.write(to, &edited(&format!("n{i}"), 12, i));
+                }
+                r.write("copy \"q\".txt", &lines("stay", 12));
+                r.write("bin \u{e9}.bin", b"\0binary changed content");
+                r.write("bin2 \"x\".bin", b"\0other binary content here too");
+            },
+        );
+        for quote in [None, Some("false")] {
+            if let Some(value) = quote {
+                r.git(&["config", "core.quotePath", value]);
+            }
+            for flags in [&[][..], &["-C", "-C"], &["-M60%"], &["--no-renames"]] {
+                r.views(flags);
+                let mut raw = vec!["diff", "HEAD~1", "HEAD", "--raw", "-z"];
+                raw.extend_from_slice(flags);
+                r.same(&raw);
+                let mut dirstat = vec!["diff", "HEAD~1", "HEAD", "--numstat"];
+                dirstat.extend_from_slice(flags);
+                r.same(&dirstat);
+            }
+        }
+    });
+}
+
 #[test]
 fn several_candidates_are_paired_in_gits_order() {
     each_format(|r| {
@@ -340,7 +624,13 @@ fn several_candidates_are_paired_in_gits_order() {
                 r.write("n/second.txt", &other);
             },
         );
-        for flags in [&[][..], &["-M30%"], &["-C"], &["--no-renames"]] {
+        for flags in [
+            &[][..],
+            &["-M30%"],
+            &["-C"],
+            &["--no-renames"],
+            &["-C", "-C"],
+        ] {
             r.views(flags);
         }
     });
@@ -422,7 +712,6 @@ fn flags_and_settings_turn_detection_on_and_off() {
                 r.write("b2.txt", &edited("b", 10, 3));
             },
         );
-        let mut copies = false;
         for setting in [
             None,
             Some(("diff.renames", "false")),
@@ -433,9 +722,6 @@ fn flags_and_settings_turn_detection_on_and_off() {
         ] {
             if let Some((key, value)) = setting {
                 r.git(&["config", key, value]);
-                if key == "diff.renames" {
-                    copies = value == "copies";
-                }
             }
             for flags in [
                 &[][..],
@@ -451,17 +737,6 @@ fn flags_and_settings_turn_detection_on_and_off() {
                 &["-l0"],
                 &["-M90%", "-l1"],
             ] {
-                // Git reads `-C` over `diff.renames=copies` as `-C -C`.
-                if copies
-                    && flags
-                        .iter()
-                        .any(|f| f.starts_with("-C") || f.starts_with("--find-copies"))
-                {
-                    let mut args = vec!["diff", "HEAD~1", "HEAD"];
-                    args.extend_from_slice(flags);
-                    assert_eq!(r.pyn(&args).status.code(), Some(129), "{args:?}");
-                    continue;
-                }
                 r.views(flags);
             }
         }
@@ -476,11 +751,16 @@ fn unsupported_and_invalid_switches_are_usage_errors() {
         |r| r.write("b", &lines("a", 5)),
     );
     for args in [
-        &["diff", "-C", "-C"][..],
-        &["diff", "--find-copies-harder"],
-        &["diff", "-Mnot-a-number"],
+        &["diff", "-Mnot-a-number"][..],
         &["diff", "-Cx"],
-        &["show", "-C", "-C"],
+        &["diff", "-C", "-C", "-Mx"],
+        &["diff", "HEAD~1", "HEAD", "-Bx"],
+        &["diff", "HEAD~1", "HEAD", "-B/x"],
+        &["diff", "HEAD~1", "HEAD", "-B", "-w"],
+        &["diff", "HEAD~1", "HEAD", "-B", "--color=always"],
+        &["diff", "HEAD~1", "HEAD", "-B", "--word-diff"],
+        &["diff", "HEAD~1", "HEAD", "-B", "--check"],
+        &["diff", "HEAD~1", "HEAD", "-B", "--dirstat"],
     ] {
         let out = r.pyn(args);
         assert_eq!(out.status.code(), Some(129), "{args:?}");
@@ -517,7 +797,6 @@ fn status_shows_staged_renames_and_copies() {
             if let Some((key, value)) = setting {
                 r.git(&["config", key, value]);
             }
-            let copies = matches!(setting, Some(("diff.renames", "copies")));
             for args in [
                 &["status", "-s"][..],
                 &["status", "--porcelain"],
@@ -532,11 +811,70 @@ fn status_shows_staged_renames_and_copies() {
                 &["diff", "HEAD", "--name-status"],
                 &["diff", "HEAD", "--stat", "--summary"],
             ] {
-                if copies && args.contains(&"-C") {
-                    continue;
-                }
                 r.same(args);
             }
+        }
+    });
+}
+
+#[test]
+fn status_renames_flags_follow_gits_option_order() {
+    each_format(|r| {
+        r.write("a.txt", &lines("a", 20));
+        r.write("b.txt", &lines("b", 20));
+        r.write("c.txt", &lines("c", 20));
+        r.write("d.txt", &lines("d", 20));
+        r.commit("one");
+        r.mv("a.txt", "a2.txt");
+        r.mv("b.txt", "b2.txt");
+        r.write("b2.txt", &edited("b", 20, 8));
+        r.write("c_copy.txt", &lines("c", 20));
+        r.write("d.txt", &edited("d", 20, 1));
+        r.write("d_copy.txt", &edited("d", 20, 2));
+        r.git(&["add", "-A"]);
+        for setting in [None, Some("false"), Some("true"), Some("copies")] {
+            if let Some(value) = setting {
+                r.git(&["config", "status.renames", value]);
+            }
+            for flags in [
+                &[][..],
+                &["--renames"],
+                &["--no-renames"],
+                &["--renames", "--no-renames"],
+                &["--no-renames", "--renames"],
+                &["-M"],
+                &["-M90%"],
+                &["-M30%"],
+                &["-M", "--no-renames"],
+                &["--no-renames", "-M"],
+                &["--no-renames", "-M30%"],
+                &["--renames", "--no-renames", "-M30%"],
+                &["--find-renames"],
+                &["--find-renames=30%"],
+                &["--find-renames=95%"],
+                &["--find-renames=100%"],
+                &["-M40%", "-M90%"],
+                &["-M=30%"],
+                &["-Mx"],
+                &["-M9x"],
+                &["--find-renames="],
+                &["-M.3"],
+                &["--renames", "-M30%"],
+            ] {
+                for base in [
+                    &["status", "-s"][..],
+                    &["status", "--porcelain"],
+                    &["status", "-sb", "--", "b2.txt", "d_copy.txt"],
+                ] {
+                    let mut args = base.to_vec();
+                    args.splice(1..1, flags.iter().copied());
+                    r.same(&args);
+                }
+            }
+        }
+        for bad in [&["status", "--renames=1"][..], &["status", "-C"]] {
+            let want = git(&r.dir).args(bad).output().unwrap().status.code();
+            assert_eq!(r.pyn(bad).status.code(), want, "{bad:?}");
         }
     });
 }
@@ -592,6 +930,115 @@ fn stash_show_pairs_renames() {
     ] {
         r.same(args);
     }
+}
+
+/// `n` 40-byte lines that differ from other tags in their last bytes, which is all git's line hash sees.
+fn rows(tag: &str, n: usize) -> Vec<u8> {
+    (0..n)
+        .map(|i| format!("{:-<27}{i:04}{tag:_<4}\n", "row "))
+        .collect::<String>()
+        .into_bytes()
+}
+
+/// A file of `n` rows with the first `keep` from `base` and the rest from `fresh`.
+fn part(base: &str, fresh: &str, n: usize, keep: usize) -> Vec<u8> {
+    let mut out: Vec<u8> = rows(base, n)
+        .split_inclusive(|b| *b == b'\n')
+        .take(keep)
+        .flatten()
+        .copied()
+        .collect();
+    out.extend(rows(fresh, n)[keep * 36..].to_vec());
+    out
+}
+
+/// `rows` with the first `k` replaced.
+fn edited_rows(tag: &str, n: usize, k: usize) -> Vec<u8> {
+    [&rows("ZZ", n)[..k * 36], &rows(tag, n)[k * 36..]].concat()
+}
+
+#[test]
+fn break_rewrites_split_and_merge_pairs_as_git_does() {
+    each_format(|r| {
+        r.two_commits(
+            |r| {
+                r.write("whole.txt", &rows("w", 40));
+                r.write("half.txt", &rows("h", 40));
+                r.write("mostly.txt", &rows("m", 40));
+                r.write("tiny.txt", &rows("t", 5));
+                r.write("src/moves.txt", &rows("mv", 40));
+                r.write("src/dies.txt", &rows("dies", 40));
+                r.write("nonl.txt", &[&rows("n", 30)[..], b"tail"].concat());
+                r.write("dir/gone.bin", &[&b"\0"[..], &rows("b", 30)].concat());
+            },
+            |r| {
+                r.write("whole.txt", &rows("W", 40));
+                r.write("half.txt", &part("h", "H", 40, 20));
+                r.write("mostly.txt", &part("m", "M", 40, 36));
+                r.write("tiny.txt", &rows("T", 5));
+                r.remove("src/moves.txt");
+                r.write("dst/moves.txt", &edited_rows("mv", 40, 3));
+                r.remove("src/dies.txt");
+                r.write("whole_copy.txt", &rows("w", 40));
+                r.write("half_copy.txt", &rows("h", 40));
+                r.write("nonl.txt", b"short\nrewrite without newline");
+                r.write("dir/gone.bin", &[&b"\0"[..], &rows("B", 30)].concat());
+            },
+        );
+        for flags in [
+            &["-B"][..],
+            &["-B", "-M"],
+            &["-B", "-C"],
+            &["-B", "-C", "-C"],
+            &["-B", "--no-renames"],
+            &["-B20%"],
+            &["-B20%/30%"],
+            &["-B20%/30%", "-M"],
+            &["-B20%/55%", "-C"],
+            &["-B90%"],
+            &["-B/10%"],
+            &["-B/90%"],
+            &["-B1%/1%", "-C"],
+            &["-B100%"],
+            &["--break-rewrites"],
+            &["--break-rewrites=40%/20%", "-M40%"],
+            &["-B", "-M95%"],
+            &["-B30%/50%", "-C", "-M70%"],
+        ] {
+            r.views(flags);
+            for extra in [
+                &["--raw"][..],
+                &["--diff-filter=B", "--name-status"],
+                &["--diff-filter=M", "--name-status"],
+                &["--diff-filter=b", "--name-status"],
+                &["--diff-filter=BR", "--name-status"],
+                &["--name-status", "-R"],
+                &["-p", "-R"],
+                &["--stat", "-R"],
+                &["--numstat", "--summary", "-z"],
+                &["--name-status", "-z"],
+                &["-U0"],
+                &["--compact-summary"],
+            ] {
+                let mut args = vec!["diff", "HEAD~1", "HEAD"];
+                args.extend_from_slice(extra);
+                args.extend_from_slice(flags);
+                r.same(&args);
+            }
+        }
+        let out = r.same(&["diff", "HEAD~1", "HEAD", "-B", "--name-status"]);
+        assert!(out.contains("M100\twhole.txt\n"), "{out}");
+        r.same(&["log", "--format=%s", "-B", "-S", "mv-003"]);
+        r.same(&[
+            "log",
+            "--format=%s",
+            "-B",
+            "-C",
+            "-G",
+            "H-0",
+            "--name-status",
+        ]);
+    });
 }
 
 /// A small deterministic generator, so a failing seed can be replayed.
@@ -703,9 +1150,114 @@ fn random_repo(r: &Repo, seed: u64) {
     r.commit("two");
 }
 
+fn random_break_repo(r: &Repo, seed: u64) {
+    let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
+    let names = ["a", "b", "c", "d", "e", "f", "g", "h"];
+    let dirs = ["", "x/", "y/"];
+    let tags = ["t1", "t2", "t3", "t4", "t5", "t6"];
+    let mut files: Vec<(String, Vec<u8>, usize, String)> = Vec::new();
+    for _ in 0..(4 + rng.next(5)) {
+        let path = format!("{}{}.txt", dirs[rng.next(3)], names[rng.next(8)]);
+        if files.iter().any(|f| f.0 == path) {
+            continue;
+        }
+        let n = 11 + rng.next(30);
+        let tag = tags[rng.next(6)].to_string();
+        files.push((path, rows(&tag, n), n, tag));
+    }
+    for (p, c, ..) in &files {
+        r.write(p, c);
+    }
+    r.commit("one");
+    let mut next: Vec<(String, Vec<u8>)> = Vec::new();
+    let taken = |next: &[(String, Vec<u8>)], q: &str| {
+        next.iter().any(|(n, _)| n == q) || files.iter().any(|f| f.0 == q)
+    };
+    for (i, (p, c, n, tag)) in files.iter().enumerate() {
+        r.remove(p);
+        let fresh = tags[rng.next(6)];
+        let rewritten = |rng: &mut Rng| -> Vec<u8> {
+            let keep = rng.next(*n + 1);
+            part(tag, fresh, *n, keep)
+        };
+        match rng.next(12) {
+            0 => {}
+            1 | 2 => next.push((p.clone(), rewritten(&mut rng))),
+            3 => {
+                next.push((p.clone(), rewritten(&mut rng)));
+                let q = format!("copy{i}.txt");
+                next.push((q, c.clone()));
+            }
+            4 => {
+                let q = format!("moved{i}/m.txt");
+                next.push((q, rewritten(&mut rng)));
+            }
+            5 => {
+                let q = format!("{}{}{i}.txt", dirs[rng.next(3)], names[rng.next(8)]);
+                if !taken(&next, &q) {
+                    next.push((q, rewritten(&mut rng)));
+                }
+                if rng.next(2) == 0 {
+                    next.push((p.clone(), rewritten(&mut rng)));
+                }
+            }
+            6 => {
+                let other = &files[rng.next(files.len())];
+                next.push((p.clone(), other.1.clone()));
+            }
+            7 => {
+                let mut out = c.clone();
+                out.extend_from_slice(&rows("add", 2));
+                next.push((p.clone(), out));
+                next.push((format!("twin{i}.txt"), rewritten(&mut rng)));
+            }
+            8 => next.push((p.clone(), part(tag, fresh, *n, *n / 2))),
+            _ => next.push((p.clone(), c.clone())),
+        }
+    }
+    for (p, c) in &next {
+        r.write(p, c);
+    }
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-q", "--allow-empty", "-m", "two"]);
+}
+
+#[test]
+fn seeded_random_rewrites_match_git() {
+    for seed in 1..=40u64 {
+        let r = Repo::new(FORMATS[(seed % 2) as usize]);
+        random_break_repo(&r, seed);
+        for flags in [
+            &["-B"][..],
+            &["-B", "-M"],
+            &["-B", "-C"],
+            &["-B", "-C", "-C"],
+            &["-B20%/30%", "-M"],
+            &["-B20%/10%", "-C"],
+            &["-B/40%", "-M30%"],
+            &["-B", "--no-renames"],
+            &["-B70%/30%", "-C"],
+            &["-B", "-M", "-l2"],
+            &["-B", "-C", "-C", "-l3"],
+        ] {
+            for args in [
+                &["diff", "HEAD~1", "HEAD", "--name-status"][..],
+                &["diff", "HEAD~1", "HEAD", "--stat", "--summary"],
+                &["diff", "HEAD~1", "HEAD", "--numstat"],
+                &["diff", "HEAD~1", "HEAD"],
+                &["diff", "HEAD~1", "HEAD", "--raw", "--diff-filter=B"],
+            ] {
+                let mut all = args.to_vec();
+                all.extend_from_slice(flags);
+                r.same(&all);
+            }
+        }
+    }
+}
+
 #[test]
 fn seeded_random_histories_match_git() {
-    for seed in 1..=14u64 {
+    for seed in 1..=30u64 {
         let format = FORMATS[(seed % 2) as usize];
         let r = Repo::new(format);
         random_repo(&r, seed);
@@ -715,6 +1267,8 @@ fn seeded_random_histories_match_git() {
             &["-M80%"],
             &["-C"],
             &["-C60%"],
+            &["-C", "-C"],
+            &["-C", "-C", "-M80%"],
             &["--no-renames"],
             &["-l2"],
         ] {

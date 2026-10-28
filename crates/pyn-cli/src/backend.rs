@@ -40,6 +40,11 @@ pub trait Backend {
         crate::rename::Defaults::default()
     }
 
+    /// Whether diff callers pass whole trees, which `-C -C` needs to see unmodified copy sources.
+    fn whole_trees(&self) -> bool {
+        false
+    }
+
     /// A setting the home's configuration holds, for the diff options that read one (`color.diff.old`, `core.whitespace`).
     fn diff_setting(&self, _key: &str) -> Option<String> {
         None

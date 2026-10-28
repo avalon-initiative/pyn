@@ -35,11 +35,60 @@ pub struct StatusArgs {
         value_name = "WHEN"
     )]
     pub ignore_submodules: Option<String>,
+    /// Detect renames in the short formats whatever `status.renames` says.
+    #[arg(long, overrides_with = "no_renames")]
+    pub renames: bool,
+    /// Turn rename detection off whatever `status.renames` says.
+    #[arg(long = "no-renames", overrides_with = "renames")]
+    pub no_renames: bool,
+    /// Turn rename detection on, optionally with a similarity threshold (`-M90%`).
+    #[arg(
+        short = 'M',
+        long = "find-renames",
+        num_args = 0..=1,
+        require_equals = true,
+        value_name = "N",
+        overrides_with = "find_renames"
+    )]
+    pub find_renames: Option<Option<String>>,
     /// Only these files and folders, taken relative to where you stand.
     pub paths: Vec<String>,
 }
 
 impl StatusArgs {
+    /// Whether a rename flag is given, which only a git repository honours.
+    pub fn renames_given(&self) -> bool {
+        self.renames || self.no_renames || self.find_renames.is_some()
+    }
+
+    /// The detection `status` runs: the settings, then `--[no-]renames`, then `-M`, which turns it on but keeps `copies`.
+    pub fn rename_options(
+        &self,
+        defaults: crate::rename::Defaults,
+    ) -> Option<crate::rename::Options> {
+        use crate::rename::{Mode, Options, status_score};
+        let mut mode = defaults.mode;
+        if self.renames {
+            mode = Some(Mode::Renames);
+        } else if self.no_renames {
+            mode = None;
+        }
+        if self.find_renames.is_some() && mode.is_none() {
+            mode = Some(Mode::Renames);
+        }
+        let score = self
+            .find_renames
+            .as_ref()
+            .and_then(|v| v.as_deref())
+            .and_then(status_score);
+        mode.map(|mode| Options {
+            mode,
+            score: score.unwrap_or(crate::rename::DEFAULT_SCORE),
+            limit: defaults.limit,
+            ..Options::renames()
+        })
+    }
+
     /// Git's check of the version: `v1` or `1`, an unknown one is fatal (128), `v2` is not built (usage, 129).
     pub fn check_porcelain(&self) -> Result<(), (i32, String)> {
         match self.porcelain.as_deref() {

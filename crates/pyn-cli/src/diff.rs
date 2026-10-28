@@ -304,6 +304,7 @@ fn id_of(blob: Option<&Blob>, other: Option<&Blob>, shorten: impl Fn(&str) -> St
 }
 
 fn patch(
+    backend: &dyn Backend,
     p: &Pair,
     c: &Contents,
     format: &Format,
@@ -318,11 +319,14 @@ fn patch(
             _ => path.to_string(),
         }
     };
-    let (old_name, new_name) = (bare(&p.old_path), bare(&p.new_path));
-    let mut head = format!(
-        "diff --git {}{old_name} {}{new_name}\n",
-        o.src_prefix, o.dst_prefix
+    let labelled = |prefix: &str, path: &str| {
+        backend.quote_diff_path(format!("{prefix}{}", bare(path)).as_bytes())
+    };
+    let (old_label, new_label) = (
+        labelled(&o.src_prefix, &p.old_path),
+        labelled(&o.dst_prefix, &p.new_path),
     );
+    let mut head = format!("diff --git {old_label} {new_label}\n");
     let mut tail = String::new();
     match (old, new) {
         (None, Some(b)) => {
@@ -337,14 +341,21 @@ fn patch(
         (Some(a), Some(_)) => tail = format!(" {}", a.mode()),
         (None, None) => {}
     }
+    if let Some(score) = p.rewrite {
+        let _ = writeln!(
+            head,
+            "dissimilarity index {}%",
+            score * 100 / rename::MAX_SCORE
+        );
+    }
     if let Some(m) = &p.moved {
         let word = if m.copy { "copy" } else { "rename" };
         let _ = writeln!(
             head,
             "similarity index {}%\n{word} from {}\n{word} to {}",
             m.percent(),
-            p.old_path,
-            p.new_path
+            backend.quote_diff_path(p.old_path.as_bytes()),
+            backend.quote_diff_path(p.new_path.as_bytes())
         );
     }
     let changed = old.zip(new).is_none_or(|(a, b)| a.hash != b.hash);
@@ -356,13 +367,17 @@ fn patch(
         let _ = writeln!(head, "index {x}..{y}{tail}");
     }
     let (from, to) = (
-        old.map_or("/dev/null".to_string(), |_| {
-            format!("{}{old_name}", o.src_prefix)
-        }),
-        new.map_or("/dev/null".to_string(), |_| {
-            format!("{}{new_name}", o.dst_prefix)
-        }),
+        old.map_or("/dev/null".to_string(), |_| old_label.clone()),
+        new.map_or("/dev/null".to_string(), |_| new_label.clone()),
     );
+    // A name with a space is followed by a tab so that patch(1) finds where it ends.
+    let spaced = |label: &str, shown: &str| {
+        if shown != "/dev/null" && label.contains(' ') {
+            format!("{shown}\t")
+        } else {
+            shown.to_string()
+        }
+    };
     let finish = |mut head: String, body: String| {
         paint_header(&mut head, style);
         head + &body
@@ -374,6 +389,22 @@ fn patch(
             String::new()
         };
         return finish(head, body);
+    }
+    if p.rewrite.is_some() {
+        // A rewrite's file labels ignore `-R`'s swap of the prefixes.
+        let (src, dst) = if o.reverse {
+            (&o.dst_prefix, &o.src_prefix)
+        } else {
+            (&o.src_prefix, &o.dst_prefix)
+        };
+        let (old_label, new_label) = (labelled(src, &p.old_path), labelled(dst, &p.new_path));
+        let _ = writeln!(
+            head,
+            "--- {}\n+++ {}",
+            spaced(&old_label, &old_label),
+            spaced(&new_label, &new_label)
+        );
+        return finish(head, rewrite_hunk(&c.old, &c.new));
     }
     let layout = pyn_diff::Layout {
         context: format.context,
@@ -391,7 +422,12 @@ fn patch(
             finish(head, String::new())
         };
     }
-    let _ = writeln!(head, "--- {from}\n+++ {to}");
+    let _ = writeln!(
+        head,
+        "--- {}\n+++ {}",
+        spaced(&old_label, &from),
+        spaced(&new_label, &to)
+    );
     let body = if let Some(setup) = words {
         String::from_utf8_lossy(&word_diff::render(&hunks, setup, style)).into_owned()
     } else if let Some(st) = style {
@@ -401,6 +437,35 @@ fn patch(
         hunks.iter().map(pyn_diff::Hunk::render).collect()
     };
     finish(head, body)
+}
+
+fn line_count(data: &[u8]) -> usize {
+    data.iter().filter(|b| **b == b'\n').count()
+        + usize::from(!data.is_empty() && !data.ends_with(b"\n"))
+}
+
+/// A rewritten file as one hunk: every old line removed, every new line added.
+fn rewrite_hunk(old: &[u8], new: &[u8]) -> String {
+    let range = |n: usize| match n {
+        0 => "0,0".to_string(),
+        1 => "1".to_string(),
+        n => format!("1,{n}"),
+    };
+    let mut out = format!(
+        "@@ -{} +{} @@\n",
+        range(line_count(old)),
+        range(line_count(new))
+    );
+    for (mark, data) in [('-', old), ('+', new)] {
+        for line in data.split_inclusive(|b| *b == b'\n') {
+            out.push(mark);
+            out.push_str(&String::from_utf8_lossy(line));
+            if !line.ends_with(b"\n") {
+                out.push_str("\n\\ No newline at end of file\n");
+            }
+        }
+    }
+    out
 }
 
 /// The color of the `commit` line when output is colored; colored decorations and graphs are not built.
@@ -454,6 +519,8 @@ pub(crate) struct Pair {
     pub(crate) old: Option<Blob>,
     pub(crate) new: Option<Blob>,
     pub(crate) moved: Option<Moved>,
+    /// `-B` kept a rewritten file whole; how much of the old content is gone, out of `rename::MAX_SCORE`.
+    pub(crate) rewrite: Option<u64>,
     /// Compared outside a repository: stat and name-status show both names.
     pub(crate) detached: bool,
 }
@@ -479,26 +546,8 @@ pub fn renamed_from(
     Ok(found.moved.get(target).map(|m| m.src.clone()))
 }
 
-/// Renames git detects between `old` and `new`, as `dst -> (src, percent)`.
-pub fn detect_renames<'a>(
-    backend: &dyn Backend,
-    old: &'a Tree,
-    new: &'a Tree,
-) -> Result<BTreeMap<&'a str, (&'a str, u64)>> {
-    let found = rename::detect(backend, old, new, &rename::Options::renames())?;
-    Ok(found
-        .moved
-        .iter()
-        .filter_map(|(dst, m)| {
-            let (dst, _) = new.get_key_value(dst)?;
-            let (src, _) = old.get_key_value(&m.src)?;
-            Some((dst.as_str(), (src.as_str(), m.percent())))
-        })
-        .collect())
-}
-
 /// The changed pairs of `old` against `new` limited to `only`, with the renames and copies `opts` finds folded in.
-fn pairs(
+pub(crate) fn pairs(
     backend: &dyn Backend,
     old: &Tree,
     new: &Tree,
@@ -540,6 +589,7 @@ fn pairs(
                 old: old.get(&m.src).cloned(),
                 new: b.cloned(),
                 moved: Some(m.clone()),
+                rewrite: None,
                 detached: false,
             },
             None => Pair {
@@ -548,11 +598,28 @@ fn pairs(
                 old: a.cloned(),
                 new: b.cloned(),
                 moved: None,
+                rewrite: found.as_ref().and_then(|f| f.rewrites.get(path)).copied(),
                 detached: false,
             },
         });
     }
     Ok(out)
+}
+
+/// The detection `request` asks for; `-C -C` is refused where callers pass only the changed paths.
+pub(crate) fn resolved(
+    backend: &dyn Backend,
+    request: &rename::Request,
+) -> Option<rename::Options> {
+    let opts = request
+        .resolve(backend.rename_defaults())
+        .unwrap_or_else(|message| crate::usage_error(&message));
+    if opts.as_ref().is_some_and(|o| o.harder) && !backend.whole_trees() {
+        crate::usage_error(
+            "`-C -C` (copies from unmodified files) is not built for this repository",
+        );
+    }
+    opts
 }
 
 /// A path of `new` that differs from `old`: the blob it came from (following a rename), the blob it is, and git's status letter.
@@ -571,9 +638,10 @@ pub fn origins(
     only: &[String],
     renames: rename::Request,
 ) -> Result<Vec<Origin>> {
-    let opts = renames
-        .resolve(backend.rename_defaults())
-        .unwrap_or_else(|message| crate::usage_error(&message));
+    let opts = resolved(backend, &renames);
+    if opts.as_ref().is_some_and(|o| o.brk.is_some()) {
+        crate::usage_error("`-B` with a combined diff is not built");
+    }
     let class = |b: &Blob| match b.mode {
         FileMode::Symlink => 1,
         FileMode::Gitlink => 2,
@@ -621,9 +689,15 @@ fn summary_line(backend: &dyn Backend, p: &Pair) -> String {
                 let word = if m.copy { "copy" } else { "rename" };
                 let name = diffstat::rename_name(old_path, new_path);
                 let _ = writeln!(out, " {word} {name} ({}%)", m.percent());
+            } else if let Some(score) = p.rewrite {
+                let _ = writeln!(
+                    out,
+                    " rewrite {new_path} ({}%)",
+                    score * 100 / rename::MAX_SCORE
+                );
             }
             if a.mode() != b.mode() {
-                let tail = if p.moved.is_some() {
+                let tail = if p.moved.is_some() || p.rewrite.is_some() {
                     String::new()
                 } else {
                     format!(" {new_path}")
@@ -724,6 +798,26 @@ fn selected(path: &str, only: &[String]) -> bool {
         })
 }
 
+/// `-B` with options that change how a rewrite is shown, which are not built.
+fn refuse_with_break(backend: &dyn Backend, format: &Format) {
+    let o = &format.opts;
+    let setting = |k: &str| backend.diff_setting(k);
+    let what = if o.ws.any() {
+        "whitespace options"
+    } else if Style::resolve(o, &setting).is_some() {
+        "color"
+    } else if word_diff::Setup::of(o, &setting).is_some() {
+        "word diffs"
+    } else if o.dirstat.is_some() || format.kind == Kind::Dirstat {
+        "--dirstat"
+    } else if format.kind == Kind::Check {
+        "--check"
+    } else {
+        return;
+    };
+    crate::usage_error(&format!("`-B` with {what} is not built"));
+}
+
 /// Appends the difference between `old` and `new` (limited to `only` when given) to `out`; true if any file differs.
 pub fn compare(
     backend: &dyn Backend,
@@ -733,10 +827,10 @@ pub fn compare(
     format: &Format,
     out: &mut String,
 ) -> Result<bool> {
-    let opts = format
-        .renames
-        .resolve(backend.rename_defaults())
-        .unwrap_or_else(|message| crate::usage_error(&message));
+    let opts = resolved(backend, &format.renames);
+    if opts.as_ref().is_some_and(|o| o.brk.is_some()) {
+        refuse_with_break(backend, format);
+    }
     let (old, new) = if format.opts.reverse {
         (new, old)
     } else {
@@ -751,7 +845,10 @@ pub fn compare(
             crate::usage_error("`--diff-filter=*` is not built");
         }
         list.retain(|p| {
-            let letter = status_of(p).chars().next().unwrap_or('M');
+            let letter = match (p.rewrite, status_of(p).chars().next()) {
+                (Some(_), Some('M')) => 'B',
+                (_, letter) => letter.unwrap_or('M'),
+            };
             !skip.contains(letter) && (keep.is_empty() || keep.contains(letter))
         });
     }
@@ -905,7 +1002,10 @@ pub(crate) fn status_of(p: &Pair) -> String {
         (None, _) => "A",
         (_, None) => "D",
         (Some(a), Some(b)) if type_changed(a, b) => "T",
-        _ => "M",
+        _ => match p.rewrite {
+            Some(score) => return format!("M{:03}", score * 100 / rename::MAX_SCORE),
+            None => "M",
+        },
     }
     .into()
 }
@@ -980,7 +1080,7 @@ fn render(backend: &dyn Backend, list: &[Pair], format: &Format, out: &mut Strin
                             ..(*p).clone()
                         };
                         let c = contents(backend, path, old, new, format.opts.text)?;
-                        out.push_str(&patch(&split, &c, format, (style, words.as_ref())));
+                        out.push_str(&patch(backend, &split, &c, format, (style, words.as_ref())));
                     }
                     continue;
                 }
@@ -1002,7 +1102,7 @@ fn render(backend: &dyn Backend, list: &[Pair], format: &Format, out: &mut Strin
                     continue;
                 }
                 if format.kind == Kind::Patch {
-                    out.push_str(&patch(p, &c, format, (style, words.as_ref())));
+                    out.push_str(&patch(backend, p, &c, format, (style, words.as_ref())));
                     continue;
                 }
                 if format.kind == Kind::Check {
@@ -1024,6 +1124,8 @@ fn render(backend: &dyn Backend, list: &[Pair], format: &Format, out: &mut Strin
                     .is_some_and(|(a, b)| a.is_gitlink() && b.is_gitlink() && a.hash == b.hash)
                 {
                     Counts::Lines(0, 0)
+                } else if p.rewrite.is_some() {
+                    Counts::Lines(line_count(&c.new), line_count(&c.old))
                 } else {
                     let (x, y) = crate::xdiff::line_counts(&c.old, &c.new, &format.opts.ws);
                     Counts::Lines(x, y)

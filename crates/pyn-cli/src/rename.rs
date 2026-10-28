@@ -10,6 +10,9 @@ use crate::diff::{Blob, Tree, blob_bytes};
 pub const MAX_SCORE: u64 = 60_000;
 pub const DEFAULT_SCORE: u64 = 30_000;
 pub const DEFAULT_LIMIT: usize = 1000;
+const DEFAULT_BREAK: u64 = 30_000;
+const DEFAULT_MERGE: u64 = 36_000;
+const MINIMUM_BREAK_SIZE: u64 = 400;
 const HASHBASE: u32 = 107_927;
 const CANDIDATES: usize = 4;
 
@@ -19,21 +22,36 @@ pub enum Mode {
     Copies,
 }
 
+/// `-B<n>/<m>`: split a file this much rewritten, and keep it split when at least `merge` of it went.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Break {
+    pub score: u64,
+    pub merge: u64,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Options {
+    /// Whether renames and copies are looked for; false when only `-B` is in force.
+    pub detect: bool,
+    pub brk: Option<Break>,
     pub mode: Mode,
     /// Minimum similarity out of `MAX_SCORE`.
     pub score: u64,
     /// `diff.renameLimit`; 0 or less means unlimited.
     pub limit: i64,
+    /// `-C -C`: unmodified files are copy sources too, so callers pass whole trees.
+    pub harder: bool,
 }
 
 impl Options {
     pub fn renames() -> Self {
         Self {
+            detect: true,
+            brk: None,
             mode: Mode::Renames,
             score: DEFAULT_SCORE,
             limit: DEFAULT_LIMIT as i64,
+            harder: false,
         }
     }
 }
@@ -68,26 +86,41 @@ pub struct Request {
     pub choice: Choice,
     pub score: Option<u64>,
     pub limit: Option<i64>,
+    /// `--find-copies-harder`, or a second `-C`.
+    pub harder: bool,
+    pub brk: Option<Break>,
+    /// A `-C` given while `diff.renames` alone decided the mode: `-C -C` if that was `copies`.
+    over_config: bool,
 }
 
 impl Request {
-    /// The options in force; `-C` over `diff.renames=copies` is git's `-C -C`, which is not built.
+    /// Whether unmodified files are copy sources too.
+    pub fn is_harder(&self, defaults: Defaults) -> bool {
+        self.harder || (self.over_config && defaults.mode == Some(Mode::Copies))
+    }
+
+    /// The options in force; git reads `--find-copies-harder` as copy detection whatever else is given.
     pub fn resolve(&self, defaults: Defaults) -> Result<Option<Options>, String> {
-        let mode = match self.choice {
-            Choice::Off => return Ok(None),
-            Choice::On(Mode::Copies) if defaults.mode == Some(Mode::Copies) => {
-                return Err("`-C` with `diff.renames=copies` finds copies from unmodified files, which is not built".into());
-            }
-            Choice::On(m) => m,
+        let harder = self.is_harder(defaults);
+        let (detect, mode) = match self.choice {
+            _ if harder => (true, Mode::Copies),
+            Choice::Off => (false, Mode::Renames),
+            Choice::On(m) => (true, m),
             Choice::Config => match defaults.mode {
-                Some(m) => m,
-                None => return Ok(None),
+                Some(m) => (true, m),
+                None => (false, Mode::Renames),
             },
         };
+        if !detect && self.brk.is_none() {
+            return Ok(None);
+        }
         Ok(Some(Options {
+            detect,
+            brk: self.brk,
             mode,
-            score: self.score.unwrap_or(DEFAULT_SCORE),
+            score: self.score.filter(|s| *s > 0).unwrap_or(DEFAULT_SCORE),
             limit: self.limit.unwrap_or(defaults.limit),
+            harder,
         }))
     }
 
@@ -107,8 +140,22 @@ impl Request {
                 ('M', None)
             } else if arg == "--find-copies" {
                 ('C', None)
+            } else if arg == "-B"
+                || arg == "--break-rewrites"
+                || arg.starts_with("-B") && !arg.starts_with("--")
+                || arg.starts_with("--break-rewrites=")
+            {
+                let value = arg
+                    .strip_prefix("--break-rewrites=")
+                    .or_else(|| arg.strip_prefix("-B"))
+                    .unwrap_or("");
+                r.brk = Some(
+                    parse_break(value).ok_or_else(|| format!("invalid argument to -B: {value}"))?,
+                );
+                continue;
             } else if arg == "--find-copies-harder" {
-                return Err("`--find-copies-harder` is not built".into());
+                r.harder = true;
+                continue;
             } else if arg == "--no-renames" {
                 r.choice = Choice::Off;
                 continue;
@@ -140,8 +187,12 @@ impl Request {
                 })?),
                 None => None,
             };
-            if kind == 'C' && r.choice == Choice::On(Mode::Copies) {
-                return Err("`-C -C` (finding copies from unmodified files) is not built".into());
+            if kind == 'C' {
+                match r.choice {
+                    Choice::On(Mode::Copies) => r.harder = true,
+                    Choice::Config => r.over_config = true,
+                    _ => {}
+                }
             }
             r.choice = Choice::On(if kind == 'M' {
                 Mode::Renames
@@ -153,17 +204,40 @@ impl Request {
     }
 }
 
+/// `<n>/<m>` of `-B`, each a score, where an absent or zero one is the default.
+pub fn parse_break(text: &str) -> Option<Break> {
+    let (first, rest) = score_prefix(text);
+    let merge = match rest {
+        "" => 0,
+        _ => parse_score(rest.strip_prefix('/')?)?,
+    };
+    Some(Break {
+        score: if first == 0 { DEFAULT_BREAK } else { first },
+        merge: if merge == 0 { DEFAULT_MERGE } else { merge },
+    })
+}
+
 /// Git's `parse_rename_score`: `90%`, `9`, `.5`, with a bare number read as digits after a decimal point.
 pub fn parse_score(text: &str) -> Option<u64> {
+    let (score, rest) = score_prefix(text);
+    rest.is_empty().then_some(score)
+}
+
+/// The score `status -M` reads: the leading part of the text, where 0 means the default.
+pub fn status_score(text: &str) -> Option<u64> {
+    Some(score_prefix(text.strip_prefix('=').unwrap_or(text)).0).filter(|s| *s > 0)
+}
+
+fn score_prefix(text: &str) -> (u64, &str) {
     let (mut num, mut scale, mut dot) = (0u64, 1u64, false);
-    let mut chars = text.chars().peekable();
-    while let Some(&ch) = chars.peek() {
+    let mut end = 0;
+    for ch in text.chars() {
         if !dot && ch == '.' {
             scale = 1;
             dot = true;
         } else if ch == '%' {
             scale = if dot { scale * 100 } else { 100 };
-            chars.next();
+            end += 1;
             break;
         } else if let Some(d) = ch.to_digit(10) {
             if scale < 100_000 {
@@ -173,16 +247,14 @@ pub fn parse_score(text: &str) -> Option<u64> {
         } else {
             break;
         }
-        chars.next();
+        end += ch.len_utf8();
     }
-    if chars.next().is_some() {
-        return None;
-    }
-    Some(if num >= scale {
+    let score = if num >= scale {
         MAX_SCORE
     } else {
         MAX_SCORE * num / scale
-    })
+    };
+    (score, &text[end..])
 }
 
 /// A threshold clap checks but does not keep: the value is read from the arguments in order, see `Request::from_args`.
@@ -205,17 +277,23 @@ impl std::str::FromStr for Checked {
 #[derive(clap::Args, Debug, Default)]
 pub struct Flags {
     /// Detect renames, optionally with a similarity threshold (`-M90%`); on by default in a git repository.
-    #[arg(short = 'M', long = "find-renames", value_name = "N", num_args = 0..=1, require_equals = true, default_missing_value = "")]
-    find_renames: Option<Checked>,
+    #[arg(short = 'M', long = "find-renames", value_name = "N", num_args = 0..=1, require_equals = true, default_missing_value = "", action = clap::ArgAction::Append)]
+    find_renames: Vec<Checked>,
     /// Detect copies as well as renames, optionally with a threshold.
-    #[arg(short = 'C', long = "find-copies", value_name = "N", num_args = 0..=1, require_equals = true, default_missing_value = "")]
-    find_copies: Option<Checked>,
+    #[arg(short = 'C', long = "find-copies", value_name = "N", num_args = 0..=1, require_equals = true, default_missing_value = "", action = clap::ArgAction::Append)]
+    find_copies: Vec<Checked>,
+    /// Split a file that is mostly rewritten into a deletion and an addition: `-B<n>/<m>`.
+    #[arg(short = 'B', long = "break-rewrites", value_name = "N", num_args = 0..=1, require_equals = true, default_missing_value = "", action = clap::ArgAction::Append)]
+    break_rewrites: Vec<String>,
     /// Turn rename detection off.
-    #[arg(long = "no-renames")]
-    no_renames: bool,
+    #[arg(long = "no-renames", action = clap::ArgAction::Count)]
+    no_renames: u8,
+    /// Also take unmodified files as copy sources (`-C -C`).
+    #[arg(long = "find-copies-harder", action = clap::ArgAction::Count)]
+    find_copies_harder: u8,
     /// Give up exhaustive rename detection beyond this many files on a side (`diff.renameLimit`).
-    #[arg(short = 'l', value_name = "N")]
-    rename_limit: Option<Checked>,
+    #[arg(short = 'l', value_name = "N", action = clap::ArgAction::Append)]
+    rename_limit: Vec<Checked>,
 }
 
 impl Flags {
@@ -238,6 +316,7 @@ pub fn attached(args: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsString> {
                 .iter()
                 .any(|n| a == n)
         })
+        .or_else(|| (args.get(1).is_some_and(|a| a == "status")).then_some(0))
         .map(|i| i + 1)
     else {
         return args;
@@ -258,6 +337,7 @@ pub fn attached(args: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsString> {
             };
             attached("-M", "find-renames")
                 .or_else(|| attached("-C", "find-copies"))
+                .or_else(|| attached("-B", "break-rewrites"))
                 .unwrap_or_else(|| arg.clone())
         })
         .collect()
@@ -277,6 +357,8 @@ pub struct Detected {
     pub moved: BTreeMap<String, Moved>,
     /// Deleted paths that a rename or copy accounts for.
     pub consumed: BTreeSet<String>,
+    /// Rewritten paths left whole by `-B`, with how little of the old content remains out of `MAX_SCORE`.
+    pub rewrites: BTreeMap<String, u64>,
 }
 
 impl Moved {
@@ -290,12 +372,17 @@ struct Src<'a> {
     blob: &'a Blob,
     used: u32,
     deleted: bool,
+    unmodified: bool,
+    /// The delete half of a rewrite `-B` broke, with its merge score (0 when too little was removed).
+    broken: Option<u64>,
 }
 
 struct Dst<'a> {
     path: &'a str,
     blob: &'a Blob,
     from: Option<(usize, u64)>,
+    /// The create half of a rewrite `-B` broke.
+    broken: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -495,7 +582,7 @@ fn record(srcs: &mut [Src], dst: &mut Dst, src: usize, score: u64) {
 
 /// Renames (and with `Mode::Copies`, copies) between `old` and `new`, as `git diff -M` / `-C` pairs them.
 pub fn detect(backend: &dyn Backend, old: &Tree, new: &Tree, opts: &Options) -> Result<Detected> {
-    let copies = opts.mode == Mode::Copies;
+    let copies = opts.detect && opts.mode == Mode::Copies;
     let mut srcs: Vec<Src> = Vec::new();
     let mut dsts: Vec<Dst> = Vec::new();
     let paths: BTreeSet<&String> = old.keys().chain(new.keys()).collect();
@@ -505,34 +592,81 @@ pub fn detect(backend: &dyn Backend, old: &Tree, new: &Tree, opts: &Options) -> 
                 path,
                 blob,
                 from: None,
+                broken: false,
             }),
             (Some(blob), None) => srcs.push(Src {
                 path,
                 blob,
                 used: 0,
                 deleted: true,
+                unmodified: false,
+                broken: None,
             }),
-            (Some(a), Some(b))
-                if copies
+            (Some(a), Some(b)) => {
+                let score = match &opts.brk {
+                    Some(brk) => broken_score(backend, path, (a, b), brk)?,
+                    None => None,
+                };
+                if let Some(score) = score {
+                    srcs.push(Src {
+                        path,
+                        blob: a,
+                        used: u32::from(score == 0),
+                        deleted: true,
+                        unmodified: false,
+                        broken: Some(score),
+                    });
+                    dsts.push(Dst {
+                        path,
+                        blob: b,
+                        from: None,
+                        broken: true,
+                    });
+                } else if copies
                     && a.is_gitlink() == b.is_gitlink()
-                    && !(a.hash == b.hash && a.mode == b.mode) =>
-            {
-                srcs.push(Src {
-                    path,
-                    blob: a,
-                    used: 1,
-                    deleted: false,
-                });
+                    && (opts.harder || !(a.hash == b.hash && a.mode == b.mode))
+                {
+                    srcs.push(Src {
+                        path,
+                        blob: a,
+                        used: 1,
+                        deleted: false,
+                        unmodified: a.hash == b.hash && a.mode == b.mode,
+                        broken: None,
+                    });
+                }
             }
-            _ => {}
+            (None, None) => {}
         }
     }
-    if !dsts.is_empty() && !srcs.is_empty() {
+    if opts.detect && !dsts.is_empty() && !srcs.is_empty() {
         pair(backend, &mut srcs, &mut dsts, opts)?;
     }
     let mut uses: Vec<u32> = srcs.iter().map(|s| s.used).collect();
+    let halves: HashMap<&str, usize> = srcs
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.broken.is_some())
+        .map(|(i, s)| (s.path, i))
+        .collect();
+    let mut rewrites = BTreeMap::new();
+    let mut selfish = BTreeSet::new();
+    for dst in dsts.iter().filter(|d| d.broken) {
+        let half = halves[dst.path];
+        let score = srcs[half].broken.unwrap_or(0);
+        match dst.from {
+            Some((s, _)) if s == half => {
+                selfish.insert(dst.path);
+            }
+            Some(_) => continue,
+            None => uses[half] += 1,
+        }
+        if score > 0 {
+            rewrites.insert(dst.path.to_string(), score);
+        }
+    }
     let mut moved = BTreeMap::new();
-    for dst in &dsts {
+    for dst in dsts.iter().filter(|d| !selfish.contains(d.path)) {
         if let Some((s, score)) = dst.from {
             uses[s] -= 1;
             moved.insert(
@@ -547,10 +681,49 @@ pub fn detect(backend: &dyn Backend, old: &Tree, new: &Tree, opts: &Options) -> 
     }
     let consumed = srcs
         .iter()
-        .filter(|s| s.deleted && s.used > 0)
+        .filter(|s| s.deleted && s.used > 0 && s.broken.is_none())
         .map(|s| s.path.to_string())
         .collect();
-    Ok(Detected { moved, consumed })
+    Ok(Detected {
+        moved,
+        consumed,
+        rewrites,
+    })
+}
+
+/// Git's `should_break`: the merge score of a pair a rewrite splits, 0 if it is split but too little was removed.
+fn broken_score(
+    backend: &dyn Backend,
+    path: &str,
+    (a, b): (&Blob, &Blob),
+    brk: &Break,
+) -> Result<Option<u64>> {
+    if !a.is_regular() || !b.is_regular() || a.hash == b.hash {
+        return Ok(None);
+    }
+    let (old, new) = (blob_bytes(backend, path, a)?, blob_bytes(backend, path, b)?);
+    let (src_size, dst_size) = (old.len() as u64, new.len() as u64);
+    let max_size = src_size.max(dst_size);
+    if max_size < MINIMUM_BREAK_SIZE || src_size == 0 {
+        return Ok(None);
+    }
+    let (from, to) = (span_counts(&old), span_counts(&new));
+    let (mut copied, mut added) = (0u64, 0u64);
+    for (h, n) in &to {
+        let m = from.get(h).copied().unwrap_or(0);
+        copied += m.min(*n);
+        added += n.saturating_sub(m);
+    }
+    let copied = copied.min(src_size);
+    if dst_size < added + copied {
+        added = dst_size.saturating_sub(copied);
+    }
+    let removed = src_size - copied;
+    let merge = removed * MAX_SCORE / src_size;
+    if (removed + added) * MAX_SCORE / max_size < brk.score {
+        return Ok(None);
+    }
+    Ok(Some(if merge >= brk.merge { merge } else { 0 }))
 }
 
 fn pair(backend: &dyn Backend, srcs: &mut [Src], dsts: &mut [Dst], opts: &Options) -> Result<()> {
@@ -564,11 +737,14 @@ fn pair(backend: &dyn Backend, srcs: &mut [Src], dsts: &mut [Dst], opts: &Option
     if minimum == MAX_SCORE {
         return Ok(());
     }
-    // Indices of the sources still unused by a rename.
+    // Git drops the sources a rename has used, unless it is finding copies or a rewrite was broken.
+    let culls = !copies && srcs.iter().all(|s| s.broken.is_none());
     let mut live: Vec<usize> = (0..srcs.len()).collect();
+    if culls {
+        live.retain(|&i| srcs[i].used == 0);
+    }
     if !copies {
         let floor = minimum + (MAX_SCORE - minimum) / 2;
-        live.retain(|&i| srcs[i].used == 0);
         let mut sources: HashMap<&str, i64> = HashMap::new();
         for &i in &live {
             let b = base(srcs[i].path);
@@ -587,6 +763,7 @@ fn pair(backend: &dyn Backend, srcs: &mut [Src], dsts: &mut [Dst], opts: &Option
         }
         let picks: Vec<(usize, usize)> = live
             .iter()
+            .filter(|&&i| srcs[i].used == 0)
             .filter_map(|&i| {
                 let b = base(srcs[i].path);
                 match (sources.get(b), dests.get(b)) {
@@ -609,11 +786,19 @@ fn pair(backend: &dyn Backend, srcs: &mut [Src], dsts: &mut [Dst], opts: &Option
                 record(srcs, &mut dsts[d], i, score);
             }
         }
-        live.retain(|&i| srcs[i].used == 0);
+        if culls {
+            live.retain(|&i| srcs[i].used == 0);
+        }
     }
     let remaining = dsts.iter().filter(|d| d.from.is_none()).count();
-    if remaining == 0 || live.is_empty() || too_many(remaining, live.len(), opts.limit) {
+    if remaining == 0 || live.is_empty() {
         return Ok(());
+    }
+    let modified = live.iter().filter(|&&i| !srcs[i].unmodified).count();
+    match too_many(remaining, (live.len(), modified), opts) {
+        Crowd::Fine => {}
+        Crowd::Refused => return Ok(()),
+        Crowd::Degraded => live.retain(|&i| !srcs[i].unmodified),
     }
     let mut matrix: Vec<Score> = Vec::new();
     for (d, dst) in dsts.iter().enumerate().filter(|(_, d)| d.from.is_none()) {
@@ -623,7 +808,7 @@ fn pair(backend: &dyn Backend, srcs: &mut [Src], dsts: &mut [Dst], opts: &Option
             score: 0,
             name: 0,
         }; CANDIDATES];
-        for &j in &live {
+        for &j in live.iter() {
             let s = &srcs[j];
             let score = estimate(
                 &mut files,
@@ -662,23 +847,40 @@ fn pair(backend: &dyn Backend, srcs: &mut [Src], dsts: &mut [Dst], opts: &Option
     Ok(())
 }
 
-fn too_many(dsts: usize, srcs: usize, limit: i64) -> bool {
-    if limit <= 0 {
-        return false;
+enum Crowd {
+    Fine,
+    Refused,
+    /// Too many with the unmodified files as sources, not without them.
+    Degraded,
+}
+
+fn too_many(dsts: usize, (srcs, modified): (usize, usize), opts: &Options) -> Crowd {
+    if opts.limit <= 0 {
+        return Crowd::Fine;
     }
-    let limit = limit as u128;
-    if (dsts as u128) * (srcs as u128) <= limit * limit {
-        return false;
+    let limit = opts.limit as u128;
+    let fits = |n: usize| (dsts as u128) * (n as u128) <= limit * limit;
+    if fits(srcs) {
+        return Crowd::Fine;
     }
+    let degraded = opts.harder && fits(modified);
     static WARNED: std::sync::Once = std::sync::Once::new();
     WARNED.call_once(|| {
-        eprintln!("warning: exhaustive rename detection was skipped due to too many files.");
+        if degraded {
+            eprintln!("warning: only found copies from modified paths due to too many files.");
+        } else {
+            eprintln!("warning: exhaustive rename detection was skipped due to too many files.");
+        }
         eprintln!(
             "warning: you may want to set your diff.renameLimit variable to at least {} and retry the command.",
             srcs.max(dsts)
         );
     });
-    true
+    if degraded {
+        Crowd::Degraded
+    } else {
+        Crowd::Refused
+    }
 }
 
 #[cfg(test)]
@@ -701,6 +903,21 @@ mod tests {
     }
 
     #[test]
+    fn break_scores_parse_as_git_reads_them() {
+        let brk = |text: &str| parse_break(text).map(|b| (b.score, b.merge));
+        assert_eq!(brk(""), Some((30_000, 36_000)));
+        assert_eq!(brk("20%"), Some((12_000, 36_000)));
+        assert_eq!(brk("/70%"), Some((30_000, 42_000)));
+        assert_eq!(brk("90/10"), Some((54_000, 6_000)));
+        assert_eq!(brk("20%/0"), Some((12_000, 36_000)));
+        assert_eq!(brk("x"), None);
+        assert_eq!(brk("20%/"), Some((12_000, 36_000)));
+        assert_eq!(brk("20%/x"), None);
+        assert_eq!(request(&["diff", "-B50%/60%"]).brk, parse_break("50%/60%"));
+        assert!(Request::from_args(["-Bq".to_string()]).is_err());
+    }
+
+    #[test]
     fn later_flags_win() {
         let r = request(&["diff", "-M", "--no-renames", "-l5"]);
         assert_eq!(r.choice, Choice::Off);
@@ -710,6 +927,28 @@ mod tests {
         let r = request(&["diff", "--no-renames", "-C75%"]);
         assert_eq!(r.choice, Choice::On(Mode::Copies));
         assert_eq!(r.score, Some(45_000));
-        assert!(Request::from_args(["-C".to_string(), "-C".to_string()]).is_err());
+        assert!(request(&["diff", "-C", "-C"]).harder);
+        assert!(!request(&["diff", "-C", "-M", "-C"]).harder);
+        assert!(!request(&["diff", "--no-renames", "-C"]).harder);
+        let r = request(&["diff", "--no-renames", "--find-copies-harder"]);
+        assert!(r.resolve(Defaults::default()).unwrap().unwrap().harder);
+        let copies = Defaults {
+            mode: Some(Mode::Copies),
+            ..Defaults::default()
+        };
+        assert!(
+            request(&["diff", "-C"])
+                .resolve(copies)
+                .unwrap()
+                .unwrap()
+                .harder
+        );
+        assert!(
+            !request(&["diff", "-M", "-C"])
+                .resolve(copies)
+                .unwrap()
+                .unwrap()
+                .harder
+        );
     }
 }
