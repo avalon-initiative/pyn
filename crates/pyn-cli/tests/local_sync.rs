@@ -1381,9 +1381,10 @@ fn a_rebase_can_skip_the_conflicting_commit_or_be_aborted() {
 }
 
 /// Two clones commit the same change at the start of a wall-clock second, so both get the same commit id.
+/// Branch names are derived from `names` so a retried attempt never recreates an existing branch.
 fn identical_pair(env: &Env, names: [&str; 2]) -> Option<[PathBuf; 2]> {
     let ws = names.map(|n| clone_with(env, n, &["--local-store"]));
-    for (w, branch) in ws.iter().zip(["one", "two"]) {
+    for (w, branch) in ws.iter().zip(names) {
         env.server_branch(w, "alice", branch);
     }
     let into_second = u64::from(
