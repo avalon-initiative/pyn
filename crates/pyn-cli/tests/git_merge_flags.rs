@@ -81,6 +81,7 @@ impl Pair {
             .current_dir(dir)
             .env("HOME", &self.home)
             .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_EDITOR", "true")
             .envs(IDENTITY)
             .output()
             .expect("git is installed")
@@ -102,6 +103,7 @@ impl Pair {
         };
         cmd.args(args)
             .env("HOME", &self.home)
+            .env("GIT_EDITOR", "true")
             .envs(IDENTITY)
             .stdin(Stdio::null())
             .output()
