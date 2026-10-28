@@ -121,10 +121,10 @@ The commands named in decision #218.
 | `git log --stat`, `--shortstat`, `--name-only`, `--name-status`, `--summary`, `-p`, `-U<n>` | same | supported | Both homes. The diff of each commit against its first parent follows its text, as `show` prints it (a merge shows none unless a merge-diff option asks, see [Merge commits in `show` and `log`](#merge-commits-in-show-and-log)); `--stat` with `-p` separates them with `---`. On a pyn server they list commits like `pyn log --commits` (`-n` or 50, medium format unless a format is given) and take no `--filter` (usage error, `129`); a path or revision narrows the commits (see the filter row above); unpublished local commits are diffed from the local store. Exclusive paths show as in `show`. `--stat`, `--shortstat`, `--name-only` and `--name-status` combine with no other of the four (usage error, `129`), and `-p` with a name flag too. |
 | `git log --oneline`, `--format=`, `--pretty=`, `--date=` | same | supported | Both homes, through one renderer (the formats and `%` placeholders of [Log on a git home](#log-on-a-git-home)). On a pyn server they list commits like `pyn log --commits` (newest first, `-n` or 50) and take no `--filter` (usage error, `129`); a path or revision narrows the commits (see the filter row above); `%d` and `%D` are empty there, as no refs are known. | |
 | `git log --all`, `--first-parent`, `--decorate[=short\|full\|auto\|no]`, `--no-decorate`, `--decorate-refs[-exclude]`, `-<n>` | same | git home: supported | Git's output on a git home (see [Log on a git home](#log-on-a-git-home)). `-<n>` is `-n <n>`. On a pyn server a usage error (`129`) naming the option. |
-| `git log --follow`, `-S<string>`, `-G<regex>` | same | git home: supported | Git's output on a git home (see [Log on a git home](#log-on-a-git-home)); `--follow` takes no diff output. On a pyn server a usage error (`129`). |
+| `git log --follow`, `-S<string>`, `-G<regex>` | same | git home: supported | Git's output on a git home (see [Log on a git home](#log-on-a-git-home)); `--follow` takes diff output, showing the renames it tracks. On a pyn server a usage error (`129`). |
 | `git log -E`, `-F`, `--basic-regexp` | same | git home: supported | The pattern syntax of `--grep`, `--author` and `--committer`; the last of the switches wins. On a pyn server a usage error (`129`). |
-| `git log -P` | none | unsupported | Usage error (`129`): pyn has no Perl-compatible regular expression engine, and `-E` covers extended expressions. |
-| `git log --graph` | same | git home: supported | Git's output on a git home, in git's topological order (see [Log on a git home](#log-on-a-git-home)); no path, diff output or commit filters. On a pyn server a usage error (`129`). |
+| `git log -P` | none | unsupported | Usage error (`129`): pyn has no Perl-compatible regular expression engine (the `regex` crate has no lookaround or back-references, and a PCRE engine would be a new dependency), and `-E` covers extended expressions. |
+| `git log --graph` | same | git home: supported | Git's output on a git home, in git's topological order (see [Log on a git home](#log-on-a-git-home)), with a path, diff output and commit filters; not with `--follow`. On a pyn server a usage error (`129`). |
 | `git log --show-signature`, `--notes` | none | unsupported | Usage error (`129`). `pyn log` is of the workspace's branch; another branch's log needs a switch (`pyn log <branch>` is not built). |
 | `pyn log --commits` | | pyn only | List commits (`COMMIT`, `AUTHOR`, `WHEN`, `FILES`, `MESSAGE`) instead of revisions. |
 | `pyn log --filter <glob>` | | pyn only | Only paths matching the glob. |
@@ -1137,8 +1137,8 @@ also matches the refs below it (`refs/heads/feature` matches `refs/heads/feature
 
 `--follow -- <path>` needs exactly one path and walks the whole history, dropping the commits that do not touch the tracked
 path; when a commit adds it, git's rename detection (identical content, then at least half similar, see `pyn diff`) names the
-old path and the walk goes on with that. Merges are dropped (unless `--first-parent`). It takes no diff output (`-p`, `--stat`,
-`--name-only`, ...) and no `-S`/`-G`: a usage error. `-S<string>` keeps the commits that change the number of occurrences of the
+old path and the walk goes on with that (`-M<n>` sets the similarity it needs and `-l` the limit; renames are tracked even with `--no-renames` or `diff.renames=false`, as in git). Merges are dropped (unless `--first-parent`). With diff output (`-p`, `--stat`,
+`--name-only`, `--raw`, ...) each commit shows only the followed path, as a rename when the commit moved it. `-S`/`-G`, copy detection (`-C`) and `-B` with `--follow` are usage errors (`129`). `-S<string>` keeps the commits that change the number of occurrences of the
 string in a file, `-G<regex>` those with an added or removed line matching an extended regular expression (never binary
 files); `-i` makes both ignore case. Both look at each file after rename detection, drop merges (unless `--first-parent`) and
 print only the matching files with a diff option. `-n` counts the commits that were kept, while `--skip` counts the ones the
@@ -1146,9 +1146,11 @@ walk selected (as git). `-S` and `-G` together fail (`128`).
 
 `--graph` draws git's graph without colors in front of every line of every format, and orders the commits topologically (no commit
 before all of its children, as `--topo-order`), as git does. It works with revisions, `--all`, `--first-parent`, `--decorate`,
-`--skip` and `-n`. It fails (`128`, as git does) with `--reverse`, and with a path, which is not built; diff output
-(`-p`, `--stat`, ...), `--author`, `--committer`, `--grep`, `--merges`, `--no-merges`, `--since`, `--until`, `-S`, `-G` and
-`--follow` are usage errors (`129`).
+`--skip`, `-n`, paths, diff output (every diff line carries the graph), `--author`, `--committer`, `--grep`, `--merges`,
+`--no-merges`, `--since`, `--until`, `-S` and `-G`. With a path, a commit's parents are rewritten past the commits that changed
+nothing (and `-p` diffs against the rewritten parent), and a parent is drawn only when the walk would show it, so the filters
+leave no dangling lines; `-S` and `-G` leave a `...` row where a commit they drop was drawn. It fails (`128`, as git does)
+with `--reverse`; `--follow` and the merge diff options (`-m`, `-c`, `--cc`, `--remerge-diff`, ...) are usage errors (`129`).
 
 `-E` and `-F` change how `--grep`, `--author` and `--committer` read their patterns: extended regular expressions (the
 operators `( ) | + ? { }` without backslashes) or fixed strings; `--basic-regexp` restores the default, and the last of
@@ -1244,7 +1246,7 @@ split pair nothing claimed is joined again; when at least `m` (default 60%) of t
 shown as `M<nnn>` (`--name-status`, `--raw`), ` rewrite <path> (N%)` (`--summary`), `dissimilarity index N%` and one hunk
 removing every old line and adding every new one (`--patch`), with all lines counted in `--stat` and `--numstat`, and selected
 by `--diff-filter=B`. Not built, each a usage error (`129`): `-B` with a combined diff, `--no-index`, color, `--word-diff`,
-whitespace options, `--check` and `--dirstat`; and `--follow` with diff output.
+whitespace options, `--check` and `--dirstat`.
 
 Git 2.43 does not count a file's final span when it has no newline (or 64 bytes) to end it, so a similarity score can differ from
 git's by a few percent there; pyn follows git 2.55.

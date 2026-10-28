@@ -1,6 +1,6 @@
 //! `pyn log` on a git repository: revision ranges, formats, filters and diff output, in git's shapes.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use anyhow::{Result, bail};
@@ -517,14 +517,14 @@ impl GitLogArgs {
             return Some("--diff-filter` also selects commits, which is not built".into());
         }
         if self.follow
-            && (self.diff_given()
-                || self.pickaxe_text.is_some()
+            && (self.pickaxe_text.is_some()
                 || self.pickaxe_lines.is_some()
                 || self.merge_diff.given().is_some())
         {
-            return Some(
-                "--follow` does not combine with diff output, merge diff options, -S or -G".into(),
-            );
+            return Some("--follow` does not combine with merge diff options, -S or -G".into());
+        }
+        if self.follow && self.renames.request().is_copying() {
+            return Some("--follow` does not combine with copy detection or -B".into());
         }
         if let Some(flag) = self.merge_diff.given()
             && (self.pickaxe_text.is_some() || self.pickaxe_lines.is_some())
@@ -533,17 +533,7 @@ impl GitLogArgs {
         }
         if self.graph {
             let combined = [
-                ("diff output", self.diff_given()),
                 ("merge diff options", self.merge_diff.given().is_some()),
-                ("--author", !self.author.is_empty()),
-                ("--committer", !self.committer.is_empty()),
-                ("--grep", !self.grep.is_empty()),
-                ("--merges", self.merges),
-                ("--no-merges", self.no_merges),
-                ("--since", self.since.is_some()),
-                ("--until", self.until.is_some()),
-                ("-S", self.pickaxe_text.is_some()),
-                ("-G", self.pickaxe_lines.is_some()),
                 ("--follow", self.follow),
             ];
             if let Some((what, _)) = combined.into_iter().find(|(_, on)| *on) {
@@ -579,6 +569,7 @@ impl GitLogArgs {
             first_parent: self.first_parent,
             spec: spec.clone(),
             renames: self.renames.request(),
+            step: None,
         }))
     }
 }
@@ -666,19 +657,34 @@ pub(super) fn log(
         if args.reverse {
             bail!("options '--reverse' and '--graph' cannot be used together");
         }
-        if !selection.paths.is_empty() {
-            bail!("`pyn log --graph` does not take a path");
-        }
         let mut list = Vec::new();
-        while let Some(entry) = walk.next_entry()? {
-            list.push(entry);
+        while let Some(w) = walk.next_walked()? {
+            list.push(w);
         }
-        printer.members = list.iter().map(|e| e.id).collect();
+        if let Some(since) = filters.since {
+            list = drop_older(list, since);
+        }
+        let shown: HashSet<ObjectId> = list
+            .iter()
+            .filter(|w| w.shown)
+            .map(|w| w.entry.id)
+            .collect();
+        let mut rewritten = rewritten_parents(&list, &walk, &shown);
+        // A parent is drawn only if the walk would show it past the commit filters.
+        printer.members = list
+            .iter()
+            .filter(|w| w.shown && filters.accepts(&w.entry.commit))
+            .map(|w| w.entry.id)
+            .collect();
         printer.graph = Some(Graph::new());
-        for entry in graph_order(list) {
+        for mut entry in graph_order(list, filters.until) {
+            if !filters.accepts(&entry.commit) {
+                continue;
+            }
             if skip > 0 {
                 skip -= 1;
             } else if limit.is_none_or(|n| printer.shown < n) {
+                entry.commit.parents = rewritten.remove(&entry.id).unwrap_or_default();
                 printer.print_graph(&entry, args.first_parent)?;
             } else {
                 break;
@@ -729,39 +735,95 @@ struct Printer<'a> {
     out: String,
 }
 
-/// The entries in the topological order `--graph` implies.
-fn graph_order(list: Vec<pyn_gitwork::LogEntry>) -> Vec<pyn_gitwork::LogEntry> {
-    let ids: Vec<ObjectId> = list.iter().map(|e| e.id).collect();
+/// The parents of each shown commit once the commits a path limit skipped are looked through, as git rewrites them for a graph.
+fn rewritten_parents(
+    list: &[pyn_gitwork::Walked],
+    walk: &pyn_gitwork::Log<'_>,
+    shown: &HashSet<ObjectId>,
+) -> HashMap<ObjectId, Vec<ObjectId>> {
+    let walked: HashSet<ObjectId> = list.iter().map(|w| w.entry.id).collect();
+    let mut out = HashMap::new();
+    for w in list.iter().filter(|w| w.shown) {
+        let mut parents: Vec<ObjectId> = Vec::new();
+        for p in &w.entry.commit.parents {
+            let p = walk.rewritten(*p);
+            let dead = walked.contains(&p) && !shown.contains(&p);
+            if !dead && !parents.contains(&p) {
+                parents.push(p);
+            }
+        }
+        out.insert(w.entry.id, parents);
+    }
+    out
+}
+
+/// Drops the commits older than `since` and everything reachable from them, as git's limited walk does.
+fn drop_older(list: Vec<pyn_gitwork::Walked>, since: i64) -> Vec<pyn_gitwork::Walked> {
+    let parents: HashMap<ObjectId, &Vec<ObjectId>> =
+        list.iter().map(|w| (w.entry.id, &w.parents)).collect();
+    let mut old: HashSet<ObjectId> = HashSet::new();
+    let mut stack: Vec<ObjectId> = list
+        .iter()
+        .filter(|w| w.entry.commit.committer.time < since)
+        .map(|w| w.entry.id)
+        .collect();
+    while let Some(id) = stack.pop() {
+        if old.insert(id)
+            && let Some(ps) = parents.get(&id)
+        {
+            stack.extend(ps.iter().copied());
+        }
+    }
+    list.into_iter()
+        .filter(|w| !old.contains(&w.entry.id))
+        .collect()
+}
+
+/// The shown commits in the topological order `--graph` implies, which sorts the skipped ones too and not those after `until`.
+fn graph_order(list: Vec<pyn_gitwork::Walked>, until: Option<i64>) -> Vec<pyn_gitwork::LogEntry> {
+    let ids: Vec<ObjectId> = list
+        .iter()
+        .filter(|w| until.is_none_or(|t| w.entry.commit.committer.time <= t))
+        .map(|w| w.entry.id)
+        .collect();
     let parents = list
         .iter()
-        .map(|e| (e.id, e.commit.parents.clone()))
+        .map(|w| (w.entry.id, w.parents.clone()))
         .collect();
-    let mut by_id: std::collections::HashMap<ObjectId, pyn_gitwork::LogEntry> =
-        list.into_iter().map(|e| (e.id, e)).collect();
+    let mut by_id: HashMap<ObjectId, pyn_gitwork::Walked> =
+        list.into_iter().map(|w| (w.entry.id, w)).collect();
     topo_order(&ids, &parents)
         .into_iter()
         .filter_map(|id| by_id.remove(&id))
+        .filter(|w| w.shown)
+        .map(|w| w.entry)
         .collect()
 }
 
 impl Printer<'_> {
     /// The text of `entry` with a graph in front of every line, assembled as git's `show_log` does.
     fn print_graph(&mut self, entry: &pyn_gitwork::LogEntry, first_parent: bool) -> Result<()> {
-        let graph = self.graph.as_mut().expect("graph mode has a graph");
         let all = &entry.commit.parents;
-        let shown: Vec<ObjectId> = if first_parent {
-            all.iter()
-                .take(1)
-                .filter(|p| self.members.contains(*p))
-                .copied()
-                .collect()
-        } else {
-            all.iter()
-                .filter(|p| self.members.contains(*p))
-                .copied()
-                .collect()
+        let shown: Vec<ObjectId> = all
+            .iter()
+            .take(if first_parent { 1 } else { usize::MAX })
+            .filter(|p| self.members.contains(*p))
+            .copied()
+            .collect();
+        self.graph
+            .as_mut()
+            .expect("graph mode has a graph")
+            .update(entry.id, shown);
+        let Some(only) = self.keeps(entry)? else {
+            return Ok(());
         };
-        graph.update(entry.id, shown);
+        let segments = self.segments(entry, only)?;
+        let tail = segments
+            .into_iter()
+            .next()
+            .map(|s| s.tail)
+            .unwrap_or_default();
+        let graph = self.graph.as_mut().expect("graph mode has a graph");
         let out = &mut self.out;
         if self.shown > 0 && !self.pretty.terminated() {
             if !self.missing_newline {
@@ -817,6 +879,10 @@ impl Printer<'_> {
             }
             out.push('\n');
         }
+        for line in tail.split_inclusive('\n') {
+            graph.show_padding(out);
+            out.push_str(line);
+        }
         self.shown += 1;
         if self.out.len() > 64 * 1024 {
             emit(&std::mem::take(&mut self.out));
@@ -824,21 +890,40 @@ impl Printer<'_> {
         Ok(())
     }
 
-    /// Adds the entry's text unless the gate drops the commit.
-    fn print(&mut self, entry: &pyn_gitwork::LogEntry) -> Result<()> {
-        let only = match &mut self.gate {
-            Some(gate) => match gate.keeps(self.git, &entry.id)? {
-                Some(only) => only,
-                None => return Ok(()),
-            },
-            None => Vec::new(),
-        };
+    /// The diff sections of a commit that stays, one per header it prints.
+    fn segments(
+        &self,
+        entry: &pyn_gitwork::LogEntry,
+        only: Vec<String>,
+    ) -> Result<Vec<super::merge_diff::Segment>> {
         let c = &entry.commit;
         let asked = self.parts.any();
+        let followed = self.gate.as_ref().and_then(|g| {
+            let (path, from) = g.step.clone()?;
+            g.follow.as_ref()?;
+            Some((path, from, g.follow_request()))
+        });
+        let (follow_spec, follow_parts, only) = match &followed {
+            Some((path, from, request)) => {
+                let names = [path.clone()].into_iter().chain(from.clone());
+                let spec = Pathspec::new(names.map(String::into_bytes));
+                let base = if asked { self.parts } else { self.patch_parts };
+                (
+                    Some(spec),
+                    Some(base.with_renames(*request)),
+                    vec![path.clone()],
+                )
+            }
+            None => (None, None, only),
+        };
         let segments = if self.plan.diffs(c.parents.len() > 1, asked) {
-            let parts = if asked { self.parts } else { self.patch_parts };
+            let parts = match &follow_parts {
+                Some(p) => p,
+                None if asked => self.parts,
+                None => self.patch_parts,
+            };
             let git = self.git;
-            let spec = self.spec;
+            let spec = follow_spec.as_ref().unwrap_or(self.spec);
             let shape = Shape {
                 git,
                 pretty: self.pretty,
@@ -871,6 +956,23 @@ impl Printer<'_> {
                 tail: String::new(),
             }]
         };
+        Ok(segments)
+    }
+
+    fn keeps(&mut self, entry: &pyn_gitwork::LogEntry) -> Result<Option<Vec<String>>> {
+        match &mut self.gate {
+            Some(gate) => gate.keeps(self.git, &entry.id),
+            None => Ok(Some(Vec::new())),
+        }
+    }
+
+    /// Adds the entry's text unless the gate drops the commit.
+    fn print(&mut self, entry: &pyn_gitwork::LogEntry) -> Result<()> {
+        let Some(only) = self.keeps(entry)? else {
+            return Ok(());
+        };
+        let c = &entry.commit;
+        let segments = self.segments(entry, only)?;
         for seg in segments {
             if self.headers > 0 && !self.pretty.terminated() {
                 self.out.push('\n');

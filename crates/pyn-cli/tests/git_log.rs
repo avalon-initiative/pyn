@@ -50,6 +50,15 @@ impl Fixture {
 
     /// A random history of `n` commits built with `commit-tree`: forks, 2-way and octopus merges, equal dates.
     fn with_dag(format: &'static str, seed: u64, n: usize) -> Self {
+        Self::dag(format, seed, n, false)
+    }
+
+    /// Like [`Fixture::with_dag`], with two files that change at random and two authors, for path limits and filters.
+    fn with_dag_files(format: &'static str, seed: u64, n: usize) -> Self {
+        Self::dag(format, seed, n, true)
+    }
+
+    fn dag(format: &'static str, seed: u64, n: usize, files: bool) -> Self {
         let f = Self::empty(format);
         let mut state = seed
             .wrapping_mul(6364136223846793005)
@@ -60,15 +69,31 @@ impl Fixture {
                 .wrapping_add(1442695040888963407);
             (state >> 33) % m
         };
-        let mut mk = git(&f.repo);
-        let tree = {
-            let out = mk
-                .arg("mktree")
-                .stdin(std::process::Stdio::null())
-                .output()
+        let tree_of = |entries: &[(&str, String)]| -> String {
+            let mut listing = String::new();
+            for (name, text) in entries {
+                let mut h = git(&f.repo);
+                h.args(["hash-object", "-w", "--stdin"])
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::piped());
+                let mut child = h.spawn().unwrap();
+                std::io::Write::write_all(&mut child.stdin.take().unwrap(), text.as_bytes())
+                    .unwrap();
+                let blob = String::from_utf8(child.wait_with_output().unwrap().stdout).unwrap();
+                listing.push_str(&format!("100644 blob {}\t{name}\n", blob.trim()));
+            }
+            let mut mk = git(&f.repo);
+            mk.arg("mktree")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped());
+            let mut child = mk.spawn().unwrap();
+            std::io::Write::write_all(&mut child.stdin.take().unwrap(), listing.as_bytes())
                 .unwrap();
+            let out = child.wait_with_output().unwrap();
             String::from_utf8(out.stdout).unwrap().trim().to_string()
         };
+        let tree = tree_of(&[]);
+        let mut contents: Vec<(u64, u64)> = Vec::new();
         let mut ids: Vec<String> = Vec::new();
         let mut time = 1_700_000_000u64;
         for i in 0..n {
@@ -91,8 +116,27 @@ impl Fixture {
             }
             time += [0, 10, 10, 50][next(4) as usize];
             let mut c = git(&f.repo);
-            identity(&mut c, ("Dag", "dag@example.com"), &format!("{time} +0000"));
-            c.args(["commit-tree", &tree, "-m", &format!("c{i}")]);
+            let (who, tree, message) = if files {
+                let (mut a, mut b) = parents.first().map_or((0, 0), |p| {
+                    contents[ids.iter().position(|x| x == p).unwrap()]
+                });
+                if next(3) == 0 {
+                    a = next(4);
+                }
+                if next(3) == 0 {
+                    b = next(4);
+                }
+                contents.push((a, b));
+                let who =
+                    [("Ann", "ann@example.com"), ("Bob", "bob@example.com")][next(2) as usize];
+                let word = ["fix", "feat", "chore"][next(3) as usize];
+                let tree = tree_of(&[("a.txt", format!("a{a}\n")), ("b.txt", format!("b{b}\n"))]);
+                (who, tree, format!("{word} c{i}"))
+            } else {
+                (("Dag", "dag@example.com"), tree.clone(), format!("c{i}"))
+            };
+            identity(&mut c, who, &format!("{time} +0000"));
+            c.args(["commit-tree", &tree, "-m", &message]);
             for p in &parents {
                 c.args(["-p", p]);
             }
@@ -977,6 +1021,43 @@ fn follow_matches_git() {
 }
 
 #[test]
+fn follow_with_diff_output_matches_git() {
+    for format in FORMATS {
+        let f = Fixture::with_renames(format);
+        for path in ["sub/c.txt", "b.txt", "a.txt", "other.txt", "nothing.txt"] {
+            for opt in [
+                &["-p"][..],
+                &["--stat"],
+                &["--stat", "-p"],
+                &["--shortstat"],
+                &["--name-only"],
+                &["--name-status"],
+                &["--raw"],
+                &["--summary"],
+                &["-p", "-M"],
+                &["-p", "-M90%"],
+                &["--name-status", "-M95%"],
+                &["--name-status", "-M30%"],
+                &["-U1"],
+                &["-p", "--first-parent"],
+                &["-p", "--decorate"],
+                &["-p", "--skip=1", "-3"],
+                &["-p", "--author=Bob"],
+            ] {
+                let mut args = vec!["--follow", "--oneline"];
+                args.extend_from_slice(opt);
+                args.extend(["--", path]);
+                f.same(&args);
+            }
+        }
+        f.same(&["--follow", "-p", "--", "sub/c.txt"]);
+        f.same(&["--follow", "--stat", "--pretty=short", "--", "sub/c.txt"]);
+        f.same(&["--follow", "-p", "-w", "--all", "--", "sub/c.txt"]);
+        f.same(&["--follow", "-p", "--merges", "--", "sub/c.txt"]);
+    }
+}
+
+#[test]
 fn pickaxe_matches_git() {
     each_format(|f| {
         for args in [
@@ -1121,25 +1202,108 @@ fn graph_refusals() {
     let f = Fixture::new("sha1");
     f.same(&["--graph", "--reverse"]);
     for args in [
-        &["--graph", "--oneline", "--", "a.txt"][..],
-        &["--graph", "a.txt"],
-    ] {
-        let (code, out, _) = f.pyn(&f.repo, args);
-        assert_eq!(code, 128, "{args:?}");
-        assert!(out.is_empty());
-    }
-    for args in [
-        &["--graph", "-p"][..],
-        &["--graph", "--stat"],
-        &["--graph", "--grep=one"],
-        &["--graph", "--author=Bob"],
-        &["--graph", "--merges"],
-        &["--graph", "--since=2020-01-01"],
-        &["--graph", "-S", "x"],
+        &["--graph", "--follow", "--", "b.txt"][..],
+        &["--graph", "-m", "-p"],
+        &["--graph", "--cc"],
     ] {
         let (code, out, _) = f.pyn(&f.repo, args);
         assert_eq!(code, 129, "{args:?}");
         assert!(out.is_empty());
+    }
+}
+
+const GRAPH_LIMITED: &[&[&str]] = &[
+    &["--graph", "--oneline", "--", "a.txt"],
+    &["--graph", "--oneline", "a.txt"],
+    &["--graph", "--oneline", "--", "b.txt"],
+    &["--graph", "--oneline", "--", "sub"],
+    &["--graph", "--oneline", "--", "a.txt", "s.txt"],
+    &["--graph", "--oneline", "--all", "--", "s.txt"],
+    &["--graph", "--oneline", "--first-parent", "--", "a.txt"],
+    &["--graph", "--oneline", "-2", "--", "a.txt"],
+    &["--graph", "--", "b.txt"],
+    &["--graph", "--oneline", "--", "nothing.txt"],
+    &["--graph", "-p"],
+    &["--graph", "-p", "--oneline"],
+    &["--graph", "--stat"],
+    &["--graph", "--stat", "--oneline"],
+    &["--graph", "--stat", "-p"],
+    &["--graph", "--name-only", "--oneline"],
+    &["--graph", "--name-status"],
+    &["--graph", "--shortstat", "--oneline"],
+    &["--graph", "--raw", "--oneline"],
+    &["--graph", "--summary", "--oneline"],
+    &["--graph", "-p", "--format=%h %s"],
+    &["--graph", "-p", "--format=format:%h%n%s"],
+    &["--graph", "-p", "--pretty=short"],
+    &["--graph", "-p", "--oneline", "--first-parent"],
+    &["--graph", "-p", "--oneline", "--", "a.txt"],
+    &["--graph", "--stat", "--", "a.txt", "b.txt"],
+    &["--graph", "-p", "--all", "--oneline"],
+    &["--graph", "--oneline", "--author=Bob"],
+    &["--graph", "--oneline", "--author=Ann", "--author=Cy"],
+    &["--graph", "--oneline", "--committer=Dee"],
+    &["--graph", "--oneline", "--grep=side"],
+    &["--graph", "--oneline", "--grep=two", "--grep=four"],
+    &["--graph", "--oneline", "-i", "--grep=MERGE"],
+    &["--graph", "--oneline", "--grep=merge", "--invert-grep"],
+    &["--graph", "--oneline", "--merges"],
+    &["--graph", "--oneline", "--no-merges"],
+    &["--graph", "--oneline", "--no-merges", "--all"],
+    &["--graph", "--oneline", "--since=2023-11-14 22:30:00 +0000"],
+    &["--graph", "--oneline", "--until=2023-11-14 22:30:00 +0000"],
+    &[
+        "--graph",
+        "--oneline",
+        "--since=2023-11-14 22:20:00 +0000",
+        "--until=2023-11-14 23:20:00 +0000",
+    ],
+    &["--graph", "--oneline", "-S", "tail"],
+    &["--graph", "--oneline", "-S", "side"],
+    &["--graph", "--oneline", "-G", "^side"],
+    &["--graph", "-p", "-S", "side"],
+    &["--graph", "--oneline", "-S", "line 3", "-3"],
+    &["--graph", "--oneline", "--author=Bob", "--", "b.txt"],
+    &["--graph", "--oneline", "--no-merges", "--author=Ann", "-p"],
+    &["--graph", "--oneline", "--skip=1", "--grep=e"],
+    &["--graph", "--oneline", "-3", "--author=Dee", "--stat"],
+    &["--graph", "--oneline", "-E", "--grep=(one|two)"],
+];
+
+#[test]
+fn graph_with_paths_diffs_and_filters_matches_git() {
+    each_format(|f| {
+        for args in GRAPH_LIMITED {
+            f.same_graph(args);
+        }
+    });
+}
+
+#[test]
+fn graph_on_random_histories_with_paths_and_filters_matches_git() {
+    for format in FORMATS {
+        for seed in 0..30 {
+            let f = Fixture::with_dag_files(format, seed, 8 + (seed as usize % 10));
+            for args in [
+                &["--graph", "--oneline", "--", "a.txt"][..],
+                &["--graph", "--oneline", "--", "b.txt"],
+                &["--graph", "--oneline", "--all", "--", "a.txt", "b.txt"],
+                &["--graph", "--oneline", "--first-parent", "--", "b.txt"],
+                &["--graph", "--oneline", "--author=Bob"],
+                &["--graph", "--oneline", "--all", "--grep=fix"],
+                &["--graph", "--oneline", "--merges"],
+                &["--graph", "--oneline", "--no-merges"],
+                &["--graph", "--oneline", "--since=@1700000100"],
+                &["--graph", "--oneline", "--until=@1700000100"],
+                &["--graph", "--oneline", "-S", "a1"],
+                &["--graph", "--oneline", "-G", "^b2"],
+                &["--graph", "--oneline", "-p", "--", "a.txt"],
+                &["--graph", "--oneline", "--stat", "--author=Ann"],
+                &["--graph", "--oneline", "--author=Ann", "--", "b.txt"],
+            ] {
+                f.same_graph(args);
+            }
+        }
     }
 }
 
@@ -1149,10 +1313,8 @@ fn unsupported_variants_are_usage_errors() {
     for args in [
         &["-P", "--grep=x"][..],
         &["--perl-regexp", "--grep=x"],
-        &["--follow", "-p", "--", "b.txt"],
-        &["--follow", "--stat", "--", "b.txt"],
-        &["--follow", "--name-only", "--", "b.txt"],
         &["--follow", "-S", "x", "--", "b.txt"],
+        &["--follow", "-C", "--", "b.txt"],
         &["--show-signature"],
         &["--notes"],
         &["--format"],

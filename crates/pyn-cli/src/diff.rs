@@ -536,13 +536,14 @@ pub fn renamed_from(
     old: &Tree,
     new: &Tree,
     target: &str,
+    opts: &rename::Options,
 ) -> Result<Option<String>> {
     let new: Tree = new
         .iter()
         .filter(|(p, _)| p.as_str() == target || old.contains_key(*p))
         .map(|(p, b)| (p.clone(), b.clone()))
         .collect();
-    let found = rename::detect(backend, old, &new, &rename::Options::renames())?;
+    let found = rename::detect(backend, old, &new, opts)?;
     Ok(found.moved.get(target).map(|m| m.src.clone()))
 }
 
@@ -1220,6 +1221,21 @@ pub struct DiffParts {
 }
 
 impl DiffParts {
+    /// The same sections with another rename request.
+    pub fn with_renames(&self, renames: rename::Request) -> Self {
+        Self {
+            renames,
+            summary: self.summary,
+            names: self.names,
+            stat: self.stat,
+            shortstat: self.shortstat,
+            dirstat: self.dirstat,
+            patch: self.patch,
+            context: self.context,
+            opts: self.opts.clone(),
+        }
+    }
+
     pub fn any(&self) -> bool {
         self.names.is_some()
             || self.stat
