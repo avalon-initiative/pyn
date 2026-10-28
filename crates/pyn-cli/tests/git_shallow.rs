@@ -59,7 +59,8 @@ fn dated_commit(dir: &Path, file: &str, content: &str, msg: &str, at: i64) {
 }
 
 impl Rig {
-    /// Six commits on `main` (one a day, each adding a file and a line of `log.txt`, `v1` on the third) and two on `feature`.
+    /// Six commits on `main` (one a day, each adding a file and a line of `log.txt`, `v1` on the third), two on `feature`,
+    /// and `joined`, which merges two more (`topic`, from the second commit) into `feature`.
     fn new(format: &str, via: Via) -> Self {
         let tmp = tempdir().unwrap();
         let root = tmp.path().canonicalize().unwrap();
@@ -86,6 +87,18 @@ impl Rig {
         run(&work, &["switch", "-q", "feature"]);
         dated_commit(&work, "g1.txt", "g1\n", "g1", BASE + 7 * DAY);
         dated_commit(&work, "g2.txt", "g2\n", "g2", BASE + 8 * DAY);
+        run(&work, &["switch", "-q", "-c", "topic", "main~4"]);
+        dated_commit(&work, "t1.txt", "t1\n", "t1", BASE + 9 * DAY);
+        dated_commit(&work, "t2.txt", "t2\n", "t2", BASE + 10 * DAY);
+        run(&work, &["switch", "-q", "-c", "joined", "feature"]);
+        let date = format!("{} +0000", BASE + 11 * DAY);
+        let merged = git(&work)
+            .args(["merge", "-q", "--no-ff", "-m", "join", "topic"])
+            .env("GIT_COMMITTER_DATE", &date)
+            .env("GIT_AUTHOR_DATE", &date)
+            .output()
+            .unwrap();
+        assert!(merged.status.success());
         run(&work, &["switch", "-q", "main"]);
         let bare = root.join("served.git");
         init(&bare, format, true);
@@ -304,6 +317,29 @@ fn fetch_moves_the_boundary_like_git() {
             rig.fetch_both(&g, &p, flags);
         }
         assert!(!p.join(".git/shallow").exists());
+    }
+}
+
+#[test]
+fn deepening_across_branches_and_merges_matches_git() {
+    for (format, via) in ways() {
+        let rig = Rig::new(format, via);
+        let (g, p) = rig.clone_both(&["--depth", "1", "--no-single-branch"]);
+        for flags in [
+            &["--deepen", "1"][..],
+            &["--deepen", "2"],
+            &["--depth", "2"],
+            &["--deepen", "1"],
+            &["--depth", "1"],
+            &["--deepen", "5"],
+            &["--unshallow"],
+        ] {
+            rig.fetch_both(&g, &p, flags);
+        }
+        let (g, p) = rig.clone_from(&rig.url, &["--depth", "2", "--branch", "joined"]);
+        rig.fetch_both(&g, &p, &["--deepen", "1"]);
+        rig.fetch_both(&g, &p, &["--depth", "3", "origin", "feature:feature"]);
+        rig.fetch_both(&g, &p, &["--deepen", "4"]);
     }
 }
 

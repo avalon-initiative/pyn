@@ -639,14 +639,15 @@ pub(super) fn fetch_core(
             promisor,
             refetch: plan.refetch,
         };
+        let before = read_shallow(git)?;
         let got = fetch_partial_with(&mut up, git.repo.git(), &wants, &wire, &mut |m| {
             relay.feed(m)
         })?;
         relay.finish();
-        reload_shallow(git)?;
-        if got.is_some() {
-            check_connected(git, &wants, filter.as_ref())?;
-        }
+        verify_shallow(git, before, || match got.is_some() {
+            true => check_connected(git, &wants, filter.as_ref()),
+            false => Ok(()),
+        })?;
     }
     for e in &entries {
         if !have(&e.id) {
@@ -703,6 +704,24 @@ pub(super) fn fetch_core(
         failed,
         remote_refs,
     })
+}
+
+fn read_shallow(git: &GitHome) -> Result<HashSet<ObjectId>> {
+    let repo = git.repo.git();
+    Ok(pyn_git::read_shallow(repo.common_dir(), repo.algorithm())?)
+}
+
+/// Loads the `shallow` a fetch wrote and runs `check`; if it fails, `before` is written back.
+fn verify_shallow(
+    git: &GitHome,
+    before: HashSet<ObjectId>,
+    check: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    reload_shallow(git)?;
+    let Err(e) = check() else { return Ok(()) };
+    pyn_git::write_shallow(git.repo.git().common_dir(), &before)?;
+    reload_shallow(git)?;
+    Err(e)
 }
 
 /// Re-reads `shallow` into the open object database after a fetch changed it.
@@ -986,4 +1005,36 @@ pub fn after_add(git: &GitHome, name: &str) -> Result<()> {
         std::process::exit(1);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pyn_git::{init, read_shallow, write_shallow};
+
+    #[test]
+    fn a_failed_check_restores_the_previous_shallow_file() {
+        let dir = tempfile::tempdir().unwrap();
+        init(dir.path(), true, Algorithm::Sha1, "main").unwrap();
+        let git = GitHome::open_at(dir.path()).unwrap();
+        let id = |c: char| ObjectId::from_hex(Algorithm::Sha1, &c.to_string().repeat(40)).unwrap();
+        let before = HashSet::from([id('a')]);
+        write_shallow(dir.path(), &before).unwrap();
+        write_shallow(dir.path(), &HashSet::from([id('b'), id('c')])).unwrap();
+        let err = verify_shallow(&git, before.clone(), || bail!("missing objects"));
+        assert!(err.is_err());
+        assert_eq!(read_shallow(dir.path(), Algorithm::Sha1).unwrap(), before);
+        assert!(git.repo.objects().is_shallow(&id('a')));
+    }
+
+    #[test]
+    fn a_passing_check_keeps_the_new_shallow_file() {
+        let dir = tempfile::tempdir().unwrap();
+        init(dir.path(), true, Algorithm::Sha1, "main").unwrap();
+        let git = GitHome::open_at(dir.path()).unwrap();
+        let now = HashSet::from([ObjectId::from_hex(Algorithm::Sha1, &"d".repeat(40)).unwrap()]);
+        write_shallow(dir.path(), &now).unwrap();
+        verify_shallow(&git, HashSet::new(), || Ok(())).unwrap();
+        assert_eq!(read_shallow(dir.path(), Algorithm::Sha1).unwrap(), now);
+    }
 }

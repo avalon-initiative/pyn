@@ -675,4 +675,99 @@ mod tests {
         assert_eq!(info.time, 1_700_000_000);
         assert_eq!(info.parents.len(), 1);
     }
+
+    /// c1 - c2 - c3 - c4 - m, with a side commit `s` on c2 merged into `m`; commit times are 1..=6.
+    struct Dag {
+        _dir: tempfile::TempDir,
+        db: ObjectDb,
+        c: [ObjectId; 4],
+        s: ObjectId,
+        m: ObjectId,
+    }
+
+    fn dag() -> Dag {
+        let dir = tempfile::tempdir().unwrap();
+        let db = ObjectDb::open(dir.path(), Algorithm::Sha1).unwrap();
+        let tree = "aa".repeat(20);
+        let put = |parents: &[ObjectId], time: i64| {
+            let mut body = format!("tree {tree}\n");
+            for p in parents {
+                body.push_str(&format!("parent {p}\n"));
+            }
+            body.push_str(&format!(
+                "author A <a@b> {time} +0000\ncommitter C <c@d> {time} +0000\n\nm"
+            ));
+            db.write(Kind::Commit, body.as_bytes()).unwrap()
+        };
+        let c1 = put(&[], 1);
+        let c2 = put(&[c1], 2);
+        let c3 = put(&[c2], 3);
+        let c4 = put(&[c3], 4);
+        let s = put(&[c2], 5);
+        let m = put(&[c4, s], 6);
+        Dag {
+            _dir: dir,
+            db,
+            c: [c1, c2, c3, c4],
+            s,
+            m,
+        }
+    }
+
+    fn sorted(mut ids: Vec<ObjectId>) -> Vec<ObjectId> {
+        ids.sort_by_key(ObjectId::to_hex);
+        ids
+    }
+
+    fn cut(d: &Dag, client: &[ObjectId], deepen: Deepen) -> ShallowCut {
+        let client = client.iter().copied().collect();
+        shallow_cut(&d.db, &[d.m], &client, &deepen).unwrap()
+    }
+
+    #[test]
+    fn depth_cuts_every_branch_of_a_merge() {
+        let d = dag();
+        let depth = |n| Deepen::Depth { n, relative: false };
+        assert_eq!(cut(&d, &[], depth(1)).shallow, vec![d.m]);
+        assert_eq!(cut(&d, &[], depth(2)).shallow, sorted(vec![d.c[3], d.s]));
+        assert_eq!(cut(&d, &[], depth(3)).shallow, sorted(vec![d.c[2], d.c[1]]));
+        assert!(cut(&d, &[], depth(9)).shallow.is_empty());
+    }
+
+    #[test]
+    fn deepening_moves_the_client_boundary() {
+        let d = dag();
+        let got = cut(
+            &d,
+            &[d.m],
+            Deepen::Depth {
+                n: 2,
+                relative: false,
+            },
+        );
+        assert_eq!(got.unshallow, vec![d.m]);
+        assert_eq!(got.shallow, sorted(vec![d.c[3], d.s]));
+        let rel = cut(
+            &d,
+            &[d.c[3], d.s],
+            Deepen::Depth {
+                n: 1,
+                relative: true,
+            },
+        );
+        assert_eq!(rel.unshallow, sorted(vec![d.c[3], d.s]));
+        assert_eq!(rel.shallow, sorted(vec![d.c[2], d.c[1]]));
+    }
+
+    #[test]
+    fn since_cuts_where_a_parent_is_older() {
+        let d = dag();
+        let got = cut(&d, &[], Deepen::Since(4));
+        assert_eq!(got.shallow, sorted(vec![d.c[3], d.s]));
+        assert!(cut(&d, &[], Deepen::Since(0)).shallow.is_empty());
+        assert!(
+            shallow_cut(&d.db, &[d.m], &HashSet::new(), &Deepen::Since(99)).is_err(),
+            "nothing newer than the date"
+        );
+    }
 }
