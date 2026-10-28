@@ -205,11 +205,6 @@ impl<'g> Session<'g> {
         } else {
             None
         };
-        if let Some(o) = &opened
-            && o.index.entries.iter().any(|e| e.skip_worktree)
-        {
-            bail!("this repository uses sparse checkout, which pyn does not support yet");
-        }
         let index_slots = opened
             .iter()
             .flat_map(|o| o.index.entries.iter())

@@ -243,9 +243,6 @@ fn start(git: &GitHome, verb: Verb, args: &PickArgs) -> Result<()> {
     let opts = Opts::of(args, replay);
     refuse_states(git, &["MERGE_HEAD", "rebase-merge", "rebase-apply"])?;
     let opened = git.open_index()?;
-    if opened.index.entries.iter().any(|e| e.skip_worktree) {
-        bail!("this repository uses sparse checkout, which pyn does not support yet");
-    }
     if opened.index.entries.iter().any(|e| e.stage > 0) {
         return Err(fail(&[
             &format!(

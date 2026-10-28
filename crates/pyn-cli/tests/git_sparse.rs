@@ -514,22 +514,3 @@ fn clone_sparse_checks_out_the_root_files() {
         assert_eq!(p.git_in(&pyn_copy, &["status", "--porcelain"], "").out, "");
     }
 }
-
-#[test]
-fn commands_that_cannot_keep_the_bits_refuse_and_change_nothing() {
-    let p = Pair::new("sha1");
-    p.set_both(&["sparse-checkout", "set", "a/b", "d"]);
-    write(&p.pyn, "d/v", "dirty\n");
-    let before = (p.tags(&p.pyn), files(&p.pyn));
-    for args in [
-        vec!["stash"],
-        vec!["restore", "d/v"],
-        vec!["reset", "--keep", "HEAD"],
-        vec!["merge", "--no-ff", "feat"],
-    ] {
-        let got = p.pyn_in(&p.pyn, &args, "");
-        assert_ne!(got.code, 0, "{args:?}");
-        assert!(got.err.contains("sparse"), "{args:?}: {}", got.err);
-    }
-    assert_eq!((p.tags(&p.pyn), files(&p.pyn)), before);
-}

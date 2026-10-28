@@ -1,7 +1,7 @@
 //! `switch`, `checkout` and the work tree forms of `restore` on a git repository: they move `HEAD`, the index and
 //! the work tree as git does, and never overwrite local changes unless `-f` (or the command's purpose) says to.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 
 use anyhow::{Result, bail};
@@ -605,6 +605,8 @@ struct Restore {
     stage: Option<u8>,
     /// Recreate the conflicted merge of unmerged paths from stages 1 to 3.
     merge: bool,
+    /// Reach skip-worktree entries too (`--ignore-skip-worktree-bits`).
+    ignore_skip: bool,
 }
 
 fn restore_paths(git: &GitHome, cwd: &Path, paths: &[String], r: Restore) -> Result<usize> {
@@ -612,10 +614,24 @@ fn restore_paths(git: &GitHome, cwd: &Path, paths: &[String], r: Restore) -> Res
         bail!("you must specify path(s) to restore");
     }
     let opened = git.open_index()?;
-    super::sparse::refuse_unsupported(&opened.index)?;
+    let patterns = super::sparse::load(git)?;
+    let skipped: HashMap<Vec<u8>, (u32, ObjectId)> = opened
+        .index
+        .entries
+        .iter()
+        .filter(|e| e.skip_worktree && e.stage == 0)
+        .map(|e| (e.path.clone(), (e.mode, e.id)))
+        .collect();
+    if r.ignore_skip
+        && matches!(r.source, Source::Tree(_))
+        && (patterns.is_some() || !skipped.is_empty())
+    {
+        bail!(
+            "--ignore-skip-worktree-bits with a tree to restore from is not supported in a sparse checkout"
+        );
+    }
     let specs = resolve_specs(git, cwd, paths)?;
     let mut entries: Entries = entries_of(&opened.index);
-    let indexed: Vec<Vec<u8>> = entries.keys().map(|(p, _)| p.clone()).collect();
     let from_tree = match &r.source {
         Source::Tree(commit) => {
             let tree = git.repo.commit(commit)?.tree;
@@ -623,6 +639,42 @@ fn restore_paths(git: &GitHome, cwd: &Path, paths: &[String], r: Restore) -> Res
         }
         Source::Index => BTreeMap::new(),
     };
+    if let Some(path) = skipped
+        .iter()
+        .find(|(p, (mode, id))| {
+            from_tree
+                .get(*p)
+                .is_some_and(|t| t.id != *id || raw_mode(t.mode) != *mode)
+        })
+        .map(|(p, _)| p)
+    {
+        bail!(
+            "'{}' is outside the sparse-checkout patterns and differs in the tree to restore from; restoring it is not supported",
+            path_string(path)
+        );
+    }
+    let hidden: HashSet<Vec<u8>> = if r.ignore_skip {
+        HashSet::new()
+    } else {
+        skipped.keys().cloned().collect()
+    };
+    let indexed: Vec<Vec<u8>> = entries
+        .keys()
+        .map(|(p, _)| p.clone())
+        .filter(|p| !hidden.contains(p))
+        .collect();
+    let mut from_tree = from_tree;
+    from_tree.retain(|p, _| !hidden.contains(p));
+    if let Some(p) = &patterns
+        && let Some(path) = from_tree
+            .keys()
+            .find(|k| !p.includes(k) && !entries.keys().any(|(e, _)| e == *k))
+    {
+        bail!(
+            "'{}' is outside the sparse-checkout patterns and not in the index; restoring it from a tree is not supported",
+            path_string(path)
+        );
+    }
     let picked: HashSet<Vec<u8>> = {
         let mut tracker = specs.spec.tracker();
         let candidates: BTreeSet<&Vec<u8>> = from_tree.keys().chain(indexed.iter()).collect();
@@ -643,7 +695,7 @@ fn restore_paths(git: &GitHome, cwd: &Path, paths: &[String], r: Restore) -> Res
             let paths: BTreeSet<&Vec<u8>> = entries
                 .keys()
                 .map(|(p, _)| p)
-                .filter(|p| in_spec(p))
+                .filter(|p| in_spec(p) && !hidden.contains(*p))
                 .collect();
             for path in paths {
                 let at = |stage: u8| entries.get(&(path.clone(), stage));
@@ -740,13 +792,16 @@ fn restore_paths(git: &GitHome, cwd: &Path, paths: &[String], r: Restore) -> Res
             write_bytes(git, path, mode, &bytes)?;
         }
     }
+    let mut cleared = false;
     for (path, entry) in &sources {
         let written = if r.to_worktree && in_spec(path) {
             Some(write_entry(git, path, entry)?)
         } else {
             None
         };
-        if r.to_index {
+        let was_skipped = r.ignore_skip && skipped.contains_key(path);
+        cleared |= was_skipped && written.is_some();
+        if r.to_index || (was_skipped && written.is_some()) {
             let e = written
                 .unwrap_or_else(|| IndexEntry::new(path.clone(), raw_mode(entry.mode), entry.id));
             put_entry(&mut entries, e);
@@ -760,7 +815,7 @@ fn restore_paths(git: &GitHome, cwd: &Path, paths: &[String], r: Restore) -> Res
             remove_entry(&mut entries, path);
         }
     }
-    if r.to_index {
+    if r.to_index || cleared {
         git.save_index(&opened, &index_of(opened.index.version, entries))?;
     }
     post_checkout_files(git)?;
@@ -789,6 +844,7 @@ pub fn restore(
     source: Option<&str>,
     staged: bool,
     worktree: bool,
+    ignore_skip: bool,
 ) -> Result<()> {
     let to_worktree = worktree || !staged;
     let source = match source {
@@ -811,6 +867,7 @@ pub fn restore(
             prune,
             stage: None,
             merge: false,
+            ignore_skip,
         },
     )?;
     Ok(())
@@ -822,6 +879,7 @@ pub(super) struct SideFlags<'a> {
     /// 2 for `--ours`, 3 for `--theirs`.
     pub stage: Option<u8>,
     pub merge: bool,
+    pub ignore_skip: bool,
 }
 
 /// `pyn restore --ours|--theirs|--merge`: takes a side of unmerged paths, or recreates their conflicted merge.
@@ -857,6 +915,7 @@ pub(super) fn restore_sides(
             prune: true,
             stage: f.stage,
             merge: f.merge,
+            ignore_skip: f.ignore_skip,
         },
     )?;
     Ok(())
@@ -938,6 +997,7 @@ fn checkout_to(git: &GitHome, cwd: &Path, args: CheckoutArgs) -> Result<()> {
         ours,
         theirs,
         yes: _,
+        ignore_skip_worktree_bits: ignore_skip,
         patch,
         recurse_submodules: _,
         no_recurse_submodules: _,
@@ -995,6 +1055,7 @@ fn checkout_to(git: &GitHome, cwd: &Path, args: CheckoutArgs) -> Result<()> {
                 prune: false,
                 stage,
                 merge: false,
+                ignore_skip,
             },
             None => Restore {
                 source: Source::Index,
@@ -1003,6 +1064,7 @@ fn checkout_to(git: &GitHome, cwd: &Path, args: CheckoutArgs) -> Result<()> {
                 prune: false,
                 stage,
                 merge: false,
+                ignore_skip,
             },
         };
         let label = match &r.source {
@@ -1098,6 +1160,7 @@ fn checkout_to(git: &GitHome, cwd: &Path, args: CheckoutArgs) -> Result<()> {
                 prune: false,
                 stage: None,
                 merge: false,
+                ignore_skip,
             },
         )?;
         if !quiet {
@@ -1163,6 +1226,7 @@ fn checkout_to(git: &GitHome, cwd: &Path, args: CheckoutArgs) -> Result<()> {
                 prune: false,
                 stage: None,
                 merge: false,
+                ignore_skip,
             },
         )?;
         if !quiet {

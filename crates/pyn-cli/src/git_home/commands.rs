@@ -163,6 +163,7 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
         Command::Maintenance(args) => super::maintenance::maintenance(git, args),
         Command::Repack(args) => super::repack::repack(git, args),
         Command::Shortlog(args) => super::shortlog::shortlog(git, cwd, args),
+        Command::CheckMailmap(args) => super::mailmap::check_mailmap(git, args),
         Command::Describe(args) => super::describe::describe(git, cwd, args),
         Command::NameRev(args) => super::name_rev::name_rev(git, cwd, args),
         Command::Am(args) => {
@@ -271,6 +272,7 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
             ours,
             theirs,
             merge,
+            ignore_skip_worktree_bits,
             ..
         } if ours || theirs || merge => super::switch::restore_sides(
             git,
@@ -287,6 +289,7 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
                     None
                 },
                 merge,
+                ignore_skip: ignore_skip_worktree_bits,
             },
         ),
         Command::Restore {
@@ -304,8 +307,17 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
             source,
             staged,
             worktree,
+            ignore_skip_worktree_bits,
             ..
-        } => super::switch::restore(git, cwd, &args, source.as_deref(), staged, worktree),
+        } => super::switch::restore(
+            git,
+            cwd,
+            &args,
+            source.as_deref(),
+            staged,
+            worktree,
+            ignore_skip_worktree_bits,
+        ),
         Command::Reset(args) => super::reset::reset(git, cwd, &args),
         Command::CherryPick(args) => super::pick::cherry_pick(git, &args),
         Command::Revert(args) => super::pick::revert(git, &args.into()),
@@ -1154,6 +1166,7 @@ fn show(
     };
     let spec = git.pathspec(cwd, &[loose.as_slice(), paths].concat(), false)?;
     let names = decorate.names(git, pretty.uses_decorations())?;
+    let mailmap = git.mailmap()?;
     let ctx = Context {
         style,
         now: chrono::Utc::now().timestamp(),
@@ -1161,6 +1174,8 @@ fn show(
         commit_color: commit_color.as_deref(),
         tabs,
         abbrev_commit,
+        mailmap: Some(&mailmap),
+        map_headers: fmt.mapped_headers(git.repo.bool_setting("log.mailmap", true)),
     };
     let shape = Shape {
         git,

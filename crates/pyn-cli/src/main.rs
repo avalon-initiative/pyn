@@ -289,6 +289,8 @@ enum Command {
     Repack(git_home::RepackArgs),
     /// Summarize the history by author (a git repository only).
     Shortlog(git_home::ShortlogArgs),
+    /// Show the canonical name and email of contacts (a git repository only).
+    CheckMailmap(git_home::CheckMailmapArgs),
     /// Name a commit after the nearest tag it descends from (a git repository only).
     Describe(git_home::DescribeArgs),
     /// Name a commit relative to the refs that reach it (a git repository only).
@@ -458,6 +460,9 @@ enum Command {
         /// Recreate the conflicted merge of unmerged paths (a git repository only).
         #[arg(long)]
         merge: bool,
+        /// Restore paths outside the sparse-checkout patterns too (a git repository only).
+        #[arg(long)]
+        ignore_skip_worktree_bits: bool,
         /// Choose the hunks to restore, one at a time (a git repository only).
         #[arg(short, long, conflicts_with_all = ["ours", "theirs", "merge", "message", "yes"])]
         patch: bool,
@@ -2176,6 +2181,7 @@ fn run(cli: Cli) -> Result<()> {
         | Command::Maintenance(_)
         | Command::Repack(_)
         | Command::Shortlog(_)
+        | Command::CheckMailmap(_)
         | Command::Describe(_)
         | Command::NameRev(_)
         | Command::Bisect(_)
@@ -2300,6 +2306,7 @@ fn run(cli: Cli) -> Result<()> {
                 .given()
                 .or(first_parent.then_some("--first-parent"))
                 .or(format.extra.git_only())
+                .or(fmt.mailmap_given())
             {
                 usage_error(&format!("`pyn show {flag}` needs a git repository"));
             }

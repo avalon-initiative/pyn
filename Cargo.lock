@@ -2021,6 +2021,7 @@ dependencies = [
  "flate2",
  "pyn-git",
  "pyn-object",
+ "sha2 0.11.1",
  "tempfile",
  "thiserror",
 ]
