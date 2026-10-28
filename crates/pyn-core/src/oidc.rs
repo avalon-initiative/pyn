@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 
 use crate::access::token;
 use crate::error::{PynError, Result};
-use crate::types::UserId;
+use crate::types::{AccountId, UserId};
 
 /// What the provider proved about a person after the ID token was validated.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,6 +84,7 @@ pub struct OidcFlow {
 /// An account created at first external sign-in, with its link to the provider.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewExternalAccount {
+    pub id: AccountId,
     pub user: UserId,
     /// A provider-verified address; stored as verified.
     pub email: Option<String>,

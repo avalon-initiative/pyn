@@ -3,7 +3,7 @@ use std::sync::Arc;
 use chrono::{TimeZone, Utc};
 use pyn_core::memory::{MemoryAuditStore, MemoryMetadataStore, MemoryObjectStore};
 use pyn_core::{
-    LimitKind, LimitReached, ManualClock, MemoryLimitEvents, PynError, RepoId, RepoPath,
+    AccountId, LimitKind, LimitReached, ManualClock, MemoryLimitEvents, PynError, RepoId, RepoPath,
     RepoService, Rules, ServiceConfig, UserId,
 };
 
@@ -18,6 +18,7 @@ async fn a_direct_service_records_limits_without_a_builder() {
         Arc::new(MemoryAuditStore::new()),
         pyn_core::RepoServiceContext {
             owner: UserId::new("owner"),
+            owner_id: AccountId::new("uowner"),
             clock: Arc::new(ManualClock::new(
                 Utc.with_ymd_and_hms(2030, 1, 1, 12, 0, 0).unwrap(),
             )),
@@ -43,6 +44,7 @@ async fn a_direct_service_records_limits_without_a_builder() {
         events.recorded(),
         vec![LimitReached {
             owner: UserId::new("owner"),
+            owner_id: AccountId::new("uowner"),
             kind: LimitKind::Locks,
             value: 1,
         }]

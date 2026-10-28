@@ -18,6 +18,7 @@ use crate::ratelimit::RateLimitStore;
 use crate::repo_policy::{
     CreationEffect, CreationRule, CreationScope, CreationSubject, MemberCreation, RepoPolicy,
 };
+use crate::types::AccountId;
 use crate::{
     AccessService, AccessStore, Credential, Identity, OrgDeleteMark, OrgMemberChange, RepoMember,
     Repositories,
@@ -105,6 +106,7 @@ fn harness_on(store: Store, objects: Arc<MemoryObjectStore>, repo: RepoId, rules
         audit.clone(),
         crate::RepoServiceContext {
             owner: crate::UserId::new("owner"),
+            owner_id: crate::AccountId::new("uowner"),
             clock: clock.clone(),
             limit_events: Arc::new(crate::MemoryLimitEvents::new()),
         },
@@ -424,6 +426,7 @@ fn tree_service(store: &Store, h: &Harness) -> RepoService {
         h.audit.clone(),
         crate::RepoServiceContext {
             owner: crate::UserId::new("owner"),
+            owner_id: crate::AccountId::new("uowner"),
             clock: h.clock.clone(),
             limit_events: Arc::new(crate::MemoryLimitEvents::new()),
         },
@@ -1067,6 +1070,7 @@ fn limited_service(store: &Store, h: &Harness, id: &str, max_locks: u32) -> Arc<
         h.audit.clone(),
         crate::RepoServiceContext {
             owner: crate::UserId::new("owner"),
+            owner_id: crate::AccountId::new("uowner"),
             clock: h.clock.clone(),
             limit_events: Arc::new(crate::MemoryLimitEvents::new()),
         },
@@ -1471,6 +1475,7 @@ fn service_in(store: &Store, h: &Harness, id: &str) -> RepoService {
         h.audit.clone(),
         crate::RepoServiceContext {
             owner: crate::UserId::new("owner"),
+            owner_id: crate::AccountId::new("uowner"),
             clock: h.clock.clone(),
             limit_events: Arc::new(crate::MemoryLimitEvents::new()),
         },
@@ -5462,6 +5467,7 @@ pub async fn repos_of_lists_a_users_roles_and_forgetting_a_repo_clears_its_acces
 
 fn new_account(name: &str, email: &str, minute: i64) -> NewAccount {
     NewAccount {
+        id: AccountId::generate(AccountKind::User).unwrap(),
         user: user(name),
         email: Some(email.to_string()),
         password_hash: format!("hash-{name}"),
@@ -5502,6 +5508,96 @@ pub async fn self_registered_accounts_start_pending_and_keep_their_password(stor
     let bob = store.account(&user("bob")).await.unwrap().unwrap();
     assert_eq!(bob.status(), AccountStatus::Active);
     assert!(bob.email.is_none());
+}
+
+pub async fn every_account_creation_path_stores_a_distinct_stable_id(store: Access) {
+    use crate::ExternalCreate;
+    let id_of = |name: &'static str| {
+        let store = store.clone();
+        async move { store.account(&user(name)).await.unwrap().unwrap().id }
+    };
+    store.create_user(&user("plain"), at(0)).await.unwrap();
+    store
+        .create_account(new_account("registered", "r@example.org", 1))
+        .await
+        .unwrap();
+    store.ensure_user(&user("ensured"), at(2)).await.unwrap();
+    assert_eq!(
+        store
+            .create_external_account(external("external", None, "sub-e"))
+            .await
+            .unwrap(),
+        ExternalCreate::Created
+    );
+    store
+        .create_org(&user("acme"), &user("plain"), at(3))
+        .await
+        .unwrap();
+    let names = ["plain", "registered", "ensured", "external", "acme"];
+    let mut ids = Vec::new();
+    for name in names {
+        ids.push(id_of(name).await);
+    }
+    for (name, id) in names.iter().zip(&ids) {
+        let prefix = if *name == "acme" { 'o' } else { 'u' };
+        assert!(id.as_str().starts_with(prefix), "{name}: {id}");
+        assert_eq!(id.as_str().len(), 25, "{name}: {id}");
+    }
+    let distinct: std::collections::BTreeSet<_> = ids.iter().collect();
+    assert_eq!(distinct.len(), names.len());
+
+    store.ensure_user(&user("ensured"), at(9)).await.unwrap();
+    assert!(!store.create_user(&user("plain"), at(9)).await.unwrap());
+    assert!(
+        !store
+            .create_org(&user("acme"), &user("plain"), at(9))
+            .await
+            .unwrap()
+    );
+    for (name, id) in names.iter().zip(&ids) {
+        assert_eq!(&id_of(name).await, id, "{name} keeps its id");
+    }
+
+    let given = AccountId::new("ugiven000000000000000000");
+    store
+        .create_user_with_events(&user("given"), &given, at(4), &[])
+        .await
+        .unwrap();
+    assert_eq!(id_of("given").await, given);
+}
+
+pub async fn an_organization_recreated_under_a_deleted_name_gets_a_new_id(store: Access) {
+    store.create_user(&user("alice"), at(0)).await.unwrap();
+    assert!(
+        store
+            .create_org(&user("acme"), &user("alice"), at(1))
+            .await
+            .unwrap()
+    );
+    let first = store.account(&user("acme")).await.unwrap().unwrap().id;
+    assert!(store.delete_org(&user("acme")).await.unwrap());
+    assert!(store.account(&user("acme")).await.unwrap().is_none());
+    assert!(
+        store
+            .create_org(&user("acme"), &user("alice"), at(2))
+            .await
+            .unwrap()
+    );
+    let second = store.account(&user("acme")).await.unwrap().unwrap().id;
+    assert_ne!(first, second);
+}
+
+pub async fn setup_stores_the_administrators_id(store: Access) {
+    let admin = new_account("root", "root@example.org", 0);
+    let id = admin.id.clone();
+    let settings = ServerSettings {
+        initialised_at: at(0),
+        server_name: None,
+        public_url: None,
+        registration: None,
+    };
+    assert!(store.complete_setup(admin, settings).await.unwrap());
+    assert_eq!(store.account(&user("root")).await.unwrap().unwrap().id, id);
 }
 
 pub async fn setup_runs_once_and_creates_the_administrator_with_its_settings(store: Access) {
@@ -6841,6 +6937,7 @@ fn identity(id: &str, owner: &str, subject: &str, minute: i64) -> crate::Externa
 
 fn external(name: &str, email: Option<&str>, subject: &str) -> crate::NewExternalAccount {
     crate::NewExternalAccount {
+        id: AccountId::generate(AccountKind::User).unwrap(),
         user: user(name),
         email: email.map(str::to_string),
         identity: identity(&format!("id-{name}"), name, subject, 0),
@@ -7549,6 +7646,9 @@ macro_rules! access_contract_tests {
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; repos_of_lists_a_users_roles_and_forgetting_a_repo_clears_its_access);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; self_registered_accounts_start_pending_and_keep_their_password);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; setup_runs_once_and_creates_the_administrator_with_its_settings);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; every_account_creation_path_stores_a_distinct_stable_id);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; an_organization_recreated_under_a_deleted_name_gets_a_new_id);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; setup_stores_the_administrators_id);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; a_setup_that_fails_leaves_the_server_uninitialised);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; a_verified_address_belongs_to_one_account);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; accounts_can_be_approved_disabled_enabled_and_listed);

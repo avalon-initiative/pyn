@@ -32,6 +32,10 @@ macro_rules! string_id {
 string_id!(RepoId);
 string_id!(UserId);
 string_id!(
+    /// Opaque key of a user or organization that never changes and is never issued again; the name is only the address.
+    AccountId
+);
+string_id!(
     /// SHA-256 hex over a revision's canonical encoding (docs/concepts/integrity.md).
     RevisionHash
 );

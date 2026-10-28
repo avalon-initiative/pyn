@@ -304,6 +304,28 @@ fn aborting_puts_the_files_back_and_forgets_the_merge() {
 }
 
 #[test]
+fn git_only_flags_are_usage_errors_on_a_pyn_server() {
+    let env = start();
+    let ws = clone(&env, "ws");
+    for flag in [
+        &["--signoff"][..],
+        &["--log"],
+        &["--autostash"],
+        &["--quit"],
+        &["--allow-unrelated-histories"],
+        &["--verify-signatures"],
+        &["--into-name", "x"],
+        &["-F", "msg.txt"],
+        &["--cleanup", "strip"],
+        &["--ff"],
+        &["--progress"],
+    ] {
+        let (code, _, err) = run(&env, &ws, &[&["merge"][..], flag, &["feature"]].concat());
+        assert_eq!(code, Some(129), "{flag:?}: {err}");
+    }
+}
+
+#[test]
 fn a_binary_conflict_is_the_whole_file_and_either_side_can_be_taken() {
     let env = start();
     let write_bin =

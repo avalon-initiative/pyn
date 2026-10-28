@@ -5,7 +5,9 @@
   "server": "https://pyn.example.com",
   "version": 1,
   "data": {
+    "repo_id": "r5e8a0c3f1b7d92460a4c8e15",
     "owner": "studio",
+    "owner_id": "o7d2e41b90c3a58f6e1d4b7a3",
     "name": "game-2",
     "previous_name": "game",
     "actor": "alice"

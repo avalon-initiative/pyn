@@ -81,10 +81,15 @@ impl WebhookStore for FailingWebhooks {
         assert_eq!(limit, "repositories");
         let event: pyn_proto::Event = serde_json::from_str(payload).unwrap();
         assert_eq!(event.created_at, now);
+        let pyn_proto::EventData::OwnerLimitReached(reached) = &event.data else {
+            panic!("not a limit event")
+        };
+        assert_eq!(reached.owner_id.len(), 25);
         assert_eq!(
             event.data,
             pyn_proto::EventData::OwnerLimitReached(pyn_proto::OwnerLimitReachedData {
                 owner: "alice".into(),
+                owner_id: reached.owner_id.clone(),
                 limit: pyn_proto::LimitKind::Repositories,
                 value: 0,
             })
