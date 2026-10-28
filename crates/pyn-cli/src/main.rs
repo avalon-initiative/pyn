@@ -2186,6 +2186,9 @@ fn run(cli: Cli) -> Result<()> {
             if args.ignore_submodules.is_some() {
                 usage_error("`pyn status --ignore-submodules` needs a git repository");
             }
+            if args.renames_given() {
+                usage_error("`pyn status` rename flags need a git repository");
+            }
             let w = in_workspace("status")?;
             let format = args.format();
             let only =

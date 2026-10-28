@@ -412,7 +412,7 @@ pub(super) fn status(git: &GitHome, cwd: &Path, args: &StatusArgs) -> Result<()>
             .transpose()?;
         let prefix = git.ws.repo_prefix(cwd, ".")?;
         let quote_high = git.repo.bool_setting("core.quotePath", true);
-        let moves = status_moves(git, &status)?;
+        let moves = status_moves(git, &status, args)?;
         let rows = short_rows(&status.entries, format, &moves);
         return short_status::print(
             &rows,
@@ -504,9 +504,8 @@ struct Moves {
     unstaged: rename::Detected,
 }
 
-fn status_moves(git: &GitHome, status: &pyn_gitwork::Status) -> Result<Moves> {
-    let defaults = git.rename_settings("status");
-    let Ok(Some(opts)) = rename::Request::default().resolve(defaults) else {
+fn status_moves(git: &GitHome, status: &pyn_gitwork::Status, args: &StatusArgs) -> Result<Moves> {
+    let Some(opts) = args.rename_options(git.rename_settings("status")) else {
         return Ok(Moves {
             staged: rename::Detected::default(),
             unstaged: rename::Detected::default(),

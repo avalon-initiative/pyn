@@ -97,7 +97,7 @@ impl Request {
         };
         Ok(Some(Options {
             mode,
-            score: self.score.unwrap_or(DEFAULT_SCORE),
+            score: self.score.filter(|s| *s > 0).unwrap_or(DEFAULT_SCORE),
             limit: self.limit.unwrap_or(defaults.limit),
             harder,
         }))
@@ -172,15 +172,25 @@ impl Request {
 
 /// Git's `parse_rename_score`: `90%`, `9`, `.5`, with a bare number read as digits after a decimal point.
 pub fn parse_score(text: &str) -> Option<u64> {
+    let (score, rest) = score_prefix(text);
+    rest.is_empty().then_some(score)
+}
+
+/// The score `status -M` reads: the leading part of the text, where 0 means the default.
+pub fn status_score(text: &str) -> Option<u64> {
+    Some(score_prefix(text.strip_prefix('=').unwrap_or(text)).0).filter(|s| *s > 0)
+}
+
+fn score_prefix(text: &str) -> (u64, &str) {
     let (mut num, mut scale, mut dot) = (0u64, 1u64, false);
-    let mut chars = text.chars().peekable();
-    while let Some(&ch) = chars.peek() {
+    let mut end = 0;
+    for ch in text.chars() {
         if !dot && ch == '.' {
             scale = 1;
             dot = true;
         } else if ch == '%' {
             scale = if dot { scale * 100 } else { 100 };
-            chars.next();
+            end += 1;
             break;
         } else if let Some(d) = ch.to_digit(10) {
             if scale < 100_000 {
@@ -190,16 +200,14 @@ pub fn parse_score(text: &str) -> Option<u64> {
         } else {
             break;
         }
-        chars.next();
+        end += ch.len_utf8();
     }
-    if chars.next().is_some() {
-        return None;
-    }
-    Some(if num >= scale {
+    let score = if num >= scale {
         MAX_SCORE
     } else {
         MAX_SCORE * num / scale
-    })
+    };
+    (score, &text[end..])
 }
 
 /// A threshold clap checks but does not keep: the value is read from the arguments in order, see `Request::from_args`.
@@ -258,6 +266,7 @@ pub fn attached(args: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsString> {
                 .iter()
                 .any(|n| a == n)
         })
+        .or_else(|| (args.get(1).is_some_and(|a| a == "status")).then_some(0))
         .map(|i| i + 1)
     else {
         return args;

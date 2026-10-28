@@ -216,6 +216,8 @@ fn renames_around_the_similarity_threshold_score_as_git_does() {
             &["-M99%"],
             &["-M100%"],
             &["-M5"],
+            &["-M0"],
+            &["-C0%"],
             &["--find-renames=60%"],
             &["--no-renames"],
         ] {
@@ -767,6 +769,68 @@ fn status_shows_staged_renames_and_copies() {
             ] {
                 r.same(args);
             }
+        }
+    });
+}
+
+#[test]
+fn status_renames_flags_follow_gits_option_order() {
+    each_format(|r| {
+        r.write("a.txt", &lines("a", 20));
+        r.write("b.txt", &lines("b", 20));
+        r.write("c.txt", &lines("c", 20));
+        r.write("d.txt", &lines("d", 20));
+        r.commit("one");
+        r.mv("a.txt", "a2.txt");
+        r.mv("b.txt", "b2.txt");
+        r.write("b2.txt", &edited("b", 20, 8));
+        r.write("c_copy.txt", &lines("c", 20));
+        r.write("d.txt", &edited("d", 20, 1));
+        r.write("d_copy.txt", &edited("d", 20, 2));
+        r.git(&["add", "-A"]);
+        for setting in [None, Some("false"), Some("true"), Some("copies")] {
+            if let Some(value) = setting {
+                r.git(&["config", "status.renames", value]);
+            }
+            for flags in [
+                &[][..],
+                &["--renames"],
+                &["--no-renames"],
+                &["--renames", "--no-renames"],
+                &["--no-renames", "--renames"],
+                &["-M"],
+                &["-M90%"],
+                &["-M30%"],
+                &["-M", "--no-renames"],
+                &["--no-renames", "-M"],
+                &["--no-renames", "-M30%"],
+                &["--renames", "--no-renames", "-M30%"],
+                &["--find-renames"],
+                &["--find-renames=30%"],
+                &["--find-renames=95%"],
+                &["--find-renames=100%"],
+                &["-M40%", "-M90%"],
+                &["-M=30%"],
+                &["-Mx"],
+                &["-M9x"],
+                &["--find-renames="],
+                &["-M.3"],
+                &["--renames", "-M30%"],
+            ] {
+                for base in [
+                    &["status", "-s"][..],
+                    &["status", "--porcelain"],
+                    &["status", "-sb", "--", "b2.txt", "d_copy.txt"],
+                ] {
+                    let mut args = base.to_vec();
+                    args.splice(1..1, flags.iter().copied());
+                    r.same(&args);
+                }
+            }
+        }
+        for bad in [&["status", "--renames=1"][..], &["status", "-C"]] {
+            let want = git(&r.dir).args(bad).output().unwrap().status.code();
+            assert_eq!(r.pyn(bad).status.code(), want, "{bad:?}");
         }
     });
 }
