@@ -7,7 +7,6 @@ use anyhow::{Result, anyhow, bail};
 use clap::{ArgAction, Args};
 use pyn_git::{ConfigFile, Expect, Remote, map_ref, set_tracking};
 use pyn_gittransport::exchange::push_with;
-use pyn_gittransport::{Connector, Env};
 use pyn_gitwire::{PushOptions, ReceivePack, RefStatus, RefUpdate};
 use pyn_gitwork::Head;
 use pyn_object::{Kind, ObjectId};
@@ -782,7 +781,7 @@ fn push_one(
     args: &PushArgs,
     opts: &Opts,
 ) -> Result<bool> {
-    let conn = Connector::new(git.config().clone(), Env::process()).connect(url, true)?;
+    let conn = git.connector().connect(url, true)?;
     let round = Round {
         git,
         target,

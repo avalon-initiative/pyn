@@ -32,6 +32,7 @@ mod convert;
 mod count_objects;
 mod decorate;
 mod describe;
+mod dwim;
 pub(crate) mod editor;
 mod fetch;
 mod fetch_apply;
@@ -82,6 +83,7 @@ mod rev_parse;
 mod rewrite;
 mod shallow;
 mod shortlog;
+mod show_object;
 mod show_ref;
 mod signing;
 mod sparse;
@@ -342,6 +344,18 @@ impl GitHome {
     /// The git configuration a transport reads: the repository's, over the user's.
     pub fn config(&self) -> &pyn_git::Config {
         self.repo.config()
+    }
+
+    /// A connector whose relative local remote paths resolve from the work tree root, as git's do.
+    pub fn connector(&self) -> pyn_gittransport::Connector {
+        let c = pyn_gittransport::Connector::new(
+            self.config().clone(),
+            pyn_gittransport::Env::process(),
+        );
+        match self.repo.git().work_tree() {
+            Some(root) => c.with_base(root),
+            None => c,
+        }
     }
 
     pub fn algorithm(&self) -> pyn_object::Algorithm {

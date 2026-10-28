@@ -8,7 +8,6 @@ use anyhow::{Result, anyhow, bail};
 use clap::{ArgAction, Args};
 use pyn_git::{ConfigFile, ObjectFilter, Ref, Refspec, Remote, map_ref, tracking};
 use pyn_gittransport::exchange::{Partial as WirePartial, fetch_partial_with, list_remote_refs};
-use pyn_gittransport::{Connector, Env};
 use pyn_gitwire::{Deepen, LsRefsOptions, RemoteRef, Transport, UploadPack};
 use pyn_gitwork::Head;
 use pyn_object::{Algorithm, ObjectId};
@@ -443,7 +442,7 @@ fn check_connected(git: &GitHome, wants: &[ObjectId], filter: Option<&ObjectFilt
 
 /// The refs a remote holds, from its URL, without fetching anything.
 pub(super) fn query_refs(git: &GitHome, url: &str) -> Result<Vec<RemoteRef>> {
-    let conn = Connector::new(git.config().clone(), Env::process()).connect(url, false)?;
+    let conn = git.connector().connect(url, false)?;
     let mut transport = conn.transport;
     let opts = LsRefsOptions {
         symrefs: true,
@@ -497,7 +496,7 @@ pub(super) fn fetch_core(
             remote_refs: Vec::new(),
         });
     };
-    let conn = Connector::new(git.config().clone(), Env::process()).connect(&target.url, false)?;
+    let conn = git.connector().connect(&target.url, false)?;
     let url = tidy_url(&conn.display);
     let mut transport = conn.transport;
     let (adopted, mut up) = open_session(git, &mut *transport)?;

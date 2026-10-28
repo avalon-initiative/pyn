@@ -64,7 +64,11 @@ pub fn run(args: &LsRemoteArgs, git: Option<&GitHome>) -> Result<()> {
     };
     let (url, default_remote) = target(git, args.repository.as_deref())?;
     let patterns = matchers(&args.patterns)?;
-    let conn = Connector::new(config, env).connect(&url, false)?;
+    let connector = match git {
+        Some(g) => g.connector(),
+        None => Connector::new(config, env),
+    };
+    let conn = connector.connect(&url, false)?;
     if default_remote {
         eprintln!("From {}", conn.display);
     }

@@ -1075,6 +1075,9 @@ fn show(
     format: &diff::Format,
 ) -> Result<()> {
     git.repo.validate_diff_ignore_submodules()?;
+    if paths.is_empty() && super::show_object::show_objects(git, cwd, args)? {
+        return Ok(());
+    }
     if format.opts.abbrev.is_some() && fmt.first_given().is_some() {
         crate::usage_error("`--abbrev` together with a commit format is not built");
     }

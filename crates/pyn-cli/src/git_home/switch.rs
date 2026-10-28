@@ -473,6 +473,12 @@ fn switch_to(git: &GitHome, args: SwitchArgs) -> Result<()> {
             (None, Some(name), false) => {
                 let name = expand_branch_name(git, name)?;
                 if git.branch_commit(&name)?.is_none() {
+                    if git.repo.resolve(&name).is_err()
+                        && super::dwim::enabled(git, crate::branch::flag(args.guess, args.no_guess))
+                        && let Some(g) = super::dwim::guess(git, &name)?
+                    {
+                        return create_guessed(git, name, &g, args.force);
+                    }
                     if git.repo.resolve(&name).is_ok() {
                         bail!(
                             "a branch is expected, got commit '{name}'; use `pyn switch --detach {name}` to check it out"
@@ -492,6 +498,16 @@ fn switch_to(git: &GitHome, args: SwitchArgs) -> Result<()> {
             force: args.force,
         },
     )
+}
+
+/// Creates the branch `name` from a guessed remote-tracking branch and makes it track that branch.
+fn create_guessed(git: &GitHome, name: String, g: &super::dwim::Guess, force: bool) -> Result<()> {
+    let landing = Landing::NewBranch {
+        name: name.clone(),
+        start: Some(g.tracking.clone()),
+    };
+    go(git, Go { landing, force })?;
+    super::dwim::track(git, &name, g)
 }
 
 /// Creates the branch `name` at the commit `start` and switches to it, as `checkout -b name start`.
@@ -859,6 +875,8 @@ fn checkout_to(git: &GitHome, cwd: &Path, args: CheckoutArgs) -> Result<()> {
         patch,
         recurse_submodules: _,
         no_recurse_submodules: _,
+        guess,
+        no_guess,
         pathspec_file: _,
     } = args;
     if patch {
@@ -1018,7 +1036,23 @@ fn checkout_to(git: &GitHome, cwd: &Path, args: CheckoutArgs) -> Result<()> {
             },
         );
     }
-    if std::env::args_os().any(|a| a == "--") {
+    let dashes = std::env::args_os().any(|a| a == "--");
+    if !detach && super::dwim::enabled(git, crate::branch::flag(guess, no_guess)) {
+        let file = !dashes && is_path(git, cwd, &name)?;
+        match super::dwim::guess(git, &name) {
+            Ok(Some(_)) if file => {
+                return Err(Refused(format!(
+                    "'{name}' could be both a local file and a tracking branch; use -- (and optionally --no-guess) to disambiguate"
+                ))
+                .into());
+            }
+            Ok(Some(g)) => return create_guessed(git, name, &g, force),
+            Ok(None) => {}
+            Err(_) if file => {}
+            Err(e) => return Err(e),
+        }
+    }
+    if dashes {
         bail!("invalid reference: {name}");
     }
     if !detach && is_path(git, cwd, &name)? {
