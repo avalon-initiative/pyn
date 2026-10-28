@@ -7,6 +7,7 @@ use pyn_object::{Algorithm, Commit, Kind, ObjectId, TreeEntry, parse_tree};
 use crate::attributes::Attributes;
 use crate::convert::{Conversion, Settings};
 use crate::error::{Error, Result, io_at};
+use crate::filter::Filters;
 use crate::ignore::{Ignore, parse_rules};
 
 /// What `HEAD` points at.
@@ -38,6 +39,7 @@ pub struct Repo {
     home: Option<PathBuf>,
     xdg: Option<PathBuf>,
     attributes: Mutex<Option<Arc<Attributes>>>,
+    filters: Arc<Filters>,
     pub(crate) ignore_override: Mutex<Option<crate::SubmoduleIgnore>>,
 }
 
@@ -65,9 +67,14 @@ impl Repo {
             home: home.map(Path::to_path_buf),
             xdg: xdg.map(Path::to_path_buf),
             attributes: Mutex::new(None),
+            filters: Arc::new(Filters::new(git.work_tree(), git.common_dir())),
             ignore_override: Mutex::new(None),
             git,
         })
+    }
+
+    pub fn filters(&self) -> &Filters {
+        &self.filters
     }
 
     pub fn git(&self) -> &Repository {
@@ -208,12 +215,13 @@ impl Repo {
         *self.attributes.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 
-    /// The line-ending and `ident` conversion that applies to `path`.
+    /// The line-ending, `ident` and filter conversion that applies to `path`.
     pub fn conversion(&self, path: &[u8]) -> Result<Conversion> {
         Ok(Conversion::new(
             Settings::from_config(&self.config),
             &self.attributes()?.for_path(path),
-        ))
+        )
+        .with_filters(&self.config, &self.filters))
     }
 
     fn global_attributes_path(&self) -> Option<PathBuf> {

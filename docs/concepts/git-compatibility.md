@@ -970,11 +970,35 @@ comparison), and to every command that writes work tree files (`switch`, `checko
 brings in applies to the files written after it, and to itself. `status` and `diff` compare the converted work tree file with the
 index, so a repository that relies on conversions shows no phantom changes. `-diff` makes a file binary in `diff` and `diff` forces text.
 
-Not built: filter drivers (`filter=<name>`, clean and smudge), `working-tree-encoding`, `-X renormalize` and `add --renormalize`,
+Not built: `working-tree-encoding`, `-X renormalize` and `add --renormalize`,
 `export-ignore`/`export-subst`, the `merge` and `whitespace` attributes, `diff=<driver>` and `textconv`, and `.gitattributes` read
 from a tree rather than the work tree (bare repositories, `--source`). `core.autocrlf` and the attributes are not applied to
 `diff --no-index`. Covered by `crates/pyn-cli/tests/git_attributes.rs`, which compares blob ids, work tree bytes and `status`
 and `diff` output with git (#273).
+
+#### Filter drivers
+
+`filter=<name>` runs the commands of `filter.<name>.clean`, `smudge`, `process` and `required` where git applies them:
+`clean` when content goes into the repository (`add`, `commit -a`, `stash`, and in `status` and `diff` to compare the work
+tree file with the index), `smudge` when a command writes a work tree file (`switch`, `checkout`, `restore`, `reset --hard`,
+`merge`, `stash apply`, `clone` and the rest of the list above). The order is git's: `clean` sees the raw file and its result
+then goes through the line-ending and `ident` conversion, while `smudge` sees the already converted content. A driver exists
+only when some `filter.<name>.*` key is set; an attribute naming an unconfigured driver changes nothing. A command is run by
+`sh -c` in the work tree root with the content on standard input; `%f` in it is the quoted path and `%%` is `%`. When
+`process` is set it is used and `clean` and `smudge` are ignored. The long-running protocol is git's: one process per
+command line and per pyn invocation, the `git-filter-client`/`git-filter-server` version 2 handshake, pkt-lines of up to
+65516 bytes, `command=` and `pathname=` per file, and a final `status=` (`success`, `error`, or `abort`, after which the
+process is not asked again). A failing command, a non-zero exit, `status=error` or a missing command for the direction leaves
+the content unfiltered with `error: external filter ... failed`, unless `filter.<name>.required` is true, which makes it
+`fatal: <path>: clean filter '<name>' failed` (or `smudge`) with exit `128`; for a required driver with no command it is fatal
+too, as in git.
+
+Not built: the `delay` capability (pyn does not advertise it, so a filter never delays a file), the `ref`, `treeish` and `blob`
+metadata that git sends with `smudge` requests, filters in `apply` and the patch-mode commands that write the work tree
+(`checkout -p`, `restore -p`), which stop for such a path (see [What pyn will not write](#what-pyn-will-not-write)),
+`-X renormalize` through a filter, and `restore` rewrites every matching path rather than only the changed ones, which a
+`smudge` that does not invert `clean` makes visible. Covered by `crates/pyn-cli/tests/git_filters.rs`, which compares blob
+ids, work tree bytes, `status`, `diff` and exit status class with git (#628).
 
 ### Pathspecs
 
@@ -1080,7 +1104,7 @@ With no worktree `.gitmodules`, an unmerged index entry for that file disables t
 Differences from git, all deliberate or not yet done:
 
 - Line endings and `ident` are converted as git does (see [Attributes and line endings](#attributes-and-line-endings));
-  filter drivers and `working-tree-encoding` are not applied.
+  `working-tree-encoding` is not applied.
 - Commit abbreviations are 7 digits and are not lengthened to stay unique; `log` and `show` print no color on a terminal.
 - A nested repository that the index does not track is one untracked `dir/`.
 - `merge` and `stash apply` write diff3 conflict markers whatever `merge.conflictStyle` says and `stash apply` merges only when
@@ -2658,10 +2682,10 @@ patch to it, and merges the result with the current tree as `cherry-pick` merges
 
 ### What pyn will not write
 
-Any command that would write a work tree file through a `filter` driver other than Git LFS, or with `working-tree-encoding`
-(other than UTF-8), stops first and changes nothing (exit `128`, naming the path), because pyn applies neither. `apply` and the
-patch-mode commands that write the work tree (`checkout -p`, `restore -p`) also stop for a path whose line endings or `ident` git would convert,
-since they copy bytes as they are. A Git LFS filter writes the pointer file as it is, with a warning (decision #245; see [Git LFS](#git-lfs)).
+Any command that would write a work tree file with `working-tree-encoding` (other than UTF-8) stops first and changes
+nothing (exit `128`, naming the path), because pyn does not apply it. `apply` and the patch-mode commands that write the work
+tree (`checkout -p`, `restore -p`) also stop for a path whose line endings, `ident` or filter git would convert, since they
+copy bytes as they are. Filters run as described in [Filter drivers](#filter-drivers).
 The hooks pyn does not run yet (see [Client hooks](#client-hooks)) draw one warning naming the ones that exist
 for the command. The split index, a sparse index and `GIT_DIR` are not supported, and anything that talks to a remote other than `ls-remote`, `fetch`, `pull`, `push` and `clone` are not built yet (epic #301; see [Transports and credentials](#transports-and-credentials)).
 
@@ -2716,14 +2740,32 @@ commit a rebase makes when `--continue` finishes an `edit` or a `squash` chain; 
 
 ### Git LFS
 
-pyn has no LFS client (provisional: a client is not scheduled). `fetch`, `pull`, `clone`, `switch`/`checkout` and the other
-commands that write the work tree keep pointer files byte for byte: nothing is smudged, downloaded or cleaned, and `status`
-sees them as ordinary files. When `filter=lfs` applies to a path, the command prints one warning on standard error, once
-per invocation (so `pull` and `clone` warn once, not once per step). `fetch` and `pull` read the `.gitattributes` files in
-the tip of each ref that moved, `clone` in the commit it checks out (none for `--bare` or `-n`), and the work tree commands
-read the attributes as for [Attributes and line endings](#attributes-and-line-endings). Only `.gitattributes` files in the tree are
-read for `fetch` and `clone`, not `.git/info/attributes` or the global file. The warning wording is not part of the
-contract. Covered by `crates/pyn-cli/tests/git_lfs.rs` (#311).
+`filter=lfs` is pyn's own implementation (decision #775): no `git-lfs` program and no LFS library is used, and
+`filter.lfs.clean`, `smudge` and `process` are ignored whether or not they are configured (`filter.lfs.required` is honoured).
+`clean` turns work tree content into a pointer file and stores the content in `.git/lfs/objects/<aa>/<bb>/<oid>` (the
+common directory of a linked work tree; `<aa>` and `<bb>` are the first two pairs of the SHA-256 hex id), written through
+`.git/lfs/tmp`:
+
+```text
+version https://git-lfs.github.com/spec/v1
+oid sha256:<64 lowercase hex digits>
+size <bytes>
+```
+
+Content that already is a pointer file (at most 1024 bytes, `version`, `oid sha256:` and `size` lines, a trailing newline) and
+empty content are passed through unchanged, so `status` sees pointers as unmodified. `smudge` turns a pointer file into the
+stored object; a pointer whose object is not in the local store stays as the pointer file, with one warning on standard error
+per invocation, because pyn cannot download LFS objects yet (the Batch API is not built). A stored object with the wrong size
+or hash is an error. `GIT_LFS_SKIP_SMUDGE=1` (or `true`) leaves pointers as they are. `fetch` and `pull` also warn once when
+the `.gitattributes` in the tip of a ref that moved applies `filter=lfs` to a path whose pointer names an object that is not
+stored (`clone` in the commit it checks out, none for `--bare` or `-n`); only `.gitattributes` files in the tree are read for
+that check. The warning wording is not part of the contract. Covered by `crates/pyn-cli/tests/git_lfs_client.rs` (the pointer
+bytes are also compared with `git lfs pointer` when `git-lfs` is installed and skipped otherwise) and
+`crates/pyn-cli/tests/git_lfs.rs` (#311, #628).
+
+Not built: downloading and uploading objects (the Batch API, `lfs.url`, transfer adapters, credentials), the locking API and
+`lockable`, `lfs.storage`, `lfs.fetchinclude` and `fetchexclude`, pointer extensions (`ext-*` lines), and the `git lfs`
+commands (`track`, `fetch`, `pull`, `push`, `ls-files`, `prune`, `lock`, `unlock`, `locks`).
 
 ### Refused commands
 
