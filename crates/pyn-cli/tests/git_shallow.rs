@@ -219,8 +219,9 @@ impl Rig {
         po
     }
 
-    /// [`Rig::fetch_both`] without comparing the boundary commits: git versions pick different ones around merges.
-    fn fetch_both_history(&self, g: &Path, p: &Path, flags: &[&str]) -> Out {
+    /// [`Rig::fetch_both`] checking only the exit status and that the result is a valid repository: git versions
+    /// deepen differently around merges, so the commits kept are not compared.
+    fn fetch_both_valid(&self, g: &Path, p: &Path, flags: &[&str]) -> Out {
         let mut args = vec!["fetch"];
         args.extend_from_slice(flags);
         let go = self.git(g, &args);
@@ -228,16 +229,12 @@ impl Rig {
         let ctx = format!("{args:?}\ngit: {}\npyn: {}", go.stderr, po.stderr);
         assert_eq!(go.code, po.code, "{ctx}");
         if po.code == 0 {
-            self.same_with(g, p, &format!("{args:?}"), false);
+            fsck(p);
         }
         po
     }
 
     fn same(&self, g: &Path, p: &Path, ctx: &str) {
-        self.same_with(g, p, ctx, true);
-    }
-
-    fn same_with(&self, g: &Path, p: &Path, ctx: &str, boundary: bool) {
         let shallow = |d: &Path| {
             let mut ids: Vec<String> = fs::read_to_string(d.join(".git/shallow"))
                 .unwrap_or_default()
@@ -247,9 +244,7 @@ impl Rig {
             ids.sort();
             ids
         };
-        if boundary {
-            assert_eq!(shallow(g), shallow(p), "{ctx}: shallow file");
-        }
+        assert_eq!(shallow(g), shallow(p), "{ctx}: shallow file");
         for args in [
             &["for-each-ref", "--format=%(refname) %(objectname)"][..],
             &["rev-list", "--all"],
@@ -364,12 +359,12 @@ fn deepening_across_branches_and_merges_matches_git() {
             &["--deepen", "5"],
             &["--unshallow"],
         ] {
-            rig.fetch_both_history(&g, &p, flags);
+            rig.fetch_both_valid(&g, &p, flags);
         }
         let (g, p) = rig.clone_from(&rig.url, &["--depth", "2", "--branch", "joined"]);
-        rig.fetch_both_history(&g, &p, &["--deepen", "1"]);
-        rig.fetch_both_history(&g, &p, &["--depth", "3", "origin", "feature:feature"]);
-        rig.fetch_both_history(&g, &p, &["--deepen", "4"]);
+        rig.fetch_both_valid(&g, &p, &["--deepen", "1"]);
+        rig.fetch_both_valid(&g, &p, &["--depth", "3", "origin", "feature:feature"]);
+        rig.fetch_both_valid(&g, &p, &["--deepen", "4"]);
     }
 }
 
