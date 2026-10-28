@@ -60,7 +60,7 @@ fn messages(
                 "CONFLICT (modify/delete): {path} deleted in {deleted} and modified in {kept}.  Version {kept} of {path} left in tree."
             )]
         }
-        Conflicting::FileDirectory => Vec::new(),
+        Conflicting::FileDirectory | Conflicting::Renamed => Vec::new(),
         _ => vec![format!("CONFLICT (content): Merge conflict in {path}")],
     }
 }

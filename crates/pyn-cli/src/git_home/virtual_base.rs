@@ -1,5 +1,5 @@
 //! The base of a merge with several merge bases (a criss-cross): `ort`'s recursive merge of the bases into one tree
-//! that is never committed. Conflicts inside it stay as markers, the way git leaves them.
+//! that is never committed. Content conflicts inside it stay as markers, the way git leaves them.
 
 use anyhow::{Result, bail};
 use pyn_object::ObjectId;
@@ -62,6 +62,15 @@ pub(super) fn virtual_tree(
             },
             &inner_settings,
         )?;
+        if merged
+            .paths
+            .values()
+            .any(|r| matches!(r, Resolved::Conflict(c) if !c.notes.is_empty()))
+        {
+            bail!(
+                "the merge bases conflict over a rename among themselves; pyn cannot merge that yet, and nothing was changed"
+            );
+        }
         if ambiguous
             && merged
                 .paths

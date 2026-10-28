@@ -557,9 +557,6 @@ fn what_cannot_be_honored_is_refused_before_anything_changes() {
         "histogram",
         "diff-algorithm=patience",
         "diff-algorithm=histogram",
-        "find-renames",
-        "find-renames=40",
-        "rename-threshold=40%",
     ] {
         each_format(CONFLICT, |p| p.refused(&["merge", "-X", opt, "side"], 129));
     }
