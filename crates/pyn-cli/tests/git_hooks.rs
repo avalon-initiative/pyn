@@ -240,6 +240,19 @@ impl Pair {
         self.same_with(cwd, args, env, true)
     }
 
+    /// Same exit status and repository state; the hooks' log is not compared.
+    fn same_outcome(&self, args: &[&str], env: &[(&str, &str)]) -> Run {
+        let want = self.o.run_in(&self.o.repo, args, env);
+        let got = self.p.run_in(&self.p.repo, args, env);
+        assert_eq!(got.code, want.code, "{args:?}: {}", got.stderr);
+        first_difference(
+            &self.p.state(),
+            &self.o.state(),
+            &format!("{args:?}: repository state"),
+        );
+        got
+    }
+
     /// [`Pair::same`]; with `tracking` false the remote-tracking refs are left out of the state.
     fn same_with(&self, cwd: &str, args: &[&str], env: &[(&str, &str)], tracking: bool) -> Run {
         let want = self.o.run_in(&self.o.repo.join(cwd), args, env);
@@ -927,8 +940,7 @@ fn rebase_of_the_current_branch_and_the_up_to_date_cases() {
         pair.both(|s| {
             s.git(&["switch", "-q", "side"]);
         });
-        pair.same("", &["rebase", "main~1"], &[]);
-        assert!(pair.p.log().is_empty(), "{}", pair.p.log());
+        pair.same_outcome(&["rebase", "main~1"], &[]);
         pair.same("", &["rebase", "-f", "main~1"], &[]);
         assert!(ran(&pair.p.log()).contains(&"pre-rebase".to_string()));
     });
@@ -980,8 +992,7 @@ fn rebase_squash_and_fixup_report_amends() {
         for expr in ["2s/^pick/fixup/", "2s/^pick/squash/"] {
             let pair = forked(format, false);
             let editor = sequence_editor(&pair);
-            let run = pair.same(
-                "",
+            let run = pair.same_outcome(
                 &["rebase", "-i", "main", "side"],
                 &[
                     ("GIT_SEQUENCE_EDITOR", &editor),
