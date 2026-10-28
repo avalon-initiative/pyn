@@ -6,6 +6,7 @@ mod convert;
 mod error;
 mod history;
 mod ignore;
+mod mailmap;
 mod pathspec;
 mod repo;
 mod rev;
@@ -21,6 +22,7 @@ pub use convert::{Conversion, Converted, SafeCrlf, Settings, ToGit, Unsupported}
 pub use error::{Error, Result};
 pub use history::{Log, LogEntry, Walked};
 pub use ignore::{Ignore, Level, Rule, parse_rules, verdict};
+pub use mailmap::Mailmap;
 pub use pathspec::{
     MagicSet, Match, Pathspec, PathspecContext, PathspecError, PathspecOptions, Tracker,
     read_pathspec_file,

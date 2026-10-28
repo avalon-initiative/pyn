@@ -873,20 +873,6 @@ fn what_is_not_built_is_a_usage_error() {
     });
 }
 
-#[test]
-fn a_mailmap_is_refused_rather_than_ignored() {
-    each_format(|r| {
-        linear(r);
-        r.write(
-            ".mailmap",
-            b"Proper <proper@example.com> <ann@example.com>\n",
-        );
-        let (code, _, err) = r.pyn(&r.dir, "blame", &["a.txt"]);
-        assert_eq!(code, 128, "{err}");
-        assert!(err.contains("mailmap"), "{err}");
-    });
-}
-
 struct Rng(u64);
 
 impl Rng {

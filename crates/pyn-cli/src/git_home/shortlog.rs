@@ -6,6 +6,7 @@ use std::path::Path;
 
 use anyhow::{Result, bail};
 use clap::Args;
+use pyn_gitwork::Mailmap;
 use pyn_object::{Kind, ObjectId};
 
 use super::GitHome;
@@ -37,36 +38,42 @@ pub struct ShortlogArgs {
 type Groups = BTreeMap<Vec<u8>, Vec<String>>;
 
 pub(super) fn shortlog(git: &GitHome, cwd: &Path, args: ShortlogArgs) -> Result<()> {
-    if git.repo.root().is_ok_and(|r| r.join(".mailmap").exists())
-        || git.config().get("mailmap.file").is_some()
-        || git.config().get("mailmap.blob").is_some()
-    {
-        bail!("shortlog does not read mailmaps on a git repository yet");
-    }
+    let map = git.mailmap()?;
     let mut groups = Groups::new();
     if args.revs.is_empty() && !std::io::stdin().is_terminal() {
-        from_stdin(&mut groups, &args)?;
+        from_stdin(&mut groups, &args, &map)?;
     } else {
-        from_history(git, cwd, &args, &mut groups)?;
+        from_history(git, cwd, &args, &map, &mut groups)?;
     }
     emit_bytes(&render(groups, &args));
     Ok(())
 }
 
 /// Outside a repository only a log on standard input can be summarized; anything else is a usage error.
+/// A `.mailmap` in the current folder still applies.
 pub(crate) fn shortlog_outside_repo(args: &ShortlogArgs) -> Result<()> {
     if !args.revs.is_empty() || !args.paths.is_empty() || std::io::stdin().is_terminal() {
         eprintln!("usage: git shortlog [<options>] [<revision-range>] [[--] <path>...]");
         eprintln!("   or: git log --pretty=short | git shortlog [<options>]");
         std::process::exit(129);
     }
+    let mut map = Mailmap::new();
+    if let Ok(bytes) = std::fs::read(".mailmap") {
+        map.parse(&bytes);
+    }
     let mut groups = Groups::new();
-    from_stdin(&mut groups, args)?;
+    from_stdin(&mut groups, args, &map)?;
     emit_bytes(&render(groups, args));
     Ok(())
 }
 
-fn from_history(git: &GitHome, cwd: &Path, args: &ShortlogArgs, groups: &mut Groups) -> Result<()> {
+fn from_history(
+    git: &GitHome,
+    cwd: &Path,
+    args: &ShortlogArgs,
+    map: &Mailmap,
+    groups: &mut Groups,
+) -> Result<()> {
     let pre = prefix(git, cwd).unwrap_or_default();
     let resolver = Resolver { git, prefix: &pre };
     let commit_of = |text: &str| -> Result<ObjectId> {
@@ -113,10 +120,11 @@ fn from_history(git: &GitHome, cwd: &Path, args: &ShortlogArgs, groups: &mut Gro
         } else {
             &entry.commit.author
         };
-        let mut key = who.name.clone();
+        let (name, email) = map.map(&who.name, &who.email);
+        let mut key = name;
         if args.email {
             key.extend_from_slice(b" <");
-            key.extend_from_slice(&who.email);
+            key.extend_from_slice(&email);
             key.push(b'>');
         }
         groups
@@ -128,7 +136,7 @@ fn from_history(git: &GitHome, cwd: &Path, args: &ShortlogArgs, groups: &mut Gro
 }
 
 /// Reads `git log` text: each `Author:` line, then the first line of its message.
-fn from_stdin(groups: &mut Groups, args: &ShortlogArgs) -> Result<()> {
+fn from_stdin(groups: &mut Groups, args: &ShortlogArgs, map: &Mailmap) -> Result<()> {
     let mut lines = std::io::stdin().lock().split(b'\n');
     while let Some(line) = lines.next().transpose()? {
         let Some(who) = line
@@ -160,6 +168,7 @@ fn from_stdin(groups: &mut Groups, args: &ShortlogArgs) -> Result<()> {
             ),
             None => (who.to_vec(), Vec::new()),
         };
+        let (name, email) = map.map(&name, &email);
         let mut key = name;
         if args.email {
             key.extend_from_slice(b" <");

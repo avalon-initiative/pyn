@@ -38,6 +38,7 @@ impl Commits for GitHome {
         };
         let pretty = Pretty::parse(&format!("format:{format}"))?;
         let decorations = Decorations::new();
+        let mailmap = self.mailmap()?;
         let ctx = Context {
             style: DateStyle::parse("default")?,
             now: chrono::Utc::now().timestamp(),
@@ -45,6 +46,8 @@ impl Commits for GitHome {
             commit_color: None,
             tabs: 8,
             abbrev_commit: false,
+            mailmap: Some(&mailmap),
+            map_headers: false,
         };
         let text = render(&pretty, &ctx, id, &self.repo.commit(id)?);
         Ok(text.replace('\n', " "))

@@ -1105,7 +1105,7 @@ simplification.
 Formats: `--oneline` (abbreviated id and subject), `--format=<f>` and `--pretty[=<f>]` with `oneline`, `short`, `medium`
 (the default), `full`, `fuller`, `raw`, `format:<template>` (a newline between commits) and `tformat:<template>` (a newline
 after each; also a bare template or `--format=<template>`). Templates take `%H %h %T %t %P %p %an %ae %ad %aD %ai %aI %as %at
-%ar %cn %ce %cd %cD %ci %cI %cs %ct %cr %s %b %B %d %D %n %%`; any other `%` sequence is printed as written. `%h`, `%t` and `%p`
+%ar %cn %ce %cd %cD %ci %cI %cs %ct %cr %s %b %B %d %D %n %%`, and the mailmap forms `%aN %aE %al %aL %cN %cE %cl %cL` (see [Mailmap](#mailmap)); `%gd %gD %gs %gn %gN %ge %gE` are empty, as in git without `-g`; any other `%` sequence is printed as written. `%h`, `%t` and `%p`
 are 7 digits. `%d` and `%D` list `HEAD -> <branch>` (or `HEAD`), then the other branches, remote-tracking branches, `tag: <name>`
 and `refs/stash` that point at the commit, in git's order. `--date=` takes `default`, `iso`, `iso-strict`, `rfc`, `short`,
 `relative`, `unix` and `raw` and applies to `Date:` and `%ad`/`%cd`; commit dates print in the offset recorded in the commit. `show` takes the same formats and `--date=`.
@@ -1169,7 +1169,7 @@ Differences from git:
   alone, match.
 - `--since` and `--until` only filter; git also stops walking at the first commit older than `--since`, which differs only for
   histories whose commit dates are not in order. A date git cannot read is a failure here (git takes `now`).
-- `%d` does not hide `refs/notes/*` or other namespaces: they print by full name. Unlisted placeholders (`%C`, `%w`, `%<`, `%aN`,
+- `%d` does not hide `refs/notes/*` or other namespaces: they print by full name. Unlisted placeholders (`%C`, `%w`, `%<`,
   `%x`) are printed as written.
 - `--format` and `--pretty` win over `--oneline` whatever their order. `--date=local`, `human` and `format:` are not taken.
 - `log --stat` takes the width forms of `diff --stat`; the graph is scaled to the terminal width as in `diff`.
@@ -2456,7 +2456,7 @@ with `^` on boundary commits, author, date, line number, aligned), `-e`, `-s`, `
 and `^/<regex>/` anchors work as git reads them, repeated or overlapping. `-w` ignores whitespace when comparing a commit
 with its parent. `--first-parent` follows only the first parent of each merge. Revisions are `<rev>` (before or after the file, with or without `--`), `<a>..<b>` and `^<rev>`;
 commits reachable from the excluded side are boundaries, and so are root commits unless `--root` or `blame.showRoot`.
-`blame.blankBoundary`, `blame.showEmail`, `blame.date`, `diff.indentHeuristic` and `core.abbrev` are read.
+`blame.blankBoundary`, `blame.showEmail`, `blame.date`, `diff.indentHeuristic` and `core.abbrev` are read. Author and committer names and emails are mapped by the [mailmap](#mailmap).
 
 A modified work tree file is blamed on `Not Committed Yet <not.committed.yet>` at the current time, with `HEAD` (and
 `MERGE_HEAD`) as parents; `--contents <file>` (or `-` for standard input) does the same for another file's content as
@@ -2469,7 +2469,7 @@ What differs, all of it refused or documented rather than silently different:
 | Difference | pyn |
 | --- | --- |
 | Not built (usage error `129`) | `-M`, `-C`, `--incremental`, `-L :<funcname>`, `--ignore-rev`, `--ignore-revs-file`, `--reverse`, `--show-stats`, `--progress`, `--score-debug`, `--color-lines`, `--color-by-age`, `--minimal`, `--diff-algorithm`, `-S`, abbreviated long options, `<a>...<b>`, the other revision-list options, and `--date=human`, `local`, `format:...` and `auto:...`. |
-| Refused (`128`) | A `.mailmap`, `mailmap.file` or `mailmap.blob` (names are not mapped), and `diff.algorithm` other than `myers`. |
+| Refused (`128`) | `diff.algorithm` other than `myers`. |
 | Abbreviation length | `core.abbrev`, else 7 digits, grown until the abbreviation of every blamed commit is unique, plus one for the boundary mark. Git also lengthens its default for repositories with tens of thousands of objects; pyn does not. |
 | Content filters | `textconv` is not applied. The line-ending conversion of the work tree file is not applied to the lines `blame` reads from it. |
 | Commit encodings | Author names and subjects are printed as stored, without re-encoding from an `encoding` header. |
@@ -2558,13 +2558,36 @@ with `fatal: not a git repository (or any of the parent directories): .git` (`12
 | `ls-tree` | `-d`, `-r`, `-t`, `-l`, `-z`, `--name-only`, `--name-status`, `--object-only`, `--full-name`, `--full-tree`, `--abbrev[=<n>]`, and paths. Paths are literal (a `*` is an ordinary character), `:(top)`, `:/` and `:(literal)` are read, and any other magic is git's `pathspec magic not supported by this command` (`128`); `.` and `..` name a folder's contents. |
 | `cat-file` | `-t`, `-s`, `-p`, `-e`, `<type> <object>` (tags are followed to the type), `--batch` and `--batch-check` with git's default format. |
 | `show-ref` | `--head` (shown whatever the other options say, as git documents), `--heads`, `--tags`, `-d`, `-s`/`--hash[=<n>]`, `--abbrev[=<n>]`, `--verify`, `--exists`, `-q`, and patterns that match the end of a ref name on a `/`. |
-| `shortlog` | `-n`, `-s`, `-e`, `-c`, a revision range and `-- <path>...`; with no revision it reads a `git log` on standard input unless that is a terminal, then it uses `HEAD`. Refused (`128`) when the repository has a `.mailmap` file or sets `mailmap.file` or `mailmap.blob`, which git would apply. |
+| `shortlog` | `-n`, `-s`, `-e`, `-c`, a revision range and `-- <path>...`; with no revision it reads a `git log` on standard input unless that is a terminal, then it uses `HEAD`. Names and emails (of the committer with `-c`) are mapped by the [mailmap](#mailmap), also from a log on standard input, and outside a repository from a `.mailmap` in the current folder. |
+| `check-mailmap` | `<contact>...` and `--stdin`, each as `Name <user@host>` or `<user@host>`; the canonical form is printed. A contact without angle brackets is a fatal error. |
 | `describe` | `--tags`, `--all`, `--always`, `--long`, `--abbrev=<n>`, `--dirty[=<mark>]`, `--match`, `--exclude`, `--exact-match`, `--candidates=<n>`, and commit-ishes. The nearest tag is chosen by the walk git uses, including its limit of candidate tags. Describing a blob and `--first-parent`, `--contains` and `--broken` are not built. |
 | `name-rev` | `--tags`, `--name-only`, `--no-undefined`, `--always` and commit-ishes. `--all`, `--stdin`, `--annotate-stdin`, `--refs` and `--exclude` are not built, and `name-rev` with no commit is a usage error where git prints nothing. |
 
 Abbreviations (`--short`, `--abbrev`, `describe`) start at `core.abbrev` or 7 digits and grow until the id is unique among all
 objects. git also grows the default length with the size of the repository (8 digits from about 16,000 objects); pyn does not,
 so past that size a default abbreviation can be one digit shorter than git's.
+
+### Mailmap
+
+One mailmap is read for every command that maps identities, from the sources git reads, later ones overriding earlier
+ones: the work tree's `.mailmap` (not when it is a symbolic link; not in a bare repository), the blob named by
+`mailmap.blob` (`HEAD:.mailmap` in a bare repository when unset; a blob that does not exist is skipped) and the file
+named by `mailmap.file` (`~/` and work-tree-relative paths; `~user/` is refused with `128`). The four line forms
+(`Proper Name <commit@email>`, `<proper@email> <commit@email>`, `Proper Name <proper@email> <commit@email>` and
+`Proper Name <proper@email> Commit Name <commit@email>`), comments and git's whitespace and malformed-line rules are read
+as git reads them. Emails and names compare ignoring ASCII case, a line that names the commit's name wins over one that
+names only the email, and a later line replaces the parts it sets. A line whose first email is empty is ignored.
+
+It maps: `blame` and `annotate` (the author and committer columns and porcelain lines), `shortlog` (also `-e` and `-c`),
+the `%aN %aE %aL %cN %cE %cL` placeholders of `log` and `show` (always, as in git), the `Author:` and `Commit:` lines of
+the `short`, `medium`, `full` and `fuller` formats when `--use-mailmap` (or `--mailmap`) is given or `log.mailmap` is
+true (the default; `--no-use-mailmap` and `--no-mailmap` turn it off, the last flag wins), the `rebase.instructionFormat`
+placeholders, `--author` and `--committer` with the same condition, and `check-mailmap`. `%an`, `%ae`, `%al` and
+`--pretty=raw` stay as recorded. With `--committer` git maps the committer line only when the author line mapped too, and
+pyn follows that (observed on git 2.43). A pyn server does not map: `--use-mailmap` there is a usage error.
+
+Not built: `cat-file --mailmap` and `--use-mailmap`, `for-each-ref` and `branch` `:mailmap` modifiers, `rev-list
+--use-mailmap`, and `check-mailmap` contacts that are only an email.
 
 ### Storage maintenance
 
