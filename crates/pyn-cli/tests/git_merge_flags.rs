@@ -29,6 +29,7 @@ struct Pair {
     home: PathBuf,
     git: PathBuf,
     pyn: PathBuf,
+    editor: std::cell::RefCell<String>,
 }
 
 fn text(bytes: &[u8]) -> String {
@@ -55,6 +56,7 @@ impl Pair {
         let pair = Self {
             _tmp: tmp,
             pyn: root.join("pyn"),
+            editor: std::cell::RefCell::new("true".into()),
             git,
             home,
         };
@@ -103,7 +105,7 @@ impl Pair {
         };
         cmd.args(args)
             .env("HOME", &self.home)
-            .env("GIT_EDITOR", "true")
+            .env("GIT_EDITOR", &*self.editor.borrow())
             .envs(IDENTITY)
             .stdin(Stdio::null())
             .output()
@@ -679,4 +681,98 @@ fn verify_signatures() {
         p.both_sh("git checkout -q signed^ 2>/dev/null; git checkout -q -B main signed^");
         p.works(&["merge", "--verify-signatures", "signed"]);
     });
+}
+
+#[test]
+fn title_of_an_ancestor_of_a_branch() {
+    for spec in [
+        "side^", "side^^", "side~1", "side~2", "side~", "side~0", "side^0", "side~~", "side^~1",
+        "nope^", "v1^",
+    ] {
+        each_format(CLEAN, |p| {
+            p.same(&["merge", "--no-ff", spec]);
+        });
+        each_format(CLEAN, |p| {
+            p.same(&["merge", "--no-ff", "--log", spec]);
+        });
+    }
+}
+
+#[test]
+fn scissors_cleanup_with_the_editor() {
+    let editors = [
+        "true",
+        "sed -i '1s/$/ edited/'",
+        "sh -c 'echo below >>\"$0\"'",
+        "sh -c 'printf \"top\\n\\n\" | cat - \"$0\" >\"$0.new\"; mv \"$0.new\" \"$0\"'",
+        "sh -c ': >\"$0\"'",
+    ];
+    for editor in editors {
+        for flags in [
+            &["--cleanup=scissors"][..],
+            &["--cleanup=scissors", "--no-ff"][..],
+        ] {
+            each_format(CLEAN, |p| {
+                *p.editor.borrow_mut() = editor.into();
+                let mut args = vec!["merge", "--edit"];
+                args.extend(flags);
+                args.push("side");
+                p.same(&args);
+            });
+        }
+        each_format(CLEAN, |p| {
+            *p.editor.borrow_mut() = editor.into();
+            p.same(&[
+                "merge",
+                "--edit",
+                "--cleanup=scissors",
+                "-m",
+                "given",
+                "side",
+            ]);
+        });
+    }
+    each_format(CLEAN, |p| {
+        p.same(&[
+            "merge",
+            "--cleanup=scissors",
+            "-m",
+            "kept\n# ------------------------ >8 ------------------------\ngone",
+            "side",
+        ]);
+    });
+}
+
+#[test]
+fn negated_forms_reset_what_came_before() {
+    let cases: &[&[&str]] = &[
+        &["-X", "ours", "--no-strategy-option"],
+        &["-X", "ours", "--no-strategy-option", "-X", "theirs"],
+        &["--into-name=topic", "--no-into-name"],
+        &["--no-into-name", "--into-name=topic"],
+    ];
+    for flag in ["--no-message", "--no-strategy", "--no-cleanup"] {
+        each_format(CLEAN, |p| {
+            let before = p.state(&p.pyn);
+            let out = p.run(true, &["merge", "-m", "x", flag, "side"]);
+            assert_eq!(out.status.code(), Some(129), "{flag}");
+            assert_eq!(p.state(&p.pyn), before, "{flag}");
+        });
+    }
+    for flags in cases {
+        each_format(CONFLICT, |p| {
+            p.both_sh("printf 'file message\\n' >msg");
+            let mut args = vec!["merge"];
+            args.extend(flags.iter());
+            args.push("side");
+            p.same(&args);
+        });
+        each_format(CLEAN, |p| {
+            p.both_sh("printf 'file message\\n' >msg");
+            let mut args = vec!["merge"];
+            args.extend(flags.iter());
+            args.push("side");
+            p.same(&args);
+        });
+    }
 }
