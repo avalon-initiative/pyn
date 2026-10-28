@@ -640,3 +640,257 @@ fn auto_merge_goes_away_when_the_merge_ends() {
         });
     }
 }
+
+/// Shell helpers giving every commit and merge a later time, so the order git merges bases in is defined.
+const CLOCK: &str = "T=1700000000\n\
+    tick() { T=$((T+100)); GIT_AUTHOR_DATE=\"$T +0000\"; GIT_COMMITTER_DATE=\"$T +0000\"; export GIT_AUTHOR_DATE GIT_COMMITTER_DATE; }\n\
+    ci() { tick; git commit -q --allow-empty \"$@\"; }\n\
+    mg() { tick; git merge -q --no-edit \"$@\" >/dev/null 2>&1 || true; }\n";
+
+/// What a criss-cross scenario changes: `x` and `y` each edit the base, `main` and `side` merge the other's commit
+/// with their own merge options, then each adds `main` and `side` commits of its own.
+struct Cross<'a> {
+    x: &'a str,
+    y: &'a str,
+    merge_main: &'a str,
+    merge_side: &'a str,
+    main: &'a str,
+    side: &'a str,
+}
+
+/// `main` and `side` each merged the other's first commit, so `x` and `y` are both merge bases of their tips.
+fn criss_cross(c: &Cross) -> String {
+    format!(
+        "{CLOCK}seq 1 9 >f; echo k >k; git add .; ci -m base\n\
+         git branch x; git branch y\n\
+         git checkout -q x\n{x}\ngit add -A; ci -m x1\n\
+         git checkout -q y\n{y}\ngit add -A; ci -m y1\n\
+         git checkout -q main\ngit reset -q --hard x\nmg {mm} y\n\
+         git checkout -q -b side y\nmg {ms} x\n\
+         git checkout -q main\n{main}\ngit add -A; ci -m more-main\n\
+         git checkout -q side\n{side}\ngit add -A; ci -m more-side\n\
+         git checkout -q main\n",
+        x = c.x,
+        y = c.y,
+        mm = c.merge_main,
+        ms = c.merge_side,
+        main = c.main,
+        side = c.side,
+    )
+}
+
+const CROSS_CLEAN: Cross = Cross {
+    x: "sed -i 1s/.*/x1/ f",
+    y: "sed -i 9s/.*/y9/ f",
+    merge_main: "",
+    merge_side: "",
+    main: "sed -i 3s/.*/m3/ f",
+    side: "sed -i 7s/.*/s7/ f; echo s >s",
+};
+
+#[test]
+fn a_criss_cross_merge_uses_a_virtual_base() {
+    let scripts = [
+        criss_cross(&CROSS_CLEAN),
+        // the final merge conflicts against the merged base
+        criss_cross(&Cross {
+            main: "sed -i 4s/.*/m4/ f",
+            side: "sed -i 4s/.*/s4/ f",
+            ..CROSS_CLEAN
+        }),
+        // the bases conflict among themselves; each merge kept its own side
+        criss_cross(&Cross {
+            x: "sed -i 5s/.*/x5/ f",
+            y: "sed -i 5s/.*/y5/ f",
+            merge_main: "-X ours",
+            merge_side: "-X ours",
+            main: "sed -i 2s/.*/m2/ f",
+            side: "sed -i 8s/.*/s8/ f",
+        }),
+        criss_cross(&Cross {
+            x: "sed -i 5s/.*/x5/ f",
+            y: "sed -i 5s/.*/y5/ f",
+            merge_main: "-X ours",
+            merge_side: "-X ours",
+            main: "sed -i 5s/.*/m5/ f",
+            side: "sed -i 5s/.*/s5/ f",
+        }),
+        // a file added on both bases, and one deleted on a base
+        criss_cross(&Cross {
+            x: "echo x >n; git rm -q k",
+            y: "echo y >n",
+            merge_main: "-X ours",
+            merge_side: "-X ours",
+            main: "echo m >>n",
+            side: "echo s >>k",
+        }),
+    ];
+    for script in &scripts {
+        each_format(script, |p| p.same(&["merge", "side"], Skip::default()));
+        each_format(script, |p| {
+            p.same(&["merge", "--no-commit", "side"], Skip::default())
+        });
+        each_format(script, |p| {
+            p.same(
+                &["merge", "-s", "ort", "-X", "theirs", "side"],
+                Skip::default(),
+            )
+        });
+    }
+}
+
+#[test]
+fn a_conflicted_criss_cross_merge_is_aborted_and_concluded_like_git() {
+    let script = criss_cross(&Cross {
+        main: "sed -i 4s/.*/m4/ f",
+        side: "sed -i 4s/.*/s4/ f",
+        ..CROSS_CLEAN
+    });
+    each_format(&script, |p| {
+        p.same(&["merge", "side"], Skip::default());
+        p.both_sh("printf 'resolved\\n' >f; git add f");
+        p.same(&["commit", "-m", "done"], Skip::default());
+    });
+    each_format(&script, |p| {
+        p.same(&["merge", "side"], Skip::default());
+        p.same(&["merge", "--abort"], Skip::default());
+    });
+}
+
+#[test]
+fn three_merge_bases_merge_one_after_another() {
+    let script = format!(
+        "{CLOCK}seq 1 9 >f; git add .; ci -m base\n\
+         for n in 1 2 3; do git checkout -q -b p$n main; echo $n >p$n; git add .; ci -m p$n; done\n\
+         git checkout -q -b main2 p1\nmg p2 p3\n\
+         git checkout -q -b side p1\nmg p3 p2\n\
+         git checkout -q main2\necho m >m; git add .; ci -m more-main\n\
+         git checkout -q side\necho s >s; git add .; ci -m more-side\n\
+         git checkout -q main2\n"
+    );
+    each_format(&script, |p| p.same(&["merge", "side"], Skip::default()));
+}
+
+/// `main` and `side` change `t` from nothing: a file on one, a folder on the other.
+fn file_folder(base: &str, main: &str, side: &str) -> String {
+    format!(
+        "{CLOCK}echo b >base; {base}\ngit add -A .; ci -m base\ngit branch side\n\
+         {main}\ngit add -A .; ci -m main\ngit checkout -q side\n\
+         {side}\ngit add -A .; ci -m side\ngit checkout -q main\n"
+    )
+}
+
+const FOLDER: &str = "mkdir t; echo in >t/x";
+const FILE: &str = "echo f >t";
+
+#[test]
+fn a_file_meeting_a_folder_is_moved_aside_like_git() {
+    let skip = Skip {
+        auto_merge: true,
+        ..Skip::default()
+    };
+    let scripts = [
+        // we add the file, they add the folder, and the other way round
+        file_folder("", FILE, FOLDER),
+        file_folder("", FOLDER, FILE),
+        // a nested folder, and a link instead of a file
+        file_folder("", FILE, "mkdir -p t/u; echo in >t/u/x"),
+        file_folder("", "ln -s foo t", FOLDER),
+        file_folder("", "mkdir t; echo f >t/u", "mkdir -p t/u; echo in >t/u/x"),
+        // the moved name is taken
+        file_folder("", "echo f >t; echo g >t~HEAD", FOLDER),
+        file_folder("", FOLDER, "echo f >t; echo g >t~side"),
+        // a side that kept the file the other replaced is not a conflict
+        file_folder(
+            "printf 'a\\nb\\n' >t",
+            "rm t; mkdir t; echo in >t/x",
+            "echo z >z",
+        ),
+        file_folder(
+            "printf 'a\\nb\\n' >t",
+            "echo z >z",
+            "rm t; mkdir t; echo in >t/x",
+        ),
+        // the file was edited where the other side replaced it with a folder
+        file_folder(
+            "printf 'a\\nb\\n' >t",
+            "echo c >>t",
+            "rm t; mkdir t; echo in >t/x",
+        ),
+        file_folder(
+            "printf 'a\\nb\\n' >t",
+            "rm t; mkdir t; echo in >t/x",
+            "echo c >>t",
+        ),
+        // the folder was edited where the other side replaced it with a file
+        file_folder(
+            "mkdir t; echo a >t/x; echo q >t/y",
+            "rm -r t; echo f >t",
+            "echo c >>t/x",
+        ),
+        file_folder(
+            "mkdir t; echo a >t/x; echo q >t/y",
+            "echo c >>t/x",
+            "rm -r t; echo f >t",
+        ),
+        file_folder(
+            "mkdir t; echo a >t/x; echo q >t/y",
+            "rm -r t; echo f >t",
+            "echo z >z",
+        ),
+    ];
+    for script in &scripts {
+        each_format(script, |p| p.same(&["merge", "side"], skip));
+        each_format(script, |p| p.same(&["merge", "--no-commit", "side"], skip));
+    }
+}
+
+#[test]
+fn a_moved_file_is_concluded_and_aborted_like_git() {
+    let skip = Skip {
+        auto_merge: true,
+        ..Skip::default()
+    };
+    for script in [
+        file_folder("", FILE, FOLDER),
+        file_folder("", FOLDER, FILE),
+        file_folder(
+            "printf 'a\\nb\\n' >t",
+            "echo c >>t",
+            "rm t; mkdir t; echo in >t/x",
+        ),
+    ] {
+        each_format(&script, |p| {
+            p.same(&["merge", "side"], skip);
+            p.same(&["merge", "--abort"], skip);
+        });
+    }
+    let script = file_folder("", FILE, FOLDER);
+    each_format(&script, |p| {
+        p.same(&["merge", "side"], skip);
+        p.both_sh("git add -A .");
+        p.same(&["commit", "-m", "done"], skip);
+    });
+    each_format(&script, |p| {
+        p.both_sh("echo dirty >>base");
+        p.same(&["merge", "side"], skip);
+    });
+}
+
+#[test]
+fn what_a_criss_cross_merge_cannot_do_is_refused_before_anything_changes() {
+    let clean = criss_cross(&CROSS_CLEAN);
+    each_format(&clean, |p| {
+        p.refused(&["merge", "-s", "resolve", "side"], 128);
+        p.refused(&["merge", "-s", "subtree", "side"], 128);
+    });
+    // the bases conflict among themselves and every commit has one time, so git's merge order is unknown
+    let same_time = "seq 1 9 >f; git add .; git commit -qm base\ngit branch x; git branch y\n\
+        git checkout -q x; sed -i 5s/.*/x5/ f; git commit -qam x1\n\
+        git checkout -q y; sed -i 5s/.*/y5/ f; git commit -qam y1\n\
+        git checkout -q main; git reset -q --hard x; git merge -q --no-edit -X ours y >/dev/null\n\
+        git checkout -q -b side y; git merge -q --no-edit -X ours x >/dev/null\n\
+        git checkout -q main; sed -i 2s/.*/m2/ f; git commit -qam m\n\
+        git checkout -q side; sed -i 8s/.*/s8/ f; git commit -qam s\ngit checkout -q main\n";
+    each_format(same_time, |p| p.refused(&["merge", "side"], 128));
+}

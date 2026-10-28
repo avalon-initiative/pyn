@@ -39,7 +39,19 @@ impl GitHome {
 
     /// The best common ancestors of `a` and `b`: those that no other common ancestor descends from.
     pub(super) fn merge_bases(&self, a: &ObjectId, b: &ObjectId) -> Result<Vec<ObjectId>> {
-        let from_a = self.reachable(a)?;
+        self.merge_bases_from(&[*a], b)
+    }
+
+    /// As `merge_bases`, with the first side being everything reachable from any of `heads`.
+    pub(super) fn merge_bases_from(
+        &self,
+        heads: &[ObjectId],
+        b: &ObjectId,
+    ) -> Result<Vec<ObjectId>> {
+        let mut from_a = HashSet::new();
+        for head in heads {
+            from_a.extend(self.reachable(head)?);
+        }
         let mut candidates: Vec<ObjectId> = Vec::new();
         let mut seen = HashSet::new();
         let mut queue = VecDeque::from([*b]);

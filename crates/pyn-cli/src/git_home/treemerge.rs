@@ -1,12 +1,14 @@
 //! A three-way merge of whole trees: each path is taken from the side that changed it, merged line by line when both
 //! did (`pyn-merge`), or left as a conflict. Renames are not detected, so a rename on one side and an edit on the
-//! other is a conflict where git would merge cleanly.
+//! other is a conflict where git would merge cleanly. A file against a folder is moved aside as git does when asked to.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Result, bail};
 use pyn_gitwork::{Entry, Pathspec};
-use pyn_merge::{Favor, Outcome as Text, merge_text_with, render_markers, render_two_way};
+use pyn_merge::{
+    Favor, Outcome as Text, merge_text_with, render_markers_sized, render_two_way_sized,
+};
 use pyn_object::{FileMode, Kind, ObjectId};
 
 use super::GitHome;
@@ -29,6 +31,8 @@ pub(super) enum Conflicting {
     ModifyDelete {
         ours_deleted: bool,
     },
+    /// A file moved aside because a folder took its path.
+    FileDirectory,
 }
 
 pub(super) enum Worktree {
@@ -46,6 +50,8 @@ pub(super) struct Conflict {
     pub theirs: Option<Entry>,
     pub worktree: Worktree,
     pub kind: Conflicting,
+    /// The path a file was moved from because a folder took it.
+    pub moved_from: Option<Vec<u8>>,
 }
 
 pub(super) enum Resolved {
@@ -99,6 +105,7 @@ fn both_present(
             theirs: Some(*t),
             worktree,
             kind,
+            moved_from: None,
         }))
     };
     let kind = if b.is_none() {
@@ -137,10 +144,11 @@ fn both_present(
             Ok(Resolved::Take(Some(Entry { mode, id })))
         }
         Text::Conflicted(chunks) => {
+            let size = pyn_merge::MARKER_SIZE + settings.marker_extra;
             let bytes = if settings.plain_markers {
-                render_two_way(&chunks, labels.ours, labels.theirs)
+                render_two_way_sized(&chunks, size, labels.ours, labels.theirs)
             } else {
-                render_markers(&chunks, labels.ours, labels.base, labels.theirs)
+                render_markers_sized(&chunks, size, (labels.ours, labels.base, labels.theirs))
             };
             conflict(kind, Worktree::Write { mode, bytes })
         }
@@ -165,6 +173,17 @@ pub(super) fn merge_trees(
     theirs: Option<&ObjectId>,
     labels: &Labels,
     settings: &Settings,
+) -> Result<Merge> {
+    merge_trees_with(git, [base, ours, theirs], labels, settings, false)
+}
+
+/// As `merge_trees`; with `move_files` a file meeting a folder is moved aside as `ort` does instead of refused.
+pub(super) fn merge_trees_with(
+    git: &GitHome,
+    [base, ours, theirs]: [Option<&ObjectId>; 3],
+    labels: &Labels,
+    settings: &Settings,
+    move_files: bool,
 ) -> Result<Merge> {
     let spec = Pathspec::default();
     let (b, o, t) = (
@@ -211,6 +230,7 @@ pub(super) fn merge_trees(
                     kind: Conflicting::ModifyDelete {
                         ours_deleted: false,
                     },
+                    moved_from: None,
                 }),
                 (None, Some(t)) => Resolved::Conflict(Conflict {
                     base: pb.copied(),
@@ -221,13 +241,18 @@ pub(super) fn merge_trees(
                         bytes: git.repo.blob(&t.id)?,
                     },
                     kind: Conflicting::ModifyDelete { ours_deleted: true },
+                    moved_from: None,
                 }),
                 (None, None) => unreachable!("equal sides were taken above"),
             }
         };
         out.paths.insert(path.clone(), resolved);
     }
-    refuse_file_folder_clashes(&out)?;
+    if move_files {
+        move_files_aside(git, &mut out, [&b, &o, &t], labels)?;
+    } else {
+        refuse_file_folder_clashes(&out)?;
+    }
     Ok(out)
 }
 
@@ -284,4 +309,88 @@ fn refuse_file_folder_clashes(merge: &Merge) -> Result<()> {
         }
     }
     Ok(())
+}
+
+type Leaves = BTreeMap<Vec<u8>, Entry>;
+
+/// Moves each file that a folder shares its path with to `<path>~<side>` (`_<n>` while taken), as `ort` does.
+fn move_files_aside(
+    git: &GitHome,
+    out: &mut Merge,
+    [b, o, t]: [&Leaves; 3],
+    labels: &Labels,
+) -> Result<()> {
+    let live: BTreeSet<Vec<u8>> = out
+        .paths
+        .iter()
+        .filter(|(_, r)| kept(r))
+        .map(|(p, _)| p.clone())
+        .collect();
+    let clashing: BTreeSet<&[u8]> = live
+        .iter()
+        .flat_map(|p| {
+            let folders = p.iter().enumerate().filter(|(_, c)| **c == b'/');
+            folders.map(|(i, _)| &p[..i]).collect::<Vec<_>>()
+        })
+        .filter(|f| live.contains(*f))
+        .collect();
+    let clashing: Vec<Vec<u8>> = clashing.into_iter().map(<[u8]>::to_vec).collect();
+    let mut taken: BTreeSet<Vec<u8>> = b.keys().chain(o.keys()).chain(t.keys()).cloned().collect();
+    for path in clashing {
+        let (entry, label) = match (o.get(&path), t.get(&path)) {
+            (Some(e), None) => (*e, labels.ours),
+            (None, Some(e)) => (*e, labels.theirs),
+            _ => bail!(
+                "'{}' is a file and a folder in the merge; pyn cannot merge that yet, and nothing was changed",
+                String::from_utf8_lossy(&path)
+            ),
+        };
+        if entry.mode == FileMode::Gitlink {
+            bail!(
+                "'{}' is a submodule meeting a folder; pyn cannot merge that yet, and nothing was changed",
+                String::from_utf8_lossy(&path)
+            );
+        }
+        let moved = unique_name(&path, label, &taken);
+        taken.insert(moved.clone());
+        let ours_side = o.contains_key(&path);
+        let kind = match out.paths.get(&path) {
+            Some(Resolved::Conflict(c)) => c.kind,
+            _ => Conflicting::FileDirectory,
+        };
+        let conflict = Conflict {
+            base: b.get(&path).copied(),
+            ours: ours_side.then_some(entry),
+            theirs: (!ours_side).then_some(entry),
+            worktree: Worktree::Write {
+                mode: entry.mode,
+                bytes: git.repo.blob(&entry.id)?,
+            },
+            kind,
+            moved_from: Some(path.clone()),
+        };
+        out.paths.insert(path, Resolved::Take(None));
+        out.paths.insert(moved, Resolved::Conflict(conflict));
+        out.trivial = false;
+    }
+    Ok(())
+}
+
+fn unique_name(path: &[u8], label: &str, taken: &BTreeSet<Vec<u8>>) -> Vec<u8> {
+    let mut base = path.to_vec();
+    base.push(b'~');
+    base.extend(label.bytes().map(|c| if c == b'/' { b'_' } else { c }));
+    let used = |name: &[u8]| {
+        taken
+            .iter()
+            .any(|k| k == name || (k.starts_with(name) && k[name.len()] == b'/'))
+    };
+    let mut name = base.clone();
+    let mut n = 0;
+    while used(&name) {
+        name = base.clone();
+        name.extend(format!("_{n}").bytes());
+        n += 1;
+    }
+    name
 }

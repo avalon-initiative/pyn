@@ -1549,12 +1549,24 @@ state folder (`rebase-merge/`, `sequencer/`) is not removed. `--hard --recurse-s
 2. If the target is an ancestor of `HEAD` it prints `Already up to date.`. If `HEAD` is an ancestor it fast-forwards, moving the
    index and work tree with the rules above and logging `merge <name>: Fast-forward`; `--no-ff` makes a merge commit instead and
    `--ff-only` refuses when it cannot (`Not possible to fast-forward, aborting.`, `128`).
-3. Otherwise there must be exactly one merge base. No base is `refusing to merge unrelated histories`; several (a criss-cross)
-   is refused, because pyn does not build a virtual base yet, and nothing is changed.
+3. Otherwise there must be a merge base. No base is `refusing to merge unrelated histories`. Several (a criss-cross) are
+   merged into one virtual base as `ort` does: the oldest first by committer time, each merged with the next against their
+   own merge bases, the result never committed. A conflict inside it stays as markers (labelled `Temporary merge branch 1`
+   and `2`, two characters wider per level), the base of a conflict in the final merge is shown as `merged common
+   ancestors`, and `-X ours` and `-X theirs` apply to the final merge only. Refused with nothing changed: `-s resolve` and
+   `-s subtree` (or `-X subtree`) with several bases, a file meeting a folder while the bases are merged, bases that
+   conflict among themselves when two of them share a committer time (git's order is then not known), and bases nested
+   more than sixteen deep.
 4. The trees are merged path by path: a side that changed alone wins, a path both changed is merged line by line with the
    three-way merge of `pyn-merge`, a file mode changed on one side is taken, and a binary or symlink changed on both is a
    conflict. Renames are not detected, so a rename on one side and an edit on the other is a modify/delete conflict where git
-   would merge cleanly; a path that is a file on one side and a folder on the other is refused before anything changes.
+   would merge cleanly. A path that is a file on one side and a folder on the other is resolved as `ort` does: a file
+   the other side left alone or deleted gives way to the folder without a conflict; otherwise the file is moved to
+   `<path>~HEAD` or `<path>~<name>` (`/` in the name becomes `_`, and `_0`, `_1`... is added while the name is taken) and
+   stays unmerged at its own stage, with `CONFLICT (file/directory)` (and the modify/delete conflict when the file was
+   edited where the other side replaced it with a folder). A submodule meeting a folder is refused. This holds for
+   `ort`, `recursive` and `subtree`; `rebase`, `cherry-pick`, `revert`, `am`, `stash` and remerge diffs still refuse such a
+   path, and a rebase, a cherry-pick and a remerge diff still refuse several merge bases.
 5. As in git's `ort` the index must equal `HEAD`: a difference stops the merge with `error: Your local changes to the following
    files would be overwritten by merge:` and the differing paths on one line, two spaces in, then `Merge with strategy ort failed.`
    (exit `2`). Then the files the merge changes must be clean in the work tree: a modified one, an untracked file in the way, or
