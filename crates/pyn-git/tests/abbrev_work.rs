@@ -2,6 +2,8 @@
 
 mod common;
 
+#[path = "../src/counters.rs"]
+pub mod counters;
 #[path = "../src/error.rs"]
 pub mod error;
 // Crate-private helpers of the database are called only by other pyn-git modules.
@@ -114,6 +116,33 @@ fn pack_abbreviation_bounds_binary_id_accesses() {
                     }
                 }
             }
+        }
+    }
+}
+
+#[test]
+fn pack_prefix_lookup_reads_only_the_matching_range() {
+    for algorithm in [Algorithm::Sha1, Algorithm::Sha256] {
+        let db = odb::ObjectDb::open(
+            &fixture_dir(&format!("{}-packed", algorithm.name())).join("dot-git/objects"),
+            algorithm,
+        )
+        .unwrap();
+        let packs = db.packs();
+        let pack = &packs[0];
+        let ids: Vec<_> = pack.ids().collect();
+        pack::Pack::take_id_accesses();
+        for id in &ids {
+            let hex = id.to_hex();
+            let found = pack.ids_with_prefix(&hex[..8]);
+            let accesses = pack::Pack::take_id_accesses();
+            assert!(found.contains(id));
+            let bound = 2 * ((usize::BITS - ids.len().leading_zeros()) as usize + 1) + found.len();
+            assert!(
+                accesses <= bound,
+                "{id}: {accesses} accesses, allowed {bound}"
+            );
+            assert!(accesses < ids.len(), "a full scan reads every id");
         }
     }
 }

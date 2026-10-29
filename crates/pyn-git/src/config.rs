@@ -57,6 +57,7 @@ impl Config {
     }
 
     pub fn entries(&self) -> &[Entry] {
+        crate::counters::bump(|c| c.config_scans += 1);
         &self.entries
     }
 

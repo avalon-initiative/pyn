@@ -1097,3 +1097,37 @@ fn inspection_commands_refuse_a_core_abbrev_below_four_like_git() {
         }
     }
 }
+
+#[test]
+fn remote_commands_ignore_an_invalid_core_abbrev_like_git() {
+    // Catches validating core.abbrev in commands that never render an id.
+    for format in FORMATS {
+        let repo = Repo::new(format);
+        setting(&repo, "3");
+        git(&repo, &repo.main, &["remote", "add", "origin", "/nowhere"]);
+        let expected = git(&repo, &repo.main, &["remote", "-v"]);
+        assert_eq!(repo.ok(&["remote", "-v"]), expected, "{format}");
+        repo.ok(&["remote", "add", "second", "/elsewhere"]);
+        repo.ok(&["remote", "get-url", "second"]);
+        repo.ok(&["remote", "remove", "second"]);
+        let (_, err) = repo.fails(&["log", "-n", "1", "--format=%h"]);
+        assert!(err.contains("core.abbrev"), "{err}");
+    }
+}
+
+#[test]
+fn core_abbrev_above_the_hash_width_renders_full_ids_where_git_2_47_does() {
+    // git 2.43 rejects these values, so there is no oracle; the full id is the contract.
+    for format in FORMATS {
+        for value in ["999", "1k", "64"] {
+            let repo = Repo::new(format);
+            let full = git(&repo, &repo.main, &["rev-parse", "HEAD"]);
+            setting(&repo, value);
+            assert_eq!(
+                repo.ok(&["log", "-n", "1", "--format=%h"]).trim_end(),
+                full.trim_end(),
+                "{format} {value}"
+            );
+        }
+    }
+}
