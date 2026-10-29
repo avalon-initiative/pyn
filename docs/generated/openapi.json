@@ -10344,7 +10344,7 @@
             "items": {
               "$ref": "#/components/schemas/RepoUsage"
             },
-            "description": "Ordered by name."
+            "description": "Largest first, then by address."
           },
           "usage": {
             "$ref": "#/components/schemas/Usage"
