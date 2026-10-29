@@ -109,7 +109,7 @@ Shared files follow git (decision #245, issue #253): `pyn add <path>...` stages 
 (all paths succeed or none do). `-u` and `--update` stage only files already tracked, `-A` and `--all` also take new ones (with
 no path, from the whole workspace), `-n` and `--dry-run` list what would be staged, `-v` prints each path, and `-f` stages
 files `.pyn/ignore` hides, which are otherwise refused with exit status `1`. `pyn commit -a` (and `-am "message"`) stages every
-changed tracked file first; new files are not included. `pyn restore --staged <path>...` takes paths out of the staged set and
+changed tracked file first, deletions included; new files are not included. `pyn commit -u` (a pyn extension: git's `commit -u` is `--untracked-files`) stages the untracked files `.pyn/ignore` does not hide, and `-uam "message"` stages new, modified and deleted files and commits; exclusive paths still need your lock. Without `-m` or `-F`, `pyn commit` opens the editor (`GIT_EDITOR`, `VISUAL`, `EDITOR`, then `vi`) on `.pyn/local_only/COMMIT_EDITMSG`, which lists the staged changes in `#` lines; those lines are dropped, and a message that is empty after that (also one given with `-m` or `-F`) aborts the commit. `pyn restore --staged <path>...` takes paths out of the staged set and
 leaves the files alone. `pyn diff --cached` shows what is staged against the last update, and `pyn diff` shows the edits made
 since. A tracked file that was deleted is staged as a removal (`add <path>`, `add -u`, `commit -a`; `-n` prints `remove '<path>'`),
 and `pyn commit` sends it with the rest as a deletion in the changeset; the commit then prints `<path> was deleted at revision N` and the

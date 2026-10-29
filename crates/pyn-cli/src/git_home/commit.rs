@@ -13,7 +13,7 @@ use super::hooks::author_env;
 use super::signing::{SignFlag, sign_commit};
 use super::stage::{
     clean_bytes, clean_ident, clear_merge_state, entries_of, env, identity, index_of, merge_heads,
-    parse_date, pending_message, refuse_states, stage_tracked, write_tree,
+    parse_date, pending_message, refuse_states, stage_working, write_tree,
 };
 
 /// The git flags of `pyn commit`; a pyn server takes only `-F` and refuses the rest.
@@ -144,8 +144,9 @@ impl GitCommitArgs {
         if !messages.is_empty() {
             bail!("options '-m' and '-F' cannot be used together");
         }
-        let text = clean_bytes(&read_message(file)?);
-        if text == b"\n" {
+        let raw = read_message(file)?;
+        let text = clean_bytes(&raw);
+        if text == b"\n" || super::editor::edited_message(&raw).is_none() {
             eprintln!("Aborting commit due to empty commit message.");
             std::process::exit(1);
         }
@@ -158,6 +159,7 @@ impl GitCommitArgs {
 pub struct CommitOptions {
     pub messages: Vec<String>,
     pub all: bool,
+    pub untracked: bool,
     pub file: Option<PathBuf>,
     pub flags: GitCommitArgs,
 }
@@ -317,6 +319,41 @@ fn forced_author(opts: &CommitOptions) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
     opts.flags.author.as_deref().map(parse_author).transpose()
 }
 
+fn finish_message(mut message: Vec<u8>, opts: &CommitOptions, who: &Signature) -> Vec<u8> {
+    if opts.flags.signoff {
+        message = append_signoff(message, &who.name, &who.email);
+    }
+    append_trailers(message, &opts.flags.trailer)
+}
+
+/// The `#` lines under an editor message: the branch and the staged changes.
+fn staged_comment(
+    git: &GitHome,
+    head: &Head,
+    base: &ObjectId,
+    has_parent: bool,
+    tree: &ObjectId,
+) -> Result<String> {
+    let mut out = match head {
+        Head::Branch { name, .. } => format!("#\n# On branch {name}\n"),
+        Head::Detached(id) => format!("#\n# HEAD detached at {}\n", git.repo.abbreviate(id)?),
+    };
+    out.push_str("# Changes to be committed:\n");
+    let changes =
+        git.repo
+            .diff_trees(has_parent.then_some(base), Some(tree), &Pathspec::default())?;
+    for c in changes {
+        let what = match (&c.old, &c.new) {
+            (None, _) => "new file:  ",
+            (_, None) => "deleted:   ",
+            _ => "modified:  ",
+        };
+        out.push_str(&format!("#\t{what} {}\n", super::path_string(&c.path)));
+    }
+    out.push_str("#\n");
+    Ok(out)
+}
+
 pub fn commit(git: &GitHome, opts: &CommitOptions) -> Result<()> {
     let rebasing = super::rebase::in_progress(git);
     let blocked: &[&str] = if rebasing {
@@ -384,13 +421,20 @@ pub fn commit(git: &GitHome, opts: &CommitOptions) -> Result<()> {
         (None, Some(c)) => Some(c.message.clone()),
         (None, None) => (!opts.messages.is_empty()).then(|| joined_messages(&opts.messages)),
     };
+    let blank = reused.is_none()
+        && opts.flags.cleanup.is_none()
+        && raw
+            .as_ref()
+            .is_some_and(|r| super::editor::edited_message(r).is_none());
     let explicit = raw.map(|r| cleaned(&r, mode));
     let explicit_given = explicit.is_some();
-    if explicit.as_ref().is_some_and(|m| m.is_empty()) && !opts.flags.allow_empty_message {
+    if (blank || explicit.as_ref().is_some_and(|m| m.is_empty())) && !opts.flags.allow_empty_message
+    {
         eprintln!("Aborting commit due to empty commit message.");
         std::process::exit(1);
     }
     let squash_pending = git.repo.git().git_dir().join("SQUASH_MSG").exists();
+    let mut needs_editor = false;
     let mut message = match (
         explicit,
         &tip,
@@ -399,15 +443,18 @@ pub fn commit(git: &GitHome, opts: &CommitOptions) -> Result<()> {
         (Some(m), ..) => m,
         (None, Some(t), _) => clean_bytes(&t.message),
         (None, None, Some(m)) if !merged.is_empty() || squash_pending => m,
-        _ => crate::usage_error(
+        _ if opts.flags.no_edit => crate::usage_error(
             "the following required arguments were not provided:\n  --message <MESSAGE>",
         ),
+        _ => {
+            needs_editor = true;
+            Vec::new()
+        }
     };
     let committer = identity(git, "committer")?;
-    if opts.flags.signoff {
-        message = append_signoff(message, &committer.name, &committer.email);
+    if !needs_editor {
+        message = finish_message(message, opts, &committer);
     }
-    message = append_trailers(message, &opts.flags.trailer);
     let forced = forced_author(opts)?;
     let kept = if opts.flags.reset_author {
         None
@@ -445,7 +492,9 @@ pub fn commit(git: &GitHome, opts: &CommitOptions) -> Result<()> {
     }
     let opened = git.open_index()?;
     let mut entries = entries_of(&opened.index);
-    let staged_now = opts.all && stage_tracked(git, &opened.index, &mut entries)?;
+    let staging = opts.all || opts.untracked;
+    let staged_now =
+        staging && stage_working(git, &opened.index, &mut entries, (opts.all, opts.untracked))?;
     if entries.keys().any(|(_, stage)| *stage > 0) {
         let mut unmerged: Vec<&Vec<u8>> = entries
             .keys()
@@ -468,7 +517,7 @@ pub fn commit(git: &GitHome, opts: &CommitOptions) -> Result<()> {
     } else {
         "pre-merge-commit"
     };
-    let wants_index = opts.all
+    let wants_index = staging
         && [commit_hook, "prepare-commit-msg", "commit-msg"]
             .iter()
             .any(|h| git.hook_present(h));
@@ -516,7 +565,34 @@ pub fn commit(git: &GitHome, opts: &CommitOptions) -> Result<()> {
         "commit-msg",
         "post-commit",
     ]);
-    if git.hook_present("prepare-commit-msg") || (verify && git.hook_present("commit-msg")) {
+    if needs_editor {
+        let comment = staged_comment(git, &head, &base, parent.is_some(), &tree)?;
+        let vetoed = std::cell::Cell::new(false);
+        let before = |path: &std::path::Path| {
+            let shown = git.hook_path(path);
+            if git.vetoed("prepare-commit-msg", &[shown], &hook_env)? {
+                vetoed.set(true);
+                bail!("prepare-commit-msg hook failed");
+            }
+            Ok(())
+        };
+        match super::editor::edit_message_with(git, b"", &comment, before) {
+            Err(_) if vetoed.get() => {
+                drop(lock);
+                std::process::exit(1);
+            }
+            Err(e) => return Err(e),
+            Ok(Some(m)) => message = finish_message(m, opts, &committer),
+            Ok(None) if opts.flags.allow_empty_message => {}
+            Ok(None) => {
+                eprintln!("Aborting commit due to empty commit message.");
+                drop(lock);
+                std::process::exit(1);
+            }
+        }
+    }
+    let prepare = git.hook_present("prepare-commit-msg") && !needs_editor;
+    if prepare || (verify && git.hook_present("commit-msg")) {
         let edit_msg = git.repo.git().git_dir().join("COMMIT_EDITMSG");
         let shown = git.hook_path(&edit_msg);
         std::fs::write(&edit_msg, &message)?;
@@ -534,7 +610,7 @@ pub fn commit(git: &GitHome, opts: &CommitOptions) -> Result<()> {
         };
         let mut args = vec![shown.clone()];
         args.extend(source);
-        let mut vetoed = git.vetoed("prepare-commit-msg", &args, &hook_env)?;
+        let mut vetoed = prepare && git.vetoed("prepare-commit-msg", &args, &hook_env)?;
         if !vetoed && verify {
             vetoed = git.vetoed("commit-msg", &[shown], &hook_env)?;
         }
