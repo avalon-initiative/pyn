@@ -4051,3 +4051,14 @@ mod fatal_formatter_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod cli_tests {
+    use clap::CommandFactory;
+
+    #[test]
+    fn every_command_passes_clap_definition_checks() {
+        // Catches two flattened groups that define one argument, such as `--abbrev` in `show`.
+        super::Cli::command().debug_assert();
+    }
+}

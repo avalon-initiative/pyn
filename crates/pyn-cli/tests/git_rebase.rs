@@ -1637,6 +1637,58 @@ fn the_editor_sees_git_s_full_comment_block_and_the_instruction_format() {
 }
 
 #[test]
+fn editor_sheets_and_stopped_patches_use_the_repository_abbreviation_policy() {
+    // Kills seven-digit todo/patch output and bypassing uniqueness for a stopped patch's null id.
+    both_formats(|format| {
+        for width in ["12", "4"] {
+            let p = history(format);
+            p.on("clean");
+            p.config("core.abbrev", width);
+            if width == "4" {
+                for dir in [&p.git, &p.pyn] {
+                    common::gitfix::write_zero_prefix_blob(dir, format);
+                }
+            }
+            let editor = (
+                "GIT_SEQUENCE_EDITOR",
+                "cp \"$1\" .git/seen-sheet; sed -i -e '1s/^pick/edit/' \"$1\" #",
+            );
+            assert_eq!(p.same_env(&["-i", "main"], format, &[editor]), 0);
+            let ids = |dir: &Path| -> Vec<String> {
+                read(dir, "seen-sheet")
+                    .lines()
+                    .filter(|line| line.starts_with("pick "))
+                    .map(|line| line.split_whitespace().nth(1).unwrap().to_string())
+                    .collect()
+            };
+            let expected = ids(&p.git);
+            assert!(!expected.is_empty());
+            assert!(
+                expected
+                    .iter()
+                    .all(|id| id.len() >= width.parse::<usize>().unwrap())
+            );
+            assert_eq!(ids(&p.pyn), expected);
+            let expected = read(&p.git, "rebase-merge/patch");
+            assert!(expected.starts_with("diff --git "), "{expected}");
+            let index = expected
+                .lines()
+                .find(|line| line.starts_with("index "))
+                .unwrap();
+            assert!(
+                index.contains(if width == "4" {
+                    "00000.."
+                } else {
+                    "000000000000.."
+                }),
+                "{index}"
+            );
+            assert_eq!(read(&p.pyn, "rebase-merge/patch"), expected);
+        }
+    });
+}
+
+#[test]
 fn the_progress_line_counts_the_commands() {
     both_formats(|f| {
         let p = history(f);

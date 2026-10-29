@@ -30,8 +30,6 @@ use crate::diff::{self, Tree};
 use crate::diffstat;
 use crate::merging::MergeArgs;
 
-const ABBREV: usize = 7;
-
 /// Set by `pyn pull -q`: the informational lines below are not printed.
 /// The reflog action when a command other than `merge` runs the merge (`pull ...`).
 pub(super) static ACTION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
@@ -86,10 +84,6 @@ const MERGE_HOOKS: [&str; 4] = [
     "commit-msg",
     "post-merge",
 ];
-
-pub(super) fn short(id: &ObjectId) -> String {
-    id.to_hex()[..ABBREV].to_string()
-}
 
 /// How git names what is being merged in a message: `branch 'x'`, `tag 'x'`, `commit 'x'`.
 fn describe(git: &GitHome, spec: &str) -> String {
@@ -298,6 +292,7 @@ fn start(git: &GitHome, mut args: MergeArgs) -> Result<()> {
 /// `SQUASH_MSG`: the commits `theirs` brings in, newest first, as `log` prints them.
 fn squash_message(git: &GitHome, ours: &ObjectId, theirs: &ObjectId) -> Result<String> {
     let mut text = String::from("Squashed commit of the following:\n");
+    let abbreviations = crate::commit_format::IdFormat::Git(git.repo.abbreviations(None)?);
     let ctx = Context {
         style: DateStyle::Default,
         now: 0,
@@ -307,6 +302,7 @@ fn squash_message(git: &GitHome, ours: &ObjectId, theirs: &ObjectId) -> Result<S
         abbrev_commit: false,
         mailmap: None,
         map_headers: false,
+        abbreviations: &abbreviations,
     };
     let mut walk = git
         .repo
@@ -427,7 +423,11 @@ fn fast_forward(
     };
     let new_tree = git.repo.commit(theirs)?.tree;
     if let Some(ours) = &ours {
-        say(&format!("Updating {}..{}", short(ours), short(theirs)));
+        say(&format!(
+            "Updating {}..{}",
+            git.repo.abbreviate(ours)?,
+            git.repo.abbreviate(theirs)?
+        ));
     }
     if let Err(blocked) = move_tree(git, opened, old_tree.as_ref(), Some(&new_tree), Mode::Safe)? {
         if let Some(ours) = &ours {
@@ -565,7 +565,7 @@ fn true_merge(
             }
             (None, "empty tree".to_string())
         }
-        [one] => (Some(tree_of(one)?), short(one)),
+        [one] => (Some(tree_of(one)?), git.repo.abbreviate(one)?),
         many => {
             if !kind.is_tree_merge() {
                 bail!(

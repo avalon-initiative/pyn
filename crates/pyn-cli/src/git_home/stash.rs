@@ -24,7 +24,6 @@ use super::worktree::{
 use super::{GitHome, Refused, convert, path_string};
 
 const STASH: &str = "refs/stash";
-const ABBREV: usize = 7;
 const INDEX_CONFLICT: &str = "conflicts in index. Try without --index.";
 
 /// Save, list and restore local changes.
@@ -122,10 +121,6 @@ enum StashAction {
         #[arg(allow_hyphen_values = true)]
         commit: Vec<String>,
     },
-}
-
-fn short(id: &ObjectId) -> String {
-    id.to_hex()[..ABBREV].to_string()
 }
 
 pub fn stash(git: &GitHome, cwd: &Path, args: StashArgs) -> Result<()> {
@@ -455,7 +450,11 @@ fn create(
         None => work_tree,
     };
     let branch = branch_label(git)?;
-    let base = format!("{branch}: {} {}", short(&head), subject(git, &head)?);
+    let base = format!(
+        "{branch}: {} {}",
+        git.repo.abbreviate(&head)?,
+        subject(git, &head)?
+    );
     let index_commit = commit_with(git, index_tree, vec![head], format!("index on {base}\n"))?;
     let mut parents = vec![head, index_commit];
     if !untracked.is_empty() {
@@ -689,7 +688,7 @@ fn apply_and_report(git: &GitHome, id: &ObjectId, index: bool, pop: bool) -> Res
         .validate_diff_ignore_submodules()
         .and_then(|()| git.repo.status())
     {
-        Ok(status) => super::commands::status_table(&status),
+        Ok(status) => super::commands::status_table(git, &status),
         Err(error) => {
             // Git completes a clean apply even when the status report fails.
             let error = anyhow::Error::from(error);

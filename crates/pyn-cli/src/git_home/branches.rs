@@ -13,12 +13,6 @@ use super::refwrite::BRANCHES;
 use super::switch::subject;
 use crate::branch::BranchArgs;
 
-const ABBREV: usize = 7;
-
-fn short(id: &ObjectId) -> String {
-    id.to_hex()[..ABBREV].to_string()
-}
-
 struct Row {
     marker: char,
     name: String,
@@ -89,7 +83,7 @@ fn list(git: &GitHome, args: &BranchArgs) -> Result<()> {
     {
         rows.push(Row {
             marker: '*',
-            name: format!("(HEAD detached at {})", short(id)),
+            name: format!("(HEAD detached at {})", git.repo.abbreviate(id)?),
             id: Some(*id),
             arrow: None,
             tracking: String::new(),
@@ -171,7 +165,7 @@ fn list(git: &GitHome, args: &BranchArgs) -> Result<()> {
                 "{} {:<width$} {} {tree}{}{}",
                 row.marker,
                 row.name,
-                short(id),
+                git.repo.abbreviate(id)?,
                 row.tracking,
                 subject(git, id)?
             );
@@ -277,7 +271,7 @@ fn delete(git: &GitHome, names: &[String], force: bool, quiet: bool) -> Result<(
         git.repo.refs().write_reflog(&full, &[])?;
         edit_config_section(git, name, Section::Drop)?;
         if !quiet {
-            println!("Deleted branch {name} (was {}).", short(&id));
+            println!("Deleted branch {name} (was {}).", git.repo.abbreviate(&id)?);
         }
     }
     if failed {

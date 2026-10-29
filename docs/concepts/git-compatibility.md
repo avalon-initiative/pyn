@@ -137,7 +137,7 @@ The commands named in decision #218.
 | `git diff --shortstat`, `-w` (`--ignore-all-space`), `--check` | same | same | Both homes. `--shortstat` prints only the totals line. `-w` compares lines with all whitespace removed, prints context lines as they are in the new file, and leaves out a file that differs only in whitespace (so `--exit-code` is `0` when nothing else changed); `--name-only` and `--name-status` still list it, as git 2.43 does (newer git versions differ on this edge; pyn lists the file). `--check` prints `path:line: trailing whitespace.` (or `space before tab in indent.`, `indent with spaces.`, `tab in indent.`, or several) and the added line, `path:line: leftover conflict marker`, then `path:line: new blank line at EOF.`, for the rules of `core.whitespace` (git's default without it), and exits `2` if it printed anything; `-w` does not affect it (newer git versions differ here too). `--check` and `--shortstat` combine with no other format (`--stat`, `--name-only`, `--name-status`): a usage error (`129`), where git prints both stats or refuses with `128`. |
 | `git diff -b`, `--ignore-space-change`, `--ignore-space-at-eol`, `--ignore-cr-at-eol`, `--ignore-blank-lines` | same | git home: supported | Git's output with the lines compared as git compares them; a file whose changes all fall away prints nothing (a change to blank lines only still counts as a difference for `--exit-code`). `--stat`, `--numstat`, `--shortstat`, `--name-only` and `--name-status` follow, and so do `show`, `log -p` and `stash show`. `--check` ignores them, as git does. `--raw`, `--name-only`, `--name-status` and `--check` still list a file that differs only in ignored whitespace (with zero ids in `--raw`), as git 2.43 does; newer git leaves it out and prints real ids. The line diff is a port of git's xdiff (the one `blame` uses), so ambiguous changes land where git puts them. |
 | `git diff -W` (`--function-context`), `--inter-hunk-context=<n>`, `--minimal`, `--diff-algorithm=default\|myers\|minimal`, `--indent-heuristic`, `--no-indent-heuristic` | same | git home: supported | A hunk grows to the whole function (a line starting with a letter, `_` or `$` begins one), hunks within the distance merge, and the algorithm flags change how the edit script is found. `diff.indentHeuristic` and `diff.algorithm` are read; `patience`, `histogram` and `--anchored` are a usage error (`129`). |
-| `git diff --raw`, `-z`, `--full-index`, `--abbrev[=<n>]`, `--no-abbrev`, `--src-prefix`, `--dst-prefix`, `--no-prefix`, `-a` (`--text`), `-R`, `--diff-filter=<kinds>`, `-s` (`--no-patch`), `-p` | same | git home: supported | Git's output. `--raw` shows an id of zeros for a work tree file; `-z` ends the records of `--raw`, `--name-only`, `--name-status` and `--numstat` with NUL; ids are shortened to seven digits unless `--abbrev=<n>` (at least 4) says otherwise; `-R` swaps the sides and the `a/` and `b/` prefixes; `--diff-filter` takes upper case letters to keep and lower case to leave out (`*` and `log` are a usage error); `diff.noprefix` is read (not `diff.mnemonicPrefix`). `-p` joins `--stat`, `--shortstat`, `--numstat`, `--raw` and `--dirstat` (`--patch-with-stat` and `--patch-with-raw` too), a stat then a blank line then the patch; with `--name-only`, `--name-status` or `--check` it is a usage error (`129`), as is `-s` with another format. `-u`, `--binary` and `--irreversible-delete` are a usage error (`129`). |
+| `git diff --raw`, `-z`, `--full-index`, `--abbrev[=<n>]`, `--no-abbrev`, `--src-prefix`, `--dst-prefix`, `--no-prefix`, `-a` (`--text`), `-R`, `--diff-filter=<kinds>`, `-s` (`--no-patch`), `-p` | same | git home: supported | Git's output. `--raw` shows an id of zeros for a work tree file; `-z` ends the records of `--raw`, `--name-only`, `--name-status` and `--numstat` with NUL; `--raw` ids are shortened to seven digits unless `--abbrev=<n>` (at least 4) says otherwise, and `index` lines follow the [abbreviation policy](#log-on-a-git-home); `-R` swaps the sides and the `a/` and `b/` prefixes; `--diff-filter` takes upper case letters to keep and lower case to leave out (`*` and `log` are a usage error); `diff.noprefix` is read (not `diff.mnemonicPrefix`). `-p` joins `--stat`, `--shortstat`, `--numstat`, `--raw` and `--dirstat` (`--patch-with-stat` and `--patch-with-raw` too), a stat then a blank line then the patch; with `--name-only`, `--name-status` or `--check` it is a usage error (`129`), as is `-s` with another format. `-u`, `--binary` and `--irreversible-delete` are a usage error (`129`). |
 | `git diff --word-diff[=plain\|color\|porcelain\|none]`, `--word-diff-regex=<regex>`, `--color-words[=<regex>]` | same | git home: supported | Git's word diff of each run of changed lines; words are runs of non-space characters, or the matches of an extended regular expression (`diff.wordRegex` too; matches never span a line). Output of `--word-diff=color` is colored whatever `color.ui` says. In `diff`, `show`, `log -p` and `stash show`. |
 | `git diff --color[=always\|never\|auto]`, `--no-color`, `--ws-error-highlight=<kinds>` | same | git home: supported | Git's colors for the headers, hunk headers, lines, whitespace errors, `--stat` and `--check`, and for the `commit` line of `show` and `log` (decorations and `--graph` are a usage error with color, `129`). `color.diff`, `color.ui` (`auto` is off when standard output is not a terminal), `color.diff.<slot>` (`meta`, `frag`, `func`, `old`, `new`, `context`, `whitespace`, `commit`), `core.whitespace` and `diff.wsErrorHighlight` are read; `--color-moved` is a usage error (`129`). |
 | `git diff --no-index [<path> <path>]` | same | supported | Compares two files, a file with the same-named file in a directory, or two directories recursively, in or out of a repository; with two existing paths and no repository `--no-index` is implied. Exits `1` when they differ. A path of `/dev/null` is an empty side. File and directory under one name, standard input (`-`), `-C` and `-B` are a usage error (`129`). The output is git's, including the names in `--stat` (`{d1 => d2}/f`) and `--raw` (zero ids for changed files); git 2.43 prefixes the current folder to the names `--summary` lists when run in a subfolder of a repository; pyn does not, as newer git. |
@@ -324,7 +324,8 @@ What a fetch does, in git's order:
 
 Each update line is ` <code> <summary>  <remote ref> -> <local ref>` on standard error after one `From <url>` line (the URL
 without user name, `.git` or trailing slashes), with git's columns. The summary column is `2 * abbrev + 3` wide and the ref column at
-least 10. Ids are `core.abbrev` digits (default 7) and are not lengthened to stay unique.
+least 10. On a git home, ids use `core.abbrev` as a minimum width and lengthen for uniqueness, including objects in alternates.
+On a git home, unset or `auto` chooses the default from the packed object count; `no`, `off` and `false` show full ids.
 
 | Line | Meaning |
 | --- | --- |
@@ -361,7 +362,7 @@ server sha256` (`128`). A repository with no objects, refs or index takes the re
 `core.repositoryformatversion = 1` and `extensions.objectformat`), which git itself refuses to do outside `clone`.
 
 Differences from git, all deliberate or not yet done: `--dry-run` downloads objects like git does, but git lists auto-followed tags twice on a dry run and pyn once;
-ids are not lengthened to stay unique and do not scale with the repository's size; there is no per-object "Receiving objects" progress,
+there is no per-object "Receiving objects" progress,
 only what the server sends;
 `fetch.output`, `fetch.showForcedUpdates`, `fetch.writeCommitGraph`, `--refmap`, `--negotiation-tip`, `--server-option`, `--stdin` and `-4`/`-6` are not read or taken; `--all` runs
 the remotes one at a time whatever `-j` or `fetch.parallel` say, so `FETCH_HEAD` lists them in configuration order; the stale-ref hint after a ref could
@@ -645,8 +646,10 @@ What a push does, in git's order:
    relays the server's messages as `remote: ...` lines. The server decides each ref: `[remote rejected] (<its reason>)`, for example a
    `pre-receive` hook, `receive.denyNonFastForwards` or deleting its current branch.
 3. Prints `To <url>` (without user name or password) and then up to date lines (`-v`), the refs that were pushed, then the failures,
-   each ` <flag> <summary> <from> -> <to> (<reason>)` in git's columns. The summary column is `2 * abbrev + 3` wide, the ids are
-   `core.abbrev` digits (default 7). Then `-u`, then the tracking refs, then `error: failed to push some refs to '<url>'` and one
+   each ` <flag> <summary> <from> -> <to> (<reason>)` in git's columns. The summary column is `2 * abbrev + 3` wide.
+   On a git home, ids use `core.abbrev`'s minimum width, extended for uniqueness across local and alternate stores;
+   unset or `auto` derives the default from the packed object count, and `no`, `off` and `false` show full ids.
+   Then `-u`, then the tracking refs, then `error: failed to push some refs to '<url>'` and one
    `hint:` block (naming `pyn pull`) for the first kind of rejection, unless `advice.pushUpdateRejected` or the specific
    `advice.push...` setting is false; or `Everything up-to-date` when nothing needed sending.
 4. For a push to a named remote it moves each remote-tracking ref the remote's fetch refspecs map the pushed ref to (and deletes
@@ -654,7 +657,7 @@ What a push does, in git's order:
    `core.logAllRefUpdates`, as fetch does).
 
 Differences from git, all deliberate or not yet done: no per-object "Enumerating objects" or "Writing objects" progress, only what the
-server sends; ids are not lengthened to stay unique; `push.autoSetupRemote`, `push.negotiate`, `push.gpgSign`, `push.recurseSubmodules`,
+server sends; `push.autoSetupRemote`, `push.negotiate`, `push.gpgSign`, `push.recurseSubmodules`,
 `push.useForceIfIncludes` and `remote.<name>.receivepack` are not read; `--dry-run` with `-u` prints `Would set upstream of ...`
 instead of setting anything.
 A push to a pyn server is not this command: see the push row above.
@@ -1110,7 +1113,7 @@ Differences from git, all deliberate or not yet done:
 
 - Line endings and `ident` are converted as git does (see [Attributes and line endings](#attributes-and-line-endings));
   `working-tree-encoding` is not applied.
-- Commit abbreviations are 7 digits and are not lengthened to stay unique; `log` and `show` print no color on a terminal.
+- `log` and `show` print no color on a terminal.
 - A nested repository that the index does not track is one untracked `dir/`.
 - `merge` and `stash apply` write diff3 conflict markers whatever `merge.conflictStyle` says and `stash apply` merges only when
   there is one merge base; `stash apply` does not write `AUTO_MERGE`; `switch` and `checkout` print their own wording where git's differs (`Fast-forward` without a diffstat, the status
@@ -1135,9 +1138,17 @@ Formats: `--oneline` (abbreviated id and subject), `--format=<f>` and `--pretty[
 (the default), `full`, `fuller`, `raw`, `format:<template>` (a newline between commits) and `tformat:<template>` (a newline
 after each; also a bare template or `--format=<template>`). Templates take `%H %h %T %t %P %p %an %ae %ad %aD %ai %aI %as %at
 %ar %cn %ce %cd %cD %ci %cI %cs %ct %cr %s %b %B %d %D %n %%`, and the mailmap forms `%aN %aE %al %aL %cN %cE %cl %cL` (see [Mailmap](#mailmap)); `%gd %gD %gs %gn %gN %ge %gE` are empty, as in git without `-g`; any other `%` sequence is printed as written. `%h`, `%t` and `%p`
-are 7 digits. `%d` and `%D` list `HEAD -> <branch>` (or `HEAD`), then the other branches, remote-tracking branches, `tag: <name>`
-and `refs/stash` that point at the commit, in git's order. `--date=` takes `default`, `iso`, `iso-strict`, `rfc`, `short`,
+use the git home's abbreviation policy described below. `%d` and `%D` list `HEAD -> <branch>` (or `HEAD`), then the other
+branches, remote-tracking branches, `tag: <name>` and `refs/stash` that point at the commit, in git's order. `--date=` takes `default`, `iso`, `iso-strict`, `rfc`, `short`,
 `relative`, `unix` and `raw` and applies to `Date:` and `%ad`/`%cd`; commit dates print in the offset recorded in the commit. `show` takes the same formats and `--date=`.
+
+On a git home, abbreviated ids (including patch headers) lengthen until unique across loose objects, packs and
+recursive alternates. The minimum defaults to at least seven, estimated from packed object counts;
+`core.abbrev=auto` or unset selects it. Numeric `core.abbrev` accepts decimal, octal, hexadecimal and binary
+`k`/`m`/`g` suffixes. Values below four, malformed or missing values and integer overflow fail;
+valid integers above the hash width render full ids in pyn, as in the tested git 2.47.3.
+`no`, `off`, `false` (case-insensitive) or an empty value selects full ids. Duplicate objects do not extend
+prefixes; null patch ids also lengthen for uniqueness. Server-home conventions are unchanged.
 
 Filters apply in this order: `--author` and `--committer` (regular expressions on `Name <email>`, any of several of the same
 kind), `--grep` (on the whole message; any of several, or all with `--all-match`, or none with `--invert-grep`), `-i` for all
@@ -1190,6 +1201,12 @@ with `--reverse`; `--follow` and the merge diff options (`-m`, `-c`, `--cc`, `--
 `-E` and `-F` change how `--grep`, `--author` and `--committer` read their patterns: extended regular expressions (the
 operators `( ) | + ? { }` without backslashes) or fixed strings; `--basic-regexp` restores the default, and the last of
 the three wins. `-G` is always extended. Back-references fail in both regular expression dialects.
+
+On a git home, `log` and `show` accept `--abbrev[=<n>]` and `--no-abbrev`. A numeric width overrides
+configuration and clamps to the valid range; a bare flag retains the configured default. Repeating `--abbrev`
+uses its last numeric or bare occurrence. The revision parser accepts a signed decimal prefix (`12junk` selects
+twelve, `-1` full width); `no` and `0` select four. `--no-abbrev` selects full commit ids while patch index ids
+keep the configured/default width; an explicit numeric width applies to both.
 
 Differences from git:
 
@@ -1926,8 +1943,9 @@ for a pull, and `rebase: fast-forward` for a fast-forward in either).
 7. `-i` (`--interactive`) writes the commits as an instruction sheet and opens it in the editor: `GIT_SEQUENCE_EDITOR`, then
    `sequence.editor`, then the message editor (`GIT_EDITOR`, `core.editor`, `VISUAL`, `EDITOR`, `vi`; `Terminal is dumb, but EDITOR
    unset` without one on a dumb terminal; an editor of `:` keeps the file). The sheet is git's: `pick`, `reword`, `edit`,
-   `squash`, `fixup`, `drop`, `exec`, `break` and `noop` (or `p`, `r`, `e`, `s`, `f`, `d`, `x`, `b`), ids abbreviated to seven
-   digits, comment lines and blank lines ignored, lines in any order. A bad line prints `error: invalid command '<word>'` and
+   `squash`, `fixup`, `drop`, `exec`, `break` and `noop` (or `p`, `r`, `e`, `s`, `f`, `d`, `x`, `b`), ids abbreviated by the
+   git home's unique-prefix policy, comment lines and blank lines ignored, lines in any order.
+   A bad line prints `error: invalid command '<word>'` and
    `error: invalid line <n>: <line>` (also `missing arguments`, `could not parse '<rev>'` and `cannot 'squash' without a previous
    commit`) and stops with `HEAD` on the new base, the sheet as written, and `--edit-todo` (the editor on the remaining sheet) or
    `--abort` to go on; `--continue` repeats the errors. A sheet with no command left prints `error: nothing to do` and changes

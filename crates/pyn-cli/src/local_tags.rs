@@ -50,7 +50,11 @@ pub fn run(backend: &dyn Backend, ws: Option<&Workspace>, args: TagArgs) -> Resu
     }
     let store = open(ws)?;
     if args.delete {
-        return git_home::delete_tags(store.repo(), &args.names);
+        return git_home::delete_tags(
+            store.repo(),
+            &args.names,
+            &crate::commit_format::IdFormat::Server,
+        );
     }
     if args.list || args.names.is_empty() {
         return git_home::list_tags(store.repo(), &args.names);
@@ -92,7 +96,10 @@ fn create(
     };
     refs.update_checked(&full, old.map_or(Expect::Absent, Expect::Id), &id)?;
     if let Some(old) = old {
-        println!("Updated tag '{name}' (was {})", git_home::short(&old));
+        println!(
+            "Updated tag '{name}' (was {})",
+            crate::commit_format::IdFormat::Server.short(&old)
+        );
     }
     Ok(())
 }

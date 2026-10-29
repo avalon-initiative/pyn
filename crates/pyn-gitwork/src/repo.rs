@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use pyn_git::{Config, ObjectDb, Ref, RefStore, Repository};
 use pyn_object::{Algorithm, Commit, Kind, ObjectId, TreeEntry, parse_tree};
@@ -33,7 +33,8 @@ impl Head {
 /// An opened git work tree with its object store and the config in effect (global under repository).
 pub struct Repo {
     git: Repository,
-    objects: ObjectDb,
+    pub(crate) objects: Arc<ObjectDb>,
+    pub(crate) abbrev: OnceLock<std::result::Result<usize, String>>,
     refs: RefStore,
     config: Config,
     home: Option<PathBuf>,
@@ -61,7 +62,8 @@ impl Repo {
         };
         config.extend(git.config().clone());
         Ok(Self {
-            objects: git.objects()?,
+            objects: Arc::new(git.objects()?),
+            abbrev: OnceLock::new(),
             refs: git.refs(),
             config,
             home: home.map(Path::to_path_buf),

@@ -54,7 +54,7 @@ pub(super) fn abbrev(git: &GitHome, id: &ObjectId, min: usize) -> String {
     let hex = id.to_hex();
     let mut n = min.clamp(4, hex.len());
     while n < hex.len() {
-        match git.repo.ids_with_prefix(&hex[..n]) {
+        match git.repo.objects().ids_with_prefix(&hex[..n]) {
             Ok(found) if found.len() > 1 => n += 1,
             _ => break,
         }
@@ -279,7 +279,10 @@ impl Resolver<'_> {
             return Ok(git.repo.refs().resolve(&full)?);
         }
         if base.len() >= 4 && base.bytes().all(|b| b.is_ascii_hexdigit()) {
-            let found = git.repo.ids_with_prefix(&base.to_ascii_lowercase())?;
+            let found = git
+                .repo
+                .objects()
+                .ids_with_prefix(&base.to_ascii_lowercase())?;
             if let [only] = found.as_slice() {
                 return Ok(Some(*only));
             }

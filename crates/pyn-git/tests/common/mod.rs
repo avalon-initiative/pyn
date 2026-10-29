@@ -83,3 +83,40 @@ pub fn make_writable(path: &Path) {
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(path, fs::Permissions::from_mode(0o644)).unwrap();
 }
+
+/// A small index-only pack with occupied first/last buckets and a null-adjacent collision.
+pub fn write_boundary_pack(objects: &Path, algorithm: Algorithm) -> Vec<ObjectId> {
+    let mut ids = Vec::new();
+    for first in [0, 1, 0x40, 0x7f, 0x80, 0xc0, 0xfe, 0xff] {
+        for fill in [0, 255] {
+            let mut bytes = vec![fill; algorithm.digest_len()];
+            bytes[0] = first;
+            bytes[algorithm.digest_len() - 1] = if fill == 0 { 1 } else { 254 };
+            ids.push(ObjectId::from_bytes(algorithm, &bytes).unwrap());
+        }
+    }
+    let mut second = vec![0; algorithm.digest_len()];
+    second[algorithm.digest_len() - 1] = 2;
+    ids.push(ObjectId::from_bytes(algorithm, &second).unwrap());
+    let mut bytes = Vec::new();
+    let mut writer = pyn_git::PackWriter::new(&mut bytes, algorithm, ids.len() as u32).unwrap();
+    // Controlled index ids avoid hash-preimage searches; these tests never read object bodies.
+    for id in &ids {
+        writer
+            .add(
+                *id,
+                pyn_git::PackEntry::Whole {
+                    kind: pyn_object::Kind::Blob,
+                    data: b"index boundary fixture",
+                },
+            )
+            .unwrap();
+    }
+    let summary = writer.finish().unwrap();
+    let dir = objects.join("pack");
+    fs::create_dir_all(&dir).unwrap();
+    let name = format!("pack-{}", summary.checksum.to_hex());
+    fs::write(dir.join(format!("{name}.pack")), bytes).unwrap();
+    fs::write(dir.join(format!("{name}.idx")), summary.index()).unwrap();
+    ids
+}

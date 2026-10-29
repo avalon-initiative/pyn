@@ -33,6 +33,8 @@ pub struct GitLogArgs {
     #[command(flatten)]
     fmt: FormatArgs,
     #[command(flatten)]
+    abbrev: crate::commit_format::AbbrevArgs,
+    #[command(flatten)]
     renames: crate::rename::Flags,
     /// Read the patterns of `--author`, `--committer` and `--grep` as extended regular expressions.
     #[arg(short = 'E', long, overrides_with_all = ["fixed_strings", "basic_regexp", "perl_regexp"])]
@@ -178,6 +180,7 @@ impl GitLogArgs {
             .map(|(f, _)| f)
             .or_else(|| self.patch_flags.given())
             .or_else(|| self.fmt.mailmap_given())
+            .or_else(|| self.abbrev.given())
     }
 
     /// The first argument given that a pyn server's commit filters cannot take.
@@ -216,7 +219,9 @@ impl GitLogArgs {
                 self.merge_diff.given().is_some(),
             )])
             .find(|(_, on)| *on)
-            .map(|(f, _)| f.to_string())
+            .map(|(f, _)| f)
+            .or_else(|| self.abbrev.given())
+            .map(str::to_string)
     }
 
     /// Whether `--author`, `--grep`, `--since` or `--until` was given.
@@ -499,7 +504,7 @@ impl GitLogArgs {
             shortstat: self.shortstat,
             patch: self.patch || self.unified.is_some(),
             context: self.unified.unwrap_or(3),
-            opts: self.patch_flags.opts(),
+            opts: self.patch_flags.opts().with_abbrev(&self.abbrev),
         }
     }
 }
@@ -629,6 +634,8 @@ pub(super) fn log(
     let commit_color = diff::commit_color(git, &parts.opts, decorate.on(), args.graph);
     let spec = git.pathspec(cwd, &selection.paths, false)?;
     let decorated = decorate.names(git, pretty.uses_decorations())?;
+    let abbreviations =
+        crate::commit_format::IdFormat::Git(git.repo.abbreviations(args.abbrev.abbreviation())?);
     let ctx = Context {
         style,
         now: chrono::Utc::now().timestamp(),
@@ -638,6 +645,7 @@ pub(super) fn log(
         abbrev_commit,
         mailmap: Some(&mailmap),
         map_headers,
+        abbreviations: &abbreviations,
     };
 
     if plan.needs_full_history() && !selection.paths.is_empty() {
@@ -670,6 +678,7 @@ pub(super) fn log(
         git,
         pretty: &pretty,
         ctx: &ctx,
+        abbreviations: &abbreviations,
         spec: &spec,
         parts: &parts,
         patch_parts: &patch_parts,
@@ -753,6 +762,7 @@ struct Printer<'a> {
     git: &'a GitHome,
     pretty: &'a Pretty,
     ctx: &'a Context<'a>,
+    abbreviations: &'a crate::commit_format::IdFormat,
     spec: &'a Pathspec,
     parts: &'a DiffParts,
     patch_parts: &'a DiffParts,
@@ -1025,8 +1035,12 @@ impl Printer<'_> {
                 Some(r) => with_report(text, r),
                 None => text,
             };
-            self.out
-                .push_str(&with_from(text, self.pretty, seg.from.as_ref()));
+            self.out.push_str(&with_from(
+                text,
+                self.pretty,
+                seg.from.as_ref(),
+                self.abbreviations,
+            ));
             self.out.push_str(self.pretty.terminator());
             self.out.push_str(&seg.tail);
             self.headers += 1;
@@ -1055,7 +1069,7 @@ pub(super) fn log_table(git: &GitHome, limit: usize) -> Result<()> {
             .diff_trees(parent_tree.as_ref(), Some(&c.tree), &Pathspec::default())?
             .len();
         rows.push(vec![
-            crate::snapshot::short(&entry.id.to_hex()).to_string(),
+            git.repo.abbreviate(&entry.id)?,
             String::from_utf8_lossy(&c.author.name).into_owned(),
             time::local(chrono::DateTime::from_timestamp(c.author.time, 0).unwrap_or_default()),
             files.to_string(),

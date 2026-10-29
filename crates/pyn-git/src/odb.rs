@@ -186,6 +186,97 @@ impl ObjectDb {
         self.packs.read().expect("pack list lock").clone()
     }
 
+    /// Object ids in this store and its recursive alternates, without duplicates.
+    /// `prefix` must be normalized lowercase ASCII hex: empty matches all ids, otherwise one or more digits.
+    pub fn ids_with_prefix(&self, prefix: &str) -> Result<Vec<ObjectId>> {
+        let mut found = Vec::new();
+        self.collect_ids(prefix, &mut found)?;
+        found.sort_by_key(ObjectId::to_hex);
+        found.dedup();
+        Ok(found)
+    }
+
+    fn collect_ids(&self, prefix: &str, found: &mut Vec<ObjectId>) -> Result<()> {
+        self.rescan_packs()?;
+        for pack in self.packs() {
+            found.extend(pack.ids().filter(|id| id.to_hex().starts_with(prefix)));
+        }
+        let dirs: Vec<String> = if prefix.len() >= 2 {
+            vec![prefix[..2].to_string()]
+        } else {
+            (0..256).map(|n| format!("{n:02x}")).collect()
+        };
+        for fanout in dirs {
+            let dir = self.dir.join(&fanout);
+            if let Ok(entries) = fs::read_dir(&dir) {
+                for entry in entries {
+                    let entry = entry.map_err(io_at(&dir))?;
+                    let hex = format!("{fanout}{}", entry.file_name().to_string_lossy());
+                    if hex.starts_with(prefix)
+                        && let Ok(id) = ObjectId::from_hex(self.algorithm, &hex)
+                    {
+                        found.push(id);
+                    }
+                }
+            }
+        }
+        for alternate in &self.alternates {
+            alternate.collect_ids(prefix, found)?;
+        }
+        Ok(())
+    }
+
+    /// Refreshes pack metadata, then extends at least two hex digits using index searches and one loose
+    /// fan-out read per store. A failed refresh selects the full hash width.
+    pub fn abbreviation_len(&self, id: &ObjectId, minimum: usize) -> usize {
+        let full = self.algorithm.digest_len() * 2;
+        let mut len = minimum.min(full);
+        if len == full {
+            return full;
+        }
+        if self.rescan_packs().is_err() {
+            return full;
+        }
+        for pack in self.packs() {
+            len = pack.abbreviation_len(id, len);
+        }
+        let hex = id.to_hex();
+        let dir = self.dir.join(&hex[..2]);
+        if let Ok(entries) = fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let other = format!("{}{}", &hex[..2], entry.file_name().to_string_lossy());
+                if let Ok(other) = ObjectId::from_hex(self.algorithm, &other) {
+                    len = len.max(crate::pack::distinguishing_len(
+                        id.as_bytes(),
+                        other.as_bytes(),
+                    ));
+                }
+            }
+        }
+        for alternate in &self.alternates {
+            len = alternate.abbreviation_len(id, len);
+        }
+        len
+    }
+
+    /// Git estimates size from packed objects, counting each canonical directory once and distinct packs separately.
+    pub fn approximate_object_count(&self) -> Result<usize> {
+        self.count_packed_objects(&mut HashSet::new())
+    }
+
+    fn count_packed_objects(&self, seen: &mut HashSet<PathBuf>) -> Result<usize> {
+        let dir = fs::canonicalize(&self.dir).map_err(io_at(&self.dir))?;
+        if !seen.insert(dir) {
+            return Ok(0);
+        }
+        self.rescan_packs()?;
+        let mut count: usize = self.packs().iter().map(|pack| pack.len()).sum();
+        for alternate in &self.alternates {
+            count = count.saturating_add(alternate.count_packed_objects(seen)?);
+        }
+        Ok(count)
+    }
+
     /// Picks up packs created since the last scan; returns whether any were added.
     pub(crate) fn rescan_packs(&self) -> Result<bool> {
         let pack_dir = self.dir.join("pack");
@@ -202,9 +293,10 @@ impl ObjectDb {
         }
         found.sort();
         let mut packs = self.packs.write().expect("pack list lock");
+        let known: HashSet<_> = packs.iter().map(|p| p.idx_path().to_path_buf()).collect();
         let mut added = false;
         for idx in found {
-            if packs.iter().all(|p| p.idx_path() != idx) {
+            if !known.contains(&idx) {
                 packs.push(Arc::new(Pack::open(&idx, self.algorithm)?));
                 added = true;
             }

@@ -11,8 +11,90 @@ use pyn_proto as api;
 
 use crate::time;
 
-/// The commit abbreviation `%h`, `%p` and `Merge:` lines use.
+/// The server renderer retains its existing abbreviation width.
 const ABBREV: usize = 7;
+
+/// Object-id rendering conventions selected by the repository's home.
+pub enum IdFormat {
+    Server,
+    Git(pyn_gitwork::Abbreviations),
+}
+
+impl IdFormat {
+    pub fn short(&self, id: &ObjectId) -> String {
+        match self {
+            Self::Server => id.to_hex()[..ABBREV].to_string(),
+            Self::Git(a) => a.short(id),
+        }
+    }
+}
+
+/// `--abbrev[=<n>]` and `--no-abbrev`, which `log`, `show`, `diff` and `stash show` share.
+#[derive(clap::Args, Debug, Default, Clone)]
+pub struct AbbrevArgs {
+    /// Minimum object-id width; a bare flag uses the configured default on a git home.
+    #[arg(long, value_name = "N", num_args = 0..=1, require_equals = true, overrides_with_all = ["no_abbrev", "abbrev"])]
+    abbrev: Option<Option<String>>,
+    /// Show full object ids on a git home.
+    #[arg(long, overrides_with = "abbrev")]
+    no_abbrev: bool,
+}
+
+impl AbbrevArgs {
+    /// The flag given, for a message naming it.
+    pub fn given(&self) -> Option<&'static str> {
+        [
+            ("--abbrev", self.abbrev.is_some()),
+            ("--no-abbrev", self.no_abbrev),
+        ]
+        .into_iter()
+        .find(|(_, on)| *on)
+        .map(|(f, _)| f)
+    }
+
+    /// Whether `--no-abbrev` is the last of the two flags.
+    pub fn no_abbrev(&self) -> bool {
+        self.no_abbrev
+    }
+
+    /// Git's revision parser reads a decimal prefix with strtoul, then clamps its unsigned-int width.
+    pub fn abbreviation(&self) -> Option<usize> {
+        if self.no_abbrev {
+            Some(usize::MAX)
+        } else {
+            self.abbrev
+                .as_ref()
+                .and_then(|value| value.as_deref())
+                .map(|value| {
+                    let value = value.trim_start();
+                    let (negative, value) = match value.as_bytes().first() {
+                        Some(b'-') => (true, &value[1..]),
+                        Some(b'+') => (false, &value[1..]),
+                        _ => (false, value),
+                    };
+                    let end = value.bytes().take_while(u8::is_ascii_digit).count();
+                    let n = match value[..end].parse::<u64>() {
+                        Ok(n) if negative => n.wrapping_neg(),
+                        Ok(n) => n,
+                        Err(error) if *error.kind() == std::num::IntErrorKind::PosOverflow => {
+                            u64::MAX
+                        }
+                        Err(_) => 0,
+                    };
+                    (n as u32 as usize).max(4)
+                })
+        }
+    }
+
+    /// A no-abbreviation header request leaves patch metadata at its configured default.
+    pub fn patch_abbreviation(&self) -> Option<usize> {
+        if self.no_abbrev {
+            None
+        } else {
+            self.abbreviation()
+        }
+    }
+}
 
 /// The format options `log` and `show` share.
 #[derive(clap::Args, Debug, Default)]
@@ -200,6 +282,7 @@ pub fn render_api(r: &Rendering, c: &api::Commit) -> Result<String> {
         abbrev_commit: r.abbrev_commit,
         mailmap: None,
         map_headers: false,
+        abbreviations: &IdFormat::Server,
     };
     Ok(format!(
         "{}{}",
@@ -411,6 +494,7 @@ pub struct Context<'a> {
     pub mailmap: Option<&'a Mailmap>,
     /// Whether the `Author:` and `Commit:` lines print mapped identities.
     pub map_headers: bool,
+    pub abbreviations: &'a IdFormat,
 }
 
 impl Context<'_> {
@@ -421,10 +505,15 @@ impl Context<'_> {
             None => text.to_string(),
         }
     }
+
+    fn short(&self, id: &ObjectId) -> String {
+        short(self.abbreviations, id)
+    }
 }
 
-pub(crate) fn short(id: &ObjectId) -> String {
-    id.to_hex()[..ABBREV].to_string()
+/// The id form every git-home rendering shares; the server's is `IdFormat::Server`.
+pub(crate) fn short(abbreviations: &IdFormat, id: &ObjectId) -> String {
+    abbreviations.short(id)
 }
 
 fn lossy(bytes: &[u8]) -> String {
@@ -517,11 +606,11 @@ fn indented(message: &[u8], first_paragraph: bool, tabs: usize) -> String {
     out
 }
 
-fn merge_line(c: &Commit) -> String {
+fn merge_line(c: &Commit, ctx: &Context<'_>) -> String {
     if c.parents.len() < 2 {
         return String::new();
     }
-    let merged: Vec<String> = c.parents.iter().map(short).collect();
+    let merged: Vec<String> = c.parents.iter().map(|id| ctx.short(id)).collect();
     format!("Merge: {}\n", merged.join(" "))
 }
 
@@ -533,16 +622,20 @@ pub fn render(pretty: &Pretty, ctx: &Context<'_>, id: &ObjectId, c: &Commit) -> 
         None => text,
     };
     let shown = if ctx.abbrev_commit {
-        short(id)
+        ctx.short(id)
     } else {
         id.to_hex()
     };
-    let head = format!("{}\n{}", paint(format!("commit {shown}")), merge_line(c));
+    let head = format!(
+        "{}\n{}",
+        paint(format!("commit {shown}")),
+        merge_line(c, ctx)
+    );
     match pretty {
         Pretty::Oneline { abbrev } => {
             let (subject, _) = subject_and_body(&lossy(&c.message));
             let name = if *abbrev || ctx.abbrev_commit {
-                short(id)
+                ctx.short(id)
             } else {
                 id.to_hex()
             };
@@ -636,11 +729,11 @@ fn placeholder(
         '%' => one("%".into()),
         'n' => one("\n".into()),
         'H' => one(id.to_hex()),
-        'h' => one(short(id)),
+        'h' => one(ctx.short(id)),
         'T' => one(c.tree.to_hex()),
-        't' => one(short(&c.tree)),
+        't' => one(ctx.short(&c.tree)),
         'P' => one(join(c.parents.iter().map(ObjectId::to_hex))),
-        'p' => one(join(c.parents.iter().map(short))),
+        'p' => one(join(c.parents.iter().map(|id| ctx.short(id)))),
         's' => one(subject_and_body(&message).0),
         'b' => one(subject_and_body(&message).1.to_string()),
         'B' => one(message),

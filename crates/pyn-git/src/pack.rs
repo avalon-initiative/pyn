@@ -12,6 +12,11 @@ use crate::util::{Checksummer, checksum};
 
 const IDX_MAGIC: [u8; 4] = [0xff, 0x74, 0x4f, 0x63];
 
+#[cfg(test)]
+thread_local! {
+    static ID_ACCESSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// How an object is stored inside a pack.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryKind {
@@ -160,8 +165,16 @@ impl Pack {
     }
 
     fn id_at(&self, i: usize) -> &[u8] {
+        #[cfg(test)]
+        ID_ACCESSES.with(|n| n.set(n.get() + 1));
         let s = self.ids_start() + i * self.hl();
         &self.idx[s..s + self.hl()]
+    }
+
+    /// Returns and resets this thread's pack-index id access count.
+    #[cfg(test)]
+    pub fn take_id_accesses() -> usize {
+        ID_ACCESSES.with(|n| n.replace(0))
     }
 
     fn crc_at(&self, i: usize) -> u32 {
@@ -206,6 +219,39 @@ impl Pack {
             }
         }
         None
+    }
+
+    /// Extends a minimum of at least two hex digits using neighboring binary ids in the fan-out bucket.
+    pub fn abbreviation_len(&self, id: &ObjectId, minimum: usize) -> usize {
+        if id.algorithm() != self.algorithm {
+            return minimum;
+        }
+        let want = id.as_bytes();
+        let first = want[0] as usize;
+        let begin = if first == 0 {
+            0
+        } else {
+            be32(&self.idx[8 + (first - 1) * 4..]) as usize
+        };
+        let end = be32(&self.idx[8 + first * 4..]) as usize;
+        let (mut lo, mut hi) = (begin, end);
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            if self.id_at(mid) < want {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        let mut len = minimum;
+        if lo > begin {
+            len = len.max(distinguishing_len(want, self.id_at(lo - 1)));
+        }
+        let next = lo + usize::from(lo < end && self.id_at(lo) == want);
+        if next < end {
+            len = len.max(distinguishing_len(want, self.id_at(next)));
+        }
+        len
     }
 
     pub fn contains(&self, id: &ObjectId) -> bool {
@@ -418,6 +464,15 @@ impl Pack {
         }
         Ok(())
     }
+}
+
+/// Hex width needed to distinguish two binary ids; identical ids do not extend a prefix.
+pub(crate) fn distinguishing_len(a: &[u8], b: &[u8]) -> usize {
+    a.iter()
+        .zip(b)
+        .enumerate()
+        .find_map(|(i, (a, b))| (a != b).then(|| i * 2 + if (a ^ b) & 0xf0 == 0 { 2 } else { 1 }))
+        .unwrap_or(0)
 }
 
 /// Parses the type, size and delta base of the entry that starts at `offset` in a pack.
