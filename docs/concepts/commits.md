@@ -16,7 +16,7 @@ A commit carries what a git commit carries:
   whose author and committer times differ keeps both;
 - the **parents**: none for the first commit of a repository, else the head of the branch it was made on;
 - the **message**;
-- room for a **signature** (a `gpgsig` header), which signed commits (#60) will fill;
+- room for a **signature** (a `gpgsig` header), which a signed commit fills (see [signing](git-compatibility.md#signing));
 - the **tree**: a git tree of every file in the repository as of this commit, with nested trees and per-entry git file
   modes (`100644`, `100755`, `120000`) and blob ids. The tree is a plain git tree, built with `pyn-object`.
 

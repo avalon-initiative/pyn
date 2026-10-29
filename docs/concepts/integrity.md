@@ -111,7 +111,7 @@ file mode) and its author, committer and message. Revisions made before v2 are n
 only by the commit record that lists them; the migrated commits themselves are covered from the moment they were created.
 
 A hash chain shows that what is there is consistent, not that nothing was cut off the end: removing the newest revisions or
-events leaves a valid chain. A client that remembers a head hash can detect that; signed revisions (#60) will prove authorship.
+events leaves a valid chain. A client that remembers a head hash can detect that; a signed commit proves authorship (see [signing](git-compatibility.md#signing)).
 
 ## Where hashes are checked
 
