@@ -1040,13 +1040,13 @@ fn inspection_commands_follow_the_policy() {
             assert_eq!(id.len(), width, "{tree}");
             let file = git(&repo, &repo.main, &["ls-files"]);
             let file = file.lines().next().unwrap();
-            // git 2.43 and 2.56 differ in the id column (padding, boundary mark): compare the id up to the width.
+            // git 2.43 and 2.56 differ in the id column (padding, boundary mark counted inside the width): compare one short of it.
             let cut = |out: &str| {
                 out.lines()
                     .map(|l| {
                         let (id, rest) = l.split_once(char::is_whitespace).unwrap();
                         let id = id.trim_start_matches('^');
-                        format!("{} {rest}", &id[..id.len().min(width)])
+                        format!("{} {rest}", &id[..id.len().min(width - 1)])
                     })
                     .collect::<Vec<_>>()
                     .join("\n")
