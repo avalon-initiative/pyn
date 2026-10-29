@@ -29,7 +29,7 @@ timezone, headers in another order, uppercase hex ids); `pyn-object` reads those
 so the object keeps the id it was stored under.
 The exact commit bytes are stored with each commit and the id is their hash; the fields above are what those bytes say.
 A server-created commit's bytes are the encoding of its fields, so every id is unchanged, and the bytes are what lets a
-commit built elsewhere keep its id (provisional: no path ingests such a commit yet). Commits that predate the stored
+commit built elsewhere keep its id (a pushed commit keeps its id). Commits that predate the stored
 bytes were re-encoded from their fields by a migration.
 Existing history was migrated once into a single mainline, now the default branch; see [integrity](integrity.md#existing-data).
 
@@ -97,13 +97,12 @@ A changeset can also carry `deletions` (`path` and `base_revision`, the revision
 and `hash_version` 3 in the commit that removes the path from the commit's tree (a folder left empty goes with it, git having no empty folders), and its `content` and `file_mode` are those of the version removed. Snapshots,
 files and trees leave deleted paths out; history and the commit's `revisions` list them. The response lists the entries' revisions in request order, then the deletions'.
 
-## Pushed commits (provisional)
+## Pushed commits
 
 Decision #300 lets a client build commits itself and publish them. The core accepts them through `RepoService::push_commits` and
 one atomic store step, `MetadataStore::push_commits_on`, and the server offers them as `POST /v1/repos/{owner}/{name}/push`
 (below). The matching read side is `POST .../fetch` ([fetching](#the-fetch-route)). `pyn push`, `pyn fetch` and `pyn pull` use
-them in a workspace with local commits, the default ([from the command line](#fetch-pull-and-push-with-a-local-store)); everything here
-is provisional.
+them in a workspace with local commits, the default ([from the command line](#fetch-pull-and-push-with-a-local-store)).
 
 ### The push route
 
@@ -158,7 +157,7 @@ of later pages; the client sends the same `haves` again, and a cursor with other
 commit the previous one sent, so its work follows the commits still to send rather than the pages already served. One request examines
 at most 1,000,000 commits; a larger walk is `invalid_request`.
 
-The route is additive and nothing existing changed. Provisional: the page limits and the examination cap may move.
+The route is additive and nothing existing changed.
 
 ### Reading a blob by id
 
@@ -170,7 +169,7 @@ repository is readable without credentials). A client that keeps commits and tre
 - A push is a chain of commits, oldest first, plus the trees they need. Commits keep their ids: each is checked to hash to the id
   it is sent under, to be a SHA-256 git commit, and to be a child of the one before it.
 - It must fast-forward: the first commit's parent is the branch's head or one of its ancestors (a first commit with no parent is
-  for an empty branch), and the pushed history must contain the head, which only a [merge commit](#merge-commits-in-a-push-provisional)
+  for an empty branch), and the pushed history must contain the head, which only a [merge commit](#merge-commits-in-a-push)
   can arrange when the first parent is not the head; otherwise `not_fast_forward`. A commit already in the repository is
   `push_invalid`. A branch that does not exist is created by the push.
 - Each commit's tree is compared with its parent's: every added or changed file becomes one revision, with the commit's author as its
@@ -195,7 +194,7 @@ repository is readable without credentials). A client that keeps commits and tre
   repository is the owner's bootstrap and needs no lock; later ones follow the policy file's own mode. The rules a policy commit
   brings apply to the commits after it in the same push, not to its own other files. Deleting the policy file from the default branch
   is `push_unsupported`. On any other branch the policy file is an ordinary file, not parsed, until a merge brings it to the
-  default branch (decision #38). Provisional: several policy commits in one push are applied one after the other against the
+  default branch (decision #38). Several policy commits in one push are applied one after the other against the
   final head.
 - Refused with `push_unsupported`, for now: a commit with more than two parents or the same parent twice; a commit with one
   parent that changes no file; a submodule entry; the policy file's removal from the default branch; and a message without its
@@ -203,9 +202,9 @@ repository is readable without credentials). A client that keeps commits and tre
   A name or message that is not UTF-8 is accepted: the exact bytes are stored and the commit keeps its id, and the name,
   email and message fields in the API are those bytes decoded lossily (invalid bytes and NUL become U+FFFD).
 - The pusher needs the `checkin` permission. A commit's author need not match the pusher, as in git; the authenticated pusher is
-  the account on the revisions and the actor in the audit log. A strict-match policy may be added later.
+  the account on the revisions and the actor in the audit log.
 
-### Merge commits in a push (provisional)
+### Merge commits in a push
 
 A commit with two parents is accepted (decision #300, issue #338) and judged as the server's own [merge](merging.md) judges it,
 so a rejected push is resolved by pulling, merging and pushing the merge. The first parent is the previous commit of the push
@@ -268,7 +267,7 @@ says there is nothing to push).
   server already has. It is accepted or refused whole. On success the
   remote-tracking ref moves to the new head, so the commits are no longer unpublished; the files take the revisions the server
   made, and exclusive files go read-only again (a deleted path leaves the workspace's state). A commit that deletes a path or
-  changes `.pyn/pyn.toml` is sent like any other ([deletions and policy commits](#pushed-commits-provisional)); when the
+  changes `.pyn/pyn.toml` is sent like any other ([deletions and policy commits](#pushed-commits)); when the
   server adds conversion commits after a policy commit, the next `fetch` brings them in, and the stranded versions it reports
   are printed after the push as for a direct policy commit, followed by a line per lock the policy released (`released bob's lock on <path>`). Output: `To <server>/<repo>` and `   <old>..<new>  main -> main`, or
   `Everything up-to-date`.
@@ -412,16 +411,16 @@ The CLI follows git where it has an equivalent; the differences are listed below
 - `pyn log --commits [--limit n]` lists commits (`COMMIT`, `AUTHOR`, `WHEN`, `FILES`, `MESSAGE`); `COMMIT` is the abbreviated hash and `MESSAGE` the subject. `pyn log` keeps listing revisions.
 - A commit is written as its hash or an abbreviation of at least 4 hex digits (`pyn log --commits` shows 10), `HEAD` (the
   head of the workspace's [branch](branches.md)), or either followed by `~N` (N commits back along the first parent), `^` (the
-  parent; `^^` is two back) or `^N` (the Nth parent of a merge; `^0` is the commit itself). `pyn show` on a merge prints the diff against each parent in turn, headed `diff against parent N`. `cN` numbers no longer exist. An argument that is also the name of something in the current
+  parent; `^^` is two back) or `^N` (the Nth parent of a merge; `^0` is the commit itself). `pyn show` on a merge prints the diff against each parent in turn, headed `diff against parent N`. An argument that is also the name of something in the current
   directory is read as a path by `pyn diff`.
 - `pyn clone --revision <commit> <source> [dir]` creates a workspace with every file as of that commit.
 - `pyn status --revision <commit>` compares the workspace with that commit instead of the newest: `behind (<commit> has rM)` for a
   file whose revision there is newer, `ahead (<commit> has rM)` or `ahead (not in <commit>)` for one that is newer than, or missing from, it.
 - `pyn update --revision <commit>` brings the workspace to that commit, older or newer: files are fetched at the commit's
   revision and files it does not have are removed. A file with local changes is never touched and is reported as skipped.
-- `pyn commit` takes `-m`, `-F`, `-a` and, so scripts written for `git commit` run unchanged, `-q`/`--quiet` (no summary; errors and
+- `pyn commit` takes `-m`, `-F`, `-a`, `-u` (stage untracked files too) and, so scripts written for `git commit` run unchanged, `-q`/`--quiet` (no summary; errors and
   warnings still print), `-n`/`--no-verify`, `--verify`, `-v`/`--verbose`, `--status`, `--no-status` and `--no-edit`, the last six
-  accepted and ignored because pyn runs no hooks and opens no editor. `--author=<Name <email>>` and `--date=<date>` (git's formats) are
+  accepted and ignored because pyn runs no hooks and shows no diff or status template. Without `-m` or `-F` it opens the editor ([workspace](workspace.md#staging)). `--author=<Name <email>>` and `--date=<date>` (git's formats) are
   taken on a local-store commit of staged changes: the client builds the commit, so they set the author and the author date,
   while the committer stays the signed-in account and the audit actor is the pusher. They survive `pyn push` and show in
   `pyn log --commits`, `log --format=%an` and `show`. A workspace without the local store, a path commit and a merge

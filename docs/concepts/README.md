@@ -5,9 +5,9 @@ server hosts many, addressed as `owner/name`.
 
 1. **File content history.** Every path has immutable, numbered revisions (1, 2, 3, ...). A restore appends a new
    revision with old content; nothing is ever rewritten.
-   *Provisional:* with git-style commit hashes (decision #245) commits are named by hash instead of `cN`, and numbered
-   revisions remain for exclusive paths only; a shared path is identified by its content.
-2. **Collaboration policy.** Each path is `shared` (git-style: concurrent edits are allowed; merging them arrives with branches, see [git compatibility](git-compatibility.md)) or
+   Commits are named by hash (decision #245). Numbered revisions remain for exclusive paths and for per-path history on a
+   pyn server home; a shared path is identified by its content.
+2. **Collaboration policy.** Each path is `shared` (git-style: concurrent edits are allowed; merged by [`pyn merge`](merging.md), see [git compatibility](git-compatibility.md)) or
    `exclusive` (one editor at a time, enforced by the server). Policy is decided by [`pyn.toml`](pyn-toml.md) and is
    not a file-type classification: a text file can be exclusive and a binary can be shared.
 3. **Branch state.** A [branch](branches.md) is a name pointing at a commit, and a commit's state gives the revision of each

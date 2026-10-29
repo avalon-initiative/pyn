@@ -169,7 +169,7 @@ that moment. The step is idempotent and skips anything already hashed.
 
 ## Commits
 
-A commit's id is its git commit id (see [commits](commits.md)). `cN` numbers are gone: commits are named by hash, with
+A commit's id is its git commit id (see [commits](commits.md)). Commits are named by hash, with
 `HEAD~N` and `^`. Each commit's `parents` link it to the commit it was made on, so every branch is a hash chain too, and the
 id covers the tree, so it covers every path's content and file mode as of that commit. A merge commit lists both parents, and
 the revisions it writes (a merged text, a resolution) cover its id like any other. Verification checks every commit of
