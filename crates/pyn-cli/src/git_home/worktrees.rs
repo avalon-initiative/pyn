@@ -10,7 +10,7 @@ use pyn_git::{Ref, RefStore};
 use pyn_object::ObjectId;
 
 use super::GitHome;
-use super::plumbing::{abbrev, default_abbrev, emit_bytes, usage};
+use super::plumbing::{emit_bytes, usage};
 use super::reflog::limit;
 use super::switch::subject;
 use super::worktree::{Mode, move_tree};
@@ -384,7 +384,7 @@ fn list(git: &GitHome, args: ListArgs) -> Result<()> {
         .map(|t| t.path.as_os_str().len())
         .max()
         .unwrap_or(0);
-    let min = default_abbrev(git);
+    let min = git.repo.abbreviation_len(None)?;
     for t in &all {
         let _ = write!(out, "{:<width$}", t.path.display());
         if t.bare {
@@ -400,7 +400,7 @@ fn list(git: &GitHome, args: ListArgs) -> Result<()> {
             let short = if id == zero {
                 "0".repeat(min)
             } else {
-                abbrev(git, &id, min)
+                git.repo.abbreviate(&id)?
             };
             let _ = write!(out, " {short} {label}");
         }
@@ -486,7 +486,10 @@ fn add(git: &GitHome, cwd: &Path, args: AddArgs) -> Result<()> {
             Some(id)
         };
         note = match existing {
-            Some(old) => format!("resetting branch '{name}'; was at {}", abbrev(git, &old, 7)),
+            Some(old) => format!(
+                "resetting branch '{name}'; was at {}",
+                git.repo.abbreviate(&old)?
+            ),
             None => format!("new branch '{name}'"),
         };
         branch = Some(name.clone());
@@ -510,7 +513,7 @@ fn add(git: &GitHome, cwd: &Path, args: AddArgs) -> Result<()> {
             .resolve(spec)
             .map_err(|_| anyhow::anyhow!("invalid reference: {spec}"))?;
         start = Some(id);
-        note = format!("detached HEAD {}", abbrev(git, &id, 7));
+        note = format!("detached HEAD {}", git.repo.abbreviate(&id)?);
     } else {
         let name = args.commit_ish.clone().unwrap_or_else(|| base.clone());
         match git.branch_commit(&name)? {
@@ -623,7 +626,7 @@ fn add(git: &GitHome, cwd: &Path, args: AddArgs) -> Result<()> {
     {
         eprintln!(
             "HEAD is now at {} {}",
-            abbrev(git, id, 7),
+            git.repo.abbreviate(id)?,
             subject(git, id)?
         );
     }

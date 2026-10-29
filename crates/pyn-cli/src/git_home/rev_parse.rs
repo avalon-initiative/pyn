@@ -7,9 +7,7 @@ use clap::Args;
 use pyn_object::{Kind, ObjectId};
 
 use super::GitHome;
-use super::plumbing::{
-    Resolver, abbrev, default_abbrev, dwim, emit_bytes, kind_of, peel, prefix, shorten_ref,
-};
+use super::plumbing::{Resolver, dwim, emit_bytes, kind_of, peel, prefix, shorten_ref};
 
 /// Print the object ids revisions name, and facts about the repository, in the order given.
 #[derive(Debug, Args)]
@@ -318,8 +316,7 @@ fn show(git: &GitHome, id: &ObjectId, name: &str, negated: bool, st: &mut State)
             text.push_str(name);
         }
     } else if let Some(short) = st.short {
-        let n = short.map_or_else(|| default_abbrev(git), |n| n.clamp(4, id.to_hex().len()));
-        text.push_str(&abbrev(git, id, n));
+        text.push_str(&git.repo.abbreviations(short)?.short(id));
     } else {
         text.push_str(&id.to_hex());
     }

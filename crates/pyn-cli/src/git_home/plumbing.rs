@@ -1,4 +1,4 @@
-//! Pieces shared by the inspection commands: object lookup by any revision form, abbreviations and exits.
+//! Pieces shared by the inspection commands: object lookup by any revision form, and exits.
 
 use std::io::Write;
 use std::path::Path;
@@ -37,29 +37,6 @@ pub(super) fn prefix(git: &GitHome, cwd: &Path) -> Result<Vec<u8>> {
 
 pub(super) fn quote(git: &GitHome, path: &[u8]) -> String {
     crate::short_status::quote_diff(path, git.repo.bool_setting("core.quotePath", true))
-}
-
-/// The abbreviation length `--short` and friends start from: `core.abbrev`, else 7.
-pub(super) fn default_abbrev(git: &GitHome) -> usize {
-    let hex = git.algorithm().digest_len() * 2;
-    match git.config().get("core.abbrev") {
-        Some(v) if v.eq_ignore_ascii_case("no") => hex,
-        Some(v) => v.parse::<usize>().map_or(7, |n| n.clamp(4, hex)),
-        None => 7,
-    }
-}
-
-/// The shortest prefix of at least `min` digits that no other object shares.
-pub(super) fn abbrev(git: &GitHome, id: &ObjectId, min: usize) -> String {
-    let hex = id.to_hex();
-    let mut n = min.clamp(4, hex.len());
-    while n < hex.len() {
-        match git.repo.objects().ids_with_prefix(&hex[..n]) {
-            Ok(found) if found.len() > 1 => n += 1,
-            _ => break,
-        }
-    }
-    hex[..n].to_string()
 }
 
 pub(super) fn kind_of(git: &GitHome, id: &ObjectId) -> Result<Option<Kind>> {

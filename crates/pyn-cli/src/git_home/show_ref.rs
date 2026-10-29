@@ -5,7 +5,7 @@ use clap::Args;
 use pyn_object::{Kind, ObjectId};
 
 use super::GitHome;
-use super::plumbing::{abbrev, default_abbrev, emit_bytes, kind_of, peel, usage};
+use super::plumbing::{emit_bytes, kind_of, peel, usage};
 
 /// List the refs of the repository with the ids they point at.
 #[derive(Debug, Args)]
@@ -44,22 +44,21 @@ pub struct ShowRefArgs {
 struct Show<'a> {
     git: &'a GitHome,
     args: &'a ShowRefArgs,
-    abbrev: Option<usize>,
+    abbreviations: Option<pyn_gitwork::Abbreviations>,
     out: Vec<u8>,
 }
 
 pub(super) fn show_ref(git: &GitHome, args: ShowRefArgs) -> Result<()> {
-    let hex = git.algorithm().digest_len() * 2;
     let digits = |v: &String| match v.parse::<usize>() {
-        Ok(n) => n.clamp(4, hex),
-        Err(_) if v.is_empty() => default_abbrev(git),
+        Ok(n) => git.repo.abbreviations(Some(n)),
+        Err(_) if v.is_empty() => git.repo.abbreviations(None),
         Err(_) => usage(&format!(
             "option `abbrev' expects a numerical value, got '{v}'"
         )),
     };
-    let abbrev = match (&args.abbrev, &args.hash) {
-        (Some(v), _) => Some(digits(v)),
-        (None, Some(v)) if !v.is_empty() => Some(digits(v)),
+    let abbreviations = match (&args.abbrev, &args.hash) {
+        (Some(v), _) => Some(digits(v)?),
+        (None, Some(v)) if !v.is_empty() => Some(digits(v)?),
         _ => None,
     };
     if args.exists {
@@ -68,7 +67,7 @@ pub(super) fn show_ref(git: &GitHome, args: ShowRefArgs) -> Result<()> {
     let mut show = Show {
         git,
         args: &args,
-        abbrev,
+        abbreviations,
         out: Vec::new(),
     };
     let result = if args.verify {
@@ -99,8 +98,8 @@ fn exists(git: &GitHome, args: &ShowRefArgs) -> Result<()> {
 
 impl Show<'_> {
     fn hex(&self, id: &ObjectId) -> String {
-        match self.abbrev {
-            Some(n) => abbrev(self.git, id, n),
+        match &self.abbreviations {
+            Some(a) => a.short(id),
             None => id.to_hex(),
         }
     }
