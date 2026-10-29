@@ -27,8 +27,10 @@ const EXCLUDE_LINE: &str = ".pyn/";
 
 /// Runs `command` on a git repository, or refuses it with the home that provides it.
 pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
-    // Validate before writes; this repository caches the configured/default length.
-    git.repo.abbreviation_len(None)?;
+    // Validate before writes; git's `remote` without a fetch never reads core.abbrev.
+    if !matches!(&command, Command::Remote(args) if !args.fetches()) {
+        git.repo.abbreviation_len(None)?;
+    }
     let server_only = |feature: &str| -> Result<()> {
         match git.pyn_server(feature) {
             Ok(_) => unreachable!("a git home has no pyn server"),

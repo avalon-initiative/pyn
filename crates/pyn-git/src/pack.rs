@@ -69,6 +69,7 @@ fn read_at(file: &File, buf: &mut [u8], pos: u64) -> std::io::Result<usize> {
 impl Pack {
     /// Opens `<name>.idx` and `<name>.pack` and checks their headers and that both name the same pack checksum.
     pub fn open(idx_path: &Path, algorithm: Algorithm) -> Result<Self> {
+        crate::counters::bump(|c| c.pack_opens += 1);
         let pack_path = idx_path.with_extension("pack");
         let idx = std::fs::read(idx_path).map_err(io_at(idx_path))?;
         let hl = algorithm.digest_len();
@@ -254,11 +255,72 @@ impl Pack {
         len
     }
 
+    /// Ids whose hex starts with `prefix` (lowercase hex, possibly odd length), in id order.
+    pub fn ids_with_prefix(&self, prefix: &str) -> Vec<ObjectId> {
+        let digits: Vec<u8> = prefix.bytes().filter_map(hex_digit).collect();
+        if digits.len() != prefix.len() || digits.len() > 2 * self.hl() {
+            return Vec::new();
+        }
+        if digits.is_empty() {
+            return self.ids().collect();
+        }
+        let mut want: Vec<u8> = digits
+            .chunks(2)
+            .map(|c| c[0] << 4 | c.get(1).copied().unwrap_or(0))
+            .collect();
+        let mask = if digits.len() % 2 == 1 { 0xf0 } else { 0xff };
+        let last = want.len() - 1;
+        want[last] &= mask;
+        let order = |id: &[u8]| {
+            let mut head = id[..want.len()].to_vec();
+            head[last] &= mask;
+            head.cmp(&want)
+        };
+        let first = want[0] as usize;
+        let (lo_byte, hi_byte) = if digits.len() == 1 {
+            (first, first | 0x0f)
+        } else {
+            (first, first)
+        };
+        let begin = if lo_byte == 0 {
+            0
+        } else {
+            be32(&self.idx[8 + (lo_byte - 1) * 4..]) as usize
+        };
+        let end = be32(&self.idx[8 + hi_byte * 4..]) as usize;
+        let start = begin
+            + self.search(begin, end, |i| {
+                order(self.id_at(i)) == std::cmp::Ordering::Less
+            });
+        let stop = begin
+            + self.search(begin, end, |i| {
+                order(self.id_at(i)) != std::cmp::Ordering::Greater
+            });
+        (start..stop)
+            .map(|i| ObjectId::from_bytes(self.algorithm, self.id_at(i)).expect("length checked"))
+            .collect()
+    }
+
+    /// The first offset in `begin..end` (relative to `begin`) where `before` is false.
+    fn search(&self, begin: usize, end: usize, before: impl Fn(usize) -> bool) -> usize {
+        let (mut lo, mut hi) = (begin, end);
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            if before(mid) {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        lo - begin
+    }
+
     pub fn contains(&self, id: &ObjectId) -> bool {
         self.find(id).is_some()
     }
 
     pub fn ids(&self) -> impl Iterator<Item = ObjectId> + '_ {
+        crate::counters::bump(|c| c.pack_enumerations += 1);
         (0..self.count)
             .map(|i| ObjectId::from_bytes(self.algorithm, self.id_at(i)).expect("length checked"))
     }
@@ -348,6 +410,7 @@ impl Pack {
 
     /// Reads and fully resolves `id`, verifying its hash.
     pub fn read(&self, id: &ObjectId) -> Result<Option<Object>> {
+        crate::counters::bump(|c| c.pack_reads += 1);
         let Some(i) = self.find(id) else {
             return Ok(None);
         };
@@ -553,4 +616,8 @@ fn read_exact_at(file: &File, buf: &mut [u8], mut pos: u64, path: &Path) -> Resu
         pos += n as u64;
     }
     Ok(())
+}
+
+fn hex_digit(b: u8) -> Option<u8> {
+    char::from(b).to_digit(16).map(|d| d as u8)
 }

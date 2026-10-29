@@ -1146,7 +1146,9 @@ On a git home, abbreviated ids (including patch headers) lengthen until unique a
 recursive alternates. The minimum defaults to at least seven, estimated from packed object counts;
 `core.abbrev=auto` or unset selects it. Numeric `core.abbrev` accepts decimal, octal, hexadecimal and binary
 `k`/`m`/`g` suffixes. Values below four, malformed or missing values and integer overflow fail;
-valid integers above the hash width render full ids in pyn, as in the tested git 2.47.3.
+valid integers above the hash width (`999`, `1k`, `64` for SHA-1) are accepted and render full ids; git 2.43 rejects them,
+and pyn deliberately does not. A bad value is reported only by commands that render
+ids or write state, so `remote` (without a fetch) succeeds where git does.
 `no`, `off`, `false` (case-insensitive) or an empty value selects full ids. Duplicate objects do not extend
 prefixes; null patch ids also lengthen for uniqueness. The `index` line of a combined diff and the `(from <parent>)` label of
 `-m --oneline` follow the same policy; a combined diff does not read `--abbrev=<n>` or `--full-index`. Server-home conventions are unchanged.

@@ -189,9 +189,12 @@ impl ObjectDb {
     /// Object ids in this store and its recursive alternates, without duplicates.
     /// `prefix` must be normalized lowercase ASCII hex: empty matches all ids, otherwise one or more digits.
     pub fn ids_with_prefix(&self, prefix: &str) -> Result<Vec<ObjectId>> {
+        if prefix.is_empty() {
+            crate::counters::bump(|c| c.id_scans += 1);
+        }
         let mut found = Vec::new();
         self.collect_ids(prefix, &mut found)?;
-        found.sort_by_key(ObjectId::to_hex);
+        found.sort_unstable_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
         found.dedup();
         Ok(found)
     }
@@ -199,7 +202,7 @@ impl ObjectDb {
     fn collect_ids(&self, prefix: &str, found: &mut Vec<ObjectId>) -> Result<()> {
         self.rescan_packs()?;
         for pack in self.packs() {
-            found.extend(pack.ids().filter(|id| id.to_hex().starts_with(prefix)));
+            found.extend(pack.ids_with_prefix(prefix));
         }
         let dirs: Vec<String> = if prefix.len() >= 2 {
             vec![prefix[..2].to_string()]
@@ -208,6 +211,7 @@ impl ObjectDb {
         };
         for fanout in dirs {
             let dir = self.dir.join(&fanout);
+            crate::counters::bump(|c| c.loose_fanout_reads += 1);
             if let Ok(entries) = fs::read_dir(&dir) {
                 for entry in entries {
                     let entry = entry.map_err(io_at(&dir))?;
@@ -229,6 +233,11 @@ impl ObjectDb {
     /// Refreshes pack metadata, then extends at least two hex digits using index searches and one loose
     /// fan-out read per store. A failed refresh selects the full hash width.
     pub fn abbreviation_len(&self, id: &ObjectId, minimum: usize) -> usize {
+        crate::counters::bump(|c| c.abbreviation_lookups += 1);
+        self.abbreviation_len_in(id, minimum)
+    }
+
+    fn abbreviation_len_in(&self, id: &ObjectId, minimum: usize) -> usize {
         let full = self.algorithm.digest_len() * 2;
         let mut len = minimum.min(full);
         if len == full {
@@ -242,6 +251,7 @@ impl ObjectDb {
         }
         let hex = id.to_hex();
         let dir = self.dir.join(&hex[..2]);
+        crate::counters::bump(|c| c.loose_fanout_reads += 1);
         if let Ok(entries) = fs::read_dir(dir) {
             for entry in entries.flatten() {
                 let other = format!("{}{}", &hex[..2], entry.file_name().to_string_lossy());
@@ -254,13 +264,14 @@ impl ObjectDb {
             }
         }
         for alternate in &self.alternates {
-            len = alternate.abbreviation_len(id, len);
+            len = alternate.abbreviation_len_in(id, len);
         }
         len
     }
 
     /// Git estimates size from packed objects, counting each canonical directory once and distinct packs separately.
     pub fn approximate_object_count(&self) -> Result<usize> {
+        crate::counters::bump(|c| c.object_counts += 1);
         self.count_packed_objects(&mut HashSet::new())
     }
 
