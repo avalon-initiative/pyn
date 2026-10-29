@@ -1530,7 +1530,7 @@ pub struct OwnerUsage {
     pub owner_id: String,
     pub limits: OwnerLimits,
     pub usage: Usage,
-    /// Ordered by name.
+    /// Largest first, then by address.
     pub repositories: Vec<RepoUsage>,
 }
 
