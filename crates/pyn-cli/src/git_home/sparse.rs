@@ -211,14 +211,35 @@ pub(super) fn load(git: &GitHome) -> Result<Option<Patterns>> {
     Ok(Some(Patterns::parse(&text, cone_setting(git))))
 }
 
-/// The refusal for commands that cannot yet keep the skip-worktree bit right.
-pub(super) fn refuse_unsupported(index: &Index) -> Result<()> {
-    if index.entries.iter().any(|e| e.skip_worktree) {
-        bail!(
-            "this repository uses sparse checkout, which pyn does not support in this command yet"
-        );
+/// Which paths a work tree update leaves alone: skipped entries, and new paths outside the patterns.
+pub(super) struct Cone {
+    patterns: Option<Patterns>,
+    skipped: BTreeSet<Vec<u8>>,
+    known: BTreeSet<Vec<u8>>,
+}
+
+impl Cone {
+    pub(super) fn of(git: &GitHome, index: &Index) -> Result<Self> {
+        let paths = |keep: &dyn Fn(&IndexEntry) -> bool| {
+            index
+                .entries
+                .iter()
+                .filter(|e| keep(e))
+                .map(|e| e.path.clone())
+                .collect()
+        };
+        Ok(Self {
+            patterns: load(git)?,
+            skipped: paths(&|e| e.skip_worktree && e.stage == 0),
+            known: paths(&|_| true),
+        })
     }
-    Ok(())
+
+    pub(super) fn out(&self, path: &[u8]) -> bool {
+        self.skipped.contains(path)
+            || (!self.known.contains(path)
+                && self.patterns.as_ref().is_some_and(|p| !p.includes(path)))
+    }
 }
 
 /// The share of tracked files present in the work tree, as `status` words it; `None` when not sparse.

@@ -610,4 +610,9 @@ impl MetadataStore for CountingStore {
         self.count();
         self.inner.repo_usage(repo).await
     }
+
+    async fn repo_breakdown(&self, repo: &RepoId) -> crate::Result<crate::RepoBreakdown> {
+        self.count();
+        self.inner.repo_breakdown(repo).await
+    }
 }

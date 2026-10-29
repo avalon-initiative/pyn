@@ -12,6 +12,7 @@ use pyn_proto::{
     LockForcedData, LockReleasedData, OrganizationCreatedData, OrganizationDeletedData,
     OwnerFrozenData, OwnerKind, OwnerLimitReachedData, OwnerLimitsChangedData, OwnerUnfrozenData,
     RepositoryCreatedData, RepositoryDeletedData, RepositoryRenamedData,
+    RepositoryStorageCapChangedData,
 };
 
 /// Builds webhook envelopes for the domain's limit refusals.
@@ -181,6 +182,21 @@ impl LimitEvents for WebhookLimitEvents {
                 owner: name(owner),
                 owner_id: owner_id.to_string(),
                 name: repo,
+                actor: name(actor),
+            }),
+            DomainEvent::RepositoryStorageCapChanged {
+                repo_id,
+                owner,
+                owner_id,
+                name: repo,
+                storage_cap,
+                actor,
+            } => EventData::RepositoryStorageCapChanged(RepositoryStorageCapChangedData {
+                repo_id: repo_id.to_string(),
+                owner: name(owner),
+                owner_id: owner_id.to_string(),
+                name: repo,
+                storage_cap,
                 actor: name(actor),
             }),
             DomainEvent::OwnerLimitsChanged {

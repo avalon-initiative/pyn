@@ -72,7 +72,8 @@ pub use limit_events::{
     MemoryLimitEvents,
 };
 pub use limits::{
-    Limits, LimitsChange, MAX_LIMIT_VALUE, RepoUsage, StorageCap, StorageCaps, Usage,
+    BREAKDOWN_PATHS, FolderUsage, Limits, LimitsChange, MAX_LIMIT_VALUE, PathUsage, RepoBreakdown,
+    RepoUsage, StorageCap, StorageCaps, Usage, top_folder,
 };
 pub use merge::{
     Change, Conflict, ConflictKind, FastForward, MergeOutcome, MergeReport, MergeRequest,

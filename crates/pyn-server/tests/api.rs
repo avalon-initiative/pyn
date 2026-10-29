@@ -52,6 +52,7 @@ async fn state_full(
         name: "game".into(),
         visibility: Visibility::Private,
         settings: RepoSettings::default(),
+        storage_cap: None,
         created_at: chrono::Utc::now(),
     })
     .await

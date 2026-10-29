@@ -204,12 +204,6 @@ pub(super) fn blame(git: &GitHome, cwd: &Path, args: BlameArgs, annotate: bool) 
     if annotate {
         p.flags.annotate = true;
     }
-    if git.config().get("mailmap.file").is_some()
-        || git.config().get("mailmap.blob").is_some()
-        || git.repo.root().is_ok_and(|r| r.join(".mailmap").exists())
-    {
-        bail!("blame does not read mailmaps on a git repository yet");
-    }
     if let Some(algo) = git.config().get("diff.algorithm")
         && !matches!(algo, "default" | "myers")
     {
@@ -381,6 +375,11 @@ pub(super) fn blame(git: &GitHome, cwd: &Path, args: BlameArgs, annotate: bool) 
         }
     }
 
+    let mailmap = git.mailmap()?;
+    let mapped = |mut who: Signature| {
+        (who.name, who.email) = mailmap.map(&who.name, &who.email);
+        who
+    };
     let mut infos: HashMap<ObjectId, Info> = HashMap::new();
     for e in &entries {
         let commit = board.origins[e.origin].commit;
@@ -388,14 +387,19 @@ pub(super) fn blame(git: &GitHome, cwd: &Path, args: BlameArgs, annotate: bool) 
             continue;
         }
         let info = if commit == zero {
-            fake_info(&p, &path)
+            let fake = fake_info(&p, &path);
+            Info {
+                author: mapped(fake.author),
+                committer: mapped(fake.committer),
+                ..fake
+            }
         } else {
             let c = git.repo.commit(&commit)?;
             Info {
                 summary: subject(&c.message, &commit),
                 boundary: hidden.contains(&commit) || (c.parents.is_empty() && !show_root),
-                author: c.author,
-                committer: c.committer,
+                author: mapped(c.author),
+                committer: mapped(c.committer),
             }
         };
         infos.insert(commit, info);

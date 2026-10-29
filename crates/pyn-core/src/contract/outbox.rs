@@ -199,6 +199,10 @@ pub async fn changes_queue_their_events_in_order(
         .unwrap();
     let repo = w.repos.open("alice", "game2").await.unwrap().record;
     w.repos
+        .set_storage_cap(&alice, &UserId::new("alice"), "game2", Some(1 << 30))
+        .await
+        .unwrap();
+    w.repos
         .update(
             &alice,
             &repo,
@@ -250,6 +254,7 @@ pub async fn changes_queue_their_events_in_order(
             "organization.created",
             "repository.created",
             "repository.renamed",
+            "repository.storage_cap_changed",
             "owner.limits_changed",
             "owner.frozen",
             "owner.unfrozen",

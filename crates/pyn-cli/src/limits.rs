@@ -232,20 +232,83 @@ fn repo_table(repos: &[api::RepoUsage]) -> String {
         .map(|r| {
             vec![
                 bytes(r.stored_bytes),
+                size_cell(r.storage_cap),
                 r.files.to_string(),
                 r.revisions.to_string(),
                 r.repository.clone(),
             ]
         })
         .collect();
-    table::render(&["STORED", "FILES", "REVISIONS", "REPOSITORY"], &rows)
+    table::render(
+        &["STORED", "CAP", "FILES", "REVISIONS", "REPOSITORY"],
+        &rows,
+    )
 }
 
-pub fn repo_usage(api: &Api, owner: &str, name: &str) -> Result<()> {
+pub fn repo_usage(api: &Api, owner: &str, name: &str, breakdown: bool) -> Result<()> {
     let used: api::RepoUsage = api
         .send(api.get(&format!("/v1/repos/{owner}/{name}/usage")))?
         .json()?;
     println!("{}", repo_table(&[used]));
+    if breakdown {
+        let detail: api::RepoUsageBreakdown = api
+            .send(api.get(&format!("/v1/repos/{owner}/{name}/usage/breakdown")))?
+            .json()?;
+        let folders: Vec<Vec<String>> = detail
+            .folders
+            .iter()
+            .map(|f| {
+                let name = if f.folder.is_empty() {
+                    "(root files)"
+                } else {
+                    &f.folder
+                };
+                vec![bytes(f.stored_bytes), f.files.to_string(), name.to_string()]
+            })
+            .collect();
+        println!();
+        println!(
+            "{}",
+            table::render(&["STORED", "FILES", "FOLDER"], &folders)
+        );
+        let paths: Vec<Vec<String>> = detail
+            .largest_paths
+            .iter()
+            .map(|p| {
+                vec![
+                    bytes(p.stored_bytes),
+                    p.revisions.to_string(),
+                    p.path.clone(),
+                ]
+            })
+            .collect();
+        println!();
+        println!(
+            "{}",
+            table::render(&["STORED", "REVISIONS", "PATH"], &paths)
+        );
+    }
+    Ok(())
+}
+
+/// Sets the repository's storage cap, or removes it with `default`.
+pub fn set_repo_storage_cap(api: &Api, owner: &str, name: &str, cap: LimitValue) -> Result<()> {
+    let body = api::SetRepoStorageCapRequest {
+        storage_bytes: cap.0,
+    };
+    let set: api::RepoStorageCap = api
+        .send(
+            api.request(
+                Method::PUT,
+                &format!("/v1/repos/{owner}/{name}/storage-cap"),
+            )
+            .json(&body),
+        )?
+        .json()?;
+    match set.storage_bytes {
+        Some(n) => println!("{} may store at most {}", set.repository, bytes(n)),
+        None => println!("{} has no storage cap of its own", set.repository),
+    }
     Ok(())
 }
 

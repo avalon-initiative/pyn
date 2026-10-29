@@ -12,7 +12,7 @@ use crate::audit::{AuditAction, AuditScope, AuditStore, NewAuditEvent};
 use crate::clock::Clock;
 use crate::error::{PynError, Result};
 use crate::limit_events::DomainEvent;
-use crate::limits::{RepoUsage, Usage};
+use crate::limits::{MAX_LIMIT_VALUE, RepoBreakdown, RepoUsage, Usage};
 use crate::object::ObjectStore;
 use crate::repo::{
     self, DEFAULT_MAX_LOCKS_PER_USER, RepoRecord, RepoSettings, RepoUpdate, Visibility,
@@ -54,7 +54,14 @@ pub struct Repositories {
     unreferenced_cap: u64,
     uploads: crate::gate::UploadGate,
     merge_slots: Arc<tokio::sync::Semaphore>,
-    services: Mutex<HashMap<crate::RepoId, (RepoSettings, Arc<RepoService>)>>,
+    services: Mutex<HashMap<crate::RepoId, (ServiceKey, Arc<RepoService>)>>,
+}
+
+/// What a cached service was built from; a change to any part rebuilds it.
+type ServiceKey = (RepoSettings, Option<u64>, String);
+
+fn service_key(record: &RepoRecord) -> ServiceKey {
+    (record.settings, record.storage_cap, record.address())
 }
 
 /// A private stand-in for a repository that does not exist, so a lookup does the work of a real one.
@@ -65,6 +72,7 @@ fn absent_record(owner: &str, name: &str) -> RepoRecord {
         name: name.to_string(),
         visibility: Visibility::Private,
         settings: RepoSettings::default(),
+        storage_cap: None,
         created_at: chrono::DateTime::<chrono::Utc>::default(),
     }
 }
@@ -150,8 +158,8 @@ impl Repositories {
 
     fn cached(&self, record: &RepoRecord) -> Option<Arc<RepoService>> {
         let services = self.services.lock().unwrap();
-        let (settings, svc) = services.get(&record.id)?;
-        (*settings == record.settings).then(|| svc.clone())
+        let (key, svc) = services.get(&record.id)?;
+        (*key == service_key(record)).then(|| svc.clone())
     }
 
     /// The cached service, or a new one, with the policy at the repository's head `.pyn/pyn.toml`; other copies may have changed it.
@@ -180,18 +188,19 @@ impl Repositories {
         );
         let svc = Arc::new(
             svc.with_storage_caps(record.owner.clone(), self.access.clone())
+                .with_repo_storage_cap(record.address(), record.storage_cap)
                 .with_owner_writes(self.access.clone())
                 .with_unreferenced_cap(self.unreferenced_cap)
                 .with_merge_slots(self.merge_slots.clone()),
         );
         svc.load_policy().await?;
         let mut services = self.services.lock().unwrap();
-        if let Some((settings, existing)) = services.get(&record.id)
-            && *settings == record.settings
+        if let Some((key, existing)) = services.get(&record.id)
+            && *key == service_key(record)
         {
             return Ok(existing.clone());
         }
-        services.insert(record.id.clone(), (record.settings, svc.clone()));
+        services.insert(record.id.clone(), (service_key(record), svc.clone()));
         Ok(svc)
     }
 
@@ -273,6 +282,74 @@ impl Repositories {
         self.meta.repo_usage(&record.id).await
     }
 
+    /// Where the repository's stored bytes sit. Repository admins only.
+    pub async fn repo_breakdown(
+        &self,
+        actor: &Identity,
+        record: &RepoRecord,
+    ) -> Result<RepoBreakdown> {
+        let held = self.access.principal_in(&record.id, actor).await?;
+        held.require(Permission::ManageRoles)?;
+        self.meta.repo_breakdown(&record.id).await
+    }
+
+    /// Sets or removes the repository's own storage cap (`None` removes it). The owner, a server administrator or a
+    /// `manage_limits` credential may; a frozen owner refuses its own members but not an operator. Deletes nothing.
+    pub async fn set_storage_cap(
+        &self,
+        actor: &Identity,
+        owner: &UserId,
+        name: &str,
+        cap: Option<u64>,
+    ) -> Result<RepoRecord> {
+        let operator = self.access.require_repo_cap_setter(actor, owner).await?;
+        let record = self
+            .meta
+            .find_repo(owner, name)
+            .await?
+            .ok_or_else(|| PynError::RepoNotFound(format!("{owner}/{name}")))?;
+        if cap.is_some_and(|c| c > MAX_LIMIT_VALUE) {
+            return Err(PynError::InvalidRequest(format!(
+                "a limit is at most {MAX_LIMIT_VALUE}"
+            )));
+        }
+        if !operator {
+            self.access.ensure_owner_writable(owner).await?;
+        }
+        let owner_id = self.access.account_id(owner).await?;
+        let event = self
+            .access
+            .draft(DomainEvent::RepositoryStorageCapChanged {
+                repo_id: record.id.clone(),
+                owner: owner.clone(),
+                owner_id,
+                name: record.name.clone(),
+                storage_cap: cap,
+                actor: actor.user.clone(),
+            })?;
+        let update = RepoUpdate {
+            storage_cap: Some(cap),
+            ..RepoUpdate::default()
+        };
+        let updated = self
+            .meta
+            .update_repo_with_events(&record.id, update, &[event])
+            .await?;
+        let detail = format!(
+            "{}: storage cap {}",
+            updated.address(),
+            cap.map_or_else(|| "none".to_string(), |c| format!("{c} bytes"))
+        );
+        self.record(
+            &updated,
+            &actor.user,
+            AuditAction::RepoStorageCapChanged,
+            detail,
+        )
+        .await?;
+        Ok(updated)
+    }
+
     /// The owner's limits, usage and per-repository usage, for the owner, an owner of the organization, a server
     /// administrator or a service credential with `manage_limits`.
     pub async fn owner_report(&self, actor: &Identity, owner: &UserId) -> Result<OwnerReport> {
@@ -286,6 +363,9 @@ impl Repositories {
             let used = self.meta.repo_usage(&record.id).await?;
             repositories.push((record, used));
         }
+        repositories.sort_by(|(a, x), (b, y)| {
+            (y.stored_bytes, a.address()).cmp(&(x.stored_bytes, b.address()))
+        });
         Ok(OwnerReport {
             limits,
             usage,
@@ -333,6 +413,7 @@ impl Repositories {
             name: repo::validate_name(name)?,
             visibility,
             settings: settings.unwrap_or_default().validate()?,
+            storage_cap: None,
             created_at: self.clock.now(),
         };
         let max_repos = self.access.effective_limits(owner).await?.repositories;

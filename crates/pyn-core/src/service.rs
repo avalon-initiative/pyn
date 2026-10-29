@@ -209,6 +209,7 @@ pub struct RepoService {
     clock: Arc<dyn Clock>,
     config: ServiceConfig,
     storage: Option<(UserId, Arc<dyn StorageCaps>)>,
+    repo_storage: Option<(String, u64)>,
     writes: Option<Arc<dyn OwnerWrites>>,
     limit_events: (UserId, AccountId, Arc<dyn crate::LimitEvents>),
     unreferenced_cap: u64,
@@ -241,6 +242,7 @@ impl RepoService {
             clock: context.clock,
             config,
             storage: None,
+            repo_storage: None,
             writes: None,
             limit_events: (context.owner, context.owner_id, context.limit_events),
             unreferenced_cap: DEFAULT_UNREFERENCED_UPLOAD_BYTES,
@@ -259,6 +261,12 @@ impl RepoService {
     /// Enforces the storage ceiling `caps` reports for the repository's `owner`, if one is set.
     pub fn with_storage_caps(mut self, owner: UserId, caps: Arc<dyn StorageCaps>) -> Self {
         self.storage = Some((owner, caps));
+        self
+    }
+
+    /// Caps the bytes of distinct content the repository `address` may store.
+    pub fn with_repo_storage_cap(mut self, address: String, cap: Option<u64>) -> Self {
+        self.repo_storage = cap.map(|c| (address, c));
         self
     }
 
@@ -1194,13 +1202,23 @@ impl RepoService {
     }
 
     async fn storage_cap(&self) -> Result<Option<StorageCap>> {
-        match &self.storage {
-            Some((owner, caps)) => Ok(caps.storage_cap(owner).await?.map(|max_bytes| StorageCap {
-                owner: owner.clone(),
-                max_bytes,
-            })),
-            None => Ok(None),
+        let Some((owner, caps)) = &self.storage else {
+            return Ok(None);
+        };
+        let max_bytes = caps.storage_cap(owner).await?;
+        if max_bytes.is_none() && self.repo_storage.is_none() {
+            return Ok(None);
         }
+        let (repository, repo_max_bytes) = match &self.repo_storage {
+            Some((address, cap)) => (address.clone(), Some(*cap)),
+            None => (String::new(), None),
+        };
+        Ok(Some(StorageCap {
+            owner: owner.clone(),
+            max_bytes,
+            repository,
+            repo_max_bytes,
+        }))
     }
 
     /// Makes an older revision's content the branch's revision as a fresh one marked `restored_from`; history is untouched.

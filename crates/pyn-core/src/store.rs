@@ -5,7 +5,7 @@ use crate::branch::{Branch, DEFAULT_BRANCH};
 use crate::error::Result;
 use crate::history::{HistoryCursor, HistoryScan};
 use crate::limit_events::LockEventBuilder;
-use crate::limits::{RepoUsage, StorageCap, Usage};
+use crate::limits::{RepoBreakdown, RepoUsage, StorageCap, Usage};
 use crate::merge::{MergeWrite, MergeWritten};
 use crate::repo::{RepoRecord, RepoUpdate};
 use crate::rules::PathFilter;
@@ -525,4 +525,7 @@ pub trait MetadataStore: Send + Sync {
     async fn owner_usage(&self, owner: &UserId) -> Result<Usage>;
 
     async fn repo_usage(&self, repo: &RepoId) -> Result<RepoUsage>;
+
+    /// Distinct stored bytes by top-level folder and the largest paths; empty for a repository with no revisions.
+    async fn repo_breakdown(&self, repo: &RepoId) -> Result<RepoBreakdown>;
 }

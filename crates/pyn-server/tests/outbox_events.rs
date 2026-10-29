@@ -93,6 +93,10 @@ async fn lifecycle_changes_queue_decodable_events() {
         )
         .await
         .unwrap();
+    repos
+        .set_storage_cap(&alice, &alice.user, "game2", Some(1 << 30))
+        .await
+        .unwrap();
     access
         .set_owner_limits(
             &root,
@@ -136,9 +140,12 @@ async fn lifecycle_changes_queue_decodable_events() {
     assert!(
         matches!(&data[4], EventData::RepositoryRenamed(d) if d.name == "game2" && d.previous_name == "game")
     );
-    assert!(matches!(&data[5], EventData::OwnerLimitsChanged(d)
+    assert!(matches!(&data[5], EventData::RepositoryStorageCapChanged(d)
+        if d.owner == "alice" && d.name == "game2" && d.storage_cap == Some(1 << 30) && d.actor == "alice"
+            && d.repo_id == repo.id.to_string()));
+    assert!(matches!(&data[6], EventData::OwnerLimitsChanged(d)
         if d.owner == "acme" && d.kind == OwnerKind::Org && d.limits.repositories == Some(3) && d.actor == "root"));
-    assert!(matches!(&data[6], EventData::AccountDisabled(d)
+    assert!(matches!(&data[7], EventData::AccountDisabled(d)
         if d.user == "alice" && d.reason.as_deref() == Some("spam")));
-    assert_eq!(data.len(), 7);
+    assert_eq!(data.len(), 8);
 }

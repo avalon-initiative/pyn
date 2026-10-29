@@ -1,0 +1,15 @@
+{
+  "id": "evt_01J9ZX3K5V8Q2M7R4T6N0B1C2D",
+  "type": "repository.storage_cap_changed",
+  "created_at": "2026-03-04T05:06:07Z",
+  "server": "https://pyn.example.com",
+  "version": 1,
+  "data": {
+    "repo_id": "r5e8a0c3f1b7d92460a4c8e15",
+    "owner": "studio",
+    "owner_id": "o7d2e41b90c3a58f6e1d4b7a3",
+    "name": "game",
+    "storage_cap": 107374182400,
+    "actor": "alice"
+  }
+}

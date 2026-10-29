@@ -216,6 +216,7 @@ pub(crate) async fn update_repo(
                 max_locks: req.max_locks_per_user.unwrap_or(current.max_locks),
             }
         }),
+        ..RepoUpdate::default()
     };
     let record = s.repos.update(&who, &open.record, update).await?;
     let role = s.access.role_in(&record.id, &who.user).await?;

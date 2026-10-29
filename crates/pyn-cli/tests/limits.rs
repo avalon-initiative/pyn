@@ -56,8 +56,11 @@ fn a_server_with_no_limits_shows_none_and_nothing_stops_creation() {
     assert_eq!(rows[1], ["USED", "LIMIT", "RESOURCE"]);
     assert_eq!(rows[2], ["3", "-", "repositories"]);
     assert_eq!(rows[3], ["0 B", "-", "storage"]);
-    assert_eq!(rows[5], ["STORED", "FILES", "REVISIONS", "REPOSITORY"]);
-    assert_eq!(rows[6], ["0 B", "0", "0", "alice/one"]);
+    assert_eq!(
+        rows[5],
+        ["STORED", "CAP", "FILES", "REVISIONS", "REPOSITORY"]
+    );
+    assert_eq!(rows[6], ["0 B", "-", "0", "0", "alice/one"]);
 
     env.ok(&home, "-", &["logout"]);
     let out = env.ok(&home, "root", &["admin", "limits", "list"]);
@@ -143,6 +146,42 @@ fn bad_values_and_empty_changes_are_refused_and_repo_usage_reports_a_repository(
     sign_in(&env, &home, "alice");
     env.ok(&home, "-", &["repo", "create", "game", "--no-policy"]);
     let rows = cell_rows(&env.ok(&home, "-", &["repo", "usage", "alice/game"]));
-    assert_eq!(rows[0], ["STORED", "FILES", "REVISIONS", "REPOSITORY"]);
-    assert_eq!(rows[1], ["0 B", "0", "0", "alice/game"]);
+    assert_eq!(
+        rows[0],
+        ["STORED", "CAP", "FILES", "REVISIONS", "REPOSITORY"]
+    );
+    assert_eq!(rows[1], ["0 B", "-", "0", "0", "alice/game"]);
+}
+
+#[test]
+fn a_repository_cap_is_set_shown_and_removed_and_the_breakdown_is_listed() {
+    let (env, home) = set_up();
+    sign_in(&env, &home, "alice");
+    env.ok(&home, "-", &["repo", "create", "game", "--no-policy"]);
+
+    let out = env.ok(&home, "-", &["repo", "storage-cap", "alice/game", "2K"]);
+    assert!(
+        out.contains("alice/game may store at most 2.0 KiB"),
+        "{out}"
+    );
+    let rows = cell_rows(&env.ok(&home, "-", &["usage"]));
+    assert_eq!(rows[6], ["0 B", "2.0 KiB", "0", "0", "alice/game"]);
+    let out = env.ok(&home, "-", &["repo", "usage", "alice/game", "--breakdown"]);
+    assert!(out.contains("FOLDER") && out.contains("PATH"), "{out}");
+
+    let denied = env.fails(&home, "-", &["repo", "storage-cap", "alice/game", "lots"]);
+    assert!(
+        denied.contains("storage-cap") || denied.contains("lots"),
+        "{denied}"
+    );
+    let out = env.ok(
+        &home,
+        "-",
+        &["repo", "storage-cap", "alice/game", "default"],
+    );
+    assert!(out.contains("no storage cap of its own"), "{out}");
+    env.ok(&home, "-", &["logout"]);
+    sign_in(&env, &home, "bob");
+    let other = env.fails(&home, "-", &["repo", "storage-cap", "alice/game", "1K"]);
+    assert!(other.contains("not_namespace_owner"), "{other}");
 }

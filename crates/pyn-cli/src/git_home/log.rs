@@ -5,7 +5,7 @@ use std::path::Path;
 
 use anyhow::{Result, bail};
 use chrono::Local;
-use pyn_gitwork::{Pathspec, fs_path};
+use pyn_gitwork::{Mailmap, Pathspec, fs_path};
 use pyn_object::{Commit, ObjectId};
 use regex::Regex;
 
@@ -177,6 +177,7 @@ impl GitLogArgs {
             .find(|(_, on)| *on)
             .map(|(f, _)| f)
             .or_else(|| self.patch_flags.given())
+            .or_else(|| self.fmt.mailmap_given())
     }
 
     /// The first argument given that a pyn server's commit filters cannot take.
@@ -398,6 +399,7 @@ fn select(
 struct Filters {
     authors: Vec<Regex>,
     committers: Vec<Regex>,
+    mailmap: Option<Mailmap>,
     greps: Vec<Regex>,
     all_match: bool,
     invert: bool,
@@ -407,7 +409,7 @@ struct Filters {
 }
 
 impl Filters {
-    fn new(a: &GitLogArgs) -> Result<Self> {
+    fn new(a: &GitLogArgs, mailmap: Option<Mailmap>) -> Result<Self> {
         let all = |patterns: &[String]| -> Result<Vec<Regex>> {
             patterns
                 .iter()
@@ -419,6 +421,7 @@ impl Filters {
         Ok(Self {
             authors: all(&a.author)?,
             committers: all(&a.committer)?,
+            mailmap,
             greps: all(&a.grep)?,
             all_match: a.all_match,
             invert: a.invert_grep,
@@ -440,17 +443,27 @@ impl Filters {
         {
             return false;
         }
-        let ident = |s: &pyn_object::Signature| {
+        // git maps the committer line only when the author line mapped too.
+        let map = self.mailmap.as_ref();
+        let author_mapped =
+            map.is_some_and(|m| m.lookup(&c.author.name, &c.author.email).is_some());
+        let ident = |s: &pyn_object::Signature, mapped: bool| {
+            let (name, email) = match map {
+                Some(map) if mapped => map.map(&s.name, &s.email),
+                _ => (s.name.clone(), s.email.clone()),
+            };
             format!(
                 "{} <{}>",
-                String::from_utf8_lossy(&s.name),
-                String::from_utf8_lossy(&s.email)
+                String::from_utf8_lossy(&name),
+                String::from_utf8_lossy(&email)
             )
         };
         let any = |patterns: &[Regex], text: &str| {
             patterns.is_empty() || patterns.iter().any(|p| p.is_match(text))
         };
-        if !any(&self.authors, &ident(&c.author)) || !any(&self.committers, &ident(&c.committer)) {
+        if !any(&self.authors, &ident(&c.author, true))
+            || !any(&self.committers, &ident(&c.committer, author_mapped))
+        {
             return false;
         }
         if self.greps.is_empty() {
@@ -599,7 +612,11 @@ pub(super) fn log(
     if args.show_signature {
         super::verify_sig::check_format(&pretty);
     }
-    let filters = Filters::new(&args)?;
+    let mailmap = git.mailmap()?;
+    let map_headers = args
+        .fmt
+        .mapped_headers(git.repo.bool_setting("log.mailmap", true));
+    let filters = Filters::new(&args, map_headers.then(|| mailmap.clone()))?;
     let parts = args.diff_parts();
     let patch_parts = DiffParts {
         patch: true,
@@ -619,6 +636,8 @@ pub(super) fn log(
         commit_color: commit_color.as_deref(),
         tabs,
         abbrev_commit,
+        mailmap: Some(&mailmap),
+        map_headers,
     };
 
     if plan.needs_full_history() && !selection.paths.is_empty() {

@@ -4048,7 +4048,7 @@
           {
             "name": "action",
             "in": "query",
-            "description": "checkout, release, checkin, delete, restore, force_unlock, member_added, role_changed, role_permissions_changed, team_access_set, team_access_removed, token_created, token_revoked, repo_created, repo_updated, repo_deleted, invite_created, invite_revoked, policy_changed, mode_converted or version_stranded",
+            "description": "checkout, release, checkin, delete, restore, force_unlock, member_added, role_changed, role_permissions_changed, team_access_set, team_access_removed, token_created, token_revoked, repo_created, repo_updated, repo_storage_cap_changed, repo_deleted, invite_created, invite_revoked, policy_changed, mode_converted or version_stranded",
             "required": false,
             "schema": {
               "type": "string"
@@ -6744,6 +6744,86 @@
         }
       }
     },
+    "/v1/repos/{owner}/{name}/storage-cap": {
+      "put": {
+        "tags": [
+          "limits_api"
+        ],
+        "operationId": "set_repo_storage_cap",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "The namespace that owns the repository.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository's name within its owner.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetRepoStorageCapRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "a cap below current use deletes nothing; writes that add stored bytes are refused with repo_storage_limit_reached until use falls under it",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepoStorageCap"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: a value out of range",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "not_namespace_owner or not_org_owner: only the owner, a server administrator or a service credential with manage_limits; service_scope_required for a service credential without manage_limits; owner_frozen for the owner's own request while it is frozen",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "repo_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/repos/{owner}/{name}/summary": {
       "get": {
         "tags": [],
@@ -7116,6 +7196,66 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/RepoUsage"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/repos/{owner}/{name}/usage/breakdown": {
+      "get": {
+        "tags": [
+          "limits_api"
+        ],
+        "operationId": "repo_usage_breakdown",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "The namespace that owns the repository.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository's name within its owner.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "distinct stored bytes by top-level folder and the largest paths",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepoUsageBreakdown"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "forbidden: needs the manage_roles permission (repository admin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "repo_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -8948,6 +9088,32 @@
           }
         }
       },
+      "FolderUsage": {
+        "type": "object",
+        "description": "Distinct stored bytes of one top-level folder.",
+        "required": [
+          "folder",
+          "stored_bytes",
+          "files"
+        ],
+        "properties": {
+          "files": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Paths with a revision under the folder.",
+            "minimum": 0
+          },
+          "folder": {
+            "type": "string",
+            "description": "The top-level folder; empty for the files at the root."
+          },
+          "stored_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
       "ForceUnlockRequest": {
         "type": "object",
         "required": [
@@ -10185,6 +10351,30 @@
           }
         }
       },
+      "PathUsage": {
+        "type": "object",
+        "description": "Distinct stored bytes of one path across its revisions.",
+        "required": [
+          "path",
+          "stored_bytes",
+          "revisions"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "revisions": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "stored_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
       "Person": {
         "type": "object",
         "description": "A commit's author or committer, apart from the time (the commit's `created_at`).",
@@ -10567,6 +10757,32 @@
           }
         }
       },
+      "RepoStorageCap": {
+        "type": "object",
+        "description": "A repository's own storage cap.",
+        "required": [
+          "repository",
+          "repo_id",
+          "storage_bytes"
+        ],
+        "properties": {
+          "repo_id": {
+            "type": "string"
+          },
+          "repository": {
+            "type": "string",
+            "description": "`owner/name`."
+          },
+          "storage_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
       "RepoSummary": {
         "type": "object",
         "required": [
@@ -10658,7 +10874,8 @@
           "repo_id",
           "stored_bytes",
           "files",
-          "revisions"
+          "revisions",
+          "storage_cap"
         ],
         "properties": {
           "files": {
@@ -10680,9 +10897,67 @@
             "format": "int64",
             "minimum": 0
           },
+          "storage_cap": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The repository's own storage cap in bytes; null when it has none.",
+            "minimum": 0
+          },
           "stored_bytes": {
             "type": "integer",
             "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "RepoUsageBreakdown": {
+        "type": "object",
+        "description": "Where a repository's stored bytes sit. Content shared by several folders or paths counts in each, so their sums\ncan pass `stored_bytes`.",
+        "required": [
+          "repository",
+          "repo_id",
+          "stored_bytes",
+          "storage_cap",
+          "folders",
+          "largest_paths"
+        ],
+        "properties": {
+          "folders": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FolderUsage"
+            },
+            "description": "Largest first."
+          },
+          "largest_paths": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PathUsage"
+            },
+            "description": "The 20 largest, largest first."
+          },
+          "repo_id": {
+            "type": "string"
+          },
+          "repository": {
+            "type": "string",
+            "description": "`owner/name`."
+          },
+          "storage_cap": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "stored_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Distinct bytes in the whole repository, each content once.",
             "minimum": 0
           }
         }
@@ -10779,6 +11054,44 @@
           "repo_id": {
             "type": "string",
             "description": "Unchanged by the rename: re-key on it."
+          }
+        }
+      },
+      "RepositoryStorageCapChangedData": {
+        "type": "object",
+        "description": "`repository.storage_cap_changed`: a repository's own storage cap was set or removed; `storage_cap` is the result.",
+        "required": [
+          "repo_id",
+          "owner",
+          "owner_id",
+          "name",
+          "storage_cap",
+          "actor"
+        ],
+        "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "owner_id": {
+            "type": "string"
+          },
+          "repo_id": {
+            "type": "string"
+          },
+          "storage_cap": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Bytes the repository may store; null when it has no cap of its own.",
+            "minimum": 0
           }
         }
       },
@@ -11153,6 +11466,23 @@
         "properties": {
           "member_creation": {
             "$ref": "#/components/schemas/MemberCreation"
+          }
+        }
+      },
+      "SetRepoStorageCapRequest": {
+        "type": "object",
+        "description": "The new storage cap of a repository; `null` removes it.",
+        "required": [
+          "storage_bytes"
+        ],
+        "properties": {
+          "storage_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
           }
         }
       },

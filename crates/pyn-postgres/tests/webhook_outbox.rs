@@ -56,6 +56,7 @@ fn repo(id: &str, name: &str) -> RepoRecord {
         name: name.into(),
         visibility: Visibility::Private,
         settings: RepoSettings::default(),
+        storage_cap: None,
         created_at: t0(),
     }
 }

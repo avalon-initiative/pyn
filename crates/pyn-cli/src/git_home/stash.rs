@@ -129,17 +129,6 @@ fn short(id: &ObjectId) -> String {
 }
 
 pub fn stash(git: &GitHome, cwd: &Path, args: StashArgs) -> Result<()> {
-    if matches!(
-        args.action,
-        None | Some(
-            StashAction::Push(_)
-                | StashAction::Pop { .. }
-                | StashAction::Apply { .. }
-                | StashAction::Branch { .. }
-        )
-    ) {
-        super::sparse::refuse_unsupported(&git.open_index()?.index)?;
-    }
     match args.action {
         None => push(git, cwd, args.push),
         Some(StashAction::Push(p)) => push(git, cwd, p),
@@ -850,6 +839,25 @@ fn apply_stash(git: &GitHome, id: &ObjectId, index: bool) -> Result<Applying> {
     )?;
     check_writes(merged.paths.keys().chain(restore_untracked.keys()))?;
     let ours = git.repo.index_leaves(&opened.index);
+    let cone = super::sparse::Cone::of(git, &opened.index)?;
+    let touched_outside = merged.paths.iter().any(|(p, r)| {
+        cone.out(p)
+            && match r {
+                Resolved::Take(e) => e.as_ref() != ours.get(p),
+                Resolved::Conflict(_) => true,
+            }
+    });
+    if touched_outside
+        && (staged.is_some()
+            || merged
+                .paths
+                .values()
+                .any(|r| matches!(r, Resolved::Conflict(_))))
+    {
+        bail!(
+            "this stash changes paths outside the sparse-checkout patterns, which pyn does not support together with --index or a conflict yet"
+        );
+    }
     let dirty = git.repo.unstaged_changes(&opened.index)?;
     let ignores = super::stage::Ignores {
         ignore: git.repo.ignore()?,
@@ -947,6 +955,14 @@ fn apply_stash(git: &GitHome, id: &ObjectId, index: bool) -> Result<Applying> {
         staged_index(git, version, merged)?
     } else {
         let mut keep = entries_of(&opened.index);
+        for (path, resolved) in &merged.paths {
+            if let Resolved::Take(Some(entry)) = resolved
+                && ours.get(path) != Some(entry)
+                && let Some(e) = keep.get_mut(&(path.clone(), 0))
+            {
+                e.skip_worktree = false;
+            }
+        }
         for entry in added {
             put_entry(&mut keep, entry);
         }

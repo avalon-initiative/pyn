@@ -833,15 +833,6 @@ fn begin(git: &GitHome, plan: &Plan) -> Result<()> {
         git,
         &["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "sequencer"],
     )?;
-    if git
-        .open_index()?
-        .index
-        .entries
-        .iter()
-        .any(|e| e.skip_worktree)
-    {
-        bail!("this repository uses sparse checkout, which pyn does not support yet");
-    }
     let head = git.repo.head()?;
     let switch = match &plan.switch_to {
         Some(spec) => Some(match git.branch_commit(spec)? {

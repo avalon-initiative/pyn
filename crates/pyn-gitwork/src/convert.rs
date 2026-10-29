@@ -1,14 +1,17 @@
 //! git's line-ending and `ident` conversion between the work tree and the repository (`convert.c`): the `text`,
-//! `eol` and `crlf` attributes, `core.autocrlf`, `core.eol` and `core.safecrlf`. Filter drivers and
-//! `working-tree-encoding` are not applied; [`Conversion::unsupported`] says when one is configured.
+//! `eol` and `crlf` attributes, `core.autocrlf`, `core.eol` and `core.safecrlf`, then filter drivers (`clean` runs
+//! before the line-ending step, `smudge` after it). `working-tree-encoding` is not applied;
+//! [`Conversion::unsupported`] says when one is configured.
 
 use std::borrow::Cow;
+use std::sync::Arc;
 
 use pyn_git::Config;
 use pyn_object::{Algorithm, Kind, hash_object};
 
 use crate::attributes::{AttrValue, PathAttributes};
 use crate::error::{Error, Result};
+use crate::filter::{Driver, Filters, Op};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AutoCrlf {
@@ -90,14 +93,12 @@ enum Eol {
 /// What git cannot be matched on here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Unsupported {
-    Filter(String),
     Encoding(String),
 }
 
 impl std::fmt::Display for Unsupported {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Filter(name) => write!(f, "the '{name}' filter applies"),
             Self::Encoding(enc) => write!(f, "working-tree-encoding={enc} applies"),
         }
     }
@@ -109,7 +110,8 @@ pub struct Conversion {
     action: Eol,
     ident: bool,
     settings: Settings,
-    lfs: bool,
+    filter_name: Option<String>,
+    filter: Option<(Driver, Arc<Filters>)>,
     unsupported: Option<Unsupported>,
 }
 
@@ -158,16 +160,12 @@ impl Conversion {
                 AutoCrlf::Input => Eol::AutoInput,
             },
         };
-        let filter = attrs.get("filter");
-        let (lfs, filter_name) = match &filter {
-            AttrValue::Value(v) if v == b"lfs" => (true, None),
-            AttrValue::Value(v) => (false, Some(String::from_utf8_lossy(v).into_owned())),
-            AttrValue::Set => (false, Some(String::new())),
-            _ => (false, None),
+        let filter_name = match attrs.get("filter") {
+            AttrValue::Value(v) => Some(String::from_utf8_lossy(&v).into_owned()),
+            _ => None,
         };
-        let unsupported = match (filter_name, attrs.get("working-tree-encoding")) {
-            (Some(name), _) => Some(Unsupported::Filter(name)),
-            (None, AttrValue::Value(enc))
+        let unsupported = match attrs.get("working-tree-encoding") {
+            AttrValue::Value(enc)
                 if !enc.eq_ignore_ascii_case(b"utf-8") && !enc.eq_ignore_ascii_case(b"utf8") =>
             {
                 Some(Unsupported::Encoding(
@@ -180,23 +178,34 @@ impl Conversion {
             action,
             ident: matches!(attrs.get("ident"), AttrValue::Set),
             settings,
-            lfs,
+            filter_name,
+            filter: None,
             unsupported,
         }
+    }
+
+    /// Resolves the `filter` attribute against the configured drivers.
+    pub fn with_filters(mut self, config: &pyn_git::Config, filters: &Arc<Filters>) -> Self {
+        self.filter = self
+            .filter_name
+            .as_deref()
+            .and_then(|name| Driver::from_config(config, name))
+            .map(|d| (d, filters.clone()));
+        self
     }
 
     pub fn unsupported(&self) -> Option<&Unsupported> {
         self.unsupported.as_ref()
     }
 
-    /// Whether the path carries a Git LFS filter, which pyn leaves as its pointer files.
+    /// Whether the path carries the Git LFS filter.
     pub fn is_lfs(&self) -> bool {
-        self.lfs
+        matches!(self.filter, Some((Driver::Lfs { .. }, _)))
     }
 
     /// Whether neither direction changes any byte.
     pub fn is_identity(&self) -> bool {
-        self.action == Eol::Binary && !self.ident
+        self.action == Eol::Binary && !self.ident && self.filter.is_none()
     }
 
     fn output_crlf(&self) -> bool {
@@ -220,6 +229,11 @@ impl Conversion {
     ) -> Result<Converted<'a>> {
         let mut warnings = Vec::new();
         let mut data = Cow::Borrowed(data);
+        if let Some((driver, filters)) = &self.filter
+            && let Some(out) = filters.apply(driver, Op::Clean, path, &data)?
+        {
+            data = Cow::Owned(out);
+        }
         if self.action != Eol::Binary && !data.is_empty() {
             data = self.crlf_to_git(path, data, opts, &mut warnings)?;
         }
@@ -284,7 +298,12 @@ impl Conversion {
     }
 
     /// The work tree form of repository content.
-    pub fn to_worktree<'a>(&self, algorithm: Algorithm, data: &'a [u8]) -> Cow<'a, [u8]> {
+    pub fn to_worktree<'a>(
+        &self,
+        algorithm: Algorithm,
+        path: &[u8],
+        data: &'a [u8],
+    ) -> Result<Cow<'a, [u8]>> {
         let mut data = Cow::Borrowed(data);
         if self.output_crlf() && !data.is_empty() {
             data = self.crlf_to_worktree(data);
@@ -294,7 +313,12 @@ impl Conversion {
         {
             data = Cow::Owned(v);
         }
-        data
+        if let Some((driver, filters)) = &self.filter
+            && let Some(out) = filters.apply(driver, Op::Smudge, path, &data)?
+        {
+            data = Cow::Owned(out);
+        }
+        Ok(data)
     }
 
     fn will_convert_lf_to_crlf(&self, stats: &Stats) -> bool {
@@ -493,8 +517,14 @@ mod tests {
     fn text_strips_carriage_returns_and_eol_crlf_adds_them() {
         let c = conv("", &[("text", AttrValue::Set), ("eol", val("crlf"))]);
         assert_eq!(git(&c, b"a\r\nb\rc\n"), b"a\nb\rc\n");
-        assert_eq!(&*c.to_worktree(Algorithm::Sha1, b"a\nb\n"), b"a\r\nb\r\n");
-        assert_eq!(&*c.to_worktree(Algorithm::Sha1, b"a\r\nb\n"), b"a\r\nb\r\n");
+        assert_eq!(
+            &*c.to_worktree(Algorithm::Sha1, b"f", b"a\nb\n").unwrap(),
+            b"a\r\nb\r\n"
+        );
+        assert_eq!(
+            &*c.to_worktree(Algorithm::Sha1, b"f", b"a\r\nb\n").unwrap(),
+            b"a\r\nb\r\n"
+        );
     }
 
     #[test]
@@ -502,22 +532,31 @@ mod tests {
         let c = conv("[core]\nautocrlf = true\n", &[]);
         assert_eq!(git(&c, b"a\r\nb\r\n"), b"a\nb\n");
         assert_eq!(git(&c, b"a\0\r\n"), b"a\0\r\n");
-        assert_eq!(&*c.to_worktree(Algorithm::Sha1, b"a\nb\r\n"), b"a\nb\r\n");
-        assert_eq!(&*c.to_worktree(Algorithm::Sha1, b"a\0\n"), b"a\0\n");
+        assert_eq!(
+            &*c.to_worktree(Algorithm::Sha1, b"f", b"a\nb\r\n").unwrap(),
+            b"a\nb\r\n"
+        );
+        assert_eq!(
+            &*c.to_worktree(Algorithm::Sha1, b"f", b"a\0\n").unwrap(),
+            b"a\0\n"
+        );
     }
 
     #[test]
     fn binary_attribute_and_core_eol() {
         assert!(conv("[core]\nautocrlf = true\n", &[("text", AttrValue::Unset)]).is_identity());
         let c = conv("[core]\neol = crlf\n", &[("text", AttrValue::Set)]);
-        assert_eq!(&*c.to_worktree(Algorithm::Sha1, b"a\n"), b"a\r\n");
+        assert_eq!(
+            &*c.to_worktree(Algorithm::Sha1, b"f", b"a\n").unwrap(),
+            b"a\r\n"
+        );
         assert!(conv("[core]\neol = crlf\n", &[]).is_identity());
     }
 
     #[test]
     fn ident_expands_and_collapses() {
         let c = conv("", &[("ident", AttrValue::Set)]);
-        let out = c.to_worktree(Algorithm::Sha1, b"x $Id$ y\n");
+        let out = c.to_worktree(Algorithm::Sha1, b"f", b"x $Id$ y\n").unwrap();
         assert!(
             out.starts_with(b"x $Id: ") && out.ends_with(b" $ y\n"),
             "{out:?}"

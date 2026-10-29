@@ -42,7 +42,8 @@ conflicted commit) go to standard output, and errors to standard error. `fetch`,
 with `fatal: not a git repository (or any of the parent directories): .git` (`128`). The statuses are checked against git by
 `crates/pyn-cli/tests/git_exit_status.rs`, which runs the same command on twin repositories under git and pyn, for error
 paths and for successful runs of the supported commands, and compares the exit status and whether standard output and
-standard error carry anything (not the text); its allow-list names the differences that remain. During a rebase, a replayed
+standard error carry anything, and that a line both print (paths and ids normalised) is on the same stream; a line only
+one of them prints is not compared; its allow-list names the differences that remain. During a rebase, a replayed
 commit that merges cleanly prints no `Auto-merging` line, as git (a merge commit recreated by `--rebase-merges` does); a
 conflicted one prints it with the `CONFLICT` lines on standard output. Where git exits `128` for a bad
 value of an option of `log` or `show` (a missing `--since` value), and `255` for a failed
@@ -306,7 +307,7 @@ applied.
 | `--write-commit-graph`, `--no-write-commit-graph` | Accepted and ignored. |
 | `--recurse-submodules[=yes\|on-demand\|no]`, `--no-recurse-submodules` | After the fetch, fetches in the checked-out, active submodules; see [Submodules](#submodules). Without a flag `fetch.recurseSubmodules`, then `submodule.recurse`, then `on-demand`. |
 | `--depth`, `--deepen`, `--shallow-since`, `--shallow-exclude`, `--unshallow` | Git's shallow fetch, see [Shallow repositories](#shallow-repositories). |
-| `--update-shallow` | Usage error (`129`): not built. |
+| `--update-shallow` | Git's meaning, see [Shallow repositories](#shallow-repositories). |
 | `--filter=<spec>`, `--no-filter`, `--refetch` | Git's partial fetch, see [Partial clones](#partial-clones). |
 | `--atomic`, `--set-upstream` | Usage error (`129`): not built. Any other unknown flag is a usage error as everywhere. |
 
@@ -384,12 +385,16 @@ boundary commit per line, removed when the history is complete). A shallow flag 
 - A boundary commit has no parents for every command: `log`, `show`, `describe`, `blame`, `merge` (a merge whose base lies beyond
   the boundary is `refusing to merge unrelated histories`), `rebase`, `bisect`, fetch negotiation and the objects a push sends. A
   push from a shallow clone works when the remote holds the boundary's ancestry. `pyn rev-parse --is-shallow-repository` says which.
-- Cloning or fetching from a shallow repository inherits its boundary, over a path, `file://`, ssh and HTTP.
+- Cloning from a shallow repository inherits its boundary (a fetch does with `--update-shallow`), over a path, `file://`, ssh and HTTP.
 - Wire: protocol v2 `shallow`, `deepen`, `deepen-relative`, `deepen-since`, `deepen-not` and the `shallow-info` section, and the v0/v1
-  `shallow` and `deepen*` lines. The in-process upload-pack for local remotes answers all of them, with `--shallow-since` and
-  `--shallow-exclude` not combinable there (git allows both together).
-
-Not done: `--update-shallow`.
+  `shallow` and `deepen*` lines. The in-process upload-pack for local remotes answers all of them, `--shallow-since` and
+  `--shallow-exclude` together included (a depth does not combine with either, as in git).
+- Fetching from a shallow repository: the roots it announces that this repository lacks the parents of are recorded only
+  with `--update-shallow` (a clone always does); without it, a ref whose history reaches such a root is rejected with
+  `warning: rejected <ref> because shallow roots are not allowed to be updated` (exit status `0`, not in `FETCH_HEAD`), as
+  git does. A root whose history is complete here is ignored. `--shallow-submodules` is a `clone` option and is supported
+  there.
+- A failed connectivity check after a shallow fetch puts the previous `.git/shallow` back.
 
 ### Partial clones
 
@@ -970,11 +975,35 @@ comparison), and to every command that writes work tree files (`switch`, `checko
 brings in applies to the files written after it, and to itself. `status` and `diff` compare the converted work tree file with the
 index, so a repository that relies on conversions shows no phantom changes. `-diff` makes a file binary in `diff` and `diff` forces text.
 
-Not built: filter drivers (`filter=<name>`, clean and smudge), `working-tree-encoding`, `-X renormalize` and `add --renormalize`,
+Not built: `working-tree-encoding`, `-X renormalize` and `add --renormalize`,
 `export-ignore`/`export-subst`, the `merge` and `whitespace` attributes, `diff=<driver>` and `textconv`, and `.gitattributes` read
 from a tree rather than the work tree (bare repositories, `--source`). `core.autocrlf` and the attributes are not applied to
 `diff --no-index`. Covered by `crates/pyn-cli/tests/git_attributes.rs`, which compares blob ids, work tree bytes and `status`
 and `diff` output with git (#273).
+
+#### Filter drivers
+
+`filter=<name>` runs the commands of `filter.<name>.clean`, `smudge`, `process` and `required` where git applies them:
+`clean` when content goes into the repository (`add`, `commit -a`, `stash`, and in `status` and `diff` to compare the work
+tree file with the index), `smudge` when a command writes a work tree file (`switch`, `checkout`, `restore`, `reset --hard`,
+`merge`, `stash apply`, `clone` and the rest of the list above). The order is git's: `clean` sees the raw file and its result
+then goes through the line-ending and `ident` conversion, while `smudge` sees the already converted content. A driver exists
+only when some `filter.<name>.*` key is set; an attribute naming an unconfigured driver changes nothing. A command is run by
+`sh -c` in the work tree root with the content on standard input; `%f` in it is the quoted path and `%%` is `%`. When
+`process` is set it is used and `clean` and `smudge` are ignored. The long-running protocol is git's: one process per
+command line and per pyn invocation, the `git-filter-client`/`git-filter-server` version 2 handshake, pkt-lines of up to
+65516 bytes, `command=` and `pathname=` per file, and a final `status=` (`success`, `error`, or `abort`, after which the
+process is not asked again). A failing command, a non-zero exit, `status=error` or a missing command for the direction leaves
+the content unfiltered with `error: external filter ... failed`, unless `filter.<name>.required` is true, which makes it
+`fatal: <path>: clean filter '<name>' failed` (or `smudge`) with exit `128`; for a required driver with no command it is fatal
+too, as in git.
+
+Not built: the `delay` capability (pyn does not advertise it, so a filter never delays a file), the `ref`, `treeish` and `blob`
+metadata that git sends with `smudge` requests, filters in `apply` and the patch-mode commands that write the work tree
+(`checkout -p`, `restore -p`), which stop for such a path (see [What pyn will not write](#what-pyn-will-not-write)),
+`-X renormalize` through a filter, and `restore` rewrites every matching path rather than only the changed ones, which a
+`smudge` that does not invert `clean` makes visible. Covered by `crates/pyn-cli/tests/git_filters.rs`, which compares blob
+ids, work tree bytes, `status`, `diff` and exit status class with git (#628).
 
 ### Pathspecs
 
@@ -1080,7 +1109,7 @@ With no worktree `.gitmodules`, an unmerged index entry for that file disables t
 Differences from git, all deliberate or not yet done:
 
 - Line endings and `ident` are converted as git does (see [Attributes and line endings](#attributes-and-line-endings));
-  filter drivers and `working-tree-encoding` are not applied.
+  `working-tree-encoding` is not applied.
 - Commit abbreviations are 7 digits and are not lengthened to stay unique; `log` and `show` print no color on a terminal.
 - A nested repository that the index does not track is one untracked `dir/`.
 - `merge` and `stash apply` write diff3 conflict markers whatever `merge.conflictStyle` says and `stash apply` merges only when
@@ -1105,7 +1134,7 @@ simplification.
 Formats: `--oneline` (abbreviated id and subject), `--format=<f>` and `--pretty[=<f>]` with `oneline`, `short`, `medium`
 (the default), `full`, `fuller`, `raw`, `format:<template>` (a newline between commits) and `tformat:<template>` (a newline
 after each; also a bare template or `--format=<template>`). Templates take `%H %h %T %t %P %p %an %ae %ad %aD %ai %aI %as %at
-%ar %cn %ce %cd %cD %ci %cI %cs %ct %cr %s %b %B %d %D %n %%`; any other `%` sequence is printed as written. `%h`, `%t` and `%p`
+%ar %cn %ce %cd %cD %ci %cI %cs %ct %cr %s %b %B %d %D %n %%`, and the mailmap forms `%aN %aE %al %aL %cN %cE %cl %cL` (see [Mailmap](#mailmap)); `%gd %gD %gs %gn %gN %ge %gE` are empty, as in git without `-g`; any other `%` sequence is printed as written. `%h`, `%t` and `%p`
 are 7 digits. `%d` and `%D` list `HEAD -> <branch>` (or `HEAD`), then the other branches, remote-tracking branches, `tag: <name>`
 and `refs/stash` that point at the commit, in git's order. `--date=` takes `default`, `iso`, `iso-strict`, `rfc`, `short`,
 `relative`, `unix` and `raw` and applies to `Date:` and `%ad`/`%cd`; commit dates print in the offset recorded in the commit. `show` takes the same formats and `--date=`.
@@ -1169,7 +1198,7 @@ Differences from git:
   alone, match.
 - `--since` and `--until` only filter; git also stops walking at the first commit older than `--since`, which differs only for
   histories whose commit dates are not in order. A date git cannot read is a failure here (git takes `now`).
-- `%d` does not hide `refs/notes/*` or other namespaces: they print by full name. Unlisted placeholders (`%C`, `%w`, `%<`, `%aN`,
+- `%d` does not hide `refs/notes/*` or other namespaces: they print by full name. Unlisted placeholders (`%C`, `%w`, `%<`,
   `%x`) are printed as written.
 - `--format` and `--pretty` win over `--oneline` whatever their order. `--date=local`, `human` and `format:` are not taken.
 - `log --stat` takes the width forms of `diff --stat`; the graph is scaled to the terminal width as in `diff`.
@@ -1496,7 +1525,7 @@ Covered against the real git by `crates/pyn-cli/tests/git_branch_track.rs`.
 - Files are written with the executable bit of the tree entry; symlinks become links (files holding the target when
   `core.symlinks=false`); `core.filemode=false` is honored when deciding what is a local change. Folders emptied by a removal are
   removed.
-- Unmerged index entries, a merge, cherry-pick, revert or rebase in progress, and a sparse checkout refuse the command.
+- Unmerged index entries, and a merge, cherry-pick, revert or rebase in progress, refuse the command.
 - `switch -C <branch> [<start>]` (`--force-create`) creates the branch or resets an existing one to the start point (default `HEAD`), logs
   `branch: Reset to <start>` (on `HEAD` alone when the branch is already there and current), and prints `Switched to and reset branch`,
   `Reset branch` (already on it) or `Switched to a new branch`. `switch --orphan <new>` points `HEAD` at an unborn branch and empties the index and the
@@ -1578,7 +1607,7 @@ reset with paths.` (`128`). On an unborn branch `HEAD` is the empty tree: `reset
 (and `--hard` and `--merge` remove the files), `--soft` does nothing, no ref or `ORIG_HEAD` is written, and `--keep` fails.
 
 `ORIG_HEAD`, `MERGE_HEAD` and `CHERRY_PICK_HEAD` are accepted wherever a revision is, and so are the reflog revisions
-(`HEAD@{1}`, `@{-1}`; see [Reflogs](#reflogs)). Unlike git, a sparse checkout refuses `--keep` and `--merge`; `--soft`, `--mixed` and `--hard` keep the skip-worktree flags. A running rebase or cherry-pick's own
+(`HEAD@{1}`, `@{-1}`; see [Reflogs](#reflogs)). `--soft`, `--mixed`, `--hard`, `--keep` and `--merge` keep the skip-worktree flags (see [Sparse checkout](#sparse-checkout)). A running rebase or cherry-pick's own
 state folder (`rebase-merge/`, `sequencer/`) is not removed. `--hard --recurse-submodules` also moves the checked-out submodules, see [Submodules](#submodules). Covered against the real git by `crates/pyn-cli/tests/git_reset.rs`.
 
 ### Merging
@@ -1788,7 +1817,7 @@ and `A...B` name ranges (applied oldest first, parents before children), and sev
 1. Before anything changes it refuses, with git's wording and exit `128` (`fatal: cherry-pick failed` after `error:` lines): a
    sequence while a cherry-pick or revert is already in progress, unmerged entries, an unknown revision, an empty range (`empty commit set passed`),
    a merge commit without `-m <n>` (or `-m` past its parents), and a staged change (`your local changes would be overwritten by
-   cherry-pick`; `-n` allows it). A merge in progress, a rebase, a sparse checkout and several commits onto an unborn branch are
+   cherry-pick`; `-n` allows it). A merge in progress, a rebase and several commits onto an unborn branch are
    refused by pyn. `-m 1` on a commit that is not a merge is accepted, and `-m 0` is a usage error (`129`).
 2. A path the commit changes whose file has unstaged changes, or has an untracked file in the way, stops the command with git's
    `Your local changes to the following files would be overwritten by merge` and nothing written; edits to other files stay.
@@ -1869,7 +1898,7 @@ no rename detection. The replay runs on a detached `HEAD`; the branch moves when
    `<branch>` is switched to first, and a detached `HEAD` is rebased and stays detached.
 3. Before anything changes it refuses with `error: cannot rebase: You have unstaged changes.` or `Your index contains uncommitted
    changes.` (exit `1`, untracked files do not count), an invalid upstream, `--onto` or branch (`fatal:`, `128`), a rebase,
-   merge, cherry-pick or revert already in progress, a sparse checkout, and an unborn branch. `--autostash` (or
+   merge, cherry-pick or revert already in progress, and an unborn branch. `--autostash` (or
    `rebase.autoStash`; `--no-autostash` overrides it) stashes the changes first (`Created autostash: <id>`, the commit id in
    `rebase-merge/autostash`) and applies them at the end (`Applied autostash.`); changes that do not apply cleanly are put on
    `refs/stash` with `Applying autostash resulted in conflicts.`.
@@ -2214,10 +2243,28 @@ the skip-worktree flag. `status` ignores skipped entries and adds the line `You 
 present.` after the branch line; `add` and `rm` refuse a path that only names skipped entries, with git's message and status `1`.
 `ls-files -t` and `-v` show `S` for them.
 
-Not built yet, and refused with an error that changes nothing when the index has skip-worktree entries: a merge that is not a
-fast-forward, `merge --abort`, `stash` (push, pop, apply, branch), `restore` and `checkout` of paths, the patch modes,
-`reset --keep` and `--merge`, `cherry-pick`, `revert`, `rebase` and `apply`. `add --sparse` and `rm --sparse` are not built. Covered by `git_sparse.rs`, which runs each scenario on two copies of a repository, pyn on one and git on
-the other, and compares the patterns file, the `ls-files -t` tags, the files and `status` in SHA-1 and SHA-256 repositories.
+Also sparse-aware, with git's rules: files outside the patterns stay out of the work tree and keep their skip-worktree
+flag, and results are computed in the index and trees.
+
+- A merge that is not a fast-forward, `cherry-pick`, `revert`, `rebase` (all backends pyn has) and `am` update the index for
+  skipped paths without writing them. A conflict on a path outside the patterns is written to the work tree with its unmerged
+  entries (the flag is dropped), is reported, and `merge --abort`, `reset --merge` and `reset --hard` put the file back as
+  git does.
+- `stash` (push, pop, apply, branch) leaves skipped files out; applying a stash that changes paths outside the patterns writes
+  them to the work tree and drops their flag, as git does.
+- `restore` and `checkout` of paths from the index leave skipped entries alone (a pathspec that names only skipped entries is an
+  error); `--ignore-skip-worktree-bits` restores them and drops the flag. `restore -p` and `checkout -p` from the index, `reset -p`
+  and `add -p` skip them.
+- `reset --keep` and `--merge` update skipped entries in the index only. `apply --index`, `--cached` and `--3way` treat a skipped
+  path the patch names as an ordinary one.
+
+Still refused with an error that changes nothing, because git's result there is not worth copying yet: `restore` or `checkout`
+from a tree when the tree has a different version of a skipped path or a path outside the patterns that the index lacks;
+`--ignore-skip-worktree-bits` together with a tree; `restore -p`, `checkout -p`, `reset -p` from a tree that differs in a skipped
+file; `stash -p`; applying a stash with `--index`, or one that conflicts, when it changes paths outside the patterns.
+`add --sparse` and `rm --sparse` are not built. Covered by `git_sparse.rs` and `git_sparse_replay.rs`, which run each scenario on
+two copies of a repository, pyn on one and git on the other, and compare the patterns file, the `ls-files -t` tags, the files,
+`HEAD` and the in-progress state, for cone and non-cone patterns.
 
 ### Linked work trees
 
@@ -2460,7 +2507,7 @@ with `^` on boundary commits, author, date, line number, aligned), `-e`, `-s`, `
 and `^/<regex>/` anchors work as git reads them, repeated or overlapping. `-w` ignores whitespace when comparing a commit
 with its parent. `--first-parent` follows only the first parent of each merge. Revisions are `<rev>` (before or after the file, with or without `--`), `<a>..<b>` and `^<rev>`;
 commits reachable from the excluded side are boundaries, and so are root commits unless `--root` or `blame.showRoot`.
-`blame.blankBoundary`, `blame.showEmail`, `blame.date`, `diff.indentHeuristic` and `core.abbrev` are read.
+`blame.blankBoundary`, `blame.showEmail`, `blame.date`, `diff.indentHeuristic` and `core.abbrev` are read. Author and committer names and emails are mapped by the [mailmap](#mailmap).
 
 A modified work tree file is blamed on `Not Committed Yet <not.committed.yet>` at the current time, with `HEAD` (and
 `MERGE_HEAD`) as parents; `--contents <file>` (or `-` for standard input) does the same for another file's content as
@@ -2473,7 +2520,7 @@ What differs, all of it refused or documented rather than silently different:
 | Difference | pyn |
 | --- | --- |
 | Not built (usage error `129`) | `-M`, `-C`, `--incremental`, `-L :<funcname>`, `--ignore-rev`, `--ignore-revs-file`, `--reverse`, `--show-stats`, `--progress`, `--score-debug`, `--color-lines`, `--color-by-age`, `--minimal`, `--diff-algorithm`, `-S`, abbreviated long options, `<a>...<b>`, the other revision-list options, and `--date=human`, `local`, `format:...` and `auto:...`. |
-| Refused (`128`) | A `.mailmap`, `mailmap.file` or `mailmap.blob` (names are not mapped), and `diff.algorithm` other than `myers`. |
+| Refused (`128`) | `diff.algorithm` other than `myers`. |
 | Abbreviation length | `core.abbrev`, else 7 digits, grown until the abbreviation of every blamed commit is unique, plus one for the boundary mark. Git also lengthens its default for repositories with tens of thousands of objects; pyn does not. |
 | Content filters | `textconv` is not applied. The line-ending conversion of the work tree file is not applied to the lines `blame` reads from it. |
 | Commit encodings | Author names and subjects are printed as stored, without re-encoding from an `encoding` header. |
@@ -2562,13 +2609,36 @@ with `fatal: not a git repository (or any of the parent directories): .git` (`12
 | `ls-tree` | `-d`, `-r`, `-t`, `-l`, `-z`, `--name-only`, `--name-status`, `--object-only`, `--full-name`, `--full-tree`, `--abbrev[=<n>]`, and paths. Paths are literal (a `*` is an ordinary character), `:(top)`, `:/` and `:(literal)` are read, and any other magic is git's `pathspec magic not supported by this command` (`128`); `.` and `..` name a folder's contents. |
 | `cat-file` | `-t`, `-s`, `-p`, `-e`, `<type> <object>` (tags are followed to the type), `--batch` and `--batch-check` with git's default format. |
 | `show-ref` | `--head` (shown whatever the other options say, as git documents), `--heads`, `--tags`, `-d`, `-s`/`--hash[=<n>]`, `--abbrev[=<n>]`, `--verify`, `--exists`, `-q`, and patterns that match the end of a ref name on a `/`. |
-| `shortlog` | `-n`, `-s`, `-e`, `-c`, a revision range and `-- <path>...`; with no revision it reads a `git log` on standard input unless that is a terminal, then it uses `HEAD`. Refused (`128`) when the repository has a `.mailmap` file or sets `mailmap.file` or `mailmap.blob`, which git would apply. |
+| `shortlog` | `-n`, `-s`, `-e`, `-c`, a revision range and `-- <path>...`; with no revision it reads a `git log` on standard input unless that is a terminal, then it uses `HEAD`. Names and emails (of the committer with `-c`) are mapped by the [mailmap](#mailmap), also from a log on standard input, and outside a repository from a `.mailmap` in the current folder. |
+| `check-mailmap` | `<contact>...` and `--stdin`, each as `Name <user@host>` or `<user@host>`; the canonical form is printed. A contact without angle brackets is a fatal error. |
 | `describe` | `--tags`, `--all`, `--always`, `--long`, `--abbrev=<n>`, `--dirty[=<mark>]`, `--match`, `--exclude`, `--exact-match`, `--candidates=<n>`, and commit-ishes. The nearest tag is chosen by the walk git uses, including its limit of candidate tags. Describing a blob and `--first-parent`, `--contains` and `--broken` are not built. |
 | `name-rev` | `--tags`, `--name-only`, `--no-undefined`, `--always` and commit-ishes. `--all`, `--stdin`, `--annotate-stdin`, `--refs` and `--exclude` are not built, and `name-rev` with no commit is a usage error where git prints nothing. |
 
 Abbreviations (`--short`, `--abbrev`, `describe`) start at `core.abbrev` or 7 digits and grow until the id is unique among all
 objects. git also grows the default length with the size of the repository (8 digits from about 16,000 objects); pyn does not,
 so past that size a default abbreviation can be one digit shorter than git's.
+
+### Mailmap
+
+One mailmap is read for every command that maps identities, from the sources git reads, later ones overriding earlier
+ones: the work tree's `.mailmap` (not when it is a symbolic link; not in a bare repository), the blob named by
+`mailmap.blob` (`HEAD:.mailmap` in a bare repository when unset; a blob that does not exist is skipped) and the file
+named by `mailmap.file` (`~/` and work-tree-relative paths; `~user/` is refused with `128`). The four line forms
+(`Proper Name <commit@email>`, `<proper@email> <commit@email>`, `Proper Name <proper@email> <commit@email>` and
+`Proper Name <proper@email> Commit Name <commit@email>`), comments and git's whitespace and malformed-line rules are read
+as git reads them. Emails and names compare ignoring ASCII case, a line that names the commit's name wins over one that
+names only the email, and a later line replaces the parts it sets. A line whose first email is empty is ignored.
+
+It maps: `blame` and `annotate` (the author and committer columns and porcelain lines), `shortlog` (also `-e` and `-c`),
+the `%aN %aE %aL %cN %cE %cL` placeholders of `log` and `show` (always, as in git), the `Author:` and `Commit:` lines of
+the `short`, `medium`, `full` and `fuller` formats when `--use-mailmap` (or `--mailmap`) is given or `log.mailmap` is
+true (the default; `--no-use-mailmap` and `--no-mailmap` turn it off, the last flag wins), the `rebase.instructionFormat`
+placeholders, `--author` and `--committer` with the same condition, and `check-mailmap`. `%an`, `%ae`, `%al` and
+`--pretty=raw` stay as recorded. With `--committer` git maps the committer line only when the author line mapped too, and
+pyn follows that (observed on git 2.43). A pyn server does not map: `--use-mailmap` there is a usage error.
+
+Not built: `cat-file --mailmap` and `--use-mailmap`, `for-each-ref` and `branch` `:mailmap` modifiers, `rev-list
+--use-mailmap`, and `check-mailmap` contacts that are only an email.
 
 ### Storage maintenance
 
@@ -2658,10 +2728,10 @@ patch to it, and merges the result with the current tree as `cherry-pick` merges
 
 ### What pyn will not write
 
-Any command that would write a work tree file through a `filter` driver other than Git LFS, or with `working-tree-encoding`
-(other than UTF-8), stops first and changes nothing (exit `128`, naming the path), because pyn applies neither. `apply` and the
-patch-mode commands that write the work tree (`checkout -p`, `restore -p`) also stop for a path whose line endings or `ident` git would convert,
-since they copy bytes as they are. A Git LFS filter writes the pointer file as it is, with a warning (decision #245; see [Git LFS](#git-lfs)).
+Any command that would write a work tree file with `working-tree-encoding` (other than UTF-8) stops first and changes
+nothing (exit `128`, naming the path), because pyn does not apply it. `apply` and the patch-mode commands that write the work
+tree (`checkout -p`, `restore -p`) also stop for a path whose line endings, `ident` or filter git would convert, since they
+copy bytes as they are. Filters run as described in [Filter drivers](#filter-drivers).
 The hooks pyn does not run yet (see [Client hooks](#client-hooks)) draw one warning naming the ones that exist
 for the command. The split index, a sparse index and `GIT_DIR` are not supported, and anything that talks to a remote other than `ls-remote`, `fetch`, `pull`, `push` and `clone` are not built yet (epic #301; see [Transports and credentials](#transports-and-credentials)).
 
@@ -2731,14 +2801,32 @@ commit a rebase makes when `--continue` finishes an `edit` or a `squash` chain; 
 
 ### Git LFS
 
-pyn has no LFS client (provisional: a client is not scheduled). `fetch`, `pull`, `clone`, `switch`/`checkout` and the other
-commands that write the work tree keep pointer files byte for byte: nothing is smudged, downloaded or cleaned, and `status`
-sees them as ordinary files. When `filter=lfs` applies to a path, the command prints one warning on standard error, once
-per invocation (so `pull` and `clone` warn once, not once per step). `fetch` and `pull` read the `.gitattributes` files in
-the tip of each ref that moved, `clone` in the commit it checks out (none for `--bare` or `-n`), and the work tree commands
-read the attributes as for [Attributes and line endings](#attributes-and-line-endings). Only `.gitattributes` files in the tree are
-read for `fetch` and `clone`, not `.git/info/attributes` or the global file. The warning wording is not part of the
-contract. Covered by `crates/pyn-cli/tests/git_lfs.rs` (#311).
+`filter=lfs` is pyn's own implementation (decision #775): no `git-lfs` program and no LFS library is used, and
+`filter.lfs.clean`, `smudge` and `process` are ignored whether or not they are configured (`filter.lfs.required` is honoured).
+`clean` turns work tree content into a pointer file and stores the content in `.git/lfs/objects/<aa>/<bb>/<oid>` (the
+common directory of a linked work tree; `<aa>` and `<bb>` are the first two pairs of the SHA-256 hex id), written through
+`.git/lfs/tmp`:
+
+```text
+version https://git-lfs.github.com/spec/v1
+oid sha256:<64 lowercase hex digits>
+size <bytes>
+```
+
+Content that already is a pointer file (at most 1024 bytes, `version`, `oid sha256:` and `size` lines, a trailing newline) and
+empty content are passed through unchanged, so `status` sees pointers as unmodified. `smudge` turns a pointer file into the
+stored object; a pointer whose object is not in the local store stays as the pointer file, with one warning on standard error
+per invocation, because pyn cannot download LFS objects yet (the Batch API is not built). A stored object with the wrong size
+or hash is an error. `GIT_LFS_SKIP_SMUDGE=1` (or `true`) leaves pointers as they are. `fetch` and `pull` also warn once when
+the `.gitattributes` in the tip of a ref that moved applies `filter=lfs` to a path whose pointer names an object that is not
+stored (`clone` in the commit it checks out, none for `--bare` or `-n`); only `.gitattributes` files in the tree are read for
+that check. The warning wording is not part of the contract. Covered by `crates/pyn-cli/tests/git_lfs_client.rs` (the pointer
+bytes are also compared with `git lfs pointer` when `git-lfs` is installed and skipped otherwise) and
+`crates/pyn-cli/tests/git_lfs.rs` (#311, #628).
+
+Not built: downloading and uploading objects (the Batch API, `lfs.url`, transfer adapters, credentials), the locking API and
+`lockable`, `lfs.storage`, `lfs.fetchinclude` and `fetchexclude`, pointer extensions (`ext-*` lines), and the `git lfs`
+commands (`track`, `fetch`, `pull`, `push`, `ls-files`, `prune`, `lock`, `unlock`, `locks`).
 
 ### Refused commands
 

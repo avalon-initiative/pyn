@@ -5,6 +5,7 @@ use std::collections::HashMap;
 
 use anyhow::{Result, bail};
 use chrono::{DateTime, FixedOffset};
+use pyn_gitwork::Mailmap;
 use pyn_object::{Commit, ObjectId, Signature};
 use pyn_proto as api;
 
@@ -51,6 +52,11 @@ pub struct FormatArgs {
     expand_tabs: Option<usize>,
     #[arg(long, overrides_with = "expand_tabs")]
     no_expand_tabs: bool,
+    /// Print mapped names and emails (per `.mailmap`) in the `Author:` and `Commit:` lines.
+    #[arg(long, alias = "mailmap", overrides_with = "no_use_mailmap")]
+    use_mailmap: bool,
+    #[arg(long, alias = "no-mailmap", overrides_with = "use_mailmap")]
+    no_use_mailmap: bool,
 }
 
 impl FormatArgs {
@@ -79,6 +85,28 @@ impl FormatArgs {
                 (None, false) => Pretty::Medium,
             },
         )
+    }
+
+    /// The mailmap flag given, which a pyn server cannot honor.
+    pub fn mailmap_given(&self) -> Option<&'static str> {
+        [
+            ("--use-mailmap", self.use_mailmap),
+            ("--no-use-mailmap", self.no_use_mailmap),
+        ]
+        .into_iter()
+        .find(|(_, on)| *on)
+        .map(|(f, _)| f)
+    }
+
+    /// Whether the person lines are mapped: the last of the flags, else `log.mailmap` (on by default).
+    pub fn mapped_headers(&self, configured: bool) -> bool {
+        if self.use_mailmap {
+            true
+        } else if self.no_use_mailmap {
+            false
+        } else {
+            configured
+        }
     }
 
     pub fn style(&self) -> Result<DateStyle> {
@@ -170,6 +198,8 @@ pub fn render_api(r: &Rendering, c: &api::Commit) -> Result<String> {
         commit_color: None,
         tabs: r.tab_width(),
         abbrev_commit: r.abbrev_commit,
+        mailmap: None,
+        map_headers: false,
     };
     Ok(format!(
         "{}{}",
@@ -377,6 +407,10 @@ pub struct Context<'a> {
     /// Tab width for the message; 0 keeps tabs.
     pub tabs: usize,
     pub abbrev_commit: bool,
+    /// What `%aN`, `%aE`, `%aL` and the committer forms read; the unmapped names without one.
+    pub mailmap: Option<&'a Mailmap>,
+    /// Whether the `Author:` and `Commit:` lines print mapped identities.
+    pub map_headers: bool,
 }
 
 impl Context<'_> {
@@ -399,6 +433,16 @@ fn lossy(bytes: &[u8]) -> String {
 
 fn ident(who: &Signature) -> String {
     format!("{} <{}>", lossy(&who.name), lossy(&who.email))
+}
+
+fn person_line(ctx: &Context<'_>, who: &Signature) -> String {
+    match ctx.mailmap.filter(|_| ctx.map_headers) {
+        Some(map) => {
+            let (name, email) = map.map(&who.name, &who.email);
+            format!("{} <{}>", lossy(&name), lossy(&email))
+        }
+        None => ident(who),
+    }
 }
 
 fn is_blank(line: &str) -> bool {
@@ -506,26 +550,26 @@ pub fn render(pretty: &Pretty, ctx: &Context<'_>, id: &ObjectId, c: &Commit) -> 
         }
         Pretty::Short => format!(
             "{head}Author: {}\n\n{}",
-            ident(&c.author),
+            person_line(ctx, &c.author),
             indented(&c.message, true, ctx.tabs)
         ),
         Pretty::Medium => format!(
             "{head}Author: {}\nDate:   {}\n\n{}",
-            ident(&c.author),
+            person_line(ctx, &c.author),
             date(&c.author),
             indented(&c.message, false, ctx.tabs)
         ),
         Pretty::Full => format!(
             "{head}Author: {}\nCommit: {}\n\n{}",
-            ident(&c.author),
-            ident(&c.committer),
+            person_line(ctx, &c.author),
+            person_line(ctx, &c.committer),
             indented(&c.message, false, ctx.tabs)
         ),
         Pretty::Fuller => format!(
             "{head}Author:     {}\nAuthorDate: {}\nCommit:     {}\nCommitDate: {}\n\n{}",
-            ident(&c.author),
+            person_line(ctx, &c.author),
             date(&c.author),
-            ident(&c.committer),
+            person_line(ctx, &c.committer),
             date(&c.committer),
             indented(&c.message, false, ctx.tabs)
         ),
@@ -608,9 +652,20 @@ fn placeholder(
             } else {
                 &c.committer
             };
+            let (name, email) = match ctx.mailmap {
+                Some(map) if matches!(rest.get(1), Some('N' | 'E' | 'L')) => {
+                    map.map(&who.name, &who.email)
+                }
+                _ => (who.name.clone(), who.email.clone()),
+            };
+            let local = |email: &[u8]| {
+                let end = email.iter().position(|b| *b == b'@').unwrap_or(email.len());
+                lossy(&email[..end])
+            };
             let text = match *rest.get(1)? {
-                'n' => lossy(&who.name),
-                'e' => lossy(&who.email),
+                'n' | 'N' => lossy(&name),
+                'e' | 'E' => lossy(&email),
+                'l' | 'L' => local(&email),
                 'd' => ctx.style.format(who, ctx.now),
                 'D' => DateStyle::Rfc.format(who, ctx.now),
                 'i' => DateStyle::Iso.format(who, ctx.now),
@@ -621,6 +676,9 @@ fn placeholder(
                 _ => return None,
             };
             Some((text, 2))
+        }
+        'g' if matches!(rest.get(1), Some('d' | 'D' | 's' | 'n' | 'N' | 'e' | 'E')) => {
+            Some((String::new(), 2))
         }
         _ => None,
     }

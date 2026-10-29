@@ -291,6 +291,9 @@ pub struct CheckoutArgs {
     /// Skip the typed confirmation before discarding an edit to an exclusive file.
     #[arg(long)]
     pub(crate) yes: bool,
+    /// Restore paths outside the sparse-checkout patterns too (a git repository only).
+    #[arg(long)]
+    pub(crate) ignore_skip_worktree_bits: bool,
     /// Choose the hunks to take from the index or the named commit, one at a time (a git repository only).
     #[arg(short, long, conflicts_with = "yes")]
     pub(crate) patch: bool,
@@ -674,6 +677,7 @@ pub fn checkout_command(
         ours,
         theirs,
         yes,
+        ignore_skip_worktree_bits: _,
         patch: _,
         recurse_submodules,
         no_recurse_submodules: _,

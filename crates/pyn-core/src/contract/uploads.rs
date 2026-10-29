@@ -1156,4 +1156,8 @@ impl MetadataStore for BudgetGateStore {
     async fn repo_usage(&self, repo: &RepoId) -> crate::Result<crate::RepoUsage> {
         self.inner.repo_usage(repo).await
     }
+
+    async fn repo_breakdown(&self, repo: &RepoId) -> crate::Result<crate::RepoBreakdown> {
+        self.inner.repo_breakdown(repo).await
+    }
 }

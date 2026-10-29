@@ -83,6 +83,14 @@ pub enum DomainEvent {
         name: String,
         actor: UserId,
     },
+    RepositoryStorageCapChanged {
+        repo_id: RepoId,
+        owner: UserId,
+        owner_id: AccountId,
+        name: String,
+        storage_cap: Option<u64>,
+        actor: UserId,
+    },
     OwnerLimitsChanged {
         owner: UserId,
         owner_id: AccountId,
@@ -170,6 +178,7 @@ impl DomainEvent {
             Self::RepositoryCreated { .. } => "repository.created",
             Self::RepositoryRenamed { .. } => "repository.renamed",
             Self::RepositoryDeleted { .. } => "repository.deleted",
+            Self::RepositoryStorageCapChanged { .. } => "repository.storage_cap_changed",
             Self::OwnerLimitsChanged { .. } => "owner.limits_changed",
             Self::OwnerFrozen { .. } => "owner.frozen",
             Self::OwnerUnfrozen { .. } => "owner.unfrozen",

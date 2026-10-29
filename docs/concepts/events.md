@@ -20,7 +20,7 @@ Every event is one JSON object:
 
 ## When events are written
 
-Account, organization, repository, lock, `owner.limits_changed`, `owner.frozen` and `owner.unfrozen` events go into the webhook outbox in the same database
+Account, organization, repository, lock, `repository.storage_cap_changed`, `owner.limits_changed`, `owner.frozen` and `owner.unfrozen` events go into the webhook outbox in the same database
 transaction as the change, so a crash never loses one and a refused or rolled-back change leaves none. Each is queued
 once per subscription whose filter matches. `owner.limit_reached` is the exception: it is recorded after the refusal and
 throttled (see below). Events are queued only when the change really happens: a duplicate name, a missing target or a
@@ -294,6 +294,30 @@ A repository was deleted.
     "owner": "studio",
     "owner_id": "o7d2e41b90c3a58f6e1d4b7a3",
     "name": "game-2",
+    "actor": "alice"
+  }
+}
+```
+
+### `repository.storage_cap_changed`
+
+The owner, an administrator or a `manage_limits` service credential set or removed a repository's own [storage cap](limits.md#per-repository-storage-cap).
+
+`data`: `repo_id`, `owner`, `owner_id`, `name`, `storage_cap` (bytes; `null` when the repository has no cap of its own), `actor`.
+
+```json
+{
+  "id": "evt_01J9ZX3K5V8Q2M7R4T6N0B1C2D",
+  "type": "repository.storage_cap_changed",
+  "created_at": "2026-03-04T05:06:07Z",
+  "server": "https://pyn.example.com",
+  "version": 1,
+  "data": {
+    "repo_id": "r5e8a0c3f1b7d92460a4c8e15",
+    "owner": "studio",
+    "owner_id": "o7d2e41b90c3a58f6e1d4b7a3",
+    "name": "game",
+    "storage_cap": 107374182400,
     "actor": "alice"
   }
 }

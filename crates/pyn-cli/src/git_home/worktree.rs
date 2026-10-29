@@ -425,7 +425,10 @@ pub(super) fn write_bytes(
     {
         let algorithm = git.repo.algorithm();
         let before = std::fs::read(fs_path(git.repo.root()?, path))?;
-        let after = git.repo.conversion(path)?.to_worktree(algorithm, bytes);
+        let after = git
+            .repo
+            .conversion(path)?
+            .to_worktree(algorithm, path, bytes)?;
         if before != *after {
             return write_converted(git, path, mode, bytes);
         }
@@ -447,7 +450,7 @@ fn write_converted(
         converted = git
             .repo
             .conversion(path)?
-            .to_worktree(git.repo.algorithm(), bytes);
+            .to_worktree(git.repo.algorithm(), path, bytes)?;
         &*converted
     } else {
         bytes
@@ -584,8 +587,9 @@ pub(super) fn move_tree(
     for (path, act) in attributes_first(acts.iter()) {
         if let Act::Write(entry) = act {
             let known = entries.get(&(path.clone(), 0));
+            let unmerged = (1..=3u8).any(|s| entries.contains_key(&(path.clone(), s)));
             let leave_out = known.map_or_else(
-                || sparse.as_ref().is_some_and(|p| !p.includes(path)),
+                || !unmerged && sparse.as_ref().is_some_and(|p| !p.includes(path)),
                 |e| e.skip_worktree,
             );
             if leave_out && entry.mode != FileMode::Gitlink {

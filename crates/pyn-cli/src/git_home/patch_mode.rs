@@ -374,6 +374,13 @@ fn gather(git: &GitHome, opened: &OpenIndex, mode: &PatchMode, spec: &Pathspec) 
                 .map(|e| e.path.as_slice()),
         );
     }
+    let skipped: BTreeSet<&[u8]> = opened
+        .index
+        .entries
+        .iter()
+        .filter(|e| e.skip_worktree)
+        .map(|e| e.path.as_slice())
+        .collect();
     let layout = layout(git)?;
     let mut found = Found {
         files: Vec::new(),
@@ -381,7 +388,7 @@ fn gather(git: &GitHome, opened: &OpenIndex, mode: &PatchMode, spec: &Pathspec) 
         unmerged: unmerged.iter().filter(|p| spec.matches(p)).count(),
     };
     for path in paths.into_iter().filter(|p| spec.matches(p)) {
-        if unmerged.contains(path) {
+        if unmerged.contains(path) || skipped.contains(path) {
             continue;
         }
         let known = |source: &Source| match source {
@@ -696,9 +703,46 @@ pub(super) fn needs_merge(index: &pyn_git::Index) -> String {
     text
 }
 
+/// Skipped files are left out of the hunks, so a tree that differs from one of them cannot be compared.
+fn refuse_sparse(git: &GitHome, index: &pyn_git::Index, mode: &PatchMode) -> Result<()> {
+    let skipped: Vec<&IndexEntry> = index.entries.iter().filter(|e| e.skip_worktree).collect();
+    if skipped.is_empty() {
+        return Ok(());
+    }
+    let refused = || {
+        anyhow::anyhow!(
+            "this repository uses sparse checkout, which pyn does not support in this command yet"
+        )
+    };
+    if mode.stash {
+        return Err(refused());
+    }
+    let tree = [&mode.old, &mode.new].into_iter().find_map(|s| match s {
+        Source::Tree(commit) => Some(*commit),
+        _ => None,
+    });
+    if let Some(commit) = tree {
+        let map = match commit {
+            Some(c) => {
+                let root = git.repo.commit(&c)?.tree;
+                git.repo.flatten(Some(&root), &Pathspec::default())?
+            }
+            None => BTreeMap::new(),
+        };
+        let same = |e: &&IndexEntry| {
+            map.get(&e.path)
+                .is_some_and(|t| t.id == e.id && raw_mode(t.mode) == e.mode)
+        };
+        if !skipped.iter().all(same) {
+            return Err(refused());
+        }
+    }
+    Ok(())
+}
+
 fn patch_spec(git: &GitHome, spec: &Pathspec, mode: &PatchMode) -> Result<()> {
     let opened = git.open_index()?;
-    super::sparse::refuse_unsupported(&opened.index)?;
+    refuse_sparse(git, &opened.index, mode)?;
     let mut entries: Entries = entries_of(&opened.index);
     let mut changed = false;
     let refreshes = mode.worktree || !mode.reverse;
@@ -737,6 +781,7 @@ pub(super) fn stash(
     spec: &Pathspec,
 ) -> Result<Option<StashPatch>> {
     let mode = PatchMode::stash(head);
+    refuse_sparse(git, &opened.index, &mode)?;
     print!("{}", needs_merge(&opened.index));
     let Some(chosen) = choose(git, opened, &mode, spec, &mut |_, _| Ok(()))? else {
         return Ok(None);

@@ -1,6 +1,7 @@
 //! Exit statuses and stream use of `pyn` on a git repository, compared with real git's on a twin copy of the same
 //! repository, for the error paths of the supported commands. Real git is the oracle in this test only and only
-//! semantics are compared: the exit status class (success, usage error, other failure), and whether standard output and standard error carry anything.
+//! semantics are compared: the exit status class (success, usage error, other failure), whether standard output and
+//! standard error carry anything, and that a line both tools print goes to the same stream.
 
 mod common;
 #[path = "common/oracle.rs"]
@@ -105,6 +106,9 @@ struct Run {
     code: i32,
     stdout: bool,
     stderr: bool,
+    /// Normalised lines of each stream.
+    out_lines: Vec<String>,
+    err_lines: Vec<String>,
     /// The first lines of both streams, for the failure message only.
     shown: String,
 }
@@ -139,12 +143,53 @@ fn run(bin: &str, args: &[&str], cwd: &Path, home: &Path, ceiling: &Path) -> Run
         code: out.status.code().unwrap_or(-1),
         stdout: !out.stdout.is_empty(),
         stderr: !out.stderr.is_empty(),
+        out_lines: lines_of(&out.stdout, &[cwd, home]),
+        err_lines: lines_of(&out.stderr, &[cwd, home]),
         shown: format!(
             "stdout {:?} stderr {:?}",
             first_line(&out.stdout),
             first_line(&out.stderr)
         ),
     }
+}
+
+/// Trimmed lines with the given paths and long hex ids replaced, so twin repositories print alike.
+fn lines_of(bytes: &[u8], paths: &[&Path]) -> Vec<String> {
+    let mut text = String::from_utf8_lossy(bytes).into_owned();
+    for p in paths {
+        text = text.replace(&p.display().to_string(), "<path>");
+    }
+    text.lines()
+        .map(|l| {
+            l.trim()
+                .split(|c: char| !c.is_ascii_alphanumeric())
+                .map(
+                    |w| match w.len() >= 7 && w.chars().all(|c| c.is_ascii_hexdigit()) {
+                        true => "<id>",
+                        false => w,
+                    },
+                )
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .filter(|l| !l.is_empty())
+        .collect()
+}
+
+/// Lines both tools print that one sends to standard output and the other to standard error.
+fn misplaced(git: &Run, ours: &Run) -> Vec<String> {
+    let mut wrong = Vec::new();
+    for l in &git.out_lines {
+        if ours.err_lines.contains(l) && !ours.out_lines.contains(l) {
+            wrong.push(format!("{l:?} is on stdout in git, stderr in pyn"));
+        }
+    }
+    for l in &git.err_lines {
+        if ours.out_lines.contains(l) && !ours.err_lines.contains(l) {
+            wrong.push(format!("{l:?} is on stderr in git, stdout in pyn"));
+        }
+    }
+    wrong
 }
 
 fn first_line(bytes: &[u8]) -> String {
@@ -207,6 +252,7 @@ fn compare(c: &Case) -> Option<String> {
             git.stderr, ours.stderr
         ));
     }
+    diffs.extend(misplaced(&git, &ours));
     (!diffs.is_empty()).then(|| {
         format!(
             "{} [git: {}; pyn: {}]",

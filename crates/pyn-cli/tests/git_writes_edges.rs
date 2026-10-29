@@ -476,29 +476,25 @@ fn the_executable_bit_and_symlinks_are_written_and_core_filemode_is_honored() {
 }
 
 #[test]
-fn filters_and_encodings_stop_every_write_before_anything_changes() {
-    for attributes in [
-        "a.txt filter=custom\n",
-        "a.txt working-tree-encoding=UTF-16\n",
-    ] {
-        let repo = Repo::merge("sha1");
-        write(&repo, ".gitattributes", attributes);
-        let before = snapshot(&repo.main);
-        let out = repo.run_in(&repo.main, &["merge", "clean"]);
-        assert_eq!(
-            out.status.code(),
-            Some(128),
-            "{attributes}: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        assert_eq!(
-            changed(&before, &repo),
-            Vec::<String>::new(),
-            "{attributes}"
-        );
-        let out = repo.run_in(&repo.main, &["restore", "--source=old", "a.txt"]);
-        assert_eq!(out.status.code(), Some(128), "{attributes}");
-    }
+fn encodings_stop_every_write_before_anything_changes() {
+    let attributes = "a.txt working-tree-encoding=UTF-16\n";
+    let repo = Repo::merge("sha1");
+    write(&repo, ".gitattributes", attributes);
+    let before = snapshot(&repo.main);
+    let out = repo.run_in(&repo.main, &["merge", "clean"]);
+    assert_eq!(
+        out.status.code(),
+        Some(128),
+        "{attributes}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        changed(&before, &repo),
+        Vec::<String>::new(),
+        "{attributes}"
+    );
+    let out = repo.run_in(&repo.main, &["restore", "--source=old", "a.txt"]);
+    assert_eq!(out.status.code(), Some(128), "{attributes}");
     let repo = Repo::merge("sha1");
     write(
         &repo,
@@ -513,23 +509,6 @@ fn filters_and_encodings_stop_every_write_before_anything_changes() {
 }
 
 #[test]
-fn a_git_lfs_filter_is_written_as_a_pointer_with_a_warning() {
-    let repo = Repo::merge("sha1");
-    write(
-        &repo,
-        ".gitattributes",
-        "*.txt filter=lfs diff=lfs merge=lfs -text\n",
-    );
-    let out = repo.run_in(&repo.main, &["switch", "clean"]);
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(String::from_utf8_lossy(&out.stderr).contains("Git LFS"));
-}
-
-#[test]
 fn a_sparse_checkout_is_refused() {
     let repo = Repo::merge("sha1");
     let path = repo.main.join(".git/index");
@@ -537,7 +516,13 @@ fn a_sparse_checkout_is_refused() {
     index.entries[0].skip_worktree = true;
     index.write(&path, Algorithm::Sha1).unwrap();
     let before = snapshot(&repo.main);
-    let (code, err) = repo.fails(&["stash"]);
+    let (code, err) = repo.fails(&[
+        "restore",
+        "--ignore-skip-worktree-bits",
+        "--source",
+        "HEAD",
+        ".",
+    ]);
     assert_eq!(code, 128);
     assert!(err.contains("sparse"), "{err}");
     assert_eq!(snapshot(&repo.main), before);

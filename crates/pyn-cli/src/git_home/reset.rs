@@ -339,9 +339,6 @@ fn reset_logging(git: &GitHome, cwd: &Path, args: &ResetArgs, log: bool) -> Resu
         eprintln!("error: You do not have a valid HEAD.");
         bail!("Could not reset index file to revision '{rev}'.");
     }
-    if matches!(kind, ResetKind::Keep | ResetKind::Merge) {
-        super::sparse::refuse_unsupported(&opened.index)?;
-    }
     let all = Pathspec::default();
     let new_tree = match &target {
         Some(c) => Some(git.repo.commit(c)?.tree),
@@ -372,10 +369,12 @@ fn reset_logging(git: &GitHome, cwd: &Path, args: &ResetArgs, log: bool) -> Resu
         }
         ResetKind::Keep | ResetKind::Merge => {
             let from = tree_entries(git, head.as_ref(), &all)?;
-            let acts = match plan(git, &opened, kind, &from, &to)? {
+            let mut acts = match plan(git, &opened, kind, &from, &to)? {
                 Ok(acts) => acts,
                 Err(blocked) => return Err(refuse(&blocked, &rev)),
             };
+            let cone = super::sparse::Cone::of(git, &opened.index)?;
+            acts.retain(|p, _| !cone.out(p));
             check_writes(to.keys().chain(acts.keys()))?;
             convert::refuse_unsupported(
                 git,
@@ -393,7 +392,8 @@ fn reset_logging(git: &GitHome, cwd: &Path, args: &ResetArgs, log: bool) -> Resu
                     }
                 }
             }
-            let index = index_with(&opened, &all, &to, written);
+            let mut index = index_with(&opened, &all, &to, written);
+            super::sparse::carry_over(git, &opened.index, &mut index)?;
             git.save_index(&opened, &index)?;
         }
     }
