@@ -2,11 +2,12 @@
 
 use std::collections::{HashMap, HashSet};
 
+use anyhow::Result;
 use pyn_object::{ObjectId, Signature};
 
 use super::GitHome;
 use super::blame_walk::Origin;
-use super::plumbing::{abbrev, default_abbrev, quote};
+use super::plumbing::quote;
 use crate::commit_format::DateStyle;
 
 /// What is shown of a commit.
@@ -141,14 +142,14 @@ impl Layout<'_> {
         }
     }
 
-    pub fn render(&self, entries: &[Entry]) -> Vec<u8> {
+    pub fn render(&self, entries: &[Entry]) -> Result<Vec<u8>> {
         let mut out = Vec::new();
         if self.flags.porcelain {
             self.porcelain(entries, &mut out);
         } else {
-            self.columns(entries, &mut out);
+            self.columns(entries, &mut out)?;
         }
-        out
+        Ok(out)
     }
 
     fn line_text(&self, out: &mut Vec<u8>, lno: usize) {
@@ -158,15 +159,16 @@ impl Layout<'_> {
         }
     }
 
-    fn columns(&self, entries: &[Entry], out: &mut Vec<u8>) {
+    fn columns(&self, entries: &[Entry], out: &mut Vec<u8>) -> Result<()> {
         let (mut longest_file, mut longest_author) = (0, 0);
         let (mut longest_src, mut longest_dst) = (0, 0);
         let mut show_name = self.flags.show_name;
         let mut seen: HashSet<ObjectId> = HashSet::new();
-        let mut auto = default_abbrev(self.git);
+        let abbreviations = self.git.repo.abbreviations(None)?;
+        let mut auto = self.git.repo.abbreviation_len(None)?;
         for e in entries {
             let o = &self.origins[e.origin];
-            auto = auto.max(abbrev(self.git, &o.commit, auto).len());
+            auto = auto.max(abbreviations.short(&o.commit).len());
             if o.path != self.path {
                 show_name = true;
             }
@@ -237,6 +239,7 @@ impl Layout<'_> {
                 self.line_text(out, lno);
             }
         }
+        Ok(())
     }
 
     fn details(

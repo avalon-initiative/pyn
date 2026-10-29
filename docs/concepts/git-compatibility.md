@@ -1148,7 +1148,8 @@ recursive alternates. The minimum defaults to at least seven, estimated from pac
 `k`/`m`/`g` suffixes. Values below four, malformed or missing values and integer overflow fail;
 valid integers above the hash width render full ids in pyn, as in the tested git 2.47.3.
 `no`, `off`, `false` (case-insensitive) or an empty value selects full ids. Duplicate objects do not extend
-prefixes; null patch ids also lengthen for uniqueness. Server-home conventions are unchanged.
+prefixes; null patch ids also lengthen for uniqueness. The `index` line of a combined diff and the `(from <parent>)` label of
+`-m --oneline` follow the same policy; a combined diff does not read `--abbrev=<n>` or `--full-index`. Server-home conventions are unchanged.
 
 Filters apply in this order: `--author` and `--committer` (regular expressions on `Name <email>`, any of several of the same
 kind), `--grep` (on the whole message; any of several, or all with `--all-match`, or none with `--invert-grep`), `-i` for all
@@ -2539,7 +2540,7 @@ What differs, all of it refused or documented rather than silently different:
 | --- | --- |
 | Not built (usage error `129`) | `-M`, `-C`, `--incremental`, `-L :<funcname>`, `--ignore-rev`, `--ignore-revs-file`, `--reverse`, `--show-stats`, `--progress`, `--score-debug`, `--color-lines`, `--color-by-age`, `--minimal`, `--diff-algorithm`, `-S`, abbreviated long options, `<a>...<b>`, the other revision-list options, and `--date=human`, `local`, `format:...` and `auto:...`. |
 | Refused (`128`) | `diff.algorithm` other than `myers`. |
-| Abbreviation length | `core.abbrev`, else 7 digits, grown until the abbreviation of every blamed commit is unique, plus one for the boundary mark. Git also lengthens its default for repositories with tens of thousands of objects; pyn does not. |
+| Abbreviation length | The [abbreviation policy](#log-on-a-git-home) (`core.abbrev`, else the object-count default), grown until the abbreviation of every blamed commit is unique, plus one for the boundary mark. |
 | Content filters | `textconv` is not applied. The line-ending conversion of the work tree file is not applied to the lines `blame` reads from it. |
 | Commit encodings | Author names and subjects are printed as stored, without re-encoding from an `encoding` header. |
 | Renames | The single added path is matched as git's rename detection would, but `diff.renameLimit` is not applied. |
@@ -2632,9 +2633,9 @@ with `fatal: not a git repository (or any of the parent directories): .git` (`12
 | `describe` | `--tags`, `--all`, `--always`, `--long`, `--abbrev=<n>`, `--dirty[=<mark>]`, `--match`, `--exclude`, `--exact-match`, `--candidates=<n>`, and commit-ishes. The nearest tag is chosen by the walk git uses, including its limit of candidate tags. Describing a blob and `--first-parent`, `--contains` and `--broken` are not built. |
 | `name-rev` | `--tags`, `--name-only`, `--no-undefined`, `--always` and commit-ishes. `--all`, `--stdin`, `--annotate-stdin`, `--refs` and `--exclude` are not built, and `name-rev` with no commit is a usage error where git prints nothing. |
 
-Abbreviations (`--short`, `--abbrev`, `describe`) start at `core.abbrev` or 7 digits and grow until the id is unique among all
-objects. git also grows the default length with the size of the repository (8 digits from about 16,000 objects); pyn does not,
-so past that size a default abbreviation can be one digit shorter than git's.
+Every abbreviated id these commands print (`--short`, `--abbrev`, `--hash=<n>`, `describe`, `name-rev --always`, the `blame` id
+column, `worktree list`) follows the [abbreviation policy](#log-on-a-git-home): `core.abbrev` read as git reads it, the
+object-count default when it is unset or `auto`, and a prefix lengthened until unique. An explicit `<n>` is a minimum of 4 or more.
 
 ### Mailmap
 

@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::fmt::Write;
 
 use anyhow::Result;
-use pyn_gitwork::Pathspec;
+use pyn_gitwork::{Abbreviations, Pathspec};
 
 use super::GitHome;
 use super::commands::{add_changes, add_unchanged};
@@ -449,11 +449,20 @@ fn mode_of(b: Option<&Blob>) -> &str {
     b.map_or("000000", |b| b.mode())
 }
 
-fn abbrev(b: Option<&Blob>) -> String {
-    b.map_or("0000000".to_string(), |b| b.hash[..7].to_string())
+fn abbrev(abbreviations: &Abbreviations, b: Option<&Blob>) -> String {
+    b.map_or_else(
+        || abbreviations.short_null(),
+        |b| abbreviations.short_hex(&b.hash),
+    )
 }
 
-fn header(git: &GitHome, e: &Element, dense: bool, file_header: bool) -> String {
+fn header(
+    git: &GitHome,
+    abbreviations: &Abbreviations,
+    e: &Element,
+    dense: bool,
+    file_header: bool,
+) -> String {
     let mut out = String::new();
     let word = if dense {
         "diff --cc "
@@ -461,12 +470,14 @@ fn header(git: &GitHome, e: &Element, dense: bool, file_header: bool) -> String 
         "diff --combined "
     };
     let _ = writeln!(out, "{word}{}", git.quote_diff_path(e.path.as_bytes()));
-    let idx: Vec<String> = e.parents.iter().map(|(b, _)| abbrev(b.as_ref())).collect();
+    let idx: Vec<String> = (e.parents.iter())
+        .map(|(b, _)| abbrev(abbreviations, b.as_ref()))
+        .collect();
     let _ = writeln!(
         out,
         "index {}..{}",
         idx.join(","),
-        abbrev(e.result.as_ref())
+        abbrev(abbreviations, e.result.as_ref())
     );
     let result_mode = mode_of(e.result.as_ref());
     let mode_differs = e
@@ -521,6 +532,7 @@ pub(super) fn patch(
     (dense, context): (bool, usize),
 ) -> Result<Option<String>> {
     let np = e.parents.len();
+    let abbreviations = git.repo.abbreviations(None)?;
     let bytes = |b: Option<&Blob>| -> Result<Vec<u8>> {
         b.map_or(Ok(Vec::new()), |b| diff::blob_bytes(git, &e.path, b))
     };
@@ -537,7 +549,7 @@ pub(super) fn patch(
     if pyn_diff::is_binary(&result) || parents.iter().any(|p| pyn_diff::is_binary(p)) {
         return Ok(Some(format!(
             "{}Binary files differ\n",
-            header(git, e, dense, false)
+            header(git, &abbreviations, e, dense, false)
         )));
     }
     let text = lines(&result);
@@ -561,7 +573,7 @@ pub(super) fn patch(
     if !show_hunks && !mode_differs {
         return Ok(None);
     }
-    let mut out = header(git, e, dense, true).into_bytes();
+    let mut out = header(git, &abbreviations, e, dense, true).into_bytes();
     dump(&mut out, &sline, &text, np, context);
     Ok(Some(String::from_utf8_lossy(&out).into_owned()))
 }

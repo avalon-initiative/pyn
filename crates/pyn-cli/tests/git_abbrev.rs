@@ -931,3 +931,153 @@ fn decorated_log_and_from_labels_match_git_at_nondefault_widths() {
         }
     }
 }
+
+fn merged(format: &'static str) -> Repo {
+    let repo = Repo::merge(format);
+    git(
+        &repo,
+        &repo.main,
+        &[
+            "-c",
+            "gc.auto=0",
+            "-c",
+            "maintenance.auto=false",
+            "merge",
+            "--no-ff",
+            "--no-edit",
+            "-q",
+            "--no-commit",
+            "clean",
+        ],
+    );
+    let files = git(&repo, &repo.main, &["ls-files"]);
+    let file = repo.main.join(files.lines().next().unwrap());
+    let mut text = fs::read(&file).unwrap();
+    text.extend_from_slice(b"merge-only line\n");
+    fs::write(&file, text).unwrap();
+    git(&repo, &repo.main, &["commit", "-q", "-a", "--no-edit"]);
+    repo
+}
+
+fn index_widths(out: &str) -> Vec<usize> {
+    out.lines()
+        .filter_map(|line| line.strip_prefix("index "))
+        .flat_map(|line| {
+            line.split_whitespace()
+                .next()
+                .unwrap()
+                .split(['.', ','])
+                .filter(|id| !id.is_empty())
+                .map(str::len)
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+#[test]
+fn combined_diffs_and_merge_labels_follow_the_policy() {
+    // Catches the fixed seven-digit combined `index` line and `(from <parent>)` label.
+    for format in FORMATS {
+        let full = if format == "sha1" { 40 } else { 64 };
+        for (value, width) in [
+            (None, 7),
+            (Some("12"), 12),
+            (Some("off"), full),
+            (Some("false"), full),
+            (Some("auto"), 7),
+        ] {
+            let repo = merged(format);
+            if let Some(value) = value {
+                setting(&repo, value);
+            }
+            for args in [
+                ["show", "-c", "HEAD"],
+                ["show", "--cc", "HEAD"],
+                ["log", "-1", "-c"],
+            ] {
+                let out = same(&repo, &args);
+                let widths = index_widths(&out);
+                assert!(!widths.is_empty(), "no combined index in {out}");
+                assert!(widths.iter().all(|w| *w == width), "{args:?}: {widths:?}");
+            }
+            let out = same(&repo, &["show", "-m", "--oneline", "HEAD"]);
+            let labels: Vec<_> = out
+                .lines()
+                .filter_map(|l| l.split(" (from ").nth(1)?.split(')').next())
+                .collect();
+            assert!(!labels.is_empty(), "{out}");
+            assert!(labels.iter().all(|l| l.len() == width));
+        }
+    }
+}
+
+#[test]
+fn inspection_commands_follow_the_policy() {
+    // Catches any of the plumbing commands keeping their own length rule.
+    for format in FORMATS {
+        let full = if format == "sha1" { 40 } else { 64 };
+        for (value, width) in [
+            (None, 7),
+            (Some("12"), 12),
+            (Some("off"), full),
+            (Some("false"), full),
+            (Some(""), full),
+            (Some("auto"), 7),
+        ] {
+            let repo = merged(format);
+            if let Some(value) = value {
+                setting(&repo, value);
+            }
+            let first = |out: &str| out.split_whitespace().next().unwrap().len();
+            assert_eq!(
+                first(&same(&repo, &["rev-parse", "--short", "HEAD"])),
+                width
+            );
+            assert_eq!(first(&same(&repo, &["show-ref", "--abbrev"])), width);
+            assert_eq!(first(&same(&repo, &["show-ref", "--hash"])), full);
+            let tree = same(&repo, &["ls-tree", "--abbrev", "HEAD"]);
+            let id = tree.split_whitespace().nth(2).unwrap();
+            assert_eq!(id.len(), width, "{tree}");
+            let file = git(&repo, &repo.main, &["ls-files"]);
+            let file = file.lines().next().unwrap();
+            let blamed = same(&repo, &["blame", file]);
+            // The id column is one wider than the abbreviation, for the boundary mark.
+            assert!(
+                blamed.lines().all(|l| l
+                    .split_whitespace()
+                    .next()
+                    .unwrap()
+                    .trim_start_matches('^')
+                    .len()
+                    <= (width + 1).min(full)),
+                "{blamed}"
+            );
+            same(&repo, &["annotate", file]);
+            same(&repo, &["describe", "--always"]);
+            same(&repo, &["describe", "--always", "--long"]);
+            same(&repo, &["name-rev", "--always", "--no-undefined", "HEAD"]);
+            let listed = repo.ok(&["worktree", "list"]);
+            assert_eq!(listed.split_whitespace().nth(1).unwrap().len(), width);
+        }
+    }
+}
+
+#[test]
+fn inspection_commands_refuse_a_core_abbrev_below_four_like_git() {
+    // Catches clamping a too-small value where git refuses it.
+    for format in FORMATS {
+        let repo = merged(format);
+        setting(&repo, "3");
+        for args in [
+            ["rev-parse", "--short", "HEAD"],
+            ["describe", "--always", "HEAD"],
+            ["show-ref", "--abbrev", "HEAD"],
+            ["show", "-c", "HEAD"],
+        ] {
+            let out = git_command(&repo, &repo.main).args(args).output().unwrap();
+            assert!(!out.status.success(), "git {args:?}");
+            let (_, err) = repo.fails(&args);
+            assert!(err.contains("core.abbrev"), "{args:?}: {err}");
+        }
+    }
+}
