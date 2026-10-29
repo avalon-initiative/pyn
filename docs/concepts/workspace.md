@@ -287,7 +287,7 @@ or on a later git clone made from it, lists the blobs of files that were never c
 (commits and trees are all present). That is not corruption; the server holds every blob, and `pyn verify` checks the
 server's side.
 
-### Local commits (provisional)
+### Local commits
 
 With the store on, `add`, `commit`, `status` and `branch` work against the store (decision #300, slice #336):
 
@@ -353,7 +353,7 @@ some branches exist only here, some only on the server, and the remote-tracking 
   `pyn merge <branch>` is still the server's merge of two server branches.
 - In a workspace cloned with `--no-local-store` the branch commands, and the web app, act on the server as before.
 
-### Fetch, pull and push (provisional)
+### Fetch, pull and push
 
 Slice #337 of the same move. With the setting on, `pyn fetch` stores the server's new commits and trees (every object checked
 against its id) and moves `refs/remotes/origin/<branch>`; `pyn pull` is a fetch and then a fast-forward or, when the
@@ -362,8 +362,8 @@ histories diverged, a merge commit as in git (`pyn pull --rebase` replays the lo
 them is unpublished. Details, output and the refusals are in
 [commits](commits.md#fetch-pull-and-push-with-a-local-store). Deletions and policy-file commits are pushed like any other
 commit. A merge commit is pushed too (issue #338): a descendant exclusive pointer is adopted without a lock, a shared
-file is merged by content, and an exclusive path both sides changed needs the person's lock (provisional, see
-[merge commits in a push](commits.md#merge-commits-in-a-push-provisional)).
+file is merged by content, and an exclusive path both sides changed needs the person's lock (see
+[merge commits in a push](commits.md#merge-commits-in-a-push)).
 
 ### Limits on what a server may send
 

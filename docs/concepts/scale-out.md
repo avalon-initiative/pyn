@@ -1,6 +1,6 @@
 # Running several server copies
 
-Audit of in-process state, for the planned shared multi-tenant server (decision #140). The question for each item is
+Audit of in-process state, for a shared multi-tenant server (decision #140). The question for each item is
 whether it stays correct when several server processes share one PostgreSQL database. Findings are tracked as issues; this
 page records the current state. Provisional: it reflects the code at the time of the audit.
 

@@ -1,8 +1,7 @@
 # Limits and usage
 
 Limits are optional. A server enforces nothing until its operator sets a limit: with none configured, no owner is
-limited, no default exists, no extra configuration is needed, and every command and route behaves as it did before limits
-existed. They are meant mainly for public and hosted servers that need to keep one owner from starving the rest. The
+limited, no default exists, and no extra configuration is needed. They are meant mainly for public and hosted servers that need to keep one owner from starving the rest. The
 server holds no concept of plans or payment; an operator or an external service only sets generic numbers.
 
 ## What can be limited
@@ -68,7 +67,7 @@ overshoot. Each limit has its own error code and answers `409`:
 | `repo_limit_reached` | creating a repository when the owner already has the limit |
 | `member_limit_reached` | adding a member to an organization at its limit |
 | `repo_storage_limit_reached` | a check-in, restore, push or merge that would add content past the repository's own [storage cap](#per-repository-storage-cap) |
-| `storage_limit_reached` | a check-in or restore that would add content past the limit, or an upload past the repository's unreferenced-upload ceiling |
+| `storage_limit_reached` | a check-in, changeset, restore, push or merge that would add content past the owner's limit, or an upload past the repository's unreferenced-upload ceiling |
 
 A frozen owner (below) is refused every write with `403 owner_frozen`, whatever its limits are.
 
@@ -159,8 +158,8 @@ not an owner gets `403 not_org_owner`. Only an administrator or a `manage_limits
 
 | Route | Returns |
 | --- | --- |
-| `GET /v1/owners/{owner}/limits` | `{kind, effective, own}`: the limits in force, and the owner's own; a null field is unlimited |
-| `GET /v1/owners/{owner}/usage` | `{owner, limits, usage: {repositories, members, stored_bytes}, repositories: [...]}` with each repository's usage |
+| `GET /v1/owners/{owner}/limits` | `{owner_id, kind, effective, own}`: the limits in force, and the owner's own; a null field is unlimited |
+| `GET /v1/owners/{owner}/usage` | `{owner, owner_id, limits, usage: {repositories, members, stored_bytes}, repositories: [...]}` with each repository's usage, largest first, then by address |
 | `GET /v1/repos/{owner}/{name}/usage` | `{repository, stored_bytes, files, revisions, storage_cap}` |
 
 ```bash
@@ -192,7 +191,7 @@ atomic step as the write, so concurrent writes cannot pass the cap together.
 The breakdown lists each top-level folder (`""` is the files at the repository root) with its distinct stored bytes and
 file count, largest first, and the 20 paths holding the most distinct bytes across their revisions. Content shared by
 several folders or paths counts in each, so their sums can pass `stored_bytes`. `GET /v1/owners/{owner}/usage` lists the
-owner's repositories largest first, each with its cap; a service credential with `manage_limits` reads it for any owner.
+owner's repositories largest first (then by address), each with its cap; a service credential with `manage_limits` reads it for any owner.
 
 A change of cap is recorded as `repo_storage_cap_changed` in the repository's audit log and raises the
 [`repository.storage_cap_changed`](events.md#repositorystoragecapchanged) event, which carries the owner's and the

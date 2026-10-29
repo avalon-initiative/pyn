@@ -3,8 +3,7 @@
 Decision #218: where pyn has an equivalent of a git command it uses git's name, flags, argument order and output shape,
 so `alias git=pyn` works for everyday flows. pyn owns what git lacks (`lock`, `unlock`, `policy`, modes, leases,
 organizations and teams). This page is the compatibility table: every difference from git is deliberate and listed here.
-The table describes the CLI as it is; rows that say *planned* name the issue that will change them. Conformance tests
-against git are tracked in #224. Everything below is about a repository on a pyn server unless it says *git home*; a
+The table describes the CLI as it is. Conformance tests against git are tracked in #224. Everything below is about a repository on a pyn server unless it says *git home*; a
 repository that lives in git is described in [On a git home](#on-a-git-home).
 
 ## Conventions
@@ -25,9 +24,9 @@ Divergence rules:
 6. **pyn-owned commands are listed as pyn only** and are never given a git name: `lock`, `unlock`, `locks`, `policy`,
    `audit`, and the account, organization, team and server administration commands.
 7. **Commits are git commits** (decision #245): identified by their git commit id (SHA-256 on a pyn server), shown
-   abbreviated, and named by hash, `HEAD`, `~N` and `^`; there are no `cN` numbers. Git's wire protocol is spoken in process
+   abbreviated, and named by hash, `HEAD`, `~N` and `^`. Git's wire protocol is spoken in process
    (see [Transports and credentials](#transports-and-credentials)), and there is no dependency on git (decision #30): git does not
-   need to be installed. A git import and export bridge may come later.
+   need to be installed. `pyn convert` moves a repository between the two homes.
 8. **Listings are aligned tables** with the path or variable column last, not git's free-form blocks. This is a
    repository-wide difference: it keeps columns such as mode, lock and revision readable.
 
@@ -72,7 +71,6 @@ Statuses used below:
 | same | Name, arguments and output shape as git. |
 | different | Supported, with a deliberate difference; the reason is given. |
 | unsupported | Fails with a message; no plan (see [Not planned](#not-planned)) or no pyn equivalent. |
-| planned | Fails with a message today; the issue that will implement it is named. |
 | pyn only | No git equivalent; pyn's own. |
 
 Global options: pyn takes `--server`, `--token`, `--user` and `--repo` (also as `PYN_SERVER`, `PYN_TOKEN`, `PYN_USER`,
@@ -152,7 +150,7 @@ The commands named in decision #218.
 | `git show --oneline`, `-s` (`--no-patch`), `--format=`, `--pretty=`, `--date=` | same | supported | Both homes, with the formats of `log`. `-s` prints the commit only; `--oneline` and the formats print their line, then the diff (blank line between for a template or a named format, none for `--oneline`). Without them a pyn server prints its own header (see above). |
 | `git show --show-signature` | same | git home: supported | As for `log`: the report follows each signed commit's `commit` line. A tag's own signature is not checked, as in git 2.43. A usage error on a pyn server. |
 | `git show <tag>` | `pyn show <tag>` | different | On a pyn server with the local store, an annotated tag prints `tag <name>`, `Tagger:`, `Date:` and its message, then the commit; a lightweight tag, or a tag with `~N`/`^` steps, shows the commit. A git home prints the same, then the commit, or for a tag of a tree or blob the tree listing or the content (`Tagger:` and `Date:` follow the format as in git: `oneline` has neither, `fuller` has `TaggerDate:`, the other formats have no date; `--date` is honoured). `show --show-signature` on a tag is refused. |
-| `git show <object>` | none | unsupported | `fatal: ... is not a commit`. |
+| `git show <object>` | `pyn show <object>` | git home: supported; pyn server: unsupported | On a git home a blob or tree id prints like `show <rev>:<path>`. On a pyn server: `fatal: ... is not a commit`. |
 | `git restore --source=<rev> <path>` | `pyn restore --source <rev> <path>` (or `pyn restore <path> <rev>`) | different | pyn's restore appends a new revision on the server: it needs the lock, the `restore` permission and a typed confirmation (`--yes` skips it); `-m` sets the message. The revision is required (git defaults to the index or HEAD) and `-s` is the short form of `--source`. Git's restore only edits the working tree. |
 | `git restore --staged <path>...` | `pyn restore --staged <path>...` (`-S`) | same | Puts the staged entries under the paths back to the last commit and leaves the files alone. On a git home `--source <commit>` takes the entries from that commit, as git; on a pyn server there is no commit to take them from and it is a usage error. |
 | `git restore [-s <rev>] [-S] [-W] <path>...` (the work tree) | `pyn restore ...` on a git home | git home only | Takes the paths from the index (or `--source`) into the work tree, and with `--staged --worktree` into both. See [Branches, switching and the work tree](#branches-switching-and-the-work-tree). On a pyn server `--worktree` is a usage error (`129`): a restore there makes an older revision the new head. |
@@ -274,7 +272,7 @@ URL by `show -n`, `show` and `prune`, as git does.
 | `pyn remote show [-n] [<name>...]` | Per remote: `* remote <name>`, the `Fetch URL` and each `Push  URL` (the name when none is set), `HEAD branch` (`(unknown)` when the remote has none, a list when it is ambiguous, `(not queried)` with `-n`), `Remote branches` with `tracked`, `new (next fetch will store in remotes/<name>)` or `stale (use 'git remote prune' to remove)` (a stale ref keeps its full `refs/remotes/...` name, as in git), `Local branches configured for 'git pull'` (`merges with remote`, `rebases onto remote` and the interactive forms from `branch.<b>.rebase`) and `Local refs configured for 'git push'` with `up to date`, `fast-forwardable`, `local out of date`, `create` or `delete`, or `Local refs will be mirrored by 'git push'` with `remote.<name>.mirror`. Pushes come from `remote.<name>.push`, else every branch both sides have. `-n` lists the branches stored under the fetch refspecs and the push refspecs as written, with `(status not queried)`. With no name it lists the remotes. It stops at the first remote it cannot reach. |
 | `pyn remote prune [-n\|--dry-run] <name>...` | Deletes the refs a fetch refspec's destination covers whose source the remote lost (and their reflogs), printing `Pruning <name>`, `URL: <url>` and ` * [pruned] <ref>` (` * [would prune] <ref>` with `-n`) for each. Nothing stale prints nothing. |
 | `pyn remote [-v] update [-p\|--prune\|--no-prune] [<group>\|<remote>...]` | Fetches each, as `pyn fetch --multiple` does (`Fetching <name>` on standard output, `error: Could not fetch <name>` and exit `1` on a failure). A name is a `remotes.<group>` first, else a configured remote, else `fatal: no such remote or remote group: <name>` (`1`). With none, the `remotes.default` group, else every remote except those with `skipFetchAll` or `skipDefaultUpdate`; a lone remote picked that way is fetched with no heading, as git does. `-p` prunes as `fetch --prune`; otherwise `remote.<name>.prune` and `fetch.prune` decide. `-v` is `fetch -v`. |
-| `pyn remote set-head <name> (-a\|--auto \| -d\|--delete \| <branch>)` | Points `refs/remotes/<name>/HEAD` at `refs/remotes/<name>/<branch>`, at the branch the remote's `HEAD` names (`-a`, printing `<name>/HEAD set to <branch>`; `error: Cannot determine remote HEAD` or `error: Multiple remote HEAD branches...`, `1`, when it cannot tell), or deletes it. A branch with no tracking ref is `error: Not a valid ref: refs/remotes/<name>/<branch>` (`1`). Any other combination is a usage error. The wording of the `-a` message is that of git 2.43 and is provisional. |
+| `pyn remote set-head <name> (-a\|--auto \| -d\|--delete \| <branch>)` | Points `refs/remotes/<name>/HEAD` at `refs/remotes/<name>/<branch>`, at the branch the remote's `HEAD` names (`-a`, printing `<name>/HEAD set to <branch>`; `error: Cannot determine remote HEAD` or `error: Multiple remote HEAD branches...`, `1`, when it cannot tell), or deletes it. A branch with no tracking ref is `error: Not a valid ref: refs/remotes/<name>/<branch>` (`1`). Any other combination is a usage error. The wording of the `-a` message is that of git 2.43. |
 | `pyn remote set-branches [--add] <name> <branch>...` | Replaces (or with `--add`, extends) the `fetch` refspecs with `+refs/heads/<branch>:refs/remotes/<name>/<branch>`. A missing remote is `error: No such remote '<name>'` (`2`). At least one branch is required; git accepts none and leaves the remote with no refspec. |
 
 Differences from git: `show` reads `branch.<b>.rebase` only (not `pull.rebase`) and ignores `push.default`, as git's `show` does; a remote branch no fetch
@@ -1502,7 +1500,7 @@ on standard output. A local branch as upstream is remote `.` with `merge = refs/
 branch itself only warns (`not setting branch '<name>' as its own upstream`), an unknown upstream is `fatal: the requested upstream branch
 '<name>' does not exist` with git's hint (off with `advice.setUpstreamFailure`), and an unknown branch `branch '<name>' does not exist`
 (all `128`). `--unset-upstream [<branch>]` removes both settings, or is `fatal: branch '<name>' has no upstream information` (`128`).
-Covered against the real git (2.43 and 2.55) by `crates/pyn-cli/tests/git_branch_flags.rs`.
+Covered against the real git (2.43 and 2.56) by `crates/pyn-cli/tests/git_branch_flags.rs`.
 
 **Tracking a created branch.** `branch <name> [<start>]`, `checkout -b`/`-B`, `switch -c`/`-C` and the guessed branch above set up the
 upstream as git does, writing `branch.<name>.remote` and `merge` (and `rebase`) and printing `branch '<name>' set up to track '<upstream>'.`
@@ -1820,7 +1818,7 @@ block; `#` lines are dropped afterwards. The order is `pre-merge-commit`, `prepa
 `commit-msg`; the hooks keep `GIT_EDITOR` when the editor runs and see `GIT_EDITOR=:` when it does not. An empty message
 (`error: Empty commit message.`) or an editor that fails exits `1` with `Not committing merge; use 'pyn commit' to complete the merge.`,
 leaving `MERGE_HEAD`, `MERGE_MODE` and `AUTO_MERGE` as for a hook veto and `MERGE_MSG` as generated. No editor opens for a
-fast-forward, `--no-commit` or a conflicted merge. Covered against real git 2.43 and 2.55 by `crates/pyn-cli/tests/git_hooks.rs`
+fast-forward, `--no-commit` or a conflicted merge. Covered against real git 2.43 and 2.56 by `crates/pyn-cli/tests/git_hooks.rs`
 and `git_pull.rs`.
 
 Still without `--edit`: `revert` and `cherry-pick` (`--no-edit` is accepted, `-e` is a usage error), `commit -e`/`--amend` with the
@@ -2067,7 +2065,7 @@ merge base is merged into a virtual base as `merge` does. pyn writes `AUTO_MERGE
 rebase refuses `fixup -C`/`-c` and `--rebase-merges`, `--root`, `--fork-point` and `--update-refs` (and the sheet commands `label`,
 `reset`, `merge` and `update-ref`), and leaves `amend!` commits where they are. There is no `post-rewrite` hook. `-m`, `-v`, `-n`, `--keep-empty` and the `--no-` forms of the refused flags are accepted and ignored. Commits whose timestamps tie are ordered by the walk of the graph, as git's, not by
 date. After an interactive rebase git leaves `REBASE_HEAD` behind in some cases; pyn removes it. Covered against the real git
-(2.43 and 2.55) by `crates/pyn-cli/tests/git_rebase.rs` and, for pull, `crates/pyn-cli/tests/git_pull.rs`.
+(2.43 and 2.56) by `crates/pyn-cli/tests/git_rebase.rs` and, for pull, `crates/pyn-cli/tests/git_pull.rs`.
 
 ### Tags
 
@@ -2315,7 +2313,7 @@ Not built: `add --track`/`--guess-remote` and `worktree.guessRemote`, `--[no-]re
 `set-url` write `path`, `url` and `branch`), `submodule.<name>.url`, `active` and `update` in `.git/config`, the submodule's git
 directory in `.git/modules/<name>` with `core.worktree` pointing back, and a `.git` file `gitdir: <relative path>` in its work tree.
 A repository pyn builds passes `git submodule status`, `git fsck` and a clean `git status`, and the other way round; the tests check
-both against git 2.43 and 2.55 (`crates/pyn-cli/tests/git_submodule_lifecycle.rs`). Nested repositories are cloned and fetched
+both against git 2.43 and 2.56 (`crates/pyn-cli/tests/git_submodule_lifecycle.rs`). Nested repositories are cloned and fetched
 through the same code as `pyn clone` and `pyn fetch`; no git program runs. `-q`/`--quiet` goes before or after the subcommand.
 
 | Command | Behaviour |
@@ -2755,7 +2753,7 @@ nothing (exit `128`, naming the path), because pyn does not apply it. `apply` an
 tree (`checkout -p`, `restore -p`) also stop for a path whose line endings, `ident` or filter git would convert, since they
 copy bytes as they are. Filters run as described in [Filter drivers](#filter-drivers).
 The hooks pyn does not run yet (see [Client hooks](#client-hooks)) draw one warning naming the ones that exist
-for the command. The split index, a sparse index and `GIT_DIR` are not supported, and anything that talks to a remote other than `ls-remote`, `fetch`, `pull`, `push` and `clone` are not built yet (epic #301; see [Transports and credentials](#transports-and-credentials)).
+for the command. The split index, a sparse index and `GIT_DIR` are not supported, and the commands that talk to a remote are `ls-remote`, `fetch`, `pull`, `push`, `clone`, `remote show`, `update` and `prune`, and the submodule commands that clone or fetch (see [Transports and credentials](#transports-and-credentials)).
 
 ### Client hooks
 
@@ -2764,8 +2762,7 @@ standard output sent to standard error and no standard input except where git gi
 (relative to the work tree root, `~/` expanded) or `<common git dir>/hooks`; only a file with an executable bit counts, so `*.sample` files
 are ignored and a non-executable hook earns git's `The '<name>' hook was ignored` hint (silenced by `advice.ignoredHook=false`). pyn
 never copies hooks: `clone` creates none, as git's templates give none, so a freshly cloned repository runs no hook until the user installs one.
-`pyn.hooks=false` in the git configuration turns every hook off, and the warning naming the hooks that exist returns (provisional: the setting and its
-default are open in #496).
+`pyn.hooks=false` in the git configuration turns every hook off, and the warning naming the hooks that exist returns.
 
 | Hook | Arguments and input | Effect of a nonzero status |
 | --- | --- | --- |
@@ -2786,7 +2783,7 @@ default are open in #496).
 | `pre-push` | `<remote name or URL> <url>`; one line `<local ref> <local id> <remote ref> <remote id>` per ref about to be sent on standard input (`(delete)` and the zero id for a deletion; refs that are up to date or rejected are left out); also run by `--dry-run` | `push` sends nothing and exits `1`; skipped by `--no-verify`. |
 
 The environment also carries `GIT_PREFIX` (the directory the command was run from, relative to the work tree root, with a trailing `/`, or empty) and
-whatever the caller had. `GIT_DIR` and `GIT_WORK_TREE` are not set. Oracle tests run one recording script under git and under pyn on git 2.43 and 2.55 and compare
+whatever the caller had. `GIT_DIR` and `GIT_WORK_TREE` are not set. Oracle tests run one recording script under git and under pyn on git 2.43 and 2.56 and compare
 arguments, standard input, working directory, environment and the resulting exit status and repository state.
 
 `reference-transaction` runs around every ref update pyn makes on a git home, one transaction per update: a branch or tag created, moved or
@@ -2870,19 +2867,19 @@ it, so the repository comes from `--repo owner/name`, `PYN_REPO` or the user con
 holds for `user add`, `whoami` (it prints the account when no repository is given) and `token create` without `--repos`. A
 `.pyn` folder in a git repository is never read for these commands.
 
-Commands a git home will gain fail with exit `1`, as the other git-only commands do, and name the issue:
+Two commands fail on a git home with exit `1`, as the other git-only commands do:
 
-| Command | Needs |
+| Command | Why |
 | --- | --- |
-| `update` | `update` #310. |
+| `update` | Says it needs git transport (#255). |
 | `get` | Per-path revisions, which git has no equivalent of; not scheduled. |
 
 `pyn convert` adopts the repository as a git home; moving it to a pyn server is `pyn convert --home pyn`, see [Moving to a pyn server](#moving-to-a-pyn-server).
 
-### Packs (library, provisional)
+### Packs (library)
 
 `pyn-git` holds the pack plumbing the git transport uses (see [Transports and credentials](#transports-and-credentials));
-`pyn-gittransport` calls it; `pyn fetch` is its first command and `pyn push` sends packs it writes with `write_pack`.
+`pyn-gittransport` calls it; `pyn fetch` reads packs through it and `pyn push` sends packs it writes with `write_pack`.
 
 - **Ingest.** `index_pack` reads a pack from any stream, checks the header, every entry's zlib data, the object count and the
   trailing checksum, resolves offset and reference deltas, and computes each object id with git's rules (SHA-1 with collision
@@ -2901,7 +2898,6 @@ Commands a git home will gain fail with exit `1`, as the other git-only commands
 ## Open items
 
 - Unknown flags on supported commands are a usage error (`129`) from the argument parser, not a message that says the git
-  flag is unsupported; making those messages explicit and pointing at the nearest pyn equivalent is #222's intent and is
-  tracked with #223 and #224.
-- `pyn status` and `pyn commit` output shapes are not aligned with git's, and `-C <dir>` and other global git flags are
-  not taken.
+  flag is unsupported; the remaining gaps are tracked in #223 and #224.
+- On a pyn server the output shapes of `pyn status` and `pyn commit` are not aligned with git's, and `-C <dir>` and other
+  global git flags are not taken.

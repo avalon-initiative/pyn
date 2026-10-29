@@ -111,7 +111,7 @@ file mode) and its author, committer and message. Revisions made before v2 are n
 only by the commit record that lists them; the migrated commits themselves are covered from the moment they were created.
 
 A hash chain shows that what is there is consistent, not that nothing was cut off the end: removing the newest revisions or
-events leaves a valid chain. A client that remembers a head hash can detect that; signed revisions (#60) will prove authorship.
+events leaves a valid chain. A client that remembers a head hash can detect that; a signed commit proves authorship (see [signing](git-compatibility.md#signing)).
 
 ## Where hashes are checked
 
@@ -169,7 +169,7 @@ that moment. The step is idempotent and skips anything already hashed.
 
 ## Commits
 
-A commit's id is its git commit id (see [commits](commits.md)). `cN` numbers are gone: commits are named by hash, with
+A commit's id is its git commit id (see [commits](commits.md)). Commits are named by hash, with
 `HEAD~N` and `^`. Each commit's `parents` link it to the commit it was made on, so every branch is a hash chain too, and the
 id covers the tree, so it covers every path's content and file mode as of that commit. A merge commit lists both parents, and
 the revisions it writes (a merged text, a resolution) cover its id like any other. Verification checks every commit of

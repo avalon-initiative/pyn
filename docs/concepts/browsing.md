@@ -23,9 +23,7 @@ is `400 invalid_request` (list a folder below it, or page through the file list 
 | `last_change` | the newest revision at or under the entry (its `path` names the file); absent for a file that is locked but has no revision yet |
 | `lock` | the live lock and its holder, on files only |
 
-"Last change" is what phase 1 stores: revisions are numbered per path and carry author, message and time, so there is no
-repository-wide commit id. Changesets and commits come with later phases; until then clients show the revision number with
-the path. A folder's mode is computed from the files that exist, not from the rules alone, so an exclusive glob that matches
+"Last change" is a revision: numbered per path, with author, message, time and the id of its [commit](commits.md). A folder's mode is computed from the files that exist, not from the rules alone, so an exclusive glob that matches
 nothing yet does not make a folder `mixed`. *Provisional*
 
 ## Summary

@@ -152,7 +152,7 @@ creating it. The new person runs `pyn register <name> --invite <code>` and gets 
 ## Protecting open registration
 
 An open server attracts bots and password guessing, so it layers these protections. Each is server-side; clients only
-display what the server says. The mode default stays `invite` for now.
+display what the server says. The mode default is `invite`.
 
 **Email verification** (`PYN_EMAIL_VERIFICATION`, on unless set to `false`). An open sign-up must carry an `email`. The
 account is created `pending_verification` and cannot sign in. The server mails a link,
@@ -212,8 +212,8 @@ is off, or on but nothing is delivered.
 | `POST /v1/register/verify` | `{token}` gives `200 {user, status}`; `400 invalid_verification` for an unknown, used or expired link |
 | `POST /v1/register/resend` | `{email}` gives `202`, always |
 | `POST /v1/login`, `POST /v1/session` | `403` `email_not_verified`, `approval_pending` or `account_disabled` after a right password |
-| `GET /v1/me` | `{user, admin}` |
-| `GET /v1/admin/users?status=&limit=` | accounts oldest first: `{user, email, email_verified, status, disabled_at, disabled_reason, admin, created_at}` |
+| `GET /v1/me` | `{id, user, admin}` |
+| `GET /v1/admin/users?status=&limit=` | accounts oldest first: `{id, user, email, email_verified, status, disabled_at, disabled_reason, admin, created_at}` |
 | `POST /v1/admin/users/{user}/approve` | `{}`; the updated account |
 | `POST /v1/admin/users/{user}/disable` | `{reason?}`; the updated account. `409 last_server_admin` if the account is the only active administrator |
 | `POST /v1/admin/users/{user}/enable` | the updated account |
