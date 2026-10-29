@@ -102,7 +102,7 @@ pub(crate) fn edit_message_with(
 ) -> Result<Option<Vec<u8>>> {
     let path = git.repo.git().git_dir().join("COMMIT_EDITMSG");
     let mut text = message.to_vec();
-    if !text.ends_with(b"\n") {
+    if !text.is_empty() && !text.ends_with(b"\n") {
         text.push(b'\n');
     }
     text.extend_from_slice(

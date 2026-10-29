@@ -445,3 +445,209 @@ fn an_empty_message_is_refused_on_a_git_home_unless_allowed() {
     rig.ok(&["commit", "--allow-empty-message", "-m", ""]);
     assert_eq!(count(&rig), 2);
 }
+
+impl Rig {
+    fn editor(&self, reply: &str) -> (String, PathBuf) {
+        let seen = self.work.join("../seen.txt");
+        let script = self.work.join("../editor.sh");
+        fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\ncp \"$1\" '{}'\nprintf '%s' '{}' > \"$1\"\n",
+                seen.display(),
+                reply
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        (script.display().to_string(), seen)
+    }
+
+    fn with_editor(&self, editor: &str, args: &[&str]) -> std::process::Output {
+        self.pyn(
+            args,
+            &[
+                ("GIT_EDITOR", editor),
+                ("EDITOR", editor),
+                ("VISUAL", editor),
+            ],
+        )
+    }
+
+    fn message(&self) -> String {
+        let out = Command::new("git")
+            .current_dir(&self.work)
+            .args(["log", "-1", "--format=%B"])
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap())
+            .env("HOME", &self.home)
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+}
+
+#[test]
+fn git_home_no_message_opens_the_editor_like_git() {
+    let rig = Rig::new();
+    rig.seed();
+    fs::write(rig.work.join("a.txt"), "two\n").unwrap();
+    fs::remove_file(rig.work.join("b.txt")).unwrap();
+    fs::write(rig.work.join("new.txt"), "n\n").unwrap();
+    let (editor, seen) = rig.editor("subject\n\nbody\n# dropped\n");
+    let out = rig.with_editor(&editor, &["commit", "-uas"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let seen = fs::read_to_string(seen).unwrap();
+    assert!(
+        seen.starts_with("\n# Please enter the commit message"),
+        "{seen}"
+    );
+    assert!(seen.contains("# On branch main"), "{seen}");
+    assert!(seen.contains("#\tmodified:   a.txt"), "{seen}");
+    assert!(seen.contains("#\tdeleted:    b.txt"), "{seen}");
+    assert!(seen.contains("#\tnew file:   new.txt"), "{seen}");
+    assert_eq!(
+        rig.message(),
+        "subject\n\nbody\n\nSigned-off-by: T <t@example.com>\n\n"
+    );
+}
+
+#[test]
+fn git_home_empty_editor_message_aborts_and_nothing_staged_skips_the_editor() {
+    let rig = Rig::new();
+    rig.seed();
+    let (editor, seen) = rig.editor("# only\n");
+    let out = rig.with_editor(&editor, &["commit"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(!seen.exists());
+    fs::write(rig.work.join("a.txt"), "two\n").unwrap();
+    let out = rig.with_editor(&editor, &["commit", "-a"]);
+    assert_eq!(out.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("Aborting commit due to empty commit message."),
+        "{err}"
+    );
+    assert_eq!(rig.message(), "base\n\n");
+}
+
+#[test]
+fn git_home_hooks_see_the_template_and_the_edited_message() {
+    let rig = Rig::new();
+    rig.seed();
+    let hooks = rig.work.join(".git/hooks");
+    let log = rig.work.join("../hooks.log");
+    for name in ["prepare-commit-msg", "commit-msg"] {
+        let path = hooks.join(name);
+        fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\necho \"== $0\" >> '{0}'\ncat \"$1\" >> '{0}'\n{1}",
+                log.display(),
+                if name == "commit-msg" {
+                    "echo hooked >> \"$1\"\n"
+                } else {
+                    ""
+                }
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    }
+    fs::write(rig.work.join("a.txt"), "two\n").unwrap();
+    let (editor, _) = rig.editor("edited\n");
+    let out = rig.with_editor(&editor, &["commit", "-a"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let seen = fs::read_to_string(log).unwrap();
+    let (prepare, commit_msg) = seen.split_once("== .git/hooks/commit-msg").unwrap();
+    assert!(
+        prepare.contains("# Please enter the commit message"),
+        "{seen}"
+    );
+    assert!(
+        commit_msg.contains("edited") && !commit_msg.contains("# Please"),
+        "{seen}"
+    );
+    assert_eq!(rig.message(), "edited\nhooked\n\n");
+}
+
+/// The commit message and tree that pyn and real git make from the same state and editor.
+#[test]
+fn git_home_editor_commit_matches_real_git() {
+    let git_commit = |args: &[&str], reply: &str| -> (String, String) {
+        let rig = Rig::new();
+        rig.seed();
+        fs::write(rig.work.join("a.txt"), "two\n").unwrap();
+        fs::write(rig.work.join("new.txt"), "n\n").unwrap();
+        let (editor, _) = rig.editor(reply);
+        let out = Command::new("git")
+            .current_dir(&rig.work)
+            .args(["commit"])
+            .args(args)
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap())
+            .env("HOME", &rig.home)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_EDITOR", &editor)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let tree = Command::new("git")
+            .current_dir(&rig.work)
+            .args(["log", "-1", "--format=%T"])
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap())
+            .env("HOME", &rig.home)
+            .output()
+            .unwrap();
+        (
+            rig.message(),
+            String::from_utf8_lossy(&tree.stdout).into_owned(),
+        )
+    };
+    let pyn_commit = |args: &[&str], reply: &str| -> (String, String) {
+        let rig = Rig::new();
+        rig.seed();
+        fs::write(rig.work.join("a.txt"), "two\n").unwrap();
+        fs::write(rig.work.join("new.txt"), "n\n").unwrap();
+        let (editor, _) = rig.editor(reply);
+        let mut full = vec!["commit"];
+        full.extend(args);
+        let out = rig.with_editor(&editor, &full);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let tree = Command::new("git")
+            .current_dir(&rig.work)
+            .args(["log", "-1", "--format=%T"])
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap())
+            .env("HOME", &rig.home)
+            .output()
+            .unwrap();
+        (
+            rig.message(),
+            String::from_utf8_lossy(&tree.stdout).into_owned(),
+        )
+    };
+    for reply in ["subject\n\nbody\n# gone\n", "\n\n  spaced   \n\n\nx\n"] {
+        let (git_message, git_tree) = git_commit(&["-a"], reply);
+        let (pyn_message, pyn_tree) = pyn_commit(&["-a"], reply);
+        assert_eq!(pyn_message, git_message, "{reply:?}");
+        assert_eq!(pyn_tree, git_tree, "{reply:?}");
+    }
+}
