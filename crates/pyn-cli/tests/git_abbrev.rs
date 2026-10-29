@@ -1052,7 +1052,19 @@ fn inspection_commands_follow_the_policy() {
                     <= (width + 1).min(full)),
                 "{blamed}"
             );
-            same(&repo, &["annotate", file]);
+            // git 2.43 pads the annotate id column by one, 2.56 does not: compare the id up to the width.
+            let cut = |out: &str| {
+                out.lines()
+                    .map(|l| {
+                        let (id, rest) = l.split_once('\t').unwrap();
+                        format!("{}\t{rest}", &id[..id.len().min(width)])
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            let theirs = git(&repo, &repo.main, &["annotate", file]);
+            let ours = repo.ok(&["annotate", file]);
+            assert_eq!(cut(&ours), cut(&theirs), "{} annotate", repo.format);
             same(&repo, &["describe", "--always"]);
             same(&repo, &["describe", "--always", "--long"]);
             same(&repo, &["name-rev", "--always", "--no-undefined", "HEAD"]);
