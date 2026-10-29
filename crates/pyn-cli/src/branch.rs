@@ -529,7 +529,7 @@ fn list_branches(
                 let message = backend.commit(c)?.message;
                 (
                     short(c).to_string(),
-                    message.lines().next().unwrap_or_default().to_string(),
+                    crate::commit_format::subject_and_body(&message).0,
                 )
             }
             (None, None) => ("-".to_string(), "(no commits yet)".to_string()),
@@ -549,7 +549,7 @@ fn local_tip(ws: &Workspace, branch: &str) -> Result<Option<(String, String)>> {
         return Ok(None);
     };
     let message = String::from_utf8_lossy(&store.repo().commit(&tip)?.message).into_owned();
-    let subject = message.lines().next().unwrap_or_default();
+    let subject = crate::commit_format::subject_and_body(&message).0;
     Ok(Some((
         short(&tip.to_hex()).to_string(),
         format!("{subject} (local, {ahead} not yet published)"),

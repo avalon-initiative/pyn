@@ -33,6 +33,15 @@ commit built elsewhere keep its id (provisional: no path ingests such a commit y
 bytes were re-encoded from their fields by a migration.
 Existing history was migrated once into a single mainline, now the default branch; see [integrity](integrity.md#existing-data).
 
+## Commit messages
+
+A message is a subject, a blank line and a body, as in git (decision #809). The **subject** is the first paragraph with its
+lines joined by single spaces; the **body** is what follows the blank lines after it, and may be empty. The stored message and
+the API are unchanged: the server keeps and returns the text as written, and each client derives the split. The CLI shows
+the subject alone wherever a message sits on one line (the `MESSAGE` column of `pyn log`, `pyn ls`, `pyn restore`, `pyn branch`,
+`pyn commit`'s summary line, `--oneline`), and `pyn log` prints a body indented below its row. Leading blank lines are not part
+of the subject, and the server drops them when it stores a message.
+
 ## The tree of a commit
 
 The tree of a commit is stored with it, built from its parent's tree by replacing the entries the commit wrote, so only
@@ -400,7 +409,7 @@ name a later commit to rewrite only the newest ones. Published history is never 
 
 The CLI follows git where it has an equivalent; the differences are listed below.
 
-- `pyn log --commits [--limit n]` lists commits (`COMMIT`, `AUTHOR`, `WHEN`, `FILES`, `MESSAGE`); `COMMIT` is the abbreviated hash. `pyn log` keeps listing revisions.
+- `pyn log --commits [--limit n]` lists commits (`COMMIT`, `AUTHOR`, `WHEN`, `FILES`, `MESSAGE`); `COMMIT` is the abbreviated hash and `MESSAGE` the subject. `pyn log` keeps listing revisions.
 - A commit is written as its hash or an abbreviation of at least 4 hex digits (`pyn log --commits` shows 10), `HEAD` (the
   head of the workspace's [branch](branches.md)), or either followed by `~N` (N commits back along the first parent), `^` (the
   parent; `^^` is two back) or `^N` (the Nth parent of a merge; `^0` is the commit itself). `pyn show` on a merge prints the diff against each parent in turn, headed `diff against parent N`. `cN` numbers no longer exist. An argument that is also the name of something in the current

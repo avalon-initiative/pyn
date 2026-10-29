@@ -2639,7 +2639,7 @@ fn run(cli: Cli) -> Result<()> {
                         c.author.name,
                         time::local(c.created_at),
                         c.revisions.len().to_string(),
-                        c.message,
+                        commit_format::subject_and_body(&c.message).0,
                     ]);
                 }
                 before = page.next_before;
@@ -2690,6 +2690,7 @@ fn run(cli: Cli) -> Result<()> {
             };
             let mut rows = local_rows;
             rows.extend(revs.into_iter().map(|r| {
+                let (subject, body) = commit_format::subject_and_body(&r.message);
                 let restored = match (r.deleted, r.restored_from) {
                     (true, _) => " (deleted)".to_string(),
                     (false, Some(n)) => format!(" (restored from r{n})"),
@@ -2699,19 +2700,19 @@ fn run(cli: Cli) -> Result<()> {
                     format!("r{}", r.id),
                     r.author,
                     time::local(r.created_at),
-                    format!("{}{restored}", r.message),
+                    format!("{subject}{restored}"),
                 ];
                 if repo_wide {
                     row.push(r.path);
                 }
-                row
+                (row, body.to_string())
             }));
             let header: &[&str] = if repo_wide {
                 &["REV", "AUTHOR", "WHEN", "MESSAGE", "PATH"]
             } else {
                 &["REV", "AUTHOR", "WHEN", "MESSAGE"]
             };
-            table::show(header, &rows, "no history");
+            table::show_notes(header, &rows, "no history");
         }
         Command::Verify { path, verbose } => {
             let api = backend.pyn_server("verify")?;
@@ -2909,7 +2910,12 @@ fn ls_command(backend: &dyn Backend, path: Option<&str>) -> Result<()> {
                 e.lock.as_ref().map_or("-".to_string(), |l| l.owner.clone()),
                 format!("{}{slash}", e.name),
                 e.last_change.as_ref().map_or("-".to_string(), |r| {
-                    format!("{} ({}, r{})", r.message, r.author, r.id)
+                    format!(
+                        "{} ({}, r{})",
+                        commit_format::subject_and_body(&r.message).0,
+                        r.author,
+                        r.id
+                    )
                 }),
             ]
         })
@@ -3256,13 +3262,15 @@ fn restore(
         .with_context(|| format!("{path} has no revision {revision}"))?;
     println!(
         "Restore {path} to r{} ({}, \"{}\").",
-        source.id, source.author, source.message
+        source.id,
+        source.author,
+        commit_format::subject_and_body(&source.message).0
     );
     println!(
         "The current head r{} ({}, \"{}\") stays in history; the restore becomes r{}.",
         head.id,
         head.author,
-        head.message,
+        commit_format::subject_and_body(&head.message).0,
         head.id + 1
     );
     if !yes {

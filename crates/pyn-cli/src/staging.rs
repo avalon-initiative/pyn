@@ -640,7 +640,7 @@ fn commit_local(
         }
     }
     Index::default().save(ws)?;
-    let first = message.lines().next().unwrap_or_default();
+    let first = crate::commit_format::subject_and_body(message).0;
     let root = if made.root { " (root-commit)" } else { "" };
     say!(
         "[{branch}{root} {}] {first}",
