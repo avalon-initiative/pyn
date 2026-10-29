@@ -1040,8 +1040,25 @@ fn inspection_commands_follow_the_policy() {
             assert_eq!(id.len(), width, "{tree}");
             let file = git(&repo, &repo.main, &["ls-files"]);
             let file = file.lines().next().unwrap();
-            let blamed = same(&repo, &["blame", file]);
-            // The id column is one wider than the abbreviation, for the boundary mark.
+            // git 2.43 and 2.56 differ in the id column (padding, boundary mark): compare the id up to the width.
+            let cut = |out: &str| {
+                out.lines()
+                    .map(|l| {
+                        let (id, rest) = l.split_once(char::is_whitespace).unwrap();
+                        let id = id.trim_start_matches('^');
+                        format!("{} {rest}", &id[..id.len().min(width)])
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            for cmd in ["blame", "annotate"] {
+                let theirs = git(&repo, &repo.main, &[cmd, file]);
+                let ours = repo.ok(&[cmd, file]);
+                assert!(!theirs.is_empty(), "positive rendering control: {cmd}");
+                assert_eq!(cut(&ours), cut(&theirs), "{} {cmd}", repo.format);
+            }
+            // The id column is at most one wider than the abbreviation, for the boundary mark.
+            let blamed = repo.ok(&["blame", file]);
             assert!(
                 blamed.lines().all(|l| l
                     .split_whitespace()
@@ -1052,19 +1069,6 @@ fn inspection_commands_follow_the_policy() {
                     <= (width + 1).min(full)),
                 "{blamed}"
             );
-            // git 2.43 pads the annotate id column by one, 2.56 does not: compare the id up to the width.
-            let cut = |out: &str| {
-                out.lines()
-                    .map(|l| {
-                        let (id, rest) = l.split_once('\t').unwrap();
-                        format!("{}\t{rest}", &id[..id.len().min(width)])
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            };
-            let theirs = git(&repo, &repo.main, &["annotate", file]);
-            let ours = repo.ok(&["annotate", file]);
-            assert_eq!(cut(&ours), cut(&theirs), "{} annotate", repo.format);
             same(&repo, &["describe", "--always"]);
             same(&repo, &["describe", "--always", "--long"]);
             same(&repo, &["name-rev", "--always", "--no-undefined", "HEAD"]);
