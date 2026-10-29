@@ -236,6 +236,7 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
             base,
             message,
             all,
+            untracked,
             git: flags,
         } => {
             if !paths.is_empty() {
@@ -252,6 +253,7 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
                 &super::commit::CommitOptions {
                     messages: message,
                     all,
+                    untracked,
                     file,
                     flags,
                 },

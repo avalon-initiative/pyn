@@ -13,7 +13,7 @@ use super::hooks::author_env;
 use super::signing::{SignFlag, sign_commit};
 use super::stage::{
     clean_bytes, clean_ident, clear_merge_state, entries_of, env, identity, index_of, merge_heads,
-    parse_date, pending_message, refuse_states, stage_tracked, write_tree,
+    parse_date, pending_message, refuse_states, stage_working, write_tree,
 };
 
 /// The git flags of `pyn commit`; a pyn server takes only `-F` and refuses the rest.
@@ -144,8 +144,9 @@ impl GitCommitArgs {
         if !messages.is_empty() {
             bail!("options '-m' and '-F' cannot be used together");
         }
-        let text = clean_bytes(&read_message(file)?);
-        if text == b"\n" {
+        let raw = read_message(file)?;
+        let text = clean_bytes(&raw);
+        if text == b"\n" || super::editor::edited_message(&raw).is_none() {
             eprintln!("Aborting commit due to empty commit message.");
             std::process::exit(1);
         }
@@ -158,6 +159,7 @@ impl GitCommitArgs {
 pub struct CommitOptions {
     pub messages: Vec<String>,
     pub all: bool,
+    pub untracked: bool,
     pub file: Option<PathBuf>,
     pub flags: GitCommitArgs,
 }
@@ -384,9 +386,15 @@ pub fn commit(git: &GitHome, opts: &CommitOptions) -> Result<()> {
         (None, Some(c)) => Some(c.message.clone()),
         (None, None) => (!opts.messages.is_empty()).then(|| joined_messages(&opts.messages)),
     };
+    let blank = reused.is_none()
+        && opts.flags.cleanup.is_none()
+        && raw
+            .as_ref()
+            .is_some_and(|r| super::editor::edited_message(r).is_none());
     let explicit = raw.map(|r| cleaned(&r, mode));
     let explicit_given = explicit.is_some();
-    if explicit.as_ref().is_some_and(|m| m.is_empty()) && !opts.flags.allow_empty_message {
+    if (blank || explicit.as_ref().is_some_and(|m| m.is_empty())) && !opts.flags.allow_empty_message
+    {
         eprintln!("Aborting commit due to empty commit message.");
         std::process::exit(1);
     }
@@ -445,7 +453,9 @@ pub fn commit(git: &GitHome, opts: &CommitOptions) -> Result<()> {
     }
     let opened = git.open_index()?;
     let mut entries = entries_of(&opened.index);
-    let staged_now = opts.all && stage_tracked(git, &opened.index, &mut entries)?;
+    let staging = opts.all || opts.untracked;
+    let staged_now =
+        staging && stage_working(git, &opened.index, &mut entries, (opts.all, opts.untracked))?;
     if entries.keys().any(|(_, stage)| *stage > 0) {
         let mut unmerged: Vec<&Vec<u8>> = entries
             .keys()
@@ -468,7 +478,7 @@ pub fn commit(git: &GitHome, opts: &CommitOptions) -> Result<()> {
     } else {
         "pre-merge-commit"
     };
-    let wants_index = opts.all
+    let wants_index = staging
         && [commit_hook, "prepare-commit-msg", "commit-msg"]
             .iter()
             .any(|h| git.hook_present(h));

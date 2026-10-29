@@ -57,6 +57,28 @@ fn state_dir(ws: &Workspace) -> std::path::PathBuf {
     ws.dir.join("local_only").join("state")
 }
 
+/// The message typed in the editor on an empty file under `comment`; `None` when nothing is left.
+pub(crate) fn edit_commit_message(ws: &Workspace, comment: &str) -> Result<Option<String>> {
+    let mut text = String::from(
+        "\n# Please enter the commit message for your changes. Lines starting\n# with '#' will be ignored, and an empty message aborts the commit.\n",
+    );
+    text.push_str(comment);
+    let dir = ws.dir.join("local_only");
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join("COMMIT_EDITMSG");
+    std::fs::write(&path, &text)?;
+    let command = editor::command_from(Which::Message, &|_| None)?;
+    let ran = editor::run_command(&command, &ws.root, &path);
+    let edited = std::fs::read(&path);
+    let _ = std::fs::remove_file(&path);
+    ran?;
+    Ok(editor::edited_message(&edited?).map(|m| {
+        String::from_utf8_lossy(&m)
+            .trim_end_matches('\n')
+            .to_string()
+    }))
+}
+
 /// The message the person makes of `message` in their editor; an empty result aborts.
 pub(crate) fn edit_message(ws: &Workspace, message: &[u8]) -> Result<Vec<u8>> {
     let mut text = message.to_vec();

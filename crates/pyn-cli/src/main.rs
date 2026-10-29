@@ -419,6 +419,9 @@ enum Command {
         /// Stage every changed tracked file first, as in git; new files are not included.
         #[arg(short = 'a', long)]
         all: bool,
+        /// Stage the untracked files that are not ignored first (a pyn extension; git's `commit -u` is `--untracked-files`).
+        #[arg(short = 'u', long)]
+        untracked: bool,
         #[command(flatten)]
         git: git_home::GitCommitArgs,
     },
@@ -1591,6 +1594,14 @@ fn run(cli: Cli) -> Result<()> {
     {
         *message = vec![text];
     }
+    if git.is_none()
+        && let Command::Commit { message, .. } = &cli.command
+        && !message.is_empty()
+        && git_home::editor::edited_message(message.join("\n\n").as_bytes()).is_none()
+    {
+        eprintln!("Aborting commit due to empty commit message.");
+        std::process::exit(1);
+    }
     if let Command::Log { git: opts, .. } = &cli.command
         && git.is_some()
         && let Some(why) = opts.refused()
@@ -1609,8 +1620,9 @@ fn run(cli: Cli) -> Result<()> {
             "`pyn log {flag}` applies to a git repository, not a pyn server"
         ));
     }
-    if let Command::Commit { message, .. } = &cli.command
+    if let Command::Commit { message, paths, .. } = &cli.command
         && message.is_empty()
+        && !paths.is_empty()
         && git.is_none()
         && !Workspace::discover(&cwd)
             .is_some_and(|w| merging::in_progress(&w) && !merging::is_paused(&w))
@@ -2413,6 +2425,7 @@ fn run(cli: Cli) -> Result<()> {
                 dry_run,
                 verbose,
                 force,
+                new_only: false,
             };
             if staging::add(&backend, in_workspace("add")?, &cwd, &args)? {
                 std::process::exit(1);
@@ -2426,8 +2439,8 @@ fn run(cli: Cli) -> Result<()> {
             base,
             message,
             all,
+            untracked,
             git: flags,
-            ..
         } if paths.is_empty() => {
             if file.is_some() || base.is_some() {
                 bail!("--file and --base need a path");
@@ -2437,7 +2450,7 @@ fn run(cli: Cli) -> Result<()> {
                 if let Some(flag) = flags.author_flag() {
                     bail!("`pyn commit {flag}` does not apply while finishing a merge");
                 }
-                if all {
+                if all || untracked {
                     bail!(
                         "cannot do a partial commit during a merge; stage what you resolved with `pyn add`"
                     );
@@ -2445,11 +2458,12 @@ fn run(cli: Cli) -> Result<()> {
                 let message = (!message.is_empty()).then(|| message.join("\n\n"));
                 merging::finish(&backend, backend.pyn_server("commit")?, w, message)?;
             } else {
-                staging::commit(&backend, w, &message.join("\n\n"), all, &flags)?;
+                let message = (!message.is_empty()).then(|| message.join("\n\n"));
+                staging::commit(&backend, w, message.as_deref(), (all, untracked), &flags)?;
             }
         }
-        Command::Commit { all: true, .. } => {
-            bail!("`commit -a` commits every changed tracked file; name no paths with it")
+        Command::Commit { all, untracked, .. } if all || untracked => {
+            bail!("`commit -a` and `-u` stage what changed; name no paths with them")
         }
         Command::Commit {
             paths,

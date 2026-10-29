@@ -203,6 +203,8 @@ pub struct AddArgs {
     pub dry_run: bool,
     pub verbose: bool,
     pub force: bool,
+    /// Stage only files the last commit does not have.
+    pub new_only: bool,
 }
 
 enum Op {
@@ -227,7 +229,7 @@ fn plan(ws: &Workspace, index: &Index, specs: &Specs, args: &AddArgs) -> Result<
     let mut ops = BTreeMap::new();
     let mut ignored = Vec::new();
     for (path, known) in &state {
-        if !specs.matches(path) {
+        if args.new_only || !specs.matches(path) {
             continue;
         }
         let file = ws.abs(path);
@@ -424,6 +426,27 @@ pub fn add(backend: &dyn Backend, ws: &Workspace, cwd: &Path, args: &AddArgs) ->
     Ok(true)
 }
 
+/// The `#` lines git shows under the message: the branch and the staged changes.
+fn staged_comment(
+    branch: &str,
+    index: &Index,
+    known: &BTreeMap<String, crate::workspace::FileState>,
+) -> String {
+    let mut out = format!("#\n# On branch {branch}\n# Changes to be committed:\n");
+    for (path, staged) in &index.entries {
+        let what = if staged.deleted {
+            "deleted:   "
+        } else if known.contains_key(path) {
+            "modified:  "
+        } else {
+            "new file:  "
+        };
+        out.push_str(&format!("#\t{what} {path}\n"));
+    }
+    out.push_str("#\n");
+    out
+}
+
 /// `pyn restore --staged`: takes the paths out of the staged changes; the files on disk are left as they are.
 pub fn unstage(ws: &Workspace, cwd: &Path, paths: &[String]) -> Result<()> {
     let mut index = Index::load(ws)?;
@@ -447,21 +470,27 @@ pub fn unstage(ws: &Workspace, cwd: &Path, paths: &[String]) -> Result<()> {
     index.save(ws)
 }
 
-/// `pyn commit` of the staged changes (after staging every changed tracked file with `all`).
+/// `pyn commit` of the staged changes, after staging the changed tracked files (`all`) and the untracked ones.
+/// Without a message the editor opens on the staged list.
 pub fn commit(
     backend: &dyn Backend,
     ws: &Workspace,
-    message: &str,
-    all: bool,
+    message: Option<&str>,
+    (all, untracked): (bool, bool),
     flags: &GitCommitArgs,
 ) -> Result<()> {
-    if all {
+    if all || untracked {
         let args = AddArgs {
-            paths: Vec::new(),
-            update: true,
+            paths: if untracked {
+                vec![".".into()]
+            } else {
+                Vec::new()
+            },
+            update: !untracked,
             dry_run: false,
             verbose: false,
             force: false,
+            new_only: untracked && !all,
         };
         add(backend, ws, ws.root.as_path(), &args)?;
     }
@@ -470,6 +499,23 @@ pub fn commit(
         eprintln!("nothing to commit; stage changes with `pyn add`, or use `pyn commit -a`");
         std::process::exit(1);
     }
+    let edited;
+    let message = match message {
+        Some(m) => m,
+        None => {
+            let known = ws.load_state()?;
+            let Some(text) = crate::local_rebase::edit_commit_message(
+                ws,
+                &staged_comment(&branch::name(Some(ws)), &index, &known),
+            )?
+            else {
+                eprintln!("Aborting commit due to empty commit message.");
+                std::process::exit(1);
+            };
+            edited = text;
+            &edited
+        }
+    };
     if let Some(store) = LocalStore::open(ws) {
         return commit_local(backend, ws, &store, &index, message, flags);
     }
