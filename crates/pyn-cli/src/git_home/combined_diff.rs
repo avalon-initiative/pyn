@@ -449,20 +449,23 @@ fn mode_of(b: Option<&Blob>) -> &str {
     b.map_or("000000", |b| b.mode())
 }
 
-fn abbrev(abbreviations: &Abbreviations, b: Option<&Blob>) -> String {
-    b.map_or_else(
-        || abbreviations.short_null(),
-        |b| abbreviations.short_hex(&b.hash),
-    )
+fn abbrev(abbreviations: &Abbreviations, full: Option<usize>, b: Option<&Blob>) -> String {
+    match (b, full) {
+        (Some(b), Some(_)) => b.hash.clone(),
+        (None, Some(width)) => "0".repeat(width),
+        (Some(b), None) => abbreviations.short_hex(&b.hash),
+        (None, None) => abbreviations.short_null(),
+    }
 }
 
 fn header(
     git: &GitHome,
-    abbreviations: &Abbreviations,
+    (abbreviations, full_index): (&Abbreviations, bool),
     e: &Element,
     dense: bool,
     file_header: bool,
 ) -> String {
+    let full = full_index.then(|| git.repo.algorithm().digest_len() * 2);
     let mut out = String::new();
     let word = if dense {
         "diff --cc "
@@ -471,13 +474,13 @@ fn header(
     };
     let _ = writeln!(out, "{word}{}", git.quote_diff_path(e.path.as_bytes()));
     let idx: Vec<String> = (e.parents.iter())
-        .map(|(b, _)| abbrev(abbreviations, b.as_ref()))
+        .map(|(b, _)| abbrev(abbreviations, full, b.as_ref()))
         .collect();
     let _ = writeln!(
         out,
         "index {}..{}",
         idx.join(","),
-        abbrev(abbreviations, e.result.as_ref())
+        abbrev(abbreviations, full, e.result.as_ref())
     );
     let result_mode = mode_of(e.result.as_ref());
     let mode_differs = e
@@ -530,6 +533,7 @@ pub(super) fn patch(
     git: &GitHome,
     e: &Element,
     (dense, context): (bool, usize),
+    full_index: bool,
 ) -> Result<Option<String>> {
     let np = e.parents.len();
     let abbreviations = git.repo.abbreviations(None)?;
@@ -549,7 +553,7 @@ pub(super) fn patch(
     if pyn_diff::is_binary(&result) || parents.iter().any(|p| pyn_diff::is_binary(p)) {
         return Ok(Some(format!(
             "{}Binary files differ\n",
-            header(git, &abbreviations, e, dense, false)
+            header(git, (&abbreviations, full_index), e, dense, false)
         )));
     }
     let text = lines(&result);
@@ -573,7 +577,7 @@ pub(super) fn patch(
     if !show_hunks && !mode_differs {
         return Ok(None);
     }
-    let mut out = header(git, &abbreviations, e, dense, true).into_bytes();
+    let mut out = header(git, (&abbreviations, full_index), e, dense, true).into_bytes();
     dump(&mut out, &sline, &text, np, context);
     Ok(Some(String::from_utf8_lossy(&out).into_owned()))
 }

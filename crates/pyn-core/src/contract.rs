@@ -18,7 +18,7 @@ use crate::ratelimit::RateLimitStore;
 use crate::repo_policy::{
     CreationEffect, CreationRule, CreationScope, CreationSubject, MemberCreation, RepoPolicy,
 };
-use crate::types::AccountId;
+use crate::types::{AccountId, TeamId};
 use crate::{
     AccessService, AccessStore, Credential, Identity, OrgDeleteMark, OrgMemberChange, RepoMember,
     Repositories,
@@ -4691,6 +4691,7 @@ pub async fn removing_an_organization_member_drops_their_roles_in_the_given_repo
 
 fn team(org: &str, slug: &str) -> TeamRecord {
     TeamRecord {
+        id: TeamId::new(format!("t{org}/{slug}")),
         org: user(org),
         slug: slug.to_string(),
         name: format!("Team {slug}"),

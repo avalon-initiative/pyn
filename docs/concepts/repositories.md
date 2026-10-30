@@ -117,21 +117,23 @@ Deleting the organization removes its policy.
 ### Teams
 
 A **team** is a flat group of an organization's members (teams do not nest) with a `slug` (1 to 39 lowercase letters,
-digits, `-` or `_`; unique in the organization), a `name` (defaults to the slug) and a `description`. A team holds **one
+digits, `-` or `_`; unique in the organization), a `name` (defaults to the slug) and a `description`. Like a repository, a team also has a
+stable `id` (`t` and 24 lowercase hex digits, opaque): generated when the team is created, unchanged by an update and never
+issued again, so a team recreated under a deleted slug has a new id. Key data about a team on the id, not the slug. A team holds **one
 role per repository** the organization owns, from the same four roles as people, and every member gets it. Only
 organization members can be in a team, and a team can be granted only on a repository its organization owns (a repository
 a user owns has no teams: `400 not_org_repo`).
 
 | Route | Notes |
 | --- | --- |
-| `GET /v1/orgs/{org}/teams` | any organization member; teams ordered by slug, each `{slug, name, description, created_at, members, repos}` |
+| `GET /v1/orgs/{org}/teams` | any organization member; teams ordered by slug, each `{id, slug, name, description, created_at, members, repos}` |
 | `POST /v1/orgs/{org}/teams` | owners; `{slug, name?, description?}` gives `201` with the team; `409 team_exists` |
 | `GET /v1/orgs/{org}/teams/{team}` | any organization member; `404 team_not_found` |
 | `PATCH /v1/orgs/{org}/teams/{team}` | owners; `{name?, description?}` |
 | `DELETE /v1/orgs/{org}/teams/{team}` | owners; removes its members and its roles on repositories |
 | `PUT /v1/orgs/{org}/teams/{team}/members/{user}` | owners; `204`, also when already in; `409 user_not_org_member` |
 | `DELETE /v1/orgs/{org}/teams/{team}/members/{user}` | owners; `404 team_member_not_found` |
-| `GET /v1/repos/{owner}/{name}/teams` | needs `manage_users`; `[{slug, name, description, role}]` |
+| `GET /v1/repos/{owner}/{name}/teams` | needs `manage_users`; `[{team_id, slug, name, description, role}]` |
 | `PUT /v1/repos/{owner}/{name}/teams/{team}` | needs `manage_users`; `{role}` sets or changes the team's role; `204`; `403 not_org_member` for anyone outside the organization who is not a server administrator, before the slug is looked at |
 | `DELETE /v1/repos/{owner}/{name}/teams/{team}` | needs `manage_users`; `204`, also when the team holds no role; `403 not_org_member` as above |
 
