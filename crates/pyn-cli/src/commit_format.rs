@@ -567,6 +567,18 @@ pub(crate) fn subject_and_body(message: &str) -> (String, &str) {
     (subject, skip_blank_lines(rest))
 }
 
+/// An audit detail on one line: a multi-line commit message in it shrinks to its subject, keeping the `(push)` mark.
+pub(crate) fn audit_detail_line(detail: &str) -> String {
+    if !detail.contains('\n') {
+        return detail.to_string();
+    }
+    let mut line = subject_and_body(detail).0;
+    if detail.ends_with(" (push)") && !line.ends_with(" (push)") {
+        line.push_str(" (push)");
+    }
+    line
+}
+
 /// The message indented by four spaces, as `medium` prints it; `first_paragraph` stops at the first blank line.
 fn expand_tabs(line: &str, width: usize) -> String {
     if width == 0 || !line.contains('\t') {
@@ -816,6 +828,17 @@ mod tests {
         let (s, b) = subject_and_body("\none\ntwo  \n\n\nbody\nmore\n");
         assert_eq!((s.as_str(), b), ("one two", "body\nmore\n"));
         assert_eq!(subject_and_body("only\n"), ("only".to_string(), ""));
+    }
+
+    #[test]
+    fn audit_detail_shrinks_to_the_subject() {
+        let long = "r1: Subject\n\nBody one\nBody two\n (push)";
+        assert_eq!(audit_detail_line(long), "r1: Subject (push)");
+        assert_eq!(audit_detail_line("r1: Subject\nmore"), "r1: Subject more");
+        assert_eq!(
+            audit_detail_line("r2: one line (push)"),
+            "r2: one line (push)"
+        );
     }
 
     #[test]
