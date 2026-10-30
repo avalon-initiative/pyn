@@ -907,12 +907,14 @@ enum ConfigCommand {
         #[arg(long)]
         local: bool,
     },
-    /// Set one setting for this workspace, or for your user with --global.
+    /// Set one setting for this workspace or git repository (--local, the default), or for your user with --global.
     Set {
         key: String,
         value: String,
-        #[arg(long)]
+        #[arg(long, conflicts_with = "local")]
         global: bool,
+        #[arg(long)]
+        local: bool,
     },
 }
 
@@ -1652,6 +1654,11 @@ fn run(cli: Cli) -> Result<()> {
     }
     let ws = if on_git {
         None
+    } else if matches!(cli.command, Command::Config(_)) {
+        match git_home::workspace_at(&cwd)? {
+            Some(ws) => Some(ws),
+            None => Workspace::discover(&cwd),
+        }
     } else {
         Workspace::discover(&cwd)
     };
@@ -3978,7 +3985,9 @@ fn config_command(
                 None => bail!("{key} is not set"),
             }
         }
-        ConfigCommand::Set { key, value, global } => {
+        ConfigCommand::Set {
+            key, value, global, ..
+        } => {
             if global {
                 let mut settings = yours.clone();
                 settings.set(&key, value)?;
