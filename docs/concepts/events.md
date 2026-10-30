@@ -26,6 +26,9 @@ once per subscription whose filter matches. `owner.limit_reached` is the excepti
 throttled (see below). Events are queued only when the change really happens: a duplicate name, a missing target or a
 refused request raises nothing.
 
+Organization membership changes (adds, invitations and their answers) are audit-log entries in the organization's log, not
+webhook events; see [organizations](repositories.md#organizations).
+
 An account created by open sign-up with email verification raises `account.created` when the address is verified, not
 when the unverified name is reserved, so abandoned sign-ups never reach receivers. A repository whose creation is undone
 before it finishes (for example, the creator is no longer an organization member) raises `repository.deleted` after its
