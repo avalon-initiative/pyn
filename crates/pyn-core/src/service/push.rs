@@ -169,7 +169,7 @@ impl RepoService {
         let mut chain = records
             .iter()
             .any(|r| r.parents.len() > 1)
-            .then(|| Chain::new(records[0].parents.first().copied()));
+            .then(|| Chain::new(records[0].parents.first().copied(), tip));
         let mut policies = Vec::new();
         let mut merges = Vec::new();
         let mut arrivals = Vec::new();

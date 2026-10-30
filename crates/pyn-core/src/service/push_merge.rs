@@ -58,10 +58,13 @@ enum Verdict {
 }
 
 impl Chain {
-    pub(super) fn new(start: Option<ObjectId>) -> Self {
+    /// `head` is the branch before the push; its history predates the push's policy commits.
+    pub(super) fn new(start: Option<ObjectId>, head: Option<ObjectId>) -> Self {
+        let mut tips: Vec<ObjectId> = start.into_iter().collect();
+        tips.extend(head.filter(|h| Some(*h) != start));
         Self {
             start,
-            tips: start.into_iter().collect(),
+            tips,
             ours: HashMap::new(),
         }
     }
