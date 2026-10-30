@@ -37,7 +37,7 @@ pub struct GitCommitArgs {
     /// Replace the tip commit with a new one, keeping its message unless `-m` or `-F` gives another.
     #[arg(long)]
     amend: bool,
-    /// Keep the message (accepted for scripts; pyn never opens an editor).
+    /// Keep the message and do not open the editor.
     #[arg(long)]
     no_edit: bool,
     #[command(flatten)]
@@ -45,7 +45,7 @@ pub struct GitCommitArgs {
     /// Print nothing on success.
     #[arg(short = 'q', long)]
     pub quiet: bool,
-    /// Accepted for scripts (pyn never opens an editor, so there is no diff to show).
+    /// Accepted for scripts (the message template shows no diff).
     #[arg(short = 'v', long, action = clap::ArgAction::Count)]
     verbose: u8,
     /// Skip the `pre-commit` (`pre-merge-commit`) and `commit-msg` hooks.

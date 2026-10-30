@@ -192,7 +192,11 @@ impl Env {
             .env("TZ", tz)
             .env_remove("PYN_TOKEN")
             .env_remove("PYN_DIR")
-            .env_remove("PYN_REPO");
+            .env_remove("PYN_REPO")
+            .env_remove("GIT_EDITOR")
+            .env_remove("PYN_EDITOR")
+            .env_remove("VISUAL")
+            .env_remove("EDITOR");
         if let Some(repo) = self.default_repo {
             cmd.env("PYN_REPO", repo);
         }

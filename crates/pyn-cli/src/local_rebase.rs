@@ -63,7 +63,7 @@ pub(crate) fn edit_commit_message(ws: &Workspace, comment: &str) -> Result<Optio
     std::fs::create_dir_all(&dir)?;
     let path = dir.join("COMMIT_EDITMSG");
     std::fs::write(&path, &text)?;
-    let command = editor::command_from(Which::Message, &|_| None)?;
+    let command = editor::command_from(Which::Message, editor::pyn_setting(ws), &|_| None)?;
     let ran = editor::run_command(&command, &ws.root, &path);
     let edited = std::fs::read(&path);
     let _ = std::fs::remove_file(&path);
@@ -87,7 +87,7 @@ pub(crate) fn edit_message(ws: &Workspace, message: &[u8]) -> Result<Vec<u8>> {
     let path = state_dir(ws).join("rebase-message");
     std::fs::create_dir_all(state_dir(ws))?;
     std::fs::write(&path, &text)?;
-    let command = editor::command_from(Which::Message, &|_| None)?;
+    let command = editor::command_from(Which::Message, editor::pyn_setting(ws), &|_| None)?;
     editor::run_command(&command, &ws.root, &path)?;
     let edited = std::fs::read(&path)?;
     let _ = std::fs::remove_file(&path);
@@ -99,7 +99,7 @@ fn edit_sheet(ws: &Workspace, text: &str) -> Result<String> {
     std::fs::create_dir_all(state_dir(ws))?;
     let path = state_dir(ws).join("rebase-todo");
     std::fs::write(&path, text)?;
-    let command = editor::command_from(Which::Sequence, &|_| None)?;
+    let command = editor::command_from(Which::Sequence, editor::pyn_setting(ws), &|_| None)?;
     let ran = editor::run_command(&command, &ws.root, &path);
     let edited = std::fs::read_to_string(&path);
     let _ = std::fs::remove_file(&path);

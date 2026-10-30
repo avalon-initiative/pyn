@@ -364,7 +364,7 @@ dropped before `pyn push`. `<upstream>` defaults to the
 fetched tip, so the commits replayed are exactly the unpublished ones; a hash, `HEAD~N` or a branch name of the local store may
 name a later commit to rewrite only the newest ones. Published history is never rewritten.
 
-- **The sheet.** `-i` opens the editor (`GIT_SEQUENCE_EDITOR`, then `GIT_EDITOR`, `VISUAL`, `EDITOR`) on git's instruction
+- **The sheet.** `-i` opens the editor (`GIT_SEQUENCE_EDITOR`, then [the usual editor lookup](workspace.md#the-editor)) on git's instruction
   sheet and reads `pick`, `reword`, `edit`, `squash`, `fixup`, `drop`, `exec`, `break` (and `noop`) lines, in any order; a line left out loses that
   commit. `reword` and the end of a `squash` chain open the editor on the message (`GIT_EDITOR`); a chain of only `fixup` keeps
   the first message. `--autosquash` moves `fixup!` and `squash!` commits under the commit they name, with or without `-i` (`amend!`

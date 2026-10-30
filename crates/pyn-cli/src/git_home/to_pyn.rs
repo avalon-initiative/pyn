@@ -785,6 +785,7 @@ fn finish(
             user: None,
             repo: Some(repo.to_string()),
             local_store: None,
+            editor: None,
         }
         .save(&ws.config_path())?;
         if workspace_branch != branch::DEFAULT_BRANCH {
