@@ -6,12 +6,12 @@ use chrono::{DateTime, Duration, Utc};
 use pyn_core::{
     AccessStore, AccountDisable, AccountId, AccountKind, AccountRecord, AccountStatus, AdminRevoke,
     CreationEffect, CreationRule, CreationScope, CreationSubject, EventDraft, ExternalCreate,
-    ExternalIdentity, IdentityUnlink, InviteId, InviteRecord, Limits, LimitsChange, LimitsEvent,
-    MemberCreation, NewAccount, NewExternalAccount, OidcFlow, OrgDeleteMark, OrgMemberChange,
-    OrgRole, Permission, PynError, RateLimitStore, RateState, RegistrationMode, RepoId, RepoPolicy,
-    Result, Role, RoleDefinitions, ServerSettings, ServiceCredentialRecord, ServiceScope,
-    SessionRecord, SignupStage, SshKeyRecord, SubjectKind, TeamId, TeamRecord, TokenId,
-    TokenRecord, UserId, VerificationRecord,
+    ExternalIdentity, IdentityUnlink, InvitationAccept, InvitationCreate, InviteId, InviteRecord,
+    Limits, LimitsChange, LimitsEvent, MemberCreation, NewAccount, NewExternalAccount, OidcFlow,
+    OrgDeleteMark, OrgInvitation, OrgMemberChange, OrgRole, Permission, PynError, RateLimitStore,
+    RateState, RegistrationMode, RepoId, RepoPolicy, Result, Role, RoleDefinitions, ServerSettings,
+    ServiceCredentialRecord, ServiceScope, SessionRecord, SignupStage, SshKeyRecord, SubjectKind,
+    TeamId, TeamRecord, TokenId, TokenRecord, UserId, VerificationRecord,
 };
 use sqlx::Row;
 use sqlx::postgres::PgRow;
@@ -69,6 +69,64 @@ fn service_credential_from(row: &PgRow) -> Result<ServiceCredentialRecord> {
         revoked_at: row.get("revoked_at"),
         last_used_at: row.get("last_used_at"),
     })
+}
+
+fn invitation_from(row: &PgRow) -> Result<OrgInvitation> {
+    Ok(OrgInvitation {
+        org: UserId::new(row.get::<String, _>("org")),
+        user: UserId::new(row.get::<String, _>("user_id")),
+        role: OrgRole::from_str(row.get("role"))?,
+        invited_by: UserId::new(row.get::<String, _>("invited_by")),
+        created_at: row.get("created_at"),
+        expires_at: row.get("expires_at"),
+    })
+}
+
+/// Inserts the member, counting against `max_members`; false if they already belong.
+async fn insert_member(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    org: &UserId,
+    user: &UserId,
+    role: OrgRole,
+    max_members: Option<u64>,
+) -> Result<bool> {
+    if let Some(limit) = max_members {
+        // The organization row serializes concurrent adds so the count cannot go stale.
+        sqlx::query("SELECT id FROM users WHERE id = $1 FOR UPDATE")
+            .bind(org.as_str())
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(db)?;
+        let taken: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM org_members WHERE org = $1 AND user_id = $2)",
+        )
+        .bind(org.as_str())
+        .bind(user.as_str())
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(db)?;
+        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM org_members WHERE org = $1")
+            .bind(org.as_str())
+            .fetch_one(&mut **tx)
+            .await
+            .map_err(db)?;
+        if !taken && count as u64 >= limit {
+            return Err(PynError::MemberLimitReached {
+                org: org.to_string(),
+                limit,
+            });
+        }
+    }
+    let added = sqlx::query(
+        "INSERT INTO org_members (org, user_id, role) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+    )
+    .bind(org.as_str())
+    .bind(user.as_str())
+    .bind(role.as_str())
+    .execute(&mut **tx)
+    .await
+    .map_err(db)?;
+    Ok(added.rows_affected() == 1)
 }
 
 fn limits_from(row: &PgRow) -> Limits {
@@ -1001,44 +1059,133 @@ impl AccessStore for PgMetadataStore {
         max_members: Option<u64>,
     ) -> Result<bool> {
         let mut tx = self.pool.begin().await.map_err(db)?;
-        if let Some(limit) = max_members {
-            // The organization row serializes concurrent adds so the count cannot go stale.
-            sqlx::query("SELECT id FROM users WHERE id = $1 FOR UPDATE")
-                .bind(org.as_str())
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(db)?;
-            let taken: bool = sqlx::query_scalar(
-                "SELECT EXISTS (SELECT 1 FROM org_members WHERE org = $1 AND user_id = $2)",
-            )
-            .bind(org.as_str())
-            .bind(user.as_str())
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(db)?;
-            let count: i64 = sqlx::query_scalar("SELECT count(*) FROM org_members WHERE org = $1")
-                .bind(org.as_str())
-                .fetch_one(&mut *tx)
-                .await
-                .map_err(db)?;
-            if !taken && count as u64 >= limit {
-                return Err(PynError::MemberLimitReached {
-                    org: org.to_string(),
-                    limit,
-                });
-            }
-        }
-        let added = sqlx::query(
-            "INSERT INTO org_members (org, user_id, role) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+        let added = insert_member(&mut tx, org, user, role, max_members).await?;
+        tx.commit().await.map_err(db)?;
+        Ok(added)
+    }
+
+    async fn create_org_invitation(&self, invitation: &OrgInvitation) -> Result<InvitationCreate> {
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        let member: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM org_members WHERE org = $1 AND user_id = $2)",
         )
-        .bind(org.as_str())
-        .bind(user.as_str())
-        .bind(role.as_str())
+        .bind(invitation.org.as_str())
+        .bind(invitation.user.as_str())
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(db)?;
+        if member {
+            return Ok(InvitationCreate::AlreadyMember);
+        }
+        let inserted = sqlx::query(
+            "INSERT INTO org_invitations (org, user_id, role, invited_by, created_at, expires_at) \
+             VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING",
+        )
+        .bind(invitation.org.as_str())
+        .bind(invitation.user.as_str())
+        .bind(invitation.role.as_str())
+        .bind(invitation.invited_by.as_str())
+        .bind(invitation.created_at)
+        .bind(invitation.expires_at)
         .execute(&mut *tx)
         .await
         .map_err(db)?;
         tx.commit().await.map_err(db)?;
-        Ok(added.rows_affected() == 1)
+        Ok(if inserted.rows_affected() == 1 {
+            InvitationCreate::Created
+        } else {
+            InvitationCreate::AlreadyInvited
+        })
+    }
+
+    async fn org_invitations(&self, org: &UserId) -> Result<Vec<OrgInvitation>> {
+        let rows = sqlx::query("SELECT org, user_id, role, invited_by, created_at, expires_at FROM org_invitations WHERE org = $1 ORDER BY user_id")
+        .bind(org.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        rows.iter().map(invitation_from).collect()
+    }
+
+    async fn org_invitations_for(&self, user: &UserId) -> Result<Vec<OrgInvitation>> {
+        let rows = sqlx::query("SELECT org, user_id, role, invited_by, created_at, expires_at FROM org_invitations WHERE user_id = $1 ORDER BY org")
+        .bind(user.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        rows.iter().map(invitation_from).collect()
+    }
+
+    async fn delete_org_invitation(
+        &self,
+        org: &UserId,
+        user: &UserId,
+    ) -> Result<Option<OrgInvitation>> {
+        let row = sqlx::query("DELETE FROM org_invitations WHERE org = $1 AND user_id = $2 RETURNING org, user_id, role, invited_by, created_at, expires_at")
+        .bind(org.as_str())
+        .bind(user.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db)?;
+        row.as_ref().map(invitation_from).transpose()
+    }
+
+    async fn take_expired_org_invitations(
+        &self,
+        org: Option<&UserId>,
+        user: Option<&UserId>,
+        now: DateTime<Utc>,
+    ) -> Result<Vec<OrgInvitation>> {
+        let rows = sqlx::query(
+            "DELETE FROM org_invitations WHERE expires_at <= $1 \
+             AND ($2::text IS NULL OR org = $2) AND ($3::text IS NULL OR user_id = $3) \
+             RETURNING org, user_id, role, invited_by, created_at, expires_at",
+        )
+        .bind(now)
+        .bind(org.map(UserId::as_str))
+        .bind(user.map(UserId::as_str))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        let mut out = rows
+            .iter()
+            .map(invitation_from)
+            .collect::<Result<Vec<_>>>()?;
+        out.sort_by(|a, b| (&a.org, &a.user).cmp(&(&b.org, &b.user)));
+        Ok(out)
+    }
+
+    async fn accept_org_invitation(
+        &self,
+        org: &UserId,
+        user: &UserId,
+        now: DateTime<Utc>,
+        max_members: Option<u64>,
+    ) -> Result<InvitationAccept> {
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        let row = sqlx::query(
+            "DELETE FROM org_invitations WHERE org = $1 AND user_id = $2 RETURNING role, expires_at",
+        )
+        .bind(org.as_str())
+        .bind(user.as_str())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db)?;
+        let Some(row) = row else {
+            return Ok(InvitationAccept::Missing);
+        };
+        let role = OrgRole::from_str(row.get("role"))?;
+        if row.get::<DateTime<Utc>, _>("expires_at") <= now {
+            tx.commit().await.map_err(db)?;
+            return Ok(InvitationAccept::Missing);
+        }
+        let joined = insert_member(&mut tx, org, user, role, max_members).await?;
+        tx.commit().await.map_err(db)?;
+        Ok(if joined {
+            InvitationAccept::Joined(role)
+        } else {
+            InvitationAccept::Missing
+        })
     }
 
     async fn owner_limits(&self, owner: &UserId) -> Result<Limits> {

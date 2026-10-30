@@ -347,6 +347,7 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
         | Command::Whoami
         | Command::Repo(_)
         | Command::Org(_)
+        | Command::Invitation(_)
         | Command::Team(_)
         | Command::Setup { .. }
         | Command::Admin(_)

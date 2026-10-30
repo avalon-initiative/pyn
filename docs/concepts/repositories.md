@@ -54,8 +54,9 @@ people act on its behalf, and a request that names an organization as the signed
   older mark is taken to be left by a crash and the new delete takes it over and finishes. Member and team changes
   are not blocked meanwhile.
 - **Members.** An organization has **owners** and **members**. An owner adds an existing user account
-  (`POST /v1/orgs/{org}/members`, `{user, role?}`, role `owner` or `member`, default `member`): there are no organization
-  invitations, so someone without an account signs up on the server first. Any member can list the members
+  (`POST /v1/orgs/{org}/members`, `{user, role?}`, role `owner` or `member`, default `member`; someone without an
+  account signs up on the server first). Adding does not make the person a member: it creates a pending
+  [invitation](#invitations) they accept or decline. Any member can list the members
   (`GET /v1/orgs/{org}/members`); owners change a role (`PATCH /v1/orgs/{org}/members/{user}`) or remove a member
   (`DELETE /v1/orgs/{org}/members/{user}`), and any member can remove themselves (leave). Changing members needs, for a
   token, `manage_roles` and no repository limit. The member role does not by itself give access to any repository: access
@@ -66,17 +67,40 @@ people act on its behalf, and a request that names an organization as the signed
   made for an organization's repository (`400 invalid_invite`), and an older one is refused at sign-up for the same reason.
   Removing a member, or the member leaving, **deletes their direct roles on every repository the organization owns**;
   roles in other repositories are untouched. Team memberships go the same way, which ends the access they gave.
-- **Audit.** Organization events (`org_created`, `org_deleted`, `org_member_added`, `org_member_removed`,
-  `org_member_role_changed`, the team events and the creation-policy events below) go to a separate organization log, readable by its owners at
+- **Audit.** Organization events (`org_created`, `org_deleted`, `org_member_added` (a direct add), `org_member_removed`,
+  `org_member_role_changed`, `org_member_invited`, `org_invitation_accepted`, `org_invitation_declined`,
+  `org_invitation_cancelled`, `org_invitation_expired` (the organization is its actor; written when the expiry is next seen), the team events and the creation-policy events below) go to a separate organization log, readable by its owners at
   `GET /v1/orgs/{org}/audit`. They are not in the server log. A removal records which repositories lost the member's
   direct access and which teams they left. Team grants and revocations are also recorded in the target repository's log.
 
 On the command line: `pyn org create <name>`, `pyn org list` (role, created, organization), `pyn org show <name>` (details,
 and the members if you belong to it), `pyn org delete <name> [--yes]` (asks you to type the name), `pyn org audit <name>
-[--before ID] [--limit N]` (owners), and `pyn org member list <org>`, `pyn org member add <org> <user> [--role owner|member]`,
-`pyn org member set <org> <user> owner|member` and `pyn org member remove <org> <user>` (naming yourself leaves). These
+[--before ID] [--limit N]` (owners), and `pyn org member list <org>`, `pyn org member add <org> <user> [--role owner|member]`
+(also `invite`; it invites, and says so, unless the server lets you add directly), `pyn org invitation list <org>` and
+`pyn org invitation cancel <org> <user>` (owners), `pyn invitation list` (role, expires, invited by, organization),
+`pyn invitation accept <org>` and `pyn invitation decline <org>` (these are separate from `pyn invite`, the one-time
+repository codes), `pyn org member set <org> <user> owner|member` and `pyn org member remove <org> <user>` (naming yourself leaves). These
 are separate from `pyn member`, which sets roles inside the current repository. `pyn repo create <org>/<name>` creates a
 repository the organization owns, and `pyn repo list [--owner <org>]` shows each repository as `owner/name`.
+
+### Invitations
+
+Membership is offered, not imposed, and these are separate from the one-time repository invitation codes (`pyn invite`). `POST /v1/orgs/{org}/members` answers
+`202` with the invitation `{org, user, role, invited_by, created_at, expires_at}`; no email is sent, the user sees it
+in the app (`GET /v1/me/invitations`) and answers it with `POST /v1/me/invitations/{org}/accept` (the user becomes a
+member with the offered role; the answer is the organization, with their role) or `.../decline` (`204`). Owners list
+the pending ones (`GET /v1/orgs/{org}/invitations`) and cancel one (`DELETE /v1/orgs/{org}/invitations/{user}`, `204`).
+There is at most one pending invitation per organization and user. An invitation expires after 30 days
+(`PYN_ORG_INVITATION_DAYS`); an expired one is gone from the lists, cannot be accepted, and a new one can be made.
+Errors: `404 user_not_found`, `400 invalid_request` for an organization name or a bad role, `409 already_org_member`,
+`409 already_invited`, `404 org_invitation_not_found` (accept, decline or cancel with nothing pending, also after
+expiry). The member limit is checked when the invitation is accepted (`409 member_limit_reached`, the invitation
+stays), and a frozen organization refuses to accept or cancel. Accepting or declining needs, for a token,
+`manage_roles` and no repository limit; listing needs a full-scope credential.
+
+The operator can allow **direct add**. When the operator sets `PYN_ORG_MEMBER_ADD=direct`, a server administrator who owns the organization is
+added without an invitation: the same request answers `201` with the member `{user, role}` and a pending invitation
+for that user is dropped. Everyone else still invites. The default is `invite`.
 
 ### Repository creation policy
 
@@ -250,7 +274,12 @@ tokens, password), create repositories in its own namespace and read public repo
 | `DELETE /v1/orgs/{org}` | delete, when it owns no repositories |
 | `GET /v1/me/orgs` | the organizations you belong to, each `{id, name, created_at, role}` (same answer as `GET /v1/orgs`) |
 | `GET /v1/orgs/{org}/members` | members `[{user, role}]` (any member) |
-| `POST /v1/orgs/{org}/members` | add an existing account `{user, role?}` (owners; `404 user_not_found`, `400` for an organization name, `409 already_org_member`); anyone else gets `403 not_org_owner` whether or not the account exists. User names and organization names are already public (registration, `GET /v1/orgs/{org}`), so an owner learns nothing new; adding needs no consent from the user (provisional) |
+| `POST /v1/orgs/{org}/members` | invite an existing account `{user, role?}` (owners): `202` with the [invitation](#invitations); `201` with the member instead when the server's `PYN_ORG_MEMBER_ADD=direct` and you are a server administrator. `404 user_not_found`, `400` for an organization name, `409 already_org_member` or `already_invited`; anyone else gets `403 not_org_owner` whether or not the account exists. User names and organization names are already public (registration, `GET /v1/orgs/{org}`), so an owner learns nothing new |
+| `GET /v1/orgs/{org}/invitations` | pending invitations `[{org, user, role, invited_by, created_at, expires_at}]` (owners) |
+| `DELETE /v1/orgs/{org}/invitations/{user}` | cancel a pending invitation (owners; `404 org_invitation_not_found`) |
+| `GET /v1/me/invitations` | your pending organization invitations, ordered by organization |
+| `POST /v1/me/invitations/{org}/accept` | accept: you become a member with the offered role; answers the organization `{id, name, created_at, role}` (`404 org_invitation_not_found`, `409 member_limit_reached`) |
+| `POST /v1/me/invitations/{org}/decline` | decline (`204`; `404 org_invitation_not_found`) |
 | `PATCH /v1/orgs/{org}/members/{user}` | change a role `{role}` (owners; `409 last_org_owner`) |
 | `DELETE /v1/orgs/{org}/members/{user}` | remove a member, or leave (owners, or the member; `409 last_org_owner`) |
 | `GET /v1/orgs/{org}/audit` | the organization's audit log (owners; `?before=`, `?limit=`) |

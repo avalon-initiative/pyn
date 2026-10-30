@@ -265,6 +265,12 @@ impl Env {
         String::from_utf8_lossy(&out.stdout).into_owned()
     }
 
+    /// `owner` invites `member` to `org` and `member` accepts.
+    pub fn join_org(&self, cwd: &Path, owner: &str, org: &str, member: &str) {
+        self.ok(cwd, owner, &["org", "member", "add", org, member]);
+        self.ok(cwd, member, &["invitation", "accept", org]);
+    }
+
     pub fn fails(&self, cwd: &Path, user: &str, args: &[&str]) -> String {
         let out = self.run(cwd, user, args);
         assert!(!out.status.success(), "pyn {args:?} should have failed");

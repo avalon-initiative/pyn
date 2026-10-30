@@ -230,7 +230,7 @@ absolute, or climbs above the workspace root, is refused. In a git repository li
 `pyn config get|set|list` reads and writes settings (`pyn config init` runs the first-run prompt). For now there are five: `server`, `user` (the development
 identity), `repo` (`owner/name`, set by `pyn clone`) and `local_store` (`true` or `false`, see [the local store](#the-local-store)) and `editor` (see [the editor](#the-editor)). `--repo` or `PYN_REPO` beats the workspace's `repo`, so one
 workspace can still reach another repository for a single command. Outside a workspace, repository commands need one of them. `set` writes the workspace's file by default and your user file with `--global`; `get` shows the effective value,
-or one layer with `--local` or `--global`. A `PYN_SERVER` or `--server` always wins, and `PYN_DIR` points at a `.pyn`
+or one layer with `--local` or `--global`. In a git repository the workspace layer is that repository's `.pyn/local_only/config.toml`. A `PYN_SERVER` or `--server` always wins, and `PYN_DIR` points at a `.pyn`
 folder kept somewhere else.
 
 ## The editor
