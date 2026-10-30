@@ -2821,7 +2821,7 @@ fn run(cli: Cli) -> Result<()> {
                         e.actor.clone(),
                         e.action.clone(),
                         e.path.clone().unwrap_or_else(|| "-".into()),
-                        time::localize(&e.detail),
+                        time::localize(&commit_format::audit_detail_line(&e.detail)),
                     ]
                 })
                 .collect();
@@ -3553,7 +3553,7 @@ fn org_command(api: &Api, cmd: OrgCommand) -> Result<()> {
                         time::local(e.at),
                         e.actor.clone(),
                         e.action.clone(),
-                        time::localize(&e.detail),
+                        time::localize(&commit_format::audit_detail_line(&e.detail)),
                     ]
                 })
                 .collect();
