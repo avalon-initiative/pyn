@@ -1150,7 +1150,7 @@ and pyn deliberately does not. A bad value is reported only by commands that rea
 `remote` (without a fetch), `prune` and `prune-packed` never do, so they succeed where git does.
 `no`, `off`, `false` (case-insensitive) or an empty value selects full ids. Duplicate objects do not extend
 prefixes; null patch ids also lengthen for uniqueness. The `index` line of a combined diff and the `(from <parent>)` label of
-`-m --oneline` follow the same policy; a combined diff does not read `--abbrev=<n>` or `--full-index`. Server-home conventions are unchanged.
+`-m --oneline` follow the same policy; a combined diff prints whole ids with `--full-index` and, as git does, ignores `--abbrev=<n>` and `--no-abbrev`. Server-home conventions are unchanged.
 
 Filters apply in this order: `--author` and `--committer` (regular expressions on `Name <email>`, any of several of the same
 kind), `--grep` (on the whole message; any of several, or all with `--all-match`, or none with `--invert-grep`), `-i` for all

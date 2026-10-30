@@ -177,12 +177,12 @@ async fn owners_create_update_and_delete_teams_and_members_list_them() {
         ("art", "Artists", "pixels")
     );
     assert!(t.members.is_empty() && t.repos.is_empty());
+    let art_id = t.id.clone();
+    assert!(art_id.starts_with('t') && art_id.len() == 25);
     let r = post(app, alice, url, json!({"slug": "eng"})).await;
-    assert_eq!(
-        r.json::<api::TeamInfo>().name,
-        "eng",
-        "the name defaults to the slug"
-    );
+    let eng = r.json::<api::TeamInfo>();
+    assert_eq!(eng.name, "eng", "the name defaults to the slug");
+    assert_ne!(eng.id, art_id);
     assert_eq!(
         code(&post(app, alice, url, json!({"slug": "art"})).await),
         (409, "team_exists".into())
@@ -235,6 +235,14 @@ async fn owners_create_update_and_delete_teams_and_members_list_them() {
         (t.name.as_str(), t.description.as_str()),
         ("Artists", "art and ui")
     );
+    assert_eq!(t.id, art_id, "an update keeps the id");
+    assert_eq!(
+        call(app, bob, "GET", "/v1/orgs/acme/teams/art", None)
+            .await
+            .json::<api::TeamInfo>()
+            .id,
+        art_id
+    );
     assert_eq!(
         code(
             &call(
@@ -264,6 +272,12 @@ async fn owners_create_update_and_delete_teams_and_members_list_them() {
     assert_eq!(
         code(&call(app, alice, "DELETE", "/v1/orgs/acme/teams/eng", None).await),
         (404, "team_not_found".into())
+    );
+    let again = post(app, alice, url, json!({"slug": "eng"})).await;
+    assert_ne!(
+        again.json::<api::TeamInfo>().id,
+        eng.id,
+        "a reused slug gets a new id"
     );
 }
 
@@ -386,6 +400,7 @@ async fn a_team_grant_gives_its_members_access_and_shows_everywhere() {
         (teams[0].slug.as_str(), teams[0].role.as_str()),
         ("art", "writer")
     );
+    assert!(teams[0].team_id.starts_with('t'));
     assert_eq!(
         code(&call(app, bob, "GET", "/v1/repos/acme/game/teams", None).await).0,
         403

@@ -172,6 +172,7 @@ pub(super) struct Want {
     pub patch: bool,
     pub context: usize,
     pub renames: rename::Request,
+    pub full_index: bool,
 }
 
 impl Want {
@@ -192,6 +193,7 @@ impl Want {
             patch: p.patch,
             context: p.context,
             renames: p.renames,
+            full_index: p.opts.full_index,
         }
     }
 
@@ -202,6 +204,7 @@ impl Want {
             patch: false,
             context: f.context,
             renames: f.renames,
+            full_index: f.opts.full_index,
         };
         match f.kind {
             Kind::Patch => want.patch = true,
@@ -395,7 +398,9 @@ impl Shape<'_> {
                 out.push('\n');
             }
             for e in &elems {
-                if let Some(text) = combined_diff::patch(git, e, (dense, want.context))? {
+                if let Some(text) =
+                    combined_diff::patch(git, e, (dense, want.context), want.full_index)?
+                {
                     out.push_str(&text);
                 }
             }
