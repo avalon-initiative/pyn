@@ -2870,7 +2870,7 @@ size <bytes>
 Content that already is a pointer file (at most 1024 bytes, `version`, `oid sha256:` and `size` lines, a trailing newline) and
 empty content are passed through unchanged, so `status` sees pointers as unmodified. `smudge` turns a pointer file into the
 stored object; a pointer whose object is not in the local store stays as the pointer file, with one warning on standard error
-per invocation, because pyn cannot download LFS objects yet (the Batch API is not built). A stored object with the wrong size
+per invocation, because the git home cannot download LFS objects yet (its Batch API client is not built; a pyn server already serves the Batch API, see [Git LFS](lfs.md)). A stored object with the wrong size
 or hash is an error. `GIT_LFS_SKIP_SMUDGE=1` (or `true`) leaves pointers as they are. `fetch` and `pull` also warn once when
 the `.gitattributes` in the tip of a ref that moved applies `filter=lfs` to a path whose pointer names an object that is not
 stored (`clone` in the commit it checks out, none for `--bare` or `-n`); only `.gitattributes` files in the tree are read for
@@ -2878,8 +2878,8 @@ that check. The warning wording is not part of the contract. Covered by `crates/
 bytes are also compared with `git lfs pointer` when `git-lfs` is installed and skipped otherwise) and
 `crates/pyn-cli/tests/git_lfs.rs` (#311, #628).
 
-Not built: downloading and uploading objects (the Batch API, `lfs.url`, transfer adapters, credentials), the locking API and
-`lockable`, `lfs.storage`, `lfs.fetchinclude` and `fetchexclude`, pointer extensions (`ext-*` lines), and the `git lfs`
+Not built on the git home: downloading and uploading objects (the Batch API client, `lfs.url`, transfer adapters, credentials), the
+locking API client and `lockable`, `lfs.storage`, `lfs.fetchinclude` and `fetchexclude`, pointer extensions (`ext-*` lines), and the `git lfs`
 commands (`track`, `fetch`, `pull`, `push`, `ls-files`, `prune`, `lock`, `unlock`, `locks`).
 
 ### Refused commands
