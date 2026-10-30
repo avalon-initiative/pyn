@@ -224,6 +224,10 @@ pub enum PynError {
     UserNotOrgMember { org: String, user: String },
     #[error("{user} is already a member of {org}")]
     AlreadyOrgMember { org: String, user: String },
+    #[error("{user} already has a pending invitation to {org}")]
+    AlreadyInvited { org: String, user: String },
+    #[error("{org} has no pending invitation for {user}")]
+    OrgInvitationNotFound { org: String, user: String },
     #[error("{user} is not a member of {org}")]
     OrgMemberNotFound { org: String, user: String },
     #[error("{0} must keep at least one owner")]
@@ -361,6 +365,8 @@ impl PynError {
             Self::NotOrgMember(_) => "not_org_member",
             Self::UserNotOrgMember { .. } => "user_not_org_member",
             Self::AlreadyOrgMember { .. } => "already_org_member",
+            Self::AlreadyInvited { .. } => "already_invited",
+            Self::OrgInvitationNotFound { .. } => "org_invitation_not_found",
             Self::OrgMemberNotFound { .. } => "org_member_not_found",
             Self::LastOrgOwner(_) => "last_org_owner",
             Self::TeamNotFound { .. } => "team_not_found",

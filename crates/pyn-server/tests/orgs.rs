@@ -26,6 +26,13 @@ async fn server_with_root(org_creation: OrgCreation) -> (Router, String) {
 }
 
 async fn server_with_store(org_creation: OrgCreation) -> (Router, String, Arc<MemoryAccessStore>) {
+    server_with_mode(org_creation, pyn_core::OrgMemberAdd::Invite).await
+}
+
+async fn server_with_mode(
+    org_creation: OrgCreation,
+    org_member_add: pyn_core::OrgMemberAdd,
+) -> (Router, String, Arc<MemoryAccessStore>) {
     let clock = Arc::new(SystemClock);
     let objects = Arc::new(MemoryObjectStore::new());
     let audit = Arc::new(MemoryAuditStore::new());
@@ -41,6 +48,7 @@ async fn server_with_store(org_creation: OrgCreation) -> (Router, String, Arc<Me
             registration: RegistrationMode::Open,
             require_email_verification: false,
             org_creation,
+            org_member_add,
             ..AccessConfig::default()
         })
         .with_registry(meta.clone())
@@ -405,6 +413,28 @@ fn code(r: &Reply) -> (u16, String) {
     (r.status.as_u16(), r.code())
 }
 
+/// Invites `name` to `org` as `owner_token` and accepts as `name`.
+async fn join(app: &Router, owner_token: &str, org: &str, name: &str, token: &str, role: &str) {
+    let r = call(
+        app,
+        owner_token,
+        "POST",
+        &format!("/v1/orgs/{org}/members"),
+        Some(json!({"user": name, "role": role})),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{}", r.code());
+    let r = call(
+        app,
+        token,
+        "POST",
+        &format!("/v1/me/invitations/{org}/accept"),
+        None,
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.code());
+}
+
 async fn members(app: &Router, who: &str, org: &str) -> Vec<(String, String)> {
     let r = call(app, who, "GET", &format!("/v1/orgs/{org}/members"), None).await;
     assert_eq!(r.status, StatusCode::OK);
@@ -428,13 +458,23 @@ async fn owners_manage_members_and_any_member_lists_them() {
     let r = call(&app, &bob, "GET", url, None).await;
     assert_eq!(code(&r), (403, "not_org_member".into()));
     let r = call(&app, &alice, "POST", url, Some(json!({"user": "bob"}))).await;
-    assert_eq!(r.status, StatusCode::CREATED);
-    let added = r.json::<api::OrgMember>();
+    assert_eq!(r.status, StatusCode::ACCEPTED);
+    let invited = r.json::<api::OrgInvitation>();
     assert_eq!(
-        (added.user.as_str(), added.role.as_str()),
+        (invited.user.as_str(), invited.role.as_str()),
         ("bob", "member"),
         "member is the default"
     );
+    assert_eq!(
+        members(&app, &alice, "acme").await.len(),
+        1,
+        "not a member yet"
+    );
+    let r = call(&app, &alice, "POST", url, Some(json!({"user": "bob"}))).await;
+    assert_eq!(code(&r), (409, "already_invited".into()));
+    let r = call(&app, &bob, "POST", "/v1/me/invitations/acme/accept", None).await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(r.json::<api::OrgInfo>().role.as_deref(), Some("member"));
     let r = call(&app, &alice, "POST", url, Some(json!({"user": "bob"}))).await;
     assert_eq!(code(&r), (409, "already_org_member".into()));
     let r = call(&app, &alice, "POST", url, Some(json!({"user": "nobody"}))).await;
@@ -467,14 +507,7 @@ async fn owners_manage_members_and_any_member_lists_them() {
     )
     .await;
     assert_eq!(code(&r), (404, "org_not_found".into()));
-    call(
-        &app,
-        &alice,
-        "POST",
-        url,
-        Some(json!({"user": "carol", "role": "owner"})),
-    )
-    .await;
+    join(&app, &alice, "acme", "carol", &carol, "owner").await;
 
     for who in [&alice, &bob, &carol] {
         assert_eq!(
@@ -535,8 +568,10 @@ async fn owners_manage_members_and_any_member_lists_them() {
         [
             "org_member_removed",
             "org_member_role_changed",
-            "org_member_added",
-            "org_member_added",
+            "org_invitation_accepted",
+            "org_member_invited",
+            "org_invitation_accepted",
+            "org_member_invited",
             "org_created"
         ]
     );
@@ -547,14 +582,7 @@ async fn the_last_owner_cannot_leave_or_be_demoted() {
     let app = server(OrgCreation::Anyone).await;
     let (alice, bob) = (token_for(&app, "alice").await, token_for(&app, "bob").await);
     create_org(&app, &alice, "acme").await;
-    call(
-        &app,
-        &alice,
-        "POST",
-        "/v1/orgs/acme/members",
-        Some(json!({"user": "bob"})),
-    )
-    .await;
+    join(&app, &alice, "acme", "bob", &bob, "member").await;
 
     let r = call(
         &app,
@@ -578,14 +606,7 @@ async fn my_orgs_lists_the_callers_organizations_with_their_role() {
     let (alice, bob) = (token_for(&app, "alice").await, token_for(&app, "bob").await);
     create_org(&app, &alice, "acme").await;
     create_org(&app, &bob, "beta").await;
-    call(
-        &app,
-        &bob,
-        "POST",
-        "/v1/orgs/beta/members",
-        Some(json!({"user": "alice"})),
-    )
-    .await;
+    join(&app, &bob, "beta", "alice", &alice, "member").await;
 
     let r = call(&app, &alice, "GET", "/v1/me/orgs", None).await;
     assert_eq!(r.status, StatusCode::OK);
@@ -619,14 +640,7 @@ async fn removal_drops_direct_grants_and_direct_grants_need_membership() {
         Some(json!({"owner": "acme", "name": "game"})),
     )
     .await;
-    call(
-        &app,
-        &alice,
-        "POST",
-        "/v1/orgs/acme/members",
-        Some(json!({"user": "bob"})),
-    )
-    .await;
+    join(&app, &alice, "acme", "bob", &bob, "member").await;
 
     let r = call(&app, &bob, "GET", "/v1/repos/acme/game/me", None).await;
     assert_eq!(
@@ -743,16 +757,8 @@ async fn the_repository_creation_policy_is_read_changed_and_applied_through_the_
         token_for(&app, "carol").await,
     );
     create_org(&app, &alice, "acme").await;
-    for user in ["bob", "carol"] {
-        let r = call(
-            &app,
-            &alice,
-            "POST",
-            "/v1/orgs/acme/members",
-            Some(json!({ "user": user })),
-        )
-        .await;
-        assert_eq!(r.status, StatusCode::CREATED);
+    for (user, token) in [("bob", &bob), ("carol", &carol)] {
+        join(&app, &alice, "acme", user, token, "member").await;
     }
     let policy = "/v1/orgs/acme/repo-policy";
     let rule = |tail: &str| format!("{policy}/rules/{tail}");
@@ -943,7 +949,141 @@ async fn the_repository_creation_policy_is_read_changed_and_applied_through_the_
             "repo_creation_rule_set",
             "repo_creation_rule_set",
             "repo_creation_policy_changed",
-            "org_member_added"
+            "org_invitation_accepted"
         ]
     );
+}
+
+#[tokio::test]
+async fn invitations_are_listed_declined_and_cancelled() {
+    let app = server(OrgCreation::Anyone).await;
+    let (alice, bob, carol) = (
+        token_for(&app, "alice").await,
+        token_for(&app, "bob").await,
+        token_for(&app, "carol").await,
+    );
+    create_org(&app, &alice, "acme").await;
+    create_org(&app, &alice, "beta").await;
+    for org in ["beta", "acme"] {
+        let url = format!("/v1/orgs/{org}/members");
+        let r = call(&app, &alice, "POST", &url, Some(json!({"user": "bob"}))).await;
+        assert_eq!(r.status, StatusCode::ACCEPTED);
+    }
+    call(
+        &app,
+        &alice,
+        "POST",
+        "/v1/orgs/acme/members",
+        Some(json!({"user": "carol", "role": "owner"})),
+    )
+    .await;
+
+    let r = call(&app, &bob, "GET", "/v1/me/invitations", None).await;
+    let mine = r.json::<Vec<api::OrgInvitation>>();
+    let names: Vec<_> = mine
+        .iter()
+        .map(|i| (i.org.as_str(), i.role.as_str()))
+        .collect();
+    assert_eq!(names, [("acme", "member"), ("beta", "member")]);
+    assert_eq!(mine[0].invited_by, "alice");
+    assert!(mine[0].expires_at > mine[0].created_at);
+
+    let url = "/v1/orgs/acme/invitations";
+    let r = call(&app, &bob, "GET", url, None).await;
+    assert_eq!(code(&r), (403, "not_org_owner".into()));
+    let r = call(&app, &alice, "GET", url, None).await;
+    let users: Vec<_> = r
+        .json::<Vec<api::OrgInvitation>>()
+        .into_iter()
+        .map(|i| i.user)
+        .collect();
+    assert_eq!(users, ["bob", "carol"]);
+
+    let r = call(&app, &bob, "POST", "/v1/me/invitations/beta/decline", None).await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT);
+    let r = call(&app, &bob, "POST", "/v1/me/invitations/beta/decline", None).await;
+    assert_eq!(code(&r), (404, "org_invitation_not_found".into()));
+    let r = call(&app, &bob, "POST", "/v1/me/invitations/beta/accept", None).await;
+    assert_eq!(code(&r), (404, "org_invitation_not_found".into()));
+    let r = call(&app, &bob, "POST", "/v1/me/invitations/nope/accept", None).await;
+    assert_eq!(code(&r), (404, "org_not_found".into()));
+
+    let r = call(&app, &bob, "DELETE", &format!("{url}/carol"), None).await;
+    assert_eq!(code(&r), (403, "not_org_owner".into()));
+    let r = call(&app, &alice, "DELETE", &format!("{url}/carol"), None).await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT);
+    let r = call(&app, &alice, "DELETE", &format!("{url}/carol"), None).await;
+    assert_eq!(code(&r), (404, "org_invitation_not_found".into()));
+    let r = call(&app, &carol, "POST", "/v1/me/invitations/acme/accept", None).await;
+    assert_eq!(code(&r), (404, "org_invitation_not_found".into()));
+
+    let r = call(&app, &alice, "GET", "/v1/orgs/acme/audit", None).await;
+    let actions: Vec<_> = r
+        .json::<api::AuditPage>()
+        .entries
+        .into_iter()
+        .map(|e| e.action)
+        .collect();
+    assert_eq!(
+        actions,
+        [
+            "org_invitation_cancelled",
+            "org_member_invited",
+            "org_member_invited",
+            "org_created"
+        ]
+    );
+    let r = call(&app, &alice, "GET", "/v1/orgs/beta/audit", None).await;
+    let actions: Vec<_> = r
+        .json::<api::AuditPage>()
+        .entries
+        .into_iter()
+        .map(|e| e.action)
+        .collect();
+    assert_eq!(
+        actions,
+        [
+            "org_invitation_declined",
+            "org_member_invited",
+            "org_created"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn direct_add_is_open_to_administrators_only_in_direct_mode() {
+    let (app, _, _) = server_with_mode(OrgCreation::Anyone, pyn_core::OrgMemberAdd::Direct).await;
+    let (alice, _bob) = (token_for(&app, "alice").await, token_for(&app, "bob").await);
+    create_org(&app, &alice, "acme").await;
+    create_org(&app, "root", "ops").await;
+
+    let r = call(
+        &app,
+        &alice,
+        "POST",
+        "/v1/orgs/acme/members",
+        Some(json!({"user": "bob"})),
+    )
+    .await;
+    assert_eq!(
+        r.status,
+        StatusCode::ACCEPTED,
+        "an owner who is no administrator still invites"
+    );
+
+    let r = call(
+        &app,
+        "root",
+        "POST",
+        "/v1/orgs/ops/members",
+        Some(json!({"user": "bob"})),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::CREATED);
+    let added = r.json::<api::OrgMember>();
+    assert_eq!(
+        (added.user.as_str(), added.role.as_str()),
+        ("bob", "member")
+    );
+    assert_eq!(members(&app, "root", "ops").await.len(), 2);
 }

@@ -140,6 +140,11 @@ struct RepoAddress {
         org_api::my_orgs,
         org_api::list_members,
         org_api::add_member,
+        org_api::list_invitations,
+        org_api::cancel_invitation,
+        org_api::my_invitations,
+        org_api::accept_invitation,
+        org_api::decline_invitation,
         org_api::set_member_role,
         org_api::remove_member,
         repo_policy_api::get_repo_policy,
@@ -294,6 +299,7 @@ struct RepoAddress {
         api::MyLock,
         api::Me,
         api::OrgInfo,
+        api::OrgInvitation,
         api::CreateOrgRequest,
         api::AdminCreateOrgRequest,
         api::CreateServiceCredentialRequest,
@@ -507,6 +513,20 @@ fn routes(state: AppState) -> Router {
             "/v1/orgs/{org}/members",
             get(org_api::list_members).post(org_api::add_member),
         )
+        .route("/v1/orgs/{org}/invitations", get(org_api::list_invitations))
+        .route(
+            "/v1/orgs/{org}/invitations/{user}",
+            axum::routing::delete(org_api::cancel_invitation),
+        )
+        .route("/v1/me/invitations", get(org_api::my_invitations))
+        .route(
+            "/v1/me/invitations/{org}/accept",
+            post(org_api::accept_invitation),
+        )
+        .route(
+            "/v1/me/invitations/{org}/decline",
+            post(org_api::decline_invitation),
+        )
         .route(
             "/v1/orgs/{org}/members/{user}",
             axum::routing::patch(org_api::set_member_role).delete(org_api::remove_member),
@@ -680,6 +700,7 @@ impl IntoResponse for ApiError {
             | PynError::OrgDeleting(_)
             | PynError::UserNotOrgMember { .. }
             | PynError::AlreadyOrgMember { .. }
+            | PynError::AlreadyInvited { .. }
             | PynError::TeamExists { .. }
             | PynError::LastOrgOwner(_)
             | PynError::LastServerAdmin
@@ -738,6 +759,7 @@ impl IntoResponse for ApiError {
             | PynError::RepoNotFound(_)
             | PynError::OrgNotFound(_)
             | PynError::OrgMemberNotFound { .. }
+            | PynError::OrgInvitationNotFound { .. }
             | PynError::TeamNotFound { .. }
             | PynError::TeamMemberNotFound { .. }
             | PynError::CreationRuleNotFound { .. }

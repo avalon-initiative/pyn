@@ -517,3 +517,54 @@ fn a_policy_the_server_refuses_leaves_the_folder_a_git_home() {
             .contains("first")
     );
 }
+
+/// A commit on top of HEAD with exactly `message` as the message bytes, written the way a web squash merge does.
+fn raw_commit(dir: &Path, file: &str, message: &str) {
+    write(dir, file, b"x\n");
+    git(dir, &["add", file]);
+    let tree = git(dir, &["write-tree"]).trim().to_string();
+    let parent = git(dir, &["rev-parse", "HEAD"]).trim().to_string();
+    let body = format!(
+        "tree {tree}\nparent {parent}\nauthor Ann <ann@example.com> 1700000000 +0000\ncommitter Cy <cy@example.com> 1700000000 +0000\n\n{message}"
+    );
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["hash-object", "-t", "commit", "-w", "--stdin"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::io::Write::write_all(&mut child.stdin.take().unwrap(), body.as_bytes()).unwrap();
+    let out = child.wait_with_output().unwrap();
+    let id = String::from_utf8(out.stdout).unwrap().trim().to_string();
+    git(dir, &["reset", "-q", "--hard", &id]);
+}
+
+#[test]
+fn a_message_without_a_final_newline_is_converted_with_one() {
+    let env = start_empty();
+    let dir = plain(&env, "squashed");
+    raw_commit(&dir, "b.txt", "Add b (#7)\n\nbody text");
+    let out = ok(&convert(&env, &dir, &[]));
+    assert!(out.contains("converted"), "{out}");
+    let messages: Vec<String> = server_commits(&env, NEW)
+        .values()
+        .map(|raw| {
+            let text = String::from_utf8(raw.clone()).unwrap();
+            text.split_once("\n\n").unwrap().1.to_string()
+        })
+        .collect();
+    assert!(
+        messages.contains(&"Add b (#7)\n\nbody text\n".to_string()),
+        "{messages:?}"
+    );
+}
+
+#[test]
+fn an_empty_message_is_refused_before_the_repository_is_created() {
+    let env = start_empty();
+    let dir = plain(&env, "blank");
+    raw_commit(&dir, "b.txt", "");
+    refused(&env, &dir, 128, "its message is empty");
+}
