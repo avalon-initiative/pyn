@@ -1819,6 +1819,153 @@
         }
       }
     },
+    "/v1/me/invitations": {
+      "get": {
+        "tags": [
+          "org_api"
+        ],
+        "operationId": "my_invitations",
+        "responses": {
+          "200": {
+            "description": "the caller's pending organization invitations, ordered by organization name",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/OrgInvitation"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "a token that is not full-scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/me/invitations/{org}/accept": {
+      "post": {
+        "tags": [
+          "org_api"
+        ],
+        "operationId": "accept_invitation",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "the inviting organization's name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "the caller is now a member, with the offered role",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrgInfo"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "a token without manage_roles or limited to repositories",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "org_not_found, or org_invitation_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "member_limit_reached: the organization is full; the invitation stays",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/me/invitations/{org}/decline": {
+      "post": {
+        "tags": [
+          "org_api"
+        ],
+        "operationId": "decline_invitation",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "the inviting organization's name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "the invitation is gone"
+          },
+          "403": {
+            "description": "a token without manage_roles or limited to repositories",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "org_not_found, or org_invitation_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/me/locks": {
       "get": {
         "tags": [
@@ -2364,6 +2511,113 @@
         }
       }
     },
+    "/v1/orgs/{org}/invitations": {
+      "get": {
+        "tags": [
+          "org_api"
+        ],
+        "operationId": "list_invitations",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "the organization's name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "pending invitations ordered by user name; expired ones are gone",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/OrgInvitation"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "not_org_owner, or a token that is not full-scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "org_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/orgs/{org}/invitations/{user}": {
+      "delete": {
+        "tags": [
+          "org_api"
+        ],
+        "operationId": "cancel_invitation",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "the organization's name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "user",
+            "in": "path",
+            "description": "the invited user's name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "the invitation is withdrawn"
+          },
+          "403": {
+            "description": "not_org_owner, or a token without manage_roles or limited to repositories",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "org_not_found, or org_invitation_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/orgs/{org}/members": {
       "get": {
         "tags": [
@@ -2445,10 +2699,21 @@
         },
         "responses": {
           "201": {
+            "description": "added without an invitation: only a server administrator, and only when the server's org member add setting is `direct`",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/OrgMember"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "invited: the user becomes a member when they accept",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrgInvitation"
                 }
               }
             }
@@ -2484,7 +2749,7 @@
             }
           },
           "409": {
-            "description": "already_org_member",
+            "description": "already_org_member, or already_invited",
             "content": {
               "application/json": {
                 "schema": {
@@ -10041,6 +10306,42 @@
                 "type": "null"
               }
             ]
+          }
+        }
+      },
+      "OrgInvitation": {
+        "type": "object",
+        "description": "A pending offer of organization membership. It becomes a membership with `role` when `user` accepts.",
+        "required": [
+          "org",
+          "user",
+          "role",
+          "invited_by",
+          "created_at",
+          "expires_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "After this the invitation is gone and cannot be accepted."
+          },
+          "invited_by": {
+            "type": "string"
+          },
+          "org": {
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/OrgRole"
+          },
+          "user": {
+            "type": "string",
+            "description": "The invited user."
           }
         }
       },

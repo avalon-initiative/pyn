@@ -777,6 +777,20 @@ pub struct OrgMember {
     pub role: String,
 }
 
+/// A pending offer of organization membership. It becomes a membership with `role` when `user` accepts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct OrgInvitation {
+    pub org: String,
+    /// The invited user.
+    pub user: String,
+    #[schema(value_type = OrgRole)]
+    pub role: String,
+    pub invited_by: String,
+    pub created_at: DateTime<Utc>,
+    /// After this the invitation is gone and cannot be accepted.
+    pub expires_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct AddOrgMemberRequest {
     /// An existing user account.
