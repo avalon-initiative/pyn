@@ -3,7 +3,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
@@ -104,10 +104,8 @@ async fn limit(State(shared): State<Arc<Shared>>, request: Request, next: Next) 
     match class {
         Class::Plain => next.run(request).await,
         Class::Streaming => {
-            let (request, rest) = Unread::wrap(idle_limited(request, limits.body_idle_timeout));
-            let response = next.run(request).await;
-            rest.drain().await;
-            response
+            next.run(idle_limited(request, limits.body_idle_timeout))
+                .await
         }
         Class::Timed | Class::Expensive => {
             let _permit = if class == Class::Expensive {
@@ -171,71 +169,6 @@ impl HttpBody for IdleBody {
 
     fn size_hint(&self) -> SizeHint {
         self.inner.size_hint()
-    }
-}
-
-/// Most an early refusal reads and discards of an upload body so the client still sees the status.
-const DRAIN_LIMIT: usize = 64 << 20;
-
-/// A request body the middleware can still read after the handler has answered without consuming it.
-struct Unread(Arc<Mutex<Body>>);
-
-struct Handle(Arc<Mutex<Body>>);
-
-impl Unread {
-    fn wrap(request: Request) -> (Request, Self) {
-        let (parts, body) = request.into_parts();
-        let shared = Arc::new(Mutex::new(body));
-        let request = Request::from_parts(parts, Body::new(Handle(shared.clone())));
-        (request, Self(shared))
-    }
-
-    /// Closing a connection with a large body unread resets it, and the client loses the response.
-    async fn drain(self) {
-        let read = async {
-            let mut seen = 0usize;
-            loop {
-                let frame = std::future::poll_fn(|cx| {
-                    let mut body = self.0.lock().unwrap();
-                    if body.is_end_stream() {
-                        return Poll::Ready(None);
-                    }
-                    Pin::new(&mut *body).poll_frame(cx)
-                })
-                .await;
-                match frame {
-                    Some(Ok(frame)) => {
-                        seen += frame.data_ref().map_or(0, Bytes::len);
-                        if seen > DRAIN_LIMIT {
-                            return;
-                        }
-                    }
-                    _ => return,
-                }
-            }
-        };
-        let _ = tokio::time::timeout(DEFAULT_REQUEST_TIMEOUT, read).await;
-    }
-}
-
-impl HttpBody for Handle {
-    type Data = Bytes;
-    type Error = axum::Error;
-
-    fn poll_frame(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<Result<Frame<Bytes>, axum::Error>>> {
-        let mut body = self.0.lock().unwrap();
-        Pin::new(&mut *body).poll_frame(cx)
-    }
-
-    fn is_end_stream(&self) -> bool {
-        self.0.lock().unwrap().is_end_stream()
-    }
-
-    fn size_hint(&self) -> SizeHint {
-        self.0.lock().unwrap().size_hint()
     }
 }
 
