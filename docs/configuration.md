@@ -41,7 +41,7 @@ keep needs at least `PYN_DATABASE_URL` and `PYN_DATA_DIR`.
 | `PYN_EMAIL` | How email is sent; only `log` (notes that a message was queued, without its body) exists |
 | `PYN_EMAIL_LOG_BODIES` | `true` also logs each message body, links included; for local development only, the server warns at startup |
 | `PYN_RATE_SIGN_IN_ACCOUNT`, `PYN_RATE_SIGN_IN_CLIENT`, `PYN_RATE_REGISTER_CLIENT`, `PYN_RATE_MAIL_PER_EMAIL` | Rate limits, defaults 5, 30, 10 and 3 (the first also limits wrong current passwords when changing a password); see [access](concepts/access.md#protecting-open-registration) |
-| `PYN_TRUST_FORWARDED_FOR` | `true` takes the client address from the last `X-Forwarded-For` entry; only behind a proxy that sets it |
+| `PYN_TRUST_FORWARDED_FOR` | `true` takes the client address from the last `X-Forwarded-For` entry; only behind a proxy that sets it; also trusts `X-Forwarded-Host` and `X-Forwarded-Proto` for the [LFS](concepts/lfs.md) URLs |
 | `PYN_PASSWORD_HASHES` | Most password hashes at once, default the number of CPUs |
 | `PYN_SESSION_DAYS` | How long a `pyn login` lasts, default 30 |
 | `PYN_CONFIG_DIR` | Where the CLI keeps `credentials.toml`, default `~/.config/pyn`; the directory is made `0700` and the file `0600`, and a file that cannot be parsed is an error, never replaced |

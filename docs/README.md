@@ -16,7 +16,7 @@ Markdown, plus the generated OpenAPI document; `make docs-check` verifies relati
 - [Content storage: streaming, ranges and the chunked format](concepts/storage.md)
 - [The `.pyn/` folder](concepts/workspace.md)
 - [Git compatibility: where the CLI follows git and where it deliberately differs](concepts/git-compatibility.md)
-- [Git LFS Locks API: `git lfs lock` against a pyn server](concepts/lfs.md)
+- [Git LFS API: locks and large files against a pyn server](concepts/lfs.md)
 - [Branches: branch heads, commits on a branch, exclusive paths across branches](concepts/branches.md)
 - [Merging: merge base, merge commits, conflicts and resolution](concepts/merging.md)
 - [Tamper-evident history: the frozen hash encoding, chained audit log, `pyn verify`](concepts/integrity.md)
