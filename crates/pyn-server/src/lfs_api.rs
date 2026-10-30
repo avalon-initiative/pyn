@@ -441,12 +441,11 @@ struct BatchResponse {
     hash_algo: &'static str,
 }
 
+/// `authenticated: true` is never sent: it makes git-lfs transfer without credentials, which the object routes refuse.
 #[derive(Serialize)]
 struct BatchObject {
     oid: String,
     size: i64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    authenticated: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     actions: Option<Actions>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -596,7 +595,6 @@ pub(crate) async fn batch(
         let mut out = BatchObject {
             oid: spec.oid.clone(),
             size: spec.size,
-            authenticated: None,
             actions: None,
             error: None,
         };
@@ -618,7 +616,6 @@ pub(crate) async fn batch(
             }
             (true, Some(_)) => {}
             (false, Some(_)) => {
-                out.authenticated = Some(true);
                 out.actions = Some(Actions {
                     download: Some(Action {
                         href: format!("{base}/{}", spec.oid),
@@ -641,7 +638,6 @@ pub(crate) async fn batch(
             (true, None) => match repo.service.lfs_admit(pending.saturating_add(size)).await {
                 Ok(()) => {
                     pending = pending.saturating_add(size);
-                    out.authenticated = Some(true);
                     out.actions = Some(Actions {
                         upload: Some(Action {
                             href: format!("{base}/{}", spec.oid),
