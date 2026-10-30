@@ -8,11 +8,14 @@ use axum::response::{IntoResponse, Response};
 use base64::Engine;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
-use pyn_core::{Lock, Permission, PynError, RepoPath};
+use pyn_core::{Lock, Permission, PynError, RepoPath, is_lfs_oid};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 
-use crate::{ApiError, AppState, authorize_repo, is_internal, public_message, status_for};
+use crate::{
+    ApiError, AppState, MAX_OBJECT_BYTES, authorize_repo, is_internal, parse_range, public_message,
+    range_not_satisfiable, status_for, upload,
+};
 
 const LFS_TYPE: &str = "application/vnd.git-lfs+json";
 const DEFAULT_LIMIT: usize = 100;
@@ -106,6 +109,16 @@ pub(crate) enum LfsError {
     UnsupportedMedia,
 }
 
+impl LfsError {
+    fn message(&self) -> String {
+        match self {
+            Self::Malformed(m) | Self::NotFound(m) => m.clone(),
+            Self::Pyn(e) => public_message(e),
+            Self::UnsupportedMedia => format!("the request body must be {LFS_TYPE}"),
+        }
+    }
+}
+
 impl From<PynError> for LfsError {
     fn from(e: PynError) -> Self {
         Self::Pyn(e)
@@ -121,7 +134,7 @@ impl From<ApiError> for LfsError {
 impl IntoResponse for LfsError {
     fn into_response(self) -> Response {
         let (status, message, internal) = match &self {
-            Self::Pyn(e) => (status_for(e), public_message(e), is_internal(e)),
+            Self::Pyn(e) => (lfs_status(e), public_message(e), is_internal(e)),
             Self::Malformed(m) => (StatusCode::UNPROCESSABLE_ENTITY, m.clone(), false),
             Self::NotFound(m) => (StatusCode::NOT_FOUND, m.clone(), false),
             Self::UnsupportedMedia => (
@@ -146,6 +159,17 @@ impl IntoResponse for LfsError {
 }
 
 type LfsResult = Result<Response, LfsError>;
+
+/// LFS clients expect 413 for a store that is full and 422 for content that is not what was declared.
+fn lfs_status(e: &PynError) -> StatusCode {
+    match e {
+        PynError::StorageLimitReached { .. } | PynError::RepoStorageLimitReached { .. } => {
+            StatusCode::PAYLOAD_TOO_LARGE
+        }
+        PynError::LengthMismatch { .. } => StatusCode::UNPROCESSABLE_ENTITY,
+        other => status_for(other),
+    }
+}
 
 /// A write must declare a JSON type, so a cross-site form post (which cannot) is refused before it is read.
 fn require_json(headers: &HeaderMap) -> Result<(), LfsError> {
@@ -390,4 +414,377 @@ pub(crate) async fn unlock(
         },
     )
     .into_response())
+}
+
+const MAX_BATCH_OBJECTS: usize = 1000;
+
+#[derive(Deserialize)]
+pub(crate) struct BatchRequest {
+    operation: String,
+    #[serde(default)]
+    transfers: Vec<String>,
+    #[serde(default)]
+    objects: Vec<ObjectSpec>,
+    hash_algo: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ObjectSpec {
+    oid: String,
+    size: i64,
+}
+
+#[derive(Serialize)]
+struct BatchResponse {
+    transfer: &'static str,
+    objects: Vec<BatchObject>,
+    hash_algo: &'static str,
+}
+
+#[derive(Serialize)]
+struct BatchObject {
+    oid: String,
+    size: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    authenticated: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    actions: Option<Actions>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<ObjectError>,
+}
+
+#[derive(Serialize, Default)]
+struct Actions {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    download: Option<Action>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    upload: Option<Action>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    verify: Option<Action>,
+}
+
+#[derive(Serialize)]
+struct Action {
+    href: String,
+}
+
+#[derive(Serialize)]
+struct ObjectError {
+    code: u16,
+    message: String,
+}
+
+#[derive(Deserialize)]
+struct VerifyObject {
+    oid: String,
+    size: i64,
+}
+
+fn object_error(code: StatusCode, message: impl Into<String>) -> ObjectError {
+    ObjectError {
+        code: code.as_u16(),
+        message: message.into(),
+    }
+}
+
+/// `scheme://host` the client reached the server by: the forwarded values when proxies are trusted, else `Host`.
+fn request_origin(s: &AppState, headers: &HeaderMap) -> String {
+    let named = |name: &str| {
+        headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.split(',').next())
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty() && !v.contains(['/', '@', ' ']))
+    };
+    let host = s
+        .trust_forwarded
+        .then(|| named("x-forwarded-host"))
+        .flatten()
+        .or_else(|| named("host"));
+    let public = s.access.public_url();
+    let public = public.trim_end_matches('/');
+    let Some(host) = host else {
+        return public.to_string();
+    };
+    let scheme = s
+        .trust_forwarded
+        .then(|| named("x-forwarded-proto"))
+        .flatten()
+        .filter(|p| matches!(p.as_str(), "http" | "https"))
+        .unwrap_or_else(|| match public.split_once("://") {
+            Some((scheme, rest)) if rest.eq_ignore_ascii_case(&host) => scheme.to_string(),
+            _ => "http".to_string(),
+        });
+    format!("{scheme}://{host}")
+}
+
+fn check_oid(oid: &str) -> Result<(), LfsError> {
+    if is_lfs_oid(oid) {
+        Ok(())
+    } else {
+        Err(LfsError::Malformed(format!(
+            "{oid:?} is not a sha256 oid (64 lowercase hex digits)"
+        )))
+    }
+}
+
+fn check_size(size: i64) -> Result<u64, LfsError> {
+    u64::try_from(size).map_err(|_| LfsError::Malformed(format!("invalid size {size}")))
+}
+
+pub(crate) async fn batch(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path((owner, name)): Path<(String, String)>,
+    body: Bytes,
+) -> LfsResult {
+    require_json(&headers)?;
+    let req: BatchRequest = serde_json::from_slice(&body)
+        .map_err(|e| LfsError::Malformed(format!("invalid request: {e}")))?;
+    let upload = match req.operation.as_str() {
+        "upload" => true,
+        "download" => false,
+        other => {
+            return Err(LfsError::Malformed(format!(
+                "operation must be upload or download, not {other:?}"
+            )));
+        }
+    };
+    if !req.transfers.is_empty() && !req.transfers.iter().any(|t| t == "basic") {
+        return Err(LfsError::Malformed(
+            "only the basic transfer adapter is supported".into(),
+        ));
+    }
+    if req.hash_algo.as_deref().is_some_and(|h| h != "sha256") {
+        return Ok(Lfs(
+            StatusCode::CONFLICT,
+            ErrorBody {
+                message: "only the sha256 hash algorithm is supported".into(),
+            },
+        )
+        .into_response());
+    }
+    if req.objects.len() > MAX_BATCH_OBJECTS {
+        return Err(LfsError::Malformed(format!(
+            "a batch names at most {MAX_BATCH_OBJECTS} objects"
+        )));
+    }
+    let need = if upload {
+        Permission::Checkin
+    } else {
+        Permission::Read
+    };
+    let (repo, _) = authorize_repo(
+        &s,
+        &with_bearer(&headers),
+        &owner,
+        repo_name(&name),
+        Some(need),
+    )
+    .await?;
+    if upload {
+        repo.service.ensure_writable().await?;
+    }
+    let base = format!(
+        "{}/v1/repos/{owner}/{name}/info/lfs/objects",
+        request_origin(&s, &headers)
+    );
+    let mut objects = Vec::with_capacity(req.objects.len());
+    let mut pending = 0u64;
+    for spec in req.objects {
+        let mut out = BatchObject {
+            oid: spec.oid.clone(),
+            size: spec.size,
+            authenticated: None,
+            actions: None,
+            error: None,
+        };
+        let size = match check_oid(&spec.oid).and_then(|()| check_size(spec.size)) {
+            Ok(size) => size,
+            Err(e) => {
+                out.error = Some(object_error(StatusCode::UNPROCESSABLE_ENTITY, e.message()));
+                objects.push(out);
+                continue;
+            }
+        };
+        let have = repo.service.lfs_object(&spec.oid).await?;
+        match (upload, have) {
+            (_, Some(have)) if have.size != size => {
+                out.error = Some(object_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    format!("{} has {} bytes, not {size}", spec.oid, have.size),
+                ));
+            }
+            (true, Some(_)) => {}
+            (false, Some(_)) => {
+                out.authenticated = Some(true);
+                out.actions = Some(Actions {
+                    download: Some(Action {
+                        href: format!("{base}/{}", spec.oid),
+                    }),
+                    ..Actions::default()
+                });
+            }
+            (false, None) => {
+                out.error = Some(object_error(
+                    StatusCode::NOT_FOUND,
+                    format!("object {} not found", spec.oid),
+                ));
+            }
+            (true, None) if size > MAX_OBJECT_BYTES => {
+                out.error = Some(object_error(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    format!("an object is at most {MAX_OBJECT_BYTES} bytes"),
+                ));
+            }
+            (true, None) => match repo.service.lfs_admit(pending.saturating_add(size)).await {
+                Ok(()) => {
+                    pending = pending.saturating_add(size);
+                    out.authenticated = Some(true);
+                    out.actions = Some(Actions {
+                        upload: Some(Action {
+                            href: format!("{base}/{}", spec.oid),
+                        }),
+                        verify: Some(Action {
+                            href: format!("{base}/verify"),
+                        }),
+                        ..Actions::default()
+                    });
+                }
+                Err(e) => {
+                    let (status, message) = (lfs_status(&e), public_message(&e));
+                    out.error = Some(object_error(status, message));
+                }
+            },
+        }
+        objects.push(out);
+    }
+    Ok(Lfs(
+        StatusCode::OK,
+        BatchResponse {
+            transfer: "basic",
+            objects,
+            hash_algo: "sha256",
+        },
+    )
+    .into_response())
+}
+
+pub(crate) async fn upload_object(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path((owner, name, oid)): Path<(String, String, String)>,
+    body: axum::body::Body,
+) -> LfsResult {
+    let (repo, who) = authorize_repo(
+        &s,
+        &with_bearer(&headers),
+        &owner,
+        repo_name(&name),
+        Some(Permission::Checkin),
+    )
+    .await?;
+    check_oid(&oid)?;
+    let _permit = s.repos.upload_permit(&who.user)?;
+    let (reader, size) = upload(&headers, body)?;
+    repo.service
+        .lfs_upload(&who.user, &oid, reader, size, Some(MAX_OBJECT_BYTES))
+        .await?;
+    Ok(StatusCode::OK.into_response())
+}
+
+pub(crate) async fn download(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path((owner, name, oid)): Path<(String, String, String)>,
+) -> LfsResult {
+    let (repo, _) = authorize_repo(
+        &s,
+        &with_bearer(&headers),
+        &owner,
+        repo_name(&name),
+        Some(Permission::Read),
+    )
+    .await?;
+    check_oid(&oid)?;
+    let object = repo
+        .service
+        .lfs_object(&oid)
+        .await?
+        .ok_or_else(|| LfsError::NotFound(format!("object {oid} not found")))?;
+    let range = match headers
+        .get(axum::http::header::RANGE)
+        .and_then(|v| v.to_str().ok())
+    {
+        Some(text) => match parse_range(text, object.size) {
+            Some(r) => Some(r),
+            None => return Ok(range_not_satisfiable(object.size)),
+        },
+        None => None,
+    };
+    let (_, found) = repo.service.lfs_read(&oid, range.clone()).await?;
+    let mut res = Response::new(axum::body::Body::from_stream(
+        tokio_util::io::ReaderStream::new(found.reader),
+    ));
+    let h = res.headers_mut();
+    h.insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static("application/octet-stream"),
+    );
+    h.insert(
+        axum::http::header::ACCEPT_RANGES,
+        HeaderValue::from_static("bytes"),
+    );
+    h.insert(
+        axum::http::header::CONTENT_LENGTH,
+        HeaderValue::from(found.range.end - found.range.start),
+    );
+    if range.is_some() {
+        *res.status_mut() = StatusCode::PARTIAL_CONTENT;
+        let content_range = format!(
+            "bytes {}-{}/{}",
+            found.range.start,
+            found.range.end.saturating_sub(1),
+            found.total
+        );
+        res.headers_mut().insert(
+            axum::http::header::CONTENT_RANGE,
+            HeaderValue::from_str(&content_range).expect("ASCII"),
+        );
+    }
+    Ok(res)
+}
+
+pub(crate) async fn verify_object(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path((owner, name)): Path<(String, String)>,
+    body: Bytes,
+) -> LfsResult {
+    require_json(&headers)?;
+    let req: VerifyObject = serde_json::from_slice(&body)
+        .map_err(|e| LfsError::Malformed(format!("invalid request: {e}")))?;
+    let (repo, _) = authorize_repo(
+        &s,
+        &with_bearer(&headers),
+        &owner,
+        repo_name(&name),
+        Some(Permission::Checkin),
+    )
+    .await?;
+    check_oid(&req.oid)?;
+    let size = check_size(req.size)?;
+    let object = repo
+        .service
+        .lfs_object(&req.oid)
+        .await?
+        .ok_or_else(|| LfsError::NotFound(format!("object {} not found", req.oid)))?;
+    if object.size != size {
+        return Err(LfsError::Malformed(format!(
+            "{} has {} bytes, not {size}",
+            req.oid, object.size
+        )));
+    }
+    Ok(StatusCode::OK.into_response())
 }

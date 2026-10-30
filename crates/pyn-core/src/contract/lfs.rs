@@ -6,8 +6,8 @@ use sha2::{Digest, Sha256};
 use tokio::io::AsyncReadExt;
 
 use super::{Harness, Store, harness, other_repo, repo_record, service_in, user};
-use crate::object::ObjectReader;
 use crate::PynError;
+use crate::object::ObjectReader;
 
 fn oid(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
@@ -47,12 +47,12 @@ pub async fn an_lfs_object_is_recorded_once_and_read_back_by_its_oid(store: Stor
     );
     assert_eq!(object.created_by, user("alice"));
     assert_eq!(read_all(&h, &object.oid).await, bytes);
-    assert_eq!(store.lfs_bytes(&h.svc.repo()).await.unwrap(), 18);
+    assert_eq!(store.lfs_bytes(h.svc.repo()).await.unwrap(), 18);
 
     let (again, fresh) = put(&h, bytes).await.unwrap();
     assert!(!fresh, "an object the repository has is left alone");
     assert_eq!(again, object);
-    assert_eq!(store.lfs_bytes(&h.svc.repo()).await.unwrap(), 18);
+    assert_eq!(store.lfs_bytes(h.svc.repo()).await.unwrap(), 18);
 
     let err = h
         .svc
@@ -98,8 +98,8 @@ pub async fn an_lfs_upload_that_does_not_hash_to_its_oid_is_refused_and_kept_now
     );
     assert_eq!(err.code(), "digest_mismatch");
     assert!(h.svc.lfs_object(&wanted).await.unwrap().is_none());
-    assert_eq!(store.unreferenced_bytes(&h.svc.repo()).await.unwrap(), 0);
-    assert_eq!(store.lfs_bytes(&h.svc.repo()).await.unwrap(), 0);
+    assert_eq!(store.unreferenced_bytes(h.svc.repo()).await.unwrap(), 0);
+    assert_eq!(store.lfs_bytes(h.svc.repo()).await.unwrap(), 0);
 }
 
 pub async fn an_lfs_upload_of_another_length_than_declared_is_refused(store: Store) {
@@ -114,7 +114,7 @@ pub async fn an_lfs_upload_of_another_length_than_declared_is_refused(store: Sto
         assert!(matches!(err, PynError::LengthMismatch { .. }), "{err}");
     }
     assert!(h.svc.lfs_object(&oid(bytes)).await.unwrap().is_none());
-    assert_eq!(store.unreferenced_bytes(&h.svc.repo()).await.unwrap(), 0);
+    assert_eq!(store.unreferenced_bytes(h.svc.repo()).await.unwrap(), 0);
 
     put(&h, bytes).await.unwrap();
     let err = h

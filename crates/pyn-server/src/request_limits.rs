@@ -60,6 +60,13 @@ fn classify(method: &Method, path: &str) -> Class {
     let (first, second) = (parts.next(), parts.next());
     let get = method == Method::GET;
     let post = method == Method::POST;
+    if (first, second) == (Some("info"), Some("lfs")) {
+        return match (parts.next(), parts.next()) {
+            (Some("objects"), Some(_)) if get || method == Method::PUT => Class::Streaming,
+            _ if get => Class::Timed,
+            _ => Class::Plain,
+        };
+    }
     match (first, second) {
         (Some("objects"), None) if method == Method::PUT => Class::Streaming,
         (Some("objects"), Some("chunk")) if method == Method::PUT => Class::Streaming,
@@ -201,6 +208,10 @@ mod tests {
         assert!(at(Method::POST, "objects/assemble") == Class::Streaming);
         assert!(at(Method::GET, "objects/abc") == Class::Streaming);
         assert!(at(Method::POST, "push") == Class::Streaming);
+        assert!(at(Method::PUT, "info/lfs/objects/abc") == Class::Streaming);
+        assert!(at(Method::GET, "info/lfs/objects/abc") == Class::Streaming);
+        assert!(at(Method::POST, "info/lfs/objects/batch") == Class::Plain);
+        assert!(at(Method::GET, "info/lfs/locks") == Class::Timed);
         assert!(at(Method::POST, "fetch") == Class::Expensive);
         assert!(at(Method::POST, "merge/preview") == Class::Expensive);
         assert!(at(Method::GET, "history") == Class::Expensive);

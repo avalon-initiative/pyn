@@ -278,7 +278,7 @@ impl RepoService {
         self
     }
 
-    pub(crate) async fn ensure_writable(&self) -> Result<()> {
+    pub async fn ensure_writable(&self) -> Result<()> {
         match &self.writes {
             Some(writes) => writes.ensure_writable(&self.limit_events.0).await,
             None => Ok(()),
