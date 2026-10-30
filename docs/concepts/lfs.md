@@ -46,7 +46,7 @@ releasing a lock needs the `lock` permission, listing and `verify` need `read`.
 
 ## Routes
 
-Bodies and responses are `application/vnd.git-lfs+json`. A request body may use that type or any other; it is read as JSON.
+Bodies and responses are `application/vnd.git-lfs+json`. A write (`POST`) must declare `application/vnd.git-lfs+json` or `application/json`, otherwise it is refused with `415`, so a cross-site form post cannot act on a cached Basic credential.
 
 ### `POST .../locks`
 

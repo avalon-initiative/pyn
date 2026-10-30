@@ -520,6 +520,22 @@ async fn permissions_malformed_bodies_and_the_git_suffix() {
         .body(Body::from("{not json"))
         .unwrap();
     assert_eq!(call(&w, bad).await.0, StatusCode::UNPROCESSABLE_ENTITY);
+    for kind in ["text/plain", "application/x-www-form-urlencoded"] {
+        let forged = Request::post(format!("{BASE}/locks"))
+            .header("authorization", format!("Bearer {}", w.wendy))
+            .header("content-type", kind)
+            .body(Body::from(r#"{"path": "Content/forged"}"#))
+            .unwrap();
+        assert_eq!(call(&w, forged).await.0, StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    }
+    let (_, listed) = call(&w, req("GET", &format!("{BASE}/locks"), &w.wendy, None)).await;
+    assert!(
+        listed["locks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|l| l["path"] != "Content/forged")
+    );
     let (status, _) = lock(&w, &w.wendy, "../escape").await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 

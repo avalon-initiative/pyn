@@ -103,6 +103,7 @@ pub(crate) enum LfsError {
     Pyn(PynError),
     Malformed(String),
     NotFound(String),
+    UnsupportedMedia,
 }
 
 impl From<PynError> for LfsError {
@@ -123,6 +124,11 @@ impl IntoResponse for LfsError {
             Self::Pyn(e) => (status_for(e), public_message(e), is_internal(e)),
             Self::Malformed(m) => (StatusCode::UNPROCESSABLE_ENTITY, m.clone(), false),
             Self::NotFound(m) => (StatusCode::NOT_FOUND, m.clone(), false),
+            Self::UnsupportedMedia => (
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                format!("the request body must be {LFS_TYPE}"),
+                false,
+            ),
         };
         let mut res = Lfs(status, ErrorBody { message }).into_response();
         if status == StatusCode::UNAUTHORIZED {
@@ -140,6 +146,19 @@ impl IntoResponse for LfsError {
 }
 
 type LfsResult = Result<Response, LfsError>;
+
+/// A write must declare a JSON type, so a cross-site form post (which cannot) is refused before it is read.
+fn require_json(headers: &HeaderMap) -> Result<(), LfsError> {
+    let essence = headers
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split(';').next())
+        .map(|v| v.trim().to_ascii_lowercase());
+    match essence.as_deref() {
+        Some(LFS_TYPE | "application/json") => Ok(()),
+        _ => Err(LfsError::UnsupportedMedia),
+    }
+}
 
 /// git-lfs sends the token as the Basic password; the rest of the server reads a Bearer one.
 fn with_bearer(headers: &HeaderMap) -> HeaderMap {
@@ -240,6 +259,7 @@ pub(crate) async fn create_lock(
     Path((owner, name)): Path<(String, String)>,
     body: Bytes,
 ) -> LfsResult {
+    require_json(&headers)?;
     let req: CreateRequest = serde_json::from_slice(&body)
         .map_err(|e| LfsError::Malformed(format!("invalid request: {e}")))?;
     let (repo, who) = authorize_repo(
@@ -305,6 +325,7 @@ pub(crate) async fn verify_locks(
     Path((owner, name)): Path<(String, String)>,
     body: Bytes,
 ) -> LfsResult {
+    require_json(&headers)?;
     let req: VerifyRequest = parse(&body)?;
     let (repo, who) = authorize_repo(
         &s,
@@ -337,6 +358,7 @@ pub(crate) async fn unlock(
     Path((owner, name, id)): Path<(String, String, String)>,
     body: Bytes,
 ) -> LfsResult {
+    require_json(&headers)?;
     let req: UnlockRequest = parse(&body)?;
     let (repo, who) = authorize_repo(
         &s,
