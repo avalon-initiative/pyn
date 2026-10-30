@@ -1146,11 +1146,11 @@ recursive alternates. The minimum defaults to at least seven, estimated from pac
 `core.abbrev=auto` or unset selects it. Numeric `core.abbrev` accepts decimal, octal, hexadecimal and binary
 `k`/`m`/`g` suffixes. Values below four, malformed or missing values and integer overflow fail;
 valid integers above the hash width (`999`, `1k`, `64` for SHA-1) are accepted and render full ids; git 2.43 rejects them,
-and pyn deliberately does not. A bad value is reported only by commands that render
-ids or write state, so `remote` (without a fetch) succeeds where git does.
+and pyn deliberately does not. A bad value is reported only by commands that read it;
+`remote` (without a fetch), `prune` and `prune-packed` never do, so they succeed where git does.
 `no`, `off`, `false` (case-insensitive) or an empty value selects full ids. Duplicate objects do not extend
 prefixes; null patch ids also lengthen for uniqueness. The `index` line of a combined diff and the `(from <parent>)` label of
-`-m --oneline` follow the same policy; a combined diff does not read `--abbrev=<n>` or `--full-index`. Server-home conventions are unchanged.
+`-m --oneline` follow the same policy; a combined diff prints whole ids with `--full-index` and, as git does, ignores `--abbrev=<n>` and `--no-abbrev`. Server-home conventions are unchanged.
 
 Filters apply in this order: `--author` and `--committer` (regular expressions on `Name <email>`, any of several of the same
 kind), `--grep` (on the whole message; any of several, or all with `--all-match`, or none with `--invert-grep`), `-i` for all

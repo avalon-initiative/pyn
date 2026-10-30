@@ -36,6 +36,10 @@ string_id!(
     AccountId
 );
 string_id!(
+    /// Opaque key of a team that never changes and is never issued again; the slug is only the address.
+    TeamId
+);
+string_id!(
     /// SHA-256 hex over a revision's canonical encoding (docs/concepts/integrity.md).
     RevisionHash
 );
