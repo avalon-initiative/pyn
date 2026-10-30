@@ -1,11 +1,13 @@
 const TREE_PAGE: usize = 5_000;
 
 mod fetch;
+mod lfs;
 mod merging;
 mod push;
 mod push_merge;
 mod uploads;
 mod verify;
+pub use lfs::is_lfs_oid;
 pub use uploads::DEFAULT_UNREFERENCED_UPLOAD_BYTES;
 
 pub use fetch::{
@@ -276,7 +278,7 @@ impl RepoService {
         self
     }
 
-    pub(crate) async fn ensure_writable(&self) -> Result<()> {
+    pub async fn ensure_writable(&self) -> Result<()> {
         match &self.writes {
             Some(writes) => writes.ensure_writable(&self.limit_events.0).await,
             None => Ok(()),

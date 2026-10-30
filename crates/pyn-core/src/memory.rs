@@ -38,8 +38,8 @@ use crate::rules::{Mode, PathFilter};
 use crate::store::{MetadataStore, UploadReservation};
 use crate::tree::HeadCounts;
 use crate::types::{
-    AccountId, ChangesetItem, Commit, CommitFilter, Lock, Person, PushedCommit, RepoId, RepoPath,
-    Revision, RevisionId, UserId,
+    AccountId, ChangesetItem, Commit, CommitFilter, LfsObject, Lock, Person, PushedCommit, RepoId,
+    RepoPath, Revision, RevisionId, UserId,
 };
 use crate::webhook::{
     Delivery, DeliveryQuery, DeliveryStatus, DueDelivery, EventDraft, Jitter, MAX_ACTIVE_SECRETS,
@@ -64,6 +64,7 @@ struct State {
     pointers: HashMap<(RepoId, ObjectId), Vec<(RepoPath, RevisionId)>>,
     /// Uploads each repository may reference: size, and whether an assembled object already holds the chunk.
     uploads: HashMap<(RepoId, ObjectId), (u64, bool)>,
+    lfs: HashMap<(RepoId, String), LfsObject>,
     /// Holds on the unreferenced-upload budget of in-flight uploads: repository, bytes, expiry.
     reservations: HashMap<i64, (RepoId, u64, DateTime<Utc>)>,
     next_reservation: i64,
@@ -1234,6 +1235,32 @@ impl MetadataStore for MemoryMetadataStore {
         Ok(())
     }
 
+    async fn record_lfs_object(&self, repo: &RepoId, object: &LfsObject) -> Result<bool> {
+        let mut st = self.state.lock().unwrap();
+        match st.lfs.entry((repo.clone(), object.oid.clone())) {
+            std::collections::hash_map::Entry::Occupied(_) => Ok(false),
+            std::collections::hash_map::Entry::Vacant(v) => {
+                v.insert(object.clone());
+                Ok(true)
+            }
+        }
+    }
+
+    async fn lfs_object(&self, repo: &RepoId, oid: &str) -> Result<Option<LfsObject>> {
+        let st = self.state.lock().unwrap();
+        Ok(st.lfs.get(&(repo.clone(), oid.to_string())).cloned())
+    }
+
+    async fn lfs_bytes(&self, repo: &RepoId) -> Result<u64> {
+        let st = self.state.lock().unwrap();
+        Ok(st
+            .lfs
+            .iter()
+            .filter(|((r, _), _)| r == repo)
+            .map(|(_, o)| o.size)
+            .sum())
+    }
+
     async fn object_is_recorded(&self, id: &ObjectId) -> Result<bool> {
         let st = self.state.lock().unwrap();
         Ok(st.uploads.keys().any(|(_, o)| o == id))
@@ -1621,6 +1648,7 @@ impl MetadataStore for MemoryMetadataStore {
         st.branches.remove(id);
         st.pointers.retain(|(r, _), _| r != id);
         st.uploads.retain(|(r, _), _| r != id);
+        st.lfs.retain(|(r, _), _| r != id);
         st.reservations.retain(|_, (r, _, _)| r != id);
         Ok(st.repos.remove(id).is_some())
     }

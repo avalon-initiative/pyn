@@ -46,7 +46,7 @@ mod webhook_api;
 pub mod webhook_delivery;
 
 /// The largest object one upload may carry.
-const MAX_OBJECT_BYTES: u64 = 16 << 30;
+pub(crate) const MAX_OBJECT_BYTES: u64 = 16 << 30;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -610,6 +610,18 @@ fn routes(state: AppState) -> Router {
             "/v1/repos/{owner}/{name}/info/lfs/locks/{id}/unlock",
             post(lfs_api::unlock),
         )
+        .route(
+            "/v1/repos/{owner}/{name}/info/lfs/objects/batch",
+            post(lfs_api::batch),
+        )
+        .route(
+            "/v1/repos/{owner}/{name}/info/lfs/objects/verify",
+            post(lfs_api::verify_object),
+        )
+        .route(
+            "/v1/repos/{owner}/{name}/info/lfs/objects/{oid}",
+            get(lfs_api::download).put(lfs_api::upload_object),
+        )
         .route("/v1/repos/{owner}/{name}/files", get(list_files))
         .route("/v1/repos/{owner}/{name}/tree", get(tree))
         .route("/v1/repos/{owner}/{name}/summary", get(summary))
@@ -748,7 +760,9 @@ fn status_for(e: &PynError) -> StatusCode {
         | PynError::PasswordSignInDisabled
         | PynError::CsrfFailed
         | PynError::OriginNotAllowed => StatusCode::FORBIDDEN,
-        PynError::PushUnsupported(_) => StatusCode::UNPROCESSABLE_ENTITY,
+        PynError::PushUnsupported(_) | PynError::DigestMismatch { .. } => {
+            StatusCode::UNPROCESSABLE_ENTITY
+        }
         PynError::TooManyAttempts { .. } | PynError::UploadsBusy { .. } => {
             StatusCode::TOO_MANY_REQUESTS
         }
@@ -1243,7 +1257,7 @@ async fn restore(
 }
 
 /// The request body as a reader, with the length its `Content-Length` header (or an exact body size) declares.
-fn upload(
+pub(crate) fn upload(
     headers: &HeaderMap,
     body: axum::body::Body,
 ) -> Result<(pyn_core::ObjectReader, u64), PynError> {
@@ -1961,7 +1975,7 @@ async fn get_content(
     Ok(res)
 }
 
-fn range_not_satisfiable(total: u64) -> Response {
+pub(crate) fn range_not_satisfiable(total: u64) -> Response {
     let mut res = Response::new(axum::body::Body::empty());
     *res.status_mut() = StatusCode::RANGE_NOT_SATISFIABLE;
     res.headers_mut().insert(
@@ -1972,7 +1986,7 @@ fn range_not_satisfiable(total: u64) -> Response {
 }
 
 /// One `bytes=` range over an object of `total` bytes, as a half-open range; `None` if unsatisfiable.
-fn parse_range(header: &str, total: u64) -> Option<std::ops::Range<u64>> {
+pub(crate) fn parse_range(header: &str, total: u64) -> Option<std::ops::Range<u64>> {
     let spec = header.strip_prefix("bytes=")?;
     if spec.contains(',') {
         return None;

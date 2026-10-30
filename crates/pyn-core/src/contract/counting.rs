@@ -408,6 +408,29 @@ impl MetadataStore for CountingStore {
             .await
     }
 
+    async fn record_lfs_object(
+        &self,
+        repo: &RepoId,
+        object: &crate::LfsObject,
+    ) -> crate::Result<bool> {
+        self.count();
+        self.inner.record_lfs_object(repo, object).await
+    }
+
+    async fn lfs_object(
+        &self,
+        repo: &RepoId,
+        oid: &str,
+    ) -> crate::Result<Option<crate::LfsObject>> {
+        self.count();
+        self.inner.lfs_object(repo, oid).await
+    }
+
+    async fn lfs_bytes(&self, repo: &RepoId) -> crate::Result<u64> {
+        self.count();
+        self.inner.lfs_bytes(repo).await
+    }
+
     async fn object_is_recorded(&self, id: &ObjectId) -> crate::Result<bool> {
         self.count();
         self.inner.object_is_recorded(id).await
