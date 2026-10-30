@@ -92,7 +92,7 @@ user, organization or repository also carries its id, in a field named after the
   rename keeps it), and is never issued again after a delete, so an organization or repository recreated under a deleted name has a new
   id. `repository.renamed` carries the unchanged `repo_id` so a consumer re-keys by name only; `repository.deleted` and
   `organization.deleted` carry the id of what is gone, so a consumer can drop its data.
-- The same ids appear in the API: `id` on `RepoInfo`, `OrgInfo`, `AccountInfo` and `GET /v1/me`, `owner_id` on `RepoInfo`,
+- The same ids appear in the API: `id` on `RepoInfo`, `OrgInfo`, `AccountInfo`, `TeamInfo` and `GET /v1/me`, `team_id` on a repository's team grants, `owner_id` on `RepoInfo`,
   the limits routes and the usage routes, `repo_id` on repository usage, and `user_id` on the repository `me` route.
 - Actors (`actor`) and lock holders (`holder`) are still named only by name: an actor can be a service credential, which
   has no account.

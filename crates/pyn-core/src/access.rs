@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::error::{PynError, Result};
-use crate::types::{AccountId, RepoId, UserId};
+use crate::types::{AccountId, RepoId, TeamId, UserId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -776,6 +776,13 @@ impl AccountId {
     }
 }
 
+impl TeamId {
+    /// A fresh random id: `t`, then 96 random bits in hex.
+    pub fn generate() -> Result<Self> {
+        Ok(Self::new(format!("t{}", token::random_hex(12)?)))
+    }
+}
+
 impl fmt::Display for AccountKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
@@ -830,6 +837,7 @@ impl FromStr for OrgRole {
 /// A flat group of an organization's members that holds one role per repository the organization owns.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TeamRecord {
+    pub id: TeamId,
     pub org: UserId,
     pub slug: String,
     pub name: String,
