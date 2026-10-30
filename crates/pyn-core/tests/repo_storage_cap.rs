@@ -214,6 +214,10 @@ async fn the_owner_an_administrator_and_a_manage_limits_credential_set_the_cap()
         )
         .await
         .unwrap();
+    w.access
+        .accept_org_invitation(&session("bob"), &user("acme"))
+        .await
+        .unwrap();
     create(&w, "acme", "tools").await;
 
     let denied = |e: PynError| matches!(e, PynError::NotNamespaceOwner(_));

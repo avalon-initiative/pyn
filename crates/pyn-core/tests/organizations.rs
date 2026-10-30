@@ -424,8 +424,8 @@ async fn organization_owners_resolve_to_admin_on_every_repository_it_owns() {
         w.access.role_in(&game.id, &user("alice")).await.unwrap(),
         Some(Role::Admin)
     );
-    w.access
-        .add_org_member(&alice, &user("acme"), &user("carol"), OrgRole::Member)
+    w.store
+        .add_org_member(&user("acme"), &user("carol"), OrgRole::Member)
         .await
         .unwrap();
     w.access
@@ -445,8 +445,8 @@ async fn owners_rename_reconfigure_and_delete_organization_repositories_but_othe
     let (alice, carol) = (session("alice"), session("carol"));
     w.access.create_org(&alice, "acme").await.unwrap();
     sign_up(&w, "carol").await;
-    w.access
-        .add_org_member(&alice, &user("acme"), &user("carol"), OrgRole::Member)
+    w.store
+        .add_org_member(&user("acme"), &user("carol"), OrgRole::Member)
         .await
         .unwrap();
     let game = w
@@ -570,6 +570,10 @@ async fn org_with(w: &World, members: &[&str]) {
             .add_org_member(&alice, &user("acme"), &user(name), OrgRole::Member)
             .await
             .unwrap();
+        w.access
+            .accept_org_invitation(&session(name), &user("acme"))
+            .await
+            .unwrap();
     }
 }
 
@@ -637,8 +641,8 @@ async fn owners_add_existing_accounts_and_nobody_else_does() {
         .unwrap();
     let (alice, bob, acme) = (session("alice"), session("bob"), user("acme"));
 
-    w.access
-        .add_org_member(&alice, &acme, &user("carol"), OrgRole::Owner)
+    w.store
+        .add_org_member(&acme, &user("carol"), OrgRole::Owner)
         .await
         .unwrap();
     assert_eq!(
@@ -901,7 +905,7 @@ async fn removing_a_member_drops_their_direct_grants_in_the_organizations_reposi
     );
     assert_eq!(
         log.iter()
-            .filter(|e| e.action == AuditAction::OrgMemberAdded)
+            .filter(|e| e.action == AuditAction::OrgInvitationAccepted)
             .count(),
         2
     );

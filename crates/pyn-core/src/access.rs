@@ -500,6 +500,66 @@ impl FromStr for OrgCreation {
     }
 }
 
+/// How an organization owner adds a member.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OrgMemberAdd {
+    /// Adding creates a pending invitation the user accepts or declines.
+    Invite,
+    /// A server administrator adds without consent; everyone else still invites.
+    Direct,
+}
+
+impl OrgMemberAdd {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Invite => "invite",
+            Self::Direct => "direct",
+        }
+    }
+}
+
+impl FromStr for OrgMemberAdd {
+    type Err = PynError;
+    fn from_str(s: &str) -> Result<Self> {
+        match s {
+            "invite" => Ok(Self::Invite),
+            "direct" => Ok(Self::Direct),
+            other => Err(PynError::InvalidRequest(format!(
+                "unknown organization member add setting {other:?}; use invite or direct"
+            ))),
+        }
+    }
+}
+
+/// A pending offer of organization membership; at most one per organization and user.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OrgInvitation {
+    pub org: UserId,
+    pub user: UserId,
+    pub role: OrgRole,
+    pub invited_by: UserId,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+}
+
+/// The outcome of recording an invitation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InvitationCreate {
+    Created,
+    AlreadyMember,
+    AlreadyInvited,
+}
+
+/// The outcome of accepting an invitation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InvitationAccept {
+    /// The membership now exists, with the offered role.
+    Joined(OrgRole),
+    /// No live invitation (never made, cancelled, declined or expired).
+    Missing,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct InviteId(pub String);
