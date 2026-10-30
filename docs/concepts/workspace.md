@@ -109,7 +109,7 @@ Shared files follow git (decision #245, issue #253): `pyn add <path>...` stages 
 (all paths succeed or none do). `-u` and `--update` stage only files already tracked, `-A` and `--all` also take new ones (with
 no path, from the whole workspace), `-n` and `--dry-run` list what would be staged, `-v` prints each path, and `-f` stages
 files `.pyn/ignore` hides, which are otherwise refused with exit status `1`. `pyn commit -a` (and `-am "message"`) stages every
-changed tracked file first, deletions included; new files are not included. `pyn commit -u` (a pyn extension: git's `commit -u` is `--untracked-files`) stages the untracked files `.pyn/ignore` does not hide, and `-uam "message"` stages new, modified and deleted files and commits; exclusive paths still need your lock. Without `-m` or `-F`, `pyn commit` opens the editor (`GIT_EDITOR`, `VISUAL`, `EDITOR`, then `vi`) on `.pyn/local_only/COMMIT_EDITMSG`, which lists the staged changes in `#` lines; those lines are dropped, and a message that is empty after that (also one given with `-m` or `-F`) aborts the commit. `pyn restore --staged <path>...` takes paths out of the staged set and
+changed tracked file first, deletions included; new files are not included. `pyn commit -u` (a pyn extension: git's `commit -u` is `--untracked-files`) stages the untracked files `.pyn/ignore` does not hide, and `-uam "message"` stages new, modified and deleted files and commits; exclusive paths still need your lock. Without `-m` or `-F`, `pyn commit` opens [the editor](#the-editor) on `.pyn/local_only/COMMIT_EDITMSG`, which lists the staged changes in `#` lines; those lines are dropped, and a message that is empty after that (also one given with `-m` or `-F`) aborts the commit. `pyn restore --staged <path>...` takes paths out of the staged set and
 leaves the files alone. `pyn diff --cached` shows what is staged against the last update, and `pyn diff` shows the edits made
 since. A tracked file that was deleted is staged as a removal (`add <path>`, `add -u`, `commit -a`; `-n` prints `remove '<path>'`),
 and `pyn commit` sends it with the rest as a deletion in the changeset; the commit then prints `<path> was deleted at revision N` and the
@@ -227,11 +227,19 @@ absolute, or climbs above the workspace root, is refused. In a git repository li
 
 ## Settings
 
-`pyn config get|set|list` reads and writes settings (`pyn config init` runs the first-run prompt). For now there are four: `server`, `user` (the development
-identity), `repo` (`owner/name`, set by `pyn clone`) and `local_store` (`true` or `false`, see [the local store](#the-local-store)). `--repo` or `PYN_REPO` beats the workspace's `repo`, so one
+`pyn config get|set|list` reads and writes settings (`pyn config init` runs the first-run prompt). For now there are five: `server`, `user` (the development
+identity), `repo` (`owner/name`, set by `pyn clone`) and `local_store` (`true` or `false`, see [the local store](#the-local-store)) and `editor` (see [the editor](#the-editor)). `--repo` or `PYN_REPO` beats the workspace's `repo`, so one
 workspace can still reach another repository for a single command. Outside a workspace, repository commands need one of them. `set` writes the workspace's file by default and your user file with `--global`; `get` shows the effective value,
 or one layer with `--local` or `--global`. A `PYN_SERVER` or `--server` always wins, and `PYN_DIR` points at a `.pyn`
 folder kept somewhere else.
+
+## The editor
+
+Commands that edit a message or an instruction sheet start an editor. The command is the first of `GIT_EDITOR`, `PYN_EDITOR`, the
+`editor` setting (the workspace's `.pyn/local_only/config.toml`, else the user file; `pyn config set editor "code --wait"`, with
+`--global` for the user file), `core.editor` (git homes), `VISUAL`, `EDITOR`, then `vi` (`notepad` on Windows). A todo list asks
+`GIT_SEQUENCE_EDITOR` and `sequence.editor` first. The command may carry arguments and is run through the shell with the file as
+its last argument; `:` keeps the file as it is. A dumb terminal (`TERM` unset or `dumb`) is an error only when none of these is set.
 
 ## The local store
 
@@ -377,7 +385,7 @@ nesting deeper than 1024 folders is refused.
 The user file is `~/.config/pyn/config.toml` (`$XDG_CONFIG_HOME/pyn/config.toml`, or `$PYN_CONFIG_DIR/config.toml`) and
 is read on every run. `PYN_CLI_CONFIG=/path/to/file.toml` makes the CLI read and write that TOML file instead; it is
 separate from the server's `PYN_CONFIG`, which names a policy file. The keys are the settings above (`server`, `user`,
-`repo`, `local_store`). Sign-in tokens never go in it: `pyn login` keeps them in `credentials.toml`, and no prompt asks for a password
+`repo`, `local_store`, `editor`). Sign-in tokens never go in it: `pyn login` keeps them in `credentials.toml`, and no prompt asks for a password
 or token.
 
 The first time a command needs the server and none is set by a flag, `PYN_SERVER`, the workspace or a user file, and

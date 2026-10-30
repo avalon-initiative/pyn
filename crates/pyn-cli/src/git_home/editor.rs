@@ -7,6 +7,7 @@ use anyhow::{Result, bail};
 
 use super::GitHome;
 use super::stage::clean_bytes;
+use crate::workspace::{Settings, Workspace};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Which {
@@ -22,15 +23,27 @@ fn dumb_terminal() -> bool {
     std::env::var("TERM").map_or(true, |t| t == "dumb")
 }
 
-/// The editor command: `GIT_EDITOR`, `core.editor`, `VISUAL`, `EDITOR`, then `vi`; a todo list first asks
-/// `GIT_SEQUENCE_EDITOR` and `sequence.editor`.
-fn command_for(git: &GitHome, which: Which) -> Result<String> {
-    command_from(which, &|key| git.repo.config().get(key).map(str::to_string))
+/// The pyn `editor` setting: the workspace's, else the user's.
+pub(crate) fn pyn_setting(ws: &Workspace) -> Option<String> {
+    let user = crate::userconfig::path()
+        .ok()
+        .map(|p| Settings::load(&p).unwrap_or_default());
+    non_empty(ws.settings().editor.or_else(|| user.and_then(|u| u.editor)))
 }
 
-/// The editor command with `config` answering the configuration keys; a pyn server workspace has none.
+/// The editor command, see [`command_from`]; `core.editor` comes from the git configuration.
+fn command_for(git: &GitHome, which: Which) -> Result<String> {
+    command_from(which, pyn_setting(&git.ws), &|key| {
+        git.repo.config().get(key).map(str::to_string)
+    })
+}
+
+/// The editor command: `GIT_EDITOR`, `PYN_EDITOR`, the pyn `editor` setting, `core.editor`, `VISUAL`, `EDITOR`, then
+/// the platform default. A todo list first asks `GIT_SEQUENCE_EDITOR` and `sequence.editor`.
+/// `config` answers git configuration keys; a pyn server workspace has none.
 pub(crate) fn command_from(
     which: Which,
+    pyn_editor: Option<String>,
     config: &dyn Fn(&str) -> Option<String>,
 ) -> Result<String> {
     let env = |name: &str| non_empty(std::env::var(name).ok());
@@ -40,15 +53,21 @@ pub(crate) fn command_from(
     {
         return Ok(editor);
     }
-    if let Some(editor) = env("GIT_EDITOR").or_else(|| config("core.editor")) {
+    if let Some(editor) = env("GIT_EDITOR")
+        .or_else(|| env("PYN_EDITOR"))
+        .or(pyn_editor)
+        .or_else(|| config("core.editor"))
+        .or_else(|| env("VISUAL"))
+        .or_else(|| env("EDITOR"))
+    {
         return Ok(editor);
     }
     if dumb_terminal() {
-        bail!("Terminal is dumb, but EDITOR unset");
+        bail!(
+            "Terminal is dumb and no editor is configured; set one with `pyn config set editor <command>` or PYN_EDITOR"
+        );
     }
-    Ok(env("VISUAL")
-        .or_else(|| env("EDITOR"))
-        .unwrap_or_else(|| "vi".into()))
+    Ok(if cfg!(windows) { "notepad" } else { "vi" }.into())
 }
 
 /// Runs the editor on `path` through the shell and waits; `:` means "keep the file as it is".

@@ -111,6 +111,7 @@ pub fn clone_into(
         user: None,
         repo: Some(repo.to_string()),
         local_store: local_store.then(|| "true".to_string()),
+        editor: None,
     }
     .save(&ws.config_path())?;
 
