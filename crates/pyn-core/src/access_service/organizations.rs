@@ -234,48 +234,6 @@ impl AccessService {
         self.store.org_members(org).await
     }
 
-    /// Adds an existing user account to the organization. Owners only.
-    pub async fn add_org_member(
-        &self,
-        actor: &Identity,
-        org: &UserId,
-        user: &UserId,
-        role: OrgRole,
-    ) -> Result<()> {
-        actor.require_namespace_management()?;
-        self.org(org).await?;
-        self.require_org_owner(org, &actor.user).await?;
-        self.ensure_owner_writable(org).await?;
-        match self.store.account(user).await? {
-            None => return Err(PynError::UserNotFound(user.to_string())),
-            Some(a) if a.kind == AccountKind::Org => {
-                return Err(PynError::InvalidRequest(format!(
-                    "{user} is an organization; only user accounts can be members"
-                )));
-            }
-            Some(_) => {}
-        }
-        let max_members = self.effective_limits(org).await?.members;
-        let result = self
-            .store
-            .add_org_member_capped(org, user, role, max_members)
-            .await;
-        if !self.limit_result(org, result, self.clock.now()).await? {
-            return Err(PynError::AlreadyOrgMember {
-                org: org.to_string(),
-                user: user.to_string(),
-            });
-        }
-        let detail = format!("{user} added as {role}");
-        self.record(
-            AuditScope::Org(org.clone()),
-            &actor.user,
-            AuditAction::OrgMemberAdded,
-            detail,
-        )
-        .await
-    }
-
     /// Changes a member's role. Owners only; the last owner cannot be demoted.
     pub async fn set_org_member_role(
         &self,
