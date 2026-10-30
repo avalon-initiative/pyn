@@ -452,3 +452,13 @@ mod tests {
         );
     }
 }
+
+/// An object uploaded through the LFS API: its sha256 `oid` (lowercase hex), its length, and where the bytes live.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LfsObject {
+    pub oid: String,
+    pub size: u64,
+    pub object: ObjectId,
+    pub created_at: DateTime<Utc>,
+    pub created_by: UserId,
+}

@@ -68,6 +68,8 @@ pub enum PynError {
     ObjectTooLarge { limit: u64 },
     #[error("declared length {declared} but {actual} bytes were sent")]
     LengthMismatch { declared: u64, actual: u64 },
+    #[error("the content hashes to {actual}, not the declared {expected}")]
+    DigestMismatch { expected: String, actual: String },
     #[error("{0} is not locked by you")]
     NotLockHolder(RepoPath),
     #[error("{0} is exclusive: lock it before checking in")]
@@ -289,6 +291,7 @@ impl PynError {
             Self::UploadsBusy { .. } => "uploads_busy",
             Self::ObjectTooLarge { .. } => "object_too_large",
             Self::LengthMismatch { .. } => "length_mismatch",
+            Self::DigestMismatch { .. } => "digest_mismatch",
             Self::NotLockHolder(_) => "not_lock_holder",
             Self::LockRequired(_) => "lock_required",
             Self::NotExclusive(_) => "not_exclusive",

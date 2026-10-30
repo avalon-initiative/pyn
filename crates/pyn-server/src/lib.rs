@@ -748,7 +748,9 @@ fn status_for(e: &PynError) -> StatusCode {
         | PynError::PasswordSignInDisabled
         | PynError::CsrfFailed
         | PynError::OriginNotAllowed => StatusCode::FORBIDDEN,
-        PynError::PushUnsupported(_) => StatusCode::UNPROCESSABLE_ENTITY,
+        PynError::PushUnsupported(_) | PynError::DigestMismatch { .. } => {
+            StatusCode::UNPROCESSABLE_ENTITY
+        }
         PynError::TooManyAttempts { .. } | PynError::UploadsBusy { .. } => {
             StatusCode::TOO_MANY_REQUESTS
         }

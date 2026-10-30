@@ -67,6 +67,8 @@ mod push_merge;
 pub use push_merge::*;
 mod uploads;
 pub use uploads::*;
+mod lfs;
+pub use lfs::*;
 mod webhooks;
 pub use webhooks::*;
 mod outbox;
@@ -3334,6 +3336,13 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_merge_resolution_needs_content_the_repository_knows);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; assembling_needs_chunks_the_repository_uploaded);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; unreferenced_uploads_are_capped_per_repository);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; an_lfs_object_is_recorded_once_and_read_back_by_its_oid);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; lfs_objects_belong_to_the_repository_that_uploaded_them);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; an_lfs_upload_that_does_not_hash_to_its_oid_is_refused_and_kept_nowhere);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; an_lfs_upload_of_another_length_than_declared_is_refused);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; an_lfs_oid_must_be_lowercase_sha256_hex);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_frozen_owner_cannot_upload_an_lfs_object);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; lfs_objects_count_against_the_storage_caps);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_text_merge_over_the_cost_bound_is_left_to_a_person);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; upload_reservations_hold_the_budget_until_released_or_expired);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; parallel_uploads_never_pass_the_unreferenced_budget);
@@ -4149,6 +4158,26 @@ impl MetadataStore for HookedMeta {
         self.inner
             .record_assembled(repo, id, size, chunks, cap)
             .await
+    }
+
+    async fn record_lfs_object(
+        &self,
+        repo: &RepoId,
+        object: &crate::LfsObject,
+    ) -> crate::Result<bool> {
+        self.inner.record_lfs_object(repo, object).await
+    }
+
+    async fn lfs_object(
+        &self,
+        repo: &RepoId,
+        oid: &str,
+    ) -> crate::Result<Option<crate::LfsObject>> {
+        self.inner.lfs_object(repo, oid).await
+    }
+
+    async fn lfs_bytes(&self, repo: &RepoId) -> crate::Result<u64> {
+        self.inner.lfs_bytes(repo).await
     }
 
     async fn object_is_recorded(&self, id: &ObjectId) -> crate::Result<bool> {
