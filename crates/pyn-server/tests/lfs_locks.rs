@@ -18,6 +18,9 @@ use pyn_server::{AppState, router};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
+#[path = "common/stock_git.rs"]
+mod stock_git;
+
 const RULES: &str = "[meta]\ndefault = \"shared\"\n[exclusive]\npaths = [\"Content/\"]\n";
 const REPO_ID: &str = "t";
 const BASE: &str = "/v1/repos/owner/game/info/lfs";
@@ -579,41 +582,27 @@ async fn stock_git_lfs_locks_and_unlocks() {
         return;
     }
     let w = world().await;
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let app = w.app.clone();
-    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let (addr, trace) = stock_git::serve(w.app.clone()).await;
 
     let dir = tempfile::tempdir().unwrap();
     let url = format!(
         "http://wendy:{}@{addr}/v1/repos/owner/game/info/lfs",
         w.wendy
     );
-    let git = |args: &[&str]| {
-        let out = std::process::Command::new("git")
-            .args(args)
-            .current_dir(dir.path())
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .output()
-            .unwrap();
-        (
-            out.status.success(),
-            String::from_utf8_lossy(&out.stdout).into_owned()
-                + &String::from_utf8_lossy(&out.stderr),
-        )
+    let git = stock_git::Git {
+        dir: dir.path().to_path_buf(),
+        trace,
     };
-    assert!(git(&["init", "-q"]).0);
-    assert!(git(&["config", "lfs.url", &url]).0);
-    assert!(git(&["config", "lfs.locksverify", "true"]).0);
-    let (ok, out) = git(&["lfs", "lock", "Content/a.umap"]);
-    assert!(ok, "{out}");
-    let (ok, out) = git(&["lfs", "locks"]);
+    git.run(&["init", "-q"]);
+    git.run(&["config", "lfs.url", &url]);
+    git.run(&["config", "lfs.locksverify", "true"]);
+    git.run(&["lfs", "lock", "Content/a.umap"]);
+    let out = git.run(&["lfs", "locks"]);
     assert!(
-        ok && out.contains("Content/a.umap") && out.contains("wendy"),
+        out.contains("Content/a.umap") && out.contains("wendy"),
         "{out}"
     );
-    let (ok, out) = git(&["lfs", "unlock", "Content/a.umap"]);
-    assert!(ok, "{out}");
-    let (ok, out) = git(&["lfs", "locks"]);
-    assert!(ok && !out.contains("Content/a.umap"), "{out}");
+    git.run(&["lfs", "unlock", "Content/a.umap"]);
+    let out = git.run(&["lfs", "locks"]);
+    assert!(!out.contains("Content/a.umap"), "{out}");
 }

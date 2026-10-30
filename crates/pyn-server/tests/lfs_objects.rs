@@ -21,6 +21,9 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tower::ServiceExt;
 
+#[path = "common/stock_git.rs"]
+mod stock_git;
+
 const PASSWORD: &str = "correct horse battery";
 const BASE: &str = "/v1/repos/alice/game/info/lfs";
 const LFS: &str = "application/vnd.git-lfs+json";
@@ -262,7 +265,7 @@ async fn an_upload_batch_names_the_upload_and_verify_actions_with_absolute_urls(
     let o = &body["objects"][0];
     assert_eq!(o["oid"], oid(bytes));
     assert_eq!(o["size"], bytes.len());
-    assert_eq!(o["authenticated"], true);
+    assert!(o.get("authenticated").is_none());
     assert_eq!(
         o["actions"]["upload"]["href"],
         format!("http://pyn.example{BASE}/objects/{}", oid(bytes))
@@ -856,29 +859,13 @@ async fn stock_git_lfs_pushes_and_fetches_objects() {
         return;
     }
     let w = world().await;
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let app = w.app.clone();
-    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let (addr, trace) = stock_git::serve(w.app.clone()).await;
 
     let dir = tempfile::tempdir().unwrap();
     let url = format!("http://bob:{}@{addr}/v1/repos/alice/game", w.bob);
-    let git = |args: &[&str]| {
-        let out = std::process::Command::new("git")
-            .args(args)
-            .current_dir(dir.path())
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .env("GIT_AUTHOR_NAME", "t")
-            .env("GIT_AUTHOR_EMAIL", "t@example.com")
-            .env("GIT_COMMITTER_NAME", "t")
-            .env("GIT_COMMITTER_EMAIL", "t@example.com")
-            .output()
-            .unwrap();
-        (
-            out.status.success(),
-            String::from_utf8_lossy(&out.stdout).into_owned()
-                + &String::from_utf8_lossy(&out.stderr),
-        )
+    let git = stock_git::Git {
+        dir: dir.path().to_path_buf(),
+        trace,
     };
     let bytes: Vec<u8> = (0..300_000u32).flat_map(|i| i.to_le_bytes()).collect();
     for args in [
@@ -889,8 +876,7 @@ async fn stock_git_lfs_pushes_and_fetches_objects() {
         vec!["config", "credential.helper", ""],
         vec!["lfs", "track", "*.bin"],
     ] {
-        let (ok, out) = git(&args);
-        assert!(ok, "{args:?}: {out}");
+        git.run(&args);
     }
     std::fs::write(dir.path().join("asset.bin"), &bytes).unwrap();
     for args in [
@@ -898,8 +884,7 @@ async fn stock_git_lfs_pushes_and_fetches_objects() {
         vec!["commit", "-q", "-m", "add"],
         vec!["lfs", "push", "--all", "origin"],
     ] {
-        let (ok, out) = git(&args);
-        assert!(ok, "{args:?}: {out}");
+        git.run(&args);
     }
     assert_eq!(
         get_with(&w, &w.bob, &oid(&bytes), None).await.body.len(),
@@ -912,8 +897,7 @@ async fn stock_git_lfs_pushes_and_fetches_objects() {
         vec!["lfs", "fetch", "--all", "origin"],
         vec!["lfs", "checkout"],
     ] {
-        let (ok, out) = git(&args);
-        assert!(ok, "{args:?}: {out}");
+        git.run(&args);
     }
     assert_eq!(std::fs::read(dir.path().join("asset.bin")).unwrap(), bytes);
 }
