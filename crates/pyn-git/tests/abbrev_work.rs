@@ -1,44 +1,14 @@
-//! Count binary id accesses inside the production pack search, including internal enumeration.
+//! Count binary id accesses inside the real pack search, including internal enumeration.
 
 mod common;
 
-#[path = "../src/counters.rs"]
-pub mod counters;
-#[path = "../src/error.rs"]
-pub mod error;
-// Crate-private helpers of the database are called only by other pyn-git modules.
-#[allow(dead_code)]
-#[path = "../src/odb.rs"]
-pub mod odb;
-#[path = "../src/pack.rs"]
-pub mod pack;
-#[path = "../src/util.rs"]
-pub mod util;
-
-pub use odb::Object;
-
-pub mod ingest {
-    pub use pyn_git::MAX_DELTA_DEPTH;
-}
-
-pub mod delta {
-    pub fn apply(_: &[u8], _: &[u8]) -> crate::error::Result<Vec<u8>> {
-        panic!("abbreviation lookup must not decode object bodies")
-    }
-}
-
-pub mod walk {
-    pub fn object_links(
-        _: pyn_object::Algorithm,
-        _: &pyn_object::ObjectId,
-        _: &crate::Object,
-    ) -> Vec<pyn_object::ObjectId> {
-        unreachable!("the fixtures have no promisor packs")
-    }
-}
-
 use common::fixture_dir;
+use pyn_git::{ObjectDb, counters};
 use pyn_object::{Algorithm, ObjectId};
+
+fn take_id_accesses() -> usize {
+    counters::take().id_accesses
+}
 
 #[test]
 fn pack_abbreviation_bounds_binary_id_accesses() {
@@ -51,13 +21,13 @@ fn pack_abbreviation_bounds_binary_id_accesses() {
             } else {
                 fixture_dir(&format!("{}-packed", algorithm.name())).join("dot-git/objects")
             };
-            let db = odb::ObjectDb::open(&dir, algorithm).unwrap();
+            let db = ObjectDb::open(&dir, algorithm).unwrap();
             let packs = db.packs();
             let pack = &packs[0];
             let ids: Vec<_> = pack.ids().collect();
             assert!(!ids.is_empty());
             assert_eq!(
-                pack::Pack::take_id_accesses(),
+                take_id_accesses(),
                 ids.len(),
                 "the id-access counter must observe actual pack enumeration"
             );
@@ -103,7 +73,7 @@ fn pack_abbreviation_bounds_binary_id_accesses() {
                         expected,
                         "positive rendering control for {id}"
                     );
-                    let accesses = pack::Pack::take_id_accesses();
+                    let accesses = take_id_accesses();
                     assert!(
                         accesses <= bound,
                         "pack abbreviation must bound binary id accesses: {id}, minimum {minimum}, got {accesses}, allowed {bound}"
@@ -123,7 +93,7 @@ fn pack_abbreviation_bounds_binary_id_accesses() {
 #[test]
 fn pack_prefix_lookup_reads_only_the_matching_range() {
     for algorithm in [Algorithm::Sha1, Algorithm::Sha256] {
-        let db = odb::ObjectDb::open(
+        let db = ObjectDb::open(
             &fixture_dir(&format!("{}-packed", algorithm.name())).join("dot-git/objects"),
             algorithm,
         )
@@ -131,11 +101,11 @@ fn pack_prefix_lookup_reads_only_the_matching_range() {
         let packs = db.packs();
         let pack = &packs[0];
         let ids: Vec<_> = pack.ids().collect();
-        pack::Pack::take_id_accesses();
+        take_id_accesses();
         for id in &ids {
             let hex = id.to_hex();
             let found = pack.ids_with_prefix(&hex[..8]);
-            let accesses = pack::Pack::take_id_accesses();
+            let accesses = take_id_accesses();
             assert!(found.contains(id));
             let bound = 2 * ((usize::BITS - ids.len().leading_zeros()) as usize + 1) + found.len();
             assert!(
