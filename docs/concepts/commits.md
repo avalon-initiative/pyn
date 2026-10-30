@@ -225,7 +225,8 @@ second parent:
   parent's pointer, and the usual lock rules apply (`lock_required`, `lock_held`, a lapsed lease refused). A diverged path whose
   tree keeps the first parent's content is accepted as an explicit choice only if the pusher holds the path's lock; otherwise the
   push is refused whole with `merge_conflict`, naming the paths. A shared version that met a conversion is diverged in the same
-  way.
+  way. A version the branch already held before the push is not diverged, even when a policy commit earlier in the same
+  push made its path exclusive: the edit came first, so a merge that takes it needs no lock.
 - A content the tree gives a path that is neither pointer's is a new revision, so an exclusive path needs the lock then too.
   A path the tree removes is a deletion revision.
 - A policy file the merge adopts on the default branch is checked and applied like an arriving policy (`edit_policy` permission,
