@@ -119,7 +119,6 @@ pub(crate) fn edit_message_with(
     comment: &str,
     before: impl FnOnce(&Path) -> Result<()>,
 ) -> Result<Option<Vec<u8>>> {
-    let path = git.repo.git().git_dir().join("COMMIT_EDITMSG");
     let mut text = message.to_vec();
     if !text.is_empty() && !text.ends_with(b"\n") {
         text.push(b'\n');
@@ -128,10 +127,20 @@ pub(crate) fn edit_message_with(
         b"\n# Please enter the commit message for your changes. Lines starting\n# with '#' will be ignored, and an empty message aborts the commit.\n",
     );
     text.extend_from_slice(comment.as_bytes());
-    std::fs::write(&path, &text)?;
+    Ok(edited_message(&edit_text(git, &text, before)?))
+}
+
+/// Writes `text` to `COMMIT_EDITMSG`, runs `before` on it, then the editor; returns the file the editor left.
+pub(crate) fn edit_text(
+    git: &GitHome,
+    text: &[u8],
+    before: impl FnOnce(&Path) -> Result<()>,
+) -> Result<Vec<u8>> {
+    let path = git.repo.git().git_dir().join("COMMIT_EDITMSG");
+    std::fs::write(&path, text)?;
     before(&path)?;
     run(git, Which::Message, &path)?;
-    Ok(edited_message(&std::fs::read(&path)?))
+    Ok(std::fs::read(&path)?)
 }
 
 #[cfg(test)]

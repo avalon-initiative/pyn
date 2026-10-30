@@ -105,13 +105,13 @@ The commands named in decision #218.
 | `git add -i`, `--interactive` | `pyn add -i` | git home only | The menu of status, update, revert, add untracked, patch, diff and help, see [Interactive add](#interactive-add). On a pyn server it is a usage error (`129`). Unmerged paths are listed and handled as git does. |
 | `git add -e`, `--chmod`, `--renormalize` | none | unsupported | Usage error (`129`). A path is a file, a folder or a git pathspec (globs and `:` magic, see [Pathspecs](#pathspecs)), taken relative to where you stand; on a git home `:(attr:...)` selects by attribute, on a pyn server it is refused. |
 | `git add --pathspec-from-file`, `--pathspec-file-nul` | same | same | Also on `rm`, `reset`, `restore`, `checkout` and `stash push`, see [Pathspecs](#pathspecs). |
-| `git commit -m <msg>` | `pyn commit -m <msg>` | different | Commits what is staged as one unit of work. On a pyn server it is one changeset uploaded to the server, so commit and publish are one step (no `push` needed), it releases the locks it held, and the output is `<path> is now at revision N` for each file. On a git home it is a git commit on the current branch (or on a detached `HEAD`, which moves only `HEAD`) and prints `[<branch> <id>] <subject>`, with `detached HEAD` in place of the branch name when detached. `-m` repeats for more paragraphs and is taken as given. Without `-m`, `-F` or `-C` the editor opens on both homes ([lookup order](workspace.md#the-editor): `GIT_EDITOR`, `PYN_EDITOR`, the pyn `editor` setting, `core.editor` on a git home, `VISUAL`, `EDITOR`, then `vi`) on `COMMIT_EDITMSG` (`.git/COMMIT_EDITMSG` on a git home, `.pyn/local_only/COMMIT_EDITMSG` on a pyn server): an empty first line, git's "Please enter the commit message" lines, the branch and the staged changes in `#` lines; lines starting with `#` are dropped. The template lists only the staged changes, not git's unstaged and untracked sections, and `--cleanup` does not change how the editor message is cleaned. On a git home `prepare-commit-msg` sees the template and `commit-msg` the edited message; `--amend` keeps the old message without opening the editor, as does `--no-edit`, and `-e`/`--edit` is unsupported. A message that is empty after that cleanup (from the editor, `-m ""`, only blanks or `#` lines, or an empty `-F` file) aborts with `Aborting commit due to empty commit message.` and exit `1`, on both homes; a git home still takes `--allow-empty-message`. A merge in progress keeps its own message. Nothing staged exits `1` with a message and never opens the editor. |
+| `git commit -m <msg>` | `pyn commit -m <msg>` | different | Commits what is staged as one unit of work. On a pyn server it is one changeset uploaded to the server, so commit and publish are one step (no `push` needed), it releases the locks it held, and the output is `<path> is now at revision N` for each file. On a git home it is a git commit on the current branch (or on a detached `HEAD`, which moves only `HEAD`) and prints `[<branch> <id>] <subject>`, with `detached HEAD` in place of the branch name when detached. `-m` repeats for more paragraphs and is taken as given. Without `-m`, `-F` or `-C` the editor opens on both homes ([lookup order](workspace.md#the-editor): `GIT_EDITOR`, `PYN_EDITOR`, the pyn `editor` setting, `core.editor` on a git home, `VISUAL`, `EDITOR`, then `vi`) on `COMMIT_EDITMSG` (`.git/COMMIT_EDITMSG` on a git home, `.pyn/local_only/COMMIT_EDITMSG` on a pyn server): an empty first line, git's "Please enter the commit message" lines, the branch and the staged changes in `#` lines; lines starting with `#` are dropped. A git home also lists the unstaged and untracked paths and opens the editor for `-e`, `--amend`, a merge or squash in progress and `--cleanup` as git does, see [The commit editor on a git home](#the-commit-editor-on-a-git-home); a pyn server opens it only when no message is given and refuses `-e`. On a git home `prepare-commit-msg` sees the template and `commit-msg` the edited message. A message that is empty after that cleanup (from the editor, `-m ""`, only blanks or `#` lines, or an empty `-F` file) aborts with `Aborting commit due to empty commit message.` and exit `1`, on both homes; a git home still takes `--allow-empty-message`. A merge in progress keeps its own message. Nothing staged exits `1` with a message and never opens the editor. |
 | `git commit -a`, `-am <msg>` | `pyn commit -a`, `-am <msg>` | same | Stages every changed tracked file, deletions included, then commits; new files are not included. Both homes. |
 | `git commit <path>...` | `pyn commit -m <msg> <path>...` | different | On a pyn server: one atomic commit of the named paths as they are on disk, whatever is staged (git's `--only`). Not available on a git home, which says to `add` the paths first. |
 | `git commit -F <file>` (`-` is standard input) | same | git home: supported; pyn server: supported | The same message reading and cleanup on both homes, with and without the local store; `-m` and `-F` together are refused. On a pyn server `--file` stays the content file (it has no short form, so `-F` does not clash). See [Commit flags on a git home](#commit-flags-on-a-git-home). |
-| `git commit --file=<file>`, `--allow-empty`, `--author=<name <email>>`, `--date=<date>`, `-s`, `--signoff`, `--amend`, `-S[<keyid>]`, `--gpg-sign[=<keyid>]`, `--no-gpg-sign`, `--allow-empty-message`, `--cleanup=<mode>`, `--reset-author`, `--trailer <trailer>`, `-C <commit>`, `--reuse-message=<commit>` | same | git home: supported | Git's behaviour on a git home; on a pyn server a usage error (`129`) naming the flag, because commits there are immutable (no `--amend`) and `--file` is the content file. `--allow-empty` is refused there because the server rejects a pushed commit that changes no file. `--author` and `--date` are the exception: a pyn server workspace with the local store takes them on a commit of staged changes (author and author date only; the committer stays the signed-in account, the audit actor the pusher, and they survive a push), and refuses them without the local store, on a path commit and on a merge conclusion. `-s` waits until accounts carry emails. See [Commit flags on a git home](#commit-flags-on-a-git-home). |
+| `git commit --file=<file>`, `--allow-empty`, `--author=<name <email>>`, `--date=<date>`, `-s`, `--signoff`, `--amend`, `-S[<keyid>]`, `--gpg-sign[=<keyid>]`, `--no-gpg-sign`, `--allow-empty-message`, `--cleanup=<mode>`, `--reset-author`, `--trailer <trailer>`, `-C <commit>`, `--reuse-message=<commit>`, `-e`, `--edit` | same | git home: supported | Git's behaviour on a git home; on a pyn server a usage error (`129`) naming the flag, because commits there are immutable (no `--amend`) and `--file` is the content file. `--allow-empty` is refused there because the server rejects a pushed commit that changes no file. `--author` and `--date` are the exception: a pyn server workspace with the local store takes them on a commit of staged changes (author and author date only; the committer stays the signed-in account, the audit actor the pusher, and they survive a push), and refuses them without the local store, on a path commit and on a merge conclusion. `-s` waits until accounts carry emails. See [Commit flags on a git home](#commit-flags-on-a-git-home). |
 | `git commit -q`, `--quiet`, `-n`, `--no-verify`, `--verify`, `-v`, `--verbose`, `--status`, `--no-status`, `--no-edit` | same | supported | Both homes. `-q` prints no summary (errors and warnings stay); `--no-verify` skips `pre-commit` and `commit-msg` on a git home (see [Client hooks](#client-hooks)) and is ignored on a pyn server; the rest are accepted and ignored. |
-| `git commit -c <commit>`, `--reedit-message`, `-e`, `--edit`, `-t <file>`, `--template`, `--fixup`, `--squash`, `--dry-run`, `--short`, `--branch`, `--long`, `--porcelain`, `-z`, `--ahead-behind`, `--untracked-files`, `-i`, `--include`, `-o`, `--only`, `-p`, `--patch`, `--interactive`, `-U`, `--unified`, `--inter-hunk-context`, `--pathspec-from-file`, `--pathspec-file-nul`, `--no-post-rewrite`, `--post-rewrite`, `--no-quiet`, `--no-verbose` and the other `--no-` forms git generates for its options | none | unsupported | Usage error (`129`). Each needs an editor, a status report, or a path selection `commit` does not have: use `add` to choose paths and `-m`/`-F` for the message. |
+| `git commit -c <commit>`, `--reedit-message`, `-t <file>`, `--template`, `--fixup`, `--squash`, `--dry-run`, `--short`, `--branch`, `--long`, `--porcelain`, `-z`, `--ahead-behind`, `--untracked-files`, `-i`, `--include`, `-o`, `--only`, `-p`, `--patch`, `--interactive`, `-U`, `--unified`, `--inter-hunk-context`, `--pathspec-from-file`, `--pathspec-file-nul`, `--no-post-rewrite`, `--post-rewrite`, `--no-quiet`, `--no-verbose` and the other `--no-` forms git generates for its options | none | unsupported | Usage error (`129`). Each needs an editor, a status report, or a path selection `commit` does not have: use `add` to choose paths and `-m`/`-F` for the message. |
 | `pyn commit -u`, `--untracked` | | pyn only | Stages the untracked files that are not ignored (`.pyn/ignore` on a pyn server, the `.gitignore` rules on a git home) before committing, and combines with `-a` and `-m` in any order: `pyn commit -uam "msg"` stages new, modified and deleted files. It differs from git, where `commit -u` is `--untracked-files` (a status option, still unsupported). Exclusive paths need your lock exactly as for `pyn add`; with it alone, tracked changes stay unstaged. |
 | `pyn commit --file <local>` | | pyn only | Content file for a single path. In a workspace the file at the path is the default. |
 | `pyn commit --base <rev>` | | pyn only | The revision the edit started from; the server rejects the commit if the branch has moved on from it on an exclusive path. |
@@ -1393,17 +1393,17 @@ git would give the same tree, parent, identity, dates and message. `commit <path
 - `-s` and `--signoff` append `Signed-off-by: <committer name> <email>` after git's trailer rules: no blank line when the last
   paragraph is a trailer block, and nothing when the last line already is that line.
 - `--amend` replaces the tip with a commit that has the tip's parents, author (name, email and date) and message, and the
-  index as its tree; `-m` or `-F` replace the message, `--author` and `--date` replace the author fields, and `--no-edit` is
-  accepted (it keeps the message and does not open the editor). `GIT_AUTHOR_*` is ignored, as in git. The committer and its date are new, a `gpgsig`
+  index as its tree; `-m` or `-F` replace the message, `--author` and `--date` replace the author fields. Without `-m`, `-F`
+  or `--no-edit` the editor opens on the old message ([below](#the-commit-editor-on-a-git-home)). `GIT_AUTHOR_*` is ignored, as in git. The committer and its date are new, a `gpgsig`
   header is dropped and other headers are kept. It exits `128` with no commit to amend or during a merge; an amend that
   would leave the commit equal to its parent's tree exits `1` unless `--allow-empty` is given; amending a merge commit is allowed.
   The branch and `HEAD` logs get `commit (amend): <subject>`, and `ORIG_HEAD` is not written.
 - `-S`, `--gpg-sign[=<keyid>]` (the key id attached or after `=`) and `--no-gpg-sign` (the last of the two wins) sign the commit;
   `commit.gpgsign=true` signs by default. See [Signing](#signing).
 - `--allow-empty-message` accepts a message that is empty after cleanup, and stores it as zero bytes. `--cleanup=<mode>` is
-  `strip` (also drops `#` lines), `whitespace` (the default, and `default` and `scissors`, which differ from it only when an editor
-  is used) or `verbatim` (the message exactly as given, `-m` paragraphs joined by a blank line); it applies to `-m`, `-F` and `-C`,
-  and an unknown mode is an error (`128`). `core.commentChar` is not read. A comment-only message is not empty under `whitespace`.
+  `strip` (also drops `#` lines), `whitespace` (the default without the editor, as are `default` and `scissors`) or `verbatim` (the
+  message exactly as given, `-m` paragraphs joined by a blank line); it applies to `-m`, `-F`, `-C` and the editor (see
+  [below](#the-commit-editor-on-a-git-home)), and an unknown mode is an error (`128`). `core.commentChar` is not read. A comment-only message is not empty under `whitespace`.
 - `--reset-author` takes the author from now (and `GIT_AUTHOR_*`) instead of the commit's, and needs `--amend` or `-C` (exit `128`);
   it cannot be combined with `--author`.
 - `--trailer <Token: value>` (or `Token=value`) adds a trailer after any `-s` line, joining the last paragraph when it is a trailer
@@ -1419,7 +1419,40 @@ git would give the same tree, parent, identity, dates and message. `commit <path
 A pyn server refuses all of these except `-q`, `-n`, `--no-verify`, `--verify`, `-v`, `--status`, `--no-status`, `--no-edit` and `-F` with a
 usage error (`129`), because its commits are immutable and `--file` there is the content file.
 
-Not built, on either home: `-c`/`--reedit-message`, `-e`/`--edit`, `-t`/`--template`, `--fixup`, `--squash`, `--dry-run`, `--short`,
+#### The commit editor on a git home
+
+The editor opens when no `-m`, `-F` or `-C` gave a message, and also with `-e`/`--edit`; `--no-edit` (the last of the two wins)
+keeps it closed. Its file is `COMMIT_EDITMSG` and starts with the message so far, then git's help lines and the `#` status lines:
+
+| Message so far | Source |
+| --- | --- |
+| `-m`, `-F`, `-C` (only with `-e`) | The message, tidied unless `--cleanup=verbatim`. |
+| `--amend` | The tip's message; the status lines add `Date:` (the author date) and, when the author is not the committer, `Author:`. |
+| A merge in progress | `MERGE_MSG` with its `# Conflicts:` list, then git's "It looks like you may be committing a merge" note. |
+| A pending `SQUASH_MSG` | The squashed log, no note. |
+| None | Empty. |
+
+`-s` and `--trailer` are added to that message before the editor opens (above a trailing `# Conflicts:` block), and a message left
+with only `Signed-off-by:` lines is empty. The status lines list the staged, unstaged (`modified`, `deleted`, `typechange`) and
+untracked paths (a folder holding nothing tracked is one `dir/`), and `Initial commit` or the merge note where git has them.
+`--no-edit` with no message source is `Aborting commit due to empty commit message.` (exit `1`).
+
+`--cleanup` decides what the editor leaves, and the help lines:
+
+| Mode | Result |
+| --- | --- |
+| `default`, unset | `strip`. |
+| `strip` | Drops `#` lines and tidies blanks. |
+| `whitespace` | Tidies blanks only; the `#` lines stay, and the help says so. |
+| `verbatim` | Keeps every byte. |
+| `scissors` | Cuts from the scissors line down, then tidies; the template has the scissors line in place of the help. |
+
+Without the editor `default` and `scissors` are `whitespace`. What stays different: the status paths are relative to the work
+tree root, not the current folder; `status.showUntrackedFiles`, `status.displayCommentPrefix` and `core.commentChar` are not read;
+`commit-msg` sees the message after cleanup, where git shows it the raw editor file; and a comment-only `-m` with no `--cleanup` is
+still refused (`Aborting commit due to empty commit message.`), deliberately, where git commits it under some modes.
+
+Not built, on either home: `-c`/`--reedit-message`, `-t`/`--template`, `--fixup`, `--squash`, `--dry-run`, `--short`,
 `--branch`, `--long`, `--porcelain`, `-z`, `--ahead-behind`, `-u`/`--untracked-files`, `-i`/`--include`, `-o`/`--only`, `-p`/`--patch`,
 `--interactive`, `-U`/`--unified`, `--inter-hunk-context`, `--pathspec-from-file`, `--pathspec-file-nul`, `--no-post-rewrite` and
 `--post-rewrite`.

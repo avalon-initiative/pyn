@@ -159,6 +159,7 @@ impl Repo {
             .current_dir(cwd)
             .env("HOME", &self.home)
             .env("TZ", "UTC")
+            .env("GIT_EDITOR", "true")
             .env_remove("XDG_CONFIG_HOME")
             .env_remove("PYN_SERVER")
             .env_remove("PYN_USER")
