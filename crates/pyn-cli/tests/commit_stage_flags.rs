@@ -503,17 +503,16 @@ fn git_home_no_message_opens_the_editor_like_git() {
     );
     let seen = fs::read_to_string(seen).unwrap();
     assert!(
-        seen.starts_with("\n# Please enter the commit message"),
+        seen.starts_with(
+            "\n\nSigned-off-by: T <t@example.com>\n\n# Please enter the commit message"
+        ),
         "{seen}"
     );
     assert!(seen.contains("# On branch main"), "{seen}");
     assert!(seen.contains("#\tmodified:   a.txt"), "{seen}");
     assert!(seen.contains("#\tdeleted:    b.txt"), "{seen}");
     assert!(seen.contains("#\tnew file:   new.txt"), "{seen}");
-    assert_eq!(
-        rig.message(),
-        "subject\n\nbody\n\nSigned-off-by: T <t@example.com>\n\n"
-    );
+    assert_eq!(rig.message(), "subject\n\nbody\n\n");
 }
 
 #[test]

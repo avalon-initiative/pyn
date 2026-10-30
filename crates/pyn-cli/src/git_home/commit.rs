@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use pyn_git::Ref;
-use pyn_gitwork::{Head, Pathspec};
+use pyn_gitwork::{Head, Kind, Pathspec};
 use pyn_object::{Commit, Kind as ObjectKind, ObjectId, Signature, hash_object};
 
 use super::GitHome;
@@ -37,8 +37,11 @@ pub struct GitCommitArgs {
     /// Replace the tip commit with a new one, keeping its message unless `-m` or `-F` gives another.
     #[arg(long)]
     amend: bool,
+    /// Open the editor on the message even when `-m`, `-F` or `-C` gave one.
+    #[arg(short = 'e', long, overrides_with = "no_edit")]
+    edit: bool,
     /// Keep the message and do not open the editor.
-    #[arg(long)]
+    #[arg(long, overrides_with = "edit")]
     no_edit: bool,
     #[command(flatten)]
     sign: SignFlag,
@@ -82,12 +85,19 @@ enum Cleanup {
     Strip,
     Whitespace,
     Verbatim,
+    Scissors,
 }
 
+const CUT_LINE: &[u8] = b"# ------------------------ >8 ------------------------";
+
 impl GitCommitArgs {
-    fn cleanup_mode(&self) -> Result<Cleanup> {
+    /// The `--cleanup` mode in effect: `default` strips with the editor and only tidies without it.
+    fn cleanup_mode(&self, editor: bool) -> Result<Cleanup> {
         match self.cleanup.as_deref() {
-            None | Some("default" | "whitespace" | "scissors") => Ok(Cleanup::Whitespace),
+            None | Some("default") if editor => Ok(Cleanup::Strip),
+            None | Some("default" | "whitespace") => Ok(Cleanup::Whitespace),
+            Some("scissors") if editor => Ok(Cleanup::Scissors),
+            Some("scissors") => Ok(Cleanup::Whitespace),
             Some("strip") => Ok(Cleanup::Strip),
             Some("verbatim") => Ok(Cleanup::Verbatim),
             Some(other) => bail!("Invalid cleanup mode {other}"),
@@ -100,6 +110,7 @@ impl GitCommitArgs {
             ("--allow-empty", self.allow_empty),
             ("--signoff", self.signoff),
             ("--amend", self.amend),
+            ("--edit", self.edit),
             ("--allow-empty-message", self.allow_empty_message),
             ("--cleanup", self.cleanup.is_some()),
             ("--reset-author", self.reset_author),
@@ -268,6 +279,16 @@ fn cleaned(raw: &[u8], mode: Cleanup) -> Vec<u8> {
     let out = match mode {
         Cleanup::Verbatim => return raw.to_vec(),
         Cleanup::Whitespace => clean_bytes(raw),
+        Cleanup::Scissors => {
+            let mut head = Vec::new();
+            for line in raw.split_inclusive(|b| *b == b'\n') {
+                if line.strip_suffix(b"\n").unwrap_or(line) == CUT_LINE {
+                    break;
+                }
+                head.extend_from_slice(line);
+            }
+            clean_bytes(&head)
+        }
         Cleanup::Strip => {
             let kept: Vec<&[u8]> = raw
                 .split(|b| *b == b'\n')
@@ -319,39 +340,196 @@ fn forced_author(opts: &CommitOptions) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
     opts.flags.author.as_deref().map(parse_author).transpose()
 }
 
-fn finish_message(mut message: Vec<u8>, opts: &CommitOptions, who: &Signature) -> Vec<u8> {
+/// Whether a message holds nothing but `Signed-off-by:` lines, which git counts as no message.
+fn only_signoffs(message: &[u8]) -> bool {
+    message
+        .split(|b| *b == b'\n')
+        .all(|l| l.is_empty() || l.starts_with(b"Signed-off-by: "))
+}
+
+/// Splits a trailing block of `#` lines (a merge's `# Conflicts:` list) from the message above it.
+fn split_comment_block(message: &[u8]) -> (&[u8], &[u8]) {
+    let lines: Vec<&[u8]> = message.split_inclusive(|b| *b == b'\n').collect();
+    let mut end = lines.len();
+    while end > 0 && lines[end - 1].iter().all(u8::is_ascii_whitespace) {
+        end -= 1;
+    }
+    let mut start = end;
+    while start > 0 && lines[start - 1].starts_with(b"#") {
+        start -= 1;
+    }
+    if start == end || start == 0 {
+        return (message, &[]);
+    }
+    let at = lines[..start].iter().map(|l| l.len()).sum();
+    message.split_at(at)
+}
+
+/// Adds the sign-off and the trailers above a trailing comment block, as git does.
+fn finish_message(message: Vec<u8>, opts: &CommitOptions, who: &Signature) -> Vec<u8> {
+    let (body, comments) = split_comment_block(&message);
+    if (!opts.flags.signoff && opts.flags.trailer.is_empty()) || comments.is_empty() {
+        return add_trailers(message, opts, who);
+    }
+    let mut out = add_trailers(body.to_vec(), opts, who);
+    out.push(b'\n');
+    out.extend_from_slice(comments);
+    out
+}
+
+fn add_trailers(mut message: Vec<u8>, opts: &CommitOptions, who: &Signature) -> Vec<u8> {
     if opts.flags.signoff {
         message = append_signoff(message, &who.name, &who.email);
     }
     append_trailers(message, &opts.flags.trailer)
 }
 
-/// The `#` lines under an editor message: the branch and the staged changes.
-fn staged_comment(
-    git: &GitHome,
-    head: &Head,
-    base: &ObjectId,
+/// What the `#` lines under an editor message report.
+struct Shown<'a> {
+    head: &'a Head,
+    base: &'a ObjectId,
     has_parent: bool,
-    tree: &ObjectId,
-) -> Result<String> {
-    let mut out = match head {
-        Head::Branch { name, .. } => format!("#\n# On branch {name}\n"),
-        Head::Detached(id) => format!("#\n# HEAD detached at {}\n", git.repo.abbreviate(id)?),
-    };
-    out.push_str("# Changes to be committed:\n");
-    let changes =
-        git.repo
-            .diff_trees(has_parent.then_some(base), Some(tree), &Pathspec::default())?;
-    for c in changes {
-        let what = match (&c.old, &c.new) {
-            (None, _) => "new file:  ",
-            (_, None) => "deleted:   ",
-            _ => "modified:  ",
-        };
-        out.push_str(&format!("#\t{what} {}\n", super::path_string(&c.path)));
+    tree: &'a ObjectId,
+    index: &'a pyn_git::Index,
+    merging: bool,
+    /// The `Author:` and `Date:` lines, already formed.
+    idents: Vec<String>,
+}
+
+fn change_word(kind: Kind) -> &'static str {
+    match kind {
+        Kind::Added => "new file:  ",
+        Kind::Deleted => "deleted:   ",
+        Kind::TypeChange => "typechange:",
+        _ => "modified:  ",
     }
-    out.push_str("#\n");
+}
+
+/// The `#` lines under an editor message: the identity, the branch and the staged, unstaged and untracked paths.
+fn status_comment(git: &GitHome, shown: &Shown) -> Result<String> {
+    let mut out = String::from("#\n");
+    if !shown.idents.is_empty() {
+        for line in &shown.idents {
+            out.push_str(&format!("# {line}\n"));
+        }
+        out.push_str("#\n");
+    }
+    match shown.head {
+        Head::Branch { name, .. } => out.push_str(&format!("# On branch {name}\n")),
+        Head::Detached(id) => {
+            out.push_str(&format!(
+                "# HEAD detached at {}\n",
+                git.repo.abbreviate(id)?
+            ));
+        }
+    }
+    if !shown.has_parent {
+        out.push_str("#\n# Initial commit\n#\n");
+    }
+    if shown.merging {
+        out.push_str("# All conflicts fixed but you are still merging.\n#\n");
+    }
+    let staged = git.repo.diff_trees(
+        shown.has_parent.then_some(shown.base),
+        Some(shown.tree),
+        &Pathspec::default(),
+    )?;
+    if !staged.is_empty() {
+        out.push_str("# Changes to be committed:\n");
+        for c in staged {
+            let what = match (&c.old, &c.new) {
+                (None, _) => "new file:  ",
+                (_, None) => "deleted:   ",
+                _ => "modified:  ",
+            };
+            out.push_str(&format!("#\t{what} {}\n", super::path_string(&c.path)));
+        }
+        out.push_str("#\n");
+    }
+    let unstaged: Vec<_> = git
+        .repo
+        .unstaged_changes(shown.index)?
+        .into_iter()
+        .filter(|(_, kind)| *kind != Kind::Unmerged)
+        .collect();
+    if !unstaged.is_empty() {
+        out.push_str("# Changes not staged for commit:\n");
+        for (path, kind) in unstaged {
+            out.push_str(&format!(
+                "#\t{} {}\n",
+                change_word(kind),
+                super::path_string(&path)
+            ));
+        }
+        out.push_str("#\n");
+    }
+    let untracked = git.repo.untracked(shown.index)?;
+    if !untracked.is_empty() {
+        out.push_str("# Untracked files:\n");
+        for path in untracked {
+            out.push_str(&format!("#\t{}\n", super::path_string(&path)));
+        }
+        out.push_str("#\n");
+    }
     Ok(out)
+}
+
+/// The `Author:` (when it is not the committer) and `Date:` (an author date that is not now) lines.
+fn author_lines(
+    author: &Signature,
+    committer: &Signature,
+    flags: &GitCommitArgs,
+    reused: bool,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    if (author.name.as_slice(), author.email.as_slice())
+        != (committer.name.as_slice(), committer.email.as_slice())
+    {
+        lines.push(format!(
+            "Author:    {} <{}>",
+            String::from_utf8_lossy(&author.name),
+            String::from_utf8_lossy(&author.email)
+        ));
+    }
+    if (reused && !flags.reset_author) || flags.date.is_some() {
+        lines.push(format!(
+            "Date:      {}",
+            crate::time::git_date(author.time, author.offset_minutes)
+        ));
+    }
+    lines
+}
+
+/// The editor file: `seed`, the notes for the cleanup mode and a merge, and the `#` status lines.
+fn editor_text(seed: &[u8], mode: Cleanup, merging: bool, status: &str) -> Vec<u8> {
+    const CUT: &str = "# ------------------------ >8 ------------------------\n# Do not modify or remove the line above.\n# Everything below it will be ignored.\n";
+    let mut text = seed.to_vec();
+    if !text.is_empty() && !text.ends_with(b"\n") {
+        text.push(b'\n');
+    }
+    let mut tail = String::new();
+    if merging {
+        if mode == Cleanup::Scissors {
+            tail.push_str(CUT);
+        }
+        tail.push_str(
+            "#\n# It looks like you may be committing a merge.\n# If this is not correct, please run\n#\tgit update-ref -d MERGE_HEAD\n# and try again.\n\n",
+        );
+    }
+    tail.push('\n');
+    tail.push_str(match mode {
+        Cleanup::Strip => {
+            "# Please enter the commit message for your changes. Lines starting\n# with '#' will be ignored, and an empty message aborts the commit.\n"
+        }
+        Cleanup::Scissors if merging => "",
+        Cleanup::Scissors => CUT,
+        _ => {
+            "# Please enter the commit message for your changes. Lines starting\n# with '#' will be kept; you may remove them yourself if you want to.\n# An empty message aborts the commit.\n"
+        }
+    });
+    text.extend_from_slice(tail.as_bytes());
+    text.extend_from_slice(status.as_bytes());
+    text
 }
 
 pub fn commit(git: &GitHome, opts: &CommitOptions) -> Result<()> {
@@ -393,7 +571,7 @@ pub fn commit(git: &GitHome, opts: &CommitOptions) -> Result<()> {
         (true, Some(p)) => Some(git.repo.commit(&p)?),
         _ => None,
     };
-    let mode = opts.flags.cleanup_mode()?;
+    opts.flags.cleanup_mode(true)?;
     let reused = match &opts.flags.reuse_message {
         Some(spec) => {
             if file.is_some() {
@@ -421,38 +599,55 @@ pub fn commit(git: &GitHome, opts: &CommitOptions) -> Result<()> {
         (None, Some(c)) => Some(c.message.clone()),
         (None, None) => (!opts.messages.is_empty()).then(|| joined_messages(&opts.messages)),
     };
-    let blank = reused.is_none()
+    let given = raw.is_some();
+    let use_editor = if opts.flags.edit {
+        true
+    } else {
+        !given && !opts.flags.no_edit
+    };
+    let mode = opts.flags.cleanup_mode(use_editor)?;
+    let blank = !use_editor
+        && reused.is_none()
         && opts.flags.cleanup.is_none()
         && raw
             .as_ref()
             .is_some_and(|r| super::editor::edited_message(r).is_none());
-    let explicit = raw.map(|r| cleaned(&r, mode));
-    let explicit_given = explicit.is_some();
+    let squash_pending = git.repo.git().git_dir().join("SQUASH_MSG").exists();
+    let pending = pending_message(git, true, true)?;
+    let pending_used = !given && tip.is_none() && (!merged.is_empty() || squash_pending);
+    let seed = match (raw, &tip, pending) {
+        (Some(r), ..) => r,
+        (None, Some(t), _) => t.message.clone(),
+        (None, None, Some(m)) if pending_used => m,
+        _ => Vec::new(),
+    };
+    let explicit = if use_editor {
+        None
+    } else if given || tip.is_some() {
+        Some(cleaned(&seed, mode))
+    } else {
+        pending_used.then(|| seed.clone())
+    };
     if (blank || explicit.as_ref().is_some_and(|m| m.is_empty())) && !opts.flags.allow_empty_message
     {
         eprintln!("Aborting commit due to empty commit message.");
         std::process::exit(1);
     }
-    let squash_pending = git.repo.git().git_dir().join("SQUASH_MSG").exists();
-    let mut needs_editor = false;
-    let mut message = match (
-        explicit,
-        &tip,
-        pending_message(git, opts.flags.no_edit, true)?,
-    ) {
-        (Some(m), ..) => m,
-        (None, Some(t), _) => clean_bytes(&t.message),
-        (None, None, Some(m)) if !merged.is_empty() || squash_pending => m,
-        _ if opts.flags.no_edit => crate::usage_error(
-            "the following required arguments were not provided:\n  --message <MESSAGE>",
-        ),
+    if explicit.is_none() && !use_editor && !opts.flags.allow_empty_message {
+        eprintln!("Aborting commit due to empty commit message.");
+        std::process::exit(1);
+    }
+    let mut message = explicit.unwrap_or_default();
+    let committer = identity(git, "committer")?;
+    let seed = match mode {
+        Cleanup::Verbatim => seed,
         _ => {
-            needs_editor = true;
-            Vec::new()
+            let tidy = clean_bytes(&seed);
+            if tidy == b"\n" { Vec::new() } else { tidy }
         }
     };
-    let committer = identity(git, "committer")?;
-    if !needs_editor {
+    let seed = finish_message(seed, opts, &committer);
+    if !use_editor {
         message = finish_message(message, opts, &committer);
     }
     let forced = forced_author(opts)?;
@@ -565,49 +760,70 @@ pub fn commit(git: &GitHome, opts: &CommitOptions) -> Result<()> {
         "commit-msg",
         "post-commit",
     ]);
-    if needs_editor {
-        let comment = staged_comment(git, &head, &base, parent.is_some(), &tree)?;
+    let source = match (
+        &opts.flags.reuse_message,
+        given,
+        amend,
+        merged.is_empty(),
+        squash_pending,
+    ) {
+        (Some(spec), ..) => vec!["commit".to_string(), spec.clone()],
+        (None, true, ..) => vec!["message".to_string()],
+        (None, false, true, ..) => vec!["commit".to_string(), "HEAD".to_string()],
+        (None, false, false, false, _) => vec!["merge".to_string()],
+        (None, false, false, true, true) => vec!["squash".to_string()],
+        _ => Vec::new(),
+    };
+    if use_editor {
+        let shown = Shown {
+            head: &head,
+            base: &base,
+            has_parent: parent.is_some(),
+            tree: &tree,
+            index: &index,
+            merging: !merged.is_empty(),
+            idents: author_lines(&author, &committer, &opts.flags, amend || reused.is_some()),
+        };
+        let text = editor_text(
+            &seed,
+            mode,
+            !merged.is_empty(),
+            &status_comment(git, &shown)?,
+        );
         let vetoed = std::cell::Cell::new(false);
         let before = |path: &std::path::Path| {
-            let shown = git.hook_path(path);
-            if git.vetoed("prepare-commit-msg", &[shown], &hook_env)? {
+            let mut args = vec![git.hook_path(path)];
+            args.extend(source.iter().cloned());
+            if git.vetoed("prepare-commit-msg", &args, &hook_env)? {
                 vetoed.set(true);
                 bail!("prepare-commit-msg hook failed");
             }
             Ok(())
         };
-        match super::editor::edit_message_with(git, b"", &comment, before) {
+        match super::editor::edit_text(git, &text, before) {
             Err(_) if vetoed.get() => {
                 drop(lock);
                 std::process::exit(1);
             }
             Err(e) => return Err(e),
-            Ok(Some(m)) => message = finish_message(m, opts, &committer),
-            Ok(None) if opts.flags.allow_empty_message => {}
-            Ok(None) => {
-                eprintln!("Aborting commit due to empty commit message.");
-                drop(lock);
-                std::process::exit(1);
+            Ok(edited) => {
+                message = cleaned(&edited, mode);
+                if mode != Cleanup::Verbatim && only_signoffs(&message) {
+                    message.clear();
+                }
             }
         }
+        if message.is_empty() && !opts.flags.allow_empty_message {
+            eprintln!("Aborting commit due to empty commit message.");
+            drop(lock);
+            std::process::exit(1);
+        }
     }
-    let prepare = git.hook_present("prepare-commit-msg") && !needs_editor;
+    let prepare = git.hook_present("prepare-commit-msg") && !use_editor;
     if prepare || (verify && git.hook_present("commit-msg")) {
         let edit_msg = git.repo.git().git_dir().join("COMMIT_EDITMSG");
         let shown = git.hook_path(&edit_msg);
         std::fs::write(&edit_msg, &message)?;
-        let source = match (
-            &opts.flags.reuse_message,
-            explicit_given,
-            amend,
-            merged.is_empty(),
-        ) {
-            (Some(spec), ..) => vec!["commit".to_string(), spec.clone()],
-            (None, true, ..) => vec!["message".to_string()],
-            (None, false, true, _) => vec!["commit".to_string(), "HEAD".to_string()],
-            (None, false, false, false) => vec!["merge".to_string()],
-            _ => Vec::new(),
-        };
         let mut args = vec![shown.clone()];
         args.extend(source);
         let mut vetoed = prepare && git.vetoed("prepare-commit-msg", &args, &hook_env)?;

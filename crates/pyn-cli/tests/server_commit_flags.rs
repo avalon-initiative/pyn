@@ -205,6 +205,8 @@ fn flags_that_need_git_are_still_refused_here() {
         &["--reset-author"],
         &["--trailer", "A: b"],
         &["-C", "HEAD"],
+        &["-e"],
+        &["--edit"],
     ] {
         let mut args = vec!["commit", "-m", "x"];
         args.extend(flag);
