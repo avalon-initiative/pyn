@@ -12,11 +12,6 @@ use crate::util::{Checksummer, checksum};
 
 const IDX_MAGIC: [u8; 4] = [0xff, 0x74, 0x4f, 0x63];
 
-#[cfg(test)]
-thread_local! {
-    static ID_ACCESSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
 /// How an object is stored inside a pack.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryKind {
@@ -166,16 +161,9 @@ impl Pack {
     }
 
     fn id_at(&self, i: usize) -> &[u8] {
-        #[cfg(test)]
-        ID_ACCESSES.with(|n| n.set(n.get() + 1));
+        crate::counters::bump(|c| c.id_accesses += 1);
         let s = self.ids_start() + i * self.hl();
         &self.idx[s..s + self.hl()]
-    }
-
-    /// Returns and resets this thread's pack-index id access count.
-    #[cfg(test)]
-    pub fn take_id_accesses() -> usize {
-        ID_ACCESSES.with(|n| n.replace(0))
     }
 
     fn crc_at(&self, i: usize) -> u32 {
