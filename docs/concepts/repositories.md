@@ -3,7 +3,7 @@
 A server hosts many repositories, addressed as `owner/name`, the way GitHub does. Everything that belongs to one
 repository is kept apart from every other: its files and revisions, its locks, its policy, its audit log, who has which role,
 and the tokens and invitations made for it. Account things (a user name, a password, SSH keys, sign-in) belong to the
-server and work across repositories. Sections marked *provisional* are not settled and may change.
+server and work across repositories.
 
 ## Addresses and namespaces
 
@@ -81,7 +81,7 @@ repository the organization owns, and `pyn repo list [--owner <org>]` shows each
 ### Repository creation policy
 
 Owners can always create repositories in their organization and cannot be locked out. For everyone else the organization
-keeps a policy, **provisional** until the web UI uses it:
+keeps a policy:
 
 - A **base setting** for members: `none` (the default: owners only), `private` or `both` (public and private).
 - **Rules**, each with a subject (`team` by slug, `user` by name, or `role`: `owner` or `member`), an effect (`allow` or

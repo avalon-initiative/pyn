@@ -2,7 +2,7 @@
 
 Audit of in-process state, for a shared multi-tenant server (decision #140). The question for each item is
 whether it stays correct when several server processes share one PostgreSQL database. Findings are tracked as issues; this
-page records the current state. Provisional: it reflects the code at the time of the audit.
+page records the current state, as of 2026-10-30.
 
 ## Safe with several copies on Postgres
 
@@ -13,7 +13,7 @@ page records the current state. Provisional: it reflects the code at the time of
 | Sessions and CSRF | `sessions` table | The CSRF token is stored in the session row. |
 | OpenID Connect flows | `oidc_flows` table | Single-use rows, so the callback may land on any copy. Discovery and key caches are per process and refetch on expiry. |
 | Audit events | `audit_events` table | There is no live push or fan-out. |
-| Cleanup of expired sessions, flows, pending accounts | Lazy, inside requests | Idempotent deletes; there are no background tasks. With no traffic nothing is swept, which costs storage only. |
+| Cleanup of expired sessions, flows, pending accounts | Lazy, inside requests | Idempotent deletes; no background task does this cleanup. With no traffic nothing is swept, which costs storage only. |
 | Organization deleting mark | Database | Atomic compare-and-set. |
 | Migrations | Startup | sqlx takes an advisory lock, so concurrent starts serialise. |
 | Repository policy cache | Per process | Revalidated against the head of `.pyn/pyn.toml` on each lookup (#181). |

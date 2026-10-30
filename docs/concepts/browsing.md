@@ -2,7 +2,7 @@
 
 Two read-only routes feed a repository landing page: a folder listing and a summary. Both need `read`. The folder listing takes
 an optional `branch` (the default branch when omitted) and the summary describes the default branch; there is no other
-revision parameter yet. Sections marked *provisional* are not settled and may change.
+revision parameter yet.
 
 ## Folder listing
 
@@ -24,21 +24,21 @@ is `400 invalid_request` (list a folder below it, or page through the file list 
 | `lock` | the live lock and its holder, on files only |
 
 "Last change" is a revision: numbered per path, with author, message, time and the id of its [commit](commits.md). A folder's mode is computed from the files that exist, not from the rules alone, so an exclusive glob that matches
-nothing yet does not make a folder `mixed`. *Provisional*
+nothing yet does not make a folder `mixed`.
 
 ## Summary
 
 `GET /v1/repos/{owner}/{name}/summary?activity=<n>` returns what a landing page's side panel needs:
 
 - `default_branch` and `branch_count`: the default branch's name (`main`) and how many [branches](branches.md) the repository has.
-  Tags are not counted yet. *Provisional*
+  Tags are not counted.
 - `files`, `exclusive_files`, `shared_files`: paths that exist on the default branch, split by the policy in force now. The
   store keeps a count with each commit, taken from the mode each revision was recorded under, so the summary is a read of
   one row however large the repository is. A policy change from exclusive to shared writes no revision, so a recorded
   count can be higher than the policy's answer. When the recorded exclusive count is not zero, the summary therefore
   counts the head's paths against the current rules (a paged read of the heads, kept until the head or the policy changes).
   A repository with more than 100,000 files reports the recorded count instead, which is stale only for paths whose
-  policy went from exclusive to shared and that have not been changed since. *Provisional*
+  policy went from exclusive to shared and that have not been changed since.
 - `updated_at`: the time of the newest revision made on the default branch's line, a deletion included.
 - `locks`: every live lock with its holder, ordered by path.
 - `activity`: the newest `n` (default 10, at most 100) file and lock events from the [audit log](access.md): `checkout`,

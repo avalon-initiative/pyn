@@ -69,7 +69,7 @@ and the `.pyn/local_only` prefix (also case-insensitive), which belongs to a wor
 `.pyn/pyn.toml` and `.pyn/ignore` stay valid. A refused path is `400 invalid_path`; a reserved segment is named in the message. Paths already in a repository's history
 are still readable, listable and unlockable whatever their name.
 
-## Precedence (provisional)
+## Precedence
 
 When several entries cover a path, the most specific wins:
 
