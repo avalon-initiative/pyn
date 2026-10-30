@@ -933,6 +933,8 @@ pub struct Member {
 /// A team of the owning organization and its role in a repository.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct RepoTeam {
+    /// Stable id of the team; never reused after a delete.
+    pub team_id: String,
     pub slug: String,
     pub name: String,
     pub description: String,
@@ -955,6 +957,8 @@ pub struct TeamRepo {
 /// A team of an organization with its members and repository roles.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct TeamInfo {
+    /// Stable id: never changes and is never issued again after a delete, so key data on it, not the slug.
+    pub id: String,
     pub slug: String,
     pub name: String,
     pub description: String,
