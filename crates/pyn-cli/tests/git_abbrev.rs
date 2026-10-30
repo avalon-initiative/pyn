@@ -1011,6 +1011,57 @@ fn combined_diffs_and_merge_labels_follow_the_policy() {
     }
 }
 
+fn index_ids(out: &str) -> Vec<String> {
+    out.lines()
+        .filter_map(|line| line.strip_prefix("index "))
+        .flat_map(|line| {
+            let ids = line.split_whitespace().next().unwrap();
+            ids.split(['.', ','])
+                .filter(|id| !id.is_empty())
+                .map(String::from)
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+#[test]
+fn combined_diffs_honor_full_index_like_git() {
+    for format in FORMATS {
+        let full = if format == "sha1" { 40 } else { 64 };
+        let repo = merged(format);
+        for args in [
+            &["show", "-c", "--full-index"][..],
+            &["show", "--cc", "--full-index"],
+            &["log", "-1", "-c", "--full-index"],
+            &["log", "-1", "--cc", "--full-index"],
+        ] {
+            let out = same(&repo, args);
+            let widths = index_widths(&out);
+            assert!(!widths.is_empty(), "no combined index in {out}");
+            assert!(widths.iter().all(|w| *w == full), "{args:?}: {widths:?}");
+        }
+    }
+}
+
+#[test]
+fn combined_diff_ids_agree_with_git_under_abbrev_flags() {
+    for format in FORMATS {
+        let repo = merged(format);
+        for flag in ["--abbrev=12", "--abbrev=4", "--no-abbrev"] {
+            for args in [&["show", "-c", flag][..], &["log", "-1", "--cc", flag]] {
+                let expected = index_ids(&git(&repo, &repo.main, args));
+                let actual = index_ids(&repo.ok(args));
+                assert!(!actual.is_empty(), "{args:?}");
+                assert_eq!(actual.len(), expected.len(), "{args:?}");
+                for (a, e) in actual.iter().zip(&expected) {
+                    let n = a.len().min(e.len());
+                    assert_eq!(a[..n], e[..n], "{} {args:?}", repo.format);
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn inspection_commands_follow_the_policy() {
     // Catches any of the plumbing commands keeping their own length rule.
