@@ -285,8 +285,8 @@ async fn an_absent_field_is_untouched_and_bad_values_are_refused() {
 async fn storage_and_member_limits_have_their_own_codes() {
     let app = server(Limits::default()).await;
     let alice = token_for(&app, "alice").await;
-    token_for(&app, "bob").await;
-    token_for(&app, "carol").await;
+    let bob = token_for(&app, "bob").await;
+    let carol = token_for(&app, "carol").await;
     make_repo(&app, &alice, "game").await;
     send(
         &app,
@@ -361,10 +361,12 @@ async fn storage_and_member_limits_have_their_own_codes() {
     .await;
     assert_eq!(
         r.status,
-        StatusCode::CREATED,
+        StatusCode::ACCEPTED,
         "{:?}",
         String::from_utf8_lossy(&r.body)
     );
+    let r = send(&app, &bob, "POST", "/v1/me/invitations/acme/accept", None).await;
+    assert_eq!(r.status, StatusCode::OK);
     let r = send(
         &app,
         &alice,
@@ -373,6 +375,8 @@ async fn storage_and_member_limits_have_their_own_codes() {
         Some(json!({"user": "carol", "role": "member"})),
     )
     .await;
+    assert_eq!(r.status, StatusCode::ACCEPTED);
+    let r = send(&app, &carol, "POST", "/v1/me/invitations/acme/accept", None).await;
     assert!(r.is(StatusCode::CONFLICT, "member_limit_reached"));
     let r = send(&app, &alice, "GET", "/v1/owners/acme/usage", None).await;
     assert_eq!(r.json::<api::OwnerUsage>().usage.members, Some(2));

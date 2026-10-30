@@ -297,13 +297,8 @@ async fn the_state_is_visible_to_the_owner_and_members_only() {
         .create_org(&session("alice"), "acme")
         .await
         .unwrap();
-    w.access
-        .add_org_member(
-            &session("alice"),
-            &user("acme"),
-            &user("bob"),
-            OrgRole::Member,
-        )
+    w.store
+        .add_org_member(&user("acme"), &user("bob"), OrgRole::Member)
         .await
         .unwrap();
     w.access
@@ -466,8 +461,8 @@ async fn a_frozen_organization_refuses_every_write_under_it_and_stays_readable()
     let alice = session("alice");
     w.access.create_org(&alice, "acme").await.unwrap();
     let acme = user("acme");
-    w.access
-        .add_org_member(&alice, &acme, &user("bob"), OrgRole::Member)
+    w.store
+        .add_org_member(&acme, &user("bob"), OrgRole::Member)
         .await
         .unwrap();
     w.access
@@ -657,8 +652,8 @@ async fn a_frozen_organization_refuses_every_write_under_it_and_stays_readable()
     );
 
     w.access.unfreeze_owner(&root, &acme).await.unwrap();
-    w.access
-        .add_org_member(&alice, &acme, &user("carol"), OrgRole::Member)
+    w.store
+        .add_org_member(&acme, &user("carol"), OrgRole::Member)
         .await
         .unwrap();
     w.access

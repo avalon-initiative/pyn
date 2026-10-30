@@ -164,6 +164,10 @@ async fn with_no_limits_configured_nothing_is_limited() {
             )
             .await
             .unwrap();
+        w.access
+            .accept_org_invitation(&session(&name), &user("acme"))
+            .await
+            .unwrap();
     }
 
     let report = w
@@ -367,14 +371,22 @@ async fn an_organization_member_limit_applies_to_organizations_only() {
         )
         .await
         .unwrap();
-    let err = w
-        .access
+    w.access
+        .accept_org_invitation(&session("bob"), &user("acme"))
+        .await
+        .unwrap();
+    w.access
         .add_org_member(
             &session("alice"),
             &user("acme"),
             &user("carol"),
             OrgRole::Member,
         )
+        .await
+        .unwrap();
+    let err = w
+        .access
+        .accept_org_invitation(&session("carol"), &user("acme"))
         .await
         .unwrap_err();
     assert!(
@@ -489,6 +501,10 @@ async fn limits_and_usage_are_visible_to_the_owner_and_to_administrators_only() 
             &user("bob"),
             OrgRole::Member,
         )
+        .await
+        .unwrap();
+    w.access
+        .accept_org_invitation(&session("bob"), &user("acme"))
         .await
         .unwrap();
     w.access
