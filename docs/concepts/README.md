@@ -69,7 +69,7 @@ lock. It needs the `force_unlock` permission, and the reason is mandatory becaus
 
 The audit log is an append-only record of lock, revision and access events: checkout, release, checkin, delete, restore, force unlock,
 member added, role changed, role permissions changed, token created, token revoked, repository created, updated and deleted, and a [version stranded](pyn-toml.md#stranded-versions) by a policy change, each with who, when, the path and a short detail (for a force unlock, whose lock was removed and why). `pyn audit` shows it
-newest first and can filter by path, user and action; it needs the `view_audit` permission. Events are never changed or
+newest first and can filter by path, user and action; it needs the `view_audit` permission. A commit message in a detail shows as its subject. Events are never changed or
 removed.
 
 Access events have no path: the detail names the target and what changed (a user and their old and new role, the
