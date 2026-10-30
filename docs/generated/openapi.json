@@ -10847,6 +10847,7 @@
         "type": "object",
         "description": "A team of the owning organization and its role in a repository.",
         "required": [
+          "team_id",
           "slug",
           "name",
           "description",
@@ -10864,6 +10865,10 @@
           },
           "slug": {
             "type": "string"
+          },
+          "team_id": {
+            "type": "string",
+            "description": "Stable id of the team; never reused after a delete."
           }
         }
       },
@@ -11780,6 +11785,7 @@
         "type": "object",
         "description": "A team of an organization with its members and repository roles.",
         "required": [
+          "id",
           "slug",
           "name",
           "description",
@@ -11794,6 +11800,10 @@
           },
           "description": {
             "type": "string"
+          },
+          "id": {
+            "type": "string",
+            "description": "Stable id: never changes and is never issued again after a delete, so key data on it, not the slug."
           },
           "members": {
             "type": "array",

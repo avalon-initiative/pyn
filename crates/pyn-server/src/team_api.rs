@@ -12,6 +12,7 @@ use crate::{ApiResult, AppState, RepoAddress, authorize_repo, identify};
 
 fn team_info(d: TeamDetail) -> api::TeamInfo {
     api::TeamInfo {
+        id: d.team.id.to_string(),
         slug: d.team.slug,
         name: d.team.name,
         description: d.team.description,
@@ -185,6 +186,7 @@ pub(crate) async fn list_repo_teams(
         teams
             .into_iter()
             .map(|(t, role)| api::RepoTeam {
+                team_id: t.id.to_string(),
                 slug: t.slug,
                 name: t.name,
                 description: t.description,

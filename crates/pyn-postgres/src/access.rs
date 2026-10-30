@@ -10,8 +10,8 @@ use pyn_core::{
     MemberCreation, NewAccount, NewExternalAccount, OidcFlow, OrgDeleteMark, OrgMemberChange,
     OrgRole, Permission, PynError, RateLimitStore, RateState, RegistrationMode, RepoId, RepoPolicy,
     Result, Role, RoleDefinitions, ServerSettings, ServiceCredentialRecord, ServiceScope,
-    SessionRecord, SignupStage, SshKeyRecord, SubjectKind, TeamRecord, TokenId, TokenRecord,
-    UserId, VerificationRecord,
+    SessionRecord, SignupStage, SshKeyRecord, SubjectKind, TeamId, TeamRecord, TokenId,
+    TokenRecord, UserId, VerificationRecord,
 };
 use sqlx::Row;
 use sqlx::postgres::PgRow;
@@ -82,6 +82,7 @@ fn limits_from(row: &PgRow) -> Limits {
 
 fn team_from(row: &PgRow) -> TeamRecord {
     TeamRecord {
+        id: TeamId::new(row.get::<String, _>("team_id")),
         org: UserId::new(row.get::<String, _>("org")),
         slug: row.get("slug"),
         name: row.get("name"),
@@ -1136,9 +1137,10 @@ impl AccessStore for PgMetadataStore {
 
     async fn create_team(&self, team: TeamRecord) -> Result<bool> {
         let done = sqlx::query(
-            "INSERT INTO teams (org, slug, name, description, created_at) VALUES ($1, $2, $3, $4, $5)
+            "INSERT INTO teams (team_id, org, slug, name, description, created_at) VALUES ($1, $2, $3, $4, $5, $6)
              ON CONFLICT DO NOTHING",
         )
+        .bind(team.id.as_str())
         .bind(team.org.as_str())
         .bind(&team.slug)
         .bind(&team.name)
@@ -1152,7 +1154,7 @@ impl AccessStore for PgMetadataStore {
 
     async fn team(&self, org: &UserId, slug: &str) -> Result<Option<TeamRecord>> {
         let row = sqlx::query(
-            "SELECT org, slug, name, description, created_at FROM teams WHERE org = $1 AND slug = $2",
+            "SELECT team_id, org, slug, name, description, created_at FROM teams WHERE org = $1 AND slug = $2",
         )
         .bind(org.as_str())
         .bind(slug)
@@ -1164,7 +1166,7 @@ impl AccessStore for PgMetadataStore {
 
     async fn teams(&self, org: &UserId) -> Result<Vec<TeamRecord>> {
         let rows = sqlx::query(
-            "SELECT org, slug, name, description, created_at FROM teams WHERE org = $1 ORDER BY slug",
+            "SELECT team_id, org, slug, name, description, created_at FROM teams WHERE org = $1 ORDER BY slug",
         )
         .bind(org.as_str())
         .fetch_all(&self.pool)
