@@ -279,6 +279,14 @@ pub fn detect(start: &Path) -> Result<Option<GitHome>> {
     Ok(Some(GitHome::new(repo, ws)))
 }
 
+/// The `.pyn` of the git home `start` is in, where its local settings live.
+pub fn workspace_at(start: &Path) -> Result<Option<Workspace>> {
+    Ok(git_root_of(start)?.map(|root| Workspace {
+        dir: root.join(workspace::DIR),
+        root: root.to_path_buf(),
+    }))
+}
+
 fn unavailable(what: &str) -> anyhow::Error {
     anyhow!("{what} is not available on a git repository yet")
 }
