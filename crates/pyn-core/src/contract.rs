@@ -1001,6 +1001,26 @@ pub async fn restore_is_for_exclusive_paths_and_real_older_revisions(store: Stor
     );
 }
 
+pub async fn lock_path_locks_exclusive_at_head_and_leaves_shared_paths_advisory(store: Store) {
+    let h = harness(store);
+    let (ex, sh) = (path("Content/x.umap"), path("Source/s.cpp"));
+    h.svc.checkout(&ex, &user("alice"), None).await.unwrap();
+    put_on(&h, "main", "alice", &ex, "v1", None).await;
+
+    let lock = h.svc.lock_path(&ex, &user("bob")).await.unwrap();
+    assert_eq!(lock.owner, user("bob"));
+    assert_eq!(h.svc.lock_of(&ex).await.unwrap(), Some(lock));
+    let err = h.svc.lock_path(&ex, &user("alice")).await.unwrap_err();
+    assert!(matches!(err, PynError::LockHeld { .. }), "{err}");
+
+    h.svc.lock_path(&sh, &user("alice")).await.unwrap();
+    put_on(&h, "main", "bob", &sh, "s1", None).await;
+    let err = h.svc.lock_path(&sh, &user("bob")).await.unwrap_err();
+    assert!(matches!(err, PynError::LockHeld { .. }), "{err}");
+    h.svc.release(&sh, &user("alice")).await.unwrap();
+    assert_eq!(h.svc.lock_of(&sh).await.unwrap(), None);
+}
+
 pub async fn force_unlock_removes_a_live_lock_and_says_why(store: Store) {
     let h = harness(store);
     let m = path("Content/m.umap");
@@ -3191,6 +3211,7 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; restore_appends_a_checkpoint_with_the_old_content);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; restore_needs_the_lock_and_the_right_confirmation);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; restore_is_for_exclusive_paths_and_real_older_revisions);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; lock_path_locks_exclusive_at_head_and_leaves_shared_paths_advisory);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; force_unlock_removes_a_live_lock_and_says_why);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; checkout_past_the_lock_limit_is_refused_until_a_slot_frees);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; the_lock_limit_counts_one_repository_at_a_time);
