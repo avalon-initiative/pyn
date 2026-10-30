@@ -27,8 +27,8 @@ const EXCLUDE_LINE: &str = ".pyn/";
 
 /// Runs `command` on a git repository, or refuses it with the home that provides it.
 pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
-    // Validate before writes; git's `remote` without a fetch never reads core.abbrev.
-    if !matches!(&command, Command::Remote(args) if !args.fetches()) {
+    // Validate before writes, except in commands that never render an abbreviated id.
+    if reads_core_abbrev(&command) {
         git.repo.abbreviation_len(None)?;
     }
     let server_only = |feature: &str| -> Result<()> {
@@ -358,6 +358,15 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
         Command::Clone { .. } | Command::Config(_) | Command::External(_) => {
             unreachable!("handled before a git home is consulted")
         }
+    }
+}
+
+/// Whether git reads `core.abbrev` for the command: `remote` without a fetch, `prune` and `prune-packed` do not.
+fn reads_core_abbrev(command: &Command) -> bool {
+    match command {
+        Command::Remote(args) => args.fetches(),
+        Command::Prune(_) | Command::PrunePacked(_) => false,
+        _ => true,
     }
 }
 

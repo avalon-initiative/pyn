@@ -1,6 +1,8 @@
 //! Abbreviations on git homes, with real git as the oracle for both object formats.
 
 mod common;
+#[path = "common/oracle.rs"]
+mod oracle;
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -1112,6 +1114,26 @@ fn remote_commands_ignore_an_invalid_core_abbrev_like_git() {
         repo.ok(&["remote", "remove", "second"]);
         let (_, err) = repo.fails(&["log", "-n", "1", "--format=%h"]);
         assert!(err.contains("core.abbrev"), "{err}");
+    }
+}
+
+#[test]
+fn prune_commands_ignore_an_invalid_core_abbrev_like_git() {
+    // Catches validating core.abbrev in commands that never render an id.
+    for format in FORMATS {
+        let repo = Repo::new(format);
+        setting(&repo, "3");
+        for args in [["prune", "-n"], ["prune-packed", "-n"]] {
+            let theirs = git_command(&repo, &repo.main).args(args).output().unwrap();
+            let ours = repo.run_in(&repo.main, &args);
+            assert_eq!(
+                oracle::status_class(ours.status.code().unwrap()),
+                oracle::status_class(theirs.status.code().unwrap()),
+                "{format} {args:?}: {}",
+                String::from_utf8_lossy(&ours.stderr)
+            );
+            assert!(ours.status.success(), "{format} {args:?}");
+        }
     }
 }
 
