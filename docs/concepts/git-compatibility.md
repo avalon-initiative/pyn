@@ -916,7 +916,9 @@ the question, and without a terminal and without `--yes` it fails (`128`) with n
   files on disk as they are. A SHA-256 git repository keeps every id. The server stores SHA-256, so a SHA-1 repository is
   rehashed: every commit, tree and file gets a new id, the parent links and trees follow, and all other bytes of a commit are
   kept, but a signature on a commit no longer verifies (it signed the old bytes). Commit ids therefore change for SHA-1 sources
-  and the confirmation says so.
+  and the confirmation says so. The server records only messages that end with a newline, so a message without one (every
+  GitHub squash or web merge) gets a final newline appended, which changes that commit's id even in a SHA-256 repository; an
+  empty message is refused.
 - **Branch names:** the server's default branch is `main`. The git branch called `main` becomes it; a repository with no
   `main` has its checked-out branch pushed as `main` (the message says so), and the other branches keep their names. A
   detached `HEAD` is refused.
@@ -928,13 +930,14 @@ the question, and without a terminal and without `--yes` it fails (`128`) with n
 - **How:** everything the server would refuse is checked first, and a refusal lists the commits and changes nothing, on the server
   or in the folder: a submodule entry, a merge of more than two parents, an empty commit, a commit that changes more than
   10000 files, a tree over 100000 entries, a commit the server cannot store byte-for-byte (not in git's canonical form, or not
-  UTF-8), more than one root commit, a shallow clone, and an operation in progress (merge, rebase, cherry-pick, revert, bisect).
+  UTF-8, or empty), more than one root commit, a shallow clone, and an operation in progress (merge, rebase, cherry-pick, revert, bisect).
   Then every file is uploaded, and each branch is pushed in batches inside the push limits. A commit merged into a branch whose
   branch is gone is pushed through a temporary branch, deleted at the end.
 - **The folder:** only after every branch is on the server does the command write `.pyn/local_only/config.toml` (server and
   repository), the revision each file is at, the branch the workspace is on, and `repo_tool = "pyn"`, last, which is what turns
   the folder into a pyn home. If the folder cannot be set up it stays a git home. If the server refuses midway, the repository
-  stays on the server partly filled; delete it or convert into another name.
+  stays on the server partly filled; delete it or convert into another name. If nothing reached a repository this run created
+  (a refusal while uploading or pushing the first branch), it is deleted again.
 - **`.git` is kept**, untouched, and ignored by pyn (a line in `.pyn/local_only/ignore`). Remove or move it when it is no longer
   needed; `pyn convert --home git` refuses while one exists.
 - **Not carried over:** tags (the server has none; they stay in `.git`), stashes, the index (staged changes), hooks, remotes and

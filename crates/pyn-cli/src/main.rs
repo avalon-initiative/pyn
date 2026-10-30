@@ -147,6 +147,9 @@ enum Command {
     /// Create, inspect and delete organizations, and manage who belongs to them.
     #[command(subcommand)]
     Org(OrgCommand),
+    /// List, accept and decline your invitations to organizations.
+    #[command(subcommand)]
+    Invitation(InvitationCommand),
     /// Create and manage an organization's teams, and grant them roles on its repositories.
     #[command(subcommand)]
     Team(TeamCommand),
@@ -761,9 +764,30 @@ enum OrgCommand {
     /// List and change an organization's members.
     #[command(subcommand)]
     Member(OrgMemberCommand),
+    /// List and cancel an organization's pending invitations.
+    #[command(subcommand)]
+    Invitation(OrgInvitationCommand),
     /// Show and change who may create repositories in an organization (owners only).
     #[command(subcommand)]
     Policy(OrgPolicyCommand),
+}
+
+#[derive(Subcommand)]
+enum InvitationCommand {
+    /// List the organization invitations waiting for you.
+    List,
+    /// Accept an invitation and join the organization with the offered role.
+    Accept { org: String },
+    /// Decline an invitation.
+    Decline { org: String },
+}
+
+#[derive(Subcommand)]
+enum OrgInvitationCommand {
+    /// List an organization's pending invitations (owners only).
+    List { org: String },
+    /// Withdraw a pending invitation (owners only).
+    Cancel { org: String, user: String },
 }
 
 #[derive(Subcommand)]
@@ -810,7 +834,8 @@ enum OrgPolicyCommand {
 enum OrgMemberCommand {
     /// List an organization's members.
     List { org: String },
-    /// Add an existing account to an organization (owners only).
+    /// Invite an existing account to an organization (owners only); a server administrator may be able to add directly.
+    #[command(alias = "invite")]
     Add {
         org: String,
         user: String,
@@ -1431,6 +1456,7 @@ fn runs_anywhere(command: &Command) -> bool {
             | Command::Token(_)
             | Command::User(_)
             | Command::Org(_)
+            | Command::Invitation(_)
             | Command::Team(_)
             | Command::Repo(_)
             | Command::Usage { .. }
@@ -1968,6 +1994,7 @@ fn run(cli: Cli) -> Result<()> {
         }
         Command::Repo(cmd) => repo_command(backend.pyn_server("repo")?, cmd)?,
         Command::Org(cmd) => org_command(backend.pyn_server("org")?, cmd)?,
+        Command::Invitation(cmd) => invitation_command(backend.pyn_server("invitation")?, cmd)?,
         Command::Setup {
             username,
             setup_token,
@@ -3574,6 +3601,7 @@ fn org_command(api: &Api, cmd: OrgCommand) -> Result<()> {
             }
         }
         OrgCommand::Member(cmd) => org_member_command(api, cmd)?,
+        OrgCommand::Invitation(cmd) => org_invitation_command(api, cmd)?,
         OrgCommand::Policy(cmd) => org_policy_command(api, cmd)?,
     }
     Ok(())
@@ -3803,13 +3831,21 @@ fn org_member_command(api: &Api, cmd: OrgMemberCommand) -> Result<()> {
                 user: user.clone(),
                 role,
             };
-            let added: api::OrgMember = api
-                .send(
-                    api.request(Method::POST, &format!("/v1/orgs/{org}/members"))
-                        .json(&body),
-                )?
-                .json()?;
-            println!("added {user} to {org} as {}", added.role);
+            let reply = api.send(
+                api.request(Method::POST, &format!("/v1/orgs/{org}/members"))
+                    .json(&body),
+            )?;
+            if reply.status == 202 {
+                let invited: api::OrgInvitation = reply.json()?;
+                println!(
+                    "invited {user} to {org} as {}; expires {}",
+                    invited.role,
+                    time::local(invited.expires_at)
+                );
+            } else {
+                let added: api::OrgMember = reply.json()?;
+                println!("added {user} to {org} as {}", added.role);
+            }
         }
         OrgMemberCommand::Set { org, user, role } => {
             let body = api::SetOrgRoleRequest { role: role.clone() };
@@ -3822,6 +3858,72 @@ fn org_member_command(api: &Api, cmd: OrgMemberCommand) -> Result<()> {
         OrgMemberCommand::Remove { org, user } => {
             api.send(api.request(Method::DELETE, &format!("/v1/orgs/{org}/members/{user}")))?;
             println!("removed {user} from {org}");
+        }
+    }
+    Ok(())
+}
+
+fn invitation_rows(
+    invitations: Vec<api::OrgInvitation>,
+    last: fn(&api::OrgInvitation) -> String,
+) -> Vec<Vec<String>> {
+    invitations
+        .into_iter()
+        .map(|i| {
+            vec![
+                i.role.clone(),
+                time::local(i.expires_at),
+                i.invited_by.clone(),
+                last(&i),
+            ]
+        })
+        .collect()
+}
+
+fn org_invitation_command(api: &Api, cmd: OrgInvitationCommand) -> Result<()> {
+    match cmd {
+        OrgInvitationCommand::List { org } => {
+            let found: Vec<api::OrgInvitation> = api
+                .send(api.get(&format!("/v1/orgs/{org}/invitations")))?
+                .json()?;
+            let rows = invitation_rows(found, |i| i.user.clone());
+            table::show(
+                &["ROLE", "EXPIRES", "INVITED BY", "USER"],
+                &rows,
+                "no pending invitations",
+            );
+        }
+        OrgInvitationCommand::Cancel { org, user } => {
+            api.send(api.request(
+                Method::DELETE,
+                &format!("/v1/orgs/{org}/invitations/{user}"),
+            ))?;
+            println!("cancelled the invitation of {user} to {org}");
+        }
+    }
+    Ok(())
+}
+
+fn invitation_command(api: &Api, cmd: InvitationCommand) -> Result<()> {
+    match cmd {
+        InvitationCommand::List => {
+            let found: Vec<api::OrgInvitation> = api.send(api.get("/v1/me/invitations"))?.json()?;
+            let rows = invitation_rows(found, |i| i.org.clone());
+            table::show(
+                &["ROLE", "EXPIRES", "INVITED BY", "ORG"],
+                &rows,
+                "no pending invitations",
+            );
+        }
+        InvitationCommand::Accept { org } => {
+            let joined: api::OrgInfo = api
+                .send(api.request(Method::POST, &format!("/v1/me/invitations/{org}/accept")))?
+                .json()?;
+            println!("joined {org} as {}", joined.role.unwrap_or_default());
+        }
+        InvitationCommand::Decline { org } => {
+            api.send(api.request(Method::POST, &format!("/v1/me/invitations/{org}/decline")))?;
+            println!("declined the invitation to {org}");
         }
     }
     Ok(())

@@ -67,7 +67,8 @@ fn read_commit(git: &GitHome, id: &ObjectId) -> Result<(Vec<u8>, Commit)> {
     Ok((object.data, parsed))
 }
 
-/// The commit body with its `tree` and `parent` header lines pointing at the new ids; every other byte is kept.
+/// The commit body with its `tree` and `parent` header lines pointing at the new ids and a final newline on the
+/// message (the server records no other); every other byte is kept.
 fn rewrite_commit(body: &[u8], tree: &ObjectId, parents: &[ObjectId]) -> Vec<u8> {
     let mut out = Vec::with_capacity(body.len());
     let (mut next, mut in_headers) = (0, true);
@@ -83,6 +84,9 @@ fn rewrite_commit(body: &[u8], tree: &ObjectId, parents: &[ObjectId]) -> Vec<u8>
         } else {
             out.extend_from_slice(line);
         }
+    }
+    if !out.ends_with(b"\n") {
+        out.push(b'\n');
     }
     out
 }
@@ -103,7 +107,10 @@ fn unpushable(body: &[u8]) -> Option<String> {
         && text(&commit.author.email)
         && text(&commit.committer.name)
         && text(&commit.committer.email);
-    (!clean).then(|| "its message or a name is not UTF-8".to_string())
+    if !clean {
+        return Some("its message or a name is not UTF-8".to_string());
+    }
+    (!commit.message.ends_with(b"\n")).then(|| "its message is empty".to_string())
 }
 
 impl Rewrite {
@@ -450,6 +457,17 @@ fn explain(err: anyhow::Error, branch: &str) -> anyhow::Error {
     err.context(format!("pushing '{branch}' failed{hint}"))
 }
 
+/// Deletes the repository this run created when nothing reached it, so a refused move leaves nothing behind.
+fn discard_if_empty(api: &Api, owner: &str, name: &str) {
+    let empty = server_branches(api)
+        .ok()
+        .flatten()
+        .is_some_and(|b| b.iter().all(|b| b.commit.is_none()));
+    if empty {
+        let _ = api.send(api.request(Method::DELETE, &format!("/v1/repos/{owner}/{name}")));
+    }
+}
+
 fn confirm(text: &str, yes: bool) {
     eprintln!("{text}");
     if yes {
@@ -666,64 +684,76 @@ pub fn to_pyn(args: &ConvertArgs, cwd: &Path, remote: Remote) -> Result<()> {
         root: root.clone(),
         dir: root.join(crate::workspace::DIR),
     };
-    let uploaded = upload_blobs(&backend, &git, &rw, &ws.dir.join("local_only/cache"))?;
+    let sent = (|| -> Result<usize> {
+        let uploaded = upload_blobs(&backend, &git, &rw, &ws.dir.join("local_only/cache"))?;
 
-    let mut pusher = Pusher {
-        git: &git,
-        rw: &rw,
-        api,
-        known: HashSet::new(),
-        sent_trees: HashSet::new(),
-        temps: Vec::new(),
-    };
-    let mut ordered: Vec<(&String, &String)> = names.iter().collect();
-    ordered.sort_by_key(|(_, server)| {
-        (
-            server.as_str() != branch::DEFAULT_BRANCH,
-            server.to_string(),
-        )
-    });
-    for (local, server) in ordered {
-        let tip = &heads[local];
-        let is_default = server == branch::DEFAULT_BRANCH;
-        let chain = pusher.ready_chain(tip, is_default)?;
-        if chain.is_empty() {
-            let body = api::CreateBranchRequest {
-                name: server.clone(),
-                start: Some(rw.commits[tip].to_hex()),
-            };
-            api.send(
-                api.request(Method::POST, &api.repo_route("/branches")?)
-                    .json(&body),
-            )?;
-        } else {
-            pusher.push_chain(server, &chain)?;
-        }
-    }
-    let temps = std::mem::take(&mut pusher.temps);
-    for name in &temps {
-        api.send(
-            api.request(
-                Method::DELETE,
-                &api.repo_route(&format!("/branches/{name}"))?,
+        let mut pusher = Pusher {
+            git: &git,
+            rw: &rw,
+            api,
+            known: HashSet::new(),
+            sent_trees: HashSet::new(),
+            temps: Vec::new(),
+        };
+        let mut ordered: Vec<(&String, &String)> = names.iter().collect();
+        ordered.sort_by_key(|(_, server)| {
+            (
+                server.as_str() != branch::DEFAULT_BRANCH,
+                server.to_string(),
             )
-            .query(&[("force", true)]),
-        )?;
-    }
-    let on_server: BTreeMap<String, Option<String>> = server_branches(api)?
-        .unwrap_or_default()
-        .into_iter()
-        .map(|b| (b.name, b.commit))
-        .collect();
-    for (local, server) in &names {
-        let want = rw.commits[&heads[local]].to_hex();
-        let got = on_server.get(server).cloned().flatten();
-        if got.as_deref() != Some(want.as_str()) && !tracked_policy {
-            bail!(
-                "the server's '{server}' is at {got:?}, not at {want}; the folder was not changed"
-            );
+        });
+        for (local, server) in ordered {
+            let tip = &heads[local];
+            let is_default = server == branch::DEFAULT_BRANCH;
+            let chain = pusher.ready_chain(tip, is_default)?;
+            if chain.is_empty() {
+                let body = api::CreateBranchRequest {
+                    name: server.clone(),
+                    start: Some(rw.commits[tip].to_hex()),
+                };
+                api.send(
+                    api.request(Method::POST, &api.repo_route("/branches")?)
+                        .json(&body),
+                )?;
+            } else {
+                pusher.push_chain(server, &chain)?;
+            }
         }
-    }
+        let temps = std::mem::take(&mut pusher.temps);
+        for name in &temps {
+            api.send(
+                api.request(
+                    Method::DELETE,
+                    &api.repo_route(&format!("/branches/{name}"))?,
+                )
+                .query(&[("force", true)]),
+            )?;
+        }
+        let on_server: BTreeMap<String, Option<String>> = server_branches(api)?
+            .unwrap_or_default()
+            .into_iter()
+            .map(|b| (b.name, b.commit))
+            .collect();
+        for (local, server) in &names {
+            let want = rw.commits[&heads[local]].to_hex();
+            let got = on_server.get(server).cloned().flatten();
+            if got.as_deref() != Some(want.as_str()) && !tracked_policy {
+                bail!(
+                    "the server's '{server}' is at {got:?}, not at {want}; the folder was not changed"
+                );
+            }
+        }
+        Ok(uploaded)
+    })();
+    let uploaded = match sent {
+        Ok(n) => n,
+        Err(e) => {
+            if existing.is_none() {
+                discard_if_empty(api, owner, name);
+            }
+            return Err(e);
+        }
+    };
 
     let policy = match (&local_policy, tracked_policy) {
         (_, true) => None,
@@ -884,6 +914,14 @@ mod tests {
         assert!(
             text.contains("gpgsig -----BEGIN\n parent 9999\n -----END\n\nmessage\nparent 4444\n")
         );
+    }
+
+    #[test]
+    fn a_message_without_a_final_newline_gets_one() {
+        let old = b"tree 1111\nauthor A <a@x> 1 +0000\ncommitter A <a@x> 1 +0000\n\nsquashed (#1)";
+        let new = rewrite_commit(old, &id('a'), &[]);
+        assert!(new.ends_with(b"\n\nsquashed (#1)\n"));
+        assert_eq!(rewrite_commit(&new, &id('a'), &[]), new);
     }
 
     #[test]

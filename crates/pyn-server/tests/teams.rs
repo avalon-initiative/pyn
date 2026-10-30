@@ -138,8 +138,9 @@ async fn acme() -> Org {
         token_for(&app, "carol").await,
     );
     post(&app, &alice, "/v1/orgs", json!({"name": "acme"})).await;
-    for u in ["bob", "carol"] {
+    for (u, token) in [("bob", &bob), ("carol", &carol)] {
         post(&app, &alice, "/v1/orgs/acme/members", json!({"user": u})).await;
+        post(&app, token, "/v1/me/invitations/acme/accept", json!({})).await;
     }
     let r = post(
         &app,
@@ -633,8 +634,10 @@ async fn team_changes_are_in_the_organization_log_and_grants_in_the_repository_l
         actions("/v1/orgs/acme/audit").await,
         [
             "org_created",
-            "org_member_added",
-            "org_member_added",
+            "org_member_invited",
+            "org_invitation_accepted",
+            "org_member_invited",
+            "org_invitation_accepted",
             "team_created",
             "team_member_added",
             "team_access_set",

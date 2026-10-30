@@ -71,12 +71,20 @@ fn members_are_added_changed_and_removed_and_the_last_owner_stays() {
     env.ok(&home, "alice", &["org", "create", "acme"]);
 
     let out = env.ok(&home, "alice", &["org", "member", "add", "acme", "bob"]);
-    assert!(out.contains("added bob to acme as member"), "{out}");
-    env.ok(
+    assert!(out.contains("invited bob to acme as member"), "{out}");
+    let pending = env.fails(&home, "alice", &["org", "member", "add", "acme", "bob"]);
+    assert!(pending.contains("already_invited"), "{pending}");
+    let out = env.ok(&home, "bob", &["invitation", "accept", "acme"]);
+    assert!(out.contains("joined acme as member"), "{out}");
+    let out = env.ok(
         &home,
         "alice",
-        &["org", "member", "add", "acme", "carol", "--role", "owner"],
+        &[
+            "org", "member", "invite", "acme", "carol", "--role", "owner",
+        ],
     );
+    assert!(out.contains("invited carol to acme as owner"), "{out}");
+    env.ok(&home, "carol", &["invitation", "accept", "acme"]);
     let again = env.fails(&home, "alice", &["org", "member", "add", "acme", "bob"]);
     assert!(again.contains("already_org_member"), "{again}");
     let ghost = env.fails(&home, "alice", &["org", "member", "add", "acme", "zed"]);
@@ -143,7 +151,7 @@ fn an_organization_owner_creates_and_lists_its_repositories() {
     let env = start_with_accounts(&["alice", "bob"]);
     let home = env.dir("home");
     env.ok(&home, "alice", &["org", "create", "acme"]);
-    env.ok(&home, "alice", &["org", "member", "add", "acme", "bob"]);
+    env.join_org(&home, "alice", "acme", "bob");
 
     let out = env.ok(&home, "alice", &["repo", "create", "acme/game"]);
     assert!(out.contains("created acme/game"), "{out}");
@@ -172,17 +180,73 @@ fn the_audit_log_is_for_owners() {
     let env = start_with_accounts(&["alice", "bob"]);
     let home = env.dir("home");
     env.ok(&home, "alice", &["org", "create", "acme"]);
-    env.ok(&home, "alice", &["org", "member", "add", "acme", "bob"]);
+    env.join_org(&home, "alice", "acme", "bob");
 
     let log = env.ok(&home, "alice", &["org", "audit", "acme"]);
     let rows = cell_rows(&log);
     assert_eq!(rows[0], ["ID", "WHEN", "ACTOR", "ACTION", "DETAIL"]);
     assert!(
-        log.contains("org_member_added") && log.contains("org_created"),
+        log.contains("org_invitation_accepted") && log.contains("org_created"),
         "{log}"
     );
-    assert!(rows[1].contains(&"alice".to_string()), "{log}");
+    assert!(rows[2].contains(&"alice".to_string()), "{log}");
 
     let denied = env.fails(&home, "bob", &["org", "audit", "acme"]);
     assert!(denied.contains("not_org_owner"), "{denied}");
+}
+
+#[test]
+fn invitations_are_listed_declined_and_cancelled() {
+    let env = start_with_accounts(&["alice", "bob"]);
+    let home = env.dir("home");
+    assert_eq!(
+        env.ok(&home, "bob", &["invitation", "list"]).trim(),
+        "no pending invitations"
+    );
+    env.ok(&home, "alice", &["org", "create", "acme"]);
+    env.ok(&home, "alice", &["org", "create", "beta"]);
+    env.ok(&home, "alice", &["org", "member", "add", "acme", "bob"]);
+    env.ok(
+        &home,
+        "alice",
+        &["org", "member", "add", "beta", "bob", "--role", "owner"],
+    );
+
+    let mine = cell_rows(&env.ok(&home, "bob", &["invitation", "list"]));
+    assert_eq!(mine[0], ["ROLE", "EXPIRES", "INVITED BY", "ORG"]);
+    assert_eq!(
+        (
+            mine[1][0].as_str(),
+            mine[1][2].as_str(),
+            mine[1][3].as_str()
+        ),
+        ("member", "alice", "acme")
+    );
+    assert_eq!(mine[2][3], "beta");
+
+    let theirs = cell_rows(&env.ok(&home, "alice", &["org", "invitation", "list", "acme"]));
+    assert_eq!(theirs[0], ["ROLE", "EXPIRES", "INVITED BY", "USER"]);
+    assert_eq!(theirs[1][3], "bob");
+    let denied = env.fails(&home, "bob", &["org", "invitation", "list", "acme"]);
+    assert!(denied.contains("not_org_owner"), "{denied}");
+
+    let out = env.ok(&home, "bob", &["invitation", "decline", "beta"]);
+    assert!(out.contains("declined the invitation to beta"), "{out}");
+    let gone = env.fails(&home, "bob", &["invitation", "accept", "beta"]);
+    assert!(gone.contains("org_invitation_not_found"), "{gone}");
+    let out = env.ok(
+        &home,
+        "alice",
+        &["org", "invitation", "cancel", "acme", "bob"],
+    );
+    assert!(
+        out.contains("cancelled the invitation of bob to acme"),
+        "{out}"
+    );
+    let gone = env.fails(&home, "bob", &["invitation", "accept", "acme"]);
+    assert!(gone.contains("org_invitation_not_found"), "{gone}");
+    assert_eq!(
+        env.ok(&home, "bob", &["invitation", "list"]).trim(),
+        "no pending invitations"
+    );
 }

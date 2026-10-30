@@ -9,7 +9,7 @@ fn teams_are_created_listed_shown_and_deleted() {
     let env = start_with_accounts(&["alice", "bob"]);
     let home = env.dir("home");
     env.ok(&home, "alice", &["org", "create", "acme"]);
-    env.ok(&home, "alice", &["org", "member", "add", "acme", "bob"]);
+    env.join_org(&home, "alice", "acme", "bob");
 
     assert_eq!(
         env.ok(&home, "bob", &["team", "list", "acme"]).trim(),
@@ -67,7 +67,7 @@ fn only_organization_members_join_a_team() {
     let env = start_with_accounts(&["alice", "bob", "carol"]);
     let home = env.dir("home");
     env.ok(&home, "alice", &["org", "create", "acme"]);
-    env.ok(&home, "alice", &["org", "member", "add", "acme", "bob"]);
+    env.join_org(&home, "alice", "acme", "bob");
     env.ok(&home, "alice", &["team", "create", "acme/art"]);
 
     let out = env.ok(
@@ -118,8 +118,8 @@ fn a_team_is_granted_and_revoked_a_role_and_member_list_shows_the_source() {
     let env = start_with_accounts(&["alice", "bob", "carol"]);
     let home = env.dir("home");
     env.ok(&home, "alice", &["org", "create", "acme"]);
-    env.ok(&home, "alice", &["org", "member", "add", "acme", "bob"]);
-    env.ok(&home, "alice", &["org", "member", "add", "acme", "carol"]);
+    env.join_org(&home, "alice", "acme", "bob");
+    env.join_org(&home, "alice", "acme", "carol");
     env.ok(&home, "alice", &["repo", "create", "acme/game"]);
     env.ok(&home, "alice", &["repo", "create", "alice/solo"]);
     env.ok(&home, "alice", &["team", "create", "acme/art"]);
@@ -188,7 +188,7 @@ fn granting_is_capped_by_the_actors_own_permissions() {
     let env = start_with_accounts(&["alice", "bob"]);
     let home = env.dir("home");
     env.ok(&home, "alice", &["org", "create", "acme"]);
-    env.ok(&home, "alice", &["org", "member", "add", "acme", "bob"]);
+    env.join_org(&home, "alice", "acme", "bob");
     env.ok(&home, "alice", &["repo", "create", "acme/game"]);
     env.ok(&home, "alice", &["team", "create", "acme/art"]);
     env.ok(

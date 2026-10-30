@@ -7,10 +7,10 @@ use std::sync::{Arc, Mutex};
 use chrono::{Duration, TimeZone, Utc};
 
 use crate::access::{
-    AccountKind, AccountStatus, InviteId, InviteRecord, NewAccount, OrgRole, Permission, Principal,
-    RegistrationMode, Role, RoleDefinitions, RoleSource, ServerSettings, ServiceCredentialRecord,
-    ServiceScope, SessionRecord, SignupStage, SshKeyRecord, TeamRecord, TokenId, TokenRecord,
-    VerificationRecord,
+    AccountKind, AccountStatus, InvitationAccept, InvitationCreate, InviteId, InviteRecord,
+    NewAccount, OrgInvitation, OrgRole, Permission, Principal, RegistrationMode, Role,
+    RoleDefinitions, RoleSource, ServerSettings, ServiceCredentialRecord, ServiceScope,
+    SessionRecord, SignupStage, SshKeyRecord, TeamRecord, TokenId, TokenRecord, VerificationRecord,
 };
 use crate::clock::Clock;
 use crate::memory::{MemoryAuditStore, MemoryMetadataStore, MemoryObjectStore};
@@ -4509,6 +4509,142 @@ pub async fn a_retried_delete_finishes_an_interrupted_one_once_its_mark_is_stale
     assert!(store.account(&acme).await.unwrap().is_none());
 }
 
+pub async fn organization_invitations_are_recorded_accepted_expired_and_removed_with_the_organization(
+    store: Access,
+) {
+    let acme = user("acme");
+    for name in ["alice", "bob", "carol"] {
+        store.create_user(&user(name), at(0)).await.unwrap();
+    }
+    store
+        .create_org(&acme, &user("alice"), at(1))
+        .await
+        .unwrap();
+    let invite = |name: &str, role: OrgRole, minutes: i64| OrgInvitation {
+        org: acme.clone(),
+        user: user(name),
+        role,
+        invited_by: user("alice"),
+        created_at: at(2),
+        expires_at: at(minutes),
+    };
+
+    assert_eq!(
+        store
+            .create_org_invitation(&invite("alice", OrgRole::Member, 60))
+            .await
+            .unwrap(),
+        InvitationCreate::AlreadyMember
+    );
+    let bob = invite("bob", OrgRole::Owner, 60);
+    assert_eq!(
+        store.create_org_invitation(&bob).await.unwrap(),
+        InvitationCreate::Created
+    );
+    assert_eq!(
+        store
+            .create_org_invitation(&invite("bob", OrgRole::Member, 90))
+            .await
+            .unwrap(),
+        InvitationCreate::AlreadyInvited
+    );
+    let carol = invite("carol", OrgRole::Member, 10);
+    store.create_org_invitation(&carol).await.unwrap();
+    assert_eq!(
+        store.org_invitations(&acme).await.unwrap(),
+        [bob.clone(), carol.clone()]
+    );
+    assert_eq!(
+        store.org_invitations_for(&user("bob")).await.unwrap(),
+        std::slice::from_ref(&bob)
+    );
+    assert!(store.org_members(&acme).await.unwrap().len() == 1);
+
+    assert!(
+        store
+            .take_expired_org_invitations(None, Some(&user("bob")), at(30))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        store
+            .take_expired_org_invitations(Some(&acme), None, at(30))
+            .await
+            .unwrap(),
+        std::slice::from_ref(&carol)
+    );
+    assert_eq!(
+        store
+            .accept_org_invitation(&acme, &user("carol"), at(30), None)
+            .await
+            .unwrap(),
+        InvitationAccept::Missing
+    );
+
+    let capped = store
+        .accept_org_invitation(&acme, &user("bob"), at(30), Some(1))
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        capped,
+        PynError::MemberLimitReached { limit: 1, .. }
+    ));
+    assert_eq!(
+        store.org_invitations(&acme).await.unwrap(),
+        std::slice::from_ref(&bob)
+    );
+    assert_eq!(
+        store
+            .accept_org_invitation(&acme, &user("bob"), at(61), None)
+            .await
+            .unwrap(),
+        InvitationAccept::Missing,
+        "an expired invitation cannot be accepted"
+    );
+    assert!(store.org_invitations(&acme).await.unwrap().is_empty());
+
+    store.create_org_invitation(&bob).await.unwrap();
+    assert_eq!(
+        store
+            .accept_org_invitation(&acme, &user("bob"), at(30), None)
+            .await
+            .unwrap(),
+        InvitationAccept::Joined(OrgRole::Owner)
+    );
+    assert_eq!(
+        store.org_role(&acme, &user("bob")).await.unwrap(),
+        Some(OrgRole::Owner)
+    );
+    assert!(store.org_invitations(&acme).await.unwrap().is_empty());
+
+    store.create_org_invitation(&carol).await.unwrap();
+    assert_eq!(
+        store
+            .delete_org_invitation(&acme, &user("carol"))
+            .await
+            .unwrap(),
+        Some(carol.clone())
+    );
+    assert_eq!(
+        store
+            .delete_org_invitation(&acme, &user("carol"))
+            .await
+            .unwrap(),
+        None
+    );
+
+    store.create_org_invitation(&carol).await.unwrap();
+    store.delete_org(&acme).await.unwrap();
+    assert!(
+        store
+            .org_invitations_for(&user("carol"))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
 pub async fn organization_members_are_added_changed_and_never_left_without_an_owner(store: Access) {
     let acme = user("acme");
     for name in ["alice", "bob", "carol"] {
@@ -4961,8 +5097,8 @@ pub async fn effective_roles_resolve_across_direct_team_and_owner_grants(store: 
         store.create_user(&user(name), at(0)).await.unwrap();
     }
     for name in ["bob", "carol", "dave"] {
-        access
-            .add_org_member(&alice, &acme, &user(name), OrgRole::Member)
+        store
+            .add_org_member(&acme, &user(name), OrgRole::Member)
             .await
             .unwrap();
     }
@@ -5197,8 +5333,8 @@ pub async fn effective_roles_resolve_across_direct_team_and_owner_grants(store: 
     );
     assert_eq!(access.repos_of(&user("dave")).await.unwrap(), []);
 
-    access
-        .add_org_member(&alice, &acme, &user("erin"), OrgRole::Owner)
+    store
+        .add_org_member(&acme, &user("erin"), OrgRole::Owner)
         .await
         .unwrap();
     assert_eq!(role("erin", &tools).await, Some(Role::Admin));
@@ -6363,8 +6499,8 @@ impl CreationWorld {
             store.create_user(&user(name), at(0)).await.unwrap();
         }
         for name in ["bob", "carol", "dave"] {
-            access
-                .add_org_member(&alice, &acme, &user(name), OrgRole::Member)
+            store
+                .add_org_member(&acme, &user(name), OrgRole::Member)
                 .await
                 .unwrap();
         }
@@ -7483,8 +7619,8 @@ pub async fn managers_cannot_act_on_admins_or_repository_owners(store: Access) {
     }
     store.set_admin(&user("root"), true).await.unwrap();
     for name in ["bob", "carol", "root"] {
-        access
-            .add_org_member(&alice, &user("acme"), &user(name), OrgRole::Member)
+        store
+            .add_org_member(&user("acme"), &user(name), OrgRole::Member)
             .await
             .unwrap();
     }
@@ -7743,6 +7879,7 @@ macro_rules! access_contract_tests {
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; repository_creation_cannot_slip_in_while_an_organization_is_deleted);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; a_retried_delete_finishes_an_interrupted_one_once_its_mark_is_stale);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; organization_members_are_added_changed_and_never_left_without_an_owner);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; organization_invitations_are_recorded_accepted_expired_and_removed_with_the_organization);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; removing_an_organization_member_drops_their_roles_in_the_given_repositories);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; teams_hold_members_and_repository_roles_until_removed);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; effective_roles_resolve_across_direct_team_and_owner_grants);

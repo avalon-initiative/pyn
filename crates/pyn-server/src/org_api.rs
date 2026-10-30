@@ -3,9 +3,10 @@
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
 use std::str::FromStr;
 
-use pyn_core::{AccountRecord, AuditQuery, OrgRole, UserId};
+use pyn_core::{AccountRecord, AuditQuery, OrgAdd, OrgInvitation, OrgRole, UserId};
 use pyn_proto as api;
 use serde::Deserialize;
 
@@ -165,27 +166,125 @@ fn member_info((user, role): (UserId, OrgRole)) -> api::OrgMember {
 #[utoipa::path(post, path = "/v1/orgs/{org}/members",
     params(("org" = String, Path, description = "the organization's name")),
     request_body = api::AddOrgMemberRequest,
-    responses((status = 201, body = api::OrgMember),
+    responses((status = 202, body = api::OrgInvitation, description = "invited: the user becomes a member when they accept"),
+              (status = 201, body = api::OrgMember, description = "added without an invitation: only a server administrator, and only when the server's org member add setting is `direct`"),
               (status = 400, body = api::ErrorBody, description = "invalid_request: bad role, or the name is an organization"),
               (status = 403, body = api::ErrorBody, description = "not_org_owner, or a token without manage_roles or limited to repositories"),
               (status = 404, body = api::ErrorBody, description = "org_not_found, or user_not_found"),
-              (status = 409, body = api::ErrorBody, description = "already_org_member")))]
+              (status = 409, body = api::ErrorBody, description = "already_org_member, or already_invited")))]
 pub(crate) async fn add_member(
     State(s): State<AppState>,
     headers: HeaderMap,
     Path(org): Path<String>,
     Json(req): Json<api::AddOrgMemberRequest>,
-) -> ApiResult<(StatusCode, Json<api::OrgMember>)> {
+) -> ApiResult<Response> {
     let who = identify(&s, &headers).await?;
     let role = req
         .role
         .as_deref()
         .map_or(Ok(OrgRole::Member), parse_role)?;
     let user = UserId::new(req.user);
-    s.access
+    let added = s
+        .access
         .add_org_member(&who, &UserId::new(org), &user, role)
         .await?;
-    Ok((StatusCode::CREATED, Json(member_info((user, role)))))
+    Ok(match added {
+        OrgAdd::Added => (StatusCode::CREATED, Json(member_info((user, role)))).into_response(),
+        OrgAdd::Invited(i) => (StatusCode::ACCEPTED, Json(invitation_info(i))).into_response(),
+    })
+}
+
+fn invitation_info(i: OrgInvitation) -> api::OrgInvitation {
+    api::OrgInvitation {
+        org: i.org.to_string(),
+        user: i.user.to_string(),
+        role: i.role.to_string(),
+        invited_by: i.invited_by.to_string(),
+        created_at: i.created_at,
+        expires_at: i.expires_at,
+    }
+}
+
+#[utoipa::path(get, path = "/v1/orgs/{org}/invitations",
+    params(("org" = String, Path, description = "the organization's name")),
+    responses((status = 200, body = Vec<api::OrgInvitation>, description = "pending invitations ordered by user name; expired ones are gone"),
+              (status = 403, body = api::ErrorBody, description = "not_org_owner, or a token that is not full-scope"),
+              (status = 404, body = api::ErrorBody, description = "org_not_found")))]
+pub(crate) async fn list_invitations(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path(org): Path<String>,
+) -> ApiResult<Json<Vec<api::OrgInvitation>>> {
+    let who = identify(&s, &headers).await?;
+    let found = s.access.org_invitations(&who, &UserId::new(org)).await?;
+    Ok(Json(found.into_iter().map(invitation_info).collect()))
+}
+
+#[utoipa::path(delete, path = "/v1/orgs/{org}/invitations/{user}",
+    params(("org" = String, Path, description = "the organization's name"),
+           ("user" = String, Path, description = "the invited user's name")),
+    responses((status = 204, description = "the invitation is withdrawn"),
+              (status = 403, body = api::ErrorBody, description = "not_org_owner, or a token without manage_roles or limited to repositories"),
+              (status = 404, body = api::ErrorBody, description = "org_not_found, or org_invitation_not_found")))]
+pub(crate) async fn cancel_invitation(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path((org, user)): Path<(String, String)>,
+) -> ApiResult<StatusCode> {
+    let who = identify(&s, &headers).await?;
+    s.access
+        .cancel_org_invitation(&who, &UserId::new(org), &UserId::new(user))
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(get, path = "/v1/me/invitations",
+    responses((status = 200, body = Vec<api::OrgInvitation>, description = "the caller's pending organization invitations, ordered by organization name"),
+              (status = 401, body = api::ErrorBody),
+              (status = 403, body = api::ErrorBody, description = "a token that is not full-scope")))]
+pub(crate) async fn my_invitations(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+) -> ApiResult<Json<Vec<api::OrgInvitation>>> {
+    let who = identify(&s, &headers).await?;
+    let found = s.access.my_org_invitations(&who).await?;
+    Ok(Json(found.into_iter().map(invitation_info).collect()))
+}
+
+#[utoipa::path(post, path = "/v1/me/invitations/{org}/accept",
+    params(("org" = String, Path, description = "the inviting organization's name")),
+    responses((status = 200, body = api::OrgInfo, description = "the caller is now a member, with the offered role"),
+              (status = 403, body = api::ErrorBody, description = "a token without manage_roles or limited to repositories"),
+              (status = 404, body = api::ErrorBody, description = "org_not_found, or org_invitation_not_found"),
+              (status = 409, body = api::ErrorBody, description = "member_limit_reached: the organization is full; the invitation stays")))]
+pub(crate) async fn accept_invitation(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path(org): Path<String>,
+) -> ApiResult<Json<api::OrgInfo>> {
+    let who = identify(&s, &headers).await?;
+    let (org, role) = s
+        .access
+        .accept_org_invitation(&who, &UserId::new(org))
+        .await?;
+    Ok(Json(org_info(org, Some(role))))
+}
+
+#[utoipa::path(post, path = "/v1/me/invitations/{org}/decline",
+    params(("org" = String, Path, description = "the inviting organization's name")),
+    responses((status = 204, description = "the invitation is gone"),
+              (status = 403, body = api::ErrorBody, description = "a token without manage_roles or limited to repositories"),
+              (status = 404, body = api::ErrorBody, description = "org_not_found, or org_invitation_not_found")))]
+pub(crate) async fn decline_invitation(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path(org): Path<String>,
+) -> ApiResult<StatusCode> {
+    let who = identify(&s, &headers).await?;
+    s.access
+        .decline_org_invitation(&who, &UserId::new(org))
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 fn parse_role(role: &str) -> Result<OrgRole, pyn_core::PynError> {
