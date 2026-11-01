@@ -10,10 +10,6 @@ use super::stage::raw_mode;
 use crate::backend::Backend;
 use crate::diffstat::Counts;
 
-fn abbrev(entry: Option<&Entry>) -> String {
-    entry.map_or_else(|| "0".repeat(7), |e| e.id.to_hex()[..7].to_string())
-}
-
 fn content(git: &GitHome, entry: Option<&Entry>) -> Result<Vec<u8>> {
     Ok(match entry {
         Some(e) if e.mode == FileMode::Gitlink => {
@@ -34,9 +30,10 @@ pub(super) fn of_commit(git: &GitHome, id: &ObjectId) -> Result<String> {
     let changes =
         git.repo
             .diff_trees(Some(&parent_tree), Some(&commit.tree), &Pathspec::default())?;
+    let abbreviations = git.repo.abbreviations(None)?;
     let mut out = String::new();
     for change in &changes {
-        out.push_str(&of_change(git, change, 3)?.text);
+        out.push_str(&of_change(git, change, 3, &abbreviations)?.text);
     }
     Ok(out)
 }
@@ -48,7 +45,18 @@ pub(super) struct Rendered {
 }
 
 /// The `diff --git` section for one change with `context` lines around each hunk; names are quoted as git does.
-pub(super) fn of_change(git: &GitHome, change: &Change, context: usize) -> Result<Rendered> {
+pub(super) fn of_change(
+    git: &GitHome,
+    change: &Change,
+    context: usize,
+    abbreviations: &pyn_gitwork::Abbreviations,
+) -> Result<Rendered> {
+    let abbrev = |entry: Option<&Entry>| {
+        entry.map_or_else(
+            || abbreviations.short_null(),
+            |e| abbreviations.short(&e.id),
+        )
+    };
     let q = |prefix: &str| {
         let mut full = prefix.as_bytes().to_vec();
         full.extend_from_slice(&change.path);

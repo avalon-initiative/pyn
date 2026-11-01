@@ -19,12 +19,7 @@ use super::worktree::{Mode, check_writes, move_tree, remove_entry_file, write_by
 use super::{GitHome, Refused, convert, path_string};
 use crate::branch::{CheckoutArgs, SwitchArgs};
 
-const ABBREV: usize = 7;
 const CHECKOUT_HOOKS: [&str; 1] = ["post-checkout"];
-
-fn abbrev(id: &ObjectId) -> String {
-    id.to_hex()[..ABBREV].to_string()
-}
 
 pub(super) fn subject(git: &GitHome, id: &ObjectId) -> Result<String> {
     let commit = git.repo.commit(id)?;
@@ -136,7 +131,11 @@ fn advice_on(git: &GitHome, name: &str) -> bool {
 
 pub(super) fn detach_advice(git: &GitHome, label: &str, id: &ObjectId) -> Result<()> {
     detach_note(git, label);
-    eprintln!("HEAD is now at {} {}", abbrev(id), subject(git, id)?);
+    eprintln!(
+        "HEAD is now at {} {}",
+        git.repo.abbreviate(id)?,
+        subject(git, id)?
+    );
     Ok(())
 }
 
@@ -186,7 +185,7 @@ fn leaving_detached(git: &GitHome, old: &ObjectId) -> Result<()> {
     if lost.is_empty() {
         eprintln!(
             "Previous HEAD position was {} {}",
-            abbrev(old),
+            git.repo.abbreviate(old)?,
             subject(git, old)?
         );
         return Ok(());
@@ -197,7 +196,7 @@ fn leaving_detached(git: &GitHome, old: &ObjectId) -> Result<()> {
         if n == 1 { "" } else { "s" }
     );
     for id in lost.iter().take(ORPHAN_LISTED) {
-        eprintln!("  {} {}", abbrev(id), subject(git, id)?);
+        eprintln!("  {} {}", git.repo.abbreviate(id)?, subject(git, id)?);
     }
     if n > ORPHAN_LISTED {
         eprintln!(" ... and {} more.", n - ORPHAN_LISTED);
@@ -208,7 +207,7 @@ fn leaving_detached(git: &GitHome, old: &ObjectId) -> Result<()> {
             "If you want to keep {} by creating a new branch, this may be a good time\n\
              to do so with:\n\n git branch <new-branch-name> {}\n",
             if n == 1 { "it" } else { "them" },
-            abbrev(&lost[0])
+            git.repo.abbreviate(&lost[0])?
         );
     }
     Ok(())
@@ -429,7 +428,11 @@ fn go_quietly(git: &GitHome, go: Go, via: Via) -> Result<()> {
             if was_detached && old_commit != Some(id) {
                 leaving_detached(git, &old_commit.expect("a detached head has a commit"))?;
             }
-            eprintln!("HEAD is now at {} {}", abbrev(&id), subject(git, &id)?);
+            eprintln!(
+                "HEAD is now at {} {}",
+                git.repo.abbreviate(&id)?,
+                subject(git, &id)?
+            );
         }
     }
     done()
@@ -1068,7 +1071,7 @@ fn checkout_to(git: &GitHome, cwd: &Path, args: CheckoutArgs) -> Result<()> {
             },
         };
         let label = match &r.source {
-            Source::Tree(c) => abbrev(c),
+            Source::Tree(c) => git.repo.abbreviate(c)?,
             Source::Index => "the index".into(),
         };
         let n = restore_paths(git, cwd, &paths, r)?;
@@ -1146,7 +1149,7 @@ fn checkout_to(git: &GitHome, cwd: &Path, args: CheckoutArgs) -> Result<()> {
         let (tree_ish, rest) = (first.clone(), &names[1..]);
         let source = Source::Tree(commit_of(git, &tree_ish)?);
         let label = match &source {
-            Source::Tree(c) => abbrev(c),
+            Source::Tree(c) => git.repo.abbreviate(c)?,
             Source::Index => unreachable!("a commit was named"),
         };
         let n = restore_paths(

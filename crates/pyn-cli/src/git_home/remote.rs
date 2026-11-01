@@ -22,6 +22,16 @@ pub struct RemoteArgs {
     command: Option<RemoteCommand>,
 }
 
+impl RemoteArgs {
+    /// Whether the invocation fetches, and so renders ids and writes refs.
+    pub(super) fn fetches(&self) -> bool {
+        matches!(
+            self.command,
+            Some(RemoteCommand::Update { .. } | RemoteCommand::Add { fetch: true, .. })
+        )
+    }
+}
+
 #[derive(Debug, Subcommand)]
 enum RemoteCommand {
     /// Define a remote with one URL and the default fetch refspec.

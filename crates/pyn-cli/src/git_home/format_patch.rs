@@ -316,10 +316,11 @@ impl Context<'_> {
         };
         let changes = self.changes(parent_tree.as_ref(), &commit.tree)?;
         let context = self.args.unified.unwrap_or(3);
+        let abbreviations = self.git.repo.abbreviations(None)?;
         let mut patch = String::new();
         let mut rows = Vec::new();
         for change in &changes {
-            let rendered = of_change(self.git, change, context)?;
+            let rendered = of_change(self.git, change, context, &abbreviations)?;
             if matches!(rendered.counts, Counts::Binary(..)) {
                 usage("format-patch does not write binary changes yet");
             }
@@ -413,9 +414,10 @@ impl Context<'_> {
             (Some(_), tree) => self.changes(tree.as_ref(), &head.tree)?,
             _ => Vec::new(),
         };
+        let abbreviations = self.git.repo.abbreviations(None)?;
         let mut rows = Vec::new();
         for change in &changes {
-            let rendered = of_change(self.git, change, 3)?;
+            let rendered = of_change(self.git, change, 3, &abbreviations)?;
             if matches!(rendered.counts, Counts::Binary(..)) {
                 usage("format-patch does not write binary changes yet");
             }

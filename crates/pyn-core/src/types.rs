@@ -36,6 +36,10 @@ string_id!(
     AccountId
 );
 string_id!(
+    /// Opaque key of a team that never changes and is never issued again; the slug is only the address.
+    TeamId
+);
+string_id!(
     /// SHA-256 hex over a revision's canonical encoding (docs/concepts/integrity.md).
     RevisionHash
 );
@@ -447,4 +451,14 @@ mod tests {
             ".git/x"
         );
     }
+}
+
+/// An object uploaded through the LFS API: its sha256 `oid` (lowercase hex), its length, and where the bytes live.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LfsObject {
+    pub oid: String,
+    pub size: u64,
+    pub object: ObjectId,
+    pub created_at: DateTime<Utc>,
+    pub created_by: UserId,
 }

@@ -308,6 +308,7 @@ fn patch(
     p: &Pair,
     c: &Contents,
     format: &Format,
+    abbreviations: &crate::commit_format::IdFormat,
     (style, words): (Option<&Style>, Option<&word_diff::Setup>),
 ) -> String {
     let (old, new) = (p.old.as_ref(), p.new.as_ref());
@@ -360,10 +361,12 @@ fn patch(
     }
     let changed = old.zip(new).is_none_or(|(a, b)| a.hash != b.hash);
     if changed {
-        let (x, y) = (
-            id_of(old, new, |h| o.index_id(h)),
-            id_of(new, old, |h| o.index_id(h)),
-        );
+        // A git home lengthens ids until unique; `--full-index` and other homes keep `Opts`' widths.
+        let shorten = |h: &str| match abbreviations {
+            crate::commit_format::IdFormat::Git(a) if !o.full_index => a.short_hex(h),
+            _ => o.index_id(h),
+        };
+        let (x, y) = (id_of(old, new, shorten), id_of(new, old, shorten));
         let _ = writeln!(head, "index {x}..{y}{tail}");
     }
     let (from, to) = (
@@ -888,7 +891,8 @@ pub(crate) fn emit(
         return Ok(!list.is_empty());
     }
     let mut body = String::new();
-    let differs = render(backend, list, format, &mut body)?;
+    let abbreviations = backend.abbreviations(format.opts.abbrev)?;
+    let differs = render(backend, list, format, &abbreviations, &mut body)?;
     let start = out.len();
     if format.kind == Kind::Patch {
         out.push_str(&summary);
@@ -908,7 +912,7 @@ pub(crate) fn emit(
             ..format.clone()
         };
         let mut patch = String::new();
-        render(backend, list, &patch_format, &mut patch)?;
+        render(backend, list, &patch_format, &abbreviations, &mut patch)?;
         // The blank line before the patch is left out after a dirstat by changes or files.
         let by_line = format
             .opts
@@ -1022,7 +1026,13 @@ pub(crate) fn status_of(p: &Pair) -> String {
     .into()
 }
 
-fn render(backend: &dyn Backend, list: &[Pair], format: &Format, out: &mut String) -> Result<bool> {
+fn render(
+    backend: &dyn Backend,
+    list: &[Pair],
+    format: &Format,
+    abbreviations: &crate::commit_format::IdFormat,
+    out: &mut String,
+) -> Result<bool> {
     let style = Style::resolve(&format.opts, &|k| backend.diff_setting(k));
     let style = style.as_ref();
     let words = word_diff::Setup::of(&format.opts, &|k| backend.diff_setting(k));
@@ -1092,7 +1102,14 @@ fn render(backend: &dyn Backend, list: &[Pair], format: &Format, out: &mut Strin
                             ..(*p).clone()
                         };
                         let c = contents(backend, path, old, new, format.opts.text)?;
-                        out.push_str(&patch(backend, &split, &c, format, (style, words.as_ref())));
+                        out.push_str(&patch(
+                            backend,
+                            &split,
+                            &c,
+                            format,
+                            abbreviations,
+                            (style, words.as_ref()),
+                        ));
                     }
                     continue;
                 }
@@ -1114,7 +1131,14 @@ fn render(backend: &dyn Backend, list: &[Pair], format: &Format, out: &mut Strin
                     continue;
                 }
                 if format.kind == Kind::Patch {
-                    out.push_str(&patch(backend, p, &c, format, (style, words.as_ref())));
+                    out.push_str(&patch(
+                        backend,
+                        p,
+                        &c,
+                        format,
+                        abbreviations,
+                        (style, words.as_ref()),
+                    ));
                     continue;
                 }
                 if format.kind == Kind::Check {

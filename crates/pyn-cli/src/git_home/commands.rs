@@ -23,12 +23,14 @@ use crate::rename;
 use crate::short_status::{self, Format, Row, StatusArgs};
 use crate::{Command, table, unsupported};
 
-/// The commit abbreviation `Merge:` lines use.
-const ABBREV: usize = 7;
 const EXCLUDE_LINE: &str = ".pyn/";
 
 /// Runs `command` on a git repository, or refuses it with the home that provides it.
 pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
+    // Validate before writes, except in commands that never render an abbreviated id.
+    if reads_core_abbrev(&command) {
+        git.repo.abbreviation_len(None)?;
+    }
     let server_only = |feature: &str| -> Result<()> {
         match git.pyn_server(feature) {
             Ok(_) => unreachable!("a git home has no pyn server"),
@@ -234,6 +236,7 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
             base,
             message,
             all,
+            untracked,
             git: flags,
         } => {
             if !paths.is_empty() {
@@ -250,6 +253,7 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
                 &super::commit::CommitOptions {
                     messages: message,
                     all,
+                    untracked,
                     file,
                     flags,
                 },
@@ -343,6 +347,7 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
         | Command::Whoami
         | Command::Repo(_)
         | Command::Org(_)
+        | Command::Invitation(_)
         | Command::Team(_)
         | Command::Setup { .. }
         | Command::Admin(_)
@@ -354,6 +359,15 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
         Command::Clone { .. } | Command::Config(_) | Command::External(_) => {
             unreachable!("handled before a git home is consulted")
         }
+    }
+}
+
+/// Whether git reads `core.abbrev` for the command: `remote` without a fetch, `prune` and `prune-packed` do not.
+fn reads_core_abbrev(command: &Command) -> bool {
+    match command {
+        Command::Remote(args) => args.fetches(),
+        Command::Prune(_) | Command::PrunePacked(_) => false,
+        _ => true,
     }
 }
 
@@ -408,10 +422,6 @@ fn kind_word(kind: Kind) -> &'static str {
     }
 }
 
-fn short(id: &ObjectId) -> String {
-    id.to_hex()[..ABBREV].to_string()
-}
-
 pub(super) fn status(git: &GitHome, cwd: &Path, args: &StatusArgs) -> Result<()> {
     if let Some(when) = &args.ignore_submodules {
         git.repo.force_submodule_ignore(when)?;
@@ -440,18 +450,22 @@ pub(super) fn status(git: &GitHome, cwd: &Path, args: &StatusArgs) -> Result<()>
     }
     let sparse = sparse::percentage(git, &git.open_index()?.index)
         .map(|p| format!("You are in a sparse checkout with {p}% of tracked files present."));
-    status_table_with(&status, sparse.as_deref())
+    status_table_with(git, &status, sparse.as_deref())
 }
 
-pub(super) fn status_table(status: &pyn_gitwork::Status) -> Result<()> {
-    status_table_with(status, None)
+pub(super) fn status_table(git: &GitHome, status: &pyn_gitwork::Status) -> Result<()> {
+    status_table_with(git, status, None)
 }
 
-fn status_table_with(status: &pyn_gitwork::Status, note: Option<&str>) -> Result<()> {
+fn status_table_with(
+    git: &GitHome,
+    status: &pyn_gitwork::Status,
+    note: Option<&str>,
+) -> Result<()> {
     let line = match &status.head {
         Head::Branch { name, id: Some(_) } => format!("On branch {name}"),
         Head::Branch { name, id: None } => format!("On branch {name} (no commits yet)"),
-        Head::Detached(id) => format!("HEAD detached at {}", short(id)),
+        Head::Detached(id) => format!("HEAD detached at {}", git.repo.abbreviate(id)?),
     };
     println!("{line}");
     if let Some(note) = note {
@@ -1134,9 +1148,6 @@ fn show(
         }
         return Ok(());
     }
-    if format.opts.abbrev.is_some() && fmt.first_given().is_some() {
-        crate::usage_error("`--abbrev` together with a commit format is not built");
-    }
     let rendering = fmt.rendering()?;
     let (tabs, abbrev_commit) = (rendering.tab_width(), rendering.abbrev_commit);
     let Rendering { pretty, style, .. } = rendering;
@@ -1167,6 +1178,13 @@ fn show(
     let spec = git.pathspec(cwd, &[loose.as_slice(), paths].concat(), false)?;
     let names = decorate.names(git, pretty.uses_decorations())?;
     let mailmap = git.mailmap()?;
+    // `--no-abbrev` shows whole commit ids; the patch keeps `format.opts.abbrev`.
+    let width = if format.opts.no_abbrev {
+        Some(usize::MAX)
+    } else {
+        format.opts.abbrev
+    };
+    let abbreviations = crate::commit_format::IdFormat::Git(git.repo.abbreviations(width)?);
     let ctx = Context {
         style,
         now: chrono::Utc::now().timestamp(),
@@ -1176,6 +1194,7 @@ fn show(
         abbrev_commit,
         mailmap: Some(&mailmap),
         map_headers: fmt.mapped_headers(git.repo.bool_setting("log.mailmap", true)),
+        abbreviations: &abbreviations,
     };
     let shape = Shape {
         git,
@@ -1269,7 +1288,7 @@ fn show(
                 Some(r) => super::verify_sig::with_report(text, r),
                 None => text,
             };
-            out.push_str(&with_from(text, &pretty, seg.from.as_ref()));
+            out.push_str(&with_from(text, &pretty, seg.from.as_ref(), &abbreviations));
             out.push_str(pretty.terminator());
             out.push_str(&seg.tail);
         }

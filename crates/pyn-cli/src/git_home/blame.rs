@@ -429,7 +429,7 @@ pub(super) fn blame(git: &GitHome, cwd: &Path, args: BlameArgs, annotate: bool) 
         infos: &infos,
         lines: &lines,
     };
-    emit_bytes(&layout.render(&entries));
+    emit_bytes(&layout.render(&entries)?);
     Ok(())
 }
 

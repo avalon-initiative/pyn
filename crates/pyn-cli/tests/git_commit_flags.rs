@@ -35,6 +35,8 @@ struct Case {
     setup: Vec<Step>,
     args: Vec<String>,
     stdin: Option<&'static str>,
+    /// A shell fragment run as the editor on `$1`, after the help text is cut from the file.
+    editor: Option<&'static str>,
 }
 
 fn case(name: &'static str, setup: &[Step], args: &[&str], stdin: Option<&'static str>) -> Case {
@@ -43,6 +45,14 @@ fn case(name: &'static str, setup: &[Step], args: &[&str], stdin: Option<&'stati
         setup: setup.to_vec(),
         args: args.iter().map(|a| a.to_string()).collect(),
         stdin,
+        editor: None,
+    }
+}
+
+fn edited(name: &'static str, setup: &[Step], args: &[&str], editor: &'static str) -> Case {
+    Case {
+        editor: Some(editor),
+        ..case(name, setup, args, None)
     }
 }
 
@@ -85,7 +95,10 @@ impl Pair {
             fs::write(dir.join(".gitignore"), "").unwrap();
             for step in setup {
                 match step {
-                    Step::Write(p, t) => fs::write(dir.join(p), t).unwrap(),
+                    Step::Write(p, t) => {
+                        fs::create_dir_all(dir.join(p).parent().unwrap()).unwrap();
+                        fs::write(dir.join(p), t).unwrap();
+                    }
                     Step::Git(args) => {
                         let mut c = git(dir);
                         dir_env(&mut c, &root);
@@ -111,7 +124,32 @@ impl Pair {
         String::from_utf8_lossy(&out.stdout).into_owned()
     }
 
-    fn command(&self, pyn: bool, args: &[String], stdin: Option<&str>) -> i32 {
+    fn seen(&self, pyn: bool) -> PathBuf {
+        self.root
+            .join(if pyn { "seen-ours" } else { "seen-oracle" })
+    }
+
+    /// An editor that drops git's help lines (their wording is git's), records the file and then runs `action`.
+    fn editor_script(&self, pyn: bool, action: &str) -> PathBuf {
+        let script = self
+            .root
+            .join(if pyn { "ed-ours.sh" } else { "ed-oracle.sh" });
+        let body = format!(
+            "#!/bin/sh\ngrep -v -e '^# Please enter the commit message' -e \"^# with '#' will be\" -e '^# An empty message aborts' \"$1\" > \"$1.tmp\"\nmv \"$1.tmp\" \"$1\"\ncp \"$1\" '{}'\n{action}\n",
+            self.seen(pyn).display()
+        );
+        fs::write(&script, body).unwrap();
+        fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        script
+    }
+
+    fn command(
+        &self,
+        pyn: bool,
+        args: &[String],
+        stdin: Option<&str>,
+        editor: Option<&str>,
+    ) -> i32 {
         let dir = if pyn { &self.ours } else { &self.oracle };
         let mut c = if pyn {
             let mut c = Command::new(env!("CARGO_BIN_EXE_pyn"));
@@ -124,6 +162,9 @@ impl Pair {
             c
         };
         dir_env(&mut c, &self.root);
+        if let Some(action) = editor {
+            c.env("GIT_EDITOR", self.editor_script(pyn, action));
+        }
         c.env("GIT_COMMITTER_DATE", "1700009999 +0000")
             .args(args)
             .stdin(Stdio::piped())
@@ -154,9 +195,20 @@ impl Pair {
 
     /// Both tools must exit alike and leave the same repository; a success must also pass `git fsck`.
     fn same(&self, case: &Case, label: &str) {
-        let want = self.command(false, &case.args, case.stdin);
-        let got = self.command(true, &case.args, case.stdin);
-        assert_eq!(got, want, "{label}: exit status of commit {:?}", case.args);
+        let want = self.command(false, &case.args, case.stdin, case.editor);
+        let got = self.command(true, &case.args, case.stdin, case.editor);
+        assert_eq!(
+            got, want,
+            "{label}: exit status of commit {:?} {:?}",
+            case.args, case.editor
+        );
+        let seen = |pyn| fs::read_to_string(self.seen(pyn)).ok();
+        assert_eq!(
+            seen(true),
+            seen(false),
+            "{label}: editor file of commit {:?}",
+            case.args
+        );
         assert_eq!(
             self.state(&self.ours),
             self.state(&self.oracle),
@@ -859,5 +911,284 @@ fn a_pyn_server_home_still_refuses_the_git_only_flags() {
             err.contains("applies to a git repository, not a pyn server"),
             "{flags:?}: {err}"
         );
+    }
+}
+
+const APPEND: &str = "printf 'added  \\n' >> \"$1\"";
+const REPLACE: &str = "printf 'new subject  \\n\\n# gone\\nbody\\n' > \"$1\"";
+const EMPTY: &str = "printf '# only\\n' > \"$1\"";
+
+const MESSY_TREE: &[Step] = &[
+    W("b.txt", "three\n"),
+    Git(&["add", "b.txt"]),
+    W("a.txt", "edited\n"),
+    W("u.txt", "new\n"),
+    W("dir/x.txt", "x\n"),
+];
+
+const CLEAN_MERGE: &[Step] = &[
+    Git(&["checkout", "-q", "side"]),
+    W("s.txt", "side\n"),
+    Git(&["add", "s.txt"]),
+    Git(&["commit", "-q", "-m", "side file"]),
+    Git(&["checkout", "-q", "main"]),
+    W("m.txt", "main\n"),
+    Git(&["add", "m.txt"]),
+    Git(&["commit", "-q", "-m", "main file"]),
+];
+
+#[test]
+fn edit_opens_the_editor_on_the_given_message() {
+    let mut cases = Vec::new();
+    for (tag, action) in [("append", APPEND), ("replace", REPLACE), ("empty", EMPTY)] {
+        cases.push(edited(tag, MESSY_TREE, &["-e", "-m", "given"], action));
+        cases.push(edited(
+            tag,
+            MESSY_TREE,
+            &["--edit", "-m", "a", "-m", "b"],
+            action,
+        ));
+        cases.push(edited(
+            tag,
+            MESSY_TREE,
+            &["-a", "-e", "-m", "given"],
+            action,
+        ));
+        cases.push(edited(
+            tag,
+            MESSY_TREE,
+            &["-e", "-s", "-m", "given"],
+            action,
+        ));
+        cases.push(edited(
+            tag,
+            MESSY_TREE,
+            &["-e", "--trailer", "Cc: z", "-m", "g"],
+            action,
+        ));
+        cases.push(edited(tag, MESSY_TREE, &["-e", "-C", "HEAD"], action));
+        cases.push(edited(
+            tag,
+            MESSY_TREE,
+            &["--no-edit", "-e", "-m", "g"],
+            action,
+        ));
+        cases.push(edited(
+            tag,
+            MESSY_TREE,
+            &["-e", "--no-edit", "-m", "g"],
+            action,
+        ));
+        cases.push(edited(
+            tag,
+            MESSY_TREE,
+            &["-e", "--allow-empty-message", "-m", "g"],
+            action,
+        ));
+    }
+    cases.push(edited(
+        "file",
+        &[
+            W("m.txt", "from file\n"),
+            W("b.txt", "three\n"),
+            Git(&["add", "b.txt"]),
+        ],
+        &["-e", "-F", "m.txt"],
+        APPEND,
+    ));
+    cases.push(edited(
+        "comment only",
+        MESSY_TREE,
+        &["-e", "-m", "# c"],
+        APPEND,
+    ));
+    run_cases(&cases);
+}
+
+#[test]
+fn no_edit_without_a_message_aborts_like_git() {
+    run_cases(&[
+        edited("staged", STAGE_B, &["--no-edit"], APPEND),
+        edited(
+            "allowed",
+            STAGE_B,
+            &["--no-edit", "--allow-empty-message"],
+            APPEND,
+        ),
+    ]);
+}
+
+#[test]
+fn amend_opens_the_editor_on_the_old_message() {
+    let mut cases = Vec::new();
+    for (tag, action) in [("append", APPEND), ("replace", REPLACE), ("empty", EMPTY)] {
+        cases.push(edited(tag, MESSY_TREE, &["--amend"], action));
+        cases.push(edited(tag, &[], &["--amend"], action));
+        cases.push(edited(tag, MESSY_TREE, &["--amend", "-s"], action));
+        cases.push(edited(
+            tag,
+            MESSY_TREE,
+            &["--amend", "-e", "-m", "new"],
+            action,
+        ));
+        cases.push(edited(
+            tag,
+            MESSY_TREE,
+            &["--amend", "--reset-author"],
+            action,
+        ));
+        cases.push(edited(
+            tag,
+            MESSY_TREE,
+            &["--amend", "--author", "Zed <z@x.org>"],
+            action,
+        ));
+        cases.push(edited(
+            tag,
+            MESSY_TREE,
+            &["--amend", "--date", "1710000000 +0900"],
+            action,
+        ));
+        cases.push(edited(
+            tag,
+            MESSY_TREE,
+            &["--amend", "-C", "HEAD~1", "-e"],
+            action,
+        ));
+    }
+    cases.push(edited(
+        "no-edit",
+        MESSY_TREE,
+        &["--amend", "--no-edit"],
+        APPEND,
+    ));
+    cases.push(edited(
+        "message",
+        MESSY_TREE,
+        &["--amend", "-m", "m"],
+        APPEND,
+    ));
+    cases.push(edited(
+        "amend a merge",
+        &[
+            Git(&["checkout", "-q", "-b", "other", "HEAD~1"]),
+            W("o.txt", "o\n"),
+            Git(&["add", "o.txt"]),
+            Git(&["commit", "-q", "-m", "other"]),
+            Git(&["checkout", "-q", "main"]),
+            Git(&["merge", "-q", "--no-ff", "-m", "merged", "other"]),
+        ],
+        &["--amend"],
+        APPEND,
+    ));
+    run_cases(&cases);
+}
+
+#[test]
+fn a_merge_or_squash_in_progress_opens_the_editor() {
+    let merge: Vec<Step> = CLEAN_MERGE
+        .iter()
+        .copied()
+        .chain([Git(&["merge", "--no-commit", "--no-ff", "side"])])
+        .collect();
+    let squash: Vec<Step> = CLEAN_MERGE
+        .iter()
+        .copied()
+        .chain([Git(&["merge", "--squash", "side"])])
+        .collect();
+    let conflicted: Vec<Step> = CONFLICTED_MERGE.to_vec();
+    let mut cases = Vec::new();
+    for (name, setup) in [
+        ("merge", &merge),
+        ("squash", &squash),
+        ("conflicted", &conflicted),
+    ] {
+        for (tag, action) in [("append", APPEND), ("replace", REPLACE), ("empty", EMPTY)] {
+            cases.push(edited(tag, setup, &[], action));
+        }
+        cases.push(edited(name, setup, &["--no-edit"], APPEND));
+        cases.push(edited(name, setup, &["-m", "given"], APPEND));
+        cases.push(edited(name, setup, &["-e", "-m", "given"], APPEND));
+        cases.push(edited(name, setup, &["-s"], APPEND));
+        cases.push(edited(name, setup, &["--cleanup=scissors"], APPEND));
+        cases.push(edited(name, setup, &["--cleanup=verbatim"], APPEND));
+        cases.push(edited(name, setup, &["--cleanup=whitespace"], APPEND));
+    }
+    run_cases(&cases);
+}
+
+#[test]
+fn cleanup_modes_keep_or_strip_comments_as_git_does() {
+    let mut cases = Vec::new();
+    for mode in ["default", "strip", "whitespace", "verbatim", "scissors"] {
+        let flag: &'static str = Box::leak(format!("--cleanup={mode}").into_boxed_str());
+        for action in [APPEND, REPLACE, EMPTY] {
+            cases.push(edited(
+                mode,
+                MESSY_TREE,
+                &["-e", "-m", "hi  ", flag],
+                action,
+            ));
+            cases.push(edited(mode, MESSY_TREE, &["--amend", flag], action));
+            cases.push(edited(mode, MESSY_TREE, &["-a", "-s", flag], action));
+        }
+        cases.push(edited(
+            mode,
+            MESSY_TREE,
+            &["-m", "hi  \n\n\n# c  ", flag],
+            APPEND,
+        ));
+        cases.push(edited(
+            mode,
+            MESSY_TREE,
+            &["--amend", "--no-edit", flag],
+            APPEND,
+        ));
+    }
+    run_cases(&cases);
+}
+
+#[test]
+fn the_template_lists_unstaged_and_untracked_paths() {
+    let ignored: Vec<Step> = [
+        W(".gitignore", "skip.txt\n"),
+        W("skip.txt", "i\n"),
+        W("a.txt", "edited\n"),
+        Git(&["rm", "-q", "--cached", "b.txt"]),
+    ]
+    .into_iter()
+    .chain(MESSY_TREE.iter().copied())
+    .collect();
+    run_cases(&[
+        edited("messy", MESSY_TREE, &["-s"], APPEND),
+        edited("ignored and removed", &ignored, &[], APPEND),
+        edited(
+            "detached",
+            &[
+                Git(&["checkout", "-q", "--detach"]),
+                W("b.txt", "d\n"),
+                Git(&["add", "b.txt"]),
+            ],
+            &[],
+            APPEND,
+        ),
+    ]);
+}
+
+#[test]
+fn the_first_commit_template_says_initial_commit() {
+    let steps = [
+        W("a.txt", "one\n"),
+        Git(&["add", "a.txt"]),
+        W("b.txt", "u\n"),
+    ];
+    for format in FORMATS {
+        for action in [APPEND, REPLACE] {
+            let pair = Pair::new(format, &steps.iter().collect::<Vec<_>>());
+            pair.same(
+                &edited("unborn", &[], &[], action),
+                &format!("{format} unborn"),
+            );
+        }
     }
 }

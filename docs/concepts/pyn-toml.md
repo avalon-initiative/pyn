@@ -1,7 +1,7 @@
 # `pyn.toml`
 
 The repository's collaboration policy, stored at `.pyn/pyn.toml` (see [the `.pyn/` folder](workspace.md)): which paths are `exclusive` (one editor at a time, enforced by the server) and
-which are `shared` (concurrent edits; merge is planned, see [git compatibility](git-compatibility.md)).
+which are `shared` (concurrent edits; merged, see [merging](merging.md) and [git compatibility](git-compatibility.md)).
 
 ```toml
 [meta]
@@ -69,7 +69,7 @@ and the `.pyn/local_only` prefix (also case-insensitive), which belongs to a wor
 `.pyn/pyn.toml` and `.pyn/ignore` stay valid. A refused path is `400 invalid_path`; a reserved segment is named in the message. Paths already in a repository's history
 are still readable, listable and unlockable whatever their name.
 
-## Precedence (provisional)
+## Precedence
 
 When several entries cover a path, the most specific wins:
 

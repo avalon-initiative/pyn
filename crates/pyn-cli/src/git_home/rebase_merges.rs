@@ -52,7 +52,7 @@ impl LabelState {
         }
         let hex_len = id.to_hex().len();
         let Some(text) = label else {
-            let mut name = abbreviation(git, id);
+            let mut name = git.repo.abbreviate(id)?;
             if self.taken.contains(&name) {
                 let full = id.to_hex();
                 name = (name.len() + 1..hex_len)
@@ -71,7 +71,7 @@ impl LabelState {
             }
         }
         if name.is_empty() {
-            name = format!("rev-{}", abbreviation(git, id));
+            name = format!("rev-{}", git.repo.abbreviate(id)?);
         }
         let looks_like_id = name.len() == hex_len && name.bytes().all(|b| b.is_ascii_hexdigit());
         if looks_like_id || name == "#" || self.taken.contains(&name) {
@@ -83,16 +83,6 @@ impl LabelState {
         }
         Ok(self.add(id, name))
     }
-}
-
-/// The shortest prefix of at least seven digits that names only this object.
-fn abbreviation(git: &GitHome, id: &ObjectId) -> String {
-    let full = id.to_hex();
-    (7..full.len())
-        .map(|n| &full[..n])
-        .find(|p| git.repo.resolve(p).is_ok_and(|found| found == *id))
-        .unwrap_or(&full)
-        .to_string()
 }
 
 fn comment(text: &str) -> Item {

@@ -6,7 +6,7 @@ use pyn_object::{Commit, ObjectId};
 
 use super::GitHome;
 use super::combined_diff;
-use crate::commit_format::{Pretty, short};
+use crate::commit_format::Pretty;
 use crate::diff::{self, DiffParts, Format, Kind};
 use crate::rename;
 
@@ -172,6 +172,7 @@ pub(super) struct Want {
     pub patch: bool,
     pub context: usize,
     pub renames: rename::Request,
+    pub full_index: bool,
 }
 
 impl Want {
@@ -192,6 +193,7 @@ impl Want {
             patch: p.patch,
             context: p.context,
             renames: p.renames,
+            full_index: p.opts.full_index,
         }
     }
 
@@ -202,6 +204,7 @@ impl Want {
             patch: false,
             context: f.context,
             renames: f.renames,
+            full_index: f.opts.full_index,
         };
         match f.kind {
             Kind::Patch => want.patch = true,
@@ -395,7 +398,9 @@ impl Shape<'_> {
                 out.push('\n');
             }
             for e in &elems {
-                if let Some(text) = combined_diff::patch(git, e, (dense, want.context))? {
+                if let Some(text) =
+                    combined_diff::patch(git, e, (dense, want.context), want.full_index)?
+                {
                     out.push_str(&text);
                 }
             }
@@ -405,7 +410,12 @@ impl Shape<'_> {
 }
 
 /// Inserts ` (from <parent>)` after the id on the first line of a built-in format; `--format` templates have none.
-pub(super) fn with_from(mut text: String, pretty: &Pretty, from: Option<&ObjectId>) -> String {
+pub(super) fn with_from(
+    mut text: String,
+    pretty: &Pretty,
+    from: Option<&ObjectId>,
+    abbreviations: &crate::commit_format::IdFormat,
+) -> String {
     let Some(p) = from else { return text };
     let (skip, short_id) = match pretty {
         Pretty::User { .. } => return text,
@@ -421,7 +431,11 @@ pub(super) fn with_from(mut text: String, pretty: &Pretty, from: Option<&ObjectI
     let end = text[skip..]
         .find([' ', '\n', '\x1b'])
         .map_or(text.len(), |i| i + skip);
-    let name = if short_id { short(p) } else { p.to_hex() };
+    let name = if short_id {
+        crate::commit_format::short(abbreviations, p)
+    } else {
+        p.to_hex()
+    };
     text.insert_str(end, &format!(" (from {name})"));
     text
 }

@@ -8,7 +8,6 @@ use pyn_object::{Commit, ObjectId};
 use super::GitHome;
 use super::switch::subject;
 use super::treemerge::{Conflicting, Labels, Resolved, merge_trees, result_tree};
-use crate::commit_format::short;
 
 /// The tree the parents merge to, and the messages each conflicted path gets.
 pub(super) struct Recreated {
@@ -17,7 +16,11 @@ pub(super) struct Recreated {
 }
 
 fn label(git: &GitHome, id: &ObjectId) -> Result<String> {
-    Ok(format!("{} ({})", short(id), subject(git, id)?))
+    Ok(format!(
+        "{} ({})",
+        git.repo.abbreviate(id)?,
+        subject(git, id)?
+    ))
 }
 
 fn settings(git: &GitHome) -> super::strategy::Settings {
@@ -77,7 +80,11 @@ pub(super) fn recreate(git: &GitHome, c: &Commit) -> Result<Recreated> {
         None => None,
     };
     let (ours, theirs) = (label(git, &a)?, label(git, &b)?);
-    let base = bases.first().map(short).unwrap_or_default();
+    let base = bases
+        .first()
+        .map(|id| git.repo.abbreviate(id))
+        .transpose()?
+        .unwrap_or_default();
     let merged = merge_trees(
         git,
         base_tree.as_ref(),

@@ -8,9 +8,7 @@ use clap::Args;
 use pyn_object::{Kind, ObjectId, Tag};
 
 use super::GitHome;
-use super::plumbing::{
-    Resolver, abbrev, default_abbrev, emit_bytes, kind_of, peel, prefix, shorten_ref,
-};
+use super::plumbing::{Resolver, emit_bytes, kind_of, peel, prefix, shorten_ref};
 
 /// Weight of a step through a merge's later parent, so such names lose to first-parent ones.
 const MERGE_WEIGHT: usize = 65535;
@@ -82,7 +80,7 @@ pub(super) fn name_rev(git: &GitHome, cwd: &Path, args: NameRevArgs) -> Result<(
         let name = match found {
             Some(name) => name,
             None if !args.no_undefined => "undefined".to_string(),
-            None if args.always => abbrev(git, &id, default_abbrev(git)),
+            None if args.always => git.repo.abbreviate(&id)?,
             None => {
                 if !args.name_only {
                     out.push_str(&format!("{arg} "));

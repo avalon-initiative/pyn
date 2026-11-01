@@ -50,6 +50,11 @@ pub enum AuditAction {
     OrgMemberAdded,
     OrgMemberRemoved,
     OrgMemberRoleChanged,
+    OrgMemberInvited,
+    OrgInvitationAccepted,
+    OrgInvitationDeclined,
+    OrgInvitationCancelled,
+    OrgInvitationExpired,
     TeamCreated,
     TeamUpdated,
     TeamDeleted,
@@ -89,7 +94,7 @@ pub enum AuditAction {
 }
 
 impl AuditAction {
-    pub const ALL: [AuditAction; 59] = [
+    pub const ALL: [AuditAction; 64] = [
         AuditAction::Checkout,
         AuditAction::Release,
         AuditAction::Checkin,
@@ -113,6 +118,11 @@ impl AuditAction {
         AuditAction::OrgMemberAdded,
         AuditAction::OrgMemberRemoved,
         AuditAction::OrgMemberRoleChanged,
+        AuditAction::OrgMemberInvited,
+        AuditAction::OrgInvitationAccepted,
+        AuditAction::OrgInvitationDeclined,
+        AuditAction::OrgInvitationCancelled,
+        AuditAction::OrgInvitationExpired,
         AuditAction::TeamCreated,
         AuditAction::TeamUpdated,
         AuditAction::TeamDeleted,
@@ -176,6 +186,11 @@ impl AuditAction {
             Self::OrgMemberAdded => "org_member_added",
             Self::OrgMemberRemoved => "org_member_removed",
             Self::OrgMemberRoleChanged => "org_member_role_changed",
+            Self::OrgMemberInvited => "org_member_invited",
+            Self::OrgInvitationAccepted => "org_invitation_accepted",
+            Self::OrgInvitationDeclined => "org_invitation_declined",
+            Self::OrgInvitationCancelled => "org_invitation_cancelled",
+            Self::OrgInvitationExpired => "org_invitation_expired",
             Self::TeamCreated => "team_created",
             Self::TeamUpdated => "team_updated",
             Self::TeamDeleted => "team_deleted",

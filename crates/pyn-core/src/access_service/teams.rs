@@ -4,6 +4,7 @@ use super::*;
 use crate::Visibility;
 use crate::access::team;
 use crate::repo::RepoRecord;
+use crate::types::TeamId;
 
 /// A team with its members and the repositories it holds a role in.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -99,6 +100,7 @@ impl AccessService {
         self.require_team_admin(actor, org).await?;
         let slug = team::validate_slug(slug)?;
         let record = TeamRecord {
+            id: TeamId::generate()?,
             org: org.clone(),
             name: team::validate_name(name.unwrap_or(&slug))?,
             description: team::validate_description(description.unwrap_or_default())?,

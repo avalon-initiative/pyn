@@ -25,9 +25,11 @@ pub struct Settings {
     pub repo: Option<String>,
     /// `true` keeps a partial local store of the history (provisional).
     pub local_store: Option<String>,
+    /// The editor command for messages and todo lists, such as `code --wait`.
+    pub editor: Option<String>,
 }
 
-pub const SETTING_KEYS: [&str; 4] = ["server", "user", "repo", "local_store"];
+pub const SETTING_KEYS: [&str; 5] = ["server", "user", "repo", "local_store", "editor"];
 
 impl Settings {
     pub fn load(path: &Path) -> Result<Self> {
@@ -58,6 +60,7 @@ impl Settings {
             "user" => Ok(self.user.as_ref()),
             "repo" => Ok(self.repo.as_ref()),
             "local_store" => Ok(self.local_store.as_ref()),
+            "editor" => Ok(self.editor.as_ref()),
             other => bail!(
                 "unknown setting {other:?}; the settings are {}",
                 SETTING_KEYS.join(", ")
@@ -79,6 +82,7 @@ impl Settings {
                 }
                 self.local_store = Some(value);
             }
+            "editor" => self.editor = Some(value),
             other => bail!(
                 "unknown setting {other:?}; the settings are {}",
                 SETTING_KEYS.join(", ")
@@ -613,6 +617,8 @@ mod tests {
     fn settings_reject_unknown_keys_and_round_trip() {
         let mut s = Settings::default();
         s.set("server", "http://x".into()).unwrap();
+        s.set("editor", "code --wait".into()).unwrap();
+        assert_eq!(s.get("editor").unwrap().unwrap(), "code --wait");
         assert!(s.set("colour", "red".into()).is_err());
         assert!(s.get("colour").is_err());
         let dir = tempfile::tempdir().unwrap();

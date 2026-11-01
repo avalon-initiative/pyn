@@ -2,14 +2,17 @@
 # Seeds a running server with two repositories, three accounts and a few held locks. Safe to run again.
 set -euo pipefail
 
-PYN=${PYN:-target/debug/pyn}
+PYN=$(realpath -m "${PYN:-target/debug/pyn}")
 export PYN_SERVER=${PYN_SERVER:-http://127.0.0.1:7878}
 ADMIN=${DEMO_ADMIN:-root}
 ADMIN_PASSWORD=${DEMO_PASSWORD:-demo-password}
-RUN_DIR=${RUN_DIR:-_running}
-POLICY=$(dirname "$0")/demo.pyn.toml
+RUN_DIR=$(realpath -m "${RUN_DIR:-_running}")
+POLICY=$(realpath "$(dirname "$0")/demo.pyn.toml")
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
+# The CLI runs here, outside any git work tree, so it never picks the git home.
+mkdir "$tmp/cwd"
+cd "$tmp/cwd"
 
 # Each account keeps its own saved sign-in so the real ~/.config/pyn is untouched.
 as() {

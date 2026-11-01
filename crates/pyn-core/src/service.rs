@@ -1,11 +1,13 @@
 const TREE_PAGE: usize = 5_000;
 
 mod fetch;
+mod lfs;
 mod merging;
 mod push;
 mod push_merge;
 mod uploads;
 mod verify;
+pub use lfs::is_lfs_oid;
 pub use uploads::DEFAULT_UNREFERENCED_UPLOAD_BYTES;
 
 pub use fetch::{
@@ -276,7 +278,7 @@ impl RepoService {
         self
     }
 
-    pub(crate) async fn ensure_writable(&self) -> Result<()> {
+    pub async fn ensure_writable(&self) -> Result<()> {
         match &self.writes {
             Some(writes) => writes.ensure_writable(&self.limit_events.0).await,
             None => Ok(()),
@@ -779,6 +781,11 @@ impl RepoService {
                 actual: head,
             });
         }
+        self.take_lock(path, user).await
+    }
+
+    /// Takes or renews the lease and audits it; no mode or base check.
+    async fn take_lock(&self, path: &RepoPath, user: &UserId) -> Result<Lock> {
         let now = self.clock.now();
         let events = self.lock_events(None).await;
         let lock = self
@@ -804,6 +811,22 @@ impl RepoService {
         )
         .await?;
         Ok(lock)
+    }
+
+    /// Locks `path` for the LFS Locks API. An exclusive path is locked as `checkout` does at its current head; any
+    /// other path gets an advisory lock that commits do not check.
+    pub async fn lock_path(&self, path: &RepoPath, user: &UserId) -> Result<Lock> {
+        if self.mode_for(path) == Mode::Exclusive {
+            let head = self.pointer_on(DEFAULT_BRANCH, path).await?.map(|r| r.id);
+            return self.checkout_on(DEFAULT_BRANCH, path, user, head).await;
+        }
+        self.ensure_writable().await?;
+        self.take_lock(path, user).await
+    }
+
+    /// The live lock on `path`, whoever holds it.
+    pub async fn lock_of(&self, path: &RepoPath) -> Result<Option<Lock>> {
+        self.meta.get_lock(&self.repo, path, self.clock.now()).await
     }
 
     pub async fn release(&self, path: &RepoPath, user: &UserId) -> Result<()> {

@@ -147,6 +147,9 @@ enum Command {
     /// Create, inspect and delete organizations, and manage who belongs to them.
     #[command(subcommand)]
     Org(OrgCommand),
+    /// List, accept and decline your invitations to organizations.
+    #[command(subcommand)]
+    Invitation(InvitationCommand),
     /// Create and manage an organization's teams, and grant them roles on its repositories.
     #[command(subcommand)]
     Team(TeamCommand),
@@ -419,6 +422,9 @@ enum Command {
         /// Stage every changed tracked file first, as in git; new files are not included.
         #[arg(short = 'a', long)]
         all: bool,
+        /// Stage the untracked files that are not ignored first (a pyn extension; git's `commit -u` is `--untracked-files`).
+        #[arg(short = 'u', long)]
+        untracked: bool,
         #[command(flatten)]
         git: git_home::GitCommitArgs,
     },
@@ -758,9 +764,30 @@ enum OrgCommand {
     /// List and change an organization's members.
     #[command(subcommand)]
     Member(OrgMemberCommand),
+    /// List and cancel an organization's pending invitations.
+    #[command(subcommand)]
+    Invitation(OrgInvitationCommand),
     /// Show and change who may create repositories in an organization (owners only).
     #[command(subcommand)]
     Policy(OrgPolicyCommand),
+}
+
+#[derive(Subcommand)]
+enum InvitationCommand {
+    /// List the organization invitations waiting for you.
+    List,
+    /// Accept an invitation and join the organization with the offered role.
+    Accept { org: String },
+    /// Decline an invitation.
+    Decline { org: String },
+}
+
+#[derive(Subcommand)]
+enum OrgInvitationCommand {
+    /// List an organization's pending invitations (owners only).
+    List { org: String },
+    /// Withdraw a pending invitation (owners only).
+    Cancel { org: String, user: String },
 }
 
 #[derive(Subcommand)]
@@ -807,7 +834,8 @@ enum OrgPolicyCommand {
 enum OrgMemberCommand {
     /// List an organization's members.
     List { org: String },
-    /// Add an existing account to an organization (owners only).
+    /// Invite an existing account to an organization (owners only); a server administrator may be able to add directly.
+    #[command(alias = "invite")]
     Add {
         org: String,
         user: String,
@@ -904,12 +932,14 @@ enum ConfigCommand {
         #[arg(long)]
         local: bool,
     },
-    /// Set one setting for this workspace, or for your user with --global.
+    /// Set one setting for this workspace or git repository (--local, the default), or for your user with --global.
     Set {
         key: String,
         value: String,
-        #[arg(long)]
+        #[arg(long, conflicts_with = "local")]
         global: bool,
+        #[arg(long)]
+        local: bool,
     },
 }
 
@@ -1426,6 +1456,7 @@ fn runs_anywhere(command: &Command) -> bool {
             | Command::Token(_)
             | Command::User(_)
             | Command::Org(_)
+            | Command::Invitation(_)
             | Command::Team(_)
             | Command::Repo(_)
             | Command::Usage { .. }
@@ -1591,6 +1622,14 @@ fn run(cli: Cli) -> Result<()> {
     {
         *message = vec![text];
     }
+    if git.is_none()
+        && let Command::Commit { message, .. } = &cli.command
+        && !message.is_empty()
+        && git_home::editor::edited_message(message.join("\n\n").as_bytes()).is_none()
+    {
+        eprintln!("Aborting commit due to empty commit message.");
+        std::process::exit(1);
+    }
     if let Command::Log { git: opts, .. } = &cli.command
         && git.is_some()
         && let Some(why) = opts.refused()
@@ -1609,8 +1648,9 @@ fn run(cli: Cli) -> Result<()> {
             "`pyn log {flag}` applies to a git repository, not a pyn server"
         ));
     }
-    if let Command::Commit { message, .. } = &cli.command
+    if let Command::Commit { message, paths, .. } = &cli.command
         && message.is_empty()
+        && !paths.is_empty()
         && git.is_none()
         && !Workspace::discover(&cwd)
             .is_some_and(|w| merging::in_progress(&w) && !merging::is_paused(&w))
@@ -1640,6 +1680,11 @@ fn run(cli: Cli) -> Result<()> {
     }
     let ws = if on_git {
         None
+    } else if matches!(cli.command, Command::Config(_)) {
+        match git_home::workspace_at(&cwd)? {
+            Some(ws) => Some(ws),
+            None => Workspace::discover(&cwd),
+        }
     } else {
         Workspace::discover(&cwd)
     };
@@ -1949,6 +1994,7 @@ fn run(cli: Cli) -> Result<()> {
         }
         Command::Repo(cmd) => repo_command(backend.pyn_server("repo")?, cmd)?,
         Command::Org(cmd) => org_command(backend.pyn_server("org")?, cmd)?,
+        Command::Invitation(cmd) => invitation_command(backend.pyn_server("invitation")?, cmd)?,
         Command::Setup {
             username,
             setup_token,
@@ -2413,6 +2459,7 @@ fn run(cli: Cli) -> Result<()> {
                 dry_run,
                 verbose,
                 force,
+                new_only: false,
             };
             if staging::add(&backend, in_workspace("add")?, &cwd, &args)? {
                 std::process::exit(1);
@@ -2426,8 +2473,8 @@ fn run(cli: Cli) -> Result<()> {
             base,
             message,
             all,
+            untracked,
             git: flags,
-            ..
         } if paths.is_empty() => {
             if file.is_some() || base.is_some() {
                 bail!("--file and --base need a path");
@@ -2437,7 +2484,7 @@ fn run(cli: Cli) -> Result<()> {
                 if let Some(flag) = flags.author_flag() {
                     bail!("`pyn commit {flag}` does not apply while finishing a merge");
                 }
-                if all {
+                if all || untracked {
                     bail!(
                         "cannot do a partial commit during a merge; stage what you resolved with `pyn add`"
                     );
@@ -2445,11 +2492,12 @@ fn run(cli: Cli) -> Result<()> {
                 let message = (!message.is_empty()).then(|| message.join("\n\n"));
                 merging::finish(&backend, backend.pyn_server("commit")?, w, message)?;
             } else {
-                staging::commit(&backend, w, &message.join("\n\n"), all, &flags)?;
+                let message = (!message.is_empty()).then(|| message.join("\n\n"));
+                staging::commit(&backend, w, message.as_deref(), (all, untracked), &flags)?;
             }
         }
-        Command::Commit { all: true, .. } => {
-            bail!("`commit -a` commits every changed tracked file; name no paths with it")
+        Command::Commit { all, untracked, .. } if all || untracked => {
+            bail!("`commit -a` and `-u` stage what changed; name no paths with them")
         }
         Command::Commit {
             paths,
@@ -2625,7 +2673,7 @@ fn run(cli: Cli) -> Result<()> {
                         c.author.name,
                         time::local(c.created_at),
                         c.revisions.len().to_string(),
-                        c.message,
+                        commit_format::subject_and_body(&c.message).0,
                     ]);
                 }
                 before = page.next_before;
@@ -2676,6 +2724,7 @@ fn run(cli: Cli) -> Result<()> {
             };
             let mut rows = local_rows;
             rows.extend(revs.into_iter().map(|r| {
+                let (subject, body) = commit_format::subject_and_body(&r.message);
                 let restored = match (r.deleted, r.restored_from) {
                     (true, _) => " (deleted)".to_string(),
                     (false, Some(n)) => format!(" (restored from r{n})"),
@@ -2685,19 +2734,19 @@ fn run(cli: Cli) -> Result<()> {
                     format!("r{}", r.id),
                     r.author,
                     time::local(r.created_at),
-                    format!("{}{restored}", r.message),
+                    format!("{subject}{restored}"),
                 ];
                 if repo_wide {
                     row.push(r.path);
                 }
-                row
+                (row, body.to_string())
             }));
             let header: &[&str] = if repo_wide {
                 &["REV", "AUTHOR", "WHEN", "MESSAGE", "PATH"]
             } else {
                 &["REV", "AUTHOR", "WHEN", "MESSAGE"]
             };
-            table::show(header, &rows, "no history");
+            table::show_notes(header, &rows, "no history");
         }
         Command::Verify { path, verbose } => {
             let api = backend.pyn_server("verify")?;
@@ -2806,7 +2855,7 @@ fn run(cli: Cli) -> Result<()> {
                         e.actor.clone(),
                         e.action.clone(),
                         e.path.clone().unwrap_or_else(|| "-".into()),
-                        time::localize(&e.detail),
+                        time::localize(&commit_format::audit_detail_line(&e.detail)),
                     ]
                 })
                 .collect();
@@ -2895,7 +2944,12 @@ fn ls_command(backend: &dyn Backend, path: Option<&str>) -> Result<()> {
                 e.lock.as_ref().map_or("-".to_string(), |l| l.owner.clone()),
                 format!("{}{slash}", e.name),
                 e.last_change.as_ref().map_or("-".to_string(), |r| {
-                    format!("{} ({}, r{})", r.message, r.author, r.id)
+                    format!(
+                        "{} ({}, r{})",
+                        commit_format::subject_and_body(&r.message).0,
+                        r.author,
+                        r.id
+                    )
                 }),
             ]
         })
@@ -3242,13 +3296,15 @@ fn restore(
         .with_context(|| format!("{path} has no revision {revision}"))?;
     println!(
         "Restore {path} to r{} ({}, \"{}\").",
-        source.id, source.author, source.message
+        source.id,
+        source.author,
+        commit_format::subject_and_body(&source.message).0
     );
     println!(
         "The current head r{} ({}, \"{}\") stays in history; the restore becomes r{}.",
         head.id,
         head.author,
-        head.message,
+        commit_format::subject_and_body(&head.message).0,
         head.id + 1
     );
     if !yes {
@@ -3531,7 +3587,7 @@ fn org_command(api: &Api, cmd: OrgCommand) -> Result<()> {
                         time::local(e.at),
                         e.actor.clone(),
                         e.action.clone(),
-                        time::localize(&e.detail),
+                        time::localize(&commit_format::audit_detail_line(&e.detail)),
                     ]
                 })
                 .collect();
@@ -3545,6 +3601,7 @@ fn org_command(api: &Api, cmd: OrgCommand) -> Result<()> {
             }
         }
         OrgCommand::Member(cmd) => org_member_command(api, cmd)?,
+        OrgCommand::Invitation(cmd) => org_invitation_command(api, cmd)?,
         OrgCommand::Policy(cmd) => org_policy_command(api, cmd)?,
     }
     Ok(())
@@ -3774,13 +3831,21 @@ fn org_member_command(api: &Api, cmd: OrgMemberCommand) -> Result<()> {
                 user: user.clone(),
                 role,
             };
-            let added: api::OrgMember = api
-                .send(
-                    api.request(Method::POST, &format!("/v1/orgs/{org}/members"))
-                        .json(&body),
-                )?
-                .json()?;
-            println!("added {user} to {org} as {}", added.role);
+            let reply = api.send(
+                api.request(Method::POST, &format!("/v1/orgs/{org}/members"))
+                    .json(&body),
+            )?;
+            if reply.status == 202 {
+                let invited: api::OrgInvitation = reply.json()?;
+                println!(
+                    "invited {user} to {org} as {}; expires {}",
+                    invited.role,
+                    time::local(invited.expires_at)
+                );
+            } else {
+                let added: api::OrgMember = reply.json()?;
+                println!("added {user} to {org} as {}", added.role);
+            }
         }
         OrgMemberCommand::Set { org, user, role } => {
             let body = api::SetOrgRoleRequest { role: role.clone() };
@@ -3793,6 +3858,72 @@ fn org_member_command(api: &Api, cmd: OrgMemberCommand) -> Result<()> {
         OrgMemberCommand::Remove { org, user } => {
             api.send(api.request(Method::DELETE, &format!("/v1/orgs/{org}/members/{user}")))?;
             println!("removed {user} from {org}");
+        }
+    }
+    Ok(())
+}
+
+fn invitation_rows(
+    invitations: Vec<api::OrgInvitation>,
+    last: fn(&api::OrgInvitation) -> String,
+) -> Vec<Vec<String>> {
+    invitations
+        .into_iter()
+        .map(|i| {
+            vec![
+                i.role.clone(),
+                time::local(i.expires_at),
+                i.invited_by.clone(),
+                last(&i),
+            ]
+        })
+        .collect()
+}
+
+fn org_invitation_command(api: &Api, cmd: OrgInvitationCommand) -> Result<()> {
+    match cmd {
+        OrgInvitationCommand::List { org } => {
+            let found: Vec<api::OrgInvitation> = api
+                .send(api.get(&format!("/v1/orgs/{org}/invitations")))?
+                .json()?;
+            let rows = invitation_rows(found, |i| i.user.clone());
+            table::show(
+                &["ROLE", "EXPIRES", "INVITED BY", "USER"],
+                &rows,
+                "no pending invitations",
+            );
+        }
+        OrgInvitationCommand::Cancel { org, user } => {
+            api.send(api.request(
+                Method::DELETE,
+                &format!("/v1/orgs/{org}/invitations/{user}"),
+            ))?;
+            println!("cancelled the invitation of {user} to {org}");
+        }
+    }
+    Ok(())
+}
+
+fn invitation_command(api: &Api, cmd: InvitationCommand) -> Result<()> {
+    match cmd {
+        InvitationCommand::List => {
+            let found: Vec<api::OrgInvitation> = api.send(api.get("/v1/me/invitations"))?.json()?;
+            let rows = invitation_rows(found, |i| i.org.clone());
+            table::show(
+                &["ROLE", "EXPIRES", "INVITED BY", "ORG"],
+                &rows,
+                "no pending invitations",
+            );
+        }
+        InvitationCommand::Accept { org } => {
+            let joined: api::OrgInfo = api
+                .send(api.request(Method::POST, &format!("/v1/me/invitations/{org}/accept")))?
+                .json()?;
+            println!("joined {org} as {}", joined.role.unwrap_or_default());
+        }
+        InvitationCommand::Decline { org } => {
+            api.send(api.request(Method::POST, &format!("/v1/me/invitations/{org}/decline")))?;
+            println!("declined the invitation to {org}");
         }
     }
     Ok(())
@@ -3956,7 +4087,9 @@ fn config_command(
                 None => bail!("{key} is not set"),
             }
         }
-        ConfigCommand::Set { key, value, global } => {
+        ConfigCommand::Set {
+            key, value, global, ..
+        } => {
             if global {
                 let mut settings = yours.clone();
                 settings.set(&key, value)?;
@@ -4049,5 +4182,16 @@ mod fatal_formatter_tests {
             fatal_message(&error),
             "outer shared tail: inner shared tail"
         );
+    }
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use clap::CommandFactory;
+
+    #[test]
+    fn every_command_passes_clap_definition_checks() {
+        // Catches two flattened groups that define one argument, such as `--abbrev` in `show`.
+        super::Cli::command().debug_assert();
     }
 }

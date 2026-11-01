@@ -37,7 +37,7 @@ pub struct PickArgs {
     /// Git repository: the parent (1, 2, ...) a merge commit is picked relative to.
     #[arg(short = 'm', long, value_name = "PARENT", conflicts_with = "control", value_parser = clap::value_parser!(u32).range(1..))]
     pub(crate) mainline: Option<u32>,
-    /// Keep the message (accepted for scripts; pyn never opens an editor).
+    /// Keep the message and do not open the editor.
     #[arg(long, conflicts_with = "control")]
     pub(crate) no_edit: bool,
     /// Git repository: the merge strategy, `ort` or `recursive`.
@@ -79,7 +79,7 @@ pub struct RevertArgs {
     /// Git repository: the parent (1, 2, ...) a merge commit is reverted relative to.
     #[arg(short = 'm', long, value_name = "PARENT", conflicts_with = "control", value_parser = clap::value_parser!(u32).range(1..))]
     pub(crate) mainline: Option<u32>,
-    /// Keep the generated message (accepted for scripts; pyn never opens an editor).
+    /// Keep the generated message and do not open the editor.
     #[arg(long, conflicts_with = "control")]
     pub(crate) no_edit: bool,
     /// Git repository: the merge strategy, `ort` or `recursive`.

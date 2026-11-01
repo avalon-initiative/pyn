@@ -5,7 +5,6 @@ use anyhow::{Result, bail};
 use pyn_object::ObjectId;
 
 use super::GitHome;
-use super::merge::short;
 use super::strategy::Settings;
 use super::treemerge::{Labels, Resolved, merge_trees, result_tree};
 
@@ -44,7 +43,7 @@ pub(super) fn virtual_tree(
         let inner = git.merge_bases_from(&heads, next)?;
         let (base, label) = match inner.as_slice() {
             [] => (None, "empty tree".to_string()),
-            [one] => (Some(tree_of(one)?), short(one)),
+            [one] => (Some(tree_of(one)?), git.repo.abbreviate(one)?),
             many => (
                 Some(virtual_tree(git, many, &inner_settings, depth + 1)?),
                 VIRTUAL_LABEL.to_string(),

@@ -282,7 +282,7 @@ pub(super) fn create_autostash(git: &GitHome) -> Result<Option<ObjectId>> {
     };
     let made = save(git, &args, false, true)?.map(|(id, _)| id);
     if let Some(id) = &made {
-        eprintln!("Created autostash: {}", super::merge::short(id));
+        eprintln!("Created autostash: {}", git.repo.abbreviate(id)?);
     }
     Ok(made)
 }

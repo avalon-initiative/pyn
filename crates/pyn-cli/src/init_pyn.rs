@@ -156,6 +156,7 @@ fn create_on_server(
         user: None,
         repo: Some(repo.to_string()),
         local_store: None,
+        editor: None,
     }
     .save(&ws.config_path())
 }

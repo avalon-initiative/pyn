@@ -10,7 +10,6 @@ use pyn_object::{FileMode, ObjectId};
 
 use super::GitHome;
 use super::commands::emit;
-use super::plumbing::{abbrev, default_abbrev};
 
 /// Show the commits that separate the recorded submodule commits from the current ones.
 #[derive(Debug, Args)]
@@ -27,8 +26,6 @@ pub struct SummaryArgs {
     /// A commit to compare with (default `HEAD`), then paths.
     rest: Vec<String>,
 }
-
-const ZERO: &str = "0000000";
 
 pub(super) fn summary(git: &GitHome, cwd: &Path, args: &SummaryArgs) -> Result<()> {
     if args.summary_limit == 0 {
@@ -118,10 +115,10 @@ fn block(
     } else {
         None
     };
-    let digits = default_abbrev(git);
+    let abbreviations = child.as_ref().unwrap_or(git).repo.abbreviations(None)?;
     let short = |e: Option<Entry>| match e {
-        Some(e) => abbrev(child.as_ref().unwrap_or(git), &e.id, digits),
-        None => ZERO.to_owned(),
+        Some(e) => abbreviations.short(&e.id),
+        None => abbreviations.short_null(),
     };
     let mut text = format!("* {name} {}...{}", short(src), short(dst));
     let has = |e: Option<Entry>| -> Result<bool> {

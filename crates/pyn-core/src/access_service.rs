@@ -5,11 +5,12 @@ use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 
 use crate::access::{
-    AccountKind, AccountRecord, AccountStatus, Credential, Identity, InviteId, InviteRecord,
-    NewAccount, ORG_DELETE_MARK_SECONDS, OrgCreation, OrgRole, Permission, Principal,
-    RegistrationMode, Role, RoleDefinitions, RoleSource, ServerSettings, ServiceCredentialRecord,
-    ServiceScope, SessionRecord, SignupStage, SshKeyRecord, TeamRecord, TokenId, TokenRecord,
-    VerificationRecord, account, invite, service_credential, session, ssh, token, verification,
+    AccountKind, AccountRecord, AccountStatus, Credential, Identity, InvitationAccept,
+    InvitationCreate, InviteId, InviteRecord, NewAccount, ORG_DELETE_MARK_SECONDS, OrgCreation,
+    OrgInvitation, OrgMemberAdd, OrgRole, Permission, Principal, RegistrationMode, Role,
+    RoleDefinitions, RoleSource, ServerSettings, ServiceCredentialRecord, ServiceScope,
+    SessionRecord, SignupStage, SshKeyRecord, TeamRecord, TokenId, TokenRecord, VerificationRecord,
+    account, invite, service_credential, session, ssh, token, verification,
 };
 use crate::audit::{AuditAction, AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent};
 use crate::clock::Clock;
@@ -37,6 +38,7 @@ pub const SERVER_AUDIT_ID: &str = "@server";
 
 mod external;
 mod freeze;
+mod invitations;
 mod limits;
 mod organizations;
 mod repo_policy;
@@ -46,6 +48,7 @@ mod webhooks;
 
 pub use external::{ExternalSignIn, OidcBegin, OidcFinish, OidcStart};
 pub use freeze::OwnerFreezeState;
+pub use invitations::OrgAdd;
 pub use limits::OwnerLimits;
 pub use setup::{SetupRequest, SetupStatus, generate_setup_token};
 pub use teams::TeamDetail;
@@ -194,6 +197,40 @@ pub trait AccessStore: Send + Sync {
         role: OrgRole,
         max_members: Option<u64>,
     ) -> Result<bool>;
+
+    /// Records the invitation unless the user already belongs to the organization or has one pending.
+    async fn create_org_invitation(&self, invitation: &OrgInvitation) -> Result<InvitationCreate>;
+
+    /// The organization's invitations, ordered by user name.
+    async fn org_invitations(&self, org: &UserId) -> Result<Vec<OrgInvitation>>;
+
+    /// The invitations addressed to the user, ordered by organization name.
+    async fn org_invitations_for(&self, user: &UserId) -> Result<Vec<OrgInvitation>>;
+
+    /// Removes the invitation and returns it.
+    async fn delete_org_invitation(
+        &self,
+        org: &UserId,
+        user: &UserId,
+    ) -> Result<Option<OrgInvitation>>;
+
+    /// Removes and returns the invitations that expired by `now`, limited to `org` and `user` when given.
+    async fn take_expired_org_invitations(
+        &self,
+        org: Option<&UserId>,
+        user: Option<&UserId>,
+        now: DateTime<Utc>,
+    ) -> Result<Vec<OrgInvitation>>;
+
+    /// Removes the invitation if it is still open at `now` and adds the member with the offered role, as one
+    /// step; `MemberLimitReached` (as in `add_org_member_capped`) leaves the invitation in place.
+    async fn accept_org_invitation(
+        &self,
+        org: &UserId,
+        user: &UserId,
+        now: DateTime<Utc>,
+        max_members: Option<u64>,
+    ) -> Result<InvitationAccept>;
 
     /// The owner's own limits; all unset when none were stored.
     async fn owner_limits(&self, owner: &UserId) -> Result<Limits>;
@@ -626,6 +663,10 @@ pub struct AccessConfig {
     pub verification_ttl: Duration,
     /// Who may create organizations.
     pub org_creation: OrgCreation,
+    /// Whether adding an organization member needs the user's consent, or a server administrator may skip it.
+    pub org_member_add: OrgMemberAdd,
+    /// How long an organization invitation stays open.
+    pub org_invitation_ttl: Duration,
     /// Limits for owners that have none of their own; all unset (unlimited) unless the operator sets them.
     pub default_limits: Limits,
     /// How external sign-in behaves; applies only when a provider is configured.
@@ -667,6 +708,8 @@ impl Default for AccessConfig {
             allowed_origins: Vec::new(),
             verification_ttl: Duration::hours(24),
             org_creation: OrgCreation::Anyone,
+            org_member_add: OrgMemberAdd::Invite,
+            org_invitation_ttl: Duration::days(30),
             default_limits: Limits::default(),
             external: ExternalPolicy::default(),
         }

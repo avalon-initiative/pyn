@@ -10,7 +10,6 @@ organizations and teams, OpenID Connect sign-in, persistent and chunked content 
 tamper-evident history, and the web UI.
 
 Branches (create, list, rename, delete, commit on a branch, switch) and merge ([merging](concepts/merging.md): merge base, merge
-commits, conflicts and their resolution) have landed ([branches](concepts/branches.md)). Still ahead:
-per-branch policy, pull requests, reviews, CI, Git import/export, and engine
-and editor integrations. The git-style commands not yet built are listed as *planned* in
-[git compatibility](concepts/git-compatibility.md).
+commits, conflicts and their resolution), per-branch policy, remotes, tags and git import and export have landed
+([branches](concepts/branches.md)). Still ahead: pull requests, reviews, CI, and engine and editor integrations. The
+git-style commands not yet built are listed in [git compatibility](concepts/git-compatibility.md).

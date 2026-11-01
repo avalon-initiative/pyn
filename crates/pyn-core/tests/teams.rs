@@ -112,8 +112,8 @@ async fn setup() -> World {
     w.access.create_org(&alice, "acme").await.unwrap();
     for name in ["bob", "carol"] {
         w.store.create_user(&user(name), Utc::now()).await.unwrap();
-        w.access
-            .add_org_member(&alice, &user("acme"), &user(name), OrgRole::Member)
+        w.store
+            .add_org_member(&user("acme"), &user(name), OrgRole::Member)
             .await
             .unwrap();
     }

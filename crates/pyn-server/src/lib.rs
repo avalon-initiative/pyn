@@ -28,6 +28,7 @@ mod client;
 pub mod email;
 pub mod events;
 mod freeze_api;
+mod lfs_api;
 mod limits_api;
 mod merge_api;
 mod oidc_api;
@@ -45,7 +46,7 @@ mod webhook_api;
 pub mod webhook_delivery;
 
 /// The largest object one upload may carry.
-const MAX_OBJECT_BYTES: u64 = 16 << 30;
+pub(crate) const MAX_OBJECT_BYTES: u64 = 16 << 30;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -140,6 +141,11 @@ struct RepoAddress {
         org_api::my_orgs,
         org_api::list_members,
         org_api::add_member,
+        org_api::list_invitations,
+        org_api::cancel_invitation,
+        org_api::my_invitations,
+        org_api::accept_invitation,
+        org_api::decline_invitation,
         org_api::set_member_role,
         org_api::remove_member,
         repo_policy_api::get_repo_policy,
@@ -294,6 +300,7 @@ struct RepoAddress {
         api::MyLock,
         api::Me,
         api::OrgInfo,
+        api::OrgInvitation,
         api::CreateOrgRequest,
         api::AdminCreateOrgRequest,
         api::CreateServiceCredentialRequest,
@@ -507,6 +514,20 @@ fn routes(state: AppState) -> Router {
             "/v1/orgs/{org}/members",
             get(org_api::list_members).post(org_api::add_member),
         )
+        .route("/v1/orgs/{org}/invitations", get(org_api::list_invitations))
+        .route(
+            "/v1/orgs/{org}/invitations/{user}",
+            axum::routing::delete(org_api::cancel_invitation),
+        )
+        .route("/v1/me/invitations", get(org_api::my_invitations))
+        .route(
+            "/v1/me/invitations/{org}/accept",
+            post(org_api::accept_invitation),
+        )
+        .route(
+            "/v1/me/invitations/{org}/decline",
+            post(org_api::decline_invitation),
+        )
         .route(
             "/v1/orgs/{org}/members/{user}",
             axum::routing::patch(org_api::set_member_role).delete(org_api::remove_member),
@@ -577,6 +598,30 @@ fn routes(state: AppState) -> Router {
             put(team_api::set_repo_team).delete(team_api::remove_repo_team),
         )
         .route("/v1/repos/{owner}/{name}/locks", get(list_locks))
+        .route(
+            "/v1/repos/{owner}/{name}/info/lfs/locks",
+            get(lfs_api::list_locks).post(lfs_api::create_lock),
+        )
+        .route(
+            "/v1/repos/{owner}/{name}/info/lfs/locks/verify",
+            post(lfs_api::verify_locks),
+        )
+        .route(
+            "/v1/repos/{owner}/{name}/info/lfs/locks/{id}/unlock",
+            post(lfs_api::unlock),
+        )
+        .route(
+            "/v1/repos/{owner}/{name}/info/lfs/objects/batch",
+            post(lfs_api::batch),
+        )
+        .route(
+            "/v1/repos/{owner}/{name}/info/lfs/objects/verify",
+            post(lfs_api::verify_object),
+        )
+        .route(
+            "/v1/repos/{owner}/{name}/info/lfs/objects/{oid}",
+            get(lfs_api::download).put(lfs_api::upload_object),
+        )
         .route("/v1/repos/{owner}/{name}/files", get(list_files))
         .route("/v1/repos/{owner}/{name}/tree", get(tree))
         .route("/v1/repos/{owner}/{name}/summary", get(summary))
@@ -640,11 +685,11 @@ fn routes(state: AppState) -> Router {
         .with_state(state)
 }
 
-pub(crate) struct ApiError(PynError);
+pub(crate) struct ApiError(pub(crate) PynError);
 
 /// The detail kept out of an internal error's response body, carried to the logging layer.
 #[derive(Clone)]
-struct InternalDetail(String);
+pub(crate) struct InternalDetail(pub(crate) String);
 
 async fn log_internal(request: axum::extract::Request, next: axum::middleware::Next) -> Response {
     let method = request.method().clone();
@@ -662,115 +707,133 @@ impl From<PynError> for ApiError {
     }
 }
 
+/// The HTTP status a domain error maps to.
+fn status_for(e: &PynError) -> StatusCode {
+    match e {
+        PynError::LockHeld { .. }
+        | PynError::LockLimitReached { .. }
+        | PynError::RepoLimitReached { .. }
+        | PynError::MemberLimitReached { .. }
+        | PynError::StorageLimitReached { .. }
+        | PynError::RepoStorageLimitReached { .. }
+        | PynError::StaleBase { .. }
+        | PynError::LockRequired(_)
+        | PynError::NotLocked(_)
+        | PynError::UserExists(_)
+        | PynError::RepoExists(_)
+        | PynError::OrgNotEmpty(_)
+        | PynError::OrgDeleting(_)
+        | PynError::UserNotOrgMember { .. }
+        | PynError::AlreadyOrgMember { .. }
+        | PynError::AlreadyInvited { .. }
+        | PynError::TeamExists { .. }
+        | PynError::LastOrgOwner(_)
+        | PynError::LastServerAdmin
+        | PynError::KeyInUse
+        | PynError::ExternalIdentityTaken
+        | PynError::LastSignInMethod
+        | PynError::AlreadyInitialised
+        | PynError::ServiceCredentialExists(_)
+        | PynError::WebhookSecretLimit(_)
+        | PynError::WebhookLastSecret
+        | PynError::BranchExists(_)
+        | PynError::BranchNotMerged(_)
+        | PynError::MergeConflict(_)
+        | PynError::MergeStale(_)
+        | PynError::NotFastForward(_)
+        | PynError::ConfirmationRequired { .. } => StatusCode::CONFLICT,
+        PynError::NotLockHolder(_)
+        | PynError::OwnerFrozen { .. }
+        | PynError::Forbidden(_)
+        | PynError::RegistrationClosed
+        | PynError::InvalidSetupToken
+        | PynError::AccountInactive(_)
+        | PynError::ServerAdminRequired
+        | PynError::ServiceScopeRequired(_)
+        | PynError::ServiceCredentialNotAllowed
+        | PynError::NotNamespaceOwner(_)
+        | PynError::NotOrgOwner(_)
+        | PynError::NotOrgMember(_)
+        | PynError::RepoCreateForbidden { .. }
+        | PynError::NotRepoMember(_)
+        | PynError::ExternalNotLinked
+        | PynError::PasswordSignInDisabled
+        | PynError::CsrfFailed
+        | PynError::OriginNotAllowed => StatusCode::FORBIDDEN,
+        PynError::PushUnsupported(_) | PynError::DigestMismatch { .. } => {
+            StatusCode::UNPROCESSABLE_ENTITY
+        }
+        PynError::TooManyAttempts { .. } | PynError::UploadsBusy { .. } => {
+            StatusCode::TOO_MANY_REQUESTS
+        }
+        PynError::ObjectTooLarge { .. } | PynError::PushTooLarge(_) => {
+            StatusCode::PAYLOAD_TOO_LARGE
+        }
+        PynError::NotInitialised => StatusCode::SERVICE_UNAVAILABLE,
+        PynError::Unauthenticated(_) | PynError::ExternalSignInFailed(_) => {
+            StatusCode::UNAUTHORIZED
+        }
+        PynError::ExternalProviderUnavailable(_) => StatusCode::BAD_GATEWAY,
+        PynError::TokenNotFound(_)
+        | PynError::ServiceCredentialNotFound(_)
+        | PynError::WebhookNotFound(_)
+        | PynError::WebhookSecretNotFound { .. }
+        | PynError::WebhookDeliveryNotFound { .. }
+        | PynError::UserNotFound(_)
+        | PynError::KeyNotFound(_)
+        | PynError::OidcNotConfigured
+        | PynError::ExternalIdentityNotFound(_)
+        | PynError::RepoNotFound(_)
+        | PynError::OrgNotFound(_)
+        | PynError::OrgMemberNotFound { .. }
+        | PynError::OrgInvitationNotFound { .. }
+        | PynError::TeamNotFound { .. }
+        | PynError::TeamMemberNotFound { .. }
+        | PynError::CreationRuleNotFound { .. }
+        | PynError::ObjectNotFound(_)
+        | PynError::PathNotFound(_) => StatusCode::NOT_FOUND,
+        PynError::RevisionNotFound { .. }
+        | PynError::CommitNotFound(_)
+        | PynError::BranchNotFound(_) => StatusCode::NOT_FOUND,
+        PynError::InvalidPath(_)
+        | PynError::ReservedPathComponent { .. }
+        | PynError::InvalidRules(_)
+        | PynError::InvalidRequest(_)
+        | PynError::PushInvalid(_)
+        | PynError::AmbiguousCommit(_)
+        | PynError::InvalidBranchName(_)
+        | PynError::InvalidInvite(_)
+        | PynError::InvalidVerification(_)
+        | PynError::InvalidRepoName(_)
+        | PynError::ReservedName(_)
+        | PynError::NotOrgRepo(_)
+        | PynError::NotExclusive(_)
+        | PynError::LengthMismatch { .. }
+        | PynError::ObjectMissing(_) => StatusCode::BAD_REQUEST,
+        PynError::Storage(_) | PynError::HistoryCorrupt(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}
+
+/// The message a client sees; an internal error's detail stays in the log.
+fn public_message(e: &PynError) -> String {
+    if is_internal(e) {
+        "an internal error occurred; the server log has the details".to_string()
+    } else {
+        e.to_string()
+    }
+}
+
+fn is_internal(e: &PynError) -> bool {
+    matches!(e, PynError::Storage(_) | PynError::HistoryCorrupt(_))
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let status = match &self.0 {
-            PynError::LockHeld { .. }
-            | PynError::LockLimitReached { .. }
-            | PynError::RepoLimitReached { .. }
-            | PynError::MemberLimitReached { .. }
-            | PynError::StorageLimitReached { .. }
-            | PynError::RepoStorageLimitReached { .. }
-            | PynError::StaleBase { .. }
-            | PynError::LockRequired(_)
-            | PynError::NotLocked(_)
-            | PynError::UserExists(_)
-            | PynError::RepoExists(_)
-            | PynError::OrgNotEmpty(_)
-            | PynError::OrgDeleting(_)
-            | PynError::UserNotOrgMember { .. }
-            | PynError::AlreadyOrgMember { .. }
-            | PynError::TeamExists { .. }
-            | PynError::LastOrgOwner(_)
-            | PynError::LastServerAdmin
-            | PynError::KeyInUse
-            | PynError::ExternalIdentityTaken
-            | PynError::LastSignInMethod
-            | PynError::AlreadyInitialised
-            | PynError::ServiceCredentialExists(_)
-            | PynError::WebhookSecretLimit(_)
-            | PynError::WebhookLastSecret
-            | PynError::BranchExists(_)
-            | PynError::BranchNotMerged(_)
-            | PynError::MergeConflict(_)
-            | PynError::MergeStale(_)
-            | PynError::NotFastForward(_)
-            | PynError::ConfirmationRequired { .. } => StatusCode::CONFLICT,
-            PynError::NotLockHolder(_)
-            | PynError::OwnerFrozen { .. }
-            | PynError::Forbidden(_)
-            | PynError::RegistrationClosed
-            | PynError::InvalidSetupToken
-            | PynError::AccountInactive(_)
-            | PynError::ServerAdminRequired
-            | PynError::ServiceScopeRequired(_)
-            | PynError::ServiceCredentialNotAllowed
-            | PynError::NotNamespaceOwner(_)
-            | PynError::NotOrgOwner(_)
-            | PynError::NotOrgMember(_)
-            | PynError::RepoCreateForbidden { .. }
-            | PynError::NotRepoMember(_)
-            | PynError::ExternalNotLinked
-            | PynError::PasswordSignInDisabled
-            | PynError::CsrfFailed
-            | PynError::OriginNotAllowed => StatusCode::FORBIDDEN,
-            PynError::PushUnsupported(_) => StatusCode::UNPROCESSABLE_ENTITY,
-            PynError::TooManyAttempts { .. } | PynError::UploadsBusy { .. } => {
-                StatusCode::TOO_MANY_REQUESTS
-            }
-            PynError::ObjectTooLarge { .. } | PynError::PushTooLarge(_) => {
-                StatusCode::PAYLOAD_TOO_LARGE
-            }
-            PynError::NotInitialised => StatusCode::SERVICE_UNAVAILABLE,
-            PynError::Unauthenticated(_) | PynError::ExternalSignInFailed(_) => {
-                StatusCode::UNAUTHORIZED
-            }
-            PynError::ExternalProviderUnavailable(_) => StatusCode::BAD_GATEWAY,
-            PynError::TokenNotFound(_)
-            | PynError::ServiceCredentialNotFound(_)
-            | PynError::WebhookNotFound(_)
-            | PynError::WebhookSecretNotFound { .. }
-            | PynError::WebhookDeliveryNotFound { .. }
-            | PynError::UserNotFound(_)
-            | PynError::KeyNotFound(_)
-            | PynError::OidcNotConfigured
-            | PynError::ExternalIdentityNotFound(_)
-            | PynError::RepoNotFound(_)
-            | PynError::OrgNotFound(_)
-            | PynError::OrgMemberNotFound { .. }
-            | PynError::TeamNotFound { .. }
-            | PynError::TeamMemberNotFound { .. }
-            | PynError::CreationRuleNotFound { .. }
-            | PynError::ObjectNotFound(_)
-            | PynError::PathNotFound(_) => StatusCode::NOT_FOUND,
-            PynError::RevisionNotFound { .. }
-            | PynError::CommitNotFound(_)
-            | PynError::BranchNotFound(_) => StatusCode::NOT_FOUND,
-            PynError::InvalidPath(_)
-            | PynError::ReservedPathComponent { .. }
-            | PynError::InvalidRules(_)
-            | PynError::InvalidRequest(_)
-            | PynError::PushInvalid(_)
-            | PynError::AmbiguousCommit(_)
-            | PynError::InvalidBranchName(_)
-            | PynError::InvalidInvite(_)
-            | PynError::InvalidVerification(_)
-            | PynError::InvalidRepoName(_)
-            | PynError::ReservedName(_)
-            | PynError::NotOrgRepo(_)
-            | PynError::NotExclusive(_)
-            | PynError::LengthMismatch { .. }
-            | PynError::ObjectMissing(_) => StatusCode::BAD_REQUEST,
-            PynError::Storage(_) | PynError::HistoryCorrupt(_) => StatusCode::INTERNAL_SERVER_ERROR,
-        };
-        let internal = matches!(self.0, PynError::Storage(_) | PynError::HistoryCorrupt(_));
+        let status = status_for(&self.0);
+        let internal = is_internal(&self.0);
         let body = api::ErrorBody {
             code: self.0.code().to_string(),
-            message: if internal {
-                "an internal error occurred; the server log has the details".to_string()
-            } else {
-                self.0.to_string()
-            },
+            message: public_message(&self.0),
         };
         let mut res = (status, Json(body)).into_response();
         if internal {
@@ -1194,7 +1257,7 @@ async fn restore(
 }
 
 /// The request body as a reader, with the length its `Content-Length` header (or an exact body size) declares.
-fn upload(
+pub(crate) fn upload(
     headers: &HeaderMap,
     body: axum::body::Body,
 ) -> Result<(pyn_core::ObjectReader, u64), PynError> {
@@ -1912,7 +1975,7 @@ async fn get_content(
     Ok(res)
 }
 
-fn range_not_satisfiable(total: u64) -> Response {
+pub(crate) fn range_not_satisfiable(total: u64) -> Response {
     let mut res = Response::new(axum::body::Body::empty());
     *res.status_mut() = StatusCode::RANGE_NOT_SATISFIABLE;
     res.headers_mut().insert(
@@ -1923,7 +1986,7 @@ fn range_not_satisfiable(total: u64) -> Response {
 }
 
 /// One `bytes=` range over an object of `total` bytes, as a half-open range; `None` if unsatisfiable.
-fn parse_range(header: &str, total: u64) -> Option<std::ops::Range<u64>> {
+pub(crate) fn parse_range(header: &str, total: u64) -> Option<std::ops::Range<u64>> {
     let spec = header.strip_prefix("bytes=")?;
     if spec.contains(',') {
         return None;

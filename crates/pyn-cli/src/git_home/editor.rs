@@ -7,6 +7,7 @@ use anyhow::{Result, bail};
 
 use super::GitHome;
 use super::stage::clean_bytes;
+use crate::workspace::{Settings, Workspace};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Which {
@@ -22,15 +23,27 @@ fn dumb_terminal() -> bool {
     std::env::var("TERM").map_or(true, |t| t == "dumb")
 }
 
-/// The editor command: `GIT_EDITOR`, `core.editor`, `VISUAL`, `EDITOR`, then `vi`; a todo list first asks
-/// `GIT_SEQUENCE_EDITOR` and `sequence.editor`.
-fn command_for(git: &GitHome, which: Which) -> Result<String> {
-    command_from(which, &|key| git.repo.config().get(key).map(str::to_string))
+/// The pyn `editor` setting: the workspace's, else the user's.
+pub(crate) fn pyn_setting(ws: &Workspace) -> Option<String> {
+    let user = crate::userconfig::path()
+        .ok()
+        .map(|p| Settings::load(&p).unwrap_or_default());
+    non_empty(ws.settings().editor.or_else(|| user.and_then(|u| u.editor)))
 }
 
-/// The editor command with `config` answering the configuration keys; a pyn server workspace has none.
+/// The editor command, see [`command_from`]; `core.editor` comes from the git configuration.
+fn command_for(git: &GitHome, which: Which) -> Result<String> {
+    command_from(which, pyn_setting(&git.ws), &|key| {
+        git.repo.config().get(key).map(str::to_string)
+    })
+}
+
+/// The editor command: `GIT_EDITOR`, `PYN_EDITOR`, the pyn `editor` setting, `core.editor`, `VISUAL`, `EDITOR`, then
+/// the platform default. A todo list first asks `GIT_SEQUENCE_EDITOR` and `sequence.editor`.
+/// `config` answers git configuration keys; a pyn server workspace has none.
 pub(crate) fn command_from(
     which: Which,
+    pyn_editor: Option<String>,
     config: &dyn Fn(&str) -> Option<String>,
 ) -> Result<String> {
     let env = |name: &str| non_empty(std::env::var(name).ok());
@@ -40,15 +53,21 @@ pub(crate) fn command_from(
     {
         return Ok(editor);
     }
-    if let Some(editor) = env("GIT_EDITOR").or_else(|| config("core.editor")) {
+    if let Some(editor) = env("GIT_EDITOR")
+        .or_else(|| env("PYN_EDITOR"))
+        .or(pyn_editor)
+        .or_else(|| config("core.editor"))
+        .or_else(|| env("VISUAL"))
+        .or_else(|| env("EDITOR"))
+    {
         return Ok(editor);
     }
     if dumb_terminal() {
-        bail!("Terminal is dumb, but EDITOR unset");
+        bail!(
+            "Terminal is dumb and no editor is configured; set one with `pyn config set editor <command>` or PYN_EDITOR"
+        );
     }
-    Ok(env("VISUAL")
-        .or_else(|| env("EDITOR"))
-        .unwrap_or_else(|| "vi".into()))
+    Ok(if cfg!(windows) { "notepad" } else { "vi" }.into())
 }
 
 /// Runs the editor on `path` through the shell and waits; `:` means "keep the file as it is".
@@ -100,19 +119,28 @@ pub(crate) fn edit_message_with(
     comment: &str,
     before: impl FnOnce(&Path) -> Result<()>,
 ) -> Result<Option<Vec<u8>>> {
-    let path = git.repo.git().git_dir().join("COMMIT_EDITMSG");
     let mut text = message.to_vec();
-    if !text.ends_with(b"\n") {
+    if !text.is_empty() && !text.ends_with(b"\n") {
         text.push(b'\n');
     }
     text.extend_from_slice(
         b"\n# Please enter the commit message for your changes. Lines starting\n# with '#' will be ignored, and an empty message aborts the commit.\n",
     );
     text.extend_from_slice(comment.as_bytes());
-    std::fs::write(&path, &text)?;
+    Ok(edited_message(&edit_text(git, &text, before)?))
+}
+
+/// Writes `text` to `COMMIT_EDITMSG`, runs `before` on it, then the editor; returns the file the editor left.
+pub(crate) fn edit_text(
+    git: &GitHome,
+    text: &[u8],
+    before: impl FnOnce(&Path) -> Result<()>,
+) -> Result<Vec<u8>> {
+    let path = git.repo.git().git_dir().join("COMMIT_EDITMSG");
+    std::fs::write(&path, text)?;
     before(&path)?;
     run(git, Which::Message, &path)?;
-    Ok(edited_message(&std::fs::read(&path)?))
+    Ok(std::fs::read(&path)?)
 }
 
 #[cfg(test)]

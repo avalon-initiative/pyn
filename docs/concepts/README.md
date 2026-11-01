@@ -5,9 +5,9 @@ server hosts many, addressed as `owner/name`.
 
 1. **File content history.** Every path has immutable, numbered revisions (1, 2, 3, ...). A restore appends a new
    revision with old content; nothing is ever rewritten.
-   *Provisional:* with git-style commit hashes (decision #245) commits are named by hash instead of `cN`, and numbered
-   revisions remain for exclusive paths only; a shared path is identified by its content.
-2. **Collaboration policy.** Each path is `shared` (git-style: concurrent edits are allowed; merging them arrives with branches, see [git compatibility](git-compatibility.md)) or
+   Commits are named by hash (decision #245). Numbered revisions remain for exclusive paths and for per-path history on a
+   pyn server home; a shared path is identified by its content.
+2. **Collaboration policy.** Each path is `shared` (git-style: concurrent edits are allowed; merged by [`pyn merge`](merging.md), see [git compatibility](git-compatibility.md)) or
    `exclusive` (one editor at a time, enforced by the server). Policy is decided by [`pyn.toml`](pyn-toml.md) and is
    not a file-type classification: a text file can be exclusive and a binary can be shared.
 3. **Branch state.** A [branch](branches.md) is a name pointing at a commit, and a commit's state gives the revision of each
@@ -69,7 +69,7 @@ lock. It needs the `force_unlock` permission, and the reason is mandatory becaus
 
 The audit log is an append-only record of lock, revision and access events: checkout, release, checkin, delete, restore, force unlock,
 member added, role changed, role permissions changed, token created, token revoked, repository created, updated and deleted, and a [version stranded](pyn-toml.md#stranded-versions) by a policy change, each with who, when, the path and a short detail (for a force unlock, whose lock was removed and why). `pyn audit` shows it
-newest first and can filter by path, user and action; it needs the `view_audit` permission. Events are never changed or
+newest first and can filter by path, user and action; it needs the `view_audit` permission. A commit message in a detail shows as its subject. Events are never changed or
 removed.
 
 Access events have no path: the detail names the target and what changed (a user and their old and new role, the

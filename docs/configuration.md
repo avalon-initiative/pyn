@@ -17,6 +17,8 @@ keep needs at least `PYN_DATABASE_URL` and `PYN_DATA_DIR`.
 | `PYN_TOKEN` | Token the CLI signs in with, instead of the sign-in saved by `pyn login` (`PYN_USER` with `PYN_DEV_AUTH`). Preferred over `--token`, whose value shows in the process list (the CLI warns); `--token -` reads the token from one line of standard input. The CLI warns on standard error when it sends a token or password over `http://` to a host that is not loopback |
 | `PYN_REGISTRATION` | `invite` (default), `open` or `closed`: how people create accounts; the choice made in first-run setup replaces it |
 | `PYN_ORG_CREATION` | `anyone` (default) or `admins`: who may create organizations; `admins` limits it to server administrators |
+| `PYN_ORG_MEMBER_ADD` | `invite` (default) or `direct`: how adding an organization member works. `invite` creates a pending [invitation](concepts/repositories.md#invitations) the user accepts or declines; `direct` lets a server administrator who owns the organization add without consent (everyone else still invites) |
+| `PYN_ORG_INVITATION_DAYS` | Days an organization invitation stays open, default 30; at least 1 |
 | `PYN_MAX_LOCKS_ALLOWED_PER_USER` | How many locks one user may hold in a repository, default 5; a repository setting or its `pyn.toml` can override it |
 | `PYN_DEFAULT_MAX_REPOSITORIES`, `PYN_DEFAULT_MAX_ORG_MEMBERS`, `PYN_DEFAULT_MAX_STORAGE_BYTES` | Optional defaults for per-owner [limits](concepts/limits.md); unset (the norm for a self-hosted server) means unlimited |
 | `PYN_MAX_UNREFERENCED_UPLOAD_BYTES` | Most bytes one repository may hold in uploads no revision names yet, a whole number of bytes, default 34359738368 (32 GiB); `0` refuses every non-empty upload; an invalid value stops the server at start, and the effective value is logged. See [limits](concepts/limits.md#unreferenced-uploads) |
@@ -39,7 +41,7 @@ keep needs at least `PYN_DATABASE_URL` and `PYN_DATA_DIR`.
 | `PYN_EMAIL` | How email is sent; only `log` (notes that a message was queued, without its body) exists |
 | `PYN_EMAIL_LOG_BODIES` | `true` also logs each message body, links included; for local development only, the server warns at startup |
 | `PYN_RATE_SIGN_IN_ACCOUNT`, `PYN_RATE_SIGN_IN_CLIENT`, `PYN_RATE_REGISTER_CLIENT`, `PYN_RATE_MAIL_PER_EMAIL` | Rate limits, defaults 5, 30, 10 and 3 (the first also limits wrong current passwords when changing a password); see [access](concepts/access.md#protecting-open-registration) |
-| `PYN_TRUST_FORWARDED_FOR` | `true` takes the client address from the last `X-Forwarded-For` entry; only behind a proxy that sets it |
+| `PYN_TRUST_FORWARDED_FOR` | `true` takes the client address from the last `X-Forwarded-For` entry; only behind a proxy that sets it; also trusts `X-Forwarded-Host` and `X-Forwarded-Proto` for the [LFS](concepts/lfs.md) URLs |
 | `PYN_PASSWORD_HASHES` | Most password hashes at once, default the number of CPUs |
 | `PYN_SESSION_DAYS` | How long a `pyn login` lasts, default 30 |
 | `PYN_CONFIG_DIR` | Where the CLI keeps `credentials.toml`, default `~/.config/pyn`; the directory is made `0700` and the file `0600`, and a file that cannot be parsed is an error, never replaced |

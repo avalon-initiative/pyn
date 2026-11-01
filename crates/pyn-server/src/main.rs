@@ -390,6 +390,15 @@ async fn main() -> anyhow::Result<()> {
             Ok(mode) => mode.parse()?,
             Err(_) => defaults.org_creation,
         },
+        org_member_add: match std::env::var("PYN_ORG_MEMBER_ADD") {
+            Ok(mode) => mode.parse()?,
+            Err(_) => defaults.org_member_add,
+        },
+        org_invitation_ttl: match optional_number("PYN_ORG_INVITATION_DAYS")? {
+            Some(0) => anyhow::bail!("PYN_ORG_INVITATION_DAYS must be at least 1"),
+            Some(days) => chrono::Duration::days(i64::try_from(days)?),
+            None => defaults.org_invitation_ttl,
+        },
         default_limits: Limits {
             repositories: optional_number("PYN_DEFAULT_MAX_REPOSITORIES")?,
             members: optional_number("PYN_DEFAULT_MAX_ORG_MEMBERS")?,

@@ -205,6 +205,8 @@ fn flags_that_need_git_are_still_refused_here() {
         &["--reset-author"],
         &["--trailer", "A: b"],
         &["-C", "HEAD"],
+        &["-e"],
+        &["--edit"],
     ] {
         let mut args = vec!["commit", "-m", "x"];
         args.extend(flag);
@@ -385,4 +387,18 @@ fn signing_flags_on_the_other_commit_commands_are_refused() {
         let err = env.fails(&ws, "alice", cmd);
         assert!(err.contains("gpg-sign"), "{cmd:?}: {err}");
     }
+}
+
+#[test]
+fn audit_shows_only_the_subject_of_a_pushed_message() {
+    let (env, ws) = seeded(&["--local-store"]);
+    stage_edit(&env, &ws);
+    std::fs::write(ws.join("msg.txt"), "Subject line\n\nBody one\nBody two\n").unwrap();
+    env.ok(&ws, "alice", &["commit", "-F", "msg.txt"]);
+    env.ok(&ws, "alice", &["push"]);
+    let audit = env.ok(&ws, "alice", &["audit"]);
+    assert!(audit.contains("Subject line (push)"), "{audit}");
+    assert!(!audit.contains("Body"), "{audit}");
+    let row = audit.lines().find(|l| l.contains("Subject line")).unwrap();
+    assert!(row.contains("checkin"), "{row}");
 }

@@ -49,9 +49,9 @@ multi-path commits, per-path and per-commit history, branches and merge (three-w
 binaries, `pyn merge --abort`), diff and show, restore, chunked content storage, accounts,
 organizations and teams, roles, API tokens and SSH keys, optional OpenID Connect sign-in, and an audit log.
 
-Not built yet: remotes (`push`, `pull`, `fetch`), tags, stash, per-branch policy, and git import and export. A shared file's
+Remotes (`push`, `pull`, `fetch`), tags, stash, per-branch policy and git import and export have landed too. A shared file's
 commit must be based on the revision its branch has, so a stale edit is rejected rather than silently overwriting someone
-else's work. The git-style rows in the compatibility table marked *planned* are the roadmap.
+else's work. Rows in the compatibility table marked *planned* are the roadmap.
 
 ## Run it
 

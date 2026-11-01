@@ -304,6 +304,18 @@ fn write_cases(owner: &str, org: bool, content: &str) -> Vec<Case> {
                 Some(json!({"user": "carol"})),
             ),
             case(
+                "cancel_invitation",
+                "DELETE",
+                format!("{base}/invitations/carol"),
+                None,
+            ),
+            case(
+                "accept_invitation",
+                "POST",
+                format!("/v1/me/invitations/{owner}/accept"),
+                None,
+            ),
+            case(
                 "set_member_role",
                 "PATCH",
                 format!("{base}/members/bob"),
@@ -387,6 +399,7 @@ const EXEMPT: &[(&str, &str)] = &[
     ("preview_policy", "a read"),
     ("missing_objects", "a read"),
     ("create_org", "makes a new owner, not a write under one"),
+    ("decline_invitation", "declining only removes an offer"),
     ("admin_create_org", "an operator action"),
     ("admin_delete_org", "an operator action"),
     ("set_owner_limits", "an operator action"),
@@ -487,7 +500,9 @@ async fn fixture() -> Fixture {
         Some(json!({"user": "bob"})),
     )
     .await;
-    assert_eq!(r.status, StatusCode::CREATED);
+    assert_eq!(r.status, StatusCode::ACCEPTED);
+    let r = send(&app, &bob, "POST", "/v1/me/invitations/acme/accept", None).await;
+    assert_eq!(r.status, StatusCode::OK);
     let r = send(
         &app,
         &alice,

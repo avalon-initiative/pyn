@@ -10,7 +10,7 @@ use pyn_gitwork::wildmatch;
 use pyn_object::{Kind, ObjectId, Tag};
 
 use super::GitHome;
-use super::plumbing::{Resolver, abbrev, default_abbrev, emit_bytes, peel, prefix};
+use super::plumbing::{Resolver, emit_bytes, peel, prefix};
 
 const SEEN: u32 = 1;
 
@@ -67,7 +67,7 @@ struct Candidate {
 pub(super) fn describe(git: &GitHome, cwd: &Path, args: DescribeArgs) -> Result<()> {
     let hex = git.algorithm().digest_len() * 2;
     let digits = match args.abbrev.as_deref() {
-        None | Some("") => default_abbrev(git),
+        None | Some("") => git.repo.abbreviation_len(None)?,
         Some(v) => match v.parse::<usize>() {
             Ok(0) => 0,
             Ok(n) => n.clamp(4, hex),
@@ -120,7 +120,7 @@ pub(super) fn describe(git: &GitHome, cwd: &Path, args: DescribeArgs) -> Result<
 
 /// How `git submodule status` names a commit: an annotated tag, else any tag, else any ref, else the abbreviated id.
 pub(super) fn submodule_name(git: &GitHome, commit: &ObjectId) -> Result<String> {
-    let digits = default_abbrev(git);
+    let digits = git.repo.abbreviation_len(None)?;
     for (tags, all) in [(false, false), (true, false), (false, true)] {
         let args = DescribeArgs {
             tags,
@@ -133,7 +133,7 @@ pub(super) fn submodule_name(git: &GitHome, commit: &ObjectId) -> Result<String>
             return Ok(text);
         }
     }
-    Ok(abbrev(git, commit, digits.max(4)))
+    Ok(git.repo.abbreviate(commit)?)
 }
 
 fn plain() -> DescribeArgs {
@@ -240,7 +240,8 @@ fn describe_one(
     digits: usize,
     max: usize,
 ) -> Result<String> {
-    let suffix = |depth: usize| -> String { format!("-{depth}-g{}", abbrev(git, commit, digits)) };
+    let abbreviations = git.repo.abbreviations(Some(digits))?;
+    let suffix = |depth: usize| -> String { format!("-{depth}-g{}", abbreviations.short(commit)) };
     let usable = |n: &Name| args.tags || args.all || n.prio == 2;
     if let Some(n) = names.get(commit).filter(|n| usable(n)) {
         return Ok(if args.long {
@@ -250,7 +251,7 @@ fn describe_one(
         });
     }
     let hex = commit.to_hex();
-    let fallback = || abbrev(git, commit, digits.max(4));
+    let fallback = || abbreviations.short(commit);
     if args.exact_match {
         bail!("no tag exactly matches '{hex}'");
     }

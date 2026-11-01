@@ -37,11 +37,7 @@ impl Commits for Named<'_> {
 
     fn subject(&self, id: &ObjectId) -> Result<String> {
         let commit = self.store.repo().commit(id)?;
-        Ok(String::from_utf8_lossy(&commit.message)
-            .lines()
-            .next()
-            .unwrap_or_default()
-            .to_string())
+        Ok(crate::commit_format::subject_and_body(&String::from_utf8_lossy(&commit.message)).0)
     }
 
     fn label(&self, id: &ObjectId) -> Result<String> {
@@ -57,6 +53,28 @@ fn state_dir(ws: &Workspace) -> std::path::PathBuf {
     ws.dir.join("local_only").join("state")
 }
 
+/// The message typed in the editor on an empty file under `comment`; `None` when nothing is left.
+pub(crate) fn edit_commit_message(ws: &Workspace, comment: &str) -> Result<Option<String>> {
+    let mut text = String::from(
+        "\n# Please enter the commit message for your changes. Lines starting\n# with '#' will be ignored, and an empty message aborts the commit.\n",
+    );
+    text.push_str(comment);
+    let dir = ws.dir.join("local_only");
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join("COMMIT_EDITMSG");
+    std::fs::write(&path, &text)?;
+    let command = editor::command_from(Which::Message, editor::pyn_setting(ws), &|_| None)?;
+    let ran = editor::run_command(&command, &ws.root, &path);
+    let edited = std::fs::read(&path);
+    let _ = std::fs::remove_file(&path);
+    ran?;
+    Ok(editor::edited_message(&edited?).map(|m| {
+        String::from_utf8_lossy(&m)
+            .trim_end_matches('\n')
+            .to_string()
+    }))
+}
+
 /// The message the person makes of `message` in their editor; an empty result aborts.
 pub(crate) fn edit_message(ws: &Workspace, message: &[u8]) -> Result<Vec<u8>> {
     let mut text = message.to_vec();
@@ -69,7 +87,7 @@ pub(crate) fn edit_message(ws: &Workspace, message: &[u8]) -> Result<Vec<u8>> {
     let path = state_dir(ws).join("rebase-message");
     std::fs::create_dir_all(state_dir(ws))?;
     std::fs::write(&path, &text)?;
-    let command = editor::command_from(Which::Message, &|_| None)?;
+    let command = editor::command_from(Which::Message, editor::pyn_setting(ws), &|_| None)?;
     editor::run_command(&command, &ws.root, &path)?;
     let edited = std::fs::read(&path)?;
     let _ = std::fs::remove_file(&path);
@@ -81,7 +99,7 @@ fn edit_sheet(ws: &Workspace, text: &str) -> Result<String> {
     std::fs::create_dir_all(state_dir(ws))?;
     let path = state_dir(ws).join("rebase-todo");
     std::fs::write(&path, text)?;
-    let command = editor::command_from(Which::Sequence, &|_| None)?;
+    let command = editor::command_from(Which::Sequence, editor::pyn_setting(ws), &|_| None)?;
     let ran = editor::run_command(&command, &ws.root, &path);
     let edited = std::fs::read_to_string(&path);
     let _ = std::fs::remove_file(&path);

@@ -7,6 +7,7 @@ use pyn_object::{ObjectId, Signature};
 use pyn_proto as api;
 
 use crate::backend::Backend;
+use crate::commit_format::subject_and_body;
 use crate::diff::{self, Blob, Source, Tree};
 use crate::local_store::{LocalStore, file_mode};
 use crate::local_sync::api_mode;
@@ -90,7 +91,7 @@ pub fn log_rows(store: &LocalStore, branch: &str) -> Result<Vec<Vec<String>>> {
                 c.author.name.clone(),
                 time::local(c.created_at),
                 changed_paths(store, &c)?.len().to_string(),
-                c.message.lines().next().unwrap_or_default().to_string(),
+                subject_and_body(&c.message).0,
             ])
         })
         .collect()
@@ -118,12 +119,12 @@ pub enum LogScope<'a> {
 }
 
 /// The rows of the revisions view for the unpublished commits, one per changed path, newest first.
-/// The `REV` column says `local`; the repository view adds the path last.
+/// Each row carries the message body. The `REV` column says `local`; the repository view adds the path last.
 pub fn revision_rows(
     store: &LocalStore,
     branch: &str,
     scope: &LogScope,
-) -> Result<Vec<Vec<String>>> {
+) -> Result<Vec<(Vec<String>, String)>> {
     let matcher = match scope {
         LogScope::Repo(Some(f)) => Some(filter_matcher(f)?),
         _ => None,
@@ -149,7 +150,7 @@ pub fn revision_rows(
             if !wanted {
                 continue;
             }
-            let first = c.message.lines().next().unwrap_or_default();
+            let (first, body) = subject_and_body(&c.message);
             let deleted = if d.new.is_none() { " (deleted)" } else { "" };
             let mut row = vec![
                 "local".to_string(),
@@ -160,7 +161,7 @@ pub fn revision_rows(
             if matches!(scope, LogScope::Repo(_)) {
                 row.push(path);
             }
-            rows.push(row);
+            rows.push((row, body.to_string()));
         }
     }
     Ok(rows)

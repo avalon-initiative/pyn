@@ -68,6 +68,8 @@ pub enum PynError {
     ObjectTooLarge { limit: u64 },
     #[error("declared length {declared} but {actual} bytes were sent")]
     LengthMismatch { declared: u64, actual: u64 },
+    #[error("the content hashes to {actual}, not the declared {expected}")]
+    DigestMismatch { expected: String, actual: String },
     #[error("{0} is not locked by you")]
     NotLockHolder(RepoPath),
     #[error("{0} is exclusive: lock it before checking in")]
@@ -224,6 +226,10 @@ pub enum PynError {
     UserNotOrgMember { org: String, user: String },
     #[error("{user} is already a member of {org}")]
     AlreadyOrgMember { org: String, user: String },
+    #[error("{user} already has a pending invitation to {org}")]
+    AlreadyInvited { org: String, user: String },
+    #[error("{org} has no pending invitation for {user}")]
+    OrgInvitationNotFound { org: String, user: String },
     #[error("{user} is not a member of {org}")]
     OrgMemberNotFound { org: String, user: String },
     #[error("{0} must keep at least one owner")]
@@ -285,6 +291,7 @@ impl PynError {
             Self::UploadsBusy { .. } => "uploads_busy",
             Self::ObjectTooLarge { .. } => "object_too_large",
             Self::LengthMismatch { .. } => "length_mismatch",
+            Self::DigestMismatch { .. } => "digest_mismatch",
             Self::NotLockHolder(_) => "not_lock_holder",
             Self::LockRequired(_) => "lock_required",
             Self::NotExclusive(_) => "not_exclusive",
@@ -361,6 +368,8 @@ impl PynError {
             Self::NotOrgMember(_) => "not_org_member",
             Self::UserNotOrgMember { .. } => "user_not_org_member",
             Self::AlreadyOrgMember { .. } => "already_org_member",
+            Self::AlreadyInvited { .. } => "already_invited",
+            Self::OrgInvitationNotFound { .. } => "org_invitation_not_found",
             Self::OrgMemberNotFound { .. } => "org_member_not_found",
             Self::LastOrgOwner(_) => "last_org_owner",
             Self::TeamNotFound { .. } => "team_not_found",

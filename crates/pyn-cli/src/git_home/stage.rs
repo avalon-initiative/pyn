@@ -947,12 +947,21 @@ pub(super) fn clean_bytes(text: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Stages every tracked file that changed in the work tree into `entries`; true if there was any.
-pub(super) fn stage_tracked(git: &GitHome, index: &Index, entries: &mut Entries) -> Result<bool> {
+/// Stages the changed tracked files and/or the untracked, unignored ones into `entries`; true if there was any.
+pub(super) fn stage_working(
+    git: &GitHome,
+    index: &Index,
+    entries: &mut Entries,
+    (tracked, untracked): (bool, bool),
+) -> Result<bool> {
     let specs = Specs {
         spec: Pathspec::default(),
     };
-    let plan = plan(git, index, &specs, true, false)?;
+    let mut plan = plan(git, index, &specs, !untracked, false)?;
+    if !tracked {
+        let known: HashSet<&[u8]> = index.entries.iter().map(|e| e.path.as_slice()).collect();
+        plan.ops.retain(|path, _| !known.contains(path.as_slice()));
+    }
     apply(git, entries, &plan.ops, (false, false, false))?;
     Ok(!plan.ops.is_empty())
 }

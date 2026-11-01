@@ -102,7 +102,7 @@ fn log_commits_lists_one_row_per_commit_newest_first() {
             .collect();
         assert_eq!(rows.len(), ids.len(), "{out}");
         for (row, id) in rows.iter().zip(&ids) {
-            assert_eq!(row[0].trim(), &id[..10], "{out}");
+            assert_eq!(row[0].trim(), &id[..7], "{out}");
         }
         assert!(out.lines().next().unwrap().starts_with("COMMIT"));
         assert!(out.contains("Merge branch 'feature'") && out.contains("initial commit"));

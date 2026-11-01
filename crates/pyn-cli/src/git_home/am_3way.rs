@@ -41,7 +41,7 @@ pub(super) fn fall_back(git: &GitHome, patch: &[u8], subject: &str) -> Result<Ou
         let named = p
             .old_id
             .as_ref()
-            .map(|prefix| git.repo.ids_with_prefix(prefix))
+            .map(|prefix| git.repo.objects().ids_with_prefix(prefix))
             .transpose()?
             .and_then(|found| match found.as_slice() {
                 [id] if git.repo.blob(id).is_ok() => Some(*id),

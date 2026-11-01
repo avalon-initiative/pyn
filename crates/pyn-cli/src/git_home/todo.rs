@@ -13,6 +13,10 @@ use crate::commit_format::{Context, DateStyle, Decorations, Pretty, render};
 /// What a sheet needs from the repository it is about: the commit a name means and a commit's subject.
 pub(crate) trait Commits {
     fn find(&self, spec: &str) -> Option<ObjectId>;
+    /// Server local-store sheets retain their existing width.
+    fn abbreviate(&self, id: &ObjectId) -> Result<String> {
+        Ok(id.to_hex()[..7].to_string())
+    }
     fn subject(&self, id: &ObjectId) -> Result<String>;
     /// The text after the id on a sheet line: the subject, or `rebase.instructionFormat` applied.
     fn label(&self, id: &ObjectId) -> Result<String>;
@@ -21,6 +25,9 @@ pub(crate) trait Commits {
 }
 
 impl Commits for GitHome {
+    fn abbreviate(&self, id: &ObjectId) -> Result<String> {
+        Ok(self.repo.abbreviate(id)?)
+    }
     fn find(&self, spec: &str) -> Option<ObjectId> {
         self.repo
             .resolve(spec)
@@ -39,6 +46,7 @@ impl Commits for GitHome {
         let pretty = Pretty::parse(&format!("format:{format}"))?;
         let decorations = Decorations::new();
         let mailmap = self.mailmap()?;
+        let abbreviations = self.repo.abbreviations(None)?;
         let ctx = Context {
             style: DateStyle::parse("default")?,
             now: chrono::Utc::now().timestamp(),
@@ -48,6 +56,7 @@ impl Commits for GitHome {
             abbrev_commit: false,
             mailmap: Some(&mailmap),
             map_headers: false,
+            abbreviations: &crate::commit_format::IdFormat::Git(abbreviations),
         };
         let text = render(&pretty, &ctx, id, &self.repo.commit(id)?);
         Ok(text.replace('\n', " "))
@@ -207,7 +216,7 @@ impl Item {
         self.cmd != Cmd::Comment
     }
 
-    /// The sheet line; `abbrev` cuts the id to seven digits for the editor.
+    /// The sheet line; `abbrev` uses the repository's unique prefix for the editor.
     pub(crate) fn line(&self, git: &dyn Commits, abbrev: bool) -> Result<String> {
         let word = self.cmd.word();
         Ok(match (self.cmd, &self.id) {
@@ -219,7 +228,7 @@ impl Item {
                 let mut line = word.to_string();
                 if let Some(id) = id {
                     let shown = if abbrev {
-                        id.to_hex()[..7].to_string()
+                        git.abbreviate(id)?
                     } else {
                         id.to_hex()
                     };
@@ -234,7 +243,7 @@ impl Item {
             }
             (_, Some(id)) => {
                 let shown = if abbrev {
-                    id.to_hex()[..7].to_string()
+                    git.abbreviate(id)?
                 } else {
                     id.to_hex()
                 };
@@ -420,7 +429,7 @@ pub(crate) fn editor_text(
     let mut text = sheet(git, items, true)?;
     text.push_str(&format!(
         "\n# Rebase {range} onto {} ({count} command{})\n#\n",
-        &onto.to_hex()[..7],
+        git.abbreviate(onto)?,
         if count == 1 { "" } else { "s" }
     ));
     text.push_str(&format!(

@@ -8,7 +8,7 @@ use pyn_gitwork::MagicSet;
 use pyn_object::{FileMode, Kind, ObjectId, TreeEntry};
 
 use super::GitHome;
-use super::plumbing::{Resolver, abbrev, default_abbrev, emit_bytes, peel, prefix, quote};
+use super::plumbing::{Resolver, emit_bytes, peel, prefix, quote};
 use crate::short_status::relative;
 
 /// List the contents of a tree object.
@@ -56,7 +56,7 @@ struct Walk<'a> {
     pre: Vec<u8>,
     patterns: Vec<Vec<u8>>,
     show_trees: bool,
-    abbrev: Option<usize>,
+    abbreviations: Option<pyn_gitwork::Abbreviations>,
     out: Vec<u8>,
 }
 
@@ -91,10 +91,11 @@ pub(super) fn ls_tree(git: &GitHome, cwd: &Path, args: LsTreeArgs) -> Result<()>
         .filter(|p| !p.is_empty())
         .map(<[u8]>::to_vec)
         .collect();
-    let abbrev = args.abbrev.as_deref().map(|v| match v.parse::<usize>() {
-        Ok(n) => n.clamp(4, git.algorithm().digest_len() * 2),
-        Err(_) => default_abbrev(git),
-    });
+    let abbreviations = args
+        .abbrev
+        .as_deref()
+        .map(|v| git.repo.abbreviations(v.parse::<usize>().ok()))
+        .transpose()?;
     let show_trees = args.show_trees || (args.trees_only && args.recursive);
     let mut walk = Walk {
         git,
@@ -102,7 +103,7 @@ pub(super) fn ls_tree(git: &GitHome, cwd: &Path, args: LsTreeArgs) -> Result<()>
         pre,
         patterns,
         show_trees,
-        abbrev,
+        abbreviations,
         out: Vec::new(),
     };
     let result = walk.tree(&tree, &mut Vec::new());
@@ -164,8 +165,8 @@ impl Walk<'_> {
         } else {
             quote(self.git, &shown).into_bytes()
         };
-        let hash = match self.abbrev {
-            Some(n) => abbrev(self.git, &e.id, n),
+        let hash = match &self.abbreviations {
+            Some(a) => a.short(&e.id),
             None => e.id.to_hex(),
         };
         let out = &mut self.out;

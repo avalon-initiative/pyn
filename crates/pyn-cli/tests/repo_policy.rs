@@ -9,7 +9,7 @@ fn owners_show_set_and_edit_the_policy() {
     let env = start_with_accounts(&["alice", "bob"]);
     let home = env.dir("home");
     env.ok(&home, "alice", &["org", "create", "acme"]);
-    env.ok(&home, "alice", &["org", "member", "add", "acme", "bob"]);
+    env.join_org(&home, "alice", "acme", "bob");
     env.ok(&home, "alice", &["team", "create", "acme/art"]);
 
     let shown = env.ok(&home, "alice", &["org", "policy", "show", "acme"]);
@@ -78,7 +78,7 @@ fn bad_policy_changes_are_refused() {
     let env = start_with_accounts(&["alice", "bob", "carol"]);
     let home = env.dir("home");
     env.ok(&home, "alice", &["org", "create", "acme"]);
-    env.ok(&home, "alice", &["org", "member", "add", "acme", "bob"]);
+    env.join_org(&home, "alice", "acme", "bob");
 
     let owner = env.fails(
         &home,
@@ -133,7 +133,7 @@ fn a_member_is_blocked_then_allowed_and_a_deny_wins() {
     let env = start_with_accounts(&["alice", "bob", "carol"]);
     let home = env.dir("home");
     env.ok(&home, "alice", &["org", "create", "acme"]);
-    env.ok(&home, "alice", &["org", "member", "add", "acme", "bob"]);
+    env.join_org(&home, "alice", "acme", "bob");
 
     let blocked = env.fails(&home, "bob", &["repo", "create", "acme/one"]);
     assert!(

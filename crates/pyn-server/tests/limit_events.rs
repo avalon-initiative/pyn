@@ -161,15 +161,19 @@ async fn members_storage_and_non_owner_locks_keep_their_errors_and_attribute_the
         .await
         .unwrap();
     w.access.create_org(&who("alice"), "studio").await.unwrap();
+    w.access
+        .add_org_member(
+            &who("alice"),
+            &UserId::new("studio"),
+            &UserId::new("bob"),
+            OrgRole::Member,
+        )
+        .await
+        .unwrap();
     for _ in 0..2 {
         let err = w
             .access
-            .add_org_member(
-                &who("alice"),
-                &UserId::new("studio"),
-                &UserId::new("bob"),
-                OrgRole::Member,
-            )
+            .accept_org_invitation(&who("bob"), &UserId::new("studio"))
             .await
             .unwrap_err();
         assert!(matches!(&err, PynError::MemberLimitReached { org, limit: 1 } if org == "studio"));

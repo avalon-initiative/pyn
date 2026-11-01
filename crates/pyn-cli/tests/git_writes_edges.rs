@@ -746,7 +746,7 @@ fn commit_after_a_merge_uses_the_merge_message_without_its_comment_lines() {
     assert!(!repo.main.join(".git/MERGE_HEAD").exists());
     assert!(!repo.main.join(".git/MERGE_MSG").exists());
     let (code, err) = repo.fails(&["commit"]);
-    assert_eq!(code, 129, "{err}");
+    assert_eq!(code, 1, "{err}");
 }
 
 #[test]

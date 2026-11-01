@@ -631,11 +631,7 @@ enum Replayed {
 }
 
 fn subject(message: &[u8]) -> String {
-    String::from_utf8_lossy(message)
-        .lines()
-        .next()
-        .unwrap_or_default()
-        .to_string()
+    crate::commit_format::subject_and_body(&String::from_utf8_lossy(message)).0
 }
 
 /// Replays the commands of `run.todo` over its tip, stopping at the first that has a conflict.

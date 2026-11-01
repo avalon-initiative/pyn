@@ -777,6 +777,20 @@ pub struct OrgMember {
     pub role: String,
 }
 
+/// A pending offer of organization membership. It becomes a membership with `role` when `user` accepts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct OrgInvitation {
+    pub org: String,
+    /// The invited user.
+    pub user: String,
+    #[schema(value_type = OrgRole)]
+    pub role: String,
+    pub invited_by: String,
+    pub created_at: DateTime<Utc>,
+    /// After this the invitation is gone and cannot be accepted.
+    pub expires_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct AddOrgMemberRequest {
     /// An existing user account.
@@ -933,6 +947,8 @@ pub struct Member {
 /// A team of the owning organization and its role in a repository.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct RepoTeam {
+    /// Stable id of the team; never reused after a delete.
+    pub team_id: String,
     pub slug: String,
     pub name: String,
     pub description: String,
@@ -955,6 +971,8 @@ pub struct TeamRepo {
 /// A team of an organization with its members and repository roles.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct TeamInfo {
+    /// Stable id: never changes and is never issued again after a delete, so key data on it, not the slug.
+    pub id: String,
     pub slug: String,
     pub name: String,
     pub description: String,
@@ -1530,7 +1548,7 @@ pub struct OwnerUsage {
     pub owner_id: String,
     pub limits: OwnerLimits,
     pub usage: Usage,
-    /// Ordered by name.
+    /// Largest first, then by address.
     pub repositories: Vec<RepoUsage>,
 }
 

@@ -7,10 +7,10 @@ use std::sync::{Arc, Mutex};
 use chrono::{Duration, TimeZone, Utc};
 
 use crate::access::{
-    AccountKind, AccountStatus, InviteId, InviteRecord, NewAccount, OrgRole, Permission, Principal,
-    RegistrationMode, Role, RoleDefinitions, RoleSource, ServerSettings, ServiceCredentialRecord,
-    ServiceScope, SessionRecord, SignupStage, SshKeyRecord, TeamRecord, TokenId, TokenRecord,
-    VerificationRecord,
+    AccountKind, AccountStatus, InvitationAccept, InvitationCreate, InviteId, InviteRecord,
+    NewAccount, OrgInvitation, OrgRole, Permission, Principal, RegistrationMode, Role,
+    RoleDefinitions, RoleSource, ServerSettings, ServiceCredentialRecord, ServiceScope,
+    SessionRecord, SignupStage, SshKeyRecord, TeamRecord, TokenId, TokenRecord, VerificationRecord,
 };
 use crate::clock::Clock;
 use crate::memory::{MemoryAuditStore, MemoryMetadataStore, MemoryObjectStore};
@@ -18,7 +18,7 @@ use crate::ratelimit::RateLimitStore;
 use crate::repo_policy::{
     CreationEffect, CreationRule, CreationScope, CreationSubject, MemberCreation, RepoPolicy,
 };
-use crate::types::AccountId;
+use crate::types::{AccountId, TeamId};
 use crate::{
     AccessService, AccessStore, Credential, Identity, OrgDeleteMark, OrgMemberChange, RepoMember,
     Repositories,
@@ -67,6 +67,8 @@ mod push_merge;
 pub use push_merge::*;
 mod uploads;
 pub use uploads::*;
+mod lfs;
+pub use lfs::*;
 mod webhooks;
 pub use webhooks::*;
 mod outbox;
@@ -999,6 +1001,26 @@ pub async fn restore_is_for_exclusive_paths_and_real_older_revisions(store: Stor
         matches!(err, PynError::InvalidRequest(_)),
         "the head itself: {err}"
     );
+}
+
+pub async fn lock_path_locks_exclusive_at_head_and_leaves_shared_paths_advisory(store: Store) {
+    let h = harness(store);
+    let (ex, sh) = (path("Content/x.umap"), path("Source/s.cpp"));
+    h.svc.checkout(&ex, &user("alice"), None).await.unwrap();
+    put_on(&h, "main", "alice", &ex, "v1", None).await;
+
+    let lock = h.svc.lock_path(&ex, &user("bob")).await.unwrap();
+    assert_eq!(lock.owner, user("bob"));
+    assert_eq!(h.svc.lock_of(&ex).await.unwrap(), Some(lock));
+    let err = h.svc.lock_path(&ex, &user("alice")).await.unwrap_err();
+    assert!(matches!(err, PynError::LockHeld { .. }), "{err}");
+
+    h.svc.lock_path(&sh, &user("alice")).await.unwrap();
+    put_on(&h, "main", "bob", &sh, "s1", None).await;
+    let err = h.svc.lock_path(&sh, &user("bob")).await.unwrap_err();
+    assert!(matches!(err, PynError::LockHeld { .. }), "{err}");
+    h.svc.release(&sh, &user("alice")).await.unwrap();
+    assert_eq!(h.svc.lock_of(&sh).await.unwrap(), None);
 }
 
 pub async fn force_unlock_removes_a_live_lock_and_says_why(store: Store) {
@@ -3191,6 +3213,7 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; restore_appends_a_checkpoint_with_the_old_content);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; restore_needs_the_lock_and_the_right_confirmation);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; restore_is_for_exclusive_paths_and_real_older_revisions);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; lock_path_locks_exclusive_at_head_and_leaves_shared_paths_advisory);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; force_unlock_removes_a_live_lock_and_says_why);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; checkout_past_the_lock_limit_is_refused_until_a_slot_frees);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; the_lock_limit_counts_one_repository_at_a_time);
@@ -3313,6 +3336,13 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_merge_resolution_needs_content_the_repository_knows);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; assembling_needs_chunks_the_repository_uploaded);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; unreferenced_uploads_are_capped_per_repository);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; an_lfs_object_is_recorded_once_and_read_back_by_its_oid);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; lfs_objects_belong_to_the_repository_that_uploaded_them);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; an_lfs_upload_that_does_not_hash_to_its_oid_is_refused_and_kept_nowhere);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; an_lfs_upload_of_another_length_than_declared_is_refused);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; an_lfs_oid_must_be_lowercase_sha256_hex);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_frozen_owner_cannot_upload_an_lfs_object);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; lfs_objects_count_against_the_storage_caps);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_text_merge_over_the_cost_bound_is_left_to_a_person);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; upload_reservations_hold_the_budget_until_released_or_expired);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; parallel_uploads_never_pass_the_unreferenced_budget);
@@ -4130,6 +4160,26 @@ impl MetadataStore for HookedMeta {
             .await
     }
 
+    async fn record_lfs_object(
+        &self,
+        repo: &RepoId,
+        object: &crate::LfsObject,
+    ) -> crate::Result<bool> {
+        self.inner.record_lfs_object(repo, object).await
+    }
+
+    async fn lfs_object(
+        &self,
+        repo: &RepoId,
+        oid: &str,
+    ) -> crate::Result<Option<crate::LfsObject>> {
+        self.inner.lfs_object(repo, oid).await
+    }
+
+    async fn lfs_bytes(&self, repo: &RepoId) -> crate::Result<u64> {
+        self.inner.lfs_bytes(repo).await
+    }
+
     async fn object_is_recorded(&self, id: &ObjectId) -> crate::Result<bool> {
         self.inner.object_is_recorded(id).await
     }
@@ -4509,6 +4559,142 @@ pub async fn a_retried_delete_finishes_an_interrupted_one_once_its_mark_is_stale
     assert!(store.account(&acme).await.unwrap().is_none());
 }
 
+pub async fn organization_invitations_are_recorded_accepted_expired_and_removed_with_the_organization(
+    store: Access,
+) {
+    let acme = user("acme");
+    for name in ["alice", "bob", "carol"] {
+        store.create_user(&user(name), at(0)).await.unwrap();
+    }
+    store
+        .create_org(&acme, &user("alice"), at(1))
+        .await
+        .unwrap();
+    let invite = |name: &str, role: OrgRole, minutes: i64| OrgInvitation {
+        org: acme.clone(),
+        user: user(name),
+        role,
+        invited_by: user("alice"),
+        created_at: at(2),
+        expires_at: at(minutes),
+    };
+
+    assert_eq!(
+        store
+            .create_org_invitation(&invite("alice", OrgRole::Member, 60))
+            .await
+            .unwrap(),
+        InvitationCreate::AlreadyMember
+    );
+    let bob = invite("bob", OrgRole::Owner, 60);
+    assert_eq!(
+        store.create_org_invitation(&bob).await.unwrap(),
+        InvitationCreate::Created
+    );
+    assert_eq!(
+        store
+            .create_org_invitation(&invite("bob", OrgRole::Member, 90))
+            .await
+            .unwrap(),
+        InvitationCreate::AlreadyInvited
+    );
+    let carol = invite("carol", OrgRole::Member, 10);
+    store.create_org_invitation(&carol).await.unwrap();
+    assert_eq!(
+        store.org_invitations(&acme).await.unwrap(),
+        [bob.clone(), carol.clone()]
+    );
+    assert_eq!(
+        store.org_invitations_for(&user("bob")).await.unwrap(),
+        std::slice::from_ref(&bob)
+    );
+    assert!(store.org_members(&acme).await.unwrap().len() == 1);
+
+    assert!(
+        store
+            .take_expired_org_invitations(None, Some(&user("bob")), at(30))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        store
+            .take_expired_org_invitations(Some(&acme), None, at(30))
+            .await
+            .unwrap(),
+        std::slice::from_ref(&carol)
+    );
+    assert_eq!(
+        store
+            .accept_org_invitation(&acme, &user("carol"), at(30), None)
+            .await
+            .unwrap(),
+        InvitationAccept::Missing
+    );
+
+    let capped = store
+        .accept_org_invitation(&acme, &user("bob"), at(30), Some(1))
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        capped,
+        PynError::MemberLimitReached { limit: 1, .. }
+    ));
+    assert_eq!(
+        store.org_invitations(&acme).await.unwrap(),
+        std::slice::from_ref(&bob)
+    );
+    assert_eq!(
+        store
+            .accept_org_invitation(&acme, &user("bob"), at(61), None)
+            .await
+            .unwrap(),
+        InvitationAccept::Missing,
+        "an expired invitation cannot be accepted"
+    );
+    assert!(store.org_invitations(&acme).await.unwrap().is_empty());
+
+    store.create_org_invitation(&bob).await.unwrap();
+    assert_eq!(
+        store
+            .accept_org_invitation(&acme, &user("bob"), at(30), None)
+            .await
+            .unwrap(),
+        InvitationAccept::Joined(OrgRole::Owner)
+    );
+    assert_eq!(
+        store.org_role(&acme, &user("bob")).await.unwrap(),
+        Some(OrgRole::Owner)
+    );
+    assert!(store.org_invitations(&acme).await.unwrap().is_empty());
+
+    store.create_org_invitation(&carol).await.unwrap();
+    assert_eq!(
+        store
+            .delete_org_invitation(&acme, &user("carol"))
+            .await
+            .unwrap(),
+        Some(carol.clone())
+    );
+    assert_eq!(
+        store
+            .delete_org_invitation(&acme, &user("carol"))
+            .await
+            .unwrap(),
+        None
+    );
+
+    store.create_org_invitation(&carol).await.unwrap();
+    store.delete_org(&acme).await.unwrap();
+    assert!(
+        store
+            .org_invitations_for(&user("carol"))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
 pub async fn organization_members_are_added_changed_and_never_left_without_an_owner(store: Access) {
     let acme = user("acme");
     for name in ["alice", "bob", "carol"] {
@@ -4691,6 +4877,7 @@ pub async fn removing_an_organization_member_drops_their_roles_in_the_given_repo
 
 fn team(org: &str, slug: &str) -> TeamRecord {
     TeamRecord {
+        id: TeamId::new(format!("t{org}/{slug}")),
         org: user(org),
         slug: slug.to_string(),
         name: format!("Team {slug}"),
@@ -4960,8 +5147,8 @@ pub async fn effective_roles_resolve_across_direct_team_and_owner_grants(store: 
         store.create_user(&user(name), at(0)).await.unwrap();
     }
     for name in ["bob", "carol", "dave"] {
-        access
-            .add_org_member(&alice, &acme, &user(name), OrgRole::Member)
+        store
+            .add_org_member(&acme, &user(name), OrgRole::Member)
             .await
             .unwrap();
     }
@@ -5196,8 +5383,8 @@ pub async fn effective_roles_resolve_across_direct_team_and_owner_grants(store: 
     );
     assert_eq!(access.repos_of(&user("dave")).await.unwrap(), []);
 
-    access
-        .add_org_member(&alice, &acme, &user("erin"), OrgRole::Owner)
+    store
+        .add_org_member(&acme, &user("erin"), OrgRole::Owner)
         .await
         .unwrap();
     assert_eq!(role("erin", &tools).await, Some(Role::Admin));
@@ -6362,8 +6549,8 @@ impl CreationWorld {
             store.create_user(&user(name), at(0)).await.unwrap();
         }
         for name in ["bob", "carol", "dave"] {
-            access
-                .add_org_member(&alice, &acme, &user(name), OrgRole::Member)
+            store
+                .add_org_member(&acme, &user(name), OrgRole::Member)
                 .await
                 .unwrap();
         }
@@ -7482,8 +7669,8 @@ pub async fn managers_cannot_act_on_admins_or_repository_owners(store: Access) {
     }
     store.set_admin(&user("root"), true).await.unwrap();
     for name in ["bob", "carol", "root"] {
-        access
-            .add_org_member(&alice, &user("acme"), &user(name), OrgRole::Member)
+        store
+            .add_org_member(&user("acme"), &user(name), OrgRole::Member)
             .await
             .unwrap();
     }
@@ -7742,6 +7929,7 @@ macro_rules! access_contract_tests {
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; repository_creation_cannot_slip_in_while_an_organization_is_deleted);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; a_retried_delete_finishes_an_interrupted_one_once_its_mark_is_stale);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; organization_members_are_added_changed_and_never_left_without_an_owner);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; organization_invitations_are_recorded_accepted_expired_and_removed_with_the_organization);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; removing_an_organization_member_drops_their_roles_in_the_given_repositories);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; teams_hold_members_and_repository_roles_until_removed);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; effective_roles_resolve_across_direct_team_and_owner_grants);

@@ -14,8 +14,8 @@ use crate::webhook::EventDraft;
 use pyn_object::ObjectId;
 
 use crate::types::{
-    ChangesetItem, Commit, CommitFilter, Lock, NewRevision, PushedCommit, RepoId, RepoPath,
-    Revision, RevisionId, UserId,
+    ChangesetItem, Commit, CommitFilter, LfsObject, Lock, NewRevision, PushedCommit, RepoId,
+    RepoPath, Revision, RevisionId, UserId,
 };
 
 /// A hold on part of a repository's unreferenced-upload budget while an upload streams in.
@@ -364,6 +364,14 @@ pub trait MetadataStore: Send + Sync {
         cap: u64,
         reservation: UploadReservation,
     ) -> Result<()>;
+
+    /// Records an LFS object for `repo`; `false` (and nothing changes) if the repository already has that oid.
+    async fn record_lfs_object(&self, repo: &RepoId, object: &LfsObject) -> Result<bool>;
+
+    async fn lfs_object(&self, repo: &RepoId, oid: &str) -> Result<Option<LfsObject>>;
+
+    /// Bytes of the repository's LFS objects.
+    async fn lfs_bytes(&self, repo: &RepoId) -> Result<u64>;
 
     /// Whether any repository, this one included, has recorded the object `id`.
     async fn object_is_recorded(&self, id: &ObjectId) -> Result<bool>;

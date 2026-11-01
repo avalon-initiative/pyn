@@ -34,7 +34,7 @@ pub(crate) fn resolve(store: &LocalStore, ws: &Workspace, spec: &str) -> Result<
 
 fn subject(store: &LocalStore, id: &ObjectId) -> Result<String> {
     let message = String::from_utf8_lossy(&store.repo().commit(id)?.message).into_owned();
-    Ok(message.lines().next().unwrap_or_default().to_string())
+    Ok(crate::commit_format::subject_and_body(&message).0)
 }
 
 pub(crate) fn branch_command(store: &LocalStore, ws: &Workspace, args: BranchArgs) -> Result<()> {

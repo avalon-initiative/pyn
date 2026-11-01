@@ -8,9 +8,10 @@ use chrono::{DateTime, Duration, Utc};
 use pyn_object::ObjectId;
 
 use crate::access::{
-    AccountKind, AccountRecord, AccountStatus, InviteId, InviteRecord, NewAccount, OrgRole,
-    Permission, Role, RoleDefinitions, ServerSettings, ServiceCredentialRecord, SessionRecord,
-    SignupStage, SshKeyRecord, TeamRecord, TokenId, TokenRecord, VerificationRecord,
+    AccountKind, AccountRecord, AccountStatus, InvitationAccept, InvitationCreate, InviteId,
+    InviteRecord, NewAccount, OrgInvitation, OrgRole, Permission, Role, RoleDefinitions,
+    ServerSettings, ServiceCredentialRecord, SessionRecord, SignupStage, SshKeyRecord, TeamRecord,
+    TokenId, TokenRecord, VerificationRecord,
 };
 use crate::access_service::{
     AccessStore, AccountDisable, AdminRevoke, OrgDeleteMark, OrgMemberChange,
@@ -37,8 +38,8 @@ use crate::rules::{Mode, PathFilter};
 use crate::store::{MetadataStore, UploadReservation};
 use crate::tree::HeadCounts;
 use crate::types::{
-    AccountId, ChangesetItem, Commit, CommitFilter, Lock, Person, PushedCommit, RepoId, RepoPath,
-    Revision, RevisionId, UserId,
+    AccountId, ChangesetItem, Commit, CommitFilter, LfsObject, Lock, Person, PushedCommit, RepoId,
+    RepoPath, Revision, RevisionId, UserId,
 };
 use crate::webhook::{
     Delivery, DeliveryQuery, DeliveryStatus, DueDelivery, EventDraft, Jitter, MAX_ACTIVE_SECRETS,
@@ -63,6 +64,7 @@ struct State {
     pointers: HashMap<(RepoId, ObjectId), Vec<(RepoPath, RevisionId)>>,
     /// Uploads each repository may reference: size, and whether an assembled object already holds the chunk.
     uploads: HashMap<(RepoId, ObjectId), (u64, bool)>,
+    lfs: HashMap<(RepoId, String), LfsObject>,
     /// Holds on the unreferenced-upload budget of in-flight uploads: repository, bytes, expiry.
     reservations: HashMap<i64, (RepoId, u64, DateTime<Utc>)>,
     next_reservation: i64,
@@ -1233,6 +1235,32 @@ impl MetadataStore for MemoryMetadataStore {
         Ok(())
     }
 
+    async fn record_lfs_object(&self, repo: &RepoId, object: &LfsObject) -> Result<bool> {
+        let mut st = self.state.lock().unwrap();
+        match st.lfs.entry((repo.clone(), object.oid.clone())) {
+            std::collections::hash_map::Entry::Occupied(_) => Ok(false),
+            std::collections::hash_map::Entry::Vacant(v) => {
+                v.insert(object.clone());
+                Ok(true)
+            }
+        }
+    }
+
+    async fn lfs_object(&self, repo: &RepoId, oid: &str) -> Result<Option<LfsObject>> {
+        let st = self.state.lock().unwrap();
+        Ok(st.lfs.get(&(repo.clone(), oid.to_string())).cloned())
+    }
+
+    async fn lfs_bytes(&self, repo: &RepoId) -> Result<u64> {
+        let st = self.state.lock().unwrap();
+        Ok(st
+            .lfs
+            .iter()
+            .filter(|((r, _), _)| r == repo)
+            .map(|(_, o)| o.size)
+            .sum())
+    }
+
     async fn object_is_recorded(&self, id: &ObjectId) -> Result<bool> {
         let st = self.state.lock().unwrap();
         Ok(st.uploads.keys().any(|(_, o)| o == id))
@@ -1620,6 +1648,7 @@ impl MetadataStore for MemoryMetadataStore {
         st.branches.remove(id);
         st.pointers.retain(|(r, _), _| r != id);
         st.uploads.retain(|(r, _), _| r != id);
+        st.lfs.retain(|(r, _), _| r != id);
         st.reservations.retain(|_, (r, _, _)| r != id);
         Ok(st.repos.remove(id).is_some())
     }
@@ -1781,6 +1810,7 @@ struct AccessState {
     ssh_keys: Vec<SshKeyRecord>,
     roles: HashMap<(RepoId, UserId), Role>,
     org_roles: HashMap<(UserId, UserId), OrgRole>,
+    org_invitations: BTreeMap<(UserId, UserId), OrgInvitation>,
     teams: BTreeMap<(UserId, String), TeamRecord>,
     team_members: BTreeSet<(UserId, String, UserId)>,
     team_roles: BTreeMap<(RepoId, UserId, String), Role>,
@@ -2010,6 +2040,7 @@ impl AccessStore for MemoryAccessStore {
         st.accounts.remove(org);
         st.limits.remove(org);
         st.org_roles.retain(|(o, _), _| o != org);
+        st.org_invitations.retain(|(o, _), _| o != org);
         st.teams.retain(|(o, _), _| o != org);
         st.team_members.retain(|(o, _, _)| o != org);
         st.team_roles.retain(|(_, o, _), _| o != org);
@@ -2081,6 +2112,102 @@ impl AccessStore for MemoryAccessStore {
         }
         st.org_roles.insert(key, role);
         Ok(true)
+    }
+
+    async fn create_org_invitation(&self, invitation: &OrgInvitation) -> Result<InvitationCreate> {
+        let mut st = self.state.lock().unwrap();
+        let key = (invitation.org.clone(), invitation.user.clone());
+        if st.org_roles.contains_key(&key) {
+            return Ok(InvitationCreate::AlreadyMember);
+        }
+        if st.org_invitations.contains_key(&key) {
+            return Ok(InvitationCreate::AlreadyInvited);
+        }
+        st.org_invitations.insert(key, invitation.clone());
+        Ok(InvitationCreate::Created)
+    }
+
+    async fn org_invitations(&self, org: &UserId) -> Result<Vec<OrgInvitation>> {
+        let st = self.state.lock().unwrap();
+        Ok(st
+            .org_invitations
+            .values()
+            .filter(|i| &i.org == org)
+            .cloned()
+            .collect())
+    }
+
+    async fn org_invitations_for(&self, user: &UserId) -> Result<Vec<OrgInvitation>> {
+        let st = self.state.lock().unwrap();
+        let mut out: Vec<_> = st
+            .org_invitations
+            .values()
+            .filter(|i| &i.user == user)
+            .cloned()
+            .collect();
+        out.sort_by(|a, b| a.org.cmp(&b.org));
+        Ok(out)
+    }
+
+    async fn delete_org_invitation(
+        &self,
+        org: &UserId,
+        user: &UserId,
+    ) -> Result<Option<OrgInvitation>> {
+        let mut st = self.state.lock().unwrap();
+        Ok(st.org_invitations.remove(&(org.clone(), user.clone())))
+    }
+
+    async fn take_expired_org_invitations(
+        &self,
+        org: Option<&UserId>,
+        user: Option<&UserId>,
+        now: DateTime<Utc>,
+    ) -> Result<Vec<OrgInvitation>> {
+        let mut st = self.state.lock().unwrap();
+        let keys: Vec<_> = st
+            .org_invitations
+            .iter()
+            .filter(|(_, i)| {
+                i.expires_at <= now
+                    && org.is_none_or(|o| &i.org == o)
+                    && user.is_none_or(|u| &i.user == u)
+            })
+            .map(|(k, _)| k.clone())
+            .collect();
+        Ok(keys
+            .iter()
+            .filter_map(|k| st.org_invitations.remove(k))
+            .collect())
+    }
+
+    async fn accept_org_invitation(
+        &self,
+        org: &UserId,
+        user: &UserId,
+        now: DateTime<Utc>,
+        max_members: Option<u64>,
+    ) -> Result<InvitationAccept> {
+        let mut st = self.state.lock().unwrap();
+        let key = (org.clone(), user.clone());
+        let Some(invitation) = st.org_invitations.get(&key).cloned() else {
+            return Ok(InvitationAccept::Missing);
+        };
+        if invitation.expires_at <= now || st.org_roles.contains_key(&key) {
+            st.org_invitations.remove(&key);
+            return Ok(InvitationAccept::Missing);
+        }
+        if let Some(limit) = max_members
+            && st.org_roles.keys().filter(|(o, _)| o == org).count() as u64 >= limit
+        {
+            return Err(PynError::MemberLimitReached {
+                org: org.to_string(),
+                limit,
+            });
+        }
+        st.org_invitations.remove(&key);
+        st.org_roles.insert(key, invitation.role);
+        Ok(InvitationAccept::Joined(invitation.role))
     }
 
     async fn owner_limits(&self, owner: &UserId) -> Result<Limits> {

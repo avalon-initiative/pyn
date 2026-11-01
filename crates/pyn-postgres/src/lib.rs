@@ -13,11 +13,11 @@ use pyn_core::commit_record::{CommitDraft, TreeChange, TreeEdit, draft_commit};
 use pyn_core::merge::{MergeWrite, MergeWritten};
 use pyn_core::{
     BREAKDOWN_PATHS, Branch, ChangesetItem, Commit, CommitFilter, EventDraft, FileMode,
-    FolderUsage, HeadCounts, HistoryCursor, HistoryScan, Lock, LockChange, LockEventBuilder,
-    MetadataStore, Mode, ObjectId, PathFilter, PathUsage, Person, PushedCommit, PynError,
-    REPO_ALGORITHM, RepoBreakdown, RepoId, RepoPath, RepoRecord, RepoSettings, RepoUpdate,
-    RepoUsage, Result, Revision, RevisionHash, RevisionId, StorageCap, UploadReservation, Usage,
-    UserId, Visibility,
+    FolderUsage, HeadCounts, HistoryCursor, HistoryScan, LfsObject, Lock, LockChange,
+    LockEventBuilder, MetadataStore, Mode, ObjectId, PathFilter, PathUsage, Person, PushedCommit,
+    PynError, REPO_ALGORITHM, RepoBreakdown, RepoId, RepoPath, RepoRecord, RepoSettings,
+    RepoUpdate, RepoUsage, Result, Revision, RevisionHash, RevisionId, StorageCap,
+    UploadReservation, Usage, UserId, Visibility,
 };
 use sqlx::migrate::MigrateDatabase;
 use sqlx::postgres::{PgPoolOptions, PgRow};
@@ -1992,6 +1992,55 @@ impl MetadataStore for PgMetadataStore {
         tx.commit().await.map_err(db)
     }
 
+    async fn record_lfs_object(&self, repo: &RepoId, object: &LfsObject) -> Result<bool> {
+        let inserted = sqlx::query(
+            "INSERT INTO lfs_objects (repo, oid, size, object, created_at, created_by)
+             VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING",
+        )
+        .bind(repo.as_str())
+        .bind(&object.oid)
+        .bind(object.size as i64)
+        .bind(object.object.to_hex())
+        .bind(object.created_at)
+        .bind(object.created_by.as_str())
+        .execute(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(inserted.rows_affected() == 1)
+    }
+
+    async fn lfs_object(&self, repo: &RepoId, oid: &str) -> Result<Option<LfsObject>> {
+        let row = sqlx::query(
+            "SELECT oid, size, object, created_at, created_by FROM lfs_objects WHERE repo = $1 AND oid = $2",
+        )
+        .bind(repo.as_str())
+        .bind(oid)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db)?;
+        row.map(|row| {
+            Ok(LfsObject {
+                oid: row.get("oid"),
+                size: row.get::<i64, _>("size") as u64,
+                object: object_id(&row.get::<String, _>("object"), "lfs object")?,
+                created_at: row.get("created_at"),
+                created_by: UserId::new(row.get::<String, _>("created_by")),
+            })
+        })
+        .transpose()
+    }
+
+    async fn lfs_bytes(&self, repo: &RepoId) -> Result<u64> {
+        let bytes: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(size), 0)::bigint FROM lfs_objects WHERE repo = $1",
+        )
+        .bind(repo.as_str())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(bytes as u64)
+    }
+
     async fn object_is_recorded(&self, id: &ObjectId) -> Result<bool> {
         sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM repo_objects WHERE id = $1)")
             .bind(id.to_hex())
@@ -2562,6 +2611,7 @@ impl MetadataStore for PgMetadataStore {
             "DELETE FROM branches WHERE repo = $1",
             "DELETE FROM trees WHERE repo = $1",
             "DELETE FROM repo_objects WHERE repo = $1",
+            "DELETE FROM lfs_objects WHERE repo = $1",
             "DELETE FROM upload_reservations WHERE repo = $1",
         ] {
             sqlx::query(stmt)

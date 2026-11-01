@@ -38,7 +38,7 @@ impl Rig {
         fs::create_dir_all(&home).unwrap();
         fs::write(
             home.join(".gitconfig"),
-            "[user]\n\tname = T\n\temail = t@example.com\n[init]\n\tdefaultBranch = main\n",
+            "[user]\n\tname = T\n\temail = t@example.com\n[init]\n\tdefaultBranch = main\n[gc]\n\tauto = 0\n[maintenance]\n\tauto = false\n",
         )
         .unwrap();
         Rig {
@@ -69,7 +69,9 @@ impl Rig {
 
     fn git(&self, cwd: &Path, args: &[&str]) -> Out {
         let mut c = Command::new("git");
-        c.current_dir(cwd).args(args);
+        c.args(["-c", "gc.auto=0", "-c", "maintenance.auto=false"])
+            .current_dir(cwd)
+            .args(args);
         self.envs(&mut c);
         out_of(c.output().unwrap())
     }

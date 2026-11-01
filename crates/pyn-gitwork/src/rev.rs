@@ -1,7 +1,7 @@
 //! Revision names: `HEAD`, `@`, branches, tags, full or abbreviated ids, then `~N`, `^` and `^N` steps. A name may
 //! carry an `@{...}` suffix first (see `revmark`).
 
-use pyn_object::{Algorithm, Kind, ObjectId};
+use pyn_object::{Kind, ObjectId};
 
 use crate::error::{Error, Result, io_at};
 use crate::repo::Repo;
@@ -121,9 +121,9 @@ impl Repo {
 
     /// The one commit whose id starts with `prefix`.
     fn expand(&self, prefix: &str) -> Option<Result<ObjectId>> {
-        let found = match self.ids_with_prefix(prefix) {
+        let found = match self.objects().ids_with_prefix(prefix) {
             Ok(f) => f,
-            Err(e) => return Some(Err(e)),
+            Err(e) => return Some(Err(e.into())),
         };
         let mut commits = Vec::new();
         for id in found {
@@ -140,35 +140,5 @@ impl Repo {
                 "short object ID {prefix} is ambiguous"
             )))),
         }
-    }
-
-    /// Every object, of any kind, whose id starts with the hex `prefix`.
-    pub fn ids_with_prefix(&self, prefix: &str) -> Result<Vec<ObjectId>> {
-        let algorithm: Algorithm = self.algorithm();
-        let mut found = Vec::new();
-        for pack in self.objects().packs() {
-            found.extend(
-                pack.ids()
-                    .filter(|id| id.to_hex().starts_with(prefix))
-                    .collect::<Vec<_>>(),
-            );
-        }
-        if prefix.len() >= 2 {
-            let dir = self.objects().dir().join(&prefix[..2]);
-            if let Ok(rd) = std::fs::read_dir(&dir) {
-                for entry in rd {
-                    let name = entry.map_err(io_at(&dir))?.file_name();
-                    let hex = format!("{}{}", &prefix[..2], name.to_string_lossy());
-                    if hex.starts_with(prefix)
-                        && let Ok(id) = ObjectId::from_hex(algorithm, &hex)
-                    {
-                        found.push(id);
-                    }
-                }
-            }
-        }
-        found.sort_by_key(|id| id.to_hex());
-        found.dedup();
-        Ok(found)
     }
 }

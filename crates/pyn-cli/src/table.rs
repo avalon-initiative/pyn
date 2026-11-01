@@ -25,6 +25,35 @@ pub fn render(header: &[&str], rows: &[Vec<String>]) -> String {
     lines.join("\n")
 }
 
+/// Like `render`, with each row's note (a message body) indented four spaces under it.
+/// Notes do not affect column widths.
+pub fn render_notes(header: &[&str], rows: &[(Vec<String>, String)]) -> String {
+    let cells: Vec<Vec<String>> = rows.iter().map(|(c, _)| c.clone()).collect();
+    let table = render(header, &cells);
+    let mut lines = table.lines();
+    let mut out = vec![lines.next().unwrap_or_default().to_string()];
+    for ((_, note), line) in rows.iter().zip(lines) {
+        out.push(line.to_string());
+        for l in note.trim_end().lines() {
+            out.push(if l.trim().is_empty() {
+                String::new()
+            } else {
+                format!("    {l}")
+            });
+        }
+    }
+    out.join("\n")
+}
+
+/// Prints the table with notes, or `empty` alone when there are no rows.
+pub fn show_notes(header: &[&str], rows: &[(Vec<String>, String)], empty: &str) {
+    if rows.is_empty() {
+        println!("{empty}");
+    } else {
+        println!("{}", render_notes(header, rows));
+    }
+}
+
 /// Prints the table, or `empty` alone when there are no rows.
 pub fn show(header: &[&str], rows: &[Vec<String>], empty: &str) {
     if rows.is_empty() {
@@ -76,6 +105,18 @@ mod tests {
     fn wide_characters_count_as_one_column() {
         let out = render(&["WHO", "N"], &[row(&["a\u{b7}b", "1"])]);
         assert_eq!(out, "WHO  N\na\u{b7}b  1");
+    }
+
+    #[test]
+    fn notes_indent_under_their_row_without_widening_columns() {
+        let rows = vec![
+            (row(&["a", "one"]), "first\n\nsecond\n".to_string()),
+            (row(&["bb", "two"]), String::new()),
+        ];
+        assert_eq!(
+            render_notes(&["A", "B"], &rows),
+            "A   B\na   one\n    first\n\n    second\nbb  two"
+        );
     }
 
     #[test]

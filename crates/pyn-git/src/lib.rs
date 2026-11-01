@@ -7,6 +7,7 @@
 mod bundle;
 mod config;
 mod config_file;
+pub mod counters;
 mod delta;
 mod error;
 mod filter;

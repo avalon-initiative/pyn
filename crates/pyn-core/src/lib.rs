@@ -38,16 +38,16 @@ pub mod webhook_secret;
 pub mod webhook_url;
 
 pub use access::{
-    AccountKind, AccountRecord, AccountStatus, Credential, Identity, InviteId, InviteRecord,
-    NewAccount, ORG_DELETE_MARK_SECONDS, OrgCreation, OrgRole, Permission, Principal,
-    RegistrationMode, Role, RoleDefinitions, RoleSource, ServerSettings, ServiceCredentialRecord,
-    ServiceScope, SessionRecord, SignupStage, SshKeyRecord, TeamRecord, TokenId, TokenRecord,
-    VerificationRecord, account, invite, service_credential, session, ssh, team, token,
-    verification,
+    AccountKind, AccountRecord, AccountStatus, Credential, Identity, InvitationAccept,
+    InvitationCreate, InviteId, InviteRecord, NewAccount, ORG_DELETE_MARK_SECONDS, OrgCreation,
+    OrgInvitation, OrgMemberAdd, OrgRole, Permission, Principal, RegistrationMode, Role,
+    RoleDefinitions, RoleSource, ServerSettings, ServiceCredentialRecord, ServiceScope,
+    SessionRecord, SignupStage, SshKeyRecord, TeamRecord, TokenId, TokenRecord, VerificationRecord,
+    account, invite, service_credential, session, ssh, team, token, verification,
 };
 pub use access_service::{
     AccessConfig, AccessService, AccessStore, AccountDisable, AdminRevoke, ExternalPolicy,
-    ExternalSignIn, MAX_INVITE_HOURS, OidcBegin, OidcFinish, OidcStart, OrgDeleteMark,
+    ExternalSignIn, MAX_INVITE_HOURS, OidcBegin, OidcFinish, OidcStart, OrgAdd, OrgDeleteMark,
     OrgMemberChange, OwnerFreezeState, OwnerLimits, RateLimits, Registration, RepoMember,
     SERVER_AUDIT_ID, SetupRequest, SetupStatus, SignUp, TeamDetail, generate_setup_token,
 };
@@ -103,16 +103,16 @@ pub use service::{
     ChangeEntry, CommitPage, Deletion, FETCH_DEFAULT_LIMIT, FETCH_MAX_EXAMINED, FETCH_MAX_HAVES,
     FETCH_MAX_LIMIT, FetchPage, FetchQuery, FetchedCommit, FileEntry, LockLimit, PolicyPreview,
     PushObjects, Pushed, Recorded, RepoService, RepoServiceContext, ServiceConfig, Snapshot,
-    SnapshotEntry, VERIFY_BUDGET,
+    SnapshotEntry, VERIFY_BUDGET, is_lfs_oid,
 };
 pub use store::{MetadataStore, UploadReservation};
 pub use stranded::{ConversionNote, StrandedVersion};
 pub use tree::{EntryKind, EntryMode, HeadCounts, RepoSummary, TREE_MAX_PATHS, TreeEntry};
 pub use types::{
-    AccountId, ChangesetItem, Commit, CommitFilter, Lock, MAX_CHANGESET_ITEMS, MAX_COMMIT_CHANGES,
-    MAX_LABEL_BYTES, MAX_MESSAGE_BYTES, MAX_PATH_BYTES, MAX_PATH_COMPONENT_BYTES, MAX_PUSH_CHANGES,
-    MAX_PUSH_COMMITS, MAX_TREE_ENTRIES, NewRevision, Person, PushedCommit, RepoId, RepoPath,
-    Revision, RevisionHash, RevisionId, UserId,
+    AccountId, ChangesetItem, Commit, CommitFilter, LfsObject, Lock, MAX_CHANGESET_ITEMS,
+    MAX_COMMIT_CHANGES, MAX_LABEL_BYTES, MAX_MESSAGE_BYTES, MAX_PATH_BYTES,
+    MAX_PATH_COMPONENT_BYTES, MAX_PUSH_CHANGES, MAX_PUSH_COMMITS, MAX_TREE_ENTRIES, NewRevision,
+    Person, PushedCommit, RepoId, RepoPath, Revision, RevisionHash, RevisionId, TeamId, UserId,
 };
 pub use webhook::{
     Delivery, DeliveryQuery, DeliveryStatus, DueDelivery, EventDraft, FixedJitter, Jitter,

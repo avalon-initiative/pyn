@@ -806,7 +806,12 @@ impl Session<'_> {
             lacking();
             return Ok(None);
         };
-        let found = self.git.repo.ids_with_prefix(prefix).map_err(internal)?;
+        let found = self
+            .git
+            .repo
+            .objects()
+            .ids_with_prefix(prefix)
+            .map_err(internal)?;
         let [base_id] = found.as_slice() else {
             lacking();
             return Ok(None);

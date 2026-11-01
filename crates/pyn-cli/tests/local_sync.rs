@@ -1419,3 +1419,39 @@ fn a_commit_identical_to_one_pushed_on_another_branch_is_pushed() {
     let log = |ws: &Path| env.ok(ws, "alice", &["log", "--commits", "--limit", "1"]);
     assert_eq!(log(&one), log(&two));
 }
+
+const SOURCE_POLICY: &str =
+    "[meta]\ndefault = \"shared\"\n[exclusive]\npaths = [\"Content/\", \"Source/\"]\n";
+
+fn policy_over_a_teammates_edit() -> (Env, PathBuf) {
+    let (env, ws) = seeded();
+    let other = clone_with(&env, "other", &["--local-store"]);
+    commit_local(&env, &other, "bob", "Source/a.cpp", "bob's edit\n", "bob");
+    env.ok(&other, "bob", &["push"]);
+    commit_local(&env, &ws, "alice", ".pyn/pyn.toml", SOURCE_POLICY, "policy");
+    (env, ws)
+}
+
+#[test]
+fn a_pulled_merge_pushes_a_policy_that_makes_a_teammates_edited_path_exclusive() {
+    let (env, ws) = policy_over_a_teammates_edit();
+    env.ok(&ws, "alice", &["pull"]);
+    env.ok(&ws, "alice", &["push"]);
+    let third = clone_with(&env, "third", &[]);
+    assert_eq!(
+        std::fs::read_to_string(third.join("Source/a.cpp")).unwrap(),
+        "bob's edit\n"
+    );
+}
+
+#[test]
+fn a_rebased_pull_pushes_a_policy_that_makes_a_teammates_edited_path_exclusive() {
+    let (env, ws) = policy_over_a_teammates_edit();
+    env.ok(&ws, "alice", &["pull", "--rebase"]);
+    env.ok(&ws, "alice", &["push"]);
+    let third = clone_with(&env, "third", &[]);
+    assert_eq!(
+        std::fs::read_to_string(third.join("Source/a.cpp")).unwrap(),
+        "bob's edit\n"
+    );
+}

@@ -154,12 +154,12 @@ Errors: `merge_conflict` (409, unresolved conflicts, paths named), `merge_stale`
 `lock_required` and `stale_base` for a resolution on an exclusive path, `forbidden` and `invalid_rules` for a policy file.
 A merge is audited as `branch_merged`, and each new revision as a checkin.
 
-## Merges pushed from a local store (provisional)
+## Merges pushed from a local store
 
 In a workspace with local commits, the default ([workspace](workspace.md#the-local-store)) the merge is made by the client, in `pyn pull`,
 and published by `pyn push` as a merge commit that the server judges with the rules above: the descendant pointer is adopted,
 a diverged exclusive path needs a new revision under the pusher's live lease, and shared content is the pushed tree's. A pull that conflicts is resolved with the flow above (markers, `pyn add`, `pyn commit`, `--abort`), see [conflicts in a pull](commits.md#conflicts-in-a-pull). See
-[merge commits in a push](commits.md#merge-commits-in-a-push-provisional) for the accounting and the errors
+[merge commits in a push](commits.md#merge-commits-in-a-push) for the accounting and the errors
 (`merge_conflict`, `lock_required`, `lock_held`, `not_fast_forward`).
 
 ## Command line

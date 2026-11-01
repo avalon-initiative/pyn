@@ -123,12 +123,8 @@ pub struct OutputFlags {
     /// End each record with a NUL instead of a newline (with `--raw`, `--name-only`, `--name-status` and `--numstat`).
     #[arg(short = 'z')]
     nul: bool,
-    /// Show object ids shortened to at least N digits.
-    #[arg(long, value_name = "N", num_args = 0..=1, require_equals = true, default_missing_value = "")]
-    abbrev: Option<String>,
-    /// Show whole object ids wherever ids are shortened.
-    #[arg(long = "no-abbrev", conflicts_with = "abbrev")]
-    no_abbrev: bool,
+    #[command(flatten)]
+    abbrev: crate::commit_format::AbbrevArgs,
     /// Show the patch (the default).
     #[arg(short = 'p', long)]
     patch: bool,
@@ -268,7 +264,6 @@ impl Default for Opts {
     }
 }
 
-const MIN_ABBREV: usize = 4;
 /// The length of the `index` and raw ids when no `--abbrev` says otherwise.
 const DEFAULT_ABBREV: usize = 7;
 
@@ -508,35 +503,21 @@ impl PatchFlags {
 
 impl OutputFlags {
     pub fn opts(&self) -> Opts {
-        let mut o = Opts {
+        Opts {
             nul: self.nul,
-            no_abbrev: self.no_abbrev,
             ..self.patch_flags.opts()
-        };
-        o.abbrev = match self.abbrev.as_deref() {
-            None | Some("") => None,
-            Some(n) => match n.parse::<usize>() {
-                Ok(n) => Some(n.max(MIN_ABBREV)),
-                Err(_) => crate::usage_error(&format!(
-                    "option `abbrev' expects a numerical value, not '{n}'"
-                )),
-            },
-        };
-        o
+        }
+        .with_abbrev(&self.abbrev)
     }
 
     /// The first option given that only a git repository honors.
     pub fn git_only(&self) -> Option<&'static str> {
-        [
-            ("--raw", self.raw),
-            ("-z", self.nul),
-            ("--abbrev", self.abbrev.is_some()),
-            ("--no-abbrev", self.no_abbrev),
-        ]
-        .into_iter()
-        .find(|(_, on)| *on)
-        .map(|(f, _)| f)
-        .or_else(|| self.patch_flags.given())
+        [("--raw", self.raw), ("-z", self.nul)]
+            .into_iter()
+            .find(|(_, on)| *on)
+            .map(|(f, _)| f)
+            .or_else(|| self.abbrev.given())
+            .or_else(|| self.patch_flags.given())
     }
 
     pub fn stat_implied(&self) -> bool {
@@ -598,6 +579,15 @@ impl Opts {
             }
         }
         o
+    }
+
+    /// These options with the widths `--abbrev` and `--no-abbrev` ask for.
+    pub fn with_abbrev(self, flags: &crate::commit_format::AbbrevArgs) -> Self {
+        Self {
+            abbrev: flags.patch_abbreviation(),
+            no_abbrev: flags.no_abbrev(),
+            ..self
+        }
     }
 
     /// The id shortened for an `index` line, or whole with `--full-index`.

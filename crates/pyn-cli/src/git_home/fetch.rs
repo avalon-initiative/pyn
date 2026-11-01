@@ -20,8 +20,6 @@ use super::fetch_map::{Entry, Inputs, build, follow_tags};
 use super::partial::{FilterFlags, is_promisor, register, stored_filter};
 use super::shallow::FetchShallow;
 
-const DEFAULT_ABBREV: usize = 7;
-
 /// Download objects and refs from a git remote (a git repository only).
 #[derive(Debug, Args)]
 pub struct FetchArgs {
@@ -287,17 +285,6 @@ fn parse_specs(args: &[String]) -> Result<Vec<Refspec>> {
         out.push(Refspec::parse(&text).map_err(|_| anyhow!("invalid refspec '{arg}'"))?);
     }
     Ok(out)
-}
-
-fn abbrev_len(git: &GitHome) -> usize {
-    let hex = git.algorithm().digest_len() * 2;
-    match git.config().get("core.abbrev") {
-        Some(v) if v.eq_ignore_ascii_case("no") => hex,
-        Some(v) => v
-            .parse::<usize>()
-            .map_or(DEFAULT_ABBREV, |n| n.clamp(4, hex)),
-        None => DEFAULT_ABBREV,
-    }
 }
 
 /// Whether nothing has been written to this repository yet: no refs, objects or index.
@@ -612,7 +599,7 @@ pub(super) fn fetch_core(
         verbosity: if o.clone { -1 } else { o.verbosity },
         dry_run: o.dry_run,
         force: o.force,
-        abbrev: abbrev_len(git),
+        abbrev: git.repo.abbreviation_len(None)?,
         action: plan.action.to_owned(),
         url,
         remote: target.name.clone(),
