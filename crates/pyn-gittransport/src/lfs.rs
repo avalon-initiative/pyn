@@ -20,7 +20,7 @@ use crate::error::{Error, Result};
 use crate::http::build_client;
 use crate::url::{RemoteUrl, redact_text, rewrite, scoped_values};
 
-const MEDIA: &str = "application/vnd.git-lfs+json";
+pub(crate) const MEDIA: &str = "application/vnd.git-lfs+json";
 const BATCH_SIZE: usize = 100;
 const MAX_REDIRECTS: usize = 10;
 
@@ -30,7 +30,7 @@ pub struct Object {
     pub size: u64,
 }
 
-fn lfs(msg: impl Into<String>) -> Error {
+pub(crate) fn lfs(msg: impl Into<String>) -> Error {
     Error::Lfs(msg.into())
 }
 
@@ -119,7 +119,7 @@ fn origin(u: &Url) -> Origin {
 
 pub struct Client {
     http: Http,
-    base: Url,
+    pub(crate) base: Url,
     flow: Flow,
     auth: Option<Offer>,
     unconfirmed: bool,
@@ -149,12 +149,12 @@ impl Client {
         })
     }
 
-    fn shown(&self) -> String {
+    pub(crate) fn shown(&self) -> String {
         RemoteUrl::Http(self.base.clone()).display()
     }
 
     /// Sends the request `make` builds; credentials go only to the endpoint's host, and a 401 asks the next source.
-    fn send(
+    pub(crate) fn send(
         &mut self,
         url: &Url,
         headers: &[(String, String)],
@@ -445,7 +445,7 @@ fn object_error(e: &ObjectError) -> Error {
     ))
 }
 
-fn status_error(code: u16, body: &str, what: &str) -> Error {
+pub(crate) fn status_error(code: u16, body: &str, what: &str) -> Error {
     let message = serde_json::from_str::<serde_json::Value>(body)
         .ok()
         .and_then(|v| v["message"].as_str().map(str::to_owned))

@@ -371,9 +371,6 @@ fn pyn_in_a_plain_git_repository_behaves_as_git_and_refuses_server_commands() {
     let before = snapshot(&repo.join(".git"));
     server.ok(&repo, "-", &["diff"]);
     for args in [
-        vec!["lock", "README.md"],
-        vec!["unlock", "README.md"],
-        vec!["locks"],
         vec!["policy", "preview", "x.toml"],
         vec!["audit"],
         vec!["verify"],

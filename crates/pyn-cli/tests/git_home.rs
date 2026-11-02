@@ -653,10 +653,6 @@ fn repository_commands_refuse_and_name_the_pyn_server() {
     let repo = Repo::new("sha1");
     let before = snapshot(&repo.main);
     for args in [
-        vec!["lock", "README.md"],
-        vec!["unlock", "README.md"],
-        vec!["locks"],
-        vec!["locks", "--mine"],
         vec!["policy", "preview", "x.toml"],
         vec!["audit"],
         vec!["verify"],
@@ -704,7 +700,7 @@ fn a_pyn_toml_in_a_git_repository_is_ignored() {
         "[meta]\ndefault = \"exclusive\"\n",
     )
     .unwrap();
-    let (code, err) = repo.fails(&["lock", "README.md"]);
+    let (code, err) = repo.fails(&["policy", "preview", "x.toml"]);
     assert_eq!(code, 128);
     assert!(err.contains("needs a pyn server"), "{err}");
     assert!(repo.ok(&["status"]).contains("README.md"));

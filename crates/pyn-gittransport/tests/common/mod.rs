@@ -2,6 +2,7 @@
 
 pub mod gitsrv;
 pub mod lfssrv;
+pub mod lockssrv;
 
 use std::path::Path;
 

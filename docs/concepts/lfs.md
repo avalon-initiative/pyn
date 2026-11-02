@@ -46,6 +46,7 @@ caller has no part in is `404`.
 - Leases are a pyn extension that LFS clients do not see. An LFS lock carries the repository's lease (8 hours by default) and
   lapses with it; `pyn lock` renews it.
 - The lock `id` is a stable opaque string derived from the path: the same path always has the same id.
+- The pyn CLI on a git repository is a client of these routes: `pyn lock`, `unlock` and `locks`, `lockable` files and the pre-push check are described under [Git LFS in git compatibility](git-compatibility.md#git-lfs).
 - `ref` in requests is accepted and ignored (pyn has a single locking line per repository).
 - Every create and unlock is audited and queues the lock events exactly as `pyn lock` and `pyn unlock` do. A force unlock needs
   the `force_unlock` permission, as a pyn force unlock does, and its audit entry reads "forced through the LFS API".
