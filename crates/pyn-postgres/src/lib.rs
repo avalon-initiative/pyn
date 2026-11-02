@@ -361,7 +361,7 @@ async fn append_revision(
         .map_err(db)?;
         if !known {
             if let Some(max) = cap.max_bytes {
-                let total = owner_stored(tx, &cap.owner).await?;
+                let total = owner_stored(tx, &cap.owner).await? + owner_lfs(tx, &cap.owner).await?;
                 if total as u64 > max {
                     return Err(PynError::StorageLimitReached {
                         owner: cap.owner.to_string(),
@@ -371,7 +371,7 @@ async fn append_revision(
                 }
             }
             if let Some(max) = cap.repo_max_bytes {
-                let total = repo_stored(tx, repo).await?;
+                let total = repo_stored(tx, repo).await? + repo_lfs(&mut **tx, repo).await?;
                 if total as u64 > max {
                     return Err(PynError::RepoStorageLimitReached {
                         repository: cap.repository.clone(),
@@ -580,7 +580,8 @@ async fn unreferenced<'e>(
     sqlx::query_scalar(
         "SELECT COALESCE(SUM(o.size), 0)::bigint FROM repo_objects o
          WHERE o.repo = $1 AND NOT o.assembled
-           AND NOT EXISTS (SELECT 1 FROM revisions r WHERE r.repo = o.repo AND r.content = o.id)",
+           AND NOT EXISTS (SELECT 1 FROM revisions r WHERE r.repo = o.repo AND r.content = o.id)
+           AND NOT EXISTS (SELECT 1 FROM lfs_objects l WHERE l.repo = o.repo AND l.object = o.id)",
     )
     .bind(repo.as_str())
     .fetch_one(exec)
@@ -642,6 +643,28 @@ async fn owner_stored(
     .fetch_one(&mut **tx)
     .await
     .map_err(db)
+}
+
+async fn owner_lfs(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, owner: &UserId) -> Result<i64> {
+    sqlx::query_scalar(
+        "SELECT COALESCE(SUM(l.size), 0)::bigint FROM lfs_objects l
+         JOIN repositories p ON p.id = l.repo WHERE p.owner = $1",
+    )
+    .bind(owner.as_str())
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(db)
+}
+
+async fn repo_lfs<'e>(
+    exec: impl sqlx::Executor<'e, Database = sqlx::Postgres>,
+    repo: &RepoId,
+) -> Result<i64> {
+    sqlx::query_scalar("SELECT COALESCE(SUM(size), 0)::bigint FROM lfs_objects WHERE repo = $1")
+        .bind(repo.as_str())
+        .fetch_one(exec)
+        .await
+        .map_err(db)
 }
 
 fn branch_from(row: &PgRow) -> Result<Branch> {
@@ -1992,7 +2015,21 @@ impl MetadataStore for PgMetadataStore {
         tx.commit().await.map_err(db)
     }
 
-    async fn record_lfs_object(&self, repo: &RepoId, object: &LfsObject) -> Result<bool> {
+    async fn record_lfs_object(
+        &self,
+        repo: &RepoId,
+        object: &LfsObject,
+        cap: Option<StorageCap>,
+    ) -> Result<bool> {
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        if let Some(cap) = &cap {
+            // Same lock as a capped check-in, so the usage read below cannot go stale.
+            sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+                .bind(format!("pyn:storage:{}", cap.owner))
+                .execute(&mut *tx)
+                .await
+                .map_err(db)?;
+        }
         let inserted = sqlx::query(
             "INSERT INTO lfs_objects (repo, oid, size, object, created_at, created_by)
              VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING",
@@ -2003,10 +2040,38 @@ impl MetadataStore for PgMetadataStore {
         .bind(object.object.to_hex())
         .bind(object.created_at)
         .bind(object.created_by.as_str())
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(db)?;
-        Ok(inserted.rows_affected() == 1)
+        if inserted.rows_affected() != 1 {
+            return Ok(false);
+        }
+        if let Some(cap) = &cap {
+            if let Some(max) = cap.max_bytes {
+                let total = (owner_stored(&mut tx, &cap.owner).await?
+                    + owner_lfs(&mut tx, &cap.owner).await?) as u64;
+                if total > max {
+                    return Err(PynError::StorageLimitReached {
+                        owner: cap.owner.to_string(),
+                        limit: max,
+                        used: total - object.size,
+                    });
+                }
+            }
+            if let Some(max) = cap.repo_max_bytes {
+                let total =
+                    (repo_stored(&mut tx, repo).await? + repo_lfs(&mut *tx, repo).await?) as u64;
+                if total > max {
+                    return Err(PynError::RepoStorageLimitReached {
+                        repository: cap.repository.clone(),
+                        limit: max,
+                        used: total - object.size,
+                    });
+                }
+            }
+        }
+        tx.commit().await.map_err(db)?;
+        Ok(true)
     }
 
     async fn lfs_object(&self, repo: &RepoId, oid: &str) -> Result<Option<LfsObject>> {
@@ -2031,22 +2096,18 @@ impl MetadataStore for PgMetadataStore {
     }
 
     async fn lfs_bytes(&self, repo: &RepoId) -> Result<u64> {
-        let bytes: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(SUM(size), 0)::bigint FROM lfs_objects WHERE repo = $1",
-        )
-        .bind(repo.as_str())
-        .fetch_one(&self.pool)
-        .await
-        .map_err(db)?;
-        Ok(bytes as u64)
+        Ok(repo_lfs(&self.pool, repo).await? as u64)
     }
 
     async fn object_is_recorded(&self, id: &ObjectId) -> Result<bool> {
-        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM repo_objects WHERE id = $1)")
-            .bind(id.to_hex())
-            .fetch_one(&self.pool)
-            .await
-            .map_err(db)
+        sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM repo_objects WHERE id = $1)
+                 OR EXISTS (SELECT 1 FROM lfs_objects WHERE object = $1)",
+        )
+        .bind(id.to_hex())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(db)
     }
 
     async fn record_assembled(
@@ -2526,10 +2587,12 @@ impl MetadataStore for PgMetadataStore {
                 .await
                 .map_err(db)?;
         let stored_bytes = owner_stored(&mut tx, owner).await?;
+        let lfs_bytes = owner_lfs(&mut tx, owner).await?;
         Ok(Usage {
             repositories: repositories as u64,
             members: None,
             stored_bytes: stored_bytes as u64,
+            lfs_bytes: lfs_bytes as u64,
         })
     }
 
@@ -2546,6 +2609,7 @@ impl MetadataStore for PgMetadataStore {
         .map_err(db)?;
         Ok(RepoUsage {
             stored_bytes: row.get::<i64, _>("bytes") as u64,
+            lfs_bytes: repo_lfs(&self.pool, repo).await? as u64,
             files: row.get::<i64, _>("files") as u64,
             revisions: row.get::<i64, _>("revisions") as u64,
         })

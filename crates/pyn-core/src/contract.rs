@@ -3343,6 +3343,10 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; an_lfs_oid_must_be_lowercase_sha256_hex);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_frozen_owner_cannot_upload_an_lfs_object);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; lfs_objects_count_against_the_storage_caps);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; lfs_bytes_are_reported_and_count_against_the_owner_cap_across_repositories);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; racing_lfs_uploads_and_checkins_cannot_exceed_the_owner_cap);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; racing_lfs_uploads_cannot_exceed_the_repository_cap);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; lfs_objects_stay_out_of_the_unreferenced_upload_ceiling);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_text_merge_over_the_cost_bound_is_left_to_a_person);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; upload_reservations_hold_the_budget_until_released_or_expired);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; parallel_uploads_never_pass_the_unreferenced_budget);
@@ -4164,8 +4168,9 @@ impl MetadataStore for HookedMeta {
         &self,
         repo: &RepoId,
         object: &crate::LfsObject,
+        cap: Option<crate::StorageCap>,
     ) -> crate::Result<bool> {
-        self.inner.record_lfs_object(repo, object).await
+        self.inner.record_lfs_object(repo, object, cap).await
     }
 
     async fn lfs_object(

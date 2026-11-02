@@ -131,7 +131,7 @@ impl RepoService {
         self.stored_size(id).await
     }
 
-    async fn stored_size(&self, id: &ObjectId) -> Result<u64> {
+    pub(super) async fn stored_size(&self, id: &ObjectId) -> Result<u64> {
         self.objects
             .size(id)
             .await?
@@ -177,14 +177,14 @@ impl Drop for ReservationGuard {
 }
 
 /// Removes objects an upload newly created unless kept or recorded by a repository; also runs when cancelled.
-struct Rollback {
+pub(super) struct Rollback {
     meta: Arc<dyn MetadataStore>,
     objects: Arc<dyn ObjectStore>,
     created: Vec<ObjectId>,
 }
 
 impl Rollback {
-    fn new(
+    pub(super) fn new(
         meta: Arc<dyn MetadataStore>,
         objects: Arc<dyn ObjectStore>,
         created: Vec<ObjectId>,
@@ -196,7 +196,7 @@ impl Rollback {
         }
     }
 
-    fn keep(&mut self) {
+    pub(super) fn keep(&mut self) {
         self.created.clear();
     }
 

@@ -120,6 +120,7 @@ pub(crate) async fn owner_usage(
             repositories: report.usage.repositories,
             members: report.usage.members,
             stored_bytes: report.usage.stored_bytes,
+            lfs_bytes: report.usage.lfs_bytes,
         },
         repositories: report
             .repositories
@@ -134,6 +135,7 @@ fn repo_usage_dto(record: &pyn_core::RepoRecord, used: pyn_core::RepoUsage) -> a
         repository: record.address(),
         repo_id: record.id.to_string(),
         stored_bytes: used.stored_bytes,
+        lfs_bytes: used.lfs_bytes,
         files: used.files,
         revisions: used.revisions,
         storage_cap: record.storage_cap,
@@ -169,6 +171,7 @@ pub(crate) async fn repo_usage_breakdown(
         repository: open.record.address(),
         repo_id: open.record.id.to_string(),
         stored_bytes: used.stored_bytes,
+        lfs_bytes: used.lfs_bytes,
         storage_cap: open.record.storage_cap,
         folders: breakdown
             .folders

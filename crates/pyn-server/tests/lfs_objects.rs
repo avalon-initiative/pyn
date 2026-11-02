@@ -540,6 +540,23 @@ async fn uploading_an_object_again_changes_nothing() {
 }
 
 #[tokio::test]
+async fn the_usage_reports_show_lfs_bytes_apart_from_revisions() {
+    let w = world().await;
+    assert_eq!(
+        put(&w, &w.alice, b"twelve bytes").await.status,
+        StatusCode::OK
+    );
+    let (status, body) = call(&w.app, "GET", "/v1/repos/alice/game/usage", &w.alice, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let used: api::RepoUsage = serde_json::from_slice(&body).unwrap();
+    assert_eq!((used.stored_bytes, used.lfs_bytes), (0, 12));
+    let (status, body) = call(&w.app, "GET", "/v1/owners/alice/usage", &w.alice, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let owner: api::OwnerUsage = serde_json::from_slice(&body).unwrap();
+    assert_eq!(owner.usage.lfs_bytes, 12);
+}
+
+#[tokio::test]
 async fn verify_confirms_what_was_stored() {
     let w = world().await;
     let bytes = b"verify me";

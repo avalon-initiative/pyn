@@ -87,6 +87,28 @@ impl State {
             .sum()
     }
 
+    fn lfs_by(&self, owner: &UserId) -> u64 {
+        self.lfs
+            .iter()
+            .filter(|((r, _), _)| self.repos.get(r).is_some_and(|rec| &rec.owner == owner))
+            .map(|(_, o)| o.size)
+            .sum()
+    }
+
+    fn lfs_in(&self, repo: &RepoId) -> u64 {
+        self.lfs
+            .iter()
+            .filter(|((r, _), _)| r == repo)
+            .map(|(_, o)| o.size)
+            .sum()
+    }
+
+    fn names_lfs_object(&self, repo: &RepoId, id: &ObjectId) -> bool {
+        self.lfs
+            .iter()
+            .any(|((r, _), o)| r == repo && &o.object == id)
+    }
+
     fn names_content(&self, repo: &RepoId, id: &ObjectId) -> bool {
         self.revisions
             .iter()
@@ -101,7 +123,10 @@ impl State {
         self.uploads
             .iter()
             .filter(|((r, id), (_, assembled))| {
-                r == repo && !assembled && !self.names_content(repo, id)
+                r == repo
+                    && !assembled
+                    && !self.names_content(repo, id)
+                    && !self.names_lfs_object(repo, id)
             })
             .map(|(_, (size, _))| size)
             .sum()
@@ -533,7 +558,7 @@ impl State {
             && !st.sizes.contains_key(&size_key)
         {
             if let Some(max) = cap.max_bytes {
-                let used = st.stored_by(&cap.owner);
+                let used = st.stored_by(&cap.owner) + st.lfs_by(&cap.owner);
                 if used + revision.size > max {
                     return Err(PynError::StorageLimitReached {
                         owner: cap.owner.to_string(),
@@ -543,7 +568,7 @@ impl State {
                 }
             }
             if let Some(max) = cap.repo_max_bytes {
-                let used = st.stored_in(repo);
+                let used = st.stored_in(repo) + st.lfs_in(repo);
                 if used + revision.size > max {
                     return Err(PynError::RepoStorageLimitReached {
                         repository: cap.repository.clone(),
@@ -1235,15 +1260,41 @@ impl MetadataStore for MemoryMetadataStore {
         Ok(())
     }
 
-    async fn record_lfs_object(&self, repo: &RepoId, object: &LfsObject) -> Result<bool> {
+    async fn record_lfs_object(
+        &self,
+        repo: &RepoId,
+        object: &LfsObject,
+        cap: Option<StorageCap>,
+    ) -> Result<bool> {
         let mut st = self.state.lock().unwrap();
-        match st.lfs.entry((repo.clone(), object.oid.clone())) {
-            std::collections::hash_map::Entry::Occupied(_) => Ok(false),
-            std::collections::hash_map::Entry::Vacant(v) => {
-                v.insert(object.clone());
-                Ok(true)
+        let key = (repo.clone(), object.oid.clone());
+        if st.lfs.contains_key(&key) {
+            return Ok(false);
+        }
+        if let Some(cap) = &cap {
+            if let Some(max) = cap.max_bytes {
+                let used = st.stored_by(&cap.owner) + st.lfs_by(&cap.owner);
+                if used.saturating_add(object.size) > max {
+                    return Err(PynError::StorageLimitReached {
+                        owner: cap.owner.to_string(),
+                        limit: max,
+                        used,
+                    });
+                }
+            }
+            if let Some(max) = cap.repo_max_bytes {
+                let used = st.stored_in(repo) + st.lfs_in(repo);
+                if used.saturating_add(object.size) > max {
+                    return Err(PynError::RepoStorageLimitReached {
+                        repository: cap.repository.clone(),
+                        limit: max,
+                        used,
+                    });
+                }
             }
         }
+        st.lfs.insert(key, object.clone());
+        Ok(true)
     }
 
     async fn lfs_object(&self, repo: &RepoId, oid: &str) -> Result<Option<LfsObject>> {
@@ -1252,18 +1303,12 @@ impl MetadataStore for MemoryMetadataStore {
     }
 
     async fn lfs_bytes(&self, repo: &RepoId) -> Result<u64> {
-        let st = self.state.lock().unwrap();
-        Ok(st
-            .lfs
-            .iter()
-            .filter(|((r, _), _)| r == repo)
-            .map(|(_, o)| o.size)
-            .sum())
+        Ok(self.state.lock().unwrap().lfs_in(repo))
     }
 
     async fn object_is_recorded(&self, id: &ObjectId) -> Result<bool> {
         let st = self.state.lock().unwrap();
-        Ok(st.uploads.keys().any(|(_, o)| o == id))
+        Ok(st.uploads.keys().any(|(_, o)| o == id) || st.lfs.values().any(|o| &o.object == id))
     }
 
     async fn record_assembled(
@@ -1659,6 +1704,7 @@ impl MetadataStore for MemoryMetadataStore {
             repositories: st.repos.values().filter(|r| &r.owner == owner).count() as u64,
             members: None,
             stored_bytes: st.stored_by(owner),
+            lfs_bytes: st.lfs_by(owner),
         })
     }
 
@@ -1707,6 +1753,7 @@ impl MetadataStore for MemoryMetadataStore {
                 .filter(|((r, _), _)| r == repo)
                 .map(|(_, size)| size)
                 .sum(),
+            lfs_bytes: st.lfs_in(repo),
             files: in_repo().count() as u64,
             revisions: in_repo().map(|(_, revs)| revs.len() as u64).sum(),
         })

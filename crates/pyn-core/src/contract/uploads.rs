@@ -968,8 +968,9 @@ impl MetadataStore for BudgetGateStore {
         &self,
         repo: &RepoId,
         object: &crate::LfsObject,
+        cap: Option<crate::StorageCap>,
     ) -> crate::Result<bool> {
-        self.inner.record_lfs_object(repo, object).await
+        self.inner.record_lfs_object(repo, object, cap).await
     }
 
     async fn lfs_object(

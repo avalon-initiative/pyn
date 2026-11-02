@@ -10,6 +10,7 @@ use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, ReadBuf};
 
 use super::RepoService;
+use super::uploads::Rollback;
 use crate::error::{PynError, Result};
 use crate::object::{Keying, ObjectReader};
 use crate::types::{LfsObject, UserId};
@@ -67,15 +68,15 @@ impl RepoService {
     }
 
     /// Whether `size` more bytes may be uploaded: the owner is not frozen and neither the owner's nor the
-    /// repository's storage cap would pass, counting the repository's LFS objects.
+    /// repository's storage cap would pass, counting revisions and LFS objects. An early check; the record is atomic.
     pub async fn lfs_admit(&self, size: u64) -> Result<()> {
         self.ensure_writable().await?;
         let Some(cap) = self.storage_cap().await? else {
             return Ok(());
         };
-        let held = self.meta.lfs_bytes(&self.repo).await?;
         if let Some(limit) = cap.repo_max_bytes {
-            let used = self.meta.repo_usage(&self.repo).await?.stored_bytes + held;
+            let used = self.meta.repo_usage(&self.repo).await?;
+            let used = used.stored_bytes + used.lfs_bytes;
             if used.saturating_add(size) > limit {
                 return Err(PynError::RepoStorageLimitReached {
                     repository: cap.repository,
@@ -85,7 +86,8 @@ impl RepoService {
             }
         }
         if let Some(limit) = cap.max_bytes {
-            let used = self.meta.owner_usage(&cap.owner).await?.stored_bytes + held;
+            let used = self.meta.owner_usage(&cap.owner).await?;
+            let used = used.stored_bytes + used.lfs_bytes;
             if used.saturating_add(size) > limit {
                 return Err(PynError::StorageLimitReached {
                     owner: cap.owner.to_string(),
@@ -131,10 +133,11 @@ impl RepoService {
             mismatch: mismatch.clone(),
         };
         let stored = self
-            .upload(Box::pin(reader), Keying::Blob { len: size }, max, size)
+            .objects
+            .put_stream_tracked(Box::pin(reader), Keying::Blob { len: size }, max)
             .await;
-        let object = match stored {
-            Ok(id) => id,
+        let stored = match stored {
+            Ok(stored) => stored,
             Err(e) => {
                 let actual = mismatch.lock().unwrap().take();
                 return Err(match actual {
@@ -146,6 +149,19 @@ impl RepoService {
                 });
             }
         };
+        let mut rollback = Rollback::new(
+            self.meta.clone(),
+            self.objects.clone(),
+            stored.created.clone(),
+        );
+        let object = stored.id;
+        let have = self.stored_size(&object).await?;
+        if have > size {
+            return Err(PynError::LengthMismatch {
+                declared: size,
+                actual: have,
+            });
+        }
         let record = LfsObject {
             oid: oid.to_string(),
             size,
@@ -153,7 +169,12 @@ impl RepoService {
             created_at: self.clock.now(),
             created_by: by.clone(),
         };
-        let fresh = self.meta.record_lfs_object(&self.repo, &record).await?;
+        let cap = self.storage_cap().await?;
+        let fresh = self
+            .meta
+            .record_lfs_object(&self.repo, &record, cap)
+            .await?;
+        rollback.keep();
         Ok((record, fresh))
     }
 

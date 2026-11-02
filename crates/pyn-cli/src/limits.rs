@@ -214,10 +214,17 @@ pub fn usage(api: &Api, owner: Option<String>) -> Result<()> {
         rows.push(vec![members.to_string(), cell(l.members), "members".into()]);
     }
     rows.push(vec![
-        bytes(u.stored_bytes),
+        bytes(u.stored_bytes + u.lfs_bytes),
         size_cell(l.storage_bytes),
         "storage".into(),
     ]);
+    if u.lfs_bytes > 0 {
+        rows.push(vec![
+            bytes(u.lfs_bytes),
+            "-".into(),
+            "  of which LFS".into(),
+        ]);
+    }
     println!("{}", table::render(&["USED", "LIMIT", "RESOURCE"], &rows));
     if !report.repositories.is_empty() {
         println!();
@@ -232,6 +239,7 @@ fn repo_table(repos: &[api::RepoUsage]) -> String {
         .map(|r| {
             vec![
                 bytes(r.stored_bytes),
+                bytes(r.lfs_bytes),
                 size_cell(r.storage_cap),
                 r.files.to_string(),
                 r.revisions.to_string(),
@@ -240,7 +248,7 @@ fn repo_table(repos: &[api::RepoUsage]) -> String {
         })
         .collect();
     table::render(
-        &["STORED", "CAP", "FILES", "REVISIONS", "REPOSITORY"],
+        &["STORED", "LFS", "CAP", "FILES", "REVISIONS", "REPOSITORY"],
         &rows,
     )
 }
