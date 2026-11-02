@@ -2431,7 +2431,7 @@ fn run(cli: Cli) -> Result<()> {
                 .and_then(|s| s.get(&path).map(|k| k.revision));
             let base = match base {
                 Some(b) => Some(b),
-                None => local_base(&backend, ws.as_ref(), &path)?.or(known),
+                None => local_base(&backend, ws.as_ref(), &path)?.unwrap_or(known),
             };
             let body = api::CheckoutRequest {
                 path: path.clone(),
@@ -4017,7 +4017,12 @@ fn token_command(api: &Api, cmd: TokenCommand) -> Result<()> {
 
 /// In a `local_store` workspace, the server's head revision of a path a local commit changed: the lock covers
 /// the merge that brings that revision in, so the stale revision the files were last updated at is not the base.
-fn local_base(backend: &PynServer, ws: Option<&Workspace>, path: &str) -> Result<Option<u64>> {
+/// `None` when the path has no unpublished change; `Some(None)` when the server does not have it (no base).
+fn local_base(
+    backend: &PynServer,
+    ws: Option<&Workspace>,
+    path: &str,
+) -> Result<Option<Option<u64>>> {
     let Some(store) = ws.and_then(local_store::LocalStore::open) else {
         return Ok(None);
     };
@@ -4028,16 +4033,20 @@ fn local_base(backend: &PynServer, ws: Option<&Workspace>, path: &str) -> Result
     {
         return Ok(None);
     }
-    Ok(backend
-        .list_files()?
-        .into_iter()
-        .find(|e| e.path == path)
-        .and_then(|e| e.revision))
+    Ok(Some(
+        backend
+            .list_files()?
+            .into_iter()
+            .find(|e| e.path == path)
+            .and_then(|e| e.revision),
+    ))
 }
 
-/// A stale-base refusal in a workspace means the file moved on: say how to catch up.
+/// A stale-base refusal in a workspace means the file moved on: say how to catch up. When the server has no revision
+/// of the path, an update cannot help.
 fn behind_hint(err: anyhow::Error, in_workspace: bool) -> anyhow::Error {
-    if in_workspace && err.to_string().starts_with("stale_base") {
+    let text = err.to_string();
+    if in_workspace && text.starts_with("stale_base") && !text.ends_with("head is none") {
         err.context("the server has a newer revision; run `pyn update` first")
     } else {
         err

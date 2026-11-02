@@ -179,6 +179,12 @@ pub fn status(
         Some(store) => store.unpublished(&crate::branch::name(Some(ws)))?,
         None => Unpublished::default(),
     };
+    let policy = match LocalStore::open(ws) {
+        Some(store) if !unpublished.paths.is_empty() => {
+            store.policy_at_tip(&crate::branch::name(Some(ws)))?
+        }
+        _ => None,
+    };
     let paths: BTreeSet<&String> = entries
         .keys()
         .chain(unpublished.paths.keys())
@@ -324,10 +330,20 @@ pub fn status(
         if notes.is_empty() && lock.is_none() && staged_entry.is_none() {
             continue;
         }
-        let mode = entry.map_or_else(
-            || known.map_or("-", |k| k.mode.as_str()),
-            |e| mode_name(e.mode),
-        );
+        let local_mode = match (&policy, unpublished.paths.get(path)) {
+            (Some(p), Some(Change::Added | Change::Modified))
+                if entry.is_none_or(|e| e.revision.is_none()) =>
+            {
+                Some(mode_name(p.mode_for(path)))
+            }
+            _ => None,
+        };
+        let mode = local_mode.unwrap_or_else(|| {
+            entry.map_or_else(
+                || known.map_or("-", |k| k.mode.as_str()),
+                |e| mode_name(e.mode),
+            )
+        });
         rows.push(vec![
             mode.to_string(),
             known.map_or("-".to_string(), |k| match k.revision {
