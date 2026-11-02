@@ -1068,6 +1068,7 @@ fn fatal_message(error: &anyhow::Error) -> String {
 
 fn main() {
     pyn_gittransport::promisor::install();
+    git_home::lfs_net::install();
     if let Some(name) = subcommand_refused_on_git() {
         eprintln!("{}", unsupported::message_on_git(&name));
         std::process::exit(1);

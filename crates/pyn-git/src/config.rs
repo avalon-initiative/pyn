@@ -51,6 +51,13 @@ impl Config {
         Ok(config)
     }
 
+    /// The entries `keep` accepts, in order.
+    pub fn filtered(&self, keep: impl Fn(&Entry) -> bool) -> Config {
+        Config {
+            entries: self.entries.iter().filter(|e| keep(e)).cloned().collect(),
+        }
+    }
+
     /// Appends `other`, which then takes precedence.
     pub fn extend(&mut self, other: Config) {
         self.entries.extend(other.entries);

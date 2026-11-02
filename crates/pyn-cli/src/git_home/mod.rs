@@ -46,6 +46,7 @@ pub(crate) mod grep_regex;
 mod hooks;
 mod hunk_pick;
 mod init_git;
+pub(crate) mod lfs_net;
 mod log;
 mod log_gate;
 mod log_graph;

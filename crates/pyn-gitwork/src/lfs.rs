@@ -1,12 +1,15 @@
-//! Git LFS pointer files and the local object store (`.git/lfs/objects/<aa>/<bb>/<oid>`), as `filter=lfs` uses
-//! them. Transfers to and from an LFS server are not part of this module.
+//! Git LFS pointer files and the local object store (`<git dir>/lfs/objects/<aa>/<bb>/<oid>`), as `filter=lfs` uses
+//! them. Transfers to and from an LFS server are done by the downloader installed with [`set_downloader`].
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+use pyn_git::Config;
 use sha2::{Digest as _, Sha256};
 
 use crate::error::{Error, Result, io_at};
+use crate::wildmatch::matches as wildmatch;
 
 const VERSION: &str = "https://git-lfs.github.com/spec/v1";
 const LEGACY_VERSIONS: [&str; 2] = [
@@ -19,6 +22,19 @@ const POINTER_LIMIT: usize = 1024;
 pub struct Pointer {
     pub oid: String,
     pub size: u64,
+    pub extensions: Vec<Extension>,
+}
+
+/// An `ext-<priority>-<name> sha256:<oid>` line: the object id before the extension `name` ran.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Extension {
+    pub priority: u8,
+    pub name: String,
+    pub oid: String,
+}
+
+fn is_oid(hex: &str) -> bool {
+    hex.len() == 64 && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 impl Pointer {
@@ -27,15 +43,19 @@ impl Pointer {
         Self {
             oid: sha256_hex(content),
             size: content.len() as u64,
+            extensions: Vec::new(),
         }
     }
 
     pub fn encode(&self) -> Vec<u8> {
-        format!(
-            "version {VERSION}\noid sha256:{}\nsize {}\n",
-            self.oid, self.size
-        )
-        .into_bytes()
+        let mut out = format!("version {VERSION}\n");
+        let mut exts: Vec<&Extension> = self.extensions.iter().collect();
+        exts.sort_by_key(|e| e.priority);
+        for e in exts {
+            out.push_str(&format!("ext-{}-{} sha256:{}\n", e.priority, e.name, e.oid));
+        }
+        out.push_str(&format!("oid sha256:{}\nsize {}\n", self.oid, self.size));
+        out.into_bytes()
     }
 
     /// Parses a pointer file; anything else, including an oversized file, is `None`.
@@ -49,18 +69,28 @@ impl Pointer {
         if version != VERSION && !LEGACY_VERSIONS.contains(&version) {
             return None;
         }
-        let (mut oid, mut size) = (None, None);
+        let (mut oid, mut size, mut extensions) = (None, None, Vec::new());
         for line in lines {
             let (key, value) = line.split_once(' ')?;
             match key {
                 "oid" => {
                     let hex = value.strip_prefix("sha256:")?;
-                    let valid = hex.len() == 64
-                        && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
-                    if !valid {
+                    if !is_oid(hex) {
                         return None;
                     }
                     oid = Some(hex.to_owned());
+                }
+                _ if key.starts_with("ext-") => {
+                    let hex = value.strip_prefix("sha256:").filter(|h| is_oid(h))?;
+                    let (priority, name) = key["ext-".len()..].split_once('-')?;
+                    if priority.len() != 1 || name.is_empty() {
+                        return None;
+                    }
+                    extensions.push(Extension {
+                        priority: priority.parse().ok()?,
+                        name: name.to_owned(),
+                        oid: hex.to_owned(),
+                    });
                 }
                 "size" => {
                     if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
@@ -74,6 +104,7 @@ impl Pointer {
         Some(Self {
             oid: oid?,
             size: size?,
+            extensions,
         })
     }
 }
@@ -85,19 +116,120 @@ pub fn sha256_hex(data: &[u8]) -> String {
         .collect()
 }
 
+/// Where the store lives and which paths are downloaded: `lfs.storage`, `lfs.fetchinclude` and `lfs.fetchexclude`.
+#[derive(Debug, Clone)]
+pub struct Options {
+    dir: PathBuf,
+    include: Vec<String>,
+    exclude: Vec<String>,
+}
+
+impl Options {
+    /// A relative `lfs.storage` is relative to the common directory.
+    pub fn new(common_dir: &Path, config: &Config) -> Self {
+        let dir = match config.get("lfs.storage").filter(|v| !v.is_empty()) {
+            Some(v) => common_dir.join(v),
+            None => common_dir.join("lfs"),
+        };
+        let list = |key: &str| {
+            config
+                .get(key)
+                .unwrap_or("")
+                .split(',')
+                .map(str::trim)
+                .filter(|p| !p.is_empty())
+                .map(str::to_owned)
+                .collect()
+        };
+        Self {
+            dir,
+            include: list("lfs.fetchinclude"),
+            exclude: list("lfs.fetchexclude"),
+        }
+    }
+
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    /// Whether `path` passes `lfs.fetchinclude` (when set) and is not in `lfs.fetchexclude`.
+    pub fn allows(&self, path: &[u8]) -> bool {
+        (self.include.is_empty() || self.include.iter().any(|p| path_matches(p, path)))
+            && !self.exclude.iter().any(|p| path_matches(p, path))
+    }
+}
+
+/// A pattern without a slash matches at any depth; a trailing slash matches everything below the folder.
+fn path_matches(pattern: &str, path: &[u8]) -> bool {
+    let anchored = pattern.starts_with('/');
+    let pattern = pattern.trim_start_matches('/');
+    let folder = pattern.ends_with('/');
+    let pattern = pattern.trim_end_matches('/');
+    let deep = |p: &str| format!("{p}/**");
+    let mut candidates = vec![pattern.to_owned(), deep(pattern)];
+    if !anchored && !pattern.contains('/') {
+        candidates.push(format!("**/{pattern}"));
+        candidates.push(format!("**/{}", deep(pattern)));
+    }
+    candidates
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !folder || i % 2 == 1)
+        .any(|(_, c)| wildmatch(c.as_bytes(), path, true))
+}
+
+/// The keys `.lfsconfig` may set: the LFS settings, never anything that runs a program.
+pub fn lfsconfig_layer(work_tree: &Path) -> Config {
+    let Ok(config) = Config::read(&work_tree.join(".lfsconfig")) else {
+        return Config::default();
+    };
+    config.filtered(|e| {
+        e.section == "lfs"
+            || (e.section == "remote" && (e.key == "lfsurl" || e.key == "lfspushurl"))
+    })
+}
+
+/// What a downloader needs to know about the repository a smudge runs in.
+#[derive(Debug, Clone)]
+pub struct Context {
+    pub common_dir: PathBuf,
+    pub work_tree: Option<PathBuf>,
+    pub options: Options,
+}
+
+/// Fetches the objects into the store; the error text is shown to the user.
+pub type Downloader = fn(&Context, &[Pointer]) -> std::result::Result<(), String>;
+
+static DOWNLOADER: OnceLock<Downloader> = OnceLock::new();
+
+/// Lets a smudge download absent objects through `download`.
+pub fn set_downloader(download: Downloader) {
+    let _ = DOWNLOADER.set(download);
+}
+
 /// The object store under a repository's common directory.
 #[derive(Debug, Clone)]
 pub struct Store {
     dir: PathBuf,
+    context: Context,
 }
 
 static TMP: AtomicU64 = AtomicU64::new(0);
 
 impl Store {
-    pub fn new(common_dir: &Path) -> Self {
+    pub fn new(root: Option<&Path>, common_dir: &Path, options: Options) -> Self {
         Self {
-            dir: common_dir.join("lfs"),
+            dir: options.dir.clone(),
+            context: Context {
+                common_dir: common_dir.to_path_buf(),
+                work_tree: root.map(Path::to_path_buf),
+                options,
+            },
         }
+    }
+
+    pub fn tmp_dir(&self) -> PathBuf {
+        self.dir.join("tmp")
     }
 
     pub fn object_path(&self, oid: &str) -> PathBuf {
@@ -108,14 +240,33 @@ impl Store {
             .join(oid)
     }
 
+    /// Whether the store has any objects directory yet.
+    pub fn exists(&self) -> bool {
+        self.dir.join("objects").is_dir()
+    }
+
+    /// Whether the store holds an object of `pointer`'s size.
+    pub fn has(&self, pointer: &Pointer) -> bool {
+        std::fs::metadata(self.object_path(&pointer.oid)).is_ok_and(|m| m.len() == pointer.size)
+    }
+
+    /// Moves the verified file `from` into the store as `oid`.
+    pub fn adopt(&self, oid: &str, from: &Path) -> Result<()> {
+        let target = self.object_path(oid);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).map_err(io_at(parent))?;
+        }
+        std::fs::rename(from, &target).map_err(io_at(&target))
+    }
+
     /// Stores `content` unless an object of that size is already there.
     pub fn put(&self, content: &[u8]) -> Result<Pointer> {
         let pointer = Pointer::of(content);
         let target = self.object_path(&pointer.oid);
-        if std::fs::metadata(&target).is_ok_and(|m| m.len() == pointer.size) {
+        if self.has(&pointer) {
             return Ok(pointer);
         }
-        let tmp_dir = self.dir.join("tmp");
+        let tmp_dir = self.tmp_dir();
         std::fs::create_dir_all(&tmp_dir).map_err(io_at(&tmp_dir))?;
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent).map_err(io_at(parent))?;
@@ -155,16 +306,29 @@ impl Store {
         Ok(self.put(data)?.encode())
     }
 
-    /// The content a pointer file stands for; the pointer itself (with a warning) when the object is not stored.
-    pub fn smudge(&self, data: &[u8]) -> Result<Vec<u8>> {
+    /// The content a pointer file stands for, downloading it first when `path` is allowed and the store lacks it;
+    /// the pointer itself (with a warning) when the object cannot be had.
+    pub fn smudge(&self, path: &[u8], data: &[u8]) -> Result<Vec<u8>> {
         let skip = std::env::var("GIT_LFS_SKIP_SMUDGE").is_ok_and(|v| v == "1" || v == "true");
         let Some(pointer) = Pointer::parse(data).filter(|_| !skip) else {
             return Ok(data.to_vec());
         };
+        if !pointer.extensions.is_empty() {
+            warn_pointers_kept(Some("the pointer uses extensions, which pyn does not run"));
+            return Ok(data.to_vec());
+        }
+        if !self.has(&pointer)
+            && self.context.options.allows(path)
+            && let Some(download) = DOWNLOADER.get()
+            && let Err(why) = download(&self.context, std::slice::from_ref(&pointer))
+        {
+            warn_pointers_kept(Some(&why));
+            return Ok(data.to_vec());
+        }
         match self.get(&pointer)? {
             Some(content) => Ok(content),
             None => {
-                warn_pointers_kept();
+                warn_pointers_kept(None);
                 Ok(data.to_vec())
             }
         }
@@ -174,10 +338,11 @@ impl Store {
 static WARNED: AtomicBool = AtomicBool::new(false);
 
 /// Prints, once per process, that pointer files stay in the work tree because their objects are not stored.
-pub fn warn_pointers_kept() {
+pub fn warn_pointers_kept(why: Option<&str>) {
     if !WARNED.swap(true, Ordering::Relaxed) {
+        let why = why.map_or(String::new(), |w| format!(": {w}"));
         eprintln!(
-            "warning: some Git LFS objects are not in the local store (.git/lfs/objects) and pyn cannot download them yet; \
+            "warning: some Git LFS objects are not in the local store and were not downloaded{why}; \
              their pointer files are kept as they are"
         );
     }
@@ -218,10 +383,14 @@ mod tests {
     #[test]
     fn store_round_trips_and_detects_corruption() {
         let dir = tempfile::tempdir().unwrap();
-        let store = Store::new(dir.path());
+        let store = Store::new(
+            None,
+            dir.path(),
+            Options::new(dir.path(), &Config::default()),
+        );
         let pointer_file = store.clean(b"payload").unwrap();
         assert_eq!(store.clean(&pointer_file).unwrap(), pointer_file);
-        assert_eq!(store.smudge(&pointer_file).unwrap(), b"payload");
+        assert_eq!(store.smudge(b"f", &pointer_file).unwrap(), b"payload");
         let p = Pointer::parse(&pointer_file).unwrap();
         let path = store.object_path(&p.oid);
         assert!(path.ends_with(format!(
@@ -231,7 +400,68 @@ mod tests {
             p.oid
         )));
         std::fs::write(&path, b"PAYLOAD").unwrap();
-        assert!(store.smudge(&pointer_file).is_err());
+        assert!(store.smudge(b"f", &pointer_file).is_err());
         assert_eq!(store.clean(b"").unwrap(), b"");
+    }
+
+    #[test]
+    fn extension_lines_round_trip_in_order() {
+        let oid = "b".repeat(64);
+        let text = format!(
+            "version {VERSION}\next-0-foo sha256:{0}\next-1-bar sha256:{0}\noid sha256:{oid}\nsize 9\n",
+            "a".repeat(64)
+        );
+        let p = Pointer::parse(text.as_bytes()).unwrap();
+        assert_eq!(p.extensions.len(), 2);
+        assert_eq!(p.extensions[1].name, "bar");
+        assert_eq!(p.encode(), text.as_bytes());
+        let bad = text.replace("ext-1-bar sha256:", "ext-1-bar md5:");
+        assert!(Pointer::parse(bad.as_bytes()).is_none());
+        assert!(Pointer::parse(text.replace("ext-1-", "ext-x-").as_bytes()).is_none());
+    }
+
+    fn options(config: &str) -> Options {
+        Options::new(Path::new("/g"), &Config::parse(config.as_bytes()).unwrap())
+    }
+
+    #[test]
+    fn storage_and_fetch_filters_come_from_config() {
+        assert_eq!(options("").dir(), Path::new("/g/lfs"));
+        assert_eq!(
+            options("[lfs]\n\tstorage = s/x\n").dir(),
+            Path::new("/g/s/x")
+        );
+        assert_eq!(
+            options("[lfs]\n\tstorage = /abs\n").dir(),
+            Path::new("/abs")
+        );
+        assert!(options("").allows(b"any/file.bin"));
+        let o = options("[lfs]\n\tfetchinclude = assets/, *.psd\n\tfetchexclude = assets/old/\n");
+        assert!(o.allows(b"assets/a.bin"));
+        assert!(o.allows(b"deep/er/x.psd"));
+        assert!(!o.allows(b"assets/old/a.bin"));
+        assert!(!o.allows(b"docs/a.bin"));
+        let o = options("[lfs]\n\tfetchinclude = /top.bin\n");
+        assert!(o.allows(b"top.bin") && !o.allows(b"sub/top.bin"));
+    }
+
+    #[test]
+    fn lfsconfig_keeps_only_lfs_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".lfsconfig"),
+            "[lfs]\n\turl = http://x\n[remote \"o\"]\n\tlfsurl = http://y\n\turl = http://z\n[credential]\n\thelper = evil\n",
+        )
+        .unwrap();
+        let c = lfsconfig_layer(dir.path());
+        assert_eq!(c.get("lfs.url"), Some("http://x"));
+        assert_eq!(c.get("remote.o.lfsurl"), Some("http://y"));
+        assert_eq!(c.get("remote.o.url"), None);
+        assert_eq!(c.get("credential.helper"), None);
+        assert!(
+            lfsconfig_layer(Path::new("/nonexistent"))
+                .entries()
+                .is_empty()
+        );
     }
 }

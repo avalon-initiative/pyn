@@ -2,7 +2,8 @@
 
 A pyn server speaks the Git LFS Locks API and the Batch API with the `basic` transfer adapter (decision #775). Stock
 `git lfs lock`, `unlock` and `locks` work against it, and the locks taken that way are the same locks the pyn CLI and web app
-see. Stock `git lfs push` and `fetch` store and retrieve large files through it. The `tus` adapter is not served.
+see. Stock `git lfs push` and `fetch` store and retrieve large files through it, and so does the pyn CLI's own client on a git
+home (see [Git LFS](git-compatibility.md#git-lfs)). The `tus` adapter is not served.
 
 The routes are not in the generated OpenAPI document: LFS clients send and expect `application/vnd.git-lfs+json`, which the
 generated client contract does not model. This page is their contract.

@@ -14,6 +14,8 @@ pub enum Error {
         "credential field '{0}' contains a control character (newline, carriage return or NUL)"
     )]
     InvalidCredential(String),
+    #[error("{0}")]
+    Lfs(String),
     #[error("i/o error: {0}")]
     Io(#[from] io::Error),
 }

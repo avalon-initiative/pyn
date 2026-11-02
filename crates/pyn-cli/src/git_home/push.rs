@@ -11,11 +11,11 @@ use pyn_gitwire::{PushOptions, ReceivePack, RefStatus, RefUpdate};
 use pyn_gitwork::Head;
 use pyn_object::{Kind, ObjectId};
 
-use super::GitHome;
 use super::push_plan::{
     Entry, Judge, LocalView, PlanError, Reason, Spec, Status, build, glob_map, judge,
     ref_name_matches,
 };
+use super::{GitHome, lfs_net};
 
 /// Update remote refs and the objects they need on a git remote (a git repository only).
 #[derive(Debug, Args)]
@@ -461,7 +461,11 @@ fn peel_commit(git: &GitHome, id: &ObjectId) -> Option<ObjectId> {
 }
 
 /// Commits reachable from `starts`, not entering `stop`.
-fn commits_from(git: &GitHome, starts: &[ObjectId], stop: &HashSet<ObjectId>) -> HashSet<ObjectId> {
+pub(super) fn commits_from(
+    git: &GitHome,
+    starts: &[ObjectId],
+    stop: &HashSet<ObjectId>,
+) -> HashSet<ObjectId> {
     let mut seen = HashSet::new();
     let mut queue: Vec<ObjectId> = starts.to_vec();
     while let Some(id) = queue.pop() {
@@ -914,6 +918,21 @@ fn push_one(
             e.status = Status::Ok;
         }
     } else if !updates.is_empty() {
+        if !args.no_verify {
+            let tips: Vec<ObjectId> = updates
+                .iter()
+                .filter_map(|u| u.new)
+                .filter_map(|id| peel_commit(git, &id))
+                .collect();
+            let remote_tips: Vec<ObjectId> = remote.iter().map(|(_, id)| *id).collect();
+            if let Err(e) =
+                lfs_net::upload_for_push(git, target.name.as_deref(), url, &tips, &remote_tips)
+            {
+                eprintln!("error: {e:#}");
+                fail(&[]);
+                return Ok(true);
+            }
+        }
         if opts.atomic && !rp.capabilities().has("atomic") {
             bail!("the receiving end does not support --atomic push");
         }

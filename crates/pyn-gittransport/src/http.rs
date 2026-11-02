@@ -64,7 +64,7 @@ pub struct HttpTransport {
 
 impl HttpTransport {
     pub fn new(url: Url, config: &Config, env: &Env, prompt: Box<dyn Prompt>) -> CrateResult<Self> {
-        let client = build_client(config, env, &url)?;
+        let client = build_client(config, env, &url, Policy::none())?;
         let extra_headers = scoped_values(config, "http", "extraheader", &url)
             .into_iter()
             .map(|h| {
@@ -112,9 +112,14 @@ impl HttpTransport {
     }
 }
 
-fn build_client(config: &Config, env: &Env, url: &Url) -> CrateResult<Client> {
+pub(crate) fn build_client(
+    config: &Config,
+    env: &Env,
+    url: &Url,
+    redirects: Policy,
+) -> CrateResult<Client> {
     let mut b = Client::builder()
-        .redirect(Policy::none())
+        .redirect(redirects)
         .user_agent(USER_AGENT)
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(None);
