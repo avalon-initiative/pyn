@@ -444,7 +444,7 @@ fn refspecs(
     )?])
 }
 
-fn peel_commit(git: &GitHome, id: &ObjectId) -> Option<ObjectId> {
+pub(super) fn peel_commit(git: &GitHome, id: &ObjectId) -> Option<ObjectId> {
     let mut current = *id;
     loop {
         let object = git.repo.objects().read(&current).ok()?;

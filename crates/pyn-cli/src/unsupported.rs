@@ -38,6 +38,9 @@ pub fn message(name: &str) -> String {
     } else if name == "submodule" {
         "pyn: 'submodule' manages a git repository's nested repositories, and this is not one; see docs/concepts/git-compatibility.md."
             .into()
+    } else if name == "lfs" {
+        "pyn: 'lfs' manages Git LFS in a git repository, and this is not one; see docs/concepts/git-compatibility.md."
+            .into()
     } else if name == "blame" || name == "annotate" {
         format!(
             "pyn: '{name}' reads a git repository's history, and this is not one; see docs/concepts/git-compatibility.md."

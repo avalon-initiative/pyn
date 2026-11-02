@@ -146,6 +146,7 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
         Command::Blame(args) => super::blame::blame(git, cwd, args, false),
         Command::Annotate(args) => super::blame::blame(git, cwd, args, true),
         Command::Reflog(args) => super::reflog::reflog(git, args),
+        Command::Lfs(args) => super::lfs_cmd::lfs(git, args),
         Command::RevParse(args) => super::rev_parse::rev_parse(git, cwd, args),
         Command::LsFiles(args) => super::ls_files::ls_files(git, cwd, args),
         Command::LsTree(args) => super::ls_tree::ls_tree(git, cwd, args),

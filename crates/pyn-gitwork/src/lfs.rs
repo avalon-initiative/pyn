@@ -232,6 +232,40 @@ impl Store {
         self.dir.join("tmp")
     }
 
+    pub fn context(&self) -> &Context {
+        &self.context
+    }
+
+    /// Every stored object as its id and size, in id order.
+    pub fn list(&self) -> Result<Vec<(String, u64)>> {
+        let mut found = Vec::new();
+        let mut stack = vec![self.dir.join("objects")];
+        while let Some(dir) = stack.pop() {
+            let entries = match std::fs::read_dir(&dir) {
+                Ok(e) => e,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(io_at(&dir)(e)),
+            };
+            for entry in entries {
+                let entry = entry.map_err(io_at(&dir))?;
+                let meta = entry.metadata().map_err(io_at(&dir))?;
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if meta.is_dir() {
+                    stack.push(entry.path());
+                } else if is_oid(&name) {
+                    found.push((name, meta.len()));
+                }
+            }
+        }
+        found.sort();
+        Ok(found)
+    }
+
+    pub fn remove(&self, oid: &str) -> Result<()> {
+        let path = self.object_path(oid);
+        std::fs::remove_file(&path).map_err(io_at(&path))
+    }
+
     pub fn object_path(&self, oid: &str) -> PathBuf {
         self.dir
             .join("objects")
