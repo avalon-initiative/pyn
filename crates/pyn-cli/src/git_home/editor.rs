@@ -19,8 +19,10 @@ fn non_empty(value: Option<String>) -> Option<String> {
     value.filter(|v| !v.is_empty())
 }
 
-fn dumb_terminal() -> bool {
-    std::env::var("TERM").map_or(true, |t| t == "dumb")
+/// The default editor needs a terminal on both ends of the session.
+fn no_terminal() -> bool {
+    use std::io::IsTerminal;
+    std::env::var("TERM").map_or(true, |t| t == "dumb") || !std::io::stdin().is_terminal()
 }
 
 /// The pyn `editor` setting: the workspace's, else the user's.
@@ -39,7 +41,7 @@ fn command_for(git: &GitHome, which: Which) -> Result<String> {
 }
 
 /// The editor command: `GIT_EDITOR`, `PYN_EDITOR`, the pyn `editor` setting, `core.editor`, `VISUAL`, `EDITOR`, then
-/// the platform default. A todo list first asks `GIT_SEQUENCE_EDITOR` and `sequence.editor`.
+/// the platform default, refused without a terminal. A todo list first asks `GIT_SEQUENCE_EDITOR` and `sequence.editor`.
 /// `config` answers git configuration keys; a pyn server workspace has none.
 pub(crate) fn command_from(
     which: Which,
@@ -62,9 +64,9 @@ pub(crate) fn command_from(
     {
         return Ok(editor);
     }
-    if dumb_terminal() {
+    if no_terminal() {
         bail!(
-            "Terminal is dumb and no editor is configured; set one with `pyn config set editor <command>` or PYN_EDITOR"
+            "No terminal (TERM is dumb or unset, or stdin is not a terminal) and no editor is configured; pass -m or -F, or set an editor with `pyn config set editor <command>` or PYN_EDITOR"
         );
     }
     Ok(if cfg!(windows) { "notepad" } else { "vi" }.into())

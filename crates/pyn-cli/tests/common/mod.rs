@@ -234,6 +234,36 @@ impl Env {
         cmd.output().unwrap()
     }
 
+    /// Runs the CLI as `user` with an open pipe as standard input that never gets data or end of file;
+    /// `None` when it is still running after `limit`.
+    pub fn run_open_stdin(
+        &self,
+        cwd: &Path,
+        user: &str,
+        args: &[&str],
+        vars: &[(&str, &str)],
+        limit: std::time::Duration,
+    ) -> Option<Output> {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_pyn"));
+        cmd.args(args)
+            .current_dir(cwd)
+            .env("PYN_SERVER", &self.url)
+            .env("PYN_USER", user)
+            .env("PYN_CONFIG_DIR", self.config.path())
+            .env("TZ", "UTC")
+            .env_remove("PYN_TOKEN")
+            .env_remove("PYN_DIR")
+            .env_remove("GIT_EDITOR")
+            .env_remove("PYN_EDITOR")
+            .env_remove("VISUAL")
+            .env_remove("EDITOR")
+            .envs(vars.iter().copied());
+        if let Some(repo) = self.default_repo {
+            cmd.env("PYN_REPO", repo);
+        }
+        spawn_with_open_stdin(cmd, limit)
+    }
+
     /// Runs the CLI as `user` with `input` on standard input.
     pub fn run_stdin(&self, cwd: &Path, user: &str, args: &[&str], input: &str) -> Output {
         use std::io::Write;
@@ -353,4 +383,26 @@ pub fn cell_rows(out: &str) -> Vec<Vec<String>> {
                 .collect()
         })
         .collect()
+}
+
+/// Runs `cmd` with an open pipe as standard input and kills it after `limit`; `None` on a timeout.
+pub fn spawn_with_open_stdin(mut cmd: Command, limit: std::time::Duration) -> Option<Output> {
+    use std::process::Stdio;
+    let mut child = cmd
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let _stdin = child.stdin.take();
+    let start = std::time::Instant::now();
+    while child.try_wait().unwrap().is_none() {
+        if start.elapsed() > limit {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    Some(child.wait_with_output().unwrap())
 }
