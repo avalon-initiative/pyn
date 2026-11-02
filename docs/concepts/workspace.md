@@ -332,7 +332,9 @@ With the store on, `add`, `commit`, `status` and `branch` work against the store
 - `pyn tag [<name> [<commit>]]`, `-a`/`-m`, `-f`, `-d` and `-l` keep tags as refs in the store, and `pyn show` and `pyn diff` take a tag
   name for a commit. Tags are local only: they are never pushed (the server has no tags), so another clone does not see them.
 - `pyn lock <path>` for a path a local commit changed takes the server's head revision as the base, so the lock the pull hint
-  asks for works after another person pushed a newer revision of it; `pyn pull` then keeps your version.
+  asks for works after another person pushed a newer revision of it; `pyn pull` then keeps your version. A path that
+  exists only in a local commit (the server has no revision of it) is locked with no base, and `pyn status` shows the mode
+  the policy gives it, so a new path under an exclusive rule is `exclusive` and `pyn lock <path>` then `pyn push` works.
 
 Unchanged by the store: `pyn commit <path> --file ... [--base ...]` and `pyn merge` still publish straight to the
 server, and the server stays the only authority over commits, locks and policy.

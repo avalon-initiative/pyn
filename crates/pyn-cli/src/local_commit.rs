@@ -90,6 +90,20 @@ impl LocalStore {
         self.published_or_base(branch)
     }
 
+    /// The policy file at the tip of the local branch; none when the file does not parse.
+    pub(crate) fn policy_at_tip(&self, branch: &str) -> Result<Option<crate::policy::Policy>> {
+        let tree = self.tree_of(self.tip(branch)?)?;
+        let files = self.repo().flatten(tree.as_ref(), &Pathspec::default())?;
+        Ok(match files.get(crate::policy::POLICY_PATH.as_bytes()) {
+            Some(e) => self
+                .repo()
+                .blob(&e.id)
+                .ok()
+                .and_then(|b| crate::policy::Policy::parse(&String::from_utf8_lossy(&b))),
+            None => Some(crate::policy::Policy::none()),
+        })
+    }
+
     /// Points the local branch at `to`, if it still is at `from`.
     pub(crate) fn move_tip(&self, branch: &str, from: ObjectId, to: ObjectId) -> Result<()> {
         self.repo()

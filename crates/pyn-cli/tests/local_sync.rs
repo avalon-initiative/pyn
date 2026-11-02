@@ -160,6 +160,41 @@ fn an_exclusive_path_needs_a_live_lock_when_pushed() {
 }
 
 #[test]
+fn a_new_exclusive_path_in_a_local_commit_shows_exclusive_and_locks_with_no_base() {
+    let (env, ws) = seeded();
+    std::fs::create_dir_all(ws.join("Content")).unwrap();
+    std::fs::write(ws.join("Content/fresh.uasset"), "x").unwrap();
+    env.ok(&ws, "alice", &["add", "Content/fresh.uasset"]);
+    env.ok(&ws, "alice", &["commit", "-m", "fresh"]);
+    let status = env.ok(&ws, "alice", &["status"]);
+    let row = status.lines().find(|l| l.contains("fresh.uasset")).unwrap();
+    assert!(row.starts_with("exclusive"), "{status}");
+
+    let err = env.fails(&ws, "alice", &["push"]);
+    assert!(err.contains("lock required"), "{err}");
+    let out = env.ok(&ws, "alice", &["lock", "Content/fresh.uasset"]);
+    assert!(out.contains("locked Content/fresh.uasset"), "{out}");
+    env.ok(&ws, "alice", &["push"]);
+    assert_eq!(
+        std::fs::read_to_string(clone_with(&env, "other", &[]).join("Content/fresh.uasset"))
+            .unwrap(),
+        "x"
+    );
+}
+
+#[test]
+fn a_stale_base_on_a_path_the_server_lacks_does_not_suggest_update() {
+    let (env, ws) = seeded();
+    let err = env.fails(
+        &ws,
+        "alice",
+        &["lock", "Content/none.uasset", "--base", "3"],
+    );
+    assert!(err.contains("stale_base"), "{err}");
+    assert!(!err.contains("pyn update"), "{err}");
+}
+
+#[test]
 fn a_lapsed_lease_is_refused_like_no_lock() {
     use pyn_core::{MetadataStore, RepoId, RepoPath, UserId};
     let (env, ws) = seeded();
