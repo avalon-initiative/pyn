@@ -55,7 +55,7 @@ services:
     read_only: true
     tmpfs:
       - /tmp
-      - /etc/nginx/conf.d
+      - /etc/nginx/conf.d:uid=101,gid=101
     cap_drop: [ALL]
     security_opt:
       - no-new-privileges:true
