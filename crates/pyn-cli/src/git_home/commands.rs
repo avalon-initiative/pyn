@@ -331,9 +331,12 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
         }
         Command::Update { .. } => refuse("update"),
         Command::Get { .. } => refuse("get"),
-        Command::Locks { .. } => server_only("locks"),
-        Command::Lock { .. } => server_only("lock"),
-        Command::Unlock { .. } => server_only("unlock"),
+        Command::Locks { mine } => super::lfs_lock::locks(git, mine),
+        Command::Lock { base: Some(_), .. } => {
+            bail!("`pyn lock --base` compares revisions, which a git repository does not have")
+        }
+        Command::Lock { path, .. } => super::lfs_lock::lock(git, cwd, &path),
+        Command::Unlock { path, force, .. } => super::lfs_lock::unlock(git, cwd, &path, force),
         Command::Policy(_) => server_only("policy"),
         Command::Audit { .. } => server_only("audit"),
         Command::Verify { .. } => server_only("verify"),

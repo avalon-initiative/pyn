@@ -93,6 +93,9 @@ impl GitHome {
         stdin: Option<&[u8]>,
         env: &[(&str, String)],
     ) -> Result<Option<i32>> {
+        if matches!(name, "post-checkout" | "post-merge") {
+            super::lfs_lock::sync_readonly(self);
+        }
         let Some(path) = self.find_hook(name) else {
             return Ok(None);
         };

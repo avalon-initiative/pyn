@@ -24,7 +24,7 @@ fn download(ctx: &Context, pointers: &[Pointer]) -> std::result::Result<(), Stri
 }
 
 /// `.lfsconfig` (lowest), the user's configuration, then the repository's.
-fn layered(env: &Env, work_tree: Option<&Path>, repo: &Config) -> Result<Config> {
+pub(super) fn layered(env: &Env, work_tree: Option<&Path>, repo: &Config) -> Result<Config> {
     let mut config = work_tree.map(lfsconfig_layer).unwrap_or_default();
     config.extend(user_config(env)?);
     config.extend(repo.clone());
@@ -32,7 +32,7 @@ fn layered(env: &Env, work_tree: Option<&Path>, repo: &Config) -> Result<Config>
 }
 
 /// `origin`, else the only remote.
-fn default_remote(config: &Config) -> Option<String> {
+pub(super) fn default_remote(config: &Config) -> Option<String> {
     if Remote::read(config, "origin").is_some() {
         return Some("origin".into());
     }
@@ -42,7 +42,7 @@ fn default_remote(config: &Config) -> Option<String> {
     }
 }
 
-fn client(
+pub(super) fn client(
     env: &Env,
     config: &Config,
     remote: Option<&str>,

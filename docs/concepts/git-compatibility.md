@@ -827,7 +827,7 @@ No git equivalent; these keep their own names and are never aliased to a git com
 
 | Command | What it does |
 | --- | --- |
-| `pyn lock <path> [--base <rev>]` | Take the leased lock on an exclusive file. |
+| `pyn lock <path> [--base <rev>]` | Take the leased lock on an exclusive file. On a git home it takes the Git LFS lock, see [Git LFS](#git-lfs). |
 | `pyn unlock <path> [--force --reason <text>]` | Give a lock up without committing, or remove another user's (needs `force_unlock`). |
 | `pyn locks [--mine]` | List live locks in the repository, or yours everywhere. |
 | `pyn policy preview` | Show which paths would change mode, which locks would be released and which branch versions would be stranded, if a policy file were committed. |
@@ -1090,7 +1090,8 @@ quotes them (`core.quotePath`), and left as they are with `-z`.
 | `format-patch`, `apply`, `am` | See [Patches](#patches). |
 | `init` | See above. `pyn init` starts a pyn repository; `pyn init-git` starts a git one. |
 | `login`, `logout`, `register`, `password`, `key`, `token`, `user`, `org`, `team`, `repo`, `usage`, `setup`, `admin`, `whoami`, `member`, `role`, `invite` | Run as anywhere else; see [Refused commands](#refused-commands). |
-| `lock`, `unlock`, `locks`, `policy`, `audit`, `verify`, `summary` | Refuse; see [Refused commands](#refused-commands). |
+| `lock`, `unlock`, `locks` | The Git LFS Locks API client, see [Git LFS](#git-lfs). |
+| `policy`, `audit`, `verify`, `summary` | Refuse; see [Refused commands](#refused-commands). |
 | `config`, `clone` | Unchanged: they do not depend on the repository's home. A clone from a pyn server made inside a git repository is its own pyn workspace; a clone from a git URL is its own git repository. |
 
 Revisions are `HEAD`, `@`, a branch, a tag (annotated tags are followed to their commit), a full or abbreviated id of 4 or
@@ -2946,14 +2947,43 @@ upload without a git push, to recover after `push --no-verify` or `GIT_LFS_SKIP_
 Not built: `status`, `migrate`, `env`, `install` (there are no hooks or filters to install), `fsck`, `--all` and `--recent`
 on `fetch` and `push`, and per-path arguments on `ls-files`.
 
+**Locking.** `lock`, `unlock` and `locks` call the endpoint's Locks API (`POST /locks`, `GET /locks`, `POST /locks/verify`,
+`POST /locks/{id}/unlock`) with the same endpoint and credentials as the Batch client, sending the current branch as `ref`. Paths
+are repository-root relative whatever the working directory.
+
+| Command | On a git home |
+| --- | --- |
+| `pyn lock <path>` | Creates the lock and prints `locked <path>`. A path already locked fails and names the holder. `--base` is refused: a git repository has no revisions. |
+| `pyn unlock <path> [--force --reason <text>]` | Looks the lock up by path and removes it (`unlocked <path>`). `--force` removes another user's lock and prints `removed <owner>'s lock on <path>`; the server needs `force_unlock` for it. LFS has no reason field, so the text is accepted and not sent. |
+| `pyn locks [--mine]` | A table of `OWNER`, `LOCKED` and `PATH` for every lock; `--mine` lists the caller's own through `verify` (`LOCKED`, `PATH`) in this repository. |
+
+A path with the `lockable` attribute (`*.psd lockable` in `.gitattributes`) is read-only in the work tree until its lock is taken.
+After `clone`, `switch`, `checkout` and `merge` (where git runs `post-checkout` and `post-merge`) pyn clears the write bits of every
+tracked `lockable` file, then restores the owner write bit on those the caller holds a lock for, asked of `verify` without prompting
+(stored credentials only). A server that cannot be reached leaves them read-only. `lock` makes the file writable and `unlock`
+makes it read-only again. Only the owner write bit is set back; the exec bit is untouched.
+
+**Pre-push check.** In a repository that has `lockable` files, `push` (unless `--no-verify`) asks `verify` for each ref and refuses the
+whole push, before any LFS object is uploaded, when a commit it sends changes (or deletes) a path another user has locked:
+
+```text
+error: Unable to push locked files:
+error: * art/hero.psd - bob
+error: Cannot update locked files.
+```
+
+A server that answers `verify` with `404` or `501` is not checked; `lfs.locksverify=false` turns the check off. A repository without
+`lockable` files, or whose remote has no derivable LFS endpoint, makes no request.
+
 Covered by `crates/pyn-gittransport/tests/lfs.rs` (the client against a local Batch server: endpoints, verified and resumed
 downloads, uploads, credentials), `crates/pyn-cli/tests/git_lfs_remote.rs` (smudge, push, settings, `.lfsconfig`), `crates/pyn-cli/tests/git_lfs_commands.rs` (the `pyn lfs` commands),
 `crates/pyn-cli/tests/git_lfs_client.rs` (the pointer bytes are also compared with `git lfs pointer` when `git-lfs` is installed
-and skipped otherwise) and `crates/pyn-cli/tests/git_lfs.rs` (#311, #628, #785).
+and skipped otherwise) `crates/pyn-gittransport/tests/lfs_locks.rs` (the Locks client against a local Locks server), `crates/pyn-cli/tests/git_lfs_locks.rs`
+(`lockable`, `lock`, `unlock`, `locks`, the pre-push check; #786) and `crates/pyn-cli/tests/git_lfs.rs` (#311, #628, #785).
 
 Not built on the git home: `ssh` remotes (`git-lfs-authenticate`) and the other transfer adapters (`tus`, custom), concurrent
-transfers, `lfs.transfer.*` tuning, the locking API client and `lockable`, `lfs.extension.*` programs, and the `git lfs` commands
-not listed under [Git LFS commands](#git-lfs-commands) (`lock`, `unlock`, `locks`).
+transfers, `lfs.transfer.*` tuning, `lfs.extension.*` programs, and the `git lfs` commands not listed under
+[Git LFS commands](#git-lfs-commands) or the locking commands above (`status`, `migrate`, `env`, `install`, `fsck`).
 
 ### Refused commands
 
@@ -2961,10 +2991,10 @@ Only the commands that act on the repository in the working directory refuse, wi
 home that has them:
 
 ```text
-fatal: `pyn lock` needs a pyn server, and this repository is a git repository; `pyn convert --home pyn` will move it to one
+fatal: `pyn policy` needs a pyn server, and this repository is a git repository; `pyn convert --home pyn` will move it to one
 ```
 
-These are `lock`, `unlock`, `locks`, `policy`, `audit`, `verify` and `summary`.
+These are `policy`, `audit`, `verify` and `summary`. `lock`, `unlock` and `locks` run on a git home against the LFS server's Locks API, see [Git LFS](#git-lfs).
 
 The account and server-level commands run from anywhere, including inside a git repository, because they address a server
 through the global config (`--server`, `PYN_SERVER`, the user config file) and not the repository in the working directory:

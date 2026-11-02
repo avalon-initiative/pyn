@@ -9,6 +9,7 @@ mod error;
 pub mod exchange;
 mod http;
 pub mod lfs;
+pub mod lfs_locks;
 mod local;
 pub mod promisor;
 mod ssh;

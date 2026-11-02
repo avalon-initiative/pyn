@@ -47,6 +47,7 @@ mod hooks;
 mod hunk_pick;
 mod init_git;
 mod lfs_cmd;
+mod lfs_lock;
 pub(crate) mod lfs_net;
 mod log;
 mod log_gate;

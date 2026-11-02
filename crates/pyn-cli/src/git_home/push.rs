@@ -15,7 +15,7 @@ use super::push_plan::{
     Entry, Judge, LocalView, PlanError, Reason, Spec, Status, build, glob_map, judge,
     ref_name_matches,
 };
-use super::{GitHome, lfs_net};
+use super::{GitHome, lfs_lock, lfs_net};
 
 /// Update remote refs and the objects they need on a git remote (a git repository only).
 #[derive(Debug, Args)]
@@ -902,6 +902,32 @@ fn push_one(
     if !args.no_verify && pre_push_vetoed(git, &round, url, &entries)? {
         fail(&[]);
         return Ok(true);
+    }
+
+    if !args.no_verify {
+        let pushed: Vec<_> = entries
+            .iter()
+            .filter(|e| e.status == Status::Pending)
+            .filter_map(|e| {
+                Some(lfs_lock::Pushed {
+                    name: e.name.clone(),
+                    new: peel_commit(git, &e.new?)?,
+                })
+            })
+            .collect();
+        let remote_tips: Vec<ObjectId> = remote.iter().map(|(_, id)| *id).collect();
+        match lfs_lock::push_blocked(git, target.name.as_deref(), url, &pushed, &remote_tips) {
+            Ok(false) => {}
+            Ok(true) => {
+                fail(&[]);
+                return Ok(true);
+            }
+            Err(e) => {
+                eprintln!("error: {e:#}");
+                fail(&[]);
+                return Ok(true);
+            }
+        }
     }
 
     let updates: Vec<RefUpdate> = entries

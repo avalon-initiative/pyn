@@ -219,9 +219,6 @@ fn commands_that_act_on_the_working_repository_still_refuse() {
     let repo = Repo::new("sha1");
     let before = snapshot(&repo.main);
     for args in [
-        vec!["lock", "README.md"],
-        vec!["unlock", "README.md"],
-        vec!["locks"],
         vec!["policy", "preview", "x.toml"],
         vec!["audit"],
         vec!["verify"],

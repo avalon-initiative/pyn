@@ -762,6 +762,7 @@ pub fn clone(
     })?;
     if let Some(id) = checked_out {
         let git = GitHome::open_at(&target)?;
+        super::lfs_lock::sync_readonly(&git);
         git.warn_if_hooks_off(&["post-checkout"]);
         if git.post_checkout_in(&target, &id, false)? != 0 {
             std::process::exit(1);
