@@ -336,7 +336,7 @@ impl RepoService {
         let theirs = self.policy_revision_at(source).await?;
         match ours.into_iter().chain(theirs).max_by_key(|r| r.id) {
             Some(rev) => self.rules_of(&rev).await,
-            None => Ok(self.fallback.clone()),
+            None => Ok(self.initial.clone()),
         }
     }
 

@@ -51,7 +51,7 @@ the folders on the changed paths are rewritten. A repository's state as of a com
   (decision #245 item 9). The server caches it per commit and reads it by walking the commit's first-parent chain; see
   [branches](branches.md#the-revision-of-a-path-at-a-commit);
 - a path's **mode** (`shared` or `exclusive`) is what `.pyn/pyn.toml` says at that commit: the policy file in the
-  commit's own snapshot, or the server's fallback rules while the repository has none;
+  commit's own snapshot, or the repository's initial policy while it has none;
 - an exclusive path is not special in the tree: its entry is the blob of the revision it has at that commit, like any
   file. The revision number is not stored in the tree, so trees stay plain git trees and rolling back or merging
   needs no pointer handling.
