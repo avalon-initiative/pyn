@@ -21,7 +21,7 @@ use crate::commit_format::{Context, FormatArgs, Pretty, Rendering, render};
 use crate::diff::{self, Blob, Source, Tree};
 use crate::rename;
 use crate::short_status::{self, Format, Row, StatusArgs};
-use crate::{Command, table, unsupported};
+use crate::{Command, PolicyCommand, table, unsupported};
 
 const EXCLUDE_LINE: &str = ".pyn/";
 
@@ -337,6 +337,9 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
         }
         Command::Lock { path, .. } => super::lfs_lock::lock(git, cwd, &path),
         Command::Unlock { path, force, .. } => super::lfs_lock::unlock(git, cwd, &path, force),
+        Command::Policy(PolicyCommand::Lint { policy }) => {
+            super::lfs_lock::lint_lockable(git, policy.as_deref())
+        }
         Command::Policy(_) => server_only("policy"),
         Command::Audit { .. } => server_only("audit"),
         Command::Verify { .. } => server_only("verify"),

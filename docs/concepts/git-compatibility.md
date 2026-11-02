@@ -831,6 +831,7 @@ No git equivalent; these keep their own names and are never aliased to a git com
 | `pyn unlock <path> [--force --reason <text>]` | Give a lock up without committing, or remove another user's (needs `force_unlock`). |
 | `pyn locks [--mine]` | List live locks in the repository, or yours everywhere. |
 | `pyn policy preview` | Show which paths would change mode, which locks would be released and which branch versions would be stranded, if a policy file were committed. |
+| `pyn policy lint [--policy <file>]` | Git home: list tracked paths where the `lockable` attribute and `exclusive` mode disagree, see [Git LFS](#git-lfs). |
 | `pyn audit` | Audit log (see `reflog` above). |
 | `pyn get <path>`, `files`, `ls`, `summary`, `update` | Content, listings, repository summary and workspace update (see above). |
 | `pyn login`, `logout`, `register`, `password`, `whoami`, `key`, `token` | Accounts, sessions, SSH keys and API tokens. |
@@ -2963,6 +2964,11 @@ tracked `lockable` file, then restores the owner write bit on those the caller h
 (stored credentials only). A server that cannot be reached leaves them read-only. `lock` makes the file writable and `unlock`
 makes it read-only again. Only the owner write bit is set back; the exec bit is untouched.
 
+**Lint.** `pyn policy lint [--policy <file>]` lists the tracked paths where `lockable` and the policy disagree, as a table of
+`MISMATCH` (`lockable, shared` or `exclusive, not lockable`) and `PATH`, or `lockable and exclusive agree`. The policy is the work
+tree's `.pyn/pyn.toml` unless `--policy` names another file; `.pyn/pyn.toml` itself is never listed. It reads only local files, changes
+nothing and exits 0 whatever it finds. `pyn.toml` stays the authority: see [locks and mapping](lfs.md#locks-mapping-to-pyn-locks).
+
 **Pre-push check.** In a repository that has `lockable` files, `push` (unless `--no-verify`) asks `verify` for each ref and refuses the
 whole push, before any LFS object is uploaded, when a commit it sends changes (or deletes) a path another user has locked:
 
@@ -2994,7 +3000,7 @@ home that has them:
 fatal: `pyn policy` needs a pyn server, and this repository is a git repository; `pyn convert --home pyn` will move it to one
 ```
 
-These are `policy`, `audit`, `verify` and `summary`. `lock`, `unlock` and `locks` run on a git home against the LFS server's Locks API, see [Git LFS](#git-lfs).
+These are `policy` (except `policy lint`, which runs on a git home), `audit`, `verify` and `summary`. `lock`, `unlock` and `locks` run on a git home against the LFS server's Locks API, see [Git LFS](#git-lfs).
 
 The account and server-level commands run from anywhere, including inside a git repository, because they address a server
 through the global config (`--server`, `PYN_SERVER`, the user config file) and not the repository in the working directory:
