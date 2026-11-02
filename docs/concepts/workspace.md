@@ -239,7 +239,7 @@ Commands that edit a message or an instruction sheet start an editor. The comman
 `editor` setting (the workspace's `.pyn/local_only/config.toml`, else the user file; `pyn config set editor "code --wait"`, with
 `--global` for the user file), `core.editor` (git homes), `VISUAL`, `EDITOR`, then `vi` (`notepad` on Windows). A todo list asks
 `GIT_SEQUENCE_EDITOR` and `sequence.editor` first. The command may carry arguments and is run through the shell with the file as
-its last argument; `:` keeps the file as it is. A dumb terminal (`TERM` unset or `dumb`) is an error only when none of these is set.
+its last argument; `:` keeps the file as it is. The fallback editor needs a terminal: with none of these set, a dumb terminal (`TERM` unset or `dumb`) or a stdin that is not a terminal (a pipe, a CI step) is an error with exit `128` that names `-m`, `-F` and `PYN_EDITOR`, and no editor is started. An explicitly configured editor is always run.
 
 ## The local store
 
