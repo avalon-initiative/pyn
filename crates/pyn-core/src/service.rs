@@ -172,7 +172,7 @@ struct LiveCount {
 const SUMMARY_LIVE_MAX_FILES: u64 = 100_000;
 const SUMMARY_PAGE: usize = 5_000;
 
-/// The rules in force and the policy revision they came from (`None` for the fallback).
+/// The rules in force and the policy revision they came from (`None` for the initial rules).
 struct Applied {
     revision: Option<RevisionId>,
     rules: Arc<Rules>,
@@ -199,8 +199,10 @@ pub struct Recorded {
 /// Server-side policy for one repository. Enforcement lives here and in the `MetadataStore` primitives.
 pub struct RepoService {
     repo: RepoId,
-    /// The rules in force until the repository has a policy file.
+    /// The server rules: the starting policy of an older repository, and what a stored policy that no longer parses falls back to.
     fallback: Arc<Rules>,
+    /// The rules for a branch with no policy commit in its ancestry.
+    initial: Arc<Rules>,
     applied: RwLock<Applied>,
     /// Parsed policy files by revision, which never change.
     parsed: Mutex<HashMap<RevisionId, Arc<Rules>>>,
@@ -232,6 +234,7 @@ impl RepoService {
         Self {
             repo,
             fallback: rules.clone(),
+            initial: rules.clone(),
             applied: RwLock::new(Applied {
                 revision: None,
                 rules,
@@ -252,6 +255,14 @@ impl RepoService {
                 crate::merge::default_concurrent_merges(),
             )),
         }
+    }
+
+    /// Starts the repository under `rules` instead of the server fallback.
+    pub fn with_initial_policy(mut self, rules: Rules) -> Self {
+        let rules = Arc::new(rules);
+        self.initial = rules.clone();
+        self.applied.get_mut().unwrap().rules = rules;
+        self
     }
 
     /// Shares `slots` as the bound on text merges running at once.
@@ -345,14 +356,14 @@ impl RepoService {
         self.rules_at(head.as_ref()).await
     }
 
-    /// The effective policy of `commit`; the fallback rules while no policy commit is in its ancestry.
+    /// The effective policy of `commit`; the initial rules while no policy commit is in its ancestry.
     async fn rules_at(&self, commit: Option<&ObjectId>) -> Result<Arc<Rules>> {
         let Some(commit) = commit else {
-            return Ok(self.fallback.clone());
+            return Ok(self.initial.clone());
         };
         match self.policy_revision_at(commit).await? {
             Some(rev) => self.rules_of(&rev).await,
-            None => Ok(self.fallback.clone()),
+            None => Ok(self.initial.clone()),
         }
     }
 

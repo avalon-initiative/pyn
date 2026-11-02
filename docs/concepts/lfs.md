@@ -113,7 +113,7 @@ A problem with one object is reported in that object's `error` `{"code", "messag
 
 - `422`: the `oid` is not 64 lowercase hex digits, the `size` is negative, or the `oid` is known with another size.
 - `404`: a download of an object this repository does not have.
-- `413`: an upload of more than 16 GiB, or one that would take the owner or the repository past its [storage cap](limits.md#per-repository-storage-cap), counting the repository's LFS objects.
+- `413`: an upload of more than 16 GiB, or one that would take the owner or the repository past its [storage cap](limits.md#per-repository-storage-cap), counting revisions and LFS objects, the owner's across all of its repositories.
 
 Refusals of the whole request: `422` for an unknown `operation`, a body that is not valid JSON, or `transfers` without `basic`;
 `409` for a `hash_algo` other than `sha256`; `403` for an upload by a caller without `checkin`, or while the owner is
@@ -132,10 +132,10 @@ otherwise it answers `422` (`digest_mismatch`, `length_mismatch`) and keeps noth
 
 - Uploading an object the repository already has is a `200` that changes nothing, as long as the length agrees (`422` otherwise).
 - `403` without `checkin` or while the owner is frozen (`owner_frozen`); `413` past the 16 GiB object limit
-  (`object_too_large`), the storage caps (`storage_limit_reached`, `repo_storage_limit_reached`) or the
-  [unreferenced-upload ceiling](storage.md#per-repository-visibility); `429` when too many uploads run at once.
-- Uploads count against the same per-user upload concurrency as `PUT .../objects`. They are recorded in the repository's usage
-  accounting like other uploads; no audit entry is written, as for `PUT .../objects`.
+  (`object_too_large`) or the storage caps (`storage_limit_reached`, `repo_storage_limit_reached`); `429` when too many
+  uploads run at once.
+- Uploads count against the same per-user upload concurrency as `PUT .../objects`. No audit entry is written, as for
+  `PUT .../objects`.
 
 ### `GET .../objects/{oid}`
 
@@ -150,12 +150,12 @@ Request `{"oid", "size"}`; `200` when the repository has that object, `404` when
 
 ### Limits and accounting
 
-- An LFS upload is held to the same bounds as any upload: the owner must not be frozen, and the unreferenced-upload ceiling
-  (32 GiB by default per repository, `PYN_MAX_UNREFERENCED_UPLOAD_BYTES`) applies because no revision names the object.
-  Raise the ceiling for repositories that keep more large files than that.
-- The storage caps are enforced at upload time against the bytes the owner or repository already stores in revisions plus the
-  repository's LFS objects. The check is not atomic with a concurrent upload or check-in, and the usage reports
-  (`pyn usage`) count revisions only, so LFS bytes do not appear in them yet.
+- An LFS upload needs an owner that is not frozen. LFS objects are not part of the unreferenced-upload ceiling
+  (`PYN_MAX_UNREFERENCED_UPLOAD_BYTES`): only the storage caps limit them.
+- The storage caps count revisions plus LFS objects: the owner's across all of its repositories, the repository's across
+  its own. The batch response checks them early; the upload checks them again in the same atomic step that records the
+  object, and a check-in checks them in its own step, so concurrent uploads and check-ins cannot pass a cap together.
+- Usage reports (`pyn usage`, `pyn repo usage`, the usage routes) show `lfs_bytes` next to `stored_bytes`.
 - Objects are not removed when a repository's other state changes. Deleting the repository removes its LFS records. The bytes
   stay in the shared object store until [garbage collection](storage.md#planned-provisional) (#207), which must treat the
   object each LFS record names as referenced.

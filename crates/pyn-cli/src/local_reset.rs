@@ -47,8 +47,8 @@ pub struct ResetArgs {
     #[arg(long, overrides_with = "recurse_submodules")]
     pub(crate) no_recurse_submodules: bool,
 
-    /// A revision (a workspace: HEAD, HEAD~N or a hash of an unpublished local commit, or of the last published
-    /// one); default HEAD. On a git repository, paths may follow it.
+    /// A revision (a workspace: HEAD, HEAD~N, a hash, a tag or `origin/<branch>` naming an unpublished local commit
+    /// or the last published one); default HEAD. On a git repository, paths may follow it.
     pub(crate) revs: Vec<String>,
     /// Git repository: reset only the index entries of these paths.
     #[arg(last = true)]
@@ -157,27 +157,51 @@ fn candidates(
     Ok(out)
 }
 
-fn pick(store: &LocalStore, text: &str, tip: ObjectId, chain: &[ObjectId]) -> Result<ObjectId> {
-    let Some(found) = snapshot::parse_commit(text) else {
-        bail!("{text} is not a commit; use HEAD, HEAD~N, HEAD^ or a commit hash");
-    };
-    let start = match &found.base {
-        Base::Head => tip,
-        Base::Hash(h) => {
-            let hits: Vec<&ObjectId> = chain
-                .iter()
-                .filter(|c| c.to_hex().starts_with(h.as_str()))
-                .collect();
-            match hits.as_slice() {
-                [one] => **one,
-                _ => bail!("{text} is not an unpublished local commit or the published tip"),
-            }
+fn first_parent_line(store: &LocalStore, tip: ObjectId) -> Result<Vec<ObjectId>> {
+    let mut out = vec![];
+    let mut at = Some(tip);
+    while let Some(id) = at {
+        out.push(id);
+        at = store.repo().commit(&id)?.parents.first().copied();
+    }
+    Ok(out)
+}
+
+fn pick(
+    store: &LocalStore,
+    ws: &Workspace,
+    text: &str,
+    tip: ObjectId,
+    chain: &[ObjectId],
+) -> Result<ObjectId> {
+    let id = match snapshot::parse_commit(text) {
+        Some(found) => {
+            let start = match &found.base {
+                Base::Head => tip,
+                Base::Hash(h) => {
+                    let hits: Vec<&ObjectId> = chain
+                        .iter()
+                        .filter(|c| c.to_hex().starts_with(h.as_str()))
+                        .collect();
+                    match hits.as_slice() {
+                        [one] => **one,
+                        _ => {
+                            bail!("{text} is not an unpublished local commit or the published tip")
+                        }
+                    }
+                }
+            };
+            found.follow(text, start, |id| Ok(store.repo().commit(id)?.parents))?
         }
+        None => crate::local_switch::resolve(store, ws, text).map_err(|_| {
+            anyhow::anyhow!(
+                "{text} is not a commit; use HEAD, HEAD~N, a commit hash, a tag or origin/<branch>"
+            )
+        })?,
     };
-    let id = found.follow(text, start, |id| Ok(store.repo().commit(id)?.parents))?;
     if !chain.contains(&id) {
         bail!(
-            "{text} is older than the last published commit; only unpublished local commits can be reset"
+            "{text} is not an unpublished local commit or the published tip; only those can be reset to"
         );
     }
     Ok(id)
@@ -201,7 +225,7 @@ pub fn reset(backend: &dyn Backend, ws: &Workspace, args: ResetArgs) -> Result<(
         bail!("branch '{branch}' has no local commits");
     };
     let chain = candidates(&store, tip, store.published(&branch)?)?;
-    let target = pick(&store, commit.unwrap_or("HEAD"), tip, &chain)?;
+    let target = pick(&store, ws, commit.unwrap_or("HEAD"), tip, &chain)?;
     if kind == Kind::Hard && !args.yes {
         if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
             bail!(
@@ -324,6 +348,13 @@ pub fn reset(backend: &dyn Backend, ws: &Workspace, args: ResetArgs) -> Result<(
         );
     }
     store.move_tip(&branch, tip, target)?;
+    if !first_parent_line(&store, tip)?.contains(&target) {
+        println!(
+            "The previous tip {} is still in the store; `pyn branch <name> {}` keeps it",
+            short(&tip.to_hex()),
+            short(&tip.to_hex())
+        );
+    }
     ws.save_state(&state)?;
     index.save(ws)?;
     let left = store.unpublished(&branch)?.ahead;

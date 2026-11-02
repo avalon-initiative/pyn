@@ -149,9 +149,12 @@ are not reported. Changing a path to shared never strands anything.
 Each revision records the mode its path had when it was made (`mode` on the revision in the API), so a path's history shows
 where it changed. Revisions made before this was recorded have no mode.
 
-A repository with no `.pyn/pyn.toml` uses the server's fallback file (`PYN_CONFIG`) if one is configured, and otherwise
-everything is exclusive. The fallback stops applying to a repository once that repository has its own file; the two are
-never merged.
+A repository gets an **initial policy** when it is created, like an empty git repository starts with default settings. It is
+the server's `PYN_CONFIG` file if one is configured, and otherwise `[meta] default = "shared"`, so nothing needs a lock until
+the owner commits a policy. It is stored with the repository (not a commit, so the repository stays empty and its first push
+may be a parentless root) and applies to every branch that has no policy commit in its ancestry. A repository created before
+this existed has no stored initial policy and keeps using the server's `PYN_CONFIG` file, or everything exclusive. An
+initial policy stops applying once the repository has its own file; the two are never merged.
 
 ## `pyn.toml` is a tracked file
 
@@ -168,7 +171,7 @@ file counts as listing it, so a folder entry such as `.pyn/` works too.
 
 The very first `pyn.toml` is the owner's initial policy. It is accepted as submitted, without a lock (it still needs
 `edit_policy`), and the mode it declares for itself applies from that revision, so a repository can be created with a
-shared `pyn.toml`. Until it exists, the fallback or the all-exclusive default applies. The first revision records the mode
+shared `pyn.toml`. Until it exists, the initial policy applies. The first revision records the mode
 it declares for itself, like any other revision records the mode in force. Only the first revision skips the lock: once any
 revision exists, a submission that claims to be the first is rejected as a stale base.
 

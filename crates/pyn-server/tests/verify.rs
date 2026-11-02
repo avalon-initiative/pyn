@@ -32,6 +32,7 @@ async fn world() -> World {
         visibility: Visibility::Private,
         settings: RepoSettings::default(),
         storage_cap: None,
+        initial_policy: None,
         created_at: chrono::Utc::now(),
     })
     .await

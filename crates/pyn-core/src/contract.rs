@@ -1281,6 +1281,7 @@ fn repo_record(id: &str, owner: &str, name: &str) -> RepoRecord {
         visibility: Visibility::Private,
         settings: RepoSettings::default(),
         storage_cap: None,
+        initial_policy: None,
         created_at: at(0),
     }
 }
@@ -1326,6 +1327,32 @@ pub async fn repositories_are_registered_found_and_listed_in_order(store: Store)
     assert_eq!(all, ["alice/alpha", "alice/zeta", "bob/alpha"]);
     let alices = store.list_repos(Some(&user("alice"))).await.unwrap();
     assert_eq!(alices.len(), 2);
+}
+
+pub async fn a_repository_keeps_its_initial_policy_or_none(store: Store) {
+    let mut starter = repo_record("r1", "alice", "new");
+    starter.initial_policy = Some("[meta]\ndefault = \"shared\"\n".to_string());
+    store.create_repo(starter.clone()).await.unwrap();
+    store
+        .create_repo(repo_record("r2", "alice", "old"))
+        .await
+        .unwrap();
+    let found = store.get_repo(&RepoId::new("r1")).await.unwrap().unwrap();
+    assert_eq!(found.initial_policy, starter.initial_policy);
+    let found = store
+        .find_repo(&user("alice"), "old")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(found.initial_policy, None);
+    let listed = store.list_repos(Some(&user("alice"))).await.unwrap();
+    assert_eq!(
+        listed
+            .iter()
+            .map(|r| r.initial_policy.is_some())
+            .collect::<Vec<_>>(),
+        [true, false]
+    );
 }
 
 pub async fn public_repositories_are_listed_in_pages_after_an_address(store: Store) {
@@ -3223,6 +3250,7 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_restore_is_chained_and_its_source_is_covered);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_changeset_chains_each_of_its_paths);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; repositories_are_registered_found_and_listed_in_order);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_repository_keeps_its_initial_policy_or_none);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; public_repositories_are_listed_in_pages_after_an_address);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_repository_name_is_unique_per_owner);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; updating_a_repository_keeps_its_id);
@@ -3343,6 +3371,10 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; an_lfs_oid_must_be_lowercase_sha256_hex);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_frozen_owner_cannot_upload_an_lfs_object);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; lfs_objects_count_against_the_storage_caps);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; lfs_bytes_are_reported_and_count_against_the_owner_cap_across_repositories);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; racing_lfs_uploads_and_checkins_cannot_exceed_the_owner_cap);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; racing_lfs_uploads_cannot_exceed_the_repository_cap);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; lfs_objects_stay_out_of_the_unreferenced_upload_ceiling);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_text_merge_over_the_cost_bound_is_left_to_a_person);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; upload_reservations_hold_the_budget_until_released_or_expired);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; parallel_uploads_never_pass_the_unreferenced_budget);
@@ -4164,8 +4196,9 @@ impl MetadataStore for HookedMeta {
         &self,
         repo: &RepoId,
         object: &crate::LfsObject,
+        cap: Option<crate::StorageCap>,
     ) -> crate::Result<bool> {
-        self.inner.record_lfs_object(repo, object).await
+        self.inner.record_lfs_object(repo, object, cap).await
     }
 
     async fn lfs_object(

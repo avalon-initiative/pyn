@@ -50,6 +50,7 @@ pub struct Repositories {
     access: Arc<AccessService>,
     clock: Arc<dyn Clock>,
     rules: Rules,
+    initial_policy: Option<String>,
     default_max_locks: u32,
     unreferenced_cap: u64,
     uploads: crate::gate::UploadGate,
@@ -73,6 +74,7 @@ fn absent_record(owner: &str, name: &str) -> RepoRecord {
         visibility: Visibility::Private,
         settings: RepoSettings::default(),
         storage_cap: None,
+        initial_policy: None,
         created_at: chrono::DateTime::<chrono::Utc>::default(),
     }
 }
@@ -94,6 +96,7 @@ impl Repositories {
             access,
             clock,
             rules,
+            initial_policy: None,
             default_max_locks: DEFAULT_MAX_LOCKS_PER_USER,
             unreferenced_cap: DEFAULT_UNREFERENCED_UPLOAD_BYTES,
             uploads: crate::gate::UploadGate::default(),
@@ -102,6 +105,13 @@ impl Repositories {
             )),
             services: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// The `pyn.toml` text new repositories start with, in force until their first policy commit.
+    pub fn with_initial_policy(mut self, text: &str) -> Result<Self> {
+        Rules::from_toml(text)?;
+        self.initial_policy = Some(text.to_string());
+        Ok(self)
     }
 
     /// The per-user lock limit for repositories that set none; validated 1 to `MAX_LOCKS_PER_USER_CEILING`.
@@ -186,6 +196,10 @@ impl Repositories {
                 max_locks: record.settings.max_locks.unwrap_or(self.default_max_locks),
             },
         );
+        let svc = match &record.initial_policy {
+            Some(text) => svc.with_initial_policy(Rules::from_toml(text)?),
+            None => svc,
+        };
         let svc = Arc::new(
             svc.with_storage_caps(record.owner.clone(), self.access.clone())
                 .with_repo_storage_cap(record.address(), record.storage_cap)
@@ -364,7 +378,8 @@ impl Repositories {
             repositories.push((record, used));
         }
         repositories.sort_by(|(a, x), (b, y)| {
-            (y.stored_bytes, a.address()).cmp(&(x.stored_bytes, b.address()))
+            (y.stored_bytes + y.lfs_bytes, a.address())
+                .cmp(&(x.stored_bytes + x.lfs_bytes, b.address()))
         });
         Ok(OwnerReport {
             limits,
@@ -414,6 +429,7 @@ impl Repositories {
             visibility,
             settings: settings.unwrap_or_default().validate()?,
             storage_cap: None,
+            initial_policy: self.initial_policy.clone(),
             created_at: self.clock.now(),
         };
         let max_repos = self.access.effective_limits(owner).await?.repositories;

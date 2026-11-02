@@ -18,6 +18,9 @@ pub enum Mode {
 /// Where a repository keeps its policy file.
 pub const POLICY_PATH: &str = ".pyn/pyn.toml";
 
+/// The policy a new repository starts with when the operator configures none: nothing needs a lock.
+pub const DEFAULT_INITIAL_POLICY: &str = "[meta]\ndefault = \"shared\"\n";
+
 /// The largest policy file the server reads or parses.
 pub const MAX_POLICY_BYTES: u64 = 1 << 20;
 

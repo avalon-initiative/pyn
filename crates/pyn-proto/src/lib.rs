@@ -1467,8 +1467,10 @@ pub struct Usage {
     /// Organization members; null for a user.
     #[schema(required = true)]
     pub members: Option<u64>,
-    /// Bytes of distinct content, counted once per repository.
+    /// Bytes of distinct revision content, counted once per repository.
     pub stored_bytes: u64,
+    /// Bytes of LFS objects. The storage limit applies to `stored_bytes` plus this.
+    pub lfs_bytes: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -1477,7 +1479,10 @@ pub struct RepoUsage {
     pub repository: String,
     /// The repository's id.
     pub repo_id: String,
+    /// Bytes of distinct revision content.
     pub stored_bytes: u64,
+    /// Bytes of LFS objects. The storage cap applies to `stored_bytes` plus this.
+    pub lfs_bytes: u64,
     /// Paths with a head revision.
     pub files: u64,
     pub revisions: u64,
@@ -1514,6 +1519,8 @@ pub struct RepoUsageBreakdown {
     pub repo_id: String,
     /// Distinct bytes in the whole repository, each content once.
     pub stored_bytes: u64,
+    /// Bytes of the repository's LFS objects, not part of the folders and paths.
+    pub lfs_bytes: u64,
     #[schema(required = true)]
     pub storage_cap: Option<u64>,
     /// Largest first.
