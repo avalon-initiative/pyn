@@ -962,3 +962,42 @@ async fn a_policy_change_that_converts_nothing_audits_no_conversions() {
             .is_empty()
     );
 }
+
+#[tokio::test]
+async fn a_repository_starts_under_its_initial_policy_and_an_older_one_under_the_fallback() {
+    let w = world();
+    let starter = build(&w, Rules::empty())
+        .with_initial_policy("[meta]\ndefault = \"shared\"\n")
+        .unwrap();
+    let alice = Identity {
+        user: UserId::new("alice"),
+        credential: Credential::Session,
+    };
+    let owner = UserId::new("alice");
+    starter
+        .create(&alice, &owner, "fresh", None, None)
+        .await
+        .unwrap();
+    let record = w.meta.find_repo(&owner, "fresh").await.unwrap().unwrap();
+    assert!(record.initial_policy.is_some());
+    let fresh = starter.open("alice", "fresh").await.unwrap().service;
+    assert_eq!(fresh.mode_for(&path("Source/a.cpp")), Mode::Shared);
+
+    let mut old = record.clone();
+    old.id = pyn_core::RepoId::new("old-id");
+    old.name = "old".into();
+    old.initial_policy = None;
+    w.meta.create_repo(old).await.unwrap();
+    let old = starter.open("alice", "old").await.unwrap().service;
+    assert_eq!(old.mode_for(&path("Source/a.cpp")), Mode::Exclusive);
+
+    put_policy(
+        &fresh,
+        &admin("alice"),
+        "[meta]\ndefault = \"exclusive\"\n",
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(fresh.mode_for(&path("Source/a.cpp")), Mode::Exclusive);
+}

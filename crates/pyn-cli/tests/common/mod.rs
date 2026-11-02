@@ -71,11 +71,26 @@ fn build(with_repo: bool, accounts: &[&str], setup_token: Option<&str>) -> Env {
     build_with(with_repo, accounts, setup_token, Arc::new(SystemClock))
 }
 
+/// A server with no repositories and no `PYN_CONFIG`: the all-exclusive fallback and the starter policy for new repositories.
+pub fn start_default_server() -> Env {
+    build_full(false, &[], None, Arc::new(SystemClock), true)
+}
+
 fn build_with(
     with_repo: bool,
     accounts: &[&str],
     setup_token: Option<&str>,
     clock: Arc<dyn Clock>,
+) -> Env {
+    build_full(with_repo, accounts, setup_token, clock, false)
+}
+
+fn build_full(
+    with_repo: bool,
+    accounts: &[&str],
+    setup_token: Option<&str>,
+    clock: Arc<dyn Clock>,
+    default_server: bool,
 ) -> Env {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let objects = Arc::new(pyn_core::ChunkedStore::new(Arc::new(
@@ -93,6 +108,7 @@ fn build_with(
                 visibility: Visibility::Private,
                 settings: RepoSettings::default(),
                 storage_cap: None,
+                initial_policy: None,
                 created_at: chrono::Utc::now(),
             }))
             .unwrap();
@@ -125,14 +141,28 @@ fn build_with(
             .block_on(access.register(Registration::new(name, "correct horse battery")))
             .unwrap();
     }
-    let repos = Arc::new(Repositories::new(
-        meta.clone(),
-        objects.clone(),
-        audit.clone(),
-        access.clone(),
-        clock,
-        Rules::from_toml(rules).unwrap(),
-    ));
+    let repos = if default_server {
+        Repositories::new(
+            meta.clone(),
+            objects.clone(),
+            audit.clone(),
+            access.clone(),
+            clock,
+            Rules::empty(),
+        )
+        .with_initial_policy(pyn_core::rules::DEFAULT_INITIAL_POLICY)
+        .unwrap()
+    } else {
+        Repositories::new(
+            meta.clone(),
+            objects.clone(),
+            audit.clone(),
+            access.clone(),
+            clock,
+            Rules::from_toml(rules).unwrap(),
+        )
+    };
+    let repos = Arc::new(repos);
     let app = router(AppState {
         repos,
         objects,

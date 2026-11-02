@@ -98,6 +98,8 @@ pub struct RepoRecord {
     pub settings: RepoSettings,
     /// Bytes of distinct content this repository may store; `None` is no cap of its own.
     pub storage_cap: Option<u64>,
+    /// `pyn.toml` text in force for a branch with no policy commit; `None` (older repositories) uses the server fallback.
+    pub initial_policy: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 
