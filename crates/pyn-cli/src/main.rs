@@ -44,6 +44,7 @@ mod mv_plan;
 mod no_index;
 mod pathspec;
 mod policy;
+mod policy_lint;
 mod probe;
 mod pyn_server;
 mod quiet;
@@ -951,6 +952,12 @@ enum PolicyCommand {
     Preview {
         /// A proposed `pyn.toml`.
         file: std::path::PathBuf,
+    },
+    /// List tracked paths where `lockable` in `.gitattributes` and `exclusive` in `.pyn/pyn.toml` disagree (git repositories).
+    Lint {
+        /// The policy to check against; the work tree's `.pyn/pyn.toml` by default.
+        #[arg(long)]
+        policy: Option<std::path::PathBuf>,
     },
 }
 
@@ -2373,6 +2380,9 @@ fn run(cli: Cli) -> Result<()> {
                 no_patch,
             };
             show_command(&backend, ws.as_ref(), commit.map(String::as_str), &shown)?
+        }
+        Command::Policy(PolicyCommand::Lint { .. }) => {
+            bail!("`pyn policy lint` checks a git repository's `.gitattributes`; this is not one")
         }
         Command::Policy(PolicyCommand::Preview { file }) => {
             let api = backend.pyn_server("policy")?;

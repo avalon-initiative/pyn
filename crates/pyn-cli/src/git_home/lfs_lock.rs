@@ -17,7 +17,8 @@ use pyn_gitwork::{Head, Pathspec, fs_path};
 use pyn_object::ObjectId;
 
 use super::{GitHome, lfs_net};
-use crate::{table, time};
+use crate::policy::{POLICY_PATH, Policy};
+use crate::{policy_lint, table, time};
 
 /// A prompt that never asks: hooks run unattended, so only stored credentials count.
 struct Silent;
@@ -67,8 +68,8 @@ fn open_client(
     Ok(Client::new(base, &config, &env, Box::new(Silent))?)
 }
 
-/// Tracked paths whose `lockable` attribute is set.
-fn lockable_paths(git: &GitHome) -> Vec<String> {
+/// Tracked paths with whether their `lockable` attribute is set.
+fn tracked_lockable(git: &GitHome) -> Vec<(String, bool)> {
     let Ok(opened) = git.open_index() else {
         return Vec::new();
     };
@@ -80,9 +81,44 @@ fn lockable_paths(git: &GitHome) -> Vec<String> {
         .entries
         .iter()
         .filter(|e| e.stage == 0 && !e.skip_worktree)
-        .filter(|e| attrs.for_path(&e.path).get("lockable").is_set())
-        .map(|e| String::from_utf8_lossy(&e.path).into_owned())
+        .map(|e| {
+            (
+                String::from_utf8_lossy(&e.path).into_owned(),
+                attrs.for_path(&e.path).get("lockable").is_set(),
+            )
+        })
         .collect()
+}
+
+/// Tracked paths whose `lockable` attribute is set.
+fn lockable_paths(git: &GitHome) -> Vec<String> {
+    let mut all = tracked_lockable(git);
+    all.retain(|(_, lockable)| *lockable);
+    all.into_iter().map(|(p, _)| p).collect()
+}
+
+/// `pyn policy lint`: tracked paths where `lockable` and the policy's `exclusive` disagree. Always exits 0 when the lint runs.
+pub fn lint_lockable(git: &GitHome, policy: Option<&Path>) -> Result<()> {
+    let file = match policy {
+        Some(p) => p.to_path_buf(),
+        None => git.repo.root()?.join(POLICY_PATH),
+    };
+    let text = fs::read_to_string(&file)
+        .with_context(|| format!("reading the policy {}", file.display()))?;
+    let Some(parsed) = Policy::parse(&text) else {
+        bail!("{} is not a valid policy file", file.display());
+    };
+    git.repo.reset_attributes();
+    let tracked = tracked_lockable(git);
+    let rows: Vec<Vec<String>> =
+        policy_lint::lint(tracked.iter().map(|(p, l)| (p.as_str(), *l)), |p| {
+            parsed.mode_for(p)
+        })
+        .into_iter()
+        .map(|(path, d)| vec![d.label().to_owned(), path.to_owned()])
+        .collect();
+    table::show(&["MISMATCH", "PATH"], &rows, "lockable and exclusive agree");
+    Ok(())
 }
 
 fn set_writable(root: &Path, path: &str, writable: bool) {

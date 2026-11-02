@@ -42,7 +42,10 @@ caller has no part in is `404`.
 - A path that is `exclusive` in `.pyn/pyn.toml` is enforced: only the holder can check in. It is locked at its current head
   as `pyn lock` does.
 - Any other path gets an advisory lock: the same record, but a check-in of a shared path never consults it. `pyn.toml` is the
-  authority, so `lockable` in `.gitattributes` does not weaken an exclusive path.
+  authority, so `lockable` in `.gitattributes` does not weaken an exclusive path. `pyn policy lint` on a git repository lists the
+  paths where the two disagree (a `lockable` path that is shared, an exclusive path without the attribute). It is computed in the
+  CLI from the work tree's `.gitattributes` and `.pyn/pyn.toml`; the server's policy preview does not carry it, since the server
+  does not evaluate attributes.
 - Leases are a pyn extension that LFS clients do not see. An LFS lock carries the repository's lease (8 hours by default) and
   lapses with it; `pyn lock` renews it.
 - The lock `id` is a stable opaque string derived from the path: the same path always has the same id.
