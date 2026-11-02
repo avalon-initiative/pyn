@@ -807,6 +807,30 @@ fn a_non_fast_forward_pull_makes_a_merge_commit_and_push_sends_it() {
 }
 
 #[test]
+fn reset_takes_origin_main_and_leaves_the_merge_recoverable() {
+    let (env, ws) = seeded();
+    diverge(&env, &ws);
+    env.ok(&ws, "alice", &["pull"]);
+    let merge = git(&ws, &["rev-parse", "main"]);
+    let theirs = git(&ws, &["rev-parse", "origin/main"]);
+    assert_ne!(merge, theirs);
+
+    let err = env.fails(&ws, "alice", &["reset", "--hard", "--yes", "origin/nope"]);
+    assert!(err.contains("not a commit"), "{err}");
+    assert_eq!(git(&ws, &["rev-parse", "main"]), merge);
+
+    let out = env.ok(&ws, "alice", &["reset", "--hard", "--yes", "origin/main"]);
+    assert!(out.contains("0 local commit(s)"), "{out}");
+    assert!(out.contains("still in the store"), "{out}");
+    assert_eq!(git(&ws, &["rev-parse", "main"]), theirs);
+    assert_eq!(read(&ws, "Source/a.cpp"), "ONE\ntwo\nthree\n");
+    assert_eq!(read(&ws, "Source/b.cpp"), "bee");
+    assert_eq!(git(&ws, &["cat-file", "-t", merge.trim()]), "commit\n");
+    let status = env.ok(&ws, "alice", &["status"]);
+    assert!(!status.contains("local commit"), "{status}");
+}
+
+#[test]
 fn show_picks_a_parent_of_a_merge_and_diffs_against_each() {
     let (env, ws) = seeded();
     diverge(&env, &ws);

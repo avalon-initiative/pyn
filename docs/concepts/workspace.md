@@ -323,7 +323,10 @@ With the store on, `add`, `commit`, `status` and `branch` work against the store
 - Branches are local, as in git ([local branches](#local-branches)); `pyn switch` and `pyn checkout <branch>` leave a branch
   with unpublished commits without touching them.
 - `pyn reset [--soft|--mixed|--hard] [<commit>]` moves the local branch back to `HEAD~N`, a hash on its unpublished chain, or
-  the last published commit (never further), which is the way out of a commit the server will not accept. `--soft` keeps the
+  the last published commit (never further), which is the way out of a commit the server will not accept. The published commit may be
+  named `origin/<branch>` (or a tag at it); after a pull that made a merge commit it is not on the local chain, and the branch then
+  moves to it, dropping the merge and the local commits from the branch (they stay in the store; `pyn branch <name> <hash>` keeps
+  them). Any other name, or a commit older than the last published one, is refused. `--soft` keeps the
   dropped changes staged, `--mixed` (the default) keeps them in the files unstaged and clears the staging area, `--hard` puts
   the files back to the commit and asks you to type the branch name. `--yes` skips that; without a terminal and without `--yes` it refuses and changes nothing, so a script passes `--yes`. Untracked files are left alone.
 - `pyn tag [<name> [<commit>]]`, `-a`/`-m`, `-f`, `-d` and `-l` keep tags as refs in the store, and `pyn show` and `pyn diff` take a tag
