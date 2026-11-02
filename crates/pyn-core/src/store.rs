@@ -365,8 +365,15 @@ pub trait MetadataStore: Send + Sync {
         reservation: UploadReservation,
     ) -> Result<()>;
 
-    /// Records an LFS object for `repo`; `false` (and nothing changes) if the repository already has that oid.
-    async fn record_lfs_object(&self, repo: &RepoId, object: &LfsObject) -> Result<bool>;
+    /// Records an LFS object for `repo`; `false` (and nothing changes) if the repository already has that oid. Under
+    /// `cap`, a new object that takes the owner's or the repository's revision and LFS bytes past it is refused and
+    /// not kept, atomically with the record and with a check-in. LFS objects never count as unreferenced uploads.
+    async fn record_lfs_object(
+        &self,
+        repo: &RepoId,
+        object: &LfsObject,
+        cap: Option<StorageCap>,
+    ) -> Result<bool>;
 
     async fn lfs_object(&self, repo: &RepoId, oid: &str) -> Result<Option<LfsObject>>;
 

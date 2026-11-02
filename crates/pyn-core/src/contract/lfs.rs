@@ -5,7 +5,7 @@ use std::sync::Arc;
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncReadExt;
 
-use super::{Harness, Store, harness, other_repo, repo_record, service_in, user};
+use super::{Harness, Store, harness, other_repo, path, repo_record, service_in, user, who};
 use crate::PynError;
 use crate::object::ObjectReader;
 
@@ -213,4 +213,193 @@ pub async fn lfs_objects_count_against_the_storage_caps(store: Store) {
         "{err}"
     );
     up(capped(Some(12), Some(12)), b"abcdef").await.unwrap();
+}
+
+fn owner_capped(store: &Store, h: &Harness, id: &str, cap: u64) -> Arc<crate::RepoService> {
+    Arc::new(
+        service_in(store, h, id).with_storage_caps(user("alice"), Arc::new(OwnerCap(Some(cap)))),
+    )
+}
+
+async fn put_in(svc: &crate::RepoService, bytes: &[u8]) -> crate::Result<(crate::LfsObject, bool)> {
+    svc.lfs_upload(
+        &user("alice"),
+        &oid(bytes),
+        body(bytes),
+        bytes.len() as u64,
+        None,
+    )
+    .await
+}
+
+pub async fn lfs_bytes_are_reported_and_count_against_the_owner_cap_across_repositories(
+    store: Store,
+) {
+    let h = harness(store.clone());
+    for id in ["one", "two"] {
+        store
+            .create_repo(repo_record(id, "alice", id))
+            .await
+            .unwrap();
+    }
+    let (one, two) = (
+        owner_capped(&store, &h, "one", 10),
+        owner_capped(&store, &h, "two", 10),
+    );
+    put_in(&one, b"123456").await.unwrap();
+
+    let err = put_in(&two, b"abcdef").await.unwrap_err();
+    assert!(
+        matches!(
+            &err,
+            PynError::StorageLimitReached {
+                limit: 10,
+                used: 6,
+                ..
+            }
+        ),
+        "{err}"
+    );
+    assert!(two.lfs_object(&oid(b"abcdef")).await.unwrap().is_none());
+
+    let content = two.upload_blob(b"abcdef".to_vec()).await.unwrap();
+    let err = two
+        .checkin(&who("alice"), &path("Art/a.png"), content, None, "a".into())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, PynError::StorageLimitReached { used: 6, .. }),
+        "a check-in counts the owner's LFS bytes: {err}"
+    );
+
+    let small = two.upload_blob(b"abcd".to_vec()).await.unwrap();
+    two.checkin(&who("alice"), &path("Art/b.png"), small, None, "b".into())
+        .await
+        .unwrap();
+    let owner = store.owner_usage(&user("alice")).await.unwrap();
+    assert_eq!((owner.stored_bytes, owner.lfs_bytes), (4, 6));
+    let (r1, r2) = (
+        store.repo_usage(&crate::RepoId::new("one")).await.unwrap(),
+        store.repo_usage(&crate::RepoId::new("two")).await.unwrap(),
+    );
+    assert_eq!(
+        [r1.stored_bytes, r1.lfs_bytes, r2.stored_bytes, r2.lfs_bytes],
+        [0, 6, 4, 0]
+    );
+}
+
+pub async fn racing_lfs_uploads_and_checkins_cannot_exceed_the_owner_cap(store: Store) {
+    let h = harness(store.clone());
+    for id in ["one", "two"] {
+        store
+            .create_repo(repo_record(id, "alice", id))
+            .await
+            .unwrap();
+    }
+    let (one, two) = (
+        owner_capped(&store, &h, "one", 12),
+        owner_capped(&store, &h, "two", 12),
+    );
+    let mut tasks = Vec::new();
+    for i in 0..6 {
+        let (one, two) = (one.clone(), two.clone());
+        tasks.push(tokio::spawn(async move {
+            let bytes = format!("{i:04}");
+            if i % 2 == 0 {
+                put_in(&one, bytes.as_bytes()).await.map(|_| ())
+            } else {
+                let content = two.upload_blob(bytes.into_bytes()).await?;
+                two.checkin(
+                    &who("alice"),
+                    &path(&format!("Art/{i}")),
+                    content,
+                    None,
+                    "x".into(),
+                )
+                .await
+                .map(|_| ())
+            }
+        }));
+    }
+    let mut won = 0;
+    for task in tasks {
+        match task.await.unwrap() {
+            Ok(()) => won += 1,
+            Err(e) => assert!(matches!(e, PynError::StorageLimitReached { .. }), "{e}"),
+        }
+    }
+    assert_eq!(won, 3);
+    let owner = store.owner_usage(&user("alice")).await.unwrap();
+    assert_eq!(owner.stored_bytes + owner.lfs_bytes, 12);
+}
+
+pub async fn racing_lfs_uploads_cannot_exceed_the_repository_cap(store: Store) {
+    let h = harness(store.clone());
+    store
+        .create_repo(repo_record("lfs", "alice", "lfs"))
+        .await
+        .unwrap();
+    let svc = Arc::new(
+        service_in(&store, &h, "lfs")
+            .with_storage_caps(user("alice"), Arc::new(OwnerCap(None)))
+            .with_repo_storage_cap("alice/lfs".into(), Some(8)),
+    );
+    let mut tasks = Vec::new();
+    for i in 0..6 {
+        let svc = svc.clone();
+        tasks.push(tokio::spawn(async move {
+            put_in(&svc, format!("{i:04}").as_bytes()).await.map(|_| ())
+        }));
+    }
+    let mut won = 0;
+    for task in tasks {
+        match task.await.unwrap() {
+            Ok(()) => won += 1,
+            Err(e) => assert!(matches!(e, PynError::RepoStorageLimitReached { .. }), "{e}"),
+        }
+    }
+    assert_eq!(won, 2);
+    assert_eq!(
+        store.lfs_bytes(&crate::RepoId::new("lfs")).await.unwrap(),
+        8
+    );
+}
+
+pub async fn lfs_objects_stay_out_of_the_unreferenced_upload_ceiling(store: Store) {
+    let h = harness(store.clone());
+    store
+        .create_repo(repo_record("lfs", "alice", "lfs"))
+        .await
+        .unwrap();
+    let id = crate::RepoId::new("lfs");
+    let svc = service_in(&store, &h, "lfs")
+        .with_unreferenced_cap(10)
+        .with_storage_caps(user("alice"), Arc::new(OwnerCap(Some(100))));
+
+    let (big, _) = put_in(&svc, &[7u8; 40]).await.unwrap();
+    assert_eq!(big.size, 40);
+    assert_eq!(store.unreferenced_bytes(&id).await.unwrap(), 0);
+    assert_eq!(store.lfs_bytes(&id).await.unwrap(), 40);
+    put_in(&svc, &[8u8; 40]).await.unwrap();
+
+    let err = svc.upload_blob(vec![9u8; 12]).await.unwrap_err();
+    assert!(
+        matches!(err, PynError::StorageLimitReached { limit: 10, .. }),
+        "a plain unreferenced upload is still refused: {err}"
+    );
+
+    let err = put_in(&svc, &[1u8; 30]).await.unwrap_err();
+    assert!(
+        matches!(err, PynError::StorageLimitReached { limit: 100, .. }),
+        "the storage cap still applies: {err}"
+    );
+
+    svc.upload_blob(vec![5u8; 6]).await.unwrap();
+    assert_eq!(store.unreferenced_bytes(&id).await.unwrap(), 6);
+    put_in(&svc, &[5u8; 6]).await.unwrap();
+    assert_eq!(
+        store.unreferenced_bytes(&id).await.unwrap(),
+        0,
+        "bytes named by an LFS object stop counting as unreferenced"
+    );
 }

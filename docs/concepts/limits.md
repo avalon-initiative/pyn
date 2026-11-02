@@ -20,11 +20,15 @@ Storage counts each distinct content once per repository (the same bytes checked
 nothing) and each repository separately, so deleting a repository frees its bytes. Revisions made before limits existed
 carry no recorded size and count as 0 bytes.
 
+LFS objects (see [Git LFS](lfs.md)) count too, per repository, next to revision content: the limit applies to
+`stored_bytes` plus `lfs_bytes`, and the usage reports show the two apart.
+
 Uploads no revision names yet are not part of `storage_bytes`; see [unreferenced uploads](#unreferenced-uploads).
 
 ## Unreferenced uploads
 
-A repository may hold a fixed number of bytes in uploads that no revision names yet. The server setting
+A repository may hold a fixed number of bytes in uploads that no revision names yet. LFS objects are not counted: no
+revision ever names one, and the storage caps limit them instead. The server setting
 `PYN_MAX_UNREFERENCED_UPLOAD_BYTES` (a whole number of bytes, applied to every repository) sets it; unset, it is
 32 GiB (34359738368). An upload that would pass it is refused with `storage_limit_reached` until some are checked in
 (see [content storage](storage.md#per-repository-visibility)). Like the other limits, `0` blocks growth entirely: every
@@ -67,7 +71,7 @@ overshoot. Each limit has its own error code and answers `409`:
 | `repo_limit_reached` | creating a repository when the owner already has the limit |
 | `member_limit_reached` | adding a member to an organization at its limit |
 | `repo_storage_limit_reached` | a check-in, restore, push or merge that would add content past the repository's own [storage cap](#per-repository-storage-cap) |
-| `storage_limit_reached` | a check-in, changeset, restore, push or merge that would add content past the owner's limit, or an upload past the repository's unreferenced-upload ceiling |
+| `storage_limit_reached` | a check-in, changeset, restore, push or merge that would add content past the owner's limit, or an upload past the repository's unreferenced-upload ceiling (LFS objects are exempt) |
 
 A frozen owner (below) is refused every write with `403 owner_frozen`, whatever its limits are.
 
@@ -159,8 +163,8 @@ not an owner gets `403 not_org_owner`. Only an administrator or a `manage_limits
 | Route | Returns |
 | --- | --- |
 | `GET /v1/owners/{owner}/limits` | `{owner_id, kind, effective, own}`: the limits in force, and the owner's own; a null field is unlimited |
-| `GET /v1/owners/{owner}/usage` | `{owner, owner_id, limits, usage: {repositories, members, stored_bytes}, repositories: [...]}` with each repository's usage, largest first, then by address |
-| `GET /v1/repos/{owner}/{name}/usage` | `{repository, stored_bytes, files, revisions, storage_cap}` |
+| `GET /v1/owners/{owner}/usage` | `{owner, owner_id, limits, usage: {repositories, members, stored_bytes, lfs_bytes}, repositories: [...]}` with each repository's usage, largest first, then by address |
+| `GET /v1/repos/{owner}/{name}/usage` | `{repository, stored_bytes, lfs_bytes, files, revisions, storage_cap}` |
 
 ```bash
 pyn usage              # you
@@ -185,12 +189,12 @@ atomic step as the write, so concurrent writes cannot pass the cap together.
 | Route | Notes |
 | --- | --- |
 | `PUT /v1/repos/{owner}/{name}/storage-cap` | `{storage_bytes}`, a number or `null` to remove the cap; returns `{repository, repo_id, storage_bytes}`. `400 invalid_request`, `404 repo_not_found`, `403 not_namespace_owner` (also for a repository that does not exist, when the caller may not set it), `not_org_owner`, `server_admin_required` or `service_scope_required` |
-| `GET /v1/repos/{owner}/{name}/usage` | `{repository, repo_id, stored_bytes, files, revisions, storage_cap}`; readable by anyone who can read the repository |
-| `GET /v1/repos/{owner}/{name}/usage/breakdown` | `{repository, repo_id, stored_bytes, storage_cap, folders, largest_paths}`; repository admins only (`403 forbidden` otherwise) |
+| `GET /v1/repos/{owner}/{name}/usage` | `{repository, repo_id, stored_bytes, lfs_bytes, files, revisions, storage_cap}`; readable by anyone who can read the repository |
+| `GET /v1/repos/{owner}/{name}/usage/breakdown` | `{repository, repo_id, stored_bytes, lfs_bytes, storage_cap, folders, largest_paths}`; repository admins only (`403 forbidden` otherwise) |
 
 The breakdown lists each top-level folder (`""` is the files at the repository root) with its distinct stored bytes and
 file count, largest first, and the 20 paths holding the most distinct bytes across their revisions. Content shared by
-several folders or paths counts in each, so their sums can pass `stored_bytes`. `GET /v1/owners/{owner}/usage` lists the
+several folders or paths counts in each, so their sums can pass `stored_bytes`. `lfs_bytes` is not part of the folders and paths. `GET /v1/owners/{owner}/usage` lists the
 owner's repositories largest first (then by address), each with its cap; a service credential with `manage_limits` reads it for any owner.
 
 A change of cap is recorded as `repo_storage_cap_changed` in the repository's audit log and raises the

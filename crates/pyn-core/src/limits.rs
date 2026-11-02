@@ -82,13 +82,19 @@ impl LimitsChange {
 pub struct Usage {
     pub repositories: u64,
     pub members: Option<u64>,
+    /// Bytes of distinct revision content.
     pub stored_bytes: u64,
+    /// Bytes of LFS objects; counted with `stored_bytes` against the storage cap.
+    pub lfs_bytes: u64,
 }
 
 /// What one repository uses now.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RepoUsage {
+    /// Bytes of distinct revision content.
     pub stored_bytes: u64,
+    /// Bytes of LFS objects; counted with `stored_bytes` against the storage cap.
+    pub lfs_bytes: u64,
     /// Paths with a head revision.
     pub files: u64,
     pub revisions: u64,

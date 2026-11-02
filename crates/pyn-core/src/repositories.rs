@@ -378,7 +378,8 @@ impl Repositories {
             repositories.push((record, used));
         }
         repositories.sort_by(|(a, x), (b, y)| {
-            (y.stored_bytes, a.address()).cmp(&(x.stored_bytes, b.address()))
+            (y.stored_bytes + y.lfs_bytes, a.address())
+                .cmp(&(x.stored_bytes + x.lfs_bytes, b.address()))
         });
         Ok(OwnerReport {
             limits,

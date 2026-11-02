@@ -11179,6 +11179,7 @@
           "repository",
           "repo_id",
           "stored_bytes",
+          "lfs_bytes",
           "files",
           "revisions",
           "storage_cap"
@@ -11188,6 +11189,12 @@
             "type": "integer",
             "format": "int64",
             "description": "Paths with a head revision.",
+            "minimum": 0
+          },
+          "lfs_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Bytes of LFS objects. The storage cap applies to `stored_bytes` plus this.",
             "minimum": 0
           },
           "repo_id": {
@@ -11215,6 +11222,7 @@
           "stored_bytes": {
             "type": "integer",
             "format": "int64",
+            "description": "Bytes of distinct revision content.",
             "minimum": 0
           }
         }
@@ -11226,6 +11234,7 @@
           "repository",
           "repo_id",
           "stored_bytes",
+          "lfs_bytes",
           "storage_cap",
           "folders",
           "largest_paths"
@@ -11244,6 +11253,12 @@
               "$ref": "#/components/schemas/PathUsage"
             },
             "description": "The 20 largest, largest first."
+          },
+          "lfs_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Bytes of the repository's LFS objects, not part of the folders and paths.",
+            "minimum": 0
           },
           "repo_id": {
             "type": "string"
@@ -12384,9 +12399,16 @@
         "required": [
           "repositories",
           "members",
-          "stored_bytes"
+          "stored_bytes",
+          "lfs_bytes"
         ],
         "properties": {
+          "lfs_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Bytes of LFS objects. The storage limit applies to `stored_bytes` plus this.",
+            "minimum": 0
+          },
           "members": {
             "type": [
               "integer",
@@ -12404,7 +12426,7 @@
           "stored_bytes": {
             "type": "integer",
             "format": "int64",
-            "description": "Bytes of distinct content, counted once per repository.",
+            "description": "Bytes of distinct revision content, counted once per repository.",
             "minimum": 0
           }
         }
