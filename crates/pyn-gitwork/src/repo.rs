@@ -61,6 +61,11 @@ impl Repo {
             None => Config::default(),
         };
         config.extend(git.config().clone());
+        let mut lfs_config = git
+            .work_tree()
+            .map(crate::lfs::lfsconfig_layer)
+            .unwrap_or_default();
+        lfs_config.extend(config.clone());
         Ok(Self {
             objects: Arc::new(git.objects()?),
             abbrev: OnceLock::new(),
@@ -69,7 +74,7 @@ impl Repo {
             home: home.map(Path::to_path_buf),
             xdg: xdg.map(Path::to_path_buf),
             attributes: Mutex::new(None),
-            filters: Arc::new(Filters::new(git.work_tree(), git.common_dir())),
+            filters: Arc::new(Filters::new(git.work_tree(), git.common_dir(), &lfs_config)),
             ignore_override: Mutex::new(None),
             git,
         })

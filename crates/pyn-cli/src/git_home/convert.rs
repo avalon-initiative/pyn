@@ -110,7 +110,7 @@ pub(super) fn warn_lfs_in_commit(git: &GitHome, commit: &ObjectId) -> Result<()>
         let missing = pyn_gitwork::lfs::Pointer::parse(&git.repo.blob(&entry.id)?)
             .is_some_and(|p| !git.repo.filters().lfs().object_path(&p.oid).exists());
         if missing {
-            pyn_gitwork::lfs::warn_pointers_kept();
+            pyn_gitwork::lfs::warn_pointers_kept(None);
             break;
         }
     }

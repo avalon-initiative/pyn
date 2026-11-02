@@ -8,6 +8,7 @@ mod env;
 mod error;
 pub mod exchange;
 mod http;
+pub mod lfs;
 mod local;
 pub mod promisor;
 mod ssh;

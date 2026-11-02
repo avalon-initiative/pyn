@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 pub mod gitsrv;
+pub mod lfssrv;
 
 use std::path::Path;
 

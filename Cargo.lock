@@ -1994,12 +1994,16 @@ name = "pyn-gittransport"
 version = "0.0.1"
 dependencies = [
  "axum",
+ "base64 0.23.1",
  "flate2",
  "pyn-git",
  "pyn-gitwire",
  "pyn-object",
  "reqwest",
  "rpassword",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
  "tempfile",
  "thiserror",
  "tokio",

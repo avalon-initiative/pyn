@@ -10,7 +10,7 @@ use std::sync::Mutex;
 use pyn_git::Config;
 
 use crate::error::{Error, Result};
-use crate::lfs::Store;
+use crate::lfs::{Options, Store};
 
 /// The driver a `filter=<name>` attribute selects.
 #[derive(Debug, Clone)]
@@ -109,10 +109,10 @@ enum Slot {
 }
 
 impl Filters {
-    pub fn new(root: Option<&Path>, common_dir: &Path) -> Self {
+    pub fn new(root: Option<&Path>, common_dir: &Path, config: &Config) -> Self {
         Self {
             root: root.map(Path::to_path_buf),
-            lfs: Store::new(common_dir),
+            lfs: Store::new(root, common_dir, Options::new(common_dir, config)),
             procs: Mutex::new(HashMap::new()),
         }
     }
@@ -134,7 +134,7 @@ impl Filters {
             Driver::Lfs { .. } => {
                 let r = match op {
                     Op::Clean => self.lfs.clean(data),
-                    Op::Smudge => self.lfs.smudge(data),
+                    Op::Smudge => self.lfs.smudge(path, data),
                 };
                 match r {
                     Ok(v) => Some(v),

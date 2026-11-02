@@ -2867,20 +2867,66 @@ oid sha256:<64 lowercase hex digits>
 size <bytes>
 ```
 
-Content that already is a pointer file (at most 1024 bytes, `version`, `oid sha256:` and `size` lines, a trailing newline) and
-empty content are passed through unchanged, so `status` sees pointers as unmodified. `smudge` turns a pointer file into the
-stored object; a pointer whose object is not in the local store stays as the pointer file, with one warning on standard error
-per invocation, because the git home cannot download LFS objects yet (its Batch API client is not built; a pyn server already serves the Batch API, see [Git LFS](lfs.md)). A stored object with the wrong size
-or hash is an error. `GIT_LFS_SKIP_SMUDGE=1` (or `true`) leaves pointers as they are. `fetch` and `pull` also warn once when
-the `.gitattributes` in the tip of a ref that moved applies `filter=lfs` to a path whose pointer names an object that is not
-stored (`clone` in the commit it checks out, none for `--bare` or `-n`); only `.gitattributes` files in the tree are read for
-that check. The warning wording is not part of the contract. Covered by `crates/pyn-cli/tests/git_lfs_client.rs` (the pointer
-bytes are also compared with `git lfs pointer` when `git-lfs` is installed and skipped otherwise) and
-`crates/pyn-cli/tests/git_lfs.rs` (#311, #628).
+Content that already is a pointer file (at most 1024 bytes, `version`, `oid sha256:` and `size` lines, optional
+`ext-<n>-<name> sha256:<oid>` lines, a trailing newline) and empty content are passed through unchanged, so `status` sees
+pointers as unmodified. A stored object with the wrong size or hash is an error. `GIT_LFS_SKIP_SMUDGE=1` (or `true`) leaves
+pointers as they are.
 
-Not built on the git home: downloading and uploading objects (the Batch API client, `lfs.url`, transfer adapters, credentials), the
-locking API client and `lockable`, `lfs.storage`, `lfs.fetchinclude` and `fetchexclude`, pointer extensions (`ext-*` lines), and the `git lfs`
-commands (`track`, `fetch`, `pull`, `push`, `ls-files`, `prune`, `lock`, `unlock`, `locks`).
+**Download on smudge.** `smudge` turns a pointer file into the object. When the object is not in the store, pyn downloads it
+first with the Batch API (`download` operation, `basic` transfer, `application/vnd.git-lfs+json`), a hundred objects to a
+request. The download is written to `<storage>/tmp/<oid>.part`; an interrupted one continues with a `Range` request, and the
+finished file must match the pointer's size and sha256 before it enters the store (a mismatch is discarded and retried once).
+If the object cannot be had (no endpoint, no credentials, the server refuses, a transfer fails, the path is excluded by
+`lfs.fetchinclude` or `lfs.fetchexclude`), the pointer file stays in the work tree and one warning goes to standard error per
+invocation, naming the cause when there is one. `fetch` and `pull` also warn once when the `.gitattributes` in the tip of a ref
+that moved applies `filter=lfs` to a path whose pointer names an object that is not stored (`clone` in the commit it checks out,
+none for `--bare` or `-n`); only `.gitattributes` files in the tree are read for that check, and nothing is downloaded until a
+file is written to the work tree. The warning wording is not part of the contract.
+
+**Upload before push.** `push` (unless `--no-verify`, as for git's `pre-push` hook) looks at the files the commits being sent
+change, finds the ones that are pointer files, and offers them to the server (`upload` operation) before the refs move. For
+each object the server lacks it sends a `PUT` of the stored file with its `Content-Length`, then calls the `verify` action when
+the server names one. Objects the server already has are not sent. A repository with no local LFS store skips this step. A
+failed upload fails the push before any ref is updated; an object that the server wants but the local store lacks is an error
+that names it.
+
+**The endpoint.** For a download, the remote is `origin`, else the only remote; for a push, the remote being pushed to. The URL is
+the first of these that is set:
+
+1. for a push, `remote.<name>.lfspushurl`, then `lfs.pushurl`;
+2. `remote.<name>.lfsurl`;
+3. `lfs.url`;
+4. the remote's URL (after `url.<base>.insteadOf`), made an LFS URL as git-lfs does: `.git` is appended when missing, then
+   `/info/lfs`. Only `http` and `https` remotes can be derived from; any other remote needs one of the settings above.
+
+A pyn server accepts `https://pyn.example/v1/repos/acme/game` as a remote and serves the derived
+`.../acme/game.git/info/lfs` (see [Git LFS](lfs.md)). Settings are read from `.git/config`, then the user's global
+configuration, then the `.lfsconfig` file at the root of the work tree, lowest priority. `.lfsconfig` is committed content, so only its
+`lfs.*` keys and `remote.<name>.lfsurl` and `lfspushurl` are honoured; anything else in it (a credential helper, for one) is ignored.
+Only an `.lfsconfig` in the work tree is read; a bare repository has none.
+
+**Credentials** go through git's own flow: credentials in the URL, then `credential.helper` (`get`, then `store` on success and
+`erase` on a refusal), `credential.username`, `credential.useHttpPath`, askpass and the terminal, scoped by URL like every other
+`credential.*` key. `http.proxy`, `http.sslVerify`, `http.sslCAInfo` and `http.extraHeader` apply too. Credentials go only to the
+endpoint's host; an action URL on another host (object storage) is called without them, unless the server's response names an
+`Authorization` header for it. The `basic` HTTP scheme is the only one used, and an action URL that downgrades `https` to `http`
+is refused.
+
+**Settings.** `lfs.storage` moves the local store (the default is `lfs` in the common directory; a relative value is relative to
+that directory). `lfs.fetchinclude` and `lfs.fetchexclude` take comma-separated path patterns that decide which paths a smudge
+downloads for: a pattern without a slash matches at any depth, a leading slash anchors it at the root, a trailing slash matches
+everything below the folder, and `*`, `?` and `**` work as in `.gitignore`. A pointer whose path is not allowed stays a pointer.
+`ext-*` lines are kept byte for byte when a pointer is read and written; pyn does not run `lfs.extension.<name>.*` programs, so a
+pointer that has any is never smudged (it stays as it is, with a warning) and its object is not downloaded.
+
+Covered by `crates/pyn-gittransport/tests/lfs.rs` (the client against a local Batch server: endpoints, verified and resumed
+downloads, uploads, credentials), `crates/pyn-cli/tests/git_lfs_remote.rs` (smudge, push, settings, `.lfsconfig`),
+`crates/pyn-cli/tests/git_lfs_client.rs` (the pointer bytes are also compared with `git lfs pointer` when `git-lfs` is installed
+and skipped otherwise) and `crates/pyn-cli/tests/git_lfs.rs` (#311, #628, #785).
+
+Not built on the git home: `ssh` remotes (`git-lfs-authenticate`) and the other transfer adapters (`tus`, custom), concurrent
+transfers, `lfs.transfer.*` tuning, the locking API client and `lockable`, `lfs.extension.*` programs, and the `git lfs` commands
+(`track`, `fetch`, `pull`, `push`, `ls-files`, `prune`, `lock`, `unlock`, `locks`).
 
 ### Refused commands
 
