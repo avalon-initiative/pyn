@@ -189,6 +189,7 @@ Commands people reach for that are not in the daily set.
 | `git config --remove-section`, `--rename-section`, `-e`, `--blob`, `--type`, `--bool`, `--get-regexp`, `--show-origin`, `-z` and value patterns | none | unsupported | Usage error (`129`). |
 | `git fsck` | `pyn verify [<path>]` | different | Checks every revision's hash and its link to the one before, and the audit log's chain. Silent and exit 0 when intact, as git; otherwise a `PROBLEM`, `WHAT`, `PATH` table and exit 1. `-v` / `--verbose` also prints what was checked. See [integrity](integrity.md). On a git home `pyn fsck` is git's command; see [Storage maintenance](#storage-maintenance). |
 | `git reflog [show\|list\|exists\|expire\|delete]` | `pyn reflog ...` on a git home | git home only | See [Reflogs](#reflogs). On a pyn server it prints the git-command message; the closest analogue there is `pyn audit`, an append-only log of lock, revision and access events, filtered with `--path`, `--actor`, `--action`, `--before`, `--limit` and permission-gated (`view_audit`). |
+| `git lfs track`, `untrack`, `ls-files`, `fetch`, `pull`, `push`, `prune` | `pyn lfs <subcommand>` on a git home | git home only | See [Git LFS commands](#git-lfs-commands). No `git-lfs` program is needed. |
 | `git count-objects`, `git fsck`, `git prune`, `git repack`, `git gc`, `git pack-refs` | the same names on a git home | git home only | See [Storage maintenance](#storage-maintenance). On a pyn server they fail with `fatal: not a git repository (or any of the parent directories): .git` (`128`). |
 | `git grep [<options>] [-e] <pattern> [<rev>...] [[--] <path>...]` | `pyn grep ...` on a git home | git home only | See [Grep](#grep). Searches the tracked files of the work tree, the index (`--cached`) or the commits named; `-n -i -w -l -c -v -q -h -H -a -I -E -G -F`, `-e` (repeatable), `--and`, `--or`, `--not` and parentheses, pathspecs after the revisions or `--`. On a pyn server or local-store workspace it says it needs a git repository (`1`). |
 | `git bisect start [--term-(bad\|new)=<term> --term-(good\|old)=<term>] [--no-checkout] [--first-parent] [<bad> [<good>...]] [--] [<pathspec>...]`, `good`\|`old`, `bad`\|`new`, `skip`, `next`, `reset`, `run`, `log`, `replay`, `terms` | `pyn bisect ...` on a git home | git home only | See [Bisect](#bisect). Git's search, output, exit statuses and `.git` state, so git and pyn can continue each other's bisection; `visualize` and `view` are not built (`129`). On a pyn server or local-store workspace it fails with `fatal: not a git repository (or any of the parent directories): .git` (`128`). |
@@ -1082,6 +1083,7 @@ quotes them (`core.quotePath`), and left as they are with `-z`.
 | `clean` | See [Clean](#clean). |
 | `submodule` | See [Submodules](#submodules). |
 | `reflog` | See [Reflogs](#reflogs). |
+| `lfs` | See [Git LFS commands](#git-lfs-commands). |
 | `rev-parse`, `ls-files`, `ls-tree`, `cat-file`, `show-ref`, `shortlog`, `describe`, `name-rev` | See [Inspection commands](#inspection-commands). |
 | `verify-commit`, `verify-tag` | See [Signing](#signing). |
 | `sparse-checkout` | See [Sparse checkout](#sparse-checkout). |
@@ -2919,14 +2921,39 @@ everything below the folder, and `*`, `?` and `**` work as in `.gitignore`. A po
 `ext-*` lines are kept byte for byte when a pointer is read and written; pyn does not run `lfs.extension.<name>.*` programs, so a
 pointer that has any is never smudged (it stays as it is, with a warning) and its object is not downloaded.
 
+#### Git LFS commands
+
+The `git lfs` commands that manage objects are one group, `pyn lfs <subcommand>`, rather than top-level verbs: `pyn fetch`, `pull`,
+`push` and `prune` already mean the git commands, so the group keeps the two apart and leaves room for the locking commands
+without more top-level names. It runs on a git home only; elsewhere it prints the git-command message.
+
+Plain git behaviour already does the transfers a normal workflow needs, so these commands are for the cases it does not cover.
+`clone`, `switch`, `checkout`, `restore` and `pull` download an object when they write a pointer's file (the smudge above), and
+`push` uploads the objects of the commits it sends before the refs move. Use the commands to download without checking out, to
+upload without a git push, to recover after `push --no-verify` or `GIT_LFS_SKIP_SMUDGE`, and to manage the store and
+`.gitattributes`.
+
+| Command | Does |
+| --- | --- |
+| `pyn lfs track [<pattern>...]` | Appends `<pattern> filter=lfs diff=lfs merge=lfs -text` to the `.gitattributes` at the root of the work tree (spaces in a pattern are written as `[[:space:]]`), printing `Tracking "<pattern>"`, or `"<pattern>" already supported`. Without a pattern it lists the root file's `filter=lfs` patterns. Files already in the index are not converted; `pyn add` them again. |
+| `pyn lfs untrack <pattern>...` | Removes the `filter=lfs` lines for those patterns from the root `.gitattributes`, printing `Untracking "<pattern>"`. |
+| `pyn lfs ls-files [-l] [-n]` | Lists the index entries that are pointer files as `<oid> <state> <path>`, state `*` when the local store has the object and `-` when it does not. `-l` shows the whole object id (10 characters otherwise); `-n` shows only paths. Only paths that `filter=lfs` applies to are read. |
+| `pyn lfs fetch [<remote> [<rev>...]]` | Downloads the objects the pointers in the trees of the revisions (default `HEAD`) name and the store lacks, through the Batch client. `lfs.fetchinclude` and `lfs.fetchexclude` apply. The remote is `origin`, else the only remote; it must be configured. |
+| `pyn lfs pull [<remote>]` | `fetch` for `HEAD`, then replaces each indexed pointer file in the work tree that still holds exactly its pointer with the object. Modified and missing files are left alone. |
+| `pyn lfs push [<remote> [<rev>...]]` | Offers every object the pointers in the commits reachable from the revisions (default `HEAD`) name, and uploads the ones the server lacks. Unlike the upload in `push`, it does not skip what the remote-tracking refs already have, so it also repairs a push made with `--no-verify`. |
+| `pyn lfs prune [-n] [-v] [--days <n>]` | Deletes stored objects that nothing needs: kept are the pointers in the index, in the tree of `HEAD`, in commits from the last `--days` days (default 7), and in commits no remote-tracking ref reaches. With no remote-tracking refs every commit counts as unpushed, so nothing is deleted. `-n` lists what would go and deletes nothing; `-v` lists each object and its size. |
+
+Not built: `status`, `migrate`, `env`, `install` (there are no hooks or filters to install), `fsck`, `--all` and `--recent`
+on `fetch` and `push`, and per-path arguments on `ls-files`.
+
 Covered by `crates/pyn-gittransport/tests/lfs.rs` (the client against a local Batch server: endpoints, verified and resumed
-downloads, uploads, credentials), `crates/pyn-cli/tests/git_lfs_remote.rs` (smudge, push, settings, `.lfsconfig`),
+downloads, uploads, credentials), `crates/pyn-cli/tests/git_lfs_remote.rs` (smudge, push, settings, `.lfsconfig`), `crates/pyn-cli/tests/git_lfs_commands.rs` (the `pyn lfs` commands),
 `crates/pyn-cli/tests/git_lfs_client.rs` (the pointer bytes are also compared with `git lfs pointer` when `git-lfs` is installed
 and skipped otherwise) and `crates/pyn-cli/tests/git_lfs.rs` (#311, #628, #785).
 
 Not built on the git home: `ssh` remotes (`git-lfs-authenticate`) and the other transfer adapters (`tus`, custom), concurrent
 transfers, `lfs.transfer.*` tuning, the locking API client and `lockable`, `lfs.extension.*` programs, and the `git lfs` commands
-(`track`, `fetch`, `pull`, `push`, `ls-files`, `prune`, `lock`, `unlock`, `locks`).
+not listed under [Git LFS commands](#git-lfs-commands) (`lock`, `unlock`, `locks`).
 
 ### Refused commands
 

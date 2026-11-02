@@ -181,6 +181,8 @@ enum Command {
     Annotate(git_home::BlameArgs),
     /// Show, check and prune the reflog (a git repository only).
     Reflog(git_home::ReflogArgs),
+    /// Track paths with Git LFS, and fetch, pull, push, list and prune its objects (a git repository only).
+    Lfs(git_home::LfsArgs),
     /// Reapply the current branch's commits on top of another base (a git repository only).
     Rebase(git_home::RebaseArgs),
     /// Convert a workspace made before local commits to one that keeps them (a pyn server only).
@@ -2207,6 +2209,10 @@ fn run(cli: Cli) -> Result<()> {
         }
         Command::Reflog(_) => {
             eprintln!("{}", unsupported::message("reflog"));
+            std::process::exit(1);
+        }
+        Command::Lfs(_) => {
+            eprintln!("{}", unsupported::message("lfs"));
             std::process::exit(1);
         }
         Command::RevParse(_)
