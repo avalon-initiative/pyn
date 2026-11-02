@@ -689,7 +689,7 @@ enum RepoCommand {
         /// Use this file as the repository's first `.pyn/pyn.toml` instead of the default (everything exclusive).
         #[arg(long, conflicts_with = "no_policy")]
         policy: Option<PathBuf>,
-        /// Create the repository without a `.pyn/pyn.toml`; the server's fallback policy applies until one is added.
+        /// Create the repository without a `.pyn/pyn.toml`; the repository's initial policy applies until one is added.
         #[arg(long)]
         no_policy: bool,
     },

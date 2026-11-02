@@ -568,3 +568,17 @@ fn an_empty_message_is_refused_before_the_repository_is_created() {
     raw_commit(&dir, "b.txt", "");
     refused(&env, &dir, 128, "its message is empty");
 }
+
+#[test]
+fn a_default_server_takes_the_move_because_a_new_repository_starts_shared() {
+    let env = common::start_default_server();
+    let dir = env.dir("plain");
+    git(&dir, &["init", "-q", "-b", "master"]);
+    commit(&dir, ".dockerignore", b"target\n", "dotfile");
+    commit(&dir, "src/a.txt", b"one\n", "first");
+    commit(&dir, "README.md", b"hi\n", "readme");
+
+    ok(&convert(&env, &dir, &[]));
+
+    assert!(!server_heads(&env, NEW).is_empty());
+}

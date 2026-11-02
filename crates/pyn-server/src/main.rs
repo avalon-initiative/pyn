@@ -285,7 +285,7 @@ async fn main() -> anyhow::Result<()> {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .init();
-    let rules = match std::env::var("PYN_CONFIG") {
+    let (rules, initial_policy) = match std::env::var("PYN_CONFIG") {
         Ok(path) => {
             let size = std::fs::metadata(&path)?.len();
             anyhow::ensure!(
@@ -293,9 +293,13 @@ async fn main() -> anyhow::Result<()> {
                 "PYN_CONFIG is larger than {} bytes",
                 pyn_core::rules::MAX_POLICY_BYTES
             );
-            Rules::from_toml(&std::fs::read_to_string(path)?)?
+            let text = std::fs::read_to_string(path)?;
+            (Rules::from_toml(&text)?, text)
         }
-        Err(_) => Rules::empty(),
+        Err(_) => (
+            Rules::empty(),
+            pyn_core::rules::DEFAULT_INITIAL_POLICY.to_string(),
+        ),
     };
 
     let request_limits = request_limits()?;
@@ -487,7 +491,8 @@ async fn main() -> anyhow::Result<()> {
         access.clone(),
         clock.clone(),
         rules,
-    );
+    )
+    .with_initial_policy(&initial_policy)?;
     if let Ok(limit) = std::env::var("PYN_MAX_LOCKS_ALLOWED_PER_USER") {
         repos = repos.with_default_max_locks(limit.parse()?)?;
     }

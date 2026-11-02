@@ -926,7 +926,7 @@ the question, and without a terminal and without `--yes` it fails (`128`) with n
   paths) is committed to `main` and written into the folder, which makes the matching existing files exclusive and read-only
   until locked. A repository whose history already tracks `.pyn/pyn.toml` keeps it, and `--exclusive` is then a usage error. An
   untracked `.pyn/pyn.toml` in the folder is sent instead of the starter policy. The history is sent before the policy, so
-  nothing in it needs a lock; a server whose default rules make a path of the history exclusive refuses the move for that reason.
+  nothing in it needs a lock; a new repository starts under the server's initial policy (shared unless the operator's `PYN_CONFIG` says otherwise), so on a default server nothing in the history needs a lock; a server whose `PYN_CONFIG` makes a path of the history exclusive refuses the move for that reason.
 - **How:** everything the server would refuse is checked first, and a refusal lists the commits and changes nothing, on the server
   or in the folder: a submodule entry, a merge of more than two parents, an empty commit, a commit that changes more than
   10000 files, a tree over 100000 entries, a commit the server cannot store byte-for-byte (not in git's canonical form, or not

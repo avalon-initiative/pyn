@@ -449,8 +449,8 @@ fn explain(err: anyhow::Error, branch: &str) -> anyhow::Error {
         .downcast_ref::<ApiError>()
         .is_some_and(|e| matches!(e.code.as_str(), "lock_required" | "lock_held"));
     let hint = if locked {
-        "; the server's default rules make a path in this history exclusive, and a history move takes no locks, so \
-         the repository would need default rules that leave it shared"
+        "; the repository's initial policy makes a path in this history exclusive, and a history move takes no locks, so \
+         the repository would need an initial policy that leaves it shared"
     } else {
         ""
     };

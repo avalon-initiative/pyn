@@ -75,7 +75,7 @@ for a branch when that branch has the policy commit").
   is only a file there. It becomes a policy commit when a merge or fast-forward lands it on the default branch, and releases
   no lock and converts no path until then.
 - The **effective policy of a commit** is the policy of the highest-numbered revision of `.pyn/pyn.toml` made in a policy
-  commit that is that commit or one of its ancestors; the server's fallback rules (or all-exclusive) when there is none.
+  commit that is that commit or one of its ancestors; the repository's initial policy when there is none.
   The **effective policy of a branch** is that of its head.
 - On the default branch this is the latest policy commit, which is what the server enforces, so a policy commit applies to
   the default branch at once. Any other branch keeps the policy it last picked up, whatever the default branch has done

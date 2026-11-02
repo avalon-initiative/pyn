@@ -174,6 +174,7 @@ fn repo_from(row: &PgRow) -> Result<RepoRecord> {
         storage_cap: row
             .get::<Option<i64>, _>("max_storage_bytes")
             .map(|n| n as u64),
+        initial_policy: row.get("initial_policy"),
         created_at: row.get("created_at"),
     })
 }
@@ -2452,8 +2453,8 @@ impl MetadataStore for PgMetadataStore {
             }
         }
         let inserted = sqlx::query(
-            "INSERT INTO repositories (id, owner, name, visibility, lease_hours, max_locks, max_storage_bytes, created_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+            "INSERT INTO repositories (id, owner, name, visibility, lease_hours, max_locks, max_storage_bytes, initial_policy, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
         )
         .bind(repo.id.as_str())
         .bind(repo.owner.as_str())
@@ -2462,6 +2463,7 @@ impl MetadataStore for PgMetadataStore {
         .bind(repo.settings.lease_hours as i32)
         .bind(repo.settings.max_locks.map(|n| n as i32))
         .bind(repo.storage_cap.map(|n| n as i64))
+        .bind(&repo.initial_policy)
         .bind(repo.created_at)
         .execute(&mut *tx)
         .await;
@@ -2479,7 +2481,7 @@ impl MetadataStore for PgMetadataStore {
 
     async fn find_repo(&self, owner: &UserId, name: &str) -> Result<Option<RepoRecord>> {
         let row = sqlx::query(
-            "SELECT id, owner, name, visibility, lease_hours, max_locks, max_storage_bytes, created_at FROM repositories
+            "SELECT id, owner, name, visibility, lease_hours, max_locks, max_storage_bytes, initial_policy, created_at FROM repositories
              WHERE owner = $1 AND name = $2",
         )
         .bind(owner.as_str())
@@ -2492,7 +2494,7 @@ impl MetadataStore for PgMetadataStore {
 
     async fn get_repo(&self, id: &RepoId) -> Result<Option<RepoRecord>> {
         let row = sqlx::query(
-            "SELECT id, owner, name, visibility, lease_hours, max_locks, max_storage_bytes, created_at FROM repositories
+            "SELECT id, owner, name, visibility, lease_hours, max_locks, max_storage_bytes, initial_policy, created_at FROM repositories
              WHERE id = $1",
         )
         .bind(id.as_str())
@@ -2504,7 +2506,7 @@ impl MetadataStore for PgMetadataStore {
 
     async fn list_repos(&self, owner: Option<&UserId>) -> Result<Vec<RepoRecord>> {
         let rows = sqlx::query(
-            "SELECT id, owner, name, visibility, lease_hours, max_locks, max_storage_bytes, created_at FROM repositories
+            "SELECT id, owner, name, visibility, lease_hours, max_locks, max_storage_bytes, initial_policy, created_at FROM repositories
              WHERE ($1::text IS NULL OR owner = $1) ORDER BY owner, name",
         )
         .bind(owner.map(UserId::as_str))
@@ -2520,7 +2522,7 @@ impl MetadataStore for PgMetadataStore {
         limit: usize,
     ) -> Result<Vec<RepoRecord>> {
         let rows = sqlx::query(
-            "SELECT id, owner, name, visibility, lease_hours, max_locks, max_storage_bytes, created_at FROM repositories
+            "SELECT id, owner, name, visibility, lease_hours, max_locks, max_storage_bytes, initial_policy, created_at FROM repositories
              WHERE visibility = 'public' AND ($1::text IS NULL OR (owner COLLATE \"C\", name COLLATE \"C\") > ($1, $2))
              ORDER BY owner COLLATE \"C\", name COLLATE \"C\" LIMIT $3",
         )
@@ -2550,7 +2552,7 @@ impl MetadataStore for PgMetadataStore {
                  max_locks = CASE WHEN $5 THEN $6 ELSE max_locks END,
                  max_storage_bytes = CASE WHEN $7 THEN $8 ELSE max_storage_bytes END
              WHERE id = $1
-             RETURNING id, owner, name, visibility, lease_hours, max_locks, max_storage_bytes, created_at",
+             RETURNING id, owner, name, visibility, lease_hours, max_locks, max_storage_bytes, initial_policy, created_at",
         )
         .bind(id.as_str())
         .bind(update.name.as_deref())
@@ -2712,7 +2714,7 @@ mod tests {
             .execute(&store.pool)
             .await
             .unwrap();
-        sqlx::query("DELETE FROM _sqlx_migrations WHERE version IN (8, 11, 42)")
+        sqlx::query("DELETE FROM _sqlx_migrations WHERE version IN (8, 11, 42, 46)")
             .execute(&store.pool)
             .await
             .unwrap();

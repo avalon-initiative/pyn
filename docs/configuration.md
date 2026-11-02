@@ -9,7 +9,7 @@ keep needs at least `PYN_DATABASE_URL` and `PYN_DATA_DIR`.
 | `PYN_CREATE_DATABASE` | `true` creates the database if it does not exist |
 | `PYN_DATA_DIR` | Directory for uploaded content; unset means in-memory |
 | `PYN_INSTANCES` | How many server copies share the database, default 1; above 1 the server refuses to start without `PYN_DATABASE_URL` and `PYN_DATA_DIR` (a shared volume), and every copy needs the same `PYN_SETUP_TOKEN` until set up |
-| `PYN_CONFIG` | Fallback policy for repositories that have no `.pyn/pyn.toml` yet; unset means everything is exclusive (`make dev` uses `scripts/demo.pyn.toml`) |
+| `PYN_CONFIG` | Initial policy of every repository created while it is set (stored with the repository), and the fallback of older repositories that have no `.pyn/pyn.toml`; unset means new repositories start shared and older ones are all-exclusive (`make dev` uses `scripts/demo.pyn.toml`) |
 | `RUST_LOG` | Log filter in `tracing` syntax (`debug`, `pyn_server=debug,info`); default `info`. An unparsable value falls back to the default |
 | `PYN_ADDR` | Listen address, default `127.0.0.1:7878` |
 | `PYN_DEV_AUTH` | `true` accepts the `X-Pyn-User` header with every permission; for server tests only, not used by `make dev` |
