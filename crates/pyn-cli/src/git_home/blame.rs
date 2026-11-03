@@ -1,7 +1,8 @@
 //! `pyn blame` and `pyn annotate` on a git repository: `git blame`'s lines, line ranges, rename following and formats.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet};
 use std::ffi::OsString;
+use std::io::IsTerminal;
 use std::path::Path;
 use std::rc::Rc;
 
@@ -15,8 +16,9 @@ use super::blame_format::{Entry, Flags, Info, Layout};
 use super::blame_range::{RangeError, parse};
 use super::blame_rename::blob_id;
 use super::blame_walk::{Board, Fake, Settings};
-use super::plumbing::{Resolver, emit_bytes, peel, prefix, usage};
+use super::plumbing::{Resolver, emit_bytes, peel, prefix};
 use crate::commit_format::DateStyle;
+use crate::date_mode::DateMode;
 
 const BLAME_USAGE: &str = "usage: pyn blame [<options>] [<rev-opts>] [<rev>] [--] <file>";
 const ANNOTATE_USAGE: &str = "usage: pyn annotate [<options>] [<rev-opts>] [<rev>] [--] <file>";
@@ -32,9 +34,12 @@ Options (a git repository only; output and exit status are git blame's):
   -p, --porcelain       machine output; --line-porcelain repeats the commit details for every line
   --abbrev=<n>          digits of the id; --date=<format> sets the date style
   --contents <file>     blame this file's contents (`-` for standard input) as the newest version
-Revisions: <rev>, <a>..<b>, ^<rev>. Not built (usage error 129): -M, -C, --incremental, -L :<funcname>,
---ignore-rev, --ignore-revs-file, --reverse, --first-parent, --show-stats, --score-debug, --color-lines, --color-by-age,
---minimal, --diff-algorithm, -S, and other revision options.";
+  --ignore-rev <rev>    blame past this commit (repeatable); --ignore-revs-file <file> lists them (`blame.ignoreRevsFile`)
+  --reverse             find where lines last existed: `<old>..<new>`, or `<old>` alone for `<old>..HEAD`
+  --minimal             spend extra cycles to find better diffs
+Revisions: <rev>, <a>..<b>, <a>...<b>, ^<rev>. Not built (usage error 129): -M, -C, --incremental, -L :<funcname>,
+--show-stats, --score-debug, --color-lines, --color-by-age, --diff-algorithm, -S, --reverse with --first-parent and other
+revision options.";
 
 #[derive(Args, Debug)]
 #[command(disable_help_flag = true, after_help = HELP)]
@@ -60,6 +65,11 @@ struct Parsed {
     root: Option<bool>,
     ignore_whitespace: bool,
     first_parent: bool,
+    minimal: bool,
+    reverse: bool,
+    ignore_revs: Vec<String>,
+    ignore_files: Vec<String>,
+    progress: Option<bool>,
     positional: Vec<String>,
     after_dashdash: Option<Vec<String>>,
 }
@@ -82,6 +92,18 @@ fn not_built(annotate: bool, option: &str) -> ! {
         annotate,
         &format!("option `{option}' is not supported on a git repository yet"),
     )
+}
+
+fn value_of(
+    it: &mut impl Iterator<Item = String>,
+    attached: Option<String>,
+    name: &str,
+    annotate: bool,
+) -> String {
+    match attached.or_else(|| it.next()) {
+        Some(v) => v,
+        None => fail(annotate, &format!("option `{name}' requires a value")),
+    }
 }
 
 fn parse_args(args: Vec<OsString>, annotate: bool) -> Parsed {
@@ -121,6 +143,14 @@ fn parse_args(args: Vec<OsString>, annotate: bool) -> Parsed {
                     ),
                 },
                 ("first-parent", None) => p.first_parent = true,
+                ("minimal", None) => p.minimal = true,
+                ("reverse", None) => p.reverse = true,
+                ("progress", None) => p.progress = Some(true),
+                ("no-progress", None) => p.progress = Some(false),
+                ("ignore-rev", v) => p.ignore_revs.push(value_of(&mut it, v, name, annotate)),
+                ("ignore-revs-file", v) => {
+                    p.ignore_files.push(value_of(&mut it, v, name, annotate));
+                }
                 ("date", Some(v)) => p.date = Some(v),
                 ("contents", Some(v)) => p.contents = Some(v),
                 ("contents", None) => match it.next() {
@@ -128,8 +158,7 @@ fn parse_args(args: Vec<OsString>, annotate: bool) -> Parsed {
                     None => fail(annotate, "option `contents' requires a value"),
                 },
                 (
-                    "incremental" | "show-stats" | "progress" | "score-debug" | "color-lines"
-                    | "color-by-age" | "minimal" | "ignore-rev" | "ignore-revs-file" | "reverse"
+                    "incremental" | "show-stats" | "score-debug" | "color-lines" | "color-by-age"
                     | "diff-algorithm",
                     _,
                 ) => not_built(annotate, &format!("--{name}")),
@@ -251,14 +280,24 @@ pub(super) fn blame(git: &GitHome, cwd: &Path, args: BlameArgs, annotate: bool) 
     };
     let (mut positives, mut hidden): (Vec<(String, ObjectId)>, HashSet<ObjectId>) =
         (Vec::new(), HashSet::new());
-    let mut negatives: Vec<ObjectId> = Vec::new();
+    let mut negatives: Vec<(String, ObjectId)> = Vec::new();
     for rev in &rev_args {
-        if rev.contains("...") {
-            not_built(annotate, "<a>...<b>");
+        if let Some((a, b)) = rev.split_once("...") {
+            let (a, b) = (
+                if a.is_empty() { "HEAD" } else { a },
+                if b.is_empty() { "HEAD" } else { b },
+            );
+            let (x, y) = (commit_of(a, a)?, commit_of(b, b)?);
+            for base in git.merge_bases(&x, &y)? {
+                hidden.extend(git.reachable(&base)?);
+                negatives.push((base.to_hex(), base));
+            }
+            positives.push((a.to_string(), x));
+            positives.push((b.to_string(), y));
         } else if let Some(rest) = rev.strip_prefix('^') {
             let id = commit_of(rest, rest)?;
             hidden.extend(git.reachable(&id)?);
-            negatives.push(id);
+            negatives.push((rest.to_string(), id));
         } else if let Some((a, b)) = rev.split_once("..") {
             let (a, b) = (
                 if a.is_empty() { "HEAD" } else { a },
@@ -266,14 +305,43 @@ pub(super) fn blame(git: &GitHome, cwd: &Path, args: BlameArgs, annotate: bool) 
             );
             let id = commit_of(a, a)?;
             hidden.extend(git.reachable(&id)?);
-            negatives.push(id);
+            negatives.push((a.to_string(), id));
             positives.push((b.to_string(), commit_of(b, b)?));
         } else {
             positives.push((rev.clone(), commit_of(rev, rev)?));
         }
     }
-    positives.retain(|(_, id)| !negatives.contains(id));
-    if positives.len() > 1 {
+    positives.retain(|(_, id)| !negatives.iter().any(|(_, n)| n == id));
+    let mut tips: Vec<ObjectId> = Vec::new();
+    if p.reverse {
+        if p.contents.is_some() {
+            bail!("--contents and --reverse do not blend well.");
+        }
+        if p.first_parent {
+            not_built(annotate, "--reverse with --first-parent");
+        }
+        if negatives.len() > 1 {
+            bail!(
+                "More than one commit to dig up from, {} and {}?",
+                negatives[1].0,
+                negatives[0].0
+            );
+        }
+        if negatives.is_empty() {
+            let head = git.repo.head_commit()?;
+            match head {
+                Some(head) if rev_args.len() == 1 && positives.len() == 1 => {
+                    let from = positives.remove(0);
+                    hidden.extend(git.reachable(&from.1)?);
+                    negatives.push(from);
+                    positives.push(("HEAD".to_string(), head));
+                }
+                _ => bail!("No commit to dig up from?"),
+            }
+        }
+        tips = positives.iter().map(|(_, id)| *id).collect();
+        positives = vec![negatives[0].clone()];
+    } else if positives.len() > 1 {
         bail!(
             "More than one commit to dig from {} and {}?",
             positives[0].0,
@@ -345,9 +413,16 @@ pub(super) fn blame(git: &GitHome, cwd: &Path, args: BlameArgs, annotate: bool) 
         ignore_whitespace: p.ignore_whitespace,
         indent_heuristic,
         first_parent: p.first_parent,
+        minimal: p.minimal,
+        reverse: p.reverse,
     };
+    let ignore = ignore_list(git, cwd, &p, &resolver)?;
     let selected_lines: Vec<usize> = (0..lines.len()).filter(|l| selected[*l]).collect();
     let mut board = Board::new(git, &hidden, settings, fake.map(|f| (zero, f)), lines.len());
+    board.ignoring(ignore);
+    if p.reverse {
+        board.with_children(children(git, &tips, &hidden)?);
+    }
     board.start(
         final_commit,
         &path,
@@ -362,8 +437,15 @@ pub(super) fn blame(git: &GitHome, cwd: &Path, args: BlameArgs, annotate: bool) 
         let Some((origin, s)) = board.lines[l] else {
             continue;
         };
+        let (ignored, unblamable) = (board.ignored[l], board.unblamable[l]);
         match entries.last_mut() {
-            Some(e) if e.origin == origin && e.s_lno + e.count == s && e.lno + e.count == l => {
+            Some(e)
+                if e.origin == origin
+                    && e.s_lno + e.count == s
+                    && e.lno + e.count == l
+                    && e.ignored == ignored
+                    && e.unblamable == unblamable =>
+            {
                 e.count += 1;
             }
             _ => entries.push(Entry {
@@ -371,6 +453,8 @@ pub(super) fn blame(git: &GitHome, cwd: &Path, args: BlameArgs, annotate: bool) 
                 s_lno: s,
                 lno: l,
                 count: 1,
+                ignored,
+                unblamable,
             }),
         }
     }
@@ -409,6 +493,11 @@ pub(super) fn blame(git: &GitHome, cwd: &Path, args: BlameArgs, annotate: bool) 
     let mut flags = p.flags;
     flags.blank_boundary |= git.repo.bool_setting("blame.blankBoundary", false);
     flags.show_email |= git.repo.bool_setting("blame.showEmail", false);
+    flags.mark_ignored = git.repo.bool_setting("blame.markIgnoredLines", false);
+    flags.mark_unblamable = git.repo.bool_setting("blame.markUnblamableLines", false);
+    if p.progress == Some(true) && flags.porcelain {
+        bail!("--progress can't be used with --incremental or porcelain formats");
+    }
     let hex_len = (algorithm.digest_len() * 2) as i64;
     let abbrev = match p.abbrev {
         Some(n) if n > 0 => {
@@ -433,25 +522,114 @@ pub(super) fn blame(git: &GitHome, cwd: &Path, args: BlameArgs, annotate: bool) 
     Ok(())
 }
 
-fn date_style(git: &GitHome, p: &Parsed, annotate: bool) -> Result<DateStyle> {
+fn date_style(git: &GitHome, p: &Parsed, annotate: bool) -> Result<DateMode> {
+    let terminal = std::io::stdout().is_terminal();
+    let configured = git
+        .config()
+        .get("blame.date")
+        .map(|v| DateMode::parse(v, terminal))
+        .transpose()?;
     if annotate {
-        return Ok(DateStyle::Iso);
+        // annotate keeps only the `-local` part of `blame.date`
+        let local = configured.is_some_and(|m| m.is_local());
+        return Ok(DateMode::plain(DateStyle::Iso).localized(local));
     }
-    let name = p
-        .date
-        .as_deref()
-        .or_else(|| git.config().get("blame.date"))
-        .unwrap_or("iso");
-    if name == "human"
-        || name.starts_with("format")
-        || name.starts_with("auto:")
-        || name.ends_with("local")
-    {
-        usage(&format!(
-            "--date={name} is not supported on a git repository yet"
+    match p.date.as_deref() {
+        Some(name) => DateMode::parse(name, terminal),
+        None => Ok(configured.unwrap_or_else(|| DateMode::plain(DateStyle::Iso))),
+    }
+}
+
+/// The commits to blame past: the files (`blame.ignoreRevsFile` first, an empty name clears) and then `--ignore-rev`.
+fn ignore_list(
+    git: &GitHome,
+    cwd: &Path,
+    p: &Parsed,
+    resolver: &Resolver,
+) -> Result<HashSet<ObjectId>> {
+    let mut set = HashSet::new();
+    let configured = git.config().get_all("blame.ignorerevsfile");
+    let files = configured
+        .into_iter()
+        .map(str::to_string)
+        .chain(p.ignore_files.iter().cloned());
+    for file in files {
+        if file.is_empty() {
+            set.clear();
+            continue;
+        }
+        let path = match file.strip_prefix("~/") {
+            Some(rest) => std::env::var_os("HOME")
+                .map(|h| Path::new(&h).join(rest))
+                .unwrap_or_else(|| cwd.join(&file)),
+            None => cwd.join(&file),
+        };
+        let Ok(text) = std::fs::read(&path) else {
+            bail!("could not open object name list: {file}");
+        };
+        for line in String::from_utf8_lossy(&text).lines() {
+            let line = line.split('#').next().unwrap_or("").trim();
+            if line.is_empty() {
+                continue;
+            }
+            let Ok(id) = ObjectId::from_hex(git.algorithm(), line) else {
+                bail!("invalid object name: {line}");
+            };
+            if let Some(commit) = peel(git, &id, Some(Kind::Commit)).ok().flatten() {
+                set.insert(commit);
+            }
+        }
+    }
+    for rev in &p.ignore_revs {
+        let commit = resolver
+            .rev(rev)
+            .ok()
+            .flatten()
+            .and_then(|id| peel(git, &id, Some(Kind::Commit)).ok().flatten());
+        match commit {
+            Some(c) => set.insert(c),
+            None => bail!("cannot find revision {rev} to ignore"),
+        };
+    }
+    Ok(set)
+}
+
+/// Each commit of the range reached from `tips` and not from `hidden`, as the parent of its children, oldest first.
+fn children(
+    git: &GitHome,
+    tips: &[ObjectId],
+    hidden: &HashSet<ObjectId>,
+) -> Result<HashMap<ObjectId, Vec<ObjectId>>> {
+    let mut map: HashMap<ObjectId, Vec<ObjectId>> = HashMap::new();
+    let mut seen: HashSet<ObjectId> = HashSet::new();
+    let mut by_seq: Vec<ObjectId> = Vec::new();
+    let mut queue: BinaryHeap<(i64, std::cmp::Reverse<usize>)> = BinaryHeap::new();
+    let enqueue = |commit: ObjectId,
+                   queue: &mut BinaryHeap<(i64, std::cmp::Reverse<usize>)>,
+                   by_seq: &mut Vec<ObjectId>|
+     -> Result<()> {
+        queue.push((
+            git.repo.commit(&commit)?.committer.time,
+            std::cmp::Reverse(by_seq.len()),
         ));
+        by_seq.push(commit);
+        Ok(())
+    };
+    for tip in tips {
+        if !hidden.contains(tip) && seen.insert(*tip) {
+            enqueue(*tip, &mut queue, &mut by_seq)?;
+        }
     }
-    DateStyle::parse(name)
+    while let Some((_, std::cmp::Reverse(at))) = queue.pop() {
+        let commit = by_seq[at];
+        for parent in git.repo.commit(&commit)?.parents {
+            map.entry(parent).or_default().insert(0, commit);
+            if !hidden.contains(&parent) && seen.insert(parent) {
+                enqueue(parent, &mut queue, &mut by_seq)?;
+            }
+        }
+    }
+    Ok(map)
 }
 
 fn fake_info(p: &Parsed, path: &[u8]) -> Info {

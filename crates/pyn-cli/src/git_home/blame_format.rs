@@ -8,7 +8,7 @@ use pyn_object::{ObjectId, Signature};
 use super::GitHome;
 use super::blame_walk::Origin;
 use super::plumbing::quote;
-use crate::commit_format::DateStyle;
+use crate::date_mode::DateMode;
 
 /// What is shown of a commit.
 pub(super) struct Info {
@@ -24,6 +24,8 @@ pub(super) struct Entry {
     pub s_lno: usize,
     pub lno: usize,
     pub count: usize,
+    pub ignored: bool,
+    pub unblamable: bool,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -38,6 +40,8 @@ pub(super) struct Flags {
     pub no_author: bool,
     pub show_email: bool,
     pub blank_boundary: bool,
+    pub mark_ignored: bool,
+    pub mark_unblamable: bool,
 }
 
 pub(super) struct Layout<'a> {
@@ -45,7 +49,7 @@ pub(super) struct Layout<'a> {
     pub flags: Flags,
     /// `Some(n)` when the abbreviation length was given (already raised by one for the boundary mark).
     pub abbrev: Option<usize>,
-    pub date: DateStyle,
+    pub date: DateMode,
     pub now: i64,
     pub path: &'a [u8],
     pub origins: &'a [Origin],
@@ -61,17 +65,6 @@ fn tz_string(offset_minutes: i32) -> String {
         abs / 60,
         abs % 60
     )
-}
-
-fn date_width(style: DateStyle) -> usize {
-    match style {
-        DateStyle::Default => 30,
-        DateStyle::Iso | DateStyle::IsoStrict => 25,
-        DateStyle::Rfc => 31,
-        DateStyle::Short | DateStyle::Unix => 10,
-        DateStyle::Relative => 22,
-        DateStyle::Raw => 16,
-    }
 }
 
 fn decimal_width(n: usize) -> usize {
@@ -119,7 +112,7 @@ impl Layout<'_> {
     }
 
     fn time(&self, who: &Signature) -> String {
-        let width = date_width(self.date);
+        let width = self.date.width();
         if self.flags.raw_time {
             return format!("{} {}", who.time, tz_string(who.offset_minutes));
         }
@@ -201,6 +194,14 @@ impl Layout<'_> {
                         length -= 1;
                         out.push(b'^');
                     }
+                }
+                if self.flags.mark_unblamable && e.unblamable {
+                    length -= 1;
+                    out.push(b'*');
+                }
+                if self.flags.mark_ignored && e.ignored {
+                    length -= 1;
+                    out.push(b'?');
                 }
                 out.extend_from_slice(&shown.as_bytes()[..length.min(shown.len())]);
                 let lno = e.lno + i;
@@ -307,6 +308,15 @@ impl Layout<'_> {
         }
     }
 
+    fn per_line(&self, e: &Entry, out: &mut Vec<u8>) {
+        if self.flags.mark_unblamable && e.unblamable {
+            out.extend_from_slice(b"unblamable\n");
+        }
+        if self.flags.mark_ignored && e.ignored {
+            out.extend_from_slice(b"ignored\n");
+        }
+    }
+
     fn porcelain(&self, entries: &[Entry], out: &mut Vec<u8>) {
         let mut guilty: HashMap<ObjectId, usize> = HashMap::new();
         for o in self.origins.iter().filter(|o| o.guilty) {
@@ -327,6 +337,7 @@ impl Layout<'_> {
                         format!("{hex} {} {} {}\n", e.s_lno + 1, e.lno + 1, e.count).as_bytes(),
                     );
                     self.details(e, &mut shown, &more, self.flags.line_porcelain, out);
+                    self.per_line(e, out);
                 } else {
                     out.extend_from_slice(
                         format!("{hex} {} {}\n", e.s_lno + 1 + i, e.lno + 1 + i).as_bytes(),
@@ -334,6 +345,7 @@ impl Layout<'_> {
                     if self.flags.line_porcelain {
                         self.details(e, &mut shown, &more, true, out);
                     }
+                    self.per_line(e, out);
                 }
                 out.push(b'\t');
                 self.line_text(out, e.lno + i);

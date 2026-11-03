@@ -25,6 +25,7 @@ struct Repo {
     dir: PathBuf,
     format: &'static str,
     tick: Cell<i64>,
+    tz: Cell<&'static str>,
 }
 
 impl Repo {
@@ -37,6 +38,7 @@ impl Repo {
             dir,
             format,
             tick: Cell::new(1_700_000_000),
+            tz: Cell::new("UTC"),
         }
     }
 
@@ -82,7 +84,7 @@ impl Repo {
 
     fn oracle(&self, cwd: &Path, cmd: &str, args: &[&str]) -> (i32, Vec<u8>) {
         let out = git(cwd)
-            .env("TZ", "UTC")
+            .env("TZ", self.tz.get())
             .arg(cmd)
             .args(args)
             .output()
@@ -98,7 +100,7 @@ impl Repo {
             .env_clear()
             .env("PATH", path_env())
             .env("HOME", self.dir.parent().unwrap())
-            .env("TZ", "UTC")
+            .env("TZ", self.tz.get())
             .output()
             .unwrap();
         (
@@ -144,6 +146,26 @@ impl Repo {
     /// For strict ISO dates, where git before 2.45 prints `+00:00` and pads to the longer width.
     fn same_loose(&self, args: &[&str]) {
         self.compare(&self.dir, "blame", args, false, true);
+    }
+
+    /// Porcelain without the per-line `ignored` and `unblamable` lines, which git 2.43 does not print.
+    fn same_unmarked(&self, args: &[&str]) {
+        let drop = |out: Vec<u8>| {
+            String::from_utf8_lossy(&out)
+                .lines()
+                .filter(|l| *l != "ignored" && *l != "unblamable")
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let (want_code, want) = self.oracle(&self.dir, "blame", args);
+        let (code, got, err) = self.pyn(&self.dir, "blame", args);
+        assert_eq!(code, want_code, "{} blame {args:?}: {err}", self.format);
+        assert_eq!(drop(got), drop(want), "{} blame {args:?}", self.format);
+    }
+
+    fn rev(&self, spec: &str) -> String {
+        let out = git(&self.dir).args(["rev-parse", spec]).output().unwrap();
+        String::from_utf8(out.stdout).unwrap().trim().to_string()
     }
 
     fn same_in(&self, cwd: &str, args: &[&str]) {
@@ -837,6 +859,362 @@ fn an_unborn_branch_has_nothing_to_blame() {
     });
 }
 
+/// A seeded choice of commits to ignore: every second one of the history, newest first.
+fn some_commits(r: &Repo, skip: usize) -> Vec<String> {
+    let out = git(&r.dir).args(["rev-list", "HEAD"]).output().unwrap();
+    String::from_utf8(out.stdout)
+        .unwrap()
+        .lines()
+        .skip(skip)
+        .step_by(2)
+        .map(String::from)
+        .collect()
+}
+
+#[test]
+fn ignored_revisions_are_blamed_past() {
+    each_format(|r| {
+        linear(r);
+        for ignored in ["HEAD", "HEAD~1", "HEAD~2", "HEAD~3", "HEAD~4"] {
+            r.same(&["--ignore-rev", ignored, "a.txt"]);
+            r.same(&[&format!("--ignore-rev={ignored}"), "-f", "-n", "a.txt"]);
+            r.same_unmarked(&["--ignore-rev", ignored, "-p", "a.txt"]);
+        }
+        r.same(&["--ignore-rev", "HEAD", "--ignore-rev", "HEAD~2", "a.txt"]);
+        r.same(&["--ignore-rev", "HEAD~1", "-w", "a.txt"]);
+        r.same(&["--ignore-rev", "HEAD~3", "-L", "3,9", "a.txt"]);
+        r.same(&["--ignore-rev", "HEAD~1", "HEAD~2", "a.txt"]);
+        r.same_annotate(&["--ignore-rev", "HEAD~1", "a.txt"]);
+        let ids = format!("{}\n{}\n", r.rev("HEAD~1"), r.rev("HEAD~3"));
+        r.write(
+            "../ignore",
+            format!(
+                "# a comment\n\n  {}  # trailing\n{}\n",
+                r.rev("HEAD~2"),
+                ids
+            )
+            .as_bytes(),
+        );
+        let file = r.dir.parent().unwrap().join("ignore");
+        let file = file.to_str().unwrap();
+        r.same(&["--ignore-revs-file", file, "a.txt"]);
+        r.same(&[&format!("--ignore-revs-file={file}"), "a.txt"]);
+        r.same(&[
+            "--ignore-revs-file",
+            file,
+            "--ignore-revs-file",
+            "",
+            "a.txt",
+        ]);
+        r.git_ok(ANN, &["config", "blame.ignoreRevsFile", file]);
+        r.same(&["a.txt"]);
+        r.same(&["--ignore-revs-file", "", "a.txt"]);
+        r.git_ok(ANN, &["config", "blame.markIgnoredLines", "true"]);
+        r.same(&["a.txt"]);
+        r.same(&["-s", "a.txt"]);
+        r.same_unmarked(&["-p", "a.txt"]);
+        r.git_ok(ANN, &["config", "blame.markUnblamableLines", "true"]);
+        r.same(&["a.txt"]);
+        r.same(&["-l", "-b", "a.txt"]);
+        r.same_annotate(&["a.txt"]);
+        r.same_unmarked(&["--line-porcelain", "a.txt"]);
+        r.git_ok(ANN, &["config", "--unset", "blame.ignoreRevsFile"]);
+        r.git_ok(ANN, &["config", "blame.markIgnoredLines", "false"]);
+        r.same(&["--ignore-rev", "HEAD~1", "a.txt"]);
+    });
+}
+
+#[test]
+fn ignore_errors_match_git() {
+    each_format(|r| {
+        linear(r);
+        r.write("../bad", b"not-a-hash\n");
+        r.write("../short", format!("{}\n", &r.rev("HEAD")[..10]).as_bytes());
+        r.write("../tree", format!("{}\n", r.rev("HEAD^{tree}")).as_bytes());
+        let dir = r.dir.parent().unwrap();
+        for args in [
+            vec!["--ignore-rev", "nonsense", "a.txt"],
+            vec!["--ignore-rev", "HEAD^{tree}", "a.txt"],
+            vec!["--ignore-revs-file", "missing", "a.txt"],
+            vec![
+                "--ignore-revs-file",
+                dir.join("bad").to_str().unwrap(),
+                "a.txt",
+            ],
+            vec![
+                "--ignore-revs-file",
+                dir.join("short").to_str().unwrap(),
+                "a.txt",
+            ],
+            vec![
+                "--ignore-revs-file",
+                dir.join("tree").to_str().unwrap(),
+                "a.txt",
+            ],
+            vec!["--ignore-rev"],
+        ] {
+            let (want, _) = r.oracle(&r.dir, "blame", &args);
+            let (code, _, err) = r.pyn(&r.dir, "blame", &args);
+            assert_eq!(
+                oracle::status_class(code),
+                oracle::status_class(want),
+                "{args:?}: {err}"
+            );
+        }
+    });
+}
+
+#[test]
+fn ignoring_revisions_in_merged_and_random_histories_matches_git() {
+    each_format(|r| {
+        merged(r);
+        for skip in [0, 1] {
+            let mut args = some_commits(r, skip)
+                .into_iter()
+                .flat_map(|c| ["--ignore-rev".to_string(), c])
+                .collect::<Vec<_>>();
+            args.push("m.txt".into());
+            let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+            r.same(&refs);
+            r.same_unmarked(&[&refs[..refs.len() - 1], &["-p", "m.txt"]].concat());
+        }
+        r.git_ok(ANN, &["config", "blame.markIgnoredLines", "true"]);
+        r.git_ok(ANN, &["config", "blame.markUnblamableLines", "true"]);
+        for single in some_commits(r, 0) {
+            r.same(&["--ignore-rev", &single, "m.txt"]);
+        }
+    });
+    for format in FORMATS {
+        for seed in 0..40u64 {
+            let r = Repo::new(format);
+            let path = random_history(&r, seed);
+            r.git_ok(ANN, &["config", "blame.markIgnoredLines", "true"]);
+            r.git_ok(ANN, &["config", "blame.markUnblamableLines", "true"]);
+            for skip in [0, 1] {
+                let ids = some_commits(&r, skip);
+                let mut args: Vec<String> = ids
+                    .iter()
+                    .flat_map(|c| ["--ignore-rev".to_string(), c.clone()])
+                    .collect();
+                args.push(path.clone());
+                let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+                r.same(&refs);
+            }
+        }
+    }
+}
+
+/// Commits at fixed ages before now, each changing another line, so `human` and `relative` dates cover every band.
+fn recent(r: &Repo) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let mut l = body(8);
+    r.tick.set(now - 3 * 365 * 86_400);
+    r.lines("t.txt", &refs(&l));
+    r.commit(ANN, "start");
+    let ages = [
+        400 * 86_400,
+        100 * 86_400,
+        40 * 86_400,
+        12 * 86_400,
+        4 * 86_400 + 3_000,
+        2 * 86_400 + 3_000,
+        7_300,
+    ];
+    for (i, age) in ages.iter().enumerate() {
+        r.tick.set(now - age - 100);
+        l[i] = format!("changed {i}");
+        r.lines("t.txt", &refs(&l));
+        r.commit([ANN, BOB, CY, ZOE][i % 4], &format!("c{i}"));
+    }
+}
+
+#[test]
+fn every_date_mode_matches_git() {
+    each_format(|r| {
+        linear(r);
+        recent(r);
+        let modes = [
+            "human",
+            "local",
+            "default-local",
+            "iso-local",
+            "iso8601-local",
+            "rfc-local",
+            "rfc2822-local",
+            "short-local",
+            "raw-local",
+            "unix-local",
+            "relative-local",
+            "human-local",
+            "format:%Y-%m-%d %H:%M",
+            "format:%a %b %e %s %z|%Z|%%",
+            "format-local:%Y-%m-%d %H:%M %z",
+            "format:",
+            "auto:human",
+            "auto:iso",
+        ];
+        for tz in ["UTC", "Asia/Kolkata", "America/New_York"] {
+            r.tz.set(tz);
+            for mode in modes {
+                let flag = format!("--date={mode}");
+                for file in ["a.txt", "t.txt"] {
+                    r.same(&[&flag, file]);
+                    r.same(&[&flag, "-e", file]);
+                }
+            }
+            for mode in ["iso-strict-local", "iso8601-strict-local"] {
+                r.same_loose(&[&format!("--date={mode}"), "t.txt"]);
+            }
+            r.git_ok(ANN, &["config", "blame.date", "human"]);
+            r.same(&["t.txt"]);
+            r.git_ok(ANN, &["config", "blame.date", "format-local:%d/%m %H"]);
+            r.same(&["t.txt"]);
+            r.same_annotate(&["t.txt"]);
+            r.git_ok(ANN, &["config", "--unset", "blame.date"]);
+        }
+        r.tz.set("UTC");
+        for bad in [
+            "--date=nonsense",
+            "--date=format",
+            "--date=isoish",
+            "--date=human-localx",
+        ] {
+            let (want, _) = r.oracle(&r.dir, "blame", &[bad, "a.txt"]);
+            let (code, out, err) = r.pyn(&r.dir, "blame", &[bad, "a.txt"]);
+            assert_eq!(code, want, "{bad}: {err}");
+            assert!(out.is_empty(), "{bad}");
+        }
+    });
+}
+
+#[test]
+fn reverse_finds_where_lines_last_existed() {
+    each_format(|r| {
+        linear(r);
+        for args in [
+            &["--reverse", "HEAD~4..HEAD", "a.txt"][..],
+            &["--reverse", "HEAD~3", "a.txt"],
+            &["--reverse", "^HEAD~2", "HEAD", "a.txt"],
+            &["--reverse", "HEAD~4..HEAD~1", "a.txt"],
+            &["--reverse", "HEAD~2..HEAD", "-f", "-n", "a.txt"],
+            &["--reverse", "HEAD~3", "-e", "-t", "a.txt"],
+            &["--reverse", "--root", "HEAD~4..HEAD", "a.txt"],
+            &["--reverse", "-w", "HEAD~4..HEAD", "a.txt"],
+            &["--reverse", "-L", "2,6", "HEAD~4..HEAD", "a.txt"],
+            &["--reverse", "HEAD~4..HEAD", "--", "a.txt"],
+            &["--reverse", "HEAD~4", "--", "a.txt"],
+            &["--reverse", "--", "a.txt", "HEAD~3"],
+        ] {
+            r.same(args);
+        }
+        r.same_annotate(&["--reverse", "HEAD~3", "a.txt"]);
+        r.same(&["--reverse", "-p", "HEAD~4..HEAD", "a.txt"]);
+        r.same(&["--reverse", "--line-porcelain", "HEAD~3", "a.txt"]);
+        for args in [
+            &["--reverse", "a.txt"][..],
+            &["--reverse", "HEAD~1", "HEAD~2", "a.txt"],
+            &["--reverse", "^HEAD~1", "^HEAD~2", "HEAD", "a.txt"],
+            &["--reverse", "HEAD~1", "nonexistent.txt"],
+        ] {
+            let (want, _) = r.oracle(&r.dir, "blame", args);
+            let (code, _, err) = r.pyn(&r.dir, "blame", args);
+            assert_eq!(code, want, "{args:?}: {err}");
+        }
+        let (code, _, _) = r.pyn(
+            &r.dir,
+            "blame",
+            &["--reverse", "--contents", "a.txt", "HEAD~1", "a.txt"],
+        );
+        assert_eq!(code, 128);
+    });
+}
+
+#[test]
+fn reverse_across_merges_and_random_histories_matches_git() {
+    each_format(|r| {
+        merged(r);
+        for args in [
+            &["--reverse", "HEAD~6..HEAD", "m.txt"][..],
+            &["--reverse", "HEAD~4..HEAD", "m.txt"],
+            &["--reverse", "HEAD~3", "m.txt"],
+            &["--reverse", "HEAD~2", "m.txt"],
+            &["--reverse", "side~1..HEAD", "m.txt"],
+            &["--reverse", "side~1..late", "m.txt"],
+            &["--reverse", "side~1..side", "m.txt"],
+            &["--reverse", "-w", "HEAD~4", "m.txt"],
+        ] {
+            r.same(args);
+        }
+    });
+    for format in FORMATS {
+        for seed in 0..40u64 {
+            let r = Repo::new(format);
+            let path = random_history(&r, seed);
+            let out = git(&r.dir)
+                .args(["rev-list", "--max-parents=0", "HEAD"])
+                .output()
+                .unwrap();
+            let root = String::from_utf8(out.stdout).unwrap().trim().to_string();
+            r.same(&["--reverse", &format!("{root}..HEAD"), "f.txt"]);
+            r.same(&["--reverse", &format!("{root}~0"), "-f", "f.txt"]);
+            let mid = r.rev("HEAD~4");
+            r.same(&["--reverse", &format!("{mid}..HEAD"), &path]);
+        }
+    }
+}
+
+#[test]
+fn symmetric_ranges_match_git() {
+    each_format(|r| {
+        merged(r);
+        for args in [
+            &["HEAD...HEAD~1", "m.txt"][..],
+            &["HEAD~1...HEAD", "m.txt"],
+            &["HEAD...HEAD", "m.txt"],
+            &["...HEAD~2", "m.txt"],
+            &["side...main", "m.txt"],
+            &["HEAD~2...HEAD~4", "m.txt"],
+            &["HEAD~3...HEAD", "--", "m.txt"],
+        ] {
+            let (want, _) = r.oracle(&r.dir, "blame", args);
+            let (code, _, err) = r.pyn(&r.dir, "blame", args);
+            assert_eq!(code, want, "{args:?}: {err}");
+            if want == 0 {
+                r.same(args);
+            }
+        }
+    });
+}
+
+#[test]
+fn minimal_and_progress_match_git() {
+    each_format(|r| {
+        linear(r);
+        r.same(&["--minimal", "a.txt"]);
+        r.same(&["--minimal", "-w", "-f", "a.txt"]);
+        r.same(&["--progress", "a.txt"]);
+        r.same(&["--no-progress", "a.txt"]);
+        for args in [
+            &["--progress", "-p", "a.txt"][..],
+            &["--progress", "--line-porcelain", "a.txt"],
+        ] {
+            let (want, _) = r.oracle(&r.dir, "blame", args);
+            let (code, _, err) = r.pyn(&r.dir, "blame", args);
+            assert_eq!(code, want, "{args:?}: {err}");
+        }
+    });
+    for format in FORMATS {
+        for seed in 0..20u64 {
+            let r = Repo::new(format);
+            let path = random_history(&r, seed);
+            r.same(&["--minimal", &path]);
+        }
+    }
+}
+
 #[test]
 fn what_is_not_built_is_a_usage_error() {
     each_format(|r| {
@@ -847,21 +1225,14 @@ fn what_is_not_built_is_a_usage_error() {
             &["-C", "-C", "a.txt"],
             &["-M20", "a.txt"],
             &["--incremental", "a.txt"],
+            &["--reverse", "--first-parent", "HEAD~1..HEAD", "a.txt"],
             &["-L", ":main", "a.txt"],
-            &["--ignore-rev", "HEAD", "a.txt"],
-            &["--ignore-revs-file", "x", "a.txt"],
-            &["--reverse", "a.txt"],
             &["--show-stats", "a.txt"],
             &["--score-debug", "a.txt"],
             &["--color-lines", "a.txt"],
             &["--color-by-age", "a.txt"],
-            &["--minimal", "a.txt"],
             &["--diff-algorithm=patience", "a.txt"],
             &["-S", "revs", "a.txt"],
-            &["--date=human", "a.txt"],
-            &["--date=local", "a.txt"],
-            &["--date=format:%Y", "a.txt"],
-            &["HEAD...HEAD~1", "a.txt"],
         ] {
             let (code, out, err) = r.pyn(&r.dir, "blame", args);
             assert_eq!(code, 129, "{} blame {args:?}: {err}", r.format);

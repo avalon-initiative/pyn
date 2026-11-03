@@ -10,16 +10,14 @@ pub fn status_class(code: i32) -> i32 {
     }
 }
 
-/// Blame-style output with the leading object id cut to seven characters and the padding after it collapsed.
-/// A boundary mark `^` is kept and a blanked id column is one space.
+/// Blame-style output with the leading object id cut to six characters (the width every git version shows) and the padding after it collapsed.
+/// The marks `^` (boundary), `*` (unblamable) and `?` (ignored) are kept and a blanked id column is one space.
 pub fn blame_lines(out: &[u8]) -> String {
     let text = String::from_utf8_lossy(out);
     let mut result = Vec::new();
     for line in text.lines() {
-        let (mark, rest) = match line.strip_prefix('^') {
-            Some(rest) => ("^", rest),
-            None => ("", line),
-        };
+        let rest = line.trim_start_matches(['^', '*', '?']);
+        let mark = &line[..line.len() - rest.len()];
         let blank = rest.trim_start_matches(' ');
         if rest.starts_with(' ') && (blank.starts_with('(') || blank.starts_with("\t(")) {
             result.push(format!(" {blank}"));
@@ -31,7 +29,7 @@ pub fn blame_lines(out: &[u8]) -> String {
             continue;
         }
         let tail = rest[hex..].trim_start_matches(' ');
-        result.push(format!("{mark}{} {tail}", &rest[..7]));
+        result.push(format!("{mark}{} {tail}", &rest[..6]));
     }
     result.join("\n")
 }
