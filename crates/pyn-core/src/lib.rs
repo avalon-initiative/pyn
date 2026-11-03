@@ -58,7 +58,7 @@ pub use audit::{AuditAction, AuditEvent, AuditQuery, AuditScope, AuditStore, New
 pub use auth::AuthProvider;
 pub use branch::{Branch, DEFAULT_BRANCH, validate_branch_name};
 pub use chunking::ChunkedStore;
-pub use clock::{Clock, ManualClock, SystemClock};
+pub use clock::{Clock, ManualClock, ScaledClock, SystemClock};
 pub use email::{EmailMessage, EmailSender, MemoryEmailSender, NullEmailSender};
 pub use error::{PynError, Result};
 pub use freeze::{FREEZE_REASON_BYTES, MemoryOwnerWrites, OwnerWrites};
