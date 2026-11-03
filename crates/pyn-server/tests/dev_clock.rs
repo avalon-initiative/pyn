@@ -8,8 +8,8 @@ use pyn_core::memory::{
     MemoryAccessStore, MemoryAuditStore, MemoryMetadataStore, MemoryObjectStore,
 };
 use pyn_core::{
-    AccessConfig, AccessService, AccessStore, Credential, Identity, RegistrationMode, RepoPath,
-    Repositories, Rules, ScaledClock, UserId,
+    AccessConfig, AccessService, AccessStore, Credential, Identity, PynError, RegistrationMode,
+    RepoPath, Repositories, Rules, ScaledClock, UserId,
 };
 
 fn who(name: &str) -> Identity {
@@ -73,10 +73,10 @@ async fn a_scaled_clock_expires_a_lease_in_seconds() {
         .await
         .unwrap();
     let content = svc.upload_blob(b"v1".to_vec()).await.unwrap();
-    assert!(
-        svc.checkin(&principal, &path, content, None, "late".into())
-            .await
-            .is_err()
-    );
+    let err = svc
+        .checkin(&principal, &path, content, None, "late".into())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::LockRequired(_)), "{err}");
     svc.checkout(&path, &bob.user, None).await.unwrap();
 }
