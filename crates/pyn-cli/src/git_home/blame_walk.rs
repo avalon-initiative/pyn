@@ -10,8 +10,9 @@ use pyn_gitwork::{Entry, Pathspec};
 use pyn_object::{Commit, FileMode, ObjectId};
 
 use super::GitHome;
+use super::blame_fuzzy::{Fingerprint, fingerprints, guess_line_blames};
 use super::blame_rename::find_source;
-use crate::xdiff::hunks;
+use crate::xdiff::hunks_ws;
 
 pub(super) struct Origin {
     pub commit: ObjectId,
@@ -38,6 +39,8 @@ pub(super) struct Settings {
     pub ignore_whitespace: bool,
     pub indent_heuristic: bool,
     pub first_parent: bool,
+    pub minimal: bool,
+    pub reverse: bool,
 }
 
 struct Queued {
@@ -80,6 +83,13 @@ pub(super) struct Board<'a> {
     commits: HashMap<ObjectId, Rc<Commit>>,
     /// Per line of the final file, the origin and its line number that the line is blamed on.
     pub lines: Vec<Option<(usize, usize)>>,
+    /// Per line of the final file: blamed past an ignored commit, or kept on one that no parent line matched.
+    pub ignored: Vec<bool>,
+    pub unblamable: Vec<bool>,
+    ignore: HashSet<ObjectId>,
+    /// With `--reverse`, a commit's children in the range, which take the place of its parents.
+    children: HashMap<ObjectId, Vec<ObjectId>>,
+    prints: HashMap<usize, Vec<Fingerprint>>,
 }
 
 fn is_link(mode: FileMode) -> bool {
@@ -107,7 +117,20 @@ impl<'a> Board<'a> {
             blobs: HashMap::new(),
             commits: HashMap::new(),
             lines: vec![None; line_count],
+            ignored: vec![false; line_count],
+            unblamable: vec![false; line_count],
+            ignore: HashSet::new(),
+            children: HashMap::new(),
+            prints: HashMap::new(),
         }
+    }
+
+    pub fn ignoring(&mut self, commits: HashSet<ObjectId>) {
+        self.ignore = commits;
+    }
+
+    pub fn with_children(&mut self, children: HashMap<ObjectId, Vec<ObjectId>>) {
+        self.children = children;
     }
 
     fn commit(&mut self, id: &ObjectId) -> Result<Rc<Commit>> {
@@ -120,6 +143,9 @@ impl<'a> Board<'a> {
     }
 
     fn parents_of(&mut self, id: &ObjectId) -> Result<Vec<ObjectId>> {
+        if self.settings.reverse {
+            return Ok(self.children.get(id).cloned().unwrap_or_default());
+        }
         if let Some((f, fake)) = &self.fake
             && f == id
         {
@@ -183,7 +209,7 @@ impl<'a> Board<'a> {
     fn push(&mut self, commit: ObjectId, time: i64) {
         self.seq += 1;
         self.queue.push(Queued {
-            time,
+            time: if self.settings.reverse { -time } else { time },
             seq: Reverse(self.seq),
             commit,
         });
@@ -211,7 +237,7 @@ impl<'a> Board<'a> {
                     .copied()
                     .find(|i| !self.origins[*i].suspects.is_empty())
             }) {
-                if !self.hidden.contains(&q.commit) {
+                if self.settings.reverse || !self.hidden.contains(&q.commit) {
                     self.pass_blame(o)?;
                 }
                 let rest = std::mem::take(&mut self.origins[o].suspects);
@@ -336,29 +362,68 @@ impl<'a> Board<'a> {
                 }
             }
         }
-        for po in found.into_iter().flatten() {
+        for po in found.iter().flatten().copied() {
             if self.origins[o].previous.is_none() {
                 self.origins[o].previous = Some(po);
             }
-            self.pass_to_parent(o, po)?;
+            self.pass_to_parent(o, po, false)?;
             if self.origins[o].suspects.is_empty() {
-                break;
+                return Ok(());
             }
+        }
+        if self.ignore.contains(&commit) {
+            for po in found.into_iter().flatten() {
+                self.pass_to_parent(o, po, true)?;
+                self.prints.remove(&po);
+                if self.origins[o].suspects.is_empty() {
+                    break;
+                }
+            }
+            self.prints.remove(&o);
         }
         Ok(())
     }
 
-    fn pass_to_parent(&mut self, o: usize, po: usize) -> Result<()> {
+    /// With `ignore`, the lines of a changed hunk go to the parent line they most resemble, else stay as unblamable.
+    fn pass_to_parent(&mut self, o: usize, po: usize, ignore: bool) -> Result<()> {
         if self.origins[o].suspects.is_empty() {
             return Ok(());
         }
         let (a, b) = (self.data(po)?, self.data(o)?);
-        let diff = hunks(
-            &a,
-            &b,
-            self.settings.ignore_whitespace,
-            self.settings.indent_heuristic,
-        );
+        let mut ws = if self.settings.ignore_whitespace {
+            pyn_diff::Ws::all()
+        } else {
+            pyn_diff::Ws::default()
+        };
+        ws.minimal = self.settings.minimal;
+        let diff = hunks_ws(&a, &b, &ws, self.settings.indent_heuristic);
+        let mut guesses: Vec<Vec<Option<usize>>> = Vec::new();
+        if ignore {
+            let mut parent = match self.prints.remove(&po) {
+                Some(p) => p,
+                None => fingerprints(&pyn_diff::split_lines(&a)),
+            };
+            let target = match self.prints.remove(&o) {
+                Some(t) => t,
+                None => fingerprints(&pyn_diff::split_lines(&b)),
+            };
+            for h in &diff {
+                guesses.push(if h.b_count > 0 {
+                    guess_line_blames(
+                        &mut parent,
+                        &target,
+                        h.b_start,
+                        h.a_start,
+                        h.b_start + h.b_count,
+                        h.a_count,
+                    )
+                } else {
+                    Vec::new()
+                });
+            }
+            self.prints.insert(po, parent);
+            self.prints.insert(o, target);
+        }
         let suspects = std::mem::take(&mut self.origins[o].suspects);
         let (mut keep, mut moved) = (Vec::new(), Vec::new());
         let (mut next, mut offset) = (0, 0i64);
@@ -369,10 +434,25 @@ impl<'a> Board<'a> {
                 next += 1;
             }
             if next < diff.len() && s >= diff[next].b_start {
-                keep.push((s, l));
+                match guesses.get(next).filter(|_| ignore) {
+                    Some(g) => match g[s - diff[next].b_start] {
+                        Some(ps) => {
+                            self.ignored[l] = true;
+                            moved.push((ps, l));
+                        }
+                        None => {
+                            self.unblamable[l] = true;
+                            keep.push((s, l));
+                        }
+                    },
+                    None => keep.push((s, l)),
+                }
             } else {
                 moved.push(((s as i64 + offset) as usize, l));
             }
+        }
+        if ignore {
+            moved.sort_unstable();
         }
         self.origins[o].suspects = keep;
         self.queue_blames(po, moved)

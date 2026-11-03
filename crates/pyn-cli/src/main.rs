@@ -12,6 +12,7 @@ mod branch;
 mod client;
 mod commit_format;
 mod credentials;
+mod date_mode;
 mod diff;
 mod diff_color;
 mod diff_driver;
