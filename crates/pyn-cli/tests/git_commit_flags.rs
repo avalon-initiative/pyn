@@ -658,6 +658,40 @@ fn cleanup_modes_match_git() {
 }
 
 #[test]
+fn scissors_line_in_a_given_message() {
+    const CUT: &str =
+        "subject\n\nbody  \n# ------------------------ >8 ------------------------\ndropped\n";
+    let file_setup = [W("m.txt", CUT), STAGE_B[0], STAGE_B[1]];
+    let mut cases = Vec::new();
+    for mode in ["scissors", "whitespace", "strip"] {
+        let flag: &'static str = Box::leak(format!("--cleanup={mode}").into_boxed_str());
+        cases.push(case("m", STAGE_B, &[flag, "-m", CUT], None));
+        cases.push(case("file", &file_setup, &[flag, "-F", "m.txt"], None));
+        for action in [APPEND, REPLACE] {
+            cases.push(edited(mode, STAGE_B, &["-e", flag, "-m", CUT], action));
+            cases.push(edited(
+                mode,
+                &file_setup,
+                &["-e", flag, "-F", "m.txt"],
+                action,
+            ));
+        }
+        cases.push(case(
+            "cut first",
+            STAGE_B,
+            &[
+                flag,
+                "--allow-empty-message",
+                "-m",
+                "# ------------------------ >8 ------------------------\nx",
+            ],
+            None,
+        ));
+    }
+    run_cases(&cases);
+}
+
+#[test]
 fn empty_messages_need_allow_empty_message() {
     run_cases(&[
         case("refused", STAGE_B, &["-m", ""], None),

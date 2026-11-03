@@ -320,7 +320,7 @@ fn wants_edit(args: &MergeArgs) -> bool {
     if args.edit || args.no_edit {
         return args.edit;
     }
-    if !args.message.is_empty() && !args.generated_message {
+    if (!args.message.is_empty() || !args.file.is_empty()) && !args.generated_message {
         return false;
     }
     if let Ok(value) = std::env::var("GIT_MERGE_AUTOEDIT") {

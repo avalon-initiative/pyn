@@ -28,6 +28,13 @@ use crate::workspace::{FileState, Workspace, hash_of, set_read_only};
 
 pub(crate) const STATE_VERSION: u32 = 1;
 
+/// One `-m` text or `-F` file of a merge message.
+#[derive(Debug, Clone)]
+pub enum MessagePart {
+    Text(String),
+    File(String),
+}
+
 /// Merge a branch (or commit) into the workspace's branch.
 #[derive(Debug, Args, Default)]
 pub struct MergeArgs {
@@ -119,9 +126,12 @@ pub struct MergeArgs {
     /// Add no shortlog.
     #[arg(long, overrides_with = "log")]
     pub(crate) no_log: bool,
-    /// Read the merge message from a file, or `-` for standard input (a git repository only).
+    /// Read the merge message from a file; repeatable, ordered with `-m` (a git repository only).
     #[arg(short = 'F', long, value_name = "FILE")]
-    pub(crate) file: Option<String>,
+    pub(crate) file: Vec<String>,
+    /// `-m` and `-F` in command-line order; empty when the arguments did not come from the command line.
+    #[arg(skip)]
+    pub(crate) message_parts: Vec<MessagePart>,
     /// How the message is cleaned up: strip, whitespace, verbatim, scissors or default (a git repository only).
     #[arg(long, value_name = "MODE")]
     pub(crate) cleanup: Option<String>,
@@ -170,6 +180,24 @@ pub struct MergeArgs {
 }
 
 impl MergeArgs {
+    /// Records `-m` and `-F` in the order they were given.
+    pub(crate) fn order_message_parts(&mut self, matches: &clap::ArgMatches) {
+        let mut parts: Vec<(usize, MessagePart)> = Vec::new();
+        for (id, make) in [
+            ("message", MessagePart::Text as fn(String) -> MessagePart),
+            ("file", MessagePart::File),
+        ] {
+            let (Some(indices), Some(values)) =
+                (matches.indices_of(id), matches.get_many::<String>(id))
+            else {
+                continue;
+            };
+            parts.extend(indices.zip(values).map(|(i, v)| (i, make(v.clone()))));
+        }
+        parts.sort_by_key(|(i, _)| *i);
+        self.message_parts = parts.into_iter().map(|(_, p)| p).collect();
+    }
+
     /// The first option only a git repository takes, for the refusal on a pyn server.
     fn git_only(&self) -> Option<&'static str> {
         [
@@ -179,7 +207,7 @@ impl MergeArgs {
             ("--no-signoff", self.no_signoff),
             ("--log", self.log.is_some()),
             ("--no-log", self.no_log),
-            ("--file", self.file.is_some()),
+            ("--file", !self.file.is_empty()),
             ("--cleanup", self.cleanup.is_some()),
             ("--no-cleanup", self.no_cleanup),
             ("--no-message", self.no_message),

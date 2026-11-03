@@ -1,4 +1,4 @@
-//! Revision names: `HEAD`, `@`, branches, tags, full or abbreviated ids, then `~N`, `^` and `^N` steps. A name may
+//! Revision names: `HEAD`, `@`, branches, tags, full or abbreviated ids, then `~N`, `^`, `^N`, `^{}` and `^{commit}` steps. A name may
 //! carry an `@{...}` suffix first (see `revmark`).
 
 use pyn_object::{Kind, ObjectId};
@@ -32,6 +32,12 @@ impl Repo {
         let bad = || Error::Revision(format!("bad revision '{spec}'"));
         while let Some(op) = rest.chars().next() {
             rest = &rest[1..];
+            if op == '^'
+                && let Some(after) = rest.strip_prefix("{commit}").or(rest.strip_prefix("{}"))
+            {
+                rest = after;
+                continue;
+            }
             let digits = rest
                 .find(|c: char| !c.is_ascii_digit())
                 .unwrap_or(rest.len());
