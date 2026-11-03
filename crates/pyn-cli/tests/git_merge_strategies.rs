@@ -566,12 +566,12 @@ fn what_cannot_be_honored_is_refused_before_anything_changes() {
 }
 
 #[test]
-fn renormalize_is_refused_where_line_endings_would_be_converted() {
+fn renormalize_merges_where_line_endings_would_be_converted() {
     let script = "printf 'a\\nb\\n' >f; printf '* text=auto\\n' >.gitattributes; git add .; git commit -qm base\n\
         git checkout -q -b side\nprintf 'a\\nb\\nc\\n' >f; git add .; git commit -qm side\ngit checkout -q main\n\
         printf 'z\\na\\nb\\n' >f; git add .; git commit -qm main\n";
     each_format(script, |p| {
-        p.refused(&["merge", "-X", "renormalize", "side"], 128)
+        p.same(&["merge", "-X", "renormalize", "side"], Skip::default())
     });
 }
 

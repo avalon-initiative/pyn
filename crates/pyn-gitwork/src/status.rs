@@ -157,12 +157,24 @@ impl Repo {
         index_id: Option<ObjectId>,
         check_roundtrip: bool,
     ) -> Result<crate::Converted<'static>> {
+        self.read_clean_with(path, file, index_id, check_roundtrip, false)
+    }
+
+    /// Like [`Self::read_clean`]; `renormalize` converts CRLF even where the index blob has carriage returns.
+    pub fn read_clean_with(
+        &self,
+        path: &[u8],
+        file: &Path,
+        index_id: Option<ObjectId>,
+        check_roundtrip: bool,
+        renormalize: bool,
+    ) -> Result<crate::Converted<'static>> {
         let bytes = std::fs::read(file).map_err(io_at(file))?;
         let conv = self.conversion(path)?;
         let blob = || index_id.and_then(|id| self.blob(&id).ok());
         let opts = crate::ToGit {
             check_roundtrip,
-            renormalize: false,
+            renormalize,
             index_blob: &blob,
         };
         let out = conv.to_git(path, &bytes, &opts)?;

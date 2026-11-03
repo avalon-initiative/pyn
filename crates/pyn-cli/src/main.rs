@@ -407,6 +407,9 @@ enum Command {
         /// Record new files as to be added later, with empty content in the index (a git repository only).
         #[arg(short = 'N', long)]
         intent_to_add: bool,
+        /// Stage every tracked file again through the clean conversion; implies --update (a git repository only).
+        #[arg(long)]
+        renormalize: bool,
     },
     /// Remove files from the work tree and stage the removal (`--cached` keeps the files). Exclusive paths need your lock.
     Rm(rm_mv::RmArgs),
@@ -2507,6 +2510,9 @@ fn run(cli: Cli) -> Result<()> {
             intent_to_add: true,
             ..
         } => usage_error("`add --intent-to-add` needs a git repository"),
+        Command::Add {
+            renormalize: true, ..
+        } => usage_error("`add --renormalize` needs a git repository"),
         Command::Add {
             paths,
             update,

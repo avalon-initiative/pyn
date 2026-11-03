@@ -1,11 +1,10 @@
-//! Guards for the conversions pyn does not apply when git would write a work tree file: `working-tree-encoding`
-//! (#273), and raw writers that cannot run a filter. Line endings, `ident` and filters are converted by
-//! `Repo::conversion`.
+//! Guards for the conversion pyn does not apply when git would write a work tree file: `working-tree-encoding`
+//! (#273). Line endings, `ident` and filters are converted by `Repo::conversion`.
 
 use std::collections::BTreeMap;
 
 use anyhow::{Result, bail};
-use pyn_gitwork::{Attributes, Pathspec};
+use pyn_gitwork::{Attributes, Pathspec, ToGit};
 use pyn_object::{FileMode, ObjectId};
 
 use super::{GitHome, path_string};
@@ -19,39 +18,14 @@ pub(super) fn refuse_unsupported<'a>(
     git: &GitHome,
     files: impl IntoIterator<Item = (&'a [u8], FileMode)>,
 ) -> Result<()> {
-    check(git, files, false)
-}
-
-/// Like [`refuse_unsupported`], and also refuses any path whose line endings, `ident` or filter git would convert,
-/// for writers that copy bytes as they are.
-pub(super) fn refuse_conversions<'a>(
-    git: &GitHome,
-    files: impl IntoIterator<Item = (&'a [u8], FileMode)>,
-) -> Result<()> {
-    check(git, files, true)
-}
-
-fn check<'a>(
-    git: &GitHome,
-    files: impl IntoIterator<Item = (&'a [u8], FileMode)>,
-    raw_writer: bool,
-) -> Result<()> {
     let mut seen: BTreeMap<Vec<u8>, ()> = BTreeMap::new();
     for (path, mode) in files {
         if skipped(mode) || seen.insert(path.to_vec(), ()).is_some() {
             continue;
         }
-        let conv = git.repo.conversion(path)?;
-        let reason = match conv.unsupported() {
-            Some(u) => Some(u.to_string()),
-            None if raw_writer && !conv.is_identity() => {
-                Some("line endings, ident or a filter would be converted".to_string())
-            }
-            None => None,
-        };
-        if let Some(reason) = reason {
+        if let Some(u) = git.repo.conversion(path)?.unsupported() {
             bail!(
-                "git would convert '{}' when writing it ({reason}), and pyn cannot do that here yet (#273); \
+                "git would convert '{}' when writing it ({u}), and pyn cannot do that here yet (#273); \
                  nothing was changed",
                 path_string(path)
             );
@@ -60,18 +34,25 @@ fn check<'a>(
     Ok(())
 }
 
-/// Fails when `-X renormalize` is asked for: it normalizes line endings and runs filters on the way into the merge,
-/// which pyn does not do for the paths that have a conversion.
-pub(super) fn refuse_renormalize(git: &GitHome, path: &[u8]) -> Result<()> {
+/// `-X renormalize`: a side's content as git's merge sees it, converted to the work tree form and back.
+pub(super) fn renormalize(git: &GitHome, path: &[u8], data: &[u8]) -> Result<Vec<u8>> {
     let conv = git.repo.conversion(path)?;
-    if !conv.is_identity() || conv.unsupported().is_some() {
+    if let Some(u) = conv.unsupported() {
         bail!(
-            "`-X renormalize` would convert '{}' on its way into the merge, and pyn does not do that yet (#273); \
-             nothing was changed",
+            "`-X renormalize` would convert '{}' ({u}), and pyn cannot do that here yet (#273); nothing was changed",
             path_string(path)
         );
     }
-    Ok(())
+    if conv.is_identity() {
+        return Ok(data.to_vec());
+    }
+    let worktree = conv.to_worktree(git.repo.algorithm(), path, data)?;
+    let opts = ToGit {
+        check_roundtrip: false,
+        renormalize: true,
+        index_blob: &|| None,
+    };
+    Ok(conv.to_git(path, &worktree, &opts)?.data.into_owned())
 }
 
 /// Warns if `filter=lfs` applies to a path of `commit`'s tree whose pointer names an object that is not stored.

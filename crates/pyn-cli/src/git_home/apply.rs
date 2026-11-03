@@ -402,7 +402,9 @@ impl<'g> Session<'g> {
         let bytes = if mode == 0o120000 {
             super::stage::link_target(&file).map_err(internal)?
         } else {
-            std::fs::read(&file).map_err(internal)?
+            let index_id = self.index_slots.get(name).map(|(_, id)| *id);
+            let clean = self.git.repo.read_clean(name, &file, index_id, false);
+            clean.map_err(internal)?.data.into_owned()
         };
         Ok(Some(Slot {
             mode,
@@ -699,7 +701,7 @@ impl<'g> Session<'g> {
         check_writes(self.overlay.keys())?;
         if !self.opts.cached {
             self.check_folders_free()?;
-            convert::refuse_conversions(
+            convert::refuse_unsupported(
                 git,
                 self.overlay.iter().filter_map(|(p, s)| {
                     s.as_ref()
