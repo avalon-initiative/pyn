@@ -259,6 +259,8 @@ enum Command {
     },
     /// Print the object ids revisions name, and facts about the repository (a git repository only).
     RevParse(git_home::RevParseArgs),
+    /// Show the attributes that apply to paths (a git repository only).
+    CheckAttr(git_home::CheckAttrArgs),
     /// Show the files in the index and the work tree (a git repository only).
     LsFiles(git_home::LsFilesArgs),
     /// List the contents of a tree object (a git repository only).
@@ -2263,6 +2265,7 @@ fn run(cli: Cli) -> Result<()> {
             std::process::exit(1);
         }
         Command::RevParse(_)
+        | Command::CheckAttr(_)
         | Command::LsFiles(_)
         | Command::LsTree(_)
         | Command::CatFile(_)

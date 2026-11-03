@@ -108,6 +108,8 @@ impl std::fmt::Display for Unsupported {
 #[derive(Debug, Clone)]
 pub struct Conversion {
     action: Eol,
+    /// The action the attributes alone ask for (`None` when they say nothing), as `ls-files --eol` shows it.
+    attr_action: Option<Eol>,
     ident: bool,
     settings: Settings,
     filter_name: Option<String>,
@@ -150,6 +152,7 @@ impl Conversion {
                 (a, _) => a,
             };
         }
+        let attr_action = action;
         let action = match action {
             Some(Eol::Text) if settings.text_eol_is_crlf() => Eol::TextCrlf,
             Some(Eol::Text) => Eol::TextInput,
@@ -176,6 +179,7 @@ impl Conversion {
         };
         Self {
             action,
+            attr_action,
             ident: matches!(attrs.get("ident"), AttrValue::Set),
             settings,
             filter_name,
@@ -192,6 +196,20 @@ impl Conversion {
             .and_then(|name| Driver::from_config(config, name))
             .map(|d| (d, filters.clone()));
         self
+    }
+
+    /// The text and eol attributes as `ls-files --eol` prints them.
+    pub fn attr_description(&self) -> &'static str {
+        match self.attr_action {
+            None => "",
+            Some(Eol::Binary) => "-text",
+            Some(Eol::Text) => "text",
+            Some(Eol::TextInput) => "text eol=lf",
+            Some(Eol::TextCrlf) => "text eol=crlf",
+            Some(Eol::Auto) => "text=auto",
+            Some(Eol::AutoInput) => "text=auto eol=lf",
+            Some(Eol::AutoCrlf) => "text=auto eol=crlf",
+        }
     }
 
     pub fn unsupported(&self) -> Option<&Unsupported> {
@@ -341,6 +359,22 @@ impl Conversion {
             out.push(*b);
         }
         Cow::Owned(out)
+    }
+}
+
+/// The line endings of `data` as `ls-files --eol` names them: `-text`, `mixed`, `lf`, `crlf` or `none`.
+pub fn eol_info(data: &[u8]) -> &'static str {
+    let stats = Stats::gather(data);
+    if stats.is_binary() {
+        "-text"
+    } else if stats.crlf > 0 && stats.lonelf > 0 {
+        "mixed"
+    } else if stats.lonelf > 0 {
+        "lf"
+    } else if stats.crlf > 0 {
+        "crlf"
+    } else {
+        "none"
     }
 }
 

@@ -443,3 +443,41 @@ fn real_git_reads_the_result() {
     );
     assert_eq!(git(&ws, &["status", "--porcelain"]), "");
 }
+
+#[test]
+fn conversion_decides_which_files_the_converted_index_trusts() {
+    let env = start();
+    env.seed("alice", ".gitattributes", "*.txt text\n", None);
+    env.seed("alice", "crlf.txt", "a\r\nb\r\n", None);
+    env.seed("alice", "lf.txt", "a\nb\n", None);
+    let ws = clone(&env, "ws");
+    let home = env.dir("gitconfig-home");
+    std::fs::write(home.join(".gitconfig"), "[core]\n\tautocrlf = true\n").unwrap();
+    let home_str = home.to_str().unwrap();
+    let out = env.run_with_vars(
+        &ws,
+        "alice",
+        &["convert", "--home", "git", "--yes"],
+        "UTC",
+        &[("HOME", home_str)],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let status = |tool: &mut Command| {
+        let out = tool
+            .current_dir(&ws)
+            .env("HOME", &home)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env_remove("GIT_CONFIG_GLOBAL")
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    let want = status(Command::new("git").args(["status", "--porcelain"]));
+    let got = status(Command::new(env!("CARGO_BIN_EXE_pyn")).args(["status", "--porcelain"]));
+    assert_eq!(want, " M crlf.txt\n");
+    assert_eq!(got, want);
+}

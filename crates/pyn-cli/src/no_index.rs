@@ -62,13 +62,48 @@ enum Entry {
     Added(String, Blob),
 }
 
-fn blob_at(path: &Path, algorithm: Algorithm) -> Result<Blob> {
+/// The repository a comparison runs in, whose attributes and `core.autocrlf` convert files inside its work tree.
+struct Ctx<'a> {
+    algorithm: Algorithm,
+    git: Option<&'a GitHome>,
+    index: Option<pyn_git::Index>,
+}
+
+impl<'a> Ctx<'a> {
+    fn new(git: Option<&'a GitHome>) -> Self {
+        Self {
+            algorithm: git.map_or(Algorithm::Sha1, |g| g.algorithm()),
+            git,
+            index: git.and_then(GitHome::index),
+        }
+    }
+
+    /// The repository form of a regular file when a conversion changes it.
+    fn cleaned(&self, file: &Path) -> Option<Vec<u8>> {
+        self.git?.cleaned_file(file, self.index.as_ref()?)
+    }
+}
+
+fn blob_at(path: &Path, ctx: &Ctx) -> Result<Blob> {
     let (mode, bytes) = localfile::read(path)?;
+    let mode = file_mode(mode);
+    let regular = matches!(
+        mode,
+        pyn_object::FileMode::Regular | pyn_object::FileMode::Executable
+    );
+    let cleaned = regular.then(|| ctx.cleaned(path)).flatten();
+    let hashed = cleaned.as_deref().unwrap_or(&bytes);
     Ok(Blob {
-        hash: pyn_object::hash_object(algorithm, ObjectKind::Blob, &bytes)?.to_hex(),
-        mode: file_mode(mode),
-        source: Source::Local {
-            file: path.to_path_buf(),
+        hash: pyn_object::hash_object(ctx.algorithm, ObjectKind::Blob, hashed)?.to_hex(),
+        mode,
+        source: match cleaned {
+            Some(data) => Source::Worktree {
+                file: path.to_path_buf(),
+                cleaned: Some(std::sync::Arc::new(data)),
+            },
+            None => Source::Local {
+                file: path.to_path_buf(),
+            },
         },
     })
 }
@@ -90,22 +125,16 @@ fn is_file(path: &Path) -> bool {
 }
 
 /// Every file under `dir` as deleted or added.
-fn sweep(
-    dir: &Path,
-    name: &str,
-    algorithm: Algorithm,
-    added: bool,
-    out: &mut Vec<Entry>,
-) -> Result<()> {
+fn sweep(dir: &Path, name: &str, ctx: &Ctx, added: bool, out: &mut Vec<Entry>) -> Result<()> {
     for file in names(dir)? {
         let (path, shown) = (
             dir.join(&file),
             format!("{name}/{}", file.to_string_lossy()),
         );
         if is_dir(&path) {
-            sweep(&path, &shown, algorithm, added, out)?;
+            sweep(&path, &shown, ctx, added, out)?;
         } else if is_file(&path) {
-            let blob = blob_at(&path, algorithm)?;
+            let blob = blob_at(&path, ctx)?;
             out.push(if added {
                 Entry::Added(shown, blob)
             } else {
@@ -116,12 +145,7 @@ fn sweep(
     Ok(())
 }
 
-fn walk(
-    a: (&Path, &str),
-    b: (&Path, &str),
-    algorithm: Algorithm,
-    out: &mut Vec<Entry>,
-) -> Result<()> {
+fn walk(a: (&Path, &str), b: (&Path, &str), ctx: &Ctx, out: &mut Vec<Entry>) -> Result<()> {
     let mut all = names(a.0)?;
     all.extend(names(b.0)?);
     all.sort_by(|x, y| x.as_encoded_bytes().cmp(y.as_encoded_bytes()));
@@ -135,30 +159,28 @@ fn walk(
             std::fs::symlink_metadata(&pb).ok(),
         ) {
             (Some(x), Some(y)) if x.is_dir() && y.is_dir() => {
-                walk((&pa, &na), (&pb, &nb), algorithm, out)?
+                walk((&pa, &na), (&pb, &nb), ctx, out)?
             }
             (Some(x), Some(y)) if x.is_dir() != y.is_dir() => {
                 crate::usage_error("a file and a directory of the same name are not compared here");
             }
             (Some(_), Some(_)) => {
                 if is_file(&pa) && is_file(&pb) {
-                    out.push(changed(&pa, &na, &pb, &nb, algorithm)?);
+                    out.push(changed(&pa, &na, &pb, &nb, ctx)?);
                 }
             }
-            (Some(x), None) if x.is_dir() => sweep(&pa, &na, algorithm, false, out)?,
-            (None, Some(y)) if y.is_dir() => sweep(&pb, &nb, algorithm, true, out)?,
-            (Some(_), None) if is_file(&pa) => {
-                out.push(Entry::Deleted(na, blob_at(&pa, algorithm)?))
-            }
-            (None, Some(_)) if is_file(&pb) => out.push(Entry::Added(nb, blob_at(&pb, algorithm)?)),
+            (Some(x), None) if x.is_dir() => sweep(&pa, &na, ctx, false, out)?,
+            (None, Some(y)) if y.is_dir() => sweep(&pb, &nb, ctx, true, out)?,
+            (Some(_), None) if is_file(&pa) => out.push(Entry::Deleted(na, blob_at(&pa, ctx)?)),
+            (None, Some(_)) if is_file(&pb) => out.push(Entry::Added(nb, blob_at(&pb, ctx)?)),
             _ => {}
         }
     }
     Ok(())
 }
 
-fn changed(pa: &Path, na: &str, pb: &Path, nb: &str, algorithm: Algorithm) -> Result<Entry> {
-    let (old, new) = (blob_at(pa, algorithm)?, blob_at(pb, algorithm)?);
+fn changed(pa: &Path, na: &str, pb: &Path, nb: &str, ctx: &Ctx) -> Result<Entry> {
+    let (old, new) = (blob_at(pa, ctx)?, blob_at(pb, ctx)?);
     Ok(Entry::Changed(Pair {
         old_path: na.to_string(),
         new_path: nb.to_string(),
@@ -234,27 +256,27 @@ fn inside(dir: &(PathBuf, String), file: &(PathBuf, String)) -> (PathBuf, String
 fn entries(
     left: Option<(PathBuf, String)>,
     right: Option<(PathBuf, String)>,
-    algorithm: Algorithm,
+    ctx: &Ctx,
 ) -> Result<Vec<Entry>> {
     let mut out = Vec::new();
     match (left, right) {
         (None, None) => {}
         (Some(a), None) if !is_dir(&a.0) => {
-            out.push(Entry::Deleted(a.1, blob_at(&a.0, algorithm)?));
+            out.push(Entry::Deleted(a.1, blob_at(&a.0, ctx)?));
         }
         (None, Some(a)) if !is_dir(&a.0) => {
-            out.push(Entry::Added(a.1, blob_at(&a.0, algorithm)?));
+            out.push(Entry::Added(a.1, blob_at(&a.0, ctx)?));
         }
         (Some(a), Some(b)) => match (is_dir(&a.0), is_dir(&b.0)) {
-            (true, true) => walk((&a.0, &a.1), (&b.0, &b.1), algorithm, &mut out)?,
-            (false, false) => out.push(changed(&a.0, &a.1, &b.0, &b.1, algorithm)?),
+            (true, true) => walk((&a.0, &a.1), (&b.0, &b.1), ctx, &mut out)?,
+            (false, false) => out.push(changed(&a.0, &a.1, &b.0, &b.1, ctx)?),
             (false, true) => {
                 let (p, n) = inside(&b, &a);
-                out.push(changed(&a.0, &a.1, &p, &n, algorithm)?);
+                out.push(changed(&a.0, &a.1, &p, &n, ctx)?);
             }
             (true, false) => {
                 let (p, n) = inside(&a, &b);
-                out.push(changed(&p, &n, &b.0, &b.1, algorithm)?);
+                out.push(changed(&p, &n, &b.0, &b.1, ctx)?);
             }
         },
         _ => crate::usage_error("a directory against /dev/null is not compared here"),
@@ -275,8 +297,8 @@ pub fn run(
     if left == "-" || right == "-" {
         crate::usage_error("`--no-index` reading standard input is not built");
     }
-    let algorithm = git.map_or(Algorithm::Sha1, |g| g.algorithm());
-    let mut found = entries(operand(left), operand(right), algorithm)?;
+    let ctx = Ctx::new(git);
+    let mut found = entries(operand(left), operand(right), &ctx)?;
     if format.opts.reverse {
         found = found.into_iter().map(reversed).collect();
     }

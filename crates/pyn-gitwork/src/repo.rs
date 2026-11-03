@@ -1,8 +1,9 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use pyn_git::{Config, ObjectDb, Ref, RefStore, Repository};
-use pyn_object::{Algorithm, Commit, Kind, ObjectId, TreeEntry, parse_tree};
+use pyn_object::{Algorithm, Commit, FileMode, Kind, ObjectId, TreeEntry, parse_tree};
 
 use crate::attributes::Attributes;
 use crate::convert::{Conversion, Settings};
@@ -28,6 +29,63 @@ impl Head {
             Self::Detached(id) => Some(*id),
         }
     }
+}
+
+/// Where the per-folder `.gitattributes` files are read from.
+#[derive(Debug, Clone, Copy)]
+pub enum AttrSource {
+    WorkTree,
+    Index,
+    Tree(ObjectId),
+    Nowhere,
+}
+
+/// The system-wide attributes file; `GIT_ATTR_NOSYSTEM` switches it off.
+fn system_attributes_path() -> Option<PathBuf> {
+    let off = std::env::var("GIT_ATTR_NOSYSTEM")
+        .is_ok_and(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"));
+    (!off).then(|| PathBuf::from("/etc/gitattributes"))
+}
+
+/// The folder a `.gitattributes` path lives in (`""` for the root), or `None` for any other path.
+fn attribute_folder(path: &[u8]) -> Option<&[u8]> {
+    if path == b".gitattributes" {
+        return Some(b"");
+    }
+    path.strip_suffix(b"/.gitattributes")
+}
+
+fn blob_data(objects: &ObjectDb, id: &ObjectId) -> Option<Vec<u8>> {
+    let object = objects.read(id).ok()?;
+    (object.kind == Kind::Blob).then_some(object.data)
+}
+
+fn tree_entry(
+    objects: &ObjectDb,
+    algorithm: Algorithm,
+    tree: &ObjectId,
+    path: &[u8],
+) -> Option<TreeEntry> {
+    let mut current = *tree;
+    let mut parts = path.split(|b| *b == b'/').peekable();
+    while let Some(part) = parts.next() {
+        let object = objects.read(&current).ok()?;
+        if object.kind != Kind::Tree {
+            return None;
+        }
+        let found = parse_tree(algorithm, &object.data)
+            .ok()?
+            .into_iter()
+            .find(|e| e.name == part)?;
+        if parts.peek().is_none() {
+            return Some(found);
+        }
+        if !found.mode.is_tree() {
+            return None;
+        }
+        current = found.id;
+    }
+    None
 }
 
 /// An opened git work tree with its object store and the config in effect (global under repository).
@@ -188,13 +246,33 @@ impl Repo {
         ))
     }
 
-    /// The attributes in effect: the global file, `.gitattributes` files in the work tree and `info/attributes`. The
-    /// folders read are cached until [`Self::reset_attributes`].
+    /// The attributes in effect: the system and global files, `.gitattributes` files from the work tree (from `HEAD`'s
+    /// tree in a bare repository) and `info/attributes`. The folders read are cached until [`Self::reset_attributes`].
     pub fn attributes(&self) -> Result<Arc<Attributes>> {
         let mut cached = self.attributes.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(a) = &*cached {
             return Ok(a.clone());
         }
+        let source = if self.git.work_tree().is_some() {
+            AttrSource::WorkTree
+        } else {
+            match self
+                .head_commit()
+                .ok()
+                .flatten()
+                .and_then(|id| self.commit(&id).ok())
+            {
+                Some(commit) => AttrSource::Tree(commit.tree),
+                None => AttrSource::Nowhere,
+            }
+        };
+        let attrs = Arc::new(self.attributes_from(&source)?);
+        *cached = Some(attrs.clone());
+        Ok(attrs)
+    }
+
+    /// The attributes with the per-folder `.gitattributes` files taken from `source`; not cached.
+    pub fn attributes_from(&self, source: &AttrSource) -> Result<Attributes> {
         let read = |path: Option<PathBuf>| match path.map(std::fs::read) {
             Some(Ok(bytes)) => Ok(bytes),
             Some(Err(e)) if e.kind() != std::io::ErrorKind::NotFound => Err(Error::Io {
@@ -203,22 +281,57 @@ impl Repo {
             }),
             _ => Ok(Vec::new()),
         };
-        let global = read(self.global_attributes_path())?;
+        let mut global = read(system_attributes_path())?;
+        if !global.is_empty() && global.last() != Some(&b'\n') {
+            global.push(b'\n');
+        }
+        global.extend(read(self.global_attributes_path())?);
         let info = read(Some(self.git.common_dir().join("info/attributes")))?;
-        let root = self.git.work_tree().map(Path::to_path_buf);
-        let loader = Box::new(move |dir: &[u8]| {
-            let file = crate::status::fs_path(root.as_deref()?, dir).join(".gitattributes");
-            let meta = std::fs::symlink_metadata(&file).ok()?;
-            meta.is_file().then(|| std::fs::read(&file).ok())?
-        });
-        let attrs = Arc::new(Attributes::new(
+        let loader: crate::attributes::Loader = match source {
+            AttrSource::WorkTree => {
+                let root = self.git.work_tree().map(Path::to_path_buf);
+                Box::new(move |dir: &[u8]| {
+                    let file = crate::status::fs_path(root.as_deref()?, dir).join(".gitattributes");
+                    let meta = std::fs::symlink_metadata(&file).ok()?;
+                    meta.is_file().then(|| std::fs::read(&file).ok())?
+                })
+            }
+            AttrSource::Index => {
+                let files: HashMap<Vec<u8>, ObjectId> = self
+                    .read_index()?
+                    .entries
+                    .iter()
+                    .filter(|e| e.stage == 0 && e.mode & 0o170000 == 0o100000)
+                    .filter_map(|e| {
+                        let dir = attribute_folder(&e.path)?;
+                        Some((dir.to_vec(), e.id))
+                    })
+                    .collect();
+                let objects = self.objects.clone();
+                Box::new(move |dir: &[u8]| blob_data(&objects, files.get(dir)?))
+            }
+            AttrSource::Tree(tree) => {
+                let objects = self.objects.clone();
+                let (tree, algorithm) = (*tree, self.algorithm());
+                Box::new(move |dir: &[u8]| {
+                    let mut path = dir.to_vec();
+                    if !path.is_empty() {
+                        path.push(b'/');
+                    }
+                    path.extend_from_slice(b".gitattributes");
+                    let entry = tree_entry(&objects, algorithm, &tree, &path)?;
+                    matches!(entry.mode, FileMode::Regular | FileMode::Executable)
+                        .then(|| blob_data(&objects, &entry.id))?
+                })
+            }
+            AttrSource::Nowhere => Box::new(|_| None),
+        };
+        Ok(Attributes::new(
             &global,
             &info,
             loader,
             self.bool_setting("core.ignorecase", false),
-        ));
-        *cached = Some(attrs.clone());
-        Ok(attrs)
+        ))
     }
 
     /// Forgets the cached attribute files; call after writing or removing a `.gitattributes`.
