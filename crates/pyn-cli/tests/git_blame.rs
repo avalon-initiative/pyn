@@ -1317,16 +1317,25 @@ fn reverse_with_first_parent_follows_the_first_parent_chain() {
     }
 }
 
+/// `c.txt` keeps same-commit lines contiguous in the source (an edit, never a deletion between them): git releases
+/// differ on whether lines split by a deleted source line are one entry, so `a.txt` is not compared for repeated lines.
 fn colored(r: &Repo) {
     linear(r);
     recent(r);
+    let mut l = body(10);
+    r.lines("c.txt", &refs(&l));
+    r.commit(ANN, "c one");
+    l[4] = "c changed".into();
+    l[5] = "c changed too".into();
+    r.lines("c.txt", &refs(&l));
+    r.commit(BOB, "c two");
 }
 
 #[test]
 fn colors_match_git() {
     each_format(|r| {
         colored(r);
-        for file in ["a.txt", "t.txt"] {
+        for file in ["a.txt", "t.txt", "c.txt"] {
             for flags in [
                 &["--color-lines"][..],
                 &["--color-by-age"],
@@ -1344,11 +1353,14 @@ fn colors_match_git() {
                 &["--color-lines", "--color-by-age", "-L", "2,6"],
                 &["--color-lines", "--color-by-age", "--date=short"],
             ] {
+                if file == "a.txt" && flags.contains(&"--color-lines") && !flags.contains(&"-c") {
+                    continue;
+                }
                 let args: Vec<&str> = flags.iter().copied().chain([file]).collect();
                 r.same(&args);
             }
         }
-        r.same_annotate(&["--color-by-age", "--color-lines", "t.txt"]);
+        r.same_annotate(&["--color-by-age", "--color-lines", "c.txt"]);
         r.same_annotate(&["--color-lines", "a.txt"]);
         for (key, value) in [
             ("blame.coloring", "repeatedLines"),
@@ -1377,7 +1389,12 @@ fn colors_match_git() {
                 &["--no-color-by-age"],
                 &["--color-lines", "--color-by-age"],
             ] {
-                for file in ["a.txt", "t.txt"] {
+                for file in ["a.txt", "t.txt", "c.txt"] {
+                    let repeated = flags.contains(&"--color-lines")
+                        || (key == "blame.coloring" && value == "repeatedLines");
+                    if file == "a.txt" && repeated {
+                        continue;
+                    }
                     let args: Vec<&str> = flags.iter().copied().chain([file]).collect();
                     let (want_code, want) = r.oracle(&r.dir, "blame", &args);
                     let (code, got, err) = r.pyn(&r.dir, "blame", &args);

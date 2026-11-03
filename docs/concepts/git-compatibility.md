@@ -2636,7 +2636,7 @@ What differs, all of it refused or documented rather than silently different:
 | Progress | `--progress` is accepted and prints nothing; with a porcelain format it is fatal as in git. |
 | Dates | A `format-local:` pattern with `%s` pads its column as git does in an eastern zone, which may differ by spaces in a western one. `%Z` in a local format prints the offset, not the zone name. |
 | Refused (`128`) | `diff.algorithm` other than `myers` (the line diff has no patience or histogram). |
-| Colors | A `color.blame.highlightRecent` date git cannot place (a year far in the future) is read as the current time here; git picks an earlier one. |
+| Colors | Whether lines of one commit split by a deleted source line count as one entry (and so get the repeated-line color) differs between git releases; pyn keeps them as separate entries, as git 2.43 does, and the tests do not compare that case. A `color.blame.highlightRecent` date git cannot place (a year far in the future) is read as the current time here; git picks an earlier one. |
 | Abbreviation length | The [abbreviation policy](#log-on-a-git-home) (`core.abbrev`, else the object-count default), grown until the abbreviation of every blamed commit is unique, plus one for the boundary mark. |
 | Content filters | `textconv` is not applied. The work tree file (or `--contents`) is converted to its repository form first, so a file that differs only in line endings the attributes convert is not blamed on the work tree. |
 | Commit encodings | Author names and subjects are printed as stored, without re-encoding from an `encoding` header. |
