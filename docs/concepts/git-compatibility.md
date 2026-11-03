@@ -988,13 +988,46 @@ index, so a repository that relies on conversions shows no phantom changes. `-di
 `pyn convert --home git` keeps a work tree file's stat data in the new index only when its converted form is the committed blob.
 
 Not built: `working-tree-encoding`, `-X renormalize` and `add --renormalize`,
-`export-ignore`/`export-subst`, the `merge` and `whitespace` attributes, `diff=<driver>` and `textconv`, `attr.tree` and
+`export-ignore`/`export-subst` (there is no `archive`), the built-in language `diff=` drivers (`cpp`, `python` and the
+rest, which supply `funcname` patterns), `diff.<name>.command`, `diff.<name>.wordRegex`, `diff.<name>.cachetextconv`,
+the `whitespace` attribute in `apply`, `attr.tree` and
 `GIT_ATTR_SOURCE` (`check-attr --source` takes a tree), and `diff --no-index` outside the work tree of a repository
 applies no conversion (git applies `core.autocrlf` from the global config there). Covered by
 `crates/pyn-cli/tests/git_attributes.rs`, which compares blob ids, work tree bytes and `status`
-and `diff` output with git (#273), and `crates/pyn-cli/tests/git_check_attr.rs` (`check-attr`, `ls-files --eol`, attributes read
-from the index and trees, `blame` and `diff --no-index`). The system attributes file is not covered by a test, as it lives
+and `diff` output with git (#273), `crates/pyn-cli/tests/git_check_attr.rs` (`check-attr`, `ls-files --eol`, attributes read
+from the index and trees, `blame` and `diff --no-index`), and `git_diff_attributes.rs` and `git_merge_attributes.rs` for
+the next section. The system attributes file is not covered by a test, as it lives
 outside the test sandbox.
+
+#### Diff, merge and whitespace attributes
+
+`diff=<name>` picks a diff driver; `diff.<name>.binary`, `textconv`, `funcname` and `xfuncname` are read, and a name with
+no such settings changes nothing. `-diff` is binary and `diff` forces text, as before.
+
+- `textconv`: `diff`, `log -p` and `show` run the command on a temporary file holding each side (the file name is appended
+  to the command, which goes through `sh -c`) and diff its output; the sides are not checked for binary content. Added and
+  deleted files convert one side. `--no-textconv` turns it off and `--textconv` turns it back on. It does not apply to
+  `--stat`, `--numstat`, `--check`, `format-patch` or `blame`. A command that fails stops the diff (`fatal: unable to read
+  files to diff`). Only regular files are converted. The command runs in the current folder, where git runs it at the top of the work tree.
+- `binary`: `diff.<name>.binary` true or false forces binary or text for every output that decides it.
+- `xfuncname` (extended expression) and `funcname` (basic expression) choose the heading after `@@`: the nearest line
+  above the hunk that matches, shown as its first group or else its match, at most 80 bytes. Several patterns are separated
+  by newlines in the value and the first that matches a line decides; one beginning with `!` rejects the line. A path
+  with a pattern uses it instead of the default (a line starting with a letter, `_` or `$`). The expressions are
+  translated onto the `regex` crate, as in `grep`. `-W` still grows a hunk to the default function lines.
+  An invalid pattern is a fatal error.
+- `merge=`: where both sides changed a file, `merge=binary` and `-merge` conflict without a line merge (`-X ours` and `-X theirs`
+  pick a side), `merge=text`, `merge` and an unspecified attribute merge by lines (a file with NUL bytes is binary),
+  `merge=union` keeps both sides of each conflicting hunk with ours first and no markers, and
+  `merge=<name>` runs `merge.<name>.driver`. A name with no `driver` setting is `binary`, `union` or text, and any other name is
+  text. `merge.default` names the driver of paths with no attribute. The command goes through `sh -c` in the work tree root with
+  `%O` (base), `%A` (ours; the result is read back from it), `%B` (theirs), `%L` (marker size), `%P` (path) and
+  `%S`, `%X`, `%Y` (the base, ours and theirs labels) replaced by quoted values; exit `0` is a clean merge and any other
+  status up to `128` is a conflict that leaves the file as the driver wrote it. `merge.<name>.recursive` is not read. It applies to `merge`,
+  `cherry-pick`, `revert`, `rebase`, `am --3way`, `stash apply` and `pull`; `apply --3way` and `--remerge-diff` merge by lines whatever the attribute says.
+- `whitespace`: sets the rule for a path in `diff --check` and in colored whitespace errors. `whitespace` is git's default
+  rules plus `indent-with-non-tab`, `-whitespace` none, and a list (`trailing-space,tabwidth=4`) starts from the default rules
+  rather than `core.whitespace`, skipping tokens it does not know. Unspecified leaves `core.whitespace`.
 
 #### Filter drivers
 

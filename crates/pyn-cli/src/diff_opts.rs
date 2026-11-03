@@ -44,6 +44,12 @@ pub struct PatchFlags {
     /// Treat every file as text.
     #[arg(short = 'a', long)]
     text: bool,
+    /// Show a patch of the files as they are, without running their `textconv` commands.
+    #[arg(long = "no-textconv", overrides_with = "textconv")]
+    no_textconv: bool,
+    /// Run the `textconv` commands of the files (the default).
+    #[arg(long, overrides_with = "no_textconv")]
+    textconv: bool,
     /// Spend extra time to find the smallest set of changes.
     #[arg(long)]
     minimal: bool,
@@ -59,9 +65,6 @@ pub struct PatchFlags {
     /// Accepted: no external diff program is run.
     #[arg(long = "no-ext-diff")]
     no_ext_diff: bool,
-    /// Accepted: no text conversion is applied.
-    #[arg(long = "no-textconv")]
-    no_textconv: bool,
     /// Swap the two sides of the comparison.
     #[arg(short = 'R')]
     swap_sides: bool,
@@ -151,6 +154,7 @@ pub struct Opts {
     pub src_prefix: String,
     pub dst_prefix: String,
     pub text: bool,
+    pub no_textconv: bool,
     pub color: Choice,
     pub ws_highlight: Option<u32>,
     pub stat: StatSpec,
@@ -251,6 +255,7 @@ impl Default for Opts {
             src_prefix: "a/".into(),
             dst_prefix: "b/".into(),
             text: false,
+            no_textconv: false,
             color: Choice::Config,
             ws_highlight: None,
             stat: StatSpec::default(),
@@ -401,6 +406,7 @@ impl PatchFlags {
             ("--no-indent-heuristic", self.no_indent_heuristic),
             ("--no-ext-diff", self.no_ext_diff),
             ("--no-textconv", self.no_textconv),
+            ("--textconv", self.textconv),
             ("-R", self.swap_sides),
             ("--stat-width", self.stat_width.is_some()),
             ("--stat-name-width", self.stat_name_width.is_some()),
@@ -457,6 +463,7 @@ impl PatchFlags {
             function: self.function_context,
             full_index: self.full_index,
             text: self.text,
+            no_textconv: self.no_textconv,
             ..Opts::default()
         };
         o.color = match (self.no_color, self.color.as_deref()) {

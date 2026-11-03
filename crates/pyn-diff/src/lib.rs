@@ -273,6 +273,34 @@ fn heading(a: &[&[u8]], start: usize, floor: isize) -> Option<String> {
     None
 }
 
+/// Recomputes the section headings of `hunks` (cut from `old`) with `find`, which returns the heading text of a line
+/// or `None` when the line is not a heading; a hunk with no heading above it keeps the one before.
+pub fn set_headings(hunks: &mut [Hunk], old: &[u8], find: &dyn Fn(&[u8]) -> Option<Vec<u8>>) {
+    let a = split_lines(old);
+    let mut floor = -1isize;
+    let mut found = String::new();
+    for h in hunks {
+        let start = h.old_start.saturating_sub(1).min(a.len());
+        let mut at = start as isize - 1;
+        while at > floor {
+            let line = a[at as usize];
+            let line = line.strip_suffix(b"\n").unwrap_or(line);
+            if let Some(text) = find(line) {
+                let text = String::from_utf8_lossy(&text).into_owned();
+                let mut end = text.len().min(HEADING_BYTES);
+                while !text.is_char_boundary(end) {
+                    end -= 1;
+                }
+                found = format!(" {}", text[..end].trim_end());
+                break;
+            }
+            at -= 1;
+        }
+        h.heading = found.clone();
+        floor = start as isize - 1;
+    }
+}
+
 /// One hunk of a unified diff: its position on both sides and its lines in order.
 /// A side's start is the line its first line sits on; with no lines on that side it is the line after the gap.
 #[derive(Debug, Clone, PartialEq, Eq)]

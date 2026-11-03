@@ -14,6 +14,7 @@ mod commit_format;
 mod credentials;
 mod diff;
 mod diff_color;
+mod diff_driver;
 mod diff_opts;
 mod diff_raw;
 mod diffstat;

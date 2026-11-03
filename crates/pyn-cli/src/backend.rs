@@ -89,10 +89,15 @@ pub trait Backend {
     /// Every path as of `commit` (an id or abbreviation; the newest if `None`), and the full id used.
     fn snapshot(&self, commit: Option<&str>) -> Result<(Option<String>, Vec<api::SnapshotEntry>)>;
 
-    /// The `diff` attribute of a path: `Some(true)` when it makes the path binary (`-diff`), `Some(false)` when it
-    /// forces text (`diff`).
-    fn diff_binary(&self, _path: &str) -> Option<bool> {
-        None
+    /// The diff driver of a path: its `diff` attribute (`-diff` makes it binary, `diff` forces text) and the
+    /// `diff.<name>.*` settings the attribute names.
+    fn diff_driver(&self, _path: &str) -> Result<crate::diff_driver::DiffDriver> {
+        Ok(crate::diff_driver::DiffDriver::default())
+    }
+
+    /// The state of one attribute of a path.
+    fn attribute(&self, _path: &str, _name: &str) -> pyn_gitwork::AttrValue {
+        pyn_gitwork::AttrValue::Unspecified
     }
 
     /// A stored object's content by its id (a git blob); `probe` asks for only the first bytes when the home can.

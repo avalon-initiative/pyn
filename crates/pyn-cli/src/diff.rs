@@ -258,6 +258,15 @@ struct Contents {
     old: Vec<u8>,
     new: Vec<u8>,
     binary: bool,
+    funcs: Option<crate::diff_driver::FuncMatcher>,
+}
+
+/// Binary-ness forced by `-a`, and whether textconv applies: only to a patch, and not under `--no-textconv`.
+fn conv(format: &Format) -> (bool, bool) {
+    (
+        format.opts.text,
+        format.kind == Kind::Patch && !format.opts.no_textconv,
+    )
 }
 
 fn contents(
@@ -265,8 +274,27 @@ fn contents(
     path: &str,
     old: Option<&Blob>,
     new: Option<&Blob>,
-    text: bool,
+    (text, textconv): (bool, bool),
 ) -> Result<Contents> {
+    let driver = backend.diff_driver(path)?;
+    let funcs = driver.funcname.clone();
+    if let Some(command) = driver.textconv.as_deref().filter(|_| textconv) {
+        let convert = |blob: Option<&Blob>| -> Result<Vec<u8>> {
+            let Some(b) = blob else { return Ok(Vec::new()) };
+            let data = bytes(backend, path, b, false)?;
+            if b.is_regular() {
+                crate::diff_driver::textconv(command, &data)
+            } else {
+                Ok(data)
+            }
+        };
+        return Ok(Contents {
+            old: convert(old)?,
+            new: convert(new)?,
+            binary: false,
+            funcs,
+        });
+    }
     let old_probe = old
         .map(|b| bytes(backend, path, b, true))
         .transpose()?
@@ -275,13 +303,14 @@ fn contents(
         .map(|b| bytes(backend, path, b, true))
         .transpose()?
         .unwrap_or_default();
-    let forced = backend.diff_binary(path);
+    let forced = driver.binary;
     let binary_of = |data: &[u8]| forced.unwrap_or_else(|| pyn_diff::is_binary(data));
     if !text && (binary_of(&old_probe) || binary_of(&new_probe)) {
         return Ok(Contents {
             old: Vec::new(),
             new: Vec::new(),
             binary: true,
+            funcs,
         });
     }
     let full = |blob: Option<&Blob>, probe: Vec<u8>| -> Result<Vec<u8>> {
@@ -292,7 +321,12 @@ fn contents(
     };
     let (old, new) = (full(old, old_probe)?, full(new, new_probe)?);
     let binary = !text && (binary_of(&old) || binary_of(&new));
-    Ok(Contents { old, new, binary })
+    Ok(Contents {
+        old,
+        new,
+        binary,
+        funcs,
+    })
 }
 
 /// A blob's id as `shorten` writes it; the null id of a missing side is as long as the other side's.
@@ -414,7 +448,10 @@ fn patch(
         inter_hunk: o.inter_hunk,
         function: o.function,
     };
-    let hunks = crate::xdiff::unified(&c.old, &c.new, &layout, &o.ws);
+    let mut hunks = crate::xdiff::unified(&c.old, &c.new, &layout, &o.ws);
+    if let Some(funcs) = &c.funcs {
+        pyn_diff::set_headings(&mut hunks, &c.old, &|l| funcs.heading(l));
+    }
     if hunks.is_empty() {
         let ignored =
             changed && old.zip(new).is_some_and(|(a, b)| a.mode() == b.mode()) && p.moved.is_none();
@@ -487,7 +524,10 @@ pub fn commit_color(
 
 /// `--check` for one file: the problems in its added lines, with the colors of `style` when there is one.
 fn check_file(backend: &dyn Backend, path: &str, c: &Contents, style: Option<&Style>) -> String {
-    let rule = diff_color::whitespace_rule(&|k| backend.diff_setting(k));
+    let rule = diff_color::path_rule(
+        &backend.attribute(path, "whitespace"),
+        diff_color::whitespace_rule(&|k| backend.diff_setting(k)),
+    );
     let edits = crate::xdiff::edits(&c.old, &c.new, &pyn_diff::Ws::default());
     let paint = style.map(|s| pyn_diff::whitespace::Paint {
         set: &s.palette.new,
@@ -735,7 +775,13 @@ pub fn merge_stat(
             .zip(p.new.as_ref())
             .is_some_and(|(a, b)| a.hash == b.hash);
         let counts = {
-            let c = contents(backend, &p.new_path, p.old.as_ref(), p.new.as_ref(), false)?;
+            let c = contents(
+                backend,
+                &p.new_path,
+                p.old.as_ref(),
+                p.new.as_ref(),
+                (false, false),
+            )?;
             if c.binary && p.moved.is_some() && same {
                 Counts::Binary(0, 0)
             } else if c.binary {
@@ -1101,7 +1147,7 @@ fn render(
                             moved: None,
                             ..(*p).clone()
                         };
-                        let c = contents(backend, path, old, new, format.opts.text)?;
+                        let c = contents(backend, path, old, new, conv(format))?;
                         out.push_str(&patch(
                             backend,
                             &split,
@@ -1113,7 +1159,7 @@ fn render(
                     }
                     continue;
                 }
-                let c = contents(backend, path, a, b, format.opts.text)?;
+                let c = contents(backend, path, a, b, conv(format))?;
                 if format.opts.ws.any()
                     && format.kind != Kind::Check
                     && p.moved.is_none()
@@ -1131,13 +1177,14 @@ fn render(
                     continue;
                 }
                 if format.kind == Kind::Patch {
+                    let styled = diff_color::path_style(backend, path, style);
                     out.push_str(&patch(
                         backend,
                         p,
                         &c,
                         format,
                         abbreviations,
-                        (style, words.as_ref()),
+                        (styled.as_deref(), words.as_ref()),
                     ));
                     continue;
                 }

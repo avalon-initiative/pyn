@@ -62,6 +62,7 @@ pub(crate) mod meld;
 mod merge;
 mod merge_diff;
 mod merge_options;
+mod mergedrv;
 mod name_rev;
 mod pack_plumbing;
 mod pack_refs;
@@ -483,12 +484,37 @@ impl Backend for GitHome {
         crate::short_status::quote_diff(path, self.repo.bool_setting("core.quotePath", true))
     }
 
-    fn diff_binary(&self, path: &str) -> Option<bool> {
-        let attrs = self.repo.attributes().ok()?.for_path(path.as_bytes());
-        match attrs.get("diff") {
-            pyn_gitwork::AttrValue::Unset => Some(true),
-            pyn_gitwork::AttrValue::Set => Some(false),
-            _ => None,
+    fn diff_driver(&self, path: &str) -> Result<crate::diff_driver::DiffDriver> {
+        use crate::diff_driver::{DiffDriver, FuncMatcher};
+        let mut driver = DiffDriver::default();
+        let name = match self.attribute(path, "diff") {
+            pyn_gitwork::AttrValue::Unset => {
+                driver.binary = Some(true);
+                return Ok(driver);
+            }
+            pyn_gitwork::AttrValue::Set => {
+                driver.binary = Some(false);
+                return Ok(driver);
+            }
+            pyn_gitwork::AttrValue::Value(v) => String::from_utf8_lossy(&v).into_owned(),
+            pyn_gitwork::AttrValue::Unspecified => return Ok(driver),
+        };
+        let config = self.repo.config();
+        let key = |k: &str| format!("diff.{name}.{k}");
+        driver.binary = config.get_bool(&key("binary")).ok().flatten();
+        driver.textconv = config.get(&key("textconv")).map(str::to_string);
+        driver.funcname = match (config.get(&key("xfuncname")), config.get(&key("funcname"))) {
+            (Some(x), _) => Some(FuncMatcher::parse(x, true)?),
+            (None, Some(f)) => Some(FuncMatcher::parse(f, false)?),
+            (None, None) => None,
+        };
+        Ok(driver)
+    }
+
+    fn attribute(&self, path: &str, name: &str) -> pyn_gitwork::AttrValue {
+        match self.repo.attributes() {
+            Ok(attrs) => attrs.for_path(path.as_bytes()).get(name),
+            Err(_) => pyn_gitwork::AttrValue::Unspecified,
         }
     }
 
