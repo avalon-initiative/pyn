@@ -89,6 +89,8 @@ pub(super) struct Board<'a> {
     ignore: HashSet<ObjectId>,
     /// With `--reverse`, a commit's children in the range, which take the place of its parents.
     children: HashMap<ObjectId, Vec<ObjectId>>,
+    /// `-S`: commits whose parents are replaced.
+    grafts: HashMap<ObjectId, Vec<ObjectId>>,
     prints: HashMap<usize, Vec<Fingerprint>>,
 }
 
@@ -121,12 +123,17 @@ impl<'a> Board<'a> {
             unblamable: vec![false; line_count],
             ignore: HashSet::new(),
             children: HashMap::new(),
+            grafts: HashMap::new(),
             prints: HashMap::new(),
         }
     }
 
     pub fn ignoring(&mut self, commits: HashSet<ObjectId>) {
         self.ignore = commits;
+    }
+
+    pub fn with_grafts(&mut self, grafts: HashMap<ObjectId, Vec<ObjectId>>) {
+        self.grafts = grafts;
     }
 
     pub fn with_children(&mut self, children: HashMap<ObjectId, Vec<ObjectId>>) {
@@ -137,7 +144,11 @@ impl<'a> Board<'a> {
         if let Some(c) = self.commits.get(id) {
             return Ok(c.clone());
         }
-        let c = Rc::new(self.git.repo.commit(id)?);
+        let mut commit = self.git.repo.commit(id)?;
+        if let Some(parents) = self.grafts.get(id) {
+            commit.parents = parents.clone();
+        }
+        let c = Rc::new(commit);
         self.commits.insert(*id, c.clone());
         Ok(c)
     }

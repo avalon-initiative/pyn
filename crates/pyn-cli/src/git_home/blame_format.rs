@@ -6,6 +6,7 @@ use anyhow::Result;
 use pyn_object::{ObjectId, Signature};
 
 use super::GitHome;
+use super::blame_color::Coloring;
 use super::blame_walk::Origin;
 use super::plumbing::quote;
 use crate::date_mode::DateMode;
@@ -55,6 +56,7 @@ pub(super) struct Layout<'a> {
     pub origins: &'a [Origin],
     pub infos: &'a HashMap<ObjectId, Info>,
     pub lines: &'a [&'a [u8]],
+    pub color: Coloring,
 }
 
 fn tz_string(offset_minutes: i32) -> String {
@@ -152,6 +154,17 @@ impl Layout<'_> {
         }
     }
 
+    /// A repeated line of an entry takes the repeated-line color, else the age color; annotate output has none.
+    fn line_color(&self, e: &Entry, i: usize) -> Option<&str> {
+        if self.flags.annotate {
+            return None;
+        }
+        match &self.color.repeated {
+            Some(c) if i > 0 => Some(c),
+            _ => self.color.heat(self.info(e).author.time),
+        }
+    }
+
     fn columns(&self, entries: &[Entry], out: &mut Vec<u8>) -> Result<()> {
         let (mut longest_file, mut longest_author) = (0, 0);
         let (mut longest_src, mut longest_dst) = (0, 0);
@@ -181,6 +194,10 @@ impl Layout<'_> {
             let info = self.info(e);
             let hex = o.commit.to_hex();
             for i in 0..e.count {
+                let color = self.line_color(e, i);
+                if let Some(c) = color {
+                    out.extend_from_slice(c.as_bytes());
+                }
                 let mut length = if self.flags.long_names {
                     hex_len
                 } else {
@@ -236,6 +253,9 @@ impl Layout<'_> {
                         );
                     }
                     out.extend_from_slice(format!(" {:>w$}) ", lno + 1, w = digits).as_bytes());
+                }
+                if color.is_some() {
+                    out.extend_from_slice(crate::diff_color::RESET.as_bytes());
                 }
                 self.line_text(out, lno);
             }

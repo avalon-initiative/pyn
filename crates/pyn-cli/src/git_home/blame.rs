@@ -12,11 +12,13 @@ use pyn_gitwork::Entry as TreeEntry;
 use pyn_object::{FileMode, Kind, ObjectId, Signature};
 
 use super::GitHome;
+use super::blame_color::ColorConfig;
 use super::blame_format::{Entry, Flags, Info, Layout};
 use super::blame_range::{RangeError, parse};
 use super::blame_rename::blob_id;
 use super::blame_walk::{Board, Fake, Settings};
 use super::plumbing::{Resolver, emit_bytes, peel, prefix};
+use crate::backend::Backend;
 use crate::commit_format::DateStyle;
 use crate::date_mode::DateMode;
 
@@ -25,7 +27,7 @@ const ANNOTATE_USAGE: &str = "usage: pyn annotate [<options>] [<rev-opts>] [<rev
 
 const HELP: &str = "\
 Options (a git repository only; output and exit status are git blame's):
-  -L <range>            only these lines: <start>,<end>, +<n> and -<n> offsets, /<regex>/ anchors; repeatable
+  -L <range>            only these lines: <start>,<end>, +<n> and -<n> offsets, /<regex>/ anchors, :<funcname>; repeatable
   -w                    ignore whitespace when finding the lines a commit changed
   --first-parent        follow only the first parent of a merge
   -s  -e  -f  -n        no author and date, author email, original file name, original line number
@@ -36,10 +38,12 @@ Options (a git repository only; output and exit status are git blame's):
   --contents <file>     blame this file's contents (`-` for standard input) as the newest version
   --ignore-rev <rev>    blame past this commit (repeatable); --ignore-revs-file <file> lists them (`blame.ignoreRevsFile`)
   --reverse             find where lines last existed: `<old>..<new>`, or `<old>` alone for `<old>..HEAD`
+  --color-lines         color repeated lines of an entry; --color-by-age colors by age (`blame.coloring`, `color.blame.*`)
+  -S <file>             take parents from a graft file: a commit id and its parents per line
   --minimal             spend extra cycles to find better diffs
-Revisions: <rev>, <a>..<b>, <a>...<b>, ^<rev>. Not built (usage error 129): -M, -C, --incremental, -L :<funcname>,
---show-stats, --score-debug, --color-lines, --color-by-age, --diff-algorithm, -S, --reverse with --first-parent and other
-revision options.";
+Revisions: <rev>, <a>..<b>, <a>...<b>, ^<rev>. Not built (usage error 129): -M, -C, --incremental, --show-stats,
+--score-debug, --diff-algorithm, -S with --reverse or a revision range, -L :<funcname> with a built-in diff driver and
+other revision options.";
 
 #[derive(Args, Debug)]
 #[command(disable_help_flag = true, after_help = HELP)]
@@ -66,6 +70,9 @@ struct Parsed {
     ignore_whitespace: bool,
     first_parent: bool,
     minimal: bool,
+    color_lines: bool,
+    color_by_age: bool,
+    revs_file: Option<String>,
     reverse: bool,
     ignore_revs: Vec<String>,
     ignore_files: Vec<String>,
@@ -144,6 +151,10 @@ fn parse_args(args: Vec<OsString>, annotate: bool) -> Parsed {
                 },
                 ("first-parent", None) => p.first_parent = true,
                 ("minimal", None) => p.minimal = true,
+                ("color-lines", None) => p.color_lines = true,
+                ("no-color-lines", None) => p.color_lines = false,
+                ("color-by-age", None) => p.color_by_age = true,
+                ("no-color-by-age", None) => p.color_by_age = false,
                 ("reverse", None) => p.reverse = true,
                 ("progress", None) => p.progress = Some(true),
                 ("no-progress", None) => p.progress = Some(false),
@@ -157,11 +168,9 @@ fn parse_args(args: Vec<OsString>, annotate: bool) -> Parsed {
                     Some(v) => p.contents = Some(v),
                     None => fail(annotate, "option `contents' requires a value"),
                 },
-                (
-                    "incremental" | "show-stats" | "score-debug" | "color-lines" | "color-by-age"
-                    | "diff-algorithm",
-                    _,
-                ) => not_built(annotate, &format!("--{name}")),
+                ("incremental" | "show-stats" | "score-debug" | "diff-algorithm", _) => {
+                    not_built(annotate, &format!("--{name}"))
+                }
                 _ => fail(annotate, &format!("unknown option `{arg}'")),
             }
         } else if arg.len() > 1 && arg.starts_with('-') {
@@ -192,7 +201,20 @@ fn parse_args(args: Vec<OsString>, annotate: bool) -> Parsed {
                         p.ranges.push(value);
                         break;
                     }
-                    'M' | 'C' | 'S' => not_built(annotate, &format!("-{}", cluster[i])),
+                    'S' => {
+                        let rest: String = cluster[i + 1..].iter().collect();
+                        let value = if rest.is_empty() {
+                            match it.next() {
+                                Some(v) => v,
+                                None => fail(annotate, "switch `S' requires a value"),
+                            }
+                        } else {
+                            rest
+                        };
+                        p.revs_file = Some(value);
+                        break;
+                    }
+                    'M' | 'C' => not_built(annotate, &format!("-{}", cluster[i])),
                     other => fail(annotate, &format!("unknown switch `{other}'")),
                 }
                 i += 1;
@@ -224,6 +246,7 @@ fn die(message: String) -> anyhow::Error {
 }
 
 pub(super) fn blame(git: &GitHome, cwd: &Path, args: BlameArgs, annotate: bool) -> Result<()> {
+    let color = ColorConfig::read(git)?;
     let mut p = parse_args(raw_args(annotate, args.args), annotate);
     let usage_line = if annotate {
         ANNOTATE_USAGE
@@ -313,12 +336,10 @@ pub(super) fn blame(git: &GitHome, cwd: &Path, args: BlameArgs, annotate: bool) 
     }
     positives.retain(|(_, id)| !negatives.iter().any(|(_, n)| n == id));
     let mut tips: Vec<ObjectId> = Vec::new();
+    let mut first_parent_children = None;
     if p.reverse {
         if p.contents.is_some() {
             bail!("--contents and --reverse do not blend well.");
-        }
-        if p.first_parent {
-            not_built(annotate, "--reverse with --first-parent");
         }
         if negatives.len() > 1 {
             bail!(
@@ -339,18 +360,45 @@ pub(super) fn blame(git: &GitHome, cwd: &Path, args: BlameArgs, annotate: bool) 
                 _ => bail!("No commit to dig up from?"),
             }
         }
+        if p.first_parent && positives.len() > 1 {
+            bail!(
+                "More than one commit to dig from {} and {}?",
+                positives[1].0,
+                positives[0].0
+            );
+        }
         tips = positives.iter().map(|(_, id)| *id).collect();
+        if p.first_parent {
+            if tips.first() == Some(&negatives[0].1) {
+                bail!("--reverse and --first-parent together require specified latest commit");
+            }
+            first_parent_children = Some(
+                first_parent_chain(git, tips[0], negatives[0].1)?.ok_or_else(|| {
+                    die(
+                        "--reverse --first-parent together require range along first-parent chain"
+                            .to_string(),
+                    )
+                })?,
+            );
+        }
         positives = vec![negatives[0].clone()];
     } else if positives.len() > 1 {
         bail!(
             "More than one commit to dig from {} and {}?",
-            positives[0].0,
-            positives[1].0
+            positives[1].0,
+            positives[0].0
         );
     }
 
     let algorithm = git.algorithm();
     let zero = ObjectId::from_bytes(algorithm, &vec![0; algorithm.digest_len()])?;
+    let grafts = match &p.revs_file {
+        Some(file) => read_grafts(git, cwd, file)?,
+        None => HashMap::new(),
+    };
+    if !grafts.is_empty() && (p.reverse || !negatives.is_empty()) {
+        not_built(annotate, "-S with --reverse or a revision range");
+    }
     let mut positive = positives.first().cloned();
     if positive.is_none() && git.is_bare() && p.contents.is_none() {
         positive = git.repo.head_commit()?.map(|id| ("HEAD".to_string(), id));
@@ -381,8 +429,9 @@ pub(super) fn blame(git: &GitHome, cwd: &Path, args: BlameArgs, annotate: bool) 
     let count = lines.len() as i64;
     let mut selected = vec![false; lines.len()];
     let mut anchor = 1;
+    let funcs = func_lines(git, &path)?;
     for spec in &ranges {
-        let (mut bottom, mut top) = match parse(spec, &lines, anchor) {
+        let (mut bottom, mut top) = match parse(spec, &lines, anchor, funcs.as_deref()) {
             Ok(r) => r,
             Err(RangeError::Usage) => usage_exit(usage_line),
             Err(RangeError::Fatal(m)) => bail!(m),
@@ -420,8 +469,12 @@ pub(super) fn blame(git: &GitHome, cwd: &Path, args: BlameArgs, annotate: bool) 
     let selected_lines: Vec<usize> = (0..lines.len()).filter(|l| selected[*l]).collect();
     let mut board = Board::new(git, &hidden, settings, fake.map(|f| (zero, f)), lines.len());
     board.ignoring(ignore);
+    board.with_grafts(grafts.clone());
     if p.reverse {
-        board.with_children(children(git, &tips, &hidden)?);
+        board.with_children(match first_parent_children {
+            Some(map) => map,
+            None => children(git, &tips, &hidden)?,
+        });
     }
     board.start(
         final_commit,
@@ -481,7 +534,11 @@ pub(super) fn blame(git: &GitHome, cwd: &Path, args: BlameArgs, annotate: bool) 
             let c = git.repo.commit(&commit)?;
             Info {
                 summary: subject(&c.message, &commit),
-                boundary: hidden.contains(&commit) || (c.parents.is_empty() && !show_root),
+                boundary: hidden.contains(&commit)
+                    || (grafts
+                        .get(&commit)
+                        .map_or(c.parents.is_empty(), Vec::is_empty)
+                        && !show_root),
                 author: mapped(c.author),
                 committer: mapped(c.committer),
             }
@@ -517,6 +574,7 @@ pub(super) fn blame(git: &GitHome, cwd: &Path, args: BlameArgs, annotate: bool) 
         origins: &board.origins,
         infos: &infos,
         lines: &lines,
+        color: color.resolve(p.color_lines, p.color_by_age),
     };
     emit_bytes(&layout.render(&entries)?);
     Ok(())
@@ -630,6 +688,90 @@ fn children(
         }
     }
     Ok(map)
+}
+
+type LineTest = Box<dyn Fn(&[u8]) -> bool>;
+
+/// What starts a function in `path`: its diff driver's patterns, else the default (a letter, `_` or `$`).
+/// `None` for a built-in language driver, whose patterns are not built.
+fn func_lines(git: &GitHome, path: &[u8]) -> Result<Option<LineTest>> {
+    let name = String::from_utf8_lossy(path).into_owned();
+    let driver = git.diff_driver(&name)?;
+    if let Some(matcher) = driver.funcname {
+        return Ok(Some(Box::new(move |l| matcher.heading(l).is_some())));
+    }
+    if let pyn_gitwork::AttrValue::Value(v) = git.attribute(&name, "diff")
+        && BUILTIN_DRIVERS.contains(&String::from_utf8_lossy(&v).as_ref())
+    {
+        return Ok(None);
+    }
+    Ok(Some(Box::new(|l| {
+        l.first()
+            .is_some_and(|c| c.is_ascii_alphabetic() || *c == b'_' || *c == b'$')
+    })))
+}
+
+const BUILTIN_DRIVERS: [&str; 26] = [
+    "ada", "bash", "bibtex", "cpp", "csharp", "css", "dts", "elixir", "fortran", "fountain",
+    "golang", "html", "ini", "java", "kotlin", "markdown", "matlab", "objc", "pascal", "perl",
+    "php", "python", "ruby", "rust", "scheme", "tex",
+];
+
+/// `-S`: one graft per line, a commit id followed by its new parents; a malformed line is reported and skipped.
+fn read_grafts(git: &GitHome, cwd: &Path, file: &str) -> Result<HashMap<ObjectId, Vec<ObjectId>>> {
+    let path = cwd.join(file);
+    let text = std::fs::read(&path).map_err(|e| {
+        let reason = e.to_string();
+        let reason = reason.split(" (os error").next().unwrap_or(&reason);
+        die(format!("reading graft file '{file}' failed: {reason}"))
+    })?;
+    let hex = git.algorithm().digest_len() * 2;
+    let mut grafts = HashMap::new();
+    for raw in String::from_utf8_lossy(&text).split('\n') {
+        let line = raw.trim_end();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let ids: Option<Vec<ObjectId>> = (line.len() + 1)
+            .is_multiple_of(hex + 1)
+            .then(|| {
+                line.as_bytes()
+                    .chunks(hex + 1)
+                    .map(|c| {
+                        let sep_ok = c.len() == hex || c[hex].is_ascii_whitespace();
+                        let id = std::str::from_utf8(&c[..hex.min(c.len())]).ok()?;
+                        sep_ok.then(|| ObjectId::from_hex(git.algorithm(), id).ok())?
+                    })
+                    .collect()
+            })
+            .flatten();
+        match ids {
+            Some(mut ids) if !ids.is_empty() => {
+                let commit = ids.remove(0);
+                grafts.insert(commit, ids);
+            }
+            _ => eprintln!("error: bad graft data: {line}"),
+        }
+    }
+    Ok(grafts)
+}
+
+/// With `--reverse --first-parent`, each commit on the first-parent chain from `tip` down to `initial`, as the child of its parent.
+fn first_parent_chain(
+    git: &GitHome,
+    tip: ObjectId,
+    initial: ObjectId,
+) -> Result<Option<HashMap<ObjectId, Vec<ObjectId>>>> {
+    let mut map = HashMap::new();
+    let mut at = tip;
+    while at != initial {
+        let Some(parent) = git.repo.commit(&at)?.parents.first().copied() else {
+            return Ok(None);
+        };
+        map.insert(parent, vec![at]);
+        at = parent;
+    }
+    Ok(Some(map))
 }
 
 fn fake_info(p: &Parsed, path: &[u8]) -> Info {

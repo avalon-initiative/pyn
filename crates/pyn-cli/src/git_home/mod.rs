@@ -14,6 +14,7 @@ mod bisect;
 mod bisect_bases;
 mod bisect_walk;
 mod blame;
+mod blame_color;
 mod blame_format;
 mod blame_fuzzy;
 mod blame_range;

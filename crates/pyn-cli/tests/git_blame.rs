@@ -1215,6 +1215,402 @@ fn minimal_and_progress_match_git() {
     }
 }
 
+/// Each name of the exit status and the part of the message that git fixes: the commits named, in order.
+fn dug_from(err: &str) -> Option<String> {
+    err.split("dig from ")
+        .nth(1)
+        .or_else(|| err.split("dig up from, ").nth(1))
+        .map(|t| t.trim().to_string())
+}
+
+#[test]
+fn reverse_with_first_parent_follows_the_first_parent_chain() {
+    each_format(|r| {
+        merged(r);
+        let root = r.rev("HEAD~4");
+        let mut candidates: Vec<Vec<String>> = Vec::new();
+        for range in [
+            "HEAD~1..HEAD",
+            "HEAD~2..HEAD",
+            "HEAD~3..HEAD",
+            "HEAD~4..HEAD",
+            "HEAD~3..HEAD~1",
+            "HEAD~4..HEAD~2",
+            "HEAD~1..late",
+            "side..HEAD",
+            "side~1..side",
+            "side~1..HEAD",
+            "late..HEAD",
+            "HEAD..HEAD~1",
+            "HEAD~2",
+            "HEAD~4",
+            "side",
+            "side~1",
+            "HEAD",
+        ] {
+            candidates.push(vec![range.to_string()]);
+        }
+        candidates.push(vec![format!("^{root}"), "HEAD".into()]);
+        candidates.push(vec!["HEAD~2..HEAD".into(), "HEAD~1".into()]);
+        candidates.push(vec!["HEAD~1".into(), "HEAD~2..HEAD".into()]);
+        candidates.push(vec!["HEAD~2..HEAD".into(), "late".into(), "side".into()]);
+        for revs in candidates {
+            let mut args: Vec<&str> = vec!["--reverse", "--first-parent"];
+            args.extend(revs.iter().map(String::as_str));
+            args.push("m.txt");
+            let (want, _) = r.oracle(&r.dir, "blame", &args);
+            let (code, _, err) = r.pyn(&r.dir, "blame", &args);
+            assert_eq!(
+                oracle::status_class(code),
+                oracle::status_class(want),
+                "{args:?}: {err}"
+            );
+            if want == 0 {
+                r.same(&args);
+                let mut with = args.clone();
+                with.splice(2..2, ["-f", "-n", "-e"]);
+                r.same(&with);
+                r.same(&[&["-p"][..], &args[..]].concat());
+            }
+            let git_err = git(&r.dir)
+                .args(["blame"])
+                .args(&args)
+                .output()
+                .unwrap()
+                .stderr;
+            let theirs = dug_from(&String::from_utf8_lossy(&git_err));
+            if theirs.is_some() {
+                assert_eq!(dug_from(&err), theirs, "{args:?}");
+            }
+        }
+    });
+    for format in FORMATS {
+        for seed in 0..40u64 {
+            let r = Repo::new(format);
+            let path = random_history(&r, seed);
+            let out = git(&r.dir)
+                .args(["rev-list", "--max-parents=0", "HEAD"])
+                .output()
+                .unwrap();
+            let root = String::from_utf8(out.stdout).unwrap().trim().to_string();
+            r.same(&[
+                "--reverse",
+                "--first-parent",
+                &format!("{root}..HEAD"),
+                "f.txt",
+            ]);
+            r.same(&["--reverse", "--first-parent", &root, &path]);
+            let mid = r.rev("HEAD~4");
+            let args = [
+                "--reverse",
+                "--first-parent",
+                &format!("{mid}..HEAD"),
+                &path,
+            ];
+            let (want, _) = r.oracle(&r.dir, "blame", &args);
+            let (code, _, err) = r.pyn(&r.dir, "blame", &args);
+            assert_eq!(code, want, "{args:?}: {err}");
+            if want == 0 {
+                r.same(&args);
+            }
+        }
+    }
+}
+
+fn colored(r: &Repo) {
+    linear(r);
+    recent(r);
+}
+
+#[test]
+fn colors_match_git() {
+    each_format(|r| {
+        colored(r);
+        for file in ["a.txt", "t.txt"] {
+            for flags in [
+                &["--color-lines"][..],
+                &["--color-by-age"],
+                &["--color-lines", "--color-by-age"],
+                &["--color-by-age", "--color-lines"],
+                &["--no-color-lines"],
+                &["--color-by-age", "--no-color-by-age"],
+                &["--color-lines", "-s"],
+                &["--color-by-age", "-e", "-f", "-n"],
+                &["--color-lines", "--color-by-age", "-l", "-t", "-b"],
+                &["--color-lines", "--color-by-age", "--root"],
+                &["--color-by-age", "-c"],
+                &["--color-lines", "-p"],
+                &["--color-by-age", "--line-porcelain"],
+                &["--color-lines", "--color-by-age", "-L", "2,6"],
+                &["--color-lines", "--color-by-age", "--date=short"],
+            ] {
+                let args: Vec<&str> = flags.iter().copied().chain([file]).collect();
+                r.same(&args);
+            }
+        }
+        r.same_annotate(&["--color-by-age", "--color-lines", "t.txt"]);
+        r.same_annotate(&["--color-lines", "a.txt"]);
+        for (key, value) in [
+            ("blame.coloring", "repeatedLines"),
+            ("blame.coloring", "highlightRecent"),
+            ("blame.coloring", "none"),
+            ("blame.coloring", "bogus"),
+            ("color.blame.repeatedLines", "bold green"),
+            ("color.blame.repeatedLines", "nonsense"),
+            ("color.blame.repeatedLines", ""),
+            (
+                "color.blame.highlightRecent",
+                "red,6 months ago,bold green,3 days ago,yellow",
+            ),
+            ("color.blame.highlightRecent", "magenta"),
+            ("color.blame.highlightRecent", ""),
+            ("color.blame.highlightRecent", "red,1999-01-01,blue"),
+            ("color.blame.highlightRecent", "red,6 months ago"),
+            ("color.blame.highlightRecent", "nonsense"),
+        ] {
+            r.git_ok(ANN, &["config", key, value]);
+            for flags in [
+                &[][..],
+                &["--color-lines"],
+                &["--color-by-age"],
+                &["--no-color-lines"],
+                &["--no-color-by-age"],
+                &["--color-lines", "--color-by-age"],
+            ] {
+                for file in ["a.txt", "t.txt"] {
+                    let args: Vec<&str> = flags.iter().copied().chain([file]).collect();
+                    let (want_code, want) = r.oracle(&r.dir, "blame", &args);
+                    let (code, got, err) = r.pyn(&r.dir, "blame", &args);
+                    assert_eq!(
+                        oracle::status_class(code),
+                        oracle::status_class(want_code),
+                        "{key}={value} {args:?}: {err}"
+                    );
+                    if want_code == 0 {
+                        assert_eq!(
+                            oracle::blame_lines(&got),
+                            oracle::blame_lines(&want),
+                            "{key}={value} {args:?}"
+                        );
+                    }
+                }
+            }
+            r.git_ok(ANN, &["config", "--unset", key]);
+        }
+    });
+}
+
+#[test]
+fn graft_files_replace_parents() {
+    each_format(|r| {
+        merged(r);
+        let ids: Vec<String> = [
+            "HEAD", "HEAD~1", "HEAD~2", "HEAD~3", "HEAD~4", "side", "side~1", "late",
+        ]
+        .iter()
+        .map(|n| r.rev(n))
+        .collect();
+        let (head, m1, m2, m3, root, side, side1, late) = (
+            &ids[0], &ids[1], &ids[2], &ids[3], &ids[4], &ids[5], &ids[6], &ids[7],
+        );
+        let full = {
+            let out = git(&r.dir)
+                .args(["rev-list", "--parents", "HEAD"])
+                .output()
+                .unwrap();
+            String::from_utf8(out.stdout).unwrap()
+        };
+        let upper = format!("{} {}\n", m1.to_uppercase(), root);
+        let cases: Vec<(&str, String)> = vec![
+            ("the real graph", full),
+            ("a commit given a new parent", format!("{m1} {root}\n")),
+            ("two parents", format!("{head} {m1} {side}\n")),
+            ("a root", format!("{m1}\n")),
+            (
+                "several lines",
+                format!("{m1} {root}\n{late} {side1}\n{side} {root}\n"),
+            ),
+            (
+                "the last of two for a commit wins",
+                format!("{m1} {root}\n{m1} {side}\n"),
+            ),
+            ("no final newline", format!("{m1} {root}")),
+            (
+                "blank lines and comments",
+                format!("\n# note\n{m1} {root}\n\n"),
+            ),
+            ("trailing space", format!("{m1} {root} \n")),
+            ("a tab between", format!("{m1}\t{root}\n")),
+            ("capitals", upper),
+            (
+                "an unknown commit",
+                format!("{} {root}\n{m2} {m3}\n", "1".repeat(root.len())),
+            ),
+            ("a short id", format!("{m1} {}\n", &root[..10])),
+            ("a double space", format!("{m1}  {root}\n")),
+            ("an id with junk", format!("{m1} {root}x\n")),
+            ("only an id and a short one", format!("{}\n", &m1[..10])),
+            ("nothing", String::new()),
+        ];
+        for (name, text) in cases {
+            let file = r.dir.parent().unwrap().join("grafts");
+            fs::write(&file, text).unwrap();
+            let file = file.to_str().unwrap();
+            for args in [
+                &["-S", file, "m.txt"][..],
+                &["-S", file, "-f", "-n", "m.txt"],
+                &["-S", file, "--root", "m.txt"],
+                &["-S", file, "--first-parent", "m.txt"],
+                &["-S", file, "-p", "m.txt"],
+                &["-S", file, "HEAD~1", "m.txt"],
+                &["-S", file, "late", "m.txt"],
+            ] {
+                let (want, _) = r.oracle(&r.dir, "blame", args);
+                let (code, _, err) = r.pyn(&r.dir, "blame", args);
+                assert_eq!(code, want, "{name} {args:?}: {err}");
+                r.same(args);
+            }
+            r.same(&[&format!("-S{file}"), "m.txt"]);
+        }
+        let (want, _) = r.oracle(&r.dir, "blame", &["-S", "nonexistent", "m.txt"]);
+        let (code, out, _) = r.pyn(&r.dir, "blame", &["-S", "nonexistent", "m.txt"]);
+        assert_eq!((code, want), (128, 128));
+        assert!(out.is_empty());
+    });
+}
+
+#[test]
+fn graft_files_with_ranges_or_reverse_are_a_usage_error() {
+    each_format(|r| {
+        merged(r);
+        let file = r.dir.parent().unwrap().join("grafts");
+        fs::write(&file, format!("{} {}\n", r.rev("HEAD~1"), r.rev("HEAD~4"))).unwrap();
+        let file = file.to_str().unwrap();
+        for args in [
+            &["-S", file, "HEAD~2..HEAD", "m.txt"][..],
+            &["-S", file, "--reverse", "HEAD~2", "m.txt"],
+        ] {
+            let (code, out, err) = r.pyn(&r.dir, "blame", args);
+            assert_eq!(code, 129, "{args:?}: {err}");
+            assert!(out.is_empty());
+        }
+    });
+}
+
+const FUNCS: &str = "#include <x>\n\nint alpha(void)\n{\n\treturn 1;\n}\n\nstatic int beta(int x)\n{\n\tif (x)\n\t\treturn 2;\n\n\treturn 3;\n}\n$weird() {\n}\n indented()\n\nlast line\n";
+
+#[test]
+fn function_ranges_match_git() {
+    each_format(|r| {
+        r.write("f.c", FUNCS.as_bytes());
+        r.commit(ANN, "one");
+        let edited = FUNCS
+            .replace("return 2;", "return 22;")
+            .replace("alpha", "alpha2");
+        r.write("f.c", edited.as_bytes());
+        r.commit(BOB, "two");
+        r.write("empty.c", b"");
+        r.commit(CY, "empty");
+        let compare = |args: &[&str]| {
+            let (want, _) = r.oracle(&r.dir, "blame", args);
+            let (code, out, err) = r.pyn(&r.dir, "blame", args);
+            assert_eq!(
+                oracle::status_class(code),
+                oracle::status_class(want),
+                "{args:?}: {err}"
+            );
+            if want == 0 {
+                r.same(args);
+            } else {
+                assert!(out.is_empty(), "{args:?}");
+            }
+        };
+        for range in [
+            ":alpha",
+            ":alpha2",
+            ":beta",
+            ":int",
+            "^:int",
+            ":nothing",
+            ":weird",
+            ":include",
+            ":last",
+            ":x",
+            ":alpha,+2",
+            "3,:beta",
+            ":",
+            ":ind",
+            ":\\(",
+            ":a\\+",
+            ":alpha:",
+            ":[[:alpha:]]*ta",
+            ":nothing:x",
+            ":alpha:x",
+            ":a:b",
+            "^:beta",
+            ":[",
+            "1,:beta",
+            "/alpha/,:beta",
+            ":^int",
+            ":void$",
+            ":(x)",
+            ":e",
+        ] {
+            compare(&["-L", range, "f.c"]);
+            compare(&["-L", range, "-s", "-f", "f.c"]);
+        }
+        compare(&["-L", ":alpha", "-L", ":beta", "f.c"]);
+        compare(&["-L", ":beta", "-L", ":alpha", "f.c"]);
+        compare(&["-L", ":alpha", "-L", "^:alpha", "f.c"]);
+        compare(&["-L", "1,2", "-L", ":beta", "f.c"]);
+        compare(&["-L", "8,9", "-L", ":alpha", "f.c"]);
+        compare(&["-L", "/alpha/", "-L", ":beta", "f.c"]);
+        compare(&["-L", ":alpha", "HEAD~1", "f.c"]);
+        compare(&["-L:alpha", "f.c"]);
+        compare(&["-L", ":a", "empty.c"]);
+        compare(&["-L", ":a", "--reverse", "HEAD~2", "f.c"]);
+    });
+}
+
+#[test]
+fn function_ranges_follow_the_diff_driver() {
+    each_format(|r| {
+        r.write("f.c", FUNCS.as_bytes());
+        r.write("g.txt", b"alpha\n  one\n  two\nbeta\n  three\n");
+        r.write(
+            ".gitattributes",
+            b"g.txt diff=mine\nf.c diff=mydefault\nx.rs diff=rust\n",
+        );
+        r.commit(ANN, "one");
+        r.git_ok(ANN, &["config", "diff.mine.funcname", "^[a-z]"]);
+        r.git_ok(ANN, &["config", "diff.mine.xfuncname", "^(beta)"]);
+        r.git_ok(ANN, &["config", "diff.mydefault.binary", "false"]);
+        for args in [
+            &["-L", ":alpha", "g.txt"][..],
+            &["-L", ":beta", "g.txt"],
+            &["-L", ":a", "g.txt"],
+            &["-L", ":alpha", "f.c"],
+            &["-L", ":beta", "f.c"],
+        ] {
+            let (want, _) = r.oracle(&r.dir, "blame", args);
+            let (code, _, err) = r.pyn(&r.dir, "blame", args);
+            assert_eq!(
+                oracle::status_class(code),
+                oracle::status_class(want),
+                "{args:?}: {err}"
+            );
+            if want == 0 {
+                r.same(args);
+            }
+        }
+        r.write("x.rs", b"fn one() {}\nfn two() {}\n");
+        r.commit(ANN, "rust");
+        let (code, out, _) = r.pyn(&r.dir, "blame", &["-L", ":one", "x.rs"]);
+        assert_eq!(code, 129);
+        assert!(out.is_empty());
+    });
+}
+
 #[test]
 fn what_is_not_built_is_a_usage_error() {
     each_format(|r| {
@@ -1225,14 +1621,9 @@ fn what_is_not_built_is_a_usage_error() {
             &["-C", "-C", "a.txt"],
             &["-M20", "a.txt"],
             &["--incremental", "a.txt"],
-            &["--reverse", "--first-parent", "HEAD~1..HEAD", "a.txt"],
-            &["-L", ":main", "a.txt"],
             &["--show-stats", "a.txt"],
             &["--score-debug", "a.txt"],
-            &["--color-lines", "a.txt"],
-            &["--color-by-age", "a.txt"],
             &["--diff-algorithm=patience", "a.txt"],
-            &["-S", "revs", "a.txt"],
         ] {
             let (code, out, err) = r.pyn(&r.dir, "blame", args);
             assert_eq!(code, 129, "{} blame {args:?}: {err}", r.format);
