@@ -7,14 +7,14 @@ use pyn_core::memory::{
 };
 use pyn_core::merge::default_concurrent_merges;
 use pyn_core::{
-    AccessConfig, AccessService, AccessStore, AuditStore, AuthProvider, ChunkedStore,
+    AccessConfig, AccessService, AccessStore, AuditStore, AuthProvider, ChunkedStore, Clock,
     ExternalPolicy, Limits, MetadataStore, ObjectStore, RandomJitter, RateLimitStore, RateLimits,
-    Repositories, Rules, SecretKey, SystemClock, WebhookSettings, WebhookStore,
+    Repositories, Rules, ScaledClock, SecretKey, SystemClock, WebhookSettings, WebhookStore,
     generate_setup_token,
 };
 use pyn_fs::FsObjectStore;
 use pyn_oidc::{HttpOidcProvider, OidcConfig};
-use pyn_postgres::PgMetadataStore;
+use pyn_postgres::{PgMetadataStore, TimeSource};
 use pyn_server::auth::{BearerAuth, DevHeaderAuth};
 use pyn_server::email::LogEmailSender;
 use pyn_server::passwords::PooledPasswords;
@@ -51,10 +51,14 @@ struct Stores {
 }
 
 /// PostgreSQL when `PYN_DATABASE_URL` is set, otherwise in-memory.
-async fn stores() -> anyhow::Result<Stores> {
+async fn stores(time: TimeSource) -> anyhow::Result<Stores> {
     Ok(match std::env::var("PYN_DATABASE_URL") {
         Ok(url) => {
-            let pg = Arc::new(PgMetadataStore::connect(&url, flag("PYN_CREATE_DATABASE")).await?);
+            let pg = Arc::new(
+                PgMetadataStore::connect(&url, flag("PYN_CREATE_DATABASE"))
+                    .await?
+                    .with_time_source(time),
+            );
             Stores {
                 meta: pg.clone(),
                 access: pg.clone(),
@@ -78,6 +82,30 @@ async fn stores() -> anyhow::Result<Stores> {
             }
         }
     })
+}
+
+/// `PYN_DEV_CLOCK_SPEED`: a clock running that many times faster than real time, for exercising lease expiry.
+/// Needs `PYN_DEV_AUTH`; it also moves sessions and rate windows.
+fn dev_clock() -> anyhow::Result<(Arc<dyn Clock>, TimeSource)> {
+    let Ok(raw) = std::env::var("PYN_DEV_CLOCK_SPEED") else {
+        return Ok((Arc::new(SystemClock), TimeSource::Database));
+    };
+    let speed: f64 = raw
+        .parse()
+        .map_err(|_| anyhow::anyhow!("PYN_DEV_CLOCK_SPEED must be a number, got {raw:?}"))?;
+    anyhow::ensure!(
+        speed.is_finite() && speed >= 1.0,
+        "PYN_DEV_CLOCK_SPEED must be at least 1"
+    );
+    anyhow::ensure!(
+        flag("PYN_DEV_AUTH"),
+        "PYN_DEV_CLOCK_SPEED needs PYN_DEV_AUTH=true: a fast clock is for development only"
+    );
+    tracing::warn!(
+        speed,
+        "PYN_DEV_CLOCK_SPEED is on: leases, sessions and rate windows run on a clock {speed} times faster than real time; development only"
+    );
+    Ok((Arc::new(ScaledClock::new(speed)), TimeSource::Caller))
 }
 
 /// A limit that stays unset, meaning unlimited, unless the variable is present.
@@ -179,7 +207,7 @@ fn webhook_settings() -> anyhow::Result<WebhookSettings> {
 /// server may run one: deliveries are claimed with row locks and a lease.
 fn start_webhook_delivery(
     store: Arc<dyn WebhookStore>,
-    clock: Arc<SystemClock>,
+    clock: Arc<dyn Clock>,
     settings: &WebhookSettings,
     public_url: String,
 ) -> anyhow::Result<()> {
@@ -285,6 +313,7 @@ async fn main() -> anyhow::Result<()> {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .init();
+    let (clock, time) = dev_clock()?;
     let (rules, initial_policy) = match std::env::var("PYN_CONFIG") {
         Ok(path) => {
             let size = std::fs::metadata(&path)?.len();
@@ -312,7 +341,7 @@ async fn main() -> anyhow::Result<()> {
         webhooks,
         postgres,
         kind: meta_kind,
-    } = stores().await?;
+    } = stores(time).await?;
     let instances: u32 = number("PYN_INSTANCES", 1)?;
     anyhow::ensure!(instances >= 1, "PYN_INSTANCES must be at least 1");
     anyhow::ensure!(
@@ -357,7 +386,6 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    let clock = Arc::new(SystemClock);
     let defaults = AccessConfig::default();
     let limit_defaults = RateLimits::default();
     let config = AccessConfig {
