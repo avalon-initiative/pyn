@@ -1075,6 +1075,44 @@ fn fatal_message(error: &anyhow::Error) -> String {
     message
 }
 
+/// Puts `branch.<current>.mergeOptions` right after `merge`, so the command line's own options win.
+fn with_merge_options(mut args: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsString> {
+    const ENDS: [&str; 3] = ["--abort", "--continue", "--quit"];
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].to_str() {
+            Some("--server" | "--token" | "--user" | "--repo") => i += 1,
+            Some(a) if a.starts_with('-') => {}
+            _ => break,
+        }
+        i += 1;
+    }
+    if args.get(i).is_none_or(|a| a != "merge") || args.iter().any(|a| ENDS.iter().any(|e| a == e))
+    {
+        return args;
+    }
+    let configured = std::env::current_dir()
+        .ok()
+        .and_then(|cwd| git_home::detect(&cwd).ok().flatten())
+        .and_then(|git| git_home::configured_merge_options(&git));
+    if let Some(words) = configured {
+        args.splice(i + 1..i + 1, words.into_iter().map(Into::into));
+    }
+    args
+}
+
+fn parse_cli(args: Vec<std::ffi::OsString>) -> Result<Cli, clap::Error> {
+    use clap::FromArgMatches;
+    let matches = Cli::command().try_get_matches_from(args)?;
+    let mut cli = Cli::from_arg_matches(&matches)?;
+    if let Command::Merge(merge) = &mut cli.command
+        && let Some(("merge", sub)) = matches.subcommand()
+    {
+        merge.order_message_parts(sub);
+    }
+    Ok(cli)
+}
+
 fn main() {
     pyn_gittransport::promisor::install();
     git_home::lfs_net::install();
@@ -1090,8 +1128,10 @@ fn main() {
         eprintln!("fatal: not a git repository (or any of the parent directories): .git");
         std::process::exit(128);
     }
-    let mut cli = match Cli::try_parse_from(attached_gpg_keys(attached_pull_rebase(counted_log(
-        numbered_commits(rename::attached(std::env::args_os().collect())),
+    let mut cli = match parse_cli(with_merge_options(attached_gpg_keys(attached_pull_rebase(
+        counted_log(numbered_commits(rename::attached(
+            std::env::args_os().collect(),
+        ))),
     )))) {
         Ok(cli) => cli,
         Err(e) => {

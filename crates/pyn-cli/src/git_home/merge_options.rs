@@ -9,7 +9,7 @@ use super::GitHome;
 use super::stage::clean_bytes;
 use super::stash::{Applying, PushArgs, apply_commit, save, store_stash};
 use crate::commit_format::subject_and_body;
-use crate::merging::MergeArgs;
+use crate::merging::{MergeArgs, MessagePart};
 
 const DEFAULT_LOG: usize = 20;
 
@@ -17,6 +17,49 @@ const DEFAULT_LOG: usize = 20;
 fn fatal(text: &str) -> ! {
     eprintln!("fatal: {text}");
     std::process::exit(128);
+}
+
+/// `branch.<current>.mergeOptions` split as git's `split_cmdline` does (quotes group, a backslash escapes
+/// inside them); `None` outside a git repository or when the branch sets none.
+pub fn configured_merge_options(git: &GitHome) -> Option<Vec<String>> {
+    let pyn_gitwork::Head::Branch { name, .. } = git.repo.head().ok()? else {
+        return None;
+    };
+    let text = git
+        .repo
+        .config()
+        .get(&format!("branch.{name}.mergeoptions"))?;
+    let (mut words, mut word, mut quote, mut started) = (Vec::new(), String::new(), None, false);
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (Some(q), c) if c == q => quote = None,
+            (Some(_), '\\') => match chars.next() {
+                Some(next) => word.push(next),
+                None => fatal(&format!(
+                    "Bad branch.{name}.mergeoptions string: cmdline ends with \\"
+                )),
+            },
+            (Some(_), c) => word.push(c),
+            (None, '"' | '\'') => (quote, started) = (Some(c), true),
+            (None, c) if c.is_whitespace() => {
+                if started {
+                    words.push(std::mem::take(&mut word));
+                    started = false;
+                }
+            }
+            (None, c) => (word.push(c), started = true).0,
+        }
+    }
+    if quote.is_some() {
+        fatal(&format!(
+            "Bad branch.{name}.mergeoptions string: unclosed quote"
+        ));
+    }
+    if started {
+        words.push(word);
+    }
+    Some(words)
 }
 
 /// How the message is cleaned: the mode named by `--cleanup`, else what the editor or its absence implies.
@@ -64,27 +107,47 @@ pub(super) fn check_flags(git: &GitHome, args: &MergeArgs) {
     if args.no_message {
         crate::usage_error("`pyn merge --no-message` is not built");
     }
-    if args.file.is_some() && !args.message.is_empty() {
-        crate::usage_error("`pyn merge -F` with `-m` is not built");
-    }
-    if let Some(file) = &args.file
-        && std::fs::read(file).is_err()
-    {
+    if let Some(file) = args.file.iter().find(|f| std::fs::read(f).is_err()) {
         crate::usage_error(&format!("could not read file '{file}'"));
     }
 }
 
-/// The message `-m` (paragraphs joined by a blank line) or `-F` gave, before cleanup.
+/// The message `-m` and `-F` gave in command-line order, before cleanup, joined as git does: a `-m` after
+/// text follows a blank line, a `-F` file follows a newline and is taken as it is.
 pub(super) fn given_message(args: &MergeArgs) -> Result<Option<Vec<u8>>> {
-    if let Some(file) = &args.file {
-        return std::fs::read(file)
-            .map(Some)
-            .map_err(|_| anyhow!("could not read file '{file}'"));
-    }
-    if args.message.is_empty() {
+    let parts: Vec<MessagePart> = if args.message_parts.is_empty() {
+        args.message
+            .iter()
+            .cloned()
+            .map(MessagePart::Text)
+            .chain(args.file.iter().cloned().map(MessagePart::File))
+            .collect()
+    } else {
+        args.message_parts.clone()
+    };
+    if parts.is_empty() {
         return Ok(None);
     }
-    Ok(Some(args.message.join("\n\n").into_bytes()))
+    let mut out = Vec::new();
+    for part in parts {
+        match part {
+            MessagePart::Text(text) => {
+                if !out.is_empty() {
+                    out.extend_from_slice(b"\n\n");
+                }
+                out.extend_from_slice(text.as_bytes());
+            }
+            MessagePart::File(file) => {
+                if !out.is_empty() {
+                    out.push(b'\n');
+                }
+                out.extend(
+                    std::fs::read(&file).map_err(|_| anyhow!("could not read file '{file}'"))?,
+                );
+            }
+        }
+    }
+    Ok(Some(out))
 }
 
 /// `text` with its comment lines dropped, then whitespace-cleaned.

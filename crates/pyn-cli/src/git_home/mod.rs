@@ -156,6 +156,7 @@ pub use ls_tree::LsTreeArgs;
 pub use mailmap::CheckMailmapArgs;
 pub use maintenance::MaintenanceArgs;
 pub use merge_diff::MergeArgs;
+pub use merge_options::configured_merge_options;
 pub use name_rev::NameRevArgs;
 pub use pack_plumbing::{PackObjectsArgs, PrunePackedArgs, UnpackObjectsArgs};
 pub use pack_refs::PackRefsArgs;

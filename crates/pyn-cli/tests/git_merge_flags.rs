@@ -776,3 +776,100 @@ fn negated_forms_reset_what_came_before() {
         });
     }
 }
+
+#[test]
+fn peeling_suffixes_in_the_spec() {
+    for spec in [
+        "side^{commit}",
+        "side~1^{commit}",
+        "side^^{commit}",
+        "side^{}",
+        "v1^{commit}",
+        "v1^{}",
+        "side^{tree}",
+        "side^{commit",
+        "side^{nope}",
+    ] {
+        each_format(CLEAN, |p| {
+            p.same(&["merge", "--no-ff", spec]);
+        });
+    }
+}
+
+#[test]
+fn file_and_message_in_command_line_order() {
+    for args in [
+        &["-m", "one", "-F", "F", "-m", "two"][..],
+        &["-F", "F", "-m", "two", "-F", "G"],
+        &["-F", "G", "-m", "two"],
+        &["-m", "one", "-F", "G"],
+        &["-m", "a", "-m", "b", "-F", "F", "-m", "c"],
+        &["-F", "empty", "-m", "x"],
+        &["--cleanup=verbatim", "-m", "x", "-F", "G"],
+        &["--cleanup=strip", "-F", "F", "-m", "# c", "-m", "y"],
+    ] {
+        each_format(CLEAN, |p| {
+            for (name, body) in [
+                ("F", "from f\n"),
+                ("G", "from g, no newline"),
+                ("empty", ""),
+            ] {
+                fs::write(p.home.join(name), body).unwrap();
+            }
+            let mapped: Vec<String> = args
+                .iter()
+                .map(|a| match *a {
+                    "F" | "G" | "empty" => p.home.join(a).display().to_string(),
+                    other => other.to_string(),
+                })
+                .collect();
+            let mut full = vec!["merge", "--no-ff"];
+            full.extend(mapped.iter().map(String::as_str));
+            full.push("side");
+            p.works(&full);
+        });
+    }
+}
+
+#[test]
+fn dash_is_a_file_named_dash() {
+    each_format(CLEAN, |p| {
+        p.refused(&["merge", "--no-ff", "-F", "-", "side"])
+    });
+    each_format(CLEAN, |p| {
+        p.both_sh("printf 'named dash\\n' >./-");
+        p.works(&["merge", "--no-ff", "-F", "-", "side"]);
+    });
+}
+
+#[test]
+fn branch_merge_options_setting() {
+    for (config, args) in [
+        ("--no-ff -m 'hello world' --log", &["side"][..]),
+        ("--no-commit", &["side"]),
+        ("--no-commit", &["--commit", "side"]),
+        ("-m \"a \\\" b\" --no-ff", &["side"]),
+        ("-m cfg --no-ff", &["-m", "cli", "side"]),
+        ("--squash", &["side"]),
+        ("   --no-ff    --signoff  ", &["side"]),
+        ("--no-ff", &["--abort"]),
+        ("-m 'open", &["side"]),
+        ("--bogus", &["side"]),
+    ] {
+        each_format(CLEAN, |p| {
+            let file = p.home.join("options");
+            fs::write(&file, config).unwrap();
+            p.both_sh(&format!(
+                "git config branch.main.mergeOptions \"$(cat '{}')\"",
+                file.display()
+            ));
+            let mut full = vec!["merge"];
+            full.extend(args);
+            p.same(&full);
+        });
+    }
+    each_format(CLEAN, |p| {
+        p.both_sh("git config branch.other.mergeOptions --no-commit");
+        p.works(&["merge", "--no-ff", "side"]);
+    });
+}

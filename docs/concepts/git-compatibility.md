@@ -496,7 +496,7 @@ that cannot fast-forward is `fatal: Not possible to fast-forward, aborting.` (`1
 | `--no-strategy`, `--all` | Usage error (`129`): not built (`--all`: use `pyn fetch --all`; `--no-strategy` because git keeps the strategies named before it). |
 
 Config read: `pull.ff`, `pull.rebase`, `branch.<name>.rebase`, `branch.<name>.merge`, `branch.<name>.remote`, `merge.ff`, plus what
-`pyn fetch` reads, plus `merge.stat` and `pull.twohead` (the default strategy of a merge, as for `pyn merge`). `pull.octopus` and `branch.<name>.mergeOptions` are not read. A merge pull also reads `merge.log`, `merge.verifySignatures`, `merge.autoStash` and the other settings of [Merge options](#merge-options). The message of an annotated tag
+`pyn fetch` reads, plus `merge.stat` and `pull.twohead` (the default strategy of a merge, as for `pyn merge`). `pull.octopus` and `branch.<name>.mergeOptions` are not read by `pull`. A merge pull also reads `merge.log`, `merge.verifySignatures`, `merge.autoStash` and the other settings of [Merge options](#merge-options). The message of an annotated tag
 is not appended to a tag merge's message. Pulling on a pyn server is #310 and still prints the git-command message.
 
 ### Clone from a git URL
@@ -1766,7 +1766,7 @@ fast-forward or an up-to-date merge. The options of the tree strategies (`ort`, 
 | `patience`, `histogram`, `diff-algorithm=patience\|histogram` | Usage error (`129`): only the Myers diff is built. |
 
 `pull.twohead` names the strategy when no `-s` is given (git reads it for `merge` too); several names in it are refused like several `-s`.
-Not built: several `-s` in one command, `-X` for `resolve`, `pull.octopus`, `merge.<name>.mergeoptions` and `branch.<name>.mergeOptions`.
+Not built: several `-s` in one command, `-X` for `resolve`, `pull.octopus` and `merge.<name>.mergeoptions`.
 #### Renames in a merge
 
 `merge` (with `ort`, `recursive` and `subtree`) finds the files each side moved since the merge base with the same detection
@@ -1831,7 +1831,7 @@ These shape the message and the surroundings of a git home merge; `pull` passes 
 | --- | --- |
 | `--signoff`, `--no-signoff` | Appends `Signed-off-by: <committer>` to the merge commit's message before the hooks and the editor see it, as `commit -s` does (not twice). Not added to `MERGE_MSG` of a stopped merge or to `SQUASH_MSG`. |
 | `--log[=<n>]`, `--no-log`, `merge.log` | Adds git's shortlog to the generated or given message after a blank line: `* <branch>:` and one indented subject per non-merge commit brought in, newest first. More than `<n>` commits (20 by default, `merge.log=true` is 20, a number is that many) print `* <branch>: (N commits)`, `<n>` subjects and `  ...`. A tag is `tag '<name>'`, a bare commit `commit '<name>'`. `--log=0` and `--no-log` add none, a negative `--log=` value falls back to `merge.log`, a non-number is a usage error (`129`), and a bad `merge.log` is `fatal` (`128`) before anything changes. `SQUASH_MSG` has none. |
-| `-F <file>`, `--file=<file>` | The message is the file, taken as `-m` is (it counts as given: no editor by default). `-` is a file of that name, as in git. An unreadable file is a usage error (`129`). `-F` with `-m` is a usage error: git concatenates them in command-line order, which pyn does not track. |
+| `-F <file>`, `--file=<file>` | The message is the file, taken as `-m` is (it counts as given: no editor by default). `-` is a file named `-` (`merge` never reads standard input, as in git). An unreadable file is a usage error (`129`). `-F` and `-m` may be mixed and repeated and are joined in command-line order as git joins them: a `-m` after earlier text follows a blank line, a `-F` file follows a newline and is taken as it is. |
 | `--cleanup=<mode>` | `strip` drops `#` lines and tidies blank lines and trailing blanks, `whitespace` tidies only (the default without the editor, so `#` lines of `-m` and `-F` stay), `verbatim` keeps every byte, `scissors` with the editor puts a scissors line after the message and drops everything from it on (otherwise it is `whitespace`, as in git, so a scissors line in `-m` stays), `default` is `strip` with the editor and `whitespace` without. Another name is `fatal` (`128`). With the editor, only `strip` appends the comment block. |
 | `--into-name <name>`, `merge.suppressDest` | The title says `into <name>` instead of the real branch. ` into <dest>` is left out when the destination (the name given, else the branch, else `HEAD`) matches a `merge.suppressDest` glob (several allowed); with none set it is left out for `main` and `master`, and a setting replaces that default. |
 | `--allow-unrelated-histories`, `--no-allow-unrelated-histories` | Merges histories with no common commit against an empty tree: files only one side has are added, a file both have is an add/add conflict whose diff3 base is `empty tree`. Without the option it is `fatal: refusing to merge unrelated histories` (`128`, `ORIG_HEAD` written). With `resolve`, `octopus` or `subtree` it is refused with nothing changed. |
@@ -1841,9 +1841,11 @@ These shape the message and the surroundings of a git home merge; `pull` passes 
 | `--ff`, `--commit`, `merge.ff` | `--ff` and `--commit` undo `--no-ff` and `--no-commit`. `merge.ff=false` is `--no-ff` and `merge.ff=only` is `--ff-only` unless the command line or `--squash` says otherwise. |
 | `-q`, `-v`, `--progress`, `--no-progress` | `-q` silences the informational lines (`Updating`, `Fast-forward`, the diffstat); the others are accepted and change nothing. |
 
-`--no-strategy-option` and `--no-into-name` reset what came before, as in git. The title of an ancestor spelled `<branch>^`, `<branch>^^`, `<branch>~<n>` is `branch '<branch>' (early part)` (and `branch '<branch>'` when it names the tip), and the `--log` heading follows it.
+`--no-strategy-option` and `--no-into-name` reset what came before, as in git. The title of an ancestor spelled `<branch>^`, `<branch>^^`, `<branch>~<n>` is `branch '<branch>' (early part)` (and `branch '<branch>'` when it names the tip), and the `--log` heading follows it. A spec may end in `^{commit}` or `^{}` (`side^{commit}`, `v1^{}`, `side~1^{commit}`); the title is then `commit '<spec>'`. Other peel forms (`^{tree}`, `^{tag}`, `^{/text}`) are refused.
 
-Not built, each a usage error (`129`): `--rerere-autoupdate` and `--no-rerere-autoupdate` (pyn has no rerere), `--overwrite-ignore`, `--no-overwrite-ignore`, and three negated forms whose git behavior depends on what came before or on the git version (`--no-message`, `--no-strategy`, `--no-cleanup`). `merge.verbosity`, `merge.stat=compact`, `branch.<name>.mergeOptions` and `merge.<name>.driver` are not read.
+Not built, each a usage error (`129`): `--rerere-autoupdate` and `--no-rerere-autoupdate` (pyn has no rerere), `--overwrite-ignore`, `--no-overwrite-ignore`, and three negated forms whose git behavior depends on what came before or on the git version (`--no-message`, `--no-strategy`, `--no-cleanup`). `merge.verbosity`, `merge.stat=compact` (it prints the normal stat) and `merge.<name>.driver` are not read.
+
+`branch.<name>.mergeOptions` of the current branch is split like a shell line (quotes group words, a backslash escapes inside them) and put before the command line's options of `merge`, so the command line wins; an unclosed quote is `fatal` (`128`) and an unknown option a usage error (`129`). It is not applied with `--abort`, `--continue` or `--quit`, and `pull` does not apply it to its merge.
 
 Covered against the real git by `crates/pyn-cli/tests/git_merge_flags.rs`: exit status class, `HEAD` (so the message, parents and tree), index, status, the merge state files, stashes and the work tree, never output text.
 
