@@ -10,7 +10,7 @@ pub fn status_class(code: i32) -> i32 {
     }
 }
 
-/// Blame-style output with the leading object id cut to seven characters and the padding after it collapsed.
+/// Blame-style output with the leading object id cut to six characters (the width every git version shows) and the padding after it collapsed.
 /// The marks `^` (boundary), `*` (unblamable) and `?` (ignored) are kept and a blanked id column is one space.
 pub fn blame_lines(out: &[u8]) -> String {
     let text = String::from_utf8_lossy(out);
@@ -29,7 +29,7 @@ pub fn blame_lines(out: &[u8]) -> String {
             continue;
         }
         let tail = rest[hex..].trim_start_matches(' ');
-        result.push(format!("{mark}{} {tail}", &rest[..7]));
+        result.push(format!("{mark}{} {tail}", &rest[..6]));
     }
     result.join("\n")
 }
