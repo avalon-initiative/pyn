@@ -360,6 +360,22 @@ pub fn render_two_way_sized(
     out
 }
 
+/// Resolves every conflict by keeping both sides, ours then theirs, as the `union` merge driver does; only ours gets a
+/// missing final newline.
+pub fn render_union(chunks: &[Chunk<&[u8]>]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for chunk in chunks {
+        match chunk {
+            Chunk::Resolved(lines) => lines.iter().for_each(|l| out.extend_from_slice(l)),
+            Chunk::Conflict(c) => {
+                push_side(&mut out, &c.ours);
+                c.theirs.iter().for_each(|l| out.extend_from_slice(l));
+            }
+        }
+    }
+    out
+}
+
 /// Renders chunks with diff3-style conflict markers, labelled with the given names.
 pub fn render_markers(chunks: &[Chunk<&[u8]>], ours: &str, base: &str, theirs: &str) -> Vec<u8> {
     render_markers_sized(chunks, MARKER_SIZE, (ours, base, theirs))

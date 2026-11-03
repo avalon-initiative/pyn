@@ -8,11 +8,13 @@ use anyhow::{Result, bail};
 use pyn_gitwork::{Entry, Pathspec};
 use pyn_merge::{
     Favor, Outcome as Text, merge_text_with, render_markers_sized, render_two_way_sized,
+    render_union,
 };
 use pyn_object::{FileMode, Kind, ObjectId};
 
 use super::GitHome;
 use super::convert;
+use super::mergedrv::{self, Driver};
 use super::stage::write_leaves;
 use super::strategy::Settings;
 
@@ -145,13 +147,46 @@ pub(super) fn both_present(
         None => Vec::new(),
     };
     let (ours, theirs) = (git.repo.blob(&o.id)?, git.repo.blob(&t.id)?);
-    match merge_text_with(&base, &ours, &theirs, settings.text) {
-        Text::Clean(bytes) => {
-            let id = git.repo.objects().write(Kind::Blob, &bytes)?;
-            Ok(Resolved::Take(Some(Entry { mode, id })))
+    let binary = || match settings.text.favor {
+        Some(favor) => {
+            let chosen = if favor == Favor::Ours { o } else { t };
+            Ok(Resolved::Take(Some(Entry {
+                mode,
+                id: chosen.id,
+            })))
         }
+        None => conflict(Conflicting::Binary, Worktree::Keep),
+    };
+    let size = pyn_merge::MARKER_SIZE + settings.marker_extra;
+    let mut text = settings.text;
+    match mergedrv::find(git, at.path) {
+        Driver::Binary => return binary(),
+        Driver::External(cmd) => {
+            let call = mergedrv::Call {
+                path: at.path,
+                labels,
+                marker_size: size,
+            };
+            let (bytes, clean) = mergedrv::run_external(git, &cmd, [&base, &ours, &theirs], &call)?;
+            if clean {
+                let id = git.repo.objects().write(Kind::Blob, &bytes)?;
+                return Ok(Resolved::Take(Some(Entry { mode, id })));
+            }
+            return conflict(kind, Worktree::Write { mode, bytes });
+        }
+        Driver::Union => {
+            text.favor = None;
+            return match merge_text_with(&base, &ours, &theirs, text) {
+                Text::Clean(bytes) => take_blob(git, mode, &bytes),
+                Text::Conflicted(chunks) => take_blob(git, mode, &render_union(&chunks)),
+                Text::BinaryConflict => binary(),
+            };
+        }
+        Driver::Text => {}
+    }
+    match merge_text_with(&base, &ours, &theirs, text) {
+        Text::Clean(bytes) => take_blob(git, mode, &bytes),
         Text::Conflicted(chunks) => {
-            let size = pyn_merge::MARKER_SIZE + settings.marker_extra;
             let bytes = if settings.plain_markers {
                 render_two_way_sized(&chunks, size, labels.ours, labels.theirs)
             } else {
@@ -159,17 +194,13 @@ pub(super) fn both_present(
             };
             conflict(kind, Worktree::Write { mode, bytes })
         }
-        Text::BinaryConflict => match settings.text.favor {
-            Some(favor) => {
-                let chosen = if favor == Favor::Ours { o } else { t };
-                Ok(Resolved::Take(Some(Entry {
-                    mode,
-                    id: chosen.id,
-                })))
-            }
-            None => conflict(Conflicting::Binary, Worktree::Keep),
-        },
+        Text::BinaryConflict => binary(),
     }
+}
+
+fn take_blob(git: &GitHome, mode: FileMode, bytes: &[u8]) -> Result<Resolved> {
+    let id = git.repo.objects().write(Kind::Blob, bytes)?;
+    Ok(Resolved::Take(Some(Entry { mode, id })))
 }
 
 /// Merges `theirs` into `ours`, both derived from `base`; nothing is written except the merged blobs.

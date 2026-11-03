@@ -197,6 +197,49 @@ pub fn whitespace_rule(setting: &dyn Fn(&str) -> Option<String>) -> Rule {
         .unwrap_or_default()
 }
 
+/// The rule for one path: its `whitespace` attribute (set, unset or a rule list that starts from git's default), else `base`.
+pub fn path_rule(attr: &pyn_gitwork::AttrValue, base: Rule) -> Rule {
+    use pyn_gitwork::AttrValue;
+    match attr {
+        AttrValue::Unspecified => base,
+        AttrValue::Set => Rule {
+            bits: Rule::default().bits | whitespace::INDENT_WITH_NON_TAB,
+            ..Rule::default()
+        },
+        AttrValue::Unset => Rule {
+            bits: 0,
+            ..Rule::default()
+        },
+        // An unknown token is skipped, as git does.
+        AttrValue::Value(v) => {
+            let spec = String::from_utf8_lossy(v);
+            let known: Vec<&str> = spec
+                .split(',')
+                .filter(|t| Rule::parse(t).is_some())
+                .collect();
+            Rule::parse(&known.join(",")).unwrap_or(base)
+        }
+    }
+}
+
+/// `style` with the whitespace rule of `path`'s `whitespace` attribute, where it has one.
+pub fn path_style<'a>(
+    backend: &dyn crate::backend::Backend,
+    path: &str,
+    style: Option<&'a Style>,
+) -> Option<std::borrow::Cow<'a, Style>> {
+    use std::borrow::Cow;
+    let style = style?;
+    let attr = backend.attribute(path, "whitespace");
+    if attr.is_unspecified() {
+        return Some(Cow::Borrowed(style));
+    }
+    Some(Cow::Owned(Style {
+        rule: path_rule(&attr, style.rule),
+        ..style.clone()
+    }))
+}
+
 /// Where whitespace errors are painted: `diff.wsErrorHighlight`, as bits.
 pub const WSEH_NEW: u32 = 1;
 pub const WSEH_OLD: u32 = 2;

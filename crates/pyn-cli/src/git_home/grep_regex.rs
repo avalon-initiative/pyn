@@ -16,9 +16,23 @@ const BADRPT: &str = "Invalid preceding regular expression";
 
 /// Compiles `pattern`; the error is the text after git's `command line, '<pattern>': `.
 pub fn compile(pattern: &str, syntax: Syntax, ignore_case: bool) -> Result<Regex, String> {
+    compile_with(pattern, syntax, ignore_case, false)
+}
+
+/// As `compile`; with `capture` a group is a capture group, for callers that read what it matched.
+pub fn compile_with(
+    pattern: &str,
+    syntax: Syntax,
+    ignore_case: bool,
+    capture: bool,
+) -> Result<Regex, String> {
     let translated = match syntax {
         Syntax::Fixed => regex::escape(pattern),
-        _ => Parser::new(pattern, syntax == Syntax::Extended, ignore_case).translate()?,
+        _ => {
+            let mut parser = Parser::new(pattern, syntax == Syntax::Extended, ignore_case);
+            parser.capture = capture;
+            parser.translate()?
+        }
     };
     RegexBuilder::new(&translated)
         .case_insensitive(ignore_case)
@@ -43,6 +57,7 @@ struct Parser {
     ere: bool,
     icase: bool,
     closed_groups: u32,
+    capture: bool,
 }
 
 impl Parser {
@@ -53,6 +68,7 @@ impl Parser {
             ere,
             icase,
             closed_groups: 0,
+            capture: false,
         }
     }
 
@@ -153,7 +169,7 @@ impl Parser {
         }
         self.at += if self.ere { 1 } else { 2 };
         self.closed_groups += 1;
-        Ok(format!("(?:{inner})"))
+        Ok(format!("({}{inner})", if self.capture { "" } else { "?:" }))
     }
 
     fn escape(
