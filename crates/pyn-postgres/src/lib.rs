@@ -49,6 +49,7 @@ pub enum TimeSource {
 pub struct PgMetadataStore {
     pool: PgPool,
     scratch_schema: Option<String>,
+    scratch_url: Option<String>,
     time: TimeSource,
 }
 
@@ -820,6 +821,7 @@ impl PgMetadataStore {
         Ok(Self {
             pool,
             scratch_schema: None,
+            scratch_url: None,
             time: TimeSource::Database,
         })
     }
@@ -898,6 +900,7 @@ impl PgMetadataStore {
             .map_err(db)?;
         let mut store = Self::from_pool(pool).await?;
         store.scratch_schema = Some(schema);
+        store.scratch_url = Some(url.to_string());
         store.time = TimeSource::Caller;
         Ok(store)
     }
@@ -905,19 +908,29 @@ impl PgMetadataStore {
 
 impl Drop for PgMetadataStore {
     fn drop(&mut self) {
-        let Some(schema) = self.scratch_schema.take() else {
+        let (Some(schema), Some(url)) = (self.scratch_schema.take(), self.scratch_url.take())
+        else {
             return;
         };
-        let pool = self.pool.clone();
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            tokio::task::block_in_place(|| {
-                handle.block_on(async move {
+        // Own thread, runtime and connection: the last store handle can drop on a worker of a runtime that is
+        // shutting down, where waiting on that runtime's pool never completes.
+        let _ = std::thread::spawn(move || {
+            let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            else {
+                return;
+            };
+            rt.block_on(async move {
+                use sqlx::Connection;
+                if let Ok(mut conn) = sqlx::PgConnection::connect(&url).await {
                     let _ = sqlx::query(AssertSqlSafe(format!("DROP SCHEMA \"{schema}\" CASCADE")))
-                        .execute(&pool)
+                        .execute(&mut conn)
                         .await;
-                });
+                }
             });
-        }
+        })
+        .join();
     }
 }
 
