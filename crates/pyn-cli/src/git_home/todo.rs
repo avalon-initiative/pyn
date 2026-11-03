@@ -9,6 +9,7 @@ use pyn_object::ObjectId;
 use super::GitHome;
 use super::pick::subject_of;
 use crate::commit_format::{Context, DateStyle, Decorations, Pretty, render};
+use crate::date_mode::DateMode;
 
 /// What a sheet needs from the repository it is about: the commit a name means and a commit's subject.
 pub(crate) trait Commits {
@@ -48,7 +49,7 @@ impl Commits for GitHome {
         let mailmap = self.mailmap()?;
         let abbreviations = self.repo.abbreviations(None)?;
         let ctx = Context {
-            style: DateStyle::parse("default")?,
+            style: DateMode::plain(DateStyle::Default),
             now: chrono::Utc::now().timestamp(),
             decorations: &decorations,
             commit_color: None,

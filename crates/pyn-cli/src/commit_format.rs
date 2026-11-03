@@ -2,6 +2,7 @@
 //! A commit is a `pyn_object::Commit` with its id; a server home's `api::Commit` converts into one.
 
 use std::collections::HashMap;
+use std::io::IsTerminal;
 
 use anyhow::{Result, bail};
 use chrono::{DateTime, FixedOffset};
@@ -9,6 +10,7 @@ use pyn_gitwork::Mailmap;
 use pyn_object::{Commit, ObjectId, Signature};
 use pyn_proto as api;
 
+use crate::date_mode::DateMode;
 use crate::time;
 
 /// The server renderer retains its existing abbreviation width.
@@ -191,10 +193,10 @@ impl FormatArgs {
         }
     }
 
-    pub fn style(&self) -> Result<DateStyle> {
+    pub fn style(&self) -> Result<DateMode> {
         match &self.date {
-            Some(d) => DateStyle::parse(d),
-            None => Ok(DateStyle::Default),
+            Some(d) => DateMode::parse(d, std::io::stdout().is_terminal()),
+            None => Ok(DateMode::plain(DateStyle::Default)),
         }
     }
 
@@ -230,7 +232,7 @@ impl FormatArgs {
 /// A chosen format and date style.
 pub struct Rendering {
     pub pretty: Pretty,
-    pub style: DateStyle,
+    pub style: DateMode,
     /// The tab width asked for; `None` leaves the format's default.
     pub tabs: Option<usize>,
     pub abbrev_commit: bool,
@@ -274,7 +276,7 @@ pub fn render_api(r: &Rendering, c: &api::Commit) -> Result<String> {
     let (id, view) = from_api(c)?;
     let none = Decorations::new();
     let ctx = Context {
-        style: r.style,
+        style: r.style.clone(),
         now: chrono::Utc::now().timestamp(),
         decorations: &none,
         commit_color: None,
@@ -304,20 +306,6 @@ pub enum DateStyle {
 }
 
 impl DateStyle {
-    pub fn parse(name: &str) -> Result<Self> {
-        Ok(match name {
-            "default" => Self::Default,
-            "iso" | "iso8601" => Self::Iso,
-            "iso-strict" | "iso8601-strict" => Self::IsoStrict,
-            "rfc" | "rfc2822" => Self::Rfc,
-            "short" => Self::Short,
-            "relative" => Self::Relative,
-            "unix" => Self::Unix,
-            "raw" => Self::Raw,
-            _ => bail!("unknown date format {name}"),
-        })
-    }
-
     pub fn format(self, who: &Signature, now: i64) -> String {
         let (secs, off) = (who.time, who.offset_minutes);
         match self {
@@ -482,7 +470,7 @@ impl Pretty {
 pub type Decorations = HashMap<ObjectId, Vec<String>>;
 
 pub struct Context<'a> {
-    pub style: DateStyle,
+    pub style: DateMode,
     pub now: i64,
     pub decorations: &'a Decorations,
     /// The escape sequence that paints a commit id, when output is colored.
@@ -872,6 +860,5 @@ mod tests {
         assert_eq!(f(DateStyle::Short), "2023-11-14");
         assert_eq!(f(DateStyle::Unix), "1700000000");
         assert_eq!(f(DateStyle::Raw), "1700000000 +0100");
-        assert!(DateStyle::parse("human").is_err());
     }
 }

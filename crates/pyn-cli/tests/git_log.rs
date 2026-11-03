@@ -451,6 +451,44 @@ fn date_styles_match_git() {
 }
 
 #[test]
+fn every_date_mode_matches_git() {
+    each_format(|f| {
+        for mode in [
+            "human",
+            "local",
+            "default-local",
+            "iso-local",
+            "rfc-local",
+            "short-local",
+            "raw-local",
+            "unix-local",
+            "human-local",
+            "format:%Y-%m-%d %H:%M",
+            "format:%a %b %e %s %z|%Z|%%",
+            "format-local:%Y-%m-%d %H:%M %z",
+            "auto:human",
+            "auto:iso",
+        ] {
+            let date = format!("--date={mode}");
+            f.same(&[date.as_str()]);
+            f.same(&[date.as_str(), "--pretty=fuller"]);
+            f.same(&[date.as_str(), "--format=%ad|%cd"]);
+            f.same_show(&[date.as_str(), "--format=%ad|%cd", "HEAD"]);
+        }
+        for bad in ["--date=nonsense", "--date=format", "--date=human-localx"] {
+            let (want, _) = f.oracle(&f.repo, &[bad]);
+            let (code, out, err) = f.pyn(&f.repo, &[bad]);
+            assert_eq!(
+                oracle::status_class(code),
+                oracle::status_class(want),
+                "{bad}: {err}"
+            );
+            assert!(out.is_empty(), "{bad}");
+        }
+    });
+}
+
+#[test]
 fn revision_ranges_match_git() {
     each_format(|f| {
         for args in [

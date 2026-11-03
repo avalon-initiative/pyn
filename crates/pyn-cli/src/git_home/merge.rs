@@ -26,6 +26,7 @@ use super::worktree::{
 };
 use super::{GitHome, Refused, convert, path_string};
 use crate::commit_format::{Context, DateStyle, Pretty, render};
+use crate::date_mode::DateMode;
 use crate::diff::{self, Tree};
 use crate::diffstat;
 use crate::merging::MergeArgs;
@@ -294,7 +295,7 @@ fn squash_message(git: &GitHome, ours: &ObjectId, theirs: &ObjectId) -> Result<S
     let mut text = String::from("Squashed commit of the following:\n");
     let abbreviations = crate::commit_format::IdFormat::Git(git.repo.abbreviations(None)?);
     let ctx = Context {
-        style: DateStyle::Default,
+        style: DateMode::plain(DateStyle::Default),
         now: 0,
         decorations: &Default::default(),
         commit_color: None,
